@@ -59,7 +59,13 @@ docker compose up -d
 
 - URL: http://localhost:8080
 
-### 2. Install the CLI
+### 2. Log in to the Web UI
+
+Open http://localhost:8080/ui/ in your browser. The Connection card will appear on the dashboard — enter the token you set in `.env` (default: `dev-token-change-me`) and click **Save**. The card disappears once authenticated.
+
+> Alternatively, use OIDC SSO by starting with `docker compose -f docker-compose.yaml -f docker-compose.sso.yml up -d` and clicking **SSO Login**.
+
+### 3. Install the CLI
 
 Download from the [Releases page](https://github.com/eirueimi/unified-cd/releases), or build from source (requires Go 1.26+):
 
@@ -67,7 +73,7 @@ Download from the [Releases page](https://github.com/eirueimi/unified-cd/release
 make build     # outputs bin/unified-cli
 ```
 
-### 3. Configure the CLI
+### 4. Configure the CLI
 
 ```bash
 mkdir -p ~/.config/unified-cd
@@ -77,7 +83,7 @@ token: dev-token-change-me
 EOF
 ```
 
-### 4. Run your first job
+### 5. Run your first job
 
 ```bash
 unified-cli apply -f examples/jobs/hello.yaml

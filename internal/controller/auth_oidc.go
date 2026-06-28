@@ -264,7 +264,23 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMe returns information about the currently logged-in user. Returns 401 when unauthenticated.
+// Supports both Bearer token (PAT) and session cookie auth.
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	// 1. Bearer token (PAT)
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, bearerPrefix) {
+		token := strings.TrimPrefix(h, bearerPrefix)
+		hash := HashToken(token)
+		pat, err := s.store.GetPATByHash(r.Context(), hash)
+		if err == nil && pat != nil {
+			writeJSON(w, http.StatusOK, map[string]string{
+				"sub":  pat.Name,
+				"name": pat.Name,
+			})
+			return
+		}
+	}
+
+	// 2. Session cookie (browser SSO)
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
