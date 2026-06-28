@@ -1,19 +1,19 @@
-# unified-cd full-stack compose（Go + Svelte hot-reload あり）
+# unified-cd full-stack compose (Go + Svelte hot-reload)
 # Usage:
 #   cp .env.example .env          # create your .env
-#   docker compose up -d          # start all services (air + Vite で自動リビルド)
+#   docker compose up -d          # start all services (air + Vite for auto-rebuild)
 #   docker compose logs -f controller # watch controller logs
-#   docker compose logs -f vite         # watch Vite dev server logs
+#   docker compose logs -f vite        # watch Vite dev server logs
 #
-# Go ファイルを変更すると自動でリビルド・再起動される。
-# .svelte ファイルを変更するとブラウザが自動更新される（HMR）。
-# docker compose build は初回のみ必要。
+# Go file changes trigger automatic rebuild and restart.
+# .svelte file changes trigger hot module replacement in the browser (HMR).
+# docker compose build is only required on first run.
 #
 # After startup:
 #   CLI: export UNIFIED_SERVER=http://localhost:8080
 #        export UNIFIED_TOKEN=dev-token-change-me
 #        ./bin/unified-cd apply -f examples/hello.yaml
-#   Web UI: http://localhost:5173/ui/  (Vite dev server with HMR)
+#   Web UI: http://localhost:8080/ui/
 
 services:
 
@@ -83,10 +83,10 @@ services:
       UNIFIED_OIDC_ISSUER: ${UNIFIED_OIDC_ISSUER:-}
       UNIFIED_OIDC_CLIENT_ID: ${UNIFIED_OIDC_CLIENT_ID:-}
       UNIFIED_OIDC_CLIENT_SECRET: ${UNIFIED_OIDC_CLIENT_SECRET:-}
-      # WebDir 未設定時、controller がどの API ルートにもマッチしなかったリクエスト
-      # (/ui/* を含む) を Vite dev server にリバースプロキシする。
-      # OIDC SSO ログイン完了後のリダイレクト先 "/ui/" は controller 自身のオリジンへの
-      # 相対パスのため、これがないと http://localhost:8080/ui/ が 404 になる。
+      # When WebDir is not set, the controller reverse-proxies any request that does
+      # not match an API route (including /ui/*) to the Vite dev server.
+      # After an OIDC SSO login, the browser is redirected to a relative path "/ui/"
+      # on the controller's own origin — without this proxy, that would 404.
       UNIFIED_UI_PROXY_TARGET: http://vite:5173
     ports:
       - "8080:8080"
@@ -98,7 +98,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ---- Vite dev server（Svelte hot reload） ----
+  # ---- Vite dev server (Svelte hot reload) ----
   vite:
     build:
       context: .
@@ -116,7 +116,7 @@ services:
       VITE_API_URL: http://controller:8080
     restart: unless-stopped
 
-  # ---- Dex（ローカル開発用 OIDC IdP） ----
+  # ---- Dex (local OIDC identity provider for development) ----
   dex:
     image: ghcr.io/dexidp/dex:v2.41.1
     command: dex serve /etc/dex/config.yaml
