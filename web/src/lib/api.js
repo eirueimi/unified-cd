@@ -20,7 +20,9 @@ export async function initAuth() {
     }
   } catch { }
   try {
-    const resp = await fetch(url + '/api/v1/auth/me', { credentials: 'include' });
+    const t = get(token);
+    const headers = t ? { Authorization: 'Bearer ' + t } : {};
+    const resp = await fetch(url + '/api/v1/auth/me', { headers, credentials: 'include' });
     if (resp.ok) currentUser.set(await resp.json());
   } catch { }
 }
