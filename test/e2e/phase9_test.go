@@ -76,12 +76,12 @@ metadata:
 spec:
   agentSelector: [kind:test]
   steps:
-    - name: step-a
-      run: sleep 0.2
-    - name: step-b
-      run: sleep 0.2
+    - parallel:
+      - name: step-a
+        run: sleep 0.2
+      - name: step-b
+        run: sleep 0.2
     - name: step-c
-      needs: [step-a, step-b]
       run: echo done
 `)
 
@@ -109,10 +109,10 @@ spec:
 	assert.True(t, seenDone, "step-c should have run and logged 'done'")
 }
 
-// TestPhase9_FailFastTrue verifies that when failFast=true, a single step failure cancels a long-running step executing in parallel.
-func TestPhase9_FailFastTrue(t *testing.T) {
+// TestPhase9_ParallelRunsToCompletion verifies that when one parallel step fails, the other runs to completion.
+func TestPhase9_ParallelRunsToCompletion(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("requires POSIX shell (exit, sleep)")
+		t.Skip("requires POSIX shell (exit)")
 	}
 
 	pg := store.NewTestPostgres(t)
@@ -133,19 +133,18 @@ func TestPhase9_FailFastTrue(t *testing.T) {
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
-  name: failfast-test
+  name: parallel-fail-test
 spec:
-  failFast: true
   agentSelector: [kind:test]
   steps:
-    - name: fail-step
-      run: exit 1
-    - name: long-step
-      run: sleep 30
+    - parallel:
+      - name: fail-step
+        run: exit 1
+      - name: complete-step
+        run: echo parallel-ran
 `)
 
-	start := time.Now()
-	runID := triggerRunPhase9(t, httpSrv.URL, tok, "failfast-test")
+	runID := triggerRunPhase9(t, httpSrv.URL, tok, "parallel-fail-test")
 
 	require.Eventually(t, func() bool {
 		r, err := pg.GetRun(ctx, runID)
@@ -156,9 +155,17 @@ spec:
 	require.NoError(t, err)
 	assert.Equal(t, api.RunFailed, r.Status)
 
-	// Confirm that long-step was interrupted by failFast (the 30s sleep did not complete)
-	elapsed := time.Since(start)
-	assert.Less(t, elapsed, 10*time.Second, "failFast should have cancelled long-step before 30s sleep completed (elapsed: %s)", elapsed)
+	// Confirm that complete-step ran to completion (parallel steps run to completion even if one fails)
+	lines, err := pg.TailLogs(ctx, runID, 0, 100)
+	require.NoError(t, err)
+	var seen bool
+	for _, l := range lines {
+		if strings.Contains(l.Line, "parallel-ran") {
+			seen = true
+			break
+		}
+	}
+	assert.True(t, seen, "complete-step should have run to completion despite fail-step failing")
 }
 
 // TestPhase9_ContinueOnError verifies that a Run succeeds even when a step with continueOnError=true fails.
@@ -193,7 +200,6 @@ spec:
       run: exit 1
       continueOnError: true
     - name: after
-      needs: [flaky]
       run: printf "after-ran\n"
 `)
 

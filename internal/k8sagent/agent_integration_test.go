@@ -91,8 +91,8 @@ func TestK8sAgent_ExecuteRun_Integration(t *testing.T) {
 	claim := api.ClaimResponse{
 		RunID:   runID,
 		JobName: "e2e-test",
-		Steps: []api.ClaimStep{
-			{Index: 0, Name: "hello", Run: "echo hello-from-k8s-agent"},
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, Name: "hello", Run: "echo hello-from-k8s-agent"}},
 		},
 	}
 
@@ -162,11 +162,10 @@ func TestK8sAgent_ExecuteRun_StepFailure_Integration(t *testing.T) {
 	a := NewK8sAgent(cfg, agentClient, pm, exec, pool)
 
 	claim := api.ClaimResponse{
-		RunID:    runID,
-		JobName:  "e2e-fail-test",
-		FailFast: true,
-		Steps: []api.ClaimStep{
-			{Index: 0, Name: "fail-step", Run: "exit 42"},
+		RunID:   runID,
+		JobName: "e2e-fail-test",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, Name: "fail-step", Run: "exit 42"}},
 		},
 	}
 
