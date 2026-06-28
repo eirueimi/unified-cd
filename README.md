@@ -48,7 +48,7 @@ sudo mv unified-cli /usr/local/bin/
 
 ### Requirements
 
-- Go 1.24+
+- Go 1.26+
 - Docker (for PostgreSQL)
 
 ### Build and run
@@ -63,13 +63,13 @@ docker compose -f docker-compose.dev.yaml up -d
 # 3. Start controller (terminal 1)
 UNIFIED_DB_DSN="postgres://unified:unified@localhost:5432/unified?sslmode=disable" \
 UNIFIED_TOKEN="dev-secret" \
-./bin/unified-cd-controller --addr :8080
+./bin/unified-cli-controller --addr :8080
 
 # 4. Start agent (terminal 2)
 UNIFIED_SERVER="http://localhost:8080" \
 UNIFIED_AGENT_TOKEN="dev-secret" \
 UNIFIED_AGENT_ID="agent-1" \
-./bin/unified-cd-agent
+./bin/unified-cli-agent
 
 # 5. Configure CLI
 mkdir -p ~/.config/unified-cd
@@ -90,9 +90,9 @@ spec:
       run: echo hello-from-unified-cd
 EOF
 
-./bin/unified-cd apply -f /tmp/hello.yaml
-RUN_ID=$(./bin/unified-cd run trigger hello)
-./bin/unified-cd logs -f "$RUN_ID"
+./bin/unified-cli apply -f /tmp/hello.yaml
+RUN_ID=$(./bin/unified-cli run trigger hello)
+./bin/unified-cli logs -f "$RUN_ID"
 ```
 
 ### Tests
@@ -204,7 +204,7 @@ make test           # full test suite (requires Docker)
 make test-short     # unit tests only
 make dev-go         # hot-reload controller with air
 make dev-ui         # Vite dev server for frontend
-make ui-build       # build frontend and embed into Go binary
+make ui-build       # build Svelte frontend assets (served by controller at runtime)
 make manifests      # regenerate Kubernetes install manifests
 make vscode-package # build VS Code extension .vsix
 ```
