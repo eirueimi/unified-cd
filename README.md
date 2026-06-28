@@ -57,10 +57,7 @@ cp .env.example .env        # edit UNIFIED_TOKEN if needed
 docker compose up -d
 ```
 
-- Controller API: http://localhost:8080
-- Web UI: http://localhost:5173/ui/
-
-`docker compose logs -f controller` でログを確認できます。
+- URL: http://localhost:8080
 
 ### 2. Install the CLI
 
