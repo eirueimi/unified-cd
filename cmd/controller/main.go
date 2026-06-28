@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/unified-cd/unified-cd/internal/config"
-	"github.com/unified-cd/unified-cd/internal/gittemplate"
-	"github.com/unified-cd/unified-cd/internal/controller"
-	"github.com/unified-cd/unified-cd/internal/objectstore"
-	"github.com/unified-cd/unified-cd/internal/secrets"
-	"github.com/unified-cd/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/config"
+	"github.com/eirueimi/unified-cd/internal/gittemplate"
+	"github.com/eirueimi/unified-cd/internal/controller"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 func main() {

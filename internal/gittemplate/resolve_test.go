@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unified-cd/unified-cd/internal/dsl"
-	"github.com/unified-cd/unified-cd/internal/gittemplate"
-	"github.com/unified-cd/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/gittemplate"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
 
 // ---- Cache tests (unchanged from before) ----

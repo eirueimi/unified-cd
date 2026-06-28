@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	agentlib "github.com/unified-cd/unified-cd/internal/agent"
-	"github.com/unified-cd/unified-cd/internal/api"
+	agentlib "github.com/eirueimi/unified-cd/internal/agent"
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

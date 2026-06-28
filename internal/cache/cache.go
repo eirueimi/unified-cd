@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/unified-cd/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
 
 // ErrCacheMiss is returned when no cache entry matches the key or restoreKeys.

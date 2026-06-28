@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/unified-cd/unified-cd/internal/controller"
-	"github.com/unified-cd/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/controller"
+	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 // mustSeedBootstrapPAT reproduces the "sync UNIFIED_TOKEN to DB as a PAT" step that production

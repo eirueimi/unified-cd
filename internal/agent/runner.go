@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/unified-cd/unified-cd/internal/api"
-	"github.com/unified-cd/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
 // findShell returns the shell executable used for step execution.

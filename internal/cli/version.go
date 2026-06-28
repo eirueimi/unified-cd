@@ -4,7 +4,7 @@ import "runtime/debug"
 
 // version can be overridden at build time:
 //
-//	go build -ldflags "-X github.com/unified-cd/unified-cd/internal/cli.version=v1.2.3"
+//	go build -ldflags "-X github.com/eirueimi/unified-cd/internal/cli.version=v1.2.3"
 var version = ""
 
 // buildVersion returns the version string embedded at build time, the module

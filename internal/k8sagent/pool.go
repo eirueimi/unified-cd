@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/unified-cd/unified-cd/internal/api"
-	"github.com/unified-cd/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/unified-cd/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/go-chi/chi/v5"
 )
 

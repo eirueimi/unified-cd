@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unified-cd/unified-cd/internal/gittemplate"
+	"github.com/eirueimi/unified-cd/internal/gittemplate"
 )
 
 // setupBareRepo creates a local git repo with the given files and returns "file://<workDir>".

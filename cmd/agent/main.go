@@ -9,9 +9,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/unified-cd/unified-cd/internal/agent"
-	"github.com/unified-cd/unified-cd/internal/config"
-	"github.com/unified-cd/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/agent"
+	"github.com/eirueimi/unified-cd/internal/config"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
 
 func main() {

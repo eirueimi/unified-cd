@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unified-cd/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 // captureRoundTripper is a mock that records the final URL passed to RoundTrip.

@@ -7,8 +7,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/unified-cd/unified-cd/internal/api"
-	"github.com/unified-cd/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
 // handleTriggerRun creates a new Run and returns it in Pending state.

@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unified-cd/unified-cd/internal/gittemplate"
+	"github.com/eirueimi/unified-cd/internal/gittemplate"
 )
 
 func TestParseURI(t *testing.T) {

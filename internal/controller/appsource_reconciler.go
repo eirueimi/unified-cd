@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/unified-cd/unified-cd/internal/dsl"
-	"github.com/unified-cd/unified-cd/internal/gittemplate"
-	"github.com/unified-cd/unified-cd/internal/secrets"
-	"github.com/unified-cd/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/gittemplate"
+	"github.com/eirueimi/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 // appSourceReconcilerLockKey is the advisory lock key used by the AppSource Reconciler.

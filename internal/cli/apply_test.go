@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
-	"github.com/unified-cd/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/api"
 )
 
 // captureTransport records requests and returns dummy responses without making real network connections.

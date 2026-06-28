@@ -1,4 +1,4 @@
-module github.com/unified-cd/unified-cd
+module github.com/eirueimi/unified-cd
 
 go 1.26.2
 

@@ -15,9 +15,9 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unified-cd/unified-cd/internal/controller"
-	"github.com/unified-cd/unified-cd/internal/secrets"
-	"github.com/unified-cd/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/controller"
+	"github.com/eirueimi/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 // newTestKeyManager creates a LocalKeyManager with a random master key for testing.

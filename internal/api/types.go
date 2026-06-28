@@ -3,7 +3,7 @@ package api
 import (
 	"time"
 
-	"github.com/unified-cd/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
 type ApplyJobRequest struct {

@@ -8,7 +8,7 @@ import (
 	"net/http"
 
 	"github.com/spf13/cobra"
-	"github.com/unified-cd/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/api"
 )
 
 func newGitCredentialCmd(resolve func() (Config, error)) *cobra.Command {

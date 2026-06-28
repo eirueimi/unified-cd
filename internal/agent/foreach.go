@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"github.com/unified-cd/unified-cd/internal/api"
-	"github.com/unified-cd/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
 // EvalForeachSource resolves a ClaimForeachSource to a []string using current template data.

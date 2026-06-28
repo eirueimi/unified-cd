@@ -6,13 +6,13 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/unified-cd/unified-cd/internal/api"
-	"github.com/unified-cd/unified-cd/internal/cache"
-	"github.com/unified-cd/unified-cd/internal/dsl"
-	"github.com/unified-cd/unified-cd/internal/gittemplate"
-	"github.com/unified-cd/unified-cd/internal/objectstore"
-	"github.com/unified-cd/unified-cd/internal/secrets"
-	"github.com/unified-cd/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/cache"
+	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/gittemplate"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 // RunScheduler transitions Pending runs to Queued.

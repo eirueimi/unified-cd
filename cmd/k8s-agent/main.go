@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	agentlib "github.com/unified-cd/unified-cd/internal/agent"
-	"github.com/unified-cd/unified-cd/internal/config"
-	"github.com/unified-cd/unified-cd/internal/k8sagent"
+	agentlib "github.com/eirueimi/unified-cd/internal/agent"
+	"github.com/eirueimi/unified-cd/internal/config"
+	"github.com/eirueimi/unified-cd/internal/k8sagent"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"

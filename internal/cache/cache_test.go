@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unified-cd/unified-cd/internal/cache"
-	"github.com/unified-cd/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/cache"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
 
 func newStore(t *testing.T) objectstore.ObjectStore {

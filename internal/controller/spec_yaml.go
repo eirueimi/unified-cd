@@ -3,7 +3,7 @@ package controller
 import (
 	"encoding/json"
 
-	"github.com/unified-cd/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"gopkg.in/yaml.v3"
 )
 

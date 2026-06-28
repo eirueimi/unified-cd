@@ -13,9 +13,9 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/unified-cd/unified-cd/internal/objectstore"
-	"github.com/unified-cd/unified-cd/internal/secrets"
-	"github.com/unified-cd/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 // Config holds the configuration for the master server.

@@ -13,11 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/unified-cd/unified-cd/internal/api"
-	"github.com/unified-cd/unified-cd/internal/cache"
-	"github.com/unified-cd/unified-cd/internal/dsl"
-	"github.com/unified-cd/unified-cd/internal/objectstore"
-	"github.com/unified-cd/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/cache"
+	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
 // postHookEntry is a post-processing entry executed after a step completes.

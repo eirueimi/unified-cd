@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
-	"github.com/unified-cd/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/api"
 )
 
 func newTestJobsCmd(t *testing.T, tr *captureTransport, serverURL string) (*cobra.Command, *strings.Builder) {

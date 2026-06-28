@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/unified-cd/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
 
 func TestArtifact_ObjectStoreNil_Upload_Returns503(t *testing.T) {

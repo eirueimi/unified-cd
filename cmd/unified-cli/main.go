@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/unified-cd/unified-cd/internal/cli"
+	"github.com/eirueimi/unified-cd/internal/cli"
 )
 
 func main() {

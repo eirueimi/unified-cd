@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	agentlib "github.com/unified-cd/unified-cd/internal/agent"
-	"github.com/unified-cd/unified-cd/internal/api"
-	"github.com/unified-cd/unified-cd/internal/dsl"
+	agentlib "github.com/eirueimi/unified-cd/internal/agent"
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
 // K8sAgent is an agent that claims Runs from the master and executes them inside a Kubernetes Pod.

@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/unified-cd/unified-cd/internal/objectstore"
-	"github.com/unified-cd/unified-cd/internal/store"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 const logArchiverLockKey = int64(0x6C6F6761) // 'loga'

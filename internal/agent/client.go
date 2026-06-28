@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/unified-cd/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/api"
 )
 
 // HTTPError represents a non-successful HTTP status returned by the server.

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/unified-cd/unified-cd/internal/api"
-	"github.com/unified-cd/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
 // safeStepCtx protects a dsl.TemplateData with a sync.RWMutex.

@@ -3,7 +3,7 @@ package dsl_test
 import (
 	"testing"
 
-	"github.com/unified-cd/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

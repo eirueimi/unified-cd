@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/unified-cd/unified-cd/internal/api"
-	"github.com/unified-cd/unified-cd/internal/dsl"
-	"github.com/unified-cd/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/go-chi/chi/v5"
 )
 
