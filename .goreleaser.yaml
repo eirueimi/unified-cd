@@ -7,7 +7,7 @@ builds:
     main: ./cmd/unified-cli
     ldflags:
       - -s -w
-      - -X github.com/unified-cd/unified-cd/internal/cli.version={{.Version}}
+      - -X github.com/eirueimi/unified-cd/internal/cli.version={{.Version}}
     goos:
       - linux
       - darwin
@@ -40,7 +40,7 @@ builds:
     main: ./cmd/agent
     ldflags:
       - -s -w
-      - -X github.com/unified-cd/unified-cd/internal/agent.Version={{.Version}}
+      - -X github.com/eirueimi/unified-cd/internal/agent.Version={{.Version}}
     goos:
       - linux
       - darwin

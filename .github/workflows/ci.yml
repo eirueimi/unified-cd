@@ -47,5 +47,9 @@ jobs:
         uses: helm/kind-action@v1
         with:
           cluster_name: ci
+      - name: Load test image into kind
+        run: |
+          docker pull ubuntu:22.04
+          kind load docker-image ubuntu:22.04 --name ci
       - name: Run k8s integration tests
         run: go test -tags k8s ./internal/k8sagent/... -timeout 10m -v
