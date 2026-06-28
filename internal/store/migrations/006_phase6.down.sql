@@ -1,0 +1,3 @@
+ALTER TABLE runs DROP COLUMN IF EXISTS triggered_by;
+DROP TABLE IF EXISTS webhook_receivers;
+DROP TABLE IF EXISTS pats;

@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../core-install
+  - ../base/postgres
+  - ../base/garage
+patches:
+  - path: secret-patch.yaml
+  - path: agent-config-patch.yaml

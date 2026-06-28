@@ -1,0 +1,155 @@
+# unified-cd full-stack compose（Go + Svelte hot-reload あり）
+# Usage:
+#   cp .env.example .env          # create your .env
+#   docker compose up -d          # start all services (air + Vite で自動リビルド)
+#   docker compose logs -f controller # watch controller logs
+#   docker compose logs -f vite         # watch Vite dev server logs
+#
+# Go ファイルを変更すると自動でリビルド・再起動される。
+# .svelte ファイルを変更するとブラウザが自動更新される（HMR）。
+# docker compose build は初回のみ必要。
+#
+# After startup:
+#   CLI: export UNIFIED_SERVER=http://localhost:8080
+#        export UNIFIED_TOKEN=dev-token-change-me
+#        ./bin/unified-cd apply -f examples/hello.yaml
+#   Web UI: http://localhost:5173/ui/  (Vite dev server with HMR)
+
+services:
+
+  # ---- PostgreSQL ----
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: unified
+      POSTGRES_PASSWORD: unified
+      POSTGRES_DB: unified
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U unified" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ---- Garage (S3-compatible object store for log archival) ----
+  garage:
+    image: dxflrs/garage:v2.3.0
+    command: /garage server --single-node --default-bucket
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-0000000000000000000000000000000000000000000000000000000000000000}
+      GARAGE_DEFAULT_ACCESS_KEY: garageadmin
+      GARAGE_DEFAULT_SECRET_KEY: garageadmin12345
+      GARAGE_DEFAULT_BUCKET: unified-cd-logs
+    volumes:
+      - garagedata:/data
+      - ./deployments/garage/garage.toml:/etc/garage.toml:ro
+    healthcheck:
+      test: [ "CMD", "/garage", "status" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---- controller ----
+  controller:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.dev
+    volumes:
+      - .:/app
+      - gocache:/gocache
+      - gomodcache:/gomodcache
+    command: air -c .air.controller.toml
+    depends_on:
+      postgres:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+    environment:
+      GOCACHE: /gocache
+      GOMODCACHE: /gomodcache
+      UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
+      UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+      UNIFIED_CONTROLLER_KEY: ${UNIFIED_CONTROLLER_KEY:-}
+      UNIFIED_S3_ENDPOINT: garage:3900
+      UNIFIED_S3_BUCKET: unified-cd-logs
+      UNIFIED_S3_KEY: garageadmin
+      UNIFIED_S3_SECRET: garageadmin12345
+      UNIFIED_OIDC_ISSUER: ${UNIFIED_OIDC_ISSUER:-}
+      UNIFIED_OIDC_CLIENT_ID: ${UNIFIED_OIDC_CLIENT_ID:-}
+      UNIFIED_OIDC_CLIENT_SECRET: ${UNIFIED_OIDC_CLIENT_SECRET:-}
+      # WebDir 未設定時、controller がどの API ルートにもマッチしなかったリクエスト
+      # (/ui/* を含む) を Vite dev server にリバースプロキシする。
+      # OIDC SSO ログイン完了後のリダイレクト先 "/ui/" は controller 自身のオリジンへの
+      # 相対パスのため、これがないと http://localhost:8080/ui/ が 404 になる。
+      UNIFIED_UI_PROXY_TARGET: http://vite:5173
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/healthz" ]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    restart: unless-stopped
+
+  # ---- Vite dev server（Svelte hot reload） ----
+  vite:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.vite
+    volumes:
+      - ./web:/app/web
+    working_dir: /app/web
+    command: sh -c "npm install && npm run dev"
+    depends_on:
+      controller:
+        condition: service_healthy
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://controller:8080
+    restart: unless-stopped
+
+  # ---- Dex（ローカル開発用 OIDC IdP） ----
+  dex:
+    image: ghcr.io/dexidp/dex:v2.41.1
+    command: dex serve /etc/dex/config.yaml
+    volumes:
+      - ./dex-config.yaml:/etc/dex/config.yaml:ro
+    ports:
+      - "5556:5556"
+    restart: unless-stopped
+
+  # ---- agent (Linux/Docker) ----
+  agent:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile.dev
+    volumes:
+      - .:/app
+      - gocache:/gocache
+      - gomodcache:/gomodcache
+    command: air -c .air.agent.toml
+    depends_on:
+      controller:
+        condition: service_healthy
+    environment:
+      GOCACHE: /gocache
+      GOMODCACHE: /gomodcache
+      UNIFIED_SERVER: http://controller:8080
+      UNIFIED_AGENT_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+      UNIFIED_AGENT_ID: docker-agent-1
+      UNIFIED_AGENT_LABELS: kind:docker,pool:default
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  garagedata:
+  gocache:
+  gomodcache:

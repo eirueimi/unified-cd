@@ -1,0 +1,70 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+builds:
+  - id: unified-cli
+    binary: unified-cli
+    main: ./cmd/unified-cli
+    ldflags:
+      - -s -w
+      - -X github.com/unified-cd/unified-cd/internal/cli.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+  - id: controller
+    binary: controller
+    main: ./cmd/controller
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+  - id: agent
+    binary: agent
+    main: ./cmd/agent
+    ldflags:
+      - -s -w
+      - -X github.com/unified-cd/unified-cd/internal/agent.Version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums-sha256.txt"
+  algorithm: sha256
+
+release:
+  draft: false
+  prerelease: auto

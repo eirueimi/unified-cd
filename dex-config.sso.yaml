@@ -1,0 +1,45 @@
+# Dex configuration for local SSO development
+#
+# The controller reverse-proxies /dex/* to Dex, so the browser reaches Dex
+# at http://localhost:8080/dex. Using a single issuer URL keeps all traffic
+# on one origin.
+#
+# Static user: admin@example.com / password
+issuer: http://localhost:8080/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  # Confidential client for browser SSO (Authorization Code Flow).
+  - id: unified-cd
+    secret: unified-cd-secret
+    name: unified-cd
+    redirectURIs:
+      - http://localhost:8080/api/v1/auth/oidc-callback
+  # Public client (no secret) for the CLI device flow.
+  # Dex requires client.Secret == deviceReq.ClientSecret, so making the client
+  # public allows the CLI to authenticate without holding a secret.
+  # Dex hardcodes the bare path "/device/callback" as the redirect URI after
+  # approval (deviceflowhandlers.go); validateRedirectURI requires an exact
+  # match, so that path must be registered here.
+  - id: unified-cd-cli
+    public: true
+    name: unified-cd CLI
+    redirectURIs:
+      - /device/callback
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: admin@example.com
+    # bcrypt hash of "password"
+    hash: "$2a$10$jWufy4Bfprg0HLUHGNgiTOSEoCJH8fe2WZXjTDnvugwq94IB5T.fa"
+    username: admin
+    userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"

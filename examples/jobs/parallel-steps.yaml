@@ -1,0 +1,36 @@
+# Demonstrates: parallel step execution using parallel: blocks
+# Usage:
+#   unified-cd apply -f examples/jobs/parallel-steps.yaml
+#   unified-cd run trigger parallel-build-deploy
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: parallel-build-deploy
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name:
+      run: echo "Starting build and deploy process..."
+    - parallel:
+      - name: buildFrontend
+        run: echo "Building frontend..."
+      - name: buildBackend
+        run: echo "Building backend..."
+
+    - parallel:
+      - name: testFrontend
+        run: echo "Testing frontend..."
+      - name: testBackend
+        run: echo "Testing backend..."
+        continueOnError: true   # proceed to deploy even if backend tests fail
+
+    - name: deploy
+      run: echo "Deploying..."
+
+# Execution order:
+# Stage 0  buildFrontend ─┐ (parallel)
+#          buildBackend  ─┘
+# Stage 1  testFrontend  ─┐ (parallel)
+#          testBackend   ─┘
+# Stage 2  deploy

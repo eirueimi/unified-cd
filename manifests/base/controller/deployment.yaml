@@ -1,0 +1,36 @@
+﻿apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unified-cd-controller
+  namespace: unified-cd
+  labels:
+    app: unified-cd-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: unified-cd-controller
+  template:
+    metadata:
+      labels:
+        app: unified-cd-controller
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: controller
+          image: ghcr.io/eirueimi/unified-cd-controller:latest
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: unified-cd-controller
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 10

@@ -1,0 +1,44 @@
+server: http://unified-cd-master:8080
+token: your-agent-token
+# agentId is overridden by UNIFIED_K8S_AGENT_ID env var when running in Kubernetes,
+# so each pod in a replicated Deployment gets a unique ID from its pod name.
+agentId: k8s-agent-1
+labels:
+  - kind:k8s
+namespace: ci
+maxConcurrent: 5
+# poolIdleTimeout: how long idle pooled pods are kept before deletion (e.g. "30m", "1h").
+# Omit or set to "" to disable eviction (idle pods live until the agent restarts).
+poolIdleTimeout: ""
+# podImage: fallback image when a Job does not specify a podTemplate
+podImage: golang:1.24-alpine
+
+podTemplates:
+  # template name: referenced by podTemplate.name in Job YAML
+  golang:
+    workspace:
+      mountPath: /workspace
+      # no pvc → emptyDir (new volume per Pod; persists while the Pod is alive during reuse)
+    spec:
+      containers:
+        - name: job
+          image: golang:1.24-alpine
+          # command omitted → agent injects ["sleep", "infinity"] automatically
+          # workspace volumeMount is injected by the agent — no need to specify it
+        - name: docker
+          image: docker:24-dind
+          securityContext:
+            privileged: true
+      volumes:
+        - name: docker-sock
+          emptyDir: {}
+
+  node:
+    workspace:
+      mountPath: /workspace
+    spec:
+      containers:
+        - name: job
+          image: node:20-alpine
+        - name: playwright
+          image: mcr.microsoft.com/playwright:v1.44.0-jammy

@@ -1,0 +1,24 @@
+# Demonstrates: orLocks — acquires whichever candidate lock is free; the acquired value is
+# exposed as a synthetic param named {NAME}_LOCK_VALUE.
+# The candidate list can be a literal, an array param ($envs), or a template expression.
+# Usage:
+#   unified-cd apply -f examples/jobs/concurrency-or-locks.yaml
+#   unified-cd run trigger deploy-to-free-environment
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: deploy-to-free-environment
+spec:
+  concurrency:
+    orLocks:
+      - name: env
+        in: [staging-a, staging-b, staging-c]
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: deploy
+      run: |
+        # the acquired candidate is available as {{ .Params.ENV_LOCK_VALUE }}
+        echo "Deploying to {{ .Params.ENV_LOCK_VALUE }} (lock acquired)..."
+        sleep 10
+        echo "Deploy complete"

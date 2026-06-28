@@ -1,0 +1,32 @@
+# Demonstrates: parameterized jobs with inputs, outputs, and step output references
+# Usage:
+#   unified-cd apply -f examples/jobs/params.yaml
+#   unified-cd run trigger build --params image=myapp,tag=v1.0.0
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build
+spec:
+  params:
+    inputs:
+      - name: image
+        type: string
+        required: true
+      - name: tag
+        type: string
+        default: latest
+    outputs:
+      - name: image_ref
+        type: string
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: build
+      run: |
+        docker build -t {{ .Params.image }}:{{ .Params.tag }} .
+        echo "Built: {{ .Params.image }}:{{ .Params.tag }}"
+      outputs:
+        image_ref: "{{ .Params.image }}:{{ .Params.tag }}"
+
+    - name: push
+      run: docker push {{ .Steps.build.Outputs.image_ref }}

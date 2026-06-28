@@ -1,0 +1,202 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: git-checkout
+spec:
+  params:
+    inputs:
+      # ── 必須 ────────────────────────────────────────────────
+      - name: url
+        type: string
+        required: true
+        description: "リポジトリURL（例: https://github.com/org/repo または git@github.com:org/repo.git）"
+      - name: ref
+        type: string
+        required: true
+        description: "チェックアウトする ref（ブランチ名、タグ名、または commit SHA）"
+      # ── 認証 ────────────────────────────────────────────────
+      - name: token_secret
+        type: string
+        default: ""
+        description: "HTTPS トークン認証用のシークレット名（例: github-token）。SSH 認証時は空文字にする"
+      - name: ssh_key_secret
+        type: string
+        default: ""
+        description: "SSH 秘密鍵用のシークレット名。HTTPS 認証時は空文字にする"
+      # ── チェックアウト先 ────────────────────────────────────
+      - name: path
+        type: string
+        default: "."
+        description: "クローン先ディレクトリ（デフォルト: . = 現在のワークスペース）"
+      # ── オプション ──────────────────────────────────────────
+      - name: fetch_depth
+        type: string
+        default: "0"
+        description: "shallow clone の深さ。0 = 全履歴取得"
+      - name: fetch_tags
+        type: string
+        default: "false"
+        description: "タグを取得するかどうか（true/false）"
+      - name: lfs
+        type: string
+        default: "false"
+        description: "Git LFS を使用するかどうか（true/false）"
+      - name: submodules
+        type: string
+        default: "false"
+        description: "サブモジュールを初期化・更新するかどうか（true/false または recursive）"
+      - name: sparse_paths
+        type: array
+        default: ""
+        description: "sparse checkout するパス（YAML 配列）。空の場合は全ファイルを取得"
+      - name: set_safe_directory
+        type: string
+        default: "true"
+        description: "git config --global --add safe.directory を設定するかどうか"
+      - name: persist_credentials
+        type: string
+        default: "false"
+        description: "クローン後も認証情報を git config に残すかどうか（後続ステップで git push 等が必要な場合に true）"
+
+  steps:
+    - name: checkout
+      env:
+        GIT_URL: "{{ .Params.url }}"
+        GIT_REF: "{{ .Params.ref }}"
+        CHECKOUT_PATH: "{{ .Params.path }}"
+        FETCH_DEPTH: "{{ .Params.fetch_depth }}"
+        FETCH_TAGS: "{{ .Params.fetch_tags }}"
+        USE_LFS: "{{ .Params.lfs }}"
+        SUBMODULES: "{{ .Params.submodules }}"
+        SPARSE_PATHS: "{{ .Params.sparse_paths }}"
+        SET_SAFE_DIR: "{{ .Params.set_safe_directory }}"
+        PERSIST_CREDENTIALS: "{{ .Params.persist_credentials }}"
+        # シークレット値（token_secret / ssh_key_secret に名前が入っている場合のみ使用）
+        GIT_TOKEN: "{{ if .Params.token_secret }}{{ index .Secrets .Params.token_secret }}{{ end }}"
+        GIT_SSH_KEY: "{{ if .Params.ssh_key_secret }}{{ index .Secrets .Params.ssh_key_secret }}{{ end }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        # ── safe directory ───────────────────────────────────────────────────
+        if [ "$SET_SAFE_DIR" = "true" ]; then
+          git config --global --add safe.directory "$(pwd)"
+          if [ "$CHECKOUT_PATH" != "." ]; then
+            git config --global --add safe.directory "$(realpath "$CHECKOUT_PATH" 2>/dev/null || echo "$CHECKOUT_PATH")"
+          fi
+        fi
+
+        # ── SSH 認証: 秘密鍵を一時ファイルに書き出す ────────────────────────
+        _SSH_KEY_FILE=""
+        if [ -n "$GIT_SSH_KEY" ]; then
+          _SSH_KEY_FILE="$(mktemp)"
+          chmod 600 "$_SSH_KEY_FILE"
+          printf '%s\n' "$GIT_SSH_KEY" > "$_SSH_KEY_FILE"
+          export GIT_SSH_COMMAND="ssh -i $_SSH_KEY_FILE -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        fi
+        _cleanup() {
+          if [ -n "$_SSH_KEY_FILE" ]; then rm -f "$_SSH_KEY_FILE"; fi
+          # persist_credentials=false の場合は extraheader を削除する
+          if [ "$PERSIST_CREDENTIALS" != "true" ] && [ -d "$CHECKOUT_PATH/.git" ]; then
+            git -C "$CHECKOUT_PATH" config --unset-all http.extraheader 2>/dev/null || true
+          fi
+        }
+        trap _cleanup EXIT
+
+        # ── HTTPS 認証: extraheader を git config に設定 ─────────────────────
+        # 後で cleanup するので global ではなく local に書く（clone前は global を使用）
+        _setup_extraheader() {
+          _repo="$1"
+          _b64="$(printf 'x-access-token:%s' "$GIT_TOKEN" | base64 | tr -d '\n')"
+          git -C "$_repo" config http.extraheader "Authorization: Basic $_b64"
+        }
+        _setup_extraheader_global() {
+          _b64="$(printf 'x-access-token:%s' "$GIT_TOKEN" | base64 | tr -d '\n')"
+          git config --global http.extraheader "Authorization: Basic $_b64"
+        }
+        _unset_extraheader_global() {
+          git config --global --unset-all http.extraheader 2>/dev/null || true
+        }
+
+        # ── clone or fetch ───────────────────────────────────────────────────
+        _DEPTH_ARGS=""
+        if [ "$FETCH_DEPTH" != "0" ] && [ -n "$FETCH_DEPTH" ]; then
+          _DEPTH_ARGS="--depth=$FETCH_DEPTH"
+        fi
+
+        if [ -d "$CHECKOUT_PATH/.git" ]; then
+          echo "[git-checkout] existing repo found — fetching"
+          if [ -n "$GIT_TOKEN" ]; then _setup_extraheader "$CHECKOUT_PATH"; fi
+          # shellcheck disable=SC2086
+          git -C "$CHECKOUT_PATH" fetch origin $( [ -n "$_DEPTH_ARGS" ] && echo "$_DEPTH_ARGS" )
+          git -C "$CHECKOUT_PATH" fetch origin "+refs/tags/*:refs/tags/*" 2>/dev/null || true
+        else
+          echo "[git-checkout] cloning $GIT_URL"
+          mkdir -p "$CHECKOUT_PATH"
+
+          # sparse checkout を使う場合は --no-checkout でクローンし後で設定する
+          _NO_CHECKOUT_FLAG=""
+          if [ -n "$SPARSE_PATHS" ]; then
+            _NO_CHECKOUT_FLAG="--no-checkout"
+          fi
+
+          if [ -n "$GIT_TOKEN" ]; then _setup_extraheader_global; fi
+
+          # shellcheck disable=SC2086
+          git clone --origin origin $( [ -n "$_DEPTH_ARGS" ] && echo "$_DEPTH_ARGS" ) \
+            $( [ -n "$_NO_CHECKOUT_FLAG" ] && echo "$_NO_CHECKOUT_FLAG" ) \
+            "$GIT_URL" "$CHECKOUT_PATH"
+
+          if [ -n "$GIT_TOKEN" ]; then
+            _unset_extraheader_global
+            # local config に移す（persist_credentials=true の場合に残す）
+            _setup_extraheader "$CHECKOUT_PATH"
+          fi
+        fi
+
+        # ── sparse checkout ──────────────────────────────────────────────────
+        if [ -n "$SPARSE_PATHS" ]; then
+          git -C "$CHECKOUT_PATH" sparse-checkout init --cone
+          # SPARSE_PATHS は改行区切りの文字列（配列パラメータが '\n' で結合されて渡される）
+          # xargs で各パスを個別引数として git sparse-checkout set に渡す
+          echo "$SPARSE_PATHS" | xargs git -C "$CHECKOUT_PATH" sparse-checkout set
+        fi
+
+        # ── LFS install ──────────────────────────────────────────────────────
+        if [ "$USE_LFS" = "true" ]; then
+          if ! command -v git-lfs >/dev/null 2>&1; then
+            echo "[git-checkout] ERROR: git-lfs not installed" >&2
+            exit 1
+          fi
+          git -C "$CHECKOUT_PATH" lfs install
+        fi
+
+        # ── checkout ─────────────────────────────────────────────────────────
+        # shallow clone では特定 ref を fetch する必要がある場合がある
+        if [ "$FETCH_DEPTH" != "0" ] && [ -n "$FETCH_DEPTH" ]; then
+          git -C "$CHECKOUT_PATH" fetch origin "--depth=$FETCH_DEPTH" "$GIT_REF" 2>/dev/null || true
+        fi
+        if ! git -C "$CHECKOUT_PATH" checkout "$GIT_REF" -- 2>/dev/null; then
+          git -C "$CHECKOUT_PATH" checkout -B "$GIT_REF" "origin/$GIT_REF"
+        fi
+
+        # ── fetch tags ───────────────────────────────────────────────────────
+        if [ "$FETCH_TAGS" = "true" ]; then
+          git -C "$CHECKOUT_PATH" fetch --tags origin
+        fi
+
+        # ── LFS pull ─────────────────────────────────────────────────────────
+        if [ "$USE_LFS" = "true" ]; then
+          git -C "$CHECKOUT_PATH" lfs pull
+        fi
+
+        # ── submodules ───────────────────────────────────────────────────────
+        if [ "$SUBMODULES" = "true" ]; then
+          git -C "$CHECKOUT_PATH" submodule update --init
+        elif [ "$SUBMODULES" = "recursive" ]; then
+          git -C "$CHECKOUT_PATH" submodule update --init --recursive
+        fi
+
+        # ── 完了ログ ─────────────────────────────────────────────────────────
+        _SHA="$(git -C "$CHECKOUT_PATH" rev-parse HEAD)"
+        echo "[git-checkout] checked out $GIT_REF @ $_SHA"

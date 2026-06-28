@@ -1,0 +1,46 @@
+﻿apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unified-cd-k8s-agent
+  namespace: unified-cd
+  labels:
+    app: unified-cd-k8s-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: unified-cd-k8s-agent
+  template:
+    metadata:
+      labels:
+        app: unified-cd-k8s-agent
+    spec:
+      serviceAccountName: unified-cd-k8s-agent
+      containers:
+        - name: k8s-agent
+          image: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
+          env:
+            - name: UNIFIED_K8S_CONFIG
+              value: /etc/unified-cd/config.yaml
+            - name: UNIFIED_K8S_SECRET
+              value: /etc/unified-cd/secret.yaml
+            - name: UNIFIED_K8S_AGENT_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: config
+              mountPath: /etc/unified-cd/config.yaml
+              subPath: k8s-agent-config.yaml
+              readOnly: true
+            - name: secret
+              mountPath: /etc/unified-cd/secret.yaml
+              subPath: k8s-agent-secret.yaml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: unified-cd-k8s-agent-config
+        - name: secret
+          secret:
+            secretName: unified-cd-k8s-agent-secret

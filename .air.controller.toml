@@ -1,0 +1,27 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -mod=vendor -o ./tmp/unified-cd-controller ./cmd/controller"
+  bin = "./tmp/unified-cd-controller"
+  delay = 1000
+  include_ext = ["go"]
+  exclude_dir = ["vendor", ".git", "tmp", "docs", "deployments", "web", "example", "manifests"]
+  kill_delay = "3s"
+  rerun = false
+  # inotify does not receive events from the Windows host filesystem when running
+  # inside a Docker Desktop Linux container. Use polling instead.
+  poll = true
+  poll_interval = 500
+
+[log]
+  time = false
+
+[color]
+  main = "magenta"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "green"
+
+[misc]
+  clean_on_exit = true

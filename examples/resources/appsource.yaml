@@ -1,0 +1,56 @@
+# AppSource — GitOps-style automatic sync of Job YAML from a Git repository.
+# unified-cd polls the repo on the configured interval and upserts any changed Jobs.
+#
+# Usage:
+#   # 1. Register an AppSource
+#   unified-cd apply -f examples/resources/appsource.yaml
+#
+#   # 2. Force an immediate sync (useful from CI after a push)
+#   curl -X POST -H "Authorization: Bearer $TOKEN" \
+#     http://localhost:8080/api/v1/appsources/my-team-pipelines/sync
+
+# ── public repository example ─────────────────────────────────────────────
+apiVersion: unified-cd/v1
+kind: AppSource
+metadata:
+  name: my-team-pipelines
+spec:
+  repoURL: https://github.com/my-org/cd-definitions
+  targetRevision: main
+  # recursively scan path/ for *.yaml files and register them as Jobs
+  path: jobs/
+  syncPolicy:
+    interval: 5m   # polling interval (default: 5m, minimum: 1m)
+    prune: false   # set to true to delete Jobs from the DB when removed from the repo
+
+---
+# ── private repository example ────────────────────────────────────────────
+# Credentials are resolved automatically by hostname.
+# Register a GitCredential first: unified-cd apply -f examples/resources/gitcredential.yaml
+apiVersion: unified-cd/v1
+kind: AppSource
+metadata:
+  name: private-pipelines
+spec:
+  repoURL: https://github.com/my-org/private-cd-definitions
+  targetRevision: main
+  path: ci/jobs/
+  syncPolicy:
+    interval: 10m
+    prune: false
+
+---
+# ── prune-enabled example ─────────────────────────────────────────────────
+# When a YAML file is deleted from the repo, the corresponding Job is also
+# deleted from the DB on the next sync. Runs already scheduled are unaffected.
+apiVersion: unified-cd/v1
+kind: AppSource
+metadata:
+  name: managed-pipelines
+spec:
+  repoURL: https://github.com/my-org/cd-definitions
+  targetRevision: production
+  path: jobs/
+  syncPolicy:
+    interval: 5m
+    prune: true   # keep the DB in sync with the Git repo at all times

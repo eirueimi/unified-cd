@@ -1,0 +1,110 @@
+package controller
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/unified-cd/unified-cd/internal/store"
+)
+
+const bearerPrefix = "Bearer "
+
+// BootstrapPATName is the fixed identifier used when syncing UNIFIED_TOKEN as a PAT at startup.
+// Using this name with UpsertBootstrapPAT / DeleteBootstrapPATByName ensures that when the
+// value changes, rows are not duplicated — only the hash is updated.
+const BootstrapPATName = "env:UNIFIED_TOKEN"
+
+// BearerAuth returns the existing static-token authentication middleware (for agent auth).
+func BearerAuth(expected string) func(http.Handler) http.Handler {
+	expectedBytes := []byte(expected)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := r.Header.Get("Authorization")
+			if !strings.HasPrefix(h, bearerPrefix) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			got := []byte(strings.TrimPrefix(h, bearerPrefix))
+			if len(expectedBytes) == 0 || subtle.ConstantTimeCompare(got, expectedBytes) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// ServerAuth returns an authentication middleware that tries three methods in order:
+// PAT, OIDC id_token, and session Cookie. UNIFIED_TOKEN (the static token) is synced to
+// the DB as a PAT at startup, so no dedicated comparison branch is needed here
+// (it is not special-cased so that deleting it from the UI revokes it immediately).
+func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 1. Bearer token
+			h := r.Header.Get("Authorization")
+			if strings.HasPrefix(h, bearerPrefix) {
+				token := strings.TrimPrefix(h, bearerPrefix)
+				// 1a. PAT (including those synced from UNIFIED_TOKEN)
+				if st != nil {
+					hash := HashToken(token)
+					pat, err := st.GetPATByHash(r.Context(), hash)
+					if err == nil && pat != nil {
+						go func() { _ = st.TouchPAT(context.Background(), pat.ID) }()
+						next.ServeHTTP(w, r)
+						return
+					}
+				}
+				// 1b. OIDC id_token (token obtained via the CLI device flow)
+				if srv != nil && srv.oidcCfg != nil {
+					if _, err := srv.verifyOIDCBearer(r.Context(), token); err == nil {
+						next.ServeHTTP(w, r)
+						return
+					}
+				}
+			}
+
+			// 2. Session Cookie (browser SSO)
+			if st != nil && srv != nil {
+				if cookie, err := r.Cookie(sessionCookieName); err == nil {
+					hash := HashToken(cookie.Value)
+					sess, err := st.GetSessionByHash(r.Context(), hash)
+					if err == nil && sess != nil {
+						now := time.Now()
+						if sess.ExpiresAt.Before(now) {
+							// Expired — delete the session.
+							_ = st.DeleteSession(context.Background(), sess.ID)
+						} else if sess.ExpiresAt.Sub(now) < refreshThreshold && srv.oidcCfg != nil && srv.km != nil {
+							// Less than 5 minutes remaining — silent refresh.
+							if err := srv.refreshSession(r.Context(), sess, r.Host); err != nil {
+								_ = st.DeleteSession(context.Background(), sess.ID)
+								http.Error(w, "session refresh failed", http.StatusUnauthorized)
+								return
+							}
+							go func() { _ = st.TouchSession(context.Background(), sess.ID) }()
+							next.ServeHTTP(w, r)
+							return
+						} else {
+							go func() { _ = st.TouchSession(context.Background(), sess.ID) }()
+							next.ServeHTTP(w, r)
+							return
+						}
+					}
+				}
+			}
+
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		})
+	}
+}
+
+// HashToken returns the SHA-256 hash of a token string as a hex string.
+func HashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}

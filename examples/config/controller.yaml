@@ -1,0 +1,30 @@
+# unified-cd controller configuration file
+# Usage: controller -f controller-config.yaml
+#
+# Priority: CLI flags > this file > environment variables
+# All fields are optional; omit to fall back to env vars or defaults.
+
+dsn: postgres://unified:password@postgres:5432/unified_cd?sslmode=disable
+addr: :8080
+token: your-static-token
+
+# Encryption key for secrets (hex-encoded 32-byte AES key).
+# Generate with: openssl rand -hex 32
+# If omitted, an ephemeral key is generated on each startup (dev only).
+controllerKey: ""
+
+# S3-compatible object store for log archival and cache (optional)
+s3Endpoint: garage:3900
+s3Bucket: unified-cd
+s3Key: garageadmin
+s3Secret: garageadmin12345
+
+# Local object store alternative to S3 (mutually exclusive with s3*)
+# dataDir: /var/lib/unified-cd
+
+# OIDC SSO (optional)
+# oidc:
+#   issuer: https://accounts.google.com
+#   issuerInternal: ""        # override for in-cluster IdP access
+#   clientId: your-client-id
+#   clientSecret: your-client-secret

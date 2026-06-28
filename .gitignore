@@ -1,0 +1,16 @@
+/bin/
+/controller
+/tmp/
+vendor/
+*.test
+.worktrees/
+*.out
+coverage.txt
+.env
+.envrc
+.claude/
+web/node_modules/
+web/dist/
+internal/controller/web/
+.superpowers
+unified-cd

@@ -1,0 +1,19 @@
+# Demonstrates: mutex concurrency — only one run with the same mutex name executes at a time
+# Usage:
+#   unified-cd apply -f examples/jobs/concurrency-mutex.yaml
+#   unified-cd run trigger deploy-production
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: deploy-production
+spec:
+  concurrency:
+    mutex: deploy-production
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: deploy
+      run: |
+        echo "Deploying to production (exclusive lock held)..."
+        sleep 10
+        echo "Deploy complete"

@@ -1,0 +1,33 @@
+# Demonstrates: Pod reuse across runs to preserve workspace state (warm cache)
+# Usage:
+#   unified-cd apply -f examples/jobs/k8s/pod-reuse.yaml
+#   unified-cd run trigger incremental-build
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: incremental-build
+spec:
+  agentSelector:
+    - kind:k8s
+  podTemplate:
+    name: golang
+    # reuse: true → after the run completes the Pod is returned to the pool instead of deleted
+    # the next run requesting the same template can reuse the existing Pod
+    reuse: true
+    # cleanWorkspace: false (default) → /workspace contents carry over to the next run
+    # cleanWorkspace: true → agent runs `rm -rf /workspace/*` before each run
+    cleanWorkspace: false
+    workspace:
+      # mount an existing PVC so the workspace persists even when the Pod is recycled
+      pvc:
+        claimName: go-build-cache
+  steps:
+    - name: download-deps
+      # if /workspace/vendor is present from a previous run, this step is a no-op
+      run: |
+        if [ ! -d /workspace/vendor ]; then
+          cd /workspace && go mod vendor
+        fi
+
+    - name: build
+      run: cd /workspace && go build ./...

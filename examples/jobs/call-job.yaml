@@ -1,0 +1,94 @@
+# Demonstrates: calling one job from another using call:, passing params and reading outputs.
+# Also demonstrates foreach: for multi-target deployment.
+# Usage:
+#   unified-cd apply -f examples/jobs/call-job.yaml
+#   unified-cd run trigger deploy-pipeline --params version=v1.2.3
+---
+# caller: deploy-pipeline calls the build job twice in parallel, then deploys
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: deploy-pipeline
+spec:
+  params:
+    inputs:
+      - name: version
+        type: string
+        required: true
+  agentSelector:
+    - kind:docker
+  steps:
+    - parallel:
+      - name: buildFrontend
+        call:
+          job: build
+          with:
+            image: myapp-frontend
+            tag: "{{ .Params.version }}"
+      - name: buildBackend
+        call:
+          job: build
+          with:
+            image: myapp-backend
+            tag: "{{ .Params.version }}"
+
+    - name: deploy
+      run: |
+        echo "frontend: {{ .Steps.buildFrontend.Outputs.image_ref }}"
+        echo "backend:  {{ .Steps.buildBackend.Outputs.image_ref }}"
+        echo "Deploying version {{ .Params.version }}..."
+
+---
+# callee: reusable build job
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build
+spec:
+  params:
+    inputs:
+      - name: image
+        type: string
+        required: true
+      - name: tag
+        type: string
+        default: latest
+    outputs:
+      - name: image_ref
+        type: string
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: build
+      run: docker build -t {{ .Params.image }}:{{ .Params.tag }} .
+      outputs:
+        image_ref: "{{ .Params.image }}:{{ .Params.tag }}"
+
+    - name: push
+      run: docker push {{ .Steps.build.Outputs.image_ref }}
+---
+# foreach example: deploy to multiple environments in parallel
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: multi-env-deploy
+spec:
+  params:
+    inputs:
+      - name: envs
+        type: array   # JSON array e.g. '["prod","staging","dev"]'
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: build
+      run: docker build -t myapp .
+
+    - name: deploy
+      foreach:
+        key: env
+        in: $envs     # expanded at runtime from the array param
+      call:
+        job: build    # reuse build job as a stand-in
+        with:
+          image: myapp
+          tag: "{{ .Foreach.env }}"

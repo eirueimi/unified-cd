@@ -1,0 +1,16 @@
+# Demonstrates: minimal Job running on a Docker agent
+# Usage:
+#   unified-cd apply -f examples/jobs/hello.yaml
+#   unified-cd run trigger hello-docker
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: hello-docker
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: hello
+      run: echo "Hello from Docker agent! $(date)"
+    - name: check-env
+      run: uname -a && echo "container user=$(id)"

@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-k8s-agent
+  namespace: ci
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log"]
+    verbs: ["create", "get", "list", "delete", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: unified-cd-k8s-agent
+  namespace: ci
+subjects:
+  - kind: ServiceAccount
+    name: unified-cd-k8s-agent
+    namespace: unified-cd
+roleRef:
+  kind: Role
+  name: unified-cd-k8s-agent
+  apiGroup: rbac.authorization.k8s.io

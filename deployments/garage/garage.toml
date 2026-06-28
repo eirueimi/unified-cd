@@ -1,0 +1,15 @@
+# Keep in sync with manifests/base/garage/garage.toml (duplicated because kustomize's LoadRestrictionsRootOnly forbids referencing a file outside the kustomization directory tree).
+metadata_dir = "/data/meta"
+data_dir = "/data/data"
+db_engine = "sqlite"
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+
+[admin]
+api_bind_addr = "[::]:3903"

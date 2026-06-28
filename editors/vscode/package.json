@@ -1,0 +1,35 @@
+{
+  "name": "unified-cd-yaml",
+  "displayName": "unified-cd YAML",
+  "description": "Schema completion and cross-reference completion for unified-cd YAML resources.",
+  "version": "0.0.1",
+  "publisher": "unified-cd",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Programming Languages", "Linters"],
+  "extensionDependencies": ["redhat.vscode-yaml"],
+  "activationEvents": ["onLanguage:yaml"],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "copy-schema": "node scripts/copy-schema.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run copy-schema && node esbuild.mjs",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "package": "npm run build && vsce package --no-dependencies -o unified-cd-yaml.vsix"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.9"
+  }
+}

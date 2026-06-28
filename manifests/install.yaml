@@ -1,0 +1,370 @@
+﻿apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: unified-cd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: unified-cd-k8s-agent
+  namespace: unified-cd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-k8s-agent
+  namespace: ci
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - pods/exec
+  - pods/log
+  verbs:
+  - create
+  - get
+  - list
+  - delete
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: unified-cd-k8s-agent
+  namespace: ci
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: unified-cd-k8s-agent
+subjects:
+- kind: ServiceAccount
+  name: unified-cd-k8s-agent
+  namespace: unified-cd
+---
+apiVersion: v1
+data:
+  garage.toml: "# Keep in sync with deployments/garage/garage.toml (duplicated because
+    kustomize's LoadRestrictionsRootOnly forbids referencing a file outside the kustomization
+    directory tree).\r\nmetadata_dir = \"/data/meta\"\r\ndata_dir = \"/data/data\"\r\ndb_engine
+    = \"sqlite\"\r\nreplication_factor = 1\r\n\r\nrpc_bind_addr = \"[::]:3901\"\r\nrpc_public_addr
+    = \"127.0.0.1:3901\"\r\n\r\n[s3_api]\r\ns3_region = \"garage\"\r\napi_bind_addr
+    = \"[::]:3900\"\r\n\r\n[admin]\r\napi_bind_addr = \"[::]:3903\"\r\n"
+kind: ConfigMap
+metadata:
+  name: garage-config-692d7mhf6h
+  namespace: unified-cd
+---
+apiVersion: v1
+data:
+  k8s-agent-config.yaml: |
+    server: http://unified-cd-controller.unified-cd.svc.cluster.local
+    agentId: k8s-agent-1
+    labels:
+      - kind:k8s
+    namespace: ci
+    maxConcurrent: 5
+    podImage: golang:1.24-alpine
+kind: ConfigMap
+metadata:
+  name: unified-cd-k8s-agent-config
+  namespace: unified-cd
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: unified-cd-controller
+  namespace: unified-cd
+stringData:
+  UNIFIED_CONTROLLER_KEY: ""
+  UNIFIED_DB_DSN: postgres://unified:unified@postgres.unified-cd.svc.cluster.local:5432/unified?sslmode=disable
+  UNIFIED_S3_BUCKET: unified-cd-logs
+  UNIFIED_S3_ENDPOINT: garage.unified-cd.svc.cluster.local:3900
+  UNIFIED_S3_KEY: garageadmin
+  UNIFIED_S3_SECRET: garageadmin12345
+  UNIFIED_TOKEN: dev-token-change-me
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: unified-cd-k8s-agent-secret
+  namespace: unified-cd
+stringData:
+  k8s-agent-secret.yaml: |
+    token: "dev-token-change-me"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+  namespace: unified-cd
+spec:
+  ports:
+  - name: api
+    port: 3900
+    targetPort: 3900
+  selector:
+    app: garage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: unified-cd
+spec:
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unified-cd-controller
+  namespace: unified-cd
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: unified-cd-controller
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: garage-data
+  namespace: unified-cd
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: unified-cd
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: garage
+  name: garage
+  namespace: unified-cd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: garage
+  template:
+    metadata:
+      labels:
+        app: garage
+    spec:
+      containers:
+      - command:
+        - /garage
+        - server
+        - --single-node
+        - --default-bucket
+        env:
+        - name: GARAGE_RPC_SECRET
+          value: "0000000000000000000000000000000000000000000000000000000000000000"
+        - name: GARAGE_DEFAULT_ACCESS_KEY
+          value: garageadmin
+        - name: GARAGE_DEFAULT_SECRET_KEY
+          value: garageadmin12345
+        - name: GARAGE_DEFAULT_BUCKET
+          value: unified-cd-logs
+        image: dxflrs/garage:v2.3.0
+        livenessProbe:
+          exec:
+            command:
+            - /garage
+            - status
+          periodSeconds: 10
+        name: garage
+        ports:
+        - containerPort: 3900
+          name: api
+        - containerPort: 3901
+          name: rpc
+        - containerPort: 3903
+          name: admin
+        readinessProbe:
+          exec:
+            command:
+            - /garage
+            - status
+          periodSeconds: 5
+        volumeMounts:
+        - mountPath: /data
+          name: data
+        - mountPath: /etc/garage.toml
+          name: config
+          subPath: garage.toml
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: garage-data
+      - configMap:
+          name: garage-config-692d7mhf6h
+        name: config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: postgres
+  name: postgres
+  namespace: unified-cd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - env:
+        - name: POSTGRES_USER
+          value: unified
+        - name: POSTGRES_PASSWORD
+          value: unified
+        - name: POSTGRES_DB
+          value: unified
+        image: postgres:16-alpine
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - unified
+          periodSeconds: 10
+        name: postgres
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - unified
+          periodSeconds: 5
+        volumeMounts:
+        - mountPath: /var/lib/postgresql/data
+          name: data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: postgres-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: unified-cd-controller
+  name: unified-cd-controller
+  namespace: unified-cd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: unified-cd-controller
+  template:
+    metadata:
+      labels:
+        app: unified-cd-controller
+    spec:
+      containers:
+      - envFrom:
+        - secretRef:
+            name: unified-cd-controller
+        image: ghcr.io/eirueimi/unified-cd-controller:latest
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          periodSeconds: 10
+        name: controller
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          periodSeconds: 10
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: unified-cd-k8s-agent
+  name: unified-cd-k8s-agent
+  namespace: unified-cd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: unified-cd-k8s-agent
+  template:
+    metadata:
+      labels:
+        app: unified-cd-k8s-agent
+    spec:
+      containers:
+      - env:
+        - name: UNIFIED_K8S_CONFIG
+          value: /etc/unified-cd/config.yaml
+        - name: UNIFIED_K8S_SECRET
+          value: /etc/unified-cd/secret.yaml
+        - name: UNIFIED_K8S_AGENT_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        image: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
+        name: k8s-agent
+        volumeMounts:
+        - mountPath: /etc/unified-cd/config.yaml
+          name: config
+          readOnly: true
+          subPath: k8s-agent-config.yaml
+        - mountPath: /etc/unified-cd/secret.yaml
+          name: secret
+          readOnly: true
+          subPath: k8s-agent-secret.yaml
+      serviceAccountName: unified-cd-k8s-agent
+      volumes:
+      - configMap:
+          name: unified-cd-k8s-agent-config
+        name: config
+      - name: secret
+        secret:
+          secretName: unified-cd-k8s-agent-secret

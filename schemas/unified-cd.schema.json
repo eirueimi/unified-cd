@@ -1,0 +1,745 @@
+{
+  "$id": "https://unified-cd/schemas/unified-cd.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AppSource": {
+      "additionalProperties": false,
+      "properties": {
+        "apiVersion": {
+          "const": "unified-cd/v1",
+          "type": "string"
+        },
+        "kind": {
+          "const": "AppSource",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/AppSourceSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object"
+    },
+    "AppSourceSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "gitCredentialRef": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "repoURL": {
+          "type": "string"
+        },
+        "syncPolicy": {
+          "$ref": "#/definitions/AppSyncPolicy"
+        },
+        "targetRevision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repoURL",
+        "targetRevision",
+        "path"
+      ],
+      "type": "object"
+    },
+    "AppSyncPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "interval": {
+          "type": "string"
+        },
+        "prune": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "CacheStep": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "restoreKeys": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ttlDays": {
+          "description": "default 30",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "key"
+      ],
+      "type": "object"
+    },
+    "CallStep": {
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {},
+          "type": "object"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "type": "object"
+    },
+    "Concurrency": {
+      "additionalProperties": false,
+      "properties": {
+        "mutex": {
+          "type": "string"
+        },
+        "namedLocks": {
+          "items": {
+            "$ref": "#/definitions/NamedLock"
+          },
+          "type": "array"
+        },
+        "orLocks": {
+          "items": {
+            "$ref": "#/definitions/OrLock"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "DownloadArtifactStep": {
+      "additionalProperties": false,
+      "properties": {
+        "destDir": {
+          "description": "省略時はカレントディレクトリ",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "GitCredential": {
+      "additionalProperties": false,
+      "description": "GitCredential はプライベートリポジトリへの git 認証情報を定義する DSL 型。",
+      "properties": {
+        "apiVersion": {
+          "const": "unified-cd/v1",
+          "type": "string"
+        },
+        "kind": {
+          "const": "GitCredential",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/GitCredentialSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object"
+    },
+    "GitCredentialSpec": {
+      "additionalProperties": false,
+      "description": "GitCredentialSpec は GitCredential の spec セクション。",
+      "properties": {
+        "host": {
+          "description": "認証情報を使うホスト名（例: github.com）",
+          "type": "string"
+        },
+        "secretRef": {
+          "description": "値を保持する StoredSecret の名前",
+          "type": "string"
+        },
+        "type": {
+          "description": "認証タイプ",
+          "enum": [
+            "token",
+            "sshKey"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "type",
+        "secretRef"
+      ],
+      "type": "object"
+    },
+    "Input": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {},
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "type": {
+          "enum": [
+            "string",
+            "bool",
+            "int"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Job": {
+      "additionalProperties": false,
+      "properties": {
+        "apiVersion": {
+          "const": "unified-cd/v1",
+          "type": "string"
+        },
+        "kind": {
+          "const": "Job",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/Spec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object"
+    },
+    "Metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "NamedLock": {
+      "additionalProperties": false,
+      "properties": {
+        "capacity": {
+          "type": "integer"
+        },
+        "pool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pool",
+        "capacity"
+      ],
+      "type": "object"
+    },
+    "OrLock": {
+      "additionalProperties": false,
+      "description": "OrLock acquires exactly one of Candidates — whichever is free — instead of\nrequiring all of them like NamedLocks does. The acquired candidate value is\nexposed to the Job's steps as a synthesized parameter named\nstrings.ToUpper(Name)+\"_LOCK_VALUE\" (e.g. Name \"env\" -\u003e \"ENV_LOCK_VALUE\"),\nreadable via {{ .Params.ENV_LOCK_VALUE }}.",
+      "properties": {
+        "candidates": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "candidates"
+      ],
+      "type": "object"
+    },
+    "Output": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "description": "\"string\", \"bool\", \"int\", \"artifact\"",
+          "enum": [
+            "string",
+            "bool",
+            "int",
+            "artifact"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Params": {
+      "additionalProperties": false,
+      "properties": {
+        "inputs": {
+          "items": {
+            "$ref": "#/definitions/Input"
+          },
+          "type": "array"
+        },
+        "outputs": {
+          "items": {
+            "$ref": "#/definitions/Output"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "PodSpecPatch": {
+      "additionalProperties": false,
+      "properties": {
+        "containers": {
+          "items": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "volumes": {
+          "items": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "PodTemplate": {
+      "additionalProperties": false,
+      "properties": {
+        "cleanWorkspace": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "override": {
+          "$ref": "#/definitions/PodSpecPatch"
+        },
+        "reuse": {
+          "type": "boolean"
+        },
+        "spec": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "workspace": {
+          "$ref": "#/definitions/WorkspaceConfig"
+        }
+      },
+      "type": "object"
+    },
+    "PostStep": {
+      "additionalProperties": false,
+      "description": "PostStep defines cleanup/post-processing to run after a step completes.\nExecuted in LIFO order after RunDAG completes.",
+      "properties": {
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "run": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Schedule": {
+      "additionalProperties": false,
+      "description": "Schedule は cron スケジュールトリガーの DSL 型。",
+      "properties": {
+        "apiVersion": {
+          "const": "unified-cd/v1",
+          "type": "string"
+        },
+        "kind": {
+          "const": "Schedule",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/ScheduleSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object"
+    },
+    "ScheduleSpec": {
+      "additionalProperties": false,
+      "description": "ScheduleSpec は Schedule の spec セクション。",
+      "properties": {
+        "cron": {
+          "type": "string"
+        },
+        "job": {
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "cron",
+        "job"
+      ],
+      "type": "object"
+    },
+    "Spec": {
+      "additionalProperties": false,
+      "properties": {
+        "agentSelector": {
+          "description": "必須のエージェントラベル。各要素は {{ .Params.X }} でRunのinputパラメータを展開できる",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "concurrency": {
+          "$ref": "#/definitions/Concurrency"
+        },
+        "failFast": {
+          "description": "nil = true（デフォルト）",
+          "type": "boolean"
+        },
+        "params": {
+          "$ref": "#/definitions/Params"
+        },
+        "podTemplate": {
+          "$ref": "#/definitions/PodTemplate"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/definitions/Step"
+          },
+          "type": "array"
+        },
+        "timeoutMinutes": {
+          "description": "ジョブレベルタイムアウト（分）",
+          "type": "number"
+        }
+      },
+      "required": [
+        "params",
+        "steps"
+      ],
+      "type": "object"
+    },
+    "Step": {
+      "additionalProperties": false,
+      "properties": {
+        "cache": {
+          "$ref": "#/definitions/CacheStep"
+        },
+        "call": {
+          "$ref": "#/definitions/CallStep"
+        },
+        "container": {
+          "type": "string"
+        },
+        "continueOnError": {
+          "type": "boolean"
+        },
+        "downloadArtifact": {
+          "$ref": "#/definitions/DownloadArtifactStep"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "ステップ実行時の環境変数（シークレット参照を含む）",
+          "type": "object"
+        },
+        "if": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "outputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "key → template expression",
+          "type": "object"
+        },
+        "post": {
+          "$ref": "#/definitions/PostStep"
+        },
+        "run": {
+          "type": "string"
+        },
+        "timeoutMinutes": {
+          "description": "ステップレベルタイムアウト（分）",
+          "type": "number"
+        },
+        "uploadArtifact": {
+          "$ref": "#/definitions/UploadArtifactStep"
+        },
+        "uses": {
+          "$ref": "#/definitions/UsesStep"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "UploadArtifactStep": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
+    "UsesStep": {
+      "additionalProperties": false,
+      "description": "UsesStep inlines a git-template job's steps directly into the current run.\nJob must be a git:// URI; unlike CallStep, it never references a registered job name.",
+      "properties": {
+        "job": {
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": {},
+          "type": "object"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "type": "object"
+    },
+    "WebhookAuth": {
+      "additionalProperties": false,
+      "properties": {
+        "secretRef": {
+          "type": "string"
+        },
+        "type": {
+          "description": "none | hmac-sha256 | github (X-Hub-Signature-256)",
+          "enum": [
+            "none",
+            "hmac-sha256",
+            "github"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "WebhookReceiver": {
+      "additionalProperties": false,
+      "description": "WebhookReceiver はwebhookレシーバー設定のDSL型。",
+      "properties": {
+        "apiVersion": {
+          "const": "unified-cd/v1",
+          "type": "string"
+        },
+        "kind": {
+          "const": "WebhookReceiver",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/WebhookReceiverSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object"
+    },
+    "WebhookReceiverSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "$ref": "#/definitions/WebhookAuth"
+        },
+        "filters": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "paramsMapping": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "trigger": {
+          "$ref": "#/definitions/WebhookTrigger"
+        }
+      },
+      "required": [
+        "trigger",
+        "auth"
+      ],
+      "type": "object"
+    },
+    "WebhookTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "type": "object"
+    },
+    "WorkspaceConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "mountPath": {
+          "type": "string"
+        },
+        "pvc": {
+          "$ref": "#/definitions/WorkspacePVC"
+        }
+      },
+      "type": "object"
+    },
+    "WorkspacePVC": {
+      "additionalProperties": false,
+      "properties": {
+        "accessMode": {
+          "enum": [
+            "ReadWriteOnce",
+            "ReadOnlyMany",
+            "ReadWriteMany"
+          ],
+          "type": "string"
+        },
+        "claimName": {
+          "type": "string"
+        },
+        "storageClassName": {
+          "type": "string"
+        },
+        "storageRequest": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "description": "unified-cd DSL schema — generated from internal/dsl/*_types.go",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/Job"
+    },
+    {
+      "$ref": "#/definitions/Schedule"
+    },
+    {
+      "$ref": "#/definitions/WebhookReceiver"
+    },
+    {
+      "$ref": "#/definitions/AppSource"
+    },
+    {
+      "$ref": "#/definitions/GitCredential"
+    }
+  ],
+  "title": "unified-cd"
+}

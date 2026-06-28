@@ -1,0 +1,190 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/unified-cd/unified-cd/internal/api"
+)
+
+// captureTransport records requests and returns dummy responses without making real network connections.
+type captureTransport struct {
+	records []struct {
+		path string
+		body []byte
+	}
+	responseFor func(path string) (int, []byte)
+}
+
+func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	var b []byte
+	if req.Body != nil {
+		b, _ = io.ReadAll(req.Body)
+	}
+	t.records = append(t.records, struct {
+		path string
+		body []byte
+	}{path: req.URL.RequestURI(), body: b})
+
+	status, respBody := t.responseFor(req.URL.RequestURI())
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(bytes.NewReader(respBody)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+func newTestApplyCmd(t *testing.T, tr *captureTransport, serverURL string) (*cobra.Command, *strings.Builder) {
+	t.Helper()
+	cfg := Config{Server: serverURL, Token: "tok"}
+	cmd := newApplyCmdWithClient(func() (Config, error) { return cfg, nil }, &http.Client{Transport: tr})
+	var out strings.Builder
+	cmd.SetOut(&out)
+	return cmd, &out
+}
+
+func TestApplyMultiDocument(t *testing.T) {
+	callIdx := 0
+	names := []string{"hello", "world"}
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) {
+			name := names[callIdx]
+			callIdx++
+			b, _ := json.Marshal(api.Job{Name: name})
+			return http.StatusOK, b
+		},
+	}
+
+	yaml := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: hello
+spec:
+  steps:
+    - name: greet
+      run: echo hi
+---
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: world
+spec:
+  steps:
+    - name: greet
+      run: echo world
+`
+	f, err := os.CreateTemp(t.TempDir(), "multi-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(yaml)
+	f.Close()
+
+	cmd, out := newTestApplyCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"-f", f.Name()})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if len(tr.records) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(tr.records))
+	}
+	for _, rec := range tr.records {
+		if rec.path != "/api/v1/jobs" {
+			t.Errorf("unexpected path %s", rec.path)
+		}
+	}
+	if !strings.Contains(out.String(), "hello") || !strings.Contains(out.String(), "world") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+}
+
+func TestApplySingleDocument(t *testing.T) {
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) {
+			b, _ := json.Marshal(api.Job{Name: "solo"})
+			return http.StatusOK, b
+		},
+	}
+
+	content := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: solo
+spec:
+  steps:
+    - name: run
+      run: echo solo
+`
+	tmp := filepath.Join(t.TempDir(), "solo.yaml")
+	os.WriteFile(tmp, []byte(content), 0o600)
+
+	cmd, out := newTestApplyCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"-f", tmp})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out.String(), "solo") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+	if len(tr.records) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(tr.records))
+	}
+}
+
+func TestApplyEmptyFile(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "empty.yaml")
+	os.WriteFile(tmp, []byte(""), 0o600)
+
+	cfg := Config{Server: "http://fake", Token: "tok"}
+	cmd := newApplyCmdWithClient(func() (Config, error) { return cfg, nil }, http.DefaultClient)
+	cmd.SetArgs([]string{"-f", tmp})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "no YAML documents") {
+		t.Errorf("expected 'no YAML documents' error, got: %v", err)
+	}
+}
+
+func TestApplyMultiDocumentStopsOnError(t *testing.T) {
+	callCount := 0
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) {
+			callCount++
+			return http.StatusInternalServerError, []byte("internal error")
+		},
+	}
+
+	yaml := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: first
+spec:
+  steps: []
+---
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: second
+spec:
+  steps: []
+`
+	tmp := filepath.Join(t.TempDir(), "multi.yaml")
+	os.WriteFile(tmp, []byte(yaml), 0o600)
+
+	cmd, _ := newTestApplyCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"-f", tmp})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error on server failure")
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 call before abort, got %d", callCount)
+	}
+}

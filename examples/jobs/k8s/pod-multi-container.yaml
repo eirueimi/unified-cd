@@ -1,0 +1,29 @@
+# Demonstrates: multiple containers in one Pod using podTemplate override
+# Usage:
+#   unified-cd apply -f examples/jobs/k8s/pod-multi-container.yaml
+#   unified-cd run trigger build-and-scan
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build-and-scan
+spec:
+  agentSelector:
+    - kind:k8s
+  podTemplate:
+    name: golang
+    # override adds extra containers while keeping the "job" container from the template
+    override:
+      containers:
+        - name: trivy
+          image: aquasec/trivy:latest
+          # command omitted → agent injects ["sleep", "infinity"] automatically
+  steps:
+    # omitting container: → runs in the "job" container
+    - name: build
+      run: cd /workspace && go build -o /workspace/app ./cmd/server
+
+    # container: trivy → switches execution to the trivy sidecar
+    # /workspace is shared across all containers, so build artifacts are accessible
+    - name: scan
+      container: trivy
+      run: trivy rootfs /workspace/app --exit-code 1 --severity HIGH,CRITICAL

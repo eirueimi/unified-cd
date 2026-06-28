@@ -1,0 +1,21 @@
+# Demonstrates: semaphores — limits how many runs hold a slot in a pool simultaneously
+# Usage:
+#   unified-cd apply -f examples/jobs/concurrency-named-locks.yaml
+#   unified-cd run trigger integration-test
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: integration-test
+spec:
+  concurrency:
+    semaphores:
+      - pool: test-environments
+        capacity: 3   # up to 3 runs may hold a slot simultaneously
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: test
+      run: |
+        echo "Running integration tests (slot acquired from pool)..."
+        sleep 30
+        echo "Tests complete"

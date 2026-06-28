@@ -1,0 +1,65 @@
+# Slack 通知ジョブテンプレート
+# unified-cd apply examples/slack-notify.yaml で登録後、call.job で呼び出す
+#
+# 必要なシークレット:
+#   unified-cd secret set slack-webhook-url --value https://hooks.slack.com/services/...
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/slack-notify.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: slack-notify
+spec:
+  params:
+    inputs:
+      - name: status
+        type: string
+        required: true
+        description: "success / failure / cancelled"
+      - name: job_name
+        type: string
+        required: true
+      - name: run_id
+        type: string
+        required: true
+      - name: message
+        type: string
+        default: ""
+        description: "追加メッセージ（省略可）"
+      - name: channel
+        type: string
+        default: ""
+        description: "送信先チャンネル（省略時は Webhook のデフォルトチャンネル）"
+  steps:
+    - name: notify
+      env:
+        SLACK_WEBHOOK_URL: "{{ .Secrets.slack-webhook-url }}"
+        STATUS: "{{ .Params.status }}"
+        JOB_NAME: "{{ .Params.job_name }}"
+        RUN_ID: "{{ .Params.run_id }}"
+        MESSAGE: "{{ .Params.message }}"
+        CHANNEL: "{{ .Params.channel }}"
+      run: |
+        case "$STATUS" in
+          success)   COLOR="good";    EMOJI=":white_check_mark:" ;;
+          failure)   COLOR="danger";  EMOJI=":x:" ;;
+          cancelled) COLOR="warning"; EMOJI=":warning:" ;;
+          *)         COLOR="#cccccc"; EMOJI=":information_source:" ;;
+        esac
+
+        TEXT="${EMOJI} *${JOB_NAME}* ${STATUS}"
+        if [ -n "$MESSAGE" ]; then
+          TEXT="${TEXT}\\n${MESSAGE}"
+        fi
+
+        if [ -n "$CHANNEL" ]; then
+          PAYLOAD="{\"channel\":\"${CHANNEL}\",\"attachments\":[{\"color\":\"${COLOR}\",\"text\":\"${TEXT}\",\"footer\":\"Run ID: ${RUN_ID}\"}]}"
+        else
+          PAYLOAD="{\"attachments\":[{\"color\":\"${COLOR}\",\"text\":\"${TEXT}\",\"footer\":\"Run ID: ${RUN_ID}\"}]}"
+        fi
+
+        curl -s -f -X POST \
+          -H 'Content-type: application/json' \
+          --data "$PAYLOAD" \
+          "$SLACK_WEBHOOK_URL"

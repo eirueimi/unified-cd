@@ -1,0 +1,186 @@
+﻿apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: unified-cd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: unified-cd-k8s-agent
+  namespace: unified-cd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-k8s-agent
+  namespace: ci
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - pods/exec
+  - pods/log
+  verbs:
+  - create
+  - get
+  - list
+  - delete
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: unified-cd-k8s-agent
+  namespace: ci
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: unified-cd-k8s-agent
+subjects:
+- kind: ServiceAccount
+  name: unified-cd-k8s-agent
+  namespace: unified-cd
+---
+apiVersion: v1
+data:
+  k8s-agent-config.yaml: |
+    server: http://unified-cd-controller.unified-cd.svc.cluster.local
+    agentId: k8s-agent-1
+    labels:
+      - kind:k8s
+    namespace: ci
+    maxConcurrent: 5
+    podImage: golang:1.24-alpine
+kind: ConfigMap
+metadata:
+  name: unified-cd-k8s-agent-config
+  namespace: unified-cd
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: unified-cd-controller
+  namespace: unified-cd
+stringData:
+  UNIFIED_CONTROLLER_KEY: CHANGEME
+  UNIFIED_DB_DSN: CHANGEME
+  UNIFIED_S3_BUCKET: CHANGEME
+  UNIFIED_S3_ENDPOINT: CHANGEME
+  UNIFIED_S3_KEY: CHANGEME
+  UNIFIED_S3_SECRET: CHANGEME
+  UNIFIED_TOKEN: CHANGEME
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: unified-cd-k8s-agent-secret
+  namespace: unified-cd
+stringData:
+  k8s-agent-secret.yaml: |
+    token: "CHANGEME"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unified-cd-controller
+  namespace: unified-cd
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: unified-cd-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: unified-cd-controller
+  name: unified-cd-controller
+  namespace: unified-cd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: unified-cd-controller
+  template:
+    metadata:
+      labels:
+        app: unified-cd-controller
+    spec:
+      containers:
+      - envFrom:
+        - secretRef:
+            name: unified-cd-controller
+        image: ghcr.io/eirueimi/unified-cd-controller:latest
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          periodSeconds: 10
+        name: controller
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          periodSeconds: 10
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: unified-cd-k8s-agent
+  name: unified-cd-k8s-agent
+  namespace: unified-cd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: unified-cd-k8s-agent
+  template:
+    metadata:
+      labels:
+        app: unified-cd-k8s-agent
+    spec:
+      containers:
+      - env:
+        - name: UNIFIED_K8S_CONFIG
+          value: /etc/unified-cd/config.yaml
+        - name: UNIFIED_K8S_SECRET
+          value: /etc/unified-cd/secret.yaml
+        image: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
+        name: k8s-agent
+        volumeMounts:
+        - mountPath: /etc/unified-cd/config.yaml
+          name: config
+          readOnly: true
+          subPath: k8s-agent-config.yaml
+        - mountPath: /etc/unified-cd/secret.yaml
+          name: secret
+          readOnly: true
+          subPath: k8s-agent-secret.yaml
+      serviceAccountName: unified-cd-k8s-agent
+      volumes:
+      - configMap:
+          name: unified-cd-k8s-agent-config
+        name: config
+      - name: secret
+        secret:
+          secretName: unified-cd-k8s-agent-secret

@@ -1,0 +1,47 @@
+# Demonstrates: triggering a job from a GitHub push webhook filtered to the main branch
+# Usage:
+#   unified-cd secret set github-webhook-secret <value>
+#   unified-cd apply -f examples/jobs/webhook-receiver.yaml
+#   # then configure the GitHub webhook to POST to: http://<controller>/webhook/github-push
+---
+# receives GitHub push webhooks and triggers the build job for pushes to main
+apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata:
+  name: github-push
+spec:
+  trigger:
+    job: build
+  auth:
+    type: github          # verifies X-Hub-Signature-256
+    secretRef: github-webhook-secret
+  filters:
+    # only pass through pushes to main
+    - '{{ eq .Payload.ref "refs/heads/main" }}'
+  paramsMapping:
+    # map webhook payload fields to job input params
+    image: "myapp"
+    tag: "{{ .Payload.after }}"   # use commit SHA as the image tag
+
+---
+# the Job triggered by the WebhookReceiver above
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build
+spec:
+  params:
+    inputs:
+      - name: image
+        type: string
+        required: true
+      - name: tag
+        type: string
+        required: true
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: build
+      run: |
+        docker build -t {{ .Params.image }}:{{ .Params.tag }} .
+        echo "Built {{ .Params.image }}:{{ .Params.tag }}"

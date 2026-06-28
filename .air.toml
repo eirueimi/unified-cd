@@ -1,0 +1,22 @@
+# air — hot reload for unified-cd controller
+# Install: go install github.com/air-verse/air@latest
+# Usage:   make dev-go
+
+[build]
+  cmd = "go build -o bin/unified-cd-controller ./cmd/controller"
+  bin = "bin/unified-cd-controller"
+  include_ext = ["go"]
+  include_dir = ["cmd", "internal"]
+  exclude_dir = ["internal/agent", "internal/k8sagent", "test", "internal/controller/web"]
+  delay = 300
+
+[run]
+  args_bin = []
+
+[log]
+  time = false
+
+[color]
+  build = "yellow"
+  runner = "green"
+  watcher = "cyan"

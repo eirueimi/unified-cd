@@ -1,0 +1,33 @@
+# Demonstrates: named podTemplate — reference a template defined in the k8s-agent config
+# Usage:
+#   Ensure the k8s-agent config defines a "golang" template (see examples/config/k8s-agent.yaml)
+#   unified-cd apply -f examples/jobs/k8s/pod-named.yaml
+#   unified-cd run trigger go-build
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: go-build
+spec:
+  agentSelector:
+    - kind:k8s
+  # references the "golang" named template from the k8s-agent configuration file
+  podTemplate:
+    name: golang
+  steps:
+    - name: build
+      run: cd /workspace && go build ./...
+
+    - name: test
+      run: cd /workspace && go test ./...
+
+# Corresponding agent config entry (examples/config/k8s-agent.yaml):
+#
+# podTemplates:
+#   golang:
+#     workspace:
+#       mountPath: /workspace
+#     spec:
+#       containers:
+#         - name: job
+#           image: golang:1.24-alpine
+#           # command omitted → agent injects ["sleep", "infinity"] automatically

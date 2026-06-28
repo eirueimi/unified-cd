@@ -1,0 +1,316 @@
+package k8sagent
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"runtime"
+	"strings"
+	"time"
+
+	agentlib "github.com/unified-cd/unified-cd/internal/agent"
+	"github.com/unified-cd/unified-cd/internal/api"
+	"github.com/unified-cd/unified-cd/internal/dsl"
+)
+
+// K8sAgent is an agent that claims Runs from the master and executes them inside a Kubernetes Pod.
+type K8sAgent struct {
+	cfg    Config
+	client *agentlib.Client
+	pm     *PodManager
+	exec   *Executor
+	pool   *PodPool
+}
+
+// NewK8sAgent creates a new K8sAgent.
+func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec *Executor, pool *PodPool) *K8sAgent {
+	return &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool}
+}
+
+// Run executes the agent's main loop.
+// After registering with the master server, it continuously claims and executes Runs.
+// Continues until the context is cancelled.
+func (a *K8sAgent) Run(ctx context.Context) error {
+	host, _ := os.Hostname()
+	labels := appendLabelIfMissing(a.cfg.Labels, "kubernetes")
+	if err := a.client.Register(ctx, api.AgentRegisterRequest{
+		AgentID:  a.cfg.AgentID,
+		Hostname: host,
+		OS:       runtime.GOOS + "/k8s",
+		Labels:   labels,
+	}); err != nil {
+		return err
+	}
+
+	if err := a.pool.Restore(ctx, a.client); err != nil {
+		slog.Warn("k8s: pool restore failed, continuing without pool", "error", err)
+	}
+	slog.Info("k8s agent registered", "agentId", a.cfg.AgentID, "labels", labels)
+
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		resp, err := a.client.Claim(ctx, a.cfg.AgentID, "30s", labels)
+		if err != nil {
+			slog.Error("claim error", "error", err)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+			continue
+		}
+		if resp.RunID == "" {
+			continue
+		}
+		go a.executeRun(ctx, resp)
+	}
+}
+
+// executeRun executes the steps contained in a ClaimResponse sequentially inside a Kubernetes Pod.
+// On step failure, subsequent steps are skipped and the Run is transitioned to Failed state.
+func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
+	slog.Info("k8s: executing Run", "runId", c.RunID, "job", c.JobName)
+
+	usePool := c.PodTemplate != nil && c.PodTemplate.Reuse
+
+	var pooledPod *PooledPod
+	var podName string
+
+	if usePool {
+		templateName := ""
+		if c.PodTemplate != nil {
+			templateName = c.PodTemplate.Name
+		}
+		pp, err := a.pool.ClaimPod(ctx, c.RunID, templateName, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage)
+		if err != nil {
+			slog.Error("k8s: failed to acquire Pod", "runId", c.RunID, "error", err)
+			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+			return
+		}
+		pooledPod = pp
+		podName = pp.PodName
+		defer func() {
+			if err := a.pool.ReleasePod(context.Background(), pooledPod, true); err != nil {
+				slog.Warn("k8s: failed to release Pod", "pod", podName, "error", err)
+			}
+		}()
+	} else {
+		pod, err := BuildPod(c.RunID, a.cfg.Namespace, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage)
+		if err != nil {
+			slog.Error("k8s: failed to build Pod spec", "runId", c.RunID, "error", err)
+			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+			return
+		}
+		created, err := a.pm.CreatePod(ctx, pod)
+		if err != nil {
+			slog.Error("k8s: failed to create Pod", "runId", c.RunID, "error", err)
+			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+			return
+		}
+		podName = created.Name
+		defer func() {
+			if err := a.pm.DeletePod(context.Background(), podName); err != nil {
+				slog.Warn("k8s: failed to delete Pod", "pod", podName, "error", err)
+			}
+		}()
+	}
+
+	if err := a.pm.WaitForPodRunning(ctx, podName); err != nil {
+		slog.Error("k8s: failed waiting for Pod to start", "runId", c.RunID, "error", err)
+		_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+		return
+	}
+
+	// If cleanWorkspace is true, clear the workspace before the first step
+	if usePool && c.PodTemplate != nil && c.PodTemplate.CleanWorkspace {
+		mountPath := "/workspace"
+		if c.PodTemplate.Workspace != nil && c.PodTemplate.Workspace.MountPath != "" {
+			mountPath = c.PodTemplate.Workspace.MountPath
+		}
+		firstContainer := ""
+		for _, stage := range c.Stages {
+			steps := api.StageSteps(stage)
+			if len(steps) > 0 {
+				firstContainer = steps[0].Container
+				break
+			}
+		}
+		_, _ = a.exec.ExecStep(ctx, podName, firstContainer, fmt.Sprintf("rm -rf %s/*", mountPath), io.Discard, io.Discard)
+	}
+
+	overallStatus := api.RunSucceeded
+	// Accumulate step outputs for template expansion in subsequent steps
+	stepCtx := dsl.TemplateData{Params: c.Params, Steps: map[string]dsl.StepData{}}
+
+	// runOneStep executes a single (already-expanded) step in the pod.
+	// Returns true if the step succeeded (or should continue), false if it failed.
+	runOneStep := func(step api.ClaimStep) bool {
+		started := time.Now().UTC()
+		_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+			RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+		})
+
+		// Build template data; expose foreach variable if set
+		tplData := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps}
+		if step.ForeachKey != "" {
+			tplData.Foreach = map[string]string{step.ForeachKey: step.ForeachValue}
+		}
+
+		// Attempt template expansion; fall back to the original script on failure
+		expandedRun, _ := dsl.ExpandTemplate(step.Run, tplData)
+		if expandedRun == "" {
+			expandedRun = step.Run
+		}
+
+		var stdoutBuf strings.Builder
+		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, step.Index, "stderr")
+
+		// stdout is written to both the string buffer and the log sender
+		stdoutWriter := io.MultiWriter(&stdoutBuf, &logLineWriter{
+			client:  a.client,
+			agentID: a.cfg.AgentID,
+			runID:   c.RunID,
+			stepIdx: step.Index,
+			stream:  "stdout",
+		})
+
+		ec, execErr := a.exec.ExecStep(ctx, podName, step.Container, expandedRun, stdoutWriter, stderrPusher)
+		stderrPusher.Flush(ctx)
+		capturedStdout := stdoutBuf.String()
+
+		status := "Succeeded"
+		if execErr != nil || ec != 0 {
+			status = "Failed"
+		} else {
+			// Evaluate output templates against the captured stdout
+			capturedOutputs := map[string]string{}
+			outCtx := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps, Stdout: capturedStdout}
+			for outKey, outTpl := range step.Outputs {
+				if val, err := dsl.ExpandTemplate(outTpl, outCtx); err == nil {
+					capturedOutputs[outKey] = val
+				}
+			}
+			if len(capturedOutputs) > 0 {
+				stepCtx.Steps[step.Name] = dsl.StepData{Outputs: capturedOutputs}
+				_ = a.client.SetStepOutputs(ctx, a.cfg.AgentID, c.RunID, step.Index, capturedOutputs)
+			}
+		}
+
+		ended := time.Now().UTC()
+		_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+			RunID:      c.RunID,
+			StepIndex:  step.Index,
+			StageIndex: step.StageIndex,
+			StepName:   step.Name,
+			Status:     status,
+			ExitCode:   ec,
+			StartedAt:  started,
+			EndedAt:    ended,
+		})
+		return status != "Failed"
+	}
+
+	for _, stage := range c.Stages {
+		for _, step := range api.StageSteps(stage) {
+			if step.Foreach != nil {
+				// Expand foreach and run each variant sequentially inside the pod
+				data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps}
+				items, err := agentlib.EvalForeachSource(step.Foreach.Source, data)
+				if err != nil {
+					slog.Error("k8s: foreach expansion failed", "step", step.Name, "error", err)
+					_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+					return
+				}
+				failed := false
+				for _, item := range items {
+					variant := step
+					variant.Foreach = nil
+					variant.ForeachKey = step.Foreach.Key
+					variant.ForeachValue = item
+					if !runOneStep(variant) {
+						overallStatus = api.RunFailed
+						failed = true
+						break
+					}
+				}
+				if failed {
+					break
+				}
+			} else {
+				if !runOneStep(step) {
+					overallStatus = api.RunFailed
+					break
+				}
+			}
+		}
+		if overallStatus == api.RunFailed {
+			break
+		}
+	}
+
+	// Promote declared job outputs
+	runOutputs := map[string]string{}
+	for _, stage := range c.Stages {
+		for _, step := range api.StageSteps(stage) {
+			if sd, ok := stepCtx.Steps[step.Name]; ok {
+				for _, outName := range c.JobOutputs {
+					if val, ok := sd.Outputs[outName]; ok {
+						runOutputs[outName] = val
+					}
+				}
+			}
+		}
+	}
+	if len(runOutputs) > 0 {
+		_ = a.client.SetRunOutputs(ctx, a.cfg.AgentID, c.RunID, runOutputs)
+	}
+
+	_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, overallStatus)
+}
+
+// logLineWriter is a Writer that sends each line of stdout to the master server via AppendLog.
+type logLineWriter struct {
+	client  *agentlib.Client
+	agentID string
+	runID   string
+	stepIdx int
+	stream  string
+	buf     strings.Builder
+}
+
+// Write receives a byte slice and sends lines delimited by newlines to the master.
+func (lw *logLineWriter) Write(p []byte) (int, error) {
+	lw.buf.Write(p)
+	s := lw.buf.String()
+	for {
+		idx := strings.IndexByte(s, '\n')
+		if idx < 0 {
+			break
+		}
+		line := s[:idx]
+		s = s[idx+1:]
+		_ = lw.client.AppendLog(context.Background(), lw.agentID, api.LogAppendRequest{
+			RunID:     lw.runID,
+			StepIndex: lw.stepIdx,
+			Stream:    lw.stream,
+			Timestamp: time.Now().UTC(),
+			Line:      line,
+		})
+	}
+	lw.buf.Reset()
+	lw.buf.WriteString(s)
+	return len(p), nil
+}
+
+func appendLabelIfMissing(labels []string, label string) []string {
+	for _, l := range labels {
+		if l == label {
+			return labels
+		}
+	}
+	return append(labels, label)
+}

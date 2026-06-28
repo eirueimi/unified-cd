@@ -1,0 +1,18 @@
+# unified-cd agent configuration file
+# Usage: agent -f agent-config.yaml
+#
+# Priority: CLI flags > this file > environment variables
+# All fields are optional; omit to fall back to env vars or defaults.
+
+server: http://unified-cd-master:8080
+token: your-agent-token
+id: my-agent-1
+labels:
+  - kind:linux
+  - env:prod
+
+# Garage cache (all fields required to enable cache; omit section to disable)
+cacheEndpoint: garage:3900
+cacheKey: garageadmin
+cacheSecret: garageadmin12345
+cacheBucket: unified-cd-cache

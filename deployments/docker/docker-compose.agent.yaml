@@ -1,0 +1,17 @@
+# Docker agent example — runs unified-cd agent inside a container.
+# Environment variables:
+#   UNIFIED_SERVER      — controller server URL (required)
+#   UNIFIED_AGENT_TOKEN — agent token (required)
+#   UNIFIED_AGENT_ID    — unique agent ID (required)
+#   UNIFIED_AGENT_LABELS — comma-separated labels (optional, e.g. "kind:docker,pool:default")
+services:
+  agent:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/Dockerfile.agent
+    environment:
+      UNIFIED_SERVER: "${UNIFIED_SERVER:-http://controller:8080}"
+      UNIFIED_AGENT_TOKEN: "${UNIFIED_AGENT_TOKEN}"
+      UNIFIED_AGENT_ID: "${UNIFIED_AGENT_ID:-docker-agent-1}"
+      UNIFIED_AGENT_LABELS: "${UNIFIED_AGENT_LABELS:-kind:docker,pool:default}"
+    restart: unless-stopped

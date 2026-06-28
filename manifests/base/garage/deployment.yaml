@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage
+  namespace: unified-cd
+  labels:
+    app: garage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: garage
+  template:
+    metadata:
+      labels:
+        app: garage
+    spec:
+      containers:
+        - name: garage
+          image: dxflrs/garage:v2.3.0
+          command: ["/garage", "server", "--single-node", "--default-bucket"]
+          env:
+            - name: GARAGE_RPC_SECRET
+              value: "0000000000000000000000000000000000000000000000000000000000000000"
+            - name: GARAGE_DEFAULT_ACCESS_KEY
+              value: garageadmin
+            - name: GARAGE_DEFAULT_SECRET_KEY
+              value: garageadmin12345
+            - name: GARAGE_DEFAULT_BUCKET
+              value: unified-cd-logs
+          ports:
+            - containerPort: 3900
+              name: api
+            - containerPort: 3901
+              name: rpc
+            - containerPort: 3903
+              name: admin
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/garage.toml
+              subPath: garage.toml
+          readinessProbe:
+            exec:
+              command: ["/garage", "status"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["/garage", "status"]
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: garage-data
+        - name: config
+          configMap:
+            name: garage-config

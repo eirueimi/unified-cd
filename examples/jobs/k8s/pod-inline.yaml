@@ -1,0 +1,45 @@
+# Demonstrates: inline podTemplate — define the Pod spec directly in the Job (no named template)
+# Usage:
+#   unified-cd apply -f examples/jobs/k8s/pod-inline.yaml
+#   unified-cd run trigger python-lint
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: python-lint
+spec:
+  agentSelector:
+    - kind:k8s
+  # no name + spec present → inline PodSpec, independent of any named agent template
+  podTemplate:
+    workspace:
+      mountPath: /workspace
+      # specifying storageClassName and storageRequest auto-creates an ephemeral PVC
+      pvc:
+        storageClassName: standard
+        storageRequest: 1Gi
+        accessMode: ReadWriteOnce
+    spec:
+      containers:
+        - name: job
+          image: python:3.12-slim
+          # command omitted → agent injects ["sleep", "infinity"] automatically
+  steps:
+    - name: setup
+      run: |
+        pip install ruff --quiet
+        cat > /workspace/requirements.txt <<'EOF'
+        # no runtime deps for this demo
+        EOF
+        cat > /workspace/math.py <<'EOF'
+        def add(x: int, y: int) -> int:
+            return x + y
+        EOF
+
+    - name: install
+      run: pip install -r /workspace/requirements.txt --target /workspace/.lib --quiet
+
+    - parallel:
+      - name: lint
+        run: ruff check /workspace/math.py --output-format=github
+      - name: format-check
+        run: ruff format /workspace/math.py --check

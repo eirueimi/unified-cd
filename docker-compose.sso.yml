@@ -1,0 +1,48 @@
+# Compose override for local SSO development
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.sso.yml up -d
+#
+# Login:
+#   Open http://localhost:8080/ui/
+#   Click the "Login with SSO" button
+#   Email: admin@example.com / Password: password
+#
+# How it works:
+#   The controller reverse-proxies /dex/* to Dex, so the browser reaches Dex
+#   at http://localhost:8080/dex (single origin for all traffic).
+#   Inside the controller container, UNIFIED_OIDC_ISSUER_INTERNAL points to
+#   http://dex:5556/dex for OIDC discovery over the Docker internal network,
+#   while JWT iss is validated against localhost:8080/dex.
+#   Dex uses the issuer path (/dex) as a prefix for all its routes, so the
+#   internal URL must also include /dex.
+#   The controller also reverse-proxies any request that does not match an API
+#   route (including /ui/*) to the Vite dev server via UNIFIED_UI_PROXY_TARGET
+#   in docker-compose.yaml. Without this, http://localhost:8080/ui/ would 404
+#   after the OIDC login redirect, which targets the controller's own origin.
+
+services:
+
+  dex:
+    volumes:
+      - ./dex-config.sso.yaml:/etc/dex/config.yaml:ro
+
+  controller:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+      dex:
+        condition: service_started
+    environment:
+      UNIFIED_OIDC_ISSUER: http://localhost:8080/dex
+      UNIFIED_OIDC_ISSUER_INTERNAL: http://dex:5556/dex
+      # When the Vite dev server (localhost:5173) proxies requests through the
+      # controller, r.Host becomes controller:8080, so the redirect URI base
+      # must be set explicitly.
+      UNIFIED_OIDC_EXTERNAL_URL: http://localhost:8080
+      UNIFIED_OIDC_CLIENT_ID: unified-cd
+      UNIFIED_OIDC_CLIENT_SECRET: unified-cd-secret
+      # Public client (no secret) for the CLI device flow.
+      UNIFIED_OIDC_DEVICE_CLIENT_ID: unified-cd-cli

@@ -1,0 +1,71 @@
+# GitHub Commit Status 更新ジョブテンプレート
+# unified-cd apply examples/github-commit-status.yaml で登録後、call.job で呼び出す
+#
+# 必要なシークレット:
+#   unified-cd secret set github-token --value ghp_xxxx
+#   必要な権限: repo:status
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/github-commit-status.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: github-commit-status
+spec:
+  params:
+    inputs:
+      - name: owner
+        type: string
+        required: true
+        description: "GitHub オーナー名（org または user）"
+      - name: repo
+        type: string
+        required: true
+        description: "リポジトリ名"
+      - name: sha
+        type: string
+        required: true
+        description: "40桁の commit SHA"
+      - name: state
+        type: string
+        required: true
+        description: "pending / success / failure / error"
+      - name: context
+        type: string
+        default: "unified-cd"
+        description: "PR の Checks 欄に表示されるラベル"
+      - name: description
+        type: string
+        default: ""
+        description: "ステータスの説明文（省略可）"
+      - name: target_url
+        type: string
+        default: ""
+        description: "Details リンク先 URL（Run の詳細画面 URL 等）"
+  steps:
+    - name: update-status
+      env:
+        GITHUB_TOKEN: "{{ .Secrets.github-token }}"
+        OWNER: "{{ .Params.owner }}"
+        REPO: "{{ .Params.repo }}"
+        SHA: "{{ .Params.sha }}"
+        STATE: "{{ .Params.state }}"
+        CONTEXT: "{{ .Params.context }}"
+        DESCRIPTION: "{{ .Params.description }}"
+        TARGET_URL: "{{ .Params.target_url }}"
+      run: |
+        BODY="{\"state\":\"${STATE}\",\"context\":\"${CONTEXT}\",\"description\":\"${DESCRIPTION}\",\"target_url\":\"${TARGET_URL}\"}"
+
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+          -X POST \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          -H "Content-Type: application/json" \
+          "https://api.github.com/repos/${OWNER}/${REPO}/statuses/${SHA}" \
+          -d "$BODY")
+
+        if [ "$HTTP_STATUS" != "201" ]; then
+          echo "GitHub API returned HTTP ${HTTP_STATUS}" >&2
+          exit 1
+        fi
+        echo "Commit status updated: ${STATE}"

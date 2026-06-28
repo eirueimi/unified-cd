@@ -1,0 +1,43 @@
+# Demonstrates: conditional step execution using if: expressions
+# Usage:
+#   unified-cd apply -f examples/jobs/step-condition.yaml
+#   unified-cd run trigger build-and-deploy --params env=staging
+#   unified-cd run trigger build-and-deploy --params env=production
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build-and-deploy
+spec:
+  params:
+    inputs:
+      - name: env
+        type: string
+        default: staging   # staging | production
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: build
+      run: |
+        make build
+        echo "ok"
+      outputs:
+        result: "{{ .Stdout | grep \"ok\" | trim }}"
+
+    - parallel:
+      - name: integrationTest
+        if: 'params.env != "production"'
+        run: make integration-test
+
+      - name: deploy
+        if: 'params.env == "production"'
+        run: ./deploy.sh
+
+      - name: notify
+        if: 'steps.build.outputs.result == "ok"'
+        run: |
+          curl -s -X POST $SLACK_WEBHOOK \
+            -d "{\"text\":\"Build finished for env=${params.env}\"}"
+
+    - name: smokeTest
+      if: 'params.env in ["production", "staging"]'
+      run: ./smoke-test.sh
