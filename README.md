@@ -48,51 +48,44 @@ sudo mv unified-cli /usr/local/bin/
 
 ### Requirements
 
-- Go 1.26+
-- Docker (for PostgreSQL)
+- Docker
 
-### Build and run
+### 1. Start services
 
 ```bash
-# 1. Build
-make build
+cp .env.example .env        # edit UNIFIED_TOKEN if needed
+docker compose up -d
+```
 
-# 2. Start PostgreSQL
-docker compose -f docker-compose.dev.yaml up -d
+- Controller API: http://localhost:8080
+- Web UI: http://localhost:5173/ui/
 
-# 3. Start controller (terminal 1)
-UNIFIED_DB_DSN="postgres://unified:unified@localhost:5432/unified?sslmode=disable" \
-UNIFIED_TOKEN="dev-secret" \
-./bin/unified-cli-controller --addr :8080
+`docker compose logs -f controller` でログを確認できます。
 
-# 4. Start agent (terminal 2)
-UNIFIED_SERVER="http://localhost:8080" \
-UNIFIED_AGENT_TOKEN="dev-secret" \
-UNIFIED_AGENT_ID="agent-1" \
-./bin/unified-cli-agent
+### 2. Install the CLI
 
-# 5. Configure CLI
+Download from the [Releases page](https://github.com/eirueimi/unified-cd/releases), or build from source (requires Go 1.26+):
+
+```bash
+make build     # outputs bin/unified-cli
+```
+
+### 3. Configure the CLI
+
+```bash
 mkdir -p ~/.config/unified-cd
 cat > ~/.config/unified-cd/config.yaml <<EOF
 server: http://localhost:8080
-token: dev-secret
+token: dev-token-change-me
 EOF
+```
 
-# 6. Run your first job
-cat > /tmp/hello.yaml <<EOF
-apiVersion: unified-cd/v1
-kind: Job
-metadata:
-  name: hello
-spec:
-  steps:
-    - name: greet
-      run: echo hello-from-unified-cd
-EOF
+### 4. Run your first job
 
-./bin/unified-cli apply -f /tmp/hello.yaml
-RUN_ID=$(./bin/unified-cli run trigger hello)
-./bin/unified-cli logs -f "$RUN_ID"
+```bash
+unified-cli apply -f examples/jobs/hello.yaml
+RUN_ID=$(unified-cli run trigger hello)
+unified-cli logs -f "$RUN_ID"
 ```
 
 ### Tests
@@ -129,7 +122,7 @@ CLI / Browser / Webhook
 - **Controller** — stateless HTTP server; schedules and dispatches jobs; manages all resources
 - **Agent** — connects to controller via long-polling; executes job steps in a workspace directory
 - **k8s-agent** — Kubernetes-native agent; creates a Pod per job and exec's steps inside it
-- **CLI** — `unified-cd` — apply YAML, trigger runs, stream logs, manage secrets and tokens
+- **CLI** — `unified-cli` — apply YAML, trigger runs, stream logs, manage secrets and tokens
 
 ---
 
