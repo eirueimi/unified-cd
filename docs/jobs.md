@@ -26,7 +26,6 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
   - [OR Lock](#or-lock)
 - [Agent Selection (`agentSelector`)](#agent-selection-agentselector)
 - [Kubernetes Pod Template (`podTemplate`)](#kubernetes-pod-template-podtemplate)
-- [Fail Fast](#fail-fast)
 - [Finally Block (`finally`)](#finally-block-finally)
 - [Status Functions in `if:`](#status-functions-in-if)
 - [Job-level Timeout](#job-level-timeout)
@@ -48,7 +47,6 @@ spec:
   params: { ... }                 # input/output parameter declarations
   agentSelector: [ ... ]          # required agent label filters
   concurrency: { ... }            # concurrency control
-  failFast: true                  # cancel remaining steps on first failure (default: true)
   timeoutMinutes: 60              # job-level timeout in minutes
   podTemplate: { ... }            # Kubernetes pod config (k8s-agent only)
   steps:
@@ -566,24 +564,6 @@ steps:
 
 ---
 
-## Fail Fast
-
-When `failFast` is `true` (the default), the first step failure cancels all other in-progress steps.
-Set to `false` to allow all steps to run to completion regardless of failures.
-
-```yaml
-spec:
-  failFast: false    # default is true
-  steps:
-    - name: lint
-      run: golangci-lint run
-    - name: test
-      run: go test ./...
-    # Both lint and test run even if one fails
-```
-
----
-
 ## Finally Block (`finally`)
 
 Steps under `spec.finally` run **after the main `steps` DAG completes** —
@@ -727,7 +707,6 @@ spec:
     - env:ci
   concurrency:
     mutex: "deploy-{{ .Params.deploy_env }}"
-  failFast: true
   timeoutMinutes: 60
 
   steps:
