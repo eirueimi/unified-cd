@@ -974,6 +974,81 @@ spec:
 	assert.Contains(t, err.Error(), "one of run, call, or uses is required")
 }
 
+func TestParse_FinallyForbidsNeeds(t *testing.T) {
+	t.Run("top-level needs in finally", func(t *testing.T) {
+		input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: notify
+      run: ./notify.sh
+      needs: [build]
+`
+		_, err := Parse(strings.NewReader(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "spec.finally")
+		assert.Contains(t, err.Error(), "needs")
+	})
+
+	t.Run("needs inside finally parallel block", func(t *testing.T) {
+		input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - parallel:
+      - name: cleanup-a
+        run: ./cleanup-a.sh
+        needs: [build]
+      - name: cleanup-b
+        run: ./cleanup-b.sh
+`
+		_, err := Parse(strings.NewReader(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "spec.finally")
+		assert.Contains(t, err.Error(), "needs")
+	})
+}
+
+func TestParse_FinallyParallelBlock(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - parallel:
+      - name: notify-slack
+        run: ./notify-slack.sh
+      - name: notify-email
+        run: ./notify-email.sh
+    - name: teardown
+      run: ./teardown.sh
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Finally, 2)
+	assert.Len(t, job.Spec.Finally[0].Parallel, 2)
+	assert.Equal(t, "notify-slack", job.Spec.Finally[0].Parallel[0].Name)
+	assert.Equal(t, "notify-email", job.Spec.Finally[0].Parallel[1].Name)
+	assert.Equal(t, "teardown", job.Spec.Finally[1].Name)
+}
+
 func TestParse_UsesStep_ArrayWith(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1

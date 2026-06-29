@@ -48,13 +48,27 @@ func checkForbiddenJobFields(data []byte) error {
 		return fmt.Errorf("spec.failFast is no longer supported: remove it (all started steps run to completion)")
 	}
 	steps, _ := spec["steps"].([]any)
-	for i, s := range steps {
+	if err := checkNeedsInEntries(steps, "spec.steps"); err != nil {
+		return err
+	}
+	finally, _ := spec["finally"].([]any)
+	if err := checkNeedsInEntries(finally, "spec.finally"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// checkNeedsInEntries scans a raw list of step entries (from spec.steps or
+// spec.finally) and returns an error if any entry — or any inner parallel
+// sub-entry — contains a forbidden needs: key.
+func checkNeedsInEntries(entries []any, prefix string) error {
+	for i, s := range entries {
 		sm, _ := s.(map[string]any)
 		if sm == nil {
 			continue
 		}
 		if _, ok := sm["needs"]; ok {
-			return fmt.Errorf("spec.steps[%d]: needs: is no longer supported — use parallel: blocks for concurrent execution", i)
+			return fmt.Errorf("%s[%d]: needs: is no longer supported — use parallel: blocks for concurrent execution", prefix, i)
 		}
 		// Also check inside parallel blocks
 		parallel, _ := sm["parallel"].([]any)
@@ -64,7 +78,7 @@ func checkForbiddenJobFields(data []byte) error {
 				continue
 			}
 			if _, ok := pm["needs"]; ok {
-				return fmt.Errorf("spec.steps[%d].parallel[%d]: needs: is no longer supported", i, j)
+				return fmt.Errorf("%s[%d].parallel[%d]: needs: is no longer supported", prefix, i, j)
 			}
 		}
 	}
