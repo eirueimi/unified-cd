@@ -104,10 +104,10 @@ func (j *Job) Validate() error {
 
 	// Collect step names for duplicate detection across steps and finally.
 	nameSet := map[string]bool{}
-	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet); err != nil {
+	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet, true); err != nil {
 		return err
 	}
-	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet); err != nil {
+	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet, false); err != nil {
 		return err
 	}
 
@@ -165,14 +165,26 @@ func (j *Job) Validate() error {
 // validateStepEntries validates a list of StepEntry (steps or finally),
 // accumulating step names into nameSet for duplicate detection across the
 // whole job. pathPrefix is "spec.steps" or "spec.finally".
-func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[string]bool) error {
+// allowDeferredHooks controls whether cache: and post: are permitted; pass
+// false for finally entries because the agent drains postHooks/hookStack
+// BEFORE running finally, so deferred hooks registered there never execute.
+func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[string]bool, allowDeferredHooks bool) error {
 	for i, entry := range entries {
 		if len(entry.Parallel) > 0 {
 			if entry.Name != "" || entry.Run != "" || entry.Call != nil || entry.Uses != nil {
 				return fmt.Errorf("%s[%d]: parallel: block must not have name, run, call, or uses fields", pathPrefix, i)
 			}
 			for j2, st := range entry.Parallel {
-				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Foreach, fmt.Sprintf("%s[%d].parallel[%d]", pathPrefix, i, j2), nameSet); err != nil {
+				subPath := fmt.Sprintf("%s[%d].parallel[%d]", pathPrefix, i, j2)
+				if !allowDeferredHooks {
+					if st.Cache != nil {
+						return fmt.Errorf("%s: cache: is not supported in finally steps", subPath)
+					}
+					if st.Post != nil {
+						return fmt.Errorf("%s: post: is not supported in finally steps", subPath)
+					}
+				}
+				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Foreach, subPath, nameSet); err != nil {
 					return err
 				}
 				if err := validateCacheStep(st.Name, st.Cache); err != nil {
@@ -189,7 +201,16 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 			if entry.Name == "" {
 				return fmt.Errorf("%s[%d]: name is required (or use parallel: for a parallel block)", pathPrefix, i)
 			}
-			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Foreach, fmt.Sprintf("%s[%d]", pathPrefix, i), nameSet); err != nil {
+			entryPath := fmt.Sprintf("%s[%d]", pathPrefix, i)
+			if !allowDeferredHooks {
+				if entry.Cache != nil {
+					return fmt.Errorf("%s: cache: is not supported in finally steps", entryPath)
+				}
+				if entry.Post != nil {
+					return fmt.Errorf("%s: post: is not supported in finally steps", entryPath)
+				}
+			}
+			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Foreach, entryPath, nameSet); err != nil {
 				return err
 			}
 			if err := validateCacheStep(entry.Name, entry.Cache); err != nil {

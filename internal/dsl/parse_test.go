@@ -1049,6 +1049,68 @@ spec:
 	assert.Equal(t, "teardown", job.Spec.Finally[1].Name)
 }
 
+func TestParse_FinallyRejectsCache(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-finally-cache
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: restore
+      cache:
+        path: node_modules
+        key: npm-abc
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finally")
+	assert.Contains(t, err.Error(), "cache")
+}
+
+func TestParse_FinallyRejectsPost(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-finally-post
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: cleanup
+      run: ./cleanup.sh
+      post:
+        run: echo done
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finally")
+	assert.Contains(t, err.Error(), "post")
+}
+
+func TestParse_FinallyPlainRunStillPasses(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: good-finally
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: notify
+      run: ./notify.sh
+`
+	_, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+}
+
 func TestParse_UsesStep_ArrayWith(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1

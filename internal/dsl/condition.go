@@ -16,6 +16,8 @@ type RunStatusView struct {
 }
 
 // statusFuncRe matches a call to a status function: always(), failure(), success().
+// This is a textual heuristic and could (rarely) match a status-function name inside
+// a string literal; the fail-direction is "run the step", which is safe.
 var statusFuncRe = regexp.MustCompile(`\b(?:always|failure|success)\s*\(`)
 
 // EvalCondition evaluates a CEL expression and returns a bool.

@@ -199,7 +199,10 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}
 
 	var cancelledByMaster atomic.Bool
-	var anyStepFailed atomic.Bool // a non-continueOnError step failed (used for if: status)
+	// anyStepFailed: a non-continueOnError step failed (used for if: status).
+	// Benign race: a step failing at the exact instant cancellation arrives may be
+	// reported as Failed vs Cancelled, but both are terminal non-success — no corruption.
+	var anyStepFailed atomic.Bool
 
 	statusView := func() dsl.RunStatusView {
 		cancelled := cancelledByMaster.Load()

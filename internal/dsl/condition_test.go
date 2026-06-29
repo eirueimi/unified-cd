@@ -10,7 +10,7 @@ import (
 func TestEvalCondition_Empty(t *testing.T) {
 	ok, err := EvalCondition("", TemplateData{}, RunStatusView{}, true)
 	require.NoError(t, err)
-	assert.True(t, ok, "empty expr should return true")
+	assert.True(t, ok, "empty expr with no failure should return true (implicit success)")
 }
 
 func TestEvalCondition_LiteralTrue(t *testing.T) {
