@@ -261,7 +261,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		// if: evaluate condition — if false, skip and return nil to RunPipeline
 		if step.If != "" {
 			ifData := sctx.snapshot()
-			ok, err := dsl.EvalCondition(step.If, ifData)
+			ok, err := dsl.EvalCondition(step.If, ifData, dsl.RunStatusView{}, true)
 			if err != nil {
 				slog.Warn("if: condition eval failed, running step", "step", step.Name, "error", err)
 			}

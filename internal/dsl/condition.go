@@ -2,21 +2,49 @@ package dsl
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
 )
 
+// RunStatusView exposes the run-level status to if: condition functions.
+type RunStatusView struct {
+	Failed    bool // a non-continueOnError step failed (and the run was not cancelled)
+	Cancelled bool // the run was cancelled (timeout or manual)
+}
+
+// statusFuncRe matches a call to a status function: always(), failure(), success().
+var statusFuncRe = regexp.MustCompile(`\b(?:always|failure|success)\s*\(`)
+
 // EvalCondition evaluates a CEL expression and returns a bool.
-// If expr is an empty string, it returns true (no condition = always execute).
-// On compile or evaluation error it returns (true, err) (fail-safe = execute the step).
 //
 // Variables:
 //
 //	params   map(string, string) — Run parameters
 //	steps    map(string, dyn)    — completed steps; access via steps.name.outputs.key
 //	secrets  map(string, string) — resolved secret values
-func EvalCondition(expr string, data TemplateData) (bool, error) {
+//
+// Functions (zero-arg):
+//
+//	failure()  → status.Failed
+//	success()  → !status.Failed && !status.Cancelled
+//	always()   → true
+//
+// implicitSuccess applies GitHub-style semantics: when true and expr references
+// no status function, the result is ANDed with success(); an empty expr is
+// treated as success(). When false (used for finally), an empty expr means
+// always-run and a non-status expr is evaluated literally.
+//
+// On compile or evaluation error it returns (true, err) (fail-safe = run the step).
+func EvalCondition(expr string, data TemplateData, status RunStatusView, implicitSuccess bool) (bool, error) {
+	successVal := !status.Failed && !status.Cancelled
+
 	if expr == "" {
+		if implicitSuccess {
+			return successVal, nil
+		}
 		return true, nil
 	}
 
@@ -24,6 +52,12 @@ func EvalCondition(expr string, data TemplateData) (bool, error) {
 		cel.Variable("params", cel.MapType(cel.StringType, cel.StringType)),
 		cel.Variable("steps", cel.MapType(cel.StringType, cel.DynType)),
 		cel.Variable("secrets", cel.MapType(cel.StringType, cel.StringType)),
+		cel.Function("failure", cel.Overload("failure_bool", []*cel.Type{}, cel.BoolType,
+			cel.FunctionBinding(func(...ref.Val) ref.Val { return types.Bool(status.Failed) }))),
+		cel.Function("success", cel.Overload("success_bool", []*cel.Type{}, cel.BoolType,
+			cel.FunctionBinding(func(...ref.Val) ref.Val { return types.Bool(successVal) }))),
+		cel.Function("always", cel.Overload("always_bool", []*cel.Type{}, cel.BoolType,
+			cel.FunctionBinding(func(...ref.Val) ref.Val { return types.Bool(true) }))),
 	)
 	if err != nil {
 		return true, fmt.Errorf("if: cel env: %w", err)
@@ -72,6 +106,10 @@ func EvalCondition(expr string, data TemplateData) (bool, error) {
 	if !ok {
 		// OutputType check above guarantees this branch is unreachable
 		return true, fmt.Errorf("if: expression %q returned non-bool", expr)
+	}
+
+	if implicitSuccess && !statusFuncRe.MatchString(expr) {
+		return b && successVal, nil
 	}
 	return b, nil
 }
