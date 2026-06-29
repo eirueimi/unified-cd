@@ -48,13 +48,27 @@ func checkForbiddenJobFields(data []byte) error {
 		return fmt.Errorf("spec.failFast is no longer supported: remove it (all started steps run to completion)")
 	}
 	steps, _ := spec["steps"].([]any)
-	for i, s := range steps {
+	if err := checkNeedsInEntries(steps, "spec.steps"); err != nil {
+		return err
+	}
+	finally, _ := spec["finally"].([]any)
+	if err := checkNeedsInEntries(finally, "spec.finally"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// checkNeedsInEntries scans a raw list of step entries (from spec.steps or
+// spec.finally) and returns an error if any entry — or any inner parallel
+// sub-entry — contains a forbidden needs: key.
+func checkNeedsInEntries(entries []any, prefix string) error {
+	for i, s := range entries {
 		sm, _ := s.(map[string]any)
 		if sm == nil {
 			continue
 		}
 		if _, ok := sm["needs"]; ok {
-			return fmt.Errorf("spec.steps[%d]: needs: is no longer supported — use parallel: blocks for concurrent execution", i)
+			return fmt.Errorf("%s[%d]: needs: is no longer supported — use parallel: blocks for concurrent execution", prefix, i)
 		}
 		// Also check inside parallel blocks
 		parallel, _ := sm["parallel"].([]any)
@@ -64,7 +78,7 @@ func checkForbiddenJobFields(data []byte) error {
 				continue
 			}
 			if _, ok := pm["needs"]; ok {
-				return fmt.Errorf("spec.steps[%d].parallel[%d]: needs: is no longer supported", i, j)
+				return fmt.Errorf("%s[%d].parallel[%d]: needs: is no longer supported", prefix, i, j)
 			}
 		}
 	}
@@ -88,46 +102,13 @@ func (j *Job) Validate() error {
 		return fmt.Errorf("spec.steps must contain at least one step")
 	}
 
-	// Collect step names for duplicate detection (across all entries including parallel blocks).
+	// Collect step names for duplicate detection across steps and finally.
 	nameSet := map[string]bool{}
-
-	for i, entry := range j.Spec.Steps {
-		if len(entry.Parallel) > 0 {
-			// Parallel block: name/run/call fields must be absent.
-			if entry.Name != "" || entry.Run != "" || entry.Call != nil || entry.Uses != nil {
-				return fmt.Errorf("spec.steps[%d]: parallel: block must not have name, run, call, or uses fields", i)
-			}
-			for j2, st := range entry.Parallel {
-				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Foreach, fmt.Sprintf("spec.steps[%d].parallel[%d]", i, j2), nameSet); err != nil {
-					return err
-				}
-				if err := validateCacheStep(st.Name, st.Cache); err != nil {
-					return err
-				}
-				if err := validateUsesStep(st.Name, st.Uses, st.Call); err != nil {
-					return err
-				}
-				if st.Post != nil && st.Post.Run == "" {
-					return fmt.Errorf("step %q: post.run is required when post is specified", st.Name)
-				}
-			}
-		} else {
-			if entry.Name == "" {
-				return fmt.Errorf("spec.steps[%d]: name is required (or use parallel: for a parallel block)", i)
-			}
-			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Foreach, fmt.Sprintf("spec.steps[%d]", i), nameSet); err != nil {
-				return err
-			}
-			if err := validateCacheStep(entry.Name, entry.Cache); err != nil {
-				return err
-			}
-			if err := validateUsesStep(entry.Name, entry.Uses, entry.Call); err != nil {
-				return err
-			}
-			if entry.Post != nil && entry.Post.Run == "" {
-				return fmt.Errorf("step %q: post.run is required when post is specified", entry.Name)
-			}
-		}
+	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet, true); err != nil {
+		return err
+	}
+	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet, false); err != nil {
+		return err
 	}
 
 	for i, p := range j.Spec.Params.Inputs {
@@ -175,6 +156,71 @@ func (j *Job) Validate() error {
 			}
 			if hasLiteral && hasExpr {
 				return fmt.Errorf("spec.concurrency.orLocks[%d].in: cannot set both a list and an expression", i)
+			}
+		}
+	}
+	return nil
+}
+
+// validateStepEntries validates a list of StepEntry (steps or finally),
+// accumulating step names into nameSet for duplicate detection across the
+// whole job. pathPrefix is "spec.steps" or "spec.finally".
+// allowDeferredHooks controls whether cache: and post: are permitted; pass
+// false for finally entries because the agent drains postHooks/hookStack
+// BEFORE running finally, so deferred hooks registered there never execute.
+func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[string]bool, allowDeferredHooks bool) error {
+	for i, entry := range entries {
+		if len(entry.Parallel) > 0 {
+			if entry.Name != "" || entry.Run != "" || entry.Call != nil || entry.Uses != nil {
+				return fmt.Errorf("%s[%d]: parallel: block must not have name, run, call, or uses fields", pathPrefix, i)
+			}
+			for j2, st := range entry.Parallel {
+				subPath := fmt.Sprintf("%s[%d].parallel[%d]", pathPrefix, i, j2)
+				if !allowDeferredHooks {
+					if st.Cache != nil {
+						return fmt.Errorf("%s: cache: is not supported in finally steps", subPath)
+					}
+					if st.Post != nil {
+						return fmt.Errorf("%s: post: is not supported in finally steps", subPath)
+					}
+				}
+				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Foreach, subPath, nameSet); err != nil {
+					return err
+				}
+				if err := validateCacheStep(st.Name, st.Cache); err != nil {
+					return err
+				}
+				if err := validateUsesStep(st.Name, st.Uses, st.Call); err != nil {
+					return err
+				}
+				if st.Post != nil && st.Post.Run == "" {
+					return fmt.Errorf("step %q: post.run is required when post is specified", st.Name)
+				}
+			}
+		} else {
+			if entry.Name == "" {
+				return fmt.Errorf("%s[%d]: name is required (or use parallel: for a parallel block)", pathPrefix, i)
+			}
+			entryPath := fmt.Sprintf("%s[%d]", pathPrefix, i)
+			if !allowDeferredHooks {
+				if entry.Cache != nil {
+					return fmt.Errorf("%s: cache: is not supported in finally steps", entryPath)
+				}
+				if entry.Post != nil {
+					return fmt.Errorf("%s: post: is not supported in finally steps", entryPath)
+				}
+			}
+			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Foreach, entryPath, nameSet); err != nil {
+				return err
+			}
+			if err := validateCacheStep(entry.Name, entry.Cache); err != nil {
+				return err
+			}
+			if err := validateUsesStep(entry.Name, entry.Uses, entry.Call); err != nil {
+				return err
+			}
+			if entry.Post != nil && entry.Post.Run == "" {
+				return fmt.Errorf("step %q: post.run is required when post is specified", entry.Name)
 			}
 		}
 	}

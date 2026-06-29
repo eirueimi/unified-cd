@@ -118,6 +118,10 @@ func writeSection(sb *strings.Builder, defName string, def map[string]any, defs 
 			continue
 		}
 		seen[ref] = true
+		// Also skip if already emitted by a recursive call above.
+		if written[ref] {
+			continue
+		}
 		refDef, ok := defs[ref].(map[string]any)
 		if !ok {
 			continue

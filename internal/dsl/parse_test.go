@@ -919,6 +919,198 @@ spec:
 	assert.Equal(t, "array", job.Spec.Params.Inputs[0].Type)
 }
 
+func TestParse_FinallyValid(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: with-finally
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: notify
+      run: ./notify.sh
+    - name: rollback
+      if: failure()
+      run: ./rollback.sh`
+	job, err := Parse(strings.NewReader(y))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Finally, 2)
+	assert.Equal(t, "notify", job.Spec.Finally[0].Name)
+	assert.Equal(t, "failure()", job.Spec.Finally[1].If)
+}
+
+func TestParse_FinallyDuplicateNameAcrossStepsAndFinally(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: dup
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: build
+      run: ./cleanup.sh`
+	_, err := Parse(strings.NewReader(y))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate step name")
+}
+
+func TestParse_FinallyStepMissingAction(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: cleanup`
+	_, err := Parse(strings.NewReader(y))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "one of run, call, or uses is required")
+}
+
+func TestParse_FinallyForbidsNeeds(t *testing.T) {
+	t.Run("top-level needs in finally", func(t *testing.T) {
+		input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: notify
+      run: ./notify.sh
+      needs: [build]
+`
+		_, err := Parse(strings.NewReader(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "spec.finally")
+		assert.Contains(t, err.Error(), "needs")
+	})
+
+	t.Run("needs inside finally parallel block", func(t *testing.T) {
+		input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - parallel:
+      - name: cleanup-a
+        run: ./cleanup-a.sh
+        needs: [build]
+      - name: cleanup-b
+        run: ./cleanup-b.sh
+`
+		_, err := Parse(strings.NewReader(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "spec.finally")
+		assert.Contains(t, err.Error(), "needs")
+	})
+}
+
+func TestParse_FinallyParallelBlock(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - parallel:
+      - name: notify-slack
+        run: ./notify-slack.sh
+      - name: notify-email
+        run: ./notify-email.sh
+    - name: teardown
+      run: ./teardown.sh
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Finally, 2)
+	assert.Len(t, job.Spec.Finally[0].Parallel, 2)
+	assert.Equal(t, "notify-slack", job.Spec.Finally[0].Parallel[0].Name)
+	assert.Equal(t, "notify-email", job.Spec.Finally[0].Parallel[1].Name)
+	assert.Equal(t, "teardown", job.Spec.Finally[1].Name)
+}
+
+func TestParse_FinallyRejectsCache(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-finally-cache
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: restore
+      cache:
+        path: node_modules
+        key: npm-abc
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finally")
+	assert.Contains(t, err.Error(), "cache")
+}
+
+func TestParse_FinallyRejectsPost(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-finally-post
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: cleanup
+      run: ./cleanup.sh
+      post:
+        run: echo done
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finally")
+	assert.Contains(t, err.Error(), "post")
+}
+
+func TestParse_FinallyPlainRunStillPasses(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: good-finally
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: notify
+      run: ./notify.sh
+`
+	_, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+}
+
 func TestParse_UsesStep_ArrayWith(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1

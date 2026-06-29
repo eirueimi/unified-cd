@@ -26,7 +26,8 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
   - [OR Lock](#or-lock)
 - [Agent Selection (`agentSelector`)](#agent-selection-agentselector)
 - [Kubernetes Pod Template (`podTemplate`)](#kubernetes-pod-template-podtemplate)
-- [Fail Fast](#fail-fast)
+- [Finally Block (`finally`)](#finally-block-finally)
+- [Status Functions in `if:`](#status-functions-in-if)
 - [Job-level Timeout](#job-level-timeout)
 - [Template Syntax](#template-syntax)
 - [Secrets in Jobs](#secrets-in-jobs)
@@ -46,7 +47,6 @@ spec:
   params: { ... }                 # input/output parameter declarations
   agentSelector: [ ... ]          # required agent label filters
   concurrency: { ... }            # concurrency control
-  failFast: true                  # cancel remaining steps on first failure (default: true)
   timeoutMinutes: 60              # job-level timeout in minutes
   podTemplate: { ... }            # Kubernetes pod config (k8s-agent only)
   steps:
@@ -564,21 +564,53 @@ steps:
 
 ---
 
-## Fail Fast
+## Finally Block (`finally`)
 
-When `failFast` is `true` (the default), the first step failure cancels all other in-progress steps.
-Set to `false` to allow all steps to run to completion regardless of failures.
+> **Note:** `finally` blocks and the `failure()`/`success()`/`always()` status functions are currently evaluated by the standard agents (Linux/macOS/Windows). The Kubernetes agent does not yet run `finally` blocks or evaluate `if:` conditions.
+
+Steps under `spec.finally` run **after the main `steps` DAG completes** —
+whether it succeeded, failed, or was cancelled. Use it for notifications,
+cleanup, or rollback.
 
 ```yaml
 spec:
-  failFast: false    # default is true
   steps:
-    - name: lint
-      run: golangci-lint run
-    - name: test
-      run: go test ./...
-    # Both lint and test run even if one fails
+    - name: deploy
+      run: ./deploy.sh
+  finally:
+    - name: notify          # no if: → always runs
+      run: ./notify.sh "{{ .Params.env }}"
+    - name: rollback
+      if: failure()         # only when a step failed
+      run: ./rollback.sh
 ```
+
+- `finally` uses the same structure as `steps` (stages + `parallel`).
+- A `finally` step with no `if:` always runs.
+- All `finally` steps run to completion; a `finally` step that fails marks the
+  run **Failed**.
+- On cancellation, `finally` still runs, but `failure()` is `false`.
+- `cache:` and `post:` are not supported in `finally` steps (they register
+  deferred hooks that run before `finally`; use them in `steps` instead).
+
+---
+
+## Status Functions in `if:`
+
+> **Note:** `finally` blocks and the `failure()`/`success()`/`always()` status functions are currently evaluated by the standard agents (Linux/macOS/Windows). The Kubernetes agent does not yet run `finally` blocks or evaluate `if:` conditions.
+
+Three zero-argument functions are available in any step `if:` (job-wide scope):
+
+| Function | True when |
+|---|---|
+| `failure()` | a previous non-`continueOnError` step has failed (not on cancel) |
+| `success()` | no step has failed and the run was not cancelled |
+| `always()`  | always |
+
+If an `if:` expression does **not** mention a status function, it is implicitly
+treated as requiring `success()` — so a normal step is skipped once an earlier
+step has failed (GitHub Actions semantics). Add `if: failure()` or
+`if: always()` to opt in to running after a failure.
 
 ---
 
@@ -681,7 +713,6 @@ spec:
     - env:ci
   concurrency:
     mutex: "deploy-{{ .Params.deploy_env }}"
-  failFast: true
   timeoutMinutes: 60
 
   steps:

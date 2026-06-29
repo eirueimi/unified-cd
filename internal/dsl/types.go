@@ -18,11 +18,17 @@ type Metadata struct {
 }
 
 type Spec struct {
-	Params         Params       `yaml:"params"`
-	Concurrency    *Concurrency `yaml:"concurrency,omitempty"`
-	AgentSelector  []string     `yaml:"agentSelector,omitempty"`
-	Steps          []StepEntry  `yaml:"steps"`
-	// FailFast removed — use parallel: blocks for grouping; all started steps run to completion
+	Params        Params       `yaml:"params"`
+	Concurrency   *Concurrency `yaml:"concurrency,omitempty"`
+	AgentSelector []string     `yaml:"agentSelector,omitempty"`
+	// Steps is the main DAG of steps to execute.
+	// (failFast was removed — all started steps run to completion.)
+	Steps []StepEntry `yaml:"steps"`
+	// Finally runs after the main DAG completes, on success, failure, or
+	// cancellation. Same structure as Steps. A finally step's `if:` defaults to
+	// always-run; use if: failure()/success() to filter. A finally step that
+	// fails marks the run Failed (after all finally steps run).
+	Finally        []StepEntry  `yaml:"finally,omitempty"`
 	TimeoutMinutes float64      `yaml:"timeoutMinutes,omitempty"`
 	PodTemplate    *PodTemplate `yaml:"podTemplate,omitempty"`
 }

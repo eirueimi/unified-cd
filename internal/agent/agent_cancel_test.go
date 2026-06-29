@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,4 +78,89 @@ func TestExecuteRun_CancelPropagation(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("FinishRun was not called within 3 seconds of executeRun returning")
 	}
+}
+
+// TestExecuteRun_FinallyRunsOnCancel verifies that the finally block runs even when
+// the run was cancelled by the master, that failure() is false in finally (cancel is
+// not a failure), and that the overall status stays Cancelled when no finally step fails.
+func TestExecuteRun_FinallyRunsOnCancel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("TODO: retryUntilSuccess with context.WithoutCancel keeps retrying after test server closes; Windows socket cleanup slower than Linux")
+	}
+	finishStatus := make(chan string, 1)
+	var getRunCalls atomic.Int32
+
+	var mu sync.Mutex
+	stepStatuses := map[string]string{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/a1/steps", func(w http.ResponseWriter, r *http.Request) {
+		var req api.StepReportRequest
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		if req.StepName != "" {
+			mu.Lock()
+			stepStatuses[req.StepName] = req.Status
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/a1/runs/run-cancel/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		select {
+		case finishStatus <- body["status"]:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/a1/runs/run-cancel/steps/0/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/a1/runs/run-cancel/steps/1/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /api/v1/runs/run-cancel", func(w http.ResponseWriter, r *http.Request) {
+		n := getRunCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		status := api.RunRunning
+		if n >= 2 {
+			status = api.RunCancelled
+		}
+		json.NewEncoder(w).Encode(api.Run{ID: "run-cancel", Status: status}) //nolint:errcheck
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	a := &Agent{
+		ID:     "a1",
+		Client: NewClient(srv.URL, "tok"),
+	}
+
+	claim := api.ClaimResponse{
+		RunID:   "run-cancel",
+		JobName: "test",
+		Stages:  []api.ClaimStage{{Step: &api.ClaimStep{Name: "s1", Index: 0, Run: "sleep 30"}}},
+		Finally: []api.ClaimStage{
+			{Step: &api.ClaimStep{Name: "cleanup", Index: 1, StageIndex: 0, Run: "echo cleanup"}},
+			{Step: &api.ClaimStep{Name: "on-fail", Index: 2, StageIndex: 1, If: "failure()", Run: "echo nope"}},
+		},
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	select {
+	case status := <-finishStatus:
+		assert.Equal(t, string(api.RunCancelled), status, "cancelled run with no failing finally step stays Cancelled")
+	case <-time.After(3 * time.Second):
+		t.Fatal("FinishRun was not called within 3 seconds of executeRun returning")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "Succeeded", stepStatuses["cleanup"], "no-if finally step runs even on cancel")
+	assert.Equal(t, "Skipped", stepStatuses["on-fail"], "failure() is false on cancel, so the step is skipped")
 }
