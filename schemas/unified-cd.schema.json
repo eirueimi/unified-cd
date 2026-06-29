@@ -114,15 +114,15 @@
         "mutex": {
           "type": "string"
         },
-        "namedLocks": {
-          "items": {
-            "$ref": "#/definitions/NamedLock"
-          },
-          "type": "array"
-        },
         "orLocks": {
           "items": {
             "$ref": "#/definitions/OrLock"
+          },
+          "type": "array"
+        },
+        "semaphores": {
+          "items": {
+            "$ref": "#/definitions/Semaphore"
           },
           "type": "array"
         }
@@ -133,7 +133,7 @@
       "additionalProperties": false,
       "properties": {
         "destDir": {
-          "description": "省略時はカレントディレクトリ",
+          "description": "defaults to the current directory if omitted",
           "type": "string"
         },
         "name": {
@@ -145,9 +145,32 @@
       ],
       "type": "object"
     },
+    "ForeachDef": {
+      "additionalProperties": false,
+      "description": "ForeachDef expands a step into one parallel run per item in the list.\nKey is the variable name accessible in templates as {{ .Foreach.key }}.",
+      "properties": {
+        "in": {
+          "$ref": "#/definitions/ForeachSource"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "in"
+      ],
+      "type": "object"
+    },
+    "ForeachSource": {
+      "additionalProperties": false,
+      "description": "ForeachSource is either a literal list (YAML sequence) or a template expression (YAML string).\n\n  in: [prod, staging, dev]                    → Literal\n  in: $envs                                   → Expr (JSON-array param reference)\n  in: \"{{ .Params.envs | split \\\",\\\" }}\"      → Expr (template)\n  in: \"{{ .Steps.list.Outputs.envs | split \\\",\\\" }}\" → Expr (step output reference)",
+      "properties": {},
+      "type": "object"
+    },
     "GitCredential": {
       "additionalProperties": false,
-      "description": "GitCredential はプライベートリポジトリへの git 認証情報を定義する DSL 型。",
+      "description": "GitCredential is the DSL type that defines git credentials for private repositories.",
       "properties": {
         "apiVersion": {
           "const": "unified-cd/v1",
@@ -174,18 +197,18 @@
     },
     "GitCredentialSpec": {
       "additionalProperties": false,
-      "description": "GitCredentialSpec は GitCredential の spec セクション。",
+      "description": "GitCredentialSpec is the spec section of GitCredential.",
       "properties": {
         "host": {
-          "description": "認証情報を使うホスト名（例: github.com）",
+          "description": "hostname to use these credentials for (e.g. github.com)",
           "type": "string"
         },
         "secretRef": {
-          "description": "値を保持する StoredSecret の名前",
+          "description": "name of the StoredSecret that holds the value",
           "type": "string"
         },
         "type": {
-          "description": "認証タイプ",
+          "description": "authentication type",
           "enum": [
             "token",
             "sshKey"
@@ -217,7 +240,8 @@
           "enum": [
             "string",
             "bool",
-            "int"
+            "int",
+            "array"
           ],
           "type": "string"
         }
@@ -272,31 +296,12 @@
       ],
       "type": "object"
     },
-    "NamedLock": {
-      "additionalProperties": false,
-      "properties": {
-        "capacity": {
-          "type": "integer"
-        },
-        "pool": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "pool",
-        "capacity"
-      ],
-      "type": "object"
-    },
     "OrLock": {
       "additionalProperties": false,
-      "description": "OrLock acquires exactly one of Candidates — whichever is free — instead of\nrequiring all of them like NamedLocks does. The acquired candidate value is\nexposed to the Job's steps as a synthesized parameter named\nstrings.ToUpper(Name)+\"_LOCK_VALUE\" (e.g. Name \"env\" -\u003e \"ENV_LOCK_VALUE\"),\nreadable via {{ .Params.ENV_LOCK_VALUE }}.",
+      "description": "OrLock acquires exactly one candidate from In — whichever is free — instead of\nrequiring all of them like Semaphores does. The acquired candidate value is\nexposed to the Job's steps as a synthesized parameter named\nstrings.ToUpper(Name)+\"_LOCK_VALUE\" (e.g. Name \"env\" -\u003e \"ENV_LOCK_VALUE\"),\nreadable via {{ .Params.ENV_LOCK_VALUE }}.",
       "properties": {
-        "candidates": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+        "in": {
+          "$ref": "#/definitions/ForeachSource"
         },
         "name": {
           "type": "string"
@@ -304,7 +309,7 @@
       },
       "required": [
         "name",
-        "candidates"
+        "in"
       ],
       "type": "object"
     },
@@ -412,7 +417,7 @@
     },
     "Schedule": {
       "additionalProperties": false,
-      "description": "Schedule は cron スケジュールトリガーの DSL 型。",
+      "description": "Schedule is the DSL type for a cron schedule trigger.",
       "properties": {
         "apiVersion": {
           "const": "unified-cd/v1",
@@ -439,7 +444,7 @@
     },
     "ScheduleSpec": {
       "additionalProperties": false,
-      "description": "ScheduleSpec は Schedule の spec セクション。",
+      "description": "ScheduleSpec is the spec section of Schedule.",
       "properties": {
         "cron": {
           "type": "string"
@@ -460,11 +465,26 @@
       ],
       "type": "object"
     },
+    "Semaphore": {
+      "additionalProperties": false,
+      "properties": {
+        "capacity": {
+          "type": "integer"
+        },
+        "pool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pool",
+        "capacity"
+      ],
+      "type": "object"
+    },
     "Spec": {
       "additionalProperties": false,
       "properties": {
         "agentSelector": {
-          "description": "必須のエージェントラベル。各要素は {{ .Params.X }} でRunのinputパラメータを展開できる",
           "items": {
             "type": "string"
           },
@@ -473,9 +493,12 @@
         "concurrency": {
           "$ref": "#/definitions/Concurrency"
         },
-        "failFast": {
-          "description": "nil = true（デフォルト）",
-          "type": "boolean"
+        "finally": {
+          "description": "Finally runs after the main DAG completes, on success, failure, or\ncancellation. Same structure as Steps. A finally step's `if:` defaults to\nalways-run; use if: failure()/success() to filter. A finally step that\nfails marks the run Failed (after all finally steps run).",
+          "items": {
+            "$ref": "#/definitions/StepEntry"
+          },
+          "type": "array"
         },
         "params": {
           "$ref": "#/definitions/Params"
@@ -484,13 +507,13 @@
           "$ref": "#/definitions/PodTemplate"
         },
         "steps": {
+          "description": "Steps is the main DAG of steps to execute.\n(failFast was removed — all started steps run to completion.)",
           "items": {
-            "$ref": "#/definitions/Step"
+            "$ref": "#/definitions/StepEntry"
           },
           "type": "array"
         },
         "timeoutMinutes": {
-          "description": "ジョブレベルタイムアウト（分）",
           "type": "number"
         }
       },
@@ -502,6 +525,7 @@
     },
     "Step": {
       "additionalProperties": false,
+      "description": "Step is a concrete step. Used inside parallel: blocks and as the body of a StepEntry.",
       "properties": {
         "cache": {
           "$ref": "#/definitions/CacheStep"
@@ -522,8 +546,10 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "ステップ実行時の環境変数（シークレット参照を含む）",
           "type": "object"
+        },
+        "foreach": {
+          "$ref": "#/definitions/ForeachDef"
         },
         "if": {
           "type": "string"
@@ -531,17 +557,10 @@
         "name": {
           "type": "string"
         },
-        "needs": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
         "outputs": {
           "additionalProperties": {
             "type": "string"
           },
-          "description": "key → template expression",
           "type": "object"
         },
         "post": {
@@ -551,7 +570,6 @@
           "type": "string"
         },
         "timeoutMinutes": {
-          "description": "ステップレベルタイムアウト（分）",
           "type": "number"
         },
         "uploadArtifact": {
@@ -564,6 +582,72 @@
       "required": [
         "name"
       ],
+      "type": "object"
+    },
+    "StepEntry": {
+      "additionalProperties": false,
+      "description": "StepEntry is either a concrete step (Name is set) or a parallel group (Parallel is set).\nThe two forms are mutually exclusive; Validate enforces this.",
+      "properties": {
+        "cache": {
+          "$ref": "#/definitions/CacheStep"
+        },
+        "call": {
+          "$ref": "#/definitions/CallStep"
+        },
+        "container": {
+          "type": "string"
+        },
+        "continueOnError": {
+          "type": "boolean"
+        },
+        "downloadArtifact": {
+          "$ref": "#/definitions/DownloadArtifactStep"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "foreach": {
+          "$ref": "#/definitions/ForeachDef"
+        },
+        "if": {
+          "type": "string"
+        },
+        "name": {
+          "description": "Concrete step fields (identical to Step, minus Needs)",
+          "type": "string"
+        },
+        "outputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "parallel": {
+          "description": "Parallel group (mutually exclusive with all concrete step fields above)",
+          "items": {
+            "$ref": "#/definitions/Step"
+          },
+          "type": "array"
+        },
+        "post": {
+          "$ref": "#/definitions/PostStep"
+        },
+        "run": {
+          "type": "string"
+        },
+        "timeoutMinutes": {
+          "type": "number"
+        },
+        "uploadArtifact": {
+          "$ref": "#/definitions/UploadArtifactStep"
+        },
+        "uses": {
+          "$ref": "#/definitions/UsesStep"
+        }
+      },
       "type": "object"
     },
     "UploadArtifactStep": {
@@ -622,7 +706,7 @@
     },
     "WebhookReceiver": {
       "additionalProperties": false,
-      "description": "WebhookReceiver はwebhookレシーバー設定のDSL型。",
+      "description": "WebhookReceiver is the DSL type for webhook receiver configuration.",
       "properties": {
         "apiVersion": {
           "const": "unified-cd/v1",

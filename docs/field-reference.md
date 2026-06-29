@@ -1,6 +1,6 @@
 # unified-cd Field Reference
 
-> This file is auto-generated. Do not edit directly.
+> This file is auto-generated. Do not edit it directly.
 > Regenerate with `go generate ./internal/dsl/`.
 
 ## Table of Contents
@@ -33,41 +33,172 @@
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `agentSelector` | []string | no | Required agent labels. Each element supports `{{ .Params.X }}` expansion using Run input parameters. |
+| `agentSelector` | []string | no |  |
 | `concurrency` | Concurrency | no |  |
-| `failFast` | boolean | no | nil = true (default) |
+| `finally` | []StepEntry | no | Finally runs after the main DAG completes, on success, failure, or
+cancellation. Same structure as Steps. A finally step's `if:` defaults to
+always-run; use if: failure()/success() to filter. A finally step that
+fails marks the run Failed (after all finally steps run). |
 | `params` | Params | yes |  |
 | `podTemplate` | PodTemplate | no |  |
-| `steps` | []Step | yes |  |
-| `timeoutMinutes` | number | no | Job-level timeout in minutes |
+| `steps` | []StepEntry | yes | Steps is the main DAG of steps to execute.
+(failFast was removed — all started steps run to completion.) |
+| `timeoutMinutes` | number | no |  |
 
 ### Concurrency
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `mutex` | string | no |  |
-| `namedLocks` | []NamedLock | no |  |
 | `orLocks` | []OrLock | no |  |
-
-### NamedLock
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `capacity` | integer | yes |  |
-| `pool` | string | yes |  |
+| `semaphores` | []Semaphore | no |  |
 
 ### OrLock
 
-OrLock acquires exactly one of Candidates — whichever is free — instead of
-requiring all of them like NamedLocks does. The acquired candidate value is
+OrLock acquires exactly one candidate from In — whichever is free — instead of
+requiring all of them like Semaphores does. The acquired candidate value is
 exposed to the Job's steps as a synthesized parameter named
 strings.ToUpper(Name)+"_LOCK_VALUE" (e.g. Name "env" -> "ENV_LOCK_VALUE"),
 readable via {{ .Params.ENV_LOCK_VALUE }}.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `candidates` | []string | yes |  |
+| `in` | ForeachSource | yes |  |
 | `name` | string | yes |  |
+
+### ForeachSource
+
+ForeachSource is either a literal list (YAML sequence) or a template expression (YAML string).
+
+  in: [prod, staging, dev]                    → Literal
+  in: $envs                                   → Expr (JSON-array param reference)
+  in: "{{ .Params.envs | split \",\" }}"      → Expr (template)
+  in: "{{ .Steps.list.Outputs.envs | split \",\" }}" → Expr (step output reference)
+
+### Semaphore
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `capacity` | integer | yes |  |
+| `pool` | string | yes |  |
+
+### StepEntry
+
+StepEntry is either a concrete step (Name is set) or a parallel group (Parallel is set).
+The two forms are mutually exclusive; Validate enforces this.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `cache` | CacheStep | no |  |
+| `call` | CallStep | no |  |
+| `container` | string | no |  |
+| `continueOnError` | boolean | no |  |
+| `downloadArtifact` | DownloadArtifactStep | no |  |
+| `env` | map[string]string | no |  |
+| `foreach` | ForeachDef | no |  |
+| `if` | string | no |  |
+| `name` | string | no | Concrete step fields (identical to Step, minus Needs) |
+| `outputs` | map[string]string | no |  |
+| `parallel` | []Step | no | Parallel group (mutually exclusive with all concrete step fields above) |
+| `post` | PostStep | no |  |
+| `run` | string | no |  |
+| `timeoutMinutes` | number | no |  |
+| `uploadArtifact` | UploadArtifactStep | no |  |
+| `uses` | UsesStep | no |  |
+
+### CacheStep
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `key` | string | yes |  |
+| `path` | string | yes |  |
+| `restoreKeys` | []string | no |  |
+| `ttlDays` | integer | no | default 30 |
+
+### CallStep
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `job` | string | yes |  |
+| `with` | map[string]any | no |  |
+
+### DownloadArtifactStep
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `destDir` | string | no | defaults to the current directory if omitted |
+| `name` | string | yes |  |
+
+### ForeachDef
+
+ForeachDef expands a step into one parallel run per item in the list.
+Key is the variable name accessible in templates as {{ .Foreach.key }}.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `in` | ForeachSource | yes |  |
+| `key` | string | yes |  |
+
+### Step
+
+Step is a concrete step. Used inside parallel: blocks and as the body of a StepEntry.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `cache` | CacheStep | no |  |
+| `call` | CallStep | no |  |
+| `container` | string | no |  |
+| `continueOnError` | boolean | no |  |
+| `downloadArtifact` | DownloadArtifactStep | no |  |
+| `env` | map[string]string | no |  |
+| `foreach` | ForeachDef | no |  |
+| `if` | string | no |  |
+| `name` | string | yes |  |
+| `outputs` | map[string]string | no |  |
+| `post` | PostStep | no |  |
+| `run` | string | no |  |
+| `timeoutMinutes` | number | no |  |
+| `uploadArtifact` | UploadArtifactStep | no |  |
+| `uses` | UsesStep | no |  |
+
+### PostStep
+
+PostStep defines cleanup/post-processing to run after a step completes.
+Executed in LIFO order after RunDAG completes.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `env` | map[string]string | no |  |
+| `run` | string | no |  |
+
+### UploadArtifactStep
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes |  |
+| `path` | string | yes |  |
+
+### UsesStep
+
+UsesStep inlines a git-template job's steps directly into the current run.
+Job must be a git:// URI; unlike CallStep, it never references a registered job name.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `job` | string | yes |  |
+| `with` | map[string]any | no |  |
+
+### PostStep
+
+PostStep defines cleanup/post-processing to run after a step completes.
+Executed in LIFO order after RunDAG completes.
+
+### UploadArtifactStep
+
+### UsesStep
+
+UsesStep inlines a git-template job's steps directly into the current run.
+Job must be a git:// URI; unlike CallStep, it never references a registered job name.
 
 ### Params
 
@@ -84,7 +215,7 @@ readable via {{ .Params.ENV_LOCK_VALUE }}.
 | `description` | string | no |  |
 | `name` | string | yes |  |
 | `required` | boolean | no |  |
-| `type` | `string` \| `bool` \| `int` | yes |  |
+| `type` | `string` \| `bool` \| `int` \| `array` | yes |  |
 
 ### Output
 
@@ -127,79 +258,9 @@ readable via {{ .Params.ENV_LOCK_VALUE }}.
 | `storageClassName` | string | no |  |
 | `storageRequest` | string | no |  |
 
-### Step
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `cache` | CacheStep | no |  |
-| `call` | CallStep | no |  |
-| `container` | string | no |  |
-| `continueOnError` | boolean | no |  |
-| `downloadArtifact` | DownloadArtifactStep | no |  |
-| `env` | map[string]string | no | Environment variables for the step (may include secret references) |
-| `if` | string | no |  |
-| `name` | string | yes |  |
-| `needs` | []string | no |  |
-| `outputs` | map[string]string | no | key → template expression |
-| `post` | PostStep | no |  |
-| `run` | string | no |  |
-| `timeoutMinutes` | number | no | Step-level timeout in minutes |
-| `uploadArtifact` | UploadArtifactStep | no |  |
-| `uses` | UsesStep | no |  |
-
-### CacheStep
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `key` | string | yes |  |
-| `path` | string | yes |  |
-| `restoreKeys` | []string | no |  |
-| `ttlDays` | integer | no | default 30 |
-
-### CallStep
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `job` | string | yes |  |
-| `with` | map[string]any | no |  |
-
-### DownloadArtifactStep
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `destDir` | string | no | Defaults to current directory |
-| `name` | string | yes |  |
-
-### PostStep
-
-PostStep defines cleanup/post-processing to run after a step completes.
-Executed in LIFO order after RunDAG completes.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `env` | map[string]string | no |  |
-| `run` | string | no |  |
-
-### UploadArtifactStep
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | yes |  |
-| `path` | string | yes |  |
-
-### UsesStep
-
-UsesStep inlines a git-template job's steps directly into the current run.
-Job must be a git:// URI; unlike CallStep, it never references a registered job name.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `job` | string | yes |  |
-| `with` | map[string]any | no |  |
-
 ## Schedule
 
-Schedule is the DSL type for cron schedule triggers.
+Schedule is the DSL type for a cron schedule trigger.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -217,7 +278,7 @@ Schedule is the DSL type for cron schedule triggers.
 
 ### ScheduleSpec
 
-ScheduleSpec is the spec section of a Schedule.
+ScheduleSpec is the spec section of Schedule.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -257,7 +318,7 @@ WebhookReceiver is the DSL type for webhook receiver configuration.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `secretRef` | string | no |  |
-| `type` | `none` \| `hmac-sha256` \| `github` | yes | none \| hmac-sha256 \| github (X-Hub-Signature-256) |
+| `type` | `none` \| `hmac-sha256` \| `github` | yes | none | hmac-sha256 | github (X-Hub-Signature-256) |
 
 ### WebhookTrigger
 
@@ -300,7 +361,7 @@ WebhookReceiver is the DSL type for webhook receiver configuration.
 
 ## GitCredential
 
-GitCredential is the DSL type for defining git authentication credentials for private repositories.
+GitCredential is the DSL type that defines git credentials for private repositories.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -318,10 +379,11 @@ GitCredential is the DSL type for defining git authentication credentials for pr
 
 ### GitCredentialSpec
 
-GitCredentialSpec is the spec section of a GitCredential.
+GitCredentialSpec is the spec section of GitCredential.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `host` | string | yes | Hostname to use these credentials for (e.g. github.com) |
-| `secretRef` | string | yes | Name of the StoredSecret holding the credential value |
-| `type` | `token` \| `sshKey` | yes | Authentication type |
+| `host` | string | yes | hostname to use these credentials for (e.g. github.com) |
+| `secretRef` | string | yes | name of the StoredSecret that holds the value |
+| `type` | `token` \| `sshKey` | yes | authentication type |
+

@@ -27,6 +27,8 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
 - [Agent Selection (`agentSelector`)](#agent-selection-agentselector)
 - [Kubernetes Pod Template (`podTemplate`)](#kubernetes-pod-template-podtemplate)
 - [Fail Fast](#fail-fast)
+- [Finally Block (`finally`)](#finally-block-finally)
+- [Status Functions in `if:`](#status-functions-in-if)
 - [Job-level Timeout](#job-level-timeout)
 - [Template Syntax](#template-syntax)
 - [Secrets in Jobs](#secrets-in-jobs)
@@ -579,6 +581,50 @@ spec:
       run: go test ./...
     # Both lint and test run even if one fails
 ```
+
+---
+
+## Finally Block (`finally`)
+
+Steps under `spec.finally` run **after the main `steps` DAG completes** —
+whether it succeeded, failed, or was cancelled. Use it for notifications,
+cleanup, or rollback.
+
+```yaml
+spec:
+  steps:
+    - name: deploy
+      run: ./deploy.sh
+  finally:
+    - name: notify          # no if: → always runs
+      run: ./notify.sh "{{ .Params.env }}"
+    - name: rollback
+      if: failure()         # only when a step failed
+      run: ./rollback.sh
+```
+
+- `finally` uses the same structure as `steps` (stages + `parallel`).
+- A `finally` step with no `if:` always runs.
+- All `finally` steps run to completion; a `finally` step that fails marks the
+  run **Failed**.
+- On cancellation, `finally` still runs, but `failure()` is `false`.
+
+---
+
+## Status Functions in `if:`
+
+Three zero-argument functions are available in any step `if:` (job-wide scope):
+
+| Function | True when |
+|---|---|
+| `failure()` | a previous non-`continueOnError` step has failed (not on cancel) |
+| `success()` | no step has failed and the run was not cancelled |
+| `always()`  | always |
+
+If an `if:` expression does **not** mention a status function, it is implicitly
+treated as requiring `success()` — so a normal step is skipped once an earlier
+step has failed (GitHub Actions semantics). Add `if: failure()` or
+`if: always()` to opt in to running after a failure.
 
 ---
 
