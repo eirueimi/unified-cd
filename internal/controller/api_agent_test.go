@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -316,6 +317,36 @@ func TestBuildClaimResponse_ParallelBlock(t *testing.T) {
 	assert.Equal(t, "c", resp.Stages[1].Step.Name)
 	assert.Equal(t, 1, resp.Stages[1].Step.StageIndex)
 	assert.Equal(t, 2, resp.Stages[1].Step.Index)
+}
+
+func TestBuildClaimResponse_Finally(t *testing.T) {
+	spec := dsl.Spec{
+		Steps: []dsl.StepEntry{
+			{Name: "build", Run: "make build"},
+		},
+		Finally: []dsl.StepEntry{
+			{Name: "notify", Run: "./notify.sh {{ secrets.HOOK }}"},
+			{Name: "rollback", If: "failure()", Run: "./rollback.sh"},
+		},
+	}
+	raw, err := json.Marshal(spec)
+	require.NoError(t, err)
+
+	resp, err := buildClaimResponse(&store.ClaimedRun{
+		Run:  api.Run{ID: "run1", JobName: "j"},
+		Spec: raw,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, resp.Stages, 1)
+	require.Len(t, resp.Finally, 2)
+	// Flat step indices continue across steps -> finally.
+	assert.Equal(t, 0, resp.Stages[0].Step.Index)
+	assert.Equal(t, 1, resp.Finally[0].Step.Index)
+	assert.Equal(t, 2, resp.Finally[1].Step.Index)
+	assert.Equal(t, "failure()", resp.Finally[1].Step.If)
+	// Secrets referenced only in finally are still collected.
+	assert.Contains(t, resp.SecretsNeeded, "HOOK")
 }
 
 func TestClaimDrainBroadcast(t *testing.T) {

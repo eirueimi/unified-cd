@@ -128,7 +128,6 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 		RunID:          c.ID,
 		JobName:        c.JobName,
 		Params:         c.Params,
-		Stages:         make([]api.ClaimStage, 0, len(spec.Steps)),
 		TimeoutMinutes: spec.TimeoutMinutes,
 		PodTemplate:    spec.PodTemplate,
 	}
@@ -138,13 +137,26 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 	}
 
 	secretsNeeded := map[string]struct{}{}
-	stepIdx := 0 // flat step counter across all stages
+	stepIdx := 0 // flat step counter across steps and finally
 
-	for stageIdx, entry := range spec.Steps {
+	resp.Stages = buildStages(spec.Steps, &stepIdx, secretsNeeded)
+	resp.Finally = buildStages(spec.Finally, &stepIdx, secretsNeeded)
+
+	for name := range secretsNeeded {
+		resp.SecretsNeeded = append(resp.SecretsNeeded, name)
+	}
+	return resp, nil
+}
+
+// buildStages compiles a list of StepEntry into ClaimStages, advancing the
+// shared flat step index and collecting referenced secret names.
+func buildStages(entries []dsl.StepEntry, stepIdx *int, secretsNeeded map[string]struct{}) []api.ClaimStage {
+	stages := make([]api.ClaimStage, 0, len(entries))
+	for stageIdx, entry := range entries {
 		if len(entry.Parallel) > 0 {
 			stage := api.ClaimStage{Parallel: make([]api.ClaimStep, 0, len(entry.Parallel))}
 			for _, st := range entry.Parallel {
-				cs := buildOneClaimStep(stepIdx, stageIdx, dsl.StepEntry{
+				cs := buildOneClaimStep(*stepIdx, stageIdx, dsl.StepEntry{
 					Name: st.Name, If: st.If, Env: st.Env, Run: st.Run,
 					Outputs: st.Outputs, Call: st.Call, Uses: st.Uses, Cache: st.Cache,
 					UploadArtifact: st.UploadArtifact, DownloadArtifact: st.DownloadArtifact,
@@ -156,24 +168,20 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 				for _, v := range st.Env {
 					collectSecretNames(v, secretsNeeded)
 				}
-				stepIdx++
+				*stepIdx++
 			}
-			resp.Stages = append(resp.Stages, stage)
+			stages = append(stages, stage)
 		} else {
-			cs := buildOneClaimStep(stepIdx, stageIdx, entry)
-			resp.Stages = append(resp.Stages, api.ClaimStage{Step: &cs})
+			cs := buildOneClaimStep(*stepIdx, stageIdx, entry)
+			stages = append(stages, api.ClaimStage{Step: &cs})
 			collectSecretNames(entry.Run, secretsNeeded)
 			for _, v := range entry.Env {
 				collectSecretNames(v, secretsNeeded)
 			}
-			stepIdx++
+			*stepIdx++
 		}
 	}
-
-	for name := range secretsNeeded {
-		resp.SecretsNeeded = append(resp.SecretsNeeded, name)
-	}
-	return resp, nil
+	return stages
 }
 
 func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry) api.ClaimStep {

@@ -68,6 +68,7 @@ type ClaimResponse struct {
 	JobName        string            `json:"jobName"`
 	Params         map[string]string `json:"params"`
 	Stages         []ClaimStage      `json:"stages"`
+	Finally        []ClaimStage      `json:"finally,omitempty"`
 	JobOutputs     []string          `json:"jobOutputs"`
 	SecretsNeeded  []string          `json:"secretsNeeded"`
 	// FailFast removed
