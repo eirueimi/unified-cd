@@ -111,7 +111,7 @@ agentId: agent-1
 	if got.MaxConcurrent != 5 {
 		t.Errorf("MaxConcurrent = %d, want 5", got.MaxConcurrent)
 	}
-	if got.PodImage != "golang:1.24-alpine" {
-		t.Errorf("PodImage = %q, want %q", got.PodImage, "golang:1.24-alpine")
+	if got.PodImage != "ghcr.io/eirueimi/unified-cd-runner:v0.0.3" {
+		t.Errorf("PodImage = %q, want %q", got.PodImage, "ghcr.io/eirueimi/unified-cd-runner:v0.0.3")
 	}
 }

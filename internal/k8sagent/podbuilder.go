@@ -85,7 +85,7 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 
 func defaultPodSpec(image string) *corev1.PodSpec {
 	if image == "" {
-		image = "golang:1.24-alpine"
+		image = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3"
 	}
 	return &corev1.PodSpec{
 		Containers: []corev1.Container{
