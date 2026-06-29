@@ -188,18 +188,6 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 | `job` | string | yes |  |
 | `with` | map[string]any | no |  |
 
-### PostStep
-
-PostStep defines cleanup/post-processing to run after a step completes.
-Executed in LIFO order after RunDAG completes.
-
-### UploadArtifactStep
-
-### UsesStep
-
-UsesStep inlines a git-template job's steps directly into the current run.
-Job must be a git:// URI; unlike CallStep, it never references a registered job name.
-
 ### Params
 
 | Field | Type | Required | Description |
