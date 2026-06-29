@@ -178,7 +178,6 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 	}
 }
 
-
 // executeRun executes the stages contained in a ClaimResponse via RunPipeline.
 // Stages run sequentially; parallel groups and foreach steps run concurrently within a stage.
 func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir string) {
@@ -267,181 +266,206 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	var hookStack []postHookEntry
 
 	getData := func() dsl.TemplateData { return sctx.snapshot() }
-	dagErr := RunPipeline(runCtx, c.Stages, getData, func(stepCtx context.Context, step api.ClaimStep) error {
-		// markFailed records a non-continueOnError failure (unless cancelled) and reports
-		// the step as Failed. Used by the cache/artifact branches, which otherwise would
-		// not report a Failed status when their internal helper returns an error.
-		markFailed := func(reportCtx context.Context) {
-			if !step.ContinueOnError && !cancelledByMaster.Load() {
-				anyStepFailed.Store(true)
-			}
-			_ = a.Client.ReportStep(reportCtx, a.ID, api.StepReportRequest{
-				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
-				StepName: step.Name, Status: "Failed", EndedAt: time.Now().UTC(),
-			})
-		}
 
-		// if: evaluate condition against the live run status with implicit success().
-		// Every step is evaluated — including steps with an empty if:, so that a normal
-		// step auto-skips once a prior step has failed. If false, skip and return nil.
-		ifData := sctx.snapshot()
-		ok, err := dsl.EvalCondition(step.If, ifData, statusView(), true)
-		if err != nil {
-			slog.Warn("if: condition eval failed, running step", "step", step.Name, "error", err)
-		}
-		if !ok {
-			retryUntilSuccess(ctx, func(callCtx context.Context) error {
-				return a.Client.ReportStep(callCtx, a.ID, api.StepReportRequest{
-					RunID:      c.RunID,
-					StepIndex:  step.Index,
-					StageIndex: step.StageIndex,
-					StepName:   step.Name,
-					Status:     "Skipped",
-				})
-			})
-			return nil
-		}
-		// Apply step-level timeout to the context if one is configured
-		if step.TimeoutMinutes > 0 {
-			var stepCancel context.CancelFunc
-			stepCtx, stepCancel = context.WithTimeout(stepCtx, time.Duration(step.TimeoutMinutes*float64(time.Minute)))
-			defer stepCancel()
-		}
-
-		// cache steps: restore immediately, defer save to postHooks
-		if step.Cache != nil {
-			if err := a.executeCacheStep(stepCtx, step, c.RunID, sctx, &postHooks); err != nil {
-				slog.Error("cache step failed", "step", step.Name, "error", err)
-				markFailed(context.WithoutCancel(stepCtx))
-			}
-			return nil
-		}
-		if step.UploadArtifact != nil {
-			if err := a.executeUploadArtifact(stepCtx, step, c.RunID); err != nil {
-				slog.Error("upload artifact failed", "step", step.Name, "error", err)
-				markFailed(context.WithoutCancel(stepCtx))
-			}
-			return nil
-		}
-		if step.DownloadArtifact != nil {
-			if err := a.executeDownloadArtifact(stepCtx, step, c.RunID); err != nil {
-				slog.Error("download artifact failed", "step", step.Name, "error", err)
-				markFailed(context.WithoutCancel(stepCtx))
-			}
-			return nil
-		}
-
-		started := time.Now().UTC()
-		_ = a.Client.ReportStep(stepCtx, a.ID, api.StepReportRequest{
-			RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
-		})
-
-		status := "Succeeded"
-		exitCode := 0
-		tplData := sctx.snapshot()
-		if step.ForeachKey != "" {
-			tplData.Foreach = map[string]string{step.ForeachKey: step.ForeachValue}
-		}
-
-		if step.Call != nil {
-			childOutputs, callErr := a.executeCallStep(stepCtx, step, tplData)
-			if callErr != nil {
-				slog.Error("call step failed", "step", step.Name, "error", callErr)
-				status = "Failed"
-			} else {
-				sctx.setStep(step.Name, dsl.StepData{Outputs: childOutputs})
-				if len(childOutputs) > 0 {
-					_ = a.Client.SetStepOutputs(stepCtx, a.ID, c.RunID, step.Index, childOutputs)
+	// makeStepRunner builds the per-step execution function. It is reused for the
+	// main DAG and for the finally block, parametrized by:
+	//   statusFn        — supplies the RunStatusView used to evaluate if:
+	//                     (live status for the main DAG, frozen status for finally)
+	//   implicitSuccess — true for the main DAG (auto-skip after a failure),
+	//                     false for finally (no-if steps always run)
+	//   failedFlag      — set when a non-continueOnError step fails
+	//   suppressOnCancel — true for the main DAG (cancellation does not count as a
+	//                      failure), false for finally (a genuine finally failure
+	//                      counts even when the run was cancelled)
+	makeStepRunner := func(statusFn func() dsl.RunStatusView, implicitSuccess bool, failedFlag *atomic.Bool, suppressOnCancel bool) func(context.Context, api.ClaimStep) error {
+		return func(stepCtx context.Context, step api.ClaimStep) error {
+			// recordFailure records a non-continueOnError failure into failedFlag,
+			// honouring suppressOnCancel (cancellation does not mask finally failures).
+			recordFailure := func() {
+				if step.ContinueOnError {
+					return
 				}
-			}
-		} else {
-			expandedRun, tplErr := dsl.ExpandTemplate(step.Run, tplData)
-			if tplErr != nil {
-				slog.Error("template expansion failed", "step", step.Name, "error", tplErr)
-				expandedRun = step.Run
+				if suppressOnCancel && cancelledByMaster.Load() {
+					return
+				}
+				failedFlag.Store(true)
 			}
 
-			// UNIFIED_AGENT_OS allows job authors to determine the running OS from within a step.
-			extraEnv := []string{"UNIFIED_AGENT_OS=" + runtime.GOOS}
-			for k, v := range step.Env {
-				expanded, _ := dsl.ExpandTemplate(v, tplData)
-				extraEnv = append(extraEnv, k+"="+expanded)
-			}
-
-			stderrPusher := NewLogPusher(a.Client, a.ID, c.RunID, step.Index, "stderr")
-			stderrPusher.SetMasker(masker)
-			capturedStdout, ec, runErr := RunStepCapture(stepCtx, expandedRun, stderrPusher, extraEnv, workDir)
-			exitCode = ec
-			stderrPusher.Flush(stepCtx)
-
-			for _, line := range splitLines(capturedStdout) {
-				maskedLine := masker.Mask(line)
-				_ = a.Client.AppendLog(stepCtx, a.ID, api.LogAppendRequest{
-					RunID:     c.RunID,
-					StepIndex: step.Index,
-					Stream:    "stdout",
-					Timestamp: time.Now().UTC(),
-					Line:      maskedLine,
+			// markFailed records a failure (via recordFailure) and reports the step as
+			// Failed. Used by the cache/artifact branches, which otherwise would not
+			// report a Failed status when their internal helper returns an error.
+			markFailed := func(reportCtx context.Context) {
+				recordFailure()
+				_ = a.Client.ReportStep(reportCtx, a.ID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
+					StepName: step.Name, Status: "Failed", EndedAt: time.Now().UTC(),
 				})
 			}
 
-			if runErr != nil || ec != 0 {
-				status = "Failed"
-			} else {
-				capturedOutputs := map[string]string{}
-				outputCtx := dsl.TemplateData{
-					Params:  tplData.Params,
-					Steps:   tplData.Steps,
-					Stdout:  capturedStdout,
-					Secrets: tplData.Secrets,
+			// if: evaluate condition against the supplied run status. For the main DAG
+			// every step is evaluated — including steps with an empty if: — so that a
+			// normal step auto-skips once a prior step has failed (implicitSuccess). For
+			// finally the status is frozen and implicitSuccess is false. If false, skip.
+			ifData := sctx.snapshot()
+			ok, err := dsl.EvalCondition(step.If, ifData, statusFn(), implicitSuccess)
+			if err != nil {
+				slog.Warn("if: condition eval failed, running step", "step", step.Name, "error", err)
+			}
+			if !ok {
+				retryUntilSuccess(ctx, func(callCtx context.Context) error {
+					return a.Client.ReportStep(callCtx, a.ID, api.StepReportRequest{
+						RunID:      c.RunID,
+						StepIndex:  step.Index,
+						StageIndex: step.StageIndex,
+						StepName:   step.Name,
+						Status:     "Skipped",
+					})
+				})
+				return nil
+			}
+			// Apply step-level timeout to the context if one is configured
+			if step.TimeoutMinutes > 0 {
+				var stepCancel context.CancelFunc
+				stepCtx, stepCancel = context.WithTimeout(stepCtx, time.Duration(step.TimeoutMinutes*float64(time.Minute)))
+				defer stepCancel()
+			}
+
+			// cache steps: restore immediately, defer save to postHooks
+			if step.Cache != nil {
+				if err := a.executeCacheStep(stepCtx, step, c.RunID, sctx, &postHooks); err != nil {
+					slog.Error("cache step failed", "step", step.Name, "error", err)
+					markFailed(context.WithoutCancel(stepCtx))
 				}
-				for outKey, outTpl := range step.Outputs {
-					val, err := dsl.ExpandTemplate(outTpl, outputCtx)
-					if err != nil {
-						slog.Warn("output template evaluation failed", "step", step.Name, "key", outKey, "error", err)
-						continue
+				return nil
+			}
+			if step.UploadArtifact != nil {
+				if err := a.executeUploadArtifact(stepCtx, step, c.RunID); err != nil {
+					slog.Error("upload artifact failed", "step", step.Name, "error", err)
+					markFailed(context.WithoutCancel(stepCtx))
+				}
+				return nil
+			}
+			if step.DownloadArtifact != nil {
+				if err := a.executeDownloadArtifact(stepCtx, step, c.RunID); err != nil {
+					slog.Error("download artifact failed", "step", step.Name, "error", err)
+					markFailed(context.WithoutCancel(stepCtx))
+				}
+				return nil
+			}
+
+			started := time.Now().UTC()
+			_ = a.Client.ReportStep(stepCtx, a.ID, api.StepReportRequest{
+				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+			})
+
+			status := "Succeeded"
+			exitCode := 0
+			tplData := sctx.snapshot()
+			if step.ForeachKey != "" {
+				tplData.Foreach = map[string]string{step.ForeachKey: step.ForeachValue}
+			}
+
+			if step.Call != nil {
+				childOutputs, callErr := a.executeCallStep(stepCtx, step, tplData)
+				if callErr != nil {
+					slog.Error("call step failed", "step", step.Name, "error", callErr)
+					status = "Failed"
+				} else {
+					sctx.setStep(step.Name, dsl.StepData{Outputs: childOutputs})
+					if len(childOutputs) > 0 {
+						_ = a.Client.SetStepOutputs(stepCtx, a.ID, c.RunID, step.Index, childOutputs)
 					}
-					capturedOutputs[outKey] = val
 				}
-				if len(capturedOutputs) > 0 {
-					sctx.setStep(step.Name, dsl.StepData{Outputs: capturedOutputs})
-					_ = a.Client.SetStepOutputs(stepCtx, a.ID, c.RunID, step.Index, capturedOutputs)
+			} else {
+				expandedRun, tplErr := dsl.ExpandTemplate(step.Run, tplData)
+				if tplErr != nil {
+					slog.Error("template expansion failed", "step", step.Name, "error", tplErr)
+					expandedRun = step.Run
+				}
+
+				// UNIFIED_AGENT_OS allows job authors to determine the running OS from within a step.
+				extraEnv := []string{"UNIFIED_AGENT_OS=" + runtime.GOOS}
+				for k, v := range step.Env {
+					expanded, _ := dsl.ExpandTemplate(v, tplData)
+					extraEnv = append(extraEnv, k+"="+expanded)
+				}
+
+				stderrPusher := NewLogPusher(a.Client, a.ID, c.RunID, step.Index, "stderr")
+				stderrPusher.SetMasker(masker)
+				capturedStdout, ec, runErr := RunStepCapture(stepCtx, expandedRun, stderrPusher, extraEnv, workDir)
+				exitCode = ec
+				stderrPusher.Flush(stepCtx)
+
+				for _, line := range splitLines(capturedStdout) {
+					maskedLine := masker.Mask(line)
+					_ = a.Client.AppendLog(stepCtx, a.ID, api.LogAppendRequest{
+						RunID:     c.RunID,
+						StepIndex: step.Index,
+						Stream:    "stdout",
+						Timestamp: time.Now().UTC(),
+						Line:      maskedLine,
+					})
+				}
+
+				if runErr != nil || ec != 0 {
+					status = "Failed"
+				} else {
+					capturedOutputs := map[string]string{}
+					outputCtx := dsl.TemplateData{
+						Params:  tplData.Params,
+						Steps:   tplData.Steps,
+						Stdout:  capturedStdout,
+						Secrets: tplData.Secrets,
+					}
+					for outKey, outTpl := range step.Outputs {
+						val, err := dsl.ExpandTemplate(outTpl, outputCtx)
+						if err != nil {
+							slog.Warn("output template evaluation failed", "step", step.Name, "key", outKey, "error", err)
+							continue
+						}
+						capturedOutputs[outKey] = val
+					}
+					if len(capturedOutputs) > 0 {
+						sctx.setStep(step.Name, dsl.StepData{Outputs: capturedOutputs})
+						_ = a.Client.SetStepOutputs(stepCtx, a.ID, c.RunID, step.Index, capturedOutputs)
+					}
 				}
 			}
-		}
 
-		if status == "Succeeded" && step.Post != nil {
-			hookStack = append(hookStack, postHookEntry{
-				stepName: step.Name,
-				post:     *step.Post,
+			if status == "Succeeded" && step.Post != nil {
+				hookStack = append(hookStack, postHookEntry{
+					stepName: step.Name,
+					post:     *step.Post,
+				})
+			}
+
+			ended := time.Now().UTC()
+			// Use a non-cancelling context for the retry so that ReportStep is reliably called
+			// even when stepCtx has been cancelled due to timeout or other reasons.
+			reportCtx := context.WithoutCancel(stepCtx)
+			reportReq := api.StepReportRequest{
+				RunID:      c.RunID,
+				StepIndex:  step.Index,
+				StageIndex: step.StageIndex,
+				StepName:   step.Name,
+				Status:     status,
+				ExitCode:   exitCode,
+				StartedAt:  started,
+				EndedAt:    ended,
+			}
+			retryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+				return a.Client.ReportStep(callCtx, a.ID, reportReq)
 			})
-		}
-
-		ended := time.Now().UTC()
-		// Use a non-cancelling context for the retry so that ReportStep is reliably called
-		// even when stepCtx has been cancelled due to timeout or other reasons.
-		reportCtx := context.WithoutCancel(stepCtx)
-		reportReq := api.StepReportRequest{
-			RunID:      c.RunID,
-			StepIndex:  step.Index,
-			StageIndex: step.StageIndex,
-			StepName:   step.Name,
-			Status:     status,
-			ExitCode:   exitCode,
-			StartedAt:  started,
-			EndedAt:    ended,
-		}
-		retryUntilSuccess(reportCtx, func(callCtx context.Context) error {
-			return a.Client.ReportStep(callCtx, a.ID, reportReq)
-		})
-		if status == "Failed" {
-			if !step.ContinueOnError && !cancelledByMaster.Load() {
-				anyStepFailed.Store(true)
+			if status == "Failed" {
+				recordFailure()
+				return nil
 			}
 			return nil
 		}
-		return nil
-	})
+	}
+
+	mainRunner := makeStepRunner(statusView, true, &anyStepFailed, true)
+	dagErr := RunPipeline(runCtx, c.Stages, getData, mainRunner)
 
 	// post-hooks run regardless of DAG success/failure (cache save should always attempt).
 	// Use WithoutCancel so a cancelled parent context doesn't skip cache saves.
@@ -461,12 +485,30 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		}
 	}
 
+	// Freeze the main-DAG status for finally if: evaluation.
 	cancelled := cancelledByMaster.Load()
 	mainFailed := anyStepFailed.Load() || (dagErr != nil && !cancelled)
 
+	// finally runs after the main DAG on success, failure, AND cancellation. Its if:
+	// conditions are evaluated against a frozen main status (so finally steps never
+	// auto-skip one another) with implicitSuccess=false (a no-if finally step always
+	// runs). A finally step failure flips the run to Failed even on cancellation.
+	var finallyFailed atomic.Bool
+	if len(c.Finally) > 0 {
+		frozen := dsl.RunStatusView{Failed: mainFailed, Cancelled: cancelled}
+		finallyStatus := func() dsl.RunStatusView { return frozen }
+		finallyRunner := makeStepRunner(finallyStatus, false, &finallyFailed, false)
+		// Use a non-cancelling context so finally runs even when the run was cancelled.
+		finallyCtx := context.WithoutCancel(ctx)
+		if err := RunPipeline(finallyCtx, c.Finally, getData, finallyRunner); err != nil {
+			slog.Warn("finally: structural error", "runId", c.RunID, "error", err)
+			finallyFailed.Store(true)
+		}
+	}
+
 	var overallStatus api.RunStatus
 	switch {
-	case mainFailed:
+	case mainFailed || finallyFailed.Load():
 		overallStatus = api.RunFailed
 	case cancelled:
 		overallStatus = api.RunCancelled

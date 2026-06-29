@@ -115,3 +115,33 @@ func TestExecuteRun_AlwaysStepRunsAfterFailure(t *testing.T) {
 	assert.Equal(t, "Succeeded", statuses["cleanup"])
 	assert.Equal(t, "Failed", runStatus)
 }
+
+func TestExecuteRun_FinallyRunsOnFailure(t *testing.T) {
+	stages := []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "exit 1"}},
+	}
+	finally := []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 1, StageIndex: 0, Name: "notify", Run: "echo notify"}},
+		{Step: &api.ClaimStep{Index: 2, StageIndex: 1, Name: "rollback", If: "failure()", Run: "echo rb"}},
+		{Step: &api.ClaimStep{Index: 3, StageIndex: 2, Name: "only-success", If: "success()", Run: "echo no"}},
+	}
+	statuses, runStatus := runJobStages(t, stages, finally)
+	assert.Equal(t, "Succeeded", statuses["notify"], "no-if finally step always runs")
+	assert.Equal(t, "Succeeded", statuses["rollback"], "failure() runs on failure")
+	assert.Equal(t, "Skipped", statuses["only-success"], "success() skips on failure")
+	assert.Equal(t, "Failed", runStatus)
+}
+
+func TestExecuteRun_FinallyStepFailureMarksRunFailed(t *testing.T) {
+	stages := []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "ok", Run: "echo ok"}},
+	}
+	finally := []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 1, StageIndex: 0, Name: "cleanup-boom", Run: "exit 1"}},
+		{Step: &api.ClaimStep{Index: 2, StageIndex: 1, Name: "cleanup-after", Run: "echo still"}},
+	}
+	statuses, runStatus := runJobStages(t, stages, finally)
+	assert.Equal(t, "Failed", statuses["cleanup-boom"])
+	assert.Equal(t, "Succeeded", statuses["cleanup-after"], "finally runs all steps to completion")
+	assert.Equal(t, "Failed", runStatus, "a finally step failure fails the run")
+}
