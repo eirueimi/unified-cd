@@ -88,46 +88,13 @@ func (j *Job) Validate() error {
 		return fmt.Errorf("spec.steps must contain at least one step")
 	}
 
-	// Collect step names for duplicate detection (across all entries including parallel blocks).
+	// Collect step names for duplicate detection across steps and finally.
 	nameSet := map[string]bool{}
-
-	for i, entry := range j.Spec.Steps {
-		if len(entry.Parallel) > 0 {
-			// Parallel block: name/run/call fields must be absent.
-			if entry.Name != "" || entry.Run != "" || entry.Call != nil || entry.Uses != nil {
-				return fmt.Errorf("spec.steps[%d]: parallel: block must not have name, run, call, or uses fields", i)
-			}
-			for j2, st := range entry.Parallel {
-				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Foreach, fmt.Sprintf("spec.steps[%d].parallel[%d]", i, j2), nameSet); err != nil {
-					return err
-				}
-				if err := validateCacheStep(st.Name, st.Cache); err != nil {
-					return err
-				}
-				if err := validateUsesStep(st.Name, st.Uses, st.Call); err != nil {
-					return err
-				}
-				if st.Post != nil && st.Post.Run == "" {
-					return fmt.Errorf("step %q: post.run is required when post is specified", st.Name)
-				}
-			}
-		} else {
-			if entry.Name == "" {
-				return fmt.Errorf("spec.steps[%d]: name is required (or use parallel: for a parallel block)", i)
-			}
-			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Foreach, fmt.Sprintf("spec.steps[%d]", i), nameSet); err != nil {
-				return err
-			}
-			if err := validateCacheStep(entry.Name, entry.Cache); err != nil {
-				return err
-			}
-			if err := validateUsesStep(entry.Name, entry.Uses, entry.Call); err != nil {
-				return err
-			}
-			if entry.Post != nil && entry.Post.Run == "" {
-				return fmt.Errorf("step %q: post.run is required when post is specified", entry.Name)
-			}
-		}
+	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet); err != nil {
+		return err
+	}
+	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet); err != nil {
+		return err
 	}
 
 	for i, p := range j.Spec.Params.Inputs {
@@ -175,6 +142,50 @@ func (j *Job) Validate() error {
 			}
 			if hasLiteral && hasExpr {
 				return fmt.Errorf("spec.concurrency.orLocks[%d].in: cannot set both a list and an expression", i)
+			}
+		}
+	}
+	return nil
+}
+
+// validateStepEntries validates a list of StepEntry (steps or finally),
+// accumulating step names into nameSet for duplicate detection across the
+// whole job. pathPrefix is "spec.steps" or "spec.finally".
+func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[string]bool) error {
+	for i, entry := range entries {
+		if len(entry.Parallel) > 0 {
+			if entry.Name != "" || entry.Run != "" || entry.Call != nil || entry.Uses != nil {
+				return fmt.Errorf("%s[%d]: parallel: block must not have name, run, call, or uses fields", pathPrefix, i)
+			}
+			for j2, st := range entry.Parallel {
+				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Foreach, fmt.Sprintf("%s[%d].parallel[%d]", pathPrefix, i, j2), nameSet); err != nil {
+					return err
+				}
+				if err := validateCacheStep(st.Name, st.Cache); err != nil {
+					return err
+				}
+				if err := validateUsesStep(st.Name, st.Uses, st.Call); err != nil {
+					return err
+				}
+				if st.Post != nil && st.Post.Run == "" {
+					return fmt.Errorf("step %q: post.run is required when post is specified", st.Name)
+				}
+			}
+		} else {
+			if entry.Name == "" {
+				return fmt.Errorf("%s[%d]: name is required (or use parallel: for a parallel block)", pathPrefix, i)
+			}
+			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Foreach, fmt.Sprintf("%s[%d]", pathPrefix, i), nameSet); err != nil {
+				return err
+			}
+			if err := validateCacheStep(entry.Name, entry.Cache); err != nil {
+				return err
+			}
+			if err := validateUsesStep(entry.Name, entry.Uses, entry.Call); err != nil {
+				return err
+			}
+			if entry.Post != nil && entry.Post.Run == "" {
+				return fmt.Errorf("step %q: post.run is required when post is specified", entry.Name)
 			}
 		}
 	}
