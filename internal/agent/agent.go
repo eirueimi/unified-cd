@@ -200,6 +200,16 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}
 
 	var cancelledByMaster atomic.Bool
+	var anyStepFailed atomic.Bool // a non-continueOnError step failed (used for if: status)
+
+	statusView := func() dsl.RunStatusView {
+		cancelled := cancelledByMaster.Load()
+		return dsl.RunStatusView{
+			Failed:    anyStepFailed.Load() && !cancelled,
+			Cancelled: cancelled,
+		}
+	}
+
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 
@@ -258,23 +268,38 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 
 	getData := func() dsl.TemplateData { return sctx.snapshot() }
 	dagErr := RunPipeline(runCtx, c.Stages, getData, func(stepCtx context.Context, step api.ClaimStep) error {
-		// if: evaluate condition — if false, skip and return nil to RunPipeline
-		if step.If != "" {
-			ifData := sctx.snapshot()
-			ok, err := dsl.EvalCondition(step.If, ifData, dsl.RunStatusView{}, true)
-			if err != nil {
-				slog.Warn("if: condition eval failed, running step", "step", step.Name, "error", err)
+		// markFailed records a non-continueOnError failure (unless cancelled) and reports
+		// the step as Failed. Used by the cache/artifact branches, which otherwise would
+		// not report a Failed status when their internal helper returns an error.
+		markFailed := func(reportCtx context.Context) {
+			if !step.ContinueOnError && !cancelledByMaster.Load() {
+				anyStepFailed.Store(true)
 			}
-			if !ok {
-				retryUntilSuccess(ctx, func(callCtx context.Context) error {
-					return a.Client.ReportStep(callCtx, a.ID, api.StepReportRequest{
-						RunID:     c.RunID,
-						StepIndex: step.Index,
-						Status:    "Skipped",
-					})
+			_ = a.Client.ReportStep(reportCtx, a.ID, api.StepReportRequest{
+				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
+				StepName: step.Name, Status: "Failed", EndedAt: time.Now().UTC(),
+			})
+		}
+
+		// if: evaluate condition against the live run status with implicit success().
+		// Every step is evaluated — including steps with an empty if:, so that a normal
+		// step auto-skips once a prior step has failed. If false, skip and return nil.
+		ifData := sctx.snapshot()
+		ok, err := dsl.EvalCondition(step.If, ifData, statusView(), true)
+		if err != nil {
+			slog.Warn("if: condition eval failed, running step", "step", step.Name, "error", err)
+		}
+		if !ok {
+			retryUntilSuccess(ctx, func(callCtx context.Context) error {
+				return a.Client.ReportStep(callCtx, a.ID, api.StepReportRequest{
+					RunID:      c.RunID,
+					StepIndex:  step.Index,
+					StageIndex: step.StageIndex,
+					StepName:   step.Name,
+					Status:     "Skipped",
 				})
-				return nil
-			}
+			})
+			return nil
 		}
 		// Apply step-level timeout to the context if one is configured
 		if step.TimeoutMinutes > 0 {
@@ -285,13 +310,25 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 
 		// cache steps: restore immediately, defer save to postHooks
 		if step.Cache != nil {
-			return a.executeCacheStep(stepCtx, step, c.RunID, sctx, &postHooks)
+			if err := a.executeCacheStep(stepCtx, step, c.RunID, sctx, &postHooks); err != nil {
+				slog.Error("cache step failed", "step", step.Name, "error", err)
+				markFailed(context.WithoutCancel(stepCtx))
+			}
+			return nil
 		}
 		if step.UploadArtifact != nil {
-			return a.executeUploadArtifact(stepCtx, step, c.RunID)
+			if err := a.executeUploadArtifact(stepCtx, step, c.RunID); err != nil {
+				slog.Error("upload artifact failed", "step", step.Name, "error", err)
+				markFailed(context.WithoutCancel(stepCtx))
+			}
+			return nil
 		}
 		if step.DownloadArtifact != nil {
-			return a.executeDownloadArtifact(stepCtx, step, c.RunID)
+			if err := a.executeDownloadArtifact(stepCtx, step, c.RunID); err != nil {
+				slog.Error("download artifact failed", "step", step.Name, "error", err)
+				markFailed(context.WithoutCancel(stepCtx))
+			}
+			return nil
 		}
 
 		started := time.Now().UTC()
@@ -398,7 +435,10 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			return a.Client.ReportStep(callCtx, a.ID, reportReq)
 		})
 		if status == "Failed" {
-			return fmt.Errorf("step %q failed with exit code %d", step.Name, exitCode)
+			if !step.ContinueOnError && !cancelledByMaster.Load() {
+				anyStepFailed.Store(true)
+			}
+			return nil
 		}
 		return nil
 	})
@@ -421,12 +461,15 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		}
 	}
 
+	cancelled := cancelledByMaster.Load()
+	mainFailed := anyStepFailed.Load() || (dagErr != nil && !cancelled)
+
 	var overallStatus api.RunStatus
 	switch {
-	case cancelledByMaster.Load():
-		overallStatus = api.RunCancelled
-	case dagErr != nil:
+	case mainFailed:
 		overallStatus = api.RunFailed
+	case cancelled:
+		overallStatus = api.RunCancelled
 	default:
 		overallStatus = api.RunSucceeded
 	}
