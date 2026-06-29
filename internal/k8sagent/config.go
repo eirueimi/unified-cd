@@ -33,7 +33,7 @@ type AgentPodTemplate struct {
 func DefaultConfig() Config {
 	return Config{
 		Namespace:     "default",
-		PodImage:      "golang:1.24-alpine",
+		PodImage:      "ghcr.io/eirueimi/unified-cd-runner:v0.0.3",
 		MaxConcurrent: 5,
 	}
 }
@@ -99,7 +99,7 @@ func (c *Config) Validate() error {
 		c.Namespace = "default"
 	}
 	if c.PodImage == "" {
-		c.PodImage = "golang:1.24-alpine"
+		c.PodImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3"
 	}
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = 5

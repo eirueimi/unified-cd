@@ -11,7 +11,7 @@ maxConcurrent: 5
 # Omit or set to "" to disable eviction (idle pods live until the agent restarts).
 poolIdleTimeout: ""
 # podImage: fallback image when a Job does not specify a podTemplate
-podImage: golang:1.24-alpine
+podImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3
 
 podTemplates:
   # template name: referenced by podTemplate.name in Job YAML
