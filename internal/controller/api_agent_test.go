@@ -349,6 +349,19 @@ func TestBuildClaimResponse_Finally(t *testing.T) {
 	assert.Contains(t, resp.SecretsNeeded, "HOOK")
 }
 
+func TestBuildClaimResponse_ApprovalDefaultsTimeout(t *testing.T) {
+	spec := dsl.Spec{Steps: []dsl.StepEntry{
+		{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok?"}}, // no timeout
+	}}
+	raw, _ := json.Marshal(spec)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: raw})
+	require.NoError(t, err)
+	require.Len(t, resp.Stages, 1)
+	require.NotNil(t, resp.Stages[0].Step.Approval)
+	assert.Equal(t, "ok?", resp.Stages[0].Step.Approval.Message)
+	assert.Equal(t, 60.0, resp.Stages[0].Step.Approval.TimeoutMinutes, "default timeout applied")
+}
+
 func TestClaimDrainBroadcast(t *testing.T) {
 	s, _ := newTestServer(t)
 

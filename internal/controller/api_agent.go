@@ -224,6 +224,13 @@ func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry) api.ClaimStep
 			},
 		}
 	}
+	if entry.Approval != nil {
+		timeout := entry.Approval.TimeoutMinutes
+		if timeout == 0 {
+			timeout = 60
+		}
+		cs.Approval = &api.ClaimApproval{Message: entry.Approval.Message, TimeoutMinutes: timeout}
+	}
 	return cs
 }
 
