@@ -242,6 +242,30 @@ func TestAPI_DeleteRun_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+func TestTriggerRun_RecordsPrincipal(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	// Create a PAT named "alice" with a known plain token.
+	plain := "test-alice-token"
+	_, err := pg.CreatePAT(t.Context(), "alice", HashToken(plain), nil)
+	require.NoError(t, err)
+
+	// Create a job to trigger.
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1",
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "j"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+plain)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var run api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &run))
+	assert.Equal(t, "alice", run.TriggeredBy)
+}
+
 func TestAPI_ListActiveRuns(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{}`))
