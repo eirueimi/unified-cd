@@ -302,6 +302,22 @@ type GitCredentialMeta struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// ---- approvals ----
+
+// RunApproval represents a manual approval gate for a run step.
+type RunApproval struct {
+	RunID     string     `json:"runId"`
+	StepIndex int        `json:"stepIndex"`
+	StepName  string     `json:"stepName"`
+	Message   string     `json:"message"`
+	Status    string     `json:"status"` // Pending | Approved | Rejected | TimedOut
+	DecidedBy string     `json:"decidedBy,omitempty"`
+	Comment   string     `json:"comment,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+	TimeoutAt *time.Time `json:"timeoutAt,omitempty"`
+	DecidedAt *time.Time `json:"decidedAt,omitempty"`
+}
+
 // ---- appsource ----
 
 // ApplyAppSourceRequest is the request for registering or updating an AppSource YAML.

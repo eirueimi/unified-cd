@@ -220,6 +220,18 @@ type Store interface {
 	DeleteSchedule(ctx context.Context, name string) error
 	UpdateScheduleLastFiredAt(ctx context.Context, name string, firedAt time.Time) error
 
+	// Approvals
+	// CreatePendingApproval inserts a new approval gate in Pending status.
+	// Idempotent: if a row with the same (run_id, step_index) already exists, it is left untouched.
+	CreatePendingApproval(ctx context.Context, runID string, stepIndex int, stepName, message string, timeoutAt *time.Time) error
+	// DecideApproval conditionally updates an approval from Pending to the given status (first-writer-wins).
+	// Returns true if a row was changed, false if the gate was already decided.
+	DecideApproval(ctx context.Context, runID string, stepIndex int, status, decidedBy, comment string) (bool, error)
+	// GetApproval returns the approval gate for the given run and step.
+	GetApproval(ctx context.Context, runID string, stepIndex int) (api.RunApproval, error)
+	// ListRunApprovals returns all approval gates for the given run, ordered by step_index.
+	ListRunApprovals(ctx context.Context, runID string) ([]api.RunApproval, error)
+
 	// ControllerSettings
 	// EnsureControllerKey returns the persisted controllerKey (hex string for the KEK).
 	// If none exists yet, it stores candidateHex and returns it (safe against simultaneous first-startup from multiple replicas).

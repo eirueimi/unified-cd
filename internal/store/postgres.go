@@ -1538,3 +1538,77 @@ func (p *Postgres) ResetAppSourceCommit(ctx context.Context, name string) error 
 		name)
 	return err
 }
+
+// ---- Approvals ----
+
+func (p *Postgres) CreatePendingApproval(ctx context.Context, runID string, stepIndex int, stepName, message string, timeoutAt *time.Time) error {
+	const q = `
+		INSERT INTO run_approvals(run_id, step_index, step_name, message, status, timeout_at)
+		VALUES ($1, $2, $3, $4, 'Pending', $5)
+		ON CONFLICT (run_id, step_index) DO NOTHING;
+	`
+	_, err := p.pool.Exec(ctx, q, runID, stepIndex, stepName, message, timeoutAt)
+	return err
+}
+
+func (p *Postgres) DecideApproval(ctx context.Context, runID string, stepIndex int, status, decidedBy, comment string) (bool, error) {
+	const q = `
+		UPDATE run_approvals
+		SET status = $3, decided_by = $4, comment = $5, decided_at = now()
+		WHERE run_id = $1 AND step_index = $2 AND status = 'Pending';
+	`
+	tag, err := p.pool.Exec(ctx, q, runID, stepIndex, status, decidedBy, comment)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (p *Postgres) GetApproval(ctx context.Context, runID string, stepIndex int) (api.RunApproval, error) {
+	const q = `
+		SELECT run_id, step_index, step_name, message, status, decided_by, comment, created_at, timeout_at, decided_at
+		FROM run_approvals WHERE run_id = $1 AND step_index = $2;
+	`
+	var a api.RunApproval
+	var decidedBy, comment *string
+	err := p.pool.QueryRow(ctx, q, runID, stepIndex).Scan(
+		&a.RunID, &a.StepIndex, &a.StepName, &a.Message, &a.Status, &decidedBy, &comment, &a.CreatedAt, &a.TimeoutAt, &a.DecidedAt)
+	if err != nil {
+		return api.RunApproval{}, err
+	}
+	if decidedBy != nil {
+		a.DecidedBy = *decidedBy
+	}
+	if comment != nil {
+		a.Comment = *comment
+	}
+	return a, nil
+}
+
+func (p *Postgres) ListRunApprovals(ctx context.Context, runID string) ([]api.RunApproval, error) {
+	const q = `
+		SELECT run_id, step_index, step_name, message, status, decided_by, comment, created_at, timeout_at, decided_at
+		FROM run_approvals WHERE run_id = $1 ORDER BY step_index;
+	`
+	rows, err := p.pool.Query(ctx, q, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []api.RunApproval
+	for rows.Next() {
+		var a api.RunApproval
+		var decidedBy, comment *string
+		if err := rows.Scan(&a.RunID, &a.StepIndex, &a.StepName, &a.Message, &a.Status, &decidedBy, &comment, &a.CreatedAt, &a.TimeoutAt, &a.DecidedAt); err != nil {
+			return nil, err
+		}
+		if decidedBy != nil {
+			a.DecidedBy = *decidedBy
+		}
+		if comment != nil {
+			a.Comment = *comment
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
