@@ -66,6 +66,19 @@
       },
       "type": "object"
     },
+    "ApprovalStep": {
+      "additionalProperties": false,
+      "description": "ApprovalStep pauses the run until an authenticated user approves or rejects.\nTimeoutMinutes defaults to 60 (applied at compile time) when zero.",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "timeoutMinutes": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
     "CacheStep": {
       "additionalProperties": false,
       "properties": {
@@ -527,6 +540,9 @@
       "additionalProperties": false,
       "description": "Step is a concrete step. Used inside parallel: blocks and as the body of a StepEntry.",
       "properties": {
+        "approval": {
+          "$ref": "#/definitions/ApprovalStep"
+        },
         "cache": {
           "$ref": "#/definitions/CacheStep"
         },
@@ -588,6 +604,9 @@
       "additionalProperties": false,
       "description": "StepEntry is either a concrete step (Name is set) or a parallel group (Parallel is set).\nThe two forms are mutually exclusive; Validate enforces this.",
       "properties": {
+        "approval": {
+          "$ref": "#/definitions/ApprovalStep"
+        },
         "cache": {
           "$ref": "#/definitions/CacheStep"
         },

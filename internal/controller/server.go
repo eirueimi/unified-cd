@@ -205,6 +205,8 @@ func (s *Server) routes() {
 		r.Get("/runs/{id}/steps", s.handleGetRunSteps)
 		r.Get("/runs/{id}/outputs", s.handleGetRunOutputs)
 		r.Get("/runs/{id}/logs/archive", s.handleLogsArchive)
+		r.Get("/runs/{runID}/approvals", s.handleListRunApprovals)
+		r.Post("/runs/{runID}/approvals/{stepIndex}", s.handleDecideApproval)
 		r.Route("/secrets", func(r chi.Router) {
 			r.Post("/", s.handleSetSecret)
 			r.Get("/", s.handleListSecrets)
@@ -301,6 +303,8 @@ func (s *Server) routes() {
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/outputs", s.handleAgentSetRunOutputs)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", s.handleAgentLogBulk)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/secrets/fetch", s.handleAgentSecretsFetch)
+		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/approvals", s.handleAgentCreateApproval)
+		r.With(BearerAuth(s.cfg.AgentToken)).Get("/{agentId}/runs/{runId}/approvals/{stepIndex}", s.handleAgentGetApproval)
 	})
 
 	s.r.Route("/api/v1/runs/{runID}/artifacts", func(r chi.Router) {

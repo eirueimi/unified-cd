@@ -86,6 +86,7 @@ type StepEntry struct {
 	Cache            *CacheStep            `yaml:"cache,omitempty"`
 	UploadArtifact   *UploadArtifactStep   `yaml:"uploadArtifact,omitempty"`
 	DownloadArtifact *DownloadArtifactStep `yaml:"downloadArtifact,omitempty"`
+	Approval         *ApprovalStep         `yaml:"approval,omitempty"`
 	Post             *PostStep             `yaml:"post,omitempty"`
 	ContinueOnError  bool                  `yaml:"continueOnError,omitempty"`
 	Container        string                `yaml:"container,omitempty"`
@@ -108,6 +109,7 @@ type Step struct {
 	Cache            *CacheStep            `yaml:"cache,omitempty"`
 	UploadArtifact   *UploadArtifactStep   `yaml:"uploadArtifact,omitempty"`
 	DownloadArtifact *DownloadArtifactStep `yaml:"downloadArtifact,omitempty"`
+	Approval         *ApprovalStep         `yaml:"approval,omitempty"`
 	Post             *PostStep             `yaml:"post,omitempty"`
 	ContinueOnError  bool                  `yaml:"continueOnError,omitempty"`
 	Container        string                `yaml:"container,omitempty"`
@@ -157,6 +159,13 @@ type UploadArtifactStep struct {
 type DownloadArtifactStep struct {
 	Name    string `yaml:"name"`
 	DestDir string `yaml:"destDir,omitempty"` // defaults to the current directory if omitted
+}
+
+// ApprovalStep pauses the run until an authenticated user approves or rejects.
+// TimeoutMinutes defaults to 60 (applied at compile time) when zero.
+type ApprovalStep struct {
+	Message        string  `yaml:"message,omitempty"`
+	TimeoutMinutes float64 `yaml:"timeoutMinutes,omitempty"`
 }
 
 // PostStep defines cleanup/post-processing to run after a step completes.

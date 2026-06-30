@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -169,6 +170,19 @@ func (c *Client) AppendLogBulk(ctx context.Context, agentID, runID string, stepI
 	path := fmt.Sprintf("/api/v1/agents/%s/runs/%s/steps/%d/logs/bulk", agentID, runID, stepIndex)
 	_, err := c.do(ctx, http.MethodPost, path, lines, nil)
 	return err
+}
+
+// CreateApproval creates a pending approval record for an approval gate step.
+func (c *Client) CreateApproval(ctx context.Context, agentID, runID string, req api.CreateApprovalRequest) error {
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/runs/"+runID+"/approvals", req, nil)
+	return err
+}
+
+// GetApproval retrieves the approval record for the given step index.
+func (c *Client) GetApproval(ctx context.Context, agentID, runID string, stepIndex int) (api.RunApproval, error) {
+	var a api.RunApproval
+	_, err := c.do(ctx, http.MethodGet, "/api/v1/agents/"+agentID+"/runs/"+runID+"/approvals/"+strconv.Itoa(stepIndex), nil, &a)
+	return a, err
 }
 
 // FetchSecrets retrieves secret values in plaintext from the master server.

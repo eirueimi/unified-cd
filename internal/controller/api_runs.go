@@ -42,7 +42,11 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 	if spec.PodTemplate != nil {
 		agentSelector = appendLabelIfMissing(agentSelector, "kubernetes")
 	}
-	run, err := s.store.CreateRun(r.Context(), job.Name, req.Params, job.Spec, agentSelector, "api")
+	triggeredBy := "api"
+	if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
+		triggeredBy = p.Name
+	}
+	run, err := s.store.CreateRun(r.Context(), job.Name, req.Params, job.Spec, agentSelector, triggeredBy)
 	if err != nil {
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
 		return

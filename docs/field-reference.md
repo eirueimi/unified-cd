@@ -89,6 +89,7 @@ The two forms are mutually exclusive; Validate enforces this.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `approval` | ApprovalStep | no |  |
 | `cache` | CacheStep | no |  |
 | `call` | CallStep | no |  |
 | `container` | string | no |  |
@@ -105,6 +106,16 @@ The two forms are mutually exclusive; Validate enforces this.
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
+
+### ApprovalStep
+
+ApprovalStep pauses the run until an authenticated user approves or rejects.
+TimeoutMinutes defaults to 60 (applied at compile time) when zero.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `message` | string | no |  |
+| `timeoutMinutes` | number | no |  |
 
 ### CacheStep
 
@@ -145,6 +156,7 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `approval` | ApprovalStep | no |  |
 | `cache` | CacheStep | no |  |
 | `call` | CallStep | no |  |
 | `container` | string | no |  |

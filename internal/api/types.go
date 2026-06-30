@@ -103,6 +103,7 @@ type ClaimStep struct {
 	Foreach          *ClaimForeachDef      `json:"foreach,omitempty"`
 	ForeachKey       string                `json:"foreachKey,omitempty"`
 	ForeachValue     string                `json:"foreachValue,omitempty"`
+	Approval         *ClaimApproval        `json:"approval,omitempty"`
 }
 
 type ClaimForeachDef struct {
@@ -300,6 +301,42 @@ type GitCredentialMeta struct {
 	CredType  string    `json:"credType"`
 	SecretRef string    `json:"secretRef"`
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+// ---- approvals ----
+
+// ClaimApproval is the approval gate definition sent to agents in a ClaimStep.
+type ClaimApproval struct {
+	Message        string  `json:"message,omitempty"`
+	TimeoutMinutes float64 `json:"timeoutMinutes"`
+}
+
+// ApprovalDecisionRequest is the request body for approving or rejecting an approval gate.
+type ApprovalDecisionRequest struct {
+	Decision string `json:"decision"` // "approve" | "reject"
+	Comment  string `json:"comment,omitempty"`
+}
+
+// CreateApprovalRequest is the request body for creating an approval record.
+type CreateApprovalRequest struct {
+	StepIndex      int     `json:"stepIndex"`
+	StepName       string  `json:"stepName"`
+	Message        string  `json:"message,omitempty"`
+	TimeoutMinutes float64 `json:"timeoutMinutes"`
+}
+
+// RunApproval represents a manual approval gate for a run step.
+type RunApproval struct {
+	RunID     string     `json:"runId"`
+	StepIndex int        `json:"stepIndex"`
+	StepName  string     `json:"stepName"`
+	Message   string     `json:"message"`
+	Status    string     `json:"status"` // Pending | Approved | Rejected | TimedOut
+	DecidedBy string     `json:"decidedBy,omitempty"`
+	Comment   string     `json:"comment,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+	TimeoutAt *time.Time `json:"timeoutAt,omitempty"`
+	DecidedAt *time.Time `json:"decidedAt,omitempty"`
 }
 
 // ---- appsource ----

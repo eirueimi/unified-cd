@@ -26,6 +26,7 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
   - [OR Lock](#or-lock)
 - [Agent Selection (`agentSelector`)](#agent-selection-agentselector)
 - [Kubernetes Pod Template (`podTemplate`)](#kubernetes-pod-template-podtemplate)
+- [Approval Step (`approval`)](#approval-step-approval)
 - [Finally Block (`finally`)](#finally-block-finally)
 - [Status Functions in `if:`](#status-functions-in-if)
 - [Job-level Timeout](#job-level-timeout)
@@ -564,9 +565,74 @@ steps:
 
 ---
 
-## Finally Block (`finally`)
+## Approval Step (`approval`)
 
-> **Note:** `finally` blocks and the `failure()`/`success()`/`always()` status functions are currently evaluated by the standard agents (Linux/macOS/Windows). The Kubernetes agent does not yet run `finally` blocks or evaluate `if:` conditions.
+An approval step pauses the run and waits for a human decision before continuing.
+The agent is held (blocked) until the step is approved, rejected, or it times out.
+
+```yaml
+spec:
+  steps:
+    - name: build
+      run: ./build.sh
+
+    - name: gate-deploy
+      approval:
+        message: "Approve deployment to production?"
+        timeoutMinutes: 30   # optional; default 60
+
+    - name: deploy
+      run: ./deploy.sh
+```
+
+### How to approve or reject
+
+Any authenticated user can make a decision through the CLI, the Web UI, or the API:
+
+**CLI:**
+
+```bash
+unified-cd approve <run-id> <step-index>
+unified-cd reject  <run-id> <step-index> [--comment "reason"]
+```
+
+**API:**
+
+```
+POST /api/v1/runs/{runID}/approvals/{stepIndex}
+```
+
+Body: `{"decision": "approved"}` or `{"decision": "rejected", "comment": "reason"}`
+
+**Web UI:** Approve / Reject buttons appear on the run detail page while the step is waiting.
+
+### Behavior
+
+- An **approval** allows the run to continue with the next step.
+- A **rejection** fails the approval step immediately; the run fails and the `finally` block runs.
+- A **timeout** also fails the step (the agent fails the step after `timeoutMinutes`); the run fails
+  and the `finally` block runs.
+- The identity of the decider is recorded (`decidedBy`) in the audit record.
+
+### `approval` fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message` | string | No | Human-readable prompt shown to approvers in the UI and CLI. |
+| `timeoutMinutes` | number | No | Minutes to wait before the step is failed automatically. Default: 60. |
+
+### Constraints and v1 limitations
+
+- `approval` is **not allowed** in a `finally` block.
+- The agent is held while waiting. Prefer short timeouts or set `timeoutMinutes` explicitly to
+  avoid blocking the agent for an extended period.
+- **v1 limitation:** when the step times out, the approval audit row in `run_approvals` remains
+  `Pending` (the agent fails the step itself; there is no agent-side endpoint to mark the row
+  `TimedOut` in v1). The run is correctly marked as Failed regardless.
+
+---
+
+## Finally Block (`finally`)
 
 Steps under `spec.finally` run **after the main `steps` DAG completes** —
 whether it succeeded, failed, or was cancelled. Use it for notifications,
@@ -592,12 +658,13 @@ spec:
 - On cancellation, `finally` still runs, but `failure()` is `false`.
 - `cache:` and `post:` are not supported in `finally` steps (they register
   deferred hooks that run before `finally`; use them in `steps` instead).
+- On the Kubernetes agent, mid-run cancellation detection is not yet
+  implemented, so `failure()` reflects only step failures (cancellation is
+  treated as `false`).
 
 ---
 
 ## Status Functions in `if:`
-
-> **Note:** `finally` blocks and the `failure()`/`success()`/`always()` status functions are currently evaluated by the standard agents (Linux/macOS/Windows). The Kubernetes agent does not yet run `finally` blocks or evaluate `if:` conditions.
 
 Three zero-argument functions are available in any step `if:` (job-wide scope):
 

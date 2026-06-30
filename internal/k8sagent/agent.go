@@ -8,12 +8,21 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
+
+// approvalPollInterval is how often WaitForApproval polls the controller for a
+// human decision. It is a var (not a const) so tests can shorten it.
+var approvalPollInterval = 3 * time.Second
+
+// podStepExec runs a single already-expanded step inside the pod and returns
+// the exit code, captured stdout, and any infrastructure error.
+type podStepExec func(ctx context.Context, step api.ClaimStep, expandedRun string) (exitCode int, stdout string, err error)
 
 // K8sAgent is an agent that claims Runs from the master and executes them inside a Kubernetes Pod.
 type K8sAgent struct {
@@ -142,78 +151,131 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		_, _ = a.exec.ExecStep(ctx, podName, firstContainer, fmt.Sprintf("rm -rf %s/*", mountPath), io.Discard, io.Discard)
 	}
 
-	overallStatus := api.RunSucceeded
+	stepExec := func(execCtx context.Context, step api.ClaimStep, expandedRun string) (int, string, error) {
+		var stdoutBuf strings.Builder
+		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, step.Index, "stderr")
+		stdoutWriter := io.MultiWriter(&stdoutBuf, &logLineWriter{
+			client: a.client, agentID: a.cfg.AgentID, runID: c.RunID, stepIdx: step.Index, stream: "stdout",
+		})
+		ec, execErr := a.exec.ExecStep(execCtx, podName, step.Container, expandedRun, stdoutWriter, stderrPusher)
+		stderrPusher.Flush(execCtx)
+		return ec, stdoutBuf.String(), execErr
+	}
+	a.orchestrate(ctx, c, stepExec)
+}
+
+// orchestrate runs the claim's stages, reporting step/run status, using stepExec
+// to run each step's command. Pure of pod lifecycle so it is unit-testable.
+func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec) {
+	var anyStepFailed atomic.Bool
+	statusView := func() dsl.RunStatusView {
+		return dsl.RunStatusView{Failed: anyStepFailed.Load(), Cancelled: false}
+	}
 	// Accumulate step outputs for template expansion in subsequent steps
 	stepCtx := dsl.TemplateData{Params: c.Params, Steps: map[string]dsl.StepData{}}
 
-	// runOneStep executes a single (already-expanded) step in the pod.
-	// Returns true if the step succeeded (or should continue), false if it failed.
-	runOneStep := func(step api.ClaimStep) bool {
-		started := time.Now().UTC()
-		_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-			RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
-		})
+	// makeRunStep builds the per-step execution function. It is reused for the
+	// main stages and for the finally block, parametrized by:
+	//   statusFn:        the run status used to evaluate if: conditions
+	//                    (live status for main stages, frozen for finally)
+	//   implicitSuccess: true for main steps (a no-if step is gated by success(),
+	//                    so it auto-skips after a failure); false for finally
+	//                    (a no-if finally step always runs)
+	//   failedFlag:      the flag a non-continueOnError failure records into
+	// It records failures into failedFlag instead of aborting the loop.
+	makeRunStep := func(statusFn func() dsl.RunStatusView, implicitSuccess bool, failedFlag *atomic.Bool) func(api.ClaimStep) {
+		return func(step api.ClaimStep) {
+			// Build template data; expose foreach variable if set
+			tplData := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps}
+			if step.ForeachKey != "" {
+				tplData.Foreach = map[string]string{step.ForeachKey: step.ForeachValue}
+			}
 
-		// Build template data; expose foreach variable if set
-		tplData := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps}
-		if step.ForeachKey != "" {
-			tplData.Foreach = map[string]string{step.ForeachKey: step.ForeachValue}
-		}
+			// Every step is gated by if:. On eval error the step runs (fail-safe);
+			// on false it is reported Skipped and not run.
+			ok, err := dsl.EvalCondition(step.If, tplData, statusFn(), implicitSuccess)
+			if err != nil {
+				slog.Warn("k8s: if condition eval failed, running step", "step", step.Name, "error", err)
+			}
+			if !ok {
+				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Skipped",
+				})
+				return
+			}
 
-		// Attempt template expansion; fall back to the original script on failure
-		expandedRun, _ := dsl.ExpandTemplate(step.Run, tplData)
-		if expandedRun == "" {
-			expandedRun = step.Run
-		}
+			// approval gate: WaitForApproval reports WaitingApproval and polls
+			// for the human decision. Placed after the if: gate so an approval
+			// step can itself be if:-gated; reports only the terminal status.
+			if step.Approval != nil {
+				approved := agentlib.WaitForApproval(ctx, a.client, a.cfg.AgentID, c.RunID, step, approvalPollInterval)
+				status := "Succeeded"
+				if !approved {
+					status = "Failed"
+				}
+				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: status, EndedAt: time.Now().UTC(),
+				})
+				if !approved && !step.ContinueOnError {
+					failedFlag.Store(true)
+				}
+				return
+			}
 
-		var stdoutBuf strings.Builder
-		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, step.Index, "stderr")
+			started := time.Now().UTC()
+			_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+			})
 
-		// stdout is written to both the string buffer and the log sender
-		stdoutWriter := io.MultiWriter(&stdoutBuf, &logLineWriter{
-			client:  a.client,
-			agentID: a.cfg.AgentID,
-			runID:   c.RunID,
-			stepIdx: step.Index,
-			stream:  "stdout",
-		})
+			// Attempt template expansion; fall back to the original script on failure
+			expandedRun, _ := dsl.ExpandTemplate(step.Run, tplData)
+			if expandedRun == "" {
+				expandedRun = step.Run
+			}
 
-		ec, execErr := a.exec.ExecStep(ctx, podName, step.Container, expandedRun, stdoutWriter, stderrPusher)
-		stderrPusher.Flush(ctx)
-		capturedStdout := stdoutBuf.String()
+			ec, capturedStdout, execErr := stepExec(ctx, step, expandedRun)
 
-		status := "Succeeded"
-		if execErr != nil || ec != 0 {
-			status = "Failed"
-		} else {
-			// Evaluate output templates against the captured stdout
-			capturedOutputs := map[string]string{}
-			outCtx := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps, Stdout: capturedStdout}
-			for outKey, outTpl := range step.Outputs {
-				if val, err := dsl.ExpandTemplate(outTpl, outCtx); err == nil {
-					capturedOutputs[outKey] = val
+			status := "Succeeded"
+			if execErr != nil || ec != 0 {
+				status = "Failed"
+			} else {
+				// Evaluate output templates against the captured stdout
+				capturedOutputs := map[string]string{}
+				outCtx := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps, Stdout: capturedStdout}
+				for outKey, outTpl := range step.Outputs {
+					if val, err := dsl.ExpandTemplate(outTpl, outCtx); err == nil {
+						capturedOutputs[outKey] = val
+					}
+				}
+				if len(capturedOutputs) > 0 {
+					stepCtx.Steps[step.Name] = dsl.StepData{Outputs: capturedOutputs}
+					_ = a.client.SetStepOutputs(ctx, a.cfg.AgentID, c.RunID, step.Index, capturedOutputs)
 				}
 			}
-			if len(capturedOutputs) > 0 {
-				stepCtx.Steps[step.Name] = dsl.StepData{Outputs: capturedOutputs}
-				_ = a.client.SetStepOutputs(ctx, a.cfg.AgentID, c.RunID, step.Index, capturedOutputs)
+
+			ended := time.Now().UTC()
+			_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				RunID:      c.RunID,
+				StepIndex:  step.Index,
+				StageIndex: step.StageIndex,
+				StepName:   step.Name,
+				Status:     status,
+				ExitCode:   ec,
+				StartedAt:  started,
+				EndedAt:    ended,
+			})
+			if status == "Failed" && !step.ContinueOnError {
+				failedFlag.Store(true)
 			}
 		}
-
-		ended := time.Now().UTC()
-		_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-			RunID:      c.RunID,
-			StepIndex:  step.Index,
-			StageIndex: step.StageIndex,
-			StepName:   step.Name,
-			Status:     status,
-			ExitCode:   ec,
-			StartedAt:  started,
-			EndedAt:    ended,
-		})
-		return status != "Failed"
 	}
 
+	// mainRun executes a main-stage step with live status and implicit success()
+	// gating, recording non-continueOnError failures into anyStepFailed.
+	mainRun := makeRunStep(statusView, true, &anyStepFailed)
+
+	// Visit every stage/step; the if: auto-skip (implicit success()) handles
+	// post-failure behavior, so the loop never aborts on failure.
 	for _, stage := range c.Stages {
 		for _, step := range api.StageSteps(stage) {
 			if step.Foreach != nil {
@@ -222,33 +284,19 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 				items, err := agentlib.EvalForeachSource(step.Foreach.Source, data)
 				if err != nil {
 					slog.Error("k8s: foreach expansion failed", "step", step.Name, "error", err)
-					_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
-					return
+					anyStepFailed.Store(true)
+					continue
 				}
-				failed := false
 				for _, item := range items {
 					variant := step
 					variant.Foreach = nil
 					variant.ForeachKey = step.Foreach.Key
 					variant.ForeachValue = item
-					if !runOneStep(variant) {
-						overallStatus = api.RunFailed
-						failed = true
-						break
-					}
-				}
-				if failed {
-					break
+					mainRun(variant)
 				}
 			} else {
-				if !runOneStep(step) {
-					overallStatus = api.RunFailed
-					break
-				}
+				mainRun(step)
 			}
-		}
-		if overallStatus == api.RunFailed {
-			break
 		}
 	}
 
@@ -269,6 +317,44 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		_ = a.client.SetRunOutputs(ctx, a.cfg.AgentID, c.RunID, runOutputs)
 	}
 
+	mainFailed := anyStepFailed.Load()
+
+	// finally runs after the main stages (and output promotion) against a FROZEN
+	// status snapshot, so finally steps never auto-skip one another. A no-if
+	// finally step always runs (implicitSuccess=false); a finally step failure
+	// flips the run to Failed.
+	var finallyFailed atomic.Bool
+	if len(c.Finally) > 0 {
+		frozen := dsl.RunStatusView{Failed: mainFailed, Cancelled: false}
+		finallyRun := makeRunStep(func() dsl.RunStatusView { return frozen }, false, &finallyFailed)
+		for _, stage := range c.Finally {
+			for _, step := range api.StageSteps(stage) {
+				if step.Foreach != nil {
+					data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps}
+					items, err := agentlib.EvalForeachSource(step.Foreach.Source, data)
+					if err != nil {
+						slog.Error("k8s: finally foreach expansion failed", "step", step.Name, "error", err)
+						finallyFailed.Store(true)
+						continue
+					}
+					for _, item := range items {
+						variant := step
+						variant.Foreach = nil
+						variant.ForeachKey = step.Foreach.Key
+						variant.ForeachValue = item
+						finallyRun(variant)
+					}
+				} else {
+					finallyRun(step)
+				}
+			}
+		}
+	}
+
+	overallStatus := api.RunSucceeded
+	if mainFailed || finallyFailed.Load() {
+		overallStatus = api.RunFailed
+	}
 	_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, overallStatus)
 }
 
