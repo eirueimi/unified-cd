@@ -12,6 +12,7 @@
   let run = null,
     logLines = [],
     steps = [],
+    approvals = [],
     loading = true,
     error = "";
   let logBox,
@@ -19,6 +20,7 @@
     selectedParallelGroup = null,
     abortController = null,
     stepsTimer = null;
+  let approvalComments = {};
 
   $: groupedStages = (() => {
     const map = new Map();
@@ -67,6 +69,22 @@
       steps = await apiFetch("/api/v1/runs/" + runID + "/steps");
     } catch {}
   }
+  async function loadApprovals() {
+    try {
+      approvals = await apiFetch("/api/v1/runs/" + runID + "/approvals");
+    } catch {}
+  }
+  async function decideApproval(stepIndex, decision, comment) {
+    try {
+      await apiFetch("/api/v1/runs/" + runID + "/approvals/" + stepIndex, {
+        method: "POST",
+        body: JSON.stringify({ decision, comment: comment || "" }),
+      });
+      await Promise.all([loadSteps(), loadApprovals()]);
+    } catch (e) {
+      error = e.message;
+    }
+  }
   function stopStepPolling() {
     if (stepsTimer) {
       clearInterval(stepsTimer);
@@ -76,7 +94,7 @@
   function startStepPolling() {
     stopStepPolling();
     stepsTimer = setInterval(async () => {
-      await Promise.all([loadSteps(), loadRun()]);
+      await Promise.all([loadSteps(), loadRun(), loadApprovals()]);
       if (run && ["Succeeded", "Failed", "Cancelled"].includes(run.status))
         stopStepPolling();
     }, 3000);
@@ -162,7 +180,7 @@
 
   async function init() {
     loading = true;
-    await Promise.all([loadRun(), loadSteps()]);
+    await Promise.all([loadRun(), loadSteps(), loadApprovals()]);
     loading = false;
     if (run && !["Succeeded", "Failed", "Cancelled"].includes(run.status))
       startStepPolling();
@@ -249,6 +267,7 @@
               </span>
             </div>
             {#each group.steps as s (s.index)}
+              {@const approval = approvals.find(a => a.stepIndex === s.index)}
               <div
                 class="step-row step-row-indented {selectedStep === s.index ? 'active' : ''}"
                 on:click={() => selectStep(s.index)}
@@ -261,21 +280,77 @@
                 <span class="step-duration">{stepDuration(s)}</span>
                 {#if s.exitCode != null}<span class="step-exit">exit {s.exitCode}</span>{/if}
               </div>
+              {#if s.status === 'WaitingApproval'}
+                <div class="approval-panel">
+                  {#if approval?.message}
+                    <div class="approval-message">{approval.message}</div>
+                  {/if}
+                  <textarea
+                    class="approval-comment"
+                    placeholder="Comment (optional)"
+                    bind:value={approvalComments[s.index]}
+                  ></textarea>
+                  <div class="approval-actions">
+                    <button
+                      class="btn btn-success"
+                      on:click|stopPropagation={() => decideApproval(s.index, 'approve', approvalComments[s.index])}
+                    >Approve</button>
+                    <button
+                      class="btn btn-danger"
+                      on:click|stopPropagation={() => decideApproval(s.index, 'reject', approvalComments[s.index])}
+                    >Reject</button>
+                  </div>
+                </div>
+              {:else if approval?.decidedBy}
+                <div class="approval-decision">
+                  Decided by <strong>{approval.decidedBy}</strong>
+                  {#if approval.comment} — {approval.comment}{/if}
+                </div>
+              {/if}
             {/each}
           {:else}
             <!-- Single sequential step -->
+            {@const s0 = group.steps[0]}
+            {@const approval0 = approvals.find(a => a.stepIndex === s0.index)}
             <div
-              class="step-row {selectedStep === group.steps[0].index ? 'active' : ''}"
-              on:click={() => selectStep(group.steps[0].index)}
+              class="step-row {selectedStep === s0.index ? 'active' : ''}"
+              on:click={() => selectStep(s0.index)}
               role="button"
               tabindex="0"
-              on:keydown={(e) => e.key === 'Enter' && selectStep(group.steps[0].index)}
+              on:keydown={(e) => e.key === 'Enter' && selectStep(s0.index)}
             >
-              <span class={statusBadge(group.steps[0].status)}>{group.steps[0].status}</span>
-              <span class="step-name">{group.steps[0].name}</span>
-              <span class="step-duration">{stepDuration(group.steps[0])}</span>
-              {#if group.steps[0].exitCode != null}<span class="step-exit">exit {group.steps[0].exitCode}</span>{/if}
+              <span class={statusBadge(s0.status)}>{s0.status}</span>
+              <span class="step-name">{s0.name}</span>
+              <span class="step-duration">{stepDuration(s0)}</span>
+              {#if s0.exitCode != null}<span class="step-exit">exit {s0.exitCode}</span>{/if}
             </div>
+            {#if s0.status === 'WaitingApproval'}
+              <div class="approval-panel">
+                {#if approval0?.message}
+                  <div class="approval-message">{approval0.message}</div>
+                {/if}
+                <textarea
+                  class="approval-comment"
+                  placeholder="Comment (optional)"
+                  bind:value={approvalComments[s0.index]}
+                ></textarea>
+                <div class="approval-actions">
+                  <button
+                    class="btn btn-success"
+                    on:click|stopPropagation={() => decideApproval(s0.index, 'approve', approvalComments[s0.index])}
+                  >Approve</button>
+                  <button
+                    class="btn btn-danger"
+                    on:click|stopPropagation={() => decideApproval(s0.index, 'reject', approvalComments[s0.index])}
+                  >Reject</button>
+                </div>
+              </div>
+            {:else if approval0?.decidedBy}
+              <div class="approval-decision">
+                Decided by <strong>{approval0.decidedBy}</strong>
+                {#if approval0.comment} — {approval0.comment}{/if}
+              </div>
+            {/if}
           {/if}
         {/each}
       </div>
@@ -358,5 +433,50 @@
   }
   .step-row-indented {
     margin-left: 1.2rem;
+  }
+  .approval-panel {
+    padding: 0.6rem 0.75rem;
+    background: var(--surface-alt, var(--surface));
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-top: 0.25rem;
+    margin-bottom: 0.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .approval-message {
+    font-size: 0.875rem;
+    color: var(--text);
+  }
+  .approval-comment {
+    width: 100%;
+    min-height: 3.5rem;
+    padding: 0.35rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.85rem;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+  .approval-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .btn-success {
+    background: #22863a;
+    color: #fff;
+    border: none;
+  }
+  .btn-success:hover {
+    background: #1a6b2c;
+  }
+  .approval-decision {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    padding: 0.25rem 0.75rem;
+    margin-bottom: 0.25rem;
   }
 </style>
