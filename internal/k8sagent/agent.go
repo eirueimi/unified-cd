@@ -16,6 +16,10 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
+// approvalPollInterval is how often WaitForApproval polls the controller for a
+// human decision. It is a var (not a const) so tests can shorten it.
+var approvalPollInterval = 3 * time.Second
+
 // podStepExec runs a single already-expanded step inside the pod and returns
 // the exit code, captured stdout, and any infrastructure error.
 type podStepExec func(ctx context.Context, step api.ClaimStep, expandedRun string) (exitCode int, stdout string, err error)
@@ -197,6 +201,24 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Skipped",
 				})
+				return
+			}
+
+			// approval gate: WaitForApproval reports WaitingApproval and polls
+			// for the human decision. Placed after the if: gate so an approval
+			// step can itself be if:-gated; reports only the terminal status.
+			if step.Approval != nil {
+				approved := agentlib.WaitForApproval(ctx, a.client, a.cfg.AgentID, c.RunID, step, approvalPollInterval)
+				status := "Succeeded"
+				if !approved {
+					status = "Failed"
+				}
+				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: status, EndedAt: time.Now().UTC(),
+				})
+				if !approved && !step.ContinueOnError {
+					failedFlag.Store(true)
+				}
 				return
 			}
 

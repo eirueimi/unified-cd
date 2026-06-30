@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -19,6 +21,10 @@ type orchestrateHarness struct {
 	statuses map[string]string
 	runState string // current run status served by GetRun
 	final    string // status passed to FinishRun
+	// approvalDecision is the terminal status GetApproval serves after the
+	// first (Pending) poll, e.g. "Approved" or "Rejected". Empty disables the
+	// approval endpoints' terminal transition (stays Pending).
+	approvalDecision string
 }
 
 // fakeStep describes what a fake step exec should return.
@@ -29,8 +35,23 @@ type fakeStep struct {
 
 func runOrchestrate(t *testing.T, c api.ClaimResponse, fakes map[string]fakeStep) (map[string]string, string) {
 	t.Helper()
-	h := &orchestrateHarness{statuses: map[string]string{}, runState: "Running"}
+	return runOrchestrateWithApproval(t, c, fakes, "")
+}
+
+// runOrchestrateWithApproval is runOrchestrate with a controllable approval
+// decision. The approval endpoints serve Pending on the first GetApproval poll
+// and approvalDecision thereafter.
+func runOrchestrateWithApproval(t *testing.T, c api.ClaimResponse, fakes map[string]fakeStep, approvalDecision string) (map[string]string, string) {
+	t.Helper()
+
+	// Speed up approval polling so the Pending->decided transition is fast.
+	prevPoll := approvalPollInterval
+	approvalPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { approvalPollInterval = prevPoll })
+
+	h := &orchestrateHarness{statuses: map[string]string{}, runState: "Running", approvalDecision: approvalDecision}
 	var mu sync.Mutex
+	var approvalPolls atomic.Int64
 
 	mux := http.NewServeMux()
 
@@ -59,6 +80,22 @@ func runOrchestrate(t *testing.T, c api.ClaimResponse, fakes map[string]fakeStep
 	// SetRunOutputs: POST /api/v1/agents/{agentID}/runs/{runId}/outputs
 	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/outputs", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+
+	// CreateApproval: POST /api/v1/agents/{id}/runs/{runId}/approvals
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/approvals", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// GetApproval: GET /api/v1/agents/{id}/runs/{runId}/approvals/{idx}
+	// Serves Pending on the first poll, then approvalDecision thereafter.
+	mux.HandleFunc("GET /api/v1/agents/{id}/runs/{runId}/approvals/{idx}", func(w http.ResponseWriter, r *http.Request) {
+		n := approvalPolls.Add(1)
+		status := "Pending"
+		if n > 1 && h.approvalDecision != "" {
+			status = h.approvalDecision
+		}
+		orchestrateWriteJSON(w, api.RunApproval{RunID: c.RunID, Status: status})
 	})
 
 	// GetRun: GET /api/v1/runs/{id}
@@ -174,6 +211,30 @@ func TestOrchestrate_ForeachSkippedAfterFailure(t *testing.T) {
 	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"boom": {exit: 1}})
 	assert.Equal(t, "Failed", statuses["boom"])
 	assert.Equal(t, "Skipped", statuses["fan"], "foreach variants auto-skip after a failure")
+	assert.Equal(t, "Failed", final)
+}
+
+func TestOrchestrate_ApprovalApprovedRunsLaterStep(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "gate",
+			Approval: &api.ClaimApproval{Message: "ok?", TimeoutMinutes: 1}}},
+		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "after", Run: "y"}},
+	}}
+	statuses, final := runOrchestrateWithApproval(t, c, nil, "Approved")
+	assert.Equal(t, "Succeeded", statuses["gate"], "approved gate reports Succeeded")
+	assert.Equal(t, "Succeeded", statuses["after"], "later step runs after an approved gate")
+	assert.Equal(t, "Succeeded", final)
+}
+
+func TestOrchestrate_ApprovalRejectedSkipsLaterStep(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "gate",
+			Approval: &api.ClaimApproval{Message: "ok?", TimeoutMinutes: 1}}},
+		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "after", Run: "y"}},
+	}}
+	statuses, final := runOrchestrateWithApproval(t, c, nil, "Rejected")
+	assert.Equal(t, "Failed", statuses["gate"], "rejected gate reports Failed")
+	assert.Equal(t, "Skipped", statuses["after"], "no-if step auto-skips after a rejected gate")
 	assert.Equal(t, "Failed", final)
 }
 
