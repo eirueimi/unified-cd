@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
@@ -162,23 +163,40 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 // orchestrate runs the claim's stages, reporting step/run status, using stepExec
 // to run each step's command. Pure of pod lifecycle so it is unit-testable.
 func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec) {
-	overallStatus := api.RunSucceeded
+	var anyStepFailed atomic.Bool
+	statusView := func() dsl.RunStatusView {
+		return dsl.RunStatusView{Failed: anyStepFailed.Load(), Cancelled: false}
+	}
 	// Accumulate step outputs for template expansion in subsequent steps
 	stepCtx := dsl.TemplateData{Params: c.Params, Steps: map[string]dsl.StepData{}}
 
-	// runOneStep executes a single (already-expanded) step via stepExec.
-	// Returns true if the step succeeded (or should continue), false if it failed.
-	runOneStep := func(step api.ClaimStep) bool {
-		started := time.Now().UTC()
-		_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-			RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
-		})
-
+	// runOneStep evaluates the step's if: condition, then executes it (already
+	// expanded) via stepExec. It records failures into anyStepFailed instead of
+	// aborting the loop; later steps auto-skip via their implicit success() gate.
+	runOneStep := func(step api.ClaimStep) {
 		// Build template data; expose foreach variable if set
 		tplData := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps}
 		if step.ForeachKey != "" {
 			tplData.Foreach = map[string]string{step.ForeachKey: step.ForeachValue}
 		}
+
+		// Every step is gated by if: (implicit success()). On eval error the step
+		// runs (fail-safe); on false it is reported Skipped and not run.
+		ok, err := dsl.EvalCondition(step.If, tplData, statusView(), true)
+		if err != nil {
+			slog.Warn("k8s: if condition eval failed, running step", "step", step.Name, "error", err)
+		}
+		if !ok {
+			_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Skipped",
+			})
+			return
+		}
+
+		started := time.Now().UTC()
+		_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+			RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+		})
 
 		// Attempt template expansion; fall back to the original script on failure
 		expandedRun, _ := dsl.ExpandTemplate(step.Run, tplData)
@@ -217,9 +235,13 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			StartedAt:  started,
 			EndedAt:    ended,
 		})
-		return status != "Failed"
+		if status == "Failed" && !step.ContinueOnError {
+			anyStepFailed.Store(true)
+		}
 	}
 
+	// Visit every stage/step; the if: auto-skip (implicit success()) handles
+	// post-failure behavior, so the loop never aborts on failure.
 	for _, stage := range c.Stages {
 		for _, step := range api.StageSteps(stage) {
 			if step.Foreach != nil {
@@ -228,33 +250,19 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				items, err := agentlib.EvalForeachSource(step.Foreach.Source, data)
 				if err != nil {
 					slog.Error("k8s: foreach expansion failed", "step", step.Name, "error", err)
-					_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
-					return
+					anyStepFailed.Store(true)
+					continue
 				}
-				failed := false
 				for _, item := range items {
 					variant := step
 					variant.Foreach = nil
 					variant.ForeachKey = step.Foreach.Key
 					variant.ForeachValue = item
-					if !runOneStep(variant) {
-						overallStatus = api.RunFailed
-						failed = true
-						break
-					}
-				}
-				if failed {
-					break
+					runOneStep(variant)
 				}
 			} else {
-				if !runOneStep(step) {
-					overallStatus = api.RunFailed
-					break
-				}
+				runOneStep(step)
 			}
-		}
-		if overallStatus == api.RunFailed {
-			break
 		}
 	}
 
@@ -275,6 +283,10 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		_ = a.client.SetRunOutputs(ctx, a.cfg.AgentID, c.RunID, runOutputs)
 	}
 
+	overallStatus := api.RunSucceeded
+	if anyStepFailed.Load() {
+		overallStatus = api.RunFailed
+	}
 	_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, overallStatus)
 }
 

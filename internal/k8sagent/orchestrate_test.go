@@ -11,7 +11,6 @@ import (
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // orchestrateHarness stands up a mock controller, records step statuses by
@@ -102,16 +101,47 @@ func runOrchestrate(t *testing.T, c api.ClaimResponse, fakes map[string]fakeStep
 	return h.statuses, h.final
 }
 
-func TestOrchestrate_SequentialAbortsOnFailure(t *testing.T) {
-	_ = require.New(t) // ensure require is used; individual assertions use assert
+func TestOrchestrate_FailureSkipsRest(t *testing.T) {
 	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "x"}},
 		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "after", Run: "y"}},
 	}}
 	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"boom": {exit: 1}})
 	assert.Equal(t, "Failed", statuses["boom"])
-	assert.NotContains(t, statuses, "after", "current behavior: stage after a failure does not run")
+	assert.Equal(t, "Skipped", statuses["after"], "no-if step auto-skips after a failure")
 	assert.Equal(t, "Failed", final)
+}
+
+func TestOrchestrate_NoIfStepSkippedAfterFailure(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "x"}},
+		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "after", Run: "y"}},
+	}}
+	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"boom": {exit: 1}})
+	assert.Equal(t, "Failed", statuses["boom"])
+	assert.Equal(t, "Skipped", statuses["after"], "no-if step auto-skips after a failure")
+	assert.Equal(t, "Failed", final)
+}
+
+func TestOrchestrate_AlwaysStepRunsAfterFailure(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "x"}},
+		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "cleanup", If: "always()", Run: "y"}},
+	}}
+	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"boom": {exit: 1}})
+	assert.Equal(t, "Succeeded", statuses["cleanup"])
+	assert.Equal(t, "Failed", final)
+}
+
+func TestOrchestrate_ContinueOnErrorDoesNotFailRun(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "flaky", Run: "x", ContinueOnError: true}},
+		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "after", Run: "y"}},
+	}}
+	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"flaky": {exit: 1}})
+	assert.Equal(t, "Failed", statuses["flaky"])
+	assert.Equal(t, "Succeeded", statuses["after"], "continueOnError failure does not block later steps")
+	assert.Equal(t, "Succeeded", final)
 }
 
 // orchestrateDecodeJSON decodes an HTTP request body as JSON into v.
