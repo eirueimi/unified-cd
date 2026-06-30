@@ -44,12 +44,12 @@
 
 ---
 
-## Task 1: Auth principal in request context
+## Task 1: Auth principal in request context (+ record run trigger identity)
 
-**Files:** Modify `internal/controller/auth.go`; Test `internal/controller/auth_principal_test.go` (new).
+**Files:** Modify `internal/controller/auth.go`, `internal/controller/api_runs.go`; Test `internal/controller/auth_principal_test.go` (new), `internal/controller/api_runs_test.go`.
 
 **Interfaces:**
-- Produces: `type Principal struct { Name string; Kind string }`; `func principalFromContext(ctx context.Context) (Principal, bool)`; `ServerAuth` now stores the `Principal` in the request context on each success path.
+- Produces: `type Principal struct { Name string; Kind string }`; `func principalFromContext(ctx context.Context) (Principal, bool)`; `ServerAuth` now stores the `Principal` in the request context on each success path. `handleTriggerRun` records the authenticated principal as the run's `TriggeredBy` (falling back to `"api"` when no principal is present).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -142,6 +142,50 @@ Expected: PASS (or SKIP if no DB — then verify compilation with `go build ./..
 ```bash
 git add internal/controller/auth.go internal/controller/auth_principal_test.go
 git commit -m "feat(controller): expose authenticated principal via request context"
+```
+
+- [ ] **Step 6: Write the failing test for run-trigger identity**
+
+Append to `internal/controller/api_runs_test.go` (or create it; mirror the package's existing server-test harness used by other `api_*_test.go`). The test triggers a run via `POST /api/v1/runs` with a PAT named `"alice"` and asserts the created run's `TriggeredBy == "alice"`:
+
+```go
+func TestTriggerRun_RecordsPrincipal(t *testing.T) {
+	// Build the server + store harness (mirror existing api_*_test.go).
+	// Create a PAT "alice"; UpsertJob "j".
+	// POST /api/v1/runs {"jobName":"j"} with Authorization: Bearer <alice token>.
+	// Assert response 200 and the returned run.TriggeredBy == "alice".
+}
+```
+
+Write it concretely against the real harness (PAT create + bearer header), asserting `run.TriggeredBy == "alice"`.
+
+- [ ] **Step 7: Run test to verify it fails**
+
+Run: `go test ./internal/controller/ -run TestTriggerRun_RecordsPrincipal -v`
+Expected: FAIL — `TriggeredBy` is the literal `"api"`, not `"alice"`.
+
+- [ ] **Step 8: Populate `TriggeredBy` from the principal**
+
+In `internal/controller/api_runs.go`, `handleTriggerRun`, replace the hardcoded `"api"` in the `CreateRun(...)` call with the principal's name, falling back to `"api"`:
+
+```go
+	triggeredBy := "api"
+	if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
+		triggeredBy = p.Name
+	}
+	run, err := s.store.CreateRun(r.Context(), job.Name, req.Params, job.Spec, agentSelector, triggeredBy)
+```
+
+(Leave the webhook/schedule trigger paths unchanged — they have no human principal and keep their source label.)
+
+- [ ] **Step 9: Run test + commit**
+
+Run: `go test ./internal/controller/ -run TestTriggerRun_RecordsPrincipal -v && go build ./...`
+Expected: PASS (or SKIP without DB; build succeeds).
+
+```bash
+git add internal/controller/api_runs.go internal/controller/api_runs_test.go
+git commit -m "feat(controller): record triggering principal as run TriggeredBy"
 ```
 
 ---
@@ -1091,6 +1135,7 @@ git commit -m "docs: document approval step; regenerate schema"
 ## Self-review notes (coverage vs spec)
 
 - Approver = any authenticated principal; `decided_by` recorded → Tasks 1, 5.
+- Run-trigger identity recorded as `TriggeredBy` (principal name, fallback `"api"`) → Task 1 (Steps 6–9).
 - `approval` step action + validation + finally-rejection → Task 2.
 - `run_approvals` store + idempotent create + conditional decide → Task 3.
 - Compile + default timeout 60 → Task 4.
