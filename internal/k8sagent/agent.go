@@ -15,6 +15,10 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
+// podStepExec runs a single already-expanded step inside the pod and returns
+// the exit code, captured stdout, and any infrastructure error.
+type podStepExec func(ctx context.Context, step api.ClaimStep, expandedRun string) (exitCode int, stdout string, err error)
+
 // K8sAgent is an agent that claims Runs from the master and executes them inside a Kubernetes Pod.
 type K8sAgent struct {
 	cfg    Config
@@ -142,11 +146,27 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		_, _ = a.exec.ExecStep(ctx, podName, firstContainer, fmt.Sprintf("rm -rf %s/*", mountPath), io.Discard, io.Discard)
 	}
 
+	stepExec := func(execCtx context.Context, step api.ClaimStep, expandedRun string) (int, string, error) {
+		var stdoutBuf strings.Builder
+		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, step.Index, "stderr")
+		stdoutWriter := io.MultiWriter(&stdoutBuf, &logLineWriter{
+			client: a.client, agentID: a.cfg.AgentID, runID: c.RunID, stepIdx: step.Index, stream: "stdout",
+		})
+		ec, execErr := a.exec.ExecStep(execCtx, podName, step.Container, expandedRun, stdoutWriter, stderrPusher)
+		stderrPusher.Flush(execCtx)
+		return ec, stdoutBuf.String(), execErr
+	}
+	a.orchestrate(ctx, c, stepExec)
+}
+
+// orchestrate runs the claim's stages, reporting step/run status, using stepExec
+// to run each step's command. Pure of pod lifecycle so it is unit-testable.
+func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec) {
 	overallStatus := api.RunSucceeded
 	// Accumulate step outputs for template expansion in subsequent steps
 	stepCtx := dsl.TemplateData{Params: c.Params, Steps: map[string]dsl.StepData{}}
 
-	// runOneStep executes a single (already-expanded) step in the pod.
+	// runOneStep executes a single (already-expanded) step via stepExec.
 	// Returns true if the step succeeded (or should continue), false if it failed.
 	runOneStep := func(step api.ClaimStep) bool {
 		started := time.Now().UTC()
@@ -166,21 +186,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			expandedRun = step.Run
 		}
 
-		var stdoutBuf strings.Builder
-		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, step.Index, "stderr")
-
-		// stdout is written to both the string buffer and the log sender
-		stdoutWriter := io.MultiWriter(&stdoutBuf, &logLineWriter{
-			client:  a.client,
-			agentID: a.cfg.AgentID,
-			runID:   c.RunID,
-			stepIdx: step.Index,
-			stream:  "stdout",
-		})
-
-		ec, execErr := a.exec.ExecStep(ctx, podName, step.Container, expandedRun, stdoutWriter, stderrPusher)
-		stderrPusher.Flush(ctx)
-		capturedStdout := stdoutBuf.String()
+		ec, capturedStdout, execErr := stepExec(ctx, step, expandedRun)
 
 		status := "Succeeded"
 		if execErr != nil || ec != 0 {
