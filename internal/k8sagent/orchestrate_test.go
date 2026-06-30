@@ -112,17 +112,6 @@ func TestOrchestrate_FailureSkipsRest(t *testing.T) {
 	assert.Equal(t, "Failed", final)
 }
 
-func TestOrchestrate_NoIfStepSkippedAfterFailure(t *testing.T) {
-	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
-		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "x"}},
-		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "after", Run: "y"}},
-	}}
-	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"boom": {exit: 1}})
-	assert.Equal(t, "Failed", statuses["boom"])
-	assert.Equal(t, "Skipped", statuses["after"], "no-if step auto-skips after a failure")
-	assert.Equal(t, "Failed", final)
-}
-
 func TestOrchestrate_AlwaysStepRunsAfterFailure(t *testing.T) {
 	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "x"}},
@@ -173,6 +162,18 @@ func TestOrchestrate_FinallyStepFailureMarksRunFailed(t *testing.T) {
 	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"cleanup-boom": {exit: 1}})
 	assert.Equal(t, "Failed", statuses["cleanup-boom"])
 	assert.Equal(t, "Succeeded", statuses["cleanup-after"], "all finally steps run to completion")
+	assert.Equal(t, "Failed", final)
+}
+
+func TestOrchestrate_ForeachSkippedAfterFailure(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "x"}},
+		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "fan", Run: "echo {{ .Foreach.item }}",
+			Foreach: &api.ClaimForeachDef{Key: "item", Source: api.ClaimForeachSource{Literal: []string{"a", "b"}}}}},
+	}}
+	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"boom": {exit: 1}})
+	assert.Equal(t, "Failed", statuses["boom"])
+	assert.Equal(t, "Skipped", statuses["fan"], "foreach variants auto-skip after a failure")
 	assert.Equal(t, "Failed", final)
 }
 
