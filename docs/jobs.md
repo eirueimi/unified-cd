@@ -566,8 +566,6 @@ steps:
 
 ## Finally Block (`finally`)
 
-> **Note:** `finally` blocks and the `failure()`/`success()`/`always()` status functions are currently evaluated by the standard agents (Linux/macOS/Windows). The Kubernetes agent does not yet run `finally` blocks or evaluate `if:` conditions.
-
 Steps under `spec.finally` run **after the main `steps` DAG completes** —
 whether it succeeded, failed, or was cancelled. Use it for notifications,
 cleanup, or rollback.
@@ -592,12 +590,13 @@ spec:
 - On cancellation, `finally` still runs, but `failure()` is `false`.
 - `cache:` and `post:` are not supported in `finally` steps (they register
   deferred hooks that run before `finally`; use them in `steps` instead).
+- On the Kubernetes agent, mid-run cancellation detection is not yet
+  implemented, so `failure()` reflects only step failures (cancellation is
+  treated as `false`).
 
 ---
 
 ## Status Functions in `if:`
-
-> **Note:** `finally` blocks and the `failure()`/`success()`/`always()` status functions are currently evaluated by the standard agents (Linux/macOS/Windows). The Kubernetes agent does not yet run `finally` blocks or evaluate `if:` conditions.
 
 Three zero-argument functions are available in any step `if:` (job-wide scope):
 

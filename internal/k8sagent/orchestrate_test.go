@@ -144,6 +144,38 @@ func TestOrchestrate_ContinueOnErrorDoesNotFailRun(t *testing.T) {
 	assert.Equal(t, "Succeeded", final)
 }
 
+func TestOrchestrate_FinallyRunsOnFailure(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "x"}},
+		},
+		Finally: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 1, StageIndex: 0, Name: "notify", Run: "y"}},
+			{Step: &api.ClaimStep{Index: 2, StageIndex: 1, Name: "rollback", If: "failure()", Run: "z"}},
+			{Step: &api.ClaimStep{Index: 3, StageIndex: 2, Name: "only-ok", If: "success()", Run: "w"}},
+		}}
+	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"boom": {exit: 1}})
+	assert.Equal(t, "Succeeded", statuses["notify"], "no-if finally step always runs")
+	assert.Equal(t, "Succeeded", statuses["rollback"], "failure() runs on failure")
+	assert.Equal(t, "Skipped", statuses["only-ok"], "success() skips on failure")
+	assert.Equal(t, "Failed", final)
+}
+
+func TestOrchestrate_FinallyStepFailureMarksRunFailed(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "ok", Run: "x"}},
+		},
+		Finally: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 1, StageIndex: 0, Name: "cleanup-boom", Run: "y"}},
+			{Step: &api.ClaimStep{Index: 2, StageIndex: 1, Name: "cleanup-after", Run: "z"}},
+		}}
+	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"cleanup-boom": {exit: 1}})
+	assert.Equal(t, "Failed", statuses["cleanup-boom"])
+	assert.Equal(t, "Succeeded", statuses["cleanup-after"], "all finally steps run to completion")
+	assert.Equal(t, "Failed", final)
+}
+
 // orchestrateDecodeJSON decodes an HTTP request body as JSON into v.
 func orchestrateDecodeJSON(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
