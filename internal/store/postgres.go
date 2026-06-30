@@ -1595,7 +1595,7 @@ func (p *Postgres) ListRunApprovals(ctx context.Context, runID string) ([]api.Ru
 		return nil, err
 	}
 	defer rows.Close()
-	var out []api.RunApproval
+	out := []api.RunApproval{}
 	for rows.Next() {
 		var a api.RunApproval
 		var decidedBy, comment *string

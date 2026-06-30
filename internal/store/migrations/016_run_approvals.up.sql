@@ -1,5 +1,5 @@
 CREATE TABLE run_approvals (
-    run_id      UUID NOT NULL,
+    run_id      UUID NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     step_index  INT  NOT NULL,
     step_name   TEXT NOT NULL,
     message     TEXT NOT NULL DEFAULT '',

@@ -41,3 +41,16 @@ func TestPostgres_Approvals_CreateDecide(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, list, 1)
 }
+
+func TestPostgres_Approvals_ListEmpty(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	_, _ = pg.UpsertJob(ctx, "j2", "unified-cd/v1", []byte(`{}`))
+	run, err := pg.CreateRun(ctx, "j2", nil, []byte(`{}`), nil, "")
+	require.NoError(t, err)
+
+	list, err := pg.ListRunApprovals(ctx, run.ID)
+	require.NoError(t, err)
+	require.NotNil(t, list)
+	require.Len(t, list, 0)
+}
