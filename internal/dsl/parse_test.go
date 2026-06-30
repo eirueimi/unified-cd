@@ -971,7 +971,7 @@ spec:
     - name: cleanup`
 	_, err := Parse(strings.NewReader(y))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "one of run, call, or uses is required")
+	assert.Contains(t, err.Error(), "one of run, call, uses, or approval is required")
 }
 
 func TestParse_FinallyForbidsNeeds(t *testing.T) {
@@ -1109,6 +1109,61 @@ spec:
 `
 	_, err := Parse(strings.NewReader(input))
 	require.NoError(t, err)
+}
+
+func TestParse_ApprovalStep(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: gated
+spec:
+  steps:
+    - name: build
+      run: make build
+    - name: gate
+      approval:
+        message: "Deploy to prod?"
+        timeoutMinutes: 30`
+	job, err := Parse(strings.NewReader(y))
+	require.NoError(t, err)
+	require.NotNil(t, job.Spec.Steps[1].Approval)
+	assert.Equal(t, "Deploy to prod?", job.Spec.Steps[1].Approval.Message)
+	assert.Equal(t, 30.0, job.Spec.Steps[1].Approval.TimeoutMinutes)
+}
+
+func TestParse_ApprovalMutuallyExclusiveWithRun(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad
+spec:
+  steps:
+    - name: gate
+      run: echo hi
+      approval:
+        message: x`
+	_, err := Parse(strings.NewReader(y))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only one of")
+}
+
+func TestParse_ApprovalRejectedInFinally(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - name: gate
+      approval:
+        message: x`
+	_, err := Parse(strings.NewReader(y))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finally")
+	assert.Contains(t, err.Error(), "approval")
 }
 
 func TestParse_UsesStep_ArrayWith(t *testing.T) {
