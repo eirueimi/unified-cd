@@ -14,6 +14,26 @@ import (
 
 const bearerPrefix = "Bearer "
 
+type ctxKey string
+
+const principalCtxKey ctxKey = "principal"
+
+// Principal identifies the authenticated caller.
+type Principal struct {
+	Name string // PAT name, or OIDC email (fallback to sub)
+	Kind string // "pat" | "oidc" | "session"
+}
+
+func withPrincipal(r *http.Request, p Principal) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), principalCtxKey, p))
+}
+
+// principalFromContext returns the authenticated principal, if any.
+func principalFromContext(ctx context.Context) (Principal, bool) {
+	p, ok := ctx.Value(principalCtxKey).(Principal)
+	return p, ok
+}
+
 // BootstrapPATName is the fixed identifier used when syncing UNIFIED_TOKEN as a PAT at startup.
 // Using this name with UpsertBootstrapPAT / DeleteBootstrapPATByName ensures that when the
 // value changes, rows are not duplicated — only the hash is updated.
@@ -56,14 +76,23 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 					pat, err := st.GetPATByHash(r.Context(), hash)
 					if err == nil && pat != nil {
 						go func() { _ = st.TouchPAT(context.Background(), pat.ID) }()
-						next.ServeHTTP(w, r)
+						next.ServeHTTP(w, withPrincipal(r, Principal{Name: pat.Name, Kind: "pat"}))
 						return
 					}
 				}
 				// 1b. OIDC id_token (token obtained via the CLI device flow)
 				if srv != nil && srv.oidcCfg != nil {
-					if _, err := srv.verifyOIDCBearer(r.Context(), token); err == nil {
-						next.ServeHTTP(w, r)
+					if idToken, err := srv.verifyOIDCBearer(r.Context(), token); err == nil {
+						var claims struct {
+							Sub   string `json:"sub"`
+							Email string `json:"email"`
+						}
+						_ = idToken.Claims(&claims)
+						name := claims.Email
+						if name == "" {
+							name = claims.Sub
+						}
+						next.ServeHTTP(w, withPrincipal(r, Principal{Name: name, Kind: "oidc"}))
 						return
 					}
 				}
@@ -87,11 +116,19 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 								return
 							}
 							go func() { _ = st.TouchSession(context.Background(), sess.ID) }()
-							next.ServeHTTP(w, r)
+							sessName := sess.Email
+							if sessName == "" {
+								sessName = sess.Sub
+							}
+							next.ServeHTTP(w, withPrincipal(r, Principal{Name: sessName, Kind: "session"}))
 							return
 						} else {
 							go func() { _ = st.TouchSession(context.Background(), sess.ID) }()
-							next.ServeHTTP(w, r)
+							sessName := sess.Email
+							if sessName == "" {
+								sessName = sess.Sub
+							}
+							next.ServeHTTP(w, withPrincipal(r, Principal{Name: sessName, Kind: "session"}))
 							return
 						}
 					}
