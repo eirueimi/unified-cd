@@ -20,6 +20,10 @@ import (
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
+// approvalPollInterval is how often WaitForApproval polls the controller for a
+// human decision. It is a var (not a const) so tests can shorten it.
+var approvalPollInterval = 3 * time.Second
+
 // postHookEntry is a post-processing entry executed after a step completes.
 type postHookEntry struct {
 	stepName string
@@ -331,6 +335,25 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				var stepCancel context.CancelFunc
 				stepCtx, stepCancel = context.WithTimeout(stepCtx, time.Duration(step.TimeoutMinutes*float64(time.Minute)))
 				defer stepCancel()
+			}
+
+			// approval gate: report WaitingApproval, poll for the human decision.
+			// Placed after the if: gate so an approval step can itself be if:-gated.
+			if step.Approval != nil {
+				approved := WaitForApproval(stepCtx, a.Client, a.ID, c.RunID, step, approvalPollInterval)
+				if approved {
+					_ = a.Client.ReportStep(stepCtx, a.ID, api.StepReportRequest{
+						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
+						StepName: step.Name, Status: "Succeeded", EndedAt: time.Now().UTC(),
+					})
+				} else {
+					_ = a.Client.ReportStep(stepCtx, a.ID, api.StepReportRequest{
+						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
+						StepName: step.Name, Status: "Failed", EndedAt: time.Now().UTC(),
+					})
+					recordFailure()
+				}
+				return nil
 			}
 
 			// cache steps: restore immediately, defer save to postHooks
