@@ -658,9 +658,9 @@ spec:
 - On cancellation, `finally` still runs, but `failure()` is `false`.
 - `cache:` and `post:` are not supported in `finally` steps (they register
   deferred hooks that run before `finally`; use them in `steps` instead).
-- On the Kubernetes agent, mid-run cancellation detection is not yet
-  implemented, so `failure()` reflects only step failures (cancellation is
-  treated as `false`).
+- Both the standard and Kubernetes agents detect mid-run cancellation: an
+  in-flight step is interrupted, `finally` still runs (with `failure()` false),
+  and the run finishes as `Cancelled`.
 
 ---
 
