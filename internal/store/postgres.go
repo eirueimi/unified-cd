@@ -1585,6 +1585,19 @@ func (p *Postgres) GetApproval(ctx context.Context, runID string, stepIndex int)
 	return a, nil
 }
 
+func (p *Postgres) MarkExpiredApprovalsTimedOut(ctx context.Context) (int, error) {
+	const q = `
+		UPDATE run_approvals
+		SET status = 'TimedOut', decided_by = 'system', decided_at = now()
+		WHERE status = 'Pending' AND timeout_at IS NOT NULL AND timeout_at < now();
+	`
+	tag, err := p.pool.Exec(ctx, q)
+	if err != nil {
+		return 0, fmt.Errorf("mark expired approvals timed out: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (p *Postgres) ListRunApprovals(ctx context.Context, runID string) ([]api.RunApproval, error) {
 	const q = `
 		SELECT run_id, step_index, step_name, message, status, decided_by, comment, created_at, timeout_at, decided_at
