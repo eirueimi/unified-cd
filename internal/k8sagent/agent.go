@@ -20,6 +20,10 @@ import (
 // human decision. It is a var (not a const) so tests can shorten it.
 var approvalPollInterval = 3 * time.Second
 
+// cancelPollInterval is how often the cancel poller polls the controller to
+// detect mid-run cancellation. It is a var (not a const) so tests can shorten it.
+var cancelPollInterval = 5 * time.Second
+
 // podStepExec runs a single already-expanded step inside the pod and returns
 // the exit code, captured stdout, and any infrastructure error.
 type podStepExec func(ctx context.Context, step api.ClaimStep, expandedRun string) (exitCode int, stdout string, err error)
@@ -168,9 +172,43 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 // to run each step's command. Pure of pod lifecycle so it is unit-testable.
 func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec) {
 	var anyStepFailed atomic.Bool
+	var cancelledByMaster atomic.Bool
 	statusView := func() dsl.RunStatusView {
-		return dsl.RunStatusView{Failed: anyStepFailed.Load(), Cancelled: false}
+		cancelled := cancelledByMaster.Load()
+		return dsl.RunStatusView{Failed: anyStepFailed.Load() && !cancelled, Cancelled: cancelled}
 	}
+
+	// runCtx is cancelled when the master cancels the run mid-flight. Passing it
+	// as the exec context interrupts an in-flight pod exec (and unblocks an
+	// approval wait). Cancelling it here (defer) also stops the poller goroutine.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	// Cancel poller: periodically ask the controller whether the run was
+	// cancelled. On cancellation, record it and cancel runCtx to interrupt any
+	// in-flight step/approval, then exit.
+	go func() {
+		ticker := time.NewTicker(cancelPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				run, err := a.client.GetRun(runCtx, c.RunID)
+				if err != nil {
+					slog.Warn("k8s: cancel poller: get run failed", "runID", c.RunID, "error", err)
+					continue
+				}
+				if run.Status == api.RunCancelled {
+					cancelledByMaster.Store(true)
+					cancelRun()
+					return
+				}
+			}
+		}
+	}()
+
 	// Accumulate step outputs for template expansion in subsequent steps
 	stepCtx := dsl.TemplateData{Params: c.Params, Steps: map[string]dsl.StepData{}}
 
@@ -182,8 +220,26 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 	//                    so it auto-skips after a failure); false for finally
 	//                    (a no-if finally step always runs)
 	//   failedFlag:      the flag a non-continueOnError failure records into
+	//   execCtx:         the context passed to stepExec/approval; runCtx for the
+	//                    main stages (so a cancel interrupts the in-flight step),
+	//                    a non-cancelling context for finally (so it still runs)
+	//   suppressOnCancel: true for the main stages (a cancel-induced failure is
+	//                    not recorded as a real failure), false for finally (a
+	//                    genuine finally failure counts even on cancellation)
 	// It records failures into failedFlag instead of aborting the loop.
-	makeRunStep := func(statusFn func() dsl.RunStatusView, implicitSuccess bool, failedFlag *atomic.Bool) func(api.ClaimStep) {
+	makeRunStep := func(statusFn func() dsl.RunStatusView, implicitSuccess bool, failedFlag *atomic.Bool, execCtx context.Context, suppressOnCancel bool) func(api.ClaimStep) {
+		// recordFailure records a non-continueOnError failure, honouring
+		// suppressOnCancel (a cancel-induced failure on the main path is not a
+		// real failure; a finally failure counts even when the run was cancelled).
+		recordFailure := func(step api.ClaimStep) {
+			if step.ContinueOnError {
+				return
+			}
+			if suppressOnCancel && cancelledByMaster.Load() {
+				return
+			}
+			failedFlag.Store(true)
+		}
 		return func(step api.ClaimStep) {
 			// Build template data; expose foreach variable if set
 			tplData := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps}
@@ -208,7 +264,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			// for the human decision. Placed after the if: gate so an approval
 			// step can itself be if:-gated; reports only the terminal status.
 			if step.Approval != nil {
-				approved := agentlib.WaitForApproval(ctx, a.client, a.cfg.AgentID, c.RunID, step, approvalPollInterval)
+				approved := agentlib.WaitForApproval(execCtx, a.client, a.cfg.AgentID, c.RunID, step, approvalPollInterval)
 				status := "Succeeded"
 				if !approved {
 					status = "Failed"
@@ -216,8 +272,8 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: status, EndedAt: time.Now().UTC(),
 				})
-				if !approved && !step.ContinueOnError {
-					failedFlag.Store(true)
+				if !approved {
+					recordFailure(step)
 				}
 				return
 			}
@@ -233,7 +289,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				expandedRun = step.Run
 			}
 
-			ec, capturedStdout, execErr := stepExec(ctx, step, expandedRun)
+			ec, capturedStdout, execErr := stepExec(execCtx, step, expandedRun)
 
 			status := "Succeeded"
 			if execErr != nil || ec != 0 {
@@ -264,15 +320,17 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				StartedAt:  started,
 				EndedAt:    ended,
 			})
-			if status == "Failed" && !step.ContinueOnError {
-				failedFlag.Store(true)
+			if status == "Failed" {
+				recordFailure(step)
 			}
 		}
 	}
 
 	// mainRun executes a main-stage step with live status and implicit success()
-	// gating, recording non-continueOnError failures into anyStepFailed.
-	mainRun := makeRunStep(statusView, true, &anyStepFailed)
+	// gating, recording non-continueOnError failures into anyStepFailed. It runs
+	// with runCtx so a mid-run cancellation interrupts the in-flight step, and
+	// suppresses cancel-induced failures.
+	mainRun := makeRunStep(statusView, true, &anyStepFailed, runCtx, true)
 
 	// Visit every stage/step; the if: auto-skip (implicit success()) handles
 	// post-failure behavior, so the loop never aborts on failure.
@@ -317,16 +375,21 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		_ = a.client.SetRunOutputs(ctx, a.cfg.AgentID, c.RunID, runOutputs)
 	}
 
+	// anyStepFailed already excludes cancel-induced failures (suppressOnCancel).
+	cancelled := cancelledByMaster.Load()
 	mainFailed := anyStepFailed.Load()
 
 	// finally runs after the main stages (and output promotion) against a FROZEN
 	// status snapshot, so finally steps never auto-skip one another. A no-if
 	// finally step always runs (implicitSuccess=false); a finally step failure
-	// flips the run to Failed.
+	// flips the run to Failed. It must run even when the run was cancelled, so
+	// its steps execute with a non-cancelling context (WithoutCancel), and its
+	// failures are never suppressed by the cancellation.
 	var finallyFailed atomic.Bool
 	if len(c.Finally) > 0 {
-		frozen := dsl.RunStatusView{Failed: mainFailed, Cancelled: false}
-		finallyRun := makeRunStep(func() dsl.RunStatusView { return frozen }, false, &finallyFailed)
+		frozen := dsl.RunStatusView{Failed: mainFailed, Cancelled: cancelled}
+		finallyCtx := context.WithoutCancel(ctx)
+		finallyRun := makeRunStep(func() dsl.RunStatusView { return frozen }, false, &finallyFailed, finallyCtx, false)
 		for _, stage := range c.Finally {
 			for _, step := range api.StageSteps(stage) {
 				if step.Foreach != nil {
@@ -351,11 +414,19 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		}
 	}
 
-	overallStatus := api.RunSucceeded
-	if mainFailed || finallyFailed.Load() {
+	// Final status precedence: Failed > Cancelled > Succeeded.
+	var overallStatus api.RunStatus
+	switch {
+	case mainFailed || finallyFailed.Load():
 		overallStatus = api.RunFailed
+	case cancelled:
+		overallStatus = api.RunCancelled
+	default:
+		overallStatus = api.RunSucceeded
 	}
-	_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, overallStatus)
+	// Use a non-cancelling context so FinishRun is reliably delivered even when
+	// the run was cancelled.
+	_ = a.client.FinishRun(context.WithoutCancel(ctx), a.cfg.AgentID, c.RunID, overallStatus)
 }
 
 // logLineWriter is a Writer that sends each line of stdout to the master server via AppendLog.
