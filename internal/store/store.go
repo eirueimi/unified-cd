@@ -231,6 +231,9 @@ type Store interface {
 	GetApproval(ctx context.Context, runID string, stepIndex int) (api.RunApproval, error)
 	// ListRunApprovals returns all approval gates for the given run, ordered by step_index.
 	ListRunApprovals(ctx context.Context, runID string) ([]api.RunApproval, error)
+	// MarkExpiredApprovalsTimedOut marks all Pending approvals whose timeout has
+	// passed as TimedOut (system-decided). Returns the number of rows updated.
+	MarkExpiredApprovalsTimedOut(ctx context.Context) (int, error)
 
 	// ControllerSettings
 	// EnsureControllerKey returns the persisted controllerKey (hex string for the KEK).

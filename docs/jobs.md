@@ -626,9 +626,10 @@ Body: `{"decision": "approved"}` or `{"decision": "rejected", "comment": "reason
 - `approval` is **not allowed** in a `finally` block.
 - The agent is held while waiting. Prefer short timeouts or set `timeoutMinutes` explicitly to
   avoid blocking the agent for an extended period.
-- **v1 limitation:** when the step times out, the approval audit row in `run_approvals` remains
-  `Pending` (the agent fails the step itself; there is no agent-side endpoint to mark the row
-  `TimedOut` in v1). The run is correctly marked as Failed regardless.
+- When the step times out, the agent fails the step itself, so the run is correctly marked as
+  Failed. The approval audit row in `run_approvals` is reconciled separately: a leader-elected
+  controller reaper marks any expired `Pending` row as `TimedOut` (with `decidedBy` = `system`)
+  within roughly one minute. The reaper only fixes the audit row — it never changes run status.
 
 ---
 
