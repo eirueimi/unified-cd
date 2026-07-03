@@ -162,9 +162,13 @@ steps (which are shell scripts). The sidecar is always invoked via `ExecStepArgv
 
 Add `SidecarS3SecretName string \`yaml:"sidecarS3SecretName"\``. Thread it into
 the `SidecarSpec` where `BuildPod` is called. When empty, cache/artifact sidecar
-transfers are unavailable — the agent logs a clear warning and cache steps are
-reported **Failed with a descriptive message** (not silent success) so the
-misconfiguration is visible. (Artifact steps already fail loudly on exec error.)
+transfers are unavailable, and the agent logs a **clear one-time startup warning**
+so the misconfiguration is visible. **Cache steps remain best-effort even under a
+missing Secret** — they are reported Succeeded (the sidecar's `cache restore`/`save`
+just fail internally and are logged), consistent with cache's best-effort semantics
+everywhere else; they never fail the run. **Artifact steps fail loudly** on the exec
+error (the sidecar exits non-zero), so an operator using artifacts sees the
+misconfiguration immediately, and the startup warning covers cache-only jobs.
 
 ### 8. Tests
 
@@ -220,7 +224,9 @@ STS/IRSA future option); cache is best-effort (miss/error never fails a step).
   binary + CA certs (no bash/curl/tar/zstd).
 - S3 credentials reach the sidecar only via the operator-provisioned Secret
   (`sidecarS3SecretName`); the job container cannot read them. A missing Secret
-  makes cache steps fail loudly (not silently succeed).
+  is surfaced by a one-time startup warning; artifact steps then fail loudly,
+  while cache steps stay best-effort (Succeeded, no-op) — never silently
+  mis-reporting a successful cache.
 - The controller and standard agent are unchanged.
 - Cluster-free unit tests cover the binary logic, the artifact store round-trip,
   the pod Secret injection, and the orchestrator's cache/artifact argv dispatch;

@@ -44,6 +44,9 @@ func main() {
 		slog.Error("invalid config", "error", err)
 		os.Exit(1)
 	}
+	if cfg.SidecarS3SecretName == "" {
+		slog.Warn("sidecarS3SecretName is not set: cache steps will be no-ops (best-effort, reported Succeeded) and artifact upload/download steps will fail; set it to a Secret carrying UNIFIED_S3_* to enable sidecar transfers")
+	}
 
 	restCfg, err := buildRestConfig(cfg.Kubeconfig)
 	if err != nil {
