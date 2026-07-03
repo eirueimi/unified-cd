@@ -2,7 +2,7 @@
 # Also demonstrates foreach: for multi-target deployment.
 # Usage:
 #   unified-cd apply -f examples/jobs/call-job.yaml
-#   unified-cd run trigger deploy-pipeline --params version=v1.2.3
+#   unified-cd run trigger deploy-pipeline --param version=v1.2.3
 ---
 # caller: deploy-pipeline calls the build job twice in parallel, then deploys
 apiVersion: unified-cd/v1

@@ -1,8 +1,8 @@
 # Demonstrates: conditional step execution using if: expressions
 # Usage:
 #   unified-cd apply -f examples/jobs/step-condition.yaml
-#   unified-cd run trigger build-and-deploy --params env=staging
-#   unified-cd run trigger build-and-deploy --params env=production
+#   unified-cd run trigger build-and-deploy --param env=staging
+#   unified-cd run trigger build-and-deploy --param env=production
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
