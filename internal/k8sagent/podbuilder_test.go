@@ -149,6 +149,29 @@ func TestBuildPod_InjectsArtifactSidecar(t *testing.T) {
 	assert.Equal(t, "tok", env["UNIFIED_AGENT_TOKEN"])
 }
 
+func TestBuildPod_SidecarSecretEnvAndIdle(t *testing.T) {
+	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sc *corev1.Container
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == artifactSidecarName {
+			sc = &pod.Spec.Containers[i]
+		}
+	}
+	if sc == nil {
+		t.Fatal("sidecar container not found")
+	}
+	if len(sc.EnvFrom) != 1 || sc.EnvFrom[0].SecretRef == nil || sc.EnvFrom[0].SecretRef.Name != "ucd-s3" {
+		t.Fatalf("expected EnvFrom secretRef ucd-s3, got %+v", sc.EnvFrom)
+	}
+	if len(sc.Command) < 2 || sc.Command[0] != "unified-sidecar" || sc.Command[1] != "idle" {
+		t.Fatalf("expected command [unified-sidecar idle], got %v", sc.Command)
+	}
+}
+
 func TestMergeContainers(t *testing.T) {
 	base := []corev1.Container{{Name: "job", Image: "golang:1.24-alpine"}}
 	patch := []corev1.Container{

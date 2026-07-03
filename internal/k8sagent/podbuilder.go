@@ -15,9 +15,10 @@ const artifactSidecarName = "unified-artifact"
 
 // SidecarSpec configures the injected artifact-transfer sidecar.
 type SidecarSpec struct {
-	Image  string
-	Server string // controller base URL reachable from within the pod
-	Token  string // bearer token for the controller artifact endpoint
+	Image        string
+	Server       string // controller base URL (legacy artifact-via-controller path; removed in the direct-S3 rewrite)
+	Token        string // bearer token (legacy)
+	S3SecretName string // Secret providing UNIFIED_S3_* env for the direct-S3 sidecar
 }
 
 // BuildPod constructs a Pod object from the agent template and Job template.
@@ -87,15 +88,21 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 		}
 	}
 	if sidecar.Image != "" {
-		podSpec.Containers = append(podSpec.Containers, corev1.Container{
+		sc := corev1.Container{
 			Name:    artifactSidecarName,
 			Image:   sidecar.Image,
-			Command: []string{"sleep", "infinity"},
+			Command: []string{"unified-sidecar", "idle"},
 			Env: []corev1.EnvVar{
 				{Name: "UNIFIED_SERVER", Value: sidecar.Server},
 				{Name: "UNIFIED_AGENT_TOKEN", Value: sidecar.Token},
 			},
-		})
+		}
+		if sidecar.S3SecretName != "" {
+			sc.EnvFrom = []corev1.EnvFromSource{
+				{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: sidecar.S3SecretName}}},
+			}
+		}
+		podSpec.Containers = append(podSpec.Containers, sc)
 	}
 
 	injectWorkspace(podSpec, wsCfg)
