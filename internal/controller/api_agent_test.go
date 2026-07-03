@@ -103,6 +103,75 @@ func TestAgentAPI_Claim_ReturnsQueuedRun(t *testing.T) {
 	assert.Equal(t, "echo x", got.Stages[0].Step.Run)
 }
 
+// TestAgentAPI_Claim_UpsertsUnregisteredAgent verifies bug #12's fix: an agent that
+// never called /register (e.g. because the controller DB was reset out from under a
+// still-running agent) still (re)appears in inventory as soon as it claims a run, with
+// the labels it presented on the claim request. This closes the "invisible agents run
+// jobs" monitoring/audit hole.
+func TestAgentAPI_Claim_UpsertsUnregisteredAgent(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	// Sanity check: the agent is not present before it ever claims.
+	before, err := pg.GetAgent(context.Background(), "ghost-agent")
+	require.NoError(t, err)
+	assert.Nil(t, before, "agent must not exist before its first claim")
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/agents/ghost-agent/claim?timeout=200ms&labels=kind:linux,zone:us-east", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	got, err := pg.GetAgent(context.Background(), "ghost-agent")
+	require.NoError(t, err)
+	require.NotNil(t, got, "agent must appear in inventory after claiming, even though it never registered")
+	assert.Equal(t, "ghost-agent", got.ID)
+	assert.ElementsMatch(t, []string{"kind:linux", "zone:us-east"}, got.Labels)
+
+	// Also visible via the list endpoint used by the UI Agents page.
+	all, err := pg.ListAgents(context.Background())
+	require.NoError(t, err)
+	found := false
+	for _, a := range all {
+		if a.ID == "ghost-agent" {
+			found = true
+		}
+	}
+	assert.True(t, found, "ghost-agent must appear in ListAgents")
+}
+
+// TestAgentAPI_Claim_DoesNotClobberRegisteredAgent verifies that claims from an agent
+// that previously did a full /register call do not wipe out its hostname/OS/version/env,
+// even though the claim handler's upsert only knows the agent ID and claim-time labels.
+func TestAgentAPI_Claim_DoesNotClobberRegisteredAgent(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	regBody, _ := json.Marshal(api.AgentRegisterRequest{
+		AgentID: "a1", Hostname: "host1", OS: "linux", Version: "v1.2.3",
+		Labels: []string{"kind:linux"},
+	})
+	regReq := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(regBody))
+	regReq.Header.Set("Authorization", "Bearer agent-secret")
+	regRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(regRec, regReq)
+	require.Equal(t, http.StatusNoContent, regRec.Code, regRec.Body.String())
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=200ms", nil)
+	claimReq.Header.Set("Authorization", "Bearer agent-secret")
+	claimRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(claimRec, claimReq)
+	require.Equal(t, http.StatusOK, claimRec.Code, claimRec.Body.String())
+
+	got, err := pg.GetAgent(context.Background(), "a1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "host1", got.Hostname, "hostname from registration must survive a claim's lightweight upsert")
+	assert.Equal(t, "linux", got.OS)
+	assert.Equal(t, "v1.2.3", got.Version)
+	assert.Contains(t, got.Labels, "kind:linux", "labels from registration must survive a claim's lightweight upsert")
+}
+
 func TestAgentAPI_ReportStep(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))

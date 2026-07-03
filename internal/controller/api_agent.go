@@ -3,6 +3,7 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -60,9 +61,6 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	if err != nil || timeout <= 0 || timeout > maxClaimTimeout {
 		timeout = maxClaimTimeout
 	}
-	// Update last_seen_at on every claim request (keeps the agent online even when idle).
-	_ = s.store.TouchAgent(r.Context(), agentID)
-
 	// Parse agent labels from the comma-separated query parameter.
 	labelsStr := r.URL.Query().Get("labels")
 	var agentLabels []string
@@ -73,6 +71,15 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 				agentLabels = append(agentLabels, l)
 			}
 		}
+	}
+
+	// Upsert the agent's registration record on every claim so an agent that is
+	// actively claiming/running jobs always (re)appears in inventory (agent list /
+	// UI Agents page), even if it was never explicitly registered or the controller
+	// DB was reset out from under a still-running agent. This is best-effort: a
+	// failure here must not fail the claim itself.
+	if err := s.store.UpsertAgent(r.Context(), agentID, "", "", "", agentLabels, nil); err != nil {
+		slog.Warn("agent claim: failed to upsert agent registration", "agentId", agentID, "error", err)
 	}
 
 	deadline := time.Now().Add(timeout)

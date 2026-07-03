@@ -654,15 +654,20 @@ func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, versi
 	if err != nil {
 		return err
 	}
+	// On conflict, only overwrite hostname/os/version/env when the caller supplied a
+	// non-empty value, and merge (rather than replace) labels. This lets lightweight
+	// callers (e.g. the claim handler, which only knows the agent ID and its claim-time
+	// labels) refresh last_seen_at/labels without clobbering richer data recorded at
+	// full registration time.
 	const q = `
 		INSERT INTO agents(id, hostname, os, labels, version, env, last_seen_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW())
 		ON CONFLICT (id) DO UPDATE
-		  SET hostname     = EXCLUDED.hostname,
-		      os           = EXCLUDED.os,
-		      labels       = EXCLUDED.labels,
-		      version      = EXCLUDED.version,
-		      env          = EXCLUDED.env,
+		  SET hostname     = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
+		      os           = COALESCE(NULLIF(EXCLUDED.os, ''), agents.os),
+		      labels       = (SELECT ARRAY(SELECT DISTINCT unnest(agents.labels || EXCLUDED.labels))),
+		      version      = COALESCE(NULLIF(EXCLUDED.version, ''), agents.version),
+		      env          = CASE WHEN EXCLUDED.env = '{}'::jsonb THEN agents.env ELSE EXCLUDED.env END,
 		      last_seen_at = NOW();
 	`
 	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON)
