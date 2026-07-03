@@ -266,6 +266,67 @@ func TestTriggerRun_RecordsPrincipal(t *testing.T) {
 	assert.Equal(t, "alice", run.TriggeredBy)
 }
 
+// TestAPI_TriggerRun_MissingRequiredParam verifies that triggering a job with a
+// declared `required: true` input and no default fails with 400 when the
+// caller omits it, per docs/jobs.md ("the run fails immediately when the
+// value is not supplied").
+func TestAPI_TriggerRun_MissingRequiredParam(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "needs-image", "unified-cd/v1", []byte(`{
+		"params": {"inputs": [{"name": "image", "type": "string", "required": true}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "needs-image"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "image")
+
+	runs, err := pg.ListRunsByJob(t.Context(), "needs-image", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs, "no Run should be created when a required param is missing")
+}
+
+// TestAPI_TriggerRun_InjectsDefaultParam verifies that an omitted param with a
+// declared `default` is injected into the created Run's params.
+func TestAPI_TriggerRun_InjectsDefaultParam(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "has-default", "unified-cd/v1", []byte(`{
+		"params": {"inputs": [{"name": "tag", "type": "string", "default": "latest"}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "has-default"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var run api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &run))
+	assert.Equal(t, "latest", run.Params["tag"])
+}
+
+// TestAPI_TriggerRun_RequiredParamProvided_Succeeds verifies the happy path:
+// supplying a required param allows the Run to be created normally.
+func TestAPI_TriggerRun_RequiredParamProvided_Succeeds(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "needs-image2", "unified-cd/v1", []byte(`{
+		"params": {"inputs": [{"name": "image", "type": "string", "required": true}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "needs-image2", Params: map[string]string{"image": "nginx"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var run api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &run))
+	assert.Equal(t, "nginx", run.Params["image"])
+}
+
 func TestAPI_ListActiveRuns(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{}`))

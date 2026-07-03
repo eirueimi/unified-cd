@@ -33,7 +33,12 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(job.Spec, &spec); err == nil {
 		agentSelector = spec.AgentSelector
 	}
-	agentSelector, err = dsl.ExpandAgentSelector(agentSelector, req.Params)
+	params, err := resolveParams(spec.Params.Inputs, req.Params)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	agentSelector, err = dsl.ExpandAgentSelector(agentSelector, params)
 	if err != nil {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
@@ -46,7 +51,7 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 	if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
 		triggeredBy = p.Name
 	}
-	run, err := s.store.CreateRun(r.Context(), job.Name, req.Params, job.Spec, agentSelector, triggeredBy)
+	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, triggeredBy)
 	if err != nil {
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
 		return

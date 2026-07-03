@@ -109,6 +109,61 @@ func TestWebhookIngress_ExpandsAgentSelectorParams(t *testing.T) {
 	require.NotNil(t, claimed, "agent with the expanded label must claim the run")
 }
 
+// TestWebhookIngress_MissingRequiredParam verifies that a webhook-triggered
+// Run is rejected with 400 when the job declares a required input that the
+// webhook's paramsMapping does not supply.
+func TestWebhookIngress_MissingRequiredParam(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
+		"params": {"inputs": [{"name": "image", "type": "string", "required": true}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "none"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	payload, _ := json.Marshal(map[string]any{"ref": "refs/heads/main"})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "image")
+
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
+// TestWebhookIngress_InjectsDefaultParam verifies that a webhook-triggered Run
+// gets defaults filled in for inputs the paramsMapping doesn't supply.
+func TestWebhookIngress_InjectsDefaultParam(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
+		"params": {"inputs": [{"name": "tag", "type": "string", "default": "latest"}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "none"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	payload, _ := json.Marshal(map[string]any{"ref": "refs/heads/main"})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, "latest", runs[0].Params["tag"])
+}
+
 func TestWebhookIngress_FilterRejectsNonMain(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",

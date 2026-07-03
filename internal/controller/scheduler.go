@@ -101,7 +101,19 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 			// Not yet due — do nothing.
 		case !next.Before(windowStart):
 			// next ∈ [windowStart, now] → fire
-			_, err := st.CreateRun(ctx, sc.JobName, sc.Params, []byte(`{}`), nil, "schedule:"+sc.Name)
+			params := sc.Params
+			if job, jerr := st.GetJob(ctx, sc.JobName); jerr == nil {
+				inputs := inputsFromSpecJSON(job.Spec)
+				resolved, perr := resolveParams(inputs, sc.Params)
+				if perr != nil {
+					slog.Warn("checkAndFireSchedules: param validation failed", "schedule", sc.Name, "error", perr)
+					continue // Do not update last_fired_at — allow retry on the next tick.
+				}
+				params = resolved
+			} else {
+				slog.Warn("checkAndFireSchedules: failed to load job for param validation", "schedule", sc.Name, "job", sc.JobName, "error", jerr)
+			}
+			_, err := st.CreateRun(ctx, sc.JobName, params, []byte(`{}`), nil, "schedule:"+sc.Name)
 			if err != nil {
 				slog.Warn("checkAndFireSchedules: failed to create Run", "schedule", sc.Name, "error", err)
 				continue // Do not update last_fired_at — allow retry on the next tick.
