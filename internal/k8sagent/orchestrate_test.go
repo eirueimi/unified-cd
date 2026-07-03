@@ -12,6 +12,7 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -132,8 +133,8 @@ func runOrchestrateWithApproval(t *testing.T, c api.ClaimResponse, fakes map[str
 		}
 		return f.exit, f.stdout, nil
 	}
-	noopArtifactExec := func(_ context.Context, _, _ string) (int, error) { return 0, nil }
-	a.orchestrate(context.Background(), c, stepExec, noopArtifactExec, "/workspace")
+	noopSidecarExec := func(_ context.Context, _ string, _ []string) (int, error) { return 0, nil }
+	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -240,14 +241,14 @@ func TestOrchestrate_ApprovalRejectedSkipsLaterStep(t *testing.T) {
 	assert.Equal(t, "Failed", final)
 }
 
-// artifactCall records a single call to the fake artifactExec.
+// artifactCall records a single call to the fake sidecarExec.
 type artifactCall struct {
 	container string
-	script    string
+	argv      []string
 }
 
 // runOrchestrateArtifact is like runOrchestrate but injects a fake
-// artifactExec that records (container, script) calls and returns exitCode
+// sidecarExec that records (container, argv) calls and returns exitCode
 // for every call. It returns the recorded calls, per-step statuses, and the
 // final run status.
 func runOrchestrateArtifact(t *testing.T, c api.ClaimResponse, exitCode int) ([]artifactCall, map[string]string, string) {
@@ -304,14 +305,14 @@ func runOrchestrateArtifact(t *testing.T, c api.ClaimResponse, exitCode int) ([]
 	fakeStepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
 		return 0, "", nil
 	}
-	fakeArtifactExec := func(_ context.Context, container, script string) (int, error) {
+	fakeSidecarExec := func(_ context.Context, container string, argv []string) (int, error) {
 		mu.Lock()
-		recorded = append(recorded, artifactCall{container: container, script: script})
+		recorded = append(recorded, artifactCall{container: container, argv: argv})
 		mu.Unlock()
 		return exitCode, nil
 	}
 
-	a.orchestrate(context.Background(), c, fakeStepExec, fakeArtifactExec, "/workspace")
+	a.orchestrate(context.Background(), c, fakeStepExec, fakeSidecarExec, "/workspace")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -326,10 +327,8 @@ func TestOrchestrate_UploadArtifactDispatchesToSidecar(t *testing.T) {
 	rec, statuses, final := runOrchestrateArtifact(t, c, 0 /*exit*/)
 	require.Len(t, rec, 1)
 	assert.Equal(t, artifactSidecarName, rec[0].container)
-	assert.Contains(t, rec[0].script, "tar cf -")
-	assert.Contains(t, rec[0].script, "zstd")
-	assert.Contains(t, rec[0].script, "-X PUT")
-	assert.Contains(t, rec[0].script, "/api/v1/runs/r1/artifacts/app")
+	assert.Equal(t, []string{"unified-sidecar", "artifact", "upload",
+		"--run", "r1", "--name", "app", "--path", "/workspace/bin/app"}, rec[0].argv)
 	assert.Equal(t, "Succeeded", statuses["up"])
 	assert.Equal(t, "Succeeded", final)
 }
@@ -342,10 +341,8 @@ func TestOrchestrate_DownloadArtifactDispatchesToSidecar(t *testing.T) {
 	rec, statuses, _ := runOrchestrateArtifact(t, c, 0)
 	require.Len(t, rec, 1)
 	assert.Equal(t, artifactSidecarName, rec[0].container)
-	assert.Contains(t, rec[0].script, "curl")
-	assert.Contains(t, rec[0].script, "zstd -d")
-	assert.Contains(t, rec[0].script, "tar xf -")
-	assert.Contains(t, rec[0].script, "/api/v1/runs/r1/artifacts/app")
+	assert.Equal(t, []string{"unified-sidecar", "artifact", "download",
+		"--run", "r1", "--name", "app", "--dest", "/workspace/out"}, rec[0].argv)
 	assert.Equal(t, "Succeeded", statuses["dl"])
 }
 
@@ -357,6 +354,45 @@ func TestOrchestrate_ArtifactExecFailureFailsRun(t *testing.T) {
 	_, statuses, final := runOrchestrateArtifact(t, c, 1 /*non-zero exit*/)
 	assert.Equal(t, "Failed", statuses["up"])
 	assert.Equal(t, "Failed", final)
+}
+
+func TestOrchestrate_CacheRestoreAndDeferredSave(t *testing.T) {
+	c := api.ClaimResponse{
+		RunID:  "r1",
+		Params: map[string]string{"v": "1"},
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "with-cache",
+				Cache: &dsl.CacheStep{Path: "node_modules", Key: "npm-{{.Params.v}}", TTLDays: 7}}},
+		},
+	}
+	rec, statuses, final := runOrchestrateArtifact(t, c, 0 /*exit*/)
+
+	var restoreCall, saveCall *artifactCall
+	for i := range rec {
+		if len(rec[i].argv) >= 2 && rec[i].argv[0] == "unified-sidecar" && rec[i].argv[1] == "cache" {
+			if len(rec[i].argv) >= 3 && rec[i].argv[2] == "restore" {
+				restoreCall = &rec[i]
+			}
+			if len(rec[i].argv) >= 3 && rec[i].argv[2] == "save" {
+				saveCall = &rec[i]
+			}
+		}
+	}
+
+	require.NotNil(t, restoreCall, "expected a cache restore argv call, got: %+v", rec)
+	assert.Equal(t, artifactSidecarName, restoreCall.container)
+	assert.Contains(t, restoreCall.argv, "--key")
+	assert.Contains(t, restoreCall.argv, "npm-1")
+	assert.Contains(t, restoreCall.argv, "--path")
+	assert.Contains(t, restoreCall.argv, "/workspace/node_modules")
+
+	require.NotNil(t, saveCall, "expected a cache save argv call after the main stages, got: %+v", rec)
+	assert.Equal(t, artifactSidecarName, saveCall.container)
+	assert.Contains(t, saveCall.argv, "--key")
+	assert.Contains(t, saveCall.argv, "npm-1")
+
+	assert.Equal(t, "Succeeded", statuses["with-cache"])
+	assert.Equal(t, "Succeeded", final)
 }
 
 // orchestrateDecodeJSON decodes an HTTP request body as JSON into v.

@@ -16,8 +16,6 @@ const artifactSidecarName = "unified-artifact"
 // SidecarSpec configures the injected artifact-transfer sidecar.
 type SidecarSpec struct {
 	Image        string
-	Server       string // controller base URL (legacy artifact-via-controller path; removed in the direct-S3 rewrite)
-	Token        string // bearer token (legacy)
 	S3SecretName string // Secret providing UNIFIED_S3_* env for the direct-S3 sidecar
 }
 
@@ -92,10 +90,6 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 			Name:    artifactSidecarName,
 			Image:   sidecar.Image,
 			Command: []string{"unified-sidecar", "idle"},
-			Env: []corev1.EnvVar{
-				{Name: "UNIFIED_SERVER", Value: sidecar.Server},
-				{Name: "UNIFIED_AGENT_TOKEN", Value: sidecar.Token},
-			},
 		}
 		if sidecar.S3SecretName != "" {
 			sc.EnvFrom = []corev1.EnvFromSource{

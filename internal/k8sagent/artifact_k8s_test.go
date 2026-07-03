@@ -4,7 +4,9 @@ package k8sagent
 
 // TestK8sAgent_ArtifactRoundTrip_Integration verifies that uploadArtifact and
 // downloadArtifact steps work end-to-end via the unified-artifact sidecar in a
-// real Kubernetes cluster.
+// real Kubernetes cluster, using the direct-S3 model: the sidecar execs the
+// unified-sidecar binary against an S3-compatible bucket (no controller
+// involvement in the transfer itself).
 //
 // Prerequisites:
 //   - A reachable Kubernetes cluster (via default kubeconfig).
@@ -12,9 +14,11 @@ package k8sagent
 //     (ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest) must be pullable
 //     from within the cluster. If the sidecar image is not yet available on the
 //     cluster, pre-load it (e.g. `kind load docker-image …`) before running.
-//   - The mock server in this test implements the artifact PUT/GET endpoints
-//     as an in-memory store, so no real unified-cd controller is needed for
-//     the artifact transfers — the sidecar's curl PUT/GET will reach the mock.
+//   - A Kubernetes Secret providing UNIFIED_S3_ENDPOINT/UNIFIED_S3_BUCKET/
+//     UNIFIED_S3_KEY/UNIFIED_S3_SECRET/UNIFIED_S3_USE_SSL/UNIFIED_S3_REGION
+//     must already exist in the test namespace; its name is passed via the
+//     UNIFIED_TEST_S3_SECRET env var. Without it, this test skips (it cannot
+//     fabricate S3 credentials for a real cluster run).
 //
 // For CI without a cluster, skip this file by not passing -tags k8s.
 // This test is intentionally skipped when -short is set.
@@ -22,10 +26,9 @@ package k8sagent
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -41,6 +44,11 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 		t.Skip("skipping artifact round-trip integration test in -short mode")
 	}
 
+	s3Secret := os.Getenv("UNIFIED_TEST_S3_SECRET")
+	if s3Secret == "" {
+		t.Skip("UNIFIED_TEST_S3_SECRET not set; skipping direct-S3 artifact round-trip (needs a pre-created Secret with UNIFIED_S3_* env in the test namespace)")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -54,10 +62,9 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 	stepStatuses := map[string]string{}
 	finishCh := make(chan api.RunStatus, 1)
 
-	// In-memory artifact store: keyed by "runID/name" → bytes.
-	var artifactMu sync.Mutex
-	artifactStore := map[string][]byte{}
-
+	// The mock controller in this test only needs to serve run/step/log
+	// bookkeeping endpoints — artifact bytes now flow directly between the
+	// sidecar and S3, never through the controller.
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
 		var req api.StepReportRequest
@@ -88,43 +95,6 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/outputs", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// artifactKey parses /api/v1/runs/{runID}/artifacts/{name} → "runID/name".
-	artifactKey := func(urlPath string) string {
-		const prefix = "/api/v1/runs/"
-		const sep = "/artifacts/"
-		rel := urlPath[len(prefix):] // "{runID}/artifacts/{name}"
-		i := strings.Index(rel, sep)
-		if i < 0 {
-			return rel
-		}
-		return rel[:i] + "/" + rel[i+len(sep):]
-	}
-	// Artifact PUT: store body bytes keyed by "runID/name".
-	mux.HandleFunc("PUT /api/v1/runs/", func(w http.ResponseWriter, r *http.Request) {
-		key := artifactKey(r.URL.Path)
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "read error", http.StatusInternalServerError)
-			return
-		}
-		artifactMu.Lock()
-		artifactStore[key] = body
-		artifactMu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
-	})
-	// Artifact GET: return stored bytes or 404.
-	mux.HandleFunc("GET /api/v1/runs/", func(w http.ResponseWriter, r *http.Request) {
-		key := artifactKey(r.URL.Path)
-		artifactMu.Lock()
-		data, ok := artifactStore[key]
-		artifactMu.Unlock()
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		w.Write(data) //nolint:errcheck
-	})
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -135,28 +105,26 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 	agentClient := agentlib.NewClient(srv.URL, "tok")
 
 	cfg := Config{
-		AgentID:      agentID,
-		Namespace:    ns,
-		PodImage:     testImage,
-		SidecarImage: "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
-		Server:       srv.URL,
-		Token:        "tok",
+		AgentID:             agentID,
+		Namespace:           ns,
+		PodImage:            testImage,
+		SidecarImage:        "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
+		Server:              srv.URL,
+		Token:               "tok",
+		SidecarS3SecretName: s3Secret,
 	}
 	a := NewK8sAgent(cfg, agentClient, pm, exec, pool)
 
 	// The round-trip stages:
 	//  1. run:  write a file into the workspace.
-	//  2. uploadArtifact: tar|zstd|curl PUT the workspace directory.
+	//  2. uploadArtifact: exec `unified-sidecar artifact upload` (direct to S3).
 	//  3. run:  delete the file to prove it is gone.
-	//  4. downloadArtifact: curl|zstd|tar restore into a subdirectory.
+	//  4. downloadArtifact: exec `unified-sidecar artifact download` (direct from S3).
 	//  5. run:  cat the restored file and assert the content is correct.
 	//
-	// Steps 2 and 4 call the real sidecar. $UNIFIED_SERVER and
-	// $UNIFIED_AGENT_TOKEN are injected by the SidecarSpec and point at this
-	// mock server, which now serves artifact PUT/GET from an in-memory store.
-	// The sidecar's curl PUT → GET round-trip therefore succeeds without a real
-	// unified-cd controller, making the "assert Succeeded" assertions genuinely
-	// verifiable on a real cluster.
+	// Steps 2 and 4 call the real sidecar binary, which authenticates to S3
+	// using the UNIFIED_S3_* env injected via the SidecarS3SecretName Secret
+	// (EnvFrom) — the mock controller above is never touched for the transfer.
 	claim := api.ClaimResponse{
 		RunID:   runID,
 		JobName: "artifact-round-trip",
