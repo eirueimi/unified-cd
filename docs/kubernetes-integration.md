@@ -218,6 +218,39 @@ Use `container:` to switch the execution container per step. When omitted, the f
 
 ---
 
+## Artifacts
+
+The k8s-agent supports `uploadArtifact` and `downloadArtifact` steps via an auto-injected sidecar container.
+
+### How it works
+
+When a job pod is created, the agent automatically adds a sidecar container named `unified-artifact` (a small Alpine image with `tar`, `zstd`, and `curl`) to the pod. The sidecar shares the pod's workspace volume and transfers files to and from the controller's artifact endpoint using the same wire format as the standard agent.
+
+Job-container steps (`run:` commands) are unaffected — the sidecar runs separately and is invisible to the main step execution.
+
+### Reserved container name
+
+The container name `unified-artifact` is **reserved**. A `podTemplate` must not define a container with that name. The agent returns a `BuildPod` error at job start if the name conflicts.
+
+### Sidecar image
+
+The sidecar image is configurable via the agent's `sidecarImage` config field:
+
+```yaml
+# k8s-agent-config.yaml
+sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest   # default
+```
+
+### Security note
+
+The controller bearer token is set on the **sidecar container's** environment, not on the job container. Job-container steps cannot read it (container-boundary isolation). However, the token does appear in the pod spec — a Secret-based hardening (using a Kubernetes `Secret` instead of a plain env var) is a planned follow-up.
+
+### Cache
+
+Cache steps (`cache:`) are **not yet supported** on the Kubernetes agent. A `cache:` step is currently a silent no-op when running on k8s. A follow-up will route cache through the same sidecar via a controller cache-proxy.
+
+---
+
 ## RBAC example
 
 Minimum permissions required for k8s-agent to operate:

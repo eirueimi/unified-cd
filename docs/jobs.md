@@ -381,6 +381,8 @@ steps:
 
 Artifacts are stored in the S3-compatible object store. Artifact names must be unique within a run.
 
+Artifacts work on both the standard and Kubernetes agents; on the k8s-agent, transfers are handled by an auto-injected workspace sidecar (`unified-artifact`).
+
 ---
 
 ## Cache
