@@ -1,0 +1,217 @@
+# TODO — 実機検証で見つかった不具合・修正すべき点
+
+2026-07-03 実施の実機検証(docker compose スタック + CLI/HTTP/Webhook 経由の実ジョブ実行)で発見。
+検証環境: `docker compose up`(controller + agent + PostgreSQL + Garage)、`unified-cli` はホストでビルド。
+
+---
+
+## 致命的(Critical)
+
+### 1. ステップの失敗/スキップでランが永久にハングし、エージェントが停止する
+
+- **症状:** ステップが1つでも失敗すると(または `if:` が false でスキップされると)、後続ステップの `Skipped` 報告が DB の CHECK 制約違反で HTTP 500 になり、エージェントが無限リトライ。ランは永遠に `Running` のまま、**エージェントは再起動するまで他のランを一切処理しない**。`run cancel` でも復旧しない。
+- **原因:** `internal/store/migrations/001_init.up.sql:26` の `step_reports` の CHECK 制約が `('Running','Succeeded','Failed','Cancelled')` のみで、エージェントが送る `Skipped`(`internal/agent/agent.go` の if:-false / 失敗後自動スキップ経路)と `WaitingApproval`(`internal/agent/approval.go:44`)を許可していない。後続マイグレーション(〜016)にも追加なし。
+- **再現:** 2ステップのジョブで1ステップ目を `exit 1` にするだけ。`if:` 不使用でも発生。
+- **修正案:**
+  - 制約に `Skipped` / `WaitingApproval` を追加する新規マイグレーション
+  - agent の `retryUntilSuccess` を 4xx/制約系エラーでは打ち切るようにし、不正ステータスでエージェントが二度と詰まらないようにする
+  - 失敗を含むマルチステップジョブの e2e テスト追加(ラン最終状態 Failed、後続ステップ Skipped を検証)
+
+### 2. `required` パラメータが強制されず、`default` も適用されない
+
+- **症状:** `required: true` の入力パラメータ未指定でもトリガーが成功し、`{{ .Params.x }}` は空文字に展開。`default: staging` も一切注入されず、CEL の `if:` 条件は `no such key` エラーになる。
+- **原因:** `Required`/`Default` は型定義とシリアライズにしか登場せず、`internal/controller/api_runs.go` の `handleTriggerRun` は `req.Params` を無検証で `store.CreateRun` に渡している。
+- **docs との矛盾:** `docs/jobs.md` は「required 未指定ならランは即失敗」「default は省略時に適用」と明記。
+- **補足(Playwright での UI 検証で確認):** Web UI の Run タブは default をフォームにプレフィルし、required は `*` 表示+未入力時は Run ボタンを disabled にしており**フロントエンドは正しく実装済み**。欠けているのはコントローラ API 側のみ(CLI / API 直叩き / webhook / schedule 経路で発症)。
+- **修正案:** trigger 経路(API / webhook / schedule すべて)で、required 欠落は 400 で拒否、省略パラメータに default を充填、型検証も検討。
+
+### 3. `if:` の文書化された構文が実装と不一致 + fail-open で危険
+
+- **症状:** README(〜189行)と `docs/jobs.md`(182–187行)は Go テンプレート構文(`if: '{{ eq .Params.env "production" }}'`)を記載しているが、実装は CEL(`internal/dsl/condition.go`、正しくは `params.env == "production"`)。docs 通りに書くと CEL コンパイルエラー → **fail-open でステップが必ず実行される**(警告は agent ログのみ)。production 限定のはずの deploy が staging トリガーで実行されるのを実機確認。
+- **修正案:**
+  - README / docs/jobs.md の `if:` 例をすべて CEL に書き換え(webhook の `filters:` は本当に Go テンプレートなのでそのまま)
+  - `if:` のコンパイルエラーをランに表面化する(ステップ警告 or ランイベント)、少なくとも fail-open 挙動を目立つ形で文書化
+
+---
+
+## 重要(High)
+
+### 4. `uploadArtifact` が相対パスを解決できない(標準エージェント)
+
+- **症状:** docs の書式通り `path: out.txt`(相対パス)を指定すると `tar walk "out.txt": lstat out.txt: no such file or directory` で失敗。シェルステップの cwd(`/root/workspace/workingN`)にファイルは存在し、絶対パス指定なら成功。
+- **原因:** `internal/agent/agent.go:637` 付近の `executeUploadArtifact` が `ua.Path` をワークスペースと結合せず、エージェントプロセス自身の cwd 基準で解決している。`executeDownloadArtifact` の `destDir` も同様の疑い。
+- **修正案:** ExecStep と同じワークスペースディレクトリ基準で相対パスを解決。相対パスアップロードのテスト追加。
+- **注意:** アップロード失敗 → 後続ステップ自動スキップ → 上記 1. のハングに連鎖する。
+
+### 5. 承認待ちステップが `run show` に表示されない
+
+- **症状:** approval ステップで待機中、`run show` にステップが1件も出ず、どのステップが承認待ちか見えない。承認自体(`approve <run> <step>`)は機能しラン完走。
+- **原因:** `WaitingApproval` の ReportStep がベストエフォート送信(`_ =`)で、上記 1. の制約違反により黙って捨てられている。1. の制約修正で解消するはず(要確認)。
+
+---
+
+## 中(Medium)
+
+### 6. 同梱サンプル `examples/jobs/parallel-steps.yaml` が apply で拒否される
+
+- 先頭ステップが `- name:`(空)のため `spec.steps[0]: name is required` で失敗。名前を付ければ並列実行自体は正常。
+
+### 7. サンプル/docs の CLI フラグ表記が誤り
+
+- 各サンプルのヘッダコメントが `--params image=myapp,tag=v1.0.0` 形式だが、実 CLI は繰り返し指定の `--param k=v`。`examples/jobs/*.yaml` のコメントと該当 docs を修正。
+
+### 8. アーティファクトステップの表示名が `step[1]` になる
+
+- `executeUploadArtifact` / `executeDownloadArtifact` 内の ReportStep に `StepName`(と `StageIndex`)が未設定のため、`run show` でステップ名でなく `step[1]` と表示される。
+
+### 9. ワークスペースがラン間で掃除されず再利用される
+
+- 別ジョブ・別ランでも `working0` が使い回され、前のランのファイルが残留するのを確認。`--clean-workspace` フラグ(オプトイン)は存在する。デフォルト挙動としてよいかの判断と、ジョブ間の情報漏えいリスク(シークレットを書いたファイル等)の文書化が必要。
+
+### 9b. エージェントのワークスペース位置が `~/workspace` にハードコード
+
+- `internal/agent/agent.go:99-101` — `Agent.WorkspaceDir` フィールドは存在するが、`cmd/agent/main.go` からも設定ファイルからも一切セットされない(テストのみ使用)。フラグ `--help` にも `docs/configuration.md` にも設定手段がない。
+- Windows では `C:\Users\<user>\workspace` に直接作られる(実機確認)。ユーザーの既存ディレクトリと衝突し得る。`-workspace-dir` フラグ / 設定ファイルキーとして公開すべき。
+
+### 9c. Windows: ラン中キャンセルで子プロセスが孤児化し、ステップが Running 表示のまま残る
+
+- **症状(実機確認):** `sleep 120` 中のランをキャンセル → ランは `Cancelled` になり step の bash.exe は終了するが、**子プロセス `sleep.exe` は生き残る**(30秒以上生存を確認、手動 kill が必要)。また該当ステップの表示が永久に `Running` のまま。
+- **原因(推定):** Windows でプロセスツリー kill(Job Object)を使っていない。ステップの最終ステータス報告もキャンセル経路で行われていない。
+- **修正案:** Windows では Job Object(または `taskkill /T`)でツリーごと終了。キャンセル時にステップを `Cancelled` として報告。
+- docs/jobs.md の「両エージェントは実行中キャンセルを検知し、実行中ステップを中断する」という記述と部分的に矛盾。
+
+### 10. Cancelled ランのログが Web UI に表示されない
+
+- **症状:** Run Detail ページで Cancelled のラン(例: 途中で失敗→キャンセルしたラン)のログ欄が「Waiting for logs…」のまま。同じランを CLI の `logs` で見るとログ(`about to fail`)は取得できる。Succeeded ランのログは UI でも正常表示(SSE)。
+- **切り分け:** データは存在しサーバ API からは取れるので、UI(またはログ SSE エンドポイント)の終了済み/キャンセル済みラン向けバックフィル経路の問題。
+- 検証: Playwright(スクリーンショット `20-failed-run-detail.png`)。
+
+### 11. CLI に `run cancel` がない
+
+- API には `POST /api/v1/runs/{id}/cancel` が存在する(204 を返すのを確認)が、CLI の `run` サブコマンドは delete/list/show/trigger のみ。ハングしたランの復旧手段として特に重要(現状 curl 直叩きが必要)。
+
+### 12. エージェント登録が起動時のみで、コントローラ DB 消失後に inventory が不整合になる
+
+- **症状(実機確認):** コントローラの DB が初期化された後(検証中に Docker Desktop の VM リセットで発生)、稼働中のエージェントは claim を継続しジョブも正常実行されるが、`agent list` / UI の Agents ページから消えたまま戻らない。
+- **含意:** ①登録は起動時の1回のみで再登録しない。②コントローラは**未登録エージェントからの claim を受理する**(ラベルは claim クエリ由来)。運用上は「見えないエージェントがジョブを実行する」状態になり、監視・監査に穴。
+- **修正案:** claim 時に登録レコードを upsert する(または未登録 claim を拒否して再登録を促す)。
+
+---
+
+## 可用性 / フェイルオーバー(設計要)
+
+### A. 実行中エージェント死亡時の in-flight run が永久に `Running` で放置される(orphaned-run reaper 未実装)
+
+- **分類:** 可用性ギャップ。標準エージェント・k8s-agent 共通(= いわゆる「k8s-agent の HA 化」の本丸)。設計から要検討(brainstorm → spec → plan)。
+- **現状の整理(コード確認済み):**
+  - **水平スケール自体は既に成立** — 実行は `ClaimNextRun` = `FOR UPDATE SKIP LOCKED`(`internal/store/postgres.go:486`)で二重 claim なし。k8s-agent は `UNIFIED_K8S_AGENT_ID`(pod 名)で各レプリカが一意 ID を持てる。→ Deployment replicas>1 で片方が死んでも残りが claim 継続。
+  - **ギャップ:** run は claim 時に `claimed_by` / `claimed_at` / status=`Running` を持ち(`postgres.go:500`)、agents には `last_seen_at` もあるが、**`Running` のまま取り残された run を失敗/再投入する reaper が存在しない**。既存 reaper は `RunScheduler`(Pending→queue)と `RunApprovalReaper`(承認 timeout)のみ。
+  - **結果:** エージェントが実行中に死ぬと run は永久に `Running`。k8s では加えて **Pod がリーク**(agent の deferred `DeletePod` が走らない)。TODO #12(DB 消失で inventory ドリフト)と地続き。
+- **修正案(設計方針):**
+  - **stuck-run reaper**(leader 選出、`RunApprovalReaper` と同型): `claimed_by` エージェントの `last_seen_at` が stale な `Running` run を検出し **Failed 化**(理由「agent lost」)。再投入(→Pending)は副作用の二重実行リスクがあるため既定は Fail が安全側(GitHub Actions 等も runner 喪失時は run を失敗させる)。
+  - **k8s orphan-pod GC**: run が終端/消滅した `ucd-run-*` Pod を掃除。
+  - **設計論点:** エージェントが実行中もハートビート(`last_seen_at` 更新)するか。claim ポーリングと別立てにするかで stale 判定の信頼性が変わる。#1(不正ステータスで agent が自分で無限リトライ)とは別の詰まり方であり、両方揃って初めて「run が詰まらない」が完成する。
+
+---
+
+## k8s-agent(docker-desktop クラスタで実機検証、2026-07-04)
+
+### 13. デフォルトの sidecarImage が pull できず、全 k8s ジョブが ImagePullBackOff で止まる
+
+- **症状(実機確認):** デフォルト設定 `ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest`(`internal/k8sagent/config.go:38`)の匿名 pull が GHCR で **403 Forbidden**(非公開 or 未公開パッケージ)。サイドカーは全ジョブ Pod に自動注入されるため、アーティファクトを使わないジョブも含め**新規インストールでは全ジョブが起動不能**。ランは Running のまま滞留。
+- **補足:** ランナーイメージ `unified-cd-runner:v0.0.3` は public で pull 可能。また PullPolicy 未指定+`:latest` タグ= Always なので、レジストリ到達不能時は常に fail-closed。
+- **修正案:** サイドカーイメージを public 化してバージョンタグで pin。runner と同じリリースパイプラインに載せる。
+
+### 14. HEAD のサイドカーイメージ(distroless)とエージェントの転送方式(bash スクリプト)が不整合 — k8s アーティファクト全滅
+
+- **症状(実機確認):** HEAD の `docker/artifact-sidecar.Dockerfile`(commit 338034c)は distroless + `unified-sidecar` バイナリのみ(bash/tar/zstd/curl なし)。しかし `internal/k8sagent/agent.go:307,336` は依然 `tar | zstd | curl` の **bash スクリプト**を `bash -lc` でサイドカーに exec しており、bash 不在で即失敗(exit 1、ログも空)。
+- Dockerfile のコメントは「agent は argv でバイナリを exec(シェル不要)」と新方式を前提にしているが、**agent 側の切り替えが未実装**。direct-to-S3 スペック(docs/superpowers/specs/2026-07-04-k8s-sidecar-direct-s3-design.md)の実装が中途の状態でイメージだけ先行。
+- **検証:** 1つ前の alpine+bash 版イメージ(600c06d)に差し替えるとアーティファクト転送は動作する(→ #15/#16 の制約下で)。
+
+### 15. k8s のステップが `/workspace` で実行されない(WorkingDir 未設定)
+
+- **症状(実機確認):** `run:` ステップはコンテナのデフォルト cwd で実行され、workspace ボリューム(`/workspace`)ではない。相対パスで作ったファイルは workspace に入らず、アーティファクト転送(mountPath と結合)から見えない。`internal/k8sagent/` に WorkingDir 設定なし。自プロジェクトの e2e テスト(artifact_k8s_test.go)自体が絶対パス `/workspace/f.txt` を使っており、相対パス運用が成立しないことを示唆。
+- **修正案:** Pod コンテナ(または exec)に WorkingDir=/workspace を設定。標準エージェント(cwd=workspace)との動作統一。
+
+### 16. k8s uploadArtifact: 単一ファイル不可+失敗しても Succeeded になる(サイレント破損)
+
+- **症状(実機確認):**
+  - `tar cf - -C <path> .` は path を**ディレクトリ前提**で扱うため、`path: out.txt`(docs の例はファイル)だと `tar: Cannot open` で常に失敗。ディレクトリなら成功。
+  - さらにパイプラインに `pipefail` がないため、**tar が失敗しても curl の PUT が成功すれば step は Succeeded(exit 0)** と報告され、壊れた(空の)アーティファクトが保存される。後続の downloadArtifact が「not a tar archive」で初めて発覚。
+- **修正案:** `set -eo pipefail` を付ける。path がファイルの場合は `-C $(dirname) $(basename)` 形式に。ファイル/ディレクトリ両対応のテスト追加(現行 k8s テストは転送を in-memory でフェイクしており実経路が未検証)。
+- **良い点(参考):** k8s-agent は失敗時に即 FinishRun(Failed) し、標準エージェントのようなハング(TODO #1)は起きない。ただし後続ステップの Skipped 報告もないため run show に残りステップが表示されない。アーティファクト失敗が agent ログに出ない(標準エージェントは出す)ロギング欠落もあり。
+
+### 検証環境メモ(k8s)
+
+- Docker Desktop 29.6.1 の Kubernetes(kind モード、k8s 1.35)は **WSL2 が cgroup v1 のままだと kubelet が起動せず** `failed to start` になる。`.wslconfig` に `kernelCommandLine = cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1` を追加し `wsl --shutdown` で解消(このマシンで実証)。unified-cd の問題ではないが、開発環境要件として docs/kubernetes-integration.md に注記の価値あり。
+
+### 17. `kind: Schedule` が CLI から apply できない
+
+- **症状(実機確認):** `unified-cli apply -f schedule.yaml` が「field cron not found in type dsl.Spec」で失敗。CLI の apply の kind ディスパッチ(`internal/cli/apply.go:88-147`)は GitCredential / WebhookReceiver / AppSource のみ対応で、**Schedule だけ Job として送信される**。`schedule` サブコマンドも存在しない。
+- docs/resources.md と README は Schedule を apply 可能なリソースとして記載。API(`POST /api/v1/schedules`)直叩きなら作成でき、cron 発火自体は正常動作(毎分スケジュールで `schedule:verify-cron` のランが起きるのを確認)。
+- **修正案:** apply.go の kind スイッチに Schedule を追加(+`schedule list/delete` サブコマンド検討)。
+
+### 18. `artifact download` がデフォルト宛先(`.`)だと必ず失敗する
+
+- **症状(実機確認):** `unified-cli artifact download <run> <name>` が `invalid path "./out.txt" in artifact archive` で失敗。`--dest <dir>` を明示すれば成功。
+- **原因:** `internal/artifact/targz.go:36-38` の zip-slip ガード。`filepath.Join(dest, name)` はパスを正規化するため、dest=`.` のとき target から `./` が消え(`out.txt`)、`HasPrefix("out.txt\", ".\")` が常に false になる。tar エントリが `./` 始まり(k8s サイドカーの `tar -C dir .` 形式)のアーカイブ+相対 dest の組み合わせで全滅。同じパターンが `internal/cache/cache.go:196-198` にもある(cache は絶対パス dest で呼ばれるため今は顕在化せず)。
+- **修正案:** 比較前に dest も target も `filepath.Abs`/`Clean` で正規化する定石実装に。デフォルト dest のテスト追加。
+
+### 19. `call:` ステップの自己デッドロック(同一エージェントスロット待ち)
+
+- **症状(実機確認):** `call:` で同じ agentSelector のジョブを呼ぶと、親ランがエージェントの唯一のスロット(max-concurrent=1)を占有したまま子ランを待ち、**子は永久に Queued、親は永久に Running**。タイムアウトも警告もなし。親をキャンセルすると finally は実行され、解放されたスロットで子は完走する。
+- **修正案:** 最低限 docs/jobs.md の call: セクションに「子が同じエージェントプールを要する場合 max-concurrent≥2 が必要」と明記。可能なら call 待機中はスロットを解放する設計(または循環検出)を検討。
+- 補足: キャンセルされた call ステップの表示が `Failed (exit 0)` になる(Cancelled が妥当)。
+
+### 20. SSO セッションでハッシュルートに直接アクセスすると本文が空になる
+
+- **症状(実機確認、Playwright):** OIDC SSO でログインしたセッションで `http://localhost:8080/ui/#/jobs` をハードナビゲーション(ディープリンク/リロード)すると、ヘッダー(ユーザー名等)は描画されるが**本文が完全に空**。失敗リクエストもコンソールエラーもゼロのまま沈黙。ルート `/ui/` からの遷移は正常。トークン認証セッションでは同じ操作が正常に描画される。
+- **修正案:** SSO セッション初期化とルーター描画の順序を調査(セッション確認完了前にルートガードが空を返している可能性)。
+
+---
+
+## 軽微(Low)— UI / CLI
+
+- `favicon.ico` が 404(全ページロードでコンソールエラーが1件出る)
+- ヘッダーの UI 言語が英語(Jobs / Agents / Resources / Tokens)なのに「ログアウト」ボタンだけ日本語。`index.html` も `lang="ja"`。言語を統一するか i18n 化する
+- `unified-cli login` だけ `UNIFIED_SERVER` 環境変数を読まず `--server` フラグ必須(他コマンドと非一貫)
+- AppSource のパスに Job 以外の kind(WebhookReceiver 等)が混在すると WARN でスキップされる(仕様どおりだが docs/resources.md に明記すると親切)。同期エラーがコントローラログでしか見えず、CLI/API から AppSource の同期状態を確認する手段がない
+
+---
+
+## 検証済みで正常だった機能(参考)
+
+- apply → trigger → logs -f → run show のコアフロー
+- 並列ステップ実行(ステージ順序の保証)
+- シークレット: env 注入 + ログマスキング(`***`)
+- Webhook: `auth: none` 受信、`filters:`(Go テンプレート)による選別、`paramsMapping` の解決
+- mutex 同時実行制御(2本目が Pending で待機 → 順次実行)
+- エラー系: 不正トークン(unauthorized)、存在しないジョブ、不正 YAML(フィールド名まで明示)
+- Schedule: cron 発火(API 経由で作成、毎分スケジュールが分境界で正しくランを起動、triggeredBy=schedule:名前)※CLI からの作成は #17
+- Webhook HMAC 認証: 正しい署名=200+ラン起動 / 不正署名・署名なし=401(X-Signature / X-Hub-Signature-256 両対応)
+- cache: ステップ: Garage(S3)への保存→ワークスペース消去→別ランでの復元(CACHE_HIT)
+- finally: 成功時の常時実行、**キャンセル時の実行**も docs 仕様どおり
+- call: 子ランの起動と完走(※同一プール単一スロットではデッドロック — #19)
+- PAT: `token create` → PAT で認証 → `token delete` → unauthorized のフルサイクル
+- artifact CLI: `artifact list` / `artifact download --dest <dir>`(※デフォルト dest は #18)
+- Windows ネイティブエージェント(ホスト実機で検証):
+  - `go build ./cmd/agent` → 起動・登録(os=windows、hostname ラベル自動付与)
+  - `agentSelector: [kind:windows]` のルーティング(docker ジョブと相互に混線なし)
+  - Git Bash(MINGW64)でのステップ実行、`UNIFIED_AGENT_OS=windows` の注入
+  - ステップ間のワークスペース共有・ファイル受け渡し
+  - ※キャンセル時の問題は上記 9c
+- k8s-agent(docker-desktop クラスタ + ローカル k8s-agent プロセスで検証):
+  - 登録(`kubernetes` ラベル自動付与)、`agentSelector: [kind:k8s]` ルーティング
+  - Pod-per-run 生成(`ucd-run-<id>`)、runner コンテナ内でのステップ exec、ログストリーム
+  - ラン完了後の Pod 自動削除
+  - アーティファクト round-trip(※alpine サイドカー+絶対パス+ディレクトリ指定の条件下でのみ。制約は #13〜#16)
+- Web UI(Playwright による実ブラウザ操作で検証):
+  - Connection カードでのトークン入力 → 認証成功でカード消滅
+  - Jobs 一覧(フィルタ付き)・ジョブ詳細(History / ▶ Run / YAML タブ)
+  - ▶ Run タブからの UI トリガー(default プレフィル、required の `*` 表示と未入力時のボタン無効化)
+  - Run Detail: ステップ毎のステータス・所要時間・exit code、SSE ライブログ、Rerun ボタン
+  - Agents ページ(docker-agent-1 のラベル表示)
+
+## 検証環境メモ
+
+- ローカルの git-ignore された `vendor/` が古いと dev compose のコンテナ内ビルドが壊れる(`go mod vendor` で復旧)。開発ドキュメントに注記するか、compose 側で吸収を検討。
