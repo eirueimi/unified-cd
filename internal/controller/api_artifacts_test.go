@@ -139,3 +139,14 @@ func TestArtifactUpload_RejectsNonAgentToken(t *testing.T) {
 		t.Fatalf("bad-token upload = %d, want 401", rr.Code)
 	}
 }
+
+func TestArtifactDownload_MissingArtifact_Returns404(t *testing.T) {
+	s, agentToken := newArtifactTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run1/artifacts/nope", nil)
+	req.Header.Set("Authorization", "Bearer "+agentToken)
+	rr := httptest.NewRecorder()
+	s.r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("missing-artifact download = %d, want 404 (body=%q)", rr.Code, rr.Body.String())
+	}
+}

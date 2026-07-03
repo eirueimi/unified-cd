@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,9 +53,19 @@ func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) 
 	}
 	defer rc.Close()
 
+	// The S3 backend's Get is lazy: a missing key does not error until the first
+	// read. Probe one byte before committing a 200 so a missing artifact yields
+	// a 404 instead of 200 + an empty body (humans request bad names far more
+	// often than the agent did). EOF means the object exists but is empty — still 200.
+	br := bufio.NewReader(rc)
+	if _, err := br.Peek(1); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, rc)
+	_, _ = io.Copy(w, br)
 }
 
 // handleArtifactList handles GET /api/v1/runs/{runID}/artifacts.
@@ -72,8 +84,13 @@ func (s *Server) handleArtifactList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]api.ArtifactInfo, 0, len(keys))
 	for _, k := range keys {
+		// Only surface keys that match the artifact layout exactly
+		// (artifacts/{runID}/{name}.tar.gz); skip any foreign object under the prefix.
+		if !strings.HasPrefix(k, prefix) || !strings.HasSuffix(k, ".tar.gz") {
+			continue
+		}
 		name := strings.TrimSuffix(strings.TrimPrefix(k, prefix), ".tar.gz")
-		if name == "" || name == k {
+		if name == "" {
 			continue
 		}
 		out = append(out, api.ArtifactInfo{Name: name})
