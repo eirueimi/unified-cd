@@ -23,6 +23,7 @@ type AgentConfig struct {
 	CacheBucket    string        `yaml:"cacheBucket"`
 	MaxConcurrent  int           `yaml:"maxConcurrent"`
 	CleanWorkspace bool          `yaml:"cleanWorkspace"`
+	WorkspaceDir   string        `yaml:"workspaceDir"`
 	DrainTimeout   time.Duration `yaml:"drainTimeout"`
 }
 
@@ -58,6 +59,7 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 		CacheKey:      os.Getenv("UNIFIED_CACHE_KEY"),
 		CacheSecret:   os.Getenv("UNIFIED_CACHE_SECRET"),
 		CacheBucket:   os.Getenv("UNIFIED_CACHE_BUCKET"),
+		WorkspaceDir:  os.Getenv("UNIFIED_AGENT_WORKSPACE_DIR"),
 	}
 	if labelsEnv := os.Getenv("UNIFIED_AGENT_LABELS"); labelsEnv != "" {
 		for _, l := range strings.Split(labelsEnv, ",") {
@@ -114,6 +116,9 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.CleanWorkspace {
 		eff.CleanWorkspace = true
+	}
+	if file.WorkspaceDir != "" {
+		eff.WorkspaceDir = file.WorkspaceDir
 	}
 	if file.DrainTimeout != 0 {
 		eff.DrainTimeout = file.DrainTimeout

@@ -107,6 +107,7 @@ unified-cd-agent [FLAGS]
   --cache-bucket          string    Cache storage bucket name
   --max-concurrent        int       Max simultaneous runs (default: 1)
   --clean-workspace       bool      Wipe workspace before each run
+  --workspace-dir         string    Base directory for run workspaces (default: ~/workspace; env: UNIFIED_AGENT_WORKSPACE_DIR)
   --drain-timeout         duration  Max wait after SIGTERM before forced shutdown (0 = wait forever)
   --log-level             string    Log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)
 ```
@@ -120,6 +121,7 @@ unified-cd-agent [FLAGS]
 | `UNIFIED_AGENT_ID` | Agent identifier (defaults to hostname if not set) |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:docker,env:prod` |
 | `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps |
+| `UNIFIED_AGENT_WORKSPACE_DIR` | Base directory for run workspaces (default: `~/workspace`) |
 | `UNIFIED_AGENT_LOG_LEVEL` | Log level: `debug`, `info` (default), `warn`, `error` |
 
 Additionally, every step receives `UNIFIED_AGENT_OS` (`linux`, `darwin`, or `windows`) automatically.
@@ -146,6 +148,7 @@ cacheBucket: unified-cd-cache
 
 maxConcurrent: 4
 cleanWorkspace: false
+workspaceDir: /data/unified-cd/workspace
 drainTimeout: 60s
 logLevel: info
 ```
