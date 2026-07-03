@@ -100,7 +100,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			templateName = c.PodTemplate.Name
 		}
 		pp, err := a.pool.ClaimPod(ctx, c.RunID, templateName, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
-			SidecarSpec{Image: a.cfg.SidecarImage, Server: a.cfg.Server, Token: a.cfg.Token})
+			SidecarSpec{Image: a.cfg.SidecarImage, Server: a.cfg.Server, Token: a.cfg.Token, S3SecretName: a.cfg.SidecarS3SecretName})
 		if err != nil {
 			slog.Error("k8s: failed to acquire Pod", "runId", c.RunID, "error", err)
 			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
@@ -115,7 +115,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		}()
 	} else {
 		pod, err := BuildPod(c.RunID, a.cfg.Namespace, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
-			SidecarSpec{Image: a.cfg.SidecarImage, Server: a.cfg.Server, Token: a.cfg.Token})
+			SidecarSpec{Image: a.cfg.SidecarImage, Server: a.cfg.Server, Token: a.cfg.Token, S3SecretName: a.cfg.SidecarS3SecretName})
 		if err != nil {
 			slog.Error("k8s: failed to build Pod spec", "runId", c.RunID, "error", err)
 			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
