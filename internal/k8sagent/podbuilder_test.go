@@ -105,7 +105,7 @@ func TestBuildPod_WorkspacePVC(t *testing.T) {
 
 func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 	t.Run("defaults to /workspace", func(t *testing.T) {
-		pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine")
+		pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{})
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 1)
 		assert.Equal(t, "/workspace", pod.Spec.Containers[0].WorkingDir)
@@ -122,7 +122,7 @@ func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 				},
 			},
 		}
-		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "")
+		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{})
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 1)
 		assert.Equal(t, "/custom-ws", pod.Spec.Containers[0].WorkingDir)
@@ -144,7 +144,7 @@ func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 				},
 			},
 		}
-		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "")
+		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{})
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 1)
 		assert.Equal(t, "/app", pod.Spec.Containers[0].WorkingDir, "user-set WorkingDir must not be overwritten")
