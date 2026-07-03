@@ -1,0 +1,43 @@
+name: unified-cd-hardfail
+networks:
+  dbnet:
+    name: unified-cd-hardfail-dbnet
+services:
+  postgres:
+    image: postgres:16-alpine
+    command:
+      - "postgres"
+      - "-c"
+      - "tcp_keepalives_idle=5"
+      - "-c"
+      - "tcp_keepalives_interval=2"
+      - "-c"
+      - "tcp_keepalives_count=2"
+    environment:
+      POSTGRES_USER: unified
+      POSTGRES_PASSWORD: unified
+      POSTGRES_DB: unified
+    networks: [dbnet]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unified"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  controller1: &ctrl
+    build:
+      context: ../..
+      dockerfile: docker/controller.Dockerfile
+    environment:
+      UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
+      UNIFIED_TOKEN: ha-admin-token
+      UNIFIED_CONTROLLER_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+    networks: [dbnet]
+    ports:
+      - "18081:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+  controller2:
+    <<: *ctrl
+    ports:
+      - "18082:8080"
