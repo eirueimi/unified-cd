@@ -14,14 +14,25 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-// WriteTarZstd walks dir and streams its contents to w as a tar+zstd archive.
-func WriteTarZstd(w io.Writer, dir string) error {
+// WriteTarZstd archives path (a directory OR a single file) and streams it to w
+// as a tar+zstd archive. For a directory, entries are named relative to the
+// directory; for a single file, the archive contains one entry named the file's
+// base name (so `path: out.txt` round-trips to `out.txt`, matching the docs).
+func WriteTarZstd(w io.Writer, path string) error {
+	// When path is a single file, name entries relative to its parent so the
+	// entry is the base name rather than "." (which would extract onto the dest
+	// directory itself).
+	relBase := path
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		relBase = filepath.Dir(path)
+	}
+
 	enc, err := zstd.NewWriter(w)
 	if err != nil {
 		return fmt.Errorf("zstd writer: %w", err)
 	}
 	tw := tar.NewWriter(enc)
-	if err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
+	if err := filepath.WalkDir(path, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
@@ -29,7 +40,7 @@ func WriteTarZstd(w io.Writer, dir string) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(dir, p)
+		rel, err := filepath.Rel(relBase, p)
 		if err != nil {
 			return err
 		}
@@ -52,7 +63,7 @@ func WriteTarZstd(w io.Writer, dir string) error {
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("tar walk %q: %w", dir, err)
+		return fmt.Errorf("tar walk %q: %w", path, err)
 	}
 	if err := tw.Close(); err != nil {
 		return fmt.Errorf("tar close: %w", err)

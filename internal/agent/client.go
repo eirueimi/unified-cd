@@ -1,23 +1,18 @@
 package agent
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
-	"github.com/klauspost/compress/zstd"
 )
 
 // HTTPError represents a non-successful HTTP status returned by the server.
@@ -205,51 +200,12 @@ func (c *Client) FetchSecrets(ctx context.Context, agentID string, names []strin
 // UploadArtifact archives path as tar+zstd and uploads it to the master server.
 // Sends to PUT /api/v1/runs/{runID}/artifacts/{name}.
 func (c *Client) UploadArtifact(ctx context.Context, runID, name, path string) error {
+	// Reuse the shared archiver so directories AND single files both round-trip
+	// (a single file is stored under its base name), and to avoid duplicating the
+	// tar+zstd logic that lives in internal/artifact.
 	var buf bytes.Buffer
-	enc, err := zstd.NewWriter(&buf)
-	if err != nil {
-		return fmt.Errorf("zstd writer: %w", err)
-	}
-	tw := tar.NewWriter(enc)
-
-	if err := filepath.WalkDir(path, func(p string, d fs.DirEntry, werr error) error {
-		if werr != nil {
-			return werr
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(path, p)
-		if err != nil {
-			return err
-		}
-		hdr, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-		hdr.Name = filepath.ToSlash(rel)
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			f, err := os.Open(p)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			_, err = io.Copy(tw, f)
-			return err
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("tar walk %q: %w", path, err)
-	}
-	if err := tw.Close(); err != nil {
-		return fmt.Errorf("tar close: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return fmt.Errorf("zstd close: %w", err)
+	if err := artifact.WriteTarZstd(&buf, path); err != nil {
+		return err
 	}
 
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)

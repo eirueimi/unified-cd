@@ -55,3 +55,24 @@ func TestUpload_UsesArtifactKeyLayout(t *testing.T) {
 		t.Fatalf("expected artifacts/runXYZ/myart.tar.gz: %v", err)
 	}
 }
+
+func TestUploadDownload_SingleFile(t *testing.T) {
+	store := objectstore.NewLocalObjectStore(t.TempDir())
+	src := t.TempDir()
+	f := filepath.Join(src, "out.txt")
+	if err := os.WriteFile(f, []byte("single"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := Upload(ctx, store, "r1", "a", f); err != nil { // upload a single FILE path
+		t.Fatalf("upload single file: %v", err)
+	}
+	dest := t.TempDir()
+	if err := Download(ctx, store, "r1", "a", dest); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "out.txt"))
+	if err != nil || string(got) != "single" {
+		t.Fatalf("dest/out.txt = %q, %v", got, err)
+	}
+}
