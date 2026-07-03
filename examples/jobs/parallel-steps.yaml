@@ -10,7 +10,7 @@ spec:
   agentSelector:
     - kind:docker
   steps:
-    - name:
+    - name: start
       run: echo "Starting build and deploy process..."
     - parallel:
       - name: buildFrontend

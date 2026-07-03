@@ -66,7 +66,7 @@ spec:
       volumes: [<map>]
   steps:
     - name: <string>              # required, unique within the job
-      if: <template expression>
+      if: <CEL expression>        # e.g. params.env == "production"; see jobs.md
       needs: [<step-name>, ...]
       env:
         <KEY>: <value>            # supports {{ secrets.NAME }} and {{ .Params.X }}

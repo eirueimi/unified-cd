@@ -175,31 +175,44 @@ Steps only start when all their `needs` have succeeded (or if `continueOnError: 
 
 Steps can be conditionally skipped based on a boolean expression.
 
+> **`if:` is CEL, not a Go template.** Unlike `run:`, `env:`, and `outputs:`
+> (which use `{{ .Params.X }}`-style Go templates), `if:` expressions are
+> [CEL](https://github.com/google/cel-go) — no `{{ }}` delimiters, and
+> variables are lowercase (`params`, `steps`, `secrets`), not `.Params`/`.Steps`.
+> **If a Go-template-style `if:` (or any expression that fails to compile) is
+> used by mistake, the condition fails OPEN: the step still runs, and the
+> only trace is a warning in the agent log.** A production-only step could
+> silently run on every trigger. Always use valid CEL syntax below, and check
+> agent logs for `if: expression ... compile error` after adding a new
+> condition.
+
 ```yaml
 steps:
   - name: deploy
     needs: [build]
-    if: '{{ eq .Params.env "production" }}'
+    if: 'params.env == "production"'
     run: ./deploy.sh
 
   - name: smoke-test
     needs: [deploy]
-    if: '{{ .Steps.deploy.Status | eq "Succeeded" }}'
+    if: 'steps.deploy.outputs.result == "ok"'
     run: ./smoke-test.sh
 ```
 
-**Available variables in `if` expressions:**
+**Available variables in `if` expressions (CEL):**
 
 | Variable | Type | Description |
 |---|---|---|
-| `.Params.NAME` | any | Input parameter value |
-| `.Steps.STEPNAME.Status` | string | Status of a previous step: `Succeeded`, `Failed`, `Skipped` |
-| `.Steps.STEPNAME.Outputs.KEY` | string | Output from a previous step |
+| `params.NAME` | string | Input parameter value |
+| `steps.STEPNAME.outputs.KEY` | dyn | Output from a previous step (only declared `outputs:`; there is no built-in step-status field) |
+| `secrets.NAME` | string | Resolved secret value |
 
-The expression must evaluate to a boolean. Use Go template functions:
-- `{{ eq .Params.env "production" }}` — equality check
-- `{{ ne .Params.env "production" }}` — inequality
-- `{{ and (eq .Params.env "production") (eq .Params.region "us-east-1") }}` — logical AND
+The expression must evaluate to a boolean. Use CEL operators and the
+zero-arg status functions (see [Status Functions in `if:`](#status-functions-in-if)):
+- `params.env == "production"` — equality check
+- `params.env != "production"` — inequality
+- `params.env == "production" && params.region == "us-east-1"` — logical AND
+- `failure()` / `success()` / `always()` — run based on the job's status so far
 
 ### Environment Variables (`env`)
 
@@ -721,6 +734,13 @@ treated as requiring `success()` — so a normal step is skipped once an earlier
 step has failed (GitHub Actions semantics). Add `if: failure()` or
 `if: always()` to opt in to running after a failure.
 
+> **Compile/eval errors fail open.** `if:` is CEL — see the warning under
+> [Conditional Execution](#conditional-execution-if). An `if:` that doesn't
+> compile (e.g. leftover `{{ }}` Go-template syntax) does not fail the run or
+> skip the step: the step **runs anyway**, and only a warning is written to
+> the agent log. Double-check any non-trivial `if:` expression before relying
+> on it to gate a sensitive step (e.g. a production deploy).
+
 ---
 
 ## Job-level Timeout
@@ -860,13 +880,13 @@ spec:
 
     - name: deploy-staging
       needs: [build-image]
-      if: '{{ eq .Params.deploy_env "staging" }}'
+      if: 'params.deploy_env == "staging"'
       run: |
         ./deploy.sh --env staging --image {{ .Steps.build-image.Outputs.image_ref }}
 
     - name: deploy-production
       needs: [build-image]
-      if: '{{ eq .Params.deploy_env "production" }}'
+      if: 'params.deploy_env == "production"'
       run: |
         ./deploy.sh --env production --image {{ .Steps.build-image.Outputs.image_ref }}
 ```

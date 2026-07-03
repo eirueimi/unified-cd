@@ -1,7 +1,7 @@
 # Demonstrates: parameterized jobs with inputs, outputs, and step output references
 # Usage:
 #   unified-cd apply -f examples/jobs/params.yaml
-#   unified-cd run trigger build --params image=myapp,tag=v1.0.0
+#   unified-cd run trigger build --param image=myapp --param tag=v1.0.0
 apiVersion: unified-cd/v1
 kind: Job
 metadata:

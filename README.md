@@ -186,7 +186,7 @@ spec:
       run: make test
     - name: deploy
       needs: [test]
-      if: '{{ eq .Params.env "production" }}'
+      if: 'params.env == "production"'
       run: make deploy
 ```
 
