@@ -323,26 +323,34 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
 				})
-				key, _ := dsl.ExpandTemplate(step.Cache.Key, tplData)
-				var restoreKeys []string
-				for _, rk := range step.Cache.RestoreKeys {
-					if v, _ := dsl.ExpandTemplate(rk, tplData); v != "" {
-						restoreKeys = append(restoreKeys, v)
+				key, kerr := dsl.ExpandTemplate(step.Cache.Key, tplData)
+				if kerr != nil || key == "" {
+					// A bad/empty key template must not silently collide caches
+					// across runs. Skip the cache operation entirely (no restore,
+					// no deferred save) but keep cache best-effort: the step still
+					// succeeds.
+					slog.Warn("k8s: cache key template failed; skipping cache for step", "step", step.Name, "keyTemplate", step.Cache.Key, "error", kerr)
+				} else {
+					var restoreKeys []string
+					for _, rk := range step.Cache.RestoreKeys {
+						if v, _ := dsl.ExpandTemplate(rk, tplData); v != "" {
+							restoreKeys = append(restoreKeys, v)
+						}
 					}
-				}
-				cachePath := path.Join(mountPath, step.Cache.Path)
-				argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", cachePath}
-				for _, rk := range restoreKeys {
-					argv = append(argv, "--restore-key", rk)
-				}
-				// Best-effort: a miss/error never fails the step (the binary exits 0).
-				_, _ = sidecarExec(execCtx, artifactSidecarName, argv)
+					cachePath := path.Join(mountPath, step.Cache.Path)
+					argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", cachePath}
+					for _, rk := range restoreKeys {
+						argv = append(argv, "--restore-key", rk)
+					}
+					// Best-effort: a miss/error never fails the step (the binary exits 0).
+					_, _ = sidecarExec(execCtx, artifactSidecarName, argv)
 
-				ttlDays := step.Cache.TTLDays
-				if ttlDays == 0 {
-					ttlDays = 30
+					ttlDays := step.Cache.TTLDays
+					if ttlDays == 0 {
+						ttlDays = 30
+					}
+					registerCacheSave(cacheSaveSpec{key: key, ttlDays: ttlDays, path: cachePath})
 				}
-				registerCacheSave(cacheSaveSpec{key: key, ttlDays: ttlDays, path: cachePath})
 
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
@@ -501,9 +509,13 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 
 	// Deferred cache saves: capture the final workspace after the main stages
 	// (before finally, which is cleanup/notify). Best-effort — never flips status.
+	// Use a non-cancelling context so a parent-context cancellation (process
+	// shutdown) doesn't abort the save, matching the standard agent and the
+	// k8s finally block below.
+	saveCtx := context.WithoutCancel(ctx)
 	for _, s := range cacheSaves {
 		argv := []string{"unified-sidecar", "cache", "save", "--key", s.key, "--ttl-days", strconv.Itoa(s.ttlDays), "--path", s.path}
-		if _, err := sidecarExec(ctx, artifactSidecarName, argv); err != nil {
+		if _, err := sidecarExec(saveCtx, artifactSidecarName, argv); err != nil {
 			slog.Warn("k8s: cache save exec failed", "key", s.key, "error", err)
 		}
 	}

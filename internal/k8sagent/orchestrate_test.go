@@ -367,13 +367,18 @@ func TestOrchestrate_CacheRestoreAndDeferredSave(t *testing.T) {
 	}
 	rec, statuses, final := runOrchestrateArtifact(t, c, 0 /*exit*/)
 
+	var restoreIdx, saveIdx = -1, -1
 	var restoreCall, saveCall *artifactCall
 	for i := range rec {
 		if len(rec[i].argv) >= 2 && rec[i].argv[0] == "unified-sidecar" && rec[i].argv[1] == "cache" {
 			if len(rec[i].argv) >= 3 && rec[i].argv[2] == "restore" {
+				require.Equal(t, -1, restoreIdx, "expected exactly one cache restore call, got: %+v", rec)
+				restoreIdx = i
 				restoreCall = &rec[i]
 			}
 			if len(rec[i].argv) >= 3 && rec[i].argv[2] == "save" {
+				require.Equal(t, -1, saveIdx, "expected exactly one cache save call, got: %+v", rec)
+				saveIdx = i
 				saveCall = &rec[i]
 			}
 		}
@@ -390,6 +395,31 @@ func TestOrchestrate_CacheRestoreAndDeferredSave(t *testing.T) {
 	assert.Equal(t, artifactSidecarName, saveCall.container)
 	assert.Contains(t, saveCall.argv, "--key")
 	assert.Contains(t, saveCall.argv, "npm-1")
+
+	// The save must be deferred until after the main stages: restore happens
+	// at step time, save happens once at the end of the run.
+	require.True(t, restoreIdx < saveIdx, "expected cache restore (idx %d) before cache save (idx %d), got: %+v", restoreIdx, saveIdx, rec)
+
+	assert.Equal(t, "Succeeded", statuses["with-cache"])
+	assert.Equal(t, "Succeeded", final)
+}
+
+func TestOrchestrate_CacheEmptyKeySkips(t *testing.T) {
+	c := api.ClaimResponse{
+		RunID:  "r1",
+		Params: map[string]string{"v": "1"},
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "with-cache",
+				Cache: &dsl.CacheStep{Path: "node_modules", Key: "{{.Params.missing}}", TTLDays: 7}}},
+		},
+	}
+	rec, statuses, final := runOrchestrateArtifact(t, c, 0 /*exit*/)
+
+	for i := range rec {
+		if len(rec[i].argv) >= 2 && rec[i].argv[0] == "unified-sidecar" && rec[i].argv[1] == "cache" {
+			t.Fatalf("expected no cache restore/save argv calls for an empty-key template, got: %+v", rec[i])
+		}
+	}
 
 	assert.Equal(t, "Succeeded", statuses["with-cache"])
 	assert.Equal(t, "Succeeded", final)
