@@ -232,6 +232,30 @@ As described above, auth state lives in the DB or JWT, and SSE is propagated to 
 - SSE is a long-lived connection; set the LB idle timeout generously (e.g. several minutes or more)
   and ensure buffering is disabled (the controller sends `X-Accel-Buffering: no`).
 
+### Upstream failover tuning
+
+unified-cd's own failover is sub-second (a new leader is elected within one scheduler tick
+of the previous leader releasing its advisory lock). Delivering that sub-second failover to
+clients is the **operator's LB responsibility**: with the LB's defaults, a hard-killed
+(SIGKILL) controller leaves clients hanging on the now-dead TCP peer for the default connect
+timeout (~60s on nginx), which undermines the fast failover the controllers provide.
+
+Configure the LB to fail fast and re-try a healthy upstream. For nginx, the reference settings
+(see `test/ha/nginx.conf` for a complete working example) are:
+
+- `proxy_connect_timeout 2s` — a dead upstream fails the connect quickly instead of hanging
+  for the ~60s default.
+- `server controller:8080 max_fails=1 fail_timeout=5s` (per upstream) — eject a controller
+  from rotation after a single failure so subsequent requests skip it.
+- `proxy_next_upstream error timeout http_502 http_503 http_504` with
+  `proxy_next_upstream_tries 3` and `proxy_next_upstream_timeout 8s` — retry the request
+  against the next controller on a connect/response error, bounded so one request can traverse
+  all three replicas within a few seconds.
+
+The equivalent knobs on other load balancers (HAProxy `connect`/`retries`/`observe`, cloud L7
+LBs' health-check and connection-drain settings) achieve the same goal: eject dead backends
+fast and re-dispatch in-flight requests to a healthy replica.
+
 ---
 
 ## Rolling Deploys and Graceful Shutdown

@@ -5,11 +5,21 @@
 // injects three kinds of leader failure, and asserts the HA invariants:
 //
 //	 1. No lost runs      — every submitted run reaches Succeeded.
-//	 2. No double exec    — each step index of each run is reported Succeeded exactly once.
-//	 3. Failover ≤ 10s    — after a leader kill/stop, a freshly submitted run reaches
+//	 2. No lost step      — every submitted run has its step reported Succeeded (a step
+//	                        that was dropped during failover surfaces as 0 reports).
+//	 3. No phantom runs   — the DB run count for the HA job equals the number the test
+//	                        submitted; no failover retry created a duplicate/phantom run.
+//	 4. Failover ≤ 10s    — after a leader kill/stop, a freshly submitted run reaches
 //	                        Queued (or later) within 10s.
-//	 4. API availability  — a background poller hitting /readyz every 200ms never sees
+//	 5. API availability  — a background poller hitting /readyz every 200ms never sees
 //	                        more than 2 CONSECUTIVE 5xx responses.
+//
+// The rigorous no-double-*claim* guarantee (each run claimed exactly once under
+// concurrency) is proven separately by the Level-1 TestHA_NoDoubleClaim, which drives
+// concurrent ClaimNextRun against Postgres. This Level-2 driver verifies the end-to-end
+// failover behaviour (no lost runs/steps, no phantom duplicate runs, fast failover,
+// API availability) but cannot by itself detect a re-execution, because step reports are
+// keyed (run_id, step_index) with ON CONFLICT DO UPDATE — a re-exec upserts the same row.
 //
 // It is build-tagged `ha` so it is excluded from normal `go test`. Run with:
 //
@@ -357,8 +367,10 @@ func waitAllSucceeded(t *testing.T, ids []string, within time.Duration) {
 
 // assertFailoverUnder submits one fresh run and measures the time until it reaches
 // Queued (or a later state). It FAILS if that takes longer than d — a slow or absent
-// failover leaves the run stuck in Pending because no scheduler is enqueuing.
-func assertFailoverUnder(t *testing.T, d time.Duration) {
+// failover leaves the run stuck in Pending because no scheduler is enqueuing. It returns
+// the submitted run ID so the caller can fold it into the accounting for the no-lost-step
+// and no-phantom-run invariants (this probe run is a genuine submission and must be counted).
+func assertFailoverUnder(t *testing.T, d time.Duration) string {
 	t.Helper()
 	applyJob(t)
 	start := time.Now()
@@ -368,17 +380,26 @@ func assertFailoverUnder(t *testing.T, d time.Duration) {
 		switch runStatus(t, id) {
 		case "Queued", "Running", "Succeeded":
 			t.Logf("failover: run %s reached queued+ in %s", id, time.Since(start).Round(time.Millisecond))
-			return
+			return id
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("FAILOVER TOO SLOW: run %s did not reach Queued within %s (status=%s) — no scheduler took over", id, d, runStatus(t, id))
+	return ""
 }
 
-// assertNoDoubleExecution fetches step reports for every run and asserts each step index
-// was reported Succeeded exactly once. A double execution (two schedulers or a re-claim
-// during failover) would surface as a step index with 2+ Succeeded reports.
-func assertNoDoubleExecution(t *testing.T, ids []string) {
+// assertNoLostStep fetches step reports for every submitted run and asserts each run has
+// its step reported Succeeded. This catches a *lost* step — a step dropped during failover
+// surfaces as 0 Succeeded reports for that run.
+//
+// NOTE: this helper does NOT (and cannot) prove no double *execution*. The step_reports
+// table has PRIMARY KEY (run_id, step_index) written with ON CONFLICT DO UPDATE, so a
+// genuine re-execution upserts the SAME row and still reads back as exactly one report.
+// The count==1 assertion therefore guards against lost steps only. The rigorous
+// no-double-*claim* guarantee is proven by the Level-1 TestHA_NoDoubleClaim, which drives
+// concurrent ClaimNextRun and asserts each run is claimed exactly once. Phantom/duplicate
+// *runs* are caught separately by assertNoPhantomRuns (run-count check) below.
+func assertNoLostStep(t *testing.T, ids []string) {
 	t.Helper()
 	for _, id := range ids {
 		code, body := apiGet(t, "/api/v1/runs/"+id+"/steps")
@@ -399,14 +420,48 @@ func assertNoDoubleExecution(t *testing.T, ids []string) {
 			}
 		}
 		if len(succeededByIndex) == 0 {
-			t.Fatalf("run %s has no Succeeded step reports (expected exactly one)", id)
+			t.Fatalf("LOST STEP: run %s has no Succeeded step reports (expected exactly one)", id)
 		}
+		// count != 1 cannot actually occur for a re-exec (see the doc comment: step reports
+		// are upserted on (run_id, step_index)), but we keep the guard so a schema change
+		// that ever allowed duplicate rows would be caught.
 		for idx, count := range succeededByIndex {
 			if count != 1 {
-				t.Fatalf("DOUBLE EXECUTION: run %s step index %d has %d Succeeded reports (want exactly 1)", id, idx, count)
+				t.Fatalf("run %s step index %d has %d Succeeded reports (want exactly 1)", id, idx, count)
 			}
 		}
 	}
+}
+
+// assertNoPhantomRuns lists the runs the API knows about for the HA workload job and asserts
+// that count equals wantSubmitted — the exact number of runs the test submitted across all
+// phases. A failover retry that created a *duplicate* run (or any phantom run creation) would
+// push the DB count above wantSubmitted; a lost run creation would push it below. This is the
+// "run count in the DB equals the number submitted" check from the HA verification plan.
+//
+// Uses GET /api/v1/runs?jobName=<name> (handleListRunsByJob), which returns a JSON array of
+// api.Run objects (each with an "id" field). Its store query caps at 50 rows; the test
+// submits fewer than that in total, so the count is exact.
+func assertNoPhantomRuns(t *testing.T, jobName string, wantSubmitted int) {
+	t.Helper()
+	if wantSubmitted >= 50 {
+		t.Fatalf("test submitted %d runs but the list endpoint caps at 50 — the run-count check would be unreliable", wantSubmitted)
+	}
+	code, body := apiGet(t, "/api/v1/runs?jobName="+jobName)
+	if code != http.StatusOK {
+		t.Fatalf("list runs for job %s: status=%d body=%s", jobName, code, body)
+	}
+	var runs []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &runs); err != nil {
+		t.Fatalf("decode runs list for job %s: %v body=%s", jobName, err, body)
+	}
+	if len(runs) != wantSubmitted {
+		t.Fatalf("PHANTOM/DUPLICATE RUNS: job %s has %d runs in the DB, want exactly %d submitted — failover created or lost run rows",
+			jobName, len(runs), wantSubmitted)
+	}
+	t.Logf("no phantom runs: job %s has exactly %d runs in the DB (== submitted)", jobName, len(runs))
 }
 
 // ----------------------------------------------------------------------------
@@ -541,7 +596,7 @@ func TestHA_ControllerFailover(t *testing.T) {
 	leader = currentLeader(t, 30*time.Second)
 	t.Logf("stopping leader=%s (SIGTERM)", leader)
 	compose(t, "stop", leader)
-	assertFailoverUnder(t, 10*time.Second)
+	allIDs = append(allIDs, assertFailoverUnder(t, 10*time.Second)) // probe run is a real submission
 	ids = submitRuns(t, 5)
 	allIDs = append(allIDs, ids...)
 	waitAllSucceeded(t, ids, 120*time.Second)
@@ -553,7 +608,7 @@ func TestHA_ControllerFailover(t *testing.T) {
 	leader = currentLeader(t, 30*time.Second)
 	t.Logf("killing leader=%s (SIGKILL)", leader)
 	compose(t, "kill", leader)
-	assertFailoverUnder(t, 10*time.Second)
+	allIDs = append(allIDs, assertFailoverUnder(t, 10*time.Second)) // probe run is a real submission
 	ids = submitRuns(t, 5)
 	allIDs = append(allIDs, ids...)
 	waitAllSucceeded(t, ids, 120*time.Second)
@@ -562,8 +617,9 @@ func TestHA_ControllerFailover(t *testing.T) {
 
 	// --- Invariants across the whole run. ---
 	errPoll.stop()
-	assert5xxWithinBound(t, errPoll, 2) // no sustained 5xx (brief transient tolerated)
-	assertNoDoubleExecution(t, allIDs)  // each step executed exactly once
+	assert5xxWithinBound(t, errPoll, 2)               // no sustained 5xx (brief transient tolerated)
+	assertNoLostStep(t, allIDs)                       // every submitted run's step reported Succeeded
+	assertNoPhantomRuns(t, "ha-workload", len(allIDs)) // DB run count == number submitted (no phantom/dupe)
 
-	t.Logf("HA failover PASSED: %d runs all Succeeded exactly once across 3 failover phases", len(allIDs))
+	t.Logf("HA failover PASSED: %d runs all Succeeded (no lost runs/steps, no phantom duplicate runs) across 3 failover phases", len(allIDs))
 }
