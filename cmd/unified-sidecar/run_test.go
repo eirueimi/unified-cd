@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
@@ -62,5 +63,20 @@ func TestRun_ArtifactDownloadMissing_Exit1(t *testing.T) {
 	store := objectstore.NewLocalObjectStore(t.TempDir())
 	if code := run(context.Background(), store, []string{"artifact", "download", "--run", "r1", "--name", "nope", "--dest", t.TempDir()}, io.Discard); code == 0 {
 		t.Fatal("missing artifact download should exit non-zero")
+	}
+}
+
+func TestRun_Idle_BlocksUntilCtxCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, nil, []string{"idle"}, io.Discard) }()
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("idle exit=%d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle did not return after cancel")
 	}
 }

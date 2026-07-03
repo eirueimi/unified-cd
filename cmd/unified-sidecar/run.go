@@ -21,6 +21,10 @@ func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 // run dispatches the sidecar subcommands against store. Cache operations are
 // best-effort (always exit 0); artifact operations exit non-zero on failure.
 func run(ctx context.Context, store objectstore.ObjectStore, args []string, stderr io.Writer) int {
+	if len(args) == 1 && args[0] == "idle" {
+		<-ctx.Done()
+		return 0
+	}
 	if len(args) < 2 {
 		fmt.Fprintln(stderr, "usage: unified-sidecar <cache|artifact> <subcommand> [flags]")
 		return 2
