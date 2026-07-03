@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -528,5 +529,109 @@ func TestAgent_CallStep_NonexistentJob_FailsRun(t *testing.T) {
 		assert.Equal(t, "Failed", status, "a call to a non-existent job should fail the Run")
 	case <-time.After(5 * time.Second):
 		t.Fatal("FinishRun was not called")
+	}
+}
+
+// TestAgent_UploadArtifact_RelativePath verifies that a relative uploadArtifact path
+// resolves against the run's workspace working directory (the same directory shell
+// steps run in), not the agent process's cwd. It also verifies the artifact step's
+// ReportStep calls carry the step name (and stage index), not a blank/zero value.
+func TestAgent_UploadArtifact_RelativePath(t *testing.T) {
+	const agentID = "upload-artifact-agent"
+	const runID = "run-upload-artifact"
+
+	// workDir simulates "<workspaceDir>/workingN" -- the per-run working directory
+	// ExecStep/shell steps use as their cwd. Deliberately distinct from the process cwd.
+	workDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "out.txt"), []byte("artifact contents"), 0o644))
+
+	var uploadedBody []byte
+	var uploadReceived bool
+	var reportedStepNames []string
+	var reportedStageIndexes []int
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
+		var body api.StepReportRequest
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		reportedStepNames = append(reportedStepNames, body.StepName)
+		reportedStageIndexes = append(reportedStageIndexes, body.StageIndex)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("PUT /api/v1/runs/"+runID+"/artifacts/out", func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		uploadedBody = b
+		uploadReceived = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	finishCh := make(chan string, 1)
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Status string `json:"status"`
+		}
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		select {
+		case finishCh <- body.Status:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := &Agent{
+		ID:     agentID,
+		Client: NewClient(srv.URL, "tok"),
+	}
+
+	resp := api.ClaimResponse{
+		RunID:   runID,
+		JobName: "test-upload-artifact",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index:      0,
+				StageIndex: 0,
+				Name:       "uploadOut",
+				UploadArtifact: &api.UploadArtifactStep{
+					Name: "out",
+					Path: "out.txt", // relative path, as job docs show
+				},
+			}},
+		},
+	}
+
+	// Process cwd must NOT contain out.txt -- otherwise the (buggy) old behavior
+	// of resolving against os.Getwd() would also succeed and the test wouldn't
+	// catch the regression.
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	_, statErr := os.Stat(filepath.Join(cwd, "out.txt"))
+	require.True(t, os.IsNotExist(statErr), "precondition: out.txt must not exist in process cwd")
+
+	a.executeRun(context.Background(), resp, workDir)
+
+	select {
+	case status := <-finishCh:
+		assert.Equal(t, "Succeeded", status, "upload-artifact of a relative path under the workspace dir should succeed")
+	case <-time.After(5 * time.Second):
+		t.Fatal("FinishRun was not called")
+	}
+
+	assert.True(t, uploadReceived, "artifact upload endpoint should have been hit")
+	assert.NotEmpty(t, uploadedBody, "uploaded artifact body should not be empty")
+
+	// The ReportStep calls for the artifact step should carry the step's name and
+	// stage index, so `run show` displays "uploadOut" rather than "step[0]".
+	require.NotEmpty(t, reportedStepNames)
+	for _, name := range reportedStepNames {
+		assert.Equal(t, "uploadOut", name, "artifact ReportStep calls should carry the step name")
+	}
+	for _, idx := range reportedStageIndexes {
+		assert.Equal(t, 0, idx, "artifact ReportStep calls should carry the stage index")
 	}
 }

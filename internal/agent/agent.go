@@ -365,14 +365,14 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				return nil
 			}
 			if step.UploadArtifact != nil {
-				if err := a.executeUploadArtifact(stepCtx, step, c.RunID); err != nil {
+				if err := a.executeUploadArtifact(stepCtx, step, c.RunID, workDir); err != nil {
 					slog.Error("upload artifact failed", "step", step.Name, "error", err)
 					markFailed(context.WithoutCancel(stepCtx))
 				}
 				return nil
 			}
 			if step.DownloadArtifact != nil {
-				if err := a.executeDownloadArtifact(stepCtx, step, c.RunID); err != nil {
+				if err := a.executeDownloadArtifact(stepCtx, step, c.RunID, workDir); err != nil {
 					slog.Error("download artifact failed", "step", step.Name, "error", err)
 					markFailed(context.WithoutCancel(stepCtx))
 				}
@@ -627,32 +627,43 @@ func (a *Agent) executeCallStep(ctx context.Context, step api.ClaimStep, tplData
 	}
 }
 
-func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, runID string) error {
+// resolveWorkspacePath joins a relative path against the run's workspace working
+// directory (the same directory ExecStep/shell steps use as their cwd, e.g.
+// "<workspaceDir>/working<N>"). Absolute paths are returned unchanged.
+func resolveWorkspacePath(workDir, path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(workDir, path)
+}
+
+func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, runID string, workDir string) error {
 	started := time.Now().UTC()
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, Status: "Running", StartedAt: started,
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
 	})
 
 	ua := step.UploadArtifact
-	if err := a.Client.UploadArtifact(ctx, runID, ua.Name, ua.Path); err != nil {
+	path := resolveWorkspacePath(workDir, ua.Path)
+	if err := a.Client.UploadArtifact(ctx, runID, ua.Name, path); err != nil {
 		slog.Error("upload-artifact failed", "step", step.Name, "error", err)
 		_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-			RunID: runID, StepIndex: step.Index, Status: "Failed",
+			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Failed",
 			StartedAt: started, EndedAt: time.Now().UTC(),
 		})
 		return fmt.Errorf("upload-artifact %q: %w", ua.Name, err)
 	}
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, Status: "Succeeded",
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Succeeded",
 		StartedAt: started, EndedAt: time.Now().UTC(),
 	})
 	return nil
 }
 
-func (a *Agent) executeDownloadArtifact(ctx context.Context, step api.ClaimStep, runID string) error {
+func (a *Agent) executeDownloadArtifact(ctx context.Context, step api.ClaimStep, runID string, workDir string) error {
 	started := time.Now().UTC()
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, Status: "Running", StartedAt: started,
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
 	})
 
 	da := step.DownloadArtifact
@@ -660,16 +671,17 @@ func (a *Agent) executeDownloadArtifact(ctx context.Context, step api.ClaimStep,
 	if destDir == "" {
 		destDir = "."
 	}
+	destDir = resolveWorkspacePath(workDir, destDir)
 	if err := a.Client.DownloadArtifact(ctx, runID, da.Name, destDir); err != nil {
 		slog.Error("download-artifact failed", "step", step.Name, "error", err)
 		_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-			RunID: runID, StepIndex: step.Index, Status: "Failed",
+			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Failed",
 			StartedAt: started, EndedAt: time.Now().UTC(),
 		})
 		return fmt.Errorf("download-artifact %q: %w", da.Name, err)
 	}
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, Status: "Succeeded",
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Succeeded",
 		StartedAt: started, EndedAt: time.Now().UTC(),
 	})
 	return nil
