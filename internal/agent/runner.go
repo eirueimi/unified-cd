@@ -90,10 +90,13 @@ func RequireShell() error {
 
 // RunStep executes the given script with bash, writing stdout/stderr to the provided writers.
 // Returns the exit code and any error. The process is interrupted if the context is cancelled.
+// On cancellation the whole process tree is killed (not just the shell), so children the
+// shell spawned (e.g. `sleep` from `bash -c 'sleep 120'`) don't survive as orphans — see
+// runTreeKilled for why exec.CommandContext alone is not enough.
 // Extra environment variables can be supplied via extraEnv in "KEY=VALUE" format.
 // If workDir is non-empty, the command runs with that directory as the working directory.
 func RunStep(ctx context.Context, script string, stdout, stderr io.Writer, extraEnv []string, workDir string) (int, error) {
-	cmd := exec.CommandContext(ctx, findShell(), "-lc", script)
+	cmd := exec.Command(findShell(), "-lc", script)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if len(extraEnv) > 0 {
@@ -102,7 +105,7 @@ func RunStep(ctx context.Context, script string, stdout, stderr io.Writer, extra
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
-	err := cmd.Run()
+	err := runTreeKilled(ctx, cmd)
 	if err == nil {
 		return 0, nil
 	}
@@ -114,11 +117,12 @@ func RunStep(ctx context.Context, script string, stdout, stderr io.Writer, extra
 
 // RunStepCapture executes a script and returns the captured stdout string and exit code.
 // stderr is written to the provided writer (for log shipping).
+// On cancellation the whole process tree is killed (not just the shell) — see runTreeKilled.
 // Extra environment variables can be supplied via extraEnv in "KEY=VALUE" format.
 // If workDir is non-empty, the command runs with that directory as the working directory.
 func RunStepCapture(ctx context.Context, script string, stderr io.Writer, extraEnv []string, workDir string) (stdout string, exitCode int, err error) {
 	var stdoutBuf bytes.Buffer
-	cmd := exec.CommandContext(ctx, findShell(), "-lc", script)
+	cmd := exec.Command(findShell(), "-lc", script)
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = stderr
 	if len(extraEnv) > 0 {
@@ -127,7 +131,7 @@ func RunStepCapture(ctx context.Context, script string, stderr io.Writer, extraE
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
-	runErr := cmd.Run()
+	runErr := runTreeKilled(ctx, cmd)
 	stdout = stdoutBuf.String()
 	if runErr == nil {
 		return stdout, 0, nil

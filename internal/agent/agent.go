@@ -435,6 +435,14 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 
 				if runErr != nil || ec != 0 {
 					status = "Failed"
+					// A step interrupted specifically because the master cancelled the
+					// run (as opposed to a step/job timeout, which is a genuine
+					// failure) should be reported as Cancelled rather than Failed so it
+					// doesn't linger as "Running" in the UI/DB — Cancelled is a terminal
+					// status the step-status CHECK constraint already allows.
+					if runErr != nil && cancelledByMaster.Load() {
+						status = "Cancelled"
+					}
 				} else {
 					capturedOutputs := map[string]string{}
 					outputCtx := dsl.TemplateData{

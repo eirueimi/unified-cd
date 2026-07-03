@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,6 +123,60 @@ func TestIsWSLLauncher(t *testing.T) {
 	assert.True(t, isWSLLauncher(`C:\WINDOWS\SYSTEM32\bash.exe`))
 	assert.False(t, isWSLLauncher(`C:\Program Files\Git\bin\bash.exe`))
 	assert.False(t, isWSLLauncher(`C:\custom\bash.exe`))
+}
+
+// TestRunStep_CancelKillsGrandchild verifies that cancelling RunStep kills the
+// whole process tree, not just the direct child shell. The step launches a
+// grandchild (`sleep` backgrounded under `bash -c ... & wait`) that
+// heartbeats into a file once a second. If only the shell were killed (the
+// exec.CommandContext default, and the pre-fix behavior on both Unix and
+// Windows), the grandchild would keep running and the heartbeat file would
+// keep growing after cancellation — reproducing bug #9c (orphaned children
+// surviving a cancelled run).
+func TestRunStep_CancelKillsGrandchild(t *testing.T) {
+	dir := t.TempDir()
+	heartbeat := filepath.Join(dir, "heartbeat")
+	// Backgrounding the heartbeat loop under `wait` gives it its own PID
+	// distinct from the bash -lc shell, i.e. a grandchild from RunStep's
+	// point of view (RunStep's direct child is the outer bash -lc process).
+	script := `(for i in $(seq 1 30); do echo tick >> heartbeat; sleep 1; done) & wait`
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var stdout, stderr bytes.Buffer
+		_, _ = RunStep(ctx, script, &stdout, &stderr, nil, dir)
+	}()
+
+	// Let the grandchild get going and write at least one heartbeat.
+	require.Eventually(t, func() bool {
+		info, err := os.Stat(heartbeat)
+		return err == nil && info.Size() > 0
+	}, 5*time.Second, 50*time.Millisecond, "grandchild did not start heartbeating")
+
+	sizeAtCancel := statSize(t, heartbeat)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("RunStep did not return within 15s of cancellation — process tree likely not killed")
+	}
+
+	// Give a killed-but-not-yet-reaped grandchild a couple of heartbeat
+	// intervals worth of time to prove it's actually gone, not just slow.
+	time.Sleep(2500 * time.Millisecond)
+	sizeAfterWait := statSize(t, heartbeat)
+	assert.Equal(t, sizeAtCancel, sizeAfterWait,
+		"heartbeat file grew after cancellation — grandchild process survived (process tree was not killed)")
+}
+
+func statSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	return info.Size()
 }
 
 func TestRequireShellFor_NonWindows_AlwaysNil(t *testing.T) {
