@@ -971,7 +971,7 @@ spec:
     - name: cleanup`
 	_, err := Parse(strings.NewReader(y))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "one of run, call, uses, or approval is required")
+	assert.Contains(t, err.Error(), "one of run, call, uses, approval, uploadArtifact, or downloadArtifact is required")
 }
 
 func TestParse_FinallyForbidsNeeds(t *testing.T) {
@@ -1193,4 +1193,116 @@ spec:
 	params := step.Uses.WithAsStrings()
 	assert.Equal(t, "https://github.com/org/repo", params["url"])
 	assert.Equal(t, "src/\ndocs/", params["sparse_paths"])
+}
+
+func TestParse_StandaloneUploadArtifactValid(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: upload-job
+spec:
+  steps:
+    - name: upload
+      uploadArtifact:
+        name: my-artifact
+        path: dist/output.tar.gz
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Steps, 1)
+	step := job.Spec.Steps[0]
+	require.NotNil(t, step.UploadArtifact)
+	assert.Equal(t, "my-artifact", step.UploadArtifact.Name)
+	assert.Equal(t, "dist/output.tar.gz", step.UploadArtifact.Path)
+}
+
+func TestParse_StandaloneDownloadArtifactValid(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: download-job
+spec:
+  steps:
+    - name: download
+      downloadArtifact:
+        name: my-artifact
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Steps, 1)
+	step := job.Spec.Steps[0]
+	require.NotNil(t, step.DownloadArtifact)
+	assert.Equal(t, "my-artifact", step.DownloadArtifact.Name)
+}
+
+func TestParse_RunPlusUploadArtifactRejected(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: bad
+      run: echo hi
+      uploadArtifact:
+        name: my-artifact
+        path: dist/output.tar.gz
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only one of")
+}
+
+func TestParse_UploadArtifactMissingName(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: upload
+      uploadArtifact:
+        path: dist/output.tar.gz
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadArtifact.name")
+}
+
+func TestParse_UploadArtifactMissingPath(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: upload
+      uploadArtifact:
+        name: my-artifact
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadArtifact.path")
+}
+
+func TestParse_DownloadArtifactMissingName(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: download
+      downloadArtifact:
+        destDir: /tmp/output
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "downloadArtifact.name")
 }
