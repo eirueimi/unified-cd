@@ -98,7 +98,8 @@ func runOrchestrateCancel(
 		}
 		return stepFn(h, &mu, execCtx, step), "", nil
 	}
-	a.orchestrate(context.Background(), c, stepExec)
+	noopArtifactExec := func(_ context.Context, _, _ string) (int, error) { return 0, nil }
+	a.orchestrate(context.Background(), c, stepExec, noopArtifactExec, "/workspace")
 
 	mu.Lock()
 	defer mu.Unlock()

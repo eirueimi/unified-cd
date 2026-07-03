@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -167,12 +168,27 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		stderrPusher.Flush(execCtx)
 		return ec, stdoutBuf.String(), execErr
 	}
-	a.orchestrate(ctx, c, stepExec)
+
+	mountPath := "/workspace"
+	if c.PodTemplate != nil && c.PodTemplate.Workspace != nil && c.PodTemplate.Workspace.MountPath != "" {
+		mountPath = c.PodTemplate.Workspace.MountPath
+	}
+
+	artifactExec := func(execCtx context.Context, container, script string) (int, error) {
+		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, 0, "stderr")
+		ec, err := a.exec.ExecStep(execCtx, podName, container, script, io.Discard, stderrPusher)
+		stderrPusher.Flush(execCtx)
+		return ec, err
+	}
+
+	a.orchestrate(ctx, c, stepExec, artifactExec, mountPath)
 }
 
 // orchestrate runs the claim's stages, reporting step/run status, using stepExec
 // to run each step's command. Pure of pod lifecycle so it is unit-testable.
-func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec) {
+// artifactExec dispatches uploadArtifact/downloadArtifact commands into the sidecar.
+// mountPath is the workspace volume's mount path inside the pod (default "/workspace").
+func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec, artifactExec func(ctx context.Context, container, script string) (int, error), mountPath string) {
 	var anyStepFailed atomic.Bool
 	var cancelledByMaster atomic.Bool
 	statusView := func() dsl.RunStatusView {
@@ -276,6 +292,60 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				})
 				if !approved {
 					recordFailure(step)
+				}
+				return
+			}
+
+			// artifact upload: exec a tar|zstd|curl PUT into the sidecar
+			if step.UploadArtifact != nil {
+				started := time.Now().UTC()
+				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+				})
+				src := path.Join(mountPath, step.UploadArtifact.Path)
+				url := fmt.Sprintf("$UNIFIED_SERVER/api/v1/runs/%s/artifacts/%s", c.RunID, step.UploadArtifact.Name)
+				script := fmt.Sprintf(
+					`set -e; tar cf - -C %q . | zstd -q | curl -fsS -X PUT -H "Authorization: Bearer $UNIFIED_AGENT_TOKEN" --data-binary @- %q`,
+					src, url)
+				ec, err := artifactExec(execCtx, artifactSidecarName, script)
+				status := "Succeeded"
+				if err != nil || ec != 0 {
+					status = "Failed"
+				}
+				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
+				})
+				if status == "Failed" && !step.ContinueOnError {
+					failedFlag.Store(true)
+				}
+				return
+			}
+
+			// artifact download: exec a curl|zstd|tar extract into the sidecar
+			if step.DownloadArtifact != nil {
+				started := time.Now().UTC()
+				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+				})
+				dest := step.DownloadArtifact.DestDir
+				if dest == "" {
+					dest = "."
+				}
+				destAbs := path.Join(mountPath, dest)
+				url := fmt.Sprintf("$UNIFIED_SERVER/api/v1/runs/%s/artifacts/%s", c.RunID, step.DownloadArtifact.Name)
+				script := fmt.Sprintf(
+					`set -e; mkdir -p %q; curl -fsS -H "Authorization: Bearer $UNIFIED_AGENT_TOKEN" %q | zstd -dq | tar xf - -C %q`,
+					destAbs, url, destAbs)
+				ec, err := artifactExec(execCtx, artifactSidecarName, script)
+				status := "Succeeded"
+				if err != nil || ec != 0 {
+					status = "Failed"
+				}
+				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
+				})
+				if status == "Failed" && !step.ContinueOnError {
+					failedFlag.Store(true)
 				}
 				return
 			}
