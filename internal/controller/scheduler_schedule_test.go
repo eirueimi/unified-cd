@@ -21,10 +21,21 @@ type mockScheduleFireStore struct {
 	created     []*api.Run
 	updated     map[string]time.Time
 	createErr   error
+	jobs        map[string]*api.Job // optional; GetJob returns "not found" when absent
 }
 
 func (m *mockScheduleFireStore) ListSchedules(_ context.Context) ([]store.Schedule, error) {
 	return m.schedules, nil
+}
+
+// GetJob returns the job spec used for param validation before firing a
+// scheduled Run. Returns an error when the job isn't registered in the mock
+// (checkAndFireSchedules tolerates this by skipping param validation).
+func (m *mockScheduleFireStore) GetJob(_ context.Context, name string) (*api.Job, error) {
+	if job, ok := m.jobs[name]; ok {
+		return job, nil
+	}
+	return nil, fmt.Errorf("job not found: %s", name)
 }
 
 func (m *mockScheduleFireStore) CreateRun(_ context.Context, jobName string, params map[string]string, _ []byte, _ []string, triggeredBy string) (*api.Run, error) {
@@ -107,6 +118,42 @@ func TestCheckAndFireSchedules_NoFireWhenNotDue(t *testing.T) {
 
 	assert.Empty(t, m.created)
 	assert.Empty(t, m.updated) // nothing is updated since next > now
+}
+
+func TestCheckAndFireSchedules_InjectsDefaultParam(t *testing.T) {
+	// The job declares a `tag` input with a default; the schedule doesn't set it.
+	lastFired := testNow.Add(-25 * time.Hour)
+	m := &mockScheduleFireStore{
+		schedules: []store.Schedule{
+			{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+		},
+		jobs: map[string]*api.Job{
+			"build": {Name: "build", Spec: []byte(`{"params":{"inputs":[{"name":"tag","type":"string","default":"latest"}]}}`)},
+		},
+	}
+	checkAndFireSchedules(context.Background(), m, testNow)
+
+	require.Len(t, m.created, 1)
+	require.NotNil(t, m.updated["daily"])
+}
+
+func TestCheckAndFireSchedules_MissingRequiredParam_SkipsAndDoesNotAdvance(t *testing.T) {
+	// The job declares a required `image` input with no default; the schedule
+	// doesn't supply it, so the Run must not be created and last_fired_at must
+	// not advance (so the next tick can retry once the schedule/job is fixed).
+	lastFired := testNow.Add(-25 * time.Hour)
+	m := &mockScheduleFireStore{
+		schedules: []store.Schedule{
+			{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+		},
+		jobs: map[string]*api.Job{
+			"build": {Name: "build", Spec: []byte(`{"params":{"inputs":[{"name":"image","type":"string","required":true}]}}`)},
+		},
+	}
+	checkAndFireSchedules(context.Background(), m, testNow)
+
+	assert.Empty(t, m.created)
+	assert.Empty(t, m.updated)
 }
 
 func TestCheckAndFireSchedules_CreateRunError_DoesNotUpdateLastFiredAt(t *testing.T) {

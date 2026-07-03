@@ -145,6 +145,11 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(job.Spec, &jobSpec); err == nil {
 		agentSelector = jobSpec.AgentSelector
 	}
+	params, err = resolveParams(jobSpec.Params.Inputs, params)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	agentSelector, err = dsl.ExpandAgentSelector(agentSelector, params)
 	if err != nil {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
