@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -16,8 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/artifact"
+	"github.com/klauspost/compress/zstd"
 )
 
 // HTTPError represents a non-successful HTTP status returned by the server.
@@ -296,51 +296,5 @@ func (c *Client) DownloadArtifact(ctx context.Context, runID, name, destDir stri
 	if destDir == "" {
 		destDir = "."
 	}
-	return extractTarZstd(resp.Body, destDir)
-}
-
-// extractTarZstd extracts a tar+zstd stream into dest.
-// Includes path checks to prevent path traversal attacks.
-func extractTarZstd(r io.Reader, dest string) error {
-	dec, err := zstd.NewReader(r)
-	if err != nil {
-		return fmt.Errorf("zstd reader: %w", err)
-	}
-	defer dec.Close()
-
-	cleanDest := filepath.Clean(dest) + string(filepath.Separator)
-	tr := tar.NewReader(dec)
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("tar next: %w", err)
-		}
-		target := filepath.Join(dest, filepath.FromSlash(hdr.Name))
-		if !strings.HasPrefix(target+string(filepath.Separator), cleanDest) {
-			return fmt.Errorf("invalid path %q in artifact archive", hdr.Name)
-		}
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o750); err != nil {
-				return err
-			}
-		default:
-			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
-				return err
-			}
-			f, err := os.Create(target)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				return err
-			}
-			f.Close()
-		}
-	}
-	return nil
+	return artifact.ExtractTarZstd(resp.Body, destDir)
 }
