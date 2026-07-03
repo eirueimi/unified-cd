@@ -12,10 +12,9 @@ package k8sagent
 //     (ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest) must be pullable
 //     from within the cluster. If the sidecar image is not yet available on the
 //     cluster, pre-load it (e.g. `kind load docker-image …`) before running.
-//   - A running unified-cd controller reachable from within the pod at
-//     $UNIFIED_SERVER with a valid $UNIFIED_AGENT_TOKEN; the test mock server
-//     used here does NOT implement the artifact store, so the actual curl/tar
-//     transfer will fail unless a real store is wired up.
+//   - The mock server in this test implements the artifact PUT/GET endpoints
+//     as an in-memory store, so no real unified-cd controller is needed for
+//     the artifact transfers — the sidecar's curl PUT/GET will reach the mock.
 //
 // For CI without a cluster, skip this file by not passing -tags k8s.
 // This test is intentionally skipped when -short is set.
@@ -23,8 +22,10 @@ package k8sagent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -52,6 +53,10 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 	var mu sync.Mutex
 	stepStatuses := map[string]string{}
 	finishCh := make(chan api.RunStatus, 1)
+
+	// In-memory artifact store: keyed by "runID/name" → bytes.
+	var artifactMu sync.Mutex
+	artifactStore := map[string][]byte{}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +88,43 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/outputs", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// artifactKey parses /api/v1/runs/{runID}/artifacts/{name} → "runID/name".
+	artifactKey := func(urlPath string) string {
+		const prefix = "/api/v1/runs/"
+		const sep = "/artifacts/"
+		rel := urlPath[len(prefix):] // "{runID}/artifacts/{name}"
+		i := strings.Index(rel, sep)
+		if i < 0 {
+			return rel
+		}
+		return rel[:i] + "/" + rel[i+len(sep):]
+	}
+	// Artifact PUT: store body bytes keyed by "runID/name".
+	mux.HandleFunc("PUT /api/v1/runs/", func(w http.ResponseWriter, r *http.Request) {
+		key := artifactKey(r.URL.Path)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
+		}
+		artifactMu.Lock()
+		artifactStore[key] = body
+		artifactMu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// Artifact GET: return stored bytes or 404.
+	mux.HandleFunc("GET /api/v1/runs/", func(w http.ResponseWriter, r *http.Request) {
+		key := artifactKey(r.URL.Path)
+		artifactMu.Lock()
+		data, ok := artifactStore[key]
+		artifactMu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write(data) //nolint:errcheck
+	})
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -109,12 +151,12 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 	//  4. downloadArtifact: curl|zstd|tar restore into a subdirectory.
 	//  5. run:  cat the restored file and assert the content is correct.
 	//
-	// NOTE: steps 2 and 4 call the real sidecar, which needs $UNIFIED_SERVER and
-	// $UNIFIED_AGENT_TOKEN to be set in the sidecar container. The mock server
-	// above does NOT implement the artifact object store, so steps 2/4 will fail
-	// unless you point cfg.Server at a real unified-cd controller.  The test
-	// asserts Succeeded for all steps — it will fail gracefully if the store is
-	// unavailable, producing a clear "Failed" status for the artifact steps.
+	// Steps 2 and 4 call the real sidecar. $UNIFIED_SERVER and
+	// $UNIFIED_AGENT_TOKEN are injected by the SidecarSpec and point at this
+	// mock server, which now serves artifact PUT/GET from an in-memory store.
+	// The sidecar's curl PUT → GET round-trip therefore succeeds without a real
+	// unified-cd controller, making the "assert Succeeded" assertions genuinely
+	// verifiable on a real cluster.
 	claim := api.ClaimResponse{
 		RunID:   runID,
 		JobName: "artifact-round-trip",

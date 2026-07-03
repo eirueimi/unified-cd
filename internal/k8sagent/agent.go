@@ -315,8 +315,8 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
 				})
-				if status == "Failed" && !step.ContinueOnError {
-					failedFlag.Store(true)
+				if status == "Failed" {
+					recordFailure(step)
 				}
 				return
 			}
@@ -344,8 +344,8 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
 				})
-				if status == "Failed" && !step.ContinueOnError {
-					failedFlag.Store(true)
+				if status == "Failed" {
+					recordFailure(step)
 				}
 				return
 			}
