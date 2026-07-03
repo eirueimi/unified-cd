@@ -17,6 +17,7 @@ type Config struct {
 	Labels        []string                    `yaml:"labels"`
 	Namespace     string                      `yaml:"namespace"`
 	PodImage      string                      `yaml:"podImage"`
+	SidecarImage  string                      `yaml:"sidecarImage"`
 	Kubeconfig    string                      `yaml:"kubeconfig"`
 	MaxConcurrent   int                         `yaml:"maxConcurrent"`
 	PoolIdleTimeout string                      `yaml:"poolIdleTimeout,omitempty"`
@@ -34,6 +35,7 @@ func DefaultConfig() Config {
 	return Config{
 		Namespace:     "default",
 		PodImage:      "ghcr.io/eirueimi/unified-cd-runner:v0.0.3",
+		SidecarImage:  "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
 		MaxConcurrent: 5,
 	}
 }
@@ -100,6 +102,9 @@ func (c *Config) Validate() error {
 	}
 	if c.PodImage == "" {
 		c.PodImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3"
+	}
+	if c.SidecarImage == "" {
+		c.SidecarImage = "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest"
 	}
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = 5

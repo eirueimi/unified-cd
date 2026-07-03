@@ -78,7 +78,7 @@ func newTestNamespace(t *testing.T, client *kubernetes.Clientset) string {
 func podReadyOrSkip(t *testing.T, pm *PodManager, runID string) string {
 	t.Helper()
 	ctx := context.Background()
-	pod, err := BuildPod(runID, pm.namespace, nil, nil, testImage)
+	pod, err := BuildPod(runID, pm.namespace, nil, nil, testImage, SidecarSpec{})
 	if err != nil {
 		t.Fatalf("BuildPod: %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // orchestrateHarness stands up a mock controller, records step statuses by
@@ -131,7 +132,8 @@ func runOrchestrateWithApproval(t *testing.T, c api.ClaimResponse, fakes map[str
 		}
 		return f.exit, f.stdout, nil
 	}
-	a.orchestrate(context.Background(), c, stepExec)
+	noopArtifactExec := func(_ context.Context, _, _ string) (int, error) { return 0, nil }
+	a.orchestrate(context.Background(), c, stepExec, noopArtifactExec, "/workspace")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -235,6 +237,125 @@ func TestOrchestrate_ApprovalRejectedSkipsLaterStep(t *testing.T) {
 	statuses, final := runOrchestrateWithApproval(t, c, nil, "Rejected")
 	assert.Equal(t, "Failed", statuses["gate"], "rejected gate reports Failed")
 	assert.Equal(t, "Skipped", statuses["after"], "no-if step auto-skips after a rejected gate")
+	assert.Equal(t, "Failed", final)
+}
+
+// artifactCall records a single call to the fake artifactExec.
+type artifactCall struct {
+	container string
+	script    string
+}
+
+// runOrchestrateArtifact is like runOrchestrate but injects a fake
+// artifactExec that records (container, script) calls and returns exitCode
+// for every call. It returns the recorded calls, per-step statuses, and the
+// final run status.
+func runOrchestrateArtifact(t *testing.T, c api.ClaimResponse, exitCode int) ([]artifactCall, map[string]string, string) {
+	t.Helper()
+
+	h := &orchestrateHarness{statuses: map[string]string{}, runState: "Running"}
+	var mu sync.Mutex
+	var recorded []artifactCall
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("POST /api/v1/agents/{id}/steps", func(w http.ResponseWriter, r *http.Request) {
+		var req api.StepReportRequest
+		_ = orchestrateDecodeJSON(r, &req)
+		mu.Lock()
+		if req.StepName != "" {
+			h.statuses[req.StepName] = req.Status
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/steps/{idx}/outputs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/outputs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /api/v1/runs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		st := h.runState
+		mu.Unlock()
+		orchestrateWriteJSON(w, api.Run{ID: c.RunID, Status: api.RunStatus(st)})
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/finish", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Status string `json:"status"`
+		}
+		_ = orchestrateDecodeJSON(r, &req)
+		mu.Lock()
+		h.final = req.Status
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := agentlib.NewClient(srv.URL, "tok")
+	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
+
+	fakeStepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
+		return 0, "", nil
+	}
+	fakeArtifactExec := func(_ context.Context, container, script string) (int, error) {
+		mu.Lock()
+		recorded = append(recorded, artifactCall{container: container, script: script})
+		mu.Unlock()
+		return exitCode, nil
+	}
+
+	a.orchestrate(context.Background(), c, fakeStepExec, fakeArtifactExec, "/workspace")
+
+	mu.Lock()
+	defer mu.Unlock()
+	return recorded, h.statuses, h.final
+}
+
+func TestOrchestrate_UploadArtifactDispatchesToSidecar(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "up",
+			UploadArtifact: &api.UploadArtifactStep{Name: "app", Path: "bin/app"}}},
+	}}
+	rec, statuses, final := runOrchestrateArtifact(t, c, 0 /*exit*/)
+	require.Len(t, rec, 1)
+	assert.Equal(t, artifactSidecarName, rec[0].container)
+	assert.Contains(t, rec[0].script, "tar cf -")
+	assert.Contains(t, rec[0].script, "zstd")
+	assert.Contains(t, rec[0].script, "-X PUT")
+	assert.Contains(t, rec[0].script, "/api/v1/runs/r1/artifacts/app")
+	assert.Equal(t, "Succeeded", statuses["up"])
+	assert.Equal(t, "Succeeded", final)
+}
+
+func TestOrchestrate_DownloadArtifactDispatchesToSidecar(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "dl",
+			DownloadArtifact: &api.DownloadArtifactStep{Name: "app", DestDir: "out"}}},
+	}}
+	rec, statuses, _ := runOrchestrateArtifact(t, c, 0)
+	require.Len(t, rec, 1)
+	assert.Equal(t, artifactSidecarName, rec[0].container)
+	assert.Contains(t, rec[0].script, "curl")
+	assert.Contains(t, rec[0].script, "zstd -d")
+	assert.Contains(t, rec[0].script, "tar xf -")
+	assert.Contains(t, rec[0].script, "/api/v1/runs/r1/artifacts/app")
+	assert.Equal(t, "Succeeded", statuses["dl"])
+}
+
+func TestOrchestrate_ArtifactExecFailureFailsRun(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "up",
+			UploadArtifact: &api.UploadArtifactStep{Name: "app", Path: "bin/app"}}},
+	}}
+	_, statuses, final := runOrchestrateArtifact(t, c, 1 /*non-zero exit*/)
+	assert.Equal(t, "Failed", statuses["up"])
 	assert.Equal(t, "Failed", final)
 }
 
