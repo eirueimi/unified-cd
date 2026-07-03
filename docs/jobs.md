@@ -383,6 +383,43 @@ Artifacts are stored in the S3-compatible object store. Artifact names must be u
 
 Artifacts work on both the standard and Kubernetes agents; on the k8s-agent, transfers are handled by an auto-injected workspace sidecar (`unified-artifact`).
 
+### Listing and downloading artifacts (humans)
+
+Besides the job-to-job `uploadArtifact` / `downloadArtifact` steps above, a human operator can
+list and fetch a run's artifacts directly through the API or the CLI.
+
+**API:**
+
+```
+GET /api/v1/runs/{runID}/artifacts
+GET /api/v1/runs/{runID}/artifacts/{name}
+```
+
+- `GET /artifacts` lists the artifact names for the run as JSON: `[{"name": "app-binary"}, {"name": "test-report"}]` (an empty run returns `[]`).
+- `GET /artifacts/{name}` streams the artifact as a tar+zstd archive (the same format `uploadArtifact`/`downloadArtifact` steps use).
+- Both routes accept **either** an agent bearer token **or** a human identity (PAT, OIDC `id_token`, or session cookie) — whichever `ServerAuth` would otherwise accept.
+- `PUT /api/v1/runs/{runID}/artifacts/{name}` (upload) is unchanged and remains **agent-only**, authenticated with `BearerAuth` using the agent token. It is not reachable with a PAT, OIDC token, or session — only agents upload artifacts.
+
+**CLI:**
+
+```bash
+unified-cd artifact list <run-id>
+unified-cd artifact download <run-id> <name> [--dest .]
+```
+
+```bash
+# List artifacts produced by a run
+unified-cd artifact list a1b2c3d4
+# app-binary
+# test-report
+
+# Download and extract "app-binary" into ./out
+unified-cd artifact download a1b2c3d4 app-binary --dest ./out
+# extracted app-binary of run a1b2c3d4 to ./out
+```
+
+`--dest` defaults to the current directory. Both commands authenticate using the CLI's configured server token (PAT or OIDC login), the same as other `unified-cd` commands.
+
 ---
 
 ## Cache

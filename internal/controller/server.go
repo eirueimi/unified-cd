@@ -308,9 +308,9 @@ func (s *Server) routes() {
 	})
 
 	s.r.Route("/api/v1/runs/{runID}/artifacts", func(r chi.Router) {
-		r.Use(BearerAuth(s.cfg.AgentToken))
-		r.Put("/{name}", s.handleArtifactUpload)
-		r.Get("/{name}", s.handleArtifactDownload)
+		r.With(BearerAuth(s.cfg.AgentToken)).Put("/{name}", s.handleArtifactUpload)
+		r.With(AgentOrServerAuth(s.cfg.AgentToken, s.store, s)).Get("/{name}", s.handleArtifactDownload)
+		r.With(AgentOrServerAuth(s.cfg.AgentToken, s.store, s)).Get("/", s.handleArtifactList)
 	})
 
 	// When WebDir is set, serve the Web UI as static files (no auth required).

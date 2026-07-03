@@ -140,6 +140,27 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 	}
 }
 
+// AgentOrServerAuth allows the agent static token (constant-time compare) OR,
+// failing that, any identity ServerAuth accepts (PAT / OIDC / session). Used for
+// artifact download + list, which both agents and humans need.
+func AgentOrServerAuth(agentToken string, st store.Store, srv *Server) func(http.Handler) http.Handler {
+	server := ServerAuth(st, srv)
+	expected := []byte(agentToken)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := r.Header.Get("Authorization")
+			if strings.HasPrefix(h, bearerPrefix) {
+				got := []byte(strings.TrimPrefix(h, bearerPrefix))
+				if len(expected) != 0 && subtle.ConstantTimeCompare(got, expected) == 1 {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			server(next).ServeHTTP(w, r)
+		})
+	}
+}
+
 // HashToken returns the SHA-256 hash of a token string as a hex string.
 func HashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
