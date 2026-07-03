@@ -103,6 +103,54 @@ func TestBuildPod_WorkspacePVC(t *testing.T) {
 	assert.Equal(t, "my-pvc", pod.Spec.Volumes[0].PersistentVolumeClaim.ClaimName)
 }
 
+func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
+	t.Run("defaults to /workspace", func(t *testing.T) {
+		pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine")
+		require.NoError(t, err)
+		require.Len(t, pod.Spec.Containers, 1)
+		assert.Equal(t, "/workspace", pod.Spec.Containers[0].WorkingDir)
+	})
+
+	t.Run("matches customized MountPath", func(t *testing.T) {
+		agentTmpls := map[string]AgentPodTemplate{
+			"golang": {
+				Workspace: &dsl.WorkspaceConfig{MountPath: "/custom-ws"},
+				Spec: map[string]any{
+					"containers": []any{
+						map[string]any{"name": "job", "image": "golang:1.24-alpine", "command": []any{"sleep", "3600"}},
+					},
+				},
+			},
+		}
+		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "")
+		require.NoError(t, err)
+		require.Len(t, pod.Spec.Containers, 1)
+		assert.Equal(t, "/custom-ws", pod.Spec.Containers[0].WorkingDir)
+		assert.Equal(t, "/custom-ws", pod.Spec.Containers[0].VolumeMounts[0].MountPath)
+	})
+
+	t.Run("preserves user-set WorkingDir", func(t *testing.T) {
+		agentTmpls := map[string]AgentPodTemplate{
+			"golang": {
+				Spec: map[string]any{
+					"containers": []any{
+						map[string]any{
+							"name":       "job",
+							"image":      "golang:1.24-alpine",
+							"command":    []any{"sleep", "3600"},
+							"workingDir": "/app",
+						},
+					},
+				},
+			},
+		}
+		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "")
+		require.NoError(t, err)
+		require.Len(t, pod.Spec.Containers, 1)
+		assert.Equal(t, "/app", pod.Spec.Containers[0].WorkingDir, "user-set WorkingDir must not be overwritten")
+	})
+}
+
 func TestInjectWorkspace_AllContainers(t *testing.T) {
 	spec := &corev1.PodSpec{
 		Containers: []corev1.Container{
