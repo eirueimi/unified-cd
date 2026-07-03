@@ -218,15 +218,22 @@ Use `container:` to switch the execution container per step. When omitted, the f
 
 ---
 
-## Artifacts
+## Artifacts and Cache
 
-The k8s-agent supports `uploadArtifact` and `downloadArtifact` steps via an auto-injected sidecar container.
+The k8s-agent supports `uploadArtifact`, `downloadArtifact`, and `cache` steps via an auto-injected sidecar container that talks **directly to S3** — object bytes never transit the controller.
 
 ### How it works
 
-When a job pod is created, the agent automatically adds a sidecar container named `unified-artifact` (a small Alpine image with `tar`, `zstd`, and `curl`) to the pod. The sidecar shares the pod's workspace volume and transfers files to and from the controller's artifact endpoint using the same wire format as the standard agent.
+When a job pod is created, the agent automatically adds a sidecar container named `unified-artifact` to the pod, running the `unified-sidecar` binary (a static, distroless image — no shell, `tar`, or `curl` inside it). The container is kept alive with `unified-sidecar idle`; individual transfers are dispatched into it via `exec` with an explicit argv (e.g. `unified-sidecar artifact upload --run <id> --name <name> --path <dir>`), never through a shell string. The sidecar shares the pod's workspace volume and reads/writes objects in the S3-compatible bucket configured for the agent.
 
-Job-container steps (`run:` commands) are unaffected — the sidecar runs separately and is invisible to the main step execution.
+Object key layout is unchanged from the controller-relay model:
+
+- Artifacts: `artifacts/{runID}/{name}.tar.gz`
+- Cache: `caches/<sha>.tar.zst` (+ `caches/<sha>.meta` for TTL/metadata)
+
+Job-container steps (`run:` commands) are unaffected — the sidecar runs in its own container and is invisible to the main step execution.
+
+**Cache** is best-effort: a `cache:` step restores at step time if a matching key exists, but a miss or restore error never fails the step. The matching save is deferred until the end of the run (after all stages complete, mirroring the standard agent's cache semantics) and is also best-effort — a save error is logged but never fails the run. **Artifacts are not best-effort** — a failed `uploadArtifact`/`downloadArtifact` transfer fails the step, same as the pre-existing k8s behavior.
 
 ### Reserved container name
 
@@ -241,13 +248,33 @@ The sidecar image is configurable via the agent's `sidecarImage` config field:
 sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest   # default
 ```
 
-### Security note
+### S3 credentials (required)
 
-The controller bearer token is set on the **sidecar container's** environment, not on the job container. Job-container steps cannot read it (container-boundary isolation). However, the token does appear in the pod spec — a Secret-based hardening (using a Kubernetes `Secret` instead of a plain env var) is a planned follow-up.
+The operator must create a Kubernetes `Secret` in the agent's namespace with the same S3 env vars used by the controller/standard agent:
 
-### Cache
+```
+UNIFIED_S3_ENDPOINT     # required
+UNIFIED_S3_BUCKET       # required
+UNIFIED_S3_KEY          # required
+UNIFIED_S3_SECRET       # required
+UNIFIED_S3_USE_SSL      # optional, bool (default: derived from endpoint scheme)
+UNIFIED_S3_REGION       # optional
+```
 
-Cache steps (`cache:`) are **not yet supported** on the Kubernetes agent. A `cache:` step is currently a silent no-op when running on k8s. A follow-up will route cache through the same sidecar via a controller cache-proxy.
+Point the agent at it via `sidecarS3SecretName` in the config file:
+
+```yaml
+# k8s-agent-config.yaml
+sidecarS3SecretName: unified-cd-s3-creds
+```
+
+The Secret is injected into the sidecar container only, via `envFrom`. If `sidecarS3SecretName` is unset (or the named Secret doesn't exist), the sidecar has no S3 credentials: artifact steps fail loudly (this is an operator misconfiguration, not a transient error), and cache steps silently no-op (best-effort — a step never fails because the cache is unavailable).
+
+### Security note / threat model
+
+Bucket-scoped S3 credentials are mounted into the **sidecar container's** environment only, via the Kubernetes Secret's `envFrom` — the job container never sees them (container-boundary isolation, the same trust boundary Argo Workflows and Tekton use for their artifact sidecars/init-containers). The credentials are long-lived, bucket-scoped static keys, not per-run or per-pod scoped; any workload able to exec into the `unified-artifact` container (or read the Secret directly, if RBAC allows `get`/`list` on Secrets in the namespace) can read/write the whole bucket for as long as the Secret is valid.
+
+This is comparable to how most CI systems hand artifact/cache sidecars static bucket credentials, but it is **not** least-privilege per run. A planned hardening is to move to short-lived, per-pod credentials via IAM Roles for Service Accounts (IRSA) on EKS or an equivalent Workload Identity / STS-assumed-role mechanism on other clouds, so the sidecar authenticates via a projected service-account token instead of a static Secret. Until then, restrict RBAC `get`/`list`/`watch` on Secrets and `pods/exec` in the agent's namespace to trusted operators.
 
 ---
 

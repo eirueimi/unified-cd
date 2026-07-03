@@ -8,7 +8,9 @@ import (
 	"os"
 	"path"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -100,7 +102,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			templateName = c.PodTemplate.Name
 		}
 		pp, err := a.pool.ClaimPod(ctx, c.RunID, templateName, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
-			SidecarSpec{Image: a.cfg.SidecarImage, Server: a.cfg.Server, Token: a.cfg.Token})
+			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName})
 		if err != nil {
 			slog.Error("k8s: failed to acquire Pod", "runId", c.RunID, "error", err)
 			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
@@ -115,7 +117,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		}()
 	} else {
 		pod, err := BuildPod(c.RunID, a.cfg.Namespace, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
-			SidecarSpec{Image: a.cfg.SidecarImage, Server: a.cfg.Server, Token: a.cfg.Token})
+			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName})
 		if err != nil {
 			slog.Error("k8s: failed to build Pod spec", "runId", c.RunID, "error", err)
 			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
@@ -174,26 +176,43 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		mountPath = c.PodTemplate.Workspace.MountPath
 	}
 
-	artifactExec := func(execCtx context.Context, container, script string) (int, error) {
+	sidecarExec := func(execCtx context.Context, container string, argv []string) (int, error) {
 		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, 0, "stderr")
-		ec, err := a.exec.ExecStep(execCtx, podName, container, script, io.Discard, stderrPusher)
+		ec, err := a.exec.ExecStepArgv(execCtx, podName, container, argv, io.Discard, stderrPusher)
 		stderrPusher.Flush(execCtx)
 		return ec, err
 	}
 
-	a.orchestrate(ctx, c, stepExec, artifactExec, mountPath)
+	a.orchestrate(ctx, c, stepExec, sidecarExec, mountPath)
 }
 
 // orchestrate runs the claim's stages, reporting step/run status, using stepExec
 // to run each step's command. Pure of pod lifecycle so it is unit-testable.
-// artifactExec dispatches uploadArtifact/downloadArtifact commands into the sidecar.
+// sidecarExec dispatches cache/artifact commands (argv, no shell) into the
+// unified-artifact sidecar container.
 // mountPath is the workspace volume's mount path inside the pod (default "/workspace").
-func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec, artifactExec func(ctx context.Context, container, script string) (int, error), mountPath string) {
+func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec, sidecarExec func(ctx context.Context, container string, argv []string) (int, error), mountPath string) {
 	var anyStepFailed atomic.Bool
 	var cancelledByMaster atomic.Bool
 	statusView := func() dsl.RunStatusView {
 		cancelled := cancelledByMaster.Load()
 		return dsl.RunStatusView{Failed: anyStepFailed.Load() && !cancelled, Cancelled: cancelled}
+	}
+
+	// cacheSaveSpec captures a cache step's save parameters, deferred until
+	// after the main stages complete (so the save captures the final
+	// workspace state, matching the standard agent's cache semantics).
+	type cacheSaveSpec struct {
+		key     string
+		ttlDays int
+		path    string
+	}
+	var cacheSavesMu sync.Mutex
+	var cacheSaves []cacheSaveSpec
+	registerCacheSave := func(s cacheSaveSpec) {
+		cacheSavesMu.Lock()
+		cacheSaves = append(cacheSaves, s)
+		cacheSavesMu.Unlock()
 	}
 
 	// runCtx is cancelled when the master cancels the run mid-flight. Passing it
@@ -296,18 +315,60 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				return
 			}
 
-			// artifact upload: exec a tar|zstd|curl PUT into the sidecar
+			// cache restore: exec the unified-sidecar binary's "cache restore" into
+			// the sidecar; best-effort, so a miss/error never fails the step. The
+			// matching save is deferred until after the main stages complete.
+			if step.Cache != nil {
+				started := time.Now().UTC()
+				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+				})
+				key, kerr := dsl.ExpandTemplate(step.Cache.Key, tplData)
+				if kerr != nil || key == "" {
+					// A bad/empty key template must not silently collide caches
+					// across runs. Skip the cache operation entirely (no restore,
+					// no deferred save) but keep cache best-effort: the step still
+					// succeeds.
+					slog.Warn("k8s: cache key template failed; skipping cache for step", "step", step.Name, "keyTemplate", step.Cache.Key, "error", kerr)
+				} else {
+					var restoreKeys []string
+					for _, rk := range step.Cache.RestoreKeys {
+						if v, _ := dsl.ExpandTemplate(rk, tplData); v != "" {
+							restoreKeys = append(restoreKeys, v)
+						}
+					}
+					cachePath := path.Join(mountPath, step.Cache.Path)
+					argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", cachePath}
+					for _, rk := range restoreKeys {
+						argv = append(argv, "--restore-key", rk)
+					}
+					// Best-effort: a miss/error never fails the step (the binary exits 0).
+					_, _ = sidecarExec(execCtx, artifactSidecarName, argv)
+
+					ttlDays := step.Cache.TTLDays
+					if ttlDays == 0 {
+						ttlDays = 30
+					}
+					registerCacheSave(cacheSaveSpec{key: key, ttlDays: ttlDays, path: cachePath})
+				}
+
+				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
+				})
+				return
+			}
+
+			// artifact upload: exec the unified-sidecar binary via argv into the
+			// sidecar. Artifacts are fail-loud (not best-effort).
 			if step.UploadArtifact != nil {
 				started := time.Now().UTC()
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
 				})
-				src := path.Join(mountPath, step.UploadArtifact.Path)
-				url := fmt.Sprintf("$UNIFIED_SERVER/api/v1/runs/%s/artifacts/%s", c.RunID, step.UploadArtifact.Name)
-				script := fmt.Sprintf(
-					`set -e; tar cf - -C %q . | zstd -q | curl -fsS -X PUT -H "Authorization: Bearer $UNIFIED_AGENT_TOKEN" --data-binary @- %q`,
-					src, url)
-				ec, err := artifactExec(execCtx, artifactSidecarName, script)
+				argv := []string{"unified-sidecar", "artifact", "upload",
+					"--run", c.RunID, "--name", step.UploadArtifact.Name,
+					"--path", path.Join(mountPath, step.UploadArtifact.Path)}
+				ec, err := sidecarExec(execCtx, artifactSidecarName, argv)
 				status := "Succeeded"
 				if err != nil || ec != 0 {
 					status = "Failed"
@@ -321,7 +382,8 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				return
 			}
 
-			// artifact download: exec a curl|zstd|tar extract into the sidecar
+			// artifact download: exec the unified-sidecar binary via argv into the
+			// sidecar. Artifacts are fail-loud (not best-effort).
 			if step.DownloadArtifact != nil {
 				started := time.Now().UTC()
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
@@ -331,12 +393,10 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				if dest == "" {
 					dest = "."
 				}
-				destAbs := path.Join(mountPath, dest)
-				url := fmt.Sprintf("$UNIFIED_SERVER/api/v1/runs/%s/artifacts/%s", c.RunID, step.DownloadArtifact.Name)
-				script := fmt.Sprintf(
-					`set -e; mkdir -p %q; curl -fsS -H "Authorization: Bearer $UNIFIED_AGENT_TOKEN" %q | zstd -dq | tar xf - -C %q`,
-					destAbs, url, destAbs)
-				ec, err := artifactExec(execCtx, artifactSidecarName, script)
+				argv := []string{"unified-sidecar", "artifact", "download",
+					"--run", c.RunID, "--name", step.DownloadArtifact.Name,
+					"--dest", path.Join(mountPath, dest)}
+				ec, err := sidecarExec(execCtx, artifactSidecarName, argv)
 				status := "Succeeded"
 				if err != nil || ec != 0 {
 					status = "Failed"
@@ -445,6 +505,19 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 	}
 	if len(runOutputs) > 0 {
 		_ = a.client.SetRunOutputs(ctx, a.cfg.AgentID, c.RunID, runOutputs)
+	}
+
+	// Deferred cache saves: capture the final workspace after the main stages
+	// (before finally, which is cleanup/notify). Best-effort — never flips status.
+	// Use a non-cancelling context so a parent-context cancellation (process
+	// shutdown) doesn't abort the save, matching the standard agent and the
+	// k8s finally block below.
+	saveCtx := context.WithoutCancel(ctx)
+	for _, s := range cacheSaves {
+		argv := []string{"unified-sidecar", "cache", "save", "--key", s.key, "--ttl-days", strconv.Itoa(s.ttlDays), "--path", s.path}
+		if _, err := sidecarExec(saveCtx, artifactSidecarName, argv); err != nil {
+			slog.Warn("k8s: cache save exec failed", "key", s.key, "error", err)
+		}
 	}
 
 	// anyStepFailed already excludes cancel-induced failures (suppressOnCancel).

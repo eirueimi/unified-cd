@@ -31,6 +31,22 @@ func NewExecutor(client kubernetes.Interface, restCfg *rest.Config, namespace st
 // Returns (exitCode, nil) when the command exits (including non-zero exit codes).
 // Returns (1, err) for infrastructure errors (network, protocol, etc.).
 func (e *Executor) ExecStep(ctx context.Context, podName, container, script string, stdout, stderr io.Writer) (int, error) {
+	return e.execArgv(ctx, podName, container, buildShellCommand(script), stdout, stderr)
+}
+
+// ExecStepArgv runs argv directly (no shell) inside the specified container,
+// streaming stdout/stderr. If container is empty, the "job" container is used.
+// Used for the unified-sidecar binary so values are never shell-interpolated.
+func (e *Executor) ExecStepArgv(ctx context.Context, podName, container string, argv []string, stdout, stderr io.Writer) (int, error) {
+	return e.execArgv(ctx, podName, container, argv, stdout, stderr)
+}
+
+// execArgv is the shared implementation for ExecStep and ExecStepArgv. It runs
+// cmd directly inside the specified container via the Kubernetes exec API,
+// streaming stdout/stderr. If container is empty, the "job" container is used.
+// Returns (exitCode, nil) when the command exits (including non-zero exit codes).
+// Returns (1, err) for infrastructure errors (network, protocol, etc.).
+func (e *Executor) execArgv(ctx context.Context, podName, container string, cmd []string, stdout, stderr io.Writer) (int, error) {
 	if container == "" {
 		container = "job"
 	}
@@ -41,7 +57,7 @@ func (e *Executor) ExecStep(ctx context.Context, podName, container, script stri
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: container,
-			Command:   buildShellCommand(script),
+			Command:   cmd,
 			Stdout:    true,
 			Stderr:    true,
 		}, scheme.ParameterCodec)

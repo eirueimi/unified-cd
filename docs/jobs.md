@@ -451,6 +451,8 @@ steps:
 The `key` and `restoreKeys` strings support template expressions (e.g. `{{ checksum "go.sum" }}`).
 On hit, the cached directory is restored before the step runs. On miss, the directory is saved after the run completes.
 
+Cache is now supported on the k8s agent (previously a silent no-op) with the same `key`/`restoreKeys`/`ttlDays` semantics — see [Kubernetes Integration: Artifacts and Cache](kubernetes-integration.md#artifacts-and-cache) for how transfers work and the required S3 credentials. Restore is best-effort (a miss or error never fails the step); save is deferred until the run's main stages complete.
+
 ---
 
 ## Concurrency Control

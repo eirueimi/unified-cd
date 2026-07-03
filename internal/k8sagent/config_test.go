@@ -96,6 +96,23 @@ token: from-config
 	}
 }
 
+func TestLoadConfig_SidecarS3SecretName(t *testing.T) {
+	cfg := writeTempYAML(t, `
+server: http://localhost:8080
+agentId: agent-1
+namespace: ci
+token: from-config
+sidecarS3SecretName: my-s3-secret
+`)
+	got, err := LoadConfig(cfg, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.SidecarS3SecretName != "my-s3-secret" {
+		t.Errorf("SidecarS3SecretName = %q, want %q", got.SidecarS3SecretName, "my-s3-secret")
+	}
+}
+
 func TestLoadConfig_DefaultsApplied(t *testing.T) {
 	cfg := writeTempYAML(t, `
 server: http://localhost:8080

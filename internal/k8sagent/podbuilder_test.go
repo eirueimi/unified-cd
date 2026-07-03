@@ -119,7 +119,7 @@ func TestInjectWorkspace_AllContainers(t *testing.T) {
 
 func TestBuildPod_InjectsArtifactSidecar(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", Server: "http://ctrl:8080", Token: "tok"})
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"})
 	require.NoError(t, err)
 
 	var sidecar *corev1.Container
@@ -140,13 +140,34 @@ func TestBuildPod_InjectsArtifactSidecar(t *testing.T) {
 	}
 	assert.True(t, hasWorkspace, "sidecar must mount the workspace volume")
 
-	// Sidecar has the controller URL + token env (job container must NOT).
-	env := map[string]string{}
-	for _, e := range sidecar.Env {
-		env[e.Name] = e.Value
+	// Sidecar gets its S3 credentials via EnvFrom the Secret (direct-S3 model);
+	// no controller URL/token env is injected.
+	require.Len(t, sidecar.EnvFrom, 1)
+	require.NotNil(t, sidecar.EnvFrom[0].SecretRef)
+	assert.Equal(t, "ucd-s3", sidecar.EnvFrom[0].SecretRef.Name)
+}
+
+func TestBuildPod_SidecarSecretEnvAndIdle(t *testing.T) {
+	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	assert.Equal(t, "http://ctrl:8080", env["UNIFIED_SERVER"])
-	assert.Equal(t, "tok", env["UNIFIED_AGENT_TOKEN"])
+	var sc *corev1.Container
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == artifactSidecarName {
+			sc = &pod.Spec.Containers[i]
+		}
+	}
+	if sc == nil {
+		t.Fatal("sidecar container not found")
+	}
+	if len(sc.EnvFrom) != 1 || sc.EnvFrom[0].SecretRef == nil || sc.EnvFrom[0].SecretRef.Name != "ucd-s3" {
+		t.Fatalf("expected EnvFrom secretRef ucd-s3, got %+v", sc.EnvFrom)
+	}
+	if len(sc.Command) < 2 || sc.Command[0] != "unified-sidecar" || sc.Command[1] != "idle" {
+		t.Fatalf("expected command [unified-sidecar idle], got %v", sc.Command)
+	}
 }
 
 func TestMergeContainers(t *testing.T) {

@@ -11,17 +11,18 @@ import (
 
 // Config holds the configuration for the Kubernetes agent.
 type Config struct {
-	Server        string                      `yaml:"server"`
-	Token         string                      `yaml:"token"`
-	AgentID       string                      `yaml:"agentId"`
-	Labels        []string                    `yaml:"labels"`
-	Namespace     string                      `yaml:"namespace"`
-	PodImage      string                      `yaml:"podImage"`
-	SidecarImage  string                      `yaml:"sidecarImage"`
-	Kubeconfig    string                      `yaml:"kubeconfig"`
-	MaxConcurrent   int                         `yaml:"maxConcurrent"`
-	PoolIdleTimeout string                      `yaml:"poolIdleTimeout,omitempty"`
-	PodTemplates    map[string]AgentPodTemplate `yaml:"podTemplates,omitempty"`
+	Server              string                      `yaml:"server"`
+	Token               string                      `yaml:"token"`
+	AgentID             string                      `yaml:"agentId"`
+	Labels              []string                    `yaml:"labels"`
+	Namespace           string                      `yaml:"namespace"`
+	PodImage            string                      `yaml:"podImage"`
+	SidecarImage        string                      `yaml:"sidecarImage"`
+	Kubeconfig          string                      `yaml:"kubeconfig"`
+	MaxConcurrent       int                         `yaml:"maxConcurrent"`
+	PoolIdleTimeout     string                      `yaml:"poolIdleTimeout,omitempty"`
+	PodTemplates        map[string]AgentPodTemplate `yaml:"podTemplates,omitempty"`
+	SidecarS3SecretName string                      `yaml:"sidecarS3SecretName,omitempty"`
 }
 
 // AgentPodTemplate is a Pod template defined in the agent configuration file.

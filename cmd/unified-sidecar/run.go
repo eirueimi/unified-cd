@@ -1,0 +1,120 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+
+	"github.com/eirueimi/unified-cd/internal/artifact"
+	"github.com/eirueimi/unified-cd/internal/cache"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
+)
+
+// stringSlice collects repeated flag values (e.g. --restore-key a --restore-key b).
+type stringSlice []string
+
+func (s *stringSlice) String() string     { return fmt.Sprint([]string(*s)) }
+func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
+
+// run dispatches the sidecar subcommands against store. Cache operations are
+// best-effort (always exit 0); artifact operations exit non-zero on failure.
+func run(ctx context.Context, store objectstore.ObjectStore, args []string, stderr io.Writer) int {
+	if len(args) == 1 && args[0] == "idle" {
+		<-ctx.Done()
+		return 0
+	}
+	if len(args) < 2 {
+		fmt.Fprintln(stderr, "usage: unified-sidecar <cache|artifact> <subcommand> [flags]")
+		return 2
+	}
+	group, sub, rest := args[0], args[1], args[2:]
+	switch group {
+	case "cache":
+		return runCache(ctx, store, sub, rest, stderr)
+	case "artifact":
+		return runArtifact(ctx, store, sub, rest, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown command group %q\n", group)
+		return 2
+	}
+}
+
+func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, args []string, stderr io.Writer) int {
+	switch sub {
+	case "restore":
+		fs := flag.NewFlagSet("cache restore", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		key := fs.String("key", "", "cache key")
+		path := fs.String("path", "", "destination path")
+		var restoreKeys stringSlice
+		fs.Var(&restoreKeys, "restore-key", "fallback restore key prefix (repeatable)")
+		if err := fs.Parse(args); err != nil {
+			return 2
+		}
+		hit, err := cache.Restore(ctx, store, *path, *key, restoreKeys)
+		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
+			fmt.Fprintf(stderr, "cache restore error (ignored): %v\n", err)
+		} else if hit {
+			fmt.Fprintf(stderr, "cache hit: %s\n", *key)
+		} else {
+			fmt.Fprintf(stderr, "cache miss: %s\n", *key)
+		}
+		return 0 // best-effort: never fail the step
+	case "save":
+		fs := flag.NewFlagSet("cache save", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		key := fs.String("key", "", "cache key")
+		path := fs.String("path", "", "source path")
+		ttlDays := fs.Int("ttl-days", 30, "TTL in days")
+		if err := fs.Parse(args); err != nil {
+			return 2
+		}
+		if err := cache.Save(ctx, store, *path, *key, *ttlDays); err != nil {
+			fmt.Fprintf(stderr, "cache save error (ignored): %v\n", err)
+		} else {
+			fmt.Fprintf(stderr, "cache saved: %s\n", *key)
+		}
+		return 0 // best-effort
+	default:
+		fmt.Fprintf(stderr, "unknown cache subcommand %q\n", sub)
+		return 2
+	}
+}
+
+func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string, args []string, stderr io.Writer) int {
+	switch sub {
+	case "upload":
+		fs := flag.NewFlagSet("artifact upload", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		runID := fs.String("run", "", "run ID")
+		name := fs.String("name", "", "artifact name")
+		path := fs.String("path", "", "source path")
+		if err := fs.Parse(args); err != nil {
+			return 2
+		}
+		if err := artifact.Upload(ctx, store, *runID, *name, *path); err != nil {
+			fmt.Fprintf(stderr, "artifact upload failed: %v\n", err)
+			return 1
+		}
+		return 0
+	case "download":
+		fs := flag.NewFlagSet("artifact download", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		runID := fs.String("run", "", "run ID")
+		name := fs.String("name", "", "artifact name")
+		dest := fs.String("dest", ".", "destination directory")
+		if err := fs.Parse(args); err != nil {
+			return 2
+		}
+		if err := artifact.Download(ctx, store, *runID, *name, *dest); err != nil {
+			fmt.Fprintf(stderr, "artifact download failed: %v\n", err)
+			return 1
+		}
+		return 0
+	default:
+		fmt.Fprintf(stderr, "unknown artifact subcommand %q\n", sub)
+		return 2
+	}
+}

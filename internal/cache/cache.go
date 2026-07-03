@@ -10,14 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
+	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/klauspost/compress/zstd"
 )
 
 // ErrCacheMiss is returned when no cache entry matches the key or restoreKeys.
@@ -40,52 +40,9 @@ func objectKey(key string) string {
 // A metadata object is stored alongside with TTL of ttlDays days.
 func Save(ctx context.Context, store objectstore.ObjectStore, path, key string, ttlDays int) error {
 	var buf bytes.Buffer
-	enc, err := zstd.NewWriter(&buf)
-	if err != nil {
-		return fmt.Errorf("zstd writer: %w", err)
+	if err := artifact.WriteTarZstd(&buf, path); err != nil {
+		return err
 	}
-	tw := tar.NewWriter(enc)
-
-	if err := filepath.WalkDir(path, func(p string, d fs.DirEntry, werr error) error {
-		if werr != nil {
-			return werr
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(path, p)
-		if err != nil {
-			return err
-		}
-		hdr, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-		hdr.Name = filepath.ToSlash(rel)
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			f, err := os.Open(p)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			_, err = io.Copy(tw, f)
-			return err
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("tar walk %q: %w", path, err)
-	}
-	if err := tw.Close(); err != nil {
-		return fmt.Errorf("tar close: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return fmt.Errorf("zstd close: %w", err)
-	}
-
 	archiveData := buf.Bytes()
 	oKey := objectKey(key)
 	if err := store.Put(ctx, oKey+".tar.zst", bytes.NewReader(archiveData), int64(len(archiveData))); err != nil {
