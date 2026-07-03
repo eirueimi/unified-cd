@@ -55,6 +55,7 @@ func main() {
 	}
 	maxConcurrent := flag.Int("max-concurrent", maxConcurrentDefault, "maximum number of runs that can execute concurrently")
 	cleanWorkspace := flag.Bool("clean-workspace", eff.CleanWorkspace, "delete and recreate the workspace before starting a run")
+	workspaceDir := flag.String("workspace-dir", eff.WorkspaceDir, "base directory for run workspaces (default: ~/workspace) (env: UNIFIED_AGENT_WORKSPACE_DIR)")
 	drainTimeout := flag.Duration("drain-timeout", eff.DrainTimeout, "maximum drain wait time after SIGTERM (0=wait indefinitely). Applies to running steps; post-hooks such as cache saves always wait for completion to preserve data")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_AGENT_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)")
 	flag.Parse()
@@ -102,6 +103,7 @@ func main() {
 	a.ExposeEnv = exposeEnv
 	a.MaxConcurrent = *maxConcurrent
 	a.CleanWorkspace = *cleanWorkspace
+	a.WorkspaceDir = *workspaceDir
 	a.DrainTimeout = *drainTimeout
 
 	if *cacheEndpoint != "" && *cacheKey != "" && *cacheSecret != "" && *cacheBucket != "" {
