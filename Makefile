@@ -1,4 +1,4 @@
-.PHONY: build test lint clean fmt dev dev-go dev-ui ui-build manifests vscode-build vscode-package
+.PHONY: build test test-short ha-test lint clean fmt dev dev-go dev-ui ui-build manifests vscode-build vscode-package
 
 GO ?= go
 GOFLAGS ?= -trimpath
@@ -16,6 +16,10 @@ test:
 
 test-short:
 	$(GO) test ./... -short -race -count=1
+
+# Level-2 HA failover driver (build-tagged `ha`; requires Docker). Slow: builds images.
+ha-test:
+	cd test/ha && $(GO) test -tags ha -v -timeout 20m ./...
 
 fmt:
 	$(GO) fmt ./...

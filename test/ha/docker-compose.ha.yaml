@@ -1,0 +1,55 @@
+name: unified-cd-ha
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: unified
+      POSTGRES_PASSWORD: unified
+      POSTGRES_DB: unified
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unified"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  controller1: &ctrl
+    build:
+      context: ../..
+      dockerfile: docker/controller.Dockerfile
+    environment:
+      UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
+      UNIFIED_TOKEN: ha-admin-token
+      UNIFIED_CONTROLLER_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  controller2: *ctrl
+  controller3: *ctrl
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "18080:8080"
+    depends_on:
+      - controller1
+      - controller2
+      - controller3
+
+  agent1: &agent
+    build:
+      context: ../..
+      dockerfile: docker/agent.Dockerfile
+    command:
+      - "--server"
+      - "http://nginx:8080"
+      - "--token"
+      - "ha-admin-token"
+      - "--labels"
+      - "kind:linux"
+    depends_on:
+      - nginx
+
+  agent2: *agent
