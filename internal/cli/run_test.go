@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,52 @@ func TestRunDelete_ConflictPropagatesMessage(t *testing.T) {
 	cmd.SetArgs([]string{"delete", "run-1"})
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "still Running") {
+		t.Fatalf("expected conflict error, got: %v", err)
+	}
+}
+
+func TestRunCancel_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/runs/run-1/cancel" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
+			t.Errorf("unexpected authorization header: %s", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	cfg := Config{Server: srv.URL, Token: "tok"}
+	cmd := newRunCmdWithClient(func() (Config, error) { return cfg, nil }, http.DefaultClient)
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"cancel", "run-1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out.String(), "run-1") || !strings.Contains(out.String(), "cancelled") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+}
+
+func TestRunCancel_ErrorPropagatesMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte("run run-1 is already terminal; cannot cancel"))
+	}))
+	defer srv.Close()
+
+	cfg := Config{Server: srv.URL, Token: "tok"}
+	cmd := newRunCmdWithClient(func() (Config, error) { return cfg, nil }, http.DefaultClient)
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"cancel", "run-1"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "already terminal") {
 		t.Fatalf("expected conflict error, got: %v", err)
 	}
 }

@@ -26,6 +26,7 @@ func newRunCmdWithClient(resolve func() (Config, error), httpClient *http.Client
 	cmd.AddCommand(newRunShowCmd(resolve, httpClient))
 	cmd.AddCommand(newRunListCmd(resolve, httpClient))
 	cmd.AddCommand(newRunDeleteCmd(resolve, httpClient))
+	cmd.AddCommand(newRunCancelCmd(resolve, httpClient))
 	return cmd
 }
 
@@ -211,6 +212,34 @@ func newRunDeleteCmd(resolve func() (Config, error), httpClient *http.Client) *c
 				return fmt.Errorf("server: %s", string(b))
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "run %q deleted\n", args[0])
+			return nil
+		},
+	}
+}
+
+func newRunCancelCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
+	return &cobra.Command{
+		Use:   "cancel <run-id>",
+		Short: "Cancel a hung or in-progress run",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := resolve()
+			if err != nil {
+				return err
+			}
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+				cfg.Server+"/api/v1/runs/"+args[0]+"/cancel", nil)
+			req.Header.Set("Authorization", "Bearer "+cfg.Token)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				b, _ := io.ReadAll(resp.Body)
+				return fmt.Errorf("server: %d: %s", resp.StatusCode, string(b))
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "run %q cancelled\n", args[0])
 			return nil
 		},
 	}
