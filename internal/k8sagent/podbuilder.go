@@ -11,8 +11,17 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
+const artifactSidecarName = "unified-artifact"
+
+// SidecarSpec configures the injected artifact-transfer sidecar.
+type SidecarSpec struct {
+	Image  string
+	Server string // controller base URL reachable from within the pod
+	Token  string // bearer token for the controller artifact endpoint
+}
+
 // BuildPod constructs a Pod object from the agent template and Job template.
-func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string) (*corev1.Pod, error) {
+func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec) (*corev1.Pod, error) {
 	suffix := runID
 	if len(suffix) > 16 {
 		suffix = suffix[:16]
@@ -70,6 +79,25 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
 	injectSleepInfinity(podSpec)
+
+	// Guard against user-supplied containers using the reserved sidecar name.
+	for _, c := range podSpec.Containers {
+		if c.Name == artifactSidecarName {
+			return nil, fmt.Errorf("container name %q is reserved for the artifact sidecar", artifactSidecarName)
+		}
+	}
+	if sidecar.Image != "" {
+		podSpec.Containers = append(podSpec.Containers, corev1.Container{
+			Name:    artifactSidecarName,
+			Image:   sidecar.Image,
+			Command: []string{"sleep", "infinity"},
+			Env: []corev1.EnvVar{
+				{Name: "UNIFIED_SERVER", Value: sidecar.Server},
+				{Name: "UNIFIED_AGENT_TOKEN", Value: sidecar.Token},
+			},
+		})
+	}
+
 	injectWorkspace(podSpec, wsCfg)
 
 	return &corev1.Pod{

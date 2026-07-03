@@ -16,7 +16,7 @@ func TestPodPool_ClaimAndRelease(t *testing.T) {
 	pool := NewPodPool(fakeClient, "default", pm)
 
 	// First Claim creates a new Pod
-	pod1, err := pool.ClaimPod(context.Background(), "run-001", "golang", nil, nil, "golang:1.24-alpine")
+	pod1, err := pool.ClaimPod(context.Background(), "run-001", "golang", nil, nil, "golang:1.24-alpine", SidecarSpec{})
 	require.NoError(t, err)
 	assert.NotEmpty(t, pod1.PodName)
 
@@ -25,7 +25,7 @@ func TestPodPool_ClaimAndRelease(t *testing.T) {
 	require.NoError(t, err)
 
 	// Second Claim reuses the existing Pod
-	pod2, err := pool.ClaimPod(context.Background(), "run-002", "golang", nil, nil, "golang:1.24-alpine")
+	pod2, err := pool.ClaimPod(context.Background(), "run-002", "golang", nil, nil, "golang:1.24-alpine", SidecarSpec{})
 	require.NoError(t, err)
 	assert.Equal(t, pod1.PodName, pod2.PodName)
 }
@@ -35,7 +35,7 @@ func TestPodPool_ReleaseDeletes(t *testing.T) {
 	pm := NewPodManager(fakeClient, "default", "golang:1.24-alpine")
 	pool := NewPodPool(fakeClient, "default", pm)
 
-	pod, err := pool.ClaimPod(context.Background(), "run-001", "golang", nil, nil, "golang:1.24-alpine")
+	pod, err := pool.ClaimPod(context.Background(), "run-001", "golang", nil, nil, "golang:1.24-alpine", SidecarSpec{})
 	require.NoError(t, err)
 
 	// reuse: false → delete
@@ -52,7 +52,7 @@ func TestPodPool_Restore_IdlePod(t *testing.T) {
 	pool := NewPodPool(fakeClient, "default", pm)
 
 	// Manually create an idle Pod
-	pod, _ := BuildPod("run-existing", "default", nil, nil, "golang:1.24-alpine")
+	pod, _ := BuildPod("run-existing", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{})
 	pod.Annotations = map[string]string{
 		annoPoolTemplate: "golang",
 		annoPoolStatus:   poolStatusIdle,
@@ -63,7 +63,7 @@ func TestPodPool_Restore_IdlePod(t *testing.T) {
 	require.NoError(t, err)
 
 	// After Restore, the Pod should be retrievable from the pool
-	claimed, err := pool.ClaimPod(context.Background(), "run-new", "golang", nil, nil, "golang:1.24-alpine")
+	claimed, err := pool.ClaimPod(context.Background(), "run-new", "golang", nil, nil, "golang:1.24-alpine", SidecarSpec{})
 	require.NoError(t, err)
 	assert.Equal(t, created.Name, claimed.PodName)
 }
