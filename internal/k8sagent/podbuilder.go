@@ -252,6 +252,12 @@ func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) {
 		if !hasMnt {
 			podSpec.Containers[i].VolumeMounts = append(podSpec.Containers[i].VolumeMounts, wsMount)
 		}
+		// Ensure run steps exec into the workspace mount by default, matching the
+		// standard agent's cwd behavior. Don't clobber a WorkingDir a user's
+		// template already set explicitly.
+		if podSpec.Containers[i].WorkingDir == "" {
+			podSpec.Containers[i].WorkingDir = mountPath
+		}
 	}
 }
 
