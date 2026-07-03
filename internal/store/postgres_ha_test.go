@@ -76,6 +76,10 @@ func TestHA_AdvisoryLockReleasedOnConnClose(t *testing.T) {
 	dsn := pg.pool.Config().ConnString()
 	raw, err := pgx.Connect(ctx, dsn)
 	require.NoError(t, err)
+	// Ensure the standalone connection is cleaned up on every path (the abrupt
+	// close below already kills it; this Close is an idempotent safety net for
+	// the error paths before the close).
+	t.Cleanup(func() { _ = raw.Close(context.Background()) })
 	_, err = raw.Exec(ctx, "SELECT pg_advisory_lock($1)", key)
 	require.NoError(t, err)
 
