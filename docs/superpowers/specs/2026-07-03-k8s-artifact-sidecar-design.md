@@ -54,9 +54,22 @@ process environment, so a malicious step cannot steal it via `env`.
 | Wire format | tar + zstd, `PUT`/`GET /api/v1/runs/{runID}/artifacts/{name}` (same as the standard agent → cross-agent compatible). |
 | Sidecar image | New small `docker/artifact-sidecar.Dockerfile` (alpine + `tar` + `zstd` + `curl` + `ca-certificates`). |
 
-## Non-goals (YAGNI / separate)
+## Future direction (design for reuse)
 
-- Cache on k8s (needs S3-creds-in-pod or a controller cache proxy).
+**Cache should eventually run through the same sidecar.** The `unified-artifact`
+sidecar and the `artifactExec` seam must be built generically (a container that
+transfers files between the shared workspace and a remote store) so a later
+change can add cache restore/save via the sidecar. The one extra piece cache
+needs is a store path: cache is stored direct-to-S3 today, so cache-via-sidecar
+will require a **controller cache-proxy endpoint** (so the sidecar talks to the
+controller, not S3 — keeping S3 creds out of the pod), mirroring the artifact
+endpoint. Name the sidecar/env/helpers neutrally (e.g. `unified-artifact` is
+fine, but keep the transfer logic reusable, not artifact-specific) so cache can
+plug in without a rewrite.
+
+## Non-goals (YAGNI / separate — this change)
+
+- Cache on k8s (needs the controller cache-proxy above — planned future work).
 - Secret-based token delivery (env for v1; the token appears in the pod spec —
   documented caveat; not readable by job steps).
 - The human-facing artifact API / CLI / e2e (items B/C/E — separate).
