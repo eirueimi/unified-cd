@@ -166,6 +166,8 @@ tcp_keepalives_count    = 3    # retries before declaring the connection dead
 # → worst case: 10 + 5×3 = 25 seconds until connection close → lock released
 ```
 
+This tuned-keepalive bound is verified by `test/ha/hardfailure_test.go`: a `docker network disconnect` partition of the leader (a real no-FIN blackhole) causes PostgreSQL to release the advisory lock via TCP keepalive detection, and the survivor becomes leader and queues a new run within ~8 s (measured; `hfBound = 20 s`). **Without `tcp_keepalives_*` tuning, PostgreSQL falls back to OS defaults (often ~2 h), making hard-failure failover unbounded — the tuning is REQUIRED for bounded hard-failure failover.**
+
 ---
 
 ### Run distribution
