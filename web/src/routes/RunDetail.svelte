@@ -1,5 +1,5 @@
 <script>
-  import { onMount, onDestroy, tick } from "svelte";
+  import { onDestroy, tick } from "svelte";
   import { push } from "svelte-spa-router";
   import { get } from "svelte/store";
   import AuthSetup from "../components/AuthSetup.svelte";
@@ -187,7 +187,13 @@
     startSSE();
   }
 
-  onMount(init);
+  // Reactive statements run once during component initialization (covering the
+  // initial mount) and again whenever runID changes (e.g. navigating between
+  // runs via "Rerun", which svelte-spa-router handles by reusing this component
+  // instance rather than recreating it). Do NOT also call init() from onMount —
+  // that caused a duplicate concurrent SSE connection/log fetch on first load,
+  // where the second connection's `logLines = []` reset could wipe out or race
+  // with logs already delivered by the first, leaving the panel stuck empty.
   onDestroy(() => {
     if (abortController) abortController.abort();
     stopStepPolling();

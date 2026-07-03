@@ -71,14 +71,14 @@
   <button
     class="btn theme-toggle"
     on:click={toggleTheme}
-    title={$themePref === 'light' ? 'テーマ: ライト（クリックでダークへ）' : 'テーマ: ダーク（クリックでライトへ）'}
-    aria-label="テーマ切り替え"
+    title={$themePref === 'light' ? 'Theme: Light (click for Dark)' : 'Theme: Dark (click for Light)'}
+    aria-label="Toggle theme"
   >{$themePref === 'light' ? '☀️' : '🌙'}</button>
   {#if $currentUser}
     <span class="meta" style="font-size:0.75rem">{$currentUser.email}</span>
-    <button class="btn btn-danger" on:click={logout} style="font-size:0.75rem;padding:0.2rem 0.6rem">ログアウト</button>
+    <button class="btn btn-danger" on:click={logout} style="font-size:0.75rem;padding:0.2rem 0.6rem">Log out</button>
   {:else if $browserSSOEnabled}
-    <button class="btn" on:click={ssoLogin} style="font-size:0.75rem;padding:0.2rem 0.6rem;background:var(--success-soft-bg);border-color:var(--success);color:var(--success)">🔒 SSOでログイン</button>
+    <button class="btn" on:click={ssoLogin} style="font-size:0.75rem;padding:0.2rem 0.6rem;background:var(--success-soft-bg);border-color:var(--success);color:var(--success)">🔒 Log in with SSO</button>
   {/if}
   <span class="meta" style="font-size:0.75rem">{$serverURL}</span>
 </nav>
