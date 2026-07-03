@@ -187,7 +187,7 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 						return fmt.Errorf("%s: approval: is not supported in finally steps", subPath)
 					}
 				}
-				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Approval, st.Foreach, subPath, nameSet); err != nil {
+				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Approval, st.Foreach, subPath, nameSet, st.UploadArtifact, st.DownloadArtifact); err != nil {
 					return err
 				}
 				if err := validateCacheStep(st.Name, st.Cache); err != nil {
@@ -216,7 +216,7 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 					return fmt.Errorf("%s: approval: is not supported in finally steps", entryPath)
 				}
 			}
-			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Approval, entry.Foreach, entryPath, nameSet); err != nil {
+			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Approval, entry.Foreach, entryPath, nameSet, entry.UploadArtifact, entry.DownloadArtifact); err != nil {
 				return err
 			}
 			if err := validateCacheStep(entry.Name, entry.Cache); err != nil {
@@ -233,7 +233,7 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 	return nil
 }
 
-func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *CacheStep, approval *ApprovalStep, foreach *ForeachDef, path string, nameSet map[string]bool) error {
+func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *CacheStep, approval *ApprovalStep, foreach *ForeachDef, path string, nameSet map[string]bool, upload *UploadArtifactStep, download *DownloadArtifactStep) error {
 	if nameSet[name] {
 		return fmt.Errorf("%s: duplicate step name %q", path, name)
 	}
@@ -255,14 +255,33 @@ func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *C
 	if approval != nil {
 		actionCount++
 	}
+	if upload != nil {
+		actionCount++
+	}
+	if download != nil {
+		actionCount++
+	}
 	if actionCount == 0 {
-		return fmt.Errorf("%s (%s): one of run, call, uses, or approval is required", path, name)
+		return fmt.Errorf("%s (%s): one of run, call, uses, approval, uploadArtifact, or downloadArtifact is required", path, name)
 	}
 	if actionCount > 1 {
-		return fmt.Errorf("%s (%s): only one of run, call, cache, uses, approval may be specified", path, name)
+		return fmt.Errorf("%s (%s): only one of run, call, cache, uses, approval, uploadArtifact, downloadArtifact may be specified", path, name)
 	}
 	if call != nil && call.Job == "" {
 		return fmt.Errorf("%s (%s): call.job is required", path, name)
+	}
+	if upload != nil {
+		if upload.Name == "" {
+			return fmt.Errorf("%s (%s): uploadArtifact.name is required", path, name)
+		}
+		if upload.Path == "" {
+			return fmt.Errorf("%s (%s): uploadArtifact.path is required", path, name)
+		}
+	}
+	if download != nil {
+		if download.Name == "" {
+			return fmt.Errorf("%s (%s): downloadArtifact.name is required", path, name)
+		}
 	}
 	if foreach != nil {
 		if foreach.Key == "" {
