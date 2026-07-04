@@ -1,0 +1,345 @@
+# Troubleshooting
+
+Symptom-indexed fixes for the failures most commonly hit when running unified-cd.
+
+## Run stays `Queued` forever
+
+**Symptom**
+
+A triggered run never leaves the `Queued` status, even though agents are connected:
+
+```
+ID:          17c9e93a-7c33-48be-831c-d7b9098ba887
+Job:         docsverify-e1
+Status:      Queued
+```
+
+**Cause**
+
+No connected agent satisfies the job's `agentSelector`, or every agent that
+does is already at its concurrency limit. Claiming only happens when an
+agent's label set is a superset of `agentSelector` (AND match) **and** the
+agent has a free concurrency slot.
+
+**Fix**
+
+Check which agents are connected and what labels they advertise:
+
+```bash
+unified-cd agent list
+# docker-agent-1   c1e136ded609   linux         hostname:c1e136ded609,kind:docker,pool:default   2026-07-04 04:54
+# k8s-agent-1      DESKTOP-EMUF6H6 windows/k8s   kubernetes,kind:k8s,pool:default,hostname:...    2026-07-04 04:54
+```
+
+- Compare the job's `agentSelector` against the label sets above — every
+  selector entry must have an exact match on some agent.
+- If the labels match but the run is still stuck, the matching agent(s) may
+  already be running `--max-concurrent` jobs; start another agent in the pool
+  or wait for a slot to free up.
+- If the job is called via a `call:` step from another run, check for the
+  slot-deadlock case first — see [Calling Other Jobs (`call`)](jobs.md#calling-other-jobs-call).
+  A parent run holding its only agent slot while waiting on a same-pool child
+  looks identical to this symptom but requires raising `--max-concurrent`
+  instead of relabeling agents.
+
+Cancel a run stuck this way with `unified-cd run cancel <run-id>`.
+
+## Webhook returns 401
+
+**Symptom**
+
+```
+signature verification failed: HMAC mismatch
+```
+
+**Cause**
+
+The receiver's `spec.auth.type` is `hmac-sha256` or `github`, and the computed
+HMAC-SHA256 of the raw request body (using the secret from `secretRef`)
+doesn't match the signature header sent by the caller. The most common causes
+are: signing with the wrong secret, signing a re-serialized/pretty-printed
+body instead of the exact raw bytes, or sending the signature in the wrong
+header.
+
+**Fix**
+
+- `hmac-sha256` receivers accept either `X-Signature: sha256=<hex>` or the
+  GitHub-compatible `X-Hub-Signature-256: sha256=<hex>`; `github` receivers
+  only check `X-Hub-Signature-256`. Confirm the sender is using the header the
+  receiver type expects.
+- The signature must be computed over the **exact raw request body bytes** —
+  re-encoding the JSON (key order, whitespace) before signing produces a
+  different HMAC and this same error.
+- Confirm the secret referenced by `secretRef` matches the one configured on
+  the sending side: `unified-cd secret set <name> "<value>"` to update it.
+- See [Resource Reference: WebhookReceiver](resources.md#webhookreceiver) for
+  the full auth field table and delivery response codes.
+
+## Webhook returns 400 `missing required param`
+
+**Symptom**
+
+```
+missing required param: image
+```
+
+**Cause**
+
+The target job declares a `required: true` input (e.g. `image`), and the
+receiver's `spec.paramsMapping` either omits that key entirely or maps it from
+a payload field that isn't present in the delivered body — either way, no
+value resolves for a required input.
+
+**Fix**
+
+- Add (or correct) a `paramsMapping` entry for every required input:
+  ```yaml
+  spec:
+    paramsMapping:
+      image: "{{ .Payload.repository.name }}"
+  ```
+- If a required input can reasonably default, give it a `default` in the job
+  instead of requiring every caller to supply it.
+- Test the mapping by POSTing a representative payload to the receiver and
+  confirming the response is `200` with a run, not `400`.
+- See [Resource Reference: WebhookReceiver](resources.md#webhookreceiver) for
+  the full delivery response table (`200` / `204` / `401` / `400`).
+
+## k8s pod `ImagePullBackOff` on `unified-artifact`
+
+**Symptom**
+
+The job's pod is stuck in `ImagePullBackOff` or `ErrImagePull`, and
+`kubectl describe pod` shows the failing container is `unified-artifact` (the
+auto-injected workspace sidecar), not one of the job's own containers.
+
+**Cause**
+
+The k8s-agent injects a sidecar container named `unified-artifact` into every
+pod to handle `uploadArtifact` / `downloadArtifact` / `cache` transfers. Its
+image is set by the agent's `sidecarImage` config field
+(default `ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest`) — if that tag
+isn't pullable from the node (private registry without imagePullSecrets, typo
+in the tag, or the tag was deleted), the pod can never become Ready.
+
+**Fix**
+
+- Confirm the configured `sidecarImage` is pullable from the cluster's nodes:
+  `docker pull <sidecarImage>` from a node, or check for image pull secrets if
+  the registry is private.
+- The sidecar image **must match the agent's release** — it runs the
+  `unified-sidecar` binary via `exec`, using a binary protocol; an
+  older/mismatched image is incompatible even if it happens to pull
+  successfully. Pin `sidecarImage` to the same version as the k8s-agent.
+- See [Kubernetes Integration Guide](kubernetes-integration.md) for the full
+  sidecar contract and `sidecarS3SecretName` configuration.
+
+## Artifact step fails `no such file`
+
+**Symptom**
+
+```
+upload-artifact "missing-artifact": tar walk "/root/workspace/working0/does-not-exist.txt": lstat /root/workspace/working0/does-not-exist.txt: no such file or directory
+```
+
+**Cause**
+
+A relative `path:` in `uploadArtifact` (or `destDir:` in `downloadArtifact`)
+resolves against the **run workspace** — the same directory `run:` steps
+execute in — on every agent type (standard and Kubernetes). This error means
+the file genuinely isn't there at that location: a common cause is a step
+that wrote the file using its own working-directory assumption (e.g.
+`cd subdir && make build` writing to `subdir/out/report.txt`, then a later
+step referencing `out/report.txt` relative to the workspace root instead of
+`subdir/out/report.txt`), or a step that wrote outside the workspace entirely
+(e.g. an absolute path like `/tmp/report.txt`).
+
+**Fix**
+
+- Double check the exact path the producing step wrote to, relative to the
+  run workspace root — add a debugging `run: ls -la` or `find . -name
+  '<file>'` step before the `uploadArtifact` step if unsure.
+- If a step intentionally `cd`s into a subdirectory, reference the artifact
+  path relative to the workspace root, not the step's `cd` target.
+- Use an absolute path in `path:`/`destDir:` only when the file is
+  intentionally outside the workspace (e.g. a shared cache directory) —
+  absolute paths pass through unchanged.
+- See [Job Reference: Artifacts](jobs.md#artifacts) for the full path
+  resolution rules.
+
+## `artifact download` fails
+
+**Symptom**
+
+`unified-cd artifact download <run-id> <name>` errors instead of extracting a
+file.
+
+**Cause**
+
+Either the run ID is wrong/belongs to a different job than expected, or the
+artifact `name` doesn't match what `uploadArtifact` used for that run (names
+are case-sensitive and must match exactly).
+
+**Fix**
+
+Always list the run's artifacts first to get the exact name:
+
+```bash
+unified-cd artifact list <run-id>
+# app-binary
+# test-report
+
+unified-cd artifact download <run-id> test-report --dest ./out
+```
+
+If the list is empty, the run never reached (or failed before) its
+`uploadArtifact` step — check `unified-cd logs <run-id>` for the upload step's
+outcome.
+
+## Conditional step ran when it shouldn't
+
+**Symptom**
+
+A step gated with `if:` runs even though its condition looks false, and the
+agent log contains:
+
+```
+if: condition eval failed, running step
+```
+
+with a nested compile error, e.g.:
+
+```
+if: expression "{{ eq .Params.x \"y\" }}" compile error: ERROR: <input>:1:17: Syntax error: missing ':' at '"y"'
+```
+
+**Cause**
+
+`if:` expressions are **CEL**, not Go templates — unlike `run:`, `env:`, and
+`outputs:` in the same job, which do use `{{ .Params.X }}`-style Go template
+syntax. Writing an `if:` with `{{ }}` delimiters (or any other expression that
+fails to compile or evaluate) **fails open**: the step still runs, and the
+only trace is a `WARN` line in the agent log — the run itself is not marked
+failed and the CLI/API give no other indication.
+
+**Fix**
+
+- Use valid CEL syntax, with lowercase variables and no `{{ }}` delimiters:
+  ```yaml
+  if: 'params.env == "production"'
+  ```
+  not:
+  ```yaml
+  if: '{{ eq .Params.env "production" }}'   # wrong — Go template, fails open
+  ```
+- After adding or changing a non-trivial `if:`, check the agent log for
+  `if: condition eval failed, running step` to confirm it compiled.
+- See [Job Reference: Conditional Execution (`if`)](jobs.md#conditional-execution-if)
+  for the full CEL variable/function reference — this is especially important
+  to verify for any `if:` gating a production deploy.
+
+## Run marked `Failed` with "agent lost"
+
+**Symptom**
+
+A run that was `Running` flips to `Failed` with no step-level error, and the
+controller log shows:
+
+```
+stuck-run reaper: failed orphaned run (agent lost)
+```
+
+**Cause**
+
+The agent that claimed the run stopped sending heartbeats (crashed, was
+killed, or lost network connectivity) and never resumed. The controller's
+orphaned-run reaper detects a `Running` run whose claiming agent's heartbeat
+has gone stale and fails the run rather than leaving it stuck forever. It
+fails (never re-queues) the run, since re-running partially-executed steps
+risks duplicating side effects like deploys.
+
+**Fix**
+
+This is expected recovery behavior, not a bug to work around — the run
+genuinely needs to be re-triggered once the underlying agent problem is
+fixed:
+
+- Confirm the agent is back and healthy: `unified-cd agent list`.
+- Re-trigger the job once the agent (or a replacement in the same pool) is
+  available.
+- On Kubernetes, the run's `ucd-run-*` pod is garbage-collected separately;
+  no manual pod cleanup is required.
+- See [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery)
+  for the full heartbeat/reaper timing and design.
+
+## Dev stack: controller container unhealthy, `vendor/modules.txt` errors
+
+**Symptom**
+
+`docker compose up` starts the controller container but it never becomes
+healthy, and its logs show something like:
+
+```
+inconsistent vendoring in /app:
+	github.com/some/module@v1.2.3: is explicitly required in go.mod, but not marked as explicit in vendor/modules.txt
+
+	go mod vendor
+to sync the vendor directory.
+```
+
+**Cause**
+
+The dev `docker-compose` stack's `air` hot-reload containers mount the repo
+into the container (`/app`), including the git-ignored local `vendor/`
+directory. If `go.mod`/`go.sum` changed (e.g. after a `git pull` or branch
+switch) but the local `vendor/` wasn't regenerated, the in-container Go build
+fails with this inconsistency error and the controller never passes its
+health check.
+
+**Fix**
+
+```bash
+go mod vendor
+docker compose restart controller agent
+```
+
+## Local Kubernetes won't start (`kubelet is not healthy`)
+
+**Symptom**
+
+Docker Desktop's Kubernetes (kind mode) never comes up, and its logs show:
+
+```
+The kubelet is not healthy after 4m0s
+```
+
+with the hint `required cgroups disabled` in the underlying error.
+
+**Cause**
+
+The Kubernetes node runs inside WSL2, and the kubelet requires cgroup v2.
+WSL2 defaults to cgroup v1 on some installs/kernels, so the kubelet fails
+its startup health check.
+
+**Fix**
+
+Edit (or create) `%UserProfile%\.wslconfig` and add the kernel command line
+switch to force cgroup v2 — put it on its own line, one key per line:
+
+```ini
+[wsl2]
+kernelCommandLine = cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1
+```
+
+Then restart WSL2 so the change takes effect:
+
+```bash
+wsl --shutdown
+```
+
+Restart Docker Desktop and re-enable Kubernetes. Verify cgroup v2 is active
+from inside any WSL2 distro:
+
+```bash
+test -f /sys/fs/cgroup/cgroup.controllers && echo "cgroup v2 active"
+```
