@@ -1,5 +1,21 @@
-DROP TABLE IF EXISTS logs;
-DROP TABLE IF EXISTS step_reports;
-DROP TABLE IF EXISTS runs;
-DROP TABLE IF EXISTS jobs;
-DROP TABLE IF EXISTS agents;
+-- Drop the consolidated schema (init migration down).
+DROP TABLE IF EXISTS public.agents CASCADE;
+DROP TABLE IF EXISTS public.app_sources CASCADE;
+DROP TABLE IF EXISTS public.controller_settings CASCADE;
+DROP TABLE IF EXISTS public.git_credentials CASCADE;
+DROP TABLE IF EXISTS public.jobs CASCADE;
+DROP TABLE IF EXISTS public.logs CASCADE;
+DROP TABLE IF EXISTS public.mutex_holders CASCADE;
+DROP TABLE IF EXISTS public.named_lock_slots CASCADE;
+DROP TABLE IF EXISTS public.oidc_states CASCADE;
+DROP TABLE IF EXISTS public.pats CASCADE;
+DROP TABLE IF EXISTS public.run_approvals CASCADE;
+DROP TABLE IF EXISTS public.run_log_archives CASCADE;
+DROP TABLE IF EXISTS public.run_outputs CASCADE;
+DROP TABLE IF EXISTS public.runs CASCADE;
+DROP TABLE IF EXISTS public.schedules CASCADE;
+DROP TABLE IF EXISTS public.secrets CASCADE;
+DROP TABLE IF EXISTS public.sessions CASCADE;
+DROP TABLE IF EXISTS public.step_outputs CASCADE;
+DROP TABLE IF EXISTS public.step_reports CASCADE;
+DROP TABLE IF EXISTS public.webhook_receivers CASCADE;
