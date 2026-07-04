@@ -120,6 +120,10 @@ type Store interface {
 	ListRunsByAgent(ctx context.Context, agentID string, limit int) ([]api.Run, error)
 	// DeleteStaleAgents deletes agents whose last_seen_at is older than olderThan and returns the count deleted.
 	DeleteStaleAgents(ctx context.Context, olderThan time.Duration) (int64, error)
+	// ListStuckRunIDs returns IDs of Running runs whose claiming agent is gone or has
+	// not sent a heartbeat within staleAfter, excluding runs claimed within the grace
+	// window (to avoid reaping a just-claimed run before its first heartbeat).
+	ListStuckRunIDs(ctx context.Context, staleAfter, grace time.Duration) ([]string, error)
 
 	// Concurrency — mutex
 	AcquireMutex(ctx context.Context, mutexName, runID string) (bool, error)
