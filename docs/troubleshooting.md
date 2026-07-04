@@ -75,6 +75,33 @@ header.
 - See [Resource Reference: WebhookReceiver](resources.md#webhookreceiver) for
   the full auth field table and delivery response codes.
 
+## Webhook returns 400 `invalid JSON payload`
+
+**Symptom**
+
+```
+invalid JSON payload
+```
+
+A GitHub delivery fails with `400` even though the `Secret` is correct (the
+signature check passed).
+
+**Cause**
+
+The receiver parses the raw request body as JSON. GitHub only sends raw JSON
+when the webhook's **Content type** is `application/json`. With the other option,
+`application/x-www-form-urlencoded`, GitHub wraps the payload as
+`payload=<url-encoded JSON>` — the signature still verifies (it is computed over
+the raw body on both sides), but that body is not valid JSON, so parsing fails.
+
+**Fix**
+
+- On GitHub, open **Settings → Webhooks →** *(your hook)* and set **Content
+  type** to `application/json`, then **Redeliver** from Recent Deliveries.
+- For non-GitHub senders, POST the JSON body directly (do not form-encode it)
+  with `Content-Type: application/json`.
+- See the [Getting Started webhook walkthrough](getting-started.md#configuring-the-webhook-on-github).
+
 ## Webhook returns 400 `missing required param`
 
 **Symptom**

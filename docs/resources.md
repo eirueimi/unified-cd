@@ -231,6 +231,14 @@ spec:
 POST http://<controller>/webhook/<receiver-name>
 ```
 
+This endpoint takes no bearer token; it is authenticated by the `auth` check
+alone. The request body must be **raw JSON** (`Content-Type: application/json`) —
+it is parsed directly as the `.Payload`. Form-encoded bodies
+(`application/x-www-form-urlencoded`, which GitHub sends as `payload=<json>`)
+fail JSON parsing and return `400`. For GitHub, set the webhook's **Content
+type** to `application/json`; see the [Getting Started webhook
+walkthrough](getting-started.md#configuring-the-webhook-on-github).
+
 ### Template variables in filters and paramsMapping
 
 | Variable | Type | Description |

@@ -289,10 +289,56 @@ spec:
     tag: "{{ .Payload.after }}"
 ```
 
+Store the shared secret first (any random string; it must match what you enter
+on GitHub), then apply:
+
 ```bash
+./bin/unified-cd secret set GITHUB_WEBHOOK_SECRET "$(openssl rand -hex 20)"
 ./bin/unified-cd apply -f webhook.yaml
 # Webhook endpoint: POST http://localhost:8080/webhook/github-push
 ```
+
+The `/webhook/<name>` endpoint takes no bearer token — it is authenticated by
+the signature check alone, so it is safe to expose publicly.
+
+### Configuring the webhook on GitHub
+
+In the repository, open **Settings → Webhooks → Add webhook** and set:
+
+| Field | Value |
+|---|---|
+| **Payload URL** | `https://<your-controller>/webhook/github-push` — the path segment is the receiver's `metadata.name` |
+| **Content type** | `application/json` — **required** (see note below) |
+| **Secret** | the exact same string you passed to `secret set GITHUB_WEBHOOK_SECRET` |
+| **SSL verification** | leave enabled when serving over HTTPS |
+| **Which events** | pick the events you want (e.g. "Just the `push` event") |
+
+> **Content type must be `application/json`.** The receiver verifies GitHub's
+> `X-Hub-Signature-256` over the raw request body and then parses that body as
+> JSON. With `application/x-www-form-urlencoded`, GitHub sends the payload as
+> `payload=<url-encoded JSON>` instead of raw JSON; the signature still matches,
+> but JSON parsing fails and the delivery returns **400 `invalid JSON payload`**.
+
+**Reachability:** GitHub's servers must be able to reach the Payload URL, so a
+bare `http://localhost:8080` will not work. Expose the controller behind an
+HTTPS reverse proxy / load balancer, or for local testing tunnel it with
+something like `ngrok http 8080` and use the public URL ngrok prints.
+
+**Verify the delivery:** GitHub's webhook page has a **Recent Deliveries**
+section showing each attempt's request and response, with a **Redeliver**
+button to retry. The controller's response codes:
+
+| Response | Meaning |
+|---|---|
+| `200` + run JSON | run created |
+| `204` | signature OK but a `filters` expression did not match — no run (e.g. a push to a non-`main` branch) |
+| `400 invalid JSON payload` | body is not JSON — usually the wrong **Content type** (see note above) |
+| `400 missing required param` | `paramsMapping` did not produce a required job input |
+| `401 signature verification failed` | wrong **Secret**, or signature sent in an unexpected header |
+
+See the [WebhookReceiver reference](resources.md#webhookreceiver) and
+[Troubleshooting](troubleshooting.md#webhook-returns-401) for the full field
+and error tables.
 
 ---
 
