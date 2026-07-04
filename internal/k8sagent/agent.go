@@ -65,6 +65,8 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	}
 	slog.Info("k8s agent registered", "agentId", a.cfg.AgentID, "labels", labels)
 
+	agentlib.StartHeartbeat(ctx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval)
+
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()

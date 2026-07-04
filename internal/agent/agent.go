@@ -91,6 +91,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	slog.Info("agent registered", "agentId", a.ID)
 
+	StartHeartbeat(ctx, a.Client, a.ID, DefaultHeartbeatInterval)
+
 	n := a.MaxConcurrent
 	if n <= 0 {
 		n = 1
