@@ -147,6 +147,7 @@ CLI / Browser / Webhook
 - **[Agent Labels and Routing](docs/agents.md)** — agentSelector, hostname labels, Windows agents
 - **[Kubernetes Integration Guide](docs/kubernetes-integration.md)** — k8s-agent setup, podTemplate patterns, RBAC
 - **[High Availability Guide](docs/high-availability.md)** — controller redundancy, leader election, rolling deploys
+- **[Operations Guide](docs/operations.md)** — state layout, backup, recovery runbook, monitoring
 - **[Frontend Development Guide](docs/frontend-development.md)** — Svelte + Vite setup, hot reload, routing
 - **[Troubleshooting](docs/troubleshooting.md)** — symptom-indexed fixes for common failures
 
