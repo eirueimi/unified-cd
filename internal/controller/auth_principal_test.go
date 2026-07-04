@@ -17,7 +17,7 @@ func TestServerAuth_StoresPATPrincipal(t *testing.T) {
 	// Create a PAT named "ci-bot" with a known plain token.
 	plain := "test-pat-token-ci-bot"
 	hash := HashToken(plain)
-	_, err := pg.CreatePAT(context.Background(), "ci-bot", hash, nil)
+	_, err := pg.CreatePAT(context.Background(), "ci-bot", hash, "admin", nil)
 	require.NoError(t, err)
 
 	var got Principal

@@ -19,6 +19,7 @@ type LogArchive struct {
 type PAT struct {
 	ID         string
 	Name       string
+	Role       string
 	CreatedAt  time.Time
 	ExpiresAt  *time.Time
 	LastUsedAt *time.Time
@@ -169,7 +170,7 @@ type Store interface {
 	ListenForNotify(ctx context.Context, channel string, callback func(payload string)) error
 
 	// PAT
-	CreatePAT(ctx context.Context, name, tokenHash string, expiresAt *time.Time) (*PAT, error)
+	CreatePAT(ctx context.Context, name, tokenHash, role string, expiresAt *time.Time) (*PAT, error)
 	GetPATByHash(ctx context.Context, tokenHash string) (*PAT, error)
 	ListPATs(ctx context.Context) ([]PAT, error)
 	DeletePAT(ctx context.Context, id string) error
@@ -199,7 +200,7 @@ type Store interface {
 	DeleteExpiredOIDCStates(ctx context.Context) error
 
 	// Sessions
-	CreateSession(ctx context.Context, tokenHash, sub, email, encryptedRefreshToken string, expiresAt time.Time) (*Session, error)
+	CreateSession(ctx context.Context, tokenHash, sub, email, role, encryptedRefreshToken string, expiresAt time.Time) (*Session, error)
 	GetSessionByHash(ctx context.Context, tokenHash string) (*Session, error)
 	UpdateSessionExpiry(ctx context.Context, id, encryptedRefreshToken string, expiresAt time.Time) error
 	DeleteSession(ctx context.Context, id string) error
@@ -272,6 +273,7 @@ type Session struct {
 	TokenHash    string
 	Sub          string
 	Email        string
+	Role         string
 	RefreshToken string // encrypted by KeyManager
 	ExpiresAt    time.Time
 	LastUsedAt   *time.Time

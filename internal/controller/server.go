@@ -35,6 +35,12 @@ type OIDCConfig struct {
 	ClientID       string
 	ClientSecret   string
 	DeviceClientID string // Public client ID for the CLI device flow (defaults to ClientID when omitted).
+
+	// Role resolution (mirrors config.ControllerOIDCConfig).
+	RolesClaim  string
+	RoleMap     map[string]string
+	UserMap     map[string]string
+	DefaultRole string
 }
 
 // Server represents the master HTTP server.
@@ -184,68 +190,76 @@ func (s *Server) routes() {
 	})
 
 	// The SSE endpoint is registered individually outside the /api/v1 route block.
-	s.r.With(ServerAuth(s.store, s)).
+	s.r.With(ServerAuth(s.store, s), requireMinRole("viewer")).
 		Get("/api/v1/runs/{id}/events", s.handleRunEvents)
 
 	s.r.Route("/api/v1", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
-		r.Post("/jobs", s.handleApplyJob)
-		r.Get("/jobs", s.handleListJobs)
-		r.Get("/jobs/{name}", s.handleGetJob)
-		r.Get("/jobs/{name}/yaml", s.handleGetJobYAML)
-		r.Delete("/jobs/{name}", s.handleDeleteJob)
-		r.Post("/runs", s.handleTriggerRun)
-		r.Get("/runs/active", s.handleListActiveRuns)
-		r.Get("/runs", s.handleListRunsByJob)
-		r.Get("/runs/{id}", s.handleGetRun)
-		r.Get("/runs/{id}/yaml", s.handleGetRunYAML)
-		r.Post("/runs/{id}/cancel", s.handleCancelRun)
-		r.Delete("/runs/{id}", s.handleDeleteRun)
-		r.Get("/runs/{id}/logs", s.handleTailLogs)
-		r.Get("/runs/{id}/steps", s.handleGetRunSteps)
-		r.Get("/runs/{id}/outputs", s.handleGetRunOutputs)
-		r.Get("/runs/{id}/logs/archive", s.handleLogsArchive)
-		r.Get("/runs/{runID}/approvals", s.handleListRunApprovals)
-		r.Post("/runs/{runID}/approvals/{stepIndex}", s.handleDecideApproval)
+
+		dev := requireMinRole("developer")
+		view := requireMinRole("viewer")
+		admin := requireMinRole("admin")
+
+		r.With(dev).Post("/jobs", s.handleApplyJob)
+		r.With(view).Get("/jobs", s.handleListJobs)
+		r.With(view).Get("/jobs/{name}", s.handleGetJob)
+		r.With(view).Get("/jobs/{name}/yaml", s.handleGetJobYAML)
+		r.With(dev).Delete("/jobs/{name}", s.handleDeleteJob)
+
+		r.With(dev).Post("/runs", s.handleTriggerRun)
+		r.With(view).Get("/runs/active", s.handleListActiveRuns)
+		r.With(view).Get("/runs", s.handleListRunsByJob)
+		r.With(view).Get("/runs/{id}", s.handleGetRun)
+		r.With(view).Get("/runs/{id}/yaml", s.handleGetRunYAML)
+		r.With(dev).Post("/runs/{id}/cancel", s.handleCancelRun)
+		r.With(dev).Delete("/runs/{id}", s.handleDeleteRun)
+		r.With(view).Get("/runs/{id}/logs", s.handleTailLogs)
+		r.With(view).Get("/runs/{id}/steps", s.handleGetRunSteps)
+		r.With(view).Get("/runs/{id}/outputs", s.handleGetRunOutputs)
+		r.With(view).Get("/runs/{id}/logs/archive", s.handleLogsArchive)
+		r.With(view).Get("/runs/{runID}/approvals", s.handleListRunApprovals)
+		r.With(dev).Post("/runs/{runID}/approvals/{stepIndex}", s.handleDecideApproval)
+
 		r.Route("/secrets", func(r chi.Router) {
-			r.Post("/", s.handleSetSecret)
-			r.Get("/", s.handleListSecrets)
-			r.Delete("/{name}", s.handleDeleteSecret)
+			r.With(admin).Post("/", s.handleSetSecret)
+			r.With(dev).Get("/", s.handleListSecrets) // names only
+			r.With(admin).Delete("/{name}", s.handleDeleteSecret)
 		})
 		r.Route("/gitcredentials", func(r chi.Router) {
+			r.Use(admin)
 			r.Post("/", s.handleUpsertGitCredential)
 			r.Get("/", s.handleListGitCredentials)
 			r.Delete("/{name}", s.handleDeleteGitCredential)
 		})
-		r.Post("/tokens", s.handleCreateToken)
-		r.Get("/tokens", s.handleListTokens)
-		r.Delete("/tokens/{id}", s.handleDeleteToken)
+		r.With(dev).Post("/tokens", s.handleCreateToken)
+		r.With(dev).Get("/tokens", s.handleListTokens)
+		r.With(dev).Delete("/tokens/{id}", s.handleDeleteToken)
 	})
 
 	// WebhookReceiver management (auth required)
 	s.r.Route("/api/v1/webhooks", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
-		r.Post("/", s.handleApplyWebhook)
-		r.Get("/", s.handleListWebhooks)
-		r.Delete("/{name}", s.handleDeleteWebhook)
+		r.With(requireMinRole("admin")).Post("/", s.handleApplyWebhook)
+		r.With(requireMinRole("viewer")).Get("/", s.handleListWebhooks)
+		r.With(requireMinRole("admin")).Delete("/{name}", s.handleDeleteWebhook)
 	})
 
 	// Schedule management (auth required)
 	s.r.Route("/api/v1/schedules", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
-		r.Post("/", s.handleApplySchedule)
-		r.Get("/", s.handleListSchedules)
-		r.Delete("/{name}", s.handleDeleteSchedule)
+		r.With(requireMinRole("developer")).Post("/", s.handleApplySchedule)
+		r.With(requireMinRole("viewer")).Get("/", s.handleListSchedules)
+		r.With(requireMinRole("developer")).Delete("/{name}", s.handleDeleteSchedule)
 	})
 
 	// AppSource management (auth required)
 	s.r.Route("/api/v1/appsources", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
-		r.Post("/", s.handleApplyAppSource)
-		r.Get("/", s.handleListAppSources)
-		r.Get("/{name}", s.handleGetAppSource)
-		r.Delete("/{name}", s.handleDeleteAppSource)
-		r.Post("/{name}/sync", s.handleSyncAppSource)
+		r.With(requireMinRole("admin")).Post("/", s.handleApplyAppSource)
+		r.With(requireMinRole("viewer")).Get("/", s.handleListAppSources)
+		r.With(requireMinRole("viewer")).Get("/{name}", s.handleGetAppSource)
+		r.With(requireMinRole("admin")).Delete("/{name}", s.handleDeleteAppSource)
+		r.With(requireMinRole("admin")).Post("/{name}/sync", s.handleSyncAppSource)
 	})
 
 	// Webhook payload ingress (no per-route auth; authenticated via signature verification)
@@ -289,10 +303,10 @@ func (s *Server) routes() {
 	s.r.Get("/api/v1/auth/me", s.handleMe)
 
 	s.r.Route("/api/v1/agents", func(r chi.Router) {
-		// GET uses ServerAuth (admin token); all other methods use BearerAuth (agent token).
-		r.With(ServerAuth(s.store, s)).Get("/", s.handleListAgents)
-		r.With(ServerAuth(s.store, s)).Get("/{agentId}", s.handleGetAgent)
-		r.With(ServerAuth(s.store, s)).Get("/{agentId}/runs", s.handleListRunsByAgent)
+		// GET uses ServerAuth + requireMinRole("viewer"); all other methods use BearerAuth (agent token).
+		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/", s.handleListAgents)
+		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}", s.handleGetAgent)
+		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}/runs", s.handleListRunsByAgent)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/register", s.handleAgentRegister)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/heartbeat", s.handleAgentHeartbeat)
 		r.With(BearerAuth(s.cfg.AgentToken)).Delete("/{agentId}", s.handleAgentDeregister)

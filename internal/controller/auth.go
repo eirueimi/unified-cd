@@ -22,6 +22,7 @@ const principalCtxKey ctxKey = "principal"
 type Principal struct {
 	Name string // PAT name, or OIDC email (fallback to sub)
 	Kind string // "pat" | "oidc" | "session"
+	Role string // "admin" | "developer" | "viewer"
 }
 
 func withPrincipal(r *http.Request, p Principal) *http.Request {
@@ -76,23 +77,32 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 					pat, err := st.GetPATByHash(r.Context(), hash)
 					if err == nil && pat != nil {
 						go func() { _ = st.TouchPAT(context.Background(), pat.ID) }()
-						next.ServeHTTP(w, withPrincipal(r, Principal{Name: pat.Name, Kind: "pat"}))
+						role := pat.Role
+						if pat.Name == BootstrapPATName {
+							role = "admin" // break-glass is always admin
+						}
+						next.ServeHTTP(w, withPrincipal(r, Principal{Name: pat.Name, Kind: "pat", Role: role}))
 						return
 					}
 				}
 				// 1b. OIDC id_token (token obtained via the CLI device flow)
 				if srv != nil && srv.oidcCfg != nil {
 					if idToken, err := srv.verifyOIDCBearer(r.Context(), token); err == nil {
-						var claims struct {
-							Sub   string `json:"sub"`
-							Email string `json:"email"`
-						}
+						var claims map[string]any
 						_ = idToken.Claims(&claims)
-						name := claims.Email
+						email, _ := claims["email"].(string)
+						sub, _ := claims["sub"].(string)
+						name := email
 						if name == "" {
-							name = claims.Sub
+							name = sub
 						}
-						next.ServeHTTP(w, withPrincipal(r, Principal{Name: name, Kind: "oidc"}))
+						values := extractRoleValues(claims, srv.oidcCfg.RolesClaim)
+						role, ok := resolveRole(values, email, sub, srv.roleMapping())
+						if !ok {
+							http.Error(w, "forbidden: no role", http.StatusForbidden)
+							return
+						}
+						next.ServeHTTP(w, withPrincipal(r, Principal{Name: name, Kind: "oidc", Role: role}))
 						return
 					}
 				}
@@ -120,7 +130,7 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 							if sessName == "" {
 								sessName = sess.Sub
 							}
-							next.ServeHTTP(w, withPrincipal(r, Principal{Name: sessName, Kind: "session"}))
+							next.ServeHTTP(w, withPrincipal(r, Principal{Name: sessName, Kind: "session", Role: sess.Role}))
 							return
 						} else {
 							go func() { _ = st.TouchSession(context.Background(), sess.ID) }()
@@ -128,7 +138,7 @@ func ServerAuth(st store.Store, srv *Server) func(http.Handler) http.Handler {
 							if sessName == "" {
 								sessName = sess.Sub
 							}
-							next.ServeHTTP(w, withPrincipal(r, Principal{Name: sessName, Kind: "session"}))
+							next.ServeHTTP(w, withPrincipal(r, Principal{Name: sessName, Kind: "session", Role: sess.Role}))
 							return
 						}
 					}

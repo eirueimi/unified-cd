@@ -53,9 +53,18 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		expiresAt = &t
 	}
 
-	// Store the token as a hash in the database (the plaintext is included in the response only once).
+	// Determine role: default to creator's role; never exceed it.
+	creator, _ := principalFromContext(r.Context())
+	role := req.Role
+	if role == "" {
+		role = creator.Role
+	}
+	if roleRank(role) == 0 || roleRank(role) > roleRank(creator.Role) {
+		role = creator.Role
+	}
+
 	hash := HashToken(token)
-	pat, err := s.store.CreatePAT(r.Context(), req.Name, hash, expiresAt)
+	pat, err := s.store.CreatePAT(r.Context(), req.Name, hash, role, expiresAt)
 	if err != nil {
 		http.Error(w, "store error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -64,6 +73,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, api.CreatePATResponse{
 		ID:    pat.ID,
 		Name:  pat.Name,
+		Role:  pat.Role,
 		Token: token,
 	})
 }
@@ -80,6 +90,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		result = append(result, api.PATMeta{
 			ID:         p.ID,
 			Name:       p.Name,
+			Role:       p.Role,
 			CreatedAt:  p.CreatedAt,
 			ExpiresAt:  p.ExpiresAt,
 			LastUsedAt: p.LastUsedAt,

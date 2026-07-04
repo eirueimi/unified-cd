@@ -1121,12 +1121,12 @@ func (p *Postgres) DeleteSecret(ctx context.Context, name, scope, scopeRef strin
 }
 
 // CreatePAT creates a Personal Access Token and returns its metadata.
-func (p *Postgres) CreatePAT(ctx context.Context, name, tokenHash string, expiresAt *time.Time) (*PAT, error) {
-	const q = `INSERT INTO pats(name, token_hash, expires_at) VALUES ($1, $2, $3)
-		RETURNING id, name, created_at, expires_at, last_used_at;`
+func (p *Postgres) CreatePAT(ctx context.Context, name, tokenHash, role string, expiresAt *time.Time) (*PAT, error) {
+	const q = `INSERT INTO pats(name, token_hash, role, expires_at) VALUES ($1, $2, $3, $4)
+		RETURNING id, name, role, created_at, expires_at, last_used_at;`
 	var pat PAT
-	err := p.pool.QueryRow(ctx, q, name, tokenHash, expiresAt).
-		Scan(&pat.ID, &pat.Name, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt)
+	err := p.pool.QueryRow(ctx, q, name, tokenHash, role, expiresAt).
+		Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create pat: %w", err)
 	}
@@ -1138,11 +1138,11 @@ func (p *Postgres) CreatePAT(ctx context.Context, name, tokenHash string, expire
 // that at most one row exists per name (since token_hash changes every time the value changes,
 // the row must be identified uniquely by name).
 func (p *Postgres) UpsertBootstrapPAT(ctx context.Context, name, tokenHash string) (*PAT, error) {
-	const updateQ = `UPDATE pats SET token_hash = $2 WHERE name = $1
-		RETURNING id, name, created_at, expires_at, last_used_at;`
+	const updateQ = `UPDATE pats SET token_hash = $2, role = 'admin' WHERE name = $1
+		RETURNING id, name, role, created_at, expires_at, last_used_at;`
 	var pat PAT
 	err := p.pool.QueryRow(ctx, updateQ, name, tokenHash).
-		Scan(&pat.ID, &pat.Name, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt)
+		Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt)
 	if err == nil {
 		return &pat, nil
 	}
@@ -1150,10 +1150,10 @@ func (p *Postgres) UpsertBootstrapPAT(ctx context.Context, name, tokenHash strin
 		return nil, fmt.Errorf("rotate bootstrap pat: %w", err)
 	}
 
-	const insertQ = `INSERT INTO pats(name, token_hash) VALUES ($1, $2)
-		RETURNING id, name, created_at, expires_at, last_used_at;`
+	const insertQ = `INSERT INTO pats(name, token_hash, role) VALUES ($1, $2, 'admin')
+		RETURNING id, name, role, created_at, expires_at, last_used_at;`
 	if err := p.pool.QueryRow(ctx, insertQ, name, tokenHash).
-		Scan(&pat.ID, &pat.Name, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt); err != nil {
+		Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt); err != nil {
 		return nil, fmt.Errorf("create bootstrap pat: %w", err)
 	}
 	return &pat, nil
@@ -1167,11 +1167,11 @@ func (p *Postgres) DeleteBootstrapPATByName(ctx context.Context, name string) er
 
 // GetPATByHash retrieves a PAT by token_hash (expired tokens are excluded).
 func (p *Postgres) GetPATByHash(ctx context.Context, tokenHash string) (*PAT, error) {
-	const q = `SELECT id, name, created_at, expires_at, last_used_at FROM pats
+	const q = `SELECT id, name, role, created_at, expires_at, last_used_at FROM pats
 		WHERE token_hash = $1 AND (expires_at IS NULL OR expires_at > NOW())`
 	var pat PAT
 	err := p.pool.QueryRow(ctx, q, tokenHash).
-		Scan(&pat.ID, &pat.Name, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt)
+		Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get pat: %w", err)
 	}
@@ -1180,7 +1180,7 @@ func (p *Postgres) GetPATByHash(ctx context.Context, tokenHash string) (*PAT, er
 
 // ListPATs returns all PATs ordered by creation date ascending.
 func (p *Postgres) ListPATs(ctx context.Context) ([]PAT, error) {
-	rows, err := p.pool.Query(ctx, `SELECT id, name, created_at, expires_at, last_used_at FROM pats ORDER BY created_at`)
+	rows, err := p.pool.Query(ctx, `SELECT id, name, role, created_at, expires_at, last_used_at FROM pats ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -1188,7 +1188,7 @@ func (p *Postgres) ListPATs(ctx context.Context) ([]PAT, error) {
 	var out []PAT
 	for rows.Next() {
 		var pat PAT
-		if err := rows.Scan(&pat.ID, &pat.Name, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt); err != nil {
+		if err := rows.Scan(&pat.ID, &pat.Name, &pat.Role, &pat.CreatedAt, &pat.ExpiresAt, &pat.LastUsedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, pat)
@@ -1294,13 +1294,13 @@ func (p *Postgres) DeleteExpiredOIDCStates(ctx context.Context) error {
 }
 
 // CreateSession saves a browser session to the database.
-func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, encryptedRefreshToken string, expiresAt time.Time) (*Session, error) {
-	const q = `INSERT INTO sessions(token_hash, sub, email, refresh_token, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, token_hash, sub, email, refresh_token, expires_at, last_used_at, created_at`
+func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, role, encryptedRefreshToken string, expiresAt time.Time) (*Session, error) {
+	const q = `INSERT INTO sessions(token_hash, sub, email, role, refresh_token, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, token_hash, sub, email, role, refresh_token, expires_at, last_used_at, created_at`
 	var s Session
-	err := p.pool.QueryRow(ctx, q, tokenHash, sub, email, encryptedRefreshToken, expiresAt).
-		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.RefreshToken, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
+	err := p.pool.QueryRow(ctx, q, tokenHash, sub, email, role, encryptedRefreshToken, expiresAt).
+		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.RefreshToken, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -1309,11 +1309,11 @@ func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, enc
 
 // GetSessionByHash retrieves a session by token_hash.
 func (p *Postgres) GetSessionByHash(ctx context.Context, tokenHash string) (*Session, error) {
-	const q = `SELECT id, token_hash, sub, email, refresh_token, expires_at, last_used_at, created_at
+	const q = `SELECT id, token_hash, sub, email, role, refresh_token, expires_at, last_used_at, created_at
 		FROM sessions WHERE token_hash = $1`
 	var s Session
 	err := p.pool.QueryRow(ctx, q, tokenHash).
-		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.RefreshToken, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
+		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.RefreshToken, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil

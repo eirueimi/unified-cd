@@ -3,6 +3,8 @@
 This document covers the authentication methods for the unified-cd controller API.
 Both the minimal non-SSO setup and the Dex-based OIDC SSO setup are described.
 
+> **Authorization (roles/RBAC):** see [Authorization](authorization.md) for the 3-role model, OIDC group/role mapping, and per-role permissions.
+
 > The CLI is referred to as `unified-cd` throughout. This is the built binary (`./bin/unified-cd`);
 > source is under `cmd/unified-cli`. During development you can also use `go run ./cmd/unified-cli ...`.
 
