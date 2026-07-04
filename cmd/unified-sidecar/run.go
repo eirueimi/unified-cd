@@ -18,9 +18,19 @@ type stringSlice []string
 func (s *stringSlice) String() string     { return fmt.Sprint([]string(*s)) }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 
-// run dispatches the sidecar subcommands against store. Cache operations are
-// best-effort (always exit 0); artifact operations exit non-zero on failure.
-func run(ctx context.Context, store objectstore.ObjectStore, args []string, stderr io.Writer) int {
+// storeProvider lazily builds (or obtains) the ObjectStore used by cache and
+// artifact subcommands. It is invoked only when a subcommand actually needs
+// the store — "idle" never calls it, so the sidecar can stay resident even
+// when no S3 configuration is present (degraded mode).
+type storeProvider func(context.Context) (objectstore.ObjectStore, error)
+
+// run dispatches the sidecar subcommands. The store is obtained lazily via
+// newStore, only for cache/artifact subcommands; "idle" ignores it entirely.
+// Cache operations are best-effort (always exit 0 once the store is
+// available); artifact operations exit non-zero on failure. If newStore
+// fails (e.g. no S3 configuration in degraded mode), cache/artifact
+// subcommands fail loudly with a clear message and a non-zero exit code.
+func run(ctx context.Context, newStore storeProvider, args []string, stderr io.Writer) int {
 	if len(args) == 1 && args[0] == "idle" {
 		<-ctx.Done()
 		return 0
@@ -32,8 +42,18 @@ func run(ctx context.Context, store objectstore.ObjectStore, args []string, stde
 	group, sub, rest := args[0], args[1], args[2:]
 	switch group {
 	case "cache":
+		store, err := newStore(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "cache requires S3 configuration (UNIFIED_S3_*): %v\n", err)
+			return 1
+		}
 		return runCache(ctx, store, sub, rest, stderr)
 	case "artifact":
+		store, err := newStore(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "artifact requires S3 configuration (UNIFIED_S3_*): %v\n", err)
+			return 1
+		}
 		return runArtifact(ctx, store, sub, rest, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command group %q\n", group)
