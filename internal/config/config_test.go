@@ -200,3 +200,29 @@ func TestControllerEffective_ControllerKeyFromFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "deadbeef", eff.ControllerKey)
 }
+
+func TestAgentEffective_WorkspaceDirFromEnv(t *testing.T) {
+	t.Setenv("UNIFIED_SERVER", "http://env-server")
+	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
+	t.Setenv("UNIFIED_AGENT_WORKSPACE_DIR", "/data/ws")
+
+	eff, err := config.AgentEffective("")
+	require.NoError(t, err)
+	assert.Equal(t, "/data/ws", eff.WorkspaceDir)
+}
+
+func TestAgentEffective_WorkspaceDirFileOverridesEnv(t *testing.T) {
+	t.Setenv("UNIFIED_SERVER", "http://env-server")
+	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
+	t.Setenv("UNIFIED_AGENT_WORKSPACE_DIR", "/env/ws")
+
+	path := writeFile(t, `
+server: http://file-server
+token: file-token
+id: file-id
+workspaceDir: /file/ws
+`)
+	eff, err := config.AgentEffective(path)
+	require.NoError(t, err)
+	assert.Equal(t, "/file/ws", eff.WorkspaceDir, "file workspaceDir should override the env value")
+}
