@@ -195,6 +195,83 @@ oidc:
 - **推奨本番**: Dex→GitLab connector（`groups`、CLI device flow維持、identityをGitLabに一元化）。
 - **代替（文書化）**: Dex→GitHub connector / Entra(App Roles) / Auth0 / GitLab直結。
 
+### 7.7 設定例（Dex経由・直結の両方をドキュメント化する）
+
+> **ドキュメント成果物要件:** ユーザー向けドキュメント（`docs/authentication.md` 更新、または新規 `docs/authorization.md`）には、**「Dexをブローカにする構成」と「IdPへ直結する構成」の両方**の設定手順を必ず記載する。両者で変わるのは `oidc.issuer`/`clientId`/`rolesClaim` と、Dex側 connector の有無だけで、`roleMap`/`userMap`/`defaultRole` と enforcement は共通であることを明示する。
+
+**(A) Dex経由（ブローカ）**
+
+```yaml
+# unified-cd controller config（issuer は Dex を指す）
+oidc:
+  issuer:         https://<controller>/dex      # 例: http://localhost:8080/dex
+  clientId:       unified-cd
+  clientSecret:   unified-cd-secret
+  deviceClientId: unified-cd-cli                 # CLI device flow は Dex が提供
+  rolesClaim:     groups
+  roleMap:
+    "my-org:platform":   admin                   # 値の形は connector 依存（下記）
+    "mygroup/devs":      developer
+  userMap:
+    alice@example.com:   admin
+  defaultRole:    viewer
+```
+
+```yaml
+# Dex 側：使いたいソースの connector を足すだけ（unified-cd 側は不変）
+connectors:
+  - type: github            # groups: "org:team"（GitHubは非OIDCゆえ専用connector必須）
+    id: github
+    config: { clientID: ..., clientSecret: ..., redirectURI: https://<dex>/callback, orgs: [{name: my-org}], teamNameField: slug }
+  - type: gitlab            # groups: "group/subgroup"
+    id: gitlab
+    config: { baseURL: https://gitlab.eiru.ddns.net, clientID: ..., clientSecret: ... }
+  - type: oidc              # Entra/Auth0 等の汎用OIDCを Dex 配下に束ねる場合
+    id: entra
+    config: { issuer: https://login.microsoftonline.com/<tenant>/v2.0, clientID: ..., clientSecret: ..., insecureEnableGroups: true, scopes: [openid, profile, email] }
+# enablePasswordDB + staticPasswords で local 静的ユーザーも併用可（groups不可→userMap）
+```
+
+**(B) IdP直結（Dexなし）** — `oidc.issuer` を IdP に向けるだけ。`roleMap`/enforcement は (A) と同一。
+
+```yaml
+# 直結：Entra ID（App Roles 推奨）
+oidc:
+  issuer:       https://login.microsoftonline.com/<tenant-id>/v2.0
+  clientId:     <app-client-id>
+  clientSecret: <client-secret>
+  rolesClaim:   roles
+  roleMap: { admin: admin, developer: developer, viewer: viewer }
+  defaultRole:  deny
+# 注: CLIの device flow を使うなら App registration で「Allow public client flows」を有効化。
+#     ブラウザSSOのみで良ければ不要。
+```
+
+```yaml
+# 直結：GitLab（自ホスト）
+oidc:
+  issuer:       https://gitlab.eiru.ddns.net       # /.well-known/openid-configuration を公開
+  clientId:     <application-id>
+  clientSecret: <secret>
+  rolesClaim:   groups_direct                       # ← GitLabのグループclaim名（版により要確認）
+  roleMap: { "mygroup/admins": admin, "mygroup/devs": developer }
+  defaultRole:  viewer
+# 注: GitLab直結は CLI device flow 対応が版依存。CLIログインを重視するなら Dex経由(A)。
+```
+
+```yaml
+# 直結：Auth0
+oidc:
+  issuer:       https://<tenant>.us.auth0.com/
+  clientId:     <client-id>
+  clientSecret: <secret>
+  rolesClaim:   "https://unified-cd.example.com/roles"   # Post-Login Action で付与する名前空間付きクレーム
+  roleMap: { admin: admin, developer: developer, viewer: viewer }
+  defaultRole:  deny
+```
+
+> **GitHub は直結不可**（非OIDC）。GitHubを使う場合は必ず (A) の Dex `github` connector 経由。
+
 ---
 
 ## 8. データモデル変更
