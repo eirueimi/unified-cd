@@ -130,17 +130,17 @@ steps:
 
 Each concurrency slot owns one workspace directory:
 `<workspace-dir>/working<N>` (default `~/workspace`, override with
-`-workspace-dir`, `UNIFIED_AGENT_WORKSPACE_DIR`, or the `workspaceDir`
+`--workspace-dir`, `UNIFIED_AGENT_WORKSPACE_DIR`, or the `workspaceDir`
 config key). `run:` steps execute with this directory as their working
 directory, and relative artifact/cache paths resolve against it.
 
-`N` ranges from `0` to `-max-concurrent - 1`; each slot's claim loop always
+`N` ranges from `0` to `--max-concurrent - 1`; each slot's claim loop always
 uses the same `working<N>` directory for every run it executes, so
 concurrent slots never share a directory.
 
 **Workspaces are reused across runs and jobs.** Files from previous runs
-remain unless the agent is started with `-clean-workspace`. If your jobs
-write credentials or other secrets to disk, enable `-clean-workspace` or
+remain unless the agent is started with `--clean-workspace`. If your jobs
+write credentials or other secrets to disk, enable `--clean-workspace` or
 delete them in a `finally:` step — otherwise later jobs on the same agent
 can read them.
 
@@ -148,9 +148,9 @@ can read them.
 > written to disk by one Run (e.g. a checked-out credential file, a
 > decrypted key) are readable by any later Run claimed into the same slot,
 > even a Run from a different Job. Treat the workspace as a shared,
-> semi-trusted directory unless `-clean-workspace` is enabled.
+> semi-trusted directory unless `--clean-workspace` is enabled.
 
-`-clean-workspace` removes and recreates `working<N>` at claim time (right
+`--clean-workspace` removes and recreates `working<N>` at claim time (right
 before a Run starts executing in that slot), not at agent startup — so the
 very first Run after the agent starts still runs against whatever was left
 in the directory from before, unless it was cleaned by a previous claim.
@@ -167,7 +167,7 @@ On startup, an agent registers with the controller (`POST
 /api/v1/agents/register`), sending its ID, hostname, OS, labels, version, and
 exposed environment variables. **Registration replaces the stored label set
 wholesale** — if a label from a prior registration is absent from the new
-`-labels`/`UNIFIED_AGENT_LABELS`/config value, it is dropped. This means
+`--labels`/`UNIFIED_AGENT_LABELS`/config value, it is dropped. This means
 removing a label and restarting the agent actually takes effect, rather than
 labels only ever accumulating.
 

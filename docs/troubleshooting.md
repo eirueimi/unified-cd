@@ -10,7 +10,7 @@ A triggered run never leaves the `Queued` status, even though agents are connect
 
 ```
 ID:          17c9e93a-7c33-48be-831c-d7b9098ba887
-Job:         docsverify-e1
+Job:         my-job
 Status:      Queued
 ```
 

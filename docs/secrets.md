@@ -28,7 +28,7 @@ Secrets are a key-value store saved in the controller's PostgreSQL database **en
 
 ### Setting `UNIFIED_CONTROLLER_KEY` (required)
 
-This is the master encryption key for secrets. **If unset, an ephemeral key is used and secrets will be lost on controller restart.**
+This is the master encryption key for secrets. **If unset, the controller generates a key once and persists it in the database (`controller_settings`), so secrets survive restarts; set the variable explicitly in production so the key can be backed up.**
 
 ```bash
 # Generate once and store
