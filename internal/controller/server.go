@@ -303,7 +303,7 @@ func (s *Server) routes() {
 	s.r.Get("/api/v1/auth/me", s.handleMe)
 
 	s.r.Route("/api/v1/agents", func(r chi.Router) {
-		// GET uses ServerAuth (admin token); all other methods use BearerAuth (agent token).
+		// GET uses ServerAuth + requireMinRole("viewer"); all other methods use BearerAuth (agent token).
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/", s.handleListAgents)
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}", s.handleGetAgent)
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}/runs", s.handleListRunsByAgent)
