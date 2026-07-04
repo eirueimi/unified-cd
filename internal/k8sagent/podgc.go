@@ -2,9 +2,12 @@ package k8sagent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"time"
 
+	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -43,10 +46,18 @@ type gcPod struct {
 // podLister lists candidate run Pods for the orphan-pod GC.
 type podLister func(ctx context.Context) ([]gcPod, error)
 
-// runGetter fetches a Run's current status. A not-found (or any other) error
-// is treated as found=false by the caller — an unreachable/gone Run is itself
-// grounds for reclaiming its Pod.
+// runGetter fetches a Run's current status. A definitive not-found (HTTP 404)
+// means the Run is gone → its Pod is an orphan. Any OTHER error (transient
+// controller/network blip) is NOT treated as "gone": deleting a Pod that may
+// still back a live run would spuriously fail that run (pod-per-run does not
+// resume), so the caller skips the Pod this cycle and retries next sweep.
 type runGetter func(ctx context.Context, runID string) (api.Run, error)
+
+// isRunNotFound reports whether a getRun error is a definitive HTTP 404.
+func isRunNotFound(err error) bool {
+	var he *agentlib.HTTPError
+	return errors.As(err, &he) && he.StatusCode == http.StatusNotFound
+}
 
 // podDeleter deletes a Pod by name.
 type podDeleter func(ctx context.Context, podName string) error
@@ -62,6 +73,12 @@ func runPodGCOnce(ctx context.Context, lister podLister, getRun runGetter, delet
 	}
 	for _, p := range pods {
 		run, err := getRun(ctx, p.runID)
+		if err != nil && !isRunNotFound(err) {
+			// Transient/unknown error: don't risk deleting a Pod that may back a
+			// live run. Skip this Pod; the next sweep retries.
+			slog.Warn("k8s: pod GC skipping pod (run status unknown)", "pod", p.podName, "runId", p.runID, "error", err)
+			continue
+		}
 		found := err == nil
 		if !podGCDecision(run.Status, found, p.pooledInUse) {
 			continue

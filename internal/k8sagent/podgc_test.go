@@ -3,8 +3,10 @@ package k8sagent
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 
+	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 )
 
@@ -35,6 +37,7 @@ func TestPodGCOnce(t *testing.T) {
 		{podName: "ucd-run-active", runID: "run-active"},
 		{podName: "ucd-run-pooled", runID: "run-pooled", pooledInUse: true},
 		{podName: "ucd-run-gone", runID: "run-gone"},
+		{podName: "ucd-run-transient", runID: "run-transient"},
 	}
 
 	lister := func(ctx context.Context) ([]gcPod, error) {
@@ -48,9 +51,17 @@ func TestPodGCOnce(t *testing.T) {
 	}
 
 	getRun := func(ctx context.Context, runID string) (api.Run, error) {
+		switch runID {
+		case "run-gone":
+			// definitive 404 -> orphan, delete
+			return api.Run{}, &agentlib.HTTPError{StatusCode: http.StatusNotFound, Body: "not found"}
+		case "run-transient":
+			// transient/unknown error -> must be SKIPPED, not deleted
+			return api.Run{}, errors.New("connection refused")
+		}
 		status, ok := runStatus[runID]
 		if !ok {
-			return api.Run{}, errors.New("not found")
+			return api.Run{}, errors.New("unexpected runID")
 		}
 		return api.Run{ID: runID, Status: status}, nil
 	}
