@@ -70,6 +70,41 @@ func TestAgentAPI_Register_DoesNotDuplicateExplicitHostnameLabel(t *testing.T) {
 	assert.Contains(t, got.Labels, "hostname:custom")
 }
 
+// TestAgentAPI_Register_RemovesDroppedLabel verifies the TODO #23 fix: re-registering
+// an agent with a smaller label set actually removes the dropped label from inventory.
+// Before the fix, UpsertAgent used the #12 claim-style DISTINCT-union label merge for
+// registration too, so labels could never be removed once seen (audit/inventory lie).
+func TestAgentAPI_Register_RemovesDroppedLabel(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	body, _ := json.Marshal(api.AgentRegisterRequest{
+		AgentID: "a1", Hostname: "host1", OS: "linux",
+		Labels: []string{"a", "b"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	body2, _ := json.Marshal(api.AgentRegisterRequest{
+		AgentID: "a1", Hostname: "host1", OS: "linux",
+		Labels: []string{"a"},
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body2))
+	req2.Header.Set("Authorization", "Bearer agent-secret")
+	rec2 := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusNoContent, rec2.Code, rec2.Body.String())
+
+	got, err := pg.GetAgent(context.Background(), "a1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	// The register handler always auto-attaches a hostname:<h> label (see
+	// TestAgentAPI_Register_DefaultsHostnameLabel), so it's expected alongside "a".
+	assert.ElementsMatch(t, []string{"a", "hostname:host1"}, got.Labels, "re-registration must remove dropped label b")
+}
+
 func TestAgentAPI_Claim_EmptyWhenNoQueued(t *testing.T) {
 	s, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=200ms", nil)

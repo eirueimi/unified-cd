@@ -643,6 +643,12 @@ func (p *Postgres) TailLogs(ctx context.Context, runID string, afterSeq int64, l
 	return out, rows.Err()
 }
 
+// UpsertAgent is the REGISTRATION path. A registration is the authoritative
+// statement of an agent's identity, so on conflict it REPLACES hostname/os/labels/
+// version/env wholesale rather than merging. In particular, if a label present in a
+// prior registration is absent here, it is dropped — this is required so removing a
+// label from an agent's config and restarting actually takes effect (see TODO #23).
+// Use UpsertAgentOnClaim for the lightweight, non-destructive claim-time upsert.
 func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error {
 	if labels == nil {
 		labels = []string{}
@@ -654,11 +660,38 @@ func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, versi
 	if err != nil {
 		return err
 	}
-	// On conflict, only overwrite hostname/os/version/env when the caller supplied a
-	// non-empty value, and merge (rather than replace) labels. This lets lightweight
-	// callers (e.g. the claim handler, which only knows the agent ID and its claim-time
-	// labels) refresh last_seen_at/labels without clobbering richer data recorded at
-	// full registration time.
+	const q = `
+		INSERT INTO agents(id, hostname, os, labels, version, env, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		ON CONFLICT (id) DO UPDATE
+		  SET hostname     = EXCLUDED.hostname,
+		      os           = EXCLUDED.os,
+		      labels       = EXCLUDED.labels,
+		      version      = EXCLUDED.version,
+		      env          = EXCLUDED.env,
+		      last_seen_at = NOW();
+	`
+	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON)
+	return err
+}
+
+// UpsertAgentOnClaim is the CLAIM path. It is a lightweight, non-destructive upsert
+// used when an agent claims a run: it only knows the agent ID and its claim-time
+// labels, so on conflict it only overwrites hostname/os/version/env when the caller
+// supplied a non-empty value, and merges (rather than replaces) labels. This lets a
+// claim refresh last_seen_at/labels without clobbering richer data recorded at full
+// registration time (e.g. the register-only hostname:<h> label). See TODO #12/#23.
+func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error {
+	if labels == nil {
+		labels = []string{}
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	envJSON, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
 	const q = `
 		INSERT INTO agents(id, hostname, os, labels, version, env, last_seen_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW())
