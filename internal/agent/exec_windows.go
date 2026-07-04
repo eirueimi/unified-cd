@@ -79,12 +79,7 @@ func killTree(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	jobMu.Lock()
-	job, ok := jobHandles[cmd]
-	if ok {
-		delete(jobHandles, cmd)
-	}
-	jobMu.Unlock()
+	job, ok := takeJobHandle(cmd)
 
 	if ok {
 		// Closing a job object created with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -93,4 +88,46 @@ func killTree(cmd *exec.Cmd) {
 		return
 	}
 	_ = cmd.Process.Kill()
+}
+
+// takeJobHandle removes and returns the Job Object handle associated with
+// cmd, if any. It is the single place that mutates jobHandles so that
+// killTree (cancel path) and cleanupTree (normal-completion path) can never
+// both act on the same handle: whichever runs first wins the entry, and the
+// other observes ok == false and does nothing. This makes cleanup idempotent
+// regardless of which exit path runs, or if both run.
+func takeJobHandle(cmd *exec.Cmd) (windows.Handle, bool) {
+	jobMu.Lock()
+	defer jobMu.Unlock()
+	job, ok := jobHandles[cmd]
+	if ok {
+		delete(jobHandles, cmd)
+	}
+	return job, ok
+}
+
+// jobHandleCount reports the number of live entries in jobHandles. It exists
+// so tests can assert on leak/no-leak behavior without depending on
+// Windows-only types (windows.Handle) in cross-platform test files.
+func jobHandleCount() int {
+	jobMu.Lock()
+	defer jobMu.Unlock()
+	return len(jobHandles)
+}
+
+// cleanupTree releases any Job Object handle still associated with cmd. It
+// must be called on every exit path from runTreeKilled — not just the
+// cancel/killTree path — otherwise the handle assigned by assignJob leaks:
+// each normally-completed step would permanently hold one kernel Job Object
+// handle plus one jobHandles map entry (which also pins cmd, preventing GC
+// of its output buffers). Safe to call after killTree already removed the
+// entry (takeJobHandle then reports ok == false and this is a no-op), so
+// callers can invoke it unconditionally via defer.
+func cleanupTree(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	if job, ok := takeJobHandle(cmd); ok {
+		_ = windows.CloseHandle(job)
+	}
 }
