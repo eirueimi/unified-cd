@@ -149,6 +149,14 @@ spec:
 
 If the controller is down during a scheduled fire time, the fire is caught up within 1 hour after restart.
 
+Apply a Schedule the same way as any other resource:
+
+```bash
+unified-cd apply -f schedule.yaml
+```
+
+Runs triggered by a Schedule show up with `triggeredBy: schedule:<name>`.
+
 ### Example
 
 ```yaml
@@ -203,8 +211,17 @@ spec:
 | Type | Description |
 |---|---|
 | `none` | No signature verification. Use only for trusted internal sources. |
-| `hmac-sha256` | Verifies `X-Signature-256: sha256=<hmac>` header using the secret from `secretRef` |
+| `hmac-sha256` | Verifies `X-Signature: sha256=<hex hmac>` (or GitHub-compatible `X-Hub-Signature-256`) over the raw request body using the secret from `secretRef` |
 | `github` | Verifies GitHub's `X-Hub-Signature-256` header using the secret from `secretRef` |
+
+### Delivery responses
+
+| Result | HTTP status |
+|---|---|
+| Run created | `200` + run JSON |
+| Filters did not match (no run) | `204` |
+| Signature invalid or missing | `401` |
+| Required job param not produced by `paramsMapping` | `400` (body names the missing param) |
 
 ### Webhook endpoint
 
@@ -375,8 +392,10 @@ spec:
 
 1. The controller clones or fetches the repository at every `interval`.
 2. All `.yaml` files under `path` are scanned recursively.
-3. Files containing `kind: Job` definitions are upserted (created or updated).
+3. Only documents with `kind: Job` are applied. Any other kind, or a file that fails to parse as YAML, is skipped; the controller logs a per-file warning and continues syncing the rest of the files.
 4. If `prune: true`, jobs that were previously managed by this AppSource but no longer appear in the repo are deleted.
+
+`spec.syncPolicy.interval` has a minimum of `1m`; values below that are rejected.
 
 ### Manual sync trigger
 

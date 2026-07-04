@@ -11,8 +11,10 @@ Complete reference for the `unified-cd` command-line tool.
 - [logs](#logs)
 - [secret](#secret)
 - [token](#token)
+- [artifact](#artifact)
 - [login](#login)
 - [agent](#agent)
+- [Configuration precedence](#configuration-precedence)
 - [Configuration File](#configuration-file)
 - [Resource Kinds Accepted by apply](#resource-kinds-accepted-by-apply)
 
@@ -31,6 +33,24 @@ unified-cd [GLOBAL FLAGS] <subcommand>
 ```
 
 **Resolution order** (highest priority first): `--flag` > environment variable > config file.
+See [Configuration precedence](#configuration-precedence) below for details.
+
+---
+
+## Configuration precedence
+
+Values are resolved in this order (highest wins):
+
+1. Command-line flags (`--server`, `--token`)
+2. Environment variables (`UNIFIED_SERVER`, `UNIFIED_TOKEN`)
+3. Config file `~/.config/unified-cd/config.yaml` (written by `login`)
+
+```bash
+# Config file has server: http://localhost:8080
+# The env var points at a bad port, but the flag wins, so this succeeds:
+UNIFIED_SERVER=http://localhost:9 unified-cd --server http://localhost:8080 jobs list
+# => (lists jobs — the --server flag beat both UNIFIED_SERVER and the config file)
+```
 
 ---
 
@@ -118,6 +138,21 @@ unified-cd run trigger build --param image=myapp --param tag=v1.0
 # Capture the run ID
 RUN_ID=$(unified-cd run trigger build --param image=myapp)
 echo "Run started: $RUN_ID"
+```
+
+### run cancel
+
+```
+unified-cd run cancel <run-id>
+```
+
+Cancel a run that is Pending, Queued, or Running. The agent interrupts the
+in-flight step (reported as `Cancelled`), `finally:` steps still execute,
+and the run finishes as `Cancelled`.
+
+```bash
+unified-cd run cancel run-abc123
+# => run "run-abc123" cancelled
 ```
 
 ### run list
@@ -251,8 +286,11 @@ Generates a new PAT. The token value is shown only once.
 
 ```bash
 unified-cd token create ci-bot
-# => Token (shown once): exc_xxxxxxxxxxxxxxxx
-#    Name: ci-bot  ID: tok-abc123
+# => Token created (shown only once):
+# =>
+# =>   exc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# =>
+# => Name: ci-bot  ID: 08c1779c-812f-4d68-9971-25ff3467637e
 
 # With expiry
 unified-cd token create deploy-bot --expires-in 8760h
@@ -266,11 +304,11 @@ Use the printed token as a bearer token in CLI, API calls, or agent configuratio
 unified-cd token list
 ```
 
-Lists all tokens (names and IDs only; values are never retrievable).
+Lists all tokens (IDs and names only; values are never retrievable).
 
 ```
-tok-abc123   ci-bot           (2026-06-01)
-tok-def456   env:UNIFIED_TOKEN  (2026-05-01)   ← bootstrap token from UNIFIED_TOKEN env var
+a7c3fec8-1922-4278-b7ca-1ec489839a61   env:UNIFIED_TOKEN   (2026-07-03)   ← bootstrap token from UNIFIED_TOKEN env var
+08c1779c-812f-4d68-9971-25ff3467637e   ci-bot               (2026-07-04)
 ```
 
 ### token delete
@@ -282,8 +320,50 @@ unified-cd token delete <id>
 Revokes a token immediately.
 
 ```bash
-unified-cd token delete tok-abc123
-# => token "tok-abc123" revoked
+unified-cd token delete 08c1779c-812f-4d68-9971-25ff3467637e
+# => token "08c1779c-812f-4d68-9971-25ff3467637e" revoked
+```
+
+---
+
+## artifact
+
+List and download artifacts uploaded by a run's steps (via `uploadArtifact`).
+Artifacts are stored on the controller as tar+zstd archives; `artifact download`
+fetches and extracts the archive for you.
+
+### artifact list
+
+```
+unified-cd artifact list <run-id>
+```
+
+Lists artifact names produced by the run.
+
+```bash
+unified-cd artifact list run-abc123
+# => cli-art
+```
+
+### artifact download
+
+```
+unified-cd artifact download <run-id> <name> [--dest DIR]
+
+  --dest  string   Destination directory (default: current directory)
+```
+
+Downloads the named artifact and extracts its tar+zstd archive into `--dest`
+(or the current directory if `--dest` is omitted).
+
+```bash
+# Extract into the current directory
+unified-cd artifact download run-abc123 cli-art
+# => extracted cli-art of run run-abc123 to .
+
+# Extract into a specific directory
+unified-cd artifact download run-abc123 cli-art --dest ./out
+# => extracted cli-art of run run-abc123 to ./out
 ```
 
 ---
@@ -291,6 +371,7 @@ unified-cd token delete tok-abc123
 ## login
 
 Authenticate using OIDC (SSO) device flow and save the token to the config file.
+`--server` is required (or set `UNIFIED_SERVER`).
 
 ```
 unified-cd login --server <url>
@@ -302,13 +383,20 @@ unified-cd login --server <url>
 
 ```bash
 unified-cd login --server http://unified-cd.example.com
-# => Open this URL in your browser: https://...
-# => Waiting for authentication...
+# => Open the following URL in your browser:
+# =>   https://...
+# =>
+# => Waiting (user code: XXXX-XXXX)...
+# =>
 # => Logged in. Token saved to ~/.config/unified-cd/config.yaml
+# => Expires: 2026-07-05T14:12:38Z
 ```
 
-After login, the id_token is stored in the config file and used automatically for subsequent commands.
-id_tokens expire (Dex default: ~24 hours). Re-run `login` when your token expires.
+On success, the verifiable id_token (JWT) from the device flow is written to the
+`token` field of `~/.config/unified-cd/config.yaml`, along with its expiry printed
+to stdout (Dex default: ~24 hours). Re-run `login` when your token expires. If the
+server has no SSO configured, `login` instead prompts for an existing PAT
+(see [`token create`](#token-create)) and stores that instead.
 
 See the [Authentication Guide](authentication.md) for full SSO setup details.
 
@@ -368,10 +456,12 @@ Default path: `~/.config/unified-cd/config.yaml`
 ```yaml
 server: http://localhost:8080
 token: dev-secret
-
-# Token from OIDC login is also stored here:
-# id_token: eyJhbGci...
+agentId: ""
 ```
+
+`token` holds either a manually-configured bearer token or the id_token written by
+`login` (OIDC device flow or PAT prompt) — both use the same field. `agentId` is
+populated only when this config file was written by `agent install`.
 
 Override the path with `--config /path/to/config.yaml`.
 
