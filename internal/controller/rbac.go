@@ -48,6 +48,19 @@ func normalizeRole(r string) (string, bool) {
 	return r, true
 }
 
+// roleMapping builds a RoleMapping from the server's OIDC config.
+func (s *Server) roleMapping() RoleMapping {
+	if s.oidcCfg == nil {
+		return RoleMapping{}
+	}
+	return RoleMapping{
+		RolesClaim:  s.oidcCfg.RolesClaim,
+		RoleMap:     s.oidcCfg.RoleMap,
+		UserMap:     s.oidcCfg.UserMap,
+		DefaultRole: s.oidcCfg.DefaultRole,
+	}
+}
+
 // extractRoleValues pulls the configured claim from a decoded claims map as
 // a []string. Accepts a string, []string, or []any of strings. Defaults the
 // claim name to "groups". Returns nil when the claim is absent.

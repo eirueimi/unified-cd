@@ -205,16 +205,21 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var claims struct {
-		Sub   string `json:"sub"`
-		Email string `json:"email"`
-	}
+	var claims map[string]any
 	if err := idToken.Claims(&claims); err != nil {
 		http.Error(w, "claims parse error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if claims.Email == "" {
-		claims.Email = claims.Sub
+	sub, _ := claims["sub"].(string)
+	email, _ := claims["email"].(string)
+	if email == "" {
+		email = sub
+	}
+	values := extractRoleValues(claims, s.oidcCfg.RolesClaim)
+	role, ok := resolveRole(values, email, sub, s.roleMapping())
+	if !ok {
+		http.Error(w, "forbidden: no role assigned", http.StatusForbidden)
+		return
 	}
 
 	if s.km == nil {
@@ -235,7 +240,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	tokenHash := HashToken(sessionToken)
 	expiresAt := time.Now().Add(sessionDuration)
 
-	if _, err := s.store.CreateSession(r.Context(), tokenHash, claims.Sub, claims.Email, "admin", hex.EncodeToString(encryptedRT), expiresAt); err != nil {
+	if _, err := s.store.CreateSession(r.Context(), tokenHash, sub, email, role, hex.EncodeToString(encryptedRT), expiresAt); err != nil {
 		http.Error(w, "session store error", http.StatusInternalServerError)
 		return
 	}
