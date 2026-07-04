@@ -22,6 +22,15 @@ docker pull ghcr.io/eirueimi/unified-cd-k8s-agent:latest
 
 Images are published to [GitHub Container Registry](https://github.com/eirueimi/unified-cd/pkgs/container/unified-cd-controller) on every `v*` tag for `linux/amd64` and `linux/arm64`.
 
+A ready-to-run stack using these published images (controller + PostgreSQL + Garage + a Docker agent) lives at [`deployments/docker/docker-compose.yaml`](deployments/docker/docker-compose.yaml). Unlike the repo-root `docker-compose.yaml` (source build with hot reload, for development), this one pulls the release images:
+
+```bash
+cp .env.example .env    # set UNIFIED_TOKEN, UNIFIED_CONTROLLER_KEY
+docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d
+```
+
+Pin a release by setting `UNIFIED_CD_VERSION` (e.g. `v0.0.3`) in `.env`.
+
 ### Kubernetes
 
 ```bash

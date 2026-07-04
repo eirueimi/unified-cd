@@ -391,8 +391,10 @@ deleted, since deleting the Pod for a Run that's actually still live would spuri
 docker compose up -d --scale controller=3
 ```
 
-> The included `docker-compose.yaml` is for development and exposes fixed ports.
-> For HA testing, remove the `ports` from the controller service and put a reverse proxy (nginx etc.) in front.
+> The repo-root `docker-compose.yaml` is for development (source build with hot
+> reload) and exposes fixed ports. For a published-image stack see
+> [`deployments/docker/docker-compose.yaml`](../deployments/docker/docker-compose.yaml).
+> For HA, remove the `ports` from the controller service and put a reverse proxy (nginx etc.) in front.
 
 ### Kubernetes (conceptual example)
 

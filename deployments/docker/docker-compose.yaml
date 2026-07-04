@@ -1,0 +1,113 @@
+# unified-cd production compose — runs the published container images.
+#
+# Unlike the repo-root docker-compose.yaml (which builds from source with air +
+# Vite for hot reload), this stack pulls the release images from GHCR. The Web UI
+# is baked into the controller image (UNIFIED_WEB_DIR=/ui), so no Vite service is
+# needed.
+#
+# Usage (run from the repository root so relative paths resolve):
+#   cp .env.example .env
+#   docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d
+#   docker compose -f deployments/docker/docker-compose.yaml logs -f controller
+#
+# Pin a release instead of :latest by setting UNIFIED_CD_VERSION in .env, e.g.
+#   UNIFIED_CD_VERSION=v0.0.3
+#
+# After startup:
+#   Web UI: http://localhost:8080/ui/   (enter UNIFIED_TOKEN on the Connection card)
+#   CLI:    export UNIFIED_SERVER=http://localhost:8080
+#           export UNIFIED_TOKEN=<your token>
+#           unified-cli apply -f examples/jobs/hello.yaml
+
+services:
+
+  # ---- PostgreSQL ----
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: unified
+      POSTGRES_PASSWORD: unified
+      POSTGRES_DB: unified
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U unified" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ---- Garage (S3-compatible object store for log archives & artifacts) ----
+  # Replace with real S3 by pointing the controller's UNIFIED_S3_* at your bucket
+  # and removing this service.
+  garage:
+    image: dxflrs/garage:v2.3.0
+    command: /garage server --single-node --default-bucket
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-0000000000000000000000000000000000000000000000000000000000000000}
+      GARAGE_DEFAULT_ACCESS_KEY: garageadmin
+      GARAGE_DEFAULT_SECRET_KEY: garageadmin12345
+      GARAGE_DEFAULT_BUCKET: unified-cd-logs
+    volumes:
+      - garagedata:/data
+      - ../garage/garage.toml:/etc/garage.toml:ro
+    healthcheck:
+      test: [ "CMD", "/garage", "status" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---- Controller (published image; Web UI baked in) ----
+  controller:
+    image: ghcr.io/eirueimi/unified-cd-controller:${UNIFIED_CD_VERSION:-latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+    environment:
+      UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
+      UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+      # 32-byte hex secret-encryption key. Generate with: openssl rand -hex 32
+      UNIFIED_CONTROLLER_KEY: ${UNIFIED_CONTROLLER_KEY:-}
+      UNIFIED_S3_ENDPOINT: garage:3900
+      UNIFIED_S3_BUCKET: unified-cd-logs
+      UNIFIED_S3_KEY: garageadmin
+      UNIFIED_S3_SECRET: garageadmin12345
+      UNIFIED_OIDC_ISSUER: ${UNIFIED_OIDC_ISSUER:-}
+      UNIFIED_OIDC_CLIENT_ID: ${UNIFIED_OIDC_CLIENT_ID:-}
+      UNIFIED_OIDC_CLIENT_SECRET: ${UNIFIED_OIDC_CLIENT_SECRET:-}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/healthz" ]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    restart: unless-stopped
+
+  # ---- Agent (Linux/Docker worker) ----
+  # No agent image is published to GHCR yet, so this is built locally from the
+  # same Dockerfile the release workflow would use. Once release-docker.yml
+  # publishes unified-cd-agent, `docker compose pull` will fetch it instead.
+  agent:
+    image: ghcr.io/eirueimi/unified-cd-agent:${UNIFIED_CD_VERSION:-latest}
+    build:
+      context: ../../
+      dockerfile: docker/agent.Dockerfile
+    depends_on:
+      controller:
+        condition: service_healthy
+    environment:
+      UNIFIED_SERVER: http://controller:8080
+      UNIFIED_AGENT_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+      UNIFIED_AGENT_ID: ${UNIFIED_AGENT_ID:-docker-agent-1}
+      UNIFIED_AGENT_LABELS: ${UNIFIED_AGENT_LABELS:-kind:docker,pool:default}
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  garagedata:

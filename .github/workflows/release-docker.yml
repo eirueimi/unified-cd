@@ -40,6 +40,17 @@ jobs:
             ghcr.io/eirueimi/unified-cd-controller:latest
             ghcr.io/eirueimi/unified-cd-controller:${{ github.ref_name }}
 
+      - name: Build and push agent
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/agent.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/eirueimi/unified-cd-agent:latest
+            ghcr.io/eirueimi/unified-cd-agent:${{ github.ref_name }}
+
       - name: Build and push k8s-agent
         uses: docker/build-push-action@v6
         with:

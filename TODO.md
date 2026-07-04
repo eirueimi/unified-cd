@@ -144,6 +144,21 @@
 - **修正案:** `set -eo pipefail` を付ける。path がファイルの場合は `-C $(dirname) $(basename)` 形式に。ファイル/ディレクトリ両対応のテスト追加(現行 k8s テストは転送を in-memory でフェイクしており実経路が未検証)。
 - **良い点(参考):** k8s-agent は失敗時に即 FinishRun(Failed) し、標準エージェントのようなハング(TODO #1)は起きない。ただし後続ステップの Skipped 報告もないため run show に残りステップが表示されない。アーティファクト失敗が agent ログに出ない(標準エージェントは出す)ロギング欠落もあり。
 
+### 21. unified-sidecar の `idle` が S3 未設定で起動即死し、degraded モードが成立しない(TODO 対応レビューで発見)
+
+- **分類:** 致命的(k8s)。#13/#14 の修正(unified-sidecar direct-S3 化)に対するコードレビューで検出(CONFIRMED)。
+- **症状:** `cmd/unified-sidecar/main.go:13-22` が **`idle` サブコマンドのディスパッチ前に** `S3ConfigFromEnv` + `NewS3ObjectStore` を実行し、失敗時 `os.Exit(2)` する。`sidecarS3SecretName` 未設定だと Pod に S3 の EnvFrom が注入されない(`podbuilder.go:94-98`)ため env 解決に失敗し、**全ジョブ Pod のサイドカーコンテナ(command: `unified-sidecar idle`)が起動直後に exit 2 で死ぬ**。RestartPolicy=Never のため再起動されず死んだまま。
+- **矛盾:** k8s-agent は起動時に「sidecarS3SecretName 未設定 → cache は no-op、artifact は明示的に失敗」という degraded モードを警告付きでサポートすると宣言している(cmd/k8s-agent/main.go、docs/kubernetes-integration.md)。実際には:
+  - artifact ステップ: 死んだコンテナへの exec が「container not running」で失敗(意図した「明示的な失敗」よりも不可解なエラー)
+  - cache ステップ: exec 結果が破棄される(`internal/k8sagent/agent.go:346` の `_, _ =`)ため **Succeeded と偽装される**
+  - さらに `WaitForPodRunning` は Pod の phase しか見ない(`podmanager.go:89-91`)ためサイドカー死亡を検知しない
+- **副次(効率):** S3 store 構築には `BucketExists`(+`MakeBucket`)のネットワーク往復が含まれ(`internal/objectstore/s3.go:39-44`)、S3 設定済みでも全 Pod 起動のクリティカルパスに同期 S3 往復が乗る。また cache/artifact 転送は毎回新しい `unified-sidecar` プロセスを exec するため、転送1回ごとに bucket-ensure 往復が発生する。
+- **修正案:**
+  - `main()` で args を見て `idle` の場合は store を構築せず即 `run()` へ(store は cache/artifact サブコマンド内で遅延構築)
+  - S3 env 不足時の cache/artifact サブコマンドは「明示的なエラーメッセージ + 非ゼロ exit」で degraded モードの宣言どおりに
+  - 転送時の bucket-ensure をスキップする `NewS3ObjectStore` バリアント(バケットは事前プロビジョニング前提)を検討
+  - 回帰テスト: 「S3 env なしで `unified-sidecar idle` が exit 0 で常駐する」ことの単体テスト(現状 run() の nil-store 分岐はテストからしか到達できず、本番経路と乖離している)
+
 ### 検証環境メモ(k8s)
 
 - Docker Desktop 29.6.1 の Kubernetes(kind モード、k8s 1.35)は **WSL2 が cgroup v1 のままだと kubelet が起動せず** `failed to start` になる。`.wslconfig` に `kernelCommandLine = cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1` を追加し `wsl --shutdown` で解消(このマシンで実証)。unified-cd の問題ではないが、開発環境要件として docs/kubernetes-integration.md に注記の価値あり。
@@ -176,6 +191,23 @@
 
 - **症状(実機確認、Playwright):** OIDC SSO でログインしたセッションで `http://localhost:8080/ui/#/jobs` をハードナビゲーション(ディープリンク/リロード)すると、ヘッダー(ユーザー名等)は描画されるが**本文が完全に空**。失敗リクエストもコンソールエラーもゼロのまま沈黙。ルート `/ui/` からの遷移は正常。トークン認証セッションでは同じ操作が正常に描画される。
 - **修正案:** SSO セッション初期化とルーター描画の順序を調査(セッション確認完了前にルートガードが空を返している可能性)。
+
+---
+
+## TODO 対応レビューで発見(2026-07-04、コードレビュー CONFIRMED)
+
+### 22. Windows: Job Object ハンドルが正常終了ステップで毎回リークする(#9c 修正の退行)
+
+- **症状:** #9c 修正で導入されたプロセスツリー kill 用の Job Object(`internal/agent/exec_windows.go:67-69` の `jobHandles[cmd] = job`)は、解放(CloseHandle + マップ delete)が **`killTree`(キャンセル経路)にしかない**。正常終了パス(`internal/agent/exec_tree.go:44-45` の `case err := <-waitDone`)は後始末をしないため、**普通に完走したステップ1つにつきカーネルハンドル1個+マップエントリ1個が永久にリーク**する。
+- **影響:** 常駐 Windows エージェントで数千ステップ実行するとハンドル/メモリが無制限に増加(マップキーが `*exec.Cmd` のためコマンドの出力バッファごと GC 不能に固定)。キャンセルは例外系、リークは正常系=毎回。
+- **付随(同 #9c 修正の隙):** ①`cmd.Start()` から `AssignProcessToJobObject` までの間に shell が fork した孫プロセスは Job 外で killTree を生き延びる。②`assignJob` の失敗は `_ =` で黙殺され、直接の子しか kill できないモードに静かに落ちる(`exec_tree.go:29-36`)。
+- **修正案:** 正常終了パスにも共通クリーンアップ(マップ delete + CloseHandle)を追加。可能なら Job Object への割当てを開始前に行う設計(または assignJob 失敗を警告ログに)。回帰テスト: 正常終了後に `jobHandles` が空であること。
+
+### 23. エージェントのラベルが一度登録されると二度と削除できない(#12 修正の退行)
+
+- **症状:** #12 修正で claim 時 UPSERT が導入された際、ラベルが上書きから **DISTINCT 和集合マージ**に変更された(`internal/store/postgres.go:668` の `labels || EXCLUDED.labels`)。このマージが起動時のフル登録(`internal/controller/api_agent.go:47`)にも適用されるため、**エージェント設定からラベルを外して再起動しても DB から永久に消えない**(手動 SQL でしか削除不能)。
+- **影響範囲(検証済み):** ルーティングは無事 — `ClaimNextRun`(`postgres.go:494`)は DB のラベルでなく claim クエリのラベルで照合するため、ジョブが誤ったエージェントに流れることはない。実害は `agent list` / UI Agents ページのインベントリ表示が恒久的に嘘をつくこと(gpu:true を外した機体が gpu 持ちとして表示され続ける等、棚卸し・監査に影響)。
+- **修正案:** 「登録」(起動時、ラベル**置換**)と「生存確認」(claim 時、マージ or `last_seen_at` のみ更新)で SQL を分離。回帰テスト: ラベルを減らして再登録 → 減った状態が DB に反映されること(現行の `TestAgentAPI_Claim_DoesNotClobberRegisteredAgent` はラベル削除ケースを覆っていない)。
 
 ---
 
