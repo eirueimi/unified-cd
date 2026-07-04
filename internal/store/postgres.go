@@ -765,6 +765,35 @@ func (p *Postgres) DeleteStaleAgents(ctx context.Context, olderThan time.Duratio
 	return tag.RowsAffected(), nil
 }
 
+// ListStuckRunIDs returns IDs of Running runs whose claiming agent is gone or has
+// not sent a heartbeat within staleAfter, excluding runs claimed within the grace
+// window (to avoid reaping a just-claimed run before its first heartbeat).
+func (p *Postgres) ListStuckRunIDs(ctx context.Context, staleAfter, grace time.Duration) ([]string, error) {
+	const q = `
+		SELECT r.id
+		FROM runs r
+		LEFT JOIN agents a ON r.claimed_by = a.id
+		WHERE r.status = 'Running'
+		  AND r.claimed_at IS NOT NULL
+		  AND r.claimed_at < NOW() - make_interval(secs => $2)
+		  AND (a.id IS NULL OR a.last_seen_at < NOW() - make_interval(secs => $1))
+	`
+	rows, err := p.pool.Query(ctx, q, staleAfter.Seconds(), grace.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("list stuck runs: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (p *Postgres) AcquireMutex(ctx context.Context, mutexName, runID string) (bool, error) {
 	_, err := p.pool.Exec(ctx,
 		`INSERT INTO mutex_holders(mutex_name, run_id) VALUES ($1, $2)`,

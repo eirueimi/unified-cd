@@ -86,6 +86,12 @@ func (c *Client) Deregister(ctx context.Context, agentID string) error {
 	return err
 }
 
+// Heartbeat refreshes the agent's last_seen_at on the controller.
+func (c *Client) Heartbeat(ctx context.Context, agentID string) error {
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/heartbeat", nil, nil)
+	return err
+}
+
 // Claim requests an executable Run for the agent. labels is the list of agent labels.
 func (c *Client) Claim(ctx context.Context, agentID, timeout string, labels []string) (api.ClaimResponse, error) {
 	path := fmt.Sprintf("/api/v1/agents/%s/claim?timeout=%s", agentID, timeout)

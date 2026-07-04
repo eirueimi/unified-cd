@@ -51,6 +51,18 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleAgentHeartbeat handles POST /api/v1/agents/{agentId}/heartbeat.
+// Refreshes the agent's last_seen_at so a busy (non-polling) agent is not
+// considered dead by the stuck-run reaper / stale-agent cleanup.
+func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
+	agentID := chi.URLParam(r, "agentId")
+	if err := s.store.TouchAgent(r.Context(), agentID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleAgentClaim is the endpoint for agents to pick up a Queued Run.
 // Long-polls until a Run is available or the timeout is reached.
 func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
