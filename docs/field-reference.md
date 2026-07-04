@@ -317,8 +317,9 @@ WebhookReceiver is the DSL type for webhook receiver configuration.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `header` | string | no | token type only: header to compare (default X-Gitlab-Token) |
 | `secretRef` | string | no |  |
-| `type` | `none` \| `hmac-sha256` \| `github` | yes | none | hmac-sha256 | github (X-Hub-Signature-256) |
+| `type` | `none` \| `hmac-sha256` \| `github` \| `token` | yes | none | hmac-sha256 | github | token |
 
 ### WebhookTrigger
 

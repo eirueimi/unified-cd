@@ -705,15 +705,20 @@
     "WebhookAuth": {
       "additionalProperties": false,
       "properties": {
+        "header": {
+          "description": "token type only: header to compare (default X-Gitlab-Token)",
+          "type": "string"
+        },
         "secretRef": {
           "type": "string"
         },
         "type": {
-          "description": "none | hmac-sha256 | github (X-Hub-Signature-256)",
+          "description": "none | hmac-sha256 | github | token",
           "enum": [
             "none",
             "hmac-sha256",
-            "github"
+            "github",
+            "token"
           ],
           "type": "string"
         }

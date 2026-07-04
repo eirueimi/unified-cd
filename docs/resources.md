@@ -187,8 +187,9 @@ spec:
   trigger:
     job: <string>                 # required — job to trigger
   auth:
-    type: none | hmac-sha256 | github  # required
-    secretRef: <string>           # name of StoredSecret containing the signing key
+    type: none | hmac-sha256 | github | token
+    secretRef: <string>           # name of StoredSecret (required unless type is none)
+    header: <string>              # token type only — header to compare (default X-Gitlab-Token)
   filters:                        # optional — all must match for the job to trigger
     - <template expression>
   paramsMapping:                  # optional — map webhook payload fields to job inputs
@@ -213,6 +214,7 @@ spec:
 | `none` | No signature verification. Use only for trusted internal sources. |
 | `hmac-sha256` | Verifies `X-Signature: sha256=<hex hmac>` (or GitHub-compatible `X-Hub-Signature-256`) over the raw request body using the secret from `secretRef` |
 | `github` | Verifies GitHub's `X-Hub-Signature-256` header using the secret from `secretRef` |
+| `token` | Verifies a plaintext shared-secret token sent in a header (default `X-Gitlab-Token`, configurable via `auth.header`) by constant-time comparison against `secretRef`. Use for GitLab and other services that send a raw token header instead of an HMAC signature. |
 
 ### Delivery responses
 
@@ -284,6 +286,23 @@ spec:
     job: cleanup
   auth:
     type: none
+
+---
+# GitLab push webhook: verify the X-Gitlab-Token secret token
+apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata:
+  name: gitlab-push
+spec:
+  trigger:
+    job: build
+  auth:
+    type: token
+    secretRef: GITLAB_WEBHOOK_TOKEN
+  filters:
+    - '{{ eq .Payload.ref "refs/heads/main" }}'
+  paramsMapping:
+    git_ref: "{{ .Payload.checkout_sha }}"
 ```
 
 ---
