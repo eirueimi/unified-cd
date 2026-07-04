@@ -13,6 +13,7 @@ This document covers how to run unified-cd controllers in a redundant, single-po
 - [Rolling Deploys and Graceful Shutdown](#rolling-deploys-and-graceful-shutdown)
 - [External Dependency Redundancy](#external-dependency-redundancy)
 - [Agent Redundancy](#agent-redundancy)
+- [Orphaned-Run Recovery](#orphaned-run-recovery)
 - [Deployment Examples](#deployment-examples)
 - [Failure Scenarios and Behavior](#failure-scenarios-and-behavior)
 - [HA Checklist](#ha-checklist)
@@ -312,6 +313,75 @@ Redundant controllers are not enough if PostgreSQL or S3 is a single point of fa
 
 ---
 
+## Orphaned-Run Recovery
+
+Horizontal scaling of agents (above) prevents *new* Runs from being starved when an agent dies,
+but it does not by itself resolve a Run that an agent had already claimed at the moment it died.
+Without the mechanisms below, such a Run would stay `Running` forever (and, on k8s, its pod-per-run
+Pod would leak). Three independent pieces close this gap:
+
+### 1. Agent heartbeat
+
+Both the standard agent and the k8s-agent run a background heartbeat loop (`agentlib.StartHeartbeat`,
+shared by both via `agentlib.Client.Heartbeat`) that calls `POST /api/v1/agents/{id}/heartbeat`
+every `DefaultHeartbeatInterval` = **15s**, refreshing the agent's `last_seen_at`.
+
+This is **independent of claim polling** — a fully-saturated agent (all concurrency slots busy
+executing Runs) still sends heartbeats on its own ticker. This matters because `DeleteStaleAgents`
+(background job, threshold **5 minutes**) removes agents whose `last_seen_at` is stale; before the
+heartbeat existed, a busy-but-alive agent that wasn't polling for new claims could be misidentified
+as dead and deleted. The heartbeat is best-effort: a failed send is logged and retried on the next tick,
+and never crashes the agent.
+
+### 2. Stuck-run reaper
+
+`internal/controller/stuckrun_reaper.go` runs `RunStuckRunReaper`, leader-elected the same way as
+the other background jobs (a dedicated PG advisory lock, `stuckRunReaperLockKey`, distinct from
+the scheduler/approval/cache/log-archiver/AppSource keys). Every **30s**, the leader calls
+`ListStuckRunIDs(staleAfter=90s, grace=60s)`, which finds `Running` runs where:
+
+- the claiming agent's `last_seen_at` is older than `staleAfter` (**90s**), **or**
+- the agent row is gone entirely (`LEFT JOIN` — covers `DeleteStaleAgents` having already removed it),
+
+excluding runs claimed within the last `grace` (**60s**), so a run isn't reaped moments after being
+claimed and before the new agent's first heartbeat lands.
+
+`staleAfter` (90s) is intentionally well under `DeleteStaleAgents`'s 5-minute threshold, so in the
+common case the reaper acts on a still-present (but stale) agent row; the `LEFT JOIN` handles the
+rarer case where the agent row was already deleted first.
+
+For each stuck run, the reaper calls `store.MarkRunFinished(id, api.RunFailed)` — **not** a bulk
+`UPDATE runs` — because `MarkRunFinished` also releases the run's `mutex_holders` and
+`named_lock_slots` rows; a bulk update would leak those locks and block unrelated runs indefinitely.
+
+**The reaper fails the run; it does not re-queue it.** Re-running a partially-executed Run risks
+duplicating side effects that already happened on the dead agent (e.g. a deploy step that already
+ran) — the same trade-off GitHub Actions and similar systems make when a runner is lost. Recovery
+is a human decision (inspect the run, then manually re-trigger the job if it's safe to repeat).
+
+### 3. k8s orphan-pod GC
+
+The k8s-agent additionally leaks `ucd-run-*` Pods if not cleaned up, since pod-per-run does not
+reuse Pods across Runs. `internal/k8sagent/podgc.go` sweeps run Pods every **~1 minute** and deletes
+a Pod when its backing Run is terminal (`Succeeded` / `Failed` / `Cancelled`) or definitively gone
+(`GetRun` returns HTTP 404) — so it naturally cleans up Pods for runs the stuck-run reaper just
+Failed. Pods still owned by the Pod-reuse pool are never touched. Any other error resolving the Run
+(a transient controller/network blip) causes that Pod to be skipped for the cycle rather than
+deleted, since deleting the Pod for a Run that's actually still live would spuriously kill it.
+
+### Summary of default thresholds
+
+| Setting | Default | Purpose |
+|---|---|---|
+| Heartbeat interval | 15s | Keeps a busy agent's `last_seen_at` fresh independent of claim polling |
+| Stuck-run reaper interval | 30s | How often the leader sweeps for stuck runs |
+| `staleAfter` | 90s | How stale an agent's heartbeat must be before its `Running` runs are reaped |
+| Grace window | 60s | Runs claimed more recently than this are never reaped |
+| `DeleteStaleAgents` threshold | 5m | When an agent row itself is deleted; kept well above `staleAfter` |
+| k8s pod GC sweep interval | ~1m | How often orphaned `ucd-run-*` Pods are cleaned up |
+
+---
+
 ## Deployment Examples
 
 ### docker compose (simple scale-out)
@@ -385,6 +455,7 @@ spec:
 | PostgreSQL primary fails → failover | All controllers get temporary DB errors. `/readyz` returns 503 and they are rotated out. Auto-reconnect and leader re-election after promotion. |
 | S3 failure | API continues. Log archive/retrieval temporarily fails (leader retries). In-progress Runs continue on agents. |
 | All controllers down | In-progress Runs continue on agents, but results cannot be reported and claiming stops. Resumes after controller recovery. |
+| An agent dies mid-Run | Its `Running` run is failed (not re-queued) by the stuck-run reaper within `staleAfter` (90s) + reaper interval (30s) of its last heartbeat. See [Orphaned-Run Recovery](#orphaned-run-recovery). |
 | Deploy (rolling) | One replica at a time: drain → stop → start new version. Zero-downtime via `/healthz` 503 drain. |
 
 ---

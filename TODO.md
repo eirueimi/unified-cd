@@ -100,7 +100,10 @@
 
 ## 可用性 / フェイルオーバー(設計要)
 
-### A. 実行中エージェント死亡時の in-flight run が永久に `Running` で放置される(orphaned-run reaper 未実装)
+### A. [IMPLEMENTED] 実行中エージェント死亡時の in-flight run が永久に `Running` で放置される(orphaned-run reaper)
+
+- **状態: 実装済み**(plan: `docs/superpowers/plans/2026-07-04-orphaned-run-reaper.md`)。3コンポーネントで解消: ①エージェント heartbeat(`POST /api/v1/agents/{id}/heartbeat` 15秒毎、claim ポーリングと独立、busy agent の誤 stale-delete も同時に解消)②stuck-run reaper(`internal/controller/stuckrun_reaper.go`、leader 選出、30秒毎、`last_seen_at` が staleAfter=90秒超過 or agent 行消失で `Running` run を `MarkRunFinished(Failed)`、grace=60秒)③k8s orphan-pod GC(`internal/k8sagent/podgc.go`、約1分毎に終端/消滅 run の `ucd-run-*` Pod を削除)。詳細: `docs/high-availability.md` の「Orphaned-Run Recovery」節。**再投入(→Pending)は意図的に不採用**(副作用の二重実行リスクのため Fail のみ)。
+- 以下は設計検討時点の分析(参考として残置):
 
 - **分類:** 可用性ギャップ。標準エージェント・k8s-agent 共通(= いわゆる「k8s-agent の HA 化」の本丸)。設計から要検討(brainstorm → spec → plan)。
 - **現状の整理(コード確認済み):**
@@ -163,6 +166,12 @@
 - **修正案:** 最低限 docs/jobs.md の call: セクションに「子が同じエージェントプールを要する場合 max-concurrent≥2 が必要」と明記。可能なら call 待機中はスロットを解放する設計(または循環検出)を検討。
 - 補足: キャンセルされた call ステップの表示が `Failed (exit 0)` になる(Cancelled が妥当)。
 
+### 20b. CLI の設定優先順位が逆(config ファイル > 環境変数)
+
+- **症状(実機確認):** `unified-cli login` が `~/.config/unified-cd/config.yaml` に server/token を書いた後は、`UNIFIED_SERVER`/`UNIFIED_TOKEN` 環境変数が**黙って無視される**。HA 検証中、env で 18080 を指定したのに config の 8080 に接続し、別サーバーにジョブを apply してしまった。
+- **原因:** `internal/cli/root.go:34,40` — env は「config の値が空のときのみ」採用。慣例(flag > env > config ファイル)と逆。
+- **修正案:** 優先順位を flag > env > config に変更。少なくとも docs/cli.md に現仕様を明記。
+
 ### 20. SSO セッションでハッシュルートに直接アクセスすると本文が空になる
 
 - **症状(実機確認、Playwright):** OIDC SSO でログインしたセッションで `http://localhost:8080/ui/#/jobs` をハードナビゲーション(ディープリンク/リロード)すると、ヘッダー(ユーザー名等)は描画されるが**本文が完全に空**。失敗リクエストもコンソールエラーもゼロのまま沈黙。ルート `/ui/` からの遷移は正常。トークン認証セッションでは同じ操作が正常に描画される。
@@ -194,6 +203,15 @@
 - call: 子ランの起動と完走(※同一プール単一スロットではデッドロック — #19)
 - PAT: `token create` → PAT で認証 → `token delete` → unauthorized のフルサイクル
 - artifact CLI: `artifact list` / `artifact download --dest <dir>`(※デフォルト dest は #18)
+- `uses:` git テンプレート: 公開 GitHub リポジトリの Job YAML を `git://github.com/...@main` で取得し、ステップを `tmpl__<name>` 形式で正しくインライン展開・実行
+- AppSource(GitOps): 公開リポジトリの `examples/jobs` を約1分で同期し Job を自動登録(再帰スキャン)。壊れた YAML はファイル名+理由付き WARN でスキップし他は続行
+- GitCredential: apply / list(※非公開リポジトリでの実フェッチはテスト用非公開リポジトリがなく未検証)
+- OIDC SSO(Dex): Web UI の SSO ログイン → セッション確立 → API 呼び出し・ユーザー表示(※ディープリンクは #20)
+- OIDC デバイスフロー: `login --server` → 検証 URL 表示 → ブラウザ承認 → トークン保存(期限付き)→ 保存トークンで API 認証成功
+- HA(nginx LB + controller×3 + agent×2、test/ha 構成で検証):
+  - LB 経由の apply / trigger / logs、2エージェントへの負荷分散
+  - **リーダー kill 後 約20秒で別コントローラがリーダー継承**、新規トリガー・ログ取得とも正常続行
+  - ※実行中エージェント kill → ランが Running のまま放置されるのを実測(45秒+)。セクション A(reaper 未実装)の分析どおり。死んだエージェントは agent list に残存
 - Windows ネイティブエージェント(ホスト実機で検証):
   - `go build ./cmd/agent` → 起動・登録(os=windows、hostname ラベル自動付与)
   - `agentSelector: [kind:windows]` のルーティング(docker ジョブと相互に混線なし)
