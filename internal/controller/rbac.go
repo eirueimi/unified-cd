@@ -1,5 +1,7 @@
 package controller
 
+import "net/http"
+
 // roleRanks defines the strict hierarchy viewer < developer < admin.
 var roleRanks = map[string]int{"viewer": 1, "developer": 2, "admin": 3}
 
@@ -87,5 +89,21 @@ func extractRoleValues(claims map[string]any, rolesClaim string) []string {
 		return out
 	default:
 		return nil
+	}
+}
+
+// requireMinRole rejects (403) callers whose role rank is below min.
+// Must run inside ServerAuth (which sets the principal + role).
+func requireMinRole(min string) func(http.Handler) http.Handler {
+	minRank := roleRank(min)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p, ok := principalFromContext(r.Context())
+			if !ok || roleRank(p.Role) < minRank {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
 }
