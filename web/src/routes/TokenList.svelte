@@ -5,7 +5,7 @@
   import { fmtTime } from '../lib/utils.js';
 
   let tokens = [], loading = true, error = '', createError = '';
-  let newName = '', newExpiry = '';
+  let newName = '', newExpiry = '', newRole = '';
   let createdToken = null;
 
   async function load() {
@@ -22,12 +22,13 @@
     try {
       const body = { name };
       if (newExpiry.trim()) body.expiresIn = newExpiry.trim();
+      if (newRole) body.role = newRole;
       const resp = await apiFetch('/api/v1/tokens', {
         method: 'POST',
         body: JSON.stringify(body),
       });
       createdToken = resp.token;
-      newName = ''; newExpiry = '';
+      newName = ''; newExpiry = ''; newRole = '';
       await load();
     } catch (e) { createError = e.message; }
   }
@@ -70,6 +71,12 @@
     <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap">
       <input class="token-input" bind:value={newName} placeholder="名前（例: ci-deploy）" style="flex:2;min-width:150px"/>
       <input class="token-input" bind:value={newExpiry} placeholder="有効期限（例: 24h, 720h）省略可" style="flex:1;min-width:120px"/>
+      <select class="token-input" bind:value={newRole} style="flex:1;min-width:120px" title="発行者のロール以下に丸められます">
+        <option value="">ロール（既定: 自分）</option>
+        <option value="viewer">viewer</option>
+        <option value="developer">developer</option>
+        <option value="admin">admin</option>
+      </select>
       <button class="btn" on:click={create}>発行</button>
     </div>
     {#if createError}<div class="error" style="margin-top:0.5rem">{createError}</div>{/if}
@@ -83,6 +90,7 @@
     <thead>
       <tr>
         <th>名前</th>
+        <th>ロール</th>
         <th>作成日時</th>
         <th>有効期限</th>
         <th></th>
@@ -92,6 +100,7 @@
       {#each tokens as t (t.id)}
         <tr>
           <td>{t.name}</td>
+          <td class="meta">{t.role}</td>
           <td class="meta">{fmtTime(t.createdAt)}</td>
           <td class="meta">{t.expiresAt ? fmtTime(t.expiresAt) : '無期限'}</td>
           <td>

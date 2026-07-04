@@ -24,6 +24,7 @@ func newTokenCmd(resolve func() (Config, error)) *cobra.Command {
 // newTokenCreateCmd returns the subcommand for creating a new PAT.
 func newTokenCreateCmd(resolve func() (Config, error)) *cobra.Command {
 	var expiresIn string
+	var role string
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a new Personal Access Token",
@@ -33,7 +34,7 @@ func newTokenCreateCmd(resolve func() (Config, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body, _ := json.Marshal(api.CreatePATRequest{Name: args[0], ExpiresIn: expiresIn})
+			body, _ := json.Marshal(api.CreatePATRequest{Name: args[0], ExpiresIn: expiresIn, Role: role})
 			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, cfg.Server+"/api/v1/tokens", bytes.NewReader(body))
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			req.Header.Set("Content-Type", "application/json")
@@ -50,11 +51,12 @@ func newTokenCreateCmd(resolve func() (Config, error)) *cobra.Command {
 			if err := json.Unmarshal(b, &result); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Token created (shown only once):\n\n  %s\n\nName: %s  ID: %s\n", result.Token, result.Name, result.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "Token created (shown only once):\n\n  %s\n\nName: %s  ID: %s  Role: %s\n", result.Token, result.Name, result.ID, result.Role)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&expiresIn, "expires-in", "", "expiry duration (e.g. 720h, 8760h)")
+	cmd.Flags().StringVar(&role, "role", "", "role for the token: admin, developer, or viewer (default: your own role; capped at it)")
 	return cmd
 }
 
@@ -88,7 +90,7 @@ func newTokenListCmd(resolve func() (Config, error)) *cobra.Command {
 				return nil
 			}
 			for _, t := range list {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t(%s)\n", t.ID, t.Name, t.CreatedAt.Format("2006-01-02"))
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t(%s)\n", t.ID, t.Name, t.Role, t.CreatedAt.Format("2006-01-02"))
 			}
 			return nil
 		},
