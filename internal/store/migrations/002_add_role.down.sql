@@ -1,0 +1,2 @@
+ALTER TABLE sessions DROP COLUMN role;
+ALTER TABLE pats DROP COLUMN role;

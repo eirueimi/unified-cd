@@ -18,7 +18,7 @@ func TestApprovals_DecideFlow(t *testing.T) {
 
 	// Create a PAT named "alice" with a known plain token so we can verify decided_by.
 	plain := "test-alice-token"
-	_, err := pg.CreatePAT(t.Context(), "alice", HashToken(plain), nil)
+	_, err := pg.CreatePAT(t.Context(), "alice", HashToken(plain), "admin", nil)
 	require.NoError(t, err)
 
 	// Create a job and run to hang approvals off.

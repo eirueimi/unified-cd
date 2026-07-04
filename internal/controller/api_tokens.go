@@ -55,7 +55,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 
 	// Store the token as a hash in the database (the plaintext is included in the response only once).
 	hash := HashToken(token)
-	pat, err := s.store.CreatePAT(r.Context(), req.Name, hash, expiresAt)
+	pat, err := s.store.CreatePAT(r.Context(), req.Name, hash, "admin", expiresAt)
 	if err != nil {
 		http.Error(w, "store error: "+err.Error(), http.StatusInternalServerError)
 		return

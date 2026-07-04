@@ -228,7 +228,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	tokenHash := HashToken(sessionToken)
 	expiresAt := time.Now().Add(sessionDuration)
 
-	if _, err := s.store.CreateSession(r.Context(), tokenHash, claims.Sub, claims.Email, hex.EncodeToString(encryptedRT), expiresAt); err != nil {
+	if _, err := s.store.CreateSession(r.Context(), tokenHash, claims.Sub, claims.Email, "admin", hex.EncodeToString(encryptedRT), expiresAt); err != nil {
 		http.Error(w, "session store error", http.StatusInternalServerError)
 		return
 	}
