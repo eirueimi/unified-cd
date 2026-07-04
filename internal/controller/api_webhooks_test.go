@@ -245,3 +245,111 @@ func TestWebhookIngress_HMACBadSignature(t *testing.T) {
 	s.Router().ServeHTTP(rec, req2)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
+
+func TestWebhookIngress_TokenVerification(t *testing.T) {
+	s, pg := newTestServer(t)
+	km := testKeyManager(t)
+	s.SetKeyManager(km)
+
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+
+	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "gl-token", Value: "s3cr3t"})
+	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
+	sreq.Header.Set("Authorization", "Bearer secret")
+	sreq.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), sreq)
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "token", "secretRef": "gl-token"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gl-hook", spec)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gl-hook", bytes.NewReader([]byte(`{"ref":"refs/heads/main"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gitlab-Token", "s3cr3t")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+func TestWebhookIngress_TokenBadToken(t *testing.T) {
+	s, pg := newTestServer(t)
+	km := testKeyManager(t)
+	s.SetKeyManager(km)
+
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "gl-token", Value: "s3cr3t"})
+	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
+	sreq.Header.Set("Authorization", "Bearer secret")
+	sreq.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), sreq)
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "token", "secretRef": "gl-token"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gl-hook", spec)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gl-hook", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gitlab-Token", "wrong")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestWebhookIngress_TokenMissingHeader(t *testing.T) {
+	s, pg := newTestServer(t)
+	km := testKeyManager(t)
+	s.SetKeyManager(km)
+
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "gl-token", Value: "s3cr3t"})
+	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
+	sreq.Header.Set("Authorization", "Bearer secret")
+	sreq.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), sreq)
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "token", "secretRef": "gl-token"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gl-hook", spec)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gl-hook", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestWebhookIngress_TokenCustomHeader(t *testing.T) {
+	s, pg := newTestServer(t)
+	km := testKeyManager(t)
+	s.SetKeyManager(km)
+
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "gl-token", Value: "s3cr3t"})
+	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
+	sreq.Header.Set("Authorization", "Bearer secret")
+	sreq.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), sreq)
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "token", "secretRef": "gl-token", "header": "X-Custom-Token"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gl-hook", spec)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gl-hook", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Custom-Token", "s3cr3t")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}

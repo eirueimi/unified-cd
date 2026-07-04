@@ -90,10 +90,17 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the signature when authentication is configured.
+	// Verify authentication when configured.
 	if spec.Auth.Type != "none" && spec.Auth.Type != "" {
-		if err := s.verifyWebhookSignature(r, body, spec.Auth); err != nil {
-			http.Error(w, "signature verification failed: "+err.Error(), http.StatusUnauthorized)
+		var verr error
+		switch spec.Auth.Type {
+		case "token":
+			verr = s.verifyWebhookToken(r, spec.Auth)
+		default: // "github", "hmac-sha256"
+			verr = s.verifyWebhookSignature(r, body, spec.Auth)
+		}
+		if verr != nil {
+			http.Error(w, "signature verification failed: "+verr.Error(), http.StatusUnauthorized)
 			return
 		}
 	}
@@ -199,6 +206,36 @@ func (s *Server) verifyWebhookSignature(r *http.Request, body []byte, auth dsl.W
 
 	if !hmac.Equal([]byte(gotSig), []byte(expected)) {
 		return fmt.Errorf("HMAC mismatch")
+	}
+	return nil
+}
+
+// verifyWebhookToken verifies a plaintext shared-secret token sent in a header
+// (GitLab-style X-Gitlab-Token). No HMAC: constant-time compare of the header
+// value against the stored secret referenced by auth.SecretRef. The header name
+// is configurable via auth.Header (default "X-Gitlab-Token").
+func (s *Server) verifyWebhookToken(r *http.Request, auth dsl.WebhookAuth) error {
+	if s.km == nil {
+		return fmt.Errorf("key manager not configured — cannot verify token")
+	}
+	stored, err := s.store.GetSecret(r.Context(), auth.SecretRef, "global", "")
+	if err != nil {
+		return fmt.Errorf("secret %q not found", auth.SecretRef)
+	}
+	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext)
+	if err != nil {
+		return fmt.Errorf("decrypt secret: %w", err)
+	}
+	header := auth.Header
+	if header == "" {
+		header = "X-Gitlab-Token"
+	}
+	got := r.Header.Get(header)
+	if got == "" {
+		return fmt.Errorf("missing %s header", header)
+	}
+	if !hmac.Equal([]byte(got), secretBytes) {
+		return fmt.Errorf("token mismatch")
 	}
 	return nil
 }

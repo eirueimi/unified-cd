@@ -36,7 +36,7 @@ func (wr *WebhookReceiver) Validate() error {
 		return fmt.Errorf("spec.trigger.job is required")
 	}
 	switch wr.Spec.Auth.Type {
-	case "none", "hmac-sha256", "github":
+	case "none", "hmac-sha256", "github", "token":
 	case "":
 		wr.Spec.Auth.Type = "none"
 	default:
