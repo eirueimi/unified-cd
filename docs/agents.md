@@ -1,13 +1,16 @@
 # Agent Labels and Routing
 
 This document covers `agentSelector` and agent-side label configuration,
-which controls which agent executes a given Job.
+which controls which agent executes a given Job, plus the agent's workspace
+lifecycle and its registration/liveness semantics with the controller.
 
 ## Table of Contents
 
 - [Agent Labels](#agent-labels)
 - [agentSelector](#agentselector)
 - [Windows Agents](#windows-agents)
+- [Workspace lifecycle](#workspace-lifecycle)
+- [Registration and liveness](#registration-and-liveness)
 
 ---
 
@@ -120,3 +123,69 @@ steps:
         echo "Running in native Unix shell"
       fi
 ```
+
+---
+
+## Workspace lifecycle
+
+Each concurrency slot owns one workspace directory:
+`<workspace-dir>/working<N>` (default `~/workspace`, override with
+`-workspace-dir`, `UNIFIED_AGENT_WORKSPACE_DIR`, or the `workspaceDir`
+config key). `run:` steps execute with this directory as their working
+directory, and relative artifact/cache paths resolve against it.
+
+`N` ranges from `0` to `-max-concurrent - 1`; each slot's claim loop always
+uses the same `working<N>` directory for every run it executes, so
+concurrent slots never share a directory.
+
+**Workspaces are reused across runs and jobs.** Files from previous runs
+remain unless the agent is started with `-clean-workspace`. If your jobs
+write credentials or other secrets to disk, enable `-clean-workspace` or
+delete them in a `finally:` step — otherwise later jobs on the same agent
+can read them.
+
+> **Security warning:** because workspaces persist by default, secrets
+> written to disk by one Run (e.g. a checked-out credential file, a
+> decrypted key) are readable by any later Run claimed into the same slot,
+> even a Run from a different Job. Treat the workspace as a shared,
+> semi-trusted directory unless `-clean-workspace` is enabled.
+
+`-clean-workspace` removes and recreates `working<N>` at claim time (right
+before a Run starts executing in that slot), not at agent startup — so the
+very first Run after the agent starts still runs against whatever was left
+in the directory from before, unless it was cleaned by a previous claim.
+
+Every `run:` step also receives `UNIFIED_AGENT_OS` (Go's `runtime.GOOS`) in
+its environment, in addition to the workspace directory as its cwd — see
+[UNIFIED_AGENT_OS environment variable](#unified_agent_os-environment-variable) above.
+
+---
+
+## Registration and liveness
+
+On startup, an agent registers with the controller (`POST
+/api/v1/agents/register`), sending its ID, hostname, OS, labels, version, and
+exposed environment variables. **Registration replaces the stored label set
+wholesale** — if a label from a prior registration is absent from the new
+`-labels`/`UNIFIED_AGENT_LABELS`/config value, it is dropped. This means
+removing a label and restarting the agent actually takes effect, rather than
+labels only ever accumulating.
+
+When an agent claims a run (`POST /api/v1/agents/{id}/claim`), the
+controller also upserts the agent row, but via a separate, non-destructive
+path: it only overwrites hostname/OS/version/env when the claim supplies a
+non-empty value, and it **merges** (rather than replaces) labels. This lets
+a claim refresh `last_seen_at` and pick up newly-observed labels without
+clobbering richer data recorded at full registration time (e.g. the
+register-only `hostname:<h>` label — see [Automatic hostname
+label](#automatic-hostname-label)).
+
+Independent of claim activity, the agent runs a background heartbeat loop
+that calls `POST /api/v1/agents/{id}/heartbeat` every 15s
+(`agent.DefaultHeartbeatInterval`), refreshing `last_seen_at`. This matters
+because a busy agent (all concurrency slots occupied) stops polling for new
+claims, and without a heartbeat it could be misidentified as dead. See
+[High Availability: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery)
+for how the controller uses `last_seen_at` staleness to reap stuck runs and
+delete dead agent rows — that mechanism is documented there, not duplicated
+here.
