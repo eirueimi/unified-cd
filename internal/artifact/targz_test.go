@@ -59,3 +59,29 @@ func TestExtractTarZstd_RejectsTraversal(t *testing.T) {
 		t.Fatal("expected path-traversal rejection, got nil")
 	}
 }
+
+func TestExtractTarZstd_RelativeDestDot(t *testing.T) {
+	// Regression (#18): extracting into the default dest "." must succeed, not
+	// trip the traversal guard.
+	dir := t.TempDir()
+	t.Chdir(dir)
+	data := makeTarZstd(t, map[string]string{"out.txt": "hi", "sub/b.txt": "there"})
+	if err := ExtractTarZstd(bytes.NewReader(data), "."); err != nil {
+		t.Fatalf("extract into '.': %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "out.txt")); err != nil || string(got) != "hi" {
+		t.Fatalf("out.txt = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "sub", "b.txt")); err != nil || string(got) != "there" {
+		t.Fatalf("sub/b.txt = %q, %v", got, err)
+	}
+}
+
+func TestExtractTarZstd_RelativeDest_StillRejectsTraversal(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	data := makeTarZstd(t, map[string]string{"../escape.txt": "evil"})
+	if err := ExtractTarZstd(bytes.NewReader(data), "."); err == nil {
+		t.Fatal("expected traversal rejection with dest '.', got nil")
+	}
+}
