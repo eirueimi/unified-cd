@@ -47,3 +47,32 @@ func normalizeRole(r string) (string, bool) {
 	}
 	return r, true
 }
+
+// extractRoleValues pulls the configured claim from a decoded claims map as
+// a []string. Accepts a string, []string, or []any of strings. Defaults the
+// claim name to "groups". Returns nil when the claim is absent.
+func extractRoleValues(claims map[string]any, rolesClaim string) []string {
+	if rolesClaim == "" {
+		rolesClaim = "groups"
+	}
+	v, ok := claims[rolesClaim]
+	if !ok {
+		return nil
+	}
+	switch t := v.(type) {
+	case string:
+		return []string{t}
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}

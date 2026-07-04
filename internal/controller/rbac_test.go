@@ -47,3 +47,15 @@ func TestRoleRank(t *testing.T) {
 	assert.Equal(t, 0, roleRank("nonsense"))
 	assert.Equal(t, 0, roleRank(""))
 }
+
+func TestExtractRoleValues(t *testing.T) {
+	assert.Equal(t, []string{"a", "b"},
+		extractRoleValues(map[string]any{"groups": []any{"a", "b"}}, "groups"))
+	assert.Equal(t, []string{"admin"},
+		extractRoleValues(map[string]any{"roles": "admin"}, "roles"))
+	assert.Nil(t, extractRoleValues(map[string]any{}, "groups"))
+	assert.Equal(t, []string{"x"},
+		extractRoleValues(map[string]any{"groups": []any{"x"}}, ""))
+	assert.Equal(t, []string{"admin"},
+		extractRoleValues(map[string]any{"https://unified-cd/roles": []any{"admin"}}, "https://unified-cd/roles"))
+}

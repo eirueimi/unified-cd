@@ -154,6 +154,10 @@ func main() {
 			ClientID:       eff.OIDC.ClientID,
 			ClientSecret:   eff.OIDC.ClientSecret,
 			DeviceClientID: eff.OIDC.DeviceClientID,
+			RolesClaim:     eff.OIDC.RolesClaim,
+			RoleMap:        eff.OIDC.RoleMap,
+			UserMap:        eff.OIDC.UserMap,
+			DefaultRole:    eff.OIDC.DefaultRole,
 		})
 		slog.Info("OIDC configured", "issuer", eff.OIDC.Issuer, "issuerInternal", eff.OIDC.IssuerInternal, "browserSSO", eff.OIDC.ClientSecret != "")
 		if eff.OIDC.IssuerInternal == "" {

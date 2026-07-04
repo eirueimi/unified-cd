@@ -35,6 +35,12 @@ type OIDCConfig struct {
 	ClientID       string
 	ClientSecret   string
 	DeviceClientID string // Public client ID for the CLI device flow (defaults to ClientID when omitted).
+
+	// Role resolution (mirrors config.ControllerOIDCConfig).
+	RolesClaim  string
+	RoleMap     map[string]string
+	UserMap     map[string]string
+	DefaultRole string
 }
 
 // Server represents the master HTTP server.

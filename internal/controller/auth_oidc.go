@@ -83,11 +83,18 @@ func (s *Server) oidcProvider(ctx context.Context, host string) (context.Context
 		redirectBase = strings.TrimRight(s.oidcCfg.ExternalURL, "/")
 	}
 	redirectURL := redirectBase + "/api/v1/auth/oidc-callback"
+	scopes := []string{oidc.ScopeOpenID, "email", "profile"}
+	// When the role claim is a bare scope-like token (e.g. "groups" for Dex),
+	// request it as a scope. Namespaced/`:`-bearing claim names (Auth0/Entra
+	// app-roles) are emitted without an extra scope and are skipped here.
+	if rc := s.oidcCfg.RolesClaim; rc != "" && !strings.ContainsAny(rc, "/:") {
+		scopes = append(scopes, rc)
+	}
 	cfg := &oauth2.Config{
 		ClientID:     s.oidcCfg.ClientID,
 		ClientSecret: s.oidcCfg.ClientSecret,
 		RedirectURL:  redirectURL,
-		Scopes:       []string{oidc.ScopeOpenID, "email", "profile"},
+		Scopes:       scopes,
 		Endpoint:     provider.Endpoint(),
 	}
 	return ctx, provider, cfg, nil
