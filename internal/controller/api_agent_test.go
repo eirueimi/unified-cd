@@ -431,6 +431,44 @@ func TestBuildClaimResponse_ApprovalDefaultsTimeout(t *testing.T) {
 	assert.Equal(t, 60.0, resp.Stages[0].Step.Approval.TimeoutMinutes, "default timeout applied")
 }
 
+func TestAgentHeartbeat_TouchesLastSeen(t *testing.T) {
+	s, pg := newTestServer(t)
+	// register an agent so a row exists
+	reg := api.AgentRegisterRequest{AgentID: "agent-hb", Hostname: "h", OS: "linux", Labels: []string{"kind:linux"}}
+	body, _ := json.Marshal(reg)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	s.Router().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+
+	before, err := pg.GetAgent(context.Background(), "agent-hb")
+	require.NoError(t, err)
+	require.NotNil(t, before)
+
+	time.Sleep(10 * time.Millisecond)
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb/heartbeat", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	s.Router().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+
+	after, err := pg.GetAgent(context.Background(), "agent-hb")
+	require.NoError(t, err)
+	require.NotNil(t, after)
+	assert.True(t, after.LastSeenAt.After(before.LastSeenAt),
+		"last_seen_at not advanced: before=%v after=%v", before.LastSeenAt, after.LastSeenAt)
+}
+
+func TestAgentHeartbeat_RejectsNonAgentToken(t *testing.T) {
+	s, _ := newTestServer(t)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/x/heartbeat", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	s.Router().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
 func TestClaimDrainBroadcast(t *testing.T) {
 	s, _ := newTestServer(t)
 

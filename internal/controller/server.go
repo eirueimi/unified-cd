@@ -294,6 +294,7 @@ func (s *Server) routes() {
 		r.With(ServerAuth(s.store, s)).Get("/{agentId}", s.handleGetAgent)
 		r.With(ServerAuth(s.store, s)).Get("/{agentId}/runs", s.handleListRunsByAgent)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/register", s.handleAgentRegister)
+		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/heartbeat", s.handleAgentHeartbeat)
 		r.With(BearerAuth(s.cfg.AgentToken)).Delete("/{agentId}", s.handleAgentDeregister)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/claim", s.handleAgentClaim)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/steps", s.handleAgentStepReport)
