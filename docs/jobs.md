@@ -331,6 +331,23 @@ steps:
 
 `call` steps wait for the called job to complete. The called job's run shares the parent run's context.
 
+> **⚠️ Slot deadlock: the called job needs a *free* agent slot.**
+> A `call` step holds the parent run's agent slot while it waits for the called
+> job to finish. The called job is a **separate run** that must be claimed by an
+> agent — if it can only run on the same agent pool and that pool has no free
+> slot, it deadlocks: the child stays `Queued` forever while the parent stays
+> `Running`, with no timeout or warning.
+>
+> The common trigger is an agent (or pool) with **`max-concurrent: 1`** calling a
+> job that targets the same agent: the parent occupies the only slot, so the
+> child can never be claimed.
+>
+> **Requirement:** any agent pool that runs `call` chains must have
+> **`max-concurrent` ≥ 2** (and ≥ 1 + the maximum `call` nesting depth for
+> nested calls), or route the called job to a *different* agent pool via its
+> `agentSelector`. Cancelling the parent releases its slot, after which the child
+> completes (and the parent's `finally` block still runs).
+
 ---
 
 ## Git Template Inlining (`uses`)
