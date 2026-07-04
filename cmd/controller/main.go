@@ -198,6 +198,7 @@ func main() {
 		go controller.RunCacheCleanup(ctx, pg, obj)
 	}
 	go controller.RunApprovalReaper(ctx, pg, time.Minute)
+	go controller.RunStuckRunReaper(ctx, pg, 30*time.Second, 90*time.Second, 60*time.Second)
 	go func() {
 		var gitCache *gittemplate.Cache
 		if obj != nil {
