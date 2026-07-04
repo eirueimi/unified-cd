@@ -21,6 +21,12 @@ type ControllerOIDCConfig struct {
 	// Using a separate secret-less public client distinct from the confidential ClientID (for browser SSO)
 	// allows the device flow to work without exposing secrets to the CLI. Falls back to ClientID when not set.
 	DeviceClientID string `yaml:"deviceClientId"`
+
+	// Role resolution (see docs/authorization.md).
+	RolesClaim  string            `yaml:"rolesClaim"`
+	RoleMap     map[string]string `yaml:"roleMap"`
+	UserMap     map[string]string `yaml:"userMap"`
+	DefaultRole string            `yaml:"defaultRole"`
 }
 
 // ControllerConfig holds all configuration for the controller binary.
@@ -93,6 +99,8 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 			ClientID:       oidcClientID,
 			ClientSecret:   os.Getenv("UNIFIED_OIDC_CLIENT_SECRET"),
 			DeviceClientID: os.Getenv("UNIFIED_OIDC_DEVICE_CLIENT_ID"),
+			RolesClaim:     os.Getenv("UNIFIED_OIDC_ROLES_CLAIM"),
+			DefaultRole:    os.Getenv("UNIFIED_OIDC_DEFAULT_ROLE"),
 		}
 	}
 
@@ -158,6 +166,18 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		}
 		if file.OIDC.DeviceClientID != "" {
 			eff.OIDC.DeviceClientID = file.OIDC.DeviceClientID
+		}
+		if file.OIDC.RolesClaim != "" {
+			eff.OIDC.RolesClaim = file.OIDC.RolesClaim
+		}
+		if len(file.OIDC.RoleMap) > 0 {
+			eff.OIDC.RoleMap = file.OIDC.RoleMap
+		}
+		if len(file.OIDC.UserMap) > 0 {
+			eff.OIDC.UserMap = file.OIDC.UserMap
+		}
+		if file.OIDC.DefaultRole != "" {
+			eff.OIDC.DefaultRole = file.OIDC.DefaultRole
 		}
 	}
 	return eff, nil
