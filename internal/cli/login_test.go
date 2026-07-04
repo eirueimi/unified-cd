@@ -64,6 +64,29 @@ func newTestCmd(stdin string) (*cobra.Command, *bytes.Buffer) {
 	return cmd, out
 }
 
+func TestLogin_UsesUnifiedServerEnvWhenFlagOmitted(t *testing.T) {
+	// The server does not need to actually respond correctly here: we're only
+	// verifying that login proceeds past the "--server is required" check
+	// (and attempts to reach the URL from UNIFIED_SERVER) instead of erroring immediately.
+	t.Setenv("UNIFIED_SERVER", "http://127.0.0.1:0")
+
+	cmd := newLoginCmd()
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "--server is required")
+}
+
+func TestLogin_MissingServerAndEnv_ReturnsError(t *testing.T) {
+	t.Setenv("UNIFIED_SERVER", "")
+
+	cmd := newLoginCmd()
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--server is required")
+}
+
 func TestTokenPromptLogin_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
