@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { browserSSOEnabled, currentUser, serverURL, initAuth } from './api.js';
+import { browserSSOEnabled, currentUser, serverURL, authReady, initAuth } from './api.js';
 
 beforeEach(() => {
   browserSSOEnabled.set(false);
   currentUser.set(null);
   serverURL.set('http://localhost');
+  authReady.set(false);
   vi.resetAllMocks();
 });
 
@@ -91,5 +92,54 @@ describe('initAuth — currentUser', () => {
 
     expect(get(browserSSOEnabled)).toBe(true);
     expect(get(currentUser)).toEqual(user);
+  });
+});
+
+describe('initAuth — authReady', () => {
+  it('開始前は authReady が false', () => {
+    expect(get(authReady)).toBe(false);
+  });
+
+  it('/auth/me が成功して currentUser が設定された後に authReady が true になる (順序保証)', async () => {
+    const user = { email: 'sso@example.com' };
+    let resolveMe;
+    const mePromise = new Promise((resolve) => { resolveMe = resolve; });
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ browserSSOEnabled: true }) })
+      .mockReturnValueOnce(mePromise);
+
+    const p = initAuth();
+
+    // セッション確認が完了するまで authReady は false のまま
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(get(authReady)).toBe(false);
+    expect(get(currentUser)).toBeNull();
+
+    resolveMe({ ok: true, json: async () => user });
+    await p;
+
+    // currentUser が設定された後で authReady が true になる
+    expect(get(currentUser)).toEqual(user);
+    expect(get(authReady)).toBe(true);
+  });
+
+  it('/auth/me が失敗しても(unauthenticated)authReady は true になる', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ browserSSOEnabled: false }) })
+      .mockResolvedValueOnce({ ok: false });
+
+    await initAuth();
+
+    expect(get(currentUser)).toBeNull();
+    expect(get(authReady)).toBe(true);
+  });
+
+  it('ネットワークエラーでも authReady は true になる(ルーターが永久にブロックされない)', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error('network error'));
+
+    await initAuth();
+
+    expect(get(authReady)).toBe(true);
   });
 });
