@@ -54,6 +54,44 @@ func TestGetAgent_ReturnsAgent(t *testing.T) {
 	}
 }
 
+// TestUpsertAgent_ReRegistrationReplacesLabels verifies the TODO #23 fix: a fresh
+// registration (UpsertAgent) is authoritative and must REPLACE the label set, so
+// removing a label from an agent's config and restarting actually drops it from
+// inventory. This is distinct from UpsertAgentOnClaim, which must merge instead.
+func TestUpsertAgent_ReRegistrationReplacesLabels(t *testing.T) {
+	st := NewTestPostgres(t)
+	ctx := context.Background()
+
+	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"a", "b"}, nil))
+	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"a"}, nil))
+
+	a, err := st.GetAgent(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	assert.ElementsMatch(t, []string{"a"}, a.Labels, "re-registration must replace labels, not merge them")
+}
+
+// TestUpsertAgentOnClaim_MergesLabelsAndDoesNotClobber verifies that the claim-path
+// upsert (UpsertAgentOnClaim) preserves the non-destructive #12 merge behavior: it
+// must not drop richer registration data (hostname/os/version) or existing labels
+// when the claim itself only supplies a subset of labels.
+func TestUpsertAgentOnClaim_MergesLabelsAndDoesNotClobber(t *testing.T) {
+	st := NewTestPostgres(t)
+	ctx := context.Background()
+
+	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"kind:linux", "hostname:host1"}, nil))
+	require.NoError(t, st.UpsertAgentOnClaim(ctx, "agent-1", "", "", "", []string{"kind:linux"}, nil))
+
+	a, err := st.GetAgent(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	assert.Equal(t, "host1", a.Hostname)
+	assert.Equal(t, "linux", a.OS)
+	assert.Equal(t, "v1.0.0", a.Version)
+	assert.Contains(t, a.Labels, "hostname:host1", "claim upsert must not drop a register-only label")
+	assert.Contains(t, a.Labels, "kind:linux")
+}
+
 func TestGetAgent_ReturnsNilWhenNotFound(t *testing.T) {
 	st := NewTestPostgres(t)
 	a, err := st.GetAgent(context.Background(), "nonexistent")

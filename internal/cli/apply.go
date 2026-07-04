@@ -112,6 +112,9 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 	case "AppSource":
 		endpoint = cfg.Server + "/api/v1/appsources"
 		bodyBytes, _ = json.Marshal(api.ApplyAppSourceRequest{YAML: string(b)})
+	case "Schedule":
+		endpoint = cfg.Server + "/api/v1/schedules/"
+		bodyBytes, _ = json.Marshal(api.ApplyScheduleRequest{YAML: string(b)})
 	default:
 		endpoint = cfg.Server + "/api/v1/jobs"
 		bodyBytes, _ = json.Marshal(api.ApplyJobRequest{YAML: string(b)})
@@ -150,6 +153,12 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "appsource applied: %s\n", meta.Name)
+	case "Schedule":
+		var meta api.ScheduleMeta
+		if err := json.Unmarshal(respBody, &meta); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "schedule applied: %s (cron=%s job=%s)\n", meta.Name, meta.Cron, meta.JobName)
 	default:
 		var job api.Job
 		if err := json.Unmarshal(respBody, &job); err != nil {

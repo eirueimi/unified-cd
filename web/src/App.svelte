@@ -1,7 +1,7 @@
 <script>
   import Router, { router } from "svelte-spa-router";
   import { onMount } from "svelte";
-  import { initAuth, serverURL, browserSSOEnabled, currentUser, token, saveAuth } from "./lib/api.js";
+  import { initAuth, serverURL, browserSSOEnabled, currentUser, token, saveAuth, authReady } from "./lib/api.js";
   import { themePref, toggleTheme, initTheme } from "./lib/theme.js";
   import JobList from "./routes/JobList.svelte";
   import JobDetail from "./routes/JobDetail.svelte";
@@ -82,4 +82,8 @@
   {/if}
   <span class="meta" style="font-size:0.75rem">{$serverURL}</span>
 </nav>
-<Router {routes} />
+{#if $authReady}
+  <Router {routes} />
+{:else}
+  <div class="container"><div class="loading">Loading...</div></div>
+{/if}

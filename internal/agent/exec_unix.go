@@ -39,3 +39,15 @@ func killTree(cmd *exec.Cmd) {
 	// Ignore errors: the group may already be gone (process exited naturally).
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 }
+
+// cleanupTree is a no-op on Unix: there is no per-step kernel handle to
+// release (the process group set up by setupProcAttrs needs no explicit
+// close). It exists so exec_tree.go can call it unconditionally on every
+// exit path without platform-specific branching; the Windows build is the
+// one that actually releases the Job Object handle here.
+func cleanupTree(cmd *exec.Cmd) {}
+
+// jobHandleCount always reports 0 on Unix: there is no jobHandles map (that
+// bookkeeping is Windows-only). It exists so cross-platform tests can assert
+// the same "no leaked handles" invariant on every OS without build tags.
+func jobHandleCount() int { return 0 }

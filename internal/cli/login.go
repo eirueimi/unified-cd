@@ -29,7 +29,10 @@ func newLoginCmd() *cobra.Command {
 		Short: "Log in via OIDC device flow and save the token",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if serverURL == "" {
-				return fmt.Errorf("--server is required")
+				serverURL = os.Getenv("UNIFIED_SERVER")
+			}
+			if serverURL == "" {
+				return fmt.Errorf("--server is required (or set UNIFIED_SERVER)")
 			}
 			// If --issuer / --client-id are not specified, fetch OIDC config from the server
 			var serverCfg *serverOIDCConfig

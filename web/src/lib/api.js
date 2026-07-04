@@ -4,6 +4,12 @@ export const token = writable(localStorage.getItem('ecd_token') || '');
 export const serverURL = writable(localStorage.getItem('ecd_server') || window.location.origin);
 export const browserSSOEnabled = writable(false);
 export const currentUser = writable(null);
+// Resolves once the initial session check (initAuth) has completed, whether it
+// found a session or not. The router waits on this before rendering the
+// current route so a hard-navigated / deep-linked hash route (e.g. reloading
+// on /ui/#/jobs with only an SSO cookie and no localStorage token) doesn't
+// render against a still-unresolved auth state.
+export const authReady = writable(false);
 
 export function saveAuth(t, s) {
   localStorage.setItem('ecd_token', t);
@@ -25,6 +31,7 @@ export async function initAuth() {
     const resp = await fetch(url + '/api/v1/auth/me', { headers, credentials: 'include' });
     if (resp.ok) currentUser.set(await resp.json());
   } catch { }
+  authReady.set(true);
 }
 
 export async function apiFetch(path, options = {}) {

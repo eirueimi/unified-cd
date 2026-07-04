@@ -152,6 +152,50 @@ func TestApplyEmptyFile(t *testing.T) {
 	}
 }
 
+func TestApplyScheduleDocument(t *testing.T) {
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) {
+			b, _ := json.Marshal(api.ScheduleMeta{Name: "nightly-build", Cron: "0 2 * * *", JobName: "build"})
+			return http.StatusOK, b
+		},
+	}
+
+	content := `apiVersion: unified-cd/v1
+kind: Schedule
+metadata:
+  name: nightly-build
+spec:
+  cron: "0 2 * * *"
+  job: build
+  params:
+    env: prod
+`
+	tmp := filepath.Join(t.TempDir(), "schedule.yaml")
+	os.WriteFile(tmp, []byte(content), 0o600)
+
+	cmd, out := newTestApplyCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"-f", tmp})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(tr.records) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(tr.records))
+	}
+	if tr.records[0].path != "/api/v1/schedules/" {
+		t.Errorf("unexpected path %s", tr.records[0].path)
+	}
+	var req api.ApplyScheduleRequest
+	if err := json.Unmarshal(tr.records[0].body, &req); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if !strings.Contains(req.YAML, "nightly-build") {
+		t.Errorf("expected request YAML to contain schedule content, got: %s", req.YAML)
+	}
+	if !strings.Contains(out.String(), "nightly-build") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+}
+
 func TestApplyMultiDocumentStopsOnError(t *testing.T) {
 	callCount := 0
 	tr := &captureTransport{

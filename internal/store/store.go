@@ -109,7 +109,13 @@ type Store interface {
 	GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error)
 	AppendLog(ctx context.Context, runID string, stepIndex int, stream string, ts time.Time, line string) (int64, error)
 	TailLogs(ctx context.Context, runID string, afterSeq int64, limit int) ([]api.LogLine, error)
+	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
+	// os/version/env wholesale (a registration is the authoritative identity).
 	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error
+	// UpsertAgentOnClaim is the CLAIM path: a lightweight, non-destructive upsert that
+	// merges labels and only overwrites scalar fields when non-empty, so a claim never
+	// clobbers richer data recorded at registration time.
+	UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error
 	TouchAgent(ctx context.Context, agentID string) error
 	DeleteAgent(ctx context.Context, agentID string) error
 	// ListAgents returns all agents ordered by last access descending.

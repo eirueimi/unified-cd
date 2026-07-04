@@ -21,7 +21,8 @@ func NewRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&serverOverride, "server", "", "override server URL")
 	root.PersistentFlags().StringVar(&tokenOverride, "token", "", "override token")
 
-	// resolve loads the config file and returns the configuration with flag overrides applied.
+	// resolve loads the config file and returns the configuration with env var and
+	// flag overrides applied. Precedence (highest first): flag > env var > config file.
 	resolve := func() (Config, error) {
 		path := configPath
 		if path == "" {
@@ -31,18 +32,7 @@ func NewRoot() *cobra.Command {
 		if err != nil {
 			return c, err
 		}
-		if envServer := os.Getenv("UNIFIED_SERVER"); envServer != "" && c.Server == "" {
-			c.Server = envServer
-		}
-		if serverOverride != "" {
-			c.Server = serverOverride
-		}
-		if envToken := os.Getenv("UNIFIED_TOKEN"); envToken != "" && c.Token == "" {
-			c.Token = envToken
-		}
-		if tokenOverride != "" {
-			c.Token = tokenOverride
-		}
+		c = resolveConfig(c, os.Getenv("UNIFIED_SERVER"), os.Getenv("UNIFIED_TOKEN"), serverOverride, tokenOverride)
 		if c.Server == "" {
 			return c, fmt.Errorf("server URL is not set; use --server flag or set 'server' in config file")
 		}
@@ -56,10 +46,29 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newAgentCmd(resolve))
 	root.AddCommand(newSecretCmd(resolve))
 	root.AddCommand(newGitCredentialCmd(resolve))
+	root.AddCommand(newScheduleCmd(resolve))
 	root.AddCommand(newTokenCmd(resolve))
 	root.AddCommand(newApproveCmd(resolve))
 	root.AddCommand(newRejectCmd(resolve))
 	root.AddCommand(newArtifactCmd(resolve))
 	root.AddCommand(newLoginCmd())
 	return root
+}
+
+// resolveConfig applies env var and flag overrides on top of a config-file-loaded
+// Config. Precedence (highest first): flag > env var > config file.
+func resolveConfig(c Config, envServer, envToken, serverOverride, tokenOverride string) Config {
+	if envServer != "" {
+		c.Server = envServer
+	}
+	if envToken != "" {
+		c.Token = envToken
+	}
+	if serverOverride != "" {
+		c.Server = serverOverride
+	}
+	if tokenOverride != "" {
+		c.Token = tokenOverride
+	}
+	return c
 }

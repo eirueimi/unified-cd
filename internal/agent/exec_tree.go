@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 	"os/exec"
 )
 
@@ -32,8 +33,27 @@ func runTreeKilled(ctx context.Context, cmd *exec.Cmd) error {
 
 	// Best-effort: if job/group assignment fails, we still run the command
 	// (with only the direct child killable on cancel) rather than aborting
-	// a step that would otherwise succeed.
-	_ = assignJob(cmd)
+	// a step that would otherwise succeed. This is logged (rather than
+	// silently swallowed) because it means killTree/cleanupTree will fall
+	// back to single-process kill for this step, which can leave
+	// grandchildren behind on cancel. Note there is an inherent fork-window
+	// race here: assignJob runs after Start, so a child process spawned by
+	// cmd in between could, in principle, escape the job/group before
+	// assignment completes. Closing that window would require assigning the
+	// job before Start (e.g. via a suspended-create + resume dance on
+	// Windows), which is out of scope for this fix.
+	if err := assignJob(cmd); err != nil {
+		slog.Warn("assignJob failed; falling back to single-process kill on cancel", "error", err)
+	}
+
+	// cleanupTree releases the platform-specific per-step resource (the
+	// Windows Job Object handle; a no-op on Unix) exactly once, regardless
+	// of which branch below returns. It is idempotent with killTree: both
+	// ultimately call takeJobHandle, so whichever runs first "wins" the
+	// handle and the other is a no-op. Without this, every normally
+	// completed step would leak one Job Object handle plus its jobHandles
+	// map entry (which also pins cmd, preventing GC of its output buffers).
+	defer cleanupTree(cmd)
 
 	waitDone := make(chan error, 1)
 	go func() {

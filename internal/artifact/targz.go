@@ -23,7 +23,15 @@ func ExtractTarZstd(r io.Reader, dest string) error {
 	}
 	defer dec.Close()
 
-	cleanDest := filepath.Clean(dest) + string(filepath.Separator)
+	// Resolve dest to an absolute path so the traversal guard works regardless of
+	// how dest was given (e.g. "." or a relative dir) — filepath.Join with a
+	// relative dest would normalise away a "./" prefix and make the HasPrefix
+	// check always fail for archives whose entries are relative (tar -C dir .).
+	absDest, err := filepath.Abs(dest)
+	if err != nil {
+		return fmt.Errorf("resolve dest %q: %w", dest, err)
+	}
+	cleanDest := absDest + string(filepath.Separator)
 	tr := tar.NewReader(dec)
 	for {
 		hdr, err := tr.Next()
@@ -33,7 +41,7 @@ func ExtractTarZstd(r io.Reader, dest string) error {
 		if err != nil {
 			return fmt.Errorf("tar next: %w", err)
 		}
-		target := filepath.Join(dest, filepath.FromSlash(hdr.Name))
+		target := filepath.Join(absDest, filepath.FromSlash(hdr.Name))
 		if !strings.HasPrefix(target+string(filepath.Separator), cleanDest) {
 			return fmt.Errorf("invalid path %q in artifact archive", hdr.Name)
 		}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 
 	"github.com/eirueimi/unified-cd/internal/objectstore"
@@ -10,15 +9,16 @@ import (
 
 func main() {
 	ctx := context.Background()
-	cfg, err := objectstore.S3ConfigFromEnv()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+	// Build the S3 store lazily: idle (degraded mode, no S3 EnvFrom) must
+	// stay resident even when S3 configuration is absent. Only cache/artifact
+	// subcommands actually need the store, so they invoke this provider
+	// themselves and fail loudly if it errors.
+	prov := func(ctx context.Context) (objectstore.ObjectStore, error) {
+		cfg, err := objectstore.S3ConfigFromEnv()
+		if err != nil {
+			return nil, err
+		}
+		return objectstore.NewS3ObjectStore(ctx, cfg)
 	}
-	store, err := objectstore.NewS3ObjectStore(ctx, cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "s3 store: %v\n", err)
-		os.Exit(2)
-	}
-	os.Exit(run(ctx, store, os.Args[1:], os.Stderr))
+	os.Exit(run(ctx, prov, os.Args[1:], os.Stderr))
 }
