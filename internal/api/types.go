@@ -206,12 +206,14 @@ type AgentFetchSecretsResponse struct {
 type CreatePATRequest struct {
 	Name      string `json:"name"`
 	ExpiresIn string `json:"expiresIn,omitempty"`
+	Role      string `json:"role,omitempty"`
 }
 
 // CreatePATResponse is the PAT creation response (the token is shown only once).
 type CreatePATResponse struct {
 	ID    string `json:"id"`
 	Name  string `json:"name"`
+	Role  string `json:"role"`
 	Token string `json:"token"` // returned only at creation time
 }
 
@@ -219,6 +221,7 @@ type CreatePATResponse struct {
 type PATMeta struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
+	Role       string     `json:"role"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
