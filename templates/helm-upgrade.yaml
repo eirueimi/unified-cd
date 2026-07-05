@@ -72,27 +72,25 @@ spec:
         printf '%s\n' "$KUBECONFIG_CONTENT" > "$_KUBECONFIG_FILE"
         export KUBECONFIG="$_KUBECONFIG_FILE"
 
-        _ARGS="upgrade --install ${RELEASE} ${CHART} --namespace ${NAMESPACE} --create-namespace --timeout ${TIMEOUT}"
+        set -- upgrade --install "$RELEASE" "$CHART" --namespace "$NAMESPACE" --create-namespace --timeout "$TIMEOUT"
 
         if [ "$ATOMIC" = "true" ]; then
-          _ARGS="${_ARGS} --atomic"
+          set -- "$@" --atomic
         fi
 
         if [ -n "$VALUES_FILE" ]; then
-          _ARGS="${_ARGS} -f ${VALUES_FILE}"
+          set -- "$@" -f "$VALUES_FILE"
         fi
 
-        _SET_ARGS=""
         _OLD_IFS="$IFS"
         IFS='
         '
         for _sv in $SET_VALUES; do
           [ -z "$_sv" ] && continue
-          _SET_ARGS="${_SET_ARGS} --set ${_sv}"
+          set -- "$@" --set "$_sv"
         done
         IFS="$_OLD_IFS"
 
-        # shellcheck disable=SC2086
-        helm $_ARGS $_SET_ARGS
+        helm "$@"
 
         echo "[helm-upgrade] upgraded release ${RELEASE} in namespace ${NAMESPACE}"

@@ -56,12 +56,18 @@ spec:
         #!/usr/bin/env sh
         set -eu
 
+        _RESPONSE_FILE="$(mktemp)"
+        _cleanup() {
+          rm -f "$_RESPONSE_FILE"
+        }
+        trap _cleanup EXIT
+
         _URL="${BASE_URL}/api/v4/projects/${PROJECT}/statuses/${SHA}?state=${STATE}&name=${CONTEXT}"
         if [ -n "$TARGET_URL" ]; then
           _URL="${_URL}&target_url=${TARGET_URL}"
         fi
 
-        HTTP_STATUS=$(curl -s -o /tmp/gitlab-status-response.json -w "%{http_code}" \
+        HTTP_STATUS=$(curl -s -o "$_RESPONSE_FILE" -w "%{http_code}" \
           -X POST \
           -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
           "$_URL")
@@ -69,7 +75,7 @@ spec:
         # GitLab は新規作成 201、既存ステータス更新 200 のどちらも返し得る
         if [ "$HTTP_STATUS" != "201" ] && [ "$HTTP_STATUS" != "200" ]; then
           echo "[gitlab-commit-status] GitLab API returned HTTP ${HTTP_STATUS}" >&2
-          cat /tmp/gitlab-status-response.json >&2 2>/dev/null || true
+          cat "$_RESPONSE_FILE" >&2 2>/dev/null || true
           exit 1
         fi
         echo "[gitlab-commit-status] set status ${STATE} for ${SHA}"

@@ -37,7 +37,6 @@ spec:
   steps:
     - name: send
       env:
-        URL_SECRET_NAME: "{{ .Params.url_secret }}"
         URL_PLAIN: "{{ .Params.url }}"
         URL_FROM_SECRET: "{{ if .Params.url_secret }}{{ index .Secrets .Params.url_secret }}{{ end }}"
         PAYLOAD: "{{ .Params.payload }}"

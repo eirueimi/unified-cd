@@ -47,8 +47,9 @@ spec:
         set -eu
 
         _PAYLOAD_FILE="$(mktemp)"
+        _RESPONSE_FILE="$(mktemp)"
         _cleanup() {
-          rm -f "$_PAYLOAD_FILE"
+          rm -f "$_PAYLOAD_FILE" "$_RESPONSE_FILE"
         }
         trap _cleanup EXIT
 
@@ -56,7 +57,7 @@ spec:
         _ESCAPED_BODY="$(printf '%s' "$BODY" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g')"
         printf '{"body":"%s"}' "$_ESCAPED_BODY" > "$_PAYLOAD_FILE"
 
-        HTTP_STATUS=$(curl -s -o /tmp/gh-pr-comment-response.json -w "%{http_code}" \
+        HTTP_STATUS=$(curl -s -o "$_RESPONSE_FILE" -w "%{http_code}" \
           -X POST \
           -H "Authorization: Bearer ${GITHUB_TOKEN}" \
           -H "Accept: application/vnd.github+json" \
@@ -66,7 +67,7 @@ spec:
 
         if [ "$HTTP_STATUS" != "201" ]; then
           echo "[github-pr-comment] GitHub API returned HTTP ${HTTP_STATUS}" >&2
-          cat /tmp/gh-pr-comment-response.json >&2 2>/dev/null || true
+          cat "$_RESPONSE_FILE" >&2 2>/dev/null || true
           exit 1
         fi
         echo "[github-pr-comment] posted comment on ${REPO}#${PR_NUMBER}"

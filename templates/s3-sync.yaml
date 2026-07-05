@@ -66,19 +66,18 @@ spec:
         #!/usr/bin/env sh
         set -eu
 
-        _ARGS="s3 sync ${SRC} ${DEST}"
+        set -- s3 sync "$SRC" "$DEST"
 
         if [ -n "$ENDPOINT" ]; then
-          _ARGS="${_ARGS} --endpoint-url ${ENDPOINT}"
+          set -- "$@" --endpoint-url "$ENDPOINT"
         fi
         if [ "$DELETE" = "true" ]; then
-          _ARGS="${_ARGS} --delete"
+          set -- "$@" --delete
         fi
         if [ -n "$ACL" ]; then
-          _ARGS="${_ARGS} --acl ${ACL}"
+          set -- "$@" --acl "$ACL"
         fi
 
-        # shellcheck disable=SC2086
-        aws $_ARGS
+        aws "$@"
 
         echo "[s3-sync] synced ${SRC} -> ${DEST}"

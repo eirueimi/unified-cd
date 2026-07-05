@@ -91,9 +91,9 @@ spec:
         _ESCAPED_NOTES="$(_json_escape "$NOTES")"
         _ESCAPED_TAG="$(_json_escape "$TAG")"
 
-        cat > "$_PAYLOAD_FILE" <<EOF
-        {"tag_name":"${_ESCAPED_TAG}","name":"${_ESCAPED_TITLE}","body":"${_ESCAPED_NOTES}","draft":${DRAFT},"prerelease":${PRERELEASE}}
-        EOF
+        printf '{"tag_name":"%s","name":"%s","body":"%s","draft":%s,"prerelease":%s}' \
+          "${_ESCAPED_TAG}" "${_ESCAPED_TITLE}" "${_ESCAPED_NOTES}" "${DRAFT}" "${PRERELEASE}" \
+          > "$_PAYLOAD_FILE"
 
         HTTP_STATUS=$(curl -s -o "$_RESPONSE_FILE" -w "%{http_code}" \
           -X POST \
