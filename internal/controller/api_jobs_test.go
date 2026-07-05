@@ -247,6 +247,87 @@ func applyJobYAML(t *testing.T, s *Server, yaml string) error {
 	return err
 }
 
+// TestAPI_ApplyJob_RejectsInvalidPathSegment verifies that a directly-applied
+// Job with a traversal-style or otherwise-invalid annotations.path segment is
+// rejected with 400 and never reaches the store, while a valid path segment
+// still succeeds and produces the expected qualified name.
+func TestAPI_ApplyJob_RejectsInvalidPathSegment(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	body := api.ApplyJobRequest{YAML: `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: evil
+  annotations:
+    path: "../evil"
+spec:
+  steps:
+    - name: c
+      run: "true"
+`}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `invalid path segment "..`)
+
+	// Must not have been stored under any name derived from the bad path.
+	_, err := pg.GetJob(t.Context(), "../evil/evil")
+	assert.Error(t, err)
+	_, err = pg.GetJob(t.Context(), "evil")
+	assert.Error(t, err)
+
+	// A segment containing a space is likewise rejected.
+	spaceBody := api.ApplyJobRequest{YAML: `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build
+  annotations:
+    path: "a b/%zz"
+spec:
+  steps:
+    - name: c
+      run: "true"
+`}
+	sb, _ := json.Marshal(spaceBody)
+	spaceReq := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", bytes.NewReader(sb))
+	spaceReq.Header.Set("Authorization", "Bearer secret")
+	spaceReq.Header.Set("Content-Type", "application/json")
+	spaceRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(spaceRec, spaceReq)
+	require.Equal(t, http.StatusBadRequest, spaceRec.Code, spaceRec.Body.String())
+
+	// A valid path still works as before.
+	okBody := api.ApplyJobRequest{YAML: `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build
+  annotations:
+    path: team-a
+spec:
+  steps:
+    - name: c
+      run: "true"
+`}
+	ob, _ := json.Marshal(okBody)
+	okReq := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", bytes.NewReader(ob))
+	okReq.Header.Set("Authorization", "Bearer secret")
+	okReq.Header.Set("Content-Type", "application/json")
+	okRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(okRec, okReq)
+	require.Equal(t, http.StatusOK, okRec.Code, okRec.Body.String())
+
+	job, err := pg.GetJob(t.Context(), "team-a/build")
+	require.NoError(t, err)
+	assert.Equal(t, "team-a/build", job.Name)
+}
+
 func TestListJobs_DerivesPathAndLeaf(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	s := &Server{store: pg}

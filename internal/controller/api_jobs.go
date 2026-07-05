@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,8 +16,9 @@ import (
 
 // handleApplyJob parses a Job YAML definition and saves it to the database.
 //
-// Status codes are deliberately distinct: a malformed request/YAML is a client
-// error (400), while marshal or store failures are server errors (500).
+// Status codes are deliberately distinct: a malformed request/YAML, or a job
+// whose annotations.path contains an invalid segment, is a client error
+// (400); marshal or store failures are server errors (500).
 func (s *Server) handleApplyJob(w http.ResponseWriter, r *http.Request) {
 	var req api.ApplyJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -32,6 +34,11 @@ func (s *Server) handleApplyJob(w http.ResponseWriter, r *http.Request) {
 
 	stored, err := s.storeJob(r.Context(), job)
 	if err != nil {
+		var badReq errBadRequest
+		if errors.As(err, &badReq) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -40,13 +47,53 @@ func (s *Server) handleApplyJob(w http.ResponseWriter, r *http.Request) {
 
 // storeJob marshals the parsed Job's spec and upserts it under its qualified
 // name. Both failures here are infrastructure/server errors, not client errors.
+//
+// Direct apply is the only path that reaches here (see handleApplyJob); the
+// AppSource reconciler upserts jobs itself using directory names straight from
+// a trusted git tree and never calls storeJob. So path-segment validation
+// belongs here, not in dsl.Job.Validate — that would also reject legitimate
+// AppSource subdirectory names that don't happen to be DNS-1123 subdomains.
 func (s *Server) storeJob(ctx context.Context, job *dsl.Job) (*api.Job, error) {
+	if err := validatePathAnnotation(job.Metadata.Annotations["path"]); err != nil {
+		return nil, errBadRequest{err}
+	}
 	specJSON, err := json.Marshal(job.Spec)
 	if err != nil {
 		return nil, fmt.Errorf("marshal spec: %w", err)
 	}
 	return s.store.UpsertJob(ctx, job.Metadata.QualifiedName(), job.APIVersion, specJSON)
 }
+
+// validatePathAnnotation validates each non-empty segment of the "path"
+// annotation using the same DNS-1123 rule already applied to metadata.name.
+// This is only meaningful on direct apply, where an untrusted caller supplies
+// the annotation directly; an empty path (no annotation) yields no segments
+// and is always accepted unchanged.
+func validatePathAnnotation(path string) error {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return nil
+	}
+	for _, seg := range strings.Split(trimmed, "/") {
+		if seg == "" {
+			// Collapse repeated slashes (e.g. "a//b") rather than treating the
+			// empty segment as invalid; QualifyName/store behavior for such
+			// input is unaffected by this validation either way.
+			continue
+		}
+		if err := dsl.ValidateName(seg); err != nil {
+			return fmt.Errorf("invalid path segment %q: %w", seg, err)
+		}
+	}
+	return nil
+}
+
+// errBadRequest marks an error as a client error (HTTP 400) rather than the
+// default 500 used for other storeJob failures.
+type errBadRequest struct{ err error }
+
+func (e errBadRequest) Error() string { return e.err.Error() }
+func (e errBadRequest) Unwrap() error { return e.err }
 
 // handleListJobs returns all registered Jobs, decorated with path/leaf.
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
