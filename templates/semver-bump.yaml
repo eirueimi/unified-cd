@@ -1,0 +1,81 @@
+# Conventional Commits に基づくセマンティックバージョン算出ジョブテンプレート
+# unified-cd apply examples/semver-bump.yaml で登録後、call.job で呼び出す
+#
+# 最後のタグから現在の HEAD までのコミットメッセージを走査し、
+# BREAKING CHANGE（または `!:` 記法）があれば major、`feat` があれば minor、
+# それ以外は patch としてバージョンをインクリメントします。
+# タグが存在しない場合は v0.0.0 を起点とします。
+#
+# エージェント要件: git（対象リポジトリが checkout 済みであること。history が
+# 必要なため git-checkout の fetch_depth は 0 を推奨）
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/semver-bump.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: semver-bump
+spec:
+  params:
+    inputs:
+      - name: prefix
+        type: string
+        default: "v"
+        description: "タグ接頭辞（例: v → v1.2.3）"
+    outputs:
+      - name: next_version
+        type: string
+      - name: bump_kind
+        type: string
+  steps:
+    - name: compute-next-version
+      env:
+        PREFIX: "{{ .Params.prefix }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+        if [ -z "$_LAST_TAG" ]; then
+          _LAST_TAG="${PREFIX}0.0.0"
+          _LOG_RANGE="HEAD"
+          echo "[semver-bump] no existing tag found; using ${_LAST_TAG} as baseline" >&2
+        else
+          _LOG_RANGE="${_LAST_TAG}..HEAD"
+        fi
+
+        _VERSION_CORE="${_LAST_TAG#"$PREFIX"}"
+        _MAJOR="$(echo "$_VERSION_CORE" | cut -d. -f1)"
+        _MINOR="$(echo "$_VERSION_CORE" | cut -d. -f2)"
+        _PATCH="$(echo "$_VERSION_CORE" | cut -d. -f3)"
+
+        _LOG="$(git log "$_LOG_RANGE" --pretty=format:'%s%n%b' 2>/dev/null || true)"
+
+        _BUMP="patch"
+        if echo "$_LOG" | grep -qE 'BREAKING CHANGE|^[a-zA-Z]+(\([^)]*\))?!:'; then
+          _BUMP="major"
+        elif echo "$_LOG" | grep -qE '^feat(\([^)]*\))?:'; then
+          _BUMP="minor"
+        fi
+
+        case "$_BUMP" in
+          major)
+            _MAJOR=$((_MAJOR + 1)); _MINOR=0; _PATCH=0
+            ;;
+          minor)
+            _MINOR=$((_MINOR + 1)); _PATCH=0
+            ;;
+          patch)
+            _PATCH=$((_PATCH + 1))
+            ;;
+        esac
+
+        _NEXT_VERSION="${PREFIX}${_MAJOR}.${_MINOR}.${_PATCH}"
+
+        echo "[semver-bump] last tag: ${_LAST_TAG}"
+        echo "[semver-bump] bump kind: ${_BUMP}"
+        echo "NEXT_VERSION=${_NEXT_VERSION}"
+        echo "BUMP_KIND=${_BUMP}"
+      outputs:
+        next_version: '{{ .Stdout | grep "NEXT_VERSION=" | cut "=" 2 | trim }}'
+        bump_kind: '{{ .Stdout | grep "BUMP_KIND=" | cut "=" 2 | trim }}'
