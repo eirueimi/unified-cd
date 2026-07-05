@@ -104,6 +104,7 @@ The two forms are mutually exclusive; Validate enforces this.
 | `parallel` | []Step | no | Parallel group (mutually exclusive with all concrete step fields above) |
 | `post` | PostStep | no |  |
 | `run` | string | no |  |
+| `runsIn` | RunsIn | no |  |
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
@@ -182,6 +183,7 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 | `outputs` | map[string]string | no |  |
 | `post` | PostStep | no |  |
 | `run` | string | no |  |
+| `runsIn` | RunsIn | no |  |
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
@@ -195,6 +197,23 @@ Executed in LIFO order after RunDAG completes.
 |-------|------|----------|-------------|
 | `env` | map[string]string | no |  |
 | `run` | string | no |  |
+
+### RunsIn
+
+RunsIn declares the execution context for a step. Image and Container are
+mutually exclusive; both empty (or RunsIn nil) means the default/shared
+environment (host process, or the default pod container on k8s).
+
+	image:     run in a fresh isolated env from this image (host: `<rt> run`;
+	           k8s: a throwaway pod). No workspace is shared — pass inputs via
+	           with:/env, return outputs via outputs:/stdout.
+	container: exec into a pre-provisioned named env (k8s pod container only;
+	           an error on the host agent).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `container` | string | no |  |
+| `image` | string | no |  |
 
 ### UploadArtifactStep
 

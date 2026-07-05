@@ -462,6 +462,19 @@
       },
       "type": "object"
     },
+    "RunsIn": {
+      "additionalProperties": false,
+      "description": "RunsIn declares the execution context for a step. Image and Container are\nmutually exclusive; both empty (or RunsIn nil) means the default/shared\nenvironment (host process, or the default pod container on k8s).\n\n\timage:     run in a fresh isolated env from this image (host: `\u003crt\u003e run`;\n\t           k8s: a throwaway pod). No workspace is shared — pass inputs via\n\t           with:/env, return outputs via outputs:/stdout.\n\tcontainer: exec into a pre-provisioned named env (k8s pod container only;\n\t           an error on the host agent).",
+      "properties": {
+        "container": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Schedule": {
       "additionalProperties": false,
       "description": "Schedule is the DSL type for a cron schedule trigger.",
@@ -622,6 +635,9 @@
         "run": {
           "type": "string"
         },
+        "runsIn": {
+          "$ref": "#/definitions/RunsIn"
+        },
         "timeoutMinutes": {
           "type": "number"
         },
@@ -696,6 +712,9 @@
         },
         "run": {
           "type": "string"
+        },
+        "runsIn": {
+          "$ref": "#/definitions/RunsIn"
         },
         "timeoutMinutes": {
           "type": "number"
