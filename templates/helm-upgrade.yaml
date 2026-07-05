@@ -1,0 +1,98 @@
+# Helm upgrade --install ジョブテンプレート
+# unified-cd apply examples/helm-upgrade.yaml で登録後、call.job で呼び出す
+#
+# エージェント要件: helm, kubectl
+#
+# 必要なシークレット:
+#   unified-cd secret set my-cluster-kubeconfig --value "$(cat ~/.kube/config)"
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/helm-upgrade.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: helm-upgrade
+spec:
+  params:
+    inputs:
+      - name: release
+        type: string
+        required: true
+        description: "Helm リリース名"
+      - name: chart
+        type: string
+        required: true
+        description: "チャートのパスまたは参照（例: ./charts/myapp、oci://... 、repo/chart）"
+      - name: namespace
+        type: string
+        required: true
+        description: "デプロイ先 namespace"
+      - name: values_file
+        type: string
+        default: ""
+        description: "-f で渡す values ファイルのパス（省略可）"
+      - name: set_values
+        type: array
+        default: ""
+        description: "--set KEY=VALUE として渡す値一覧（YAML 配列、省略可）"
+      - name: kubeconfig_secret
+        type: string
+        required: true
+        description: "kubeconfig の内容を保持するシークレット名"
+      - name: atomic
+        type: string
+        default: "true"
+        description: "失敗時に自動ロールバックするか（--atomic）"
+      - name: timeout
+        type: string
+        default: "5m"
+        description: "helm upgrade --timeout"
+  steps:
+    - name: helm-upgrade-install
+      env:
+        KUBECONFIG_CONTENT: "{{ index .Secrets .Params.kubeconfig_secret }}"
+        RELEASE: "{{ .Params.release }}"
+        CHART: "{{ .Params.chart }}"
+        NAMESPACE: "{{ .Params.namespace }}"
+        VALUES_FILE: "{{ .Params.values_file }}"
+        SET_VALUES: "{{ .Params.set_values }}"
+        ATOMIC: "{{ .Params.atomic }}"
+        TIMEOUT: "{{ .Params.timeout }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _KUBECONFIG_FILE="$(mktemp)"
+        chmod 600 "$_KUBECONFIG_FILE"
+        _cleanup() {
+          rm -f "$_KUBECONFIG_FILE"
+        }
+        trap _cleanup EXIT
+
+        printf '%s\n' "$KUBECONFIG_CONTENT" > "$_KUBECONFIG_FILE"
+        export KUBECONFIG="$_KUBECONFIG_FILE"
+
+        _ARGS="upgrade --install ${RELEASE} ${CHART} --namespace ${NAMESPACE} --create-namespace --timeout ${TIMEOUT}"
+
+        if [ "$ATOMIC" = "true" ]; then
+          _ARGS="${_ARGS} --atomic"
+        fi
+
+        if [ -n "$VALUES_FILE" ]; then
+          _ARGS="${_ARGS} -f ${VALUES_FILE}"
+        fi
+
+        _SET_ARGS=""
+        _OLD_IFS="$IFS"
+        IFS='
+        '
+        for _sv in $SET_VALUES; do
+          [ -z "$_sv" ] && continue
+          _SET_ARGS="${_SET_ARGS} --set ${_sv}"
+        done
+        IFS="$_OLD_IFS"
+
+        # shellcheck disable=SC2086
+        helm $_ARGS $_SET_ARGS
+
+        echo "[helm-upgrade] upgraded release ${RELEASE} in namespace ${NAMESPACE}"

@@ -1,0 +1,84 @@
+# AWS CLI (aws s3 sync) 経由のオブジェクトストレージ同期 ジョブテンプレート
+# unified-cd apply examples/s3-sync.yaml で登録後、call.job で呼び出す
+#
+# エージェント要件: aws (AWS CLI v2)
+#
+# 必要なシークレット:
+#   unified-cd secret set s3-access-key --value AKIAxxxxxxxx
+#   unified-cd secret set s3-secret-key --value xxxxxxxxxxxx
+#
+# MinIO / Garage 等 S3 互換ストレージを使う場合は endpoint に
+# https://minio.example.com のようなカスタムエンドポイントを設定してください。
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/s3-sync.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: s3-sync
+spec:
+  params:
+    inputs:
+      - name: src
+        type: string
+        required: true
+        description: "同期元パス（ローカルディレクトリまたは s3://bucket/path）"
+      - name: dest
+        type: string
+        required: true
+        description: "同期先パス（s3://bucket/path、src と逆方向のダウンロードにも利用可）"
+      - name: endpoint
+        type: string
+        default: ""
+        description: "S3 互換エンドポイント URL（空文字なら AWS 標準エンドポイントを使用）"
+      - name: access_key_secret
+        type: string
+        required: true
+        description: "アクセスキーを保持するシークレット名"
+      - name: secret_key_secret
+        type: string
+        required: true
+        description: "シークレットキーを保持するシークレット名"
+      - name: region
+        type: string
+        default: "us-east-1"
+        description: "リージョン"
+      - name: delete
+        type: string
+        default: "false"
+        description: "同期元にないオブジェクトを同期先から削除するか（aws s3 sync --delete）"
+      - name: acl
+        type: string
+        default: ""
+        description: "アップロード時の ACL（例: public-read。省略可）"
+  steps:
+    - name: s3-sync
+      env:
+        AWS_ACCESS_KEY_ID: "{{ index .Secrets .Params.access_key_secret }}"
+        AWS_SECRET_ACCESS_KEY: "{{ index .Secrets .Params.secret_key_secret }}"
+        SRC: "{{ .Params.src }}"
+        DEST: "{{ .Params.dest }}"
+        ENDPOINT: "{{ .Params.endpoint }}"
+        AWS_DEFAULT_REGION: "{{ .Params.region }}"
+        DELETE: "{{ .Params.delete }}"
+        ACL: "{{ .Params.acl }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _ARGS="s3 sync ${SRC} ${DEST}"
+
+        if [ -n "$ENDPOINT" ]; then
+          _ARGS="${_ARGS} --endpoint-url ${ENDPOINT}"
+        fi
+        if [ "$DELETE" = "true" ]; then
+          _ARGS="${_ARGS} --delete"
+        fi
+        if [ -n "$ACL" ]; then
+          _ARGS="${_ARGS} --acl ${ACL}"
+        fi
+
+        # shellcheck disable=SC2086
+        aws $_ARGS
+
+        echo "[s3-sync] synced ${SRC} -> ${DEST}"
