@@ -127,13 +127,19 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 	seen := map[store.ResourceRef]bool{}
 	for _, fp := range paths {
 		kind := probeKind(files[fp])
+		dir := relDir(spec.Path, fp)
+		refName := probeName(files[fp])
+		if kind == "Job" {
+			refName = dsl.QualifyName(dir, refName)
+		}
 		// Skip duplicates BEFORE writing to the store, so the first file (sorted)
-		// wins the stored spec — not just the ManagedResources bookkeeping.
-		if ref := (store.ResourceRef{Kind: kind, Name: probeName(files[fp])}); seen[ref] {
+		// wins. Dedup on the qualified name so team-a/build and team-b/build are
+		// distinct, not collapsed.
+		if ref := (store.ResourceRef{Kind: kind, Name: refName}); seen[ref] {
 			slog.Warn("appsource reconciler: duplicate resource, keeping first", "name", src.Name, "kind", kind, "resource", ref.Name, "file", fp)
 			continue
 		}
-		name, err := applyResource(ctx, st, kind, files[fp])
+		name, err := applyResource(ctx, st, kind, dir, files[fp])
 		if err != nil {
 			// Store-write failures abort the whole sync; parse/unknown-kind skip one file.
 			if errors.Is(err, errStoreWrite) {

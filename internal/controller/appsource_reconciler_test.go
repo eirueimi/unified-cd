@@ -268,3 +268,30 @@ func TestReconciler_DuplicateResourceFirstWins(t *testing.T) {
 	require.Len(t, as.ManagedResources, 1, "ManagedResources should contain exactly one entry for the duplicate")
 	assert.Equal(t, store.ResourceRef{Kind: "Job", Name: "dup"}, as.ManagedResources[0])
 }
+
+func TestReconciler_DirectoryBecomesQualifiedName(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	ctx := context.Background()
+	_, err := pg.UpsertAppSource(ctx, "src", []byte(appSourceSpecJSON))
+	require.NoError(t, err)
+
+	job := func(name string) []byte {
+		return []byte("apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: " + name +
+			"\nspec:\n  steps:\n    - name: c\n      run: \"true\"\n")
+	}
+	fetcher := &mockAppSourceFetcher{
+		sha: "sha1",
+		files: map[string][]byte{
+			"jobs/team-a/build.yaml": job("build"),
+			"jobs/team-b/build.yaml": job("build"),
+			"jobs/root.yaml":         job("root"),
+		},
+	}
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	for _, want := range []string{"team-a/build", "team-b/build", "root"} {
+		j, err := pg.GetJob(ctx, want)
+		require.NoErrorf(t, err, "expected job %q", want)
+		assert.Equal(t, want, j.Name)
+	}
+}
