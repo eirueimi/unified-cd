@@ -1,6 +1,7 @@
 package dsl
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -1382,4 +1383,28 @@ spec:
 			require.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+func TestParse_ExampleMatrixJob(t *testing.T) {
+	data, err := os.ReadFile("../../examples/jobs/matrix.yaml")
+	require.NoError(t, err)
+
+	job, err := Parse(strings.NewReader(string(data)))
+	require.NoError(t, err)
+	assert.Equal(t, "matrix-build", job.Metadata.Name)
+	require.Len(t, job.Spec.Steps, 2)
+
+	build := job.Spec.Steps[0]
+	assert.Equal(t, "build", build.Name)
+	require.NotNil(t, build.Matrix)
+	require.Len(t, build.Matrix.Dimensions, 2)
+	assert.Equal(t, "os", build.Matrix.Dimensions[0].Name)
+	assert.Equal(t, []string{"linux", "windows", "darwin"}, build.Matrix.Dimensions[0].Source.Literal)
+	assert.Equal(t, "arch", build.Matrix.Dimensions[1].Name)
+	assert.Equal(t, []string{"amd64", "arm64"}, build.Matrix.Dimensions[1].Source.Literal)
+	require.Len(t, build.Matrix.Exclude, 1)
+	assert.Equal(t, map[string]string{"os": "windows", "arch": "arm64"}, build.Matrix.Exclude[0])
+
+	report := job.Spec.Steps[1]
+	assert.Equal(t, "report", report.Name)
 }
