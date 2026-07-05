@@ -1,0 +1,159 @@
+# Docker イメージビルド & プッシュジョブテンプレート
+# unified-cd apply examples/docker-build-push.yaml で登録後、call.job で呼び出す
+#
+# エージェント要件: docker（マルチプラットフォームビルドには buildx も必要）
+#
+# 必要なシークレット（プライベートレジストリ/Docker Hub にプッシュする場合）:
+#   unified-cd secret set dockerhub-username --value myuser
+#   unified-cd secret set dockerhub-password --value xxxxxxxx
+#   ※ username_secret を設定しない場合は認証なしで push を試みる（パブリックの匿名 push 用途等）
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/docker-build-push.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: docker-build-push
+spec:
+  params:
+    inputs:
+      - name: image
+        type: string
+        required: true
+        description: "registry/repo 形式のイメージ名（例: myorg/myapp）"
+      - name: tags
+        type: array
+        default: "latest"
+        description: "付与するタグ一覧（YAML 配列）"
+      - name: context
+        type: string
+        default: "."
+        description: "ビルドコンテキストのパス"
+      - name: dockerfile
+        type: string
+        default: "Dockerfile"
+        description: "Dockerfile のパス（context からの相対パス）"
+      - name: registry
+        type: string
+        default: ""
+        description: "レジストリのホスト名（例: ghcr.io、空文字なら Docker Hub）"
+      - name: username_secret
+        type: string
+        default: ""
+        description: "レジストリ認証ユーザー名を保持するシークレット名（空文字ならログインをスキップ）"
+      - name: password_secret
+        type: string
+        default: ""
+        description: "レジストリ認証パスワード/トークンを保持するシークレット名"
+      - name: push
+        type: string
+        default: "true"
+        description: "ビルド後に push するかどうか（true/false）"
+      - name: build_args
+        type: array
+        default: ""
+        description: "docker build --build-arg に渡す KEY=VALUE 一覧（YAML 配列）"
+      - name: platform
+        type: string
+        default: ""
+        description: "マルチプラットフォームビルド対象（例: linux/amd64,linux/arm64）。空文字なら通常の docker build を使用"
+  steps:
+    - name: build-and-push
+      env:
+        IMAGE: "{{ .Params.image }}"
+        TAGS: "{{ .Params.tags }}"
+        CONTEXT: "{{ .Params.context }}"
+        DOCKERFILE: "{{ .Params.dockerfile }}"
+        REGISTRY: "{{ .Params.registry }}"
+        REGISTRY_USERNAME: "{{ if .Params.username_secret }}{{ index .Secrets .Params.username_secret }}{{ end }}"
+        REGISTRY_PASSWORD: "{{ if .Params.password_secret }}{{ index .Secrets .Params.password_secret }}{{ end }}"
+        DO_PUSH: "{{ .Params.push }}"
+        BUILD_ARGS: "{{ .Params.build_args }}"
+        PLATFORM: "{{ .Params.platform }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _cleanup() {
+          if [ -n "$REGISTRY_USERNAME" ]; then
+            docker logout "$REGISTRY" >/dev/null 2>&1 || true
+          fi
+        }
+        trap _cleanup EXIT
+
+        if [ -n "$REGISTRY_USERNAME" ]; then
+          echo "[docker-build-push] logging in to ${REGISTRY:-docker.io}"
+          printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin
+        fi
+
+        _FULL_IMAGE="$IMAGE"
+        if [ -n "$REGISTRY" ]; then
+          _FULL_IMAGE="${REGISTRY}/${IMAGE}"
+        fi
+
+        # タグ一覧を -t 引数に変換（配列パラメータは改行区切りで渡される）
+        _TAG_ARGS=""
+        _OLD_IFS="$IFS"
+        IFS='
+        '
+        for _tag in $TAGS; do
+          [ -z "$_tag" ] && continue
+          _TAG_ARGS="${_TAG_ARGS} -t ${_FULL_IMAGE}:${_tag}"
+        done
+        IFS="$_OLD_IFS"
+
+        if [ -z "$_TAG_ARGS" ]; then
+          _TAG_ARGS=" -t ${_FULL_IMAGE}:latest"
+        fi
+
+        # build-arg 一覧を --build-arg 引数に変換
+        _BUILD_ARG_ARGS=""
+        _OLD_IFS="$IFS"
+        IFS='
+        '
+        for _ba in $BUILD_ARGS; do
+          [ -z "$_ba" ] && continue
+          _BUILD_ARG_ARGS="${_BUILD_ARG_ARGS} --build-arg ${_ba}"
+        done
+        IFS="$_OLD_IFS"
+
+        _PUSH_ARGS=""
+        if [ "$DO_PUSH" = "true" ]; then
+          _PUSH_ARGS="--push"
+        fi
+
+        if [ -n "$PLATFORM" ]; then
+          echo "[docker-build-push] buildx build --platform ${PLATFORM}"
+          # shellcheck disable=SC2086
+          docker buildx build \
+            --platform "$PLATFORM" \
+            -f "${CONTEXT}/${DOCKERFILE}" \
+            $_TAG_ARGS \
+            $_BUILD_ARG_ARGS \
+            $_PUSH_ARGS \
+            "$CONTEXT"
+        else
+          echo "[docker-build-push] docker build"
+          # shellcheck disable=SC2086
+          docker build \
+            -f "${CONTEXT}/${DOCKERFILE}" \
+            $_TAG_ARGS \
+            $_BUILD_ARG_ARGS \
+            "$CONTEXT"
+
+          if [ "$DO_PUSH" = "true" ]; then
+            _OLD_IFS="$IFS"
+            IFS='
+        '
+            for _tag in $TAGS; do
+              [ -z "$_tag" ] && continue
+              docker push "${_FULL_IMAGE}:${_tag}"
+            done
+            IFS="$_OLD_IFS"
+            if [ -z "$TAGS" ]; then
+              docker push "${_FULL_IMAGE}:latest"
+            fi
+          fi
+        fi
+
+        echo "[docker-build-push] done: ${_FULL_IMAGE}"

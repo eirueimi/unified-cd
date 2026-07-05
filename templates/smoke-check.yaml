@@ -1,0 +1,81 @@
+# デプロイ後スモークテスト（URL ポーリング）ジョブテンプレート
+# unified-cd apply examples/smoke-check.yaml で登録後、call.job で呼び出す
+#
+# エージェント要件: curl
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/smoke-check.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: smoke-check
+spec:
+  params:
+    inputs:
+      - name: url
+        type: string
+        required: true
+        description: "疎通確認する URL"
+      - name: expect_status
+        type: string
+        default: "200"
+        description: "期待する HTTP ステータスコード"
+      - name: retries
+        type: string
+        default: "10"
+        description: "最大リトライ回数"
+      - name: interval_seconds
+        type: string
+        default: "5"
+        description: "リトライ間隔（秒）"
+      - name: body_contains
+        type: string
+        default: ""
+        description: "レスポンスボディに含まれるべき文字列（省略可）"
+  steps:
+    - name: poll
+      env:
+        URL: "{{ .Params.url }}"
+        EXPECT_STATUS: "{{ .Params.expect_status }}"
+        RETRIES: "{{ .Params.retries }}"
+        INTERVAL_SECONDS: "{{ .Params.interval_seconds }}"
+        BODY_CONTAINS: "{{ .Params.body_contains }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _BODY_FILE="$(mktemp)"
+        _cleanup() {
+          rm -f "$_BODY_FILE"
+        }
+        trap _cleanup EXIT
+
+        _attempt=1
+        while [ "$_attempt" -le "$RETRIES" ]; do
+          echo "[smoke-check] attempt ${_attempt}/${RETRIES}: GET ${URL}"
+          _STATUS=$(curl -s -o "$_BODY_FILE" -w "%{http_code}" "$URL" || echo "000")
+
+          if [ "$_STATUS" = "$EXPECT_STATUS" ]; then
+            if [ -n "$BODY_CONTAINS" ]; then
+              if grep -q -- "$BODY_CONTAINS" "$_BODY_FILE"; then
+                echo "[smoke-check] OK: status ${_STATUS}, body contains expected string"
+                exit 0
+              else
+                echo "[smoke-check] status ${_STATUS} OK but body missing expected string"
+              fi
+            else
+              echo "[smoke-check] OK: status ${_STATUS}"
+              exit 0
+            fi
+          else
+            echo "[smoke-check] got status ${_STATUS}, expected ${EXPECT_STATUS}"
+          fi
+
+          _attempt=$((_attempt + 1))
+          if [ "$_attempt" -le "$RETRIES" ]; then
+            sleep "$INTERVAL_SECONDS"
+          fi
+        done
+
+        echo "[smoke-check] FAILED after ${RETRIES} attempts" >&2
+        exit 1
