@@ -26,6 +26,16 @@ func (f *fakeRuntime) Run(_ context.Context, spec crt.RunSpec, stdout, _ io.Writ
 	return f.exit, nil
 }
 
+func (f *fakeRuntime) Create(context.Context, crt.CreateSpec) (crt.ContainerHandle, error) {
+	return crt.ContainerHandle{}, nil
+}
+func (f *fakeRuntime) Exec(context.Context, crt.ContainerHandle, crt.ExecSpec, io.Writer, io.Writer) (int, error) {
+	return 0, nil
+}
+func (f *fakeRuntime) CopyIn(context.Context, crt.ContainerHandle, string, string) error  { return nil }
+func (f *fakeRuntime) CopyOut(context.Context, crt.ContainerHandle, string, string) error { return nil }
+func (f *fakeRuntime) Remove(context.Context, crt.ContainerHandle) error                  { return nil }
+
 func TestRunStepContainer_CapturesStdoutAndPassesEnv(t *testing.T) {
 	f := &fakeRuntime{stdout: "built\n", exit: 0}
 	var stderr bytes.Buffer
