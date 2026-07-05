@@ -114,8 +114,11 @@ type Store interface {
 	MarkRunRunning(ctx context.Context, runID string) error
 	MarkRunFinished(ctx context.Context, runID string, status api.RunStatus) error
 	DeleteRun(ctx context.Context, id string) error
-	UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time) error
+	UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) error
 	GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error)
+	// GetRunParent returns the call step (and parent run) that launched childRunID,
+	// or nil if the run was not created by a call step.
+	GetRunParent(ctx context.Context, childRunID string) (*api.CalledBy, error)
 	AppendLog(ctx context.Context, runID string, stepIndex int, stream string, ts time.Time, line string) (int64, error)
 	TailLogs(ctx context.Context, runID string, afterSeq int64, limit int) ([]api.LogLine, error)
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/

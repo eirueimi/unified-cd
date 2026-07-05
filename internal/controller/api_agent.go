@@ -323,7 +323,8 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 		ec := req.ExitCode
 		exit = &ec
 	}
-	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, req.StepName, req.Variant, req.Status, exit, startedAt, endedAt); err != nil {
+	// TODO(Task 2): pass through the child run link once the controller records call-step child runs.
+	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, req.StepName, req.Variant, req.Status, exit, startedAt, endedAt, "", ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

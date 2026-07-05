@@ -566,25 +566,28 @@ func (p *Postgres) DeleteRun(ctx context.Context, id string) error {
 	return err
 }
 
-func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time) error {
+func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) error {
 	const q = `
-		INSERT INTO step_reports(run_id, step_index, variant, stage_index, step_name, status, exit_code, started_at, ended_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO step_reports(run_id, step_index, variant, stage_index, step_name, status, exit_code, started_at, ended_at, child_run_id, call_job_name)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULLIF($10,'')::uuid, NULLIF($11,''))
 		ON CONFLICT (run_id, step_index, variant) DO UPDATE
-		  SET stage_index = EXCLUDED.stage_index,
-		      step_name   = EXCLUDED.step_name,
-		      status      = EXCLUDED.status,
-		      exit_code   = COALESCE(EXCLUDED.exit_code, step_reports.exit_code),
-		      started_at  = COALESCE(EXCLUDED.started_at, step_reports.started_at),
-		      ended_at    = COALESCE(EXCLUDED.ended_at, step_reports.ended_at);
+		  SET stage_index   = EXCLUDED.stage_index,
+		      step_name     = EXCLUDED.step_name,
+		      status        = EXCLUDED.status,
+		      exit_code     = COALESCE(EXCLUDED.exit_code, step_reports.exit_code),
+		      started_at    = COALESCE(EXCLUDED.started_at, step_reports.started_at),
+		      ended_at      = COALESCE(EXCLUDED.ended_at, step_reports.ended_at),
+		      child_run_id  = COALESCE(EXCLUDED.child_run_id, step_reports.child_run_id),
+		      call_job_name = COALESCE(EXCLUDED.call_job_name, step_reports.call_job_name);
 	`
-	_, err := p.pool.Exec(ctx, q, runID, stepIndex, variant, stageIndex, stepName, status, exitCode, startedAt, endedAt)
+	_, err := p.pool.Exec(ctx, q, runID, stepIndex, variant, stageIndex, stepName, status, exitCode, startedAt, endedAt, childRunID, callJobName)
 	return err
 }
 
 func (p *Postgres) GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error) {
 	const q = `
-		SELECT step_index, stage_index, step_name, status, exit_code, started_at, ended_at, variant
+		SELECT step_index, stage_index, step_name, status, exit_code, started_at, ended_at, variant,
+		       COALESCE(child_run_id::text, ''), COALESCE(call_job_name, '')
 		FROM step_reports
 		WHERE run_id = $1
 		ORDER BY step_index, variant;
@@ -597,12 +600,33 @@ func (p *Postgres) GetRunSteps(ctx context.Context, runID string) ([]api.StepRep
 	var out []api.StepReport
 	for rows.Next() {
 		var s api.StepReport
-		if err := rows.Scan(&s.Index, &s.StageIndex, &s.Name, &s.Status, &s.ExitCode, &s.StartedAt, &s.EndedAt, &s.Variant); err != nil {
+		if err := rows.Scan(&s.Index, &s.StageIndex, &s.Name, &s.Status, &s.ExitCode, &s.StartedAt, &s.EndedAt, &s.Variant, &s.ChildRunID, &s.CallJobName); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// GetRunParent returns the call step (and parent run) that launched childRunID,
+// or nil if the run was not created by a call step.
+func (p *Postgres) GetRunParent(ctx context.Context, childRunID string) (*api.CalledBy, error) {
+	const q = `
+		SELECT sr.run_id::text, r.job_name, sr.step_name
+		FROM step_reports sr
+		JOIN runs r ON r.id = sr.run_id
+		WHERE sr.child_run_id = $1::uuid
+		LIMIT 1;
+	`
+	var cb api.CalledBy
+	err := p.pool.QueryRow(ctx, q, childRunID).Scan(&cb.ParentRunID, &cb.ParentJobName, &cb.StepName)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &cb, nil
 }
 
 func (p *Postgres) AppendLog(ctx context.Context, runID string, stepIndex int, stream string, ts time.Time, line string) (int64, error) {
