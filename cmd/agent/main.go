@@ -1,13 +1,10 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"log/slog"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/config"
@@ -96,8 +93,10 @@ func main() {
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// First SIGINT/SIGTERM begins a graceful shutdown (drain in-flight runs up to
+	// DrainTimeout); a second signal forces an immediate shutdown.
+	ctx, cancel := agent.ShutdownContext()
+	defer cancel()
 
 	cli := agent.NewClient(*server, *token)
 	a := agent.NewWithLabels(*id, labels, cli)

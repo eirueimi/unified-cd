@@ -1,12 +1,9 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/config"
@@ -68,8 +65,10 @@ func main() {
 	}
 	ag := k8sagent.NewK8sAgent(cfg, masterClient, pm, exec, pool)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// First SIGINT/SIGTERM begins a graceful shutdown; a second signal forces an
+	// immediate shutdown.
+	ctx, cancel := agentlib.ShutdownContext()
+	defer cancel()
 
 	pool.StartEviction(ctx)
 
