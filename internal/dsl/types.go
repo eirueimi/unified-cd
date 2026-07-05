@@ -94,6 +94,11 @@ type StepEntry struct {
 	ContinueOnError  bool                  `yaml:"continueOnError,omitempty"`
 	Container        string                `yaml:"container,omitempty"`
 	RunsIn           *RunsIn               `yaml:"runsIn,omitempty" json:"runsIn,omitempty"`
+	// Scope tagging: set by inline expansion when a uses-level runsIn.image
+	// makes the whole template one isolated scope. Steps sharing ScopeID run
+	// in one environment. Not user-authored.
+	ScopeID    string `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
+	ScopeImage string `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
 	TimeoutMinutes   float64               `yaml:"timeoutMinutes,omitempty"`
 	Foreach          *ForeachDef           `yaml:"foreach,omitempty"`
 	Matrix           *MatrixDef            `yaml:"matrix,omitempty"`
@@ -119,6 +124,11 @@ type Step struct {
 	ContinueOnError  bool                  `yaml:"continueOnError,omitempty"`
 	Container        string                `yaml:"container,omitempty"`
 	RunsIn           *RunsIn               `yaml:"runsIn,omitempty" json:"runsIn,omitempty"`
+	// Scope tagging: set by inline expansion when a uses-level runsIn.image
+	// makes the whole template one isolated scope. Steps sharing ScopeID run
+	// in one environment. Not user-authored.
+	ScopeID    string `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
+	ScopeImage string `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
 	TimeoutMinutes   float64               `yaml:"timeoutMinutes,omitempty"`
 	Foreach          *ForeachDef           `yaml:"foreach,omitempty"`
 	Matrix           *MatrixDef            `yaml:"matrix,omitempty"`
