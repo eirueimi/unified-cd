@@ -1,0 +1,51 @@
+# Go モジュール/ビルドキャッシュ セットアップジョブテンプレート
+# unified-cd apply examples/setup-go.yaml で登録後、call.job で呼び出す
+#
+# エージェント要件: go（PATH 上に go コマンドが必要）
+#
+# 注意: `go env -w` はエージェントのユーザー環境（$HOME/.config/go/env）に
+# 永続化される設定です。同一エージェントで実行される以降のジョブにも
+# GOMODCACHE/GOCACHE の変更が残るため、共有エージェントで使う場合は
+# 副作用として認識してください。
+#
+# cache: ステップは path を1つしか指定できないため、GOMODCACHE 用と
+# GOCACHE 用で2つの cache ステップに分けています。
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/setup-go.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: setup-go
+spec:
+  params:
+    inputs:
+      - name: working_dir
+        type: string
+        default: "."
+        description: "go.sum を探すディレクトリ（デフォルト: カレントディレクトリ）"
+  steps:
+    - name: configure-go-env
+      env:
+        WORKING_DIR: "{{ .Params.working_dir }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+        cd "$WORKING_DIR"
+        go env -w GOMODCACHE="$(pwd)/.gomodcache" GOCACHE="$(pwd)/.gocache"
+        mkdir -p "$(pwd)/.gomodcache" "$(pwd)/.gocache"
+        echo "[setup-go] GOMODCACHE=$(go env GOMODCACHE) GOCACHE=$(go env GOCACHE)"
+
+    - name: restore-mod-cache
+      cache:
+        path: .gomodcache
+        key: "go-mod-{{ hashFile \"go.sum\" }}"
+        restoreKeys:
+          - "go-mod-"
+
+    - name: restore-build-cache
+      cache:
+        path: .gocache
+        key: "go-build-{{ hashFile \"go.sum\" }}"
+        restoreKeys:
+          - "go-build-"

@@ -1,0 +1,73 @@
+# Google Play への AAB アップロード ジョブテンプレート（fastlane supply 経由）
+# unified-cd apply examples/google-play-upload.yaml で登録後、call.job で呼び出す
+#
+# 【前提条件 — このリポジトリの CI では実行できません】
+# このテンプレートは fastlane（および supply アクション、事実上 Ruby +
+# bundler 環境）がインストール済みのエージェント（agentSelector に
+# fastlane:true などのラベルを推奨）でのみ動作します。以下は fastlane
+# 公式ドキュメントに基づく想定であり、実行検証はできていません:
+#   - `fastlane supply` はサービスアカウント JSON キーでの認証を
+#     `--json_key` 引数（または JSON_KEY_FILE 環境変数）で受け取る
+#   - Google Play Console 側で当該サービスアカウントに
+#     「Release Manager」以上の権限が付与されていることが前提
+#
+# 必要なシークレット:
+#   unified-cd secret set google-play-service-account --value "$(cat service-account.json)"
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/google-play-upload.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: google-play-upload
+spec:
+  params:
+    inputs:
+      - name: aab_path
+        type: string
+        required: true
+        description: "アップロードする .aab ファイルのパス"
+      - name: package_name
+        type: string
+        required: true
+        description: "アプリのパッケージ名（例: com.example.myapp）"
+      - name: track
+        type: string
+        default: "internal"
+        description: "リリーストラック（internal / alpha / beta / production 等）"
+      - name: service_account_json_secret
+        type: string
+        required: true
+        description: "Google Play サービスアカウント JSON キーを保持するシークレット名"
+  steps:
+    - name: supply-upload
+      env:
+        SERVICE_ACCOUNT_JSON: "{{ index .Secrets .Params.service_account_json_secret }}"
+        AAB_PATH: "{{ .Params.aab_path }}"
+        PACKAGE_NAME: "{{ .Params.package_name }}"
+        TRACK: "{{ .Params.track }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _KEY_FILE="$(mktemp)"
+        chmod 600 "$_KEY_FILE"
+        _cleanup() {
+          rm -f "$_KEY_FILE"
+        }
+        trap _cleanup EXIT
+
+        printf '%s\n' "$SERVICE_ACCOUNT_JSON" > "$_KEY_FILE"
+
+        if [ ! -f "$AAB_PATH" ]; then
+          echo "[google-play-upload] ERROR: aab not found at ${AAB_PATH}" >&2
+          exit 1
+        fi
+
+        fastlane supply \
+          --json_key "$_KEY_FILE" \
+          --package_name "$PACKAGE_NAME" \
+          --track "$TRACK" \
+          --aab "$AAB_PATH"
+
+        echo "[google-play-upload] uploaded ${AAB_PATH} to track ${TRACK} for ${PACKAGE_NAME}"

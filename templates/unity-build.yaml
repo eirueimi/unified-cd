@@ -1,0 +1,119 @@
+# Unity バッチモードビルド ジョブテンプレート
+# unified-cd apply examples/unity-build.yaml で登録後、call.job で呼び出す
+#
+# 【注意 — このリポジトリの CI では実行できません】
+# このテンプレートは Unity Editor がインストールされた実機/VM エージェント
+# （agentSelector に unity:true などのラベルを推奨）でのみ動作します。
+# 開発中に curl や go test で直接検証することはできないため、以下の
+# 前提を仮定しています。実際の運用エージェントで smoke テストしてから
+# 使用してください:
+#   - unity_path で指定したパスが Unity Editor の実行ファイルであること
+#     （Windows: Unity.exe、macOS/Linux: Unity バイナリ）
+#   - build_method は `-executeMethod` に渡す静的 C# メソッド
+#     （例: BuildScript.Build）で、プロジェクト内に実装されていること
+#   - ライセンス認証は既にアクティベーション済みのエージェント運用を想定
+#     （license_*_secret を渡すと `-serial`/`-username`/`-password` で
+#     都度アクティベーションを試みますが、Unity のライセンスサーバー
+#     疎通・アクティベーション上限に依存するため CI 内での実証はできて
+#     いません。参考: unity-messaging-cd-workflow の運用ではエージェント
+#     に恒久ライセンスを設定し、この引数は未使用としています）
+#   - ログは -logFile - で標準出力に流し、Unity の終了コードで成否判定
+#     （Unity はビルド失敗時に非ゼロで終了する、という公式ドキュメントの
+#     挙動に依拠。実機での終了コード検証はできていません）
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/unity-build.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: unity-build
+spec:
+  params:
+    inputs:
+      - name: unity_path
+        type: string
+        default: "unity"
+        description: "Unity Editor 実行ファイルのパス（PATH 上にあれば 'unity' のままで可）"
+      - name: project_path
+        type: string
+        default: "."
+        description: "Unity プロジェクトのルートディレクトリ"
+      - name: build_target
+        type: string
+        required: true
+        description: "ビルドターゲット（例: Android, iOS, WebGL, StandaloneLinux64）"
+      - name: build_method
+        type: string
+        default: "BuildScript.Build"
+        description: "-executeMethod に渡す静的 C# メソッド"
+      - name: output_path
+        type: string
+        required: true
+        description: "ビルド成果物の出力先パス"
+      - name: license_serial_secret
+        type: string
+        default: ""
+        description: "Unity ライセンスシリアルを保持するシークレット名（省略可、既にアクティベーション済みのエージェントでは不要）"
+      - name: license_username_secret
+        type: string
+        default: ""
+        description: "Unity ライセンス認証用ユーザー名を保持するシークレット名（省略可）"
+      - name: license_password_secret
+        type: string
+        default: ""
+        description: "Unity ライセンス認証用パスワードを保持するシークレット名（省略可）"
+      - name: extra_args
+        type: string
+        default: ""
+        description: "Unity バッチモードに追加で渡す引数（スペース区切り、省略可）"
+  steps:
+    - name: build
+      env:
+        UNITY_PATH: "{{ .Params.unity_path }}"
+        PROJECT_PATH: "{{ .Params.project_path }}"
+        BUILD_TARGET: "{{ .Params.build_target }}"
+        BUILD_METHOD: "{{ .Params.build_method }}"
+        OUTPUT_PATH: "{{ .Params.output_path }}"
+        LICENSE_SERIAL: "{{ if .Params.license_serial_secret }}{{ index .Secrets .Params.license_serial_secret }}{{ end }}"
+        LICENSE_USERNAME: "{{ if .Params.license_username_secret }}{{ index .Secrets .Params.license_username_secret }}{{ end }}"
+        LICENSE_PASSWORD: "{{ if .Params.license_password_secret }}{{ index .Secrets .Params.license_password_secret }}{{ end }}"
+        EXTRA_ARGS: "{{ .Params.extra_args }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _LICENSE_ARGS=""
+        if [ -n "$LICENSE_SERIAL" ]; then
+          _LICENSE_ARGS="${_LICENSE_ARGS} -serial ${LICENSE_SERIAL}"
+        fi
+        if [ -n "$LICENSE_USERNAME" ]; then
+          _LICENSE_ARGS="${_LICENSE_ARGS} -username ${LICENSE_USERNAME}"
+        fi
+        if [ -n "$LICENSE_PASSWORD" ]; then
+          _LICENSE_ARGS="${_LICENSE_ARGS} -password ${LICENSE_PASSWORD}"
+        fi
+
+        mkdir -p "$(dirname "$OUTPUT_PATH")" 2>/dev/null || true
+
+        echo "[unity-build] building ${BUILD_TARGET} via ${BUILD_METHOD} -> ${OUTPUT_PATH}"
+
+        _EXIT_CODE=0
+        # shellcheck disable=SC2086
+        "$UNITY_PATH" \
+          -batchmode \
+          -nographics \
+          -quit \
+          -projectPath "$PROJECT_PATH" \
+          -buildTarget "$BUILD_TARGET" \
+          -executeMethod "$BUILD_METHOD" \
+          -logFile - \
+          $_LICENSE_ARGS \
+          $EXTRA_ARGS \
+          -customBuildOutputPath "$OUTPUT_PATH" || _EXIT_CODE=$?
+
+        if [ "$_EXIT_CODE" -ne 0 ]; then
+          echo "[unity-build] Unity exited with code ${_EXIT_CODE}" >&2
+          exit "$_EXIT_CODE"
+        fi
+
+        echo "[unity-build] build complete: ${OUTPUT_PATH}"

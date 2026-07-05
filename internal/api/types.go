@@ -342,6 +342,20 @@ type RunApproval struct {
 	DecidedAt *time.Time `json:"decidedAt,omitempty"`
 }
 
+// ---- audit ----
+
+// AuditLog represents a single recorded state-changing API operation.
+type AuditLog struct {
+	ID         int64     `json:"id"`
+	OccurredAt time.Time `json:"occurredAt"`
+	Actor      string    `json:"actor"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	Action     string    `json:"action"`
+	Resource   string    `json:"resource,omitempty"`
+	Status     int       `json:"status"`
+}
+
 // ---- appsource ----
 
 // ApplyAppSourceRequest is the request for registering or updating an AppSource YAML.
