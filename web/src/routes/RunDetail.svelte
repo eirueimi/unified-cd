@@ -40,6 +40,45 @@
       ? logLines.filter((l) => selectedParallelGroup.includes(l.stepIndex))
       : logLines;
 
+  // ---- Virtualized log rendering ----
+  // Logs can reach tens of thousands of lines (e.g. Unity's `-logFile -`), which
+  // freezes the browser if every line becomes a DOM node. We render only the
+  // rows inside the scroll viewport (plus a small overscan) using fixed-height
+  // rows and top/bottom spacer divs, so the scrollbar still reflects the full log.
+  const LOG_ROW_H = 20; // px — must match .log-row height in <style>
+  const LOG_OVERSCAN = 15; // extra rows rendered above and below the viewport
+  let logScrollTop = 0;
+  let logViewportH = 600;
+  let logStick = true; // keep auto-scrolling to the bottom while the user is there
+  $: logTotal = filteredLogs.length;
+  $: logStart = Math.max(0, Math.floor(logScrollTop / LOG_ROW_H) - LOG_OVERSCAN);
+  $: logEnd = Math.min(
+    logTotal,
+    Math.ceil((logScrollTop + logViewportH) / LOG_ROW_H) + LOG_OVERSCAN,
+  );
+  $: visibleLogs = filteredLogs.slice(logStart, logEnd);
+  function measureLogViewport() {
+    if (logBox) logViewportH = logBox.clientHeight;
+  }
+  function onLogScroll() {
+    if (!logBox) return;
+    logScrollTop = logBox.scrollTop;
+    // Stick to the bottom only while the user is within ~2 rows of the end.
+    logStick =
+      logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight <
+      LOG_ROW_H * 2;
+  }
+  // Reset the scroll position when the step/parallel filter changes so the newly
+  // filtered log starts from the top.
+  $: resetLogScrollOnFilter(selectedStep, selectedParallelGroup);
+  function resetLogScrollOnFilter() {
+    logScrollTop = 0;
+    logStick = true;
+    tick().then(() => {
+      if (logBox) logBox.scrollTop = 0;
+    });
+  }
+
   // Reactive so the log labels re-render when steps load after SSE starts.
   // Logs are shared across all matrix variants of a step index (there is no
   // per-line variant tag), so when multiple rows share `idx` we just take the
@@ -138,9 +177,13 @@
             const data = JSON.parse(line);
             if (data.type === "log") {
               logLines = [...logLines, data];
-              await tick();
-              if (logBox && selectedStep === null)
-                logBox.scrollTop = logBox.scrollHeight;
+              if (logStick && selectedStep === null) {
+                await tick();
+                if (logBox) {
+                  logBox.scrollTop = logBox.scrollHeight;
+                  logScrollTop = logBox.scrollTop;
+                }
+              }
             } else if (data.type === "status") {
               if (run) run = { ...run, status: data.status };
               if (["Succeeded", "Failed", "Cancelled"].includes(data.status)) {
@@ -185,6 +228,8 @@
     loading = true;
     await Promise.all([loadRun(), loadSteps(), loadApprovals()]);
     loading = false;
+    await tick();
+    measureLogViewport();
     if (run && !["Succeeded", "Failed", "Cancelled"].includes(run.status))
       startStepPolling();
     startSSE();
@@ -197,9 +242,13 @@
   // that caused a duplicate concurrent SSE connection/log fetch on first load,
   // where the second connection's `logLines = []` reset could wipe out or race
   // with logs already delivered by the first, leaving the panel stuck empty.
+  if (typeof window !== "undefined")
+    window.addEventListener("resize", measureLogViewport);
   onDestroy(() => {
     if (abortController) abortController.abort();
     stopStepPolling();
+    if (typeof window !== "undefined")
+      window.removeEventListener("resize", measureLogViewport);
   });
   $: runID, init();
 </script>
@@ -387,17 +436,21 @@
           on:click={() => (selectedStep = null)}>All Steps</button
         >
       {/if}
+      {#if logTotal}
+        <span class="meta" style="font-size:0.75rem"
+          >{logTotal.toLocaleString()} lines</span
+        >
+      {/if}
       <span class="meta" style="font-size:0.75rem">SSE</span>
     </div>
-    <div class="log-box" bind:this={logBox}>
+    <div class="log-box" bind:this={logBox} on:scroll={onLogScroll}>
       {#if !filteredLogs.length}
         <span style="color:var(--text-muted)">Waiting for logs…</span>
       {:else}
-        {#each filteredLogs as l, i (i)}
-          <div>
-            {#if selectedStep === null}<span
-                class="meta"
-                style="font-size:0.7rem;margin-right:0.4rem"
+        <div style="height:{logStart * LOG_ROW_H}px" aria-hidden="true"></div>
+        {#each visibleLogs as l (l.seq)}
+          <div class="log-row">
+            {#if selectedStep === null}<span class="meta log-step-label"
                 >{stepName(l.stepIndex)}</span
               >{/if}<span
               class={l.stream === "stderr" ? "log-stderr" : "log-stdout"}
@@ -405,6 +458,10 @@
             >
           </div>
         {/each}
+        <div
+          style="height:{(logTotal - logEnd) * LOG_ROW_H}px"
+          aria-hidden="true"
+        ></div>
       {/if}
     </div>
   {/if}
@@ -421,6 +478,16 @@
   .param-k {
     color: var(--text-muted);
     white-space: nowrap;
+  }
+  /* Fixed-height rows are required by the log virtual scroller (LOG_ROW_H). */
+  .log-row {
+    height: 20px;
+    line-height: 20px;
+    white-space: pre;
+  }
+  .log-step-label {
+    font-size: 0.7rem;
+    margin-right: 0.4rem;
   }
   .param-v {
     color: var(--text);

@@ -81,7 +81,7 @@ tr:hover td { background: var(--bg-elev); }
 .badge-pending { background: var(--badge-pending-bg); color: var(--badge-pending-fg); }
 .badge-queued  { background: var(--badge-queued-bg); color: var(--badge-queued-fg); }
 .badge-cancelled { background: var(--badge-cancelled-bg); color: var(--badge-cancelled-fg); }
-.log-box { background: var(--bg-inset); border: 1px solid var(--border); border-radius: 0.375rem; padding: 1rem; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.8rem; line-height: 1.5; height: 60vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.log-box { background: var(--bg-inset); border: 1px solid var(--border); border-radius: 0.375rem; padding: 1rem; font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.8rem; line-height: 1.5; height: 60vh; overflow: auto; }
 .log-stdout { color: var(--text); }
 .log-stderr { color: var(--danger); }
 .btn { display: inline-block; padding: 0.4rem 0.8rem; border-radius: 0.375rem; border: 1px solid var(--border); background: var(--btn-bg); color: var(--text); cursor: pointer; font-size: 0.85rem; }

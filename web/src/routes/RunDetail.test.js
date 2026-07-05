@@ -40,6 +40,31 @@ function countEventsCalls(fetchMock) {
   return fetchMock.mock.calls.filter(([url]) => String(url).includes('/events')).length;
 }
 
+// A `/events` response that streams `n` log lines in a single chunk, then ends.
+function eventsResponseWithLogs(n) {
+  const enc = new TextEncoder();
+  let payload = '';
+  for (let i = 0; i < n; i++) {
+    payload += `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'line ' + i })}\n\n`;
+  }
+  let sent = false;
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        return {
+          read: async () => {
+            if (sent) return { done: true, value: undefined };
+            sent = true;
+            return { done: false, value: enc.encode(payload) };
+          },
+        };
+      },
+    },
+  });
+}
+
 beforeEach(() => {
   token.set('');
   serverURL.set('http://localhost:8080');
@@ -187,5 +212,36 @@ describe('RunDetail — matrix/foreach steps with duplicate step index (C1)', ()
       const rows = container.querySelectorAll('.step-name');
       expect(rows.length).toBe(2);
     });
+  });
+});
+
+// A huge log (e.g. Unity's `-logFile -`) used to render every line as a DOM
+// node, freezing the tab. RunDetail now virtualizes the log: it ingests every
+// line (the "N lines" counter reflects the full total) but only keeps a small
+// window of rows in the DOM.
+describe('RunDetail — log virtualization', () => {
+  it('renders only a window of rows for a large log, not every line', async () => {
+    const N = 500;
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return eventsResponseWithLogs(N);
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-1', status: 'Succeeded', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+
+    // All N lines are ingested (the counter shows the full total)...
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain(`${N} lines`);
+    });
+
+    // ...but only a small window of rows is materialized in the DOM.
+    const rows = container.querySelectorAll('.log-row');
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThan(N);
+    expect(rows.length).toBeLessThanOrEqual(60);
   });
 });
