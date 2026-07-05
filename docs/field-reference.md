@@ -26,6 +26,7 @@
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `annotations` | map[string]string | no |  |
 | `labels` | map[string]string | no |  |
 | `name` | string | yes |  |
 
@@ -105,6 +106,10 @@ The two forms are mutually exclusive; Validate enforces this.
 | `post` | PostStep | no |  |
 | `run` | string | no |  |
 | `runsIn` | RunsIn | no |  |
+| `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image
+makes the whole template one isolated scope. Steps sharing ScopeID run
+in one environment. Not user-authored. |
+| `scopeImage` | string | no |  |
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
@@ -184,6 +189,10 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 | `post` | PostStep | no |  |
 | `run` | string | no |  |
 | `runsIn` | RunsIn | no |  |
+| `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image
+makes the whole template one isolated scope. Steps sharing ScopeID run
+in one environment. Not user-authored. |
+| `scopeImage` | string | no |  |
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
@@ -325,6 +334,7 @@ Schedule is the DSL type for a cron schedule trigger.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `annotations` | map[string]string | no |  |
 | `labels` | map[string]string | no |  |
 | `name` | string | yes |  |
 
@@ -353,6 +363,7 @@ WebhookReceiver is the DSL type for webhook receiver configuration.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `annotations` | map[string]string | no |  |
 | `labels` | map[string]string | no |  |
 | `name` | string | yes |  |
 
@@ -397,6 +408,7 @@ the named AppSource on the next reconciler tick.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `annotations` | map[string]string | no |  |
 | `labels` | map[string]string | no |  |
 | `name` | string | yes |  |
 
@@ -431,6 +443,7 @@ GitCredential is the DSL type that defines git credentials for private repositor
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `annotations` | map[string]string | no |  |
 | `labels` | map[string]string | no |  |
 | `name` | string | yes |  |
 

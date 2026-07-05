@@ -325,6 +325,12 @@
     "Metadata": {
       "additionalProperties": false,
       "properties": {
+        "annotations": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "labels": {
           "additionalProperties": {
             "type": "string"
@@ -664,6 +670,13 @@
         "runsIn": {
           "$ref": "#/definitions/RunsIn"
         },
+        "scopeID": {
+          "description": "Scope tagging: set by inline expansion when a uses-level runsIn.image\nmakes the whole template one isolated scope. Steps sharing ScopeID run\nin one environment. Not user-authored.",
+          "type": "string"
+        },
+        "scopeImage": {
+          "type": "string"
+        },
         "timeoutMinutes": {
           "type": "number"
         },
@@ -741,6 +754,13 @@
         },
         "runsIn": {
           "$ref": "#/definitions/RunsIn"
+        },
+        "scopeID": {
+          "description": "Scope tagging: set by inline expansion when a uses-level runsIn.image\nmakes the whole template one isolated scope. Steps sharing ScopeID run\nin one environment. Not user-authored.",
+          "type": "string"
+        },
+        "scopeImage": {
+          "type": "string"
         },
         "timeoutMinutes": {
           "type": "number"
