@@ -67,6 +67,9 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	if cb, cErr := s.store.GetRunParent(r.Context(), id); cErr == nil && cb != nil {
+		run.CalledBy = cb
+	}
 	writeJSON(w, http.StatusOK, run)
 }
 

@@ -55,6 +55,7 @@ type Run struct {
 	CreatedAt   time.Time         `json:"createdAt"`
 	UpdatedAt   time.Time         `json:"updatedAt"`
 	TriggeredBy string            `json:"triggeredBy"`
+	CalledBy    *CalledBy         `json:"calledBy,omitempty"`
 }
 
 // CalledBy identifies the call step (and its run) that launched this run.
@@ -161,6 +162,9 @@ type StepReportRequest struct {
 	StartedAt  time.Time `json:"startedAt,omitempty"`
 	EndedAt    time.Time `json:"endedAt,omitempty"`
 	Variant    string    `json:"variant,omitempty"`
+
+	ChildRunID  string `json:"childRunId,omitempty"`
+	CallJobName string `json:"callJobName,omitempty"`
 }
 
 type StepReport struct {
