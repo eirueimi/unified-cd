@@ -35,6 +35,39 @@ func plannedSteps(spec dsl.Spec) []api.StepReport {
 	return out
 }
 
+// mergedRunSteps overlays reported step statuses onto the planned step list.
+// For each planned step index: if the agent has reported it (possibly as
+// multiple matrix variants), use the reported rows (with kind/section attached
+// from the plan); otherwise emit the planned "Pending" entry. Reported rows
+// whose index is not in the plan (shouldn't happen) are appended verbatim so
+// real data is never dropped.
+func mergedRunSteps(reported []api.StepReport, spec dsl.Spec) []api.StepReport {
+	planned := plannedSteps(spec)
+	byIndex := map[int][]api.StepReport{}
+	for _, r := range reported {
+		byIndex[r.Index] = append(byIndex[r.Index], r)
+	}
+	plannedIdx := map[int]bool{}
+	var out []api.StepReport
+	for _, p := range planned {
+		plannedIdx[p.Index] = true
+		if rs, ok := byIndex[p.Index]; ok {
+			for _, r := range rs {
+				r.Kind, r.Section, r.Matrix = p.Kind, p.Section, p.Matrix
+				out = append(out, r)
+			}
+			continue
+		}
+		out = append(out, p)
+	}
+	for _, r := range reported {
+		if !plannedIdx[r.Index] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // stepKind classifies a ClaimStep by its primary action for display.
 func stepKind(cs api.ClaimStep) string {
 	switch {

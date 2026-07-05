@@ -175,6 +175,14 @@ func (s *Server) handleGetRunSteps(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Overlay onto the planned step list so not-yet-run steps show as Pending.
+	// Best-effort: if the spec is missing/unparseable, fall back to reported.
+	if specJSON, sErr := s.store.GetRunSpec(r.Context(), id); sErr == nil && len(specJSON) > 0 {
+		var spec dsl.Spec
+		if json.Unmarshal(specJSON, &spec) == nil {
+			steps = mergedRunSteps(steps, spec)
+		}
+	}
 	if steps == nil {
 		steps = []api.StepReport{}
 	}
