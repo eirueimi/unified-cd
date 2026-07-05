@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -16,13 +17,21 @@ type mockAppSourceFetcher struct {
 	files         map[string][]byte
 	filesErr      error
 	fetchDirCalls int
+	resolveErr    error
+	fetchErr      error
 }
 
 func (m *mockAppSourceFetcher) ResolveCommitSHA(_ context.Context, _, _, _, _ string) (string, error) {
+	if m.resolveErr != nil {
+		return "", m.resolveErr
+	}
 	return m.sha, m.shaErr
 }
 func (m *mockAppSourceFetcher) FetchDir(_ context.Context, _, _, _, _, _ string) (map[string][]byte, error) {
 	m.fetchDirCalls++
+	if m.fetchErr != nil {
+		return nil, m.fetchErr
+	}
 	return m.files, m.filesErr
 }
 
@@ -143,4 +152,22 @@ func TestReconciler_ForceSyncOnEmptyCommit(t *testing.T) {
 
 	_, err = pg.GetJob(ctx, "build")
 	require.NoError(t, err, "should sync when last_commit is empty (forced sync)")
+}
+
+func TestReconcile_RecordsFailedStatusOnError(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))
+	require.NoError(t, err)
+
+	fetcher := &mockAppSourceFetcher{
+		resolveErr: fmt.Errorf("auth denied"),
+	}
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	src, err := pg.GetAppSource(ctx, "my-src")
+	require.NoError(t, err)
+	assert.Equal(t, "Failed", src.SyncStatus)
+	assert.Contains(t, src.LastError, "auth denied")
 }

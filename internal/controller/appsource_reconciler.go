@@ -74,6 +74,9 @@ func reconcileAppSources(ctx context.Context, st store.Store, fetcher AppSourceF
 		}
 		if err := syncAppSource(ctx, st, fetcher, km, src, spec); err != nil {
 			slog.Warn("appsource reconciler: sync failed", "name", src.Name, "error", err)
+			if serr := st.SetAppSourceSyncStatus(ctx, src.Name, "Failed", err.Error()); serr != nil {
+				slog.Warn("appsource reconciler: failed to record sync status", "name", src.Name, "error", serr)
+			}
 		}
 	}
 }
