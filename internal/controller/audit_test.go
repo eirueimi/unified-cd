@@ -48,6 +48,36 @@ spec:
 	assert.Equal(t, 200, logs[0].Status)
 }
 
+// TestAudit_JobDeleteRecordsQualifiedName verifies that deleting a Job whose
+// qualified name contains "/" (e.g. hierarchical jobs like "team-a/build") is
+// recorded with action "job.delete" and the full qualified name as the
+// resource. The job routes are registered as a catch-all "/jobs/*" (to allow
+// slash-containing names), not "/jobs/{name}", so this also guards against
+// regressing the audit route-pattern classification and resource resolution.
+func TestAudit_JobDeleteRecordsQualifiedName(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	// Hierarchical job names (containing "/") cannot be created via the YAML
+	// apply endpoint (dsl name validation forbids "/" in metadata.name); seed
+	// the store directly, mirroring TestAPI_GetJob_SlashInName.
+	_, err := pg.UpsertJob(t.Context(), "team-a/build", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/team-a/build", nil)
+	delReq.Header.Set("Authorization", "Bearer secret")
+	delRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(delRec, delReq)
+	require.Equal(t, http.StatusNoContent, delRec.Code, delRec.Body.String())
+
+	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.Equal(t, "job.delete", logs[0].Action)
+	assert.Equal(t, "team-a/build", logs[0].Resource)
+	assert.Equal(t, "DELETE", logs[0].Method)
+	assert.Equal(t, "/api/v1/jobs/team-a/build", logs[0].Path)
+}
+
 // TestAudit_SecretSetRecordsNameOnly verifies that setting a secret records
 // only the secret's name, and that the value never appears anywhere in the
 // audit row (path, action, or resource).

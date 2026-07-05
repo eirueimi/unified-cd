@@ -23,7 +23,7 @@ func TestApplyResource_EachKind(t *testing.T) {
 		{"AppSource", "as1", "apiVersion: unified-cd/v1\nkind: AppSource\nmetadata:\n  name: as1\nspec:\n  repoURL: https://x/y\n  targetRevision: main\n  path: jobs"},
 	}
 	for _, c := range cases {
-		got, err := applyResource(ctx, pg, c.kind, []byte(c.doc))
+		got, err := applyResource(ctx, pg, c.kind, "", []byte(c.doc))
 		if err != nil {
 			t.Fatalf("%s: applyResource error: %v", c.kind, err)
 		}
@@ -36,13 +36,13 @@ func TestApplyResource_EachKind(t *testing.T) {
 func TestApplyResource_UnknownAndBad(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	ctx := context.Background()
-	_, err := applyResource(ctx, pg, "Nope", []byte("kind: Nope"))
+	_, err := applyResource(ctx, pg, "Nope", "", []byte("kind: Nope"))
 	if err == nil {
 		t.Error("unknown kind: expected error")
 	}
 	require.False(t, errors.Is(err, errStoreWrite), "unknown kind error must not be classified as a store-write failure")
 
-	_, err = applyResource(ctx, pg, "Job", []byte("kind: Job\nmetadata: {name: x}\nspec: {steps: []}"))
+	_, err = applyResource(ctx, pg, "Job", "", []byte("kind: Job\nmetadata: {name: x}\nspec: {steps: []}"))
 	if err == nil {
 		t.Error("invalid Job: expected error")
 	}

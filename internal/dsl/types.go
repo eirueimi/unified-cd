@@ -15,8 +15,9 @@ type Job struct {
 }
 
 type Metadata struct {
-	Name   string            `yaml:"name"`
-	Labels map[string]string `yaml:"labels,omitempty"`
+	Name        string            `yaml:"name"`
+	Labels      map[string]string `yaml:"labels,omitempty"`
+	Annotations map[string]string `yaml:"annotations,omitempty"`
 }
 
 type Spec struct {

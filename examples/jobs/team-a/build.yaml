@@ -1,0 +1,12 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build
+  annotations:
+    path: team-a   # optional for direct apply; AppSource sets this from the directory
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: build
+      run: echo "building team-a/build"

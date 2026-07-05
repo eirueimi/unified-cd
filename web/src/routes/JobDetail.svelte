@@ -5,7 +5,7 @@
   import { statusBadge, fmtRelative } from "../lib/utils.js";
 
   export let params;
-  $: jobName = params.name;
+  $: jobName = decodeURIComponent(params.name);
 
   let runs = [],
     loading = true,
@@ -46,9 +46,9 @@
     <h1>{jobName}</h1>
   </div>
   <div style="border-bottom:1px solid var(--border);margin-bottom:1.5rem">
-    <a href="#/jobs/{jobName}" class="tab-link tab-active">History</a>
-    <a href="#/jobs/{jobName}/run" class="tab-link">▶ Run</a>
-    <a href="#/jobs/{jobName}/yaml" class="tab-link">YAML</a>
+    <a href="#/jobs/{encodeURIComponent(jobName)}" class="tab-link tab-active">History</a>
+    <a href="#/jobs/{encodeURIComponent(jobName)}/run" class="tab-link">▶ Run</a>
+    <a href="#/jobs/{encodeURIComponent(jobName)}/yaml" class="tab-link">YAML</a>
   </div>
   {#if loading}<div class="loading">Loading...</div>
   {:else if error}<div class="error">{error}</div>

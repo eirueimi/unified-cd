@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -19,7 +20,7 @@ import (
 // recorded with a generic action derived from the path (see classifyAudit).
 var auditActionTable = map[string]string{
 	"POST /api/v1/jobs":                               "job.apply",
-	"DELETE /api/v1/jobs/{name}":                      "job.delete",
+	"DELETE /api/v1/jobs/*":                           "job.delete",
 	"POST /api/v1/runs":                               "run.trigger",
 	"POST /api/v1/runs/{id}/cancel":                   "run.cancel",
 	"DELETE /api/v1/runs/{id}":                        "run.delete",
@@ -42,8 +43,13 @@ var auditActionTable = map[string]string{
 // auditResourceParams lists, per action, the chi URL param name (if any) that
 // identifies the resource. When empty, the resource is resolved from the
 // request/response body instead (see auditBodyNameActions).
+//
+// "*" is a special sentinel meaning the resource is the chi catch-all wildcard
+// param, with any leading slash trimmed (see auditResourceFromParam). This is
+// used by routes registered as "/jobs/*" rather than "/jobs/{name}", where job
+// names may themselves contain "/" (e.g. "team-a/build").
 var auditResourceParams = map[string]string{
-	"job.delete":           "name",
+	"job.delete":           "*",
 	"run.cancel":           "id",
 	"run.delete":           "id",
 	"run.approval.decide":  "runID",
@@ -54,6 +60,17 @@ var auditResourceParams = map[string]string{
 	"schedule.delete":      "name",
 	"appsource.delete":     "name",
 	"appsource.sync":       "name",
+}
+
+// auditResourceFromParam resolves a resource name from a chi URL param. The
+// "*" sentinel (see auditResourceParams) reads the catch-all wildcard and
+// trims any leading slash, so a request to DELETE /api/v1/jobs/team-a/build
+// resolves to the resource "team-a/build", not "/team-a/build".
+func auditResourceFromParam(r *http.Request, param string) string {
+	if param == "*" {
+		return strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+	}
+	return chi.URLParam(r, param)
 }
 
 // auditBodyNameSource says whether to resolve a body-derived resource name
@@ -169,7 +186,7 @@ func auditLogMiddleware(st interface {
 
 			resource := ""
 			if param, ok := auditResourceParams[action]; ok && param != "" {
-				resource = chi.URLParam(r, param)
+				resource = auditResourceFromParam(r, param)
 			} else if src, ok := auditBodyNameSource[action]; ok {
 				switch src {
 				case "request":

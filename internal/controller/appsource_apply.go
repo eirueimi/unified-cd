@@ -43,21 +43,26 @@ func probeName(doc []byte) string {
 // applyResource parses one synced document by kind and upserts it, returning metadata.name.
 // Parse/unknown-kind failures return a bare error (skippable); store failures are
 // wrapped with errStoreWrite (abort). Never panics.
-func applyResource(ctx context.Context, st store.Store, kind string, doc []byte) (string, error) {
+func applyResource(ctx context.Context, st store.Store, kind, dir string, doc []byte) (string, error) {
 	switch kind {
 	case "Job":
 		job, err := dsl.Parse(strings.NewReader(string(doc)))
 		if err != nil {
 			return "", err
 		}
+		if job.Metadata.Annotations == nil {
+			job.Metadata.Annotations = map[string]string{}
+		}
+		job.Metadata.Annotations["path"] = dir
 		specJSON, err := json.Marshal(job.Spec)
 		if err != nil {
 			return "", err
 		}
-		if _, err := st.UpsertJob(ctx, job.Metadata.Name, job.APIVersion, specJSON); err != nil {
+		name := job.Metadata.QualifiedName()
+		if _, err := st.UpsertJob(ctx, name, job.APIVersion, specJSON); err != nil {
 			return "", fmt.Errorf("%w: %v", errStoreWrite, err)
 		}
-		return job.Metadata.Name, nil
+		return name, nil
 	case "Schedule":
 		sc, err := dsl.ParseSchedule(strings.NewReader(string(doc)))
 		if err != nil {

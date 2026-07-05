@@ -197,10 +197,32 @@ body, so slashes need no special handling.)
 
 ## Backward compatibility
 
-Fully compatible. Existing jobs have flat names (no `/`) → derived `path` is
-`""`, `leaf` equals the name → they render at the tree root. Existing runs,
-schedules, webhooks, and their name references are untouched. No data
-migration.
+Fully compatible **for jobs directly under `spec.path`** (i.e. an empty
+relative directory). Existing flat jobs have names with no `/` → derived
+`path` is `""`, `leaf` equals the name → they render unchanged at the tree
+root under the same qualified name as before. Their runs, schedules,
+webhooks, and other name references are untouched. No data migration for
+this case.
+
+**This does NOT extend to jobs that already live in AppSource
+subdirectories.** A file previously synced from, say, `jobs/team-a/build.yaml`
+was stored under the flat name `build` (the directory was ignored pre-feature).
+After this change the same file is stored under the qualified name
+`team-a/build` — a different `jobs.name` value.
+
+> **UPGRADE NOTE:** On the first reconcile after upgrading, every AppSource
+> job that lives in a subdirectory is re-keyed: it is applied under its new
+> qualified name (`team-a/build`) and the old flat-named row (`build`) is no
+> longer written by that AppSource. If the AppSource has `prune: true`, the
+> old flat-named job is deleted on that same sync. If `prune: false`, the old
+> flat-named job is left behind as an orphan (no AppSource claims it anymore)
+> and must be cleaned up manually. Either way, expect a one-time
+> prune/re-create for every nested job, and re-point any Schedules or
+> WebhookReceivers that reference the old flat name (e.g. `job: build`) to the
+> new qualified name (`job: team-a/build`) *before* or immediately after the
+> upgrade, since they are not renamed automatically. Run history rows keyed to
+> the old flat name remain in place but are no longer associated with the
+> job's new identity going forward.
 
 ## Testing
 
