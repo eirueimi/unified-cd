@@ -408,8 +408,8 @@ steps:
 
 ## AppSource
 
-GitOps-style automatic synchronization of job definitions from a Git repository.
-When applied, the controller periodically clones the repository and upserts any Job YAML files found at the specified path.
+GitOps-style automatic synchronization of resource definitions from a Git repository.
+When applied, the controller periodically clones the repository and upserts the supported resource kinds found at the specified path.
 
 ```yaml
 apiVersion: unified-cd/v1
@@ -423,7 +423,7 @@ spec:
   gitCredentialRef: <string>      # optional — GitCredential name for private repos
   syncPolicy:
     interval: <duration>          # polling interval (default: 5m, minimum: 1m)
-    prune: <bool>                 # delete jobs from DB when removed from the repo (default: false)
+    prune: <bool>                 # delete resources from DB when removed from the repo (default: false)
 ```
 
 ### Fields
@@ -436,14 +436,19 @@ spec:
 | `spec.path` | string | Yes | Directory within the repo to scan for YAML files (recursive) |
 | `spec.gitCredentialRef` | string | No | Name of a GitCredential resource for private repository access |
 | `spec.syncPolicy.interval` | string | No | How often to check for changes (e.g. `5m`, `1h`). Default: `5m`, minimum: `1m` |
-| `spec.syncPolicy.prune` | bool | No | If `true`, jobs that are removed from the repo are deleted from the controller. Default: `false` |
+| `spec.syncPolicy.prune` | bool | No | If `true`, resources that are removed from the repo are deleted from the controller. Default: `false` |
 
 ### Sync behavior
 
 1. The controller clones or fetches the repository at every `interval`.
 2. All `.yaml` files under `path` are scanned recursively.
-3. Only documents with `kind: Job` are applied. Any other kind, or a file that fails to parse as YAML, is skipped; the controller logs a per-file warning and continues syncing the rest of the files.
-4. If `prune: true`, jobs that were previously managed by this AppSource but no longer appear in the repo are deleted.
+3. AppSource syncs `Job`, `Schedule`, `WebhookReceiver`, `GitCredential`, and `AppSource` documents found (recursively) under `spec.path`. Files of other kinds, or files that fail to parse, are skipped with a per-file warning; the rest of the sync continues.
+4. Files are processed in sorted path order. If two files declare the same kind and name, the first (lexicographically earliest path) wins and the rest are skipped with a warning.
+5. If `prune: true`, resources that were previously managed by this AppSource but no longer appear in the repo are deleted. Pruning a nested `AppSource` removes only that AppSource; the resources it managed are left in place (non-cascading, matching Argo CD's default).
+
+Do not manage the same resource from two AppSources — the last sync wins.
+
+`secretRef` fields (on `GitCredential`/`WebhookReceiver`) reference a `StoredSecret` by name. Secret values are never stored in Git; create them with `unified-cd secret set` before syncing.
 
 `spec.syncPolicy.interval` has a minimum of `1m`; values below that are rejected.
 
