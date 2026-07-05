@@ -49,9 +49,17 @@ func hostContainerLimits(rs *dsl.ResourceSpec) (cpu, mem string) {
 var approvalPollInterval = 3 * time.Second
 
 // postHookEntry is a post-processing entry executed after a step completes.
+// scoped/sm/h carry the owning step's scope container, if any, so the post
+// script runs inside the same isolated environment the step body ran in
+// rather than on the host workspace. sm/h are only meaningful when scoped is
+// true; the scope container is still alive when hookStack is drained (see
+// executeRun: hookStack runs before the deferred scopeManager.closeAll).
 type postHookEntry struct {
 	stepName string
 	post     api.PostStep
+	scoped   bool
+	sm       *scopeManager
+	h        crt.ContainerHandle
 }
 
 // Agent represents an agent that communicates with the master server to execute jobs.
@@ -319,8 +327,18 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	// scopes: one scopeManager for the whole claim, created lazily on first use
 	// by a uses-scope step. Torn down at claim end regardless of how the claim
 	// finished (success, failure, or cancellation).
+	//
+	// parallel: steps in the same claim run concurrently as goroutines (see
+	// runParallel in pipeline.go), so getScopes can be called from multiple
+	// goroutines at once. scopesMu guards the nil-check-and-assign so exactly
+	// one scopeManager is ever created per claim, instead of a data race that
+	// could construct two managers (leaking/duplicating scope containers) or
+	// trip Go's "concurrent map writes" panic in scopeManager.open.
 	var scopes *scopeManager
+	var scopesMu sync.Mutex
 	getScopes := func() (*scopeManager, error) {
+		scopesMu.Lock()
+		defer scopesMu.Unlock()
 		if scopes != nil {
 			return scopes, nil
 		}
@@ -476,6 +494,14 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				tplData.Foreach = step.MatrixValues // foreach シュガー互換: {{ .Foreach.key }}
 			}
 
+			// stepScope/stepScopeHandle capture this step's scope container (if
+			// any), set inside the isScopedStep run-branch case below. A step's
+			// post: hook must execute inside the same scope container the step
+			// body ran in (not the host workspace), so postHookEntry carries
+			// these through to the hookStack drain in the finally block.
+			var stepScope *scopeManager
+			var stepScopeHandle crt.ContainerHandle
+
 			if step.Call != nil {
 				childOutputs, callErr := a.executeCallStep(stepCtx, step, tplData)
 				if callErr != nil {
@@ -526,6 +552,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 						ec = -1
 						break
 					}
+					stepScope, stepScopeHandle = sm, h
 					var stdoutBuf bytes.Buffer
 					ec, runErr = sm.exec(stepCtx, h, expandedRun, extraEnv, &stdoutBuf, stderrPusher)
 					capturedStdout = stdoutBuf.String()
@@ -601,6 +628,9 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				hookStack = append(hookStack, postHookEntry{
 					stepName: step.Name,
 					post:     *step.Post,
+					scoped:   isScopedStep(step),
+					sm:       stepScope,
+					h:        stepScopeHandle,
 				})
 			}
 
@@ -645,6 +675,17 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		var extraEnv []string
 		for k, v := range entry.post.Env {
 			extraEnv = append(extraEnv, k+"="+v)
+		}
+		if entry.scoped {
+			// The owning step ran in an isolated scope container; its post:
+			// hook must run there too, not on the host workspace. The scope
+			// container is still alive here — hookStack is drained before the
+			// deferred scopeManager.closeAll runs (see the `defer` registered
+			// alongside getScopes above).
+			if _, runErr := entry.sm.exec(hookCtx, entry.h, cmd, extraEnv, nil, nil); runErr != nil {
+				slog.Warn("post step failed", "step", entry.stepName, "error", runErr)
+			}
+			continue
 		}
 		if _, _, runErr := RunStepCapture(hookCtx, cmd, nil, extraEnv, workDir); runErr != nil {
 			slog.Warn("post step failed", "step", entry.stepName, "error", runErr)

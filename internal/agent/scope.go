@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
@@ -13,8 +14,23 @@ import (
 
 // scopeManager owns the isolated environments for uses-level runsIn.image
 // scopes on the host agent. One environment per (ScopeID, MatrixKey).
+//
+// A single claim's steps may run concurrently (parallel: stages execute as
+// goroutines, see pipeline.go's runParallel), and multiple of those steps can
+// share a scope key or race to provision distinct keys at the same time. mu
+// guards every access to open so that concurrent ensure/closeKey/closeAll
+// calls are race-free and each key is provisioned at most once.
+//
+// mu is held across the check-and-create in ensure (including the
+// rt.Create call), which is the simplest correct option: it serializes scope
+// provisioning within a claim, trading a small amount of parallelism (two
+// distinct scopes cannot be created at the exact same instant) for a
+// guarantee that a key is never double-created and open is never touched
+// without the lock. Scope provisioning happens once per key per claim, so
+// this serialization is not expected to be a meaningful bottleneck.
 type scopeManager struct {
 	rt   crt.ContainerRuntime
+	mu   sync.Mutex
 	open map[string]crt.ContainerHandle
 }
 
@@ -32,8 +48,14 @@ func (m *scopeManager) key(step api.ClaimStep) string {
 }
 
 // ensure returns the scope container for step, creating it on first use.
+// The lock is held across the check-and-create (including the rt.Create
+// call) so that concurrent callers racing on the same key never both
+// observe a miss and double-create a container; see the scopeManager doc
+// comment for the tradeoff this implies.
 func (m *scopeManager) ensure(ctx context.Context, step api.ClaimStep, env []string) (crt.ContainerHandle, error) {
 	k := m.key(step)
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if h, ok := m.open[k]; ok {
 		return h, nil
 	}
@@ -70,18 +92,28 @@ func (m *scopeManager) copyIn(ctx context.Context, h crt.ContainerHandle, hostPa
 }
 
 func (m *scopeManager) closeKey(ctx context.Context, key string) {
+	m.mu.Lock()
 	h, ok := m.open[key]
+	if ok {
+		delete(m.open, key)
+	}
+	m.mu.Unlock()
 	if !ok {
 		return
 	}
 	if err := m.rt.Remove(ctx, h); err != nil {
 		slog.Warn("scope teardown failed", "container", h.ID, "error", err)
 	}
-	delete(m.open, key)
 }
 
 func (m *scopeManager) closeAll(ctx context.Context) {
+	m.mu.Lock()
+	keys := make([]string, 0, len(m.open))
 	for k := range m.open {
+		keys = append(keys, k)
+	}
+	m.mu.Unlock()
+	for _, k := range keys {
 		m.closeKey(ctx, k)
 	}
 }
