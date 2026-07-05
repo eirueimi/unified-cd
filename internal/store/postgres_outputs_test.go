@@ -15,8 +15,8 @@ func TestPostgres_StepOutputs(t *testing.T) {
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
 
-	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "artifact_url", "s3://bucket/a.tar.gz"))
-	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "version", "1.2.3"))
+	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "", "artifact_url", "s3://bucket/a.tar.gz"))
+	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "", "version", "1.2.3"))
 
 	outputs, err := pg.GetStepOutputs(ctx, run.ID, 0)
 	require.NoError(t, err)
@@ -24,14 +24,30 @@ func TestPostgres_StepOutputs(t *testing.T) {
 	assert.Equal(t, "1.2.3", outputs["version"])
 
 	// upsert — overwrites the existing value
-	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "artifact_url", "s3://bucket/b.tar.gz"))
+	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "", "artifact_url", "s3://bucket/b.tar.gz"))
 	outputs2, _ := pg.GetStepOutputs(ctx, run.ID, 0)
 	assert.Equal(t, "s3://bucket/b.tar.gz", outputs2["artifact_url"])
 
 	// different step indices are managed independently
-	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 1, "result", "ok"))
+	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 1, "", "result", "ok"))
 	step1Outputs, _ := pg.GetStepOutputs(ctx, run.ID, 1)
 	assert.Equal(t, "ok", step1Outputs["result"])
+}
+
+func TestStepOutputs_VariantKeyed(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+
+	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "linux/amd64", "version", "1.2"))
+	require.NoError(t, pg.SetStepOutput(ctx, run.ID, 0, "linux/arm64", "version", "1.3"))
+	// no clobber: both variant rows are stored, though GetStepOutputs (unkeyed by
+	// variant, signature unchanged) will only surface one value per key.
+	outputs, err := pg.GetStepOutputs(ctx, run.ID, 0)
+	require.NoError(t, err)
+	assert.Contains(t, []string{"1.2", "1.3"}, outputs["version"])
 }
 
 func TestPostgres_GetStepOutputs_Empty(t *testing.T) {

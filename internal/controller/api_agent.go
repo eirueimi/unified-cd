@@ -321,7 +321,7 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 		ec := req.ExitCode
 		exit = &ec
 	}
-	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, req.StepName, req.Status, exit, startedAt, endedAt); err != nil {
+	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, req.StepName, req.Variant, req.Status, exit, startedAt, endedAt); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -383,13 +383,14 @@ func (s *Server) handleAgentSetStepOutputs(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid stepIndex", http.StatusBadRequest)
 		return
 	}
+	variant := r.URL.Query().Get("variant")
 	var req api.SetOutputsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	for k, v := range req.Outputs {
-		if err := s.store.SetStepOutput(r.Context(), runID, stepIndex, k, v); err != nil {
+		if err := s.store.SetStepOutput(r.Context(), runID, stepIndex, variant, k, v); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

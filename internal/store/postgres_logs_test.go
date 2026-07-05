@@ -42,10 +42,10 @@ func TestPostgres_UpsertStepReport(t *testing.T) {
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
 
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "step-one", "Running", nil, nil, nil))
+	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "step-one", "", "Running", nil, nil, nil))
 	ec := 0
 	end := time.Now().UTC()
-	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "step-one", "Succeeded", &ec, nil, &end))
+	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "step-one", "", "Succeeded", &ec, nil, &end))
 }
 
 func TestPostgres_UpsertStepReport_StageIndex(t *testing.T) {
@@ -56,13 +56,38 @@ func TestPostgres_UpsertStepReport_StageIndex(t *testing.T) {
 
 	exitCode := 0
 	now := time.Now().UTC()
-	err := pg.UpsertStepReport(ctx, run.ID, 0, 1, "build", "Succeeded", &exitCode, &now, &now)
+	err := pg.UpsertStepReport(ctx, run.ID, 0, 1, "build", "", "Succeeded", &exitCode, &now, &now)
 	require.NoError(t, err)
 
 	steps, err := pg.GetRunSteps(ctx, run.ID)
 	require.NoError(t, err)
 	require.Len(t, steps, 1)
 	assert.Equal(t, 1, steps[0].StageIndex)
+}
+
+func TestStepReports_MatrixVariantsDoNotClobber(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+
+	ec := 0
+	now := time.Now().UTC()
+	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "build (linux, amd64)", "linux/amd64", "Succeeded", &ec, &now, &now))
+	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "build (linux, arm64)", "linux/arm64", "Running", nil, &now, nil))
+
+	steps, err := pg.GetRunSteps(ctx, run.ID)
+	require.NoError(t, err)
+	require.Len(t, steps, 2) // same step_index but 2 rows, one per variant
+	assert.Equal(t, "linux/amd64", steps[0].Variant)
+	assert.Equal(t, "linux/arm64", steps[1].Variant)
+
+	// same (run, index, variant) upserts in place
+	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "build (linux, arm64)", "linux/arm64", "Succeeded", &ec, &now, &now))
+	steps, err = pg.GetRunSteps(ctx, run.ID)
+	require.NoError(t, err)
+	require.Len(t, steps, 2)
 }
 
 func TestPostgres_Agents(t *testing.T) {
