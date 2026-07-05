@@ -78,6 +78,15 @@ spec:
 | `metadata.name` | string | Yes | Unique job identifier. Used in CLI, API, and when calling this job from another job. |
 | `metadata.labels` | map[string]string | No | Arbitrary labels. Not used for routing; reserved for future filtering. |
 
+### Hierarchical grouping (annotations.path)
+
+A job's position in the Web UI tree comes from `metadata.annotations.path`.
+Jobs synced by an AppSource get this set automatically from their directory
+(relative to the AppSource `spec.path`), so `jobs/team-a/build.yaml` shows as
+`build` under a `team-a` folder. The stored, unique job name is the *qualified*
+name `team-a/build` — trigger it with `unified-cli run trigger team-a/build`.
+Jobs applied directly with no `path` appear at the tree root.
+
 ---
 
 ## Parameters (inputs / outputs)
