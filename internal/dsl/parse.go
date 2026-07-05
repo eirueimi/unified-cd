@@ -295,6 +295,9 @@ func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *C
 	if foreach != nil && matrix != nil {
 		return fmt.Errorf("%s (%s): foreach and matrix are mutually exclusive", path, name)
 	}
+	if (foreach != nil || matrix != nil) && approval != nil {
+		return fmt.Errorf("%s (%s): approval is not supported with matrix/foreach", path, name)
+	}
 	if matrix != nil {
 		if len(matrix.Dimensions) == 0 {
 			return fmt.Errorf("%s (%s): matrix requires at least one dimension", path, name)

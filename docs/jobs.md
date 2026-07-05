@@ -384,6 +384,8 @@ its combinations** into a map keyed by combination key:
 
 **`foreach:` is sugar for a single-dimension `matrix:`.** `foreach: {key: X, in: [...]}` is equivalent to a one-dimension `matrix:` named `X`, and `{{ .Foreach.X }}` reads the same value as `{{ .Matrix.X }}` would. Declaring both `foreach:` and `matrix:` on the same step is a mutual-exclusion error at apply time.
 
+**`approval` と `matrix`/`foreach` は同時指定不可** — expanded combinations share one (run_id, step_index) approval decision row, which has no way to represent per-combination decisions, so declaring both on the same step is rejected at apply time.
+
 > **Upgrade note:** matrix support changed the agent claim wire format
 > (`ForeachKey`/`ForeachValue` were replaced by a `MatrixValues` map). There
 > is no backward-compatibility shim — see

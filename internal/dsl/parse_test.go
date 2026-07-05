@@ -1148,6 +1148,41 @@ spec:
 	assert.Contains(t, err.Error(), "only one of")
 }
 
+func TestParse_ApprovalRejectedWithMatrix(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad
+spec:
+  steps:
+    - name: gate
+      matrix:
+        os: [linux, windows]
+      approval:
+        message: x`
+	_, err := Parse(strings.NewReader(y))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "approval is not supported with matrix/foreach")
+}
+
+func TestParse_ApprovalRejectedWithForeach(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad
+spec:
+  steps:
+    - name: gate
+      foreach:
+        key: env
+        in: [dev, prod]
+      approval:
+        message: x`
+	_, err := Parse(strings.NewReader(y))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "approval is not supported with matrix/foreach")
+}
+
 func TestParse_ApprovalRejectedInFinally(t *testing.T) {
 	y := `apiVersion: unified-cd/v1
 kind: Job
