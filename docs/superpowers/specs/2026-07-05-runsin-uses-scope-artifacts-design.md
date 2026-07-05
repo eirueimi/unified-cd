@@ -83,6 +83,19 @@ through unchanged) → agent.
    - **Validation:** if any inner step declares its own `runsIn.image` or
      `runsIn.container` while the `uses` is in scope mode → **parse error**
      naming the offending step (scope must be homogeneous).
+   - **Validation:** an inner `approval:` step in scope mode → **parse error**
+     naming the step. An approval pause would hold the isolated scope
+     environment (container/pod) alive across a human wait (up to the
+     approval timeout), wasting resources and risking the k8s pod deadline
+     killing it mid-wait.
+   - **Validation:** an inner `call:` step in scope mode → **parse error**
+     naming the step. A `call:` spawns a separate child run on another
+     agent/workspace that cannot see the scope's isolated filesystem, so it
+     has undefined semantics inside a scope.
+   - These three checks (nested `runsIn`, `approval`, `call`) apply to both
+     concrete steps and `parallel:` members, and are inert outside scope mode
+     (a plain `uses` or a `uses` with `runsIn.container` still allows
+     `approval:`/`call:` unchanged).
 
 2. **API types (`internal/api/types.go`)**
    - `ClaimStep` gains `ScopeID string` and `ScopeImage string`. Controller
@@ -140,6 +153,8 @@ through unchanged) → agent.
 | Situation | Behavior |
 |---|---|
 | Nested `runsIn.image`/`container` inside a scoped `uses` | **Parse error** naming the step |
+| Inner `approval:` step inside a scoped `uses` | **Parse error** naming the step (would hold the scope environment alive across a human wait) |
+| Inner `call:` step inside a scoped `uses` | **Parse error** naming the step (child run can't see the scope's isolated filesystem) |
 | host: container runtime absent when provisioning a scope | **Run-time hard error** (no silent host fallback, matching base `runsIn.image`) |
 | Scope environment fails to start (e.g. image pull failure) | Fail the scope's first step, skip the rest, report the reason; k8s applies a start-wait bound like `imagePodStartTimeout` |
 | `upload-artifact` in scope, `CopyOut` path missing (host) | upload-artifact fails, error names the path (**fail-loud**, matching existing artifact semantics) |
@@ -150,7 +165,9 @@ through unchanged) → agent.
 
 - **Unit**
   - `inline.go`: scope tagging (`ScopeID`/`ScopeImage` assignment) and the
-    nested-`runsIn` parse error.
+    nested-`runsIn`, `approval:`, and `call:` parse errors (concrete steps and
+    `parallel:` members), plus the non-scope-mode regression (same shapes
+    still allowed when the `uses` has no `runsIn.image`).
   - host runtime driver `Create`/`Exec`/`CopyOut`/`Remove` lifecycle via a fake
     runtime.
   - k8s `buildScopePod`: has a scratch volume + artifact sidecar and does **not**
@@ -170,6 +187,10 @@ through unchanged) → agent.
 - Artifact/cache support for step-level `runsIn.image` (single pure call stays
   artifact/cache-free).
 - Nested per-step `runsIn` inside a scope (parse error).
+- `approval:` inside a scope (parse error — would hold the scope environment
+  alive across a human wait).
+- `call:` inside a scope (parse error — child run can't see the scope's
+  isolated filesystem).
 - Cross-scope filesystem sharing.
 
 ## Implementation order (rough)

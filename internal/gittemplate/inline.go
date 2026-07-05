@@ -21,6 +21,29 @@ var stepRefGoRe = regexp.MustCompile(`\.Steps\.([A-Za-z_][A-Za-z0-9_]*)\.Outputs
 // stepRefCondRe matches condition-language "steps.NAME.outputs." references, capturing NAME.
 var stepRefCondRe = regexp.MustCompile(`\bsteps\.([A-Za-z_][A-Za-z0-9_]*)\.outputs\.`)
 
+// checkScopeStepAllowed rejects step shapes that don't make sense inside a
+// scoped uses (uses-level runsIn.image, i.e. a single shared environment):
+//   - nested runsIn (image/container): the scope IS the environment, a step
+//     can't declare a second one.
+//   - approval: would hold the isolated scope environment (container/pod)
+//     alive across a human wait, wasting resources and risking the k8s pod
+//     deadline killing it mid-wait.
+//   - call: spawns a separate child run on another agent/workspace that
+//     cannot see the scope's isolated filesystem, so it has undefined
+//     semantics inside a scope.
+func checkScopeStepAllowed(name string, r *dsl.RunsIn, hasApproval, hasCall bool) error {
+	if r != nil && (r.Image != "" || r.Container != "") {
+		return fmt.Errorf("step %q: runsIn is not allowed inside a uses running with runsIn.image (the scope is a single environment)", name)
+	}
+	if hasApproval {
+		return fmt.Errorf("step %q: approval is not allowed inside a uses running with runsIn.image (it would hold the scope environment alive across a human wait)", name)
+	}
+	if hasCall {
+		return fmt.Errorf("step %q: call is not allowed inside a uses running with runsIn.image (a called job cannot see the scope's isolated filesystem)", name)
+	}
+	return nil
+}
+
 func prefixedName(usesName, innerName string) string {
 	return usesName + usesPrefixSep + innerName
 }
@@ -173,8 +196,8 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 					return nil, fmt.Errorf("internal error: parallel step %q has unresolved nested uses; must be resolved before expandUsesStep", ps.Name)
 				}
 				if scopeMode {
-					if ps.RunsIn != nil && (ps.RunsIn.Image != "" || ps.RunsIn.Container != "") {
-						return nil, fmt.Errorf("step %q: runsIn is not allowed inside a uses running with runsIn.image (the scope is a single environment)", ps.Name)
+					if err := checkScopeStepAllowed(ps.Name, ps.RunsIn, ps.Approval != nil, ps.Call != nil); err != nil {
+						return nil, err
 					}
 					ns.ScopeID = scopeID
 					ns.ScopeImage = scopeImage
@@ -201,8 +224,8 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				TimeoutMinutes:  inner.TimeoutMinutes,
 			}
 			if scopeMode {
-				if inner.RunsIn != nil && (inner.RunsIn.Image != "" || inner.RunsIn.Container != "") {
-					return nil, fmt.Errorf("step %q: runsIn is not allowed inside a uses running with runsIn.image (the scope is a single environment)", inner.Name)
+				if err := checkScopeStepAllowed(inner.Name, inner.RunsIn, inner.Approval != nil, inner.Call != nil); err != nil {
+					return nil, err
 				}
 				ns.ScopeID = scopeID
 				ns.ScopeImage = scopeImage

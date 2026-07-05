@@ -57,3 +57,71 @@ func TestExpandUsesContainerModeUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestExpandUsesScopeApprovalIsError(t *testing.T) {
+	tpl := dsl.Spec{Steps: []dsl.StepEntry{
+		{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok to proceed?"}},
+	}}
+	_, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"})
+	if err == nil || !strings.Contains(err.Error(), "gate") {
+		t.Fatalf("expected approval-in-scope error naming step, got %v", err)
+	}
+}
+
+func TestExpandUsesScopeCallIsError(t *testing.T) {
+	tpl := dsl.Spec{Steps: []dsl.StepEntry{
+		{Name: "delegate", Call: &dsl.CallStep{Job: "some-job"}},
+	}}
+	_, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"})
+	if err == nil || !strings.Contains(err.Error(), "delegate") {
+		t.Fatalf("expected call-in-scope error naming step, got %v", err)
+	}
+}
+
+func TestExpandUsesScopeParallelApprovalIsError(t *testing.T) {
+	tpl := dsl.Spec{Steps: []dsl.StepEntry{
+		{Parallel: []dsl.Step{
+			{Name: "a", Run: "echo a"},
+			{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok to proceed?"}},
+		}},
+	}}
+	_, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"})
+	if err == nil || !strings.Contains(err.Error(), "gate") {
+		t.Fatalf("expected approval-in-scope error naming step, got %v", err)
+	}
+}
+
+func TestExpandUsesScopeParallelCallIsError(t *testing.T) {
+	tpl := dsl.Spec{Steps: []dsl.StepEntry{
+		{Parallel: []dsl.Step{
+			{Name: "a", Run: "echo a"},
+			{Name: "delegate", Call: &dsl.CallStep{Job: "some-job"}},
+		}},
+	}}
+	_, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"})
+	if err == nil || !strings.Contains(err.Error(), "delegate") {
+		t.Fatalf("expected call-in-scope error naming step, got %v", err)
+	}
+}
+
+func TestExpandUsesContainerModeApprovalAndCallAllowed(t *testing.T) {
+	// uses-level runsIn.container is NOT scope mode: approval/call must still work.
+	tpl := dsl.Spec{Steps: []dsl.StepEntry{
+		{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok to proceed?"}},
+		{Name: "delegate", Call: &dsl.CallStep{Job: "some-job"}},
+	}}
+	if _, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Container: "builder"}); err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+}
+
+func TestExpandUsesNoRunsInApprovalAndCallAllowed(t *testing.T) {
+	// No uses-level runsIn at all: approval/call must still work.
+	tpl := dsl.Spec{Steps: []dsl.StepEntry{
+		{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok to proceed?"}},
+		{Name: "delegate", Call: &dsl.CallStep{Job: "some-job"}},
+	}}
+	if _, err := expandUsesStep("build", map[string]string{}, tpl, nil); err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+}
