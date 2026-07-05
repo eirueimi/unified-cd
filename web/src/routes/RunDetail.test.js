@@ -293,4 +293,48 @@ describe('RunDetail — log virtualization', () => {
       expect(banner.textContent).toContain('truncated');
     });
   });
+
+  it('ingests a full chunk of logs even when it ends with a terminal status', async () => {
+    // Logs and the terminal status arrive in ONE chunk. The batched ingestion
+    // must flush every log line before acting on the status, so the tail of a
+    // completed run's log is not dropped.
+    const N = 40;
+    const enc = new TextEncoder();
+    let payload = '';
+    for (let i = 0; i < N; i++) {
+      payload += `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'line ' + i })}\n\n`;
+    }
+    payload += `data: ${JSON.stringify({ type: 'status', status: 'Succeeded' })}\n\n`;
+    let sent = false;
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          body: {
+            getReader() {
+              return {
+                read: async () => {
+                  if (sent) return { done: true, value: undefined };
+                  sent = true;
+                  return { done: false, value: enc.encode(payload) };
+                },
+              };
+            },
+          },
+        });
+      }
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-1', status: 'Running', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain(`${N} lines`);
+    });
+  });
 });
