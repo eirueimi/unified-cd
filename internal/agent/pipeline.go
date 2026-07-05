@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -49,44 +48,66 @@ func (s *safeStepCtx) setStep(name string, data dsl.StepData) {
 	s.data.Steps[name] = data
 }
 
-// RunPipeline executes stages sequentially.
-// For each stage, if it is a parallel group or a foreach step, steps run concurrently.
-// A stage fails if any step fails (unless ContinueOnError is true on that step).
-// When a stage fails, subsequent stages are not executed.
+// setStepMatrixOutputs merges one matrix copy's outputs into the aggregated
+// per-combination map under the base step name. Inner maps are rebuilt on
+// every write so snapshots never observe concurrent mutation.
+func (s *safeStepCtx) setStepMatrixOutputs(name, comboKey string, outputs map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.Steps == nil {
+		s.data.Steps = make(map[string]dsl.StepData)
+	}
+	sd := s.data.Steps[name]
+	if sd.Outputs == nil {
+		sd.Outputs = map[string]any{}
+	}
+	for k, v := range outputs {
+		merged := map[string]string{comboKey: v}
+		if prev, ok := sd.Outputs[k].(map[string]string); ok {
+			for pk, pv := range prev {
+				merged[pk] = pv
+			}
+			merged[comboKey] = v
+		}
+		sd.Outputs[k] = merged
+	}
+	s.data.Steps[name] = sd
+}
+
+// RunPipeline executes stages sequentially. Within a stage, matrix expansion
+// applies to the single step and to every member of a parallel group; all
+// resulting copies run concurrently. When a stage fails, subsequent stages are
+// not executed.
 func RunPipeline(
 	ctx context.Context,
 	stages []api.ClaimStage,
 	getData func() dsl.TemplateData,
+	maxCombos int,
 	run func(ctx context.Context, step api.ClaimStep) error,
 ) error {
 	for _, stage := range stages {
+		members := stage.Parallel
 		if stage.Step != nil {
-			step := *stage.Step
-			if step.Foreach != nil {
-				items, err := EvalForeachSource(step.Foreach.Source, getData())
-				if err != nil {
-					return fmt.Errorf("foreach expansion for step %q: %w", step.Name, err)
-				}
-				expanded := make([]api.ClaimStep, len(items))
-				for i, item := range items {
-					s := step
-					s.Foreach = nil
-					s.ForeachKey = step.Foreach.Key
-					s.ForeachValue = item
-					expanded[i] = s
-				}
-				if err := runParallel(ctx, expanded, run); err != nil {
-					return err
-				}
-			} else {
-				if err := runOne(ctx, step, run); err != nil {
-					return err
-				}
-			}
-		} else {
-			if err := runParallel(ctx, stage.Parallel, run); err != nil {
+			members = []api.ClaimStep{*stage.Step}
+		}
+		var expanded []api.ClaimStep
+		for _, st := range members {
+			ex, err := ExpandMatrixStep(st, getData(), maxCombos)
+			if err != nil {
 				return err
 			}
+			expanded = append(expanded, ex...)
+		}
+		// Preserve the historical single-step path (no goroutine) for a plain
+		// non-matrix single-step stage.
+		if stage.Step != nil && stage.Step.Matrix == nil {
+			if err := runOne(ctx, expanded[0], run); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := runParallel(ctx, expanded, run); err != nil {
+			return err
 		}
 	}
 	return nil
