@@ -28,6 +28,13 @@ var approvalPollInterval = 3 * time.Second
 // detect mid-run cancellation. It is a var (not a const) so tests can shorten it.
 var cancelPollInterval = 5 * time.Second
 
+// imagePodStartTimeout bounds how long runImageStep waits for a throwaway
+// image pod to reach Running. Under RestartPolicy: Never a pod stuck in
+// Pending/ImagePullBackOff never transitions to Failed, so without a bound
+// the wait would hang until the whole run is cancelled. This gives a bad
+// image a fast, explicit failure instead.
+const imagePodStartTimeout = 5 * time.Minute
+
 // podStepExec runs a single already-expanded step inside the pod and returns
 // the exit code, captured stdout, and any infrastructure error.
 type podStepExec func(ctx context.Context, step api.ClaimStep, expandedRun string) (exitCode int, stdout string, err error)
@@ -191,15 +198,8 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		if step.RunsIn != nil && step.RunsIn.Image != "" {
 			// Isolated throwaway pod. UNIFIED_AGENT_OS mirrors the host agent's
 			// convention; step.Env arrives already template-expanded (orchestrate).
-			env := step.Env
-			if env == nil {
-				env = map[string]string{}
-			}
-			env["UNIFIED_AGENT_OS"] = runtime.GOOS
-			deadline := int64(3600)
-			if step.TimeoutMinutes > 0 {
-				deadline = int64(step.TimeoutMinutes * 60)
-			}
+			env := imageStepEnv(step)
+			deadline := imageStepDeadline(step)
 			ec, execErr = a.runImageStep(execCtx, c.RunID, step.RunsIn.Image, env, deadline, expandedRun, stdoutWriter, stderrPusher)
 		} else {
 			ec, execErr = a.exec.ExecStep(execCtx, podName, execContainer(step), expandedRun, stdoutWriter, stderrPusher)
@@ -682,12 +682,36 @@ func expandStepEnv(env map[string]string, td dsl.TemplateData) map[string]string
 	return out
 }
 
+// imageStepEnv returns a fresh env map for a runsIn.image container: the step's
+// env plus UNIFIED_AGENT_OS. Always a new map, so callers never mutate the claim.
+func imageStepEnv(step api.ClaimStep) map[string]string {
+	env := make(map[string]string, len(step.Env)+1)
+	for k, v := range step.Env {
+		env[k] = v
+	}
+	env["UNIFIED_AGENT_OS"] = runtime.GOOS
+	return env
+}
+
+// imageStepDeadline returns the throwaway pod's activeDeadlineSeconds: the step
+// timeout if set, else a 1-hour default.
+func imageStepDeadline(step api.ClaimStep) int64 {
+	if step.TimeoutMinutes > 0 {
+		return int64(step.TimeoutMinutes * 60)
+	}
+	return 3600
+}
+
 // runImageStep runs a runsIn.image step in a throwaway, isolated pod: create a
-// pod from the image (kept alive with sleep infinity), wait until it is
-// running, exec the step's script into the single "step" container, then delete
-// the pod. The pod is always deleted (defer, non-cancellable context) so a
-// cancelled or failed step never leaks a pod. A failure to create/start the pod
-// is a hard error surfaced to the step — never a silent fallback.
+// pod from the image (the pod, built by buildImageStepPod, stays alive via
+// sleep infinity), wait until it is running, exec the step's script into the
+// single "step" container, then delete the pod. The pod is always deleted
+// (defer, non-cancellable context) so a cancelled or failed step never leaks a
+// pod. A failure to create/start the pod is a hard error surfaced to the step
+// — never a silent fallback. The start wait is bounded by imagePodStartTimeout
+// so a bad image (stuck Pending/ImagePullBackOff, which never reaches Failed
+// under RestartPolicy: Never) fails fast instead of hanging until the run is
+// cancelled.
 func (a *K8sAgent) runImageStep(ctx context.Context, runID, image string, env map[string]string, deadlineSeconds int64, script string, stdout, stderr io.Writer) (int, error) {
 	pod := buildImageStepPod(runID, a.cfg.Namespace, image, env, deadlineSeconds)
 	created, err := a.pm.CreatePod(ctx, pod)
@@ -701,8 +725,10 @@ func (a *K8sAgent) runImageStep(ctx context.Context, runID, image string, env ma
 		}
 	}()
 
-	if err := a.pm.WaitForPodRunning(ctx, name); err != nil {
-		return -1, fmt.Errorf("runsIn.image %q: pod did not start: %w", image, err)
+	waitCtx, cancel := context.WithTimeout(ctx, imagePodStartTimeout)
+	defer cancel()
+	if err := a.pm.WaitForPodRunning(waitCtx, name); err != nil {
+		return -1, fmt.Errorf("runsIn.image %q: pod did not become ready within %s (image pull may have failed): %w", image, imagePodStartTimeout, err)
 	}
 	return a.exec.ExecStep(ctx, name, "step", script, stdout, stderr)
 }

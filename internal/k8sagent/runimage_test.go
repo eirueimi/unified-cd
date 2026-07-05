@@ -13,10 +13,12 @@ import (
 )
 
 type fakePM struct {
-	created   *corev1.Pod
-	createdNm string
-	waitErr   error
-	deleted   []string
+	created         *corev1.Pod
+	createdNm       string
+	waitErr         error
+	deleted         []string
+	waitHadDeadline bool
+	waitCtxSeen     bool
 }
 
 func (f *fakePM) CreatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
@@ -26,7 +28,12 @@ func (f *fakePM) CreatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod, err
 	f.createdNm = out.Name
 	return out, nil
 }
-func (f *fakePM) WaitForPodRunning(_ context.Context, _ string) error { return f.waitErr }
+func (f *fakePM) WaitForPodRunning(ctx context.Context, _ string) error {
+	f.waitCtxSeen = true
+	_, hasDeadline := ctx.Deadline()
+	f.waitHadDeadline = hasDeadline
+	return f.waitErr
+}
 func (f *fakePM) DeletePod(_ context.Context, name string) error {
 	f.deleted = append(f.deleted, name)
 	return nil
@@ -72,6 +79,22 @@ func TestRunImageStep_CreatesExecsDeletes(t *testing.T) {
 	assert.Equal(t, "echo hi", ex.gotScript)
 	// pod deleted exactly once
 	assert.Equal(t, []string{"ucd-img-generated-xyz"}, pm.deleted)
+	// wait was bounded by a deadline (imagePodStartTimeout), not the bare run ctx
+	assert.True(t, pm.waitHadDeadline, "WaitForPodRunning should be called with a deadline-bounded context")
+}
+
+func TestRunImageStep_WaitBoundedByTimeout(t *testing.T) {
+	pm := &fakePM{}
+	ex := &fakeExec{stdout: "ok\n", exit: 0}
+	a := &K8sAgent{pm: pm, exec: ex}
+
+	code, err := a.runImageStep(context.Background(), "run-1", "alpine:3.20",
+		nil, 3600, "true", io.Discard, io.Discard)
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	require.True(t, pm.waitCtxSeen)
+	assert.True(t, pm.waitHadDeadline, "runImageStep must bound WaitForPodRunning with a timeout so a stuck pod fails fast")
 }
 
 func TestRunImageStep_DeletesOnWaitFailure(t *testing.T) {
