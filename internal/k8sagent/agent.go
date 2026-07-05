@@ -17,6 +17,7 @@ import (
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // approvalPollInterval is how often WaitForApproval polls the controller for a
@@ -31,12 +32,27 @@ var cancelPollInterval = 5 * time.Second
 // the exit code, captured stdout, and any infrastructure error.
 type podStepExec func(ctx context.Context, step api.ClaimStep, expandedRun string) (exitCode int, stdout string, err error)
 
+// podManager and stepExecutor are the narrow slices of *PodManager / *Executor
+// that K8sAgent depends on. Interfaces (satisfied by the concrete types) make
+// pod-lifecycle and exec paths unit-testable with fakes.
+type podManager interface {
+	CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error)
+	WaitForPodRunning(ctx context.Context, name string) error
+	DeletePod(ctx context.Context, name string) error
+	ListPods(ctx context.Context, labelSelector string) (*corev1.PodList, error)
+}
+
+type stepExecutor interface {
+	ExecStep(ctx context.Context, podName, container, script string, stdout, stderr io.Writer) (int, error)
+	ExecStepArgv(ctx context.Context, podName, container string, argv []string, stdout, stderr io.Writer) (int, error)
+}
+
 // K8sAgent is an agent that claims Runs from the master and executes them inside a Kubernetes Pod.
 type K8sAgent struct {
 	cfg    Config
 	client *agentlib.Client
-	pm     *PodManager
-	exec   *Executor
+	pm     podManager
+	exec   stepExecutor
 	pool   *PodPool
 }
 
@@ -639,6 +655,31 @@ func runsInImageUnsupported(s api.ClaimStep) error {
 		return fmt.Errorf("runsIn.image (%q) is not supported on the k8s agent yet; run this step on the host agent, or use runsIn.container to target a named pod container", s.RunsIn.Image)
 	}
 	return nil
+}
+
+// runImageStep runs a runsIn.image step in a throwaway, isolated pod: create a
+// pod from the image (kept alive with sleep infinity), wait until it is
+// running, exec the step's script into the single "step" container, then delete
+// the pod. The pod is always deleted (defer, non-cancellable context) so a
+// cancelled or failed step never leaks a pod. A failure to create/start the pod
+// is a hard error surfaced to the step — never a silent fallback.
+func (a *K8sAgent) runImageStep(ctx context.Context, runID, image string, env map[string]string, deadlineSeconds int64, script string, stdout, stderr io.Writer) (int, error) {
+	pod := buildImageStepPod(runID, a.cfg.Namespace, image, env, deadlineSeconds)
+	created, err := a.pm.CreatePod(ctx, pod)
+	if err != nil {
+		return -1, fmt.Errorf("runsIn.image %q: create pod: %w", image, err)
+	}
+	name := created.Name
+	defer func() {
+		if derr := a.pm.DeletePod(context.WithoutCancel(ctx), name); derr != nil {
+			slog.Warn("k8s: failed to delete image-step pod", "pod", name, "error", derr)
+		}
+	}()
+
+	if err := a.pm.WaitForPodRunning(ctx, name); err != nil {
+		return -1, fmt.Errorf("runsIn.image %q: pod did not start: %w", image, err)
+	}
+	return a.exec.ExecStep(ctx, name, "step", script, stdout, stderr)
 }
 
 func appendLabelIfMissing(labels []string, label string) []string {

@@ -9,7 +9,6 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // podGCDecision reports whether a run Pod should be deleted by the orphan-pod
@@ -119,9 +118,7 @@ func (a *K8sAgent) runPodGC(ctx context.Context, interval time.Duration) {
 // listRunPods lists this namespace's run Pods (app=unified-cd-agent) and
 // extracts each one's runId label and pool-in-use status for the GC sweep.
 func (a *K8sAgent) listRunPods(ctx context.Context) ([]gcPod, error) {
-	pods, err := a.pm.client.CoreV1().Pods(a.pm.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app=unified-cd-agent",
-	})
+	pods, err := a.pm.ListPods(ctx, "app=unified-cd-agent")
 	if err != nil {
 		return nil, err
 	}

@@ -59,6 +59,14 @@ func (pm *PodManager) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.P
 	return created, nil
 }
 
+// ListPods lists Pods in the manager's namespace matching the given label
+// selector (e.g. "app=unified-cd-agent"). Used by the orphan-pod GC sweep.
+func (pm *PodManager) ListPods(ctx context.Context, labelSelector string) (*corev1.PodList, error) {
+	return pm.client.CoreV1().Pods(pm.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+}
+
 // UpdatePodAnnotations updates Pod annotations using optimistic concurrency control.
 // Returns a conflict error if the resourceVersion does not match.
 func (pm *PodManager) UpdatePodAnnotations(ctx context.Context, podName string, annotations map[string]string, resourceVersion string) error {
