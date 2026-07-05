@@ -388,6 +388,8 @@ its combinations** into a map keyed by combination key:
 
 matrix付きcallステップは組み合わせごとに子ランを起動し、出力は集約マップになる。
 
+Kubernetesエージェントでは組み合わせはPod内で順次実行される(標準エージェントは並列)。
+
 > **Upgrade note:** matrix support changed the agent claim wire format
 > (`ForeachKey`/`ForeachValue` were replaced by a `MatrixValues` map). There
 > is no backward-compatibility shim — see
