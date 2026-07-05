@@ -6,11 +6,11 @@
 
   let jobs = [], loading = true, error = '';
   let filterQuery = '';
-  // jobName → Run[] (アクティブRunのみ)
+  // jobName → Run[] (active Runs only)
   let activeRunsByJob = {};
-  // 展開中のジョブ名
+  // Name of the currently expanded job
   let expandedJob = null;
-  // 展開中ジョブの直近runs（最大5件）
+  // Recent runs for the expanded job (up to 5)
   let expandedRuns = [];
   let expandedLoading = false;
 
@@ -38,7 +38,7 @@
         byJob[r.jobName].push(r);
       }
       activeRunsByJob = byJob;
-    } catch (_) { /* ポーリング失敗は無視 */ }
+    } catch (_) { /* Ignore polling failures */ }
   }
 
   async function toggleExpand(jobName) {
@@ -102,7 +102,7 @@
               <a href="#/jobs/{encodeURIComponent(row.job.name)}" on:click|stopPropagation>{row.job.leaf}</a>
               {#if activeRunsByJob[row.job.name]?.length}
                 <span class="badge badge-running" style="margin-left:0.5rem">
-                  ● 実行中 {activeRunsByJob[row.job.name].length > 1 ? `(${activeRunsByJob[row.job.name].length})` : ''}
+                  ● Running {activeRunsByJob[row.job.name].length > 1 ? `(${activeRunsByJob[row.job.name].length})` : ''}
                 </span>
               {/if}
             </td>
@@ -116,7 +116,7 @@
                   {#if expandedLoading}
                     <div class="meta" style="padding:0.25rem 0">Loading...</div>
                   {:else if !expandedRuns.length}
-                    <div class="meta" style="padding:0.25rem 0">Runはありません。</div>
+                    <div class="meta" style="padding:0.25rem 0">No runs.</div>
                   {:else}
                     {#each expandedRuns as r (r.id)}
                       <div
@@ -129,7 +129,7 @@
                       </div>
                     {/each}
                     <div style="margin-top:0.25rem">
-                      <a href="#/jobs/{encodeURIComponent(row.job.name)}" class="meta" style="font-size:0.8rem" on:click|stopPropagation>すべて見る →</a>
+                      <a href="#/jobs/{encodeURIComponent(row.job.name)}" class="meta" style="font-size:0.8rem" on:click|stopPropagation>View all →</a>
                     </div>
                   {/if}
                 </div>

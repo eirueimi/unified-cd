@@ -1,11 +1,11 @@
-# GitHub Commit Status 更新ジョブテンプレート
-# unified-cd apply examples/github-commit-status.yaml で登録後、call.job で呼び出す
+# GitHub Commit Status update job template
+# After registering with unified-cd apply examples/github-commit-status.yaml, invoke it via call.job
 #
-# 必要なシークレット:
+# Required secrets:
 #   unified-cd secret set github-token --value ghp_xxxx
-#   必要な権限: repo:status
+#   Required permission: repo:status
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/github-commit-status.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -17,15 +17,15 @@ spec:
       - name: owner
         type: string
         required: true
-        description: "GitHub オーナー名（org または user）"
+        description: "GitHub owner name (org or user)"
       - name: repo
         type: string
         required: true
-        description: "リポジトリ名"
+        description: "Repository name"
       - name: sha
         type: string
         required: true
-        description: "40桁の commit SHA"
+        description: "40-character commit SHA"
       - name: state
         type: string
         required: true
@@ -33,15 +33,15 @@ spec:
       - name: context
         type: string
         default: "unified-cd"
-        description: "PR の Checks 欄に表示されるラベル"
+        description: "Label displayed in the PR's Checks section"
       - name: description
         type: string
         default: ""
-        description: "ステータスの説明文（省略可）"
+        description: "Status description text (optional)"
       - name: target_url
         type: string
         default: ""
-        description: "Details リンク先 URL（Run の詳細画面 URL 等）"
+        description: "Details link URL (e.g. the run's detail page URL)"
   steps:
     - name: update-status
       env:

@@ -24,7 +24,7 @@ describe('theme', () => {
     themePref.set('dark');
   });
 
-  it('toggleTheme は dark ↔ light を切り替える', () => {
+  it('toggleTheme switches between dark and light', () => {
     themePref.set('dark');
     toggleTheme();
     expect(get(themePref)).toBe('light');
@@ -32,52 +32,52 @@ describe('theme', () => {
     expect(get(themePref)).toBe('dark');
   });
 
-  it('toggleTheme は preference を localStorage に保存する', () => {
+  it('toggleTheme saves the preference to localStorage', () => {
     themePref.set('dark');
     toggleTheme();
     expect(localStorage.getItem('theme')).toBe('light');
   });
 
-  it('initTheme は localStorage の preference を読み戻す', () => {
+  it('initTheme reads the preference back from localStorage', () => {
     localStorage.setItem('theme', 'light');
     initTheme();
     expect(get(themePref)).toBe('light');
   });
 
-  it('initTheme は data-theme 属性を設定する', () => {
+  it('initTheme sets the data-theme attribute', () => {
     localStorage.setItem('theme', 'light');
     initTheme();
     expect(document.documentElement.getAttribute('data-theme')).toBe('light');
   });
 
-  it('保存値がないとき初回は OS 設定（dark）から決定する', () => {
+  it('decides from the OS setting (dark) on first run when there is no stored value', () => {
     mockMatchMedia(true);
     initTheme();
     expect(get(themePref)).toBe('dark');
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
   });
 
-  it('保存値がないとき初回は OS 設定（light）から決定する', () => {
+  it('decides from the OS setting (light) on first run when there is no stored value', () => {
     mockMatchMedia(false);
     initTheme();
     expect(get(themePref)).toBe('light');
     expect(document.documentElement.getAttribute('data-theme')).toBe('light');
   });
 
-  it('初回に OS から決定した値を localStorage に永続化する（以後は OS を参照しない）', () => {
+  it('persists the OS-derived value to localStorage on first run (the OS is not consulted again after this)', () => {
     mockMatchMedia(false);
     initTheme();
     expect(localStorage.getItem('theme')).toBe('light');
   });
 
-  it('不正な localStorage 値は OS 設定から決定する', () => {
+  it('falls back to the OS setting when the localStorage value is invalid', () => {
     localStorage.setItem('theme', 'garbage');
     mockMatchMedia(true);
     initTheme();
     expect(get(themePref)).toBe('dark');
   });
 
-  it('matchMedia 非対応環境では dark にフォールバックする', () => {
+  it('falls back to dark in environments without matchMedia support', () => {
     delete window.matchMedia;
     initTheme();
     expect(get(themePref)).toBe('dark');

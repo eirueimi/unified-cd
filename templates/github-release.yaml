@@ -1,11 +1,11 @@
-# GitHub リリース作成 & アセットアップロード ジョブテンプレート（curl のみ、gh 不要）
-# unified-cd apply examples/github-release.yaml で登録後、call.job で呼び出す
+# GitHub release creation & asset upload job template (curl only, no gh required)
+# Register with unified-cd apply examples/github-release.yaml, then invoke via call.job
 #
-# 必要なシークレット:
+# Required secrets:
 #   unified-cd secret set github-token --value ghp_xxxx
-#   必要な権限: contents:write
+#   Required permission: contents:write
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/github-release.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -17,43 +17,43 @@ spec:
       - name: repo
         type: string
         required: true
-        description: "org/name 形式のリポジトリ"
+        description: "Repository in org/name form"
       - name: tag
         type: string
         required: true
-        description: "リリースタグ名（既存タグでも新規タグでも可）"
+        description: "Release tag name (can be an existing tag or a new one)"
       - name: title
         type: string
         default: ""
-        description: "リリースタイトル（省略時は tag と同じ）"
+        description: "Release title (defaults to the tag if omitted)"
       - name: notes
         type: string
         default: ""
-        description: "リリースノート本文（Markdown）"
+        description: "Release notes body (Markdown)"
       - name: assets
         type: array
         default: ""
-        description: "アップロードするファイルパス一覧（YAML 配列、省略可）"
+        description: "List of file paths to upload (YAML array, optional)"
       - name: draft
         type: string
         default: "false"
-        description: "ドラフトとして作成するか（true/false）"
+        description: "Whether to create as a draft (true/false)"
       - name: prerelease
         type: string
         default: "false"
-        description: "プレリリースとして作成するか（true/false）"
+        description: "Whether to create as a prerelease (true/false)"
       - name: token_secret
         type: string
         default: "github-token"
-        description: "GitHub トークンを保持するシークレット名"
+        description: "Secret name holding the GitHub token"
       - name: api_url
         type: string
         default: "https://api.github.com"
-        description: "GitHub API のベース URL（GitHub Enterprise Server の場合に変更）"
+        description: "Base URL for the GitHub API (change for GitHub Enterprise Server)"
       - name: upload_url
         type: string
         default: "https://uploads.github.com"
-        description: "アセットアップロード用のベース URL（GitHub Enterprise Server の場合に変更）"
+        description: "Base URL for asset uploads (change for GitHub Enterprise Server)"
   steps:
     - name: create-release-and-upload-assets
       env:
@@ -82,8 +82,8 @@ spec:
           printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g'
         }
 
-        # draft/prerelease は JSON の真偽値リテラルとしてそのまま埋め込むため、
-        # true/false のいずれかであることを厳密に検証してから使用する
+        # draft/prerelease are embedded as-is as JSON boolean literals, so strictly
+        # validate that each is either true or false before using it
         case "$DRAFT" in
           true|false) ;;
           *)
@@ -134,7 +134,7 @@ spec:
         fi
         echo "[github-release] created release ${TAG} (id=${_RELEASE_ID})"
 
-        # name= クエリパラメータに埋め込む前にアセット名を URL エンコードする
+        # URL-encode the asset name before embedding it in the name= query parameter
         _urlencode() {
           _s="$1"
           _len=${#_s}
@@ -153,7 +153,7 @@ spec:
           done
         }
 
-        # アセットが指定されていればアップロード（配列パラメータは改行区切りで渡される）
+        # Upload assets if specified (array params are passed newline-separated)
         if [ -n "$ASSETS" ]; then
           _OLD_IFS="$IFS"
           IFS='

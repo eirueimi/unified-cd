@@ -1,10 +1,10 @@
-# Slack 通知ジョブテンプレート
-# unified-cd apply examples/slack-notify.yaml で登録後、call.job で呼び出す
+# Slack notification job template
+# After registering with unified-cd apply examples/slack-notify.yaml, invoke it via call.job
 #
-# 必要なシークレット:
+# Required secrets:
 #   unified-cd secret set slack-webhook-url --value https://hooks.slack.com/services/...
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/slack-notify.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -26,11 +26,11 @@ spec:
       - name: message
         type: string
         default: ""
-        description: "追加メッセージ（省略可）"
+        description: "Additional message (optional)"
       - name: channel
         type: string
         default: ""
-        description: "送信先チャンネル（省略時は Webhook のデフォルトチャンネル）"
+        description: "Destination channel (if omitted, uses the webhook's default channel)"
   steps:
     - name: notify
       env:

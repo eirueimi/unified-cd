@@ -1,14 +1,14 @@
-# Docker イメージビルド & プッシュジョブテンプレート
-# unified-cd apply examples/docker-build-push.yaml で登録後、call.job で呼び出す
+# Docker image build & push job template
+# Register with unified-cd apply examples/docker-build-push.yaml, then invoke via call.job
 #
-# エージェント要件: docker（マルチプラットフォームビルドには buildx も必要）
+# Agent requirements: docker (buildx is also required for multi-platform builds)
 #
-# 必要なシークレット（プライベートレジストリ/Docker Hub にプッシュする場合）:
+# Required secrets (when pushing to a private registry / Docker Hub):
 #   unified-cd secret set dockerhub-username --value myuser
 #   unified-cd secret set dockerhub-password --value xxxxxxxx
-#   ※ username_secret を設定しない場合は認証なしで push を試みる（パブリックの匿名 push 用途等）
+#   * If username_secret is not set, push is attempted without authentication (e.g. for public anonymous pushes)
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/docker-build-push.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -20,43 +20,43 @@ spec:
       - name: image
         type: string
         required: true
-        description: "registry/repo 形式のイメージ名（例: myorg/myapp）"
+        description: "Image name in registry/repo form (e.g. myorg/myapp)"
       - name: tags
         type: array
         default: "latest"
-        description: "付与するタグ一覧（YAML 配列）"
+        description: "List of tags to apply (YAML array)"
       - name: context
         type: string
         default: "."
-        description: "ビルドコンテキストのパス"
+        description: "Path to the build context"
       - name: dockerfile
         type: string
         default: "Dockerfile"
-        description: "Dockerfile のパス（context からの相対パス）"
+        description: "Path to the Dockerfile (relative to context)"
       - name: registry
         type: string
         default: ""
-        description: "レジストリのホスト名（例: ghcr.io、空文字なら Docker Hub）"
+        description: "Registry hostname (e.g. ghcr.io; empty means Docker Hub)"
       - name: username_secret
         type: string
         default: ""
-        description: "レジストリ認証ユーザー名を保持するシークレット名（空文字ならログインをスキップ）"
+        description: "Secret name holding the registry auth username (empty skips login)"
       - name: password_secret
         type: string
         default: ""
-        description: "レジストリ認証パスワード/トークンを保持するシークレット名"
+        description: "Secret name holding the registry auth password/token"
       - name: push
         type: string
         default: "true"
-        description: "ビルド後に push するかどうか（true/false）"
+        description: "Whether to push after building (true/false)"
       - name: build_args
         type: array
         default: ""
-        description: "docker build --build-arg に渡す KEY=VALUE 一覧（YAML 配列）"
+        description: "List of KEY=VALUE pairs passed to docker build --build-arg (YAML array)"
       - name: platform
         type: string
         default: ""
-        description: "マルチプラットフォームビルド対象（例: linux/amd64,linux/arm64）。空文字なら通常の docker build を使用"
+        description: "Multi-platform build targets (e.g. linux/amd64,linux/arm64). Empty uses a regular docker build"
   steps:
     - name: build-and-push
       env:
@@ -91,7 +91,7 @@ spec:
           _FULL_IMAGE="${REGISTRY}/${IMAGE}"
         fi
 
-        # タグ一覧を -t 引数に変換（配列パラメータは改行区切りで渡される）
+        # Convert the tag list into -t arguments (array params are passed newline-separated)
         set --
         _OLD_IFS="$IFS"
         IFS='
@@ -106,7 +106,7 @@ spec:
           set -- -t "${_FULL_IMAGE}:latest"
         fi
 
-        # build-arg 一覧を --build-arg 引数に変換
+        # Convert the build-arg list into --build-arg arguments
         _OLD_IFS="$IFS"
         IFS='
         '

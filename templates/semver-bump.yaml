@@ -1,15 +1,16 @@
-# Conventional Commits に基づくセマンティックバージョン算出ジョブテンプレート
-# unified-cd apply examples/semver-bump.yaml で登録後、call.job で呼び出す
+# Semantic version calculation job template based on Conventional Commits
+# After registering with unified-cd apply examples/semver-bump.yaml, invoke it via call.job
 #
-# 最後のタグから現在の HEAD までのコミットメッセージを走査し、
-# BREAKING CHANGE（または `!:` 記法）があれば major、`feat` があれば minor、
-# それ以外は patch としてバージョンをインクリメントします。
-# タグが存在しない場合は v0.0.0 を起点とします。
+# Scans the commit messages from the last tag to the current HEAD, and
+# increments the version as major if there is a BREAKING CHANGE (or `!:`
+# notation), minor if there is a `feat`, or patch otherwise.
+# If no tag exists, v0.0.0 is used as the starting point.
 #
-# エージェント要件: git（対象リポジトリが checkout 済みであること。history が
-# 必要なため git-checkout の fetch_depth は 0 を推奨）
+# Agent requirements: git (the target repository must already be checked
+# out. Since history is needed, a git-checkout fetch_depth of 0 is
+# recommended)
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/semver-bump.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -21,7 +22,7 @@ spec:
       - name: prefix
         type: string
         default: "v"
-        description: "タグ接頭辞（例: v → v1.2.3）"
+        description: "Tag prefix (e.g. v -> v1.2.3)"
     outputs:
       - name: next_version
         type: string

@@ -1,12 +1,12 @@
-# rsync 経由のリモートデプロイ ジョブテンプレート
-# unified-cd apply examples/rsync-deploy.yaml で登録後、call.job で呼び出す
+# Remote deploy job template via rsync
+# Register with unified-cd apply examples/rsync-deploy.yaml, then invoke via call.job
 #
-# エージェント要件: rsync, ssh
+# Agent requirements: rsync, ssh
 #
-# 必要なシークレット:
+# Required secrets:
 #   unified-cd secret set deploy-ssh-key --value "$(cat ~/.ssh/id_ed25519)"
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/rsync-deploy.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -18,27 +18,27 @@ spec:
       - name: src
         type: string
         default: "./"
-        description: "同期元ディレクトリ（ローカル）"
+        description: "Source directory to sync from (local)"
       - name: dest
         type: string
         required: true
-        description: "同期先（例: user@host:/path/to/app）"
+        description: "Sync destination (e.g. user@host:/path/to/app)"
       - name: ssh_key_secret
         type: string
         required: true
-        description: "SSH 秘密鍵を保持するシークレット名"
+        description: "Secret name holding the SSH private key"
       - name: port
         type: string
         default: "22"
-        description: "SSH ポート"
+        description: "SSH port"
       - name: delete
         type: string
         default: "false"
-        description: "同期元にないファイルを同期先から削除するか（rsync --delete）"
+        description: "Whether to delete files from the destination that don't exist in the source (rsync --delete)"
       - name: extra_args
         type: string
         default: ""
-        description: "rsync に追加で渡す引数（スペース区切り、省略可）"
+        description: "Additional arguments to pass to rsync (space-separated, optional)"
   steps:
     - name: rsync
       env:
@@ -61,8 +61,8 @@ spec:
 
         printf '%s\n' "$SSH_KEY" > "$_SSH_KEY_FILE"
 
-        # PORT は ssh -p / ProxyCommand 文字列に直接埋め込まれるため、数字以外の
-        # 文字が含まれる場合はコマンドインジェクションの恐れがあり拒否する
+        # PORT is embedded directly into the ssh -p / ProxyCommand string, so reject
+        # it if it contains any non-digit characters, since that risks command injection
         case "$PORT" in
           *[!0-9]*|'')
             echo "[rsync-deploy] invalid port: ${PORT}" >&2
@@ -75,8 +75,9 @@ spec:
           set -- "$@" --delete
         fi
 
-        # extra_args はスペース区切りの自由入力のためワードスプリットは仕様通り行うが、
-        # ワークスペース内のファイル名に対する意図しないグロブ展開は無効化する（set -f）
+        # extra_args is free-form, space-separated input, so word splitting is performed
+        # as intended, but unintended glob expansion against workspace file names is
+        # disabled (set -f)
         set -f
         # shellcheck disable=SC2086
         set -- "$@" $EXTRA_ARGS

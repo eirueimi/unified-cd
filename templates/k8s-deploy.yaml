@@ -1,12 +1,12 @@
-# Kubernetes マニフェスト適用ジョブテンプレート
-# unified-cd apply examples/k8s-deploy.yaml で登録後、call.job で呼び出す
+# Kubernetes manifest apply job template
+# After registering with unified-cd apply examples/k8s-deploy.yaml, invoke it via call.job
 #
-# エージェント要件: kubectl
+# Agent requirements: kubectl
 #
-# 必要なシークレット:
+# Required secrets:
 #   unified-cd secret set my-cluster-kubeconfig --value "$(cat ~/.kube/config)"
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/k8s-deploy.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -18,23 +18,23 @@ spec:
       - name: manifest_path
         type: string
         required: true
-        description: "適用するマニフェストファイル/ディレクトリのパス（kubectl apply -f に渡す）"
+        description: "Path to the manifest file/directory to apply (passed to kubectl apply -f)"
       - name: namespace
         type: string
         default: "default"
-        description: "適用先の namespace"
+        description: "Target namespace to apply to"
       - name: kubeconfig_secret
         type: string
         required: true
-        description: "kubeconfig の内容を保持するシークレット名"
+        description: "Name of the secret holding the kubeconfig contents"
       - name: rollout_target
         type: string
         default: ""
-        description: "ロールアウト完了を待つ対象（例: deployment/myapp）。空文字ならロールアウト待機をスキップ"
+        description: "Target to wait for rollout completion (e.g. deployment/myapp). If empty, skips waiting for rollout"
       - name: timeout
         type: string
         default: "120s"
-        description: "kubectl rollout status のタイムアウト"
+        description: "Timeout for kubectl rollout status"
   steps:
     - name: apply-manifests
       env:

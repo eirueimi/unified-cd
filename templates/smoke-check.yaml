@@ -1,9 +1,9 @@
-# デプロイ後スモークテスト（URL ポーリング）ジョブテンプレート
-# unified-cd apply examples/smoke-check.yaml で登録後、call.job で呼び出す
+# Post-deploy smoke test (URL polling) job template
+# After registering with unified-cd apply examples/smoke-check.yaml, invoke it via call.job
 #
-# エージェント要件: curl
+# Agent requirements: curl
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/smoke-check.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -15,23 +15,23 @@ spec:
       - name: url
         type: string
         required: true
-        description: "疎通確認する URL"
+        description: "URL to check connectivity against"
       - name: expect_status
         type: string
         default: "200"
-        description: "期待する HTTP ステータスコード"
+        description: "Expected HTTP status code"
       - name: retries
         type: string
         default: "10"
-        description: "最大リトライ回数"
+        description: "Maximum number of retries"
       - name: interval_seconds
         type: string
         default: "5"
-        description: "リトライ間隔（秒）"
+        description: "Retry interval (seconds)"
       - name: body_contains
         type: string
         default: ""
-        description: "レスポンスボディに含まれるべき文字列（省略可）"
+        description: "String that must be contained in the response body (optional)"
   steps:
     - name: poll
       env:

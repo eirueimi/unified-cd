@@ -446,7 +446,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			tplData := sctx.snapshot()
 			if step.MatrixValues != nil {
 				tplData.Matrix = step.MatrixValues
-				tplData.Foreach = step.MatrixValues // foreach シュガー互換: {{ .Foreach.key }}
+				tplData.Foreach = step.MatrixValues // foreach sugar compatibility: {{ .Foreach.key }}
 			}
 
 			var callChildRunID, callJobName string

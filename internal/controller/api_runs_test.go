@@ -407,7 +407,7 @@ func TestAPI_ListActiveRuns(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{}`))
 
-	// アクティブなRun作成
+	// Create an active Run
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "myjob"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -415,7 +415,7 @@ func TestAPI_ListActiveRuns(t *testing.T) {
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	// active エンドポイントで取得
+	// Fetch via the active endpoint
 	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/runs/active", nil)
 	req2.Header.Set("Authorization", "Bearer secret")
 	rec2 := httptest.NewRecorder()

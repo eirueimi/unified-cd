@@ -1,19 +1,19 @@
-# Go モジュール/ビルドキャッシュ セットアップジョブテンプレート
-# unified-cd apply examples/setup-go.yaml で登録後、call.job で呼び出す
+# Go module/build cache setup job template
+# After registering with unified-cd apply examples/setup-go.yaml, invoke it via call.job
 #
-# エージェント要件: go（PATH 上に go コマンドが必要）
+# Agent requirements: go (the go command must be on PATH)
 #
-# 注意: `go env -w` はエージェントのユーザー環境（$HOME/.config/go/env）に
-# 永続化される設定です。同一エージェントで実行される以降のジョブにも
-# GOMODCACHE/GOCACHE の変更が残るため、共有エージェントで使う場合は
-# 副作用として認識してください。
+# Note: `go env -w` persists settings into the agent's user environment
+# ($HOME/.config/go/env). The GOMODCACHE/GOCACHE changes will carry over
+# to subsequent jobs run on the same agent, so be aware of this side
+# effect when using a shared agent.
 #
-# cache: ステップは path を1つしか指定できないため、GOMODCACHE 用と
-# GOCACHE 用で2つの cache ステップに分けています。
-# path はテンプレート式を展開するため、working_dir 配下のキャッシュ
-# ディレクトリ（configure-go-env が作成する場所）をそのまま指せます。
+# cache: since a cache step can only specify a single path, this is split
+# into two cache steps, one for GOMODCACHE and one for GOCACHE.
+# Because path expands template expressions, it can point directly at the
+# cache directories under working_dir (created by configure-go-env).
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/setup-go.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -25,7 +25,7 @@ spec:
       - name: working_dir
         type: string
         default: "."
-        description: "go.sum を探すディレクトリ（デフォルト: カレントディレクトリ）"
+        description: "Directory to look for go.sum in (default: current directory)"
   steps:
     - name: configure-go-env
       env:

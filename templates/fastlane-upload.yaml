@@ -1,25 +1,26 @@
-# fastlane レーン実行 ジョブテンプレート（App Store Connect API キー対応）
-# unified-cd apply examples/fastlane-upload.yaml で登録後、call.job で呼び出す
+# fastlane lane execution job template (supports App Store Connect API key)
+# Register with unified-cd apply examples/fastlane-upload.yaml, then invoke via call.job
 #
-# 【注意 — このリポジトリの CI では実行できません】
-# fastlane / bundler / Xcode がインストールされた macOS エージェント
-# （agentSelector に macos:true, fastlane:true などのラベルを推奨）でのみ
-# 動作します。以下は fastlane 公式ドキュメントに基づく想定であり、実行検証
-# はできていません:
-#   - ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_CONTENT の環境変数名は
-#     fastlane の App Store Connect API キー認証（app_store_connect_api_key
-#     action）が参照する規約に合わせたもの。実際の変数名/受け渡し方法は
-#     使用する fastlane プラグインやバージョンによって異なる可能性がある
-#     ため、導入時に fastlane 側のドキュメントで最終確認してください。
-#   - Gemfile が存在する場合は `bundle exec fastlane` を、存在しない場合は
-#     素の `fastlane` コマンドにフォールバックします。
+# [Note — this cannot be run in this repository's CI]
+# This only works on a macOS agent with fastlane / bundler / Xcode installed
+# (recommend labeling it with macos:true, fastlane:true, or similar in
+# agentSelector). The following is based on the official fastlane
+# documentation and has not been verified by actual execution:
+#   - The ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_CONTENT environment variable
+#     names match the convention referenced by fastlane's App Store Connect
+#     API key authentication (the app_store_connect_api_key action). The
+#     actual variable names/passing method may differ depending on the
+#     fastlane plugin or version in use, so please do a final check against
+#     the fastlane documentation when adopting this.
+#   - If a Gemfile is present, falls back to `bundle exec fastlane`;
+#     otherwise falls back to the plain `fastlane` command.
 #
-# 必要なシークレット（App Store Connect API キー認証を使う場合、省略可）:
+# Required secrets (when using App Store Connect API key authentication; optional):
 #   unified-cd secret set asc-key-id --value XXXXXXXXXX
 #   unified-cd secret set asc-issuer-id --value xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 #   unified-cd secret set asc-key-content --value "$(cat AuthKey_XXXXXXXXXX.p8)"
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/fastlane-upload.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -31,23 +32,23 @@ spec:
       - name: lane
         type: string
         required: true
-        description: "実行する fastlane レーン名"
+        description: "Name of the fastlane lane to run"
       - name: project_dir
         type: string
         default: "."
-        description: "Fastfile が存在するディレクトリ（fastlane/ の親ディレクトリ）"
+        description: "Directory containing the Fastfile (the parent directory of fastlane/)"
       - name: asc_key_id_secret
         type: string
         default: ""
-        description: "App Store Connect API Key ID を保持するシークレット名（省略可）"
+        description: "Secret name holding the App Store Connect API Key ID (optional)"
       - name: asc_issuer_id_secret
         type: string
         default: ""
-        description: "App Store Connect Issuer ID を保持するシークレット名（省略可）"
+        description: "Secret name holding the App Store Connect Issuer ID (optional)"
       - name: asc_key_content_secret
         type: string
         default: ""
-        description: "App Store Connect API キー（.p8 の内容）を保持するシークレット名（省略可）"
+        description: "Secret name holding the App Store Connect API key (.p8 contents) (optional)"
   steps:
     - name: run-fastlane
       env:

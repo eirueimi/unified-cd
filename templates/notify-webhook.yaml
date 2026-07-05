@@ -1,11 +1,11 @@
-# 汎用 Webhook 通知ジョブテンプレート（JSON POST）
-# unified-cd apply examples/notify-webhook.yaml で登録後、call.job で呼び出す
+# Generic webhook notification job template (JSON POST)
+# After registering with unified-cd apply examples/notify-webhook.yaml, invoke it via call.job
 #
-# 必要なシークレット（url_secret を使う場合）:
+# Required secrets (if using url_secret):
 #   unified-cd secret set my-webhook-url --value https://example.com/hooks/xxxx
-#   ※ url パラメータで平文 URL を渡す場合はシークレット不要
+#   * No secret is needed if passing the plaintext URL via the url parameter
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/notify-webhook.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -17,23 +17,23 @@ spec:
       - name: url_secret
         type: string
         default: ""
-        description: "POST 先 URL を保持するシークレット名。url と排他（どちらか一方が必須）"
+        description: "Name of the secret holding the destination POST URL. Mutually exclusive with url (exactly one is required)"
       - name: url
         type: string
         default: ""
-        description: "POST 先 URL（平文）。url_secret と排他（どちらか一方が必須）"
+        description: "Destination POST URL (plaintext). Mutually exclusive with url_secret (exactly one is required)"
       - name: payload
         type: string
         required: true
-        description: "送信する JSON 文字列（生データ）"
+        description: "JSON string to send (raw data)"
       - name: content_type
         type: string
         default: "application/json"
-        description: "Content-Type ヘッダー"
+        description: "Content-Type header"
       - name: retries
         type: string
         default: "3"
-        description: "curl --retry の回数"
+        description: "Number of curl --retry attempts"
   steps:
     - name: send
       env:

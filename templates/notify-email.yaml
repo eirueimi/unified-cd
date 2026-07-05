@@ -1,12 +1,12 @@
-# SMTP メール通知ジョブテンプレート（curl の smtp(s):// サポートを利用）
-# unified-cd apply examples/notify-email.yaml で登録後、call.job で呼び出す
+# SMTP email notification job template (using curl's smtp(s):// support)
+# After registering with unified-cd apply examples/notify-email.yaml, invoke it via call.job
 #
-# 必要なシークレット:
+# Required secrets:
 #   unified-cd secret set smtp-url --value smtps://smtp.example.com:465
 #   unified-cd secret set smtp-username --value user@example.com
 #   unified-cd secret set smtp-password --value xxxxxxxx
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/notify-email.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -18,31 +18,31 @@ spec:
       - name: smtp_url_secret
         type: string
         required: true
-        description: "SMTP サーバー URL を保持するシークレット名（例: smtps://smtp.example.com:465）"
+        description: "Name of the secret holding the SMTP server URL (e.g. smtps://smtp.example.com:465)"
       - name: username_secret
         type: string
         required: true
-        description: "SMTP 認証ユーザー名を保持するシークレット名"
+        description: "Name of the secret holding the SMTP auth username"
       - name: password_secret
         type: string
         required: true
-        description: "SMTP 認証パスワードを保持するシークレット名"
+        description: "Name of the secret holding the SMTP auth password"
       - name: mail_from
         type: string
         required: true
-        description: "送信元アドレス"
+        description: "Sender address"
       - name: mail_to
         type: string
         required: true
-        description: "宛先アドレス（カンマ区切りで複数可）"
+        description: "Recipient address(es) (comma-separated for multiple)"
       - name: subject
         type: string
         required: true
-        description: "件名"
+        description: "Subject"
       - name: body
         type: string
         required: true
-        description: "本文（プレーンテキスト）"
+        description: "Body (plain text)"
   steps:
     - name: send
       env:
@@ -64,8 +64,9 @@ spec:
         }
         trap _cleanup EXIT
 
-        # ヘッダインジェクション対策: RFC822 ヘッダに使う値に CR/LF が混入して
-        # いないか検証する（改行を許すと追加ヘッダの注入が可能になるため）
+        # Header injection prevention: verify that values used in RFC822
+        # headers do not contain CR/LF (allowing newlines would make it
+        # possible to inject additional headers)
         _check_no_crlf() {
           _name="$1"
           _val="$2"
@@ -84,7 +85,7 @@ spec:
         _check_no_crlf mail_to "$MAIL_TO"
         _check_no_crlf subject "$SUBJECT"
 
-        # RCPT 用にカンマ区切りを --mail-rcpt の複数指定に変換
+        # Convert the comma-separated list into multiple --mail-rcpt options for RCPT
         set --
         _OLD_IFS="$IFS"
         IFS=','

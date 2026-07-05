@@ -1,11 +1,11 @@
-# GitLab コミットステータス更新ジョブテンプレート
-# unified-cd apply examples/gitlab-commit-status.yaml で登録後、call.job で呼び出す
+# GitLab commit status update job template
+# After registering with unified-cd apply examples/gitlab-commit-status.yaml, invoke it via call.job
 #
-# 必要なシークレット:
+# Required secrets:
 #   unified-cd secret set gitlab-token --value glpat-xxxx
-#   必要なスコープ: api（または report-manager 以上のロール）
+#   Required scope: api (or a role of report-manager or higher)
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/gitlab-commit-status.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -17,15 +17,15 @@ spec:
       - name: base_url
         type: string
         default: "https://gitlab.com"
-        description: "GitLab インスタンスのベース URL（self-managed の場合に変更）"
+        description: "Base URL of the GitLab instance (change for self-managed)"
       - name: project
         type: string
         required: true
-        description: "プロジェクトパス（URL エンコード済み、例: group%2Fsubgroup%2Frepo）または数値 ID"
+        description: "Project path (URL-encoded, e.g. group%2Fsubgroup%2Frepo) or numeric ID"
       - name: sha
         type: string
         required: true
-        description: "コミット SHA"
+        description: "Commit SHA"
       - name: state
         type: string
         required: true
@@ -33,15 +33,15 @@ spec:
       - name: context
         type: string
         default: "unified-cd"
-        description: "ステータスの名前（GitLab の name パラメータ）"
+        description: "Status name (GitLab's name parameter)"
       - name: target_url
         type: string
         default: ""
-        description: "詳細リンク先 URL（省略可）"
+        description: "Details link URL (optional)"
       - name: token_secret
         type: string
         default: "gitlab-token"
-        description: "GitLab トークンを保持するシークレット名"
+        description: "Name of the secret holding the GitLab token"
   steps:
     - name: update-status
       env:
@@ -62,7 +62,7 @@ spec:
         }
         trap _cleanup EXIT
 
-        # クエリ文字列に埋め込む前に各値を URL エンコードする
+        # URL-encode each value before embedding it in the query string
         _urlencode() {
           _s="$1"
           _len=${#_s}
@@ -95,7 +95,7 @@ spec:
           -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
           "$_URL")
 
-        # GitLab は新規作成 201、既存ステータス更新 200 のどちらも返し得る
+        # GitLab may return either 201 for new creation or 200 for updating an existing status
         if [ "$HTTP_STATUS" != "201" ] && [ "$HTTP_STATUS" != "200" ]; then
           echo "[gitlab-commit-status] GitLab API returned HTTP ${HTTP_STATUS}" >&2
           cat "$_RESPONSE_FILE" >&2 2>/dev/null || true

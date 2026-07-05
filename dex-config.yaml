@@ -1,5 +1,5 @@
-# ローカル開発用 Dex 設定
-# 静的ユーザー: admin@example.com / password
+# Dex configuration for local development
+# Static user: admin@example.com / password
 issuer: http://localhost:5556
 
 storage:

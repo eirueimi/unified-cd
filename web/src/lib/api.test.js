@@ -11,7 +11,7 @@ beforeEach(() => {
 });
 
 describe('initAuth — browserSSOEnabled', () => {
-  it('サーバーが browserSSOEnabled:true を返したとき store が true になる', async () => {
+  it('store becomes true when the server returns browserSSOEnabled:true', async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ browserSSOEnabled: true, clientId: 'test', issuer: 'http://localhost' }) })
       .mockResolvedValueOnce({ ok: false });
@@ -21,7 +21,7 @@ describe('initAuth — browserSSOEnabled', () => {
     expect(get(browserSSOEnabled)).toBe(true);
   });
 
-  it('サーバーが browserSSOEnabled:false を返したとき store が false のまま', async () => {
+  it('store stays false when the server returns browserSSOEnabled:false', async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ browserSSOEnabled: false }) })
       .mockResolvedValueOnce({ ok: false });
@@ -31,7 +31,7 @@ describe('initAuth — browserSSOEnabled', () => {
     expect(get(browserSSOEnabled)).toBe(false);
   });
 
-  it('fetch が失敗したとき store が false のまま', async () => {
+  it('store stays false when fetch fails', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('network error'));
 
     await initAuth();
@@ -39,7 +39,7 @@ describe('initAuth — browserSSOEnabled', () => {
     expect(get(browserSSOEnabled)).toBe(false);
   });
 
-  it('oidc-config レスポンスが ok でないとき store が false のまま', async () => {
+  it('store stays false when the oidc-config response is not ok', async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: false })
       .mockResolvedValueOnce({ ok: false });
@@ -51,7 +51,7 @@ describe('initAuth — browserSSOEnabled', () => {
 });
 
 describe('initAuth — currentUser', () => {
-  it('/auth/me が成功したとき currentUser が設定される', async () => {
+  it('currentUser is set when /auth/me succeeds', async () => {
     const user = { email: 'test@example.com', name: 'Test User' };
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ browserSSOEnabled: true }) })
@@ -62,7 +62,7 @@ describe('initAuth — currentUser', () => {
     expect(get(currentUser)).toEqual(user);
   });
 
-  it('/auth/me が失敗したとき currentUser が null のまま', async () => {
+  it('currentUser stays null when /auth/me fails', async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ browserSSOEnabled: true }) })
       .mockResolvedValueOnce({ ok: false });
@@ -72,7 +72,7 @@ describe('initAuth — currentUser', () => {
     expect(get(currentUser)).toBeNull();
   });
 
-  it('/auth/me の fetch が失敗しても currentUser が null のまま', async () => {
+  it('currentUser stays null even when the /auth/me fetch fails', async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ browserSSOEnabled: true }) })
       .mockRejectedValueOnce(new Error('network error'));
@@ -82,7 +82,7 @@ describe('initAuth — currentUser', () => {
     expect(get(currentUser)).toBeNull();
   });
 
-  it('browserSSOEnabled と currentUser を同時に設定できる', async () => {
+  it('can set browserSSOEnabled and currentUser at the same time', async () => {
     const user = { email: 'sso@example.com' };
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ browserSSOEnabled: true }) })
@@ -96,11 +96,11 @@ describe('initAuth — currentUser', () => {
 });
 
 describe('initAuth — authReady', () => {
-  it('開始前は authReady が false', () => {
+  it('authReady is false before starting', () => {
     expect(get(authReady)).toBe(false);
   });
 
-  it('/auth/me が成功して currentUser が設定された後に authReady が true になる (順序保証)', async () => {
+  it('authReady becomes true after /auth/me succeeds and currentUser is set (ordering guarantee)', async () => {
     const user = { email: 'sso@example.com' };
     let resolveMe;
     const mePromise = new Promise((resolve) => { resolveMe = resolve; });
@@ -110,7 +110,7 @@ describe('initAuth — authReady', () => {
 
     const p = initAuth();
 
-    // セッション確認が完了するまで authReady は false のまま
+    // authReady stays false until the session check completes
     await Promise.resolve();
     await Promise.resolve();
     expect(get(authReady)).toBe(false);
@@ -119,12 +119,12 @@ describe('initAuth — authReady', () => {
     resolveMe({ ok: true, json: async () => user });
     await p;
 
-    // currentUser が設定された後で authReady が true になる
+    // authReady becomes true after currentUser is set
     expect(get(currentUser)).toEqual(user);
     expect(get(authReady)).toBe(true);
   });
 
-  it('/auth/me が失敗しても(unauthenticated)authReady は true になる', async () => {
+  it('authReady becomes true even when /auth/me fails (unauthenticated)', async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ browserSSOEnabled: false }) })
       .mockResolvedValueOnce({ ok: false });
@@ -135,7 +135,7 @@ describe('initAuth — authReady', () => {
     expect(get(authReady)).toBe(true);
   });
 
-  it('ネットワークエラーでも authReady は true になる(ルーターが永久にブロックされない)', async () => {
+  it('authReady becomes true even on a network error (the router is never permanently blocked)', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('network error'));
 
     await initAuth();

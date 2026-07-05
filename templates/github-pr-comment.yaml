@@ -1,11 +1,11 @@
-# GitHub PR コメント投稿ジョブテンプレート
-# unified-cd apply examples/github-pr-comment.yaml で登録後、call.job で呼び出す
+# GitHub PR comment posting job template
+# After registering with unified-cd apply examples/github-pr-comment.yaml, invoke it via call.job
 #
-# 必要なシークレット:
+# Required secrets:
 #   unified-cd secret set github-token --value ghp_xxxx
-#   必要な権限: pull-requests:write（Issues コメント API を PR にも利用）
+#   Required permission: pull-requests:write (the Issues comment API is also used for PRs)
 #
-# git:// テンプレートとして参照する場合:
+# When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/github-pr-comment.yaml@v1
 apiVersion: unified-cd/v1
 kind: Job
@@ -17,23 +17,23 @@ spec:
       - name: repo
         type: string
         required: true
-        description: "org/name 形式のリポジトリ"
+        description: "Repository in org/name format"
       - name: pr_number
         type: string
         required: true
-        description: "PR 番号（Issue 番号と共通）"
+        description: "PR number (shared with the issue number)"
       - name: body
         type: string
         required: true
-        description: "コメント本文（GitHub Flavored Markdown）"
+        description: "Comment body (GitHub Flavored Markdown)"
       - name: token_secret
         type: string
         default: "github-token"
-        description: "GitHub トークンを保持するシークレット名"
+        description: "Name of the secret holding the GitHub token"
       - name: api_url
         type: string
         default: "https://api.github.com"
-        description: "GitHub API のベース URL（GitHub Enterprise Server の場合に変更）"
+        description: "GitHub API base URL (change for GitHub Enterprise Server)"
   steps:
     - name: comment
       env:
@@ -53,7 +53,7 @@ spec:
         }
         trap _cleanup EXIT
 
-        # jq がなくても壊れないよう手動で JSON エスケープする（\、"、改行のみ対応）
+        # Manually JSON-escape so this works without jq (only handles \, ", and newlines)
         _ESCAPED_BODY="$(printf '%s' "$BODY" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g')"
         printf '{"body":"%s"}' "$_ESCAPED_BODY" > "$_PAYLOAD_FILE"
 

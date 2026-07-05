@@ -24,7 +24,7 @@ async function registerSchemaContributor(context: vscode.ExtensionContext): Prom
   const yamlExt = vscode.extensions.getExtension('redhat.vscode-yaml');
   if (!yamlExt) {
     vscode.window.showWarningMessage(
-      'unified-cd YAML: redhat.vscode-yaml が見つかりません。スキーマ補完は無効です。',
+      'unified-cd YAML: redhat.vscode-yaml was not found. Schema completion is disabled.',
     );
     return;
   }
@@ -32,7 +32,7 @@ async function registerSchemaContributor(context: vscode.ExtensionContext): Prom
   const yamlApi = await yamlExt.activate();
   if (!yamlApi || typeof yamlApi.registerContributor !== 'function') {
     vscode.window.showWarningMessage(
-      'unified-cd YAML: vscode-yaml の schema API を利用できません。スキーマ補完は無効です。',
+      'unified-cd YAML: the vscode-yaml schema API is unavailable. Schema completion is disabled.',
     );
     return;
   }

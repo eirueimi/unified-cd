@@ -130,7 +130,7 @@ func TestRunPipeline_MatrixExpansion(t *testing.T) {
 }
 
 func TestRunPipeline_MatrixInsideParallelExpands(t *testing.T) {
-	// 従来バグ: parallel 内の foreach/matrix が展開されず1回だけ実行されていた
+	// Former bug: foreach/matrix inside parallel was not expanded and ran only once
 	stages := []api.ClaimStage{{Parallel: []api.ClaimStep{
 		{Name: "plain", Run: "echo"},
 		{Name: "fanout", Matrix: &api.ClaimMatrixDef{Dimensions: []api.ClaimMatrixDimension{
