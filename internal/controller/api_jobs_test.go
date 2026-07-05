@@ -261,3 +261,43 @@ func TestListJobs_DerivesPathAndLeaf(t *testing.T) {
 	assert.Equal(t, "team-a", jobs[0].Path)
 	assert.Equal(t, "build", jobs[0].Leaf)
 }
+
+func TestExtractJobName(t *testing.T) {
+	assert.Equal(t, "team-a/build", extractJobName("team-a/build"))
+	assert.Equal(t, "team-a/build", extractJobName("/team-a/build"))
+
+	name, isYAML := extractJobNameAndYAML("team-a/build/yaml")
+	assert.Equal(t, "team-a/build", name)
+	assert.True(t, isYAML)
+
+	name2, isYAML2 := extractJobNameAndYAML("team-a/build")
+	assert.Equal(t, "team-a/build", name2)
+	assert.False(t, isYAML2)
+}
+
+// TestAPI_GetJob_SlashInName verifies that a hierarchical job name (containing
+// "/") is routable via the catch-all "/jobs/*" route end to end, both for the
+// job itself and its YAML rendering.
+func TestAPI_GetJob_SlashInName(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(t.Context(), "team-a/build", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/team-a/build", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got api.Job
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, "team-a/build", got.Name)
+	assert.Equal(t, "team-a", got.Path)
+	assert.Equal(t, "build", got.Leaf)
+
+	yamlReq := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/team-a/build/yaml", nil)
+	yamlReq.Header.Set("Authorization", "Bearer secret")
+	yamlRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(yamlRec, yamlReq)
+	require.Equal(t, http.StatusOK, yamlRec.Code, yamlRec.Body.String())
+	assert.Equal(t, "text/plain; charset=utf-8", yamlRec.Header().Get("Content-Type"))
+}

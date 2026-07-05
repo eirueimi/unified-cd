@@ -73,9 +73,37 @@ func (s *Server) listJobsDecorated(ctx context.Context) ([]api.Job, error) {
 	return jobs, nil
 }
 
-// handleGetJob returns the Job with the given name.
-func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+// extractJobName returns the catch-all wildcard as the job name.
+func extractJobName(wild string) string {
+	return strings.TrimPrefix(wild, "/")
+}
+
+// extractJobNameAndYAML strips an optional trailing "/yaml" segment, reporting
+// whether it was present.
+func extractJobNameAndYAML(wild string) (name string, yaml bool) {
+	wild = strings.TrimPrefix(wild, "/")
+	if strings.HasSuffix(wild, "/yaml") {
+		return strings.TrimSuffix(wild, "/yaml"), true
+	}
+	return wild, false
+}
+
+// NOTE: a job whose leaf is literally "yaml" (qualified name ".../yaml") is
+// unreachable via GET as a job — the suffix is read as the YAML discriminator.
+// Such names are not expected; direct apply can still create/delete them.
+
+// handleGetJobOrYAML dispatches GET /jobs/* to the job or its YAML.
+func (s *Server) handleGetJobOrYAML(w http.ResponseWriter, r *http.Request) {
+	name, yaml := extractJobNameAndYAML(chi.URLParam(r, "*"))
+	if yaml {
+		s.serveJobYAML(w, r, name)
+		return
+	}
+	s.serveJob(w, r, name)
+}
+
+// serveJob returns the Job with the given name.
+func (s *Server) serveJob(w http.ResponseWriter, r *http.Request, name string) {
 	job, err := s.store.GetJob(r.Context(), name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -86,9 +114,8 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
-// handleGetJobYAML returns the YAML definition of the specified Job.
-func (s *Server) handleGetJobYAML(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+// serveJobYAML returns the YAML definition of the specified Job.
+func (s *Server) serveJobYAML(w http.ResponseWriter, r *http.Request, name string) {
 	job, err := s.store.GetJob(r.Context(), name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -107,7 +134,7 @@ func (s *Server) handleGetJobYAML(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteJob deletes the Job with the given name. Associated Run history is also cascade-deleted.
 func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+	name := extractJobName(chi.URLParam(r, "*"))
 	if err := s.store.DeleteJob(r.Context(), name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
