@@ -401,7 +401,11 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 					slog.Error("call step failed", "step", step.Name, "error", callErr)
 					status = "Failed"
 				} else {
-					sctx.setStep(step.Name, dsl.StepData{Outputs: dsl.StringOutputs(childOutputs)})
+					if step.MatrixKey != "" {
+						sctx.setStepMatrixOutputs(step.Name, step.MatrixKey, childOutputs)
+					} else {
+						sctx.setStep(step.Name, dsl.StepData{Outputs: dsl.StringOutputs(childOutputs)})
+					}
 					if len(childOutputs) > 0 {
 						_ = a.Client.SetStepOutputs(stepCtx, a.ID, c.RunID, step.Index, step.MatrixKey, childOutputs)
 					}

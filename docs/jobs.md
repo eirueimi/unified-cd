@@ -386,6 +386,8 @@ its combinations** into a map keyed by combination key:
 
 **`approval` と `matrix`/`foreach` は同時指定不可** — expanded combinations share one (run_id, step_index) approval decision row, which has no way to represent per-combination decisions, so declaring both on the same step is rejected at apply time.
 
+matrix付きcallステップは組み合わせごとに子ランを起動し、出力は集約マップになる。
+
 > **Upgrade note:** matrix support changed the agent claim wire format
 > (`ForeachKey`/`ForeachValue` were replaced by a `MatrixValues` map). There
 > is no backward-compatibility shim — see
