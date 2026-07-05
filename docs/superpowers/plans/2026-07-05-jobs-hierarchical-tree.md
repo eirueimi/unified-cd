@@ -13,7 +13,7 @@
 - `jobs.name` remains the sole unique identifier. Do NOT add a composite key, relax the `UNIQUE(name)` constraint, or add a `path` column. No DB migration.
 - Do NOT touch run association, schedules, or webhook receivers — they reference jobs by `jobName`, which is now the qualified name, and need no code change.
 - AppSource name must not appear in the UI, the API, or any job reference.
-- Reserved annotation key is exactly `path`. Empty/absent `path` ⇒ qualified name == short name (backward compatible; existing flat jobs render at tree root).
+- Reserved annotation key is exactly `path`. Empty/absent `path` ⇒ qualified name == short name (backward compatible; existing flat jobs render at tree root). Note: this backward compatibility is scoped to root-level jobs — existing AppSource jobs already living in subdirectories are re-keyed to their qualified name on the first sync after upgrade (one-time prune/re-create); see the design doc's "Backward compatibility" section for the upgrade note.
 - Short `name` is joined to `path` with a single `/`; leading/trailing slashes on both are trimmed.
 
 ---
