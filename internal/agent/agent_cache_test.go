@@ -14,6 +14,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
 
 // newCacheTestAgent returns an Agent whose Client points at a stub controller
@@ -52,7 +53,7 @@ func TestExecuteCacheStep_PathTemplateExpandedOnRestore(t *testing.T) {
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.dir }}", Key: "k-{{ .Params.v }}"})
 
 	var postHooks []func(context.Context)
-	require.NoError(t, a.executeCacheStep(ctx, step, "r1", sctx, &postHooks))
+	require.NoError(t, a.executeCacheStep(ctx, step, "r1", sctx, &postHooks, nil, crt.ContainerHandle{}))
 
 	got, err := os.ReadFile(filepath.Join(dest, "f.txt"))
 	require.NoError(t, err, "cache should restore into the template-expanded path")
@@ -69,7 +70,7 @@ func TestExecuteCacheStep_PathTemplateExpandedOnDeferredSave(t *testing.T) {
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.dir }}", Key: "save-key"})
 
 	var postHooks []func(context.Context)
-	require.NoError(t, a.executeCacheStep(ctx, step, "r1", sctx, &postHooks))
+	require.NoError(t, a.executeCacheStep(ctx, step, "r1", sctx, &postHooks, nil, crt.ContainerHandle{}))
 	require.Len(t, postHooks, 1)
 	postHooks[0](ctx)
 
@@ -88,7 +89,7 @@ func TestExecuteCacheStep_PathTemplateParseErrorFailsStep(t *testing.T) {
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.dir", Key: "k"})
 
 	var postHooks []func(context.Context)
-	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooks)
+	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooks, nil, crt.ContainerHandle{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cache path")
 	assert.Empty(t, postHooks, "no save should be registered when the path template is invalid")
@@ -100,7 +101,7 @@ func TestExecuteCacheStep_EmptyExpandedPathFailsStep(t *testing.T) {
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.missing }}", Key: "k"})
 
 	var postHooks []func(context.Context)
-	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooks)
+	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooks, nil, crt.ContainerHandle{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty")
 	assert.Empty(t, postHooks, "no save should be registered when the path expands to empty")

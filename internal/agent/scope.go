@@ -22,6 +22,11 @@ func newScopeManager(rt crt.ContainerRuntime) *scopeManager {
 	return &scopeManager{rt: rt, open: map[string]crt.ContainerHandle{}}
 }
 
+// isScopedStep reports whether step targets an isolated uses-scope container
+// rather than the shared host workspace. This is the same routing signal the
+// k8s agent uses (step.ScopeID != "") for backend parity.
+func isScopedStep(step api.ClaimStep) bool { return step.ScopeID != "" }
+
 func (m *scopeManager) key(step api.ClaimStep) string {
 	return step.ScopeID + "\x00" + step.MatrixKey
 }
