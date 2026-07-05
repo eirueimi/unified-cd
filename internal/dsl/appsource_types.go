@@ -10,11 +10,10 @@ type AppSource struct {
 }
 
 type AppSourceSpec struct {
-	RepoURL          string        `yaml:"repoURL"`
-	TargetRevision   string        `yaml:"targetRevision"`
-	Path             string        `yaml:"path"`
-	GitCredentialRef string        `yaml:"gitCredentialRef,omitempty"`
-	SyncPolicy       AppSyncPolicy `yaml:"syncPolicy,omitempty"`
+	RepoURL        string        `yaml:"repoURL"`
+	TargetRevision string        `yaml:"targetRevision"`
+	Path           string        `yaml:"path"`
+	SyncPolicy     AppSyncPolicy `yaml:"syncPolicy,omitempty"`
 }
 
 type AppSyncPolicy struct {

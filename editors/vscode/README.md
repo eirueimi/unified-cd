@@ -12,7 +12,6 @@ completion for unified-cd YAML resources (`apiVersion: unified-cd/v1`).
   in the workspace:
   - `Schedule` `spec.job` → names of `kind: Job` resources in the workspace
   - `WebhookReceiver` `spec.trigger.job` → same as above
-  - `AppSource` `spec.gitCredentialRef` → names of `kind: GitCredential` resources in the workspace
 
 ## Limitations (current version)
 
@@ -42,7 +41,7 @@ To install via the GUI: open the Extensions view, click the `…` menu, choose
 
 1. Open a unified-cd YAML file (e.g. `examples/*.yaml`) in VS Code.
 2. Type a key or enum value to get completion and validation.
-3. Trigger completion at the value position of `job:` or `gitCredentialRef:` to see
+3. Trigger completion at the value position of `job:` to see
    matching resource names from the workspace.
 
 ## Development

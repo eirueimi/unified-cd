@@ -11,10 +11,6 @@ describe('detectRefTarget', () => {
     expect(detectRefTarget('    job: my')).toBe('Job');
   });
 
-  it('detects a gitCredentialRef field', () => {
-    expect(detectRefTarget('  gitCredentialRef: ')).toBe('GitCredential');
-  });
-
   it('returns undefined for unrelated keys', () => {
     expect(detectRefTarget('  name: hello')).toBeUndefined();
     expect(detectRefTarget('  cron: "* * * * *"')).toBeUndefined();
@@ -28,12 +24,6 @@ describe('completionsForLine', () => {
     index.update('u1', 'kind: Job\nmetadata:\n  name: build\n');
     index.update('u2', 'kind: GitCredential\nmetadata:\n  name: gh\n');
     expect(completionsForLine(index, '  job: ')).toEqual(['build']);
-  });
-
-  it('returns GitCredential names on a gitCredentialRef line', () => {
-    const index = new ResourceIndex();
-    index.update('u2', 'kind: GitCredential\nmetadata:\n  name: gh\n');
-    expect(completionsForLine(index, '  gitCredentialRef: ')).toEqual(['gh']);
   });
 
   it('returns empty for unrelated lines', () => {

@@ -97,7 +97,7 @@ func shouldSync(src store.AppSource, spec dsl.AppSourceSpec, now time.Time) bool
 // syncAppSource syncs a single AppSource from Git.
 // Skips when the SHA is unchanged from last time. Prunes resources removed from Git when syncPolicy.prune is enabled.
 func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher, km secrets.KeyManager, src store.AppSource, spec dsl.AppSourceSpec) error {
-	cred, err := resolveCredential(ctx, st, km, spec.RepoURL, spec.GitCredentialRef)
+	cred, err := resolveCredential(ctx, st, km, spec.RepoURL)
 	if err != nil {
 		return fmt.Errorf("failed to resolve credential: %w", err)
 	}
@@ -166,9 +166,10 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 	return st.UpdateAppSourceSyncState(ctx, src.Name, headSHA, time.Now(), current)
 }
 
-// resolveCredential resolves Git credentials based on the AppSource's repoURL and gitCredentialRef.
-// Returns an empty Credential when st or km is nil (e.g. in test environments).
-func resolveCredential(ctx context.Context, st store.Store, km secrets.KeyManager, repoURL, _ string) (gittemplate.Credential, error) {
+// resolveCredential resolves Git credentials by matching the AppSource's repoURL host
+// against a stored GitCredential. Returns an empty Credential when st or km is nil
+// (e.g. in test environments).
+func resolveCredential(ctx context.Context, st store.Store, km secrets.KeyManager, repoURL string) (gittemplate.Credential, error) {
 	if st == nil || km == nil {
 		return gittemplate.Credential{}, nil
 	}

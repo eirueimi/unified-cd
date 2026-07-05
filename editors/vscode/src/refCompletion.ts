@@ -1,14 +1,10 @@
 import { ResourceIndex } from './resourceIndex';
 
-export type RefTargetKind = 'Job' | 'GitCredential';
+export type RefTargetKind = 'Job';
 
 const JOB_FIELD = /^\s*job\s*:/;
-const GIT_CRED_FIELD = /^\s*gitCredentialRef\s*:/;
 
 export function detectRefTarget(lineText: string): RefTargetKind | undefined {
-  if (GIT_CRED_FIELD.test(lineText)) {
-    return 'GitCredential';
-  }
   if (JOB_FIELD.test(lineText)) {
     return 'Job';
   }

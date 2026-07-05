@@ -384,7 +384,6 @@ the named AppSource on the next reconciler tick.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `gitCredentialRef` | string | no |  |
 | `path` | string | yes |  |
 | `repoURL` | string | yes |  |
 | `syncPolicy` | AppSyncPolicy | no |  |

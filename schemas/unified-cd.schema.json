@@ -31,9 +31,6 @@
     "AppSourceSpec": {
       "additionalProperties": false,
       "properties": {
-        "gitCredentialRef": {
-          "type": "string"
-        },
         "path": {
           "type": "string"
         },
