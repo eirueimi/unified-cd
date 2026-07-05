@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
@@ -244,6 +245,200 @@ func TestWebhookIngress_HMACBadSignature(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req2)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestWebhookIngress_HMACSecretNotFound verifies that a receiver referencing a
+// secret that was never created returns a clear "not found" message, not a
+// generic signature mismatch.
+func TestWebhookIngress_HMACSecretNotFound(t *testing.T) {
+	s, pg := newTestServer(t)
+	s.SetKeyManager(testKeyManager(t))
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "hmac-sha256", "secretRef": "never-set"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "secured-hook", spec)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/secured-hook", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("X-Signature", "sha256=deadbeef")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Contains(t, rec.Body.String(), "not found")
+	assert.Contains(t, rec.Body.String(), "never-set")
+}
+
+// TestWebhookIngress_HMACEmptySecret verifies that an empty stored secret (e.g.
+// created by piping an empty value) yields a clear "empty" message rather than a
+// generic signature mismatch.
+func TestWebhookIngress_HMACEmptySecret(t *testing.T) {
+	s, pg := newTestServer(t)
+	s.SetKeyManager(testKeyManager(t))
+
+	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "webhook-secret", Value: ""})
+	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
+	sreq.Header.Set("Authorization", "Bearer secret")
+	sreq.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), sreq)
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "hmac-sha256", "secretRef": "webhook-secret"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "secured-hook", spec)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/secured-hook", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("X-Signature", "sha256=deadbeef")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Contains(t, rec.Body.String(), "empty")
+}
+
+// TestWebhookIngress_GithubMissingSignatureHeader verifies that a github
+// receiver that receives no signature header is told which header is missing.
+func TestWebhookIngress_GithubMissingSignatureHeader(t *testing.T) {
+	s, pg := newTestServer(t)
+	s.SetKeyManager(testKeyManager(t))
+
+	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "gh-secret", Value: "mysecret"})
+	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
+	sreq.Header.Set("Authorization", "Bearer secret")
+	sreq.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), sreq)
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "github", "secretRef": "gh-secret"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gh-hook", spec)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gh-hook", bytes.NewReader([]byte(`{}`)))
+	// no X-Hub-Signature-256 header
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Contains(t, rec.Body.String(), "X-Hub-Signature-256")
+}
+
+// TestWebhookIngress_HMACMismatchMessage verifies that a genuine signature
+// mismatch names the secret and points at the secret/body as the cause.
+func TestWebhookIngress_HMACMismatchMessage(t *testing.T) {
+	s, pg := newTestServer(t)
+	s.SetKeyManager(testKeyManager(t))
+
+	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "webhook-secret", Value: "mysecret"})
+	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
+	sreq.Header.Set("Authorization", "Bearer secret")
+	sreq.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), sreq)
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "hmac-sha256", "secretRef": "webhook-secret"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "secured-hook", spec)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/secured-hook", bytes.NewReader([]byte(`{"event":"push"}`)))
+	req.Header.Set("X-Signature", "sha256=00000000")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	assert.Contains(t, rec.Body.String(), "does not match")
+	assert.Contains(t, rec.Body.String(), "webhook-secret")
+}
+
+// TestWebhookIngress_AppSourceTrigger verifies that a webhook whose trigger
+// targets an AppSource forces a re-sync (resets last_commit) instead of creating
+// a Run, and returns 202.
+func TestWebhookIngress_AppSourceTrigger(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	appSpec, _ := json.Marshal(map[string]any{
+		"repoURL":        "https://github.com/acme/pipelines",
+		"targetRevision": "main",
+		"path":           "jobs",
+	})
+	_, err := pg.UpsertAppSource(t.Context(), "my-pipelines", appSpec)
+	require.NoError(t, err)
+	// Give it a non-empty last_commit so we can observe the reset.
+	require.NoError(t, pg.UpdateAppSourceSyncState(t.Context(), "my-pipelines", "abc123", time.Now(), nil))
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"appSource": "my-pipelines"},
+		"auth":    map[string]any{"type": "none"},
+		"filters": []string{`{{ eq (index .Payload "ref") "refs/heads/main" }}`},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gitops-hook", spec)
+
+	payload, _ := json.Marshal(map[string]any{"ref": "refs/heads/main"})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gitops-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
+
+	got, err := pg.GetAppSource(t.Context(), "my-pipelines")
+	require.NoError(t, err)
+	assert.Equal(t, "", got.LastCommit, "last_commit should be reset to force a re-sync")
+
+	// No run should have been created.
+	runs, _ := pg.ListRunsByJob(t.Context(), "my-pipelines", 10)
+	assert.Empty(t, runs)
+}
+
+// TestWebhookIngress_AppSourceTriggerFilteredOut verifies the filter still
+// applies to AppSource triggers (a non-main push does not force a sync).
+func TestWebhookIngress_AppSourceTriggerFilteredOut(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	appSpec, _ := json.Marshal(map[string]any{"repoURL": "https://github.com/acme/pipelines", "targetRevision": "main", "path": "jobs"})
+	_, _ = pg.UpsertAppSource(t.Context(), "my-pipelines", appSpec)
+	require.NoError(t, pg.UpdateAppSourceSyncState(t.Context(), "my-pipelines", "abc123", time.Now(), nil))
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"appSource": "my-pipelines"},
+		"auth":    map[string]any{"type": "none"},
+		"filters": []string{`{{ eq (index .Payload "ref") "refs/heads/main" }}`},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gitops-hook", spec)
+
+	payload, _ := json.Marshal(map[string]any{"ref": "refs/heads/feature"})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gitops-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	got, _ := pg.GetAppSource(t.Context(), "my-pipelines")
+	assert.Equal(t, "abc123", got.LastCommit, "filtered-out delivery must not reset last_commit")
+}
+
+// TestWebhookIngress_AppSourceNotFound verifies a clear error when the receiver
+// references an AppSource that does not exist.
+func TestWebhookIngress_AppSourceNotFound(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"appSource": "does-not-exist"},
+		"auth":    map[string]any{"type": "none"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gitops-hook", spec)
+
+	payload, _ := json.Marshal(map[string]any{"ref": "refs/heads/main"})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/gitops-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "does-not-exist")
 }
 
 func TestWebhookIngress_TokenVerification(t *testing.T) {

@@ -32,8 +32,10 @@ func (wr *WebhookReceiver) Validate() error {
 	if err := ValidateName(wr.Metadata.Name); err != nil {
 		return fmt.Errorf("metadata.name %w", err)
 	}
-	if wr.Spec.Trigger.Job == "" {
-		return fmt.Errorf("spec.trigger.job is required")
+	hasJob := wr.Spec.Trigger.Job != ""
+	hasAppSource := wr.Spec.Trigger.AppSource != ""
+	if hasJob == hasAppSource {
+		return fmt.Errorf("spec.trigger must set exactly one of job or appSource")
 	}
 	switch wr.Spec.Auth.Type {
 	case "none", "hmac-sha256", "github", "token":

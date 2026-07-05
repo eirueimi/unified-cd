@@ -46,32 +46,59 @@ Cancel a run stuck this way with `unified-cd run cancel <run-id>`.
 
 ## Webhook returns 401
 
-**Symptom**
+**Symptom** — one of these `signature verification failed: …` messages:
 
 ```
-signature verification failed: HMAC mismatch
+signature verification failed: secret "<name>" not found — create it with ...
+signature verification failed: secret "<name>" is empty — set a non-empty value ...
+signature verification failed: missing X-Hub-Signature-256 header — GitHub sends it only when ...
+signature verification failed: X-Hub-Signature-256 does not match — the "<name>" secret differs ...
 ```
 
 **Cause**
 
-The receiver's `spec.auth.type` is `hmac-sha256` or `github`, and the computed
-HMAC-SHA256 of the raw request body (using the secret from `secretRef`)
-doesn't match the signature header sent by the caller. The most common causes
-are: signing with the wrong secret, signing a re-serialized/pretty-printed
-body instead of the exact raw bytes, or sending the signature in the wrong
-header.
+The receiver's `spec.auth.type` is `hmac-sha256` or `github`, and signature
+verification failed. The message names the specific reason:
+
+- **`secret "<name>" not found`** — no secret with that `secretRef` exists.
+- **`secret "<name>" is empty`** — the secret exists but its value is empty.
+  This commonly happens when the value was piped in without one (e.g.
+  `echo | unified-cli secret set <name>`), or set with an empty string.
+- **`missing … header`** — no signature header arrived. For GitHub, this means
+  the webhook has **no Secret configured** (GitHub only sends
+  `X-Hub-Signature-256` when a Secret is set).
+- **`… does not match`** — a signature arrived but the HMAC differs: the stored
+  secret differs from the sender's, or the raw body was altered in transit.
 
 **Fix**
 
+- Set the secret with the **two-argument form**, which does not add a trailing
+  newline, and use the *exact same value* on the sender:
+  ```bash
+  unified-cli secret set <name> '<value>'
+  ```
+  Avoid `echo "<value>" | unified-cli secret set <name>` — `echo` appends a
+  `\n`, so the stored secret won't match the sender's. Use `echo -n` if you must
+  pipe.
+- For GitHub receivers, set the webhook **Secret** field to that same value and
+  set **Content type** to `application/json` (a form-encoded body is signed the
+  same on both sides but changes the bytes the receiver hashes).
 - `hmac-sha256` receivers accept either `X-Signature: sha256=<hex>` or the
-  GitHub-compatible `X-Hub-Signature-256: sha256=<hex>`; `github` receivers
-  only check `X-Hub-Signature-256`. Confirm the sender is using the header the
-  receiver type expects.
+  GitHub-compatible `X-Hub-Signature-256: sha256=<hex>`; `github` receivers only
+  check `X-Hub-Signature-256`. Confirm the sender uses the expected header.
 - The signature must be computed over the **exact raw request body bytes** —
   re-encoding the JSON (key order, whitespace) before signing produces a
   different HMAC and this same error.
-- Confirm the secret referenced by `secretRef` matches the one configured on
-  the sending side: `unified-cd secret set <name> "<value>"` to update it.
+- To isolate whether the stored secret is the problem, sign a test body with the
+  value you *think* is stored and POST it directly; if that succeeds, the
+  mismatch is on the sender's side:
+  ```bash
+  SECRET='<value-you-think-is-stored>'
+  BODY='{"ref":"refs/heads/main"}'
+  SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
+  curl -i -X POST http://<controller>/webhook/<name> \
+    -H 'Content-Type: application/json' -H "X-Hub-Signature-256: $SIG" -d "$BODY"
+  ```
 - See [Resource Reference: WebhookReceiver](resources.md#webhookreceiver) for
   the full auth field table and delivery response codes.
 

@@ -184,8 +184,9 @@ kind: WebhookReceiver
 metadata:
   name: <string>                  # required
 spec:
-  trigger:
-    job: <string>                 # required — job to trigger
+  trigger:                        # exactly one of job / appSource
+    job: <string>                 # trigger a Job (creates a Run)
+    appSource: <string>           # OR force a GitOps re-sync of an AppSource
   auth:
     type: none | hmac-sha256 | github | token
     secretRef: <string>           # name of StoredSecret (required unless type is none)
@@ -201,11 +202,12 @@ spec:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `metadata.name` | string | Yes | Unique receiver name. Also the URL path segment: `POST /webhook/<name>` |
-| `spec.trigger.job` | string | Yes | Name of the Job to trigger |
+| `spec.trigger.job` | string | Cond. | Name of the Job to trigger. Exactly one of `job` / `appSource` is required |
+| `spec.trigger.appSource` | string | Cond. | Name of an AppSource to force-sync (resets its `lastCommit` so the next reconciler tick re-syncs). Exactly one of `job` / `appSource` is required |
 | `spec.auth.type` | string | Yes | Authentication method (see below) |
 | `spec.auth.secretRef` | string | No | Name of a StoredSecret containing the HMAC key (required for `hmac-sha256` and `github`) |
-| `spec.filters` | []string | No | Template expressions that must all evaluate to `true` for the trigger to fire |
-| `spec.paramsMapping` | map[string]string | No | Maps payload fields to job input parameter names |
+| `spec.filters` | []string | No | Template expressions that must all evaluate to `true` for the trigger to fire (applies to both `job` and `appSource` triggers) |
+| `spec.paramsMapping` | map[string]string | No | Maps payload fields to job input parameter names. Ignored for `appSource` triggers |
 
 ### Authentication types
 
@@ -220,10 +222,11 @@ spec:
 
 | Result | HTTP status |
 |---|---|
-| Run created | `200` + run JSON |
-| Filters did not match (no run) | `204` |
+| Run created (`job` trigger) | `200` + run JSON |
+| AppSource re-sync scheduled (`appSource` trigger) | `202` + `{"appSource","status"}` |
+| Filters did not match (no run / no sync) | `204` |
 | Signature invalid or missing | `401` |
-| Required job param not produced by `paramsMapping` | `400` (body names the missing param) |
+| Required job param not produced by `paramsMapping`, or `appSource` not found | `400` (body names the cause) |
 
 ### Webhook endpoint
 
@@ -311,7 +314,27 @@ spec:
     - '{{ eq .Payload.ref "refs/heads/main" }}'
   paramsMapping:
     git_ref: "{{ .Payload.checkout_sha }}"
+
+---
+# GitHub push webhook: force a GitOps re-sync of an AppSource on push to main
+apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata:
+  name: gitops-sync
+spec:
+  trigger:
+    appSource: my-pipelines      # instead of job — force-syncs this AppSource
+  auth:
+    type: github
+    secretRef: github-webhook-secret
+  filters:
+    - '{{ eq .Payload.ref "refs/heads/main" }}'
 ```
+
+An `appSource` trigger resets the AppSource's `lastCommit`, so the next
+reconciler tick (≤30s) re-syncs from Git — turning the otherwise poll-only
+[AppSource](#appsource) into a push-driven sync. It does not wait for the sync
+to finish; it responds `202` immediately.
 
 ---
 
@@ -424,13 +447,26 @@ spec:
 
 `spec.syncPolicy.interval` has a minimum of `1m`; values below that are rejected.
 
-### Manual sync trigger
+### Triggering a sync out of band
+
+AppSource is poll-driven, but two mechanisms let you force a sync between ticks
+(both reset `lastCommit` so the next reconciler tick re-syncs; neither waits for
+the sync to complete):
 
 ```bash
-# Force an immediate re-sync via the API
+# 1. Manual sync via the CLI (requires the bearer token)
+unified-cli appsource sync my-pipelines
+
+#    …or the equivalent raw API call
 curl -X POST http://localhost:8080/api/v1/appsources/my-pipelines/sync \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+2. **Push-driven sync via a webhook** — point a Git provider's webhook at a
+   [WebhookReceiver](#webhookreceiver) whose `trigger.appSource` names this
+   AppSource. This needs no admin token (it is authenticated by signature) and
+   is the recommended way to make GitOps sync react to pushes instead of waiting
+   for the poll interval.
 
 ### Examples
 

@@ -58,6 +58,16 @@ func TestFetcher_ResolveCommitSHA(t *testing.T) {
 	assert.Len(t, sha, 40, "should be a full SHA")
 }
 
+// TestFetcher_ResolveCommitSHA_ErrorIncludesStderr verifies that when git fails,
+// the returned error surfaces git's stderr (e.g. auth/TLS/not-a-repo) rather than
+// a bare "exit status 128".
+func TestFetcher_ResolveCommitSHA_ErrorIncludesStderr(t *testing.T) {
+	f := gittemplate.NewFetcher()
+	_, err := f.ResolveCommitSHA(context.Background(), "file:///nonexistent-unified-cd-xyz", "main", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fatal", "error should include git's stderr, got: "+err.Error())
+}
+
 func TestFetcher_FetchDir(t *testing.T) {
 	repoDir := makeTestRepo(t)
 	f := gittemplate.NewFetcher()

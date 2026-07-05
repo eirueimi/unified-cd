@@ -12,6 +12,7 @@ Complete reference for the `unified-cd` command-line tool.
 - [secret](#secret)
 - [token](#token)
 - [artifact](#artifact)
+- [appsource](#appsource)
 - [login](#login)
 - [agent](#agent)
 - [Configuration precedence](#configuration-precedence)
@@ -365,6 +366,56 @@ unified-cd artifact download run-abc123 cli-art
 unified-cd artifact download run-abc123 cli-art --dest ./out
 # => extracted cli-art of run run-abc123 to ./out
 ```
+
+---
+
+## appsource
+
+Manage GitOps [AppSources](resources.md#appsource). Create/update an AppSource
+with `apply`; the commands below operate on existing ones.
+
+### appsource sync
+
+```
+unified-cd appsource sync <name>
+```
+
+Forces a re-sync: resets the AppSource's `lastCommit` so the next reconciler
+tick (≤30s) re-syncs from Git. Returns immediately — it does not wait for the
+sync to finish. This is the CLI equivalent of `POST /api/v1/appsources/<name>/sync`.
+
+```bash
+unified-cd appsource sync my-pipelines
+# => appsource sync scheduled: my-pipelines
+```
+
+### appsource list
+
+```
+unified-cd appsource list
+```
+
+```bash
+unified-cd appsource list
+# => my-pipelines   repo=https://github.com/acme/pipelines rev=main lastCommit=abc1234
+```
+
+### appsource get
+
+```
+unified-cd appsource get <name>
+```
+
+Shows repoURL, targetRevision, path, last synced commit, and last sync time.
+
+### appsource delete
+
+```
+unified-cd appsource delete <name>
+```
+
+Removes the AppSource. Jobs it previously synced are left in place (they are not
+pruned by deletion).
 
 ---
 

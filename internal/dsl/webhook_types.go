@@ -15,8 +15,12 @@ type WebhookReceiverSpec struct {
 	Filters       []string          `yaml:"filters,omitempty"`
 }
 
+// WebhookTrigger selects what a webhook delivery triggers. Exactly one of Job or
+// AppSource must be set: Job creates a Run; AppSource forces a GitOps re-sync of
+// the named AppSource on the next reconciler tick.
 type WebhookTrigger struct {
-	Job string `yaml:"job"`
+	Job       string `yaml:"job,omitempty"`
+	AppSource string `yaml:"appSource,omitempty"`
 }
 
 type WebhookAuth struct {

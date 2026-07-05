@@ -35,7 +35,7 @@ spec:
 	require.Len(t, wr.Spec.Filters, 1)
 }
 
-func TestParseWebhookReceiver_RejectsMissingJob(t *testing.T) {
+func TestParseWebhookReceiver_RejectsMissingTrigger(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1
 kind: WebhookReceiver
@@ -48,7 +48,46 @@ spec:
 `
 	_, err := ParseWebhookReceiver(strings.NewReader(input))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "trigger.job")
+	assert.Contains(t, err.Error(), "appSource")
+}
+
+func TestParseWebhookReceiver_AppSourceTrigger(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata:
+  name: gitops-sync
+spec:
+  trigger:
+    appSource: my-pipelines
+  auth:
+    type: github
+    secretRef: github-webhook-secret
+  filters:
+    - '{{ eq (index .Payload "ref") "refs/heads/main" }}'
+`
+	wr, err := ParseWebhookReceiver(strings.NewReader(input))
+	require.NoError(t, err)
+	assert.Equal(t, "my-pipelines", wr.Spec.Trigger.AppSource)
+	assert.Equal(t, "", wr.Spec.Trigger.Job)
+}
+
+func TestParseWebhookReceiver_RejectsBothJobAndAppSource(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata:
+  name: x
+spec:
+  trigger:
+    job: build
+    appSource: my-pipelines
+  auth:
+    type: none
+`
+	_, err := ParseWebhookReceiver(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exactly one")
 }
 
 func TestWebhookTemplate_ExpandPayload(t *testing.T) {

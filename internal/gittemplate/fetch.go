@@ -2,12 +2,28 @@ package gittemplate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+// gitErr augments an exec error with git's stderr. cmd.Output()/Run() capture
+// stderr into (*exec.ExitError).Stderr when cmd.Stderr is nil, but the default
+// error string is only "exit status N" — the actual reason (auth required, TLS
+// failure, unknown ref) lives in stderr. This surfaces it so callers and logs
+// see what git actually said.
+func gitErr(err error) error {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if msg := strings.TrimSpace(string(ee.Stderr)); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+	}
+	return err
+}
 
 // Fetcher retrieves a file from a git repository using the system git binary.
 type Fetcher struct{}
@@ -68,7 +84,7 @@ func (f *Fetcher) fetchWithURL(ctx context.Context, repoURL, filePath, ref strin
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	data, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("git show FETCH_HEAD:%s: %w", filePath, err)
+		return nil, fmt.Errorf("git show FETCH_HEAD:%s: %w", filePath, gitErr(err))
 	}
 	return data, nil
 }
@@ -126,7 +142,7 @@ func (f *Fetcher) fetchSSH(ctx context.Context, uri URI, sshKey string) ([]byte,
 	)
 	data, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("git show FETCH_HEAD:%s (SSH): %w", uri.Path, err)
+		return nil, fmt.Errorf("git show FETCH_HEAD:%s (SSH): %w", uri.Path, gitErr(err))
 	}
 	return data, nil
 }
@@ -215,7 +231,7 @@ func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, ssh
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git ls-remote %s %s: %w", repoURL, ref, err)
+		return "", fmt.Errorf("git ls-remote %s %s: %w", repoURL, ref, gitErr(err))
 	}
 	return parseLsRemoteOutput(string(out), ref)
 }
@@ -280,7 +296,7 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string
 	lsCmd.Env = env
 	lsOut, err := lsCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("git ls-tree: %w", err)
+		return nil, fmt.Errorf("git ls-tree: %w", gitErr(err))
 	}
 
 	files := map[string][]byte{}
@@ -296,7 +312,7 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string
 		showCmd.Env = env
 		data, err := showCmd.Output()
 		if err != nil {
-			return nil, fmt.Errorf("git show FETCH_HEAD:%s: %w", line, err)
+			return nil, fmt.Errorf("git show FETCH_HEAD:%s: %w", line, gitErr(err))
 		}
 		files[line] = data
 	}

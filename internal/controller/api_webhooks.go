@@ -128,6 +128,24 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AppSource trigger: force a GitOps re-sync instead of creating a Run.
+	// paramsMapping does not apply here (there are no job inputs to fill).
+	if spec.Trigger.AppSource != "" {
+		if _, err := s.store.GetAppSource(r.Context(), spec.Trigger.AppSource); err != nil {
+			http.Error(w, "appSource not found: "+spec.Trigger.AppSource, http.StatusBadRequest)
+			return
+		}
+		if err := s.store.ResetAppSourceCommit(r.Context(), spec.Trigger.AppSource); err != nil {
+			http.Error(w, "trigger appSource sync: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{
+			"appSource": spec.Trigger.AppSource,
+			"status":    "sync scheduled",
+		})
+		return
+	}
+
 	// Map parameters from the payload.
 	params := map[string]string{}
 	for k, tpl := range spec.ParamsMapping {
@@ -181,31 +199,44 @@ func (s *Server) verifyWebhookSignature(r *http.Request, body []byte, auth dsl.W
 	}
 	stored, err := s.store.GetSecret(r.Context(), auth.SecretRef, "global", "")
 	if err != nil {
-		return fmt.Errorf("secret %q not found", auth.SecretRef)
+		return fmt.Errorf("secret %q not found — create it with `unified-cli secret set %s <value>` using the same value configured on the sender", auth.SecretRef, auth.SecretRef)
 	}
 	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext)
 	if err != nil {
-		return fmt.Errorf("decrypt secret: %w", err)
+		return fmt.Errorf("decrypt secret %q: %w", auth.SecretRef, err)
+	}
+	if len(secretBytes) == 0 {
+		return fmt.Errorf("secret %q is empty — set a non-empty value that matches the sender (an empty value can happen when piping with a trailing newline; prefer `unified-cli secret set %s '<value>'`)", auth.SecretRef, auth.SecretRef)
+	}
+
+	// Locate the signature header: X-Hub-Signature-256 for GitHub, or
+	// X-Signature (falling back to X-Hub-Signature-256) for generic HMAC.
+	var sigHeader, gotSig string
+	switch auth.Type {
+	case "github":
+		sigHeader = "X-Hub-Signature-256"
+		gotSig = r.Header.Get(sigHeader)
+	default:
+		sigHeader = "X-Signature"
+		gotSig = r.Header.Get(sigHeader)
+		if gotSig == "" {
+			sigHeader = "X-Hub-Signature-256"
+			gotSig = r.Header.Get(sigHeader)
+		}
+	}
+	if gotSig == "" {
+		if auth.Type == "github" {
+			return fmt.Errorf("missing %s header — GitHub sends it only when the webhook has a Secret set; configure the same secret as %q on the GitHub webhook", sigHeader, auth.SecretRef)
+		}
+		return fmt.Errorf("missing signature header — expected X-Signature or X-Hub-Signature-256 carrying an HMAC-SHA256 of the request body")
 	}
 
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write(body)
 	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 
-	// Check X-Signature (generic) or X-Hub-Signature-256 (GitHub).
-	var gotSig string
-	switch auth.Type {
-	case "github":
-		gotSig = r.Header.Get("X-Hub-Signature-256")
-	default:
-		gotSig = r.Header.Get("X-Signature")
-		if gotSig == "" {
-			gotSig = r.Header.Get("X-Hub-Signature-256")
-		}
-	}
-
 	if !hmac.Equal([]byte(gotSig), []byte(expected)) {
-		return fmt.Errorf("HMAC mismatch")
+		return fmt.Errorf("%s does not match — the %q secret differs from the value configured on the sender, or the request body was modified in transit (for GitHub, set the webhook Content type to application/json)", sigHeader, auth.SecretRef)
 	}
 	return nil
 }
@@ -220,11 +251,11 @@ func (s *Server) verifyWebhookToken(r *http.Request, auth dsl.WebhookAuth) error
 	}
 	stored, err := s.store.GetSecret(r.Context(), auth.SecretRef, "global", "")
 	if err != nil {
-		return fmt.Errorf("secret %q not found", auth.SecretRef)
+		return fmt.Errorf("secret %q not found — create it with `unified-cli secret set %s <value>` using the same value configured on the sender", auth.SecretRef, auth.SecretRef)
 	}
 	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext)
 	if err != nil {
-		return fmt.Errorf("decrypt secret: %w", err)
+		return fmt.Errorf("decrypt secret %q: %w", auth.SecretRef, err)
 	}
 	header := auth.Header
 	if header == "" {
@@ -232,10 +263,10 @@ func (s *Server) verifyWebhookToken(r *http.Request, auth dsl.WebhookAuth) error
 	}
 	got := r.Header.Get(header)
 	if got == "" {
-		return fmt.Errorf("missing %s header", header)
+		return fmt.Errorf("missing %s header — the sender must send the shared token in this header", header)
 	}
 	if !hmac.Equal([]byte(got), secretBytes) {
-		return fmt.Errorf("token mismatch")
+		return fmt.Errorf("token in %s does not match secret %q — check that the sender's token equals the stored value (watch for a trailing newline)", header, auth.SecretRef)
 	}
 	return nil
 }
