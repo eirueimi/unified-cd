@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 const SupportedAPIVersion = "unified-cd/v1"
@@ -260,7 +261,34 @@ func normalizeRunsIn(container string, runsIn *RunsIn, path, name string) (*Runs
 	if runsIn != nil && runsIn.Image != "" && runsIn.Container != "" {
 		return nil, fmt.Errorf("%s (%s): runsIn.image and runsIn.container are mutually exclusive", path, name)
 	}
+	if runsIn != nil && runsIn.Resources != nil {
+		if runsIn.Image == "" {
+			return nil, fmt.Errorf("%s (%s): runsIn.resources requires runsIn.image", path, name)
+		}
+		if err := validateResources(runsIn.Resources); err != nil {
+			return nil, fmt.Errorf("%s (%s): %w", path, name, err)
+		}
+	}
 	return runsIn, nil
+}
+
+// validateResources parses every non-empty cpu/memory quantity, rejecting
+// malformed values at apply time.
+func validateResources(rs *ResourceSpec) error {
+	for _, rl := range []*ResourceList{rs.Requests, rs.Limits} {
+		if rl == nil {
+			continue
+		}
+		for field, v := range map[string]string{"cpu": rl.CPU, "memory": rl.Memory} {
+			if v == "" {
+				continue
+			}
+			if _, err := resource.ParseQuantity(v); err != nil {
+				return fmt.Errorf("invalid resources %s quantity %q: %w", field, v, err)
+			}
+		}
+	}
+	return nil
 }
 
 func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *CacheStep, approval *ApprovalStep, foreach *ForeachDef, matrix *MatrixDef, path string, nameSet map[string]bool, upload *UploadArtifactStep, download *DownloadArtifactStep) error {

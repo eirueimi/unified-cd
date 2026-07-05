@@ -155,8 +155,22 @@ type MatrixDimension struct {
 //	container: exec into a pre-provisioned named env (k8s pod container only;
 //	           an error on the host agent).
 type RunsIn struct {
-	Image     string `yaml:"image,omitempty" json:"image,omitempty"`
-	Container string `yaml:"container,omitempty" json:"container,omitempty"`
+	Image     string        `yaml:"image,omitempty" json:"image,omitempty"`
+	Container string        `yaml:"container,omitempty" json:"container,omitempty"`
+	Resources *ResourceSpec `yaml:"resources,omitempty" json:"resources,omitempty"`
+}
+
+// ResourceSpec declares CPU/memory requests and limits for a runsIn.image step.
+type ResourceSpec struct {
+	Requests *ResourceList `yaml:"requests,omitempty" json:"requests,omitempty"`
+	Limits   *ResourceList `yaml:"limits,omitempty" json:"limits,omitempty"`
+}
+
+// ResourceList is a cpu/memory pair using Kubernetes quantity strings
+// (e.g. "500m", "1", "256Mi", "1Gi").
+type ResourceList struct {
+	CPU    string `yaml:"cpu,omitempty" json:"cpu,omitempty"`
+	Memory string `yaml:"memory,omitempty" json:"memory,omitempty"`
 }
 
 // UnmarshalYAML parses the matrix mapping while preserving key order.

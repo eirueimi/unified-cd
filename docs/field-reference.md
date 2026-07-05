@@ -214,6 +214,26 @@ environment (host process, or the default pod container on k8s).
 |-------|------|----------|-------------|
 | `container` | string | no |  |
 | `image` | string | no |  |
+| `resources` | ResourceSpec | no |  |
+
+### ResourceSpec
+
+ResourceSpec declares CPU/memory requests and limits for a runsIn.image step.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `limits` | ResourceList | no |  |
+| `requests` | ResourceList | no |  |
+
+### ResourceList
+
+ResourceList is a cpu/memory pair using Kubernetes quantity strings
+(e.g. "500m", "1", "256Mi", "1Gi").
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `cpu` | string | no |  |
+| `memory` | string | no |  |
 
 ### UploadArtifactStep
 

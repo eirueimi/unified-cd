@@ -459,6 +459,32 @@
       },
       "type": "object"
     },
+    "ResourceList": {
+      "additionalProperties": false,
+      "description": "ResourceList is a cpu/memory pair using Kubernetes quantity strings\n(e.g. \"500m\", \"1\", \"256Mi\", \"1Gi\").",
+      "properties": {
+        "cpu": {
+          "type": "string"
+        },
+        "memory": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ResourceSpec": {
+      "additionalProperties": false,
+      "description": "ResourceSpec declares CPU/memory requests and limits for a runsIn.image step.",
+      "properties": {
+        "limits": {
+          "$ref": "#/definitions/ResourceList"
+        },
+        "requests": {
+          "$ref": "#/definitions/ResourceList"
+        }
+      },
+      "type": "object"
+    },
     "RunsIn": {
       "additionalProperties": false,
       "description": "RunsIn declares the execution context for a step. Image and Container are\nmutually exclusive; both empty (or RunsIn nil) means the default/shared\nenvironment (host process, or the default pod container on k8s).\n\n\timage:     run in a fresh isolated env from this image (host: `\u003crt\u003e run`;\n\t           k8s: a throwaway pod). No workspace is shared — pass inputs via\n\t           with:/env, return outputs via outputs:/stdout.\n\tcontainer: exec into a pre-provisioned named env (k8s pod container only;\n\t           an error on the host agent).",
@@ -468,6 +494,9 @@
         },
         "image": {
           "type": "string"
+        },
+        "resources": {
+          "$ref": "#/definitions/ResourceSpec"
         }
       },
       "type": "object"
