@@ -41,9 +41,11 @@ function countEventsCalls(fetchMock) {
 }
 
 // A `/events` response that streams `n` log lines in a single chunk, then ends.
-function eventsResponseWithLogs(n) {
+// When `truncated` is true it leads with a "truncated" event, mimicking the
+// server dropping older lines from a capped backfill.
+function eventsResponseWithLogs(n, truncated = false) {
   const enc = new TextEncoder();
-  let payload = '';
+  let payload = truncated ? `data: ${JSON.stringify({ type: 'truncated' })}\n\n` : '';
   for (let i = 0; i < n; i++) {
     payload += `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'line ' + i })}\n\n`;
   }
@@ -270,6 +272,25 @@ describe('RunDetail — log virtualization', () => {
     await vi.waitFor(() => {
       expect(container.textContent).toContain('1 / 1');
       expect(container.querySelector('mark.log-hit')).toBeTruthy();
+    });
+  });
+
+  it('shows a truncation banner when the server drops older backfill lines', async () => {
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return eventsResponseWithLogs(10, true);
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-1', status: 'Succeeded', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+
+    await vi.waitFor(() => {
+      const banner = container.querySelector('.log-truncated');
+      expect(banner).toBeTruthy();
+      expect(banner.textContent).toContain('truncated');
     });
   });
 });

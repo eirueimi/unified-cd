@@ -50,6 +50,7 @@
   let logScrollTop = 0;
   let logViewportH = 600;
   let logStick = true; // keep auto-scrolling to the bottom while the user is there
+  let logTruncated = false; // server dropped older lines from the backfill
   $: logTotal = filteredLogs.length;
   $: logStart = Math.max(0, Math.floor(logScrollTop / LOG_ROW_H) - LOG_OVERSCAN);
   $: logEnd = Math.min(
@@ -213,6 +214,7 @@
       abortController = null;
     }
     logLines = [];
+    logTruncated = false;
     abortController = new AbortController();
     const headers = {};
     const t = get(token);
@@ -250,6 +252,8 @@
                   logScrollTop = logBox.scrollTop;
                 }
               }
+            } else if (data.type === "truncated") {
+              logTruncated = true;
             } else if (data.type === "status") {
               if (run) run = { ...run, status: data.status };
               if (["Succeeded", "Failed", "Cancelled"].includes(data.status)) {
@@ -535,6 +539,12 @@
       </div>
       <span class="meta" style="font-size:0.75rem">SSE</span>
     </div>
+    {#if logTruncated}
+      <div class="log-truncated">
+        Older lines were truncated — showing the most recent {logTotal.toLocaleString()}.
+        Use <code>unified-cli logs {runID}</code> for the full log.
+      </div>
+    {/if}
     <div class="log-box" bind:this={logBox} on:scroll={onLogScroll}>
       {#if !filteredLogs.length}
         <span style="color:var(--text-muted)">Waiting for logs…</span>
@@ -607,6 +617,18 @@
     padding: 0.05rem 0.45rem;
     font-size: 1rem;
     line-height: 1.2;
+  }
+  .log-truncated {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: var(--surface-alt, var(--surface));
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.3rem 0.6rem;
+    margin-bottom: 0.4rem;
+  }
+  .log-truncated code {
+    font-size: 0.72rem;
   }
   .log-row-current {
     background: rgba(255, 150, 50, 0.12);

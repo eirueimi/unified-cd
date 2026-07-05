@@ -12,7 +12,7 @@ import (
 )
 
 type sseEvent struct {
-	Type      string `json:"type"` // "log" or "status"
+	Type      string `json:"type"` // "log", "status", or "truncated"
 	Seq       int64  `json:"seq,omitempty"`
 	StepIndex int    `json:"stepIndex"` // must not use omitempty: index 0 (first step) is a valid value
 	Stream    string `json:"stream,omitempty"`
@@ -20,6 +20,13 @@ type sseEvent struct {
 	Timestamp string `json:"timestamp,omitempty"`
 	Status    string `json:"status,omitempty"`
 }
+
+// sseBackfillLimit bounds how many existing log lines are replayed when a client
+// connects. Huge logs (e.g. Unity's `-logFile -` streams tens of thousands of
+// lines) otherwise cost a multi-megabyte burst to transfer and parse. It is a
+// var (not a const) so tests can shrink it. Live lines after connect are not
+// affected by this cap.
+var sseBackfillLimit = 10_000
 
 func writeSSE(w http.ResponseWriter, event sseEvent) {
 	b, _ := json.Marshal(event)
@@ -42,12 +49,19 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	// Send all existing log lines first.
+	// Replay the most recent existing log lines first. For very large logs we cap
+	// the backfill and keep the TAIL — the end of the log, where failures usually
+	// are — rather than the head. If older lines were dropped we tell the client
+	// (via a "truncated" event) so it can surface that the view is not complete.
 	var lastSeq int64
-	existing, err := s.store.TailLogs(r.Context(), id, 0, 100_000)
+	existing, err := s.store.TailLogsRecent(r.Context(), id, sseBackfillLimit+1)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if len(existing) > sseBackfillLimit {
+		existing = existing[len(existing)-sseBackfillLimit:]
+		writeSSE(w, sseEvent{Type: "truncated"})
 	}
 	for _, l := range existing {
 		writeSSE(w, sseEvent{
