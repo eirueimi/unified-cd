@@ -1,0 +1,75 @@
+# GitLab コミットステータス更新ジョブテンプレート
+# unified-cd apply examples/gitlab-commit-status.yaml で登録後、call.job で呼び出す
+#
+# 必要なシークレット:
+#   unified-cd secret set gitlab-token --value glpat-xxxx
+#   必要なスコープ: api（または report-manager 以上のロール）
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/gitlab-commit-status.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: gitlab-commit-status
+spec:
+  params:
+    inputs:
+      - name: base_url
+        type: string
+        default: "https://gitlab.com"
+        description: "GitLab インスタンスのベース URL（self-managed の場合に変更）"
+      - name: project
+        type: string
+        required: true
+        description: "プロジェクトパス（URL エンコード済み、例: group%2Fsubgroup%2Frepo）または数値 ID"
+      - name: sha
+        type: string
+        required: true
+        description: "コミット SHA"
+      - name: state
+        type: string
+        required: true
+        description: "pending / running / success / failed / canceled"
+      - name: context
+        type: string
+        default: "unified-cd"
+        description: "ステータスの名前（GitLab の name パラメータ）"
+      - name: target_url
+        type: string
+        default: ""
+        description: "詳細リンク先 URL（省略可）"
+      - name: token_secret
+        type: string
+        default: "gitlab-token"
+        description: "GitLab トークンを保持するシークレット名"
+  steps:
+    - name: update-status
+      env:
+        GITLAB_TOKEN: "{{ index .Secrets .Params.token_secret }}"
+        BASE_URL: "{{ .Params.base_url }}"
+        PROJECT: "{{ .Params.project }}"
+        SHA: "{{ .Params.sha }}"
+        STATE: "{{ .Params.state }}"
+        CONTEXT: "{{ .Params.context }}"
+        TARGET_URL: "{{ .Params.target_url }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _URL="${BASE_URL}/api/v4/projects/${PROJECT}/statuses/${SHA}?state=${STATE}&name=${CONTEXT}"
+        if [ -n "$TARGET_URL" ]; then
+          _URL="${_URL}&target_url=${TARGET_URL}"
+        fi
+
+        HTTP_STATUS=$(curl -s -o /tmp/gitlab-status-response.json -w "%{http_code}" \
+          -X POST \
+          -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+          "$_URL")
+
+        # GitLab は新規作成 201、既存ステータス更新 200 のどちらも返し得る
+        if [ "$HTTP_STATUS" != "201" ] && [ "$HTTP_STATUS" != "200" ]; then
+          echo "[gitlab-commit-status] GitLab API returned HTTP ${HTTP_STATUS}" >&2
+          cat /tmp/gitlab-status-response.json >&2 2>/dev/null || true
+          exit 1
+        fi
+        echo "[gitlab-commit-status] set status ${STATE} for ${SHA}"
