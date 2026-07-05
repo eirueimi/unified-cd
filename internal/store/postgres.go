@@ -1525,13 +1525,22 @@ func (p *Postgres) DeleteJob(ctx context.Context, name string) error {
 	return err
 }
 
-// UpsertAppSource creates or updates an AppSource. On update, last_commit is reset.
+// UpsertAppSource creates or updates an AppSource. On update, last_commit is
+// reset to "" (forcing a fresh sync) only when the spec actually changed; an
+// upsert with an identical spec preserves last_commit. This avoids a nested
+// AppSource re-fetching its whole directory on every parent reconcile tick,
+// where the parent re-applies the child's unchanged spec each time.
 func (p *Postgres) UpsertAppSource(ctx context.Context, name string, spec []byte) (*AppSource, error) {
 	const q = `
 		INSERT INTO app_sources(name, spec)
 		VALUES ($1, $2)
 		ON CONFLICT (name) DO UPDATE
-		  SET spec = EXCLUDED.spec, last_commit = '', updated_at = NOW()
+		  SET spec = EXCLUDED.spec,
+		      last_commit = CASE
+		        WHEN app_sources.spec IS DISTINCT FROM EXCLUDED.spec THEN ''
+		        ELSE app_sources.last_commit
+		      END,
+		      updated_at = NOW()
 		RETURNING name, spec, last_synced_at, last_commit, managed_resources, updated_at`
 	var a AppSource
 	var mr []byte
