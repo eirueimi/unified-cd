@@ -280,6 +280,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					continue
 				}
 				if run.Status == api.RunCancelled {
+					slog.Info("k8s: received cancellation signal from master; interrupting run", "runID", c.RunID)
 					cancelledByMaster.Store(true)
 					cancelRun()
 					return

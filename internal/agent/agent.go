@@ -288,6 +288,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 					continue
 				}
 				if run.Status == api.RunCancelled {
+					slog.Info("received cancellation signal from master; interrupting run", "runID", c.RunID)
 					cancelledByMaster.Store(true)
 					cancelRun()
 					return
