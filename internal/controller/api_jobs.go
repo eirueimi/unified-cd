@@ -14,39 +14,33 @@ import (
 )
 
 // handleApplyJob parses a Job YAML definition and saves it to the database.
+//
+// Status codes are deliberately distinct: a malformed request/YAML is a client
+// error (400), while marshal or store failures are server errors (500).
 func (s *Server) handleApplyJob(w http.ResponseWriter, r *http.Request) {
 	var req api.ApplyJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	stored, err := s.upsertJobFromYAML(r.Context(), req.YAML, "")
+
+	job, err := dsl.Parse(strings.NewReader(req.YAML))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid yaml: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	stored, err := s.storeJob(r.Context(), job)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, stored)
 }
 
-// applyJobFromYAML is a thin wrapper used by tests.
-func (s *Server) applyJobFromYAML(ctx context.Context, yaml string) error {
-	_, err := s.upsertJobFromYAML(ctx, yaml, "")
-	return err
-}
-
-// upsertJobFromYAML parses a Job document, folds dirOverride (when non-empty)
-// into metadata.annotations["path"], and upserts under the qualified name.
-func (s *Server) upsertJobFromYAML(ctx context.Context, yaml, dirOverride string) (*api.Job, error) {
-	job, err := dsl.Parse(strings.NewReader(yaml))
-	if err != nil {
-		return nil, fmt.Errorf("invalid yaml: %w", err)
-	}
-	if dirOverride != "" {
-		if job.Metadata.Annotations == nil {
-			job.Metadata.Annotations = map[string]string{}
-		}
-		job.Metadata.Annotations["path"] = dirOverride
-	}
+// storeJob marshals the parsed Job's spec and upserts it under its qualified
+// name. Both failures here are infrastructure/server errors, not client errors.
+func (s *Server) storeJob(ctx context.Context, job *dsl.Job) (*api.Job, error) {
 	specJSON, err := json.Marshal(job.Spec)
 	if err != nil {
 		return nil, fmt.Errorf("marshal spec: %w", err)

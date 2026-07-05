@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -233,7 +235,14 @@ spec:
 	assert.Equal(t, "team-a/build", job.Name)
 }
 
+// applyJobYAML mirrors handleApplyJob's parse+store path without going through HTTP,
+// so tests can assert on stored state directly.
 func applyJobYAML(t *testing.T, s *Server, yaml string) error {
 	t.Helper()
-	return s.applyJobFromYAML(context.Background(), yaml)
+	job, err := dsl.Parse(strings.NewReader(yaml))
+	if err != nil {
+		return err
+	}
+	_, err = s.storeJob(context.Background(), job)
+	return err
 }
