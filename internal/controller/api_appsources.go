@@ -75,10 +75,15 @@ func (s *Server) handleDeleteAppSource(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleSyncAppSource resets the lastCommit of the given AppSource to force a re-sync on the next poll.
+// handleSyncAppSource resets the lastCommit of the given AppSource to force a re-sync on the next poll,
+// and marks the AppSource as Syncing so the API/WebUI can reflect the in-progress state.
 func (s *Server) handleSyncAppSource(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if err := s.store.ResetAppSourceCommit(r.Context(), name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.store.SetAppSourceSyncStatus(r.Context(), name, "Syncing", ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -94,6 +99,8 @@ func appSourceToMeta(a *store.AppSource, spec dsl.AppSourceSpec) api.AppSourceMe
 		Path:           spec.Path,
 		LastSyncedAt:   a.LastSyncedAt,
 		LastCommit:     a.LastCommit,
+		SyncStatus:     a.SyncStatus,
+		LastError:      a.LastError,
 		UpdatedAt:      a.UpdatedAt,
 	}
 }

@@ -357,5 +357,7 @@ type AppSourceMeta struct {
 	Path           string     `json:"path"`
 	LastSyncedAt   *time.Time `json:"lastSyncedAt,omitempty"`
 	LastCommit     string     `json:"lastCommit,omitempty"`
+	SyncStatus     string     `json:"syncStatus,omitempty"`
+	LastError      string     `json:"lastError,omitempty"`
 	UpdatedAt      time.Time  `json:"updatedAt"`
 }
