@@ -200,7 +200,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			// convention; step.Env arrives already template-expanded (orchestrate).
 			env := imageStepEnv(step)
 			deadline := imageStepDeadline(step)
-			ec, execErr = a.runImageStep(execCtx, c.RunID, step.RunsIn.Image, env, deadline, expandedRun, stdoutWriter, stderrPusher)
+			ec, execErr = a.runImageStep(execCtx, c.RunID, step.RunsIn.Image, env, deadline, step.RunsIn.Resources, expandedRun, stdoutWriter, stderrPusher)
 		} else {
 			ec, execErr = a.exec.ExecStep(execCtx, podName, execContainer(step), expandedRun, stdoutWriter, stderrPusher)
 		}
@@ -712,8 +712,8 @@ func imageStepDeadline(step api.ClaimStep) int64 {
 // so a bad image (stuck Pending/ImagePullBackOff, which never reaches Failed
 // under RestartPolicy: Never) fails fast instead of hanging until the run is
 // cancelled.
-func (a *K8sAgent) runImageStep(ctx context.Context, runID, image string, env map[string]string, deadlineSeconds int64, script string, stdout, stderr io.Writer) (int, error) {
-	pod := buildImageStepPod(runID, a.cfg.Namespace, image, env, deadlineSeconds)
+func (a *K8sAgent) runImageStep(ctx context.Context, runID, image string, env map[string]string, deadlineSeconds int64, resources *dsl.ResourceSpec, script string, stdout, stderr io.Writer) (int, error) {
+	pod := buildImageStepPod(runID, a.cfg.Namespace, image, env, deadlineSeconds, resources)
 	created, err := a.pm.CreatePod(ctx, pod)
 	if err != nil {
 		return -1, fmt.Errorf("runsIn.image %q: create pod: %w", image, err)

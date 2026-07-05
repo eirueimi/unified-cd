@@ -65,7 +65,7 @@ func TestRunImageStep_CreatesExecsDeletes(t *testing.T) {
 
 	var out, errBuf bytes.Buffer
 	code, err := a.runImageStep(context.Background(), "run-1", "alpine:3.20",
-		map[string]string{"FOO": "bar"}, 1800, "echo hi", &out, &errBuf)
+		map[string]string{"FOO": "bar"}, 1800, nil, "echo hi", &out, &errBuf)
 
 	require.NoError(t, err)
 	assert.Equal(t, 0, code)
@@ -89,7 +89,7 @@ func TestRunImageStep_WaitBoundedByTimeout(t *testing.T) {
 	a := &K8sAgent{pm: pm, exec: ex}
 
 	code, err := a.runImageStep(context.Background(), "run-1", "alpine:3.20",
-		nil, 3600, "true", io.Discard, io.Discard)
+		nil, 3600, nil, "true", io.Discard, io.Discard)
 
 	require.NoError(t, err)
 	assert.Equal(t, 0, code)
@@ -103,7 +103,7 @@ func TestRunImageStep_DeletesOnWaitFailure(t *testing.T) {
 	a := &K8sAgent{pm: pm, exec: ex}
 
 	code, err := a.runImageStep(context.Background(), "run-1", "no/such:img",
-		nil, 3600, "true", io.Discard, io.Discard)
+		nil, 3600, nil, "true", io.Discard, io.Discard)
 
 	require.Error(t, err)
 	assert.Equal(t, -1, code)

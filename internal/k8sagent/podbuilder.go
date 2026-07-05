@@ -310,7 +310,7 @@ func buildWorkspaceVolume(wsCfg *dsl.WorkspaceConfig) corev1.Volume {
 // volume and no artifact sidecar are attached (inputs arrive via env, output
 // via stdout). imagePullSecrets are intentionally NOT set — the pod uses the
 // namespace's default ServiceAccount, exactly like BuildPod.
-func buildImageStepPod(runID, namespace, image string, env map[string]string, deadlineSeconds int64) *corev1.Pod {
+func buildImageStepPod(runID, namespace, image string, env map[string]string, deadlineSeconds int64, resources *dsl.ResourceSpec) *corev1.Pod {
 	suffix := runID
 	if len(suffix) > 16 {
 		suffix = suffix[:16]
@@ -343,9 +343,39 @@ func buildImageStepPod(runID, namespace, image string, env map[string]string, de
 			Containers: []corev1.Container{{
 				Name:    "step",
 				Image:   image,
-				Command: []string{"sleep", "infinity"},
-				Env:     envVars,
+				Command:   []string{"sleep", "infinity"},
+				Env:       envVars,
+				Resources: toResourceRequirements(resources),
 			}},
 		},
 	}
+}
+
+// toResourceRequirements converts a validated dsl.ResourceSpec to k8s
+// ResourceRequirements. Quantities are already validated at apply time, so a
+// parse error here is treated defensively (the value is skipped).
+func toResourceRequirements(rs *dsl.ResourceSpec) corev1.ResourceRequirements {
+	var req corev1.ResourceRequirements
+	if rs == nil {
+		return req
+	}
+	fill := func(rl *dsl.ResourceList) corev1.ResourceList {
+		if rl == nil {
+			return nil
+		}
+		out := corev1.ResourceList{}
+		if q, err := resource.ParseQuantity(rl.CPU); rl.CPU != "" && err == nil {
+			out[corev1.ResourceCPU] = q
+		}
+		if q, err := resource.ParseQuantity(rl.Memory); rl.Memory != "" && err == nil {
+			out[corev1.ResourceMemory] = q
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	req.Requests = fill(rs.Requests)
+	req.Limits = fill(rs.Limits)
+	return req
 }

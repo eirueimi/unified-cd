@@ -10,7 +10,7 @@ import (
 
 func TestBuildImageStepPod(t *testing.T) {
 	pod := buildImageStepPod("run-abcdef0123456789xyz", "ci", "alpine:3.20",
-		map[string]string{"FOO": "bar", "UNIFIED_AGENT_OS": "linux"}, 1800)
+		map[string]string{"FOO": "bar", "UNIFIED_AGENT_OS": "linux"}, 1800, nil)
 
 	// naming + labels (GenerateName suffix = first 16 chars of runID: "run-abcdef012345")
 	assert.Equal(t, "ucd-img-run-abcdef012345-", pod.GenerateName)
@@ -46,7 +46,7 @@ func TestBuildImageStepPod(t *testing.T) {
 }
 
 func TestBuildImageStepPod_EmptyEnv(t *testing.T) {
-	pod := buildImageStepPod("r", "ci", "busybox", nil, 3600)
+	pod := buildImageStepPod("r", "ci", "busybox", nil, 3600, nil)
 	assert.Empty(t, pod.Spec.Containers[0].Env)
 	assert.Equal(t, "ucd-img-r-", pod.GenerateName)
 }
