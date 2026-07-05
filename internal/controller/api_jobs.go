@@ -48,20 +48,29 @@ func (s *Server) storeJob(ctx context.Context, job *dsl.Job) (*api.Job, error) {
 	return s.store.UpsertJob(ctx, job.Metadata.QualifiedName(), job.APIVersion, specJSON)
 }
 
-// handleListJobs returns all registered Jobs.
+// handleListJobs returns all registered Jobs, decorated with path/leaf.
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.store.ListJobs(r.Context())
+	jobs, err := s.listJobsDecorated(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (s *Server) listJobsDecorated(ctx context.Context) ([]api.Job, error) {
+	jobs, err := s.store.ListJobs(ctx)
+	if err != nil {
+		return nil, err
 	}
 	if jobs == nil {
 		jobs = []api.Job{}
 	}
 	for i := range jobs {
 		jobs[i].Inputs = specInputs(jobs[i].Spec)
+		jobs[i].Path, jobs[i].Leaf = dsl.SplitQualifiedName(jobs[i].Name)
 	}
-	writeJSON(w, http.StatusOK, jobs)
+	return jobs, nil
 }
 
 // handleGetJob returns the Job with the given name.
@@ -73,6 +82,7 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job.Inputs = specInputs(job.Spec)
+	job.Path, job.Leaf = dsl.SplitQualifiedName(job.Name)
 	writeJSON(w, http.StatusOK, job)
 }
 

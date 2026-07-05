@@ -246,3 +246,18 @@ func applyJobYAML(t *testing.T, s *Server, yaml string) error {
 	_, err = s.storeJob(context.Background(), job)
 	return err
 }
+
+func TestListJobs_DerivesPathAndLeaf(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	s := &Server{store: pg}
+	ctx := context.Background()
+	_, err := pg.UpsertJob(ctx, "team-a/build", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+
+	jobs, err := s.listJobsDecorated(ctx)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	assert.Equal(t, "team-a/build", jobs[0].Name)
+	assert.Equal(t, "team-a", jobs[0].Path)
+	assert.Equal(t, "build", jobs[0].Leaf)
+}
