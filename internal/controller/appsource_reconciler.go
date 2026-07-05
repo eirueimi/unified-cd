@@ -92,7 +92,7 @@ func shouldSync(src store.AppSource, spec dsl.AppSourceSpec, now time.Time) bool
 }
 
 // syncAppSource syncs a single AppSource from Git.
-// Skips when the SHA is unchanged from last time. Deletes stale Jobs when prune is enabled.
+// Skips when the SHA is unchanged from last time. Prunes resources removed from Git when syncPolicy.prune is enabled.
 func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher, km secrets.KeyManager, src store.AppSource, spec dsl.AppSourceSpec) error {
 	cred, err := resolveCredential(ctx, st, km, spec.RepoURL, spec.GitCredentialRef)
 	if err != nil {

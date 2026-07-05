@@ -2,7 +2,10 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/eirueimi/unified-cd/internal/store"
 )
@@ -33,12 +36,17 @@ func TestApplyResource_EachKind(t *testing.T) {
 func TestApplyResource_UnknownAndBad(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	ctx := context.Background()
-	if _, err := applyResource(ctx, pg, "Nope", []byte("kind: Nope")); err == nil {
+	_, err := applyResource(ctx, pg, "Nope", []byte("kind: Nope"))
+	if err == nil {
 		t.Error("unknown kind: expected error")
 	}
-	if _, err := applyResource(ctx, pg, "Job", []byte("kind: Job\nmetadata: {name: x}\nspec: {steps: []}")); err == nil {
+	require.False(t, errors.Is(err, errStoreWrite), "unknown kind error must not be classified as a store-write failure")
+
+	_, err = applyResource(ctx, pg, "Job", []byte("kind: Job\nmetadata: {name: x}\nspec: {steps: []}"))
+	if err == nil {
 		t.Error("invalid Job: expected error")
 	}
+	require.False(t, errors.Is(err, errStoreWrite), "bad-parse error must not be classified as a store-write failure")
 }
 
 func TestProbeKind(t *testing.T) {

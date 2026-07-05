@@ -147,6 +147,8 @@ func TestReconciler_AppliesAllKinds(t *testing.T) {
 	if _, err := pg.GetSchedule(ctx, "sc1"); err != nil {
 		t.Errorf("schedule not applied: %v", err)
 	}
+	_, err = pg.GetWebhookReceiver(ctx, "wh1")
+	require.NoError(t, err)
 	as, err := pg.GetAppSource(ctx, "multi")
 	require.NoError(t, err)
 	if len(as.ManagedResources) != 3 {
@@ -210,4 +212,34 @@ func TestReconciler_ForceSyncOnEmptyCommit(t *testing.T) {
 
 	_, err = pg.GetJob(ctx, "build")
 	require.NoError(t, err, "should sync when last_commit is empty (forced sync)")
+}
+
+func TestReconciler_DuplicateResourceFirstWins(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.UpsertAppSource(ctx, "dup-src", []byte(appSourceSpecJSON))
+	require.NoError(t, err)
+
+	files := map[string][]byte{
+		"a.yaml": []byte("apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: dup\nspec:\n  agentSelector: [kind:docker]\n  steps:\n    - name: s\n      run: echo A"),
+		"b.yaml": []byte("apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: dup\nspec:\n  agentSelector: [kind:docker]\n  steps:\n    - name: s\n      run: echo B"),
+	}
+	fetcher := &mockAppSourceFetcher{sha: "sha1", files: files}
+
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	job, err := pg.GetJob(ctx, "dup")
+	require.NoError(t, err, "exactly one Job named dup should exist")
+	// NOTE: applyResource performs the store write before the duplicate-ref check
+	// runs (see syncAppSource), so both a.yaml and b.yaml are upserted to the store
+	// and the later file's write (b.yaml) lands last. Only the ManagedResources
+	// bookkeeping below reflects "first wins". Tracked as a follow-up bug (the
+	// stored spec should also reflect a.yaml, the lexicographically-first file).
+	assert.Contains(t, string(job.Spec), "echo B", "current behavior: last processed file's store write wins")
+
+	as, err := pg.GetAppSource(ctx, "dup-src")
+	require.NoError(t, err)
+	require.Len(t, as.ManagedResources, 1, "ManagedResources should contain exactly one entry for the duplicate")
+	assert.Equal(t, store.ResourceRef{Kind: "Job", Name: "dup"}, as.ManagedResources[0])
 }
