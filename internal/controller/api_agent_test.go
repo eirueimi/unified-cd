@@ -504,6 +504,108 @@ func TestAgentHeartbeat_RejectsNonAgentToken(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
+func TestBuildClaimStep_MatrixAndForeachNormalization(t *testing.T) {
+	// matrix はそのまま次元列に変換される
+	entry := dsl.StepEntry{
+		Name: "build",
+		Run:  "echo",
+		Matrix: &dsl.MatrixDef{
+			Dimensions: []dsl.MatrixDimension{
+				{Name: "os", Source: dsl.ForeachSource{Literal: []string{"linux", "windows"}}},
+				{Name: "arch", Source: dsl.ForeachSource{Expr: "$archs"}},
+			},
+			Exclude: []map[string]string{{"os": "windows"}},
+		},
+	}
+	cs := buildOneClaimStep(0, 0, entry)
+	require.NotNil(t, cs.Matrix)
+	require.Len(t, cs.Matrix.Dimensions, 2)
+	require.Equal(t, "os", cs.Matrix.Dimensions[0].Name)
+	require.Equal(t, []string{"linux", "windows"}, cs.Matrix.Dimensions[0].Source.Literal)
+	require.Equal(t, "$archs", cs.Matrix.Dimensions[1].Source.Expr)
+	require.Equal(t, []map[string]string{{"os": "windows"}}, cs.Matrix.Exclude)
+
+	// foreach は1次元 matrix に正規化される
+	fe := dsl.StepEntry{
+		Name:    "deploy",
+		Run:     "echo",
+		Foreach: &dsl.ForeachDef{Key: "env", Source: dsl.ForeachSource{Literal: []string{"dev", "prod"}}},
+	}
+	cs = buildOneClaimStep(1, 1, fe)
+	require.NotNil(t, cs.Matrix)
+	require.Len(t, cs.Matrix.Dimensions, 1)
+	require.Equal(t, "env", cs.Matrix.Dimensions[0].Name)
+	require.Equal(t, []string{"dev", "prod"}, cs.Matrix.Dimensions[0].Source.Literal)
+}
+
+func TestClaimStep_DisplayName(t *testing.T) {
+	s := api.ClaimStep{Name: "build"}
+	require.Equal(t, "build", s.DisplayName())
+	s.MatrixKey = "linux/amd64"
+	require.Equal(t, "build (linux, amd64)", s.DisplayName())
+}
+
+// TestBuildClaimResponse_ParallelInnerStepMatrixAndForeach verifies that
+// foreach/matrix defined on steps inside a `parallel:` block go through the
+// same normalization as top-level steps (shared conversion helper). It also
+// pins (review finding T5) that a parallel-inner step's Approval field
+// survives the dsl.Step -> dsl.StepEntry -> api.ClaimStep conversion chain
+// (stepToStepEntry -> buildOneClaimStep) — that piggybacked fix had no
+// dedicated assertion before this test was extended.
+func TestBuildClaimResponse_ParallelInnerStepMatrixAndForeach(t *testing.T) {
+	spec := dsl.Spec{
+		Steps: []dsl.StepEntry{
+			{Parallel: []dsl.Step{
+				{
+					Name: "build",
+					Run:  "echo",
+					Matrix: &dsl.MatrixDef{
+						Dimensions: []dsl.MatrixDimension{
+							{Name: "os", Source: dsl.ForeachSource{Literal: []string{"linux", "windows"}}},
+						},
+					},
+				},
+				{
+					Name:    "deploy",
+					Run:     "echo",
+					Foreach: &dsl.ForeachDef{Key: "env", Source: dsl.ForeachSource{Literal: []string{"dev", "prod"}}},
+				},
+				{
+					Name:     "gate",
+					Approval: &dsl.ApprovalStep{Message: "ship it?", TimeoutMinutes: 15},
+				},
+			}},
+		},
+	}
+	raw, err := json.Marshal(spec)
+	require.NoError(t, err)
+
+	resp, err := buildClaimResponse(&store.ClaimedRun{
+		Run:  api.Run{ID: "run1", JobName: "j"},
+		Spec: raw,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Stages, 1)
+	require.Len(t, resp.Stages[0].Parallel, 3)
+
+	build := resp.Stages[0].Parallel[0]
+	require.NotNil(t, build.Matrix)
+	require.Len(t, build.Matrix.Dimensions, 1)
+	assert.Equal(t, "os", build.Matrix.Dimensions[0].Name)
+	assert.Equal(t, []string{"linux", "windows"}, build.Matrix.Dimensions[0].Source.Literal)
+
+	deploy := resp.Stages[0].Parallel[1]
+	require.NotNil(t, deploy.Matrix)
+	require.Len(t, deploy.Matrix.Dimensions, 1)
+	assert.Equal(t, "env", deploy.Matrix.Dimensions[0].Name)
+	assert.Equal(t, []string{"dev", "prod"}, deploy.Matrix.Dimensions[0].Source.Literal)
+
+	gate := resp.Stages[0].Parallel[2]
+	require.NotNil(t, gate.Approval, "a parallel-inner step's Approval must survive claim conversion")
+	assert.Equal(t, "ship it?", gate.Approval.Message)
+	assert.Equal(t, 15.0, gate.Approval.TimeoutMinutes)
+}
+
 func TestClaimDrainBroadcast(t *testing.T) {
 	s, _ := newTestServer(t)
 

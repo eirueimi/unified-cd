@@ -307,7 +307,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				recordFailure()
 				_ = a.Client.ReportStep(reportCtx, a.ID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
-					StepName: step.Name, Status: "Failed", EndedAt: time.Now().UTC(),
+					StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", EndedAt: time.Now().UTC(),
 				})
 			}
 
@@ -326,7 +326,8 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 						RunID:      c.RunID,
 						StepIndex:  step.Index,
 						StageIndex: step.StageIndex,
-						StepName:   step.Name,
+						StepName:   step.DisplayName(),
+						Variant:    step.MatrixKey,
 						Status:     "Skipped",
 					})
 				})
@@ -346,12 +347,12 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				if approved {
 					_ = a.Client.ReportStep(stepCtx, a.ID, api.StepReportRequest{
 						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
-						StepName: step.Name, Status: "Succeeded", EndedAt: time.Now().UTC(),
+						StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", EndedAt: time.Now().UTC(),
 					})
 				} else {
 					_ = a.Client.ReportStep(stepCtx, a.ID, api.StepReportRequest{
 						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
-						StepName: step.Name, Status: "Failed", EndedAt: time.Now().UTC(),
+						StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", EndedAt: time.Now().UTC(),
 					})
 					recordFailure()
 				}
@@ -383,14 +384,15 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 
 			started := time.Now().UTC()
 			_ = a.Client.ReportStep(stepCtx, a.ID, api.StepReportRequest{
-				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 			})
 
 			status := "Succeeded"
 			exitCode := 0
 			tplData := sctx.snapshot()
-			if step.ForeachKey != "" {
-				tplData.Foreach = map[string]string{step.ForeachKey: step.ForeachValue}
+			if step.MatrixValues != nil {
+				tplData.Matrix = step.MatrixValues
+				tplData.Foreach = step.MatrixValues // foreach シュガー互換: {{ .Foreach.key }}
 			}
 
 			if step.Call != nil {
@@ -399,9 +401,13 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 					slog.Error("call step failed", "step", step.Name, "error", callErr)
 					status = "Failed"
 				} else {
-					sctx.setStep(step.Name, dsl.StepData{Outputs: childOutputs})
+					if step.MatrixKey != "" {
+						sctx.setStepMatrixOutputs(step.Name, step.MatrixKey, childOutputs)
+					} else {
+						sctx.setStep(step.Name, dsl.StepData{Outputs: dsl.StringOutputs(childOutputs)})
+					}
 					if len(childOutputs) > 0 {
-						_ = a.Client.SetStepOutputs(stepCtx, a.ID, c.RunID, step.Index, childOutputs)
+						_ = a.Client.SetStepOutputs(stepCtx, a.ID, c.RunID, step.Index, step.MatrixKey, childOutputs)
 					}
 				}
 			} else {
@@ -452,6 +458,8 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 						Steps:   tplData.Steps,
 						Stdout:  capturedStdout,
 						Secrets: tplData.Secrets,
+						Matrix:  tplData.Matrix,
+						Foreach: tplData.Foreach,
 					}
 					for outKey, outTpl := range step.Outputs {
 						val, err := dsl.ExpandTemplate(outTpl, outputCtx)
@@ -461,9 +469,13 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 						}
 						capturedOutputs[outKey] = val
 					}
+					if step.MatrixKey != "" {
+						sctx.setStepMatrixOutputs(step.Name, step.MatrixKey, capturedOutputs)
+					} else {
+						sctx.setStep(step.Name, dsl.StepData{Outputs: dsl.StringOutputs(capturedOutputs)})
+					}
 					if len(capturedOutputs) > 0 {
-						sctx.setStep(step.Name, dsl.StepData{Outputs: capturedOutputs})
-						_ = a.Client.SetStepOutputs(stepCtx, a.ID, c.RunID, step.Index, capturedOutputs)
+						_ = a.Client.SetStepOutputs(stepCtx, a.ID, c.RunID, step.Index, step.MatrixKey, capturedOutputs)
 					}
 				}
 			}
@@ -483,7 +495,8 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				RunID:      c.RunID,
 				StepIndex:  step.Index,
 				StageIndex: step.StageIndex,
-				StepName:   step.Name,
+				StepName:   step.DisplayName(),
+				Variant:    step.MatrixKey,
 				Status:     status,
 				ExitCode:   exitCode,
 				StartedAt:  started,
@@ -501,7 +514,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}
 
 	mainRunner := makeStepRunner(statusView, true, &anyStepFailed, true)
-	dagErr := RunPipeline(runCtx, c.Stages, getData, mainRunner)
+	dagErr := RunPipeline(runCtx, c.Stages, getData, c.MatrixMaxCombinations, mainRunner)
 
 	// post-hooks run regardless of DAG success/failure (cache save should always attempt).
 	// Use WithoutCancel so a cancelled parent context doesn't skip cache saves.
@@ -536,7 +549,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		finallyRunner := makeStepRunner(finallyStatus, false, &finallyFailed, false)
 		// Use a non-cancelling context so finally runs even when the run was cancelled.
 		finallyCtx := context.WithoutCancel(ctx)
-		if err := RunPipeline(finallyCtx, c.Finally, getData, finallyRunner); err != nil {
+		if err := RunPipeline(finallyCtx, c.Finally, getData, c.MatrixMaxCombinations, finallyRunner); err != nil {
 			slog.Warn("finally: structural error", "runId", c.RunID, "error", err)
 			finallyFailed.Store(true)
 		}
@@ -564,7 +577,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			for _, step := range api.StageSteps(stage) {
 				if sd, ok := finalData.Steps[step.Name]; ok {
 					if val, ok := sd.Outputs[outName]; ok {
-						runOutputs[outName] = val
+						runOutputs[outName] = dsl.OutputValueString(val)
 					}
 				}
 			}
@@ -650,7 +663,7 @@ func resolveWorkspacePath(workDir, path string) string {
 func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, runID string, workDir string) error {
 	started := time.Now().UTC()
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 	})
 
 	ua := step.UploadArtifact
@@ -658,13 +671,13 @@ func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, r
 	if err := a.Client.UploadArtifact(ctx, runID, ua.Name, path); err != nil {
 		slog.Error("upload-artifact failed", "step", step.Name, "error", err)
 		_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Failed",
+			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
 			StartedAt: started, EndedAt: time.Now().UTC(),
 		})
 		return fmt.Errorf("upload-artifact %q: %w", ua.Name, err)
 	}
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Succeeded",
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded",
 		StartedAt: started, EndedAt: time.Now().UTC(),
 	})
 	return nil
@@ -673,7 +686,7 @@ func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, r
 func (a *Agent) executeDownloadArtifact(ctx context.Context, step api.ClaimStep, runID string, workDir string) error {
 	started := time.Now().UTC()
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 	})
 
 	da := step.DownloadArtifact
@@ -685,13 +698,13 @@ func (a *Agent) executeDownloadArtifact(ctx context.Context, step api.ClaimStep,
 	if err := a.Client.DownloadArtifact(ctx, runID, da.Name, destDir); err != nil {
 		slog.Error("download-artifact failed", "step", step.Name, "error", err)
 		_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Failed",
+			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
 			StartedAt: started, EndedAt: time.Now().UTC(),
 		})
 		return fmt.Errorf("download-artifact %q: %w", da.Name, err)
 	}
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Succeeded",
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded",
 		StartedAt: started, EndedAt: time.Now().UTC(),
 	})
 	return nil
@@ -706,7 +719,7 @@ func (a *Agent) executeCacheStep(
 ) error {
 	started := time.Now().UTC()
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, StepName: step.Name, Status: "Running", StartedAt: started,
+		RunID: runID, StepIndex: step.Index, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 	})
 
 	cs := step.Cache
@@ -760,7 +773,7 @@ func (a *Agent) executeCacheStep(
 	})
 
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, StepName: step.Name, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
+		RunID: runID, StepIndex: step.Index, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
 	})
 	return nil
 }

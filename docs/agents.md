@@ -11,6 +11,7 @@ lifecycle and its registration/liveness semantics with the controller.
 - [Windows Agents](#windows-agents)
 - [Workspace lifecycle](#workspace-lifecycle)
 - [Registration and liveness](#registration-and-liveness)
+- [Matrix wire format upgrade note](#matrix-wire-format-upgrade-note)
 
 ---
 
@@ -189,3 +190,21 @@ claims, and without a heartbeat it could be misidentified as dead. See
 for how the controller uses `last_seen_at` staleness to reap stuck runs and
 delete dead agent rows — that mechanism is documented there, not duplicated
 here.
+
+---
+
+## Matrix wire format upgrade note
+
+The release that added `matrix:`/`foreach:` step expansion (see
+[docs/jobs.md: Matrix and Foreach Steps](jobs.md#matrix-and-foreach-steps))
+changed the claim wire format: the previous per-claim `ForeachKey` /
+`ForeachValue` string fields were replaced by a `MatrixValues map[string]string`
+field (one entry per matrix dimension; a foreach-sugared step produces a
+single-entry map).
+
+**There is no backward-compatibility shim for this change.** An agent
+(standard or k8s-agent) running the pre-matrix binary cannot correctly
+expand `foreach:`/`matrix:` steps claimed under the new wire format —
+**the controller and every agent (standard and k8s-agent alike) must be
+upgraded together.** Do not roll out a matrix-capable controller while
+older agent binaries are still claiming runs from it.

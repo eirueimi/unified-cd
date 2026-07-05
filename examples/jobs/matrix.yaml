@@ -1,0 +1,28 @@
+# Demonstrates: multi-dimensional matrix step (os x arch), minus one excluded
+# combination, plus output aggregation across combinations.
+# See docs/jobs.md's "Matrix and Foreach Steps" section for the full syntax
+# reference (dimensions, exclude, combination-key normal form, output
+# aggregation, and the matrix-max-combinations cap).
+# Usage:
+#   unified-cd apply -f examples/jobs/matrix.yaml
+#   unified-cd run trigger matrix-build
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: matrix-build
+spec:
+  steps:
+    - name: build
+      matrix:
+        os: [linux, windows, darwin]
+        arch: [amd64, arm64]
+        exclude:
+          - os: windows
+            arch: arm64
+      outputs:
+        built: "{{ .Matrix.os }}-{{ .Matrix.arch }}"
+      run: |
+        echo "building for {{ .Matrix.os }}/{{ .Matrix.arch }}"
+    - name: report
+      run: |
+        echo "built variants: {{ keys .Steps.build.Outputs.built }}"

@@ -141,6 +141,75 @@ func runOrchestrateWithApproval(t *testing.T, c api.ClaimResponse, fakes map[str
 	return h.statuses, h.final
 }
 
+// runOrchestrateVariants is like runOrchestrate but also records the Variant
+// reported on each ReportStep call, keyed by the reported step name.
+func runOrchestrateVariants(t *testing.T, c api.ClaimResponse, fakes map[string]fakeStep) (map[string]string, map[string]string, string) {
+	t.Helper()
+
+	h := &orchestrateHarness{statuses: map[string]string{}, runState: "Running"}
+	var mu sync.Mutex
+	variants := map[string]string{}
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("POST /api/v1/agents/{id}/steps", func(w http.ResponseWriter, r *http.Request) {
+		var req api.StepReportRequest
+		_ = orchestrateDecodeJSON(r, &req)
+		mu.Lock()
+		if req.StepName != "" {
+			h.statuses[req.StepName] = req.Status
+			variants[req.StepName] = req.Variant
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/steps/{idx}/outputs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/outputs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /api/v1/runs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		st := h.runState
+		mu.Unlock()
+		orchestrateWriteJSON(w, api.Run{ID: c.RunID, Status: api.RunStatus(st)})
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/finish", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Status string `json:"status"`
+		}
+		_ = orchestrateDecodeJSON(r, &req)
+		mu.Lock()
+		h.final = req.Status
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := agentlib.NewClient(srv.URL, "tok")
+	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
+
+	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
+		f, ok := fakes[step.Name]
+		if !ok {
+			return 0, "", nil
+		}
+		return f.exit, f.stdout, nil
+	}
+	noopSidecarExec := func(_ context.Context, _ string, _ []string) (int, error) { return 0, nil }
+	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace")
+
+	mu.Lock()
+	defer mu.Unlock()
+	return variants, h.statuses, h.final
+}
+
 func TestOrchestrate_FailureSkipsRest(t *testing.T) {
 	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "x"}},
@@ -209,12 +278,137 @@ func TestOrchestrate_ForeachSkippedAfterFailure(t *testing.T) {
 	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "x"}},
 		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "fan", Run: "echo {{ .Foreach.item }}",
-			Foreach: &api.ClaimForeachDef{Key: "item", Source: api.ClaimForeachSource{Literal: []string{"a", "b"}}}}},
+			Matrix: &api.ClaimMatrixDef{Dimensions: []api.ClaimMatrixDimension{
+				{Name: "item", Source: api.ClaimForeachSource{Literal: []string{"a", "b"}}},
+			}}}},
 	}}
 	statuses, final := runOrchestrate(t, c, map[string]fakeStep{"boom": {exit: 1}})
 	assert.Equal(t, "Failed", statuses["boom"])
-	assert.Equal(t, "Skipped", statuses["fan"], "foreach variants auto-skip after a failure")
+	assert.Equal(t, "Skipped", statuses["fan (a)"], "foreach variants auto-skip after a failure")
+	assert.Equal(t, "Skipped", statuses["fan (b)"], "foreach variants auto-skip after a failure")
 	assert.Equal(t, "Failed", final)
+}
+
+// TestOrchestrate_MatrixTwoDimensionExpansion verifies a 2-dimension matrix
+// step expands into one run per combination, with DisplayName "name (v1, v2)"
+// and a Variant "v1/v2" reported on each ReportStep call.
+func TestOrchestrate_MatrixTwoDimensionExpansion(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "build", Run: "echo build",
+			Matrix: &api.ClaimMatrixDef{Dimensions: []api.ClaimMatrixDimension{
+				{Name: "target", Source: api.ClaimForeachSource{Literal: []string{"x", "y"}}},
+				{Name: "shard", Source: api.ClaimForeachSource{Literal: []string{"1", "2"}}},
+			}}}},
+	}}
+
+	variants, statuses, final := runOrchestrateVariants(t, c, map[string]fakeStep{"build": {exit: 0}})
+
+	wantNames := []string{"build (x, 1)", "build (x, 2)", "build (y, 1)", "build (y, 2)"}
+	for _, name := range wantNames {
+		assert.Equal(t, "Succeeded", statuses[name], "expected step %q to run and succeed", name)
+	}
+	assert.Len(t, statuses, 4, "expected exactly 4 expanded step runs")
+
+	wantVariants := map[string]string{
+		"build (x, 1)": "x/1",
+		"build (x, 2)": "x/2",
+		"build (y, 1)": "y/1",
+		"build (y, 2)": "y/2",
+	}
+	for name, variant := range wantVariants {
+		assert.Equal(t, variant, variants[name], "expected Variant %q for step %q", variant, name)
+	}
+
+	assert.Equal(t, "Succeeded", final)
+}
+
+// TestOrchestrate_MatrixOutputsCaptureMatrixTemplateValue is a regression test
+// for review finding C2: the k8s agent's output-template evaluation context
+// omitted Matrix/Foreach, so an `outputs:` template referencing
+// `{{ .Matrix.x }}` silently evaluated to "" (missingkey=zero) instead of the
+// actual per-combination dimension value. It verifies each matrix variant's
+// SetStepOutputs call carries the real dimension value, not an empty string.
+func TestOrchestrate_MatrixOutputsCaptureMatrixTemplateValue(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{
+			Index: 0, StageIndex: 0, Name: "build", Run: "echo build",
+			Matrix: &api.ClaimMatrixDef{Dimensions: []api.ClaimMatrixDimension{
+				{Name: "os", Source: api.ClaimForeachSource{Literal: []string{"linux", "windows"}}},
+				{Name: "arch", Source: api.ClaimForeachSource{Literal: []string{"amd64", "arm64"}}},
+			}},
+			Outputs: map[string]string{"built": "{{ .Matrix.os }}-{{ .Matrix.arch }}"},
+		}},
+	}}
+
+	outputsByVariant := runOrchestrateCaptureOutputs(t, c, map[string]fakeStep{"build": {exit: 0}})
+
+	want := map[string]string{
+		"linux/amd64":   "linux-amd64",
+		"linux/arm64":   "linux-arm64",
+		"windows/amd64": "windows-amd64",
+		"windows/arm64": "windows-arm64",
+	}
+	require.Len(t, outputsByVariant, 4, "expected outputs reported for all 4 combinations")
+	for variant, want := range want {
+		got, ok := outputsByVariant[variant]
+		require.True(t, ok, "no outputs reported for variant %q", variant)
+		assert.Equal(t, want, got["built"], "outputs.built for variant %q should resolve the real Matrix values, not \"-\"", variant)
+	}
+}
+
+// runOrchestrateCaptureOutputs is like runOrchestrate but records the outputs
+// body posted to SetStepOutputs, keyed by the `variant` query parameter.
+func runOrchestrateCaptureOutputs(t *testing.T, c api.ClaimResponse, fakes map[string]fakeStep) map[string]map[string]string {
+	t.Helper()
+
+	var mu sync.Mutex
+	outputsByVariant := map[string]map[string]string{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/{id}/steps", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/steps/{idx}/outputs", func(w http.ResponseWriter, r *http.Request) {
+		var req api.SetOutputsRequest
+		_ = orchestrateDecodeJSON(r, &req)
+		variant := r.URL.Query().Get("variant")
+		mu.Lock()
+		outputsByVariant[variant] = req.Outputs
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/outputs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /api/v1/runs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		orchestrateWriteJSON(w, api.Run{ID: c.RunID, Status: "Running"})
+	})
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/finish", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := agentlib.NewClient(srv.URL, "tok")
+	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
+
+	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
+		f, ok := fakes[step.Name]
+		if !ok {
+			return 0, "", nil
+		}
+		return f.exit, f.stdout, nil
+	}
+	noopSidecarExec := func(_ context.Context, _ string, _ []string) (int, error) { return 0, nil }
+	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace")
+
+	mu.Lock()
+	defer mu.Unlock()
+	return outputsByVariant
 }
 
 func TestOrchestrate_ApprovalApprovedRunsLaterStep(t *testing.T) {

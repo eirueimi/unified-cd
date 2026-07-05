@@ -105,7 +105,7 @@ func TestExpandConcurrency_PropagatesPoolTemplateError(t *testing.T) {
 func TestExpandTemplate_StepOutputs(t *testing.T) {
 	data := TemplateData{
 		Steps: map[string]StepData{
-			"build": {Outputs: map[string]string{"artifact_url": "s3://bucket/a.tar.gz"}},
+			"build": {Outputs: map[string]any{"artifact_url": "s3://bucket/a.tar.gz"}},
 		},
 	}
 	result, err := ExpandTemplate("artifact: {{ .Steps.build.Outputs.artifact_url }}", data)

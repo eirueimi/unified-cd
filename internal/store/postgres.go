@@ -566,11 +566,11 @@ func (p *Postgres) DeleteRun(ctx context.Context, id string) error {
 	return err
 }
 
-func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, status string, exitCode *int, startedAt, endedAt *time.Time) error {
+func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time) error {
 	const q = `
-		INSERT INTO step_reports(run_id, step_index, stage_index, step_name, status, exit_code, started_at, ended_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (run_id, step_index) DO UPDATE
+		INSERT INTO step_reports(run_id, step_index, variant, stage_index, step_name, status, exit_code, started_at, ended_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (run_id, step_index, variant) DO UPDATE
 		  SET stage_index = EXCLUDED.stage_index,
 		      step_name   = EXCLUDED.step_name,
 		      status      = EXCLUDED.status,
@@ -578,16 +578,16 @@ func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex
 		      started_at  = COALESCE(EXCLUDED.started_at, step_reports.started_at),
 		      ended_at    = COALESCE(EXCLUDED.ended_at, step_reports.ended_at);
 	`
-	_, err := p.pool.Exec(ctx, q, runID, stepIndex, stageIndex, stepName, status, exitCode, startedAt, endedAt)
+	_, err := p.pool.Exec(ctx, q, runID, stepIndex, variant, stageIndex, stepName, status, exitCode, startedAt, endedAt)
 	return err
 }
 
 func (p *Postgres) GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error) {
 	const q = `
-		SELECT step_index, stage_index, step_name, status, exit_code, started_at, ended_at
+		SELECT step_index, stage_index, step_name, status, exit_code, started_at, ended_at, variant
 		FROM step_reports
 		WHERE run_id = $1
-		ORDER BY step_index;
+		ORDER BY step_index, variant;
 	`
 	rows, err := p.pool.Query(ctx, q, runID)
 	if err != nil {
@@ -597,7 +597,7 @@ func (p *Postgres) GetRunSteps(ctx context.Context, runID string) ([]api.StepRep
 	var out []api.StepReport
 	for rows.Next() {
 		var s api.StepReport
-		if err := rows.Scan(&s.Index, &s.StageIndex, &s.Name, &s.Status, &s.ExitCode, &s.StartedAt, &s.EndedAt); err != nil {
+		if err := rows.Scan(&s.Index, &s.StageIndex, &s.Name, &s.Status, &s.ExitCode, &s.StartedAt, &s.EndedAt, &s.Variant); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -888,19 +888,19 @@ func (p *Postgres) ReleaseSemaphore(ctx context.Context, poolName, runID string)
 		poolName, runID)
 	return err
 }
-func (p *Postgres) SetStepOutput(ctx context.Context, runID string, stepIndex int, key, value string) error {
+func (p *Postgres) SetStepOutput(ctx context.Context, runID string, stepIndex int, variant, key, value string) error {
 	const q = `
-		INSERT INTO step_outputs(run_id, step_index, key, value)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (run_id, step_index, key) DO UPDATE SET value = EXCLUDED.value;
+		INSERT INTO step_outputs(run_id, step_index, variant, key, value)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (run_id, step_index, variant, key) DO UPDATE SET value = EXCLUDED.value;
 	`
-	_, err := p.pool.Exec(ctx, q, runID, stepIndex, key, value)
+	_, err := p.pool.Exec(ctx, q, runID, stepIndex, variant, key, value)
 	return err
 }
 
 func (p *Postgres) GetStepOutputs(ctx context.Context, runID string, stepIndex int) (map[string]string, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT key, value FROM step_outputs WHERE run_id = $1 AND step_index = $2`,
+		`SELECT key, value FROM step_outputs WHERE run_id = $1 AND step_index = $2 ORDER BY variant`,
 		runID, stepIndex)
 	if err != nil {
 		return nil, err

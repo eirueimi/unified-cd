@@ -179,10 +179,18 @@
       "type": "object"
     },
     "ForeachSource": {
-      "additionalProperties": false,
       "description": "ForeachSource is either a literal list (YAML sequence) or a template expression (YAML string).\n\n  in: [prod, staging, dev]                    → Literal\n  in: $envs                                   → Expr (JSON-array param reference)\n  in: \"{{ .Params.envs | split \\\",\\\" }}\"      → Expr (template)\n  in: \"{{ .Steps.list.Outputs.envs | split \\\",\\\" }}\" → Expr (step output reference)",
-      "properties": {},
-      "type": "object"
+      "oneOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "GitCredential": {
       "additionalProperties": false,
@@ -292,6 +300,29 @@
         "metadata",
         "spec"
       ],
+      "type": "object"
+    },
+    "MatrixDef": {
+      "additionalProperties": {
+        "$ref": "#/definitions/ForeachSource"
+      },
+      "description": "MatrixDef expands a step into one copy per combination of dimension values\n(cartesian product minus exclude entries). Dimensions preserve YAML\ndeclaration order; the combination key joins values with \"/\" in that order\n(e.g. \"linux/amd64\").",
+      "properties": {
+        "exclude": {
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "MatrixDimension": {
+      "additionalProperties": false,
+      "properties": {},
       "type": "object"
     },
     "Metadata": {
@@ -573,6 +604,9 @@
         "if": {
           "type": "string"
         },
+        "matrix": {
+          "$ref": "#/definitions/MatrixDef"
+        },
         "name": {
           "type": "string"
         },
@@ -636,6 +670,9 @@
         },
         "if": {
           "type": "string"
+        },
+        "matrix": {
+          "$ref": "#/definitions/MatrixDef"
         },
         "name": {
           "description": "Concrete step fields (identical to Step, minus Needs)",
@@ -788,14 +825,15 @@
     },
     "WebhookTrigger": {
       "additionalProperties": false,
+      "description": "WebhookTrigger selects what a webhook delivery triggers. Exactly one of Job or\nAppSource must be set: Job creates a Run; AppSource forces a GitOps re-sync of\nthe named AppSource on the next reconciler tick.",
       "properties": {
+        "appSource": {
+          "type": "string"
+        },
         "job": {
           "type": "string"
         }
       },
-      "required": [
-        "job"
-      ],
       "type": "object"
     },
     "WorkspaceConfig": {

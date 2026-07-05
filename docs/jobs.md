@@ -16,6 +16,7 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
   - [Timeout](#timeout)
   - [Continue on Error](#continue-on-error)
   - [Post-step hooks (`post`)](#post-step-hooks-post)
+  - [Matrix and Foreach Steps](#matrix-and-foreach-steps)
 - [Calling Other Jobs (`call`)](#calling-other-jobs-call)
 - [Git Template Inlining (`uses`)](#git-template-inlining-uses)
 - [Artifacts](#artifacts)
@@ -301,6 +302,99 @@ steps:
 
 Post hooks run after the main DAG finishes (regardless of success or failure), in reverse declaration order.
 Use them for cleanup tasks (delete temp files, stop containers, release resources).
+
+---
+
+### Matrix and Foreach Steps
+
+`matrix:` expands a single step declaration into one run per combination of
+one or more dimensions (a cartesian product), similar to a build matrix in
+other CI systems. It works inside `parallel:` blocks too — every step in a
+`parallel:` block that declares a `matrix:` (or `foreach:`) expands into its
+combinations, and those combinations run in parallel alongside the block's
+other steps.
+
+```yaml
+steps:
+  - name: build
+    matrix:
+      os: [linux, windows, darwin]
+      arch: [amd64, arm64]
+      exclude:
+        - os: windows
+          arch: arm64
+    outputs:
+      built: "{{ .Matrix.os }}-{{ .Matrix.arch }}"
+    run: |
+      GOOS={{ .Matrix.os }} GOARCH={{ .Matrix.arch }} go build -o out/{{ .Matrix.os }}-{{ .Matrix.arch }}
+```
+
+**Dimensions.** Each key under `matrix:` other than the reserved `exclude` is
+a dimension: its name becomes the key used in `{{ .Matrix.<name> }}`, and its
+value is a `ForeachSource` — the same source form `foreach.in` accepts:
+
+- a literal list: `os: [linux, windows, darwin]`
+- a `$param` reference to a JSON-array-valued parameter: `os: $osList`
+- a template expression: `os: "{{ .Params.osList | split \",\" }}"`, including
+  references to a previous step's output (`"{{ .Steps.list.Outputs.envs | split \",\" }}"`)
+
+Dimensions are evaluated and combined in **declaration order**, and within
+each dimension, in list order. A dimension that resolves to zero items
+produces **zero combinations overall** — the step is skipped entirely (not
+an error), and the run continues normally.
+
+**`exclude:`** is a list of dimension-name → value maps. A combination is
+dropped if it matches every key/value pair in at least one exclude entry.
+An exclude entry naming only a subset of dimensions still drops every
+combination that matches those dimensions (partial-match exclusion, the
+same semantics as GitHub Actions matrix `exclude`). Referencing a dimension
+name that isn't declared on the same `matrix:` is an apply-time error.
+
+**Combination key normal form.** Each expanded combination gets a key formed
+by joining its dimension values with `/`, in dimension declaration order —
+e.g. `linux/amd64`. Because `/` is the separator, **dimension values must
+not contain `/`**; a value that does causes the step to fail at expansion
+time (this is caught even for dynamic/expression-sourced dimensions, since
+values aren't known until expansion).
+
+**Combination limit.** The number of combinations a single `matrix:` step
+may expand to (after `exclude` is applied) is capped — default **64** —
+configurable on the controller via the `--matrix-max-combinations` flag or
+the `UNIFIED_MATRIX_MAX_COMBINATIONS` environment variable. Because
+dimensions can be dynamic (parameter- or step-output-sourced), the cap is
+enforced at **expansion time** on the agent, not at apply time; exceeding it
+fails the step.
+
+**Output aggregation.** A non-matrix step's `outputs:` values are plain
+strings, as usual. A **matrix step's outputs are aggregated across all of
+its combinations** into a map keyed by combination key:
+
+```yaml
+- name: report
+  run: |
+    echo "built variants: {{ keys .Steps.build.Outputs.built }}"
+    echo "one value: {{ index .Steps.build.Outputs.built "linux/amd64" }}"
+```
+
+- `{{ .Steps.build.Outputs.built }}` is a `map[string]string` (combination key → value), not a plain string.
+- Use the `keys` / `values` template functions to get the sorted list of combination keys, or the values in that same sorted-key order — handy for fanning a downstream `matrix:`/`foreach:` dimension out from a previous matrix step's outputs.
+- Use `{{ index .Steps.build.Outputs.built "linux/amd64" }}` to read a single combination's value.
+- From a CEL `if:` expression, access it as `steps.build.outputs.built["linux/amd64"]`.
+- If a matrix step's output is promoted to a job-level output (declared in `spec.params.outputs` and referenced from a step in that job), the promoted value becomes a **JSON-encoded string** of the combination-key → value map (e.g. `{"linux/amd64":"1.2","linux/arm64":"1.3"}`), not a Go map — job outputs are always plain strings on the wire, so the aggregated map is serialized rather than dropped.
+
+**`foreach:` is sugar for a single-dimension `matrix:`.** `foreach: {key: X, in: [...]}` is equivalent to a one-dimension `matrix:` named `X`, and `{{ .Foreach.X }}` reads the same value as `{{ .Matrix.X }}` would. Declaring both `foreach:` and `matrix:` on the same step is a mutual-exclusion error at apply time.
+
+**`approval` と `matrix`/`foreach` は同時指定不可** — expanded combinations share one (run_id, step_index) approval decision row, which has no way to represent per-combination decisions, so declaring both on the same step is rejected at apply time.
+
+matrix付きcallステップは組み合わせごとに子ランを起動し、出力は集約マップになる。
+
+Kubernetesエージェントでは組み合わせはPod内で順次実行される(標準エージェントは並列)。
+
+> **Upgrade note:** matrix support changed the agent claim wire format
+> (`ForeachKey`/`ForeachValue` were replaced by a `MatrixValues` map). There
+> is no backward-compatibility shim — see
+> [docs/agents.md](agents.md#matrix-wire-format-upgrade-note) for the
+> upgrade requirement.
 
 ---
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -67,6 +68,8 @@ func main() {
 	uiProxyTarget := flag.String("ui-proxy-target", eff.UIProxyTarget, "Vite dev server URL to reverse-proxy /ui/* to when --web-dir is empty, e.g. http://localhost:5173 (env: UNIFIED_UI_PROXY_TARGET)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
 	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
+	var matrixMaxEnvWarning string
+	matrixMax := flag.Int("matrix-max-combinations", envIntOr("UNIFIED_MATRIX_MAX_COMBINATIONS", 64, &matrixMaxEnvWarning), "max combinations a matrix step may expand to (env: UNIFIED_MATRIX_MAX_COMBINATIONS)")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
 
@@ -77,6 +80,12 @@ func main() {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
+
+	// envIntOr runs during flag registration, before the logger above exists,
+	// so a malformed value's warning is collected then and only logged now.
+	if matrixMaxEnvWarning != "" {
+		slog.Warn(matrixMaxEnvWarning)
+	}
 
 	if *dsn == "" {
 		slog.Error("dsn is required (--dsn, UNIFIED_DB_DSN, or config file)")
@@ -157,7 +166,7 @@ func main() {
 		slog.Warn("no object store configured — log archival disabled")
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, AgentToken: *token, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget}, pg)
+	srv := controller.NewServer(controller.Config{Token: *token, AgentToken: *token, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax}, pg)
 	srv.SetKeyManager(km)
 	if obj != nil {
 		srv.SetObjectStore(obj)
@@ -263,4 +272,20 @@ func main() {
 		slog.Error("listen", "error", err)
 		os.Exit(1)
 	}
+}
+
+// envIntOr parses an integer environment variable, falling back to def when
+// unset or malformed. It runs at flag-registration time, before the slog
+// default logger is configured, so a malformed value can't be logged
+// immediately; if warning is non-nil and the value fails to parse, *warning
+// is set to a message the caller should log once the logger is ready.
+func envIntOr(name string, def int, warning *string) int {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		} else if warning != nil {
+			*warning = fmt.Sprintf("malformed %s=%q, falling back to default %d: %v", name, v, def, err)
+		}
+	}
+	return def
 }
