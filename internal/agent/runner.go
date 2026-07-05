@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
@@ -140,6 +141,19 @@ func RunStepCapture(ctx context.Context, script string, stderr io.Writer, extraE
 		return stdout, ee.ExitCode(), nil
 	}
 	return stdout, -1, runErr
+}
+
+// RunStepContainer runs script inside a fresh container via rt, capturing
+// stdout (like RunStepCapture) and streaming stderr to the provided writer.
+// No host workspace is mounted — this is the isolated runsIn.image path.
+func RunStepContainer(ctx context.Context, rt crt.ContainerRuntime, image, script string, stderr io.Writer, extraEnv []string) (stdout string, exitCode int, err error) {
+	var buf bytes.Buffer
+	code, runErr := rt.Run(ctx, crt.RunSpec{
+		Image:  image,
+		Script: script,
+		Env:    extraEnv,
+	}, &buf, stderr)
+	return buf.String(), code, runErr
 }
 
 // pendingBatch holds a batch of log requests that failed to send.

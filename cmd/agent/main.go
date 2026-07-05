@@ -58,6 +58,7 @@ func main() {
 	workspaceDir := flag.String("workspace-dir", eff.WorkspaceDir, "base directory for run workspaces (default: ~/workspace) (env: UNIFIED_AGENT_WORKSPACE_DIR)")
 	drainTimeout := flag.Duration("drain-timeout", eff.DrainTimeout, "maximum drain wait time after SIGTERM (0=wait indefinitely). Applies to running steps; post-hooks such as cache saves always wait for completion to preserve data")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_AGENT_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)")
+	containerRuntime := flag.String("container-runtime", "", "container runtime for runsIn.image steps (docker|podman|nerdctl|wslc|container); empty = auto-detect")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
 
@@ -105,6 +106,7 @@ func main() {
 	a.CleanWorkspace = *cleanWorkspace
 	a.WorkspaceDir = *workspaceDir
 	a.DrainTimeout = *drainTimeout
+	a.RuntimePref = *containerRuntime
 
 	if *cacheEndpoint != "" && *cacheKey != "" && *cacheSecret != "" && *cacheBucket != "" {
 		cs, err := objectstore.NewS3ObjectStore(ctx, objectstore.S3Config{

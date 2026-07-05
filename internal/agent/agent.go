@@ -17,6 +17,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
@@ -41,6 +42,24 @@ type Agent struct {
 	WorkspaceDir   string
 	CleanWorkspace bool
 	DrainTimeout   time.Duration
+
+	// RuntimePref selects the container runtime for runsIn.image steps
+	// (docker|podman|nerdctl|wslc|container); empty = auto-detect.
+	RuntimePref string
+
+	resolvedRuntime crt.ContainerRuntime
+	runtimeErr      error
+	runtimeOnce     sync.Once
+}
+
+// containerRuntime resolves (once) the container runtime for runsIn.image
+// steps, honoring RuntimePref. A missing runtime is a hard error surfaced to
+// the step (no silent host fallback).
+func (a *Agent) containerRuntime() (crt.ContainerRuntime, error) {
+	a.runtimeOnce.Do(func() {
+		a.resolvedRuntime, a.runtimeErr = crt.Detect(a.RuntimePref)
+	})
+	return a.resolvedRuntime, a.runtimeErr
 }
 
 // New creates a new agent with the given ID and client.
@@ -426,7 +445,24 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 
 				stderrPusher := NewLogPusher(a.Client, a.ID, c.RunID, step.Index, "stderr")
 				stderrPusher.SetMasker(masker)
-				capturedStdout, ec, runErr := RunStepCapture(stepCtx, expandedRun, stderrPusher, extraEnv, workDir)
+				var capturedStdout string
+				var ec int
+				var runErr error
+				switch {
+				case step.RunsIn != nil && step.RunsIn.Container != "":
+					runErr = fmt.Errorf("runsIn.container (%q) is not supported on the host agent; use runsIn.image or the k8s agent", step.RunsIn.Container)
+					ec = -1
+				case step.RunsIn != nil && step.RunsIn.Image != "":
+					rt, derr := a.containerRuntime()
+					if derr != nil {
+						runErr = fmt.Errorf("runsIn.image %q requires a container runtime: %w", step.RunsIn.Image, derr)
+						ec = -1
+					} else {
+						capturedStdout, ec, runErr = RunStepContainer(stepCtx, rt, step.RunsIn.Image, expandedRun, stderrPusher, extraEnv)
+					}
+				default:
+					capturedStdout, ec, runErr = RunStepCapture(stepCtx, expandedRun, stderrPusher, extraEnv, workDir)
+				}
 				exitCode = ec
 				stderrPusher.Flush(stepCtx)
 
