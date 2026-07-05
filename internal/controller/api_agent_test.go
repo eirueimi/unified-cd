@@ -547,7 +547,11 @@ func TestClaimStep_DisplayName(t *testing.T) {
 
 // TestBuildClaimResponse_ParallelInnerStepMatrixAndForeach verifies that
 // foreach/matrix defined on steps inside a `parallel:` block go through the
-// same normalization as top-level steps (shared conversion helper).
+// same normalization as top-level steps (shared conversion helper). It also
+// pins (review finding T5) that a parallel-inner step's Approval field
+// survives the dsl.Step -> dsl.StepEntry -> api.ClaimStep conversion chain
+// (stepToStepEntry -> buildOneClaimStep) — that piggybacked fix had no
+// dedicated assertion before this test was extended.
 func TestBuildClaimResponse_ParallelInnerStepMatrixAndForeach(t *testing.T) {
 	spec := dsl.Spec{
 		Steps: []dsl.StepEntry{
@@ -566,6 +570,10 @@ func TestBuildClaimResponse_ParallelInnerStepMatrixAndForeach(t *testing.T) {
 					Run:     "echo",
 					Foreach: &dsl.ForeachDef{Key: "env", Source: dsl.ForeachSource{Literal: []string{"dev", "prod"}}},
 				},
+				{
+					Name:     "gate",
+					Approval: &dsl.ApprovalStep{Message: "ship it?", TimeoutMinutes: 15},
+				},
 			}},
 		},
 	}
@@ -578,7 +586,7 @@ func TestBuildClaimResponse_ParallelInnerStepMatrixAndForeach(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, resp.Stages, 1)
-	require.Len(t, resp.Stages[0].Parallel, 2)
+	require.Len(t, resp.Stages[0].Parallel, 3)
 
 	build := resp.Stages[0].Parallel[0]
 	require.NotNil(t, build.Matrix)
@@ -591,6 +599,11 @@ func TestBuildClaimResponse_ParallelInnerStepMatrixAndForeach(t *testing.T) {
 	require.Len(t, deploy.Matrix.Dimensions, 1)
 	assert.Equal(t, "env", deploy.Matrix.Dimensions[0].Name)
 	assert.Equal(t, []string{"dev", "prod"}, deploy.Matrix.Dimensions[0].Source.Literal)
+
+	gate := resp.Stages[0].Parallel[2]
+	require.NotNil(t, gate.Approval, "a parallel-inner step's Approval must survive claim conversion")
+	assert.Equal(t, "ship it?", gate.Approval.Message)
+	assert.Equal(t, 15.0, gate.Approval.TimeoutMinutes)
 }
 
 func TestClaimDrainBroadcast(t *testing.T) {
