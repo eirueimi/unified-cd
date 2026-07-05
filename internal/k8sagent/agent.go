@@ -433,7 +433,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			} else {
 				// Evaluate output templates against the captured stdout
 				capturedOutputs := map[string]string{}
-				outCtx := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps, Stdout: capturedStdout}
+				outCtx := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps, Stdout: capturedStdout, Matrix: tplData.Matrix, Foreach: tplData.Foreach}
 				for outKey, outTpl := range step.Outputs {
 					if val, err := dsl.ExpandTemplate(outTpl, outCtx); err == nil {
 						capturedOutputs[outKey] = val
