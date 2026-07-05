@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -18,6 +19,23 @@ import (
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
+
+// auditRetentionDaysDefault resolves the --audit-retention-days flag default
+// from UNIFIED_AUDIT_RETENTION_DAYS, falling back to 90 days when unset or
+// invalid. 0 means keep forever.
+func auditRetentionDaysDefault() int {
+	const defaultDays = 90
+	v := os.Getenv("UNIFIED_AUDIT_RETENTION_DAYS")
+	if v == "" {
+		return defaultDays
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		slog.Warn("invalid UNIFIED_AUDIT_RETENTION_DAYS, using default", "value", v, "default", defaultDays)
+		return defaultDays
+	}
+	return n
+}
 
 func main() {
 	// Pre-scan os.Args for -f so we can load the config file before defining
@@ -48,6 +66,7 @@ func main() {
 	webDir := flag.String("web-dir", eff.WebDir, "static web assets directory; if empty /ui/* returns 404 (env: UNIFIED_WEB_DIR)")
 	uiProxyTarget := flag.String("ui-proxy-target", eff.UIProxyTarget, "Vite dev server URL to reverse-proxy /ui/* to when --web-dir is empty, e.g. http://localhost:5173 (env: UNIFIED_UI_PROXY_TARGET)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
+	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
 
@@ -203,6 +222,12 @@ func main() {
 	}
 	go controller.RunApprovalReaper(ctx, pg, time.Minute)
 	go controller.RunStuckRunReaper(ctx, pg, 30*time.Second, 90*time.Second, 60*time.Second)
+	if *auditRetentionDays > 0 {
+		slog.Info("audit log retention enabled", "retentionDays", *auditRetentionDays)
+	} else {
+		slog.Info("audit log retention disabled (keep forever)")
+	}
+	go controller.RunAuditRetention(ctx, pg, time.Hour, *auditRetentionDays)
 	go func() {
 		var gitCache *gittemplate.Cache
 		if obj != nil {
