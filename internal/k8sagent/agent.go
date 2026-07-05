@@ -180,15 +180,31 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	}
 
 	stepExec := func(execCtx context.Context, step api.ClaimStep, expandedRun string) (int, string, error) {
-		if err := runsInImageUnsupported(step); err != nil {
-			return -1, "", err
-		}
 		var stdoutBuf strings.Builder
 		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, step.Index, "stderr")
 		stdoutWriter := io.MultiWriter(&stdoutBuf, &logLineWriter{
 			client: a.client, agentID: a.cfg.AgentID, runID: c.RunID, stepIdx: step.Index, stream: "stdout",
 		})
-		ec, execErr := a.exec.ExecStep(execCtx, podName, execContainer(step), expandedRun, stdoutWriter, stderrPusher)
+
+		var ec int
+		var execErr error
+		if step.RunsIn != nil && step.RunsIn.Image != "" {
+			// Isolated throwaway pod. UNIFIED_AGENT_OS mirrors the host agent's
+			// convention; step.Env arrives already template-expanded (orchestrate).
+			env := step.Env
+			if env == nil {
+				env = map[string]string{}
+			}
+			env["UNIFIED_AGENT_OS"] = runtime.GOOS
+			deadline := int64(3600)
+			if step.TimeoutMinutes > 0 {
+				deadline = int64(step.TimeoutMinutes * 60)
+			}
+			ec, execErr = a.runImageStep(execCtx, c.RunID, step.RunsIn.Image, env, deadline, expandedRun, stdoutWriter, stderrPusher)
+		} else {
+			ec, execErr = a.exec.ExecStep(execCtx, podName, execContainer(step), expandedRun, stdoutWriter, stderrPusher)
+		}
+
 		stderrPusher.Flush(execCtx)
 		return ec, stdoutBuf.String(), execErr
 	}
@@ -450,7 +466,9 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				expandedRun = step.Run
 			}
 
-			ec, capturedStdout, execErr := stepExec(execCtx, step, expandedRun)
+			stepForExec := step
+			stepForExec.Env = expandStepEnv(step.Env, tplData)
+			ec, capturedStdout, execErr := stepExec(execCtx, stepForExec, expandedRun)
 
 			status := "Succeeded"
 			if execErr != nil || ec != 0 {
@@ -647,14 +665,21 @@ func execContainer(s api.ClaimStep) string {
 	return ""
 }
 
-// runsInImageUnsupported rejects runsIn.image steps on the k8s agent. A fresh
-// image means a throwaway pod (Plan B); until that exists we hard-error rather
-// than silently running the step in the default pod container.
-func runsInImageUnsupported(s api.ClaimStep) error {
-	if s.RunsIn != nil && s.RunsIn.Image != "" {
-		return fmt.Errorf("runsIn.image (%q) is not supported on the k8s agent yet; run this step on the host agent, or use runsIn.container to target a named pod container", s.RunsIn.Image)
+// expandStepEnv template-expands each env value against the run's template data
+// so a runsIn.image container receives resolved values (mirrors the host agent).
+func expandStepEnv(env map[string]string, td dsl.TemplateData) map[string]string {
+	if len(env) == 0 {
+		return nil
 	}
-	return nil
+	out := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		ev, err := dsl.ExpandTemplate(v, td)
+		if err != nil {
+			ev = v
+		}
+		out[k] = ev
+	}
+	return out
 }
 
 // runImageStep runs a runsIn.image step in a throwaway, isolated pod: create a
