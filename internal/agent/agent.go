@@ -787,7 +787,7 @@ func (a *Agent) executeCacheStep(
 ) error {
 	started := time.Now().UTC()
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 	})
 
 	cs := step.Cache
@@ -841,7 +841,7 @@ func (a *Agent) executeCacheStep(
 	})
 
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
-		RunID: runID, StepIndex: step.Index, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
 	})
 	return nil
 }
