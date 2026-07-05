@@ -10,6 +10,8 @@
 #
 # cache: ステップは path を1つしか指定できないため、GOMODCACHE 用と
 # GOCACHE 用で2つの cache ステップに分けています。
+# path はテンプレート式を展開するため、working_dir 配下のキャッシュ
+# ディレクトリ（configure-go-env が作成する場所）をそのまま指せます。
 #
 # git:// テンプレートとして参照する場合:
 #   job: git://github.com/your-org/ci-templates/setup-go.yaml@v1
@@ -38,14 +40,14 @@ spec:
 
     - name: restore-mod-cache
       cache:
-        path: .gomodcache
+        path: "{{ .Params.working_dir }}/.gomodcache"
         key: "go-mod-{{ hashFile \"go.sum\" }}"
         restoreKeys:
           - "go-mod-"
 
     - name: restore-build-cache
       cache:
-        path: .gocache
+        path: "{{ .Params.working_dir }}/.gocache"
         key: "go-build-{{ hashFile \"go.sum\" }}"
         restoreKeys:
           - "go-build-"

@@ -213,13 +213,56 @@ func cleanComment(s string) string {
 // Schema generation
 // -----------------------------------------------------------------------
 
+// manualSchemaOverrides holds hand-written schema fragments for types whose
+// real YAML shape the AST-based field extractor cannot derive: these types
+// have a custom UnmarshalYAML and yaml-untagged Go fields (so extractFields
+// sees zero fields and would otherwise emit a useless
+// {"properties": {}, "additionalProperties": false} — which actively
+// *rejects* the type's real, valid YAML rather than merely under-describing
+// it). Keyed by struct name; the fragment replaces structToSchema's output
+// entirely (any description from a doc comment is still merged in by the
+// caller).
+var manualSchemaOverrides = map[string]SchemaNode{
+	// ForeachSource (internal/dsl/types.go) unmarshals as either a YAML
+	// sequence of strings (Literal) or a bare string (Expr, a $param
+	// reference or a template expression) — never as a mapping. It's used
+	// both as `foreach.in` and as each matrix dimension's value.
+	"ForeachSource": {
+		"oneOf": []SchemaNode{
+			{"type": "array", "items": SchemaNode{"type": "string"}},
+			{"type": "string"},
+		},
+	},
+	// MatrixDef (internal/dsl/types.go) unmarshals as a mapping where the
+	// reserved "exclude" key holds a list of dimension-name→value filters
+	// and every other key is a dimension name whose value is a
+	// ForeachSource. Dimension names aren't known ahead of time, so
+	// additionalProperties must allow them (typed as ForeachSource) rather
+	// than being false.
+	"MatrixDef": {
+		"type": "object",
+		"properties": SchemaNode{
+			"exclude": SchemaNode{
+				"type":  "array",
+				"items": SchemaNode{"type": "object", "additionalProperties": SchemaNode{"type": "string"}},
+			},
+		},
+		"additionalProperties": SchemaNode{"$ref": "#/definitions/ForeachSource"},
+	},
+}
+
 func buildSchema(structs map[string]StructInfo, typeDescs map[string]string) SchemaNode {
 	defs := SchemaNode{}
 
 	// Generate a definition for every struct.
 	names := sortedKeys(structs)
 	for _, name := range names {
-		def := structToSchema(structs[name], structs)
+		var def SchemaNode
+		if override, ok := manualSchemaOverrides[name]; ok {
+			def = override
+		} else {
+			def = structToSchema(structs[name], structs)
+		}
 		if d := typeDescs[name]; d != "" {
 			def["description"] = d
 		}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
@@ -72,12 +73,14 @@ type ClaimResponse struct {
 	JobOutputs     []string          `json:"jobOutputs"`
 	SecretsNeeded  []string          `json:"secretsNeeded"`
 	// FailFast removed
-	TimeoutMinutes float64           `json:"timeoutMinutes,omitempty"`
-	PodTemplate    *dsl.PodTemplate  `json:"podTemplate,omitempty"`
+	TimeoutMinutes        float64          `json:"timeoutMinutes,omitempty"`
+	PodTemplate           *dsl.PodTemplate `json:"podTemplate,omitempty"`
+	MatrixMaxCombinations int              `json:"matrixMaxCombinations,omitempty"`
 }
 
 // ClaimStage is either a single step (Step set) or an explicit parallel group (Parallel set).
-// Foreach steps arrive as a single ClaimStep with Foreach set; the agent expands them at runtime.
+// Foreach/matrix steps arrive as a single ClaimStep with Matrix set (foreach is normalized to a
+// 1-dimension matrix); the agent expands them at runtime.
 type ClaimStage struct {
 	Step     *ClaimStep  `json:"step,omitempty"`
 	Parallel []ClaimStep `json:"parallel,omitempty"`
@@ -100,14 +103,31 @@ type ClaimStep struct {
 	TimeoutMinutes   float64               `json:"timeoutMinutes,omitempty"`
 	UploadArtifact   *UploadArtifactStep   `json:"uploadArtifact,omitempty"`
 	DownloadArtifact *DownloadArtifactStep `json:"downloadArtifact,omitempty"`
-	Foreach          *ClaimForeachDef      `json:"foreach,omitempty"`
-	ForeachKey       string                `json:"foreachKey,omitempty"`
-	ForeachValue     string                `json:"foreachValue,omitempty"`
+	Matrix           *ClaimMatrixDef       `json:"matrix,omitempty"`
+	MatrixValues     map[string]string     `json:"matrixValues,omitempty"`
+	MatrixKey        string                `json:"matrixKey,omitempty"`
 	Approval         *ClaimApproval        `json:"approval,omitempty"`
 }
 
-type ClaimForeachDef struct {
-	Key    string             `json:"key"`
+// DisplayName returns the human-facing step name: matrix copies get the
+// combination appended, e.g. `build (linux, amd64)`. Safe because dimension
+// values may not contain "/" (enforced at expansion).
+func (s ClaimStep) DisplayName() string {
+	if s.MatrixKey == "" {
+		return s.Name
+	}
+	return s.Name + " (" + strings.ReplaceAll(s.MatrixKey, "/", ", ") + ")"
+}
+
+// ClaimMatrixDef is the wire form of a matrix (or foreach, normalized to one
+// dimension) definition. The agent expands it at runtime.
+type ClaimMatrixDef struct {
+	Dimensions []ClaimMatrixDimension `json:"dimensions"`
+	Exclude    []map[string]string    `json:"exclude,omitempty"`
+}
+
+type ClaimMatrixDimension struct {
+	Name   string             `json:"name"`
 	Source ClaimForeachSource `json:"source"`
 }
 
@@ -130,6 +150,7 @@ type StepReportRequest struct {
 	ExitCode   int       `json:"exitCode,omitempty"`
 	StartedAt  time.Time `json:"startedAt,omitempty"`
 	EndedAt    time.Time `json:"endedAt,omitempty"`
+	Variant    string    `json:"variant,omitempty"`
 }
 
 type StepReport struct {
@@ -140,6 +161,7 @@ type StepReport struct {
 	ExitCode   *int       `json:"exitCode,omitempty"`
 	StartedAt  *time.Time `json:"startedAt,omitempty"`
 	EndedAt    *time.Time `json:"endedAt,omitempty"`
+	Variant    string     `json:"variant,omitempty"`
 }
 
 type LogAppendRequest struct {

@@ -41,6 +41,9 @@
       : logLines;
 
   // Reactive so the log labels re-render when steps load after SSE starts.
+  // Logs are shared across all matrix variants of a step index (there is no
+  // per-line variant tag), so when multiple rows share `idx` we just take the
+  // first one for the label rather than trying to represent every variant.
   $: stepName = (idx) => {
     if (idx === -1) return "System";
     const s = steps.find((s) => s.index === idx);
@@ -272,7 +275,7 @@
                 {group.steps.map(s => s.name).join(' · ')}
               </span>
             </div>
-            {#each group.steps as s (s.index)}
+            {#each group.steps as s (`${s.index}/${s.variant ?? ""}`)}
               {@const approval = approvals.find(a => a.stepIndex === s.index)}
               <div
                 class="step-row step-row-indented {selectedStep === s.index ? 'active' : ''}"

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -49,44 +48,83 @@ func (s *safeStepCtx) setStep(name string, data dsl.StepData) {
 	s.data.Steps[name] = data
 }
 
-// RunPipeline executes stages sequentially.
-// For each stage, if it is a parallel group or a foreach step, steps run concurrently.
-// A stage fails if any step fails (unless ContinueOnError is true on that step).
-// When a stage fails, subsequent stages are not executed.
+// setStepMatrixOutputs merges one matrix copy's outputs into the aggregated
+// per-combination map under the base step name. Every map at every level —
+// the outer s.data.Steps map, the per-step Outputs map, and each per-key
+// combo map — is rebuilt fresh on every write and only swapped in at the end
+// under the lock. snapshot() takes an RLock and only copies the outer Steps
+// map one level deep, so it can end up holding the very same inner Outputs
+// map (and combo map) instance that a concurrent setStepMatrixOutputs call
+// mutated in place; without rebuilding the outer map too, a snapshot taken
+// concurrently with this call could observe a StepData whose Outputs map is
+// being written to from another goroutine. Reassigning a fresh outer map
+// (and fresh StepData/Outputs values into it) ensures any snapshot taken
+// before or after this call's critical section sees a fully-formed,
+// never-mutated-after-publish set of maps.
+func (s *safeStepCtx) setStepMatrixOutputs(name, comboKey string, outputs map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	newSteps := make(map[string]dsl.StepData, len(s.data.Steps)+1)
+	for k, v := range s.data.Steps {
+		newSteps[k] = v
+	}
+
+	sd := newSteps[name]
+	newOutputs := make(map[string]any, len(sd.Outputs))
+	for k, v := range sd.Outputs {
+		newOutputs[k] = v
+	}
+	for k, v := range outputs {
+		merged := map[string]string{comboKey: v}
+		if prev, ok := newOutputs[k].(map[string]string); ok {
+			for pk, pv := range prev {
+				merged[pk] = pv
+			}
+			merged[comboKey] = v
+		}
+		newOutputs[k] = merged
+	}
+	sd.Outputs = newOutputs
+	newSteps[name] = sd
+
+	s.data.Steps = newSteps
+}
+
+// RunPipeline executes stages sequentially. Within a stage, matrix expansion
+// applies to the single step and to every member of a parallel group; all
+// resulting copies run concurrently. When a stage fails, subsequent stages are
+// not executed.
 func RunPipeline(
 	ctx context.Context,
 	stages []api.ClaimStage,
 	getData func() dsl.TemplateData,
+	maxCombos int,
 	run func(ctx context.Context, step api.ClaimStep) error,
 ) error {
 	for _, stage := range stages {
+		members := stage.Parallel
 		if stage.Step != nil {
-			step := *stage.Step
-			if step.Foreach != nil {
-				items, err := EvalForeachSource(step.Foreach.Source, getData())
-				if err != nil {
-					return fmt.Errorf("foreach expansion for step %q: %w", step.Name, err)
-				}
-				expanded := make([]api.ClaimStep, len(items))
-				for i, item := range items {
-					s := step
-					s.Foreach = nil
-					s.ForeachKey = step.Foreach.Key
-					s.ForeachValue = item
-					expanded[i] = s
-				}
-				if err := runParallel(ctx, expanded, run); err != nil {
-					return err
-				}
-			} else {
-				if err := runOne(ctx, step, run); err != nil {
-					return err
-				}
-			}
-		} else {
-			if err := runParallel(ctx, stage.Parallel, run); err != nil {
+			members = []api.ClaimStep{*stage.Step}
+		}
+		var expanded []api.ClaimStep
+		for _, st := range members {
+			ex, err := ExpandMatrixStep(st, getData(), maxCombos)
+			if err != nil {
 				return err
 			}
+			expanded = append(expanded, ex...)
+		}
+		// Preserve the historical single-step path (no goroutine) for a plain
+		// non-matrix single-step stage.
+		if stage.Step != nil && stage.Step.Matrix == nil {
+			if err := runOne(ctx, expanded[0], run); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := runParallel(ctx, expanded, run); err != nil {
+			return err
 		}
 	}
 	return nil

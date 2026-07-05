@@ -69,7 +69,7 @@ func TestEvalCondition_NonBoolResult(t *testing.T) {
 func TestEvalCondition_StepOutputs(t *testing.T) {
 	data := TemplateData{
 		Steps: map[string]StepData{
-			"build": {Outputs: map[string]string{"ok": "true"}},
+			"build": {Outputs: map[string]any{"ok": "true"}},
 		},
 	}
 	ok, err := EvalCondition(`steps.build.outputs.ok == "true"`, data, RunStatusView{}, true)

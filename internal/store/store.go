@@ -114,7 +114,7 @@ type Store interface {
 	MarkRunRunning(ctx context.Context, runID string) error
 	MarkRunFinished(ctx context.Context, runID string, status api.RunStatus) error
 	DeleteRun(ctx context.Context, id string) error
-	UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, status string, exitCode *int, startedAt, endedAt *time.Time) error
+	UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time) error
 	GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error)
 	AppendLog(ctx context.Context, runID string, stepIndex int, stream string, ts time.Time, line string) (int64, error)
 	TailLogs(ctx context.Context, runID string, afterSeq int64, limit int) ([]api.LogLine, error)
@@ -150,7 +150,7 @@ type Store interface {
 	ReleaseSemaphore(ctx context.Context, poolName, runID string) error
 
 	// Outputs — step level
-	SetStepOutput(ctx context.Context, runID string, stepIndex int, key, value string) error
+	SetStepOutput(ctx context.Context, runID string, stepIndex int, variant, key, value string) error
 	GetStepOutputs(ctx context.Context, runID string, stepIndex int) (map[string]string, error)
 
 	// Outputs — run level

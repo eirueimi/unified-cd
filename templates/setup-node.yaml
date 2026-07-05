@@ -3,13 +3,8 @@
 #
 # エージェント要件: node, npm
 #
-# 注意: cache: ステップの path は固定文字列のみで、テンプレート式
-# （{{ .Params.* }}）は展開されません（agent 実装は cache.Path を
-# そのままキャッシュストアのキーパスとして使います）。そのため working_dir
-# が "." 以外の場合でも、キャッシュ対象パスは常にジョブワークスペース直下の
-# "node_modules"（working_dir 配下）として扱われるよう、npm ci 実行前に
-# シンボリックリンクで working_dir/node_modules を workspace 直下の
-# node_modules に固定しています。working_dir が "." の場合は無害です。
+# cache: ステップの path はテンプレート式({{ .Params.* }})を展開するため、
+# working_dir 配下の node_modules を直接キャッシュ対象にできます。
 #
 # git:// テンプレートとして参照する場合:
 #   job: git://github.com/your-org/ci-templates/setup-node.yaml@v1
@@ -31,7 +26,7 @@ spec:
   steps:
     - name: restore-node-modules-cache
       cache:
-        path: node_modules
+        path: "{{ .Params.working_dir }}/node_modules"
         key: "npm-{{ hashFile .Params.lockfile }}"
         restoreKeys:
           - "npm-"
@@ -42,16 +37,6 @@ spec:
       run: |
         #!/usr/bin/env sh
         set -eu
-
-        if [ "$WORKING_DIR" != "." ]; then
-          mkdir -p "$WORKING_DIR"
-          # cache: ステップは常にワークスペース直下の node_modules を
-          # 復元/保存するため、working_dir 配下の node_modules をそこへ
-          # シンボリックリンクしてキャッシュを共有する
-          rm -rf "${WORKING_DIR}/node_modules"
-          ln -s "$(pwd)/node_modules" "${WORKING_DIR}/node_modules" 2>/dev/null || mkdir -p "${WORKING_DIR}/node_modules"
-        fi
-
         cd "$WORKING_DIR"
         npm ci
         echo "[setup-node] npm ci complete in ${WORKING_DIR}"

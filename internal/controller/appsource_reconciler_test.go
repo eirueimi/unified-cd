@@ -258,12 +258,10 @@ func TestReconciler_DuplicateResourceFirstWins(t *testing.T) {
 
 	job, err := pg.GetJob(ctx, "dup")
 	require.NoError(t, err, "exactly one Job named dup should exist")
-	// NOTE: applyResource performs the store write before the duplicate-ref check
-	// runs (see syncAppSource), so both a.yaml and b.yaml are upserted to the store
-	// and the later file's write (b.yaml) lands last. Only the ManagedResources
-	// bookkeeping below reflects "first wins". Tracked as a follow-up bug (the
-	// stored spec should also reflect a.yaml, the lexicographically-first file).
-	assert.Contains(t, string(job.Spec), "echo B", "current behavior: last processed file's store write wins")
+	// Duplicate {kind,name} resources are deduped BEFORE applyResource writes to
+	// the store, so the lexicographically-first file (a.yaml) wins the stored spec.
+	assert.Contains(t, string(job.Spec), "echo A", "first file (a.yaml) should win the stored spec")
+	assert.NotContains(t, string(job.Spec), "echo B", "second file (b.yaml) must never reach the store")
 
 	as, err := pg.GetAppSource(ctx, "dup-src")
 	require.NoError(t, err)

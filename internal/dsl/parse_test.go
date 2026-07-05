@@ -1,6 +1,7 @@
 package dsl
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -1147,6 +1148,41 @@ spec:
 	assert.Contains(t, err.Error(), "only one of")
 }
 
+func TestParse_ApprovalRejectedWithMatrix(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad
+spec:
+  steps:
+    - name: gate
+      matrix:
+        os: [linux, windows]
+      approval:
+        message: x`
+	_, err := Parse(strings.NewReader(y))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "approval is not supported with matrix/foreach")
+}
+
+func TestParse_ApprovalRejectedWithForeach(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad
+spec:
+  steps:
+    - name: gate
+      foreach:
+        key: env
+        in: [dev, prod]
+      approval:
+        message: x`
+	_, err := Parse(strings.NewReader(y))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "approval is not supported with matrix/foreach")
+}
+
 func TestParse_ApprovalRejectedInFinally(t *testing.T) {
 	y := `apiVersion: unified-cd/v1
 kind: Job
@@ -1305,4 +1341,105 @@ spec:
 	_, err := Parse(strings.NewReader(input))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "downloadArtifact.name")
+}
+
+func TestParse_MatrixStep(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: matrix-job
+spec:
+  steps:
+    - name: build
+      matrix:
+        os: [linux, windows]
+        arch: [amd64, arm64]
+        exclude:
+          - os: windows
+            arch: arm64
+      run: echo {{ .Matrix.os }}/{{ .Matrix.arch }}
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	m := job.Spec.Steps[0].Matrix
+	require.NotNil(t, m)
+	require.Len(t, m.Dimensions, 2)
+	// declaration order is preserved
+	require.Equal(t, "os", m.Dimensions[0].Name)
+	require.Equal(t, []string{"linux", "windows"}, m.Dimensions[0].Source.Literal)
+	require.Equal(t, "arch", m.Dimensions[1].Name)
+	require.Equal(t, []map[string]string{{"os": "windows", "arch": "arm64"}}, m.Exclude)
+}
+
+func TestParse_MatrixValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		snippet string // contents nested under steps[0]
+		wantErr string
+	}{
+		{"foreach and matrix both set", `
+      matrix:
+        os: [linux]
+      foreach:
+        key: x
+        in: [a]
+      run: echo`, "mutually exclusive"},
+		{"zero dimensions", `
+      matrix: {}
+      run: echo`, "at least one dimension"},
+		{"exclude references unknown dimension", `
+      matrix:
+        os: [linux]
+        exclude:
+          - arch: amd64
+      run: echo`, "unknown dimension"},
+		{"invalid dimension name", `
+      matrix:
+        "os-name": [linux]
+      run: echo`, "dimension name"},
+		{"empty source", `
+      matrix:
+        os: []
+      run: echo`, "non-empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: j
+spec:
+  steps:
+    - name: s` + tc.snippet
+			_, err := Parse(strings.NewReader(input))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestParse_ExampleMatrixJob(t *testing.T) {
+	data, err := os.ReadFile("../../examples/jobs/matrix.yaml")
+	require.NoError(t, err)
+
+	job, err := Parse(strings.NewReader(string(data)))
+	require.NoError(t, err)
+	assert.Equal(t, "matrix-build", job.Metadata.Name)
+	require.Len(t, job.Spec.Steps, 2)
+
+	build := job.Spec.Steps[0]
+	assert.Equal(t, "build", build.Name)
+	require.NotNil(t, build.Matrix)
+	require.Len(t, build.Matrix.Dimensions, 2)
+	assert.Equal(t, "os", build.Matrix.Dimensions[0].Name)
+	assert.Equal(t, []string{"linux", "windows", "darwin"}, build.Matrix.Dimensions[0].Source.Literal)
+	assert.Equal(t, "arch", build.Matrix.Dimensions[1].Name)
+	assert.Equal(t, []string{"amd64", "arm64"}, build.Matrix.Dimensions[1].Source.Literal)
+	require.Len(t, build.Matrix.Exclude, 1)
+	assert.Equal(t, map[string]string{"os": "windows", "arch": "arm64"}, build.Matrix.Exclude[0])
+
+	report := job.Spec.Steps[1]
+	assert.Equal(t, "report", report.Name)
 }
