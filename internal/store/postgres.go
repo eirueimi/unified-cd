@@ -621,7 +621,7 @@ func (p *Postgres) GetRunParent(ctx context.Context, childRunID string) (*api.Ca
 	var cb api.CalledBy
 	err := p.pool.QueryRow(ctx, q, childRunID).Scan(&cb.ParentRunID, &cb.ParentJobName, &cb.StepName)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err

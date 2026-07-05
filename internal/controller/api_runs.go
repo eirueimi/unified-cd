@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -67,7 +68,9 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if cb, cErr := s.store.GetRunParent(r.Context(), id); cErr == nil && cb != nil {
+	if cb, cErr := s.store.GetRunParent(r.Context(), id); cErr != nil {
+		slog.Warn("get run parent failed", "runId", id, "error", cErr)
+	} else if cb != nil {
 		run.CalledBy = cb
 	}
 	writeJSON(w, http.StatusOK, run)
