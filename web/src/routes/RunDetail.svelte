@@ -223,6 +223,11 @@
   {#if loading}<div class="loading">Loading...</div>
   {:else if error}<div class="error">{error}</div>
   {:else if run}
+    {#if run.calledBy}
+      <div class="called-by meta" style="margin-bottom:0.75rem">
+        Called by <a href="#/runs/{run.calledBy.parentRunId}" title="Caller step: {run.calledBy.stepName}">{run.calledBy.parentJobName} ↗</a>
+      </div>
+    {/if}
     <div class="card grid-2" style="margin-bottom:1rem">
       <div>
         <div class="meta">Status</div>
@@ -286,6 +291,9 @@
               >
                 <span class={statusBadge(s.status)}>{s.status}</span>
                 <span class="step-name">{s.name}</span>
+                {#if s.childRunId}
+                  <a class="call-link" href="#/runs/{s.childRunId}" title="Called job run">{s.callJobName || 'child run'} ↗</a>
+                {/if}
                 <span class="step-duration">{stepDuration(s)}</span>
                 {#if s.exitCode != null}<span class="step-exit">exit {s.exitCode}</span>{/if}
               </div>
@@ -330,6 +338,9 @@
             >
               <span class={statusBadge(s0.status)}>{s0.status}</span>
               <span class="step-name">{s0.name}</span>
+              {#if s0.childRunId}
+                <a class="call-link" href="#/runs/{s0.childRunId}" title="Called job run">{s0.callJobName || 'child run'} ↗</a>
+              {/if}
               <span class="step-duration">{stepDuration(s0)}</span>
               {#if s0.exitCode != null}<span class="step-exit">exit {s0.exitCode}</span>{/if}
             </div>
