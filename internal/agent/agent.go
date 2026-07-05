@@ -321,6 +321,17 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}
 
 	// deferred hooks: run after RunPipeline completes (cache save, etc.)
+	//
+	// parallel: steps in the same claim run concurrently as goroutines (see
+	// runParallel in pipeline.go), and both postHooks (cache save, appended
+	// from executeCacheStep) and hookStack (post: hooks, appended below in
+	// makeStepRunner) are appended from inside that concurrently-invoked step
+	// runner. postHooksMu guards every append to either slice so concurrent
+	// parallel-group members with a post:/cache: don't race on the shared
+	// backing array. The drain loops below run after RunPipeline returns
+	// (i.e. after all step-runner goroutines have finished), so the drain
+	// itself does not need the lock.
+	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
 	var hookStack []postHookEntry
 
@@ -448,7 +459,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 					markFailed(context.WithoutCancel(stepCtx))
 					return nil
 				}
-				if err := a.executeCacheStep(stepCtx, step, c.RunID, sctx, &postHooks, sm, h); err != nil {
+				if err := a.executeCacheStep(stepCtx, step, c.RunID, sctx, &postHooksMu, &postHooks, sm, h); err != nil {
 					slog.Error("cache step failed", "step", step.Name, "error", err)
 					markFailed(context.WithoutCancel(stepCtx))
 				}
@@ -625,6 +636,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			}
 
 			if status == "Succeeded" && step.Post != nil {
+				postHooksMu.Lock()
 				hookStack = append(hookStack, postHookEntry{
 					stepName: step.Name,
 					post:     *step.Post,
@@ -632,6 +644,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 					sm:       stepScope,
 					h:        stepScopeHandle,
 				})
+				postHooksMu.Unlock()
 			}
 
 			ended := time.Now().UTC()
@@ -943,6 +956,7 @@ func (a *Agent) executeCacheStep(
 	step api.ClaimStep,
 	runID string,
 	sctx *safeStepCtx,
+	postHooksMu *sync.Mutex,
 	postHooks *[]func(context.Context),
 	sm *scopeManager,
 	h crt.ContainerHandle,
@@ -1014,6 +1028,7 @@ func (a *Agent) executeCacheStep(
 	}
 	capturedPath := cachePath
 	capturedKey := key
+	postHooksMu.Lock()
 	*postHooks = append(*postHooks, func(hookCtx context.Context) {
 		if a.CacheStore == nil {
 			return
@@ -1038,6 +1053,7 @@ func (a *Agent) executeCacheStep(
 			slog.Info("cache saved", "key", capturedKey)
 		}
 	})
+	postHooksMu.Unlock()
 
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
 		RunID: runID, StepIndex: step.Index, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),

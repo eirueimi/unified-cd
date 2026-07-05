@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -570,5 +571,112 @@ func TestGetScopes_ConcurrentLazyInit(t *testing.T) {
 	}
 	if got := rt.removeCalls.Load(); got != 1 {
 		t.Fatalf("expected exactly 1 Remove at claim teardown, got %d", got)
+	}
+}
+
+// TestExecuteRun_ParallelPostHooks_ConcurrentAppendIsSafe is the regression
+// test for the "unguarded concurrent append to the post-hook slice(s)"
+// finding: makeStepRunner's closure appends to the claim-scoped hookStack
+// (agent.go, guarded by postHooksMu) whenever a step with `post:` succeeds,
+// and runParallel (pipeline.go) invokes that closure concurrently — one
+// goroutine per parallel: member. Before the fix, two or more parallel
+// members each carrying a post: hook would race on `append(hookStack, ...)`,
+// which `go test -race` flags as a data race and which can also corrupt the
+// backing array / silently drop an appended entry.
+//
+// This test drives a real parallel: stage with several members that each
+// have a distinct post: hook (through the real executeRun/RunPipeline/
+// runParallel path, not a synthetic unit test of the slice), then asserts
+// every single post hook actually ran by checking for its marker file. Run
+// under `go test -race` this both proves there is no data race left and — by
+// checking every marker file, not just len(hookStack) — proves no entry was
+// silently lost to the race.
+func TestExecuteRun_ParallelPostHooks_ConcurrentAppendIsSafe(t *testing.T) {
+	const agentID = "parallel-post-agent"
+	const runID = "run-parallel-post"
+
+	workDir := t.TempDir()
+
+	finishCh := make(chan string, 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	for i := 0; i < 8; i++ {
+		mux.HandleFunc(fmt.Sprintf("POST /api/v1/agents/%s/runs/%s/steps/%d/logs/bulk", agentID, runID, i), func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
+	}
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Status string `json:"status"`
+		}
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		select {
+		case finishCh <- body.Status:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+
+	// Several parallel members, each with its own post: hook writing a
+	// distinct marker file. All run concurrently via runParallel, so all of
+	// their hookStack appends race unless serialized by postHooksMu.
+	const n = 8
+	members := make([]api.ClaimStep, n)
+	markerPaths := make([]string, n)
+	for i := 0; i < n; i++ {
+		markerPaths[i] = filepath.Join(workDir, fmt.Sprintf("post-marker-%d.txt", i))
+		// Use forward slashes in the script itself: on Windows the script is
+		// interpreted by git-bash (findShell), which chokes on raw backslash
+		// Windows paths embedded in a command string (e.g. "\a" is read as an
+		// escape) even though os.ReadFile below uses the native path fine.
+		markerPathForScript := strings.ReplaceAll(markerPaths[i], "\\", "/")
+		members[i] = api.ClaimStep{
+			Index:      i,
+			StageIndex: 0,
+			Name:       fmt.Sprintf("member-%d", i),
+			Run:        "echo main",
+			Post:       &api.PostStep{Run: "echo posted > \"" + markerPathForScript + "\""},
+		}
+	}
+	resp := api.ClaimResponse{
+		RunID:   runID,
+		JobName: "test-parallel-post",
+		Stages:  []api.ClaimStage{{Parallel: members}},
+	}
+
+	a.executeRun(context.Background(), resp, workDir)
+
+	select {
+	case status := <-finishCh:
+		if status != "Succeeded" {
+			t.Fatalf("expected Succeeded, got %s", status)
+		}
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+
+	// The real assertion: every single parallel member's post: hook ran.
+	// Under the old unguarded append, some entries could be lost to the race
+	// (backing-array corruption / lost writes), which would show up here as
+	// a missing marker file for one or more members.
+	for i, mp := range markerPaths {
+		got, err := os.ReadFile(mp)
+		if err != nil {
+			t.Fatalf("member %d: post hook marker file missing (post hook did not run or was lost to a race): %v", i, err)
+		}
+		if string(got) != "posted\n" {
+			t.Fatalf("member %d: unexpected marker content %q", i, string(got))
+		}
 	}
 }
