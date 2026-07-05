@@ -201,3 +201,66 @@ func TestSafeStepCtx_MatrixOutputAggregation(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, map[string]string{"linux/amd64": "1.2", "linux/arm64": "1.3"}, agg)
 }
+
+// TestSafeStepCtx_ConcurrentSetStepMatrixOutputsAndSnapshot is a regression
+// test for review finding I3: setStepMatrixOutputs used to rebuild only the
+// inner per-key combo map, writing it back into the *existing* outer
+// s.data.Steps map and the existing per-step Outputs map that a concurrent
+// snapshot() may have already copied a reference to (snapshot only copies one
+// level deep). That's a genuine data race: one goroutine mutates a map in
+// place while another iterates/reads the same map instance.
+//
+// This test hammers setStepMatrixOutputs and snapshot concurrently across
+// many goroutines and combos. Without `go test -race` it cannot prove the
+// race is gone by itself — a racy map read/write does not reliably panic or
+// produce a visibly wrong value under `go test` alone — but it documents the
+// intended concurrent-access contract and will reliably crash
+// ("concurrent map read and map write" / "concurrent map writes") under the
+// old implementation if run enough iterations, and is exactly the shape
+// `-race` should be pointed at in CI (this Windows dev box has no gcc, so
+// `-race` cannot run locally here — see report).
+func TestSafeStepCtx_ConcurrentSetStepMatrixOutputsAndSnapshot(t *testing.T) {
+	sctx := &safeStepCtx{data: dsl.TemplateData{Steps: map[string]dsl.StepData{}}}
+
+	const goroutines = 8
+	const itersPerGoroutine = 200
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines + 1)
+
+	// Writers: concurrently merge outputs for different combos of the same step.
+	for g := 0; g < goroutines; g++ {
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < itersPerGoroutine; i++ {
+				combo := "combo-" + string(rune('a'+g))
+				sctx.setStepMatrixOutputs("build", combo, map[string]string{
+					"version": string(rune('0' + (i % 10))),
+				})
+			}
+		}(g)
+	}
+
+	// Reader: concurrently snapshots and reads through the aggregated map,
+	// exercising exactly the access pattern that used to race.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < itersPerGoroutine; i++ {
+			snap := sctx.snapshot()
+			if sd, ok := snap.Steps["build"]; ok {
+				if agg, ok := sd.Outputs["version"].(map[string]string); ok {
+					for range agg {
+						// touch every entry to force a full map read
+					}
+				}
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	snap := sctx.snapshot()
+	agg, ok := snap.Steps["build"].Outputs["version"].(map[string]string)
+	require.True(t, ok)
+	require.Len(t, agg, goroutines, "expected one aggregated combo per writer goroutine")
+}
