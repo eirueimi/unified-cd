@@ -133,8 +133,9 @@ func runOrchestrateWithApproval(t *testing.T, c api.ClaimResponse, fakes map[str
 		}
 		return f.exit, f.stdout, nil
 	}
-	noopSidecarExec := func(_ context.Context, _ string, _ []string) (int, error) { return 0, nil }
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace")
+	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
+	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
+	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace", noopEnsureScopePod)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -202,8 +203,9 @@ func runOrchestrateVariants(t *testing.T, c api.ClaimResponse, fakes map[string]
 		}
 		return f.exit, f.stdout, nil
 	}
-	noopSidecarExec := func(_ context.Context, _ string, _ []string) (int, error) { return 0, nil }
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace")
+	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
+	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
+	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace", noopEnsureScopePod)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -403,8 +405,9 @@ func runOrchestrateCaptureOutputs(t *testing.T, c api.ClaimResponse, fakes map[s
 		}
 		return f.exit, f.stdout, nil
 	}
-	noopSidecarExec := func(_ context.Context, _ string, _ []string) (int, error) { return 0, nil }
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace")
+	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
+	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
+	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace", noopEnsureScopePod)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -437,6 +440,7 @@ func TestOrchestrate_ApprovalRejectedSkipsLaterStep(t *testing.T) {
 
 // artifactCall records a single call to the fake sidecarExec.
 type artifactCall struct {
+	targetPod string
 	container string
 	argv      []string
 }
@@ -499,14 +503,17 @@ func runOrchestrateArtifact(t *testing.T, c api.ClaimResponse, exitCode int) ([]
 	fakeStepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
 		return 0, "", nil
 	}
-	fakeSidecarExec := func(_ context.Context, container string, argv []string) (int, error) {
+	fakeSidecarExec := func(_ context.Context, targetPod, container string, argv []string) (int, error) {
 		mu.Lock()
-		recorded = append(recorded, artifactCall{container: container, argv: argv})
+		recorded = append(recorded, artifactCall{targetPod: targetPod, container: container, argv: argv})
 		mu.Unlock()
 		return exitCode, nil
 	}
+	fakeEnsureScopePod := func(_ context.Context, step api.ClaimStep) (string, error) {
+		return "scope-pod-" + step.ScopeID, nil
+	}
 
-	a.orchestrate(context.Background(), c, fakeStepExec, fakeSidecarExec, "/workspace")
+	a.orchestrate(context.Background(), c, fakeStepExec, fakeSidecarExec, "/workspace", fakeEnsureScopePod)
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -11,6 +12,14 @@ import (
 // scopeMountPath is the fixed mount path for a scope pod's private scratch
 // volume, mounted by both the step container and the artifact sidecar.
 const scopeMountPath = "/workspace"
+
+// scopeKey returns the identity of a scoped step's scope pod within a claim:
+// scope pods are keyed by (ScopeID, MatrixKey) so distinct matrix variants of
+// the same uses-scope get their own isolated pod, mirroring the host agent's
+// scopeManager key. The NUL separator avoids accidental collisions between a
+// ScopeID/MatrixKey pair and another pair whose concatenation happens to
+// coincide.
+func scopeKey(step api.ClaimStep) string { return step.ScopeID + "\x00" + step.MatrixKey }
 
 // buildScopePod builds a dedicated, isolated pod for a uses-level
 // runsIn.image scope: a "step" container running the scope image (kept
