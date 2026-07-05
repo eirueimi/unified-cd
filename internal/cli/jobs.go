@@ -21,8 +21,91 @@ func newJobsCmdWithClient(resolve func() (Config, error), httpClient *http.Clien
 		Short: "Job management commands",
 	}
 	cmd.AddCommand(newJobsListCmd(resolve, httpClient))
+	cmd.AddCommand(newJobsGetCmd(resolve, httpClient))
+	cmd.AddCommand(newJobsShowYAMLCmd(resolve, httpClient))
 	cmd.AddCommand(newJobsDeleteCmd(resolve, httpClient))
 	return cmd
+}
+
+func newJobsGetCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
+	return &cobra.Command{
+		Use:   "get <name>",
+		Short: "Show details of a job including its input parameters",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := resolve()
+			if err != nil {
+				return err
+			}
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+				cfg.Server+"/api/v1/jobs/"+args[0], nil)
+			req.Header.Set("Authorization", "Bearer "+cfg.Token)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("server: %s", string(b))
+			}
+			var job api.Job
+			if err := json.Unmarshal(b, &job); err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Name:        %s\n", job.Name)
+			fmt.Fprintf(out, "ID:          %s\n", job.ID)
+			fmt.Fprintf(out, "APIVersion:  %s\n", job.APIVersion)
+			fmt.Fprintf(out, "Updated:     %s\n", job.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
+			if len(job.Inputs) > 0 {
+				fmt.Fprintf(out, "Inputs:\n")
+				for _, in := range job.Inputs {
+					attrs := in.Type
+					if in.Required {
+						attrs += ", required"
+					}
+					if in.Default != nil {
+						attrs += fmt.Sprintf(", default=%v", in.Default)
+					}
+					desc := ""
+					if in.Description != "" {
+						desc = "  " + in.Description
+					}
+					fmt.Fprintf(out, "  %-20s (%s)%s\n", in.Name, attrs, desc)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+func newJobsShowYAMLCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
+	return &cobra.Command{
+		Use:   "show-yaml <name>",
+		Short: "Show the YAML definition of a job",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := resolve()
+			if err != nil {
+				return err
+			}
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+				cfg.Server+"/api/v1/jobs/"+args[0]+"/yaml", nil)
+			req.Header.Set("Authorization", "Bearer "+cfg.Token)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("server: %s", string(b))
+			}
+			fmt.Fprint(cmd.OutOrStdout(), string(b))
+			return nil
+		},
+	}
 }
 
 func newJobsListCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
