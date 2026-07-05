@@ -82,7 +82,7 @@
     {#if error}<div class="error">{error}</div>{/if}
     <div style="max-width:480px">
       {#if !inputs.length}<p class="meta" style="margin-bottom:1rem">
-          このジョブにはパラメータがありません。
+          This job has no parameters.
         </p>{/if}
       {#each inputs as inp (inp.name)}
         <div style="margin-bottom:1rem">

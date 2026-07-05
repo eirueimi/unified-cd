@@ -9,6 +9,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPostgres_TailLogsRecent(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	now := time.Now().UTC()
+	for _, ln := range []string{"a", "b", "c", "d", "e"} {
+		_, err := pg.AppendLog(ctx, run.ID, 0, "stdout", now, ln)
+		require.NoError(t, err)
+	}
+
+	// A limit smaller than the log returns the TAIL, in ascending order.
+	recent, err := pg.TailLogsRecent(ctx, run.ID, 2)
+	require.NoError(t, err)
+	require.Len(t, recent, 2)
+	assert.Equal(t, "d", recent[0].Line)
+	assert.Equal(t, "e", recent[1].Line)
+
+	// A limit larger than the log returns everything, ascending.
+	all, err := pg.TailLogsRecent(ctx, run.ID, 100)
+	require.NoError(t, err)
+	require.Len(t, all, 5)
+	assert.Equal(t, "a", all[0].Line)
+	assert.Equal(t, "e", all[4].Line)
+}
+
 func TestPostgres_AppendAndTailLogs(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()

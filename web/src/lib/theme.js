@@ -5,7 +5,7 @@ const VALID = ['light', 'dark'];
 
 export const themePref = writable('dark');
 
-// OS の配色設定からテーマを決定する（初回表示用）。
+// Determine the theme from the OS color scheme setting (for the first render).
 function systemTheme() {
   if (typeof window === 'undefined' || !window.matchMedia) return 'dark';
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -24,7 +24,7 @@ function savePref(pref) {
   try {
     localStorage.setItem(STORAGE_KEY, pref);
   } catch {
-    // localStorage 不可（プライベートモード等）。永続化を諦めて続行。
+    // localStorage unavailable (private mode, etc.). Give up on persisting and continue.
   }
 }
 
@@ -35,7 +35,7 @@ function apply(pref) {
 export function initTheme() {
   let pref = readStored();
   if (pref === null) {
-    // 保存値がない初回のみ OS 設定から決定し、永続化する（以後は OS を参照しない）。
+    // Only on the first run with no stored value, decide from the OS setting and persist it (the OS is not consulted again after this).
     pref = systemTheme();
     savePref(pref);
   }

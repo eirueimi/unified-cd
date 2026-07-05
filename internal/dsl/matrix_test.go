@@ -21,7 +21,7 @@ func TestEvalMatrix_CartesianOrderAndKey(t *testing.T) {
 	for i, c := range combos {
 		keys[i] = c.Key
 	}
-	// 次元は宣言順、値はリスト順
+	// Dimensions are in declaration order, values are in list order
 	require.Equal(t, []string{"linux/amd64", "linux/arm64", "windows/amd64", "windows/arm64"}, keys)
 	require.Equal(t, map[string]string{"os": "linux", "arch": "amd64"}, combos[0].Values)
 }
@@ -43,7 +43,7 @@ func TestEvalMatrix_Exclude(t *testing.T) {
 }
 
 func TestEvalMatrix_ExcludePartialMatch(t *testing.T) {
-	// 部分指定は一致する全組み合わせを除外(GHA互換)
+	// A partial specification excludes all matching combinations (GHA-compatible)
 	def := MatrixDef{
 		Dimensions: []MatrixDimension{
 			{Name: "os", Source: lit("linux", "windows")},
@@ -164,7 +164,7 @@ func TestTemplate_MatrixVarAndAggregatedOutputs(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "1.3", out)
 
-	// keys はソート済み
+	// keys are sorted
 	out, err = ExpandTemplate(`{{ keys .Steps.build.Outputs.version }}`, data)
 	require.NoError(t, err)
 	require.Equal(t, "[linux/amd64 linux/arm64]", out)

@@ -1,10 +1,10 @@
-# ジョブテンプレート集
+# Job Template Collection
 
-`unified-cd` の再利用可能な `Job` テンプレート集です。`unified-cd apply templates/<file>.yaml` で登録して
-`call:` から呼び出すか、`uses:` で `git://` URI 経由でインラインするかのどちらかで使用します。
+A collection of reusable `Job` templates for `unified-cd`. Register them with `unified-cd apply templates/<file>.yaml`
+and use them either by calling them via `call:`, or by inlining them via a `git://` URI with `uses:`.
 
 ```yaml
-# 登録済みジョブとして呼び出す場合
+# When calling a registered job
 steps:
   - name: notify
     call:
@@ -14,7 +14,7 @@ steps:
         job_name: my-job
         run_id: "{{ .RunID }}"
 
-# git テンプレートとしてインラインする場合
+# When inlining as a git template
 steps:
   - name: notify
     uses:
@@ -25,53 +25,54 @@ steps:
         run_id: "{{ .RunID }}"
 ```
 
-## テンプレート一覧
+## Template list
 
-| テンプレート | 用途 | 必要ツール | 推奨エージェントラベル | 使用シークレット |
+| Template | Purpose | Required tools | Recommended agent label | Secrets used |
 |---|---|---|---|---|
-| `git-checkout.yaml` | Git リポジトリのクローン/チェックアウト（HTTPS/SSH、LFS、sparse checkout、submodule 対応） | git, (git-lfs) | `git:true` | `token_secret` で指定（例: github-token）／`ssh_key_secret` で指定 |
-| `slack-notify.yaml` | Slack Incoming Webhook への通知 | curl | - | `slack-webhook-url` |
-| `github-commit-status.yaml` | GitHub コミットステータス更新 | curl | - | `github-token` |
-| `notify-webhook.yaml` | 汎用 Webhook への JSON POST 通知 | curl | - | `url_secret` で指定（省略時は平文 `url`） |
-| `notify-email.yaml` | SMTP 経由のメール通知 | curl（SMTP(S) 対応ビルド） | - | `smtp_url_secret`, `username_secret`, `password_secret` で指定 |
-| `github-pr-comment.yaml` | GitHub PR/Issue へのコメント投稿 | curl | - | `token_secret`（デフォルト: `github-token`） |
-| `gitlab-commit-status.yaml` | GitLab コミットステータス更新 | curl | - | `token_secret`（デフォルト: `gitlab-token`） |
-| `docker-build-push.yaml` | Docker イメージのビルド & プッシュ（buildx マルチプラットフォーム対応） | docker, (docker buildx) | `docker:true` | `username_secret` / `password_secret` で指定（省略可） |
-| `setup-go.yaml` | Go モジュール/ビルドキャッシュのセットアップ | go | `go:true` | なし |
-| `setup-node.yaml` | Node.js 依存関係キャッシュのセットアップ（npm ci） | node, npm | `node:true` | なし |
-| `github-release.yaml` | GitHub リリース作成 & アセットアップロード（curl のみ、gh 不要） | curl | - | `token_secret`（デフォルト: `github-token`） |
-| `semver-bump.yaml` | Conventional Commits に基づく次バージョン算出 | git | `git:true` | なし |
-| `k8s-deploy.yaml` | Kubernetes マニフェスト適用 & ロールアウト待機 | kubectl | `kubectl:true` | `kubeconfig_secret` で指定 |
-| `helm-upgrade.yaml` | Helm upgrade --install | helm, kubectl | `helm:true`, `kubectl:true` | `kubeconfig_secret` で指定 |
-| `rsync-deploy.yaml` | rsync 経由のリモートデプロイ | rsync, ssh | `rsync:true` | `ssh_key_secret` で指定 |
-| `s3-sync.yaml` | S3 互換オブジェクトストレージへの同期（AWS/MinIO/Garage） | aws (AWS CLI v2) | `aws:true` | `access_key_secret` / `secret_key_secret` で指定 |
-| `smoke-check.yaml` | デプロイ後の URL ポーリングによるスモークテスト | curl | - | なし |
-| `unity-build.yaml` | Unity バッチモードビルド（Android/iOS/WebGL 等） | Unity Editor | `unity:true` | `license_*_secret` で指定（省略可） |
-| `fastlane-upload.yaml` | fastlane レーン実行（App Store Connect API キー対応） | fastlane, bundler, Xcode | `macos:true`, `fastlane:true` | `asc_*_secret` で指定（省略可） |
-| `google-play-upload.yaml` | Google Play への AAB アップロード（fastlane supply） | fastlane | `fastlane:true` | `service_account_json_secret` で指定 |
+| `git-checkout.yaml` | Clone/checkout a Git repository (supports HTTPS/SSH, LFS, sparse checkout, submodules) | git, (git-lfs) | `git:true` | Specified via `token_secret` (e.g. github-token) / `ssh_key_secret` |
+| `slack-notify.yaml` | Notify a Slack Incoming Webhook | curl | - | `slack-webhook-url` |
+| `github-commit-status.yaml` | Update a GitHub commit status | curl | - | `github-token` |
+| `notify-webhook.yaml` | Send a generic JSON POST notification to a webhook | curl | - | Specified via `url_secret` (plain `url` if omitted) |
+| `notify-email.yaml` | Send email notifications via SMTP | curl (SMTP(S)-enabled build) | - | Specified via `smtp_url_secret`, `username_secret`, `password_secret` |
+| `github-pr-comment.yaml` | Post a comment on a GitHub PR/Issue | curl | - | `token_secret` (default: `github-token`) |
+| `gitlab-commit-status.yaml` | Update a GitLab commit status | curl | - | `token_secret` (default: `gitlab-token`) |
+| `docker-build-push.yaml` | Build & push a Docker image (supports buildx multi-platform) | docker, (docker buildx) | `docker:true` | Specified via `username_secret` / `password_secret` (optional) |
+| `setup-go.yaml` | Set up Go module/build cache | go | `go:true` | none |
+| `setup-node.yaml` | Set up Node.js dependency cache (npm ci) | node, npm | `node:true` | none |
+| `github-release.yaml` | Create a GitHub release & upload assets (curl only, no gh required) | curl | - | `token_secret` (default: `github-token`) |
+| `semver-bump.yaml` | Compute the next version based on Conventional Commits | git | `git:true` | none |
+| `k8s-deploy.yaml` | Apply Kubernetes manifests & wait for rollout | kubectl | `kubectl:true` | Specified via `kubeconfig_secret` |
+| `helm-upgrade.yaml` | Helm upgrade --install | helm, kubectl | `helm:true`, `kubectl:true` | Specified via `kubeconfig_secret` |
+| `rsync-deploy.yaml` | Remote deploy via rsync | rsync, ssh | `rsync:true` | Specified via `ssh_key_secret` |
+| `s3-sync.yaml` | Sync to S3-compatible object storage (AWS/MinIO/Garage) | aws (AWS CLI v2) | `aws:true` | Specified via `access_key_secret` / `secret_key_secret` |
+| `smoke-check.yaml` | Smoke test via URL polling after deployment | curl | - | none |
+| `unity-build.yaml` | Unity batch-mode build (Android/iOS/WebGL, etc.) | Unity Editor | `unity:true` | Specified via `license_*_secret` (optional) |
+| `fastlane-upload.yaml` | Run a fastlane lane (supports App Store Connect API key) | fastlane, bundler, Xcode | `macos:true`, `fastlane:true` | Specified via `asc_*_secret` (optional) |
+| `google-play-upload.yaml` | Upload an AAB to Google Play (fastlane supply) | fastlane | `fastlane:true` | Specified via `service_account_json_secret` |
 
-## 規約
+## Conventions
 
-各テンプレートは以下の house style に従います（`git-checkout.yaml` / `slack-notify.yaml` が原型）:
+Each template follows the house style below (`git-checkout.yaml` / `slack-notify.yaml` are the prototypes):
 
-- `apiVersion: unified-cd/v1`, `kind: Job`。`spec.params.inputs` で `name` / `type` / `required` / `default` / `description`
-  を宣言する。`description` は日本語で記述する。
-- ファイル先頭のヘッダーコメントに、テンプレートの目的・必要なシークレット（`unified-cd secret set ...` の実行例）・
-  `git://` テンプレートとして参照する場合の使用例を書く。
-- ツールの前提条件（docker, kubectl, helm, aws CLI, fastlane, Unity Editor 等）はヘッダーコメントに明記する。
-  実行に必要なエージェントラベル（例: `docker:true`, `kubectl:true`, `unity:true`）は本 README の表に記載する
-  **命名規約であり、`agentSelector` として強制されるものではない**（各利用者がジョブ側で `agentSelector` を設定する）。
-- パラメータやシークレットは `env:` にマッピングしてから POSIX `sh`（`set -eu`、bashism 禁止）のスクリプトで使う。
-  シェルコードに直接文字列展開しない。
-- 任意（optional）シークレットの間接参照パターン:
+- `apiVersion: unified-cd/v1`, `kind: Job`. Declare `name` / `type` / `required` / `default` / `description`
+  under `spec.params.inputs`. Write `description` in English.
+- In the header comment at the top of the file, state the template's purpose, the required secrets (with an example
+  `unified-cd secret set ...` invocation), and a usage example for referencing it as a `git://` template.
+- Document tool prerequisites (docker, kubectl, helm, aws CLI, fastlane, Unity Editor, etc.) in the header comment.
+  The agent labels required to run it (e.g. `docker:true`, `kubectl:true`, `unity:true`) listed in this README's table
+  are **a naming convention, not something enforced as `agentSelector`** (each user sets `agentSelector` on their own job).
+- Map parameters and secrets into `env:` first, then use them from a POSIX `sh` script (`set -eu`, no bashisms).
+  Do not interpolate them directly into shell code.
+- Indirect reference pattern for optional secrets:
   `"{{ if .Params.token_secret }}{{ index .Secrets .Params.token_secret }}{{ end }}"`
-- 秘密鍵やトークン等の機微情報をファイルに書き出す場合は `mktemp` で一時ファイルを作り `chmod 600` し、
-  `trap ... EXIT` でクリーンアップする。
-- `cache:` ステップの `key` / `restoreKeys` はテンプレート式を展開できる（`{{ hashFile "path/glob" }}` を使う。
-  docs 上の `checksum` という関数名は存在しないので注意）が、`path` は展開されない**固定文字列**である
-  （`internal/agent/agent.go` の `executeCacheStep` 参照）。可変のキャッシュ対象パスが必要な場合は
-  `setup-go.yaml` のようにキャッシュ対象ごとにステップを分けるか、`setup-node.yaml` のようにシンボリックリンクで
-  固定パスへ寄せる。
-- `type: array` の入力パラメータは、YAML 配列として渡された値がジョブ実行時に改行区切りの文字列として
-  環境変数に入る（`git-checkout.yaml` の `sparse_paths` 参照）。デフォルト値は空配列ではなく空文字列
-  `default: ""` で宣言する（配列型でも文字列のデフォルトを使うのが既存の慣習）。
+- When writing sensitive information such as private keys or tokens to a file, create a temp file with `mktemp`,
+  `chmod 600` it, and clean it up with `trap ... EXIT`.
+- The `key` / `restoreKeys` fields of a `cache:` step can expand template expressions (use `{{ hashFile "path/glob" }}`;
+  note that no function named `checksum` exists despite what some docs suggest), but `path` is a **fixed string** that
+  is not expanded (see `executeCacheStep` in `internal/agent/agent.go`). If you need a variable cache target path,
+  either split it into separate steps per cache target as in `setup-go.yaml`, or funnel it to a fixed path via a
+  symlink as in `setup-node.yaml`.
+- For `type: array` input parameters, the value passed as a YAML array is delivered to the job at runtime as a
+  newline-separated string in the environment variable (see `sparse_paths` in `git-checkout.yaml`). Declare the
+  default value as an empty string `default: ""` rather than an empty array (using a string default even for
+  array-typed params is the existing convention).

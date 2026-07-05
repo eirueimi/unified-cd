@@ -401,11 +401,11 @@ its combinations** into a map keyed by combination key:
 
 **`foreach:` is sugar for a single-dimension `matrix:`.** `foreach: {key: X, in: [...]}` is equivalent to a one-dimension `matrix:` named `X`, and `{{ .Foreach.X }}` reads the same value as `{{ .Matrix.X }}` would. Declaring both `foreach:` and `matrix:` on the same step is a mutual-exclusion error at apply time.
 
-**`approval` と `matrix`/`foreach` は同時指定不可** — expanded combinations share one (run_id, step_index) approval decision row, which has no way to represent per-combination decisions, so declaring both on the same step is rejected at apply time.
+**`approval` and `matrix`/`foreach` cannot be specified together** — expanded combinations share one (run_id, step_index) approval decision row, which has no way to represent per-combination decisions, so declaring both on the same step is rejected at apply time.
 
-matrix付きcallステップは組み合わせごとに子ランを起動し、出力は集約マップになる。
+A `call` step with a matrix launches one child run per combination, and the outputs become an aggregated map.
 
-Kubernetesエージェントでは組み合わせはPod内で順次実行される(標準エージェントは並列)。
+On the Kubernetes agent, combinations run sequentially within the Pod (the standard agent runs them in parallel).
 
 > **Upgrade note:** matrix support changed the agent claim wire format
 > (`ForeachKey`/`ForeachValue` were replaced by a `MatrixValues` map). There

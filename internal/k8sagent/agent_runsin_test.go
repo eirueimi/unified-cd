@@ -10,11 +10,11 @@ import (
 )
 
 func TestExecContainer_FromRunsIn(t *testing.T) {
-	// RunsIn.Container が exec 先コンテナ名になる（正規化後の唯一の真実源）
+	// RunsIn.Container becomes the exec target container name (the sole source of truth after normalization)
 	assert.Equal(t, "tools", execContainer(api.ClaimStep{RunsIn: &dsl.RunsIn{Container: "tools"}}))
-	// RunsIn 未指定はデフォルトコンテナ（空文字）
+	// No RunsIn specified means the default container (empty string)
 	assert.Equal(t, "", execContainer(api.ClaimStep{}))
-	// RunsIn.Image のみ（named container ではない）も空 = デフォルト
+	// RunsIn.Image only (not a named container) is also empty = default
 	assert.Equal(t, "", execContainer(api.ClaimStep{RunsIn: &dsl.RunsIn{Image: "golang:1.22"}}))
 }
 

@@ -505,7 +505,7 @@ func TestAgentHeartbeat_RejectsNonAgentToken(t *testing.T) {
 }
 
 func TestBuildClaimStep_MatrixAndForeachNormalization(t *testing.T) {
-	// matrix はそのまま次元列に変換される
+	// matrix is converted directly into a dimension list
 	entry := dsl.StepEntry{
 		Name: "build",
 		Run:  "echo",
@@ -525,7 +525,7 @@ func TestBuildClaimStep_MatrixAndForeachNormalization(t *testing.T) {
 	require.Equal(t, "$archs", cs.Matrix.Dimensions[1].Source.Expr)
 	require.Equal(t, []map[string]string{{"os": "windows"}}, cs.Matrix.Exclude)
 
-	// foreach は1次元 matrix に正規化される
+	// foreach is normalized into a single-dimension matrix
 	fe := dsl.StepEntry{
 		Name:    "deploy",
 		Run:     "echo",

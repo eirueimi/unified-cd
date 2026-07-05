@@ -50,7 +50,7 @@
 
   {#if loading}<div class="loading">Loading...</div>
   {:else if error}<div class="error">{error}</div>
-  {:else if !agent}<div class="empty">このエージェントは削除されています。</div>
+  {:else if !agent}<div class="empty">This agent has been removed.</div>
   {:else}
 
   <div class="card grid-2" style="margin-bottom:1rem">

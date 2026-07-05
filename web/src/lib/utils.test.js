@@ -2,24 +2,24 @@ import { describe, it, expect } from 'vitest';
 import { matchesFilter, buildJobTree, flattenJobTree } from './utils.js';
 
 describe('matchesFilter', () => {
-  it('部分一致でマッチする', () => {
+  it('matches on partial match', () => {
     expect(matchesFilter('hello-docker', 'docker')).toBe(true);
   });
 
-  it('大小文字を無視してマッチする', () => {
+  it('matches case-insensitively', () => {
     expect(matchesFilter('Hello-Docker', 'docker')).toBe(true);
     expect(matchesFilter('hello-docker', 'DOCKER')).toBe(true);
   });
 
-  it('空文字クエリは常にマッチする', () => {
+  it('an empty query always matches', () => {
     expect(matchesFilter('hello-docker', '')).toBe(true);
   });
 
-  it('マッチしない場合は false を返す', () => {
+  it('returns false when there is no match', () => {
     expect(matchesFilter('hello-docker', 'xyz')).toBe(false);
   });
 
-  it('null/undefined クエリは常にマッチする', () => {
+  it('a null/undefined query always matches', () => {
     expect(matchesFilter('hello-docker', null)).toBe(true);
     expect(matchesFilter('hello-docker', undefined)).toBe(true);
   });

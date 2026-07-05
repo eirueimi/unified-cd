@@ -60,6 +60,7 @@
   let logScrollTop = 0;
   let logViewportH = 600;
   let logStick = true; // keep auto-scrolling to the bottom while the user is there
+  let logTruncated = false; // server dropped older lines from the backfill
   $: logTotal = filteredLogs.length;
   $: logStart = Math.max(0, Math.floor(logScrollTop / LOG_ROW_H) - LOG_OVERSCAN);
   $: logEnd = Math.min(
@@ -223,6 +224,7 @@
       abortController = null;
     }
     logLines = [];
+    logTruncated = false;
     abortController = new AbortController();
     const headers = {};
     const t = get(token);
@@ -246,30 +248,45 @@
         buf += decoder.decode(value, { stream: true });
         const parts = buf.split("\n\n");
         buf = parts.pop();
+        // Collect this chunk's log lines and flush them in ONE reactive update.
+        // Appending per line (logLines = [...logLines, data]) plus a per-line
+        // tick + scrollHeight read is O(n^2) array copies and O(n) forced
+        // layout reflows — a 10k-line backfill (one chunk) would freeze the tab.
+        // The backfill usually arrives in a single read, so this is one flush.
+        const batch = [];
+        let terminalStatus = null;
         for (const part of parts) {
           const line = part.replace(/^data: /, "").trim();
           if (!line) continue;
           try {
             const data = JSON.parse(line);
             if (data.type === "log") {
-              logLines = [...logLines, data];
-              if (logStick && selectedStep === null) {
-                await tick();
-                if (logBox) {
-                  logBox.scrollTop = logBox.scrollHeight;
-                  logScrollTop = logBox.scrollTop;
-                }
-              }
+              batch.push(data);
+            } else if (data.type === "truncated") {
+              logTruncated = true;
             } else if (data.type === "status") {
               if (run) run = { ...run, status: data.status };
               if (["Succeeded", "Failed", "Cancelled"].includes(data.status)) {
-                await loadSteps();
-                stopStepPolling();
-                abortController.abort();
-                return;
+                terminalStatus = data.status;
               }
             }
           } catch {}
+        }
+        if (batch.length) {
+          logLines = logLines.length ? logLines.concat(batch) : batch;
+          if (logStick && selectedStep === null) {
+            await tick();
+            if (logBox) {
+              logBox.scrollTop = logBox.scrollHeight;
+              logScrollTop = logBox.scrollTop;
+            }
+          }
+        }
+        if (terminalStatus) {
+          await loadSteps();
+          stopStepPolling();
+          abortController.abort();
+          return;
         }
       }
     } catch (e) {
@@ -549,6 +566,12 @@
       </div>
       <span class="meta" style="font-size:0.75rem">SSE</span>
     </div>
+    {#if logTruncated}
+      <div class="log-truncated">
+        Older lines were truncated — showing the most recent {logTotal.toLocaleString()}.
+        Use <code>unified-cli logs {runID}</code> for the full log.
+      </div>
+    {/if}
     <div class="log-box" bind:this={logBox} on:scroll={onLogScroll}>
       {#if !filteredLogs.length}
         <span style="color:var(--text-muted)">Waiting for logs…</span>
@@ -621,6 +644,18 @@
     padding: 0.05rem 0.45rem;
     font-size: 1rem;
     line-height: 1.2;
+  }
+  .log-truncated {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: var(--surface-alt, var(--surface));
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.3rem 0.6rem;
+    margin-bottom: 0.4rem;
+  }
+  .log-truncated code {
+    font-size: 0.72rem;
   }
   .log-row-current {
     background: rgba(255, 150, 50, 0.12);

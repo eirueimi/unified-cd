@@ -715,6 +715,35 @@ func (p *Postgres) TailLogs(ctx context.Context, runID string, afterSeq int64, l
 	return out, rows.Err()
 }
 
+// TailLogsRecent returns up to the last `limit` log lines for the run in
+// ascending seq order (the tail of the log). It selects the newest `limit` rows
+// (seq DESC) then re-sorts them ascending, so a bounded backfill keeps the end
+// of a huge log rather than its beginning.
+func (p *Postgres) TailLogsRecent(ctx context.Context, runID string, limit int) ([]api.LogLine, error) {
+	const q = `
+		SELECT seq, step_index, stream, ts, line FROM (
+			SELECT seq, step_index, stream, ts, line
+			FROM logs WHERE run_id = $1
+			ORDER BY seq DESC LIMIT $2
+		) recent
+		ORDER BY seq ASC;
+	`
+	rows, err := p.pool.Query(ctx, q, runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []api.LogLine
+	for rows.Next() {
+		var l api.LogLine
+		if err := rows.Scan(&l.Seq, &l.StepIndex, &l.Stream, &l.Timestamp, &l.Line); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
 // UpsertAgent is the REGISTRATION path. A registration is the authoritative
 // statement of an agent's identity, so on conflict it REPLACES hostname/os/labels/
 // version/env wholesale rather than merging. In particular, if a label present in a

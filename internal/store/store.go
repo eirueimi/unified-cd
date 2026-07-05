@@ -130,6 +130,10 @@ type Store interface {
 	GetRunParent(ctx context.Context, childRunID string) (*api.CalledBy, error)
 	AppendLog(ctx context.Context, runID string, stepIndex int, stream string, ts time.Time, line string) (int64, error)
 	TailLogs(ctx context.Context, runID string, afterSeq int64, limit int) ([]api.LogLine, error)
+	// TailLogsRecent returns up to the last `limit` log lines for the run, in
+	// ascending seq order (the tail of the log), so a bounded backfill can keep
+	// the end of a huge log rather than its beginning.
+	TailLogsRecent(ctx context.Context, runID string, limit int) ([]api.LogLine, error)
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
 	// os/version/env wholesale (a registration is the authoritative identity).
 	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error

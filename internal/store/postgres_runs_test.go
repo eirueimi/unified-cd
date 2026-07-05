@@ -266,10 +266,10 @@ func TestPostgres_ListActiveRuns(t *testing.T) {
 	_, _ = pg.UpsertJob(ctx, "job-a", "unified-cd/v1", []byte(`{}`))
 	_, _ = pg.UpsertJob(ctx, "job-b", "unified-cd/v1", []byte(`{}`))
 
-	// アクティブなRun（Pending状態で作成される）
+	// Active Runs (created in Pending state)
 	r1, _ := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, "")
 	r2, _ := pg.CreateRun(ctx, "job-b", nil, []byte(`{}`), nil, "")
-	// 終了状態のRun
+	// A Run in a terminal state
 	r3, _ := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, "")
 	_ = pg.MarkRunFinished(ctx, r3.ID, api.RunSucceeded)
 

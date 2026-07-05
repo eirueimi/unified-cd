@@ -170,6 +170,41 @@ func TestAPI_RunEvents_SSE_ReceivesExistingLogs(t *testing.T) {
 	assert.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
 }
 
+// When the log exceeds the backfill cap, the SSE handler replays only the TAIL
+// (the most recent lines, where failures usually are) and emits a "truncated"
+// event so the client can say the view is incomplete.
+func TestAPI_RunEvents_SSE_BackfillTruncatesToTail(t *testing.T) {
+	old := sseBackfillLimit
+	sseBackfillLimit = 2
+	defer func() { sseBackfillLimit = old }()
+
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	now := time.Now().UTC()
+	for _, ln := range []string{"line-1", "line-2", "line-3", "line-4", "line-5"} {
+		_, _ = pg.AppendLog(t.Context(), run.ID, 0, "stdout", now, ln)
+	}
+	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
+	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil)
+	require.NoError(t, pg.MarkRunRunning(t.Context(), run.ID))
+	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunSucceeded))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/events", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, `"type":"truncated"`)
+	assert.Contains(t, body, "line-4")
+	assert.Contains(t, body, "line-5")
+	assert.NotContains(t, body, "line-1")
+	assert.NotContains(t, body, "line-2")
+	assert.NotContains(t, body, "line-3")
+}
+
 func TestAPI_GetRunYAML(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"deploy","run":"echo deploy"}]}`)
@@ -372,7 +407,7 @@ func TestAPI_ListActiveRuns(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{}`))
 
-	// アクティブなRun作成
+	// Create an active Run
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "myjob"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -380,7 +415,7 @@ func TestAPI_ListActiveRuns(t *testing.T) {
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	// active エンドポイントで取得
+	// Fetch via the active endpoint
 	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/runs/active", nil)
 	req2.Header.Set("Authorization", "Bearer secret")
 	rec2 := httptest.NewRecorder()
