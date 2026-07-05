@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -25,8 +26,12 @@ func newRunCmdWithClient(resolve func() (Config, error), httpClient *http.Client
 	cmd.AddCommand(newRunTriggerCmd(resolve, httpClient))
 	cmd.AddCommand(newRunShowCmd(resolve, httpClient))
 	cmd.AddCommand(newRunListCmd(resolve, httpClient))
+	cmd.AddCommand(newRunListActiveCmd(resolve, httpClient))
 	cmd.AddCommand(newRunDeleteCmd(resolve, httpClient))
 	cmd.AddCommand(newRunCancelCmd(resolve, httpClient))
+	cmd.AddCommand(newRunOutputsCmd(resolve, httpClient))
+	cmd.AddCommand(newRunShowYAMLCmd(resolve, httpClient))
+	cmd.AddCommand(newRunApprovalsCmd(resolve, httpClient))
 	return cmd
 }
 
@@ -212,6 +217,165 @@ func newRunDeleteCmd(resolve func() (Config, error), httpClient *http.Client) *c
 				return fmt.Errorf("server: %s", string(b))
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "run %q deleted\n", args[0])
+			return nil
+		},
+	}
+}
+
+func newRunListActiveCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list-active",
+		Short: "List runs in Pending, Queued, or Running state across all jobs",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := resolve()
+			if err != nil {
+				return err
+			}
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+				cfg.Server+"/api/v1/runs/active", nil)
+			req.Header.Set("Authorization", "Bearer "+cfg.Token)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("server: %s", string(b))
+			}
+			var list []api.Run
+			if err := json.Unmarshal(b, &list); err != nil {
+				return err
+			}
+			if len(list) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "(no active runs)")
+				return nil
+			}
+			for _, r := range list {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n",
+					r.ID, r.JobName, r.Status, r.CreatedAt.Format("2006-01-02 15:04"), r.TriggeredBy)
+			}
+			return nil
+		},
+	}
+}
+
+func newRunOutputsCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
+	return &cobra.Command{
+		Use:   "outputs <run-id>",
+		Short: "Show run-level outputs reported by the job",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := resolve()
+			if err != nil {
+				return err
+			}
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+				cfg.Server+"/api/v1/runs/"+args[0]+"/outputs", nil)
+			req.Header.Set("Authorization", "Bearer "+cfg.Token)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("server: %s", string(b))
+			}
+			var outputs api.RunOutputs
+			if err := json.Unmarshal(b, &outputs); err != nil {
+				return err
+			}
+			if len(outputs.Outputs) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "(no outputs)")
+				return nil
+			}
+			keys := make([]string, 0, len(outputs.Outputs))
+			for k := range outputs.Outputs {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s=%s\n", k, outputs.Outputs[k])
+			}
+			return nil
+		},
+	}
+}
+
+func newRunShowYAMLCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
+	return &cobra.Command{
+		Use:   "show-yaml <run-id>",
+		Short: "Show the YAML definition the run was executed with",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := resolve()
+			if err != nil {
+				return err
+			}
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+				cfg.Server+"/api/v1/runs/"+args[0]+"/yaml", nil)
+			req.Header.Set("Authorization", "Bearer "+cfg.Token)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("server: %s", string(b))
+			}
+			fmt.Fprint(cmd.OutOrStdout(), string(b))
+			return nil
+		},
+	}
+}
+
+func newRunApprovalsCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
+	return &cobra.Command{
+		Use:   "approvals <run-id>",
+		Short: "List approval gates of a run and their state",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := resolve()
+			if err != nil {
+				return err
+			}
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+				cfg.Server+"/api/v1/runs/"+args[0]+"/approvals", nil)
+			req.Header.Set("Authorization", "Bearer "+cfg.Token)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("server: %s", string(b))
+			}
+			var list []api.RunApproval
+			if err := json.Unmarshal(b, &list); err != nil {
+				return err
+			}
+			if len(list) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "(no approvals)")
+				return nil
+			}
+			for _, a := range list {
+				name := a.StepName
+				if name == "" {
+					name = fmt.Sprintf("step[%d]", a.StepIndex)
+				}
+				decided := ""
+				if a.DecidedBy != "" {
+					decided = "by " + a.DecidedBy
+					if a.DecidedAt != nil {
+						decided += " at " + a.DecidedAt.Local().Format("2006-01-02 15:04:05")
+					}
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "[%d]\t%s\t%s\t%s\n", a.StepIndex, name, a.Status, decided)
+			}
 			return nil
 		},
 	}

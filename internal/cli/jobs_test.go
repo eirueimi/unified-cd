@@ -51,6 +51,74 @@ func TestJobsList_EmptyShowsMessage(t *testing.T) {
 	}
 }
 
+func TestJobsGet_PrintsSummary(t *testing.T) {
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) {
+			job := api.Job{
+				ID:         "id-1",
+				Name:       "build",
+				APIVersion: "unified-cd/v1",
+				Inputs: []api.InputDef{
+					{Name: "image", Type: "string", Required: true, Description: "container image"},
+					{Name: "tag", Type: "string", Default: "latest"},
+				},
+			}
+			b, _ := json.Marshal(job)
+			return http.StatusOK, b
+		},
+	}
+	cmd, out := newTestJobsCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"get", "build"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if tr.records[0].path != "/api/v1/jobs/build" {
+		t.Errorf("unexpected path: %s", tr.records[0].path)
+	}
+	s := out.String()
+	if !strings.Contains(s, "build") || !strings.Contains(s, "image") || !strings.Contains(s, "required") || !strings.Contains(s, "default=latest") {
+		t.Errorf("unexpected output: %s", s)
+	}
+}
+
+func TestJobsGet_RequiresName(t *testing.T) {
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) { return http.StatusOK, []byte("{}") }}
+	cmd, _ := newTestJobsCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"get"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error when name is omitted")
+	}
+}
+
+func TestJobsShowYAML_PrintsRawBody(t *testing.T) {
+	yamlBody := "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: build\n"
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) { return http.StatusOK, []byte(yamlBody) },
+	}
+	cmd, out := newTestJobsCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"show-yaml", "build"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if tr.records[0].path != "/api/v1/jobs/build/yaml" {
+		t.Errorf("unexpected path: %s", tr.records[0].path)
+	}
+	if out.String() != yamlBody {
+		t.Errorf("unexpected output: %q", out.String())
+	}
+}
+
+func TestJobsShowYAML_NotFoundPropagatesMessage(t *testing.T) {
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) { return http.StatusNotFound, []byte("job not found") },
+	}
+	cmd, _ := newTestJobsCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"show-yaml", "missing"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "job not found") {
+		t.Fatalf("expected not-found error, got: %v", err)
+	}
+}
+
 func TestJobsDelete_Success(t *testing.T) {
 	tr := &captureTransport{
 		responseFor: func(path string) (int, []byte) { return http.StatusNoContent, nil },

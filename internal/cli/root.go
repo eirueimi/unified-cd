@@ -47,6 +47,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newSecretCmd(resolve))
 	root.AddCommand(newGitCredentialCmd(resolve))
 	root.AddCommand(newScheduleCmd(resolve))
+	root.AddCommand(newWebhookCmd(resolve))
 	root.AddCommand(newAppSourceCmd(resolve))
 	root.AddCommand(newTokenCmd(resolve))
 	root.AddCommand(newApproveCmd(resolve))
