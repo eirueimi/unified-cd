@@ -257,6 +257,15 @@ type Store interface {
 	// If none exists yet, it stores candidateHex and returns it (safe against simultaneous first-startup from multiple replicas).
 	EnsureControllerKey(ctx context.Context, candidateHex string) (string, error)
 
+	// Audit
+	// InsertAuditLog records a single state-changing API operation.
+	InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error
+	// ListAuditLogs returns audit log entries newest-first, with limit/offset pagination.
+	ListAuditLogs(ctx context.Context, limit, offset int) ([]api.AuditLog, error)
+	// DeleteAuditLogsOlderThan deletes audit log rows with occurred_at before the given time.
+	// Returns the number of rows deleted.
+	DeleteAuditLogsOlderThan(ctx context.Context, before time.Time) (int, error)
+
 	// Connectivity
 	// Ping checks connectivity to the database.
 	Ping(ctx context.Context) error

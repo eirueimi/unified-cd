@@ -53,6 +53,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newApproveCmd(resolve))
 	root.AddCommand(newRejectCmd(resolve))
 	root.AddCommand(newArtifactCmd(resolve))
+	root.AddCommand(newAuditCmd(resolve))
 	root.AddCommand(newLoginCmd())
 	return root
 }

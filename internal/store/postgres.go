@@ -1418,6 +1418,48 @@ func (p *Postgres) EnsureControllerKey(ctx context.Context, candidateHex string)
 	return keyHex, nil
 }
 
+// InsertAuditLog records a single state-changing API operation.
+func (p *Postgres) InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error {
+	const q = `
+		INSERT INTO audit_logs(actor, method, path, action, resource, status)
+		VALUES ($1, $2, $3, $4, $5, $6)`
+	_, err := p.pool.Exec(ctx, q, actor, method, path, action, resource, status)
+	return err
+}
+
+// ListAuditLogs returns audit log entries newest-first, with limit/offset pagination.
+func (p *Postgres) ListAuditLogs(ctx context.Context, limit, offset int) ([]api.AuditLog, error) {
+	const q = `
+		SELECT id, occurred_at, actor, method, path, action, resource, status
+		FROM audit_logs
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT $1 OFFSET $2`
+	rows, err := p.pool.Query(ctx, q, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := make([]api.AuditLog, 0)
+	for rows.Next() {
+		var a api.AuditLog
+		if err := rows.Scan(&a.ID, &a.OccurredAt, &a.Actor, &a.Method, &a.Path, &a.Action, &a.Resource, &a.Status); err != nil {
+			return nil, err
+		}
+		list = append(list, a)
+	}
+	return list, rows.Err()
+}
+
+// DeleteAuditLogsOlderThan deletes audit log rows with occurred_at before the given time.
+// Returns the number of rows deleted.
+func (p *Postgres) DeleteAuditLogsOlderThan(ctx context.Context, before time.Time) (int, error) {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM audit_logs WHERE occurred_at < $1`, before)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (p *Postgres) ListPendingRuns(ctx context.Context, limit int) ([]PendingRun, error) {
 	rows, err := p.pool.Query(ctx,
 		`SELECT id, spec FROM runs WHERE status = 'Pending' ORDER BY created_at LIMIT $1`,

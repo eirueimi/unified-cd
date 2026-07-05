@@ -157,6 +157,7 @@ CLI / Browser / Webhook
 - **[Kubernetes Integration Guide](docs/kubernetes-integration.md)** — k8s-agent setup, podTemplate patterns, RBAC
 - **[High Availability Guide](docs/high-availability.md)** — controller redundancy, leader election, rolling deploys
 - **[Operations Guide](docs/operations.md)** — state layout, backup, recovery runbook, monitoring
+- **[Audit Log Guide](docs/audit.md)** — what's recorded/excluded, `GET /api/v1/audit`, `audit list`, retention
 - **[Frontend Development Guide](docs/frontend-development.md)** — Svelte + Vite setup, hot reload, routing
 - **[Troubleshooting](docs/troubleshooting.md)** — symptom-indexed fixes for common failures
 
