@@ -97,9 +97,104 @@ spec:
         env:
           <KEY>: <value>
       container: <string>         # k8s multi-container: target container name
+      runsIn:                     # see "runsIn" below
+        image: <string>
+        container: <string>
+        resources:
+          requests: { cpu: <string>, memory: <string> }
+          limits: { cpu: <string>, memory: <string> }
       continueOnError: <bool>     # default: false
       timeoutMinutes: <number>
 ```
+
+### `runsIn`
+
+`runsIn` declares an isolated execution context for a step. `image` and
+`container` are mutually exclusive; a step with no `runsIn` (or `runsIn: null`)
+runs in the default/shared environment (the host agent process, or the
+default pod container on k8s).
+
+| Field | Behavior |
+|---|---|
+| `runsIn.image` | Run in a fresh, isolated environment from this image: the standard agent runs `<runtime> run --rm`, the k8s agent spins up a throwaway pod. This environment does **not** share the job workspace — it is a "pure function" call. Pass inputs via `with:`/`env`, and read outputs via `outputs:`/stdout. |
+| `runsIn.container` | Exec into a pre-provisioned, named container (k8s pod only — a hard error on the standard agent). |
+| `runsIn.resources` | Optional CPU/memory `requests`/`limits` (Kubernetes quantity strings, e.g. `"500m"`, `"1"`, `"256Mi"`, `"1Gi"`) applied to a `runsIn.image` step's container. |
+
+`runsIn` can be set on a plain step or on a `uses` step; the two placements
+have different meanings — see the next section.
+
+#### Step-level vs. uses-level `runsIn.image`
+
+- **Step-level** `runsIn.image` (on a `run` step): unchanged, single throwaway
+  isolated call as described above. No artifact/cache support — it is a pure
+  function with no persistent filesystem.
+- **Uses-level** `runsIn.image` (on a `uses:` step): **scope mode**. The whole
+  inlined template runs inside **one** isolated environment (a "scope") that
+  stays alive for all of the template's steps, instead of each inlined step
+  getting its own independent throwaway environment.
+- **Uses-level** `runsIn.container`: unchanged — exec into a named
+  pre-provisioned container; not scope mode.
+- A `uses` step without `runsIn`: unchanged current inlining behavior.
+
+#### Uses-level scope: artifacts & cache in the isolated environment
+
+When a `uses:` step declares `runsIn.image`, every step inlined from that
+template shares one isolated scope environment (one container on the standard
+agent, one dedicated pod on k8s). `cache`, `uploadArtifact`, and
+`downloadArtifact` steps inside that scope operate on **the scope's own
+filesystem**, not the outer job workspace — so a template that builds
+something in its isolated environment can save/restore that output as an
+artifact or cache entry without ever touching the outer workspace.
+
+The scope does not share the outer job workspace; it starts from a fresh,
+empty filesystem:
+
+- **Inputs** enter the scope via `with:` (environment variables, as with any
+  `uses`) and `downloadArtifact` (which writes into the scope's filesystem).
+- **Outputs** leave the scope via `uploadArtifact` (pushed to the run's
+  artifact store) and `outputs:`/stdout.
+
+Because artifacts are keyed by run, not by workspace path, they cross the
+isolation boundary naturally — on Kubernetes this means no shared
+`ReadWriteMany` volume is required for a scoped `uses`.
+
+```yaml
+steps:
+  - name: build-in-container
+    uses:
+      job: git://github.com/my-org/ci-templates/jobs/build.yaml@v1
+      with:
+        target: ./cmd/server
+      runsIn:
+        image: golang:1.22
+```
+
+If `build.yaml` contains a `download-deps` step with `cache:`, a `compile`
+step with `run:`, and a `save-binary` step with `uploadArtifact:`, all three
+run inside the same `golang:1.22` scope: the cache is restored into and saved
+from the scope's filesystem, the compile step writes into that same
+filesystem, and the artifact upload reads the compiled binary from it — none
+of it touches the outer job's workspace.
+
+Under `matrix`/`foreach`, each variant of a scoped `uses` step gets its own,
+independent scope instance (its own container/pod), so matrix variants never
+share isolated state.
+
+**Validation — the following are parse errors inside a scoped `uses` (a `uses`
+whose own `runsIn.image` is set), because they are incompatible with holding
+one isolated environment open for the template's steps:**
+
+| Inside a scoped `uses` | Why it's a parse error |
+|---|---|
+| A nested `runsIn.image` or `runsIn.container` on an inlined step | A scope must be homogeneous — one environment for the whole template, not a per-step override. |
+| An `approval:` step | An approval pause would hold the scope's container/pod alive across a human wait (up to the approval timeout), wasting resources and risking a k8s pod deadline killing it mid-wait. |
+| A `call:` step | `call:` spawns a separate child run on another agent/workspace that cannot see the scope's isolated filesystem — undefined semantics inside a scope. |
+
+These checks apply to both concrete steps and members of a `parallel:` block,
+and are inert outside scope mode — a plain `uses` or a `uses` with
+`runsIn.container` still allows `approval:`/`call:` unchanged. `parallel:`
+sub-steps inside a scoped `uses` execute concurrently, but all still target
+the same shared scope environment.
 
 ---
 

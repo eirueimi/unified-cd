@@ -21,6 +21,29 @@ type RunSpec struct {
 	MemLimit string   // container memory limit in bytes (e.g. "536870912"); empty = no limit
 }
 
+// ContainerHandle identifies a running long-lived container (scope environment).
+type ContainerHandle struct{ ID string }
+
+// CreateSpec describes a detached long-lived container for a uses scope.
+type CreateSpec struct {
+	Image    string
+	Env      []string // KEY=VALUE, injected as -e
+	CPULimit string
+	MemLimit string
+	// WorkDir sets the container's working directory (docker/podman/Apple
+	// container's `run -w`), so scoped `run:` steps and `exec` default there
+	// instead of an undefined working directory. Empty means "no -w flag"
+	// (driver default). See scope.go's scopeWorkDir for the host agent's value.
+	WorkDir string
+}
+
+// ExecSpec describes one script execution inside a running container.
+type ExecSpec struct {
+	Script string
+	Env    []string // KEY=VALUE, injected as -e on exec
+	Shell  []string // defaults to {"sh","-c"}
+}
+
 // ContainerRuntime runs a step in a fresh, isolated container. No host
 // workspace is mounted — inputs arrive via Env, outputs via stdout.
 type ContainerRuntime interface {
@@ -28,6 +51,13 @@ type ContainerRuntime interface {
 	Available() bool
 	Pull(ctx context.Context, image string) error
 	Run(ctx context.Context, spec RunSpec, stdout, stderr io.Writer) (int, error)
+
+	// Long-lived scope lifecycle (uses-level runsIn.image).
+	Create(ctx context.Context, spec CreateSpec) (ContainerHandle, error)
+	Exec(ctx context.Context, h ContainerHandle, spec ExecSpec, stdout, stderr io.Writer) (int, error)
+	CopyIn(ctx context.Context, h ContainerHandle, hostPath, containerPath string) error
+	CopyOut(ctx context.Context, h ContainerHandle, containerPath, hostPath string) error
+	Remove(ctx context.Context, h ContainerHandle) error
 }
 
 // detectOrder is the auto-detection preference order.

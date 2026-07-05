@@ -15,7 +15,7 @@ func TestExpandUses_PropagatesRunsIn(t *testing.T) {
 			{Name: "special", Run: "echo hi", RunsIn: &dsl.RunsIn{Image: "alpine:3"}},
 		},
 	}
-	outerRunsIn := &dsl.RunsIn{Image: "golang:1.22"}
+	outerRunsIn := &dsl.RunsIn{Container: "builder"}
 
 	expanded, err := expandUsesStep("tmpl", nil, tplSpec, outerRunsIn)
 	require.NoError(t, err)
@@ -37,7 +37,7 @@ func TestExpandUses_PropagatesRunsIn(t *testing.T) {
 
 	// inherits the uses step's runsIn since it has none of its own
 	require.NotNil(t, compile.RunsIn)
-	assert.Equal(t, "golang:1.22", compile.RunsIn.Image)
+	assert.Equal(t, "builder", compile.RunsIn.Container)
 
 	// keeps its own runsIn (no override)
 	require.NotNil(t, special.RunsIn)

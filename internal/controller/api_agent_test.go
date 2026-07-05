@@ -423,6 +423,37 @@ func TestBuildClaimResponse_ParallelBlock(t *testing.T) {
 	assert.Equal(t, 2, resp.Stages[1].Step.Index)
 }
 
+func TestBuildClaimResponse_CarriesScopeFields(t *testing.T) {
+	spec := dsl.Spec{
+		Steps: []dsl.StepEntry{
+			{Name: "compile", Run: "make", ScopeID: "scope:build", ScopeImage: "golang:1.22"},
+			{Parallel: []dsl.Step{
+				{Name: "a", Run: "echo a", ScopeID: "scope:par", ScopeImage: "alpine:3"},
+				{Name: "b", Run: "echo b"},
+			}},
+		},
+	}
+	raw, err := json.Marshal(spec)
+	require.NoError(t, err)
+
+	resp, err := buildClaimResponse(&store.ClaimedRun{
+		Run:  api.Run{ID: "run1", JobName: "j"},
+		Spec: raw,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, resp.Stages, 2)
+	require.NotNil(t, resp.Stages[0].Step)
+	assert.Equal(t, "scope:build", resp.Stages[0].Step.ScopeID)
+	assert.Equal(t, "golang:1.22", resp.Stages[0].Step.ScopeImage)
+
+	require.Len(t, resp.Stages[1].Parallel, 2)
+	assert.Equal(t, "scope:par", resp.Stages[1].Parallel[0].ScopeID)
+	assert.Equal(t, "alpine:3", resp.Stages[1].Parallel[0].ScopeImage)
+	assert.Equal(t, "", resp.Stages[1].Parallel[1].ScopeID)
+	assert.Equal(t, "", resp.Stages[1].Parallel[1].ScopeImage)
+}
+
 func TestBuildClaimResponse_Finally(t *testing.T) {
 	spec := dsl.Spec{
 		Steps: []dsl.StepEntry{

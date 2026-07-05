@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -53,9 +55,17 @@ var approvalPollInterval = 3 * time.Second
 var heartbeatInterval = DefaultHeartbeatInterval
 
 // postHookEntry is a post-processing entry executed after a step completes.
+// scoped/sm/h carry the owning step's scope container, if any, so the post
+// script runs inside the same isolated environment the step body ran in
+// rather than on the host workspace. sm/h are only meaningful when scoped is
+// true; the scope container is still alive when hookStack is drained (see
+// executeRun: hookStack runs before the deferred scopeManager.closeAll).
 type postHookEntry struct {
 	stepName string
 	post     api.PostStep
+	scoped   bool
+	sm       *scopeManager
+	h        crt.ContainerHandle
 }
 
 // Agent represents an agent that communicates with the master server to execute jobs.
@@ -325,8 +335,50 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}
 
 	// deferred hooks: run after RunPipeline completes (cache save, etc.)
+	//
+	// parallel: steps in the same claim run concurrently as goroutines (see
+	// runParallel in pipeline.go), and both postHooks (cache save, appended
+	// from executeCacheStep) and hookStack (post: hooks, appended below in
+	// makeStepRunner) are appended from inside that concurrently-invoked step
+	// runner. postHooksMu guards every append to either slice so concurrent
+	// parallel-group members with a post:/cache: don't race on the shared
+	// backing array. The drain loops below run after RunPipeline returns
+	// (i.e. after all step-runner goroutines have finished), so the drain
+	// itself does not need the lock.
+	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
 	var hookStack []postHookEntry
+
+	// scopes: one scopeManager for the whole claim, created lazily on first use
+	// by a uses-scope step. Torn down at claim end regardless of how the claim
+	// finished (success, failure, or cancellation).
+	//
+	// parallel: steps in the same claim run concurrently as goroutines (see
+	// runParallel in pipeline.go), so getScopes can be called from multiple
+	// goroutines at once. scopesMu guards the nil-check-and-assign so exactly
+	// one scopeManager is ever created per claim, instead of a data race that
+	// could construct two managers (leaking/duplicating scope containers) or
+	// trip Go's "concurrent map writes" panic in scopeManager.open.
+	var scopes *scopeManager
+	var scopesMu sync.Mutex
+	getScopes := func() (*scopeManager, error) {
+		scopesMu.Lock()
+		defer scopesMu.Unlock()
+		if scopes != nil {
+			return scopes, nil
+		}
+		rt, err := a.containerRuntime()
+		if err != nil {
+			return nil, fmt.Errorf("uses-scope requires a container runtime: %w", err)
+		}
+		scopes = newScopeManager(rt)
+		return scopes, nil
+	}
+	defer func() {
+		if scopes != nil {
+			scopes.closeAll(context.WithoutCancel(ctx))
+		}
+	}()
 
 	getData := func() dsl.TemplateData { return sctx.snapshot() }
 
@@ -415,21 +467,47 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 
 			// cache steps: restore immediately, defer save to postHooks
 			if step.Cache != nil {
-				if err := a.executeCacheStep(stepCtx, step, c.RunID, sctx, &postHooks); err != nil {
+				sm, h, serr := resolveScopeHandle(stepCtx, step, getScopes)
+				if serr != nil {
+					// Cache stays warn+skip (lenient policy), matching the
+					// k8s agent: a scope pod/container that never becomes
+					// available must not fail the step, just skip the cache
+					// operation (no restore, no deferred save). Unlike
+					// artifact upload/download, which remain fail-loud.
+					slog.Warn("cache scope unavailable; skipping cache for step", "step", step.Name, "error", serr)
+					_ = a.Client.ReportStep(context.WithoutCancel(stepCtx), a.ID, api.StepReportRequest{
+						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
+						StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", EndedAt: time.Now().UTC(),
+					})
+					return nil
+				}
+				if err := a.executeCacheStep(stepCtx, step, c.RunID, sctx, &postHooksMu, &postHooks, sm, h); err != nil {
 					slog.Error("cache step failed", "step", step.Name, "error", err)
 					markFailed(context.WithoutCancel(stepCtx))
 				}
 				return nil
 			}
 			if step.UploadArtifact != nil {
-				if err := a.executeUploadArtifact(stepCtx, step, c.RunID, workDir); err != nil {
+				sm, h, serr := resolveScopeHandle(stepCtx, step, getScopes)
+				if serr != nil {
+					slog.Error("upload artifact failed", "step", step.Name, "error", serr)
+					markFailed(context.WithoutCancel(stepCtx))
+					return nil
+				}
+				if err := a.executeUploadArtifact(stepCtx, step, c.RunID, workDir, sm, h); err != nil {
 					slog.Error("upload artifact failed", "step", step.Name, "error", err)
 					markFailed(context.WithoutCancel(stepCtx))
 				}
 				return nil
 			}
 			if step.DownloadArtifact != nil {
-				if err := a.executeDownloadArtifact(stepCtx, step, c.RunID, workDir); err != nil {
+				sm, h, serr := resolveScopeHandle(stepCtx, step, getScopes)
+				if serr != nil {
+					slog.Error("download artifact failed", "step", step.Name, "error", serr)
+					markFailed(context.WithoutCancel(stepCtx))
+					return nil
+				}
+				if err := a.executeDownloadArtifact(stepCtx, step, c.RunID, workDir, sm, h); err != nil {
 					slog.Error("download artifact failed", "step", step.Name, "error", err)
 					markFailed(context.WithoutCancel(stepCtx))
 				}
@@ -450,6 +528,14 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			}
 
 			var callChildRunID, callJobName string
+			// stepScope/stepScopeHandle capture this step's scope container (if
+			// any), set inside the isScopedStep run-branch case below. A step's
+			// post: hook must execute inside the same scope container the step
+			// body ran in (not the host workspace), so postHookEntry carries
+			// these through to the hookStack drain in the finally block.
+			var stepScope *scopeManager
+			var stepScopeHandle crt.ContainerHandle
+
 			if step.Call != nil {
 				childOutputs, childRunID, callErr := a.executeCallStep(stepCtx, step, tplData)
 				callChildRunID = childRunID
@@ -487,6 +573,25 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				var ec int
 				var runErr error
 				switch {
+				case isScopedStep(step):
+					// Scoped steps never carry RunsIn (mutually exclusive at the DSL
+					// level), so this case takes precedence over the RunsIn cases below.
+					sm, serr := getScopes()
+					if serr != nil {
+						runErr = serr
+						ec = -1
+						break
+					}
+					h, herr := sm.ensure(stepCtx, step, extraEnv)
+					if herr != nil {
+						runErr = herr
+						ec = -1
+						break
+					}
+					stepScope, stepScopeHandle = sm, h
+					var stdoutBuf bytes.Buffer
+					ec, runErr = sm.exec(stepCtx, h, expandedRun, extraEnv, &stdoutBuf, stderrPusher)
+					capturedStdout = stdoutBuf.String()
 				case step.RunsIn != nil && step.RunsIn.Container != "":
 					runErr = fmt.Errorf("runsIn.container (%q) is not supported on the host agent; use runsIn.image or the k8s agent", step.RunsIn.Container)
 					ec = -1
@@ -556,10 +661,15 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			}
 
 			if status == "Succeeded" && step.Post != nil {
+				postHooksMu.Lock()
 				hookStack = append(hookStack, postHookEntry{
 					stepName: step.Name,
 					post:     *step.Post,
+					scoped:   isScopedStep(step),
+					sm:       stepScope,
+					h:        stepScopeHandle,
 				})
+				postHooksMu.Unlock()
 			}
 
 			ended := time.Now().UTC()
@@ -605,6 +715,17 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		var extraEnv []string
 		for k, v := range entry.post.Env {
 			extraEnv = append(extraEnv, k+"="+v)
+		}
+		if entry.scoped {
+			// The owning step ran in an isolated scope container; its post:
+			// hook must run there too, not on the host workspace. The scope
+			// container is still alive here — hookStack is drained before the
+			// deferred scopeManager.closeAll runs (see the `defer` registered
+			// alongside getScopes above).
+			if _, runErr := entry.sm.exec(hookCtx, entry.h, cmd, extraEnv, nil, nil); runErr != nil {
+				slog.Warn("post step failed", "step", entry.stepName, "error", runErr)
+			}
+			continue
 		}
 		if _, _, runErr := RunStepCapture(hookCtx, cmd, nil, extraEnv, workDir); runErr != nil {
 			slog.Warn("post step failed", "step", entry.stepName, "error", runErr)
@@ -731,25 +852,84 @@ func (a *Agent) executeCallStep(ctx context.Context, step api.ClaimStep, tplData
 	}
 }
 
+// resolveScopeHandle returns the (scopeManager, ContainerHandle) pair for a
+// scoped step's cache/artifact operations, creating the claim's scopeManager
+// and the step's scope container on first use. For non-scoped steps it
+// returns (nil, zero handle, nil) so callers can branch on sm == nil.
+// A scoped step that cannot obtain a runtime or container is a hard error
+// (no silent fallback to the host workspace).
+func resolveScopeHandle(ctx context.Context, step api.ClaimStep, getScopes func() (*scopeManager, error)) (*scopeManager, crt.ContainerHandle, error) {
+	if !isScopedStep(step) {
+		return nil, crt.ContainerHandle{}, nil
+	}
+	sm, err := getScopes()
+	if err != nil {
+		return nil, crt.ContainerHandle{}, err
+	}
+	h, err := sm.ensure(ctx, step, nil)
+	if err != nil {
+		return nil, crt.ContainerHandle{}, err
+	}
+	return sm, h, nil
+}
+
 // resolveWorkspacePath joins a relative path against the run's workspace working
 // directory (the same directory ExecStep/shell steps use as their cwd, e.g.
 // "<workspaceDir>/working<N>"). Absolute paths are returned unchanged.
-func resolveWorkspacePath(workDir, path string) string {
-	if path == "" || filepath.IsAbs(path) {
-		return path
+func resolveWorkspacePath(workDir, p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
 	}
-	return filepath.Join(workDir, path)
+	return filepath.Join(workDir, p)
 }
 
-func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, runID string, workDir string) error {
+// resolveScopePath joins a relative CONTAINER-side path against scopeWorkDir
+// (the scope container's working directory, see scope.go), so it is always
+// absolute before being handed to scopeManager.copyIn/copyOut. This mirrors
+// the k8s agent's path.Join(mountPath, dest) (internal/k8sagent/agent.go).
+// A relative container path passed straight to `docker cp` is rejected
+// ("destination path must be absolute") — this is the fix for that class of
+// failure. Uses "path" (forward-slash), not "path/filepath": the scope
+// container is always Linux regardless of the host OS. Already-absolute
+// container paths are returned unchanged.
+func resolveScopePath(p string) string {
+	if p == "" {
+		return scopeWorkDir
+	}
+	if path.IsAbs(p) {
+		return p
+	}
+	return path.Join(scopeWorkDir, p)
+}
+
+func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, runID string, workDir string, sm *scopeManager, h crt.ContainerHandle) error {
 	started := time.Now().UTC()
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
 		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 	})
 
 	ua := step.UploadArtifact
-	path := resolveWorkspacePath(workDir, ua.Path)
-	if err := a.Client.UploadArtifact(ctx, runID, ua.Name, path); err != nil {
+	var artifactPath string
+	if sm != nil {
+		// ua.Path is a CONTAINER-side path; resolve it against the scope
+		// container's working directory before copyOutToTemp so it is always
+		// absolute (mirrors the k8s agent's path.Join(mountPath, ...)).
+		p, cleanup, err := sm.copyOutToTemp(ctx, h, resolveScopePath(ua.Path))
+		if err != nil {
+			// fail-loud: artifact operations do not silently skip on error.
+			slog.Error("upload-artifact failed", "step", step.Name, "error", err)
+			_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
+				RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
+				StartedAt: started, EndedAt: time.Now().UTC(),
+			})
+			return fmt.Errorf("upload-artifact %q: copy from scope: %w", ua.Name, err)
+		}
+		defer cleanup()
+		artifactPath = p
+	} else {
+		artifactPath = resolveWorkspacePath(workDir, ua.Path)
+	}
+	if err := a.Client.UploadArtifact(ctx, runID, ua.Name, artifactPath); err != nil {
 		slog.Error("upload-artifact failed", "step", step.Name, "error", err)
 		_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
 			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
@@ -764,7 +944,7 @@ func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, r
 	return nil
 }
 
-func (a *Agent) executeDownloadArtifact(ctx context.Context, step api.ClaimStep, runID string, workDir string) error {
+func (a *Agent) executeDownloadArtifact(ctx context.Context, step api.ClaimStep, runID string, workDir string, sm *scopeManager, h crt.ContainerHandle) error {
 	started := time.Now().UTC()
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
 		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
@@ -775,8 +955,29 @@ func (a *Agent) executeDownloadArtifact(ctx context.Context, step api.ClaimStep,
 	if destDir == "" {
 		destDir = "."
 	}
-	destDir = resolveWorkspacePath(workDir, destDir)
-	if err := a.Client.DownloadArtifact(ctx, runID, da.Name, destDir); err != nil {
+
+	var hostDestDir string
+	var cleanup func()
+	if sm != nil {
+		tmp, err := os.MkdirTemp("", "ucd-scope-download-")
+		if err != nil {
+			slog.Error("download-artifact failed", "step", step.Name, "error", err)
+			_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
+				RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
+				StartedAt: started, EndedAt: time.Now().UTC(),
+			})
+			return fmt.Errorf("download-artifact %q: create temp dir: %w", da.Name, err)
+		}
+		hostDestDir = tmp
+		cleanup = func() { _ = os.RemoveAll(tmp) }
+	} else {
+		hostDestDir = resolveWorkspacePath(workDir, destDir)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	if err := a.Client.DownloadArtifact(ctx, runID, da.Name, hostDestDir); err != nil {
 		slog.Error("download-artifact failed", "step", step.Name, "error", err)
 		_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
 			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
@@ -784,6 +985,21 @@ func (a *Agent) executeDownloadArtifact(ctx context.Context, step api.ClaimStep,
 		})
 		return fmt.Errorf("download-artifact %q: %w", da.Name, err)
 	}
+
+	if sm != nil {
+		// destDir (default ".") is a CONTAINER-side path; resolve it against
+		// the scope container's working directory before copyIn so it is
+		// always absolute (mirrors the k8s agent's path.Join(mountPath, dest)).
+		if err := sm.copyIn(ctx, h, hostDestDir, resolveScopePath(destDir)); err != nil {
+			slog.Error("download-artifact failed", "step", step.Name, "error", err)
+			_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
+				RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
+				StartedAt: started, EndedAt: time.Now().UTC(),
+			})
+			return fmt.Errorf("download-artifact %q: copy into scope: %w", da.Name, err)
+		}
+	}
+
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
 		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded",
 		StartedAt: started, EndedAt: time.Now().UTC(),
@@ -796,7 +1012,10 @@ func (a *Agent) executeCacheStep(
 	step api.ClaimStep,
 	runID string,
 	sctx *safeStepCtx,
+	postHooksMu *sync.Mutex,
 	postHooks *[]func(context.Context),
+	sm *scopeManager,
+	h crt.ContainerHandle,
 ) error {
 	started := time.Now().UTC()
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
@@ -817,6 +1036,14 @@ func (a *Agent) executeCacheStep(
 	if cachePath == "" {
 		return fmt.Errorf("cache path template %q expanded to empty string", cs.Path)
 	}
+	// When scoped, cachePath is a CONTAINER-side path; resolve it against the
+	// scope container's working directory so it is always absolute before
+	// copyIn/copyOut (mirrors the k8s agent's path.Join(mount, expandedPath)).
+	// Left unresolved (as-authored) for the non-scoped host-workspace path.
+	scopedCachePath := cachePath
+	if sm != nil {
+		scopedCachePath = resolveScopePath(cachePath)
+	}
 	var restoreKeys []string
 	for _, rk := range cs.RestoreKeys {
 		expanded, _ := dsl.ExpandTemplate(rk, tplData)
@@ -825,14 +1052,37 @@ func (a *Agent) executeCacheStep(
 		}
 	}
 
+	// Cache stays warn+skip on error (lenient policy): a restore/save problem
+	// should not fail the step, unlike artifact upload/download.
 	if a.CacheStore != nil {
-		hit, err := cache.Restore(ctx, a.CacheStore, cachePath, key, restoreKeys)
-		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
-			slog.Warn("cache restore error", "step", step.Name, "error", err)
-		} else if hit {
-			slog.Info("cache hit", "step", step.Name, "key", key)
+		if sm != nil {
+			hostDir, err := os.MkdirTemp("", "ucd-scope-cache-restore-")
+			if err != nil {
+				slog.Warn("cache restore error", "step", step.Name, "error", err)
+			} else {
+				hit, rerr := cache.Restore(ctx, a.CacheStore, hostDir, key, restoreKeys)
+				if rerr != nil && !errors.Is(rerr, cache.ErrCacheMiss) {
+					slog.Warn("cache restore error", "step", step.Name, "error", rerr)
+				} else if hit {
+					if cerr := sm.copyIn(ctx, h, hostDir, scopedCachePath); cerr != nil {
+						slog.Warn("cache restore error", "step", step.Name, "error", cerr)
+					} else {
+						slog.Info("cache hit", "step", step.Name, "key", key)
+					}
+				} else {
+					slog.Info("cache miss", "step", step.Name, "key", key)
+				}
+				_ = os.RemoveAll(hostDir)
+			}
 		} else {
-			slog.Info("cache miss", "step", step.Name, "key", key)
+			hit, err := cache.Restore(ctx, a.CacheStore, cachePath, key, restoreKeys)
+			if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
+				slog.Warn("cache restore error", "step", step.Name, "error", err)
+			} else if hit {
+				slog.Info("cache hit", "step", step.Name, "key", key)
+			} else {
+				slog.Info("cache miss", "step", step.Name, "key", key)
+			}
 		}
 	}
 
@@ -840,10 +1090,25 @@ func (a *Agent) executeCacheStep(
 	if ttlDays == 0 {
 		ttlDays = 30
 	}
-	capturedPath := cachePath
+	capturedPath := scopedCachePath
 	capturedKey := key
+	postHooksMu.Lock()
 	*postHooks = append(*postHooks, func(hookCtx context.Context) {
 		if a.CacheStore == nil {
+			return
+		}
+		if sm != nil {
+			hostPath, cleanup, err := sm.copyOutToTemp(hookCtx, h, capturedPath)
+			if err != nil {
+				slog.Warn("cache save failed", "key", capturedKey, "error", err)
+				return
+			}
+			defer cleanup()
+			if err := cache.Save(hookCtx, a.CacheStore, hostPath, capturedKey, ttlDays); err != nil {
+				slog.Warn("cache save failed", "key", capturedKey, "error", err)
+			} else {
+				slog.Info("cache saved", "key", capturedKey)
+			}
 			return
 		}
 		if err := cache.Save(hookCtx, a.CacheStore, capturedPath, capturedKey, ttlDays); err != nil {
@@ -852,6 +1117,7 @@ func (a *Agent) executeCacheStep(
 			slog.Info("cache saved", "key", capturedKey)
 		}
 	})
+	postHooksMu.Unlock()
 
 	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
 		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),

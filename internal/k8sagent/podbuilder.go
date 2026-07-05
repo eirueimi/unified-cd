@@ -20,6 +20,24 @@ type SidecarSpec struct {
 	S3SecretName string // Secret providing UNIFIED_S3_* env for the direct-S3 sidecar
 }
 
+// buildArtifactSidecarContainer constructs the artifact-transfer sidecar
+// container from a SidecarSpec. Shared by BuildPod (workspace PVC pods) and
+// buildScopePod (isolated scope pods with a private scratch volume) — callers
+// are responsible for attaching whatever volume the sidecar should mount.
+func buildArtifactSidecarContainer(sidecar SidecarSpec) corev1.Container {
+	sc := corev1.Container{
+		Name:    artifactSidecarName,
+		Image:   sidecar.Image,
+		Command: []string{"unified-sidecar", "idle"},
+	}
+	if sidecar.S3SecretName != "" {
+		sc.EnvFrom = []corev1.EnvFromSource{
+			{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: sidecar.S3SecretName}}},
+		}
+	}
+	return sc
+}
+
 // BuildPod constructs a Pod object from the agent template and Job template.
 func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec) (*corev1.Pod, error) {
 	suffix := runID
@@ -87,17 +105,7 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 		}
 	}
 	if sidecar.Image != "" {
-		sc := corev1.Container{
-			Name:    artifactSidecarName,
-			Image:   sidecar.Image,
-			Command: []string{"unified-sidecar", "idle"},
-		}
-		if sidecar.S3SecretName != "" {
-			sc.EnvFrom = []corev1.EnvFromSource{
-				{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: sidecar.S3SecretName}}},
-			}
-		}
-		podSpec.Containers = append(podSpec.Containers, sc)
+		podSpec.Containers = append(podSpec.Containers, buildArtifactSidecarContainer(sidecar))
 	}
 
 	injectWorkspace(podSpec, wsCfg)

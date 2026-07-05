@@ -21,6 +21,29 @@ var stepRefGoRe = regexp.MustCompile(`\.Steps\.([A-Za-z_][A-Za-z0-9_]*)\.Outputs
 // stepRefCondRe matches condition-language "steps.NAME.outputs." references, capturing NAME.
 var stepRefCondRe = regexp.MustCompile(`\bsteps\.([A-Za-z_][A-Za-z0-9_]*)\.outputs\.`)
 
+// checkScopeStepAllowed rejects step shapes that don't make sense inside a
+// scoped uses (uses-level runsIn.image, i.e. a single shared environment):
+//   - nested runsIn (image/container): the scope IS the environment, a step
+//     can't declare a second one.
+//   - approval: would hold the isolated scope environment (container/pod)
+//     alive across a human wait, wasting resources and risking the k8s pod
+//     deadline killing it mid-wait.
+//   - call: spawns a separate child run on another agent/workspace that
+//     cannot see the scope's isolated filesystem, so it has undefined
+//     semantics inside a scope.
+func checkScopeStepAllowed(name string, r *dsl.RunsIn, hasApproval, hasCall bool) error {
+	if r != nil && (r.Image != "" || r.Container != "") {
+		return fmt.Errorf("step %q: runsIn is not allowed inside a uses running with runsIn.image (the scope is a single environment)", name)
+	}
+	if hasApproval {
+		return fmt.Errorf("step %q: approval is not allowed inside a uses running with runsIn.image (it would hold the scope environment alive across a human wait)", name)
+	}
+	if hasCall {
+		return fmt.Errorf("step %q: call is not allowed inside a uses running with runsIn.image (a called job cannot see the scope's isolated filesystem)", name)
+	}
+	return nil
+}
+
 func prefixedName(usesName, innerName string) string {
 	return usesName + usesPrefixSep + innerName
 }
@@ -28,6 +51,11 @@ func prefixedName(usesName, innerName string) string {
 func inputsStepName(usesName string) string {
 	return usesName + usesPrefixSep + "inputs"
 }
+
+// scopeIDFor returns the scope identity shared by all steps expanded from a
+// uses-level runsIn.image invocation. The agent keys the scope environment on
+// (ScopeID, MatrixKey) so matrix variants get independent environments.
+func scopeIDFor(usesName string) string { return "scope:" + usesName }
 
 // rewriteRefs rewrites .Params.X / params.X to point at the synthetic inputs-capture
 // step, and .Steps.<inner>.Outputs.X / steps.<inner>.outputs.X — where <inner> is one
@@ -86,6 +114,13 @@ func rewriteMap(m map[string]string, usesName string, innerNames map[string]bool
 func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn) ([]dsl.StepEntry, error) {
 	if len(tplSpec.Steps) == 0 {
 		return nil, fmt.Errorf("template job has no steps")
+	}
+
+	scopeMode := outerRunsIn != nil && outerRunsIn.Image != ""
+	var scopeID, scopeImage string
+	if scopeMode {
+		scopeID = scopeIDFor(usesName)
+		scopeImage = outerRunsIn.Image
 	}
 
 	innerNames := make(map[string]bool, len(tplSpec.Steps))
@@ -160,9 +195,18 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				if ps.Uses != nil {
 					return nil, fmt.Errorf("internal error: parallel step %q has unresolved nested uses; must be resolved before expandUsesStep", ps.Name)
 				}
-				ns.RunsIn = ps.RunsIn
-				if ns.RunsIn == nil {
-					ns.RunsIn = outerRunsIn
+				if scopeMode {
+					if err := checkScopeStepAllowed(ps.Name, ps.RunsIn, ps.Approval != nil, ps.Call != nil); err != nil {
+						return nil, err
+					}
+					ns.ScopeID = scopeID
+					ns.ScopeImage = scopeImage
+					ns.RunsIn = nil
+				} else {
+					ns.RunsIn = ps.RunsIn
+					if ns.RunsIn == nil {
+						ns.RunsIn = outerRunsIn
+					}
 				}
 				rp[i] = ns
 			}
@@ -179,9 +223,18 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				Container:       inner.Container,
 				TimeoutMinutes:  inner.TimeoutMinutes,
 			}
-			ns.RunsIn = inner.RunsIn
-			if ns.RunsIn == nil {
-				ns.RunsIn = outerRunsIn
+			if scopeMode {
+				if err := checkScopeStepAllowed(inner.Name, inner.RunsIn, inner.Approval != nil, inner.Call != nil); err != nil {
+					return nil, err
+				}
+				ns.ScopeID = scopeID
+				ns.ScopeImage = scopeImage
+				ns.RunsIn = nil
+			} else {
+				ns.RunsIn = inner.RunsIn
+				if ns.RunsIn == nil {
+					ns.RunsIn = outerRunsIn
+				}
 			}
 			if inner.Cache != nil {
 				c := *inner.Cache
