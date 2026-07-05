@@ -14,7 +14,7 @@ type ApplyJobRequest struct {
 // InputDef represents an input parameter definition for a job.
 type InputDef struct {
 	Name        string `json:"name"`
-	Type        string `json:"type"`        // "string" | "bool" | "int"
+	Type        string `json:"type"` // "string" | "bool" | "int"
 	Required    bool   `json:"required,omitempty"`
 	Default     any    `json:"default,omitempty"`
 	Description string `json:"description,omitempty"`
@@ -67,13 +67,13 @@ type AgentRegisterRequest struct {
 }
 
 type ClaimResponse struct {
-	RunID          string            `json:"runId"`
-	JobName        string            `json:"jobName"`
-	Params         map[string]string `json:"params"`
-	Stages         []ClaimStage      `json:"stages"`
-	Finally        []ClaimStage      `json:"finally,omitempty"`
-	JobOutputs     []string          `json:"jobOutputs"`
-	SecretsNeeded  []string          `json:"secretsNeeded"`
+	RunID         string            `json:"runId"`
+	JobName       string            `json:"jobName"`
+	Params        map[string]string `json:"params"`
+	Stages        []ClaimStage      `json:"stages"`
+	Finally       []ClaimStage      `json:"finally,omitempty"`
+	JobOutputs    []string          `json:"jobOutputs"`
+	SecretsNeeded []string          `json:"secretsNeeded"`
 	// FailFast removed
 	TimeoutMinutes        float64          `json:"timeoutMinutes,omitempty"`
 	PodTemplate           *dsl.PodTemplate `json:"podTemplate,omitempty"`
@@ -89,20 +89,22 @@ type ClaimStage struct {
 }
 
 type ClaimStep struct {
-	Index            int                   `json:"index"`
-	StageIndex       int                   `json:"stageIndex"`
-	Name             string                `json:"name"`
-	If               string                `json:"if,omitempty"`
-	Env              map[string]string     `json:"env,omitempty"`
-	Run              string                `json:"run"`
-	Outputs          map[string]string     `json:"outputs,omitempty"`
-	Call             *ClaimCallStep        `json:"call,omitempty"`
-	Cache            *dsl.CacheStep        `json:"cache,omitempty"`
-	Post             *PostStep             `json:"post,omitempty"`
+	Index      int               `json:"index"`
+	StageIndex int               `json:"stageIndex"`
+	Name       string            `json:"name"`
+	If         string            `json:"if,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Run        string            `json:"run"`
+	Outputs    map[string]string `json:"outputs,omitempty"`
+	Call       *ClaimCallStep    `json:"call,omitempty"`
+	Cache      *dsl.CacheStep    `json:"cache,omitempty"`
+	Post       *PostStep         `json:"post,omitempty"`
 	// Needs removed — use parallel: or foreach:
 	ContinueOnError  bool                  `json:"continueOnError,omitempty"`
 	Container        string                `json:"container,omitempty"`
 	RunsIn           *dsl.RunsIn           `json:"runsIn,omitempty"`
+	ScopeID          string                `json:"scopeID,omitempty"`
+	ScopeImage       string                `json:"scopeImage,omitempty"`
 	TimeoutMinutes   float64               `json:"timeoutMinutes,omitempty"`
 	UploadArtifact   *UploadArtifactStep   `json:"uploadArtifact,omitempty"`
 	DownloadArtifact *DownloadArtifactStep `json:"downloadArtifact,omitempty"`
