@@ -1,0 +1,158 @@
+package controller
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestAudit_JobApplyRecorded verifies that applying a Job is recorded with the
+// actor resolved from the PAT, the correct action classification, the job
+// name as the resource (pulled from the response body), and the response
+// status code.
+func TestAudit_JobApplyRecorded(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	body := api.ApplyJobRequest{YAML: `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: hello
+spec:
+  steps:
+    - name: greet
+      run: echo hi
+`}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/jobs", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.Equal(t, "test-bootstrap", logs[0].Actor)
+	assert.Equal(t, "job.apply", logs[0].Action)
+	assert.Equal(t, "hello", logs[0].Resource)
+	assert.Equal(t, "POST", logs[0].Method)
+	assert.Equal(t, "/api/v1/jobs", logs[0].Path)
+	assert.Equal(t, 200, logs[0].Status)
+}
+
+// TestAudit_SecretSetRecordsNameOnly verifies that setting a secret records
+// only the secret's name, and that the value never appears anywhere in the
+// audit row (path, action, or resource).
+func TestAudit_SecretSetRecordsNameOnly(t *testing.T) {
+	s, pg := newTestServerWithKM(t)
+
+	body, _ := json.Marshal(api.SetSecretRequest{Name: "AWS_KEY", Value: "super-secret-value-xyz"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.Equal(t, "secret.set", logs[0].Action)
+	assert.Equal(t, "AWS_KEY", logs[0].Resource)
+	assert.NotContains(t, logs[0].Resource, "super-secret-value-xyz")
+	assert.NotContains(t, logs[0].Path, "super-secret-value-xyz")
+}
+
+// TestAudit_SecretDeleteRecordsName verifies deletes use the URL param, not a body.
+func TestAudit_SecretDeleteRecordsName(t *testing.T) {
+	s, pg := newTestServerWithKM(t)
+
+	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "DB_PASS", Value: "hunter2"})
+	setReq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
+	setReq.Header.Set("Authorization", "Bearer secret")
+	setReq.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), setReq)
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/secrets/DB_PASS", nil)
+	delReq.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, delReq)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
+	require.NoError(t, err)
+	require.Len(t, logs, 2) // set + delete
+	assert.Equal(t, "secret.delete", logs[0].Action) // newest first
+	assert.Equal(t, "DB_PASS", logs[0].Resource)
+}
+
+// TestAudit_GetRequestsNotRecorded verifies read-only GET calls are never audited.
+func TestAudit_GetRequestsNotRecorded(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, logs, 0)
+}
+
+// TestAudit_AgentEndpointsNotRecorded verifies agent-facing BearerAuth routes
+// (which have no human Principal) are excluded from the audit trail.
+func TestAudit_AgentEndpointsNotRecorded(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	body, _ := json.Marshal(map[string]any{"hostname": "h", "os": "linux"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, logs, 0)
+}
+
+// TestAudit_TokenCreateAndDelete verifies the token lifecycle is recorded with
+// the token name (from the response body for create, URL param for delete).
+func TestAudit_TokenCreateAndDelete(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	body, _ := json.Marshal(api.CreatePATRequest{Name: "ci-bot"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tokens", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var resp api.CreatePATResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/tokens/"+resp.ID, nil)
+	delReq.Header.Set("Authorization", "Bearer secret")
+	delRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(delRec, delReq)
+	require.Equal(t, http.StatusNoContent, delRec.Code, delRec.Body.String())
+
+	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
+	require.NoError(t, err)
+	require.Len(t, logs, 2)
+	assert.Equal(t, "token.delete", logs[0].Action)
+	assert.Equal(t, resp.ID, logs[0].Resource)
+	assert.Equal(t, "token.create", logs[1].Action)
+	assert.Equal(t, "ci-bot", logs[1].Resource)
+}
