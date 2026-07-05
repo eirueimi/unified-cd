@@ -81,7 +81,9 @@ func rewriteMap(m map[string]string, usesName string, innerNames map[string]bool
 // with is the already-stringified `uses.with` map (via UsesStep.WithAsStrings).
 // tplSpec must have at least one step (the caller is responsible for having already
 // validated the fetched job, e.g. via dsl.Job.Validate()).
-func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec) ([]dsl.StepEntry, error) {
+// outerRunsIn is the RunsIn declared on the outer `uses` step (may be nil); each
+// inlined template step keeps its own RunsIn if set, otherwise inherits outerRunsIn.
+func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn) ([]dsl.StepEntry, error) {
 	if len(tplSpec.Steps) == 0 {
 		return nil, fmt.Errorf("template job has no steps")
 	}
@@ -158,6 +160,10 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec) (
 				if ps.Uses != nil {
 					return nil, fmt.Errorf("internal error: parallel step %q has unresolved nested uses; must be resolved before expandUsesStep", ps.Name)
 				}
+				ns.RunsIn = ps.RunsIn
+				if ns.RunsIn == nil {
+					ns.RunsIn = outerRunsIn
+				}
 				rp[i] = ns
 			}
 			renamed[idx] = dsl.StepEntry{Parallel: rp}
@@ -172,6 +178,10 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec) (
 				ContinueOnError: inner.ContinueOnError,
 				Container:       inner.Container,
 				TimeoutMinutes:  inner.TimeoutMinutes,
+			}
+			ns.RunsIn = inner.RunsIn
+			if ns.RunsIn == nil {
+				ns.RunsIn = outerRunsIn
 			}
 			if inner.Cache != nil {
 				c := *inner.Cache
