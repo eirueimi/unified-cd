@@ -14,18 +14,19 @@ Do not write in Japanese or any other language.
 
 ## Feature Development Workflow
 
-**Always use a git worktree when implementing a new feature or fixing a non-trivial bug.**
+**Always create a git worktree before committing anything.** Never commit from the main working tree — cut an isolated worktree on a dedicated branch first, make your commits there, then integrate. This applies to every change that ends in a commit, not just large features.
 
 ```bash
-# Create an isolated worktree for the feature
-git worktree add ../unified-cd-<feature-name> -b <feature-name>
+# Create an isolated worktree BEFORE making any commit
+git worktree add ../unified-cd-<change-name> -b <change-name>
 
-# Work in the worktree
-cd ../unified-cd-<feature-name>
-# ... implement the feature ...
+# Work and commit inside the worktree
+cd ../unified-cd-<change-name>
+# ... make changes ...
+git add -A && git commit -m "..."
 
 # When done, merge and clean up
-git worktree remove ../unified-cd-<feature-name>
+git worktree remove ../unified-cd-<change-name>
 ```
 
 This keeps the main working tree clean and allows parallel development without branch-switching side effects.
