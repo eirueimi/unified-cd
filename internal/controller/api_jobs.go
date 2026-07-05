@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -18,22 +20,38 @@ func (s *Server) handleApplyJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	job, err := dsl.Parse(strings.NewReader(req.YAML))
+	stored, err := s.upsertJobFromYAML(r.Context(), req.YAML, "")
 	if err != nil {
-		http.Error(w, "invalid yaml: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	specJSON, err := json.Marshal(job.Spec)
-	if err != nil {
-		http.Error(w, "marshal spec: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	stored, err := s.store.UpsertJob(r.Context(), job.Metadata.Name, job.APIVersion, specJSON)
-	if err != nil {
-		http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, http.StatusOK, stored)
+}
+
+// applyJobFromYAML is a thin wrapper used by tests.
+func (s *Server) applyJobFromYAML(ctx context.Context, yaml string) error {
+	_, err := s.upsertJobFromYAML(ctx, yaml, "")
+	return err
+}
+
+// upsertJobFromYAML parses a Job document, folds dirOverride (when non-empty)
+// into metadata.annotations["path"], and upserts under the qualified name.
+func (s *Server) upsertJobFromYAML(ctx context.Context, yaml, dirOverride string) (*api.Job, error) {
+	job, err := dsl.Parse(strings.NewReader(yaml))
+	if err != nil {
+		return nil, fmt.Errorf("invalid yaml: %w", err)
+	}
+	if dirOverride != "" {
+		if job.Metadata.Annotations == nil {
+			job.Metadata.Annotations = map[string]string{}
+		}
+		job.Metadata.Annotations["path"] = dirOverride
+	}
+	specJSON, err := json.Marshal(job.Spec)
+	if err != nil {
+		return nil, fmt.Errorf("marshal spec: %w", err)
+	}
+	return s.store.UpsertJob(ctx, job.Metadata.QualifiedName(), job.APIVersion, specJSON)
 }
 
 // handleListJobs returns all registered Jobs.

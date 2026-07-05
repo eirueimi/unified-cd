@@ -209,3 +209,31 @@ func TestAPI_DeleteJob_CascadesRuns(t *testing.T) {
 	_, err := pg.GetRun(t.Context(), run.ID)
 	assert.Error(t, err, "run should be cascade-deleted")
 }
+
+func TestHandleApplyJob_UsesQualifiedName(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	s := &Server{store: pg}
+	ctx := context.Background()
+
+	const y = `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build
+  annotations:
+    path: team-a
+spec:
+  steps:
+    - name: c
+      run: "true"
+`
+	require.NoError(t, applyJobYAML(t, s, y))
+
+	job, err := pg.GetJob(ctx, "team-a/build")
+	require.NoError(t, err)
+	assert.Equal(t, "team-a/build", job.Name)
+}
+
+func applyJobYAML(t *testing.T, s *Server, yaml string) error {
+	t.Helper()
+	return s.applyJobFromYAML(context.Background(), yaml)
+}
