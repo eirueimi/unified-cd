@@ -207,7 +207,7 @@
 <div class="container">
   <AuthSetup />
   <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">
-    {#if run}<a href="#/jobs/{run.jobName}">← {run.jobName}</a>{/if}
+    {#if run}<a href="#/jobs/{encodeURIComponent(run.jobName)}">← {run.jobName}</a>{/if}
     <h1>Run Detail</h1>
     {#if run && ["Running", "Queued", "Pending"].includes(run.status)}
       <button class="btn btn-danger" on:click={cancelRun}>Cancel</button>

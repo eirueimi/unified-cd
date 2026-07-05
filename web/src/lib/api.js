@@ -68,3 +68,10 @@ export async function apiFetchText(path, options = {}) {
   if (!resp.ok) throw new Error(await resp.text());
   return resp.text();
 }
+
+// jobPath encodes a qualified job name for use as a URL path under
+// /api/v1/jobs/ — each segment is percent-encoded but the slashes are kept
+// literal so the controller's catch-all route captures the full name.
+export function jobPath(name) {
+  return String(name).split('/').map(encodeURIComponent).join('/');
+}
