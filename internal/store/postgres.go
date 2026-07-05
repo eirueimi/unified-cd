@@ -1531,38 +1531,38 @@ func (p *Postgres) UpsertAppSource(ctx context.Context, name string, spec []byte
 		INSERT INTO app_sources(name, spec)
 		VALUES ($1, $2)
 		ON CONFLICT (name) DO UPDATE
-		  SET spec = EXCLUDED.spec,
-		      last_commit = '',
-		      updated_at = NOW()
-		RETURNING name, spec, last_synced_at, last_commit, managed_jobs, updated_at`
+		  SET spec = EXCLUDED.spec, last_commit = '', updated_at = NOW()
+		RETURNING name, spec, last_synced_at, last_commit, managed_resources, updated_at`
 	var a AppSource
-	var managedJobs []string
-	err := p.pool.QueryRow(ctx, q, name, spec).
-		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt)
-	if err != nil {
+	var mr []byte
+	if err := p.pool.QueryRow(ctx, q, name, spec).
+		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &mr, &a.UpdatedAt); err != nil {
 		return nil, fmt.Errorf("upsert AppSource: %w", err)
 	}
-	a.ManagedJobs = managedJobs
+	if err := unmarshalManagedResources(mr, &a); err != nil {
+		return nil, err
+	}
 	return &a, nil
 }
 
 // GetAppSource retrieves an AppSource by name.
 func (p *Postgres) GetAppSource(ctx context.Context, name string) (*AppSource, error) {
-	const q = `SELECT name, spec, last_synced_at, last_commit, managed_jobs, updated_at FROM app_sources WHERE name = $1`
+	const q = `SELECT name, spec, last_synced_at, last_commit, managed_resources, updated_at FROM app_sources WHERE name = $1`
 	var a AppSource
-	var managedJobs []string
-	err := p.pool.QueryRow(ctx, q, name).
-		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt)
-	if err != nil {
+	var mr []byte
+	if err := p.pool.QueryRow(ctx, q, name).
+		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &mr, &a.UpdatedAt); err != nil {
 		return nil, fmt.Errorf("get AppSource name=%s: %w", name, err)
 	}
-	a.ManagedJobs = managedJobs
+	if err := unmarshalManagedResources(mr, &a); err != nil {
+		return nil, err
+	}
 	return &a, nil
 }
 
 // ListAppSources returns all AppSources ordered by name.
 func (p *Postgres) ListAppSources(ctx context.Context) ([]AppSource, error) {
-	const q = `SELECT name, spec, last_synced_at, last_commit, managed_jobs, updated_at FROM app_sources ORDER BY name`
+	const q = `SELECT name, spec, last_synced_at, last_commit, managed_resources, updated_at FROM app_sources ORDER BY name`
 	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1571,11 +1571,13 @@ func (p *Postgres) ListAppSources(ctx context.Context) ([]AppSource, error) {
 	var out []AppSource
 	for rows.Next() {
 		var a AppSource
-		var managedJobs []string
-		if err := rows.Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt); err != nil {
+		var mr []byte
+		if err := rows.Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &mr, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
-		a.ManagedJobs = managedJobs
+		if err := unmarshalManagedResources(mr, &a); err != nil {
+			return nil, err
+		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
@@ -1587,15 +1589,31 @@ func (p *Postgres) DeleteAppSource(ctx context.Context, name string) error {
 	return err
 }
 
-// UpdateAppSourceSyncState updates the sync state of an AppSource (last commit, sync time, and managed job list).
-func (p *Postgres) UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managedJobs []string) error {
-	if managedJobs == nil {
-		managedJobs = []string{}
+// UpdateAppSourceSyncState updates the sync state of an AppSource (last commit, sync time, and managed resource list).
+func (p *Postgres) UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managed []ResourceRef) error {
+	if managed == nil {
+		managed = []ResourceRef{}
 	}
-	_, err := p.pool.Exec(ctx,
-		`UPDATE app_sources SET last_commit = $1, last_synced_at = $2, managed_jobs = $3, updated_at = NOW() WHERE name = $4`,
-		lastCommit, syncedAt, managedJobs, name)
+	data, err := json.Marshal(managed)
+	if err != nil {
+		return fmt.Errorf("marshal managed resources: %w", err)
+	}
+	_, err = p.pool.Exec(ctx,
+		`UPDATE app_sources SET last_commit = $1, last_synced_at = $2, managed_resources = $3, updated_at = NOW() WHERE name = $4`,
+		lastCommit, syncedAt, data, name)
 	return err
+}
+
+// unmarshalManagedResources decodes the managed_resources jsonb column into a.ManagedResources.
+func unmarshalManagedResources(raw []byte, a *AppSource) error {
+	if len(raw) == 0 {
+		a.ManagedResources = nil
+		return nil
+	}
+	if err := json.Unmarshal(raw, &a.ManagedResources); err != nil {
+		return fmt.Errorf("unmarshal managed_resources for %q: %w", a.Name, err)
+	}
+	return nil
 }
 
 // ResetAppSourceCommit resets the last_commit of an AppSource to an empty string.

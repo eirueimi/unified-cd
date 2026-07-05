@@ -64,14 +64,20 @@ type SecretMeta struct {
 	CreatedAt time.Time
 }
 
+// ResourceRef identifies a resource managed by an AppSource.
+type ResourceRef struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
 // AppSource holds a GitOps source definition.
 type AppSource struct {
-	Name         string
-	Spec         []byte
-	LastSyncedAt *time.Time
-	LastCommit   string
-	ManagedJobs  []string
-	UpdatedAt    time.Time
+	Name             string
+	Spec             []byte
+	LastSyncedAt     *time.Time
+	LastCommit       string
+	ManagedResources []ResourceRef
+	UpdatedAt        time.Time
 }
 
 // GitCredential holds per-host Git credentials.
@@ -217,7 +223,7 @@ type Store interface {
 	GetAppSource(ctx context.Context, name string) (*AppSource, error)
 	ListAppSources(ctx context.Context) ([]AppSource, error)
 	DeleteAppSource(ctx context.Context, name string) error
-	UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managedJobs []string) error
+	UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managed []ResourceRef) error
 	ResetAppSourceCommit(ctx context.Context, name string) error
 
 	// Git resolver helpers

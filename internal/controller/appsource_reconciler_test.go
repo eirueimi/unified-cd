@@ -88,7 +88,7 @@ func TestReconciler_PruneDeletesRemovedJobs(t *testing.T) {
 	require.NoError(t, err)
 
 	_, _ = pg.UpsertJob(ctx, "old-job", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"x"}]}`))
-	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute), []string{"old-job"}))
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute), []store.ResourceRef{{Kind: "Job", Name: "old-job"}}))
 
 	fetcher := &mockAppSourceFetcher{
 		sha:   "new-sha",
@@ -112,7 +112,7 @@ func TestReconciler_WarnOnlyWithoutPrune(t *testing.T) {
 	require.NoError(t, err)
 
 	_, _ = pg.UpsertJob(ctx, "old-job", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"x"}]}`))
-	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute), []string{"old-job"}))
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute), []store.ResourceRef{{Kind: "Job", Name: "old-job"}}))
 
 	fetcher := &mockAppSourceFetcher{
 		sha:   "new-sha",

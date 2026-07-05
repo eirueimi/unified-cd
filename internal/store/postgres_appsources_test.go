@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func TestPostgres_AppSourceCRUD(t *testing.T) {
 	assert.JSONEq(t, string(spec), string(a.Spec))
 	assert.Nil(t, a.LastSyncedAt)
 	assert.Equal(t, "", a.LastCommit)
-	assert.Empty(t, a.ManagedJobs)
+	assert.Empty(t, a.ManagedResources)
 
 	// Get
 	got, err := pg.GetAppSource(ctx, "my-pipelines")
@@ -36,12 +37,12 @@ func TestPostgres_AppSourceCRUD(t *testing.T) {
 
 	// UpdateAppSourceSyncState
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-pipelines", "abc123", now, []string{"job-a", "job-b"}))
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-pipelines", "abc123", now, []ResourceRef{{Kind: "Job", Name: "job-a"}, {Kind: "Job", Name: "job-b"}}))
 	got, err = pg.GetAppSource(ctx, "my-pipelines")
 	require.NoError(t, err)
 	assert.Equal(t, "abc123", got.LastCommit)
 	assert.WithinDuration(t, now, *got.LastSyncedAt, time.Second)
-	assert.Equal(t, []string{"job-a", "job-b"}, got.ManagedJobs)
+	assert.Equal(t, []ResourceRef{{Kind: "Job", Name: "job-a"}, {Kind: "Job", Name: "job-b"}}, got.ManagedResources)
 
 	// ResetAppSourceCommit
 	require.NoError(t, pg.ResetAppSourceCommit(ctx, "my-pipelines"))
@@ -62,6 +63,25 @@ func TestPostgres_AppSourceCRUD(t *testing.T) {
 	require.NoError(t, pg.DeleteAppSource(ctx, "my-pipelines"))
 	_, err = pg.GetAppSource(ctx, "my-pipelines")
 	require.Error(t, err)
+}
+
+func TestAppSource_ManagedResourcesRoundTrip(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	if _, err := pg.UpsertAppSource(ctx, "src1", []byte(`{"repoURL":"https://x/y","targetRevision":"main","path":"jobs"}`)); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	want := []ResourceRef{{Kind: "Job", Name: "build"}, {Kind: "Schedule", Name: "nightly"}}
+	if err := pg.UpdateAppSourceSyncState(ctx, "src1", "sha1", time.Now(), want); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, err := pg.GetAppSource(ctx, "src1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !reflect.DeepEqual(got.ManagedResources, want) {
+		t.Fatalf("round-trip mismatch: got %+v want %+v", got.ManagedResources, want)
+	}
 }
 
 func TestPostgres_DeleteJob(t *testing.T) {

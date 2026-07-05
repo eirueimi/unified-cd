@@ -131,26 +131,29 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 	}
 
 	// Handle Jobs that were managed previously but are no longer present in the current file list.
-	for _, prev := range src.ManagedJobs {
-		if currentJobNames[prev] {
+	for _, prev := range src.ManagedResources {
+		if prev.Kind != "Job" {
+			continue
+		}
+		if currentJobNames[prev.Name] {
 			continue
 		}
 		if spec.SyncPolicy.Prune {
-			if err := st.DeleteJob(ctx, prev); err != nil {
-				slog.Warn("appsource reconciler: failed to delete Job", "appsource", src.Name, "job", prev, "error", err)
+			if err := st.DeleteJob(ctx, prev.Name); err != nil {
+				slog.Warn("appsource reconciler: failed to delete Job", "appsource", src.Name, "job", prev.Name, "error", err)
 			} else {
-				slog.Info("appsource reconciler: deleted Job (prune)", "appsource", src.Name, "job", prev)
+				slog.Info("appsource reconciler: deleted Job (prune)", "appsource", src.Name, "job", prev.Name)
 			}
 		} else {
-			slog.Warn("appsource reconciler: Job removed from Git is still present (set syncPolicy.prune: true to delete it)", "appsource", src.Name, "job", prev)
+			slog.Warn("appsource reconciler: Job removed from Git is still present (set syncPolicy.prune: true to delete it)", "appsource", src.Name, "job", prev.Name)
 		}
 	}
 
-	managedJobs := make([]string, 0, len(currentJobNames))
+	managed := make([]store.ResourceRef, 0, len(currentJobNames))
 	for name := range currentJobNames {
-		managedJobs = append(managedJobs, name)
+		managed = append(managed, store.ResourceRef{Kind: "Job", Name: name})
 	}
-	return st.UpdateAppSourceSyncState(ctx, src.Name, headSHA, time.Now(), managedJobs)
+	return st.UpdateAppSourceSyncState(ctx, src.Name, headSHA, time.Now(), managed)
 }
 
 // resolveCredential resolves Git credentials based on the AppSource's repoURL and gitCredentialRef.
