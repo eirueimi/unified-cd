@@ -54,11 +54,12 @@ func Detect(preferred string) (ContainerRuntime, error) {
 }
 
 // driverFor maps a runtime name to a driver, or nil if unknown.
-// Apple's "container" driver is added in a later task.
 func driverFor(name string) ContainerRuntime {
 	switch name {
 	case "docker", "podman", "nerdctl", "wslc":
 		return &ociCLI{bin: name}
+	case "container":
+		return &appleContainer{}
 	default:
 		return nil
 	}
