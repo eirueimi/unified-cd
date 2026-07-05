@@ -341,8 +341,8 @@ func buildImageStepPod(runID, namespace, image string, env map[string]string, de
 			RestartPolicy:         corev1.RestartPolicyNever,
 			ActiveDeadlineSeconds: &deadline,
 			Containers: []corev1.Container{{
-				Name:    "step",
-				Image:   image,
+				Name:      "step",
+				Image:     image,
 				Command:   []string{"sleep", "infinity"},
 				Env:       envVars,
 				Resources: toResourceRequirements(resources),
