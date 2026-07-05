@@ -21,11 +21,14 @@ type TemplateData struct {
 	Stdout  string            // only set during output-capture template evaluation
 	Secrets map[string]string // resolved secret values (must not be written to logs)
 	Foreach map[string]string // set during foreach step execution; key = ForeachDef.Key
+	Matrix  map[string]string // set during matrix/foreach step execution; key = dimension name
 }
 
 // StepData holds the captured outputs of a previously executed step.
+// Non-matrix steps store plain strings; matrix steps store an aggregated
+// map[string]string keyed by combination key (e.g. "linux/amd64").
 type StepData struct {
-	Outputs map[string]string
+	Outputs map[string]any
 }
 
 // secretsRefRe matches "{{ secrets.NAME }}" (without leading dot).
@@ -120,6 +123,49 @@ var funcMap = template.FuncMap{
 			h.Write(data)
 		}
 		return hex.EncodeToString(h.Sum(nil)), nil
+	},
+	// keys returns the sorted keys of a map (matrix aggregated outputs helper).
+	"keys": func(m any) []string {
+		var out []string
+		switch t := m.(type) {
+		case map[string]string:
+			for k := range t {
+				out = append(out, k)
+			}
+		case map[string]any:
+			for k := range t {
+				out = append(out, k)
+			}
+		}
+		sort.Strings(out)
+		return out
+	},
+	// values returns map values ordered by sorted key.
+	"values": func(m any) []string {
+		var ks []string
+		switch t := m.(type) {
+		case map[string]string:
+			for k := range t {
+				ks = append(ks, k)
+			}
+			sort.Strings(ks)
+			out := make([]string, len(ks))
+			for i, k := range ks {
+				out[i] = t[k]
+			}
+			return out
+		case map[string]any:
+			for k := range t {
+				ks = append(ks, k)
+			}
+			sort.Strings(ks)
+			out := make([]string, len(ks))
+			for i, k := range ks {
+				out[i] = OutputValueString(t[k])
+			}
+			return out
+		}
+		return nil
 	},
 }
 
