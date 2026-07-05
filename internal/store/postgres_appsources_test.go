@@ -64,6 +64,41 @@ func TestPostgres_AppSourceCRUD(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestAppSource_SyncStatusLifecycle(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.UpsertAppSource(ctx, "s1", []byte(`{}`))
+	require.NoError(t, err)
+
+	// initial values are empty
+	got, err := pg.GetAppSource(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, "", got.SyncStatus)
+	assert.Equal(t, "", got.LastError)
+
+	// transition to Syncing
+	require.NoError(t, pg.SetAppSourceSyncStatus(ctx, "s1", "Syncing", ""))
+	got, err = pg.GetAppSource(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, "Syncing", got.SyncStatus)
+
+	// Failed + error
+	require.NoError(t, pg.SetAppSourceSyncStatus(ctx, "s1", "Failed", "boom"))
+	got, err = pg.GetAppSource(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, "Failed", got.SyncStatus)
+	assert.Equal(t, "boom", got.LastError)
+
+	// recording a successful sync sets Synced and clears the error
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "s1", "sha1", time.Now(), []string{"j"}))
+	got, err = pg.GetAppSource(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, "Synced", got.SyncStatus)
+	assert.Equal(t, "", got.LastError)
+	assert.Equal(t, "sha1", got.LastCommit)
+}
+
 func TestPostgres_DeleteJob(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()

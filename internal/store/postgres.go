@@ -1534,11 +1534,11 @@ func (p *Postgres) UpsertAppSource(ctx context.Context, name string, spec []byte
 		  SET spec = EXCLUDED.spec,
 		      last_commit = '',
 		      updated_at = NOW()
-		RETURNING name, spec, last_synced_at, last_commit, managed_jobs, updated_at`
+		RETURNING name, spec, last_synced_at, last_commit, managed_jobs, updated_at, sync_status, last_error`
 	var a AppSource
 	var managedJobs []string
 	err := p.pool.QueryRow(ctx, q, name, spec).
-		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt)
+		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt, &a.SyncStatus, &a.LastError)
 	if err != nil {
 		return nil, fmt.Errorf("upsert AppSource: %w", err)
 	}
@@ -1548,11 +1548,11 @@ func (p *Postgres) UpsertAppSource(ctx context.Context, name string, spec []byte
 
 // GetAppSource retrieves an AppSource by name.
 func (p *Postgres) GetAppSource(ctx context.Context, name string) (*AppSource, error) {
-	const q = `SELECT name, spec, last_synced_at, last_commit, managed_jobs, updated_at FROM app_sources WHERE name = $1`
+	const q = `SELECT name, spec, last_synced_at, last_commit, managed_jobs, updated_at, sync_status, last_error FROM app_sources WHERE name = $1`
 	var a AppSource
 	var managedJobs []string
 	err := p.pool.QueryRow(ctx, q, name).
-		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt)
+		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt, &a.SyncStatus, &a.LastError)
 	if err != nil {
 		return nil, fmt.Errorf("get AppSource name=%s: %w", name, err)
 	}
@@ -1562,7 +1562,7 @@ func (p *Postgres) GetAppSource(ctx context.Context, name string) (*AppSource, e
 
 // ListAppSources returns all AppSources ordered by name.
 func (p *Postgres) ListAppSources(ctx context.Context) ([]AppSource, error) {
-	const q = `SELECT name, spec, last_synced_at, last_commit, managed_jobs, updated_at FROM app_sources ORDER BY name`
+	const q = `SELECT name, spec, last_synced_at, last_commit, managed_jobs, updated_at, sync_status, last_error FROM app_sources ORDER BY name`
 	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1572,7 +1572,7 @@ func (p *Postgres) ListAppSources(ctx context.Context) ([]AppSource, error) {
 	for rows.Next() {
 		var a AppSource
 		var managedJobs []string
-		if err := rows.Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt, &a.SyncStatus, &a.LastError); err != nil {
 			return nil, err
 		}
 		a.ManagedJobs = managedJobs
@@ -1588,12 +1588,13 @@ func (p *Postgres) DeleteAppSource(ctx context.Context, name string) error {
 }
 
 // UpdateAppSourceSyncState updates the sync state of an AppSource (last commit, sync time, and managed job list).
+// A successful sync also marks the AppSource as Synced and clears any recorded error.
 func (p *Postgres) UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managedJobs []string) error {
 	if managedJobs == nil {
 		managedJobs = []string{}
 	}
 	_, err := p.pool.Exec(ctx,
-		`UPDATE app_sources SET last_commit = $1, last_synced_at = $2, managed_jobs = $3, updated_at = NOW() WHERE name = $4`,
+		`UPDATE app_sources SET last_commit = $1, last_synced_at = $2, managed_jobs = $3, sync_status = 'Synced', last_error = '', updated_at = NOW() WHERE name = $4`,
 		lastCommit, syncedAt, managedJobs, name)
 	return err
 }
@@ -1603,6 +1604,14 @@ func (p *Postgres) ResetAppSourceCommit(ctx context.Context, name string) error 
 	_, err := p.pool.Exec(ctx,
 		`UPDATE app_sources SET last_commit = '', updated_at = NOW() WHERE name = $1`,
 		name)
+	return err
+}
+
+// SetAppSourceSyncStatus sets the sync_status and last_error of an AppSource.
+func (p *Postgres) SetAppSourceSyncStatus(ctx context.Context, name, status, lastError string) error {
+	_, err := p.pool.Exec(ctx,
+		`UPDATE app_sources SET sync_status = $1, last_error = $2, updated_at = NOW() WHERE name = $3`,
+		status, lastError, name)
 	return err
 }
 

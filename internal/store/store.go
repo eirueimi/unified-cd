@@ -72,6 +72,8 @@ type AppSource struct {
 	LastCommit   string
 	ManagedJobs  []string
 	UpdatedAt    time.Time
+	SyncStatus   string
+	LastError    string
 }
 
 // GitCredential holds per-host Git credentials.
@@ -219,6 +221,7 @@ type Store interface {
 	DeleteAppSource(ctx context.Context, name string) error
 	UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managedJobs []string) error
 	ResetAppSourceCommit(ctx context.Context, name string) error
+	SetAppSourceSyncStatus(ctx context.Context, name, status, lastError string) error
 
 	// Git resolver helpers
 	ListPendingRuns(ctx context.Context, limit int) ([]PendingRun, error)
