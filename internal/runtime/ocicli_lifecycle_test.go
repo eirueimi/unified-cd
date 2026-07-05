@@ -51,3 +51,44 @@ func TestOCICLICopyInArgv(t *testing.T) {
 		}
 	}
 }
+
+// TestOCICLICreateArgv_WorkDir is the regression test for Finding 1: the host
+// scope container must be launched with a defined working directory (`-w`),
+// mirroring the k8s scope pod's WorkingDir. Without this, scoped `run:` steps
+// and `docker exec` have no cwd, and relative container-side paths passed to
+// `docker cp` are rejected ("destination path must be absolute").
+//
+// Uses createArgs directly (not Create+withFakeExec): Create shells out via
+// exec.Cmd.Output() to read the container id from stdout, and the fake `true`
+// command used elsewhere in this file produces no stdout, so it can't stand
+// in for a real container-id-producing `run -d`. createArgs isolates the pure
+// argv-building logic that Create dispatches through exec.
+func TestOCICLICreateArgv_WorkDir(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{Image: "golang:1.22", WorkDir: "/workspace"})
+	foundFlag := false
+	for i, a := range got {
+		if a == "-w" {
+			foundFlag = true
+			if i+1 >= len(got) || got[i+1] != "/workspace" {
+				t.Fatalf("expected -w to be followed by /workspace, argv = %v", got)
+			}
+		}
+	}
+	if !foundFlag {
+		t.Fatalf("expected -w /workspace in argv, got %v", got)
+	}
+}
+
+// TestOCICLICreateArgv_NoWorkDirWhenEmpty confirms empty WorkDir omits -w
+// entirely (preserves prior behavior / driver default) rather than passing
+// -w "".
+func TestOCICLICreateArgv_NoWorkDirWhenEmpty(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{Image: "golang:1.22"})
+	for _, a := range got {
+		if a == "-w" {
+			t.Fatalf("expected no -w flag when WorkDir is empty, argv = %v", got)
+		}
+	}
+}

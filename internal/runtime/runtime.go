@@ -30,6 +30,11 @@ type CreateSpec struct {
 	Env      []string // KEY=VALUE, injected as -e
 	CPULimit string
 	MemLimit string
+	// WorkDir sets the container's working directory (docker/podman/Apple
+	// container's `run -w`), so scoped `run:` steps and `exec` default there
+	// instead of an undefined working directory. Empty means "no -w flag"
+	// (driver default). See scope.go's scopeWorkDir for the host agent's value.
+	WorkDir string
 }
 
 // ExecSpec describes one script execution inside a running container.

@@ -57,7 +57,10 @@ func (a *appleContainer) Run(ctx context.Context, spec RunSpec, stdout, stderr i
 // Apple's `container` CLI is docker-compatible for run/exec/cp/rm (see
 // runArgs/Pull/Run above, which already used the same grammar before this
 // change).
-func (a *appleContainer) Create(ctx context.Context, spec CreateSpec) (ContainerHandle, error) {
+// createArgs builds the argv for `run -d`; extracted from Create so tests can
+// assert on the argv (notably -w for spec.WorkDir) without depending on
+// exec.Cmd.Output()'s stdout plumbing. Mirrors ociCLI.createArgs.
+func (a *appleContainer) createArgs(spec CreateSpec) []string {
 	args := []string{"run", "-d"}
 	if spec.CPULimit != "" {
 		args = append(args, "--cpus", spec.CPULimit)
@@ -65,10 +68,18 @@ func (a *appleContainer) Create(ctx context.Context, spec CreateSpec) (Container
 	if spec.MemLimit != "" {
 		args = append(args, "--memory", spec.MemLimit)
 	}
+	if spec.WorkDir != "" {
+		args = append(args, "-w", spec.WorkDir)
+	}
 	for _, e := range spec.Env {
 		args = append(args, "-e", e)
 	}
 	args = append(args, spec.Image, "sleep", "infinity")
+	return args
+}
+
+func (a *appleContainer) Create(ctx context.Context, spec CreateSpec) (ContainerHandle, error) {
+	args := a.createArgs(spec)
 	out, err := execCommand(ctx, "container", args...).Output()
 	if err != nil {
 		return ContainerHandle{}, fmt.Errorf("container run -d: %w", err)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -455,8 +456,16 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			if step.Cache != nil {
 				sm, h, serr := resolveScopeHandle(stepCtx, step, getScopes)
 				if serr != nil {
-					slog.Error("cache step failed", "step", step.Name, "error", serr)
-					markFailed(context.WithoutCancel(stepCtx))
+					// Cache stays warn+skip (lenient policy), matching the
+					// k8s agent: a scope pod/container that never becomes
+					// available must not fail the step, just skip the cache
+					// operation (no restore, no deferred save). Unlike
+					// artifact upload/download, which remain fail-loud.
+					slog.Warn("cache scope unavailable; skipping cache for step", "step", step.Name, "error", serr)
+					_ = a.Client.ReportStep(context.WithoutCancel(stepCtx), a.ID, api.StepReportRequest{
+						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
+						StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", EndedAt: time.Now().UTC(),
+					})
 					return nil
 				}
 				if err := a.executeCacheStep(stepCtx, step, c.RunID, sctx, &postHooksMu, &postHooks, sm, h); err != nil {
@@ -845,11 +854,30 @@ func resolveScopeHandle(ctx context.Context, step api.ClaimStep, getScopes func(
 // resolveWorkspacePath joins a relative path against the run's workspace working
 // directory (the same directory ExecStep/shell steps use as their cwd, e.g.
 // "<workspaceDir>/working<N>"). Absolute paths are returned unchanged.
-func resolveWorkspacePath(workDir, path string) string {
-	if path == "" || filepath.IsAbs(path) {
-		return path
+func resolveWorkspacePath(workDir, p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
 	}
-	return filepath.Join(workDir, path)
+	return filepath.Join(workDir, p)
+}
+
+// resolveScopePath joins a relative CONTAINER-side path against scopeWorkDir
+// (the scope container's working directory, see scope.go), so it is always
+// absolute before being handed to scopeManager.copyIn/copyOut. This mirrors
+// the k8s agent's path.Join(mountPath, dest) (internal/k8sagent/agent.go).
+// A relative container path passed straight to `docker cp` is rejected
+// ("destination path must be absolute") — this is the fix for that class of
+// failure. Uses "path" (forward-slash), not "path/filepath": the scope
+// container is always Linux regardless of the host OS. Already-absolute
+// container paths are returned unchanged.
+func resolveScopePath(p string) string {
+	if p == "" {
+		return scopeWorkDir
+	}
+	if path.IsAbs(p) {
+		return p
+	}
+	return path.Join(scopeWorkDir, p)
 }
 
 func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, runID string, workDir string, sm *scopeManager, h crt.ContainerHandle) error {
@@ -859,9 +887,12 @@ func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, r
 	})
 
 	ua := step.UploadArtifact
-	var path string
+	var artifactPath string
 	if sm != nil {
-		p, cleanup, err := sm.copyOutToTemp(ctx, h, ua.Path)
+		// ua.Path is a CONTAINER-side path; resolve it against the scope
+		// container's working directory before copyOutToTemp so it is always
+		// absolute (mirrors the k8s agent's path.Join(mountPath, ...)).
+		p, cleanup, err := sm.copyOutToTemp(ctx, h, resolveScopePath(ua.Path))
 		if err != nil {
 			// fail-loud: artifact operations do not silently skip on error.
 			slog.Error("upload-artifact failed", "step", step.Name, "error", err)
@@ -872,11 +903,11 @@ func (a *Agent) executeUploadArtifact(ctx context.Context, step api.ClaimStep, r
 			return fmt.Errorf("upload-artifact %q: copy from scope: %w", ua.Name, err)
 		}
 		defer cleanup()
-		path = p
+		artifactPath = p
 	} else {
-		path = resolveWorkspacePath(workDir, ua.Path)
+		artifactPath = resolveWorkspacePath(workDir, ua.Path)
 	}
-	if err := a.Client.UploadArtifact(ctx, runID, ua.Name, path); err != nil {
+	if err := a.Client.UploadArtifact(ctx, runID, ua.Name, artifactPath); err != nil {
 		slog.Error("upload-artifact failed", "step", step.Name, "error", err)
 		_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
 			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
@@ -934,7 +965,10 @@ func (a *Agent) executeDownloadArtifact(ctx context.Context, step api.ClaimStep,
 	}
 
 	if sm != nil {
-		if err := sm.copyIn(ctx, h, hostDestDir, destDir); err != nil {
+		// destDir (default ".") is a CONTAINER-side path; resolve it against
+		// the scope container's working directory before copyIn so it is
+		// always absolute (mirrors the k8s agent's path.Join(mountPath, dest)).
+		if err := sm.copyIn(ctx, h, hostDestDir, resolveScopePath(destDir)); err != nil {
 			slog.Error("download-artifact failed", "step", step.Name, "error", err)
 			_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
 				RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
@@ -980,6 +1014,14 @@ func (a *Agent) executeCacheStep(
 	if cachePath == "" {
 		return fmt.Errorf("cache path template %q expanded to empty string", cs.Path)
 	}
+	// When scoped, cachePath is a CONTAINER-side path; resolve it against the
+	// scope container's working directory so it is always absolute before
+	// copyIn/copyOut (mirrors the k8s agent's path.Join(mount, expandedPath)).
+	// Left unresolved (as-authored) for the non-scoped host-workspace path.
+	scopedCachePath := cachePath
+	if sm != nil {
+		scopedCachePath = resolveScopePath(cachePath)
+	}
 	var restoreKeys []string
 	for _, rk := range cs.RestoreKeys {
 		expanded, _ := dsl.ExpandTemplate(rk, tplData)
@@ -1000,7 +1042,7 @@ func (a *Agent) executeCacheStep(
 				if rerr != nil && !errors.Is(rerr, cache.ErrCacheMiss) {
 					slog.Warn("cache restore error", "step", step.Name, "error", rerr)
 				} else if hit {
-					if cerr := sm.copyIn(ctx, h, hostDir, cachePath); cerr != nil {
+					if cerr := sm.copyIn(ctx, h, hostDir, scopedCachePath); cerr != nil {
 						slog.Warn("cache restore error", "step", step.Name, "error", cerr)
 					} else {
 						slog.Info("cache hit", "step", step.Name, "key", key)
@@ -1026,7 +1068,7 @@ func (a *Agent) executeCacheStep(
 	if ttlDays == 0 {
 		ttlDays = 30
 	}
-	capturedPath := cachePath
+	capturedPath := scopedCachePath
 	capturedKey := key
 	postHooksMu.Lock()
 	*postHooks = append(*postHooks, func(hookCtx context.Context) {

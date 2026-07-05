@@ -43,6 +43,16 @@ func newScopeManager(rt crt.ContainerRuntime) *scopeManager {
 // k8s agent uses (step.ScopeID != "") for backend parity.
 func isScopedStep(step api.ClaimStep) bool { return step.ScopeID != "" }
 
+// scopeWorkDir is the fixed working directory for a host uses-scope
+// container, mirroring the k8s agent's scopeMountPath (internal/k8sagent/
+// scopepod.go). Without a defined working directory, scoped `run:` steps and
+// `docker exec` have no cwd, and relative container-side paths handed to
+// `docker cp` are rejected ("destination path must be absolute"). Container
+// paths for scoped artifact/cache operations are resolved against this
+// constant (via path.Join, not filepath.Join — the container is always
+// Linux, forward-slash, regardless of host OS) before copyIn/copyOut.
+const scopeWorkDir = "/workspace"
+
 func (m *scopeManager) key(step api.ClaimStep) string {
 	return step.ScopeID + "\x00" + step.MatrixKey
 }
@@ -59,7 +69,7 @@ func (m *scopeManager) ensure(ctx context.Context, step api.ClaimStep, env []str
 	if h, ok := m.open[k]; ok {
 		return h, nil
 	}
-	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env})
+	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir})
 	if err != nil {
 		return crt.ContainerHandle{}, fmt.Errorf("provision scope %q (image %q): %w", step.ScopeID, step.ScopeImage, err)
 	}

@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,8 +17,39 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
+	"github.com/klauspost/compress/zstd"
 )
+
+// makeAgentTestTarZstd builds a minimal tar+zstd stream, mirroring
+// internal/artifact/targz_test.go's makeTarZstd helper, for tests that need
+// Client.DownloadArtifact to succeed against a real artifact.ExtractTarZstd
+// call rather than an empty/204 response body.
+func makeAgentTestTarZstd(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(zw)
+	for name, content := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
 
 func TestIsScopedStep(t *testing.T) {
 	if !isScopedStep(api.ClaimStep{ScopeID: "scope:x"}) {
@@ -141,8 +174,12 @@ func TestExecuteRun_UploadArtifact_ScopedRoutesToScopeContainer(t *testing.T) {
 	if rt.copyOutCalls != 1 {
 		t.Fatalf("expected exactly 1 CopyOut call, got %d", rt.copyOutCalls)
 	}
-	if rt.copyOutSrcPath != "out.txt" {
-		t.Fatalf("expected CopyOut to be called with the artifact's container path %q, got %q", "out.txt", rt.copyOutSrcPath)
+	// Finding 1: a relative container-side artifact path must be resolved
+	// against scopeWorkDir ("/workspace") before reaching CopyOut, mirroring
+	// the k8s agent's path.Join(mountPath, ...). A raw relative path handed to
+	// `docker cp` is rejected ("destination path must be absolute").
+	if rt.copyOutSrcPath != "/workspace/out.txt" {
+		t.Fatalf("expected CopyOut to be called with the absolute container path %q, got %q", "/workspace/out.txt", rt.copyOutSrcPath)
 	}
 	// The uploaded body is tar+zstd; just prove it's non-empty and did not
 	// come from an untouched host workDir copy (which would fail to route
@@ -150,6 +187,201 @@ func TestExecuteRun_UploadArtifact_ScopedRoutesToScopeContainer(t *testing.T) {
 	// source of "scope container content").
 	if len(uploadedBody) == 0 {
 		t.Fatal("expected non-empty uploaded artifact body")
+	}
+}
+
+// copyInTrackingRT is a fakeRT variant that records the CONTAINER-side path
+// passed to CopyIn, so a test can assert it was resolved to an absolute
+// /workspace/... path (Finding 1) instead of being passed through relative
+// (which docker/podman reject: "destination path must be absolute").
+type copyInTrackingRT struct {
+	fakeRT
+	copyInCalls         int
+	copyInContainerPath string
+}
+
+func (c *copyInTrackingRT) CopyIn(_ context.Context, _ crt.ContainerHandle, hostPath, containerPath string) error {
+	c.copyInCalls++
+	c.copyInContainerPath = containerPath
+	return nil
+}
+
+// TestExecuteRun_DownloadArtifact_ScopedUsesAbsoluteContainerPath is the
+// regression test for Finding 1 on the download-artifact path: a scoped
+// download-artifact step with the default destDir (".") must resolve to an
+// absolute /workspace path before scopeManager.copyIn, mirroring the k8s
+// agent's path.Join(mountPath, dest). A relative "." handed straight to
+// `docker cp` is rejected by docker/podman ("destination path must be
+// absolute").
+func TestExecuteRun_DownloadArtifact_ScopedUsesAbsoluteContainerPath(t *testing.T) {
+	const agentID = "scoped-download-agent"
+	const runID = "run-scoped-download"
+
+	workDir := t.TempDir()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /api/v1/runs/"+runID+"/artifacts/in", func(w http.ResponseWriter, r *http.Request) {
+		// Client-side DownloadArtifact extracts the response body as a real
+		// tar+zstd stream (artifact.ExtractTarZstd), so serve a minimal valid
+		// one rather than an empty/204 body.
+		w.Write(makeAgentTestTarZstd(t, map[string]string{"in.txt": "content"})) //nolint:errcheck
+	})
+	finishCh := make(chan string, 1)
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Status string `json:"status"`
+		}
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		select {
+		case finishCh <- body.Status:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	rt := &copyInTrackingRT{}
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a.runtimeOnce.Do(func() {})
+	a.resolvedRuntime = rt
+
+	resp := api.ClaimResponse{
+		RunID:   runID,
+		JobName: "test-scoped-download",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index:      0,
+				StageIndex: 0,
+				Name:       "downloadIn",
+				ScopeID:    "scope:build",
+				ScopeImage: "golang:1.22",
+				DownloadArtifact: &api.DownloadArtifactStep{
+					Name: "in",
+					// DestDir intentionally empty: executeDownloadArtifact
+					// defaults it to ".", the exact relative-path case Finding
+					// 1 is about.
+				},
+			}},
+		},
+	}
+
+	a.executeRun(context.Background(), resp, workDir)
+
+	select {
+	case status := <-finishCh:
+		if status != "Succeeded" {
+			t.Fatalf("expected Succeeded, got %s", status)
+		}
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+
+	if rt.copyInCalls != 1 {
+		t.Fatalf("expected exactly 1 CopyIn call, got %d", rt.copyInCalls)
+	}
+	if rt.copyInContainerPath != "/workspace" {
+		t.Fatalf("expected CopyIn to be called with the absolute container path %q (default destDir \".\" resolved against scopeWorkDir), got %q", "/workspace", rt.copyInContainerPath)
+	}
+}
+
+// failingCreateRT is a fakeRT variant whose Create always errors, simulating
+// a scope environment that can never be provisioned (e.g. the container
+// runtime is unreachable, image pull fails, etc).
+type failingCreateRT struct {
+	fakeRT
+}
+
+func (f *failingCreateRT) Create(context.Context, crt.CreateSpec) (crt.ContainerHandle, error) {
+	return crt.ContainerHandle{}, fmt.Errorf("simulated scope provisioning failure")
+}
+
+// TestExecuteRun_ScopedCache_ScopeUnavailable_WarnAndSkip is the regression
+// test for Finding 2: on the host agent, a scoped cache step whose scope
+// handle cannot be resolved must warn+skip (report Succeeded), matching both
+// the host's existing lenient cache policy (a restore/save error never fails
+// the step) and the k8s agent's behavior for the same situation (see
+// internal/k8sagent/agent.go's cache branch: "cache scope pod unavailable;
+// skipping cache for step" -> reports Succeeded). Before this fix, the host
+// hard-failed the step here via markFailed, diverging from k8s.
+func TestExecuteRun_ScopedCache_ScopeUnavailable_WarnAndSkip(t *testing.T) {
+	const agentID = "scoped-cache-unavailable-agent"
+	const runID = "run-scoped-cache-unavailable"
+
+	workDir := t.TempDir()
+
+	var reportedStatus string
+	finishCh := make(chan string, 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
+		var req api.StepReportRequest
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		if req.Status == "Succeeded" || req.Status == "Failed" {
+			reportedStatus = req.Status
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Status string `json:"status"`
+		}
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		select {
+		case finishCh <- body.Status:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	rt := &failingCreateRT{}
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	a.runtimeOnce.Do(func() {})
+	a.resolvedRuntime = rt
+
+	resp := api.ClaimResponse{
+		RunID:   runID,
+		JobName: "test-scoped-cache-unavailable",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index:      0,
+				StageIndex: 0,
+				Name:       "cache-step",
+				ScopeID:    "scope:build",
+				ScopeImage: "golang:1.22",
+				Cache: &dsl.CacheStep{
+					Key:  "k1",
+					Path: "deps",
+				},
+			}},
+		},
+	}
+
+	a.executeRun(context.Background(), resp, workDir)
+
+	select {
+	case status := <-finishCh:
+		if status != "Succeeded" {
+			t.Fatalf("expected run Succeeded despite unavailable scope (cache is warn+skip), got %s", status)
+		}
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+	if reportedStatus != "Succeeded" {
+		t.Fatalf("expected the cache step itself to report Succeeded (warn+skip), got %q", reportedStatus)
 	}
 }
 
@@ -257,9 +489,9 @@ type concurrentRT struct {
 	nextID    int
 }
 
-func (c *concurrentRT) Name() string                                    { return "concurrent" }
-func (c *concurrentRT) Available() bool                                 { return true }
-func (c *concurrentRT) Pull(context.Context, string) error              { return nil }
+func (c *concurrentRT) Name() string                       { return "concurrent" }
+func (c *concurrentRT) Available() bool                    { return true }
+func (c *concurrentRT) Pull(context.Context, string) error { return nil }
 func (c *concurrentRT) Run(context.Context, crt.RunSpec, io.Writer, io.Writer) (int, error) {
 	return 0, nil
 }
@@ -277,8 +509,10 @@ func (c *concurrentRT) Exec(_ context.Context, _ crt.ContainerHandle, spec crt.E
 	c.mu.Unlock()
 	return 0, nil
 }
-func (c *concurrentRT) CopyIn(context.Context, crt.ContainerHandle, string, string) error  { return nil }
-func (c *concurrentRT) CopyOut(context.Context, crt.ContainerHandle, string, string) error { return nil }
+func (c *concurrentRT) CopyIn(context.Context, crt.ContainerHandle, string, string) error { return nil }
+func (c *concurrentRT) CopyOut(context.Context, crt.ContainerHandle, string, string) error {
+	return nil
+}
 func (c *concurrentRT) Remove(context.Context, crt.ContainerHandle) error {
 	c.removeCalls.Add(1)
 	return nil

@@ -63,7 +63,11 @@ func (r *ociCLI) Run(ctx context.Context, spec RunSpec, stdout, stderr io.Writer
 	return -1, err
 }
 
-func (r *ociCLI) Create(ctx context.Context, spec CreateSpec) (ContainerHandle, error) {
+// createArgs builds the argv for `run -d` (the long-lived scope container
+// used to back a uses-level runsIn.image scope). Extracted from Create so
+// tests can assert on the argv (notably -w for spec.WorkDir) without
+// depending on exec.Cmd.Output()'s stdout plumbing.
+func (r *ociCLI) createArgs(spec CreateSpec) []string {
 	args := []string{"run", "-d"}
 	if spec.CPULimit != "" {
 		args = append(args, "--cpus", spec.CPULimit)
@@ -71,10 +75,18 @@ func (r *ociCLI) Create(ctx context.Context, spec CreateSpec) (ContainerHandle, 
 	if spec.MemLimit != "" {
 		args = append(args, "--memory", spec.MemLimit)
 	}
+	if spec.WorkDir != "" {
+		args = append(args, "-w", spec.WorkDir)
+	}
 	for _, e := range spec.Env {
 		args = append(args, "-e", e)
 	}
 	args = append(args, spec.Image, "sleep", "infinity")
+	return args
+}
+
+func (r *ociCLI) Create(ctx context.Context, spec CreateSpec) (ContainerHandle, error) {
+	args := r.createArgs(spec)
 	out, err := execCommand(ctx, r.bin, args...).Output()
 	if err != nil {
 		return ContainerHandle{}, fmt.Errorf("%s run -d: %w", r.bin, err)
