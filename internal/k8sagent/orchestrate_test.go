@@ -425,6 +425,61 @@ func TestOrchestrate_CacheEmptyKeySkips(t *testing.T) {
 	assert.Equal(t, "Succeeded", final)
 }
 
+func TestOrchestrate_CachePathTemplateExpanded(t *testing.T) {
+	c := api.ClaimResponse{
+		RunID:  "r1",
+		Params: map[string]string{"dir": "apps/web", "v": "1"},
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "with-cache",
+				Cache: &dsl.CacheStep{Path: "{{ .Params.dir }}/node_modules", Key: "npm-{{.Params.v}}", TTLDays: 7}}},
+		},
+	}
+	rec, statuses, final := runOrchestrateArtifact(t, c, 0 /*exit*/)
+
+	var restoreCall, saveCall *artifactCall
+	for i := range rec {
+		if len(rec[i].argv) >= 3 && rec[i].argv[0] == "unified-sidecar" && rec[i].argv[1] == "cache" {
+			switch rec[i].argv[2] {
+			case "restore":
+				restoreCall = &rec[i]
+			case "save":
+				saveCall = &rec[i]
+			}
+		}
+	}
+
+	require.NotNil(t, restoreCall, "expected a cache restore argv call, got: %+v", rec)
+	assert.Contains(t, restoreCall.argv, "/workspace/apps/web/node_modules",
+		"restore should target the template-expanded path")
+	require.NotNil(t, saveCall, "expected a deferred cache save argv call, got: %+v", rec)
+	assert.Contains(t, saveCall.argv, "/workspace/apps/web/node_modules",
+		"deferred save should target the template-expanded path")
+
+	assert.Equal(t, "Succeeded", statuses["with-cache"])
+	assert.Equal(t, "Succeeded", final)
+}
+
+func TestOrchestrate_CacheEmptyPathSkips(t *testing.T) {
+	c := api.ClaimResponse{
+		RunID:  "r1",
+		Params: map[string]string{"v": "1"},
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "with-cache",
+				Cache: &dsl.CacheStep{Path: "{{ .Params.missing }}", Key: "npm-{{.Params.v}}", TTLDays: 7}}},
+		},
+	}
+	rec, statuses, final := runOrchestrateArtifact(t, c, 0 /*exit*/)
+
+	for i := range rec {
+		if len(rec[i].argv) >= 2 && rec[i].argv[0] == "unified-sidecar" && rec[i].argv[1] == "cache" {
+			t.Fatalf("expected no cache restore/save argv calls for an empty-path template, got: %+v", rec[i])
+		}
+	}
+
+	assert.Equal(t, "Succeeded", statuses["with-cache"])
+	assert.Equal(t, "Succeeded", final)
+}
+
 // orchestrateDecodeJSON decodes an HTTP request body as JSON into v.
 func orchestrateDecodeJSON(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)

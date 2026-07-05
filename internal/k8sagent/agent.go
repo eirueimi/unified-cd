@@ -327,12 +327,18 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
 				})
 				key, kerr := dsl.ExpandTemplate(step.Cache.Key, tplData)
+				expandedPath, perr := dsl.ExpandTemplate(step.Cache.Path, tplData)
 				if kerr != nil || key == "" {
 					// A bad/empty key template must not silently collide caches
 					// across runs. Skip the cache operation entirely (no restore,
 					// no deferred save) but keep cache best-effort: the step still
 					// succeeds.
 					slog.Warn("k8s: cache key template failed; skipping cache for step", "step", step.Name, "keyTemplate", step.Cache.Key, "error", kerr)
+				} else if perr != nil || expandedPath == "" {
+					// A bad/empty path template would make the cache target the
+					// workspace mount root (or a wrong directory). Skip the cache
+					// operation entirely, same as a bad key.
+					slog.Warn("k8s: cache path template failed; skipping cache for step", "step", step.Name, "pathTemplate", step.Cache.Path, "error", perr)
 				} else {
 					var restoreKeys []string
 					for _, rk := range step.Cache.RestoreKeys {
@@ -340,7 +346,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 							restoreKeys = append(restoreKeys, v)
 						}
 					}
-					cachePath := path.Join(mountPath, step.Cache.Path)
+					cachePath := path.Join(mountPath, expandedPath)
 					argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", cachePath}
 					for _, rk := range restoreKeys {
 						argv = append(argv, "--restore-key", rk)
