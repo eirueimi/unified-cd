@@ -389,4 +389,34 @@ describe('RunDetail — log virtualization', () => {
       expect(container.textContent).toContain(`${N} lines`);
     });
   });
+
+  it('toggles line wrapping (and persists the choice)', async () => {
+    localStorage.removeItem('ecd_log_wrap');
+    const N = 30;
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return eventsResponseWithLogs(N);
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-1', status: 'Succeeded', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+    await vi.waitFor(() => {
+      expect(container.querySelector('.log-row')).toBeTruthy();
+    });
+
+    // Default: no wrapping.
+    expect(container.querySelector('.log-box.wrap')).toBeFalsy();
+    expect(container.querySelector('.log-row-wrap')).toBeFalsy();
+
+    await fireEvent.click(container.querySelector('.log-wrap-btn'));
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('.log-box.wrap')).toBeTruthy();
+      expect(container.querySelector('.log-row-wrap')).toBeTruthy();
+    });
+    expect(localStorage.getItem('ecd_log_wrap')).toBe('1');
+  });
 });

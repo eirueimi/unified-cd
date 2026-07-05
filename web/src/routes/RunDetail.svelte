@@ -61,15 +61,92 @@
   let logViewportH = 600;
   let logStick = true; // keep auto-scrolling to the bottom while the user is there
   let logTruncated = false; // server dropped older lines from the backfill
+
+  // Wrap long lines instead of scrolling horizontally. Wrapping makes rows a
+  // VARIABLE height, so the virtual scroller switches from a fixed row height to
+  // per-line estimated heights (monospace char count / columns) with cumulative
+  // offsets. The choice is persisted so it sticks across runs.
+  let logWrap = false;
+  try {
+    logWrap = localStorage.getItem("ecd_log_wrap") === "1";
+  } catch {}
+  $: persistLogWrap(logWrap);
+  function persistLogWrap(w) {
+    try {
+      localStorage.setItem("ecd_log_wrap", w ? "1" : "0");
+    } catch {}
+  }
+  let logCharW = 7.7; // measured monospace char width (px)
+  let logInnerW = 800; // log-box content width (px), minus padding
+  $: logCols = Math.max(20, Math.floor(logInnerW / logCharW));
+
   $: logTotal = filteredLogs.length;
-  $: logStart = Math.max(0, Math.floor(logScrollTop / LOG_ROW_H) - LOG_OVERSCAN);
-  $: logEnd = Math.min(
-    logTotal,
-    Math.ceil((logScrollTop + logViewportH) / LOG_ROW_H) + LOG_OVERSCAN,
-  );
+  // In wrap mode: cumulative pixel offsets, offs[i] = top of line i (null otherwise).
+  $: logOffsets = logWrap ? buildLogOffsets(filteredLogs, logCols) : null;
+  $: logContentH = logWrap
+    ? logOffsets && logOffsets.length
+      ? logOffsets[logOffsets.length - 1]
+      : 0
+    : logTotal * LOG_ROW_H;
+  $: logStart = logWrap
+    ? Math.max(0, offsetIndex(logOffsets, logScrollTop) - LOG_OVERSCAN)
+    : Math.max(0, Math.floor(logScrollTop / LOG_ROW_H) - LOG_OVERSCAN);
+  $: logEnd = logWrap
+    ? Math.min(
+        logTotal,
+        offsetIndex(logOffsets, logScrollTop + logViewportH) + 1 + LOG_OVERSCAN,
+      )
+    : Math.min(
+        logTotal,
+        Math.ceil((logScrollTop + logViewportH) / LOG_ROW_H) + LOG_OVERSCAN,
+      );
   $: visibleLogs = filteredLogs.slice(logStart, logEnd);
-  function measureLogViewport() {
-    if (logBox) logViewportH = logBox.clientHeight;
+  $: logTopPad = logWrap
+    ? logOffsets
+      ? logOffsets[logStart]
+      : 0
+    : logStart * LOG_ROW_H;
+  $: logBotPad = logWrap
+    ? logContentH - (logOffsets ? logOffsets[logEnd] : 0)
+    : (logTotal - logEnd) * LOG_ROW_H;
+
+  function buildLogOffsets(lines, cols) {
+    const n = lines.length;
+    const offs = new Array(n + 1);
+    offs[0] = 0;
+    for (let i = 0; i < n; i++) {
+      const len = lines[i].line ? lines[i].line.length : 0;
+      const span = len > cols ? Math.ceil(len / cols) : 1;
+      offs[i + 1] = offs[i] + span * LOG_ROW_H;
+    }
+    return offs;
+  }
+  // Largest index i with offs[i] <= y (binary search over cumulative offsets).
+  function offsetIndex(offs, y) {
+    if (!offs || offs.length <= 1) return 0;
+    let lo = 0,
+      hi = offs.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (offs[mid] <= y) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+  function measureLogMetrics() {
+    if (!logBox) return;
+    logViewportH = logBox.clientHeight;
+    logInnerW = Math.max(50, logBox.clientWidth - 32); // minus 1rem padding each side
+    try {
+      const cs = getComputedStyle(logBox);
+      const canvas = (measureLogMetrics._c ||= document.createElement("canvas"));
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.font = `${cs.fontSize} ${cs.fontFamily}`;
+        const w = ctx.measureText("0".repeat(200)).width / 200;
+        if (w > 0) logCharW = w;
+      }
+    } catch {}
   }
   function onLogScroll() {
     if (!logBox) return;
@@ -121,10 +198,9 @@
     logStick = false; // don't fight the jump with auto-scroll
     tick().then(() => {
       if (!logBox) return;
-      logBox.scrollTop = Math.max(
-        0,
-        rowIdx * LOG_ROW_H - logBox.clientHeight / 2,
-      );
+      const targetY =
+        logWrap && logOffsets ? logOffsets[rowIdx] : rowIdx * LOG_ROW_H;
+      logBox.scrollTop = Math.max(0, targetY - logBox.clientHeight / 2);
       logScrollTop = logBox.scrollTop;
     });
   }
@@ -322,7 +398,7 @@
     await Promise.all([loadRun(), loadSteps(), loadApprovals()]);
     loading = false;
     await tick();
-    measureLogViewport();
+    measureLogMetrics();
     if (run && !["Succeeded", "Failed", "Cancelled"].includes(run.status))
       startStepPolling();
     startSSE();
@@ -336,12 +412,12 @@
   // where the second connection's `logLines = []` reset could wipe out or race
   // with logs already delivered by the first, leaving the panel stuck empty.
   if (typeof window !== "undefined")
-    window.addEventListener("resize", measureLogViewport);
+    window.addEventListener("resize", measureLogMetrics);
   onDestroy(() => {
     if (abortController) abortController.abort();
     stopStepPolling();
     if (typeof window !== "undefined")
-      window.removeEventListener("resize", measureLogViewport);
+      window.removeEventListener("resize", measureLogMetrics);
   });
   $: runID, init();
 </script>
@@ -538,6 +614,13 @@
           >{logTotal.toLocaleString()} lines</span
         >
       {/if}
+      <button
+        class="btn log-wrap-btn"
+        class:active={logWrap}
+        title="Wrap long lines"
+        aria-pressed={logWrap}
+        on:click={() => (logWrap = !logWrap)}>⤶ Wrap</button
+      >
       <div class="log-search">
         <input
           class="log-search-input"
@@ -572,13 +655,22 @@
         Use <code>unified-cli logs {runID}</code> for the full log.
       </div>
     {/if}
-    <div class="log-box" bind:this={logBox} on:scroll={onLogScroll}>
+    <div
+      class="log-box"
+      class:wrap={logWrap}
+      bind:this={logBox}
+      on:scroll={onLogScroll}
+    >
       {#if !filteredLogs.length}
         <span style="color:var(--text-muted)">Waiting for logs…</span>
       {:else}
-        <div style="height:{logStart * LOG_ROW_H}px" aria-hidden="true"></div>
+        <div style="height:{logTopPad}px" aria-hidden="true"></div>
         {#each visibleLogs as l, i (l.seq)}
-          <div class="log-row" class:log-row-current={logStart + i === curMatchRow}>
+          <div
+            class="log-row"
+            class:log-row-wrap={logWrap}
+            class:log-row-current={logStart + i === curMatchRow}
+          >
             {#if selectedStep === null}<span class="meta log-step-label"
                 >{stepName(l.stepIndex)}</span
               >{/if}<span
@@ -587,10 +679,7 @@
             >
           </div>
         {/each}
-        <div
-          style="height:{(logTotal - logEnd) * LOG_ROW_H}px"
-          aria-hidden="true"
-        ></div>
+        <div style="height:{logBotPad}px" aria-hidden="true"></div>
       {/if}
     </div>
   {/if}
@@ -613,6 +702,18 @@
     height: 20px;
     line-height: 20px;
     white-space: pre;
+  }
+  /* Wrap mode: variable-height rows (the virtual scroller estimates each row's
+     wrapped height). min-height keeps the estimate honest without clipping. */
+  .log-row-wrap {
+    height: auto;
+    min-height: 20px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
+  .log-box.wrap {
+    overflow-x: hidden;
   }
   .log-step-label {
     font-size: 0.7rem;
@@ -644,6 +745,16 @@
     padding: 0.05rem 0.45rem;
     font-size: 1rem;
     line-height: 1.2;
+  }
+  .log-wrap-btn {
+    margin-left: auto;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+  .log-wrap-btn.active {
+    background: var(--primary-light, #e8f0fe);
+    border-color: var(--primary, #4285f4);
   }
   .log-truncated {
     font-size: 0.75rem;
