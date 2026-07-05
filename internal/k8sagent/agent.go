@@ -164,6 +164,9 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	}
 
 	stepExec := func(execCtx context.Context, step api.ClaimStep, expandedRun string) (int, string, error) {
+		if err := runsInImageUnsupported(step); err != nil {
+			return -1, "", err
+		}
 		var stdoutBuf strings.Builder
 		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, step.Index, "stderr")
 		stdoutWriter := io.MultiWriter(&stdoutBuf, &logLineWriter{
@@ -626,6 +629,16 @@ func execContainer(s api.ClaimStep) string {
 		return s.RunsIn.Container
 	}
 	return ""
+}
+
+// runsInImageUnsupported rejects runsIn.image steps on the k8s agent. A fresh
+// image means a throwaway pod (Plan B); until that exists we hard-error rather
+// than silently running the step in the default pod container.
+func runsInImageUnsupported(s api.ClaimStep) error {
+	if s.RunsIn != nil && s.RunsIn.Image != "" {
+		return fmt.Errorf("runsIn.image (%q) is not supported on the k8s agent yet; run this step on the host agent, or use runsIn.container to target a named pod container", s.RunsIn.Image)
+	}
+	return nil
 }
 
 func appendLabelIfMissing(labels []string, label string) []string {
