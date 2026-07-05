@@ -13,6 +13,7 @@ Complete reference for the `unified-cd` command-line tool.
 - [token](#token)
 - [artifact](#artifact)
 - [appsource](#appsource)
+- [webhook](#webhook)
 - [login](#login)
 - [agent](#agent)
 - [Configuration precedence](#configuration-precedence)
@@ -100,6 +101,36 @@ build          (2026-06-15)
 ci-pipeline    (2026-06-20)
 ```
 
+### jobs get
+
+```
+unified-cd jobs get <name>
+```
+
+Shows details of a job, including its input parameter definitions.
+
+```
+Name:        build
+ID:          08c1779c-812f-4d68-9971-25ff3467637e
+APIVersion:  unified-cd/v1
+Updated:     2026-06-15 10:00:00
+Inputs:
+  image                (string, required)  container image name
+  tag                  (string, default=latest)
+```
+
+### jobs show-yaml
+
+```
+unified-cd jobs show-yaml <name>
+```
+
+Prints the job's YAML definition as stored on the controller.
+
+```bash
+unified-cd jobs show-yaml build > build.yaml
+```
+
 ### jobs delete
 
 ```
@@ -171,6 +202,64 @@ run-abc123   Succeeded   2026-06-20 10:00   manual
 run-def456   Failed      2026-06-20 09:30   schedule:nightly-build
 run-ghi789   Running     2026-06-20 11:00   webhook:github-push
 ```
+
+### run list-active
+
+```
+unified-cd run list-active
+```
+
+Lists all runs in Pending, Queued, or Running state across all jobs.
+
+```
+run-abc123   build    Running   2026-06-20 11:00   manual
+run-def456   deploy   Queued    2026-06-20 11:01   webhook:github-push
+```
+
+### run outputs
+
+```
+unified-cd run outputs <run-id>
+```
+
+Shows run-level outputs reported by the job, one `key=value` per line
+(sorted by key).
+
+```bash
+unified-cd run outputs run-abc123
+# => imageDigest=sha256:abcd...
+# => version=1.4.2
+```
+
+### run show-yaml
+
+```
+unified-cd run show-yaml <run-id>
+```
+
+Prints the YAML definition the run was executed with (the job spec snapshot
+taken at trigger time).
+
+```bash
+unified-cd run show-yaml run-abc123 > run-spec.yaml
+```
+
+### run approvals
+
+```
+unified-cd run approvals <run-id>
+```
+
+Lists the run's approval gates and their state
+(`Pending` / `Approved` / `Rejected` / `TimedOut`).
+
+```
+[2]   deploy-gate   Approved   by alice at 2026-06-20 11:05:00
+[4]   step[4]       Pending
+```
+
+Use [`approve` / `reject`](#run) (`unified-cd approve <run-id> <step-index>`)
+to decide a pending gate.
 
 ### run delete
 
@@ -419,6 +508,41 @@ pruned by deletion).
 
 ---
 
+## webhook
+
+Manage [WebhookReceivers](resources.md#webhookreceiver). Create/update a
+receiver with `apply -f` (`kind: WebhookReceiver`); the commands below
+operate on existing ones.
+
+### webhook list
+
+```
+unified-cd webhook list
+```
+
+Lists registered webhook receivers.
+
+```
+github-push    (2026-06-01)
+gitlab-push    (2026-07-01)
+```
+
+### webhook delete
+
+```
+unified-cd webhook delete <name>
+```
+
+Deletes a webhook receiver. Payloads sent to its `/webhook/<name>` URL will
+return 404 afterwards.
+
+```bash
+unified-cd webhook delete github-push
+# => webhook receiver "github-push" deleted
+```
+
+---
+
 ## login
 
 Authenticate using OIDC (SSO) device flow and save the token to the config file.
@@ -496,6 +620,38 @@ Lists all registered agents and their status.
 agent-1    ci-worker-01   linux   kind:linux,env:ci   2026-06-20 10:55
 agent-2    ci-worker-02   linux   kind:linux,env:ci   2026-06-20 10:54
 k8s-1      k8s-node-1     linux   kind:k8s            2026-06-20 10:55
+```
+
+### agent get
+
+```
+unified-cd agent get <agent-id>
+```
+
+Shows details of a registered agent.
+
+```
+ID:         agent-1
+Hostname:   ci-worker-01
+OS:         linux
+Labels:     kind:linux,env:ci
+Version:    1.2.3
+LastSeenAt: 2026-06-20 10:55:12
+Env:
+  REGION=us-east
+```
+
+### agent runs
+
+```
+unified-cd agent runs <agent-id>
+```
+
+Lists recent runs claimed by the agent (most recent 50).
+
+```
+run-abc123   build    Succeeded   2026-06-20 10:00   manual
+run-def456   deploy   Running    2026-06-20 11:00   schedule:nightly
 ```
 
 ---

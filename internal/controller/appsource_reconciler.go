@@ -3,10 +3,11 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
-	"strings"
+	"sort"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
@@ -74,6 +75,9 @@ func reconcileAppSources(ctx context.Context, st store.Store, fetcher AppSourceF
 		}
 		if err := syncAppSource(ctx, st, fetcher, km, src, spec); err != nil {
 			slog.Warn("appsource reconciler: sync failed", "name", src.Name, "error", err)
+			if serr := st.SetAppSourceSyncStatus(ctx, src.Name, "Failed", err.Error()); serr != nil {
+				slog.Warn("appsource reconciler: failed to record sync status", "name", src.Name, "error", serr)
+			}
 		}
 	}
 }
@@ -91,7 +95,7 @@ func shouldSync(src store.AppSource, spec dsl.AppSourceSpec, now time.Time) bool
 }
 
 // syncAppSource syncs a single AppSource from Git.
-// Skips when the SHA is unchanged from last time. Deletes stale Jobs when prune is enabled.
+// Skips when the SHA is unchanged from last time. Prunes resources removed from Git when syncPolicy.prune is enabled.
 func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher, km secrets.KeyManager, src store.AppSource, spec dsl.AppSourceSpec) error {
 	cred, err := resolveCredential(ctx, st, km, spec.RepoURL, spec.GitCredentialRef)
 	if err != nil {
@@ -112,45 +116,54 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 		return fmt.Errorf("failed to fetch directory: %w", err)
 	}
 
-	currentJobNames := map[string]bool{}
-	for filePath, content := range files {
-		job, err := dsl.Parse(strings.NewReader(string(content)))
-		if err != nil {
-			slog.Warn("appsource reconciler: failed to parse YAML", "name", src.Name, "file", filePath, "error", err)
+	// Deterministic order: sort file paths so duplicate {kind,name} resolution is stable.
+	paths := make([]string, 0, len(files))
+	for fp := range files {
+		paths = append(paths, fp)
+	}
+	sort.Strings(paths)
+
+	current := make([]store.ResourceRef, 0, len(paths))
+	seen := map[store.ResourceRef]bool{}
+	for _, fp := range paths {
+		kind := probeKind(files[fp])
+		// Skip duplicates BEFORE writing to the store, so the first file (sorted)
+		// wins the stored spec — not just the ManagedResources bookkeeping.
+		if ref := (store.ResourceRef{Kind: kind, Name: probeName(files[fp])}); seen[ref] {
+			slog.Warn("appsource reconciler: duplicate resource, keeping first", "name", src.Name, "kind", kind, "resource", ref.Name, "file", fp)
 			continue
 		}
-		specJSON, err := json.Marshal(job.Spec)
+		name, err := applyResource(ctx, st, kind, files[fp])
 		if err != nil {
-			slog.Warn("appsource reconciler: failed to convert spec to JSON", "name", src.Name, "file", filePath, "error", err)
+			// Store-write failures abort the whole sync; parse/unknown-kind skip one file.
+			if errors.Is(err, errStoreWrite) {
+				return fmt.Errorf("apply %s (%s): %w", kind, fp, err)
+			}
+			slog.Warn("appsource reconciler: skipping file", "name", src.Name, "file", fp, "kind", kind, "error", err)
 			continue
 		}
-		if _, err := st.UpsertJob(ctx, job.Metadata.Name, job.APIVersion, specJSON); err != nil {
-			return fmt.Errorf("failed to upsert Job %q (%s): %w", job.Metadata.Name, filePath, err)
-		}
-		currentJobNames[job.Metadata.Name] = true
+		ref := store.ResourceRef{Kind: kind, Name: name}
+		seen[ref] = true
+		current = append(current, ref)
 	}
 
-	// Handle Jobs that were managed previously but are no longer present in the current file list.
-	for _, prev := range src.ManagedJobs {
-		if currentJobNames[prev] {
+	// Prune resources managed previously but absent now.
+	for _, prev := range src.ManagedResources {
+		if seen[prev] {
 			continue
 		}
 		if spec.SyncPolicy.Prune {
-			if err := st.DeleteJob(ctx, prev); err != nil {
-				slog.Warn("appsource reconciler: failed to delete Job", "appsource", src.Name, "job", prev, "error", err)
+			if err := deleteResource(ctx, st, prev.Kind, prev.Name); err != nil {
+				slog.Warn("appsource reconciler: failed to delete resource", "appsource", src.Name, "kind", prev.Kind, "resource", prev.Name, "error", err)
 			} else {
-				slog.Info("appsource reconciler: deleted Job (prune)", "appsource", src.Name, "job", prev)
+				slog.Info("appsource reconciler: deleted resource (prune)", "appsource", src.Name, "kind", prev.Kind, "resource", prev.Name)
 			}
 		} else {
-			slog.Warn("appsource reconciler: Job removed from Git is still present (set syncPolicy.prune: true to delete it)", "appsource", src.Name, "job", prev)
+			slog.Warn("appsource reconciler: resource removed from Git is still present (set syncPolicy.prune: true to delete it)", "appsource", src.Name, "kind", prev.Kind, "resource", prev.Name)
 		}
 	}
 
-	managedJobs := make([]string, 0, len(currentJobNames))
-	for name := range currentJobNames {
-		managedJobs = append(managedJobs, name)
-	}
-	return st.UpdateAppSourceSyncState(ctx, src.Name, headSHA, time.Now(), managedJobs)
+	return st.UpdateAppSourceSyncState(ctx, src.Name, headSHA, time.Now(), current)
 }
 
 // resolveCredential resolves Git credentials based on the AppSource's repoURL and gitCredentialRef.

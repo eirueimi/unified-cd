@@ -1,0 +1,75 @@
+# fastlane レーン実行 ジョブテンプレート（App Store Connect API キー対応）
+# unified-cd apply examples/fastlane-upload.yaml で登録後、call.job で呼び出す
+#
+# 【注意 — このリポジトリの CI では実行できません】
+# fastlane / bundler / Xcode がインストールされた macOS エージェント
+# （agentSelector に macos:true, fastlane:true などのラベルを推奨）でのみ
+# 動作します。以下は fastlane 公式ドキュメントに基づく想定であり、実行検証
+# はできていません:
+#   - ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_CONTENT の環境変数名は
+#     fastlane の App Store Connect API キー認証（app_store_connect_api_key
+#     action）が参照する規約に合わせたもの。実際の変数名/受け渡し方法は
+#     使用する fastlane プラグインやバージョンによって異なる可能性がある
+#     ため、導入時に fastlane 側のドキュメントで最終確認してください。
+#   - Gemfile が存在する場合は `bundle exec fastlane` を、存在しない場合は
+#     素の `fastlane` コマンドにフォールバックします。
+#
+# 必要なシークレット（App Store Connect API キー認証を使う場合、省略可）:
+#   unified-cd secret set asc-key-id --value XXXXXXXXXX
+#   unified-cd secret set asc-issuer-id --value xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+#   unified-cd secret set asc-key-content --value "$(cat AuthKey_XXXXXXXXXX.p8)"
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/fastlane-upload.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: fastlane-upload
+spec:
+  params:
+    inputs:
+      - name: lane
+        type: string
+        required: true
+        description: "実行する fastlane レーン名"
+      - name: project_dir
+        type: string
+        default: "."
+        description: "Fastfile が存在するディレクトリ（fastlane/ の親ディレクトリ）"
+      - name: asc_key_id_secret
+        type: string
+        default: ""
+        description: "App Store Connect API Key ID を保持するシークレット名（省略可）"
+      - name: asc_issuer_id_secret
+        type: string
+        default: ""
+        description: "App Store Connect Issuer ID を保持するシークレット名（省略可）"
+      - name: asc_key_content_secret
+        type: string
+        default: ""
+        description: "App Store Connect API キー（.p8 の内容）を保持するシークレット名（省略可）"
+  steps:
+    - name: run-fastlane
+      env:
+        LANE: "{{ .Params.lane }}"
+        PROJECT_DIR: "{{ .Params.project_dir }}"
+        ASC_KEY_ID: "{{ if .Params.asc_key_id_secret }}{{ index .Secrets .Params.asc_key_id_secret }}{{ end }}"
+        ASC_ISSUER_ID: "{{ if .Params.asc_issuer_id_secret }}{{ index .Secrets .Params.asc_issuer_id_secret }}{{ end }}"
+        ASC_KEY_CONTENT: "{{ if .Params.asc_key_content_secret }}{{ index .Secrets .Params.asc_key_content_secret }}{{ end }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        export ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_CONTENT
+
+        cd "$PROJECT_DIR"
+
+        if [ -f "Gemfile" ]; then
+          echo "[fastlane-upload] Gemfile found; running via bundle exec"
+          bundle exec fastlane "$LANE"
+        else
+          echo "[fastlane-upload] no Gemfile found; running plain fastlane"
+          fastlane "$LANE"
+        fi
+
+        echo "[fastlane-upload] lane ${LANE} completed"

@@ -64,14 +64,22 @@ type SecretMeta struct {
 	CreatedAt time.Time
 }
 
+// ResourceRef identifies a resource managed by an AppSource.
+type ResourceRef struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
 // AppSource holds a GitOps source definition.
 type AppSource struct {
-	Name         string
-	Spec         []byte
-	LastSyncedAt *time.Time
-	LastCommit   string
-	ManagedJobs  []string
-	UpdatedAt    time.Time
+	Name             string
+	Spec             []byte
+	LastSyncedAt     *time.Time
+	LastCommit       string
+	ManagedResources []ResourceRef
+	UpdatedAt        time.Time
+	SyncStatus       string
+	LastError        string
 }
 
 // GitCredential holds per-host Git credentials.
@@ -106,7 +114,7 @@ type Store interface {
 	MarkRunRunning(ctx context.Context, runID string) error
 	MarkRunFinished(ctx context.Context, runID string, status api.RunStatus) error
 	DeleteRun(ctx context.Context, id string) error
-	UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, status string, exitCode *int, startedAt, endedAt *time.Time) error
+	UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time) error
 	GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error)
 	AppendLog(ctx context.Context, runID string, stepIndex int, stream string, ts time.Time, line string) (int64, error)
 	TailLogs(ctx context.Context, runID string, afterSeq int64, limit int) ([]api.LogLine, error)
@@ -142,7 +150,7 @@ type Store interface {
 	ReleaseSemaphore(ctx context.Context, poolName, runID string) error
 
 	// Outputs — step level
-	SetStepOutput(ctx context.Context, runID string, stepIndex int, key, value string) error
+	SetStepOutput(ctx context.Context, runID string, stepIndex int, variant, key, value string) error
 	GetStepOutputs(ctx context.Context, runID string, stepIndex int) (map[string]string, error)
 
 	// Outputs — run level
@@ -217,8 +225,9 @@ type Store interface {
 	GetAppSource(ctx context.Context, name string) (*AppSource, error)
 	ListAppSources(ctx context.Context) ([]AppSource, error)
 	DeleteAppSource(ctx context.Context, name string) error
-	UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managedJobs []string) error
+	UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managed []ResourceRef) error
 	ResetAppSourceCommit(ctx context.Context, name string) error
+	SetAppSourceSyncStatus(ctx context.Context, name, status, lastError string) error
 
 	// Git resolver helpers
 	ListPendingRuns(ctx context.Context, limit int) ([]PendingRun, error)
@@ -250,6 +259,15 @@ type Store interface {
 	// EnsureControllerKey returns the persisted controllerKey (hex string for the KEK).
 	// If none exists yet, it stores candidateHex and returns it (safe against simultaneous first-startup from multiple replicas).
 	EnsureControllerKey(ctx context.Context, candidateHex string) (string, error)
+
+	// Audit
+	// InsertAuditLog records a single state-changing API operation.
+	InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error
+	// ListAuditLogs returns audit log entries newest-first, with limit/offset pagination.
+	ListAuditLogs(ctx context.Context, limit, offset int) ([]api.AuditLog, error)
+	// DeleteAuditLogsOlderThan deletes audit log rows with occurred_at before the given time.
+	// Returns the number of rows deleted.
+	DeleteAuditLogsOlderThan(ctx context.Context, before time.Time) (int, error)
 
 	// Connectivity
 	// Ping checks connectivity to the database.

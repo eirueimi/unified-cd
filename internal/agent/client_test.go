@@ -92,7 +92,7 @@ func TestClient_SetStepOutputs(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	require.NoError(t, c.SetStepOutputs(t.Context(), "a", "run-1", 0, map[string]string{"k": "v"}))
+	require.NoError(t, c.SetStepOutputs(t.Context(), "a", "run-1", 0, "", map[string]string{"k": "v"}))
 	assert.Equal(t, "v", got.Outputs["k"])
 }
 

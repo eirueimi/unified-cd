@@ -90,7 +90,7 @@ func EvalCondition(expr string, data TemplateData, status RunStatusView, implici
 	for name, sd := range data.Steps {
 		outputs := sd.Outputs
 		if outputs == nil {
-			outputs = map[string]string{}
+			outputs = map[string]any{}
 		}
 		stepsAny[name] = map[string]any{"outputs": outputs}
 	}

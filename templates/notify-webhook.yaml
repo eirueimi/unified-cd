@@ -1,0 +1,66 @@
+# 汎用 Webhook 通知ジョブテンプレート（JSON POST）
+# unified-cd apply examples/notify-webhook.yaml で登録後、call.job で呼び出す
+#
+# 必要なシークレット（url_secret を使う場合）:
+#   unified-cd secret set my-webhook-url --value https://example.com/hooks/xxxx
+#   ※ url パラメータで平文 URL を渡す場合はシークレット不要
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/notify-webhook.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: notify-webhook
+spec:
+  params:
+    inputs:
+      - name: url_secret
+        type: string
+        default: ""
+        description: "POST 先 URL を保持するシークレット名。url と排他（どちらか一方が必須）"
+      - name: url
+        type: string
+        default: ""
+        description: "POST 先 URL（平文）。url_secret と排他（どちらか一方が必須）"
+      - name: payload
+        type: string
+        required: true
+        description: "送信する JSON 文字列（生データ）"
+      - name: content_type
+        type: string
+        default: "application/json"
+        description: "Content-Type ヘッダー"
+      - name: retries
+        type: string
+        default: "3"
+        description: "curl --retry の回数"
+  steps:
+    - name: send
+      env:
+        URL_PLAIN: "{{ .Params.url }}"
+        URL_FROM_SECRET: "{{ if .Params.url_secret }}{{ index .Secrets .Params.url_secret }}{{ end }}"
+        PAYLOAD: "{{ .Params.payload }}"
+        CONTENT_TYPE: "{{ .Params.content_type }}"
+        RETRIES: "{{ .Params.retries }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        if [ -n "$URL_FROM_SECRET" ]; then
+          TARGET_URL="$URL_FROM_SECRET"
+        else
+          TARGET_URL="$URL_PLAIN"
+        fi
+
+        if [ -z "$TARGET_URL" ]; then
+          echo "[notify-webhook] ERROR: either url_secret or url must be set" >&2
+          exit 1
+        fi
+
+        curl -sS -f \
+          --retry "$RETRIES" \
+          -X POST \
+          -H "Content-Type: ${CONTENT_TYPE}" \
+          --data "$PAYLOAD" \
+          "$TARGET_URL"
+        echo "[notify-webhook] posted payload to webhook"

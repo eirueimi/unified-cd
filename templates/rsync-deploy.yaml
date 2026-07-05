@@ -1,0 +1,76 @@
+# rsync 経由のリモートデプロイ ジョブテンプレート
+# unified-cd apply examples/rsync-deploy.yaml で登録後、call.job で呼び出す
+#
+# エージェント要件: rsync, ssh
+#
+# 必要なシークレット:
+#   unified-cd secret set deploy-ssh-key --value "$(cat ~/.ssh/id_ed25519)"
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/rsync-deploy.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: rsync-deploy
+spec:
+  params:
+    inputs:
+      - name: src
+        type: string
+        default: "./"
+        description: "同期元ディレクトリ（ローカル）"
+      - name: dest
+        type: string
+        required: true
+        description: "同期先（例: user@host:/path/to/app）"
+      - name: ssh_key_secret
+        type: string
+        required: true
+        description: "SSH 秘密鍵を保持するシークレット名"
+      - name: port
+        type: string
+        default: "22"
+        description: "SSH ポート"
+      - name: delete
+        type: string
+        default: "false"
+        description: "同期元にないファイルを同期先から削除するか（rsync --delete）"
+      - name: extra_args
+        type: string
+        default: ""
+        description: "rsync に追加で渡す引数（スペース区切り、省略可）"
+  steps:
+    - name: rsync
+      env:
+        SSH_KEY: "{{ index .Secrets .Params.ssh_key_secret }}"
+        SRC: "{{ .Params.src }}"
+        DEST: "{{ .Params.dest }}"
+        PORT: "{{ .Params.port }}"
+        DELETE: "{{ .Params.delete }}"
+        EXTRA_ARGS: "{{ .Params.extra_args }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _SSH_KEY_FILE="$(mktemp)"
+        chmod 600 "$_SSH_KEY_FILE"
+        _cleanup() {
+          rm -f "$_SSH_KEY_FILE"
+        }
+        trap _cleanup EXIT
+
+        printf '%s\n' "$SSH_KEY" > "$_SSH_KEY_FILE"
+
+        _DELETE_FLAG=""
+        if [ "$DELETE" = "true" ]; then
+          _DELETE_FLAG="--delete"
+        fi
+
+        # shellcheck disable=SC2086
+        rsync -az \
+          -e "ssh -i ${_SSH_KEY_FILE} -p ${PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+          $_DELETE_FLAG \
+          $EXTRA_ARGS \
+          "$SRC" "$DEST"
+
+        echo "[rsync-deploy] synced ${SRC} -> ${DEST}"

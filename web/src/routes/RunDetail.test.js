@@ -100,3 +100,32 @@ describe('RunDetail — single SSE/events connection per run (TODO #10)', () => 
     expect(eventsUrls.filter((u) => u.includes('/runs/run-2/events')).length).toBe(1);
   });
 });
+
+// Regression test for matrix-steps review finding C1: GetRunSteps now returns
+// one row per (stepIndex, variant) for matrix/foreach steps, all sharing the
+// same `index`. The step list used to key `{#each ...}` by `s.index` alone,
+// which is a duplicate-key Svelte 5 runtime error whenever a step expands
+// into more than one variant. Keying by `${index}/${variant}` fixes it.
+describe('RunDetail — matrix/foreach steps with duplicate step index (C1)', () => {
+  it('renders multiple variant rows sharing the same step index without throwing', async () => {
+    const steps = [
+      { index: 0, stageIndex: 0, name: 'build (linux, amd64)', variant: 'linux/amd64', status: 'Succeeded' },
+      { index: 0, stageIndex: 0, name: 'build (linux, arm64)', variant: 'linux/arm64', status: 'Running' },
+    ];
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return emptyEventsResponse();
+      if (u.includes('/steps')) return jsonResponse(steps);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-1', status: 'Running', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+
+    await vi.waitFor(() => {
+      const rows = container.querySelectorAll('.step-name');
+      expect(rows.length).toBe(2);
+    });
+  });
+});

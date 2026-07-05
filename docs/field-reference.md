@@ -98,6 +98,7 @@ The two forms are mutually exclusive; Validate enforces this.
 | `env` | map[string]string | no |  |
 | `foreach` | ForeachDef | no |  |
 | `if` | string | no |  |
+| `matrix` | MatrixDef | no |  |
 | `name` | string | no | Concrete step fields (identical to Step, minus Needs) |
 | `outputs` | map[string]string | no |  |
 | `parallel` | []Step | no | Parallel group (mutually exclusive with all concrete step fields above) |
@@ -121,9 +122,9 @@ TimeoutMinutes defaults to 60 (applied at compile time) when zero.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `key` | string | yes |  |
-| `path` | string | yes |  |
-| `restoreKeys` | []string | no |  |
+| `key` | string | yes | cache key; supports template expansion |
+| `path` | string | yes | directory to cache; supports template expansion |
+| `restoreKeys` | []string | no | fallback key prefixes; support template expansion |
 | `ttlDays` | integer | no | default 30 |
 
 ### CallStep
@@ -150,6 +151,17 @@ Key is the variable name accessible in templates as {{ .Foreach.key }}.
 | `in` | ForeachSource | yes |  |
 | `key` | string | yes |  |
 
+### MatrixDef
+
+MatrixDef expands a step into one copy per combination of dimension values
+(cartesian product minus exclude entries). Dimensions preserve YAML
+declaration order; the combination key joins values with "/" in that order
+(e.g. "linux/amd64").
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `exclude` | []map[string]string | no |  |
+
 ### Step
 
 Step is a concrete step. Used inside parallel: blocks and as the body of a StepEntry.
@@ -165,6 +177,7 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 | `env` | map[string]string | no |  |
 | `foreach` | ForeachDef | no |  |
 | `if` | string | no |  |
+| `matrix` | MatrixDef | no |  |
 | `name` | string | yes |  |
 | `outputs` | map[string]string | no |  |
 | `post` | PostStep | no |  |
@@ -323,9 +336,14 @@ WebhookReceiver is the DSL type for webhook receiver configuration.
 
 ### WebhookTrigger
 
+WebhookTrigger selects what a webhook delivery triggers. Exactly one of Job or
+AppSource must be set: Job creates a Run; AppSource forces a GitOps re-sync of
+the named AppSource on the next reconciler tick.
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `job` | string | yes |  |
+| `appSource` | string | no |  |
+| `job` | string | no |  |
 
 ## AppSource
 

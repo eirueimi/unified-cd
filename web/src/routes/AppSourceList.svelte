@@ -7,6 +7,9 @@
   let sources = [], loading = true, error = '';
   let syncing = {};
 
+  const POLL_MS = 1500;
+  const TIMEOUT_MS = 60000;
+
   async function load() {
     loading = true; error = '';
     try { sources = await apiFetch('/api/v1/appsources'); }
@@ -16,9 +19,23 @@
 
   async function sync(name) {
     syncing = { ...syncing, [name]: true };
+    error = '';
     try {
       await apiFetch(`/api/v1/appsources/${name}/sync`, { method: 'POST' });
-      await load();
+      const started = Date.now();
+      // Poll until the row leaves the Syncing state, or bail out at the timeout.
+      while (Date.now() - started < TIMEOUT_MS) {
+        await new Promise((r) => setTimeout(r, POLL_MS));
+        sources = await apiFetch('/api/v1/appsources');
+        const s = sources.find((x) => x.name === name);
+        if (!s || s.syncStatus !== 'Syncing') break;
+      }
+      const s = sources.find((x) => x.name === name);
+      if (s && s.syncStatus === 'Failed') {
+        error = `${name}: ${s.lastError || 'sync failed'}`;
+      } else if (s && s.syncStatus === 'Syncing') {
+        error = `${name}: sync did not complete in time (timed out). Check the controller logs.`;
+      }
     } catch (e) { error = e.message; }
     finally { syncing = { ...syncing, [name]: false }; }
   }
@@ -35,7 +52,7 @@
   {:else}
   <table>
     <thead>
-      <tr><th>Name</th><th>Repo</th><th>Ref</th><th>Path</th><th>Last synced</th><th>Commit</th><th></th></tr>
+      <tr><th>Name</th><th>Repo</th><th>Ref</th><th>Path</th><th>Status</th><th>Last synced</th><th>Commit</th><th></th></tr>
     </thead>
     <tbody>
       {#each sources as s (s.name)}
@@ -44,6 +61,17 @@
           <td><a href={s.repoURL} target="_blank" rel="noreferrer">{s.repoURL.replace(/^https?:\/\//, '')}</a></td>
           <td><code>{s.targetRevision}</code></td>
           <td class="meta">{s.path || '/'}</td>
+          <td>
+            {#if s.syncStatus === 'Failed'}
+              <span class="badge badge-failed" title={s.lastError}>Failed</span>
+            {:else if s.syncStatus === 'Syncing' || syncing[s.name]}
+              <span class="badge badge-running">Syncing…</span>
+            {:else if s.syncStatus === 'Synced'}
+              <span class="badge badge-success">Synced</span>
+            {:else}
+              <span class="meta">—</span>
+            {/if}
+          </td>
           <td class="meta">{s.lastSyncedAt ? fmtRelative(s.lastSyncedAt) : '—'}</td>
           <td><code class="meta">{s.lastCommit ? s.lastCommit.slice(0, 7) : '—'}</code></td>
           <td>

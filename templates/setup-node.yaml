@@ -1,0 +1,42 @@
+# Node.js 依存関係キャッシュ セットアップジョブテンプレート
+# unified-cd apply examples/setup-node.yaml で登録後、call.job で呼び出す
+#
+# エージェント要件: node, npm
+#
+# cache: ステップの path はテンプレート式({{ .Params.* }})を展開するため、
+# working_dir 配下の node_modules を直接キャッシュ対象にできます。
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/setup-node.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: setup-node
+spec:
+  params:
+    inputs:
+      - name: working_dir
+        type: string
+        default: "."
+        description: "package-lock.json / npm ci を実行するディレクトリ"
+      - name: lockfile
+        type: string
+        default: "package-lock.json"
+        description: "キャッシュキーの計算に使うロックファイル名"
+  steps:
+    - name: restore-node-modules-cache
+      cache:
+        path: "{{ .Params.working_dir }}/node_modules"
+        key: "npm-{{ hashFile .Params.lockfile }}"
+        restoreKeys:
+          - "npm-"
+
+    - name: npm-ci
+      env:
+        WORKING_DIR: "{{ .Params.working_dir }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+        cd "$WORKING_DIR"
+        npm ci
+        echo "[setup-node] npm ci complete in ${WORKING_DIR}"

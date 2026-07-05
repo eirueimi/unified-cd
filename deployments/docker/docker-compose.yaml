@@ -81,9 +81,14 @@ services:
       UNIFIED_OIDC_CLIENT_SECRET: ${UNIFIED_OIDC_CLIENT_SECRET:-}
     ports:
       - "8080:8080"
-    # No container healthcheck: the published controller image is distroless
-    # (gcr.io/distroless/static-debian12) and has no shell, wget, or curl to run
-    # one. Check readiness from the host instead: `wget -qO- localhost:8080/healthz`.
+    # The controller image is alpine-based (it needs the git CLI for AppSource
+    # reconciliation), so busybox wget is available for a container healthcheck.
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/healthz" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   # ---- Agent (Linux/Docker worker) ----
@@ -95,12 +100,11 @@ services:
     build:
       context: ../../
       dockerfile: docker/agent.Dockerfile
-    # service_started (not service_healthy): the controller has no healthcheck
-    # (distroless). The agent registers via retry-with-backoff, so it tolerates
-    # the controller not being ready yet.
+    # The controller now has a healthcheck, so wait for it to be healthy. The
+    # agent also registers via retry-with-backoff, so it tolerates restarts.
     depends_on:
       controller:
-        condition: service_started
+        condition: service_healthy
     environment:
       UNIFIED_SERVER: http://controller:8080
       UNIFIED_AGENT_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}

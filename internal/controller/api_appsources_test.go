@@ -106,3 +106,30 @@ func TestAPI_SyncAppSource(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", got.LastCommit)
 }
+
+func TestSyncAppSource_SetsSyncingStatus(t *testing.T) {
+	s, pg := newTestServer(t)
+	ctx := t.Context()
+	_, err := pg.UpsertAppSource(ctx, "s1", []byte(`{}`))
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/appsources/s1/sync", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	got, err := pg.GetAppSource(ctx, "s1")
+	require.NoError(t, err)
+	assert.Equal(t, "Syncing", got.SyncStatus)
+
+	// Also verify the GET API response surfaces syncStatus.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/appsources/s1", nil)
+	getReq.Header.Set("Authorization", "Bearer secret")
+	getRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(getRec, getReq)
+	require.Equal(t, http.StatusOK, getRec.Code)
+	var meta api.AppSourceMeta
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &meta))
+	assert.Equal(t, "Syncing", meta.SyncStatus)
+}

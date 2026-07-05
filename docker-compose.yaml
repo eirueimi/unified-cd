@@ -59,7 +59,7 @@ services:
   controller:
     build:
       context: .
-      dockerfile: deployments/docker/Dockerfile.dev
+      dockerfile: docker/dev.Dockerfile
     volumes:
       - .:/app
       - gocache:/gocache
@@ -102,7 +102,7 @@ services:
   vite:
     build:
       context: .
-      dockerfile: deployments/docker/Dockerfile.vite
+      dockerfile: docker/vite.Dockerfile
     volumes:
       - ./web:/app/web
     working_dir: /app/web
@@ -130,7 +130,7 @@ services:
   agent:
     build:
       context: .
-      dockerfile: deployments/docker/Dockerfile.dev
+      dockerfile: docker/dev.Dockerfile
     volumes:
       - .:/app
       - gocache:/gocache

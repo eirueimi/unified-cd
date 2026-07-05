@@ -38,6 +38,7 @@ unified-cd-controller [FLAGS]
   --web-dir               string   Static web assets directory (env: UNIFIED_WEB_DIR)
   --ui-proxy-target       string   Vite dev server URL to proxy /ui/* (env: UNIFIED_UI_PROXY_TARGET)
   --log-level             string   Log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)
+  --audit-retention-days  int      Days to keep audit_logs rows; 0 = keep forever (default: 90, env: UNIFIED_AUDIT_RETENTION_DAYS)
 ```
 
 ### Controller Environment Variables
@@ -61,6 +62,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_OIDC_CLIENT_ID` | No (SSO only) | OIDC client ID for browser SSO (confidential client) |
 | `UNIFIED_OIDC_CLIENT_SECRET` | No (SSO only) | OIDC client secret |
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | No (SSO only) | OIDC public client ID for CLI device flow. Falls back to `UNIFIED_OIDC_CLIENT_ID` if unset. |
+| `UNIFIED_AUDIT_RETENTION_DAYS` | No | Days to keep `audit_logs` rows before a leader-only background task deletes them. Default `90`. `0` = keep forever. See [docs/audit.md](audit.md). |
 
 ### Controller Config File
 

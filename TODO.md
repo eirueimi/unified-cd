@@ -86,9 +86,10 @@
 - **切り分け:** データは存在しサーバ API からは取れるので、UI(またはログ SSE エンドポイント)の終了済み/キャンセル済みラン向けバックフィル経路の問題。
 - 検証: Playwright(スクリーンショット `20-failed-run-detail.png`)。
 
-### 11. CLI に `run cancel` がない
+### 11. [IMPLEMENTED] CLI に `run cancel` がない
 
-- API には `POST /api/v1/runs/{id}/cancel` が存在する(204 を返すのを確認)が、CLI の `run` サブコマンドは delete/list/show/trigger のみ。ハングしたランの復旧手段として特に重要(現状 curl 直叩きが必要)。
+- **状態: 実装済み**(`run cancel` は commit `ce8309e` で追加済み。さらに branch `feature/cli-gaps` で CLI の API カバレッジを拡充: `run list-active` / `run outputs` / `run show-yaml` / `run approvals`、`jobs get` / `jobs show-yaml`、`webhook list` / `webhook delete`、`agent get` / `agent runs`。docs/cli.md にも反映)。
+- 原記載: API には `POST /api/v1/runs/{id}/cancel` が存在する(204 を返すのを確認)が、CLI の `run` サブコマンドは delete/list/show/trigger のみ。ハングしたランの復旧手段として特に重要(現状 curl 直叩きが必要)。
 
 ### 12. エージェント登録が起動時のみで、コントローラ DB 消失後に inventory が不整合になる
 
@@ -163,7 +164,10 @@
 
 - Docker Desktop 29.6.1 の Kubernetes(kind モード、k8s 1.35)は **WSL2 が cgroup v1 のままだと kubelet が起動せず** `failed to start` になる。`.wslconfig` に `kernelCommandLine = cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1` を追加し `wsl --shutdown` で解消(このマシンで実証)。unified-cd の問題ではないが、開発環境要件として docs/kubernetes-integration.md に注記の価値あり。
 
-### 17. `kind: Schedule` が CLI から apply できない
+### 17. [IMPLEMENTED] `kind: Schedule` が CLI から apply できない
+
+- **状態: 実装済み**(apply の kind ディスパッチに Schedule を追加 — commit `e146d29`。`schedule list` / `schedule delete` サブコマンドも `internal/cli/schedule.go` に存在。branch `feature/cli-gaps` での確認時点で対応済みであることを確認し、本エントリを更新)。
+- 以下は原記載:
 
 - **症状(実機確認):** `unified-cli apply -f schedule.yaml` が「field cron not found in type dsl.Spec」で失敗。CLI の apply の kind ディスパッチ(`internal/cli/apply.go:88-147`)は GitCredential / WebhookReceiver / AppSource のみ対応で、**Schedule だけ Job として送信される**。`schedule` サブコマンドも存在しない。
 - docs/resources.md と README は Schedule を apply 可能なリソースとして記載。API(`POST /api/v1/schedules`)直叩きなら作成でき、cron 発火自体は正常動作(毎分スケジュールで `schedule:verify-cron` のランが起きるのを確認)。
@@ -213,11 +217,12 @@
 
 ## 機能要望(Feature)
 
-### 24. 監査ログ(API 操作の記録)
+### 24. 監査ログ(API 操作の記録)— 実装済み(branch `feature/audit-log`)
 
 - **背景:** 現在監査証跡があるのは承認/却下(`run_approvals` テーブル、decidedBy 付き)のみ。シークレットの変更、Job の apply/削除、手動トリガー、トークン発行/削除、キャンセルなどの操作は誰がいつ実行したか記録が残らない。エンタープライズ用途・障害調査(「誰がこのジョブを書き換えたか」)で必須になる。
 - **内容:** 状態を変更する API 操作(POST/PUT/DELETE 系)について、操作者(トークン/OIDC サブジェクト)・操作種別・対象リソース・タイムスタンプ・結果を記録する。シークレットは名前のみ記録し値は残さない。
 - **実装案:** `audit_logs` テーブルを追加し、コントローラの認証済みハンドラ層(ミドルウェア)で一括記録。閲覧は admin ロール限定で `GET /api/v1/audit` + `unified-cli audit list`。保持期間は設定可能(デフォルト例: 90日)にし、リーダー限定タスクで期限切れを削除。
+- **実装:** マイグレーション `internal/store/migrations/004_audit_logs.{up,down}.sql`。ミドルウェア `internal/controller/audit.go` を `/api/v1`(jobs/runs/secrets/gitcredentials/tokens)・`/api/v1/webhooks`・`/api/v1/schedules`・`/api/v1/appsources` の各ルートグループに追加(POST/PUT/DELETE のみ記録、GET・エージェント向け・webhook ingress・auth/OIDC は対象外)。`GET /api/v1/audit`(admin 限定、`internal/controller/api_audit.go`)、`unified-cli audit list --limit N`(`internal/cli/audit.go`)、保持期間クリーンアップ `internal/controller/audit_retention.go`(リーダー限定、`--audit-retention-days` / `UNIFIED_AUDIT_RETENTION_DAYS`、デフォルト90日、0=無期限)。詳細は [docs/audit.md](docs/audit.md)。
 
 ---
 

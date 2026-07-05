@@ -25,6 +25,9 @@ type Config struct {
 	ListenAddr    string
 	WebDir        string // Directory for static web files. When empty, /ui/* returns 404.
 	UIProxyTarget string // URL of the Vite dev server to proxy /ui/* to when WebDir is not set (e.g. http://vite:5173). When empty, /ui/* returns 404.
+
+	// MatrixMaxCombinations caps matrix step expansion; 0 means the default (64).
+	MatrixMaxCombinations int
 }
 
 // OIDCConfig holds the OIDC provider configuration.
@@ -195,10 +198,13 @@ func (s *Server) routes() {
 
 	s.r.Route("/api/v1", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
+		r.Use(auditLogMiddleware(s.store))
 
 		dev := requireMinRole("developer")
 		view := requireMinRole("viewer")
 		admin := requireMinRole("admin")
+
+		r.With(admin).Get("/audit", s.handleListAuditLogs)
 
 		r.With(dev).Post("/jobs", s.handleApplyJob)
 		r.With(view).Get("/jobs", s.handleListJobs)
@@ -239,6 +245,7 @@ func (s *Server) routes() {
 	// WebhookReceiver management (auth required)
 	s.r.Route("/api/v1/webhooks", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
+		r.Use(auditLogMiddleware(s.store))
 		r.With(requireMinRole("admin")).Post("/", s.handleApplyWebhook)
 		r.With(requireMinRole("viewer")).Get("/", s.handleListWebhooks)
 		r.With(requireMinRole("admin")).Delete("/{name}", s.handleDeleteWebhook)
@@ -247,6 +254,7 @@ func (s *Server) routes() {
 	// Schedule management (auth required)
 	s.r.Route("/api/v1/schedules", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
+		r.Use(auditLogMiddleware(s.store))
 		r.With(requireMinRole("developer")).Post("/", s.handleApplySchedule)
 		r.With(requireMinRole("viewer")).Get("/", s.handleListSchedules)
 		r.With(requireMinRole("developer")).Delete("/{name}", s.handleDeleteSchedule)
@@ -255,6 +263,7 @@ func (s *Server) routes() {
 	// AppSource management (auth required)
 	s.r.Route("/api/v1/appsources", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
+		r.Use(auditLogMiddleware(s.store))
 		r.With(requireMinRole("admin")).Post("/", s.handleApplyAppSource)
 		r.With(requireMinRole("viewer")).Get("/", s.handleListAppSources)
 		r.With(requireMinRole("viewer")).Get("/{name}", s.handleGetAppSource)

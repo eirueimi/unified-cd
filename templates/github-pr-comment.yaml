@@ -1,0 +1,73 @@
+# GitHub PR コメント投稿ジョブテンプレート
+# unified-cd apply examples/github-pr-comment.yaml で登録後、call.job で呼び出す
+#
+# 必要なシークレット:
+#   unified-cd secret set github-token --value ghp_xxxx
+#   必要な権限: pull-requests:write（Issues コメント API を PR にも利用）
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/github-pr-comment.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: github-pr-comment
+spec:
+  params:
+    inputs:
+      - name: repo
+        type: string
+        required: true
+        description: "org/name 形式のリポジトリ"
+      - name: pr_number
+        type: string
+        required: true
+        description: "PR 番号（Issue 番号と共通）"
+      - name: body
+        type: string
+        required: true
+        description: "コメント本文（GitHub Flavored Markdown）"
+      - name: token_secret
+        type: string
+        default: "github-token"
+        description: "GitHub トークンを保持するシークレット名"
+      - name: api_url
+        type: string
+        default: "https://api.github.com"
+        description: "GitHub API のベース URL（GitHub Enterprise Server の場合に変更）"
+  steps:
+    - name: comment
+      env:
+        GITHUB_TOKEN: "{{ index .Secrets .Params.token_secret }}"
+        REPO: "{{ .Params.repo }}"
+        PR_NUMBER: "{{ .Params.pr_number }}"
+        BODY: "{{ .Params.body }}"
+        API_URL: "{{ .Params.api_url }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _PAYLOAD_FILE="$(mktemp)"
+        _RESPONSE_FILE="$(mktemp)"
+        _cleanup() {
+          rm -f "$_PAYLOAD_FILE" "$_RESPONSE_FILE"
+        }
+        trap _cleanup EXIT
+
+        # jq がなくても壊れないよう手動で JSON エスケープする（\、"、改行のみ対応）
+        _ESCAPED_BODY="$(printf '%s' "$BODY" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g')"
+        printf '{"body":"%s"}' "$_ESCAPED_BODY" > "$_PAYLOAD_FILE"
+
+        HTTP_STATUS=$(curl -s -o "$_RESPONSE_FILE" -w "%{http_code}" \
+          -X POST \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "Content-Type: application/json" \
+          "${API_URL}/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+          --data @"$_PAYLOAD_FILE")
+
+        if [ "$HTTP_STATUS" != "201" ]; then
+          echo "[github-pr-comment] GitHub API returned HTTP ${HTTP_STATUS}" >&2
+          cat "$_RESPONSE_FILE" >&2 2>/dev/null || true
+          exit 1
+        fi
+        echo "[github-pr-comment] posted comment on ${REPO}#${PR_NUMBER}"

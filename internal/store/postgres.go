@@ -566,11 +566,11 @@ func (p *Postgres) DeleteRun(ctx context.Context, id string) error {
 	return err
 }
 
-func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, status string, exitCode *int, startedAt, endedAt *time.Time) error {
+func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time) error {
 	const q = `
-		INSERT INTO step_reports(run_id, step_index, stage_index, step_name, status, exit_code, started_at, ended_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (run_id, step_index) DO UPDATE
+		INSERT INTO step_reports(run_id, step_index, variant, stage_index, step_name, status, exit_code, started_at, ended_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (run_id, step_index, variant) DO UPDATE
 		  SET stage_index = EXCLUDED.stage_index,
 		      step_name   = EXCLUDED.step_name,
 		      status      = EXCLUDED.status,
@@ -578,16 +578,16 @@ func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex
 		      started_at  = COALESCE(EXCLUDED.started_at, step_reports.started_at),
 		      ended_at    = COALESCE(EXCLUDED.ended_at, step_reports.ended_at);
 	`
-	_, err := p.pool.Exec(ctx, q, runID, stepIndex, stageIndex, stepName, status, exitCode, startedAt, endedAt)
+	_, err := p.pool.Exec(ctx, q, runID, stepIndex, variant, stageIndex, stepName, status, exitCode, startedAt, endedAt)
 	return err
 }
 
 func (p *Postgres) GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error) {
 	const q = `
-		SELECT step_index, stage_index, step_name, status, exit_code, started_at, ended_at
+		SELECT step_index, stage_index, step_name, status, exit_code, started_at, ended_at, variant
 		FROM step_reports
 		WHERE run_id = $1
-		ORDER BY step_index;
+		ORDER BY step_index, variant;
 	`
 	rows, err := p.pool.Query(ctx, q, runID)
 	if err != nil {
@@ -597,7 +597,7 @@ func (p *Postgres) GetRunSteps(ctx context.Context, runID string) ([]api.StepRep
 	var out []api.StepReport
 	for rows.Next() {
 		var s api.StepReport
-		if err := rows.Scan(&s.Index, &s.StageIndex, &s.Name, &s.Status, &s.ExitCode, &s.StartedAt, &s.EndedAt); err != nil {
+		if err := rows.Scan(&s.Index, &s.StageIndex, &s.Name, &s.Status, &s.ExitCode, &s.StartedAt, &s.EndedAt, &s.Variant); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -888,19 +888,19 @@ func (p *Postgres) ReleaseSemaphore(ctx context.Context, poolName, runID string)
 		poolName, runID)
 	return err
 }
-func (p *Postgres) SetStepOutput(ctx context.Context, runID string, stepIndex int, key, value string) error {
+func (p *Postgres) SetStepOutput(ctx context.Context, runID string, stepIndex int, variant, key, value string) error {
 	const q = `
-		INSERT INTO step_outputs(run_id, step_index, key, value)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (run_id, step_index, key) DO UPDATE SET value = EXCLUDED.value;
+		INSERT INTO step_outputs(run_id, step_index, variant, key, value)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (run_id, step_index, variant, key) DO UPDATE SET value = EXCLUDED.value;
 	`
-	_, err := p.pool.Exec(ctx, q, runID, stepIndex, key, value)
+	_, err := p.pool.Exec(ctx, q, runID, stepIndex, variant, key, value)
 	return err
 }
 
 func (p *Postgres) GetStepOutputs(ctx context.Context, runID string, stepIndex int) (map[string]string, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT key, value FROM step_outputs WHERE run_id = $1 AND step_index = $2`,
+		`SELECT key, value FROM step_outputs WHERE run_id = $1 AND step_index = $2 ORDER BY variant`,
 		runID, stepIndex)
 	if err != nil {
 		return nil, err
@@ -1418,6 +1418,48 @@ func (p *Postgres) EnsureControllerKey(ctx context.Context, candidateHex string)
 	return keyHex, nil
 }
 
+// InsertAuditLog records a single state-changing API operation.
+func (p *Postgres) InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error {
+	const q = `
+		INSERT INTO audit_logs(actor, method, path, action, resource, status)
+		VALUES ($1, $2, $3, $4, $5, $6)`
+	_, err := p.pool.Exec(ctx, q, actor, method, path, action, resource, status)
+	return err
+}
+
+// ListAuditLogs returns audit log entries newest-first, with limit/offset pagination.
+func (p *Postgres) ListAuditLogs(ctx context.Context, limit, offset int) ([]api.AuditLog, error) {
+	const q = `
+		SELECT id, occurred_at, actor, method, path, action, resource, status
+		FROM audit_logs
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT $1 OFFSET $2`
+	rows, err := p.pool.Query(ctx, q, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := make([]api.AuditLog, 0)
+	for rows.Next() {
+		var a api.AuditLog
+		if err := rows.Scan(&a.ID, &a.OccurredAt, &a.Actor, &a.Method, &a.Path, &a.Action, &a.Resource, &a.Status); err != nil {
+			return nil, err
+		}
+		list = append(list, a)
+	}
+	return list, rows.Err()
+}
+
+// DeleteAuditLogsOlderThan deletes audit log rows with occurred_at before the given time.
+// Returns the number of rows deleted.
+func (p *Postgres) DeleteAuditLogsOlderThan(ctx context.Context, before time.Time) (int, error) {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM audit_logs WHERE occurred_at < $1`, before)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (p *Postgres) ListPendingRuns(ctx context.Context, limit int) ([]PendingRun, error) {
 	rows, err := p.pool.Query(ctx,
 		`SELECT id, spec FROM runs WHERE status = 'Pending' ORDER BY created_at LIMIT $1`,
@@ -1525,44 +1567,53 @@ func (p *Postgres) DeleteJob(ctx context.Context, name string) error {
 	return err
 }
 
-// UpsertAppSource creates or updates an AppSource. On update, last_commit is reset.
+// UpsertAppSource creates or updates an AppSource. On update, last_commit is
+// reset to "" (forcing a fresh sync) only when the spec actually changed; an
+// upsert with an identical spec preserves last_commit. This avoids a nested
+// AppSource re-fetching its whole directory on every parent reconcile tick,
+// where the parent re-applies the child's unchanged spec each time.
 func (p *Postgres) UpsertAppSource(ctx context.Context, name string, spec []byte) (*AppSource, error) {
 	const q = `
 		INSERT INTO app_sources(name, spec)
 		VALUES ($1, $2)
 		ON CONFLICT (name) DO UPDATE
 		  SET spec = EXCLUDED.spec,
-		      last_commit = '',
+		      last_commit = CASE
+		        WHEN app_sources.spec IS DISTINCT FROM EXCLUDED.spec THEN ''
+		        ELSE app_sources.last_commit
+		      END,
 		      updated_at = NOW()
-		RETURNING name, spec, last_synced_at, last_commit, managed_jobs, updated_at`
+		RETURNING name, spec, last_synced_at, last_commit, managed_resources, updated_at, sync_status, last_error`
 	var a AppSource
-	var managedJobs []string
-	err := p.pool.QueryRow(ctx, q, name, spec).
-		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt)
-	if err != nil {
+	var mr []byte
+	if err := p.pool.QueryRow(ctx, q, name, spec).
+		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &mr, &a.UpdatedAt, &a.SyncStatus, &a.LastError); err != nil {
 		return nil, fmt.Errorf("upsert AppSource: %w", err)
 	}
-	a.ManagedJobs = managedJobs
+	if err := unmarshalManagedResources(mr, &a); err != nil {
+		return nil, err
+	}
 	return &a, nil
 }
 
 // GetAppSource retrieves an AppSource by name.
 func (p *Postgres) GetAppSource(ctx context.Context, name string) (*AppSource, error) {
-	const q = `SELECT name, spec, last_synced_at, last_commit, managed_jobs, updated_at FROM app_sources WHERE name = $1`
+	const q = `SELECT name, spec, last_synced_at, last_commit, managed_resources, updated_at, sync_status, last_error FROM app_sources WHERE name = $1`
 	var a AppSource
-	var managedJobs []string
-	err := p.pool.QueryRow(ctx, q, name).
-		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt)
-	if err != nil {
+	var mr []byte
+	if err := p.pool.QueryRow(ctx, q, name).
+		Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &mr, &a.UpdatedAt, &a.SyncStatus, &a.LastError); err != nil {
 		return nil, fmt.Errorf("get AppSource name=%s: %w", name, err)
 	}
-	a.ManagedJobs = managedJobs
+	if err := unmarshalManagedResources(mr, &a); err != nil {
+		return nil, err
+	}
 	return &a, nil
 }
 
 // ListAppSources returns all AppSources ordered by name.
 func (p *Postgres) ListAppSources(ctx context.Context) ([]AppSource, error) {
-	const q = `SELECT name, spec, last_synced_at, last_commit, managed_jobs, updated_at FROM app_sources ORDER BY name`
+	const q = `SELECT name, spec, last_synced_at, last_commit, managed_resources, updated_at, sync_status, last_error FROM app_sources ORDER BY name`
 	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1571,11 +1622,13 @@ func (p *Postgres) ListAppSources(ctx context.Context) ([]AppSource, error) {
 	var out []AppSource
 	for rows.Next() {
 		var a AppSource
-		var managedJobs []string
-		if err := rows.Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &managedJobs, &a.UpdatedAt); err != nil {
+		var mr []byte
+		if err := rows.Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &mr, &a.UpdatedAt, &a.SyncStatus, &a.LastError); err != nil {
 			return nil, err
 		}
-		a.ManagedJobs = managedJobs
+		if err := unmarshalManagedResources(mr, &a); err != nil {
+			return nil, err
+		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
@@ -1587,15 +1640,32 @@ func (p *Postgres) DeleteAppSource(ctx context.Context, name string) error {
 	return err
 }
 
-// UpdateAppSourceSyncState updates the sync state of an AppSource (last commit, sync time, and managed job list).
-func (p *Postgres) UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managedJobs []string) error {
-	if managedJobs == nil {
-		managedJobs = []string{}
+// UpdateAppSourceSyncState updates the sync state of an AppSource (last commit, sync time, and managed resource list).
+// A successful sync also marks the AppSource as Synced and clears any recorded error.
+func (p *Postgres) UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managed []ResourceRef) error {
+	if managed == nil {
+		managed = []ResourceRef{}
 	}
-	_, err := p.pool.Exec(ctx,
-		`UPDATE app_sources SET last_commit = $1, last_synced_at = $2, managed_jobs = $3, updated_at = NOW() WHERE name = $4`,
-		lastCommit, syncedAt, managedJobs, name)
+	data, err := json.Marshal(managed)
+	if err != nil {
+		return fmt.Errorf("marshal managed resources: %w", err)
+	}
+	_, err = p.pool.Exec(ctx,
+		`UPDATE app_sources SET last_commit = $1, last_synced_at = $2, managed_resources = $3, sync_status = 'Synced', last_error = '', updated_at = NOW() WHERE name = $4`,
+		lastCommit, syncedAt, data, name)
 	return err
+}
+
+// unmarshalManagedResources decodes the managed_resources jsonb column into a.ManagedResources.
+func unmarshalManagedResources(raw []byte, a *AppSource) error {
+	if len(raw) == 0 {
+		a.ManagedResources = nil
+		return nil
+	}
+	if err := json.Unmarshal(raw, &a.ManagedResources); err != nil {
+		return fmt.Errorf("unmarshal managed_resources for %q: %w", a.Name, err)
+	}
+	return nil
 }
 
 // ResetAppSourceCommit resets the last_commit of an AppSource to an empty string.
@@ -1603,6 +1673,14 @@ func (p *Postgres) ResetAppSourceCommit(ctx context.Context, name string) error 
 	_, err := p.pool.Exec(ctx,
 		`UPDATE app_sources SET last_commit = '', updated_at = NOW() WHERE name = $1`,
 		name)
+	return err
+}
+
+// SetAppSourceSyncStatus sets the sync_status and last_error of an AppSource.
+func (p *Postgres) SetAppSourceSyncStatus(ctx context.Context, name, status, lastError string) error {
+	_, err := p.pool.Exec(ctx,
+		`UPDATE app_sources SET sync_status = $1, last_error = $2, updated_at = NOW() WHERE name = $3`,
+		status, lastError, name)
 	return err
 }
 

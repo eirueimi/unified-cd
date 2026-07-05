@@ -1,0 +1,67 @@
+# Kubernetes マニフェスト適用ジョブテンプレート
+# unified-cd apply examples/k8s-deploy.yaml で登録後、call.job で呼び出す
+#
+# エージェント要件: kubectl
+#
+# 必要なシークレット:
+#   unified-cd secret set my-cluster-kubeconfig --value "$(cat ~/.kube/config)"
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/k8s-deploy.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: k8s-deploy
+spec:
+  params:
+    inputs:
+      - name: manifest_path
+        type: string
+        required: true
+        description: "適用するマニフェストファイル/ディレクトリのパス（kubectl apply -f に渡す）"
+      - name: namespace
+        type: string
+        default: "default"
+        description: "適用先の namespace"
+      - name: kubeconfig_secret
+        type: string
+        required: true
+        description: "kubeconfig の内容を保持するシークレット名"
+      - name: rollout_target
+        type: string
+        default: ""
+        description: "ロールアウト完了を待つ対象（例: deployment/myapp）。空文字ならロールアウト待機をスキップ"
+      - name: timeout
+        type: string
+        default: "120s"
+        description: "kubectl rollout status のタイムアウト"
+  steps:
+    - name: apply-manifests
+      env:
+        KUBECONFIG_CONTENT: "{{ index .Secrets .Params.kubeconfig_secret }}"
+        MANIFEST_PATH: "{{ .Params.manifest_path }}"
+        NAMESPACE: "{{ .Params.namespace }}"
+        ROLLOUT_TARGET: "{{ .Params.rollout_target }}"
+        TIMEOUT: "{{ .Params.timeout }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _KUBECONFIG_FILE="$(mktemp)"
+        chmod 600 "$_KUBECONFIG_FILE"
+        _cleanup() {
+          rm -f "$_KUBECONFIG_FILE"
+        }
+        trap _cleanup EXIT
+
+        printf '%s\n' "$KUBECONFIG_CONTENT" > "$_KUBECONFIG_FILE"
+        export KUBECONFIG="$_KUBECONFIG_FILE"
+
+        kubectl apply -n "$NAMESPACE" -f "$MANIFEST_PATH"
+
+        if [ -n "$ROLLOUT_TARGET" ]; then
+          echo "[k8s-deploy] waiting for rollout of ${ROLLOUT_TARGET} (timeout ${TIMEOUT})"
+          kubectl rollout status "$ROLLOUT_TARGET" -n "$NAMESPACE" --timeout="$TIMEOUT"
+        fi
+
+        echo "[k8s-deploy] applied ${MANIFEST_PATH} to namespace ${NAMESPACE}"

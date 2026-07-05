@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -152,9 +153,13 @@ func (c *Client) GetRunOutputs(ctx context.Context, runID string) (map[string]st
 	return out.Outputs, nil
 }
 
-// SetStepOutputs sends the step outputs to the master server.
-func (c *Client) SetStepOutputs(ctx context.Context, agentID, runID string, stepIndex int, outputs map[string]string) error {
+// SetStepOutputs sends the step outputs to the master server. variant is the
+// matrix combination key ("" for non-matrix steps).
+func (c *Client) SetStepOutputs(ctx context.Context, agentID, runID string, stepIndex int, variant string, outputs map[string]string) error {
 	path := fmt.Sprintf("/api/v1/agents/%s/runs/%s/steps/%d/outputs", agentID, runID, stepIndex)
+	if variant != "" {
+		path += "?variant=" + url.QueryEscape(variant)
+	}
 	_, err := c.do(ctx, http.MethodPost, path, api.SetOutputsRequest{Outputs: outputs}, nil)
 	return err
 }

@@ -13,6 +13,7 @@ import (
 const SupportedAPIVersion = "unified-cd/v1"
 
 var orLockNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var matrixDimNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func Parse(r io.Reader) (*Job, error) {
 	data, err := io.ReadAll(r)
@@ -187,7 +188,7 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 						return fmt.Errorf("%s: approval: is not supported in finally steps", subPath)
 					}
 				}
-				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Approval, st.Foreach, subPath, nameSet, st.UploadArtifact, st.DownloadArtifact); err != nil {
+				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Approval, st.Foreach, st.Matrix, subPath, nameSet, st.UploadArtifact, st.DownloadArtifact); err != nil {
 					return err
 				}
 				if err := validateCacheStep(st.Name, st.Cache); err != nil {
@@ -216,7 +217,7 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 					return fmt.Errorf("%s: approval: is not supported in finally steps", entryPath)
 				}
 			}
-			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Approval, entry.Foreach, entryPath, nameSet, entry.UploadArtifact, entry.DownloadArtifact); err != nil {
+			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Approval, entry.Foreach, entry.Matrix, entryPath, nameSet, entry.UploadArtifact, entry.DownloadArtifact); err != nil {
 				return err
 			}
 			if err := validateCacheStep(entry.Name, entry.Cache); err != nil {
@@ -233,7 +234,7 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 	return nil
 }
 
-func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *CacheStep, approval *ApprovalStep, foreach *ForeachDef, path string, nameSet map[string]bool, upload *UploadArtifactStep, download *DownloadArtifactStep) error {
+func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *CacheStep, approval *ApprovalStep, foreach *ForeachDef, matrix *MatrixDef, path string, nameSet map[string]bool, upload *UploadArtifactStep, download *DownloadArtifactStep) error {
 	if nameSet[name] {
 		return fmt.Errorf("%s: duplicate step name %q", path, name)
 	}
@@ -289,6 +290,37 @@ func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *C
 		}
 		if len(foreach.Source.Literal) == 0 && foreach.Source.Expr == "" {
 			return fmt.Errorf("%s (%s): foreach.in must be a non-empty list or expression", path, name)
+		}
+	}
+	if foreach != nil && matrix != nil {
+		return fmt.Errorf("%s (%s): foreach and matrix are mutually exclusive", path, name)
+	}
+	if (foreach != nil || matrix != nil) && approval != nil {
+		return fmt.Errorf("%s (%s): approval is not supported with matrix/foreach", path, name)
+	}
+	if matrix != nil {
+		if len(matrix.Dimensions) == 0 {
+			return fmt.Errorf("%s (%s): matrix requires at least one dimension", path, name)
+		}
+		dimNames := map[string]bool{}
+		for _, d := range matrix.Dimensions {
+			if !matrixDimNameRe.MatchString(d.Name) {
+				return fmt.Errorf("%s (%s): matrix dimension name %q must match %s", path, name, d.Name, matrixDimNameRe.String())
+			}
+			if dimNames[d.Name] {
+				return fmt.Errorf("%s (%s): duplicate matrix dimension %q", path, name, d.Name)
+			}
+			dimNames[d.Name] = true
+			if len(d.Source.Literal) == 0 && d.Source.Expr == "" {
+				return fmt.Errorf("%s (%s): matrix.%s must be a non-empty list or expression", path, name, d.Name)
+			}
+		}
+		for _, ex := range matrix.Exclude {
+			for k := range ex {
+				if !dimNames[k] {
+					return fmt.Errorf("%s (%s): matrix.exclude references unknown dimension %q", path, name, k)
+				}
+			}
 		}
 	}
 	return nil

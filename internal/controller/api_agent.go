@@ -115,6 +115,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, cerr.Error(), http.StatusInternalServerError)
 				return
 			}
+			resp.MatrixMaxCombinations = s.cfg.MatrixMaxCombinations
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
@@ -175,13 +176,7 @@ func buildStages(entries []dsl.StepEntry, stepIdx *int, secretsNeeded map[string
 		if len(entry.Parallel) > 0 {
 			stage := api.ClaimStage{Parallel: make([]api.ClaimStep, 0, len(entry.Parallel))}
 			for _, st := range entry.Parallel {
-				cs := buildOneClaimStep(*stepIdx, stageIdx, dsl.StepEntry{
-					Name: st.Name, If: st.If, Env: st.Env, Run: st.Run,
-					Outputs: st.Outputs, Call: st.Call, Uses: st.Uses, Cache: st.Cache,
-					UploadArtifact: st.UploadArtifact, DownloadArtifact: st.DownloadArtifact,
-					Post: st.Post, ContinueOnError: st.ContinueOnError, Container: st.Container,
-					TimeoutMinutes: st.TimeoutMinutes, Foreach: st.Foreach,
-				})
+				cs := buildOneClaimStep(*stepIdx, stageIdx, stepToStepEntry(st))
 				stage.Parallel = append(stage.Parallel, cs)
 				collectSecretNames(st.Run, secretsNeeded)
 				for _, v := range st.Env {
@@ -201,6 +196,20 @@ func buildStages(entries []dsl.StepEntry, stepIdx *int, secretsNeeded map[string
 		}
 	}
 	return stages
+}
+
+// stepToStepEntry converts a dsl.Step (used inside parallel: blocks) into the
+// equivalent dsl.StepEntry so it can go through buildOneClaimStep and receive
+// the same foreach/matrix normalization as top-level steps.
+func stepToStepEntry(st dsl.Step) dsl.StepEntry {
+	return dsl.StepEntry{
+		Name: st.Name, If: st.If, Env: st.Env, Run: st.Run,
+		Outputs: st.Outputs, Call: st.Call, Uses: st.Uses, Cache: st.Cache,
+		UploadArtifact: st.UploadArtifact, DownloadArtifact: st.DownloadArtifact,
+		Post: st.Post, ContinueOnError: st.ContinueOnError, Container: st.Container,
+		TimeoutMinutes: st.TimeoutMinutes, Foreach: st.Foreach, Matrix: st.Matrix,
+		Approval: st.Approval,
+	}
 }
 
 func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry) api.ClaimStep {
@@ -235,13 +244,20 @@ func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry) api.ClaimStep
 		cs.DownloadArtifact = &api.DownloadArtifactStep{Name: entry.DownloadArtifact.Name, DestDir: entry.DownloadArtifact.DestDir}
 	}
 	if entry.Foreach != nil {
-		cs.Foreach = &api.ClaimForeachDef{
-			Key: entry.Foreach.Key,
-			Source: api.ClaimForeachSource{
-				Literal: entry.Foreach.Source.Literal,
-				Expr:    entry.Foreach.Source.Expr,
-			},
+		cs.Matrix = &api.ClaimMatrixDef{Dimensions: []api.ClaimMatrixDimension{{
+			Name:   entry.Foreach.Key,
+			Source: api.ClaimForeachSource{Literal: entry.Foreach.Source.Literal, Expr: entry.Foreach.Source.Expr},
+		}}}
+	}
+	if entry.Matrix != nil {
+		dims := make([]api.ClaimMatrixDimension, len(entry.Matrix.Dimensions))
+		for i, d := range entry.Matrix.Dimensions {
+			dims[i] = api.ClaimMatrixDimension{
+				Name:   d.Name,
+				Source: api.ClaimForeachSource{Literal: d.Source.Literal, Expr: d.Source.Expr},
+			}
 		}
+		cs.Matrix = &api.ClaimMatrixDef{Dimensions: dims, Exclude: entry.Matrix.Exclude}
 	}
 	if entry.Approval != nil {
 		timeout := entry.Approval.TimeoutMinutes
@@ -305,7 +321,7 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 		ec := req.ExitCode
 		exit = &ec
 	}
-	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, req.StepName, req.Status, exit, startedAt, endedAt); err != nil {
+	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, req.StepName, req.Variant, req.Status, exit, startedAt, endedAt); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -367,13 +383,14 @@ func (s *Server) handleAgentSetStepOutputs(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid stepIndex", http.StatusBadRequest)
 		return
 	}
+	variant := r.URL.Query().Get("variant")
 	var req api.SetOutputsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	for k, v := range req.Outputs {
-		if err := s.store.SetStepOutput(r.Context(), runID, stepIndex, k, v); err != nil {
+		if err := s.store.SetStepOutput(r.Context(), runID, stepIndex, variant, k, v); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

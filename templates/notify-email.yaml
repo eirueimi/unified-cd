@@ -1,0 +1,94 @@
+# SMTP メール通知ジョブテンプレート（curl の smtp(s):// サポートを利用）
+# unified-cd apply examples/notify-email.yaml で登録後、call.job で呼び出す
+#
+# 必要なシークレット:
+#   unified-cd secret set smtp-url --value smtps://smtp.example.com:465
+#   unified-cd secret set smtp-username --value user@example.com
+#   unified-cd secret set smtp-password --value xxxxxxxx
+#
+# git:// テンプレートとして参照する場合:
+#   job: git://github.com/your-org/ci-templates/notify-email.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: notify-email
+spec:
+  params:
+    inputs:
+      - name: smtp_url_secret
+        type: string
+        required: true
+        description: "SMTP サーバー URL を保持するシークレット名（例: smtps://smtp.example.com:465）"
+      - name: username_secret
+        type: string
+        required: true
+        description: "SMTP 認証ユーザー名を保持するシークレット名"
+      - name: password_secret
+        type: string
+        required: true
+        description: "SMTP 認証パスワードを保持するシークレット名"
+      - name: mail_from
+        type: string
+        required: true
+        description: "送信元アドレス"
+      - name: mail_to
+        type: string
+        required: true
+        description: "宛先アドレス（カンマ区切りで複数可）"
+      - name: subject
+        type: string
+        required: true
+        description: "件名"
+      - name: body
+        type: string
+        required: true
+        description: "本文（プレーンテキスト）"
+  steps:
+    - name: send
+      env:
+        SMTP_URL: "{{ index .Secrets .Params.smtp_url_secret }}"
+        SMTP_USERNAME: "{{ index .Secrets .Params.username_secret }}"
+        SMTP_PASSWORD: "{{ index .Secrets .Params.password_secret }}"
+        MAIL_FROM: "{{ .Params.mail_from }}"
+        MAIL_TO: "{{ .Params.mail_to }}"
+        SUBJECT: "{{ .Params.subject }}"
+        BODY: "{{ .Params.body }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        _MSG_FILE="$(mktemp)"
+        chmod 600 "$_MSG_FILE"
+        _cleanup() {
+          rm -f "$_MSG_FILE"
+        }
+        trap _cleanup EXIT
+
+        # RCPT 用にカンマ区切りを --mail-rcpt の複数指定に変換
+        _RCPT_ARGS=""
+        _OLD_IFS="$IFS"
+        IFS=','
+        for _addr in $MAIL_TO; do
+          _RCPT_ARGS="${_RCPT_ARGS} --mail-rcpt ${_addr}"
+        done
+        IFS="$_OLD_IFS"
+
+        {
+          printf 'From: %s\n' "$MAIL_FROM"
+          printf 'To: %s\n' "$MAIL_TO"
+          printf 'Subject: %s\n' "$SUBJECT"
+          printf 'Content-Type: text/plain; charset=UTF-8\n'
+          printf '\n'
+          printf '%s\n' "$BODY"
+        } > "$_MSG_FILE"
+
+        # shellcheck disable=SC2086
+        curl -sS \
+          --url "$SMTP_URL" \
+          --mail-from "$MAIL_FROM" \
+          $_RCPT_ARGS \
+          --user "${SMTP_USERNAME}:${SMTP_PASSWORD}" \
+          --upload-file "$_MSG_FILE" \
+          --ssl-reqd
+
+        echo "[notify-email] sent mail to ${MAIL_TO}"
