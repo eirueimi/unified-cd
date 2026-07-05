@@ -14,8 +14,12 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /controller ./cmd/controller
 
-# Stage 3: Minimal runtime image
-FROM gcr.io/distroless/static-debian12
+# Stage 3: Runtime image.
+# alpine (not distroless) because the AppSource reconciler shells out to the
+# git CLI at runtime (internal/gittemplate: git ls-remote / fetch) to resolve
+# and read repo contents. distroless has no git, causing "exec: git: not found".
+FROM alpine:3.20
+RUN apk add --no-cache git ca-certificates
 COPY --from=go-build /controller /controller
 COPY --from=node-build /src/dist /ui
 ENV UNIFIED_WEB_DIR=/ui
