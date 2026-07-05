@@ -27,6 +27,19 @@ func probeKind(doc []byte) string {
 	return probe.Kind
 }
 
+// probeName reads only the "metadata.name" field of a YAML document. Used to
+// detect duplicate {kind,name} resources before applyResource writes to the
+// store, so the first file (in sorted order) wins.
+func probeName(doc []byte) string {
+	var probe struct {
+		Metadata struct {
+			Name string `yaml:"name"`
+		} `yaml:"metadata"`
+	}
+	_ = yaml.Unmarshal(doc, &probe)
+	return probe.Metadata.Name
+}
+
 // applyResource parses one synced document by kind and upserts it, returning metadata.name.
 // Parse/unknown-kind failures return a bare error (skippable); store failures are
 // wrapped with errStoreWrite (abort). Never panics.
