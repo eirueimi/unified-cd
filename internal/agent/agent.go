@@ -436,8 +436,11 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				tplData.Foreach = step.MatrixValues // foreach シュガー互換: {{ .Foreach.key }}
 			}
 
+			var callChildRunID, callJobName string
 			if step.Call != nil {
-				childOutputs, callErr := a.executeCallStep(stepCtx, step, tplData)
+				childOutputs, childRunID, callErr := a.executeCallStep(stepCtx, step, tplData)
+				callChildRunID = childRunID
+				callJobName = step.Call.Job
 				if callErr != nil {
 					slog.Error("call step failed", "step", step.Name, "error", callErr)
 					status = "Failed"
@@ -551,15 +554,17 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			// even when stepCtx has been cancelled due to timeout or other reasons.
 			reportCtx := context.WithoutCancel(stepCtx)
 			reportReq := api.StepReportRequest{
-				RunID:      c.RunID,
-				StepIndex:  step.Index,
-				StageIndex: step.StageIndex,
-				StepName:   step.DisplayName(),
-				Variant:    step.MatrixKey,
-				Status:     status,
-				ExitCode:   exitCode,
-				StartedAt:  started,
-				EndedAt:    ended,
+				RunID:       c.RunID,
+				StepIndex:   step.Index,
+				StageIndex:  step.StageIndex,
+				StepName:    step.DisplayName(),
+				Variant:     step.MatrixKey,
+				Status:      status,
+				ExitCode:    exitCode,
+				StartedAt:   started,
+				EndedAt:     ended,
+				ChildRunID:  callChildRunID,
+				CallJobName: callJobName,
 			}
 			retryUntilSuccess(reportCtx, func(callCtx context.Context) error {
 				return a.Client.ReportStep(callCtx, a.ID, reportReq)
@@ -652,8 +657,12 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 }
 
 // executeCallStep launches a child Run and polls until it completes.
-// Returns the child Run's outputs.
-func (a *Agent) executeCallStep(ctx context.Context, step api.ClaimStep, tplData dsl.TemplateData) (map[string]string, error) {
+// Returns the child Run's outputs and the child Run's ID (so the caller can
+// report it on the step's terminal StepReport for caller→child linking in the
+// WebUI). childRunID is "" only if the child run could not be created at all;
+// on every other path (success, failure, cancellation, timeout) it is
+// returned alongside the error so the link is preserved even for failed calls.
+func (a *Agent) executeCallStep(ctx context.Context, step api.ClaimStep, tplData dsl.TemplateData) (outputs map[string]string, childRunID string, err error) {
 	// Expand templates in the call parameters.
 	// Stdout is not exposed to prevent previous step output from leaking into child job parameters.
 	callCtx := dsl.TemplateData{Params: tplData.Params, Steps: tplData.Steps}
@@ -669,7 +678,7 @@ func (a *Agent) executeCallStep(ctx context.Context, step api.ClaimStep, tplData
 
 	childRun, err := a.Client.CreateRun(ctx, step.Call.Job, expandedParams)
 	if err != nil {
-		return nil, fmt.Errorf("create child run for job %q: %w", step.Call.Job, err)
+		return nil, "", fmt.Errorf("create child run for job %q: %w", step.Call.Job, err)
 	}
 	slog.Info("call: child run created", "childRunId", childRun.ID, "job", step.Call.Job)
 
@@ -690,20 +699,20 @@ func (a *Agent) executeCallStep(ctx context.Context, step api.ClaimStep, tplData
 					slog.Warn("call: get child outputs failed", "childRunId", childRun.ID, "error", oErr)
 					outputs = map[string]string{}
 				}
-				return outputs, nil
+				return outputs, childRun.ID, nil
 			case api.RunFailed, api.RunCancelled:
-				return nil, fmt.Errorf("call: child run %s finished with status %s", childRun.ID, run.Status)
+				return nil, childRun.ID, fmt.Errorf("call: child run %s finished with status %s", childRun.ID, run.Status)
 			}
 		}
 
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("call: child run %s timed out after %s", childRun.ID, maxWait)
+			return nil, childRun.ID, fmt.Errorf("call: child run %s timed out after %s", childRun.ID, maxWait)
 		}
 		select {
 		case <-ctx.Done():
 			// child run orphaned; log for visibility
 			slog.Warn("call: parent context cancelled, child run may be orphaned", "childRunId", childRun.ID)
-			return nil, ctx.Err()
+			return nil, childRun.ID, ctx.Err()
 		case <-ticker.C:
 		}
 	}
