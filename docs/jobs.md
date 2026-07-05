@@ -554,8 +554,8 @@ Cache directories (e.g. dependency downloads) across runs on the same agent or a
 steps:
   - name: restore-cache
     cache:
-      path: vendor/             # directory to cache
-      key: go-vendor-{{ checksum "go.sum" }}
+      path: vendor/             # directory to cache (supports templates, e.g. {{ .Params.working_dir }}/vendor)
+      key: go-vendor-{{ hashFile "go.sum" }}
       restoreKeys:              # fallback keys (prefix match)
         - go-vendor-
       ttlDays: 30               # cache expiry (default: 30 days)
@@ -572,7 +572,7 @@ steps:
     run: go build ./...
 ```
 
-The `key` and `restoreKeys` strings support template expressions (e.g. `{{ checksum "go.sum" }}`).
+The `path`, `key`, and `restoreKeys` strings support template expressions (e.g. `path: {{ .Params.working_dir }}/node_modules`, `key: go-vendor-{{ hashFile "go.sum" }}`). A `path` that fails to expand (or expands to empty) fails the step on the standard agent and skips the cache operation on the k8s agent.
 On hit, the cached directory is restored before the step runs. On miss, the directory is saved after the run completes.
 
 Cache is now supported on the k8s agent (previously a silent no-op) with the same `key`/`restoreKeys`/`ttlDays` semantics — see [Kubernetes Integration: Artifacts and Cache](kubernetes-integration.md#artifacts-and-cache) for how transfers work and the required S3 credentials. Restore is best-effort (a miss or error never fails the step); save is deferred until the run's main stages complete.
@@ -874,7 +874,7 @@ Job YAML values support Go template expressions (`{{ expr }}`).
 
 | Variable | Available in | Description |
 |---|---|---|
-| `{{ .Params.NAME }}` | `run`, `env`, `if`, `agentSelector`, `outputs`, `call.with`, `uses.with`, `cache.key` | Input parameter value |
+| `{{ .Params.NAME }}` | `run`, `env`, `if`, `agentSelector`, `outputs`, `call.with`, `uses.with`, `cache.key`, `cache.path`, `cache.restoreKeys` | Input parameter value |
 | `{{ .Steps.NAME.Outputs.KEY }}` | `run`, `env`, `if`, `outputs` | Output from a completed step |
 | `{{ .Steps.NAME.Status }}` | `if` | Step status: `Succeeded`, `Failed`, `Skipped` |
 | `{{ secrets.NAME }}` | `env` values, `run` strings | Decrypted secret value |

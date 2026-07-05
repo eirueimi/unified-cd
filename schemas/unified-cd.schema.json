@@ -83,12 +83,15 @@
       "additionalProperties": false,
       "properties": {
         "key": {
+          "description": "cache key; supports template expansion",
           "type": "string"
         },
         "path": {
+          "description": "directory to cache; supports template expansion",
           "type": "string"
         },
         "restoreKeys": {
+          "description": "fallback key prefixes; support template expansion",
           "items": {
             "type": "string"
           },

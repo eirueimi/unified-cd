@@ -729,6 +729,13 @@ func (a *Agent) executeCacheStep(
 	if err != nil {
 		return fmt.Errorf("cache key template: %w", err)
 	}
+	cachePath, err := dsl.ExpandTemplate(cs.Path, tplData)
+	if err != nil {
+		return fmt.Errorf("cache path template: %w", err)
+	}
+	if cachePath == "" {
+		return fmt.Errorf("cache path template %q expanded to empty string", cs.Path)
+	}
 	var restoreKeys []string
 	for _, rk := range cs.RestoreKeys {
 		expanded, _ := dsl.ExpandTemplate(rk, tplData)
@@ -738,7 +745,7 @@ func (a *Agent) executeCacheStep(
 	}
 
 	if a.CacheStore != nil {
-		hit, err := cache.Restore(ctx, a.CacheStore, cs.Path, key, restoreKeys)
+		hit, err := cache.Restore(ctx, a.CacheStore, cachePath, key, restoreKeys)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			slog.Warn("cache restore error", "step", step.Name, "error", err)
 		} else if hit {
@@ -752,7 +759,7 @@ func (a *Agent) executeCacheStep(
 	if ttlDays == 0 {
 		ttlDays = 30
 	}
-	capturedPath := cs.Path
+	capturedPath := cachePath
 	capturedKey := key
 	*postHooks = append(*postHooks, func(hookCtx context.Context) {
 		if a.CacheStore == nil {
