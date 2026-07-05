@@ -94,6 +94,38 @@ func TestAudit_SecretDeleteRecordsName(t *testing.T) {
 	assert.Equal(t, "DB_PASS", logs[0].Resource)
 }
 
+// TestAudit_GitCredentialUpsertAndDelete verifies the gitcredential lifecycle
+// is recorded with the credential name: from the request body for upsert
+// (the handler responds 204 No Content, so a response-body source would
+// always resolve to an empty resource), and from the URL param for delete.
+func TestAudit_GitCredentialUpsertAndDelete(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	body, _ := json.Marshal(api.UpsertGitCredentialRequest{
+		Name: "github-creds", Host: "github.com", CredType: "token", SecretRef: "gh-token",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gitcredentials", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/gitcredentials/github-creds", nil)
+	delReq.Header.Set("Authorization", "Bearer secret")
+	delRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(delRec, delReq)
+	require.Equal(t, http.StatusNoContent, delRec.Code, delRec.Body.String())
+
+	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
+	require.NoError(t, err)
+	require.Len(t, logs, 2) // upsert + delete
+	assert.Equal(t, "gitcredential.delete", logs[0].Action) // newest first
+	assert.Equal(t, "github-creds", logs[0].Resource)
+	assert.Equal(t, "gitcredential.upsert", logs[1].Action)
+	assert.Equal(t, "github-creds", logs[1].Resource)
+}
+
 // TestAudit_GetRequestsNotRecorded verifies read-only GET calls are never audited.
 func TestAudit_GetRequestsNotRecorded(t *testing.T) {
 	s, pg := newTestServer(t)

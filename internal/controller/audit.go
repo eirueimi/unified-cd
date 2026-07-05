@@ -59,12 +59,14 @@ var auditResourceParams = map[string]string{
 // auditBodyNameSource says whether to resolve a body-derived resource name
 // from the "request" body or the "response" body for a given action.
 // Secrets deliberately read the request body (name only, never "value")
-// so that no secret value is ever inspected or logged.
+// so that no secret value is ever inspected or logged. gitcredential.upsert
+// also reads the request body: its handler responds 204 No Content with no
+// body, so a "response" source would always resolve to an empty resource.
 var auditBodyNameSource = map[string]string{
 	"job.apply":            "response",
 	"run.trigger":          "response",
 	"secret.set":           "request",
-	"gitcredential.upsert": "response",
+	"gitcredential.upsert": "request",
 	"token.create":         "response",
 	"webhook.apply":        "response",
 	"schedule.apply":       "response",
