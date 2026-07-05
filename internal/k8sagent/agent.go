@@ -281,10 +281,11 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			failedFlag.Store(true)
 		}
 		return func(step api.ClaimStep) {
-			// Build template data; expose foreach variable if set
+			// Build template data; expose matrix/foreach values if set
 			tplData := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps}
-			if step.ForeachKey != "" {
-				tplData.Foreach = map[string]string{step.ForeachKey: step.ForeachValue}
+			if step.MatrixValues != nil {
+				tplData.Matrix = step.MatrixValues
+				tplData.Foreach = step.MatrixValues
 			}
 
 			// Every step is gated by if:. On eval error the step runs (fail-safe);
@@ -295,7 +296,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			}
 			if !ok {
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Skipped",
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Skipped",
 				})
 				return
 			}
@@ -310,7 +311,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					status = "Failed"
 				}
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: status, EndedAt: time.Now().UTC(),
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status, EndedAt: time.Now().UTC(),
 				})
 				if !approved {
 					recordFailure(step)
@@ -324,7 +325,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			if step.Cache != nil {
 				started := time.Now().UTC()
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 				})
 				key, kerr := dsl.ExpandTemplate(step.Cache.Key, tplData)
 				if kerr != nil || key == "" {
@@ -356,7 +357,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				}
 
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
 				})
 				return
 			}
@@ -366,7 +367,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			if step.UploadArtifact != nil {
 				started := time.Now().UTC()
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 				})
 				argv := []string{"unified-sidecar", "artifact", "upload",
 					"--run", c.RunID, "--name", step.UploadArtifact.Name,
@@ -377,7 +378,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					status = "Failed"
 				}
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
 				})
 				if status == "Failed" {
 					recordFailure(step)
@@ -390,7 +391,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			if step.DownloadArtifact != nil {
 				started := time.Now().UTC()
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 				})
 				dest := step.DownloadArtifact.DestDir
 				if dest == "" {
@@ -405,7 +406,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					status = "Failed"
 				}
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
 				})
 				if status == "Failed" {
 					recordFailure(step)
@@ -415,7 +416,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 
 			started := time.Now().UTC()
 			_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.Name, Status: "Running", StartedAt: started,
+				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 			})
 
 			// Attempt template expansion; fall back to the original script on failure
@@ -439,8 +440,24 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					}
 				}
 				if len(capturedOutputs) > 0 {
-					stepCtx.Steps[step.Name] = dsl.StepData{Outputs: capturedOutputs}
-					_ = a.client.SetStepOutputs(ctx, a.cfg.AgentID, c.RunID, step.Index, capturedOutputs)
+					if step.MatrixKey != "" {
+						sd := stepCtx.Steps[step.Name]
+						if sd.Outputs == nil {
+							sd.Outputs = map[string]any{}
+						}
+						for k, v := range capturedOutputs {
+							m, _ := sd.Outputs[k].(map[string]string)
+							if m == nil {
+								m = map[string]string{}
+							}
+							m[step.MatrixKey] = v
+							sd.Outputs[k] = m
+						}
+						stepCtx.Steps[step.Name] = sd
+					} else {
+						stepCtx.Steps[step.Name] = dsl.StepData{Outputs: dsl.StringOutputs(capturedOutputs)}
+					}
+					_ = a.client.SetStepOutputs(ctx, a.cfg.AgentID, c.RunID, step.Index, step.MatrixKey, capturedOutputs)
 				}
 			}
 
@@ -449,7 +466,8 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				RunID:      c.RunID,
 				StepIndex:  step.Index,
 				StageIndex: step.StageIndex,
-				StepName:   step.Name,
+				StepName:   step.DisplayName(),
+				Variant:    step.MatrixKey,
 				Status:     status,
 				ExitCode:   ec,
 				StartedAt:  started,
@@ -471,24 +489,15 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 	// post-failure behavior, so the loop never aborts on failure.
 	for _, stage := range c.Stages {
 		for _, step := range api.StageSteps(stage) {
-			if step.Foreach != nil {
-				// Expand foreach and run each variant sequentially inside the pod
-				data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps}
-				items, err := agentlib.EvalForeachSource(step.Foreach.Source, data)
-				if err != nil {
-					slog.Error("k8s: foreach expansion failed", "step", step.Name, "error", err)
-					anyStepFailed.Store(true)
-					continue
-				}
-				for _, item := range items {
-					variant := step
-					variant.Foreach = nil
-					variant.ForeachKey = step.Foreach.Key
-					variant.ForeachValue = item
-					mainRun(variant)
-				}
-			} else {
-				mainRun(step)
+			data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps}
+			variants, err := agentlib.ExpandMatrixStep(step, data, c.MatrixMaxCombinations)
+			if err != nil {
+				slog.Error("k8s: matrix expansion failed", "step", step.Name, "error", err)
+				anyStepFailed.Store(true)
+				continue
+			}
+			for _, v := range variants {
+				mainRun(v)
 			}
 		}
 	}
@@ -500,7 +509,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			if sd, ok := stepCtx.Steps[step.Name]; ok {
 				for _, outName := range c.JobOutputs {
 					if val, ok := sd.Outputs[outName]; ok {
-						runOutputs[outName] = val
+						runOutputs[outName] = dsl.OutputValueString(val)
 					}
 				}
 			}
@@ -540,23 +549,15 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		finallyRun := makeRunStep(func() dsl.RunStatusView { return frozen }, false, &finallyFailed, finallyCtx, false)
 		for _, stage := range c.Finally {
 			for _, step := range api.StageSteps(stage) {
-				if step.Foreach != nil {
-					data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps}
-					items, err := agentlib.EvalForeachSource(step.Foreach.Source, data)
-					if err != nil {
-						slog.Error("k8s: finally foreach expansion failed", "step", step.Name, "error", err)
-						finallyFailed.Store(true)
-						continue
-					}
-					for _, item := range items {
-						variant := step
-						variant.Foreach = nil
-						variant.ForeachKey = step.Foreach.Key
-						variant.ForeachValue = item
-						finallyRun(variant)
-					}
-				} else {
-					finallyRun(step)
+				data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps}
+				variants, err := agentlib.ExpandMatrixStep(step, data, c.MatrixMaxCombinations)
+				if err != nil {
+					slog.Error("k8s: finally matrix expansion failed", "step", step.Name, "error", err)
+					finallyFailed.Store(true)
+					continue
+				}
+				for _, v := range variants {
+					finallyRun(v)
 				}
 			}
 		}
