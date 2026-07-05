@@ -100,6 +100,7 @@ type ClaimStep struct {
 	// Needs removed — use parallel: or foreach:
 	ContinueOnError  bool                  `json:"continueOnError,omitempty"`
 	Container        string                `json:"container,omitempty"`
+	RunsIn           *dsl.RunsIn           `json:"runsIn,omitempty"`
 	TimeoutMinutes   float64               `json:"timeoutMinutes,omitempty"`
 	UploadArtifact   *UploadArtifactStep   `json:"uploadArtifact,omitempty"`
 	DownloadArtifact *DownloadArtifactStep `json:"downloadArtifact,omitempty"`

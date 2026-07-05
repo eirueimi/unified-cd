@@ -92,7 +92,7 @@ type StepEntry struct {
 	Post             *PostStep             `yaml:"post,omitempty"`
 	ContinueOnError  bool                  `yaml:"continueOnError,omitempty"`
 	Container        string                `yaml:"container,omitempty"`
-	RunsIn           *RunsIn               `yaml:"runsIn,omitempty"`
+	RunsIn           *RunsIn               `yaml:"runsIn,omitempty" json:"runsIn,omitempty"`
 	TimeoutMinutes   float64               `yaml:"timeoutMinutes,omitempty"`
 	Foreach          *ForeachDef           `yaml:"foreach,omitempty"`
 	Matrix           *MatrixDef            `yaml:"matrix,omitempty"`
@@ -117,7 +117,7 @@ type Step struct {
 	Post             *PostStep             `yaml:"post,omitempty"`
 	ContinueOnError  bool                  `yaml:"continueOnError,omitempty"`
 	Container        string                `yaml:"container,omitempty"`
-	RunsIn           *RunsIn               `yaml:"runsIn,omitempty"`
+	RunsIn           *RunsIn               `yaml:"runsIn,omitempty" json:"runsIn,omitempty"`
 	TimeoutMinutes   float64               `yaml:"timeoutMinutes,omitempty"`
 	Foreach          *ForeachDef           `yaml:"foreach,omitempty"`
 	Matrix           *MatrixDef            `yaml:"matrix,omitempty"`

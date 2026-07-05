@@ -156,7 +156,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		for _, stage := range c.Stages {
 			steps := api.StageSteps(stage)
 			if len(steps) > 0 {
-				firstContainer = steps[0].Container
+				firstContainer = execContainer(steps[0])
 				break
 			}
 		}
@@ -169,7 +169,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		stdoutWriter := io.MultiWriter(&stdoutBuf, &logLineWriter{
 			client: a.client, agentID: a.cfg.AgentID, runID: c.RunID, stepIdx: step.Index, stream: "stdout",
 		})
-		ec, execErr := a.exec.ExecStep(execCtx, podName, step.Container, expandedRun, stdoutWriter, stderrPusher)
+		ec, execErr := a.exec.ExecStep(execCtx, podName, execContainer(step), expandedRun, stdoutWriter, stderrPusher)
 		stderrPusher.Flush(execCtx)
 		return ec, stdoutBuf.String(), execErr
 	}
@@ -616,6 +616,16 @@ func (lw *logLineWriter) Write(p []byte) (int, error) {
 	lw.buf.Reset()
 	lw.buf.WriteString(s)
 	return len(p), nil
+}
+
+// execContainer returns the pod container a step should exec into. After DSL
+// normalization the canonical source is RunsIn.Container (the flat Container
+// field is cleared at validation time); nil/absent means the default container.
+func execContainer(s api.ClaimStep) string {
+	if s.RunsIn != nil {
+		return s.RunsIn.Container
+	}
+	return ""
 }
 
 func appendLabelIfMissing(labels []string, label string) []string {
