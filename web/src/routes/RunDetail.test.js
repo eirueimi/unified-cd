@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import { token, serverURL } from '../lib/api.js';
 import RunDetail from './RunDetail.svelte';
 
@@ -243,5 +243,33 @@ describe('RunDetail — log virtualization', () => {
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.length).toBeLessThan(N);
     expect(rows.length).toBeLessThanOrEqual(60);
+  });
+
+  it('searches the full log (including off-screen lines) and highlights the match', async () => {
+    const N = 500;
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return eventsResponseWithLogs(N);
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-1', status: 'Succeeded', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain(`${N} lines`);
+    });
+
+    // "line 123" is off-screen (row 123 is far below the initial window) yet the
+    // in-app search finds it — proving search covers the whole log, not just the
+    // rendered rows — and highlights it.
+    const input = container.querySelector('.log-search-input');
+    await fireEvent.input(input, { target: { value: 'line 123' } });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('1 / 1');
+      expect(container.querySelector('mark.log-hit')).toBeTruthy();
+    });
   });
 });

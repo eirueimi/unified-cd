@@ -79,6 +79,72 @@
     });
   }
 
+  // ---- In-app log search ----
+  // Native Ctrl+F only sees the virtualized (visible) rows, so we provide search
+  // over the FULL log: it scans every line in memory, counts matches, jumps the
+  // virtual list to each match, and highlights the hits.
+  let logQuery = "";
+  let logMatchPos = 0;
+  $: logMatches = logQuery
+    ? filteredLogs.reduce((acc, l, idx) => {
+        if (l.line && l.line.toLowerCase().includes(logQuery.toLowerCase()))
+          acc.push(idx);
+        return acc;
+      }, [])
+    : [];
+  // Keep the cursor in range when the match set changes (new logs, filter, edit).
+  $: if (logMatchPos >= logMatches.length) logMatchPos = 0;
+  $: curMatchRow = logMatches.length ? logMatches[logMatchPos] : -1;
+  $: logQuery, resetMatchPos();
+  function resetMatchPos() {
+    logMatchPos = 0;
+    tick().then(() => {
+      if (logQuery && logMatches.length) gotoMatch(0);
+    });
+  }
+  function gotoMatch(pos) {
+    if (!logMatches.length) return;
+    const n = logMatches.length;
+    logMatchPos = ((pos % n) + n) % n; // wrap around
+    const rowIdx = logMatches[logMatchPos];
+    logStick = false; // don't fight the jump with auto-scroll
+    tick().then(() => {
+      if (!logBox) return;
+      logBox.scrollTop = Math.max(
+        0,
+        rowIdx * LOG_ROW_H - logBox.clientHeight / 2,
+      );
+      logScrollTop = logBox.scrollTop;
+    });
+  }
+  function onSearchKey(e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      gotoMatch(logMatchPos + (e.shiftKey ? -1 : 1));
+    } else if (e.key === "Escape") {
+      logQuery = "";
+    }
+  }
+  // Split a line into {t, hit} segments around case-insensitive matches of q.
+  function highlightSegments(line, q) {
+    if (!q) return [{ t: line, hit: false }];
+    const segs = [];
+    const lc = line.toLowerCase();
+    const qc = q.toLowerCase();
+    let i = 0;
+    while (i < line.length) {
+      const idx = lc.indexOf(qc, i);
+      if (idx === -1) {
+        segs.push({ t: line.slice(i), hit: false });
+        break;
+      }
+      if (idx > i) segs.push({ t: line.slice(i, idx), hit: false });
+      segs.push({ t: line.slice(idx, idx + q.length), hit: true });
+      i = idx + q.length;
+    }
+    return segs;
+  }
+
   // Reactive so the log labels re-render when steps load after SSE starts.
   // Logs are shared across all matrix variants of a step index (there is no
   // per-line variant tag), so when multiple rows share `idx` we just take the
@@ -441,6 +507,32 @@
           >{logTotal.toLocaleString()} lines</span
         >
       {/if}
+      <div class="log-search">
+        <input
+          class="log-search-input"
+          type="search"
+          placeholder="Search logs…"
+          bind:value={logQuery}
+          on:keydown={onSearchKey}
+        />
+        {#if logQuery}
+          <span class="meta log-search-count"
+            >{logMatches.length ? logMatchPos + 1 : 0} / {logMatches.length}</span
+          >
+          <button
+            class="btn log-search-btn"
+            title="Previous match (Shift+Enter)"
+            on:click={() => gotoMatch(logMatchPos - 1)}
+            disabled={!logMatches.length}>‹</button
+          >
+          <button
+            class="btn log-search-btn"
+            title="Next match (Enter)"
+            on:click={() => gotoMatch(logMatchPos + 1)}
+            disabled={!logMatches.length}>›</button
+          >
+        {/if}
+      </div>
       <span class="meta" style="font-size:0.75rem">SSE</span>
     </div>
     <div class="log-box" bind:this={logBox} on:scroll={onLogScroll}>
@@ -448,13 +540,13 @@
         <span style="color:var(--text-muted)">Waiting for logs…</span>
       {:else}
         <div style="height:{logStart * LOG_ROW_H}px" aria-hidden="true"></div>
-        {#each visibleLogs as l (l.seq)}
-          <div class="log-row">
+        {#each visibleLogs as l, i (l.seq)}
+          <div class="log-row" class:log-row-current={logStart + i === curMatchRow}>
             {#if selectedStep === null}<span class="meta log-step-label"
                 >{stepName(l.stepIndex)}</span
               >{/if}<span
               class={l.stream === "stderr" ? "log-stderr" : "log-stdout"}
-              >{l.line}</span
+              >{#if logQuery}{#each highlightSegments(l.line, logQuery) as seg}{#if seg.hit}<mark class="log-hit" class:log-hit-current={logStart + i === curMatchRow}>{seg.t}</mark>{:else}{seg.t}{/if}{/each}{:else}{l.line}{/if}</span
             >
           </div>
         {/each}
@@ -488,6 +580,46 @@
   .log-step-label {
     font-size: 0.7rem;
     margin-right: 0.4rem;
+  }
+  .log-search {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .log-search-input {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.45rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text);
+    width: 12rem;
+    max-width: 40vw;
+  }
+  .log-search-count {
+    font-size: 0.72rem;
+    min-width: 3.2rem;
+    text-align: right;
+    white-space: nowrap;
+  }
+  .log-search-btn {
+    padding: 0.05rem 0.45rem;
+    font-size: 1rem;
+    line-height: 1.2;
+  }
+  .log-row-current {
+    background: rgba(255, 150, 50, 0.12);
+  }
+  mark.log-hit {
+    padding: 0;
+    background: rgba(255, 214, 0, 0.4);
+    color: inherit;
+    border-radius: 2px;
+  }
+  mark.log-hit-current {
+    background: #ff9632;
+    color: #1a1a1a;
   }
   .param-v {
     color: var(--text);
