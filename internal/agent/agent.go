@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +20,28 @@ import (
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/eirueimi/unified-cd/internal/secrets"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
+
+// hostContainerLimits converts a validated runsIn.resources spec to the OCI-CLI
+// limit values: cpu as a core decimal, memory as bytes. Only limits map on the
+// host (docker has no request concept); requests are k8s-scheduling-only.
+func hostContainerLimits(rs *dsl.ResourceSpec) (cpu, mem string) {
+	if rs == nil || rs.Limits == nil {
+		return "", ""
+	}
+	if rs.Limits.CPU != "" {
+		if q, err := resource.ParseQuantity(rs.Limits.CPU); err == nil {
+			cpu = strconv.FormatFloat(float64(q.MilliValue())/1000.0, 'g', -1, 64)
+		}
+	}
+	if rs.Limits.Memory != "" {
+		if q, err := resource.ParseQuantity(rs.Limits.Memory); err == nil {
+			mem = strconv.FormatInt(q.Value(), 10)
+		}
+	}
+	return cpu, mem
+}
 
 // approvalPollInterval is how often WaitForApproval polls the controller for a
 // human decision. It is a var (not a const) so tests can shorten it.
@@ -458,7 +480,8 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 						runErr = fmt.Errorf("runsIn.image %q requires a container runtime: %w", step.RunsIn.Image, derr)
 						ec = -1
 					} else {
-						capturedStdout, ec, runErr = RunStepContainer(stepCtx, rt, step.RunsIn.Image, expandedRun, stderrPusher, extraEnv)
+						cpuLimit, memLimit := hostContainerLimits(step.RunsIn.Resources)
+						capturedStdout, ec, runErr = RunStepContainer(stepCtx, rt, step.RunsIn.Image, expandedRun, stderrPusher, extraEnv, cpuLimit, memLimit)
 					}
 				default:
 					capturedStdout, ec, runErr = RunStepCapture(stepCtx, expandedRun, stderrPusher, extraEnv, workDir)

@@ -30,7 +30,7 @@ func TestRunStepContainer_CapturesStdoutAndPassesEnv(t *testing.T) {
 	f := &fakeRuntime{stdout: "built\n", exit: 0}
 	var stderr bytes.Buffer
 	out, code, err := RunStepContainer(context.Background(), f, "golang:1.22", "go build",
-		&stderr, []string{"FOO=bar"})
+		&stderr, []string{"FOO=bar"}, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, code)
 	assert.Equal(t, "built\n", out)

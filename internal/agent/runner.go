@@ -146,12 +146,14 @@ func RunStepCapture(ctx context.Context, script string, stderr io.Writer, extraE
 // RunStepContainer runs script inside a fresh container via rt, capturing
 // stdout (like RunStepCapture) and streaming stderr to the provided writer.
 // No host workspace is mounted — this is the isolated runsIn.image path.
-func RunStepContainer(ctx context.Context, rt crt.ContainerRuntime, image, script string, stderr io.Writer, extraEnv []string) (stdout string, exitCode int, err error) {
+func RunStepContainer(ctx context.Context, rt crt.ContainerRuntime, image, script string, stderr io.Writer, extraEnv []string, cpuLimit, memLimit string) (stdout string, exitCode int, err error) {
 	var buf bytes.Buffer
 	code, runErr := rt.Run(ctx, crt.RunSpec{
-		Image:  image,
-		Script: script,
-		Env:    extraEnv,
+		Image:    image,
+		Script:   script,
+		Env:      extraEnv,
+		CPULimit: cpuLimit,
+		MemLimit: memLimit,
 	}, &buf, stderr)
 	return buf.String(), code, runErr
 }

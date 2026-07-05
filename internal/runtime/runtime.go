@@ -13,10 +13,12 @@ import (
 
 // RunSpec describes a one-shot containerized step execution.
 type RunSpec struct {
-	Image  string   // OCI image reference
-	Script string   // shell script to run (the step's run:)
-	Env    []string // KEY=VALUE, injected as -e
-	Shell  []string // entrypoint; defaults to {"sh","-c"}
+	Image    string   // OCI image reference
+	Script   string   // shell script to run (the step's run:)
+	Env      []string // KEY=VALUE, injected as -e
+	Shell    []string // entrypoint; defaults to {"sh","-c"}
+	CPULimit string   // container CPU limit in cores (e.g. "0.5"); empty = no limit
+	MemLimit string   // container memory limit in bytes (e.g. "536870912"); empty = no limit
 }
 
 // ContainerRuntime runs a step in a fresh, isolated container. No host

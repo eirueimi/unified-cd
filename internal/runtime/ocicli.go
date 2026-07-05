@@ -21,6 +21,12 @@ func (r *ociCLI) Available() bool {
 
 func (r *ociCLI) runArgs(spec RunSpec) []string {
 	args := []string{"run", "--rm"}
+	if spec.CPULimit != "" {
+		args = append(args, "--cpus", spec.CPULimit)
+	}
+	if spec.MemLimit != "" {
+		args = append(args, "--memory", spec.MemLimit)
+	}
 	for _, e := range spec.Env {
 		args = append(args, "-e", e)
 	}
