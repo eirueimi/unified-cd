@@ -35,7 +35,7 @@
       {#each webhooks as w (w.name)}
         <tr>
           <td>{w.name}</td>
-          <td><a href="#/jobs/{w.jobName}">{w.jobName}</a></td>
+          <td><a href="#/jobs/{encodeURIComponent(w.jobName)}">{w.jobName}</a></td>
           <td><span class="badge badge-running">{w.authType || 'none'}</span></td>
           <td>
             <code class="meta" style="font-size:0.8rem">/webhook/{w.name}</code>

@@ -78,6 +78,23 @@ spec:
 | `metadata.name` | string | Yes | Unique job identifier. Used in CLI, API, and when calling this job from another job. |
 | `metadata.labels` | map[string]string | No | Arbitrary labels. Not used for routing; reserved for future filtering. |
 
+### Hierarchical grouping (annotations.path)
+
+A job's position in the Web UI tree comes from `metadata.annotations.path`.
+Jobs synced by an AppSource get this set automatically from their directory
+(relative to the AppSource `spec.path`), so `jobs/team-a/build.yaml` shows as
+`build` under a `team-a` folder. The stored, unique job name is the *qualified*
+name `team-a/build` — trigger it with `unified-cli run trigger team-a/build`.
+Jobs applied directly with no `path` appear at the tree root.
+
+**Upgrade note:** if you're upgrading from a version predating hierarchical
+grouping, only jobs at the AppSource root (no subdirectory) keep their old
+name unchanged. Jobs that previously synced from a subdirectory (e.g.
+`jobs/team-a/build.yaml`, previously stored as `build`) are re-keyed to their
+qualified name (`team-a/build`) on the next sync — this is a one-time
+prune/re-create of those jobs. Re-point any Schedules or WebhookReceivers
+that reference the old flat name before or right after upgrading.
+
 ---
 
 ## Parameters (inputs / outputs)

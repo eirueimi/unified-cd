@@ -208,9 +208,8 @@ func (s *Server) routes() {
 
 		r.With(dev).Post("/jobs", s.handleApplyJob)
 		r.With(view).Get("/jobs", s.handleListJobs)
-		r.With(view).Get("/jobs/{name}", s.handleGetJob)
-		r.With(view).Get("/jobs/{name}/yaml", s.handleGetJobYAML)
-		r.With(dev).Delete("/jobs/{name}", s.handleDeleteJob)
+		r.With(view).Get("/jobs/*", s.handleGetJobOrYAML)
+		r.With(dev).Delete("/jobs/*", s.handleDeleteJob)
 
 		r.With(dev).Post("/runs", s.handleTriggerRun)
 		r.With(view).Get("/runs/active", s.handleListActiveRuns)

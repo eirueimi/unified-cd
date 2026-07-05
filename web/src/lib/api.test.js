@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { browserSSOEnabled, currentUser, serverURL, authReady, initAuth } from './api.js';
+import { browserSSOEnabled, currentUser, serverURL, authReady, initAuth, jobPath } from './api.js';
 
 beforeEach(() => {
   browserSSOEnabled.set(false);
@@ -141,5 +141,13 @@ describe('initAuth — authReady', () => {
     await initAuth();
 
     expect(get(authReady)).toBe(true);
+  });
+});
+
+describe('jobPath', () => {
+  it('encodes segments but keeps slashes', () => {
+    expect(jobPath('team-a/build')).toBe('team-a/build');
+    expect(jobPath('hello')).toBe('hello');
+    expect(jobPath('a b/c')).toBe('a%20b/c');
   });
 });

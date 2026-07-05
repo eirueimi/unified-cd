@@ -1,10 +1,10 @@
 <script>
     import { onMount } from "svelte";
     import AuthSetup from "../components/AuthSetup.svelte";
-    import { apiFetchText } from "../lib/api.js";
+    import { apiFetchText, jobPath } from "../lib/api.js";
 
     export let params;
-    $: jobName = params.name;
+    $: jobName = decodeURIComponent(params.name);
 
     let yamlText = "",
         loading = true,
@@ -16,7 +16,7 @@
         yamlText = "";
         try {
             yamlText = await apiFetchText(
-                "/api/v1/jobs/" + encodeURIComponent(jobName) + "/yaml",
+                "/api/v1/jobs/" + jobPath(jobName) + "/yaml",
             );
         } catch (e) {
             error = e.message;
@@ -35,9 +35,9 @@
         <h1>{jobName}</h1>
     </div>
     <div style="border-bottom:1px solid var(--border);margin-bottom:1.5rem">
-        <a href="#/jobs/{jobName}" class="tab-link">History</a>
-        <a href="#/jobs/{jobName}/run" class="tab-link">▶ Run</a>
-        <a href="#/jobs/{jobName}/yaml" class="tab-link tab-active">YAML</a>
+        <a href="#/jobs/{encodeURIComponent(jobName)}" class="tab-link">History</a>
+        <a href="#/jobs/{encodeURIComponent(jobName)}/run" class="tab-link">▶ Run</a>
+        <a href="#/jobs/{encodeURIComponent(jobName)}/yaml" class="tab-link tab-active">YAML</a>
     </div>
     {#if loading}<div class="loading">Loading...</div>
     {:else if error}<div class="error">{error}</div>

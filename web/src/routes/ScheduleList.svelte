@@ -31,7 +31,7 @@
         <tr>
           <td>{s.name}</td>
           <td><code>{s.cron}</code></td>
-          <td><a href="#/jobs/{s.jobName}">{s.jobName}</a></td>
+          <td><a href="#/jobs/{encodeURIComponent(s.jobName)}">{s.jobName}</a></td>
           <td class="meta">{s.lastFiredAt ? fmtRelative(s.lastFiredAt) : '—'}</td>
           <td class="meta">{fmtTime(s.updatedAt)}</td>
         </tr>
