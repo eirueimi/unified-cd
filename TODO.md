@@ -213,11 +213,12 @@
 
 ## 機能要望(Feature)
 
-### 24. 監査ログ(API 操作の記録)
+### 24. 監査ログ(API 操作の記録)— 実装済み(branch `feature/audit-log`)
 
 - **背景:** 現在監査証跡があるのは承認/却下(`run_approvals` テーブル、decidedBy 付き)のみ。シークレットの変更、Job の apply/削除、手動トリガー、トークン発行/削除、キャンセルなどの操作は誰がいつ実行したか記録が残らない。エンタープライズ用途・障害調査(「誰がこのジョブを書き換えたか」)で必須になる。
 - **内容:** 状態を変更する API 操作(POST/PUT/DELETE 系)について、操作者(トークン/OIDC サブジェクト)・操作種別・対象リソース・タイムスタンプ・結果を記録する。シークレットは名前のみ記録し値は残さない。
 - **実装案:** `audit_logs` テーブルを追加し、コントローラの認証済みハンドラ層(ミドルウェア)で一括記録。閲覧は admin ロール限定で `GET /api/v1/audit` + `unified-cli audit list`。保持期間は設定可能(デフォルト例: 90日)にし、リーダー限定タスクで期限切れを削除。
+- **実装:** マイグレーション `internal/store/migrations/004_audit_logs.{up,down}.sql`。ミドルウェア `internal/controller/audit.go` を `/api/v1`(jobs/runs/secrets/gitcredentials/tokens)・`/api/v1/webhooks`・`/api/v1/schedules`・`/api/v1/appsources` の各ルートグループに追加(POST/PUT/DELETE のみ記録、GET・エージェント向け・webhook ingress・auth/OIDC は対象外)。`GET /api/v1/audit`(admin 限定、`internal/controller/api_audit.go`)、`unified-cli audit list --limit N`(`internal/cli/audit.go`)、保持期間クリーンアップ `internal/controller/audit_retention.go`(リーダー限定、`--audit-retention-days` / `UNIFIED_AUDIT_RETENTION_DAYS`、デフォルト90日、0=無期限)。詳細は [docs/audit.md](docs/audit.md)。
 
 ---
 
