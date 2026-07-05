@@ -92,6 +92,7 @@ type StepEntry struct {
 	Post             *PostStep             `yaml:"post,omitempty"`
 	ContinueOnError  bool                  `yaml:"continueOnError,omitempty"`
 	Container        string                `yaml:"container,omitempty"`
+	RunsIn           *RunsIn               `yaml:"runsIn,omitempty"`
 	TimeoutMinutes   float64               `yaml:"timeoutMinutes,omitempty"`
 	Foreach          *ForeachDef           `yaml:"foreach,omitempty"`
 	Matrix           *MatrixDef            `yaml:"matrix,omitempty"`
@@ -116,6 +117,7 @@ type Step struct {
 	Post             *PostStep             `yaml:"post,omitempty"`
 	ContinueOnError  bool                  `yaml:"continueOnError,omitempty"`
 	Container        string                `yaml:"container,omitempty"`
+	RunsIn           *RunsIn               `yaml:"runsIn,omitempty"`
 	TimeoutMinutes   float64               `yaml:"timeoutMinutes,omitempty"`
 	Foreach          *ForeachDef           `yaml:"foreach,omitempty"`
 	Matrix           *MatrixDef            `yaml:"matrix,omitempty"`
@@ -141,6 +143,20 @@ type MatrixDef struct {
 type MatrixDimension struct {
 	Name   string
 	Source ForeachSource
+}
+
+// RunsIn declares the execution context for a step. Image and Container are
+// mutually exclusive; both empty (or RunsIn nil) means the default/shared
+// environment (host process, or the default pod container on k8s).
+//
+//	image:     run in a fresh isolated env from this image (host: `<rt> run`;
+//	           k8s: a throwaway pod). No workspace is shared — pass inputs via
+//	           with:/env, return outputs via outputs:/stdout.
+//	container: exec into a pre-provisioned named env (k8s pod container only;
+//	           an error on the host agent).
+type RunsIn struct {
+	Image     string `yaml:"image,omitempty" json:"image,omitempty"`
+	Container string `yaml:"container,omitempty" json:"container,omitempty"`
 }
 
 // UnmarshalYAML parses the matrix mapping while preserving key order.

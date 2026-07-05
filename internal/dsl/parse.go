@@ -200,6 +200,13 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				if st.Post != nil && st.Post.Run == "" {
 					return fmt.Errorf("step %q: post.run is required when post is specified", st.Name)
 				}
+				ri, err := normalizeRunsIn(st.Container, st.RunsIn, subPath, st.Name)
+				if err != nil {
+					return err
+				}
+				st.RunsIn = ri
+				st.Container = ""
+				entry.Parallel[j2] = st
 			}
 		} else {
 			if entry.Name == "" {
@@ -229,9 +236,31 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 			if entry.Post != nil && entry.Post.Run == "" {
 				return fmt.Errorf("step %q: post.run is required when post is specified", entry.Name)
 			}
+			ri, err := normalizeRunsIn(entry.Container, entry.RunsIn, entryPath, entry.Name)
+			if err != nil {
+				return err
+			}
+			entry.RunsIn = ri
+			entry.Container = ""
+			entries[i] = entry
 		}
 	}
 	return nil
+}
+
+// normalizeRunsIn folds the deprecated flat `container:` into RunsIn.Container
+// and rejects conflicting/exclusive combinations. path/name are for error text.
+func normalizeRunsIn(container string, runsIn *RunsIn, path, name string) (*RunsIn, error) {
+	if container != "" && runsIn != nil {
+		return nil, fmt.Errorf("%s (%s): cannot set both container: and runsIn:", path, name)
+	}
+	if container != "" {
+		return &RunsIn{Container: container}, nil
+	}
+	if runsIn != nil && runsIn.Image != "" && runsIn.Container != "" {
+		return nil, fmt.Errorf("%s (%s): runsIn.image and runsIn.container are mutually exclusive", path, name)
+	}
+	return runsIn, nil
 }
 
 func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *CacheStep, approval *ApprovalStep, foreach *ForeachDef, matrix *MatrixDef, path string, nameSet map[string]bool, upload *UploadArtifactStep, download *DownloadArtifactStep) error {
