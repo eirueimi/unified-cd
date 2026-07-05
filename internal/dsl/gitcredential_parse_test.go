@@ -22,19 +22,29 @@ spec:
 }
 
 func TestParseGitCredential_Invalid(t *testing.T) {
-	cases := map[string]string{
-		"missing name":     "apiVersion: unified-cd/v1\nkind: GitCredential\nspec:\n  host: github.com\n  type: token\n  secretRef: s",
-		"missing host":     "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: gh\nspec:\n  type: token\n  secretRef: s",
-		"bad type":         "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: gh\nspec:\n  host: github.com\n  type: basic\n  secretRef: s",
-		"missing secret":   "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: gh\nspec:\n  host: github.com\n  type: token",
-		"wrong apiVersion": "apiVersion: bad\nkind: GitCredential\nmetadata:\n  name: gh\nspec:\n  host: github.com\n  type: token\n  secretRef: s",
-		"wrong kind":       "apiVersion: unified-cd/v1\nkind: Schedule\nmetadata:\n  name: gh\nspec:\n  host: github.com\n  type: token\n  secretRef: s",
-		"unknown field":    "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: gh\nspec:\n  host: github.com\n  type: token\n  sceretRef: s",
-		"invalid name":     "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: \"Foo Bar!\"\nspec:\n  host: github.com\n  type: token\n  secretRef: s",
+	cases := []struct {
+		name    string
+		in      string
+		wantErr string // substring identifying which validation fired
+	}{
+		{"missing name", "apiVersion: unified-cd/v1\nkind: GitCredential\nspec:\n  host: github.com\n  type: token\n  secretRef: s", "metadata.name is required"},
+		{"missing host", "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: gh\nspec:\n  type: token\n  secretRef: s", "spec.host"},
+		{"bad type", "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: gh\nspec:\n  host: github.com\n  type: basic\n  secretRef: s", "spec.type"},
+		{"missing secret", "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: gh\nspec:\n  host: github.com\n  type: token", "spec.secretRef"},
+		{"wrong apiVersion", "apiVersion: bad\nkind: GitCredential\nmetadata:\n  name: gh\nspec:\n  host: github.com\n  type: token\n  secretRef: s", "apiVersion"},
+		{"wrong kind", "apiVersion: unified-cd/v1\nkind: Schedule\nmetadata:\n  name: gh\nspec:\n  host: github.com\n  type: token\n  secretRef: s", "kind"},
+		{"unknown field", "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: gh\nspec:\n  host: github.com\n  type: token\n  sceretRef: s", "sceretRef"},
+		{"invalid name", "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: \"Foo Bar!\"\nspec:\n  host: github.com\n  type: token\n  secretRef: s", "is invalid"},
 	}
-	for name, in := range cases {
-		if _, err := ParseGitCredential(strings.NewReader(in)); err == nil {
-			t.Errorf("%s: expected error, got nil", name)
-		}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := ParseGitCredential(strings.NewReader(c.in))
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), c.wantErr)
+			}
+		})
 	}
 }
