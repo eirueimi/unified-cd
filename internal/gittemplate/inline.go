@@ -29,6 +29,11 @@ func inputsStepName(usesName string) string {
 	return usesName + usesPrefixSep + "inputs"
 }
 
+// scopeIDFor returns the scope identity shared by all steps expanded from a
+// uses-level runsIn.image invocation. The agent keys the scope environment on
+// (ScopeID, MatrixKey) so matrix variants get independent environments.
+func scopeIDFor(usesName string) string { return "scope:" + usesName }
+
 // rewriteRefs rewrites .Params.X / params.X to point at the synthetic inputs-capture
 // step, and .Steps.<inner>.Outputs.X / steps.<inner>.outputs.X — where <inner> is one
 // of the template job's own step names — to point at that step's prefixed name.
@@ -86,6 +91,13 @@ func rewriteMap(m map[string]string, usesName string, innerNames map[string]bool
 func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn) ([]dsl.StepEntry, error) {
 	if len(tplSpec.Steps) == 0 {
 		return nil, fmt.Errorf("template job has no steps")
+	}
+
+	scopeMode := outerRunsIn != nil && outerRunsIn.Image != ""
+	var scopeID, scopeImage string
+	if scopeMode {
+		scopeID = scopeIDFor(usesName)
+		scopeImage = outerRunsIn.Image
 	}
 
 	innerNames := make(map[string]bool, len(tplSpec.Steps))
@@ -160,9 +172,18 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				if ps.Uses != nil {
 					return nil, fmt.Errorf("internal error: parallel step %q has unresolved nested uses; must be resolved before expandUsesStep", ps.Name)
 				}
-				ns.RunsIn = ps.RunsIn
-				if ns.RunsIn == nil {
-					ns.RunsIn = outerRunsIn
+				if scopeMode {
+					if ps.RunsIn != nil && (ps.RunsIn.Image != "" || ps.RunsIn.Container != "") {
+						return nil, fmt.Errorf("step %q: runsIn is not allowed inside a uses running with runsIn.image (the scope is a single environment)", ps.Name)
+					}
+					ns.ScopeID = scopeID
+					ns.ScopeImage = scopeImage
+					ns.RunsIn = nil
+				} else {
+					ns.RunsIn = ps.RunsIn
+					if ns.RunsIn == nil {
+						ns.RunsIn = outerRunsIn
+					}
 				}
 				rp[i] = ns
 			}
@@ -179,9 +200,18 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				Container:       inner.Container,
 				TimeoutMinutes:  inner.TimeoutMinutes,
 			}
-			ns.RunsIn = inner.RunsIn
-			if ns.RunsIn == nil {
-				ns.RunsIn = outerRunsIn
+			if scopeMode {
+				if inner.RunsIn != nil && (inner.RunsIn.Image != "" || inner.RunsIn.Container != "") {
+					return nil, fmt.Errorf("step %q: runsIn is not allowed inside a uses running with runsIn.image (the scope is a single environment)", inner.Name)
+				}
+				ns.ScopeID = scopeID
+				ns.ScopeImage = scopeImage
+				ns.RunsIn = nil
+			} else {
+				ns.RunsIn = inner.RunsIn
+				if ns.RunsIn == nil {
+					ns.RunsIn = outerRunsIn
+				}
 			}
 			if inner.Cache != nil {
 				c := *inner.Cache
