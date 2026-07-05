@@ -22,15 +22,25 @@
     stepsTimer = null;
   let approvalComments = {};
 
-  $: groupedStages = (() => {
-    const map = new Map();
+  $: stepSections = (() => {
+    const bySection = { main: [], finally: [] };
     for (const s of steps) {
-      if (!map.has(s.stageIndex)) map.set(s.stageIndex, []);
-      map.get(s.stageIndex).push(s);
+      (s.section === "finally" ? bySection.finally : bySection.main).push(s);
     }
-    return [...map.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([stageIndex, stageSteps]) => ({ stageIndex, steps: stageSteps }));
+    const group = (arr) => {
+      const map = new Map();
+      for (const s of arr) {
+        if (!map.has(s.stageIndex)) map.set(s.stageIndex, []);
+        map.get(s.stageIndex).push(s);
+      }
+      return [...map.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([stageIndex, stageSteps]) => ({ stageIndex, steps: stageSteps }));
+    };
+    const out = [{ section: "main", label: "Steps", groups: group(bySection.main) }];
+    if (bySection.finally.length)
+      out.push({ section: "finally", label: "Finally", groups: group(bySection.finally) });
+    return out;
   })();
 
   $: filteredLogs =
@@ -369,126 +379,130 @@
       {/if}
     </div>
     {#if steps.length}
-      <h2 style="margin-bottom:0.5rem">Steps</h2>
-      <div class="step-list">
-        {#each groupedStages as group (group.stageIndex)}
-          {#if group.steps.length > 1}
-            <!-- Parallel group header -->
-            <div
-              class="stage-group-header {group.steps.some(s => selectedStep === s.index) ? 'active' : ''}"
-              on:click={() => {
-                const indices = group.steps.map(s => s.index);
-                const allSelected = selectedParallelGroup !== null && indices.every(i => selectedParallelGroup.includes(i));
-                selectedStep = allSelected ? null : indices[0];
-                selectedParallelGroup = allSelected ? null : indices;
-              }}
-              role="button"
-              tabindex="0"
-              on:keydown={(e) => e.key === 'Enter' && (() => {
-                const indices = group.steps.map(s => s.index);
-                selectedParallelGroup = selectedParallelGroup?.join() === indices.join() ? null : indices;
-                selectedStep = null;
-              })()}
-            >
-              <span class="parallel-label">parallel</span>
-              <span class="meta" style="font-size:0.75rem">
-                {group.steps.map(s => s.name).join(' · ')}
-              </span>
-            </div>
-            {#each group.steps as s (`${s.index}/${s.variant ?? ""}`)}
-              {@const approval = approvals.find(a => a.stepIndex === s.index)}
+      {#each stepSections as sec (sec.section)}
+        <h2 style="margin-bottom:0.5rem">{sec.label}</h2>
+        <div class="step-list">
+          {#each sec.groups as group (group.stageIndex)}
+            {#if group.steps.length > 1}
+              <!-- Parallel group header -->
               <div
-                class="step-row step-row-indented {selectedStep === s.index ? 'active' : ''}"
-                on:click={() => selectStep(s.index)}
+                class="stage-group-header {group.steps.some(s => selectedStep === s.index) ? 'active' : ''}"
+                on:click={() => {
+                  const indices = group.steps.map(s => s.index);
+                  const allSelected = selectedParallelGroup !== null && indices.every(i => selectedParallelGroup.includes(i));
+                  selectedStep = allSelected ? null : indices[0];
+                  selectedParallelGroup = allSelected ? null : indices;
+                }}
                 role="button"
                 tabindex="0"
-                on:keydown={(e) => e.key === 'Enter' && selectStep(s.index)}
+                on:keydown={(e) => e.key === 'Enter' && (() => {
+                  const indices = group.steps.map(s => s.index);
+                  selectedParallelGroup = selectedParallelGroup?.join() === indices.join() ? null : indices;
+                  selectedStep = null;
+                })()}
               >
-                <span class={statusBadge(s.status)}>{s.status}</span>
-                <span class="step-name">{s.name}</span>
-                {#if s.childRunId}
-                  <a class="call-link" href="#/runs/{s.childRunId}" title="Called job run">{s.callJobName || 'child run'} ↗</a>
-                {/if}
-                <span class="step-duration">{stepDuration(s)}</span>
-                {#if s.exitCode != null}<span class="step-exit">exit {s.exitCode}</span>{/if}
+                <span class="parallel-label">parallel</span>
+                <span class="meta" style="font-size:0.75rem">
+                  {group.steps.map(s => s.name).join(' · ')}
+                </span>
               </div>
-              {#if s.status === 'WaitingApproval'}
+              {#each group.steps as s (`${s.index}/${s.variant ?? ""}`)}
+                {@const approval = approvals.find(a => a.stepIndex === s.index)}
+                <div
+                  class="step-row step-row-indented {selectedStep === s.index ? 'active' : ''}"
+                  on:click={() => selectStep(s.index)}
+                  role="button"
+                  tabindex="0"
+                  on:keydown={(e) => e.key === 'Enter' && selectStep(s.index)}
+                >
+                  <span class={statusBadge(s.status)}>{s.status}</span>
+                  <span class="step-name">{s.name}</span>
+                  {#if s.kind}<span class="step-kind meta">[{s.kind}]{#if s.matrix} matrix{/if}</span>{/if}
+                  {#if s.childRunId}
+                    <a class="call-link" href="#/runs/{s.childRunId}" title="Called job run">{s.callJobName || 'child run'} ↗</a>
+                  {/if}
+                  <span class="step-duration">{stepDuration(s)}</span>
+                  {#if s.exitCode != null}<span class="step-exit">exit {s.exitCode}</span>{/if}
+                </div>
+                {#if s.status === 'WaitingApproval'}
+                  <div class="approval-panel">
+                    {#if approval?.message}
+                      <div class="approval-message">{approval.message}</div>
+                    {/if}
+                    <textarea
+                      class="approval-comment"
+                      placeholder="Comment (optional)"
+                      bind:value={approvalComments[s.index]}
+                    ></textarea>
+                    <div class="approval-actions">
+                      <button
+                        class="btn btn-success"
+                        on:click|stopPropagation={() => decideApproval(s.index, 'approve', approvalComments[s.index])}
+                      >Approve</button>
+                      <button
+                        class="btn btn-danger"
+                        on:click|stopPropagation={() => decideApproval(s.index, 'reject', approvalComments[s.index])}
+                      >Reject</button>
+                    </div>
+                  </div>
+                {:else if approval?.decidedBy}
+                  <div class="approval-decision">
+                    Decided by <strong>{approval.decidedBy}</strong>
+                    {#if approval.comment} — {approval.comment}{/if}
+                  </div>
+                {/if}
+              {/each}
+            {:else}
+              <!-- Single sequential step -->
+              {@const s0 = group.steps[0]}
+              {@const approval0 = approvals.find(a => a.stepIndex === s0.index)}
+              <div
+                class="step-row {selectedStep === s0.index ? 'active' : ''}"
+                on:click={() => selectStep(s0.index)}
+                role="button"
+                tabindex="0"
+                on:keydown={(e) => e.key === 'Enter' && selectStep(s0.index)}
+              >
+                <span class={statusBadge(s0.status)}>{s0.status}</span>
+                <span class="step-name">{s0.name}</span>
+                {#if s0.kind}<span class="step-kind meta">[{s0.kind}]{#if s0.matrix} matrix{/if}</span>{/if}
+                {#if s0.childRunId}
+                  <a class="call-link" href="#/runs/{s0.childRunId}" title="Called job run">{s0.callJobName || 'child run'} ↗</a>
+                {/if}
+                <span class="step-duration">{stepDuration(s0)}</span>
+                {#if s0.exitCode != null}<span class="step-exit">exit {s0.exitCode}</span>{/if}
+              </div>
+              {#if s0.status === 'WaitingApproval'}
                 <div class="approval-panel">
-                  {#if approval?.message}
-                    <div class="approval-message">{approval.message}</div>
+                  {#if approval0?.message}
+                    <div class="approval-message">{approval0.message}</div>
                   {/if}
                   <textarea
                     class="approval-comment"
                     placeholder="Comment (optional)"
-                    bind:value={approvalComments[s.index]}
+                    bind:value={approvalComments[s0.index]}
                   ></textarea>
                   <div class="approval-actions">
                     <button
                       class="btn btn-success"
-                      on:click|stopPropagation={() => decideApproval(s.index, 'approve', approvalComments[s.index])}
+                      on:click|stopPropagation={() => decideApproval(s0.index, 'approve', approvalComments[s0.index])}
                     >Approve</button>
                     <button
                       class="btn btn-danger"
-                      on:click|stopPropagation={() => decideApproval(s.index, 'reject', approvalComments[s.index])}
+                      on:click|stopPropagation={() => decideApproval(s0.index, 'reject', approvalComments[s0.index])}
                     >Reject</button>
                   </div>
                 </div>
-              {:else if approval?.decidedBy}
+              {:else if approval0?.decidedBy}
                 <div class="approval-decision">
-                  Decided by <strong>{approval.decidedBy}</strong>
-                  {#if approval.comment} — {approval.comment}{/if}
+                  Decided by <strong>{approval0.decidedBy}</strong>
+                  {#if approval0.comment} — {approval0.comment}{/if}
                 </div>
               {/if}
-            {/each}
-          {:else}
-            <!-- Single sequential step -->
-            {@const s0 = group.steps[0]}
-            {@const approval0 = approvals.find(a => a.stepIndex === s0.index)}
-            <div
-              class="step-row {selectedStep === s0.index ? 'active' : ''}"
-              on:click={() => selectStep(s0.index)}
-              role="button"
-              tabindex="0"
-              on:keydown={(e) => e.key === 'Enter' && selectStep(s0.index)}
-            >
-              <span class={statusBadge(s0.status)}>{s0.status}</span>
-              <span class="step-name">{s0.name}</span>
-              {#if s0.childRunId}
-                <a class="call-link" href="#/runs/{s0.childRunId}" title="Called job run">{s0.callJobName || 'child run'} ↗</a>
-              {/if}
-              <span class="step-duration">{stepDuration(s0)}</span>
-              {#if s0.exitCode != null}<span class="step-exit">exit {s0.exitCode}</span>{/if}
-            </div>
-            {#if s0.status === 'WaitingApproval'}
-              <div class="approval-panel">
-                {#if approval0?.message}
-                  <div class="approval-message">{approval0.message}</div>
-                {/if}
-                <textarea
-                  class="approval-comment"
-                  placeholder="Comment (optional)"
-                  bind:value={approvalComments[s0.index]}
-                ></textarea>
-                <div class="approval-actions">
-                  <button
-                    class="btn btn-success"
-                    on:click|stopPropagation={() => decideApproval(s0.index, 'approve', approvalComments[s0.index])}
-                  >Approve</button>
-                  <button
-                    class="btn btn-danger"
-                    on:click|stopPropagation={() => decideApproval(s0.index, 'reject', approvalComments[s0.index])}
-                  >Reject</button>
-                </div>
-              </div>
-            {:else if approval0?.decidedBy}
-              <div class="approval-decision">
-                Decided by <strong>{approval0.decidedBy}</strong>
-                {#if approval0.comment} — {approval0.comment}{/if}
-              </div>
             {/if}
-          {/if}
-        {/each}
-      </div>
+          {/each}
+        </div>
+      {/each}
     {/if}
     <div class="log-header">
       <h2>Logs</h2>

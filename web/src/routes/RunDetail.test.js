@@ -215,6 +215,58 @@ describe('RunDetail — matrix/foreach steps with duplicate step index (C1)', ()
   });
 });
 
+// Task 3: pre-execution planned steps display. GetRunSteps now returns the
+// full planned flow, including not-yet-run steps with status "Pending" plus
+// `kind`/`section`/`matrix`. The step list must show a waiting badge for
+// Pending steps, display each step's kind, and split into "Steps" (section
+// "main") and "Finally" (section "finally") headings — grouping stageIndex
+// within each section so finally's stageIndex 0 doesn't collide with main's.
+describe('RunDetail — planned steps display (Task 3)', () => {
+  it('shows planned steps as Pending with kind, split into Steps/Finally sections', async () => {
+    const steps = [
+      { index: 0, stageIndex: 0, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+      { index: 1, stageIndex: 1, name: 'restore-cache', status: 'Pending', kind: 'cache', section: 'main' },
+      { index: 2, stageIndex: 0, name: 'notify', status: 'Pending', kind: 'run', section: 'finally' },
+    ];
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return emptyEventsResponse();
+      if (u.includes('/steps')) return jsonResponse(steps);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-1', status: 'Running', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll('.step-name').length).toBe(3);
+    });
+
+    // Section headings: "Steps" for main, "Finally" for finally.
+    const headings = [...container.querySelectorAll('h2')].map((h) => h.textContent);
+    expect(headings).toContain('Steps');
+    expect(headings).toContain('Finally');
+
+    // restore-cache is Pending with a waiting badge and shows its kind.
+    const rows = [...container.querySelectorAll('.step-row, .step-row-indented')];
+    const cacheRow = rows.find((r) => r.querySelector('.step-name')?.textContent === 'restore-cache');
+    expect(cacheRow).toBeTruthy();
+    expect(cacheRow.querySelector('.badge-pending')).toBeTruthy();
+    expect(cacheRow.textContent).toContain('Pending');
+    expect(cacheRow.querySelector('.step-kind')?.textContent).toContain('cache');
+
+    // notify is under the Finally heading.
+    const notifyRow = rows.find((r) => r.querySelector('.step-name')?.textContent === 'notify');
+    expect(notifyRow).toBeTruthy();
+    expect(notifyRow.querySelector('.step-kind')?.textContent).toContain('run');
+
+    // Finally heading appears after notify's row in document order.
+    const finallyHeading = [...container.querySelectorAll('h2')].find((h) => h.textContent === 'Finally');
+    expect(finallyHeading.compareDocumentPosition(notifyRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
 // A huge log (e.g. Unity's `-logFile -`) used to render every line as a DOM
 // node, freezing the tab. RunDetail now virtualizes the log: it ingests every
 // line (the "N lines" counter reflects the full total) but only keeps a small
