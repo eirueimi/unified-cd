@@ -1306,3 +1306,80 @@ spec:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "downloadArtifact.name")
 }
+
+func TestParse_MatrixStep(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: matrix-job
+spec:
+  steps:
+    - name: build
+      matrix:
+        os: [linux, windows]
+        arch: [amd64, arm64]
+        exclude:
+          - os: windows
+            arch: arm64
+      run: echo {{ .Matrix.os }}/{{ .Matrix.arch }}
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	m := job.Spec.Steps[0].Matrix
+	require.NotNil(t, m)
+	require.Len(t, m.Dimensions, 2)
+	// declaration order is preserved
+	require.Equal(t, "os", m.Dimensions[0].Name)
+	require.Equal(t, []string{"linux", "windows"}, m.Dimensions[0].Source.Literal)
+	require.Equal(t, "arch", m.Dimensions[1].Name)
+	require.Equal(t, []map[string]string{{"os": "windows", "arch": "arm64"}}, m.Exclude)
+}
+
+func TestParse_MatrixValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		snippet string // contents nested under steps[0]
+		wantErr string
+	}{
+		{"foreach and matrix both set", `
+      matrix:
+        os: [linux]
+      foreach:
+        key: x
+        in: [a]
+      run: echo`, "mutually exclusive"},
+		{"zero dimensions", `
+      matrix: {}
+      run: echo`, "at least one dimension"},
+		{"exclude references unknown dimension", `
+      matrix:
+        os: [linux]
+        exclude:
+          - arch: amd64
+      run: echo`, "unknown dimension"},
+		{"invalid dimension name", `
+      matrix:
+        "os-name": [linux]
+      run: echo`, "dimension name"},
+		{"empty source", `
+      matrix:
+        os: []
+      run: echo`, "non-empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: j
+spec:
+  steps:
+    - name: s` + tc.snippet
+			_, err := Parse(strings.NewReader(input))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}

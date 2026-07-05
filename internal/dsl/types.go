@@ -3,6 +3,8 @@ package dsl
 import (
 	"fmt"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Job struct {
@@ -92,6 +94,7 @@ type StepEntry struct {
 	Container        string                `yaml:"container,omitempty"`
 	TimeoutMinutes   float64               `yaml:"timeoutMinutes,omitempty"`
 	Foreach          *ForeachDef           `yaml:"foreach,omitempty"`
+	Matrix           *MatrixDef            `yaml:"matrix,omitempty"`
 
 	// Parallel group (mutually exclusive with all concrete step fields above)
 	Parallel []Step `yaml:"parallel,omitempty"`
@@ -115,6 +118,7 @@ type Step struct {
 	Container        string                `yaml:"container,omitempty"`
 	TimeoutMinutes   float64               `yaml:"timeoutMinutes,omitempty"`
 	Foreach          *ForeachDef           `yaml:"foreach,omitempty"`
+	Matrix           *MatrixDef            `yaml:"matrix,omitempty"`
 	// Needs removed — use parallel: blocks instead
 }
 
@@ -123,6 +127,44 @@ type Step struct {
 type ForeachDef struct {
 	Key    string        `yaml:"key"`
 	Source ForeachSource `yaml:"in"`
+}
+
+// MatrixDef expands a step into one copy per combination of dimension values
+// (cartesian product minus exclude entries). Dimensions preserve YAML
+// declaration order; the combination key joins values with "/" in that order
+// (e.g. "linux/amd64").
+type MatrixDef struct {
+	Dimensions []MatrixDimension
+	Exclude    []map[string]string
+}
+
+type MatrixDimension struct {
+	Name   string
+	Source ForeachSource
+}
+
+// UnmarshalYAML parses the matrix mapping while preserving key order.
+// The reserved key "exclude" holds combination filters; every other key is a
+// dimension whose value is a ForeachSource (list or expression string).
+func (m *MatrixDef) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("matrix must be a mapping of dimension name to a list or expression")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		keyNode, valNode := node.Content[i], node.Content[i+1]
+		if keyNode.Value == "exclude" {
+			if err := valNode.Decode(&m.Exclude); err != nil {
+				return fmt.Errorf("matrix.exclude: %w", err)
+			}
+			continue
+		}
+		var src ForeachSource
+		if err := valNode.Decode(&src); err != nil {
+			return fmt.Errorf("matrix.%s: %w", keyNode.Value, err)
+		}
+		m.Dimensions = append(m.Dimensions, MatrixDimension{Name: keyNode.Value, Source: src})
+	}
+	return nil
 }
 
 // ForeachSource is either a literal list (YAML sequence) or a template expression (YAML string).
