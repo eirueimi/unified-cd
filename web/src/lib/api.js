@@ -16,6 +16,27 @@ export function saveAuth(t, s) {
   localStorage.setItem('ecd_server', s);
 }
 
+// Deep-link restoration across the SSO redirect (hash routing loses the
+// intended route across the full-page navigation to the IdP and back).
+// Only in-app hash routes ("#/...") are ever persisted/restored, so this
+// can't be used as an open redirect.
+const DEEP_LINK_KEY = 'ecd_post_login_hash';
+
+export function savePostLoginHash() {
+  const hash = window.location.hash;
+  if (hash && hash.startsWith('#/')) {
+    localStorage.setItem(DEEP_LINK_KEY, hash);
+  }
+}
+
+export function restorePostLoginHash() {
+  const hash = localStorage.getItem(DEEP_LINK_KEY);
+  localStorage.removeItem(DEEP_LINK_KEY);
+  if (hash && hash.startsWith('#/')) {
+    window.location.hash = hash;
+  }
+}
+
 export async function initAuth() {
   const url = get(serverURL);
   try {
@@ -42,6 +63,7 @@ export async function apiFetch(path, options = {}) {
   const resp = await fetch(url + path, { ...options, credentials: 'include', headers });
   if (resp.status === 401) {
     if (get(browserSSOEnabled)) {
+      savePostLoginHash();
       window.location.href = url + '/api/v1/auth/oidc-login';
       throw new Error('sso-redirect');
     }
@@ -60,6 +82,7 @@ export async function apiFetchText(path, options = {}) {
   const resp = await fetch(url + path, { ...options, credentials: 'include', headers });
   if (resp.status === 401) {
     if (get(browserSSOEnabled)) {
+      savePostLoginHash();
       window.location.href = url + '/api/v1/auth/oidc-login';
       throw new Error('sso-redirect');
     }

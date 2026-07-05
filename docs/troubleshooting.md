@@ -326,6 +326,67 @@ fixed:
 - See [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery)
   for the full heartbeat/reaper timing and design.
 
+## Controller fails with `column "..." does not exist` after upgrading
+
+**Symptom**
+
+After upgrading the controller binary/image against an existing database, the
+controller starts (migrations appear to run without error) but requests fail
+at runtime with errors such as:
+
+```
+column "role" does not exist
+column "managed_resources" does not exist
+relation "audit_logs" does not exist
+column "sync_status" does not exist
+```
+
+**Cause**
+
+Commit `79c1074` squashed the original incremental migrations `001`-`017`
+into a single consolidated `001_init` (plus a new, renumbered `002`-`006`
+series for schema changes added after the squash). A database that was
+**provisioned before the squash** already has `schema_migrations.version`
+recorded as `17` (or wherever it had reached in the old numbering).
+`golang-migrate` only applies migrations with a version *greater than* the
+recorded one — since the new chain tops out at version `6`, `migrate up`
+against such a database is a **silent no-op**: it reports success and the
+controller starts normally, but none of the columns/tables introduced after
+the squash point (`role`, `managed_resources`, `audit_logs`, `sync_status`,
+etc.) ever get created.
+
+This only affects databases created **before** the squash landed. A database
+initialized from the current migration set (fresh install) is unaffected.
+
+**Fix**
+
+In-place `migrate up` is **not a supported upgrade path** across the squash
+boundary. Choose one of:
+
+- **Fresh init (recommended when data loss is acceptable)** — provision a new
+  empty database and let the controller run the current migration set from
+  scratch (`001_init` through the latest). This is the simplest and
+  best-tested path; see [Operations Guide: Recovery Runbook](operations.md#recovery-runbook)
+  for re-applying resources afterward.
+- **Manual bridge (when the existing data must be preserved)** — inspect
+  `schema_migrations.version` on the old database, then manually apply the
+  DDL each pre-squash migration (`002`-`017` in the old numbering, as they
+  existed on the commit immediately before `79c1074`) would have added, and
+  finally set `schema_migrations` to match the new chain's head version so
+  `migrate up` treats the database as fully migrated. This must be done by
+  hand (or with a custom script) — there is no automated tool for it — and
+  should be tested against a copy of the database first.
+
+Check which case you're in before upgrading:
+
+```sql
+SELECT version, dirty FROM schema_migrations;
+```
+
+If `version` is `6` or lower on a database that predates commit `79c1074`,
+it silently skipped the squashed migrations and needs the bridge above rather
+than a plain restart.
+
 ## Dev stack: controller container unhealthy, `vendor/modules.txt` errors
 
 **Symptom**

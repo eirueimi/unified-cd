@@ -37,8 +37,11 @@ func newJobsGetCmd(resolve func() (Config, error), httpClient *http.Client) *cob
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/jobs/"+args[0], nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -90,8 +93,11 @@ func newJobsShowYAMLCmd(resolve func() (Config, error), httpClient *http.Client)
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/jobs/"+args[0]+"/yaml", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -117,8 +123,11 @@ func newJobsListCmd(resolve func() (Config, error), httpClient *http.Client) *co
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/jobs", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -156,8 +165,11 @@ func newJobsDeleteCmd(resolve func() (Config, error), httpClient *http.Client) *
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete,
 				cfg.Server+"/api/v1/jobs/"+args[0], nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {

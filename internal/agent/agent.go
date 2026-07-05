@@ -47,6 +47,11 @@ func hostContainerLimits(rs *dsl.ResourceSpec) (cpu, mem string) {
 // human decision. It is a var (not a const) so tests can shorten it.
 var approvalPollInterval = 3 * time.Second
 
+// heartbeatInterval is the interval Run uses when starting the liveness
+// heartbeat. It is a var (not a const) so tests can shorten it; production code
+// leaves it at DefaultHeartbeatInterval.
+var heartbeatInterval = DefaultHeartbeatInterval
+
 // postHookEntry is a post-processing entry executed after a step completes.
 type postHookEntry struct {
 	stepName string
@@ -132,8 +137,6 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	slog.Info("agent registered", "agentId", a.ID)
 
-	StartHeartbeat(ctx, a.Client, a.ID, DefaultHeartbeatInterval)
-
 	n := a.MaxConcurrent
 	if n <= 0 {
 		n = 1
@@ -171,6 +174,15 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 		}()
 	}
+
+	// Heartbeat is bound to runCtx, NOT claimCtx. claimCtx is cancelled the instant
+	// a drain (SIGTERM/cordon) begins, but an in-flight run keeps executing under
+	// runCtx for up to DrainTimeout. Binding to claimCtx would stop heartbeats the
+	// moment a drain starts, so after staleAfter the stuck-run reaper would Fail a
+	// perfectly healthy draining run. runCtx outlives claimCtx during drain and is
+	// cancelled on full shutdown (defer runCancel / DrainTimeout), so heartbeats
+	// continue through the whole drain window and stop cleanly on shutdown — no leak.
+	StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval)
 
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {

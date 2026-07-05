@@ -39,7 +39,10 @@ func newAuditListCmdWithClient(resolve func() (Config, error), httpClient *http.
 			if limit > 0 {
 				url += "?limit=" + strconv.Itoa(limit)
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {

@@ -163,6 +163,11 @@ func TestPhase8_FullOIDCFlow(t *testing.T) {
 		Issuer:       idpSrv.URL,
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
+		// After the RBAC merge, OIDC login is deny-by-default when no role can
+		// be resolved from the ID token claims. The mock IdP token in this test
+		// carries no groups/role claim, so a DefaultRole is required for login
+		// to succeed.
+		DefaultRole: "admin",
 	})
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()

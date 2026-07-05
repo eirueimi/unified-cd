@@ -1,7 +1,7 @@
 <script>
   import Router, { router } from "svelte-spa-router";
   import { onMount } from "svelte";
-  import { initAuth, serverURL, browserSSOEnabled, currentUser, token, saveAuth, authReady } from "./lib/api.js";
+  import { initAuth, serverURL, browserSSOEnabled, currentUser, token, saveAuth, authReady, savePostLoginHash, restorePostLoginHash } from "./lib/api.js";
   import { themePref, toggleTheme, initTheme } from "./lib/theme.js";
   import JobList from "./routes/JobList.svelte";
   import JobDetail from "./routes/JobDetail.svelte";
@@ -36,11 +36,17 @@
   };
 
   onMount(() => {
-    initAuth();
+    initAuth().then(() => {
+      // Restore a hash route saved before an SSO redirect (deep-link across
+      // the full-page navigation to the IdP and back). Only ever restores an
+      // in-app "#/..." route — see restorePostLoginHash.
+      restorePostLoginHash();
+    });
     initTheme();
   });
 
   function ssoLogin() {
+    savePostLoginHash();
     window.location.href = $serverURL + '/api/v1/auth/oidc-login';
   }
 

@@ -55,8 +55,11 @@ func newRunTriggerCmd(resolve func() (Config, error), httpClient *http.Client) *
 				params[kv[:idx]] = kv[idx+1:]
 			}
 			body, _ := json.Marshal(api.TriggerRunRequest{JobName: args[0], Params: params})
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
 				cfg.Server+"/api/v1/runs", bytes.NewReader(body))
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := httpClient.Do(req)
@@ -90,8 +93,11 @@ func newRunListCmd(resolve func() (Config, error), httpClient *http.Client) *cob
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/runs?jobName="+jobName, nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -135,7 +141,10 @@ func newRunShowCmd(resolve func() (Config, error), httpClient *http.Client) *cob
 			runID := args[0]
 			ctx := context.Background()
 
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Server+"/api/v1/runs/"+runID, nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Server+"/api/v1/runs/"+runID, nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -151,7 +160,10 @@ func newRunShowCmd(resolve func() (Config, error), httpClient *http.Client) *cob
 				return err
 			}
 
-			req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Server+"/api/v1/runs/"+runID+"/steps", nil)
+			req2, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Server+"/api/v1/runs/"+runID+"/steps", nil)
+			if err != nil {
+				return err
+			}
 			req2.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp2, err := httpClient.Do(req2)
 			if err != nil {
@@ -204,8 +216,11 @@ func newRunDeleteCmd(resolve func() (Config, error), httpClient *http.Client) *c
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete,
 				cfg.Server+"/api/v1/runs/"+args[0], nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -232,8 +247,11 @@ func newRunListActiveCmd(resolve func() (Config, error), httpClient *http.Client
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/runs/active", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -271,8 +289,11 @@ func newRunOutputsCmd(resolve func() (Config, error), httpClient *http.Client) *
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/runs/"+args[0]+"/outputs", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -314,8 +335,11 @@ func newRunShowYAMLCmd(resolve func() (Config, error), httpClient *http.Client) 
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/runs/"+args[0]+"/yaml", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -342,8 +366,11 @@ func newRunApprovalsCmd(resolve func() (Config, error), httpClient *http.Client)
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/runs/"+args[0]+"/approvals", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -391,8 +418,11 @@ func newRunCancelCmd(resolve func() (Config, error), httpClient *http.Client) *c
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
 				cfg.Server+"/api/v1/runs/"+args[0]+"/cancel", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {

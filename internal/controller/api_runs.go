@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 // handleTriggerRun creates a new Run and returns it in Pending state.
@@ -65,7 +68,15 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	run, err := s.store.GetRun(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// Only a genuine "not found" is a 404. Transient DB errors (pool
+		// exhaustion, timeouts, dropped connections) must surface as 500 so
+		// that clients such as the k8s pod-GC do not treat a still-running
+		// run as gone and reap its pod.
+		if errors.Is(err, store.ErrRunNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if cb, cErr := s.store.GetRunParent(r.Context(), id); cErr != nil {
@@ -177,7 +188,38 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Cascade cancellation to descendant runs spawned via call: steps, so a
+	// child job doesn't keep running after its parent is cancelled. Best-effort:
+	// the executing agent picks up the Cancelled status the same way it does for
+	// a directly-cancelled run.
+	s.cancelDescendantRuns(r.Context(), id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// cancelDescendantRuns walks the parent→child run tree breadth-first and marks
+// every descendant Cancelled. A visited set guards against cycles.
+func (s *Server) cancelDescendantRuns(ctx context.Context, rootID string) {
+	visited := map[string]bool{rootID: true}
+	queue := []string{rootID}
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		children, err := s.store.ListChildRunIDs(ctx, parent)
+		if err != nil {
+			slog.Warn("cancel run: list child runs failed", "run", parent, "error", err)
+			continue
+		}
+		for _, child := range children {
+			if visited[child] {
+				continue
+			}
+			visited[child] = true
+			if err := s.store.MarkRunFinished(ctx, child, api.RunCancelled); err != nil {
+				slog.Warn("cancel run: cascade cancel failed", "run", child, "parent", parent, "error", err)
+			}
+			queue = append(queue, child)
+		}
+	}
 }
 
 // handleDeleteRun deletes a Run that has reached a terminal state (Succeeded/Failed/Cancelled).
@@ -186,7 +228,11 @@ func (s *Server) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	run, err := s.store.GetRun(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if errors.Is(err, store.ErrRunNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	switch run.Status {

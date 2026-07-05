@@ -637,3 +637,77 @@ func TestClaimDrainBroadcast(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentAPI_FinishRun_FreshTransition verifies the happy path: a first finish
+// report on a non-terminal run transitions it and returns 204.
+func TestAgentAPI_FinishRun_FreshTransition(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+
+	body, _ := json.Marshal(map[string]string{"status": string(api.RunSucceeded)})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+run.ID+"/finish", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	got, err := pg.GetRun(t.Context(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunSucceeded, got.Status)
+}
+
+// TestAgentAPI_FinishRun_AlreadyTerminal verifies FIX #33: a late finish report on
+// an already-terminal run (e.g. the reaper Failed it first) is not falsely
+// reported as a fresh success. The handler responds 200 with a body flagging
+// alreadyFinalized rather than a plain 204, and does not overwrite the status.
+func TestAgentAPI_FinishRun_AlreadyTerminal(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	// Simulate the reaper finalizing the run as Failed before the agent's late report.
+	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunFailed))
+
+	body, _ := json.Marshal(map[string]string{"status": string(api.RunSucceeded)})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+run.ID+"/finish", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["alreadyFinalized"])
+
+	got, err := pg.GetRun(t.Context(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunFailed, got.Status, "the reaper's terminal status must not be overwritten")
+}
+
+// TestAgentAPI_ReportStep_AlreadyTerminal verifies the step-report guard: a late
+// step report under an already-terminal run does not write stale step state and
+// is reported distinctly (200-with-body) instead of a 204 that would suggest the
+// write happened.
+func TestAgentAPI_ReportStep_AlreadyTerminal(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunFailed))
+
+	body, _ := json.Marshal(api.StepReportRequest{
+		RunID: run.ID, StepIndex: 0, Status: "Succeeded", StartedAt: time.Now(), EndedAt: time.Now(),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/steps", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["alreadyFinalized"])
+
+	steps, err := pg.GetRunSteps(t.Context(), run.ID)
+	require.NoError(t, err)
+	assert.Empty(t, steps, "no step report should be written under an already-terminal run")
+}

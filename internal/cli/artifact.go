@@ -37,7 +37,10 @@ func newArtifactListCmd(resolve func() (Config, error), httpClient *http.Client)
 				return err
 			}
 			url := cfg.Server + "/api/v1/runs/" + args[0] + "/artifacts"
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -72,7 +75,10 @@ func newArtifactDownloadCmd(resolve func() (Config, error), httpClient *http.Cli
 				return err
 			}
 			url := cfg.Server + "/api/v1/runs/" + args[0] + "/artifacts/" + args[1]
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {

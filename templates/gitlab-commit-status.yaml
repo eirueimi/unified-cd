@@ -62,9 +62,32 @@ spec:
         }
         trap _cleanup EXIT
 
-        _URL="${BASE_URL}/api/v4/projects/${PROJECT}/statuses/${SHA}?state=${STATE}&name=${CONTEXT}"
+        # クエリ文字列に埋め込む前に各値を URL エンコードする
+        _urlencode() {
+          _s="$1"
+          _len=${#_s}
+          _i=0
+          while [ "$_i" -lt "$_len" ]; do
+            _c="$(printf '%s' "$_s" | cut -c $((_i + 1)))"
+            case "$_c" in
+              [a-zA-Z0-9.~_-])
+                printf '%s' "$_c"
+                ;;
+              *)
+                printf '%%%02X' "'$_c"
+                ;;
+            esac
+            _i=$((_i + 1))
+          done
+        }
+
+        _STATE_ENC="$(_urlencode "$STATE")"
+        _CONTEXT_ENC="$(_urlencode "$CONTEXT")"
+
+        _URL="${BASE_URL}/api/v4/projects/${PROJECT}/statuses/${SHA}?state=${_STATE_ENC}&name=${_CONTEXT_ENC}"
         if [ -n "$TARGET_URL" ]; then
-          _URL="${_URL}&target_url=${TARGET_URL}"
+          _TARGET_URL_ENC="$(_urlencode "$TARGET_URL")"
+          _URL="${_URL}&target_url=${_TARGET_URL_ENC}"
         fi
 
         HTTP_STATUS=$(curl -s -o "$_RESPONSE_FILE" -w "%{http_code}" \

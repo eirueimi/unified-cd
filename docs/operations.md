@@ -30,7 +30,7 @@ Back up with `pg_dump` on a regular schedule:
 docker compose exec -T postgres pg_dump -U unified unified > unified-cd-backup.sql
 ```
 
-(Verified in the dev stack: `docker compose exec -T postgres pg_dump --version` reports `pg_dump (PostgreSQL) 16.14`.) Restore into a fresh `unified` database with `psql` before starting the controller — migrations are additive and idempotent (see [Upgrades](#upgrades)), so restoring an older dump and letting the controller migrate forward on next startup is expected to work.
+(Verified in the dev stack: `docker compose exec -T postgres pg_dump --version` reports `pg_dump (PostgreSQL) 16.14`.) Restore into a fresh `unified` database with `psql` before starting the controller — migrations are additive and idempotent (see [Upgrades](#upgrades)), so restoring an older dump and letting the controller migrate forward on next startup is expected to work, **unless the dump predates the migrations-001-017 squash** (see the Upgrades exception below and [Troubleshooting](troubleshooting.md#controller-fails-with-column--does-not-exist-after-upgrading)).
 
 ### S3 / object store
 
@@ -70,6 +70,8 @@ This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Manage
 Upgrade order: **controller first, then agents.**
 
 1. **Controller** — database migrations run automatically at startup (`internal/store`, via `golang-migrate` against the embedded migration set). Roll controller replicas one at a time in an HA deployment; the new version's migrations apply once, and old and new controller binaries can both be running against the already-migrated schema during a rolling deploy as long as the migration is backward-compatible (additive columns/tables — this is the norm for unified-cd's migration history).
+
+   **Exception:** a database provisioned before the migrations-001-017 squash (commit `79c1074`) is **not** upgraded correctly by this automatic `migrate up` — the new migration chain's version numbering starts below where such a database already is, so the migration runner treats it as already up to date and silently applies nothing. This leaves newer columns/tables (e.g. `role`, `managed_resources`, `audit_logs`, `sync_status`) missing. See [Troubleshooting: `column "..." does not exist` after upgrading](troubleshooting.md#controller-fails-with-column--does-not-exist-after-upgrading) for the supported fresh-init/manual-bridge paths.
 2. **Agents** — upgrade standard agents after the controller is on the new version.
 3. **k8s-agent + sidecar image** — the k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. Pin `sidecarImage` in the k8s-agent config to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
 

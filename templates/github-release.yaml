@@ -82,6 +82,23 @@ spec:
           printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g'
         }
 
+        # draft/prerelease は JSON の真偽値リテラルとしてそのまま埋め込むため、
+        # true/false のいずれかであることを厳密に検証してから使用する
+        case "$DRAFT" in
+          true|false) ;;
+          *)
+            echo "[github-release] invalid draft value: ${DRAFT}" >&2
+            exit 1
+            ;;
+        esac
+        case "$PRERELEASE" in
+          true|false) ;;
+          *)
+            echo "[github-release] invalid prerelease value: ${PRERELEASE}" >&2
+            exit 1
+            ;;
+        esac
+
         _TITLE="$TITLE"
         if [ -z "$_TITLE" ]; then
           _TITLE="$TAG"
@@ -117,6 +134,25 @@ spec:
         fi
         echo "[github-release] created release ${TAG} (id=${_RELEASE_ID})"
 
+        # name= クエリパラメータに埋め込む前にアセット名を URL エンコードする
+        _urlencode() {
+          _s="$1"
+          _len=${#_s}
+          _i=0
+          while [ "$_i" -lt "$_len" ]; do
+            _c="$(printf '%s' "$_s" | cut -c $((_i + 1)))"
+            case "$_c" in
+              [a-zA-Z0-9.~_-])
+                printf '%s' "$_c"
+                ;;
+              *)
+                printf '%%%02X' "'$_c"
+                ;;
+            esac
+            _i=$((_i + 1))
+          done
+        }
+
         # アセットが指定されていればアップロード（配列パラメータは改行区切りで渡される）
         if [ -n "$ASSETS" ]; then
           _OLD_IFS="$IFS"
@@ -129,6 +165,7 @@ spec:
               exit 1
             fi
             _asset_name="$(basename "$_asset")"
+            _asset_name_enc="$(_urlencode "$_asset_name")"
             echo "[github-release] uploading asset: ${_asset_name}"
             _UP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
               -X POST \
@@ -136,7 +173,7 @@ spec:
               -H "Accept: application/vnd.github+json" \
               -H "Content-Type: application/octet-stream" \
               --data-binary "@${_asset}" \
-              "${UPLOAD_URL}/repos/${REPO}/releases/${_RELEASE_ID}/assets?name=${_asset_name}")
+              "${UPLOAD_URL}/repos/${REPO}/releases/${_RELEASE_ID}/assets?name=${_asset_name_enc}")
             if [ "$_UP_STATUS" != "201" ]; then
               echo "[github-release] ERROR: asset upload for ${_asset_name} returned HTTP ${_UP_STATUS}" >&2
               exit 1

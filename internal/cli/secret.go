@@ -53,8 +53,11 @@ func newSecretSetCmd(resolve func() (Config, error)) *cobra.Command {
 				value = string(data)
 			}
 			body, _ := json.Marshal(api.SetSecretRequest{Name: name, Value: value})
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
 				cfg.Server+"/api/v1/secrets/", bytes.NewReader(body))
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := http.DefaultClient.Do(req)
@@ -83,8 +86,11 @@ func newSecretListCmd(resolve func() (Config, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/secrets/", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -121,8 +127,11 @@ func newSecretDeleteCmd(resolve func() (Config, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete,
 				cfg.Server+"/api/v1/secrets/"+args[0], nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {

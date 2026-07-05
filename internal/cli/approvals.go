@@ -41,7 +41,10 @@ func newApprovalDecisionCmdWithClient(resolve func() (Config, error), httpClient
 			}
 			body, _ := json.Marshal(api.ApprovalDecisionRequest{Decision: decision, Comment: comment})
 			url := cfg.Server + "/api/v1/runs/" + args[0] + "/approvals/" + args[1]
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := httpClient.Do(req)

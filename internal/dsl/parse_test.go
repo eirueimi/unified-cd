@@ -1343,6 +1343,148 @@ spec:
 	assert.Contains(t, err.Error(), "downloadArtifact.name")
 }
 
+func TestParse_UploadArtifactNameTraversalRejected(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: upload
+      uploadArtifact:
+        name: "../victim-run/pwned"
+        path: dist/output.tar.gz
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadArtifact.name")
+}
+
+func TestParse_UploadArtifactNameWithSlashRejected(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: upload
+      uploadArtifact:
+        name: "a/b"
+        path: dist/output.tar.gz
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadArtifact.name")
+}
+
+func TestParse_UploadArtifactNameEmptyRejected(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: upload
+      uploadArtifact:
+        name: ""
+        path: dist/output.tar.gz
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploadArtifact.name")
+}
+
+func TestParse_UploadArtifactNameValidAccepted(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: good-job
+spec:
+  steps:
+    - name: upload
+      uploadArtifact:
+        name: my-valid_artifact.123
+        path: dist/output.tar.gz
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Steps, 1)
+	assert.Equal(t, "my-valid_artifact.123", job.Spec.Steps[0].UploadArtifact.Name)
+}
+
+func TestParse_DownloadArtifactNameTraversalRejected(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: download
+      downloadArtifact:
+        name: "../../cache/evil"
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "downloadArtifact.name")
+}
+
+func TestParse_DownloadArtifactNameWithBackslashRejected(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: download
+      downloadArtifact:
+        name: "a\\b"
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "downloadArtifact.name")
+}
+
+func TestParse_DownloadArtifactNameWhitespaceRejected(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: download
+      downloadArtifact:
+        name: "  padded  "
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "downloadArtifact.name")
+}
+
+func TestParse_DownloadArtifactNameValidAccepted(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: good-job
+spec:
+  steps:
+    - name: download
+      downloadArtifact:
+        name: my-valid_artifact.123
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Steps, 1)
+	assert.Equal(t, "my-valid_artifact.123", job.Spec.Steps[0].DownloadArtifact.Name)
+}
+
 func TestParse_MatrixStep(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1

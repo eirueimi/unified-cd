@@ -92,53 +92,45 @@ spec:
         fi
 
         # タグ一覧を -t 引数に変換（配列パラメータは改行区切りで渡される）
-        _TAG_ARGS=""
+        set --
         _OLD_IFS="$IFS"
         IFS='
         '
         for _tag in $TAGS; do
           [ -z "$_tag" ] && continue
-          _TAG_ARGS="${_TAG_ARGS} -t ${_FULL_IMAGE}:${_tag}"
+          set -- "$@" -t "${_FULL_IMAGE}:${_tag}"
         done
         IFS="$_OLD_IFS"
 
-        if [ -z "$_TAG_ARGS" ]; then
-          _TAG_ARGS=" -t ${_FULL_IMAGE}:latest"
+        if [ "$#" -eq 0 ]; then
+          set -- -t "${_FULL_IMAGE}:latest"
         fi
 
         # build-arg 一覧を --build-arg 引数に変換
-        _BUILD_ARG_ARGS=""
         _OLD_IFS="$IFS"
         IFS='
         '
         for _ba in $BUILD_ARGS; do
           [ -z "$_ba" ] && continue
-          _BUILD_ARG_ARGS="${_BUILD_ARG_ARGS} --build-arg ${_ba}"
+          set -- "$@" --build-arg "$_ba"
         done
         IFS="$_OLD_IFS"
 
-        _PUSH_ARGS=""
-        if [ "$DO_PUSH" = "true" ]; then
-          _PUSH_ARGS="--push"
-        fi
-
         if [ -n "$PLATFORM" ]; then
+          if [ "$DO_PUSH" = "true" ]; then
+            set -- "$@" --push
+          fi
           echo "[docker-build-push] buildx build --platform ${PLATFORM}"
-          # shellcheck disable=SC2086
           docker buildx build \
             --platform "$PLATFORM" \
             -f "${CONTEXT}/${DOCKERFILE}" \
-            $_TAG_ARGS \
-            $_BUILD_ARG_ARGS \
-            $_PUSH_ARGS \
+            "$@" \
             "$CONTEXT"
         else
           echo "[docker-build-push] docker build"
-          # shellcheck disable=SC2086
           docker build \
             -f "${CONTEXT}/${DOCKERFILE}" \
-            $_TAG_ARGS \
-            $_BUILD_ARG_ARGS \
+            "$@" \
             "$CONTEXT"
 
           if [ "$DO_PUSH" = "true" ]; then

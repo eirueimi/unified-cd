@@ -231,6 +231,10 @@ func main() {
 	}
 	go controller.RunApprovalReaper(ctx, pg, time.Minute)
 	go controller.RunStuckRunReaper(ctx, pg, 30*time.Second, 90*time.Second, 60*time.Second)
+	// Reap AppSources stuck in "Syncing" (bug #33): the manual sync-trigger API sets
+	// sync_status="Syncing" synchronously, so a reconciler crash / restart / leadership
+	// change mid-sync can strand the row forever. Reset any Syncing row older than 5m.
+	go controller.RunAppSourceSyncReaper(ctx, pg, 30*time.Second, 5*time.Minute)
 	if *auditRetentionDays > 0 {
 		slog.Info("audit log retention enabled", "retentionDays", *auditRetentionDays)
 	} else {

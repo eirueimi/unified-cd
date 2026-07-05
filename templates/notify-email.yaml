@@ -64,12 +64,33 @@ spec:
         }
         trap _cleanup EXIT
 
+        # ヘッダインジェクション対策: RFC822 ヘッダに使う値に CR/LF が混入して
+        # いないか検証する（改行を許すと追加ヘッダの注入が可能になるため）
+        _check_no_crlf() {
+          _name="$1"
+          _val="$2"
+          case "$_val" in
+            *"$(printf '\r')"*)
+              echo "[notify-email] ${_name} contains CR" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$(printf '%s' "$_val" | wc -l)" -ne 0 ]; then
+            echo "[notify-email] ${_name} contains LF" >&2
+            exit 1
+          fi
+        }
+        _check_no_crlf mail_from "$MAIL_FROM"
+        _check_no_crlf mail_to "$MAIL_TO"
+        _check_no_crlf subject "$SUBJECT"
+
         # RCPT 用にカンマ区切りを --mail-rcpt の複数指定に変換
-        _RCPT_ARGS=""
+        set --
         _OLD_IFS="$IFS"
         IFS=','
         for _addr in $MAIL_TO; do
-          _RCPT_ARGS="${_RCPT_ARGS} --mail-rcpt ${_addr}"
+          [ -z "$_addr" ] && continue
+          set -- "$@" --mail-rcpt "$_addr"
         done
         IFS="$_OLD_IFS"
 
@@ -82,11 +103,10 @@ spec:
           printf '%s\n' "$BODY"
         } > "$_MSG_FILE"
 
-        # shellcheck disable=SC2086
         curl -sS \
           --url "$SMTP_URL" \
           --mail-from "$MAIL_FROM" \
-          $_RCPT_ARGS \
+          "$@" \
           --user "${SMTP_USERNAME}:${SMTP_PASSWORD}" \
           --upload-file "$_MSG_FILE" \
           --ssl-reqd

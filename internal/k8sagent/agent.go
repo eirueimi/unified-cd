@@ -88,6 +88,10 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	}
 	slog.Info("k8s agent registered", "agentId", a.cfg.AgentID, "labels", labels)
 
+	// The k8s agent has no drain/cordon: ctx is cancelled only on full shutdown,
+	// so binding the heartbeat to ctx keeps it alive for the agent's whole lifetime
+	// and stops it cleanly on shutdown. (Unlike the host agent, there is no separate
+	// claimCtx that is cancelled before in-flight runs finish, so no divergence here.)
 	agentlib.StartHeartbeat(ctx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval)
 	go a.runPodGC(ctx, time.Minute)
 
@@ -364,17 +368,37 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				})
 				key, kerr := dsl.ExpandTemplate(step.Cache.Key, tplData)
 				expandedPath, perr := dsl.ExpandTemplate(step.Cache.Path, tplData)
-				if kerr != nil || key == "" {
-					// A bad/empty key template must not silently collide caches
-					// across runs. Skip the cache operation entirely (no restore,
-					// no deferred save) but keep cache best-effort: the step still
-					// succeeds.
-					slog.Warn("k8s: cache key template failed; skipping cache for step", "step", step.Name, "keyTemplate", step.Cache.Key, "error", kerr)
-				} else if perr != nil || expandedPath == "" {
-					// A bad/empty path template would make the cache target the
-					// workspace mount root (or a wrong directory). Skip the cache
-					// operation entirely, same as a bad key.
-					slog.Warn("k8s: cache path template failed; skipping cache for step", "step", step.Name, "pathTemplate", step.Cache.Path, "error", perr)
+				// A template PARSE/EXPAND error on cache.key or cache.path is a hard
+				// failure (matching the standard host agent, which fails the step
+				// loudly on the same condition) — it means the job author wrote a
+				// malformed template and silently succeeding would hide the bug and
+				// let the cache target the wrong directory. Empty-but-valid expansion
+				// (key/path resolves to "") stays a legitimate best-effort skip: the
+				// step succeeds without any cache op.
+				if kerr != nil || perr != nil {
+					tplErr := kerr
+					which := "cache.key"
+					if kerr == nil {
+						tplErr = perr
+						which = "cache.path"
+					}
+					slog.Error("k8s: cache template expansion failed; failing step", "step", step.Name, "which", which, "error", tplErr)
+					recordFailure(step)
+					_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", StartedAt: started, EndedAt: time.Now().UTC(),
+					})
+					return
+				}
+				if key == "" {
+					// A valid-but-empty key must not silently collide caches across
+					// runs. Skip the cache operation entirely (no restore, no deferred
+					// save) but keep cache best-effort: the step still succeeds.
+					slog.Warn("k8s: cache key expanded to empty; skipping cache for step", "step", step.Name, "keyTemplate", step.Cache.Key)
+				} else if expandedPath == "" {
+					// A valid-but-empty path would make the cache target the workspace
+					// mount root (or a wrong directory). Skip the cache operation
+					// entirely, same as an empty key.
+					slog.Warn("k8s: cache path expanded to empty; skipping cache for step", "step", step.Name, "pathTemplate", step.Cache.Path)
 				} else {
 					var restoreKeys []string
 					for _, rk := range step.Cache.RestoreKeys {

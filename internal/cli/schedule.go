@@ -34,8 +34,11 @@ func newScheduleListCmd(resolve func() (Config, error), httpClient *http.Client)
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/schedules/", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -72,8 +75,11 @@ func newScheduleDeleteCmd(resolve func() (Config, error), httpClient *http.Clien
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete,
 				cfg.Server+"/api/v1/schedules/"+args[0], nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {

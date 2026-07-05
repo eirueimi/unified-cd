@@ -104,7 +104,16 @@ type Store interface {
 	GetJob(ctx context.Context, name string) (*api.Job, error)
 	ListJobs(ctx context.Context) ([]api.Job, error)
 	DeleteJob(ctx context.Context, name string) error
+	// RenameJob re-keys a job from oldName to newName and repoints run history,
+	// in a single transaction. If newName already exists, the oldName row is
+	// treated as an orphan: run history is repointed to newName and the orphan is
+	// deleted. Idempotent: a missing oldName is a no-op.
+	RenameJob(ctx context.Context, oldName, newName string) error
 	CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, triggeredBy string) (*api.Run, error)
+	// ListChildRunIDs returns the IDs of runs directly spawned by parentRunID via
+	// call: steps (recorded as child_run_id on the parent's step reports), so a
+	// cancellation of the parent can cascade to its children.
+	ListChildRunIDs(ctx context.Context, parentRunID string) ([]string, error)
 	GetRun(ctx context.Context, id string) (*api.Run, error)
 	GetRunSpec(ctx context.Context, id string) ([]byte, error)
 	ListRunsByJob(ctx context.Context, jobName string, limit int) ([]api.Run, error)
@@ -231,6 +240,10 @@ type Store interface {
 	UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managed []ResourceRef) error
 	ResetAppSourceCommit(ctx context.Context, name string) error
 	SetAppSourceSyncStatus(ctx context.Context, name, status, lastError string) error
+	// ResetStuckSyncingAppSources resets AppSources stuck in sync_status='Syncing'
+	// whose updated_at is older than olderThan to a retryable state (clears
+	// last_commit so the next reconcile tick re-syncs), returning the count reset.
+	ResetStuckSyncingAppSources(ctx context.Context, olderThan time.Duration) (int, error)
 
 	// Git resolver helpers
 	ListPendingRuns(ctx context.Context, limit int) ([]PendingRun, error)

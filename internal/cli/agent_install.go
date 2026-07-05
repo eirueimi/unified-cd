@@ -50,8 +50,11 @@ func newAgentListCmd(resolve func() (Config, error), httpClient *http.Client) *c
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/agents", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -89,8 +92,11 @@ func newAgentGetCmd(resolve func() (Config, error), httpClient *http.Client) *co
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/agents/"+args[0], nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {
@@ -133,8 +139,11 @@ func newAgentRunsCmd(resolve func() (Config, error), httpClient *http.Client) *c
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/agents/"+args[0]+"/runs", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := httpClient.Do(req)
 			if err != nil {

@@ -2,12 +2,87 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestPostgres_GetRun_NotFound verifies that a missing run yields the typed
+// ErrRunNotFound sentinel (matchable with errors.Is), so callers can map a
+// genuine miss to 404 while treating other errors as infrastructure failures.
+// Non-ErrNoRows errors (pool exhaustion, timeouts, dropped connections) are NOT
+// wrapped as ErrRunNotFound and therefore flow through as generic errors — the
+// controller maps those to 500. That fault path is not exercised here because it
+// requires injecting a live DB fault, but the code path is: only pgx.ErrNoRows
+// is converted to ErrRunNotFound in GetRun.
+func TestPostgres_GetRun_NotFound(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.GetRun(ctx, "00000000-0000-0000-0000-000000000000")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRunNotFound), "missing run should yield ErrRunNotFound, got %v", err)
+}
+
+// TestPostgres_RunParentLinkage verifies ListChildRunIDs returns exactly the
+// direct children recorded via call: step reports (child_run_id).
+func TestPostgres_RunParentLinkage(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	parent, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	require.NoError(t, err)
+	childA, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	require.NoError(t, err)
+	childB, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	require.NoError(t, err)
+	unrelated, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	require.NoError(t, err)
+
+	// The parent's call: step reports record each spawned child via child_run_id.
+	require.NoError(t, pg.UpsertStepReport(ctx, parent.ID, 0, 0, "call-a", "", "Succeeded", nil, nil, nil, childA.ID, "hello"))
+	require.NoError(t, pg.UpsertStepReport(ctx, parent.ID, 1, 0, "call-b", "", "Succeeded", nil, nil, nil, childB.ID, "hello"))
+
+	ids, err := pg.ListChildRunIDs(ctx, parent.ID)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{childA.ID, childB.ID}, ids)
+
+	none, err := pg.ListChildRunIDs(ctx, unrelated.ID)
+	require.NoError(t, err)
+	assert.Empty(t, none)
+}
+
+// TestPostgres_FinishRun_ReportsUpdated verifies the RowsAffected signal: a fresh
+// terminal transition reports updated=true, while a subsequent finish on the now
+// already-terminal run reports updated=false (the CAS matched no rows) — the
+// signal handleAgentFinishRun uses to distinguish a real finish from a late/no-op.
+func TestPostgres_FinishRun_ReportsUpdated(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	require.NoError(t, err)
+
+	updated, err := pg.FinishRun(ctx, run.ID, api.RunSucceeded)
+	require.NoError(t, err)
+	assert.True(t, updated, "first finish should transition the run")
+
+	// A second finish on the already-terminal run is a no-op.
+	updated, err = pg.FinishRun(ctx, run.ID, api.RunFailed)
+	require.NoError(t, err)
+	assert.False(t, updated, "finishing an already-terminal run should report no-op")
+
+	got, err := pg.GetRun(ctx, run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunSucceeded, got.Status, "terminal status must not be overwritten")
+}
 
 func TestPostgres_CreateAndGetRun(t *testing.T) {
 	pg := NewTestPostgres(t)

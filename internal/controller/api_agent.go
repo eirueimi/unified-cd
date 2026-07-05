@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -323,6 +325,28 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 		ec := req.ExitCode
 		exit = &ec
 	}
+	// Guard against writing stale step state under an already-terminal run. If the
+	// parent run was finalized (e.g. the reaper Failed it) before this late report
+	// arrived, upserting would leave a step in a status inconsistent with the run's
+	// terminal outcome. Report the no-op distinctly (200-with-body, mirroring
+	// handleAgentFinishRun) so the agent's client — which treats >=400 as an error —
+	// does not spuriously fail. GetRun's not-found/transient errors are handled
+	// separately so a transient DB blip does not masquerade as "already finalized".
+	if run, err := s.store.GetRun(r.Context(), req.RunID); err == nil {
+		switch run.Status {
+		case api.RunSucceeded, api.RunFailed, api.RunCancelled:
+			writeJSON(w, http.StatusOK, map[string]any{
+				"runId":            req.RunID,
+				"stepIndex":        req.StepIndex,
+				"alreadyFinalized": true,
+			})
+			return
+		}
+	} else if !errors.Is(err, store.ErrRunNotFound) {
+		// Transient DB error: fail loudly rather than silently dropping the report.
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, req.StepName, req.Variant, req.Status, exit, startedAt, endedAt, req.ChildRunID, req.CallJobName); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -352,7 +376,24 @@ func (s *Server) handleAgentLogAppend(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// runFinisher is the optional store capability that reports whether a finish
+// actually transitioned the run (vs. a no-op because it was already terminal).
+// The concrete *store.Postgres implements it; we type-assert so the store.Store
+// interface does not have to change.
+type runFinisher interface {
+	FinishRun(ctx context.Context, runID string, status api.RunStatus) (bool, error)
+}
+
 // handleAgentFinishRun records the final status of a Run.
+//
+// When the run was already terminal (e.g. the orphaned-run reaper Failed it
+// before this late report arrived), the CAS in the store matches no rows. Rather
+// than returning a plain 204 — which would falsely tell the agent its report
+// won the race — we respond 200 with a body flagging the run as already
+// finalized. 200-with-body (not 409) is deliberate: the agent HTTP client treats
+// any status >= 400 as an error, and FinishRun ignores the response body, so
+// 200 keeps the agent from spuriously erroring while still letting other clients
+// observe that the report was a no-op.
 func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "runId")
 	var body struct {
@@ -369,6 +410,26 @@ func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid status", http.StatusBadRequest)
 		return
 	}
+	if rf, ok := s.store.(runFinisher); ok {
+		updated, err := rf.FinishRun(r.Context(), id, st)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !updated {
+			// Late/CAS-miss report: the run was already terminal. Report the
+			// no-op distinctly instead of a false-success 204.
+			writeJSON(w, http.StatusOK, map[string]any{
+				"runId":            id,
+				"status":           string(st),
+				"alreadyFinalized": true,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	// Fallback for stores that do not report RowsAffected (preserves prior behavior).
 	if err := s.store.MarkRunFinished(r.Context(), id, st); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

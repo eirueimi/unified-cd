@@ -66,6 +66,9 @@ func TestWebhookDelete_Success(t *testing.T) {
 	if len(tr.records) != 1 || tr.records[0].path != "/api/v1/webhooks/github-push" {
 		t.Fatalf("unexpected requests: %+v", tr.records)
 	}
+	if tr.records[0].method != http.MethodDelete {
+		t.Errorf("expected DELETE, got %s", tr.records[0].method)
+	}
 	if !strings.Contains(out.String(), "github-push") || !strings.Contains(out.String(), "deleted") {
 		t.Errorf("unexpected output: %s", out.String())
 	}

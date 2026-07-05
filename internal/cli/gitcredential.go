@@ -30,8 +30,11 @@ func newListGitCredentialsCmd(resolve func() (Config, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
 				cfg.Server+"/api/v1/gitcredentials", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -69,8 +72,11 @@ func newDeleteGitCredentialCmd(resolve func() (Config, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete,
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete,
 				cfg.Server+"/api/v1/gitcredentials/"+args[0], nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {

@@ -82,23 +82,30 @@ spec:
         #!/usr/bin/env sh
         set -eu
 
-        _LICENSE_ARGS=""
+        set --
         if [ -n "$LICENSE_SERIAL" ]; then
-          _LICENSE_ARGS="${_LICENSE_ARGS} -serial ${LICENSE_SERIAL}"
+          set -- "$@" -serial "$LICENSE_SERIAL"
         fi
         if [ -n "$LICENSE_USERNAME" ]; then
-          _LICENSE_ARGS="${_LICENSE_ARGS} -username ${LICENSE_USERNAME}"
+          set -- "$@" -username "$LICENSE_USERNAME"
         fi
         if [ -n "$LICENSE_PASSWORD" ]; then
-          _LICENSE_ARGS="${_LICENSE_ARGS} -password ${LICENSE_PASSWORD}"
+          set -- "$@" -password "$LICENSE_PASSWORD"
         fi
+
+        # extra_args はスペース区切りの自由入力として仕様上ワードスプリットを許容するが、
+        # ワークスペース内のファイル名に対するグロブ展開（*, ?, [ ...]）は無効化して
+        # 意図しないファイル名展開によるフラグ注入を防ぐ（set -f）。
+        set -f
+        # shellcheck disable=SC2086
+        set -- "$@" $EXTRA_ARGS
+        set +f
 
         mkdir -p "$(dirname "$OUTPUT_PATH")" 2>/dev/null || true
 
         echo "[unity-build] building ${BUILD_TARGET} via ${BUILD_METHOD} -> ${OUTPUT_PATH}"
 
         _EXIT_CODE=0
-        # shellcheck disable=SC2086
         "$UNITY_PATH" \
           -batchmode \
           -nographics \
@@ -107,8 +114,7 @@ spec:
           -buildTarget "$BUILD_TARGET" \
           -executeMethod "$BUILD_METHOD" \
           -logFile - \
-          $_LICENSE_ARGS \
-          $EXTRA_ARGS \
+          "$@" \
           -customBuildOutputPath "$OUTPUT_PATH" || _EXIT_CODE=$?
 
         if [ "$_EXIT_CODE" -ne 0 ]; then

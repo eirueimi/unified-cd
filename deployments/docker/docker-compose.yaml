@@ -60,8 +60,15 @@ services:
     restart: unless-stopped
 
   # ---- Controller (published image; Web UI baked in) ----
+  # A local build fallback is declared so `docker compose up --build` (or a first
+  # `up` when no image is published yet) produces the alpine-based controller the
+  # healthcheck below expects. Once release-docker.yml publishes a matching
+  # unified-cd-controller image, `docker compose pull` fetches it instead.
   controller:
     image: ghcr.io/eirueimi/unified-cd-controller:${UNIFIED_CD_VERSION:-latest}
+    build:
+      context: ../../
+      dockerfile: docker/controller.Dockerfile
     depends_on:
       postgres:
         condition: service_healthy

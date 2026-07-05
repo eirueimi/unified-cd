@@ -131,6 +131,9 @@ func TestJobsDelete_Success(t *testing.T) {
 	if len(tr.records) != 1 || tr.records[0].path != "/api/v1/jobs/hello" {
 		t.Fatalf("unexpected requests: %+v", tr.records)
 	}
+	if tr.records[0].method != http.MethodDelete {
+		t.Errorf("expected DELETE, got %s", tr.records[0].method)
+	}
 	if !strings.Contains(out.String(), "hello") {
 		t.Errorf("unexpected output: %s", out.String())
 	}

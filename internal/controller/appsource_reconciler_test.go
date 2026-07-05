@@ -269,6 +269,120 @@ func TestReconciler_DuplicateResourceFirstWins(t *testing.T) {
 	assert.Equal(t, store.ResourceRef{Kind: "Job", Name: "dup"}, as.ManagedResources[0])
 }
 
+// TestReconciler_LegacyBareJobNameNotPrunedOnUpgrade is the regression test for
+// bug #25 (data loss). Before commit 51ce318, a job in a subdirectory
+// (jobs/team-a/build.yaml) was stored under the BARE name "build" and recorded in
+// managed_resources as {Job,"build"}. After the upgrade the reconciler computes the
+// desired set with the QUALIFIED name "team-a/build". The prune loop must recognize
+// that the legacy bare {Job,"build"} entry and the new {Job,"team-a/build"} entry are
+// the SAME resource merely re-keyed, and must NOT delete the live job.
+func TestReconciler_LegacyBareJobNameNotPrunedOnUpgrade(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	ctx := context.Background()
+
+	// prune:true is the dangerous case: without the guard the job is deleted+recreated,
+	// breaking run history and any Schedule/WebhookReceiver referencing the bare name.
+	pruneSpec := `{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/","syncPolicy":{"prune":true}}`
+	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(pruneSpec))
+	require.NoError(t, err)
+
+	// Seed the store as an upgraded DB would look after the 003 migration backfill:
+	// the live job is stored under the BARE name, and managed_resources records it bare.
+	// We stamp a recognizable spec so we can prove the row is never delete+recreated.
+	const seededSpec = `{"steps":[{"name":"legacy","run":"legacy-marker"}]}`
+	_, err = pg.UpsertJob(ctx, "build", "unified-cd/v1", []byte(seededSpec))
+	require.NoError(t, err)
+	// A run recorded against the BARE legacy name; it must be repointed to the
+	// qualified name so run history survives the re-key (bug #25 follow-up).
+	legacyRun, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, "")
+	require.NoError(t, err)
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute),
+		[]store.ResourceRef{{Kind: "Job", Name: "build"}}))
+
+	// Git tree now has the SAME file in a subdirectory; the desired name is qualified.
+	job := func(name string) []byte {
+		return []byte("apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: " + name +
+			"\nspec:\n  steps:\n    - name: c\n      run: \"true\"\n")
+	}
+	fetcher := &mockAppSourceFetcher{
+		sha:   "new-sha",
+		files: map[string][]byte{"jobs/team-a/build.yaml": job("build")},
+	}
+
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	// PROPERTY 1 (non-negotiable): the live job must NOT be deleted.
+	// The current git content is now applied under the qualified name "team-a/build".
+	qj, err := pg.GetJob(ctx, "team-a/build")
+	require.NoError(t, err, "qualified job team-a/build must exist after upgrade sync")
+	assert.Equal(t, "team-a/build", qj.Name)
+
+	// PROPERTY 2 (true in-place rename, bug #25 follow-up): the bare orphan row is
+	// now REMOVED. The re-key completes at the store level via RenameJob, which
+	// repoints run history onto the (already-applied) qualified row and then deletes
+	// the bare orphan — so there is exactly ONE row under the qualified name, and no
+	// lingering orphan. The "never delete a live job" guarantee is kept because the
+	// qualified row exists before the bare row is dropped.
+	_, err = pg.GetJob(ctx, "build")
+	require.Error(t, err, "bare orphan must be removed after in-place rename")
+
+	// Run history recorded against the bare name must now reference the qualified name.
+	gotRun, err := pg.GetRun(ctx, legacyRun.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "team-a/build", gotRun.JobName, "run history must be repointed to the qualified name")
+
+	// PROPERTY 3 (idempotent + clean state): managed_resources ends up in the new
+	// qualified form so subsequent syncs no longer see a bare prev entry.
+	src, err := pg.GetAppSource(ctx, "my-src")
+	require.NoError(t, err)
+	require.Len(t, src.ManagedResources, 1)
+	assert.Equal(t, store.ResourceRef{Kind: "Job", Name: "team-a/build"}, src.ManagedResources[0],
+		"managed_resources must be rewritten to the qualified name")
+
+	// A second sync with the same tree must be a no-op prune-wise (idempotent): the
+	// qualified job survives and nothing is deleted.
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "", time.Now().Add(-10*time.Minute), src.ManagedResources))
+	fetcher2 := &mockAppSourceFetcher{
+		sha:   "new-sha",
+		files: map[string][]byte{"jobs/team-a/build.yaml": job("build")},
+	}
+	reconcileAppSources(ctx, pg, fetcher2, nil)
+	_, err = pg.GetJob(ctx, "team-a/build")
+	require.NoError(t, err, "qualified job must survive a second idempotent sync")
+}
+
+// TestReconciler_LegacyBareGuardDoesNotSpareGenuinelyRemovedJob guards the collision
+// heuristic: the legacy leaf-match must ONLY spare a bare prev entry when a qualified
+// seen entry has the SAME leaf. A bare prev entry whose leaf appears NOWHERE in the
+// desired set is a genuine removal and must still be pruned.
+func TestReconciler_LegacyBareGuardDoesNotSpareGenuinelyRemovedJob(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	ctx := context.Background()
+
+	pruneSpec := `{"repoURL":"https://github.com/org/repo","targetRevision":"main","path":"jobs/","syncPolicy":{"prune":true}}`
+	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(pruneSpec))
+	require.NoError(t, err)
+
+	// "gone" is a bare legacy entry whose leaf ("gone") is not present in git anymore.
+	_, err = pg.UpsertJob(ctx, "gone", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"x"}]}`))
+	require.NoError(t, err)
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute),
+		[]store.ResourceRef{{Kind: "Job", Name: "gone"}}))
+
+	job := func(name string) []byte {
+		return []byte("apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: " + name +
+			"\nspec:\n  steps:\n    - name: c\n      run: \"true\"\n")
+	}
+	fetcher := &mockAppSourceFetcher{
+		sha:   "new-sha",
+		files: map[string][]byte{"jobs/team-a/build.yaml": job("build")},
+	}
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	_, err = pg.GetJob(ctx, "gone")
+	require.Error(t, err, "a genuinely-removed legacy job must still be pruned")
+}
+
 func TestReconciler_DirectoryBecomesQualifiedName(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	ctx := context.Background()
@@ -294,4 +408,78 @@ func TestReconciler_DirectoryBecomesQualifiedName(t *testing.T) {
 		require.NoErrorf(t, err, "expected job %q", want)
 		assert.Equal(t, want, j.Name)
 	}
+}
+
+// TestRedactURLCredentials covers bug #33: credentials embedded in a repoURL
+// (https://user:secret@host/...) must never leak into the persisted last_error.
+func TestRedactURLCredentials(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "user and password",
+			in:   `failed to clone https://alice:s3cr3t@github.com/org/repo.git: not found`,
+			want: `failed to clone https://***:***@github.com/org/repo.git: not found`,
+		},
+		{
+			name: "user only",
+			in:   `error at ssh://git@example.com/x while syncing`,
+			want: `error at ssh://***@example.com/x while syncing`,
+		},
+		{
+			name: "no credentials untouched",
+			in:   `failed to resolve commit SHA: https://github.com/org/repo not found`,
+			want: `failed to resolve commit SHA: https://github.com/org/repo not found`,
+		},
+		{
+			name: "token in userinfo",
+			in:   `dial https://ghp_ABC123token@github.com/org/repo: timeout`,
+			want: `dial https://***@github.com/org/repo: timeout`,
+		},
+		{
+			name: "plain message no url",
+			in:   `auth denied`,
+			want: `auth denied`,
+		},
+		{
+			name: "multiple urls",
+			in:   `https://u:p@a.com/x and https://x:y@b.com/z both failed`,
+			want: `https://***:***@a.com/x and https://***:***@b.com/z both failed`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := redactURLCredentials(c.in)
+			assert.Equal(t, c.want, got)
+		})
+	}
+}
+
+// TestReconciler_RedactsCredentialsInLastError proves the redaction is wired into the
+// reconciler error path: a repoURL with embedded credentials that fails to resolve
+// must not leak the secret into the stored last_error.
+func TestReconciler_RedactsCredentialsInLastError(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	ctx := context.Background()
+
+	// Note: parse-side validation is intentionally left permissive (see #33); the spec
+	// is stored via UpsertAppSource which does not re-validate, so the credentialed URL
+	// reaches the reconciler and its error string.
+	spec := `{"repoURL":"https://alice:s3cr3t@github.com/org/repo","targetRevision":"main","path":"jobs/"}`
+	_, err := pg.UpsertAppSource(ctx, "cred-src", []byte(spec))
+	require.NoError(t, err)
+
+	fetcher := &mockAppSourceFetcher{
+		resolveErr: fmt.Errorf("clone https://alice:s3cr3t@github.com/org/repo failed"),
+	}
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	src, err := pg.GetAppSource(ctx, "cred-src")
+	require.NoError(t, err)
+	assert.Equal(t, "Failed", src.SyncStatus)
+	assert.NotContains(t, src.LastError, "s3cr3t", "password must be redacted from last_error")
+	assert.NotContains(t, src.LastError, "alice", "username must be redacted from last_error")
+	assert.Contains(t, src.LastError, "***", "redaction marker should be present")
 }

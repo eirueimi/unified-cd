@@ -28,9 +28,12 @@ func TestStartHeartbeat_TicksUntilCtxDone(t *testing.T) {
 	if got < 3 {
 		t.Fatalf("expected several heartbeats, got %d", got)
 	}
-	// after cancel, hits should stop growing
-	time.Sleep(60 * time.Millisecond)
-	if atomic.LoadInt32(&hits) != got && atomic.LoadInt32(&hits) < got {
-		t.Fatalf("heartbeats continued after cancel")
+	// After cancel, heartbeats must stop. Record the count immediately, wait
+	// several intervals, and assert the count did NOT increase. (hits only ever
+	// increments, so a strict equality check is a real assertion here.)
+	afterCancel := atomic.LoadInt32(&hits)
+	time.Sleep(100 * time.Millisecond) // several 20ms intervals
+	if grown := atomic.LoadInt32(&hits); grown != afterCancel {
+		t.Fatalf("heartbeats continued after cancel: %d -> %d", afterCancel, grown)
 	}
 }

@@ -17,8 +17,9 @@ import (
 // captureTransport records requests and returns dummy responses without making real network connections.
 type captureTransport struct {
 	records []struct {
-		path string
-		body []byte
+		method string
+		path   string
+		body   []byte
 	}
 	responseFor func(path string) (int, []byte)
 }
@@ -29,9 +30,10 @@ func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		b, _ = io.ReadAll(req.Body)
 	}
 	t.records = append(t.records, struct {
-		path string
-		body []byte
-	}{path: req.URL.RequestURI(), body: b})
+		method string
+		path   string
+		body   []byte
+	}{method: req.Method, path: req.URL.RequestURI(), body: b})
 
 	status, respBody := t.responseFor(req.URL.RequestURI())
 	return &http.Response{

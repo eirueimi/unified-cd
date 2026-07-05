@@ -31,8 +31,25 @@ func TestAppSourceSync(t *testing.T) {
 	if len(tr.records) != 1 || tr.records[0].path != "/api/v1/appsources/my-pipelines/sync" {
 		t.Fatalf("unexpected requests: %+v", tr.records)
 	}
+	if tr.records[0].method != http.MethodPost {
+		t.Errorf("expected POST, got %s", tr.records[0].method)
+	}
 	if !strings.Contains(out.String(), "my-pipelines") {
 		t.Errorf("unexpected output: %s", out.String())
+	}
+}
+
+func TestAppSourceSync_ServerErrorPropagatesMessage(t *testing.T) {
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) { return http.StatusInternalServerError, []byte("sync boom") },
+	}
+	cmd, _ := newTestAppSourceCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"sync", "my-pipelines"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "sync boom") {
+		t.Fatalf("expected error containing 'sync boom', got: %v", err)
+	}
+	if len(tr.records) != 1 || tr.records[0].method != http.MethodPost {
+		t.Fatalf("unexpected requests: %+v", tr.records)
 	}
 }
 
@@ -89,6 +106,9 @@ func TestAppSourceDelete(t *testing.T) {
 	}
 	if len(tr.records) != 1 || tr.records[0].path != "/api/v1/appsources/my-pipelines" {
 		t.Fatalf("unexpected requests: %+v", tr.records)
+	}
+	if tr.records[0].method != http.MethodDelete {
+		t.Errorf("expected DELETE, got %s", tr.records[0].method)
 	}
 	if !strings.Contains(out.String(), "my-pipelines") {
 		t.Errorf("unexpected output: %s", out.String())

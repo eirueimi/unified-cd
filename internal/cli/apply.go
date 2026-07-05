@@ -120,8 +120,11 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 		bodyBytes, _ = json.Marshal(api.ApplyJobRequest{YAML: string(b)})
 	}
 
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := httpClient.Do(req)

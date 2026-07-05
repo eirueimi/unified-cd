@@ -37,6 +37,39 @@ func TestResolveParams_OmittedWithDefault_Filled(t *testing.T) {
 	assert.Equal(t, "latest", got["tag"])
 }
 
+func TestResolveParams_ExplicitEmptyValue_FallsBackToDefault(t *testing.T) {
+	// An explicit `working_dir: ""` must not bypass the declared default; it should
+	// fall back to the default just like an omitted param.
+	inputs := []dsl.Input{
+		{Name: "working_dir", Type: "string", Default: "/src"},
+	}
+	got, err := resolveParams(inputs, map[string]string{"working_dir": ""})
+	require.NoError(t, err)
+	assert.Equal(t, "/src", got["working_dir"])
+}
+
+func TestResolveParams_ExplicitEmptyValue_NoDefault_KeptEmpty(t *testing.T) {
+	// With no declared default there is nothing to fall back to, so an explicit
+	// empty value is preserved as-is (and does not error for a non-required param).
+	inputs := []dsl.Input{
+		{Name: "note", Type: "string"},
+	}
+	got, err := resolveParams(inputs, map[string]string{"note": ""})
+	require.NoError(t, err)
+	assert.Equal(t, "", got["note"])
+}
+
+func TestResolveParams_ExplicitEmptyValue_RequiredNoDefault_Errors(t *testing.T) {
+	// An explicit empty value for a required param with no default is treated as
+	// unset, so it errors like an omitted required param.
+	inputs := []dsl.Input{
+		{Name: "image", Type: "string", Required: true},
+	}
+	_, err := resolveParams(inputs, map[string]string{"image": ""})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "image")
+}
+
 func TestResolveParams_ProvidedValue_Unchanged(t *testing.T) {
 	inputs := []dsl.Input{
 		{Name: "tag", Type: "string", Default: "latest"},

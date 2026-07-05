@@ -1,7 +1,9 @@
 package dsl
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -76,6 +78,58 @@ func TestEvalMatrix_CapExceeded(t *testing.T) {
 	}}
 	_, err := EvalMatrix(def, TemplateData{}, 8)
 	require.ErrorContains(t, err, "exceed")
+}
+
+func TestEvalMatrix_CapExceeded_BailsBeforeFullMaterialization(t *testing.T) {
+	// 3 dimensions of 100 items each = 1,000,000 combinations. If EvalMatrix
+	// materialized the full cartesian product before checking the cap, this
+	// test would allocate ~1M MatrixCombo values (each with its own map) just
+	// to then discard them. maxCombos is tiny (10) so a correct implementation
+	// must detect the overflow while still expanding dimensions, not after.
+	hundred := make([]string, 100)
+	for i := range hundred {
+		hundred[i] = fmt.Sprintf("v%d", i)
+	}
+	def := MatrixDef{Dimensions: []MatrixDimension{
+		{Name: "a", Source: lit(hundred...)},
+		{Name: "b", Source: lit(hundred...)},
+		{Name: "c", Source: lit(hundred...)},
+	}}
+
+	start := time.Now()
+	combos, err := EvalMatrix(def, TemplateData{}, 10)
+	elapsed := time.Since(start)
+
+	require.Nil(t, combos)
+	require.ErrorContains(t, err, "exceed")
+	require.ErrorContains(t, err, "10")
+	// A naive implementation that first builds the full 1,000,000-element
+	// product before checking the cap is dramatically slower and far more
+	// memory-hungry than one that bails during expansion. This threshold is
+	// generous but still catches full materialization.
+	require.Less(t, elapsed, 500*time.Millisecond, "EvalMatrix took too long; looks like it materialized the full cartesian product before enforcing the cap")
+}
+
+func TestEvalMatrix_WithinCap_MatchesPreviousBehavior(t *testing.T) {
+	def := MatrixDef{
+		Dimensions: []MatrixDimension{
+			{Name: "os", Source: lit("linux", "windows")},
+			{Name: "arch", Source: lit("amd64", "arm64")},
+		},
+		Exclude: []map[string]string{{"os": "windows", "arch": "arm64"}},
+	}
+	combos, err := EvalMatrix(def, TemplateData{}, 8)
+	require.NoError(t, err)
+	require.Len(t, combos, 3)
+	keys := make([]string, len(combos))
+	for i, c := range combos {
+		keys[i] = c.Key
+	}
+	require.Equal(t, []string{"linux/amd64", "linux/arm64", "windows/amd64"}, keys)
+	require.Equal(t, map[string]string{"os": "linux", "arch": "amd64"}, combos[0].Values)
+	for _, c := range combos {
+		require.NotEqual(t, "windows/arm64", c.Key)
+	}
 }
 
 func TestEvalMatrix_DynamicSource(t *testing.T) {

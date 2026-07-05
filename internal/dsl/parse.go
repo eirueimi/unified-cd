@@ -16,6 +16,33 @@ const SupportedAPIVersion = "unified-cd/v1"
 var orLockNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var matrixDimNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// validateArtifactName rejects artifact names that could be used for path
+// traversal (or otherwise corrupt the object-store key) once they reach
+// internal/artifact's artifactKey. It intentionally rejects "/", "\\", "..",
+// leading/trailing whitespace, and control characters rather than trying to
+// allow-list every safe character, so it stays permissive for ordinary names
+// while closing the traversal vector reported in #26.
+func validateArtifactName(name string) error {
+	if name == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("must not have leading or trailing whitespace")
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("must not contain \"..\"")
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("must not contain \"/\" or \"\\\"")
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("must not contain control characters")
+		}
+	}
+	return nil
+}
+
 func Parse(r io.Reader) (*Job, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -332,6 +359,9 @@ func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *C
 		if upload.Name == "" {
 			return fmt.Errorf("%s (%s): uploadArtifact.name is required", path, name)
 		}
+		if err := validateArtifactName(upload.Name); err != nil {
+			return fmt.Errorf("%s (%s): uploadArtifact.name %q is invalid: %w", path, name, upload.Name, err)
+		}
 		if upload.Path == "" {
 			return fmt.Errorf("%s (%s): uploadArtifact.path is required", path, name)
 		}
@@ -339,6 +369,9 @@ func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *C
 	if download != nil {
 		if download.Name == "" {
 			return fmt.Errorf("%s (%s): downloadArtifact.name is required", path, name)
+		}
+		if err := validateArtifactName(download.Name); err != nil {
+			return fmt.Errorf("%s (%s): downloadArtifact.name %q is invalid: %w", path, name, download.Name, err)
 		}
 	}
 	if foreach != nil {

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
@@ -18,6 +20,30 @@ import (
 
 // appSourceReconcilerLockKey is the advisory lock key used by the AppSource Reconciler.
 const appSourceReconcilerLockKey = int64(0x61707073)
+
+// urlUserinfoRe matches the userinfo portion of a URL embedded in a larger string:
+// scheme://[user[:pass]@]host. We only replace the credential (userinfo) part so the
+// rest of the message (scheme, host, path, surrounding text) is preserved for
+// debugging. The host is required to be non-"@" so we don't over-match on stray "@".
+var urlUserinfoRe = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)([^/@\s]+)@`)
+
+// redactURLCredentials strips userinfo (user and optional password) from any URL
+// substrings in s, replacing it with "***" (or "***:***" when a password is present).
+// This prevents credentials embedded in spec.repoURL (e.g.
+// https://user:token@host/repo) from leaking into persisted last_error strings.
+func redactURLCredentials(s string) string {
+	return urlUserinfoRe.ReplaceAllStringFunc(s, func(match string) string {
+		sub := urlUserinfoRe.FindStringSubmatch(match)
+		if sub == nil {
+			return match
+		}
+		scheme, userinfo := sub[1], sub[2]
+		if strings.Contains(userinfo, ":") {
+			return scheme + "***:***@"
+		}
+		return scheme + "***@"
+	})
+}
 
 // AppSourceFetcher is the interface that abstracts Git operations used by the Reconciler.
 type AppSourceFetcher interface {
@@ -74,8 +100,11 @@ func reconcileAppSources(ctx context.Context, st store.Store, fetcher AppSourceF
 			continue
 		}
 		if err := syncAppSource(ctx, st, fetcher, km, src, spec); err != nil {
-			slog.Warn("appsource reconciler: sync failed", "name", src.Name, "error", err)
-			if serr := st.SetAppSourceSyncStatus(ctx, src.Name, "Failed", err.Error()); serr != nil {
+			// Redact any credentials embedded in a repoURL before the error string is
+			// logged or persisted (bug #33), so tokens/passwords never leak.
+			redacted := redactURLCredentials(err.Error())
+			slog.Warn("appsource reconciler: sync failed", "name", src.Name, "error", redacted)
+			if serr := st.SetAppSourceSyncStatus(ctx, src.Name, "Failed", redacted); serr != nil {
 				slog.Warn("appsource reconciler: failed to record sync status", "name", src.Name, "error", serr)
 			}
 		}
@@ -154,9 +183,65 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 	}
 
 	// Prune resources managed previously but absent now.
+	//
+	// Legacy re-keying guard (bug #25): before commit 51ce318, a Job in a
+	// subdirectory was stored under its BARE metadata.name and recorded in
+	// managed_resources as {Job,"build"}. It is now keyed by the QUALIFIED name
+	// {Job,"team-a/build"}. On the first sync after upgrade the prev entry is bare
+	// but the seen entry is qualified, so an exact-set comparison would treat the
+	// live job as removed and delete it (data loss). We recognize the re-key and
+	// skip the delete, and rewrite managed_resources to the qualified form so
+	// subsequent syncs are clean.
+	//
+	// Collision handling: we prefer an EXACT match (seen[prev]) first, so a bare
+	// prev that still corresponds to a truly bare seen entry (flat layout) is
+	// handled normally. Only when there is no exact match do we fall back to a
+	// leaf match, and only for bare Job names. If two directories each contain a
+	// "build" (seen = {team-a/build, team-b/build}), a single legacy bare
+	// {Job,"build"} maps to whichever qualified entry shares the leaf — either is a
+	// safe non-deletion because the live row was re-keyed into exactly one of them
+	// by applyResource; we never delete, and we record the matched qualified name.
+	legacyLeaf := map[string]string{} // bare Job leaf -> a qualified seen name sharing that leaf
+	for ref := range seen {
+		if ref.Kind != "Job" {
+			continue
+		}
+		if _, leaf := dsl.SplitQualifiedName(ref.Name); leaf != ref.Name {
+			// ref.Name is qualified (contains a "/"); index its leaf.
+			if _, exists := legacyLeaf[leaf]; !exists {
+				legacyLeaf[leaf] = ref.Name
+			}
+		}
+	}
+
 	for _, prev := range src.ManagedResources {
 		if seen[prev] {
 			continue
+		}
+		// Legacy-upgrade fallback: a bare Job name re-keyed to a qualified one.
+		if prev.Kind == "Job" && !strings.Contains(prev.Name, "/") {
+			if qualified, ok := legacyLeaf[prev.Name]; ok {
+				// current already contains {Job, qualified} from applyResource, so
+				// managed_resources will be rewritten to the qualified form. Complete
+				// the in-place rename at the store level (bug #25 follow-up): applyResource
+				// has ALREADY UpsertJob'd the qualified row before this prune loop runs, so
+				// the bare row is now an orphan. RenameJob repoints run history from the
+				// bare name to the qualified name and deletes the bare orphan, leaving
+				// exactly one row under the qualified name with history intact. It never
+				// deletes a live job: it only removes the bare row after run history has
+				// been moved onto the (already-present) qualified row.
+				if err := st.RenameJob(ctx, prev.Name, qualified); err != nil {
+					// Non-fatal: the qualified row already exists and is managed, so the
+					// job is not lost. Worst case the bare orphan lingers and we retry
+					// next sync. Log and keep the historic no-delete guarantee.
+					slog.Warn("appsource reconciler: legacy job re-key rename failed (bare orphan left for retry)",
+						"appsource", src.Name, "old", prev.Name, "new", qualified, "error", err)
+				} else {
+					slog.Info("appsource reconciler: legacy job name re-keyed in place (orphan removed, history repointed)",
+						"appsource", src.Name, "old", prev.Name, "new", qualified)
+				}
+				continue
+			}
 		}
 		if spec.SyncPolicy.Prune {
 			if err := deleteResource(ctx, st, prev.Kind, prev.Name); err != nil {

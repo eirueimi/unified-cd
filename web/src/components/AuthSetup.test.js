@@ -3,6 +3,11 @@ import { render, screen, fireEvent } from '@testing-library/svelte';
 import { browserSSOEnabled, currentUser, token, serverURL } from '../lib/api.js';
 import AuthSetup from './AuthSetup.svelte';
 
+// AuthSetup only ever renders the token-entry / SSO card — it shows nothing
+// once a user is logged in (`{#if !$currentUser}` guards the whole markup).
+// The logged-in header (email + "Log out") lives in App.svelte instead; see
+// App.test.js for those assertions.
+
 beforeEach(() => {
   browserSSOEnabled.set(false);
   currentUser.set(null);
@@ -10,29 +15,24 @@ beforeEach(() => {
   serverURL.set('http://localhost:8080');
 });
 
-describe('AuthSetup — SSO ボタン', () => {
-  it('browserSSOEnabled が false のとき SSO ボタンが表示されない', () => {
+describe('AuthSetup — SSO button', () => {
+  it('does not show the SSO button when browserSSOEnabled is false', () => {
     browserSSOEnabled.set(false);
     render(AuthSetup);
 
-    expect(screen.queryByText(/SSOでログイン/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/SSO Login/)).not.toBeInTheDocument();
   });
 
-  it('browserSSOEnabled が true のとき SSO ボタンが表示される', () => {
+  it('shows the SSO button when browserSSOEnabled is true', () => {
     browserSSOEnabled.set(true);
     render(AuthSetup);
 
-    expect(screen.getByText('🔒 SSOでログイン')).toBeInTheDocument();
+    expect(screen.getByText('SSO Login')).toBeInTheDocument();
   });
 
-  it('SSO ボタンをクリックすると /api/v1/auth/oidc-login へリダイレクトする', () => {
+  it('clicking the SSO button redirects to /api/v1/auth/oidc-login', () => {
     browserSSOEnabled.set(true);
-    const assignSpy = vi.spyOn(window, 'location', 'get').mockReturnValue({
-      ...window.location,
-      assign: vi.fn(),
-      href: '',
-    });
-    // window.location.href への代入をキャプチャ
+    // Capture assignments to window.location.href.
     let redirectTarget = '';
     Object.defineProperty(window, 'location', {
       value: { ...window.location, get href() { return redirectTarget; }, set href(v) { redirectTarget = v; } },
@@ -41,39 +41,25 @@ describe('AuthSetup — SSO ボタン', () => {
     });
 
     render(AuthSetup);
-    fireEvent.click(screen.getByText('🔒 SSOでログイン'));
+    fireEvent.click(screen.getByText('SSO Login'));
 
     expect(redirectTarget).toBe('http://localhost:8080/api/v1/auth/oidc-login');
-    assignSpy.mockRestore();
   });
 });
 
-describe('AuthSetup — ログイン済み表示', () => {
-  it('currentUser が設定されているとき SSO ボタンが表示されない', () => {
+describe('AuthSetup — hidden once logged in', () => {
+  it('renders nothing when currentUser is set, even if SSO is enabled', () => {
     currentUser.set({ email: 'user@example.com' });
     browserSSOEnabled.set(true);
-    render(AuthSetup);
+    const { container } = render(AuthSetup);
 
-    expect(screen.queryByText(/SSOでログイン/)).not.toBeInTheDocument();
-  });
-
-  it('currentUser が設定されているときメールアドレスが表示される', () => {
-    currentUser.set({ email: 'user@example.com' });
-    render(AuthSetup);
-
-    expect(screen.getByText(/user@example\.com/)).toBeInTheDocument();
-  });
-
-  it('currentUser が設定されているときログアウトボタンが表示される', () => {
-    currentUser.set({ email: 'user@example.com' });
-    render(AuthSetup);
-
-    expect(screen.getByText('ログアウト')).toBeInTheDocument();
+    expect(screen.queryByText(/SSO Login/)).not.toBeInTheDocument();
+    expect(container.textContent.trim()).toBe('');
   });
 });
 
-describe('AuthSetup — トークン入力フォーム', () => {
-  it('未ログイン時はトークン入力フォームが表示される', () => {
+describe('AuthSetup — token entry form', () => {
+  it('shows the token entry form when logged out', () => {
     render(AuthSetup);
 
     expect(screen.getByPlaceholderText('Bearer token or PAT')).toBeInTheDocument();
@@ -81,11 +67,11 @@ describe('AuthSetup — トークン入力フォーム', () => {
     expect(screen.getByText('Save')).toBeInTheDocument();
   });
 
-  it('browserSSOEnabled が true のとき SSO ボタンとトークン入力の両方が表示される', () => {
+  it('shows both the SSO button and the token entry form when browserSSOEnabled is true', () => {
     browserSSOEnabled.set(true);
     render(AuthSetup);
 
-    expect(screen.getByText('🔒 SSOでログイン')).toBeInTheDocument();
+    expect(screen.getByText('SSO Login')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Bearer token or PAT')).toBeInTheDocument();
   });
 });

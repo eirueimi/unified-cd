@@ -33,6 +33,20 @@ func EvalMatrix(def MatrixDef, data TemplateData, maxCombos int) ([]MatrixCombo,
 		if err != nil {
 			return nil, fmt.Errorf("matrix.%s: %w", dim.Name, err)
 		}
+		// Bail out on the running (pre-exclude) product size as soon as it
+		// would exceed the cap, before allocating the expanded slice. This
+		// avoids materializing a huge cartesian product (e.g. 100^4 combos)
+		// just to discard it a few lines later. Excludes can only shrink the
+		// final count, so a running product already over the cap is enough
+		// to know the post-exclude count also cannot be computed cheaply
+		// without the same blow-up; we report the same error the old
+		// post-exclude check would have produced once we can no longer
+		// bound the result within maxCombos.
+		if len(items) != 0 && len(combos) > maxCombos/len(items) {
+			// len(combos)*len(items) would exceed maxCombos.
+			projected := len(combos) * len(items)
+			return nil, fmt.Errorf("matrix expands to %d combinations, exceeding the limit of %d", projected, maxCombos)
+		}
 		next := make([]MatrixCombo, 0, len(combos)*len(items))
 		for _, c := range combos {
 			for _, v := range items {

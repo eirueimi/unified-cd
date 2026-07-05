@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/klauspost/compress/zstd"
@@ -74,22 +75,58 @@ func WriteTarZstd(w io.Writer, path string) error {
 	return nil
 }
 
-func artifactKey(runID, name string) string {
-	return fmt.Sprintf("artifacts/%s/%s.tar.gz", runID, name)
+// isSafeArtifactPathSegment reports whether s is safe to use as a single path
+// segment in an object-store key: non-empty, containing no path separators
+// and no "..", so it can never introduce or traverse into another directory
+// component of the key.
+func isSafeArtifactPathSegment(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	if strings.ContainsAny(s, "/\\") {
+		return false
+	}
+	return true
+}
+
+// artifactKey builds the object-store key for an artifact. It is defensive
+// regardless of upstream validation (internal/dsl already rejects unsafe
+// uploadArtifact/downloadArtifact names at parse time, but this is the last
+// line of defense against path traversal — see #26): runID and name are
+// required to be plain, single path segments with no "/", "\\", or "..". A
+// name/runID that satisfies that constraint produces the exact same key as
+// before this fix, so already-stored artifacts with plain names are
+// unaffected.
+func artifactKey(runID, name string) (string, error) {
+	if !isSafeArtifactPathSegment(runID) {
+		return "", fmt.Errorf("invalid runID %q", runID)
+	}
+	if !isSafeArtifactPathSegment(name) {
+		return "", fmt.Errorf("invalid artifact name %q", name)
+	}
+	return fmt.Sprintf("artifacts/%s/%s.tar.gz", runID, name), nil
 }
 
 // Upload tars+zstds dir and stores it at artifacts/{runID}/{name}.tar.gz.
 func Upload(ctx context.Context, store objectstore.ObjectStore, runID, name, dir string) error {
+	key, err := artifactKey(runID, name)
+	if err != nil {
+		return fmt.Errorf("upload artifact: %w", err)
+	}
 	var buf bytes.Buffer
 	if err := WriteTarZstd(&buf, dir); err != nil {
 		return err
 	}
-	return store.Put(ctx, artifactKey(runID, name), bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	return store.Put(ctx, key, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
 }
 
 // Download fetches artifacts/{runID}/{name}.tar.gz and extracts it into dest.
 func Download(ctx context.Context, store objectstore.ObjectStore, runID, name, dest string) error {
-	rc, err := store.Get(ctx, artifactKey(runID, name))
+	key, err := artifactKey(runID, name)
+	if err != nil {
+		return fmt.Errorf("download artifact: %w", err)
+	}
+	rc, err := store.Get(ctx, key)
 	if err != nil {
 		return fmt.Errorf("get artifact: %w", err)
 	}

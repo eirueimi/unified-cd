@@ -79,6 +79,21 @@ func TestAPI_GetRun(t *testing.T) {
 	assert.Equal(t, r.ID, got.ID)
 }
 
+// TestAPI_GetRun_NotFound verifies FIX #28: a genuinely-missing run still yields
+// 404 (via the ErrRunNotFound sentinel). Non-ErrNoRows errors from GetRun now map
+// to 500 instead of 404, so a transient DB fault no longer masquerades as "run
+// gone" to clients like the k8s pod-GC. The 500 path is documented in the store
+// test (it requires injecting a live DB fault to exercise) rather than asserted
+// here, but the discrimination lives in handleGetRun (errors.Is check).
+func TestAPI_GetRun_NotFound(t *testing.T) {
+	s, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/00000000-0000-0000-0000-000000000000", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+}
+
 func TestAPI_GetRunOutputs_Empty(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
@@ -235,11 +250,37 @@ func TestAPI_DeleteRun_RejectsNonTerminalState(t *testing.T) {
 
 func TestAPI_DeleteRun_NotFound(t *testing.T) {
 	s, _ := newTestServer(t)
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/runs/does-not-exist", nil)
+	// A well-formed but absent UUID: GetRun returns ErrNoRows -> ErrRunNotFound -> 404.
+	// (A malformed id now surfaces the DB syntax error as 500 rather than a false 404,
+	// per FIX #28 — only genuine not-found is 404.)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/runs/00000000-0000-0000-0000-000000000000", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestAPI_CancelRun_CascadesToChildRuns(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	grandchild, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	// Link parent→child→grandchild via call: step reports (child_run_id).
+	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
+	require.NoError(t, pg.UpsertStepReport(t.Context(), child.ID, 0, 0, "call-grandchild", "", "Running", nil, nil, nil, grandchild.ID, "j"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+parent.ID+"/cancel", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	for _, id := range []string{parent.ID, child.ID, grandchild.ID} {
+		got, err := pg.GetRun(t.Context(), id)
+		require.NoError(t, err)
+		assert.Equal(t, api.RunCancelled, got.Status, "run %s should be cancelled", id)
+	}
 }
 
 func TestTriggerRun_RecordsPrincipal(t *testing.T) {

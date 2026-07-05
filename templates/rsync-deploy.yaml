@@ -61,16 +61,30 @@ spec:
 
         printf '%s\n' "$SSH_KEY" > "$_SSH_KEY_FILE"
 
-        _DELETE_FLAG=""
+        # PORT は ssh -p / ProxyCommand 文字列に直接埋め込まれるため、数字以外の
+        # 文字が含まれる場合はコマンドインジェクションの恐れがあり拒否する
+        case "$PORT" in
+          *[!0-9]*|'')
+            echo "[rsync-deploy] invalid port: ${PORT}" >&2
+            exit 1
+            ;;
+        esac
+
+        set --
         if [ "$DELETE" = "true" ]; then
-          _DELETE_FLAG="--delete"
+          set -- "$@" --delete
         fi
 
+        # extra_args はスペース区切りの自由入力のためワードスプリットは仕様通り行うが、
+        # ワークスペース内のファイル名に対する意図しないグロブ展開は無効化する（set -f）
+        set -f
         # shellcheck disable=SC2086
+        set -- "$@" $EXTRA_ARGS
+        set +f
+
         rsync -az \
           -e "ssh -i ${_SSH_KEY_FILE} -p ${PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
-          $_DELETE_FLAG \
-          $EXTRA_ARGS \
+          "$@" \
           "$SRC" "$DEST"
 
         echo "[rsync-deploy] synced ${SRC} -> ${DEST}"

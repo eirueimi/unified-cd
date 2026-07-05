@@ -62,7 +62,10 @@ func newLogsCmd(resolve func() (Config, error)) *cobra.Command {
 // fetchLogs fetches log lines after the specified sequence number and the run status from the master server.
 func fetchLogs(ctx context.Context, cfg Config, runID string, after int64) ([]api.LogLine, api.RunStatus, error) {
 	url := cfg.Server + "/api/v1/runs/" + runID + "/logs?after=" + strconv.FormatInt(after, 10)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -78,7 +81,10 @@ func fetchLogs(ctx context.Context, cfg Config, runID string, after int64) ([]ap
 		return nil, "", err
 	}
 
-	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Server+"/api/v1/runs/"+runID, nil)
+	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Server+"/api/v1/runs/"+runID, nil)
+	if err != nil {
+		return lines, "", nil
+	}
 	req2.Header.Set("Authorization", "Bearer "+cfg.Token)
 	resp2, err := http.DefaultClient.Do(req2)
 	if err != nil {

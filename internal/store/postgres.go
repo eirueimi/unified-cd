@@ -167,6 +167,31 @@ func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[str
 	return &r, nil
 }
 
+// ListChildRunIDs returns the IDs of runs directly spawned by parentRunID via
+// call: steps, read from the step reports that recorded each child_run_id.
+func (p *Postgres) ListChildRunIDs(ctx context.Context, parentRunID string) ([]string, error) {
+	rows, err := p.pool.Query(ctx, `SELECT child_run_id::text FROM step_reports WHERE run_id = $1 AND child_run_id IS NOT NULL`, parentRunID)
+	if err != nil {
+		return nil, fmt.Errorf("list child runs: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan child run id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ErrRunNotFound is returned by GetRun when no run exists with the requested ID.
+// It is distinct from transient database errors (pool exhaustion, timeouts,
+// dropped connections) so callers can map a genuine "not found" to HTTP 404
+// while surfacing infrastructure failures as 5xx. Match it with errors.Is.
+var ErrRunNotFound = errors.New("run not found")
+
 func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
 	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by FROM runs WHERE id = $1`
 	var r api.Run
@@ -174,6 +199,9 @@ func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
 	var status string
 	err := p.pool.QueryRow(ctx, q, id).
 		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, id)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get run: %w", err)
 	}
@@ -525,38 +553,58 @@ func (p *Postgres) MarkRunRunning(ctx context.Context, runID string) error {
 	return err
 }
 
+// MarkRunFinished transitions a run to a terminal status via a CAS that refuses to
+// overwrite an already-terminal run, and releases the run's mutex/semaphore locks.
+// It is idempotent: a no-op (the run was already terminal) returns nil, matching the
+// expectations of the schedulers/reapers that call it. Callers that need to know
+// whether the run actually transitioned should use FinishRun instead.
 func (p *Postgres) MarkRunFinished(ctx context.Context, runID string, status api.RunStatus) error {
+	_, err := p.FinishRun(ctx, runID, status)
+	return err
+}
+
+// FinishRun is like MarkRunFinished but reports whether the run actually
+// transitioned to the terminal status. updated is false when the CAS matched no
+// rows because the run was already terminal (e.g. the reaper already Failed it),
+// so the caller can signal that the finish report was a late/no-op rather than a
+// fresh success. The CAS guard (WHERE status NOT IN terminal set) is unchanged.
+func (p *Postgres) FinishRun(ctx context.Context, runID string, status api.RunStatus) (updated bool, err error) {
 	switch status {
 	case api.RunSucceeded, api.RunFailed, api.RunCancelled:
 	default:
-		return fmt.Errorf("invalid terminal status %q", status)
+		return false, fmt.Errorf("invalid terminal status %q", status)
 	}
 
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`UPDATE runs SET status = $1, updated_at = NOW()
 WHERE id = $2 AND status NOT IN ('Succeeded', 'Failed', 'Cancelled')`,
-		string(status), runID); err != nil {
-		return err
+		string(status), runID)
+	if err != nil {
+		return false, err
 	}
+	updated = tag.RowsAffected() > 0
 	// release mutex
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM mutex_holders WHERE run_id = $1`, runID); err != nil {
-		return err
+		return false, err
 	}
 	// release named lock slot
 	if _, err := tx.Exec(ctx,
 		`UPDATE named_lock_slots SET run_id = NULL, acquired_at = NULL WHERE run_id = $1`,
 		runID); err != nil {
-		return err
+		return false, err
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return updated, nil
 }
 
 // DeleteRun deletes a Run. step_reports/logs/run_outputs etc. are cascade-deleted
@@ -1591,6 +1639,82 @@ func (p *Postgres) DeleteJob(ctx context.Context, name string) error {
 	return err
 }
 
+// RenameJob re-keys a job from oldName to newName and repoints its run history,
+// in a single transaction. It is used by the AppSource reconciler's legacy
+// re-keying guard (bug #25) to turn a bare-named legacy Job (e.g. "build") into
+// its qualified form (e.g. "team-a/build") without losing run history or leaving
+// an orphan row.
+//
+// Two cases are handled, driven by whether newName already exists:
+//
+//   - newName does NOT exist yet: copy the row to newName, repoint run history,
+//     then drop the old row. The FK runs.job_name -> jobs.name has ON DELETE
+//     CASCADE but no ON UPDATE CASCADE and is not deferrable, so a plain UPDATE of
+//     jobs.name would transiently violate the FK for existing runs. We instead
+//     create the newName parent first, move the runs onto it, then remove the old
+//     parent. See the ordering below.
+//
+//   - newName ALREADY exists (the common reconciler path: applyResource has already
+//     UpsertJob'd the qualified row before prune runs): the oldName row is an
+//     orphan. We repoint run history to newName and DELETE the orphan, never
+//     clobbering the existing qualified row's spec.
+//
+// Ordering (FK-safe, no ON UPDATE CASCADE):
+//  1. Ensure the newName row exists. If it does not, copy oldName's row to newName.
+//  2. Repoint runs.job_name from oldName -> newName (now a valid FK target).
+//  3. Delete the oldName row (safe: no runs reference it anymore).
+//
+// Idempotent: a missing oldName is a no-op. Never leaves zero rows for a job that
+// should exist; never touches unrelated jobs.
+func (p *Postgres) RenameJob(ctx context.Context, oldName, newName string) error {
+	if oldName == newName {
+		return nil
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("rename job: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Ensure the newName row exists. INSERT ... SELECT from the old row copies
+	// its api_version/spec so a plain rename preserves the job definition. If
+	// newName already exists (reconciler path), ON CONFLICT DO NOTHING leaves the
+	// already-applied qualified row untouched. If oldName does not exist and
+	// newName does not exist, this inserts nothing (SELECT is empty) — handled by
+	// the no-op guard below.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO jobs(name, api_version, spec, updated_at)
+		SELECT $2, api_version, spec, NOW() FROM jobs WHERE name = $1
+		ON CONFLICT (name) DO NOTHING`, oldName, newName); err != nil {
+		return fmt.Errorf("rename job: ensure new row: %w", err)
+	}
+
+	// If neither row exists we cannot proceed meaningfully; treat as no-op.
+	var newExists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE name = $1)`, newName).
+		Scan(&newExists); err != nil {
+		return fmt.Errorf("rename job: check new row: %w", err)
+	}
+	if !newExists {
+		// oldName didn't exist either — nothing to do.
+		return tx.Commit(ctx)
+	}
+
+	// 2. Repoint run history now that newName is a valid FK target.
+	if _, err := tx.Exec(ctx,
+		`UPDATE runs SET job_name = $2 WHERE job_name = $1`, oldName, newName); err != nil {
+		return fmt.Errorf("rename job: repoint runs: %w", err)
+	}
+
+	// 3. Remove the old (bare) row. No runs reference it anymore, so the ON DELETE
+	// CASCADE FK does not cascade any history away.
+	if _, err := tx.Exec(ctx, `DELETE FROM jobs WHERE name = $1`, oldName); err != nil {
+		return fmt.Errorf("rename job: delete old row: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
 // UpsertAppSource creates or updates an AppSource. On update, last_commit is
 // reset to "" (forcing a fresh sync) only when the spec actually changed; an
 // upsert with an identical spec preserves last_commit. This avoids a nested
@@ -1706,6 +1830,43 @@ func (p *Postgres) SetAppSourceSyncStatus(ctx context.Context, name, status, las
 		`UPDATE app_sources SET sync_status = $1, last_error = $2, updated_at = NOW() WHERE name = $3`,
 		status, lastError, name)
 	return err
+}
+
+// stuckSyncingResetError is the last_error recorded on an AppSource that the
+// sync reaper reset after it was stuck in "Syncing" past the timeout.
+const stuckSyncingResetError = "sync reset by reaper: stuck in Syncing past timeout (previous sync did not complete — reconciler crash, process restart, or leadership change)"
+
+// ResetStuckSyncingAppSources finds AppSources stuck in sync_status='Syncing'
+// whose updated_at is older than olderThan and resets them to a retryable state,
+// returning the number reset.
+//
+// The manual sync-trigger API sets sync_status='Syncing' synchronously, decoupled
+// from the actual reconcile that happens on the next ticker cycle (see
+// handleSyncAppSource). If the reconciler panics, the process dies, or leadership
+// changes mid-sync, the row can stay 'Syncing' forever. This reaper bounds that.
+//
+// Recovered state: we set sync_status='Failed' (so the UI/API surfaces that the
+// prior attempt did not finish) and clear last_commit. Clearing last_commit is
+// what actually makes the next reconcile tick re-sync: shouldSync returns true
+// when last_commit is empty (see appsource_reconciler.shouldSync), and
+// syncAppSource force-fetches when last_commit is empty. A last_error explains the
+// reset. We deliberately do NOT set status back to 'Syncing' (that would be
+// re-armed as stuck next cycle); the reconciler will flip it to Synced/Failed on
+// its next real attempt.
+func (p *Postgres) ResetStuckSyncingAppSources(ctx context.Context, olderThan time.Duration) (int, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE app_sources
+		SET sync_status = 'Failed',
+		    last_error  = $2,
+		    last_commit = '',
+		    updated_at  = NOW()
+		WHERE sync_status = 'Syncing'
+		  AND updated_at < NOW() - make_interval(secs => $1)`,
+		olderThan.Seconds(), stuckSyncingResetError)
+	if err != nil {
+		return 0, fmt.Errorf("reset stuck syncing app_sources: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 // ---- Approvals ----

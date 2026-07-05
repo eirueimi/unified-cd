@@ -35,7 +35,10 @@ func newTokenCreateCmd(resolve func() (Config, error)) *cobra.Command {
 				return err
 			}
 			body, _ := json.Marshal(api.CreatePATRequest{Name: args[0], ExpiresIn: expiresIn, Role: role})
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, cfg.Server+"/api/v1/tokens", bytes.NewReader(body))
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, cfg.Server+"/api/v1/tokens", bytes.NewReader(body))
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := http.DefaultClient.Do(req)
@@ -70,7 +73,10 @@ func newTokenListCmd(resolve func() (Config, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.Server+"/api/v1/tokens", nil)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, cfg.Server+"/api/v1/tokens", nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -108,7 +114,10 @@ func newTokenDeleteCmd(resolve func() (Config, error)) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete, cfg.Server+"/api/v1/tokens/"+args[0], nil)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, cfg.Server+"/api/v1/tokens/"+args[0], nil)
+			if err != nil {
+				return err
+			}
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
