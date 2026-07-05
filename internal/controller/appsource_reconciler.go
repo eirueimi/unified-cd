@@ -124,6 +124,12 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 	seen := map[store.ResourceRef]bool{}
 	for _, fp := range paths {
 		kind := probeKind(files[fp])
+		// Skip duplicates BEFORE writing to the store, so the first file (sorted)
+		// wins the stored spec — not just the ManagedResources bookkeeping.
+		if ref := (store.ResourceRef{Kind: kind, Name: probeName(files[fp])}); seen[ref] {
+			slog.Warn("appsource reconciler: duplicate resource, keeping first", "name", src.Name, "kind", kind, "resource", ref.Name, "file", fp)
+			continue
+		}
 		name, err := applyResource(ctx, st, kind, files[fp])
 		if err != nil {
 			// Store-write failures abort the whole sync; parse/unknown-kind skip one file.
@@ -134,10 +140,6 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 			continue
 		}
 		ref := store.ResourceRef{Kind: kind, Name: name}
-		if seen[ref] {
-			slog.Warn("appsource reconciler: duplicate resource, keeping first", "name", src.Name, "kind", kind, "resource", name, "file", fp)
-			continue
-		}
 		seen[ref] = true
 		current = append(current, ref)
 	}
