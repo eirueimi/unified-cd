@@ -3,14 +3,17 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -301,4 +304,85 @@ func TestLogPusherFlushExitRetry(t *testing.T) {
 	p.mu.Unlock()
 	assert.Equal(t, 0, pendingCount, "after Flush exit-retry succeeds, pending should be empty")
 	assert.Equal(t, 3, attempt)
+}
+
+// TestLogPusher_StartAutoFlush_ShipsLinesBeforeStepEnds proves that
+// StartAutoFlush periodically ships buffered lines to the server without
+// waiting for an explicit Flush call — mirroring the k8s agent's need to
+// surface sparse stderr output mid-step instead of only at step end.
+func TestLogPusher_StartAutoFlush_ShipsLinesBeforeStepEnds(t *testing.T) {
+	var mu sync.Mutex
+	var received []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqs []api.LogAppendRequest
+		_ = json.NewDecoder(r.Body).Decode(&reqs)
+		mu.Lock()
+		for _, req := range reqs {
+			received = append(received, req.Line)
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "tok")
+	p := NewLogPusher(client, "a1", "run1", 0, "stderr")
+
+	flushCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	p.StartAutoFlush(flushCtx, 20*time.Millisecond)
+
+	_, _ = p.Write([]byte("early-line\n"))
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, l := range received {
+			if l == "early-line" {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond, "expected StartAutoFlush to ship the buffered line without an explicit Flush call")
+
+	stop()
+}
+
+// TestLogPusher_StartAutoFlush_HoldsBackPartialLine proves auto-flush only
+// ships complete lines (terminated by '\n'): a partial trailing line with no
+// newline yet must not be shipped until it is completed or the step ends
+// with an explicit Flush.
+func TestLogPusher_StartAutoFlush_HoldsBackPartialLine(t *testing.T) {
+	var mu sync.Mutex
+	var received []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqs []api.LogAppendRequest
+		_ = json.NewDecoder(r.Body).Decode(&reqs)
+		mu.Lock()
+		for _, req := range reqs {
+			received = append(received, req.Line)
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "tok")
+	p := NewLogPusher(client, "a1", "run1", 0, "stderr")
+
+	flushCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	p.StartAutoFlush(flushCtx, 20*time.Millisecond)
+
+	_, _ = p.Write([]byte("no-newline-yet"))
+
+	// Give auto-flush several ticks to (incorrectly) ship the partial line.
+	time.Sleep(150 * time.Millisecond)
+	stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, l := range received {
+		assert.NotEqual(t, "no-newline-yet", l, "auto-flush must not ship an incomplete line before it is newline-terminated")
+	}
 }
