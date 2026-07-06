@@ -289,7 +289,18 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		return ec, err
 	}
 
-	a.orchestrate(ctx, c, stepExec, sidecarExec, mountPath, ensureScopePod)
+	// postExec runs a post: hook's script in the given pod/container (empty
+	// targetPod means the default pooled/run pod, mirroring sidecarExec above).
+	// Used only by the post-hook drain in orchestrate.
+	postExec := func(execCtx context.Context, targetPod, container, script string, env []string) error {
+		if targetPod == "" {
+			targetPod = podName
+		}
+		_, err := a.exec.ExecStep(execCtx, targetPod, container, script, env, io.Discard, io.Discard)
+		return err
+	}
+
+	a.orchestrate(ctx, c, stepExec, sidecarExec, postExec, mountPath, ensureScopePod)
 }
 
 // orchestrate runs the claim's stages, reporting step/run status, using stepExec
@@ -301,7 +312,10 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 // ensureScopePod lazily creates (or returns the cached) scope pod for a scoped
 // cache/artifact step, so its sidecar call can target the scope pod's sidecar
 // and scratch volume instead of the run pod's.
-func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec, sidecarExec func(ctx context.Context, targetPod, container string, argv []string) (int, error), mountPath string, ensureScopePod func(ctx context.Context, step api.ClaimStep) (string, error)) {
+// postExec runs a post: hook's script (no shell wrapping beyond what ExecStep
+// itself does) in targetPod/container; empty targetPod means the default
+// pooled/run pod, mirroring sidecarExec's convention.
+func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec, sidecarExec func(ctx context.Context, targetPod, container string, argv []string) (int, error), postExec func(ctx context.Context, targetPod, container, script string, env []string) error, mountPath string, ensureScopePod func(ctx context.Context, step api.ClaimStep) (string, error)) {
 	// reportCtx is derived from the ORIGINAL incoming ctx (before any job-level
 	// timeout is applied below) via WithoutCancel, so a StepReportRequest for a
 	// step that failed BECAUSE its context deadline was exceeded can still
@@ -346,6 +360,25 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		cacheSaves = append(cacheSaves, s)
 		cacheSavesMu.Unlock()
 	}
+
+	// postHookEntry is a post: hook queued after a step Succeeds, mirroring the
+	// host agent's postHookEntry (internal/agent/agent.go:57-69). scopeID
+	// carries the owning step's ScopeID (empty for a default-pod step) so the
+	// drain below (after the main stages, before finally) can route the hook
+	// into the same container the step body ran in: the step's scope pod's
+	// "step" container when scopeID != "", otherwise the run pod's default
+	// container. The k8s agent runs a claim's steps sequentially (no
+	// goroutines within orchestrate — see the scopePods map's doc comment
+	// above in executeRun), so hookStack needs no mutex, unlike the host's
+	// postHooksMu (which guards concurrent `parallel:` step-runner goroutines).
+	type postHookEntry struct {
+		stepName  string
+		post      api.PostStep
+		scopeID   string
+		matrixKey string
+		container string
+	}
+	var hookStack []postHookEntry
 
 	// runCtx is cancelled when the master cancels the run mid-flight. Passing it
 	// as the exec context interrupts an in-flight pod exec (and unblocks an
@@ -685,6 +718,16 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				}
 			}
 
+			if status == "Succeeded" && step.Post != nil {
+				hookStack = append(hookStack, postHookEntry{
+					stepName:  step.Name,
+					post:      *step.Post,
+					scopeID:   step.ScopeID,
+					matrixKey: step.MatrixKey,
+					container: execContainer(step),
+				})
+			}
+
 			ended := time.Now().UTC()
 			_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 				RunID:      c.RunID,
@@ -723,6 +766,38 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			for _, v := range variants {
 				mainRun(v)
 			}
+		}
+	}
+
+	// post: hooks run regardless of DAG success/failure (mirrors the host
+	// agent's postHooks/hookStack drain, internal/agent/agent.go:707-734),
+	// draining LIFO so hooks unwind in the reverse order their steps
+	// succeeded — before finally, using a non-cancelling context so a
+	// cancelled/timed-out parent context doesn't skip cleanup. A hook failure
+	// is only logged; it never flips the run status (matching the host).
+	hookCtx := context.WithoutCancel(ctx)
+	for i := len(hookStack) - 1; i >= 0; i-- {
+		entry := hookStack[i]
+		var extraEnv []string
+		for k, v := range entry.post.Env {
+			extraEnv = append(extraEnv, k+"="+v)
+		}
+		// Route the hook into the same container the step body ran in: the
+		// step's scope pod (if any) or the default run/pooled pod otherwise
+		// (empty targetPod resolves to the default pod inside postExec).
+		var targetPod string
+		container := entry.container
+		if entry.scopeID != "" {
+			scopePod, err := ensureScopePod(hookCtx, api.ClaimStep{ScopeID: entry.scopeID, MatrixKey: entry.matrixKey})
+			if err != nil {
+				slog.Warn("k8s: post step's scope pod unavailable; skipping hook", "step", entry.stepName, "error", err)
+				continue
+			}
+			targetPod = scopePod
+			container = "step"
+		}
+		if err := postExec(hookCtx, targetPod, container, entry.post.Run, extraEnv); err != nil {
+			slog.Warn("k8s: post step failed", "step", entry.stepName, "error", err)
 		}
 	}
 

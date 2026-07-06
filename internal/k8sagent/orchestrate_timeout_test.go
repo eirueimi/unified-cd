@@ -64,8 +64,9 @@ func runOrchestrateTimeout(t *testing.T, c api.ClaimResponse, stepExec podStepEx
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
 
 	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
+	noopPostExec := func(_ context.Context, _, _, _ string, _ []string) error { return nil }
 	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace", noopEnsureScopePod)
+	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, noopPostExec, "/workspace", noopEnsureScopePod)
 
 	mu.Lock()
 	defer mu.Unlock()

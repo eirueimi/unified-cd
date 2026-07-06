@@ -99,8 +99,9 @@ func runOrchestrateCancel(
 		return stepFn(h, &mu, execCtx, step), "", nil
 	}
 	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
+	noopPostExec := func(_ context.Context, _, _, _ string, _ []string) error { return nil }
 	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, "/workspace", noopEnsureScopePod)
+	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, noopPostExec, "/workspace", noopEnsureScopePod)
 
 	mu.Lock()
 	defer mu.Unlock()
