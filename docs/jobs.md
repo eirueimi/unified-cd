@@ -66,7 +66,7 @@ spec:
       uploadArtifact: { ... }     # upload a file as an artifact
       downloadArtifact: { ... }   # download a previously uploaded artifact
       post: { ... }               # post-run cleanup hook
-      container: <string>         # target container (k8s multi-container)
+      container: <string>         # target container (k8s multi-container); shorthand for runsIn: { container: ... }, cannot combine with runsIn:
       continueOnError: false      # don't fail the run if this step fails
       timeoutMinutes: 10          # step-level timeout in minutes
     - parallel:                   # OR: a group of steps that run concurrently
@@ -111,7 +111,7 @@ spec:
   params:
     inputs:
       - name: image
-        type: string        # "string" | "bool" | "int"
+        type: string        # "string" | "bool" | "int" | "array"
         required: true
         description: "Docker image name"
       - name: tag
@@ -132,7 +132,7 @@ spec:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | Yes | Parameter name. Referenced as `{{ .Params.name }}` in steps. |
-| `type` | string | Yes | `string`, `bool`, or `int` |
+| `type` | string | Yes | `string`, `bool`, `int`, or `array` (backs `$param`-style references used by `matrix`/`foreach`/`orLocks`) |
 | `required` | bool | No | If true, the run fails immediately when the value is not supplied. |
 | `default` | any | No | Value used when the caller does not supply this parameter. |
 | `description` | string | No | Human-readable description shown in the Web UI trigger form. |
@@ -147,7 +147,7 @@ spec:
 ### Trigger with parameters
 
 ```bash
-unified-cd run trigger build --param image=myapp --param tag=v2.0 --param run_tests=false
+unified-cli run trigger build --param image=myapp --param tag=v2.0 --param run_tests=false
 ```
 
 ---
@@ -639,22 +639,22 @@ GET /api/v1/runs/{runID}/artifacts/{name}
 **CLI:**
 
 ```bash
-unified-cd artifact list <run-id>
-unified-cd artifact download <run-id> <name> [--dest .]
+unified-cli artifact list <run-id>
+unified-cli artifact download <run-id> <name> [--dest .]
 ```
 
 ```bash
 # List artifacts produced by a run
-unified-cd artifact list a1b2c3d4
+unified-cli artifact list a1b2c3d4
 # app-binary
 # test-report
 
 # Download and extract "app-binary" into ./out
-unified-cd artifact download a1b2c3d4 app-binary --dest ./out
+unified-cli artifact download a1b2c3d4 app-binary --dest ./out
 # extracted app-binary of run a1b2c3d4 to ./out
 ```
 
-`--dest` defaults to the current directory. Both commands authenticate using the CLI's configured server token (PAT or OIDC login), the same as other `unified-cd` commands.
+`--dest` defaults to the current directory. Both commands authenticate using the CLI's configured server token (PAT or OIDC login), the same as other `unified-cli` commands.
 
 ---
 
@@ -768,7 +768,7 @@ spec:
 ```
 
 ```bash
-unified-cd run trigger build --param pool=gpu-workers
+unified-cli run trigger build --param pool=gpu-workers
 # → only agents with label "pool:gpu-workers" can claim this run
 ```
 
@@ -825,7 +825,9 @@ spec:
 | `override.containers` | []map | Additional containers to merge into the pod spec |
 | `override.volumes` | []map | Additional volumes to merge into the pod spec |
 
-Use `container:` in a step to target a specific container:
+Use `container:` in a step to target a specific container. It is shorthand for
+`runsIn: { container: ... }` and cannot be combined with `runsIn:` on the same
+step (parse-time error).
 
 ```yaml
 steps:
@@ -866,8 +868,8 @@ Any authenticated user can make a decision through the CLI, the Web UI, or the A
 **CLI:**
 
 ```bash
-unified-cd approve <run-id> <step-index>
-unified-cd reject  <run-id> <step-index> [--comment "reason"]
+unified-cli approve <run-id> <step-index>
+unified-cli reject  <run-id> <step-index> [--comment "reason"]
 ```
 
 **API:**
@@ -985,8 +987,11 @@ Job YAML values support Go template expressions (`{{ expr }}`).
 |---|---|---|
 | `{{ .Params.NAME }}` | `run`, `env`, `if`, `agentSelector`, `outputs`, `call.with`, `uses.with`, `cache.key`, `cache.path`, `cache.restoreKeys` | Input parameter value |
 | `{{ .Steps.NAME.Outputs.KEY }}` | `run`, `env`, `if`, `outputs` | Output from a completed step |
-| `{{ .Steps.NAME.Status }}` | `if` | Step status: `Succeeded`, `Failed`, `Skipped` |
 | `{{ secrets.NAME }}` | `env` values, `run` strings | Decrypted secret value |
+
+> Step status is not exposed as a template variable. To branch on a step's
+> outcome in an `if:` expression, use the CEL functions `failure()`,
+> `success()`, or `always()` (see [Status Functions in `if:`](#status-functions-in-if)).
 
 ### Template functions
 
@@ -1030,9 +1035,9 @@ steps:
 To create secrets:
 
 ```bash
-unified-cd secret set DATABASE_URL "postgres://user:pass@host/db"
-unified-cd secret set API_KEY_PROD "sk-..."
-unified-cd secret set slack-webhook-url "https://hooks.slack.com/services/..."
+unified-cli secret set DATABASE_URL "postgres://user:pass@host/db"
+unified-cli secret set API_KEY_PROD "sk-..."
+unified-cli secret set slack-webhook-url "https://hooks.slack.com/services/..."
 ```
 
 See the [Secrets Management Guide](secrets.md) for the full encryption model.

@@ -2,9 +2,11 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/go-chi/chi/v5"
 )
@@ -20,8 +22,10 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+	// Validate the secret name (env-var style: letters/digits/_/-, starting
+	// with a letter or '_') so it is always resolvable from {{ secrets.NAME }}.
+	if err := dsl.ValidateSecretName(req.Name); err != nil {
+		http.Error(w, fmt.Sprintf("name %v", err), http.StatusBadRequest)
 		return
 	}
 	if req.Scope == "" {

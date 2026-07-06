@@ -4,6 +4,8 @@ The unified-cd UI is built with **Svelte + Vite**.
 
 ## Directory Layout
 
+Illustrative — see `web/src` for the current, complete set of files.
+
 ```
 web/                         # Svelte + Vite project
 ├── index.html               # Vite entry point
@@ -15,20 +17,19 @@ web/                         # Svelte + Vite project
     ├── app.css              # global styles
     ├── lib/
     │   ├── api.js           # Svelte stores, apiFetch
+    │   ├── theme.js         # theme (light/dark) store + toggle
     │   └── utils.js         # statusBadge, fmtTime, etc.
     ├── components/
     │   └── AuthSetup.svelte # Bearer token / OIDC SSO input
     └── routes/
         ├── JobList.svelte
         ├── JobDetail.svelte
-        ├── JobRun.svelte
-        ├── RunDetail.svelte
+        ├── ...              # see the Routing table below for the full list
         └── AgentMonitor.svelte
-
-internal/controller/web/     # Vite build output (go:embed target)
-├── index.html
-└── assets/
 ```
+
+`web/dist/` (Vite's build output directory) is **not committed** — it is
+built fresh for each deployment mode; see Production Build below.
 
 ## Dev Setup
 
@@ -85,28 +86,55 @@ docker compose down
 
 ## Production Build
 
-When development is done, build the UI for embedding into the Go binary:
+There is **no `go:embed`** — the UI is not compiled into the controller
+binary. The controller serves the built UI at **runtime** from a directory on
+disk, and the Go binaries are built independently of the frontend:
 
 ```bash
-make ui-build
-# or
-cd web && npm run build
+make build
+# builds web/dist (Vite) and the Go binaries (cmd/controller, cmd/agent, ...)
+# as separate, independent artifacts — neither embeds the other
 ```
 
-HTML, CSS, and JS are output to `internal/controller/web/`. They are embedded into the binary at `go build` time.
+Run the controller pointing `--web-dir` (or `UNIFIED_WEB_DIR`) at the built
+`web/dist` directory (see `internal/controller/server.go`,
+`cmd/controller/main.go`):
 
-`make build` calls `ui-build` internally, so normally `make build` alone is sufficient.
+```bash
+cd web && npm run build     # produces web/dist
+./controller --web-dir ./web/dist ...
+```
+
+The Docker image (`docker/controller.Dockerfile`) builds `web/dist` in a
+Node stage and copies it into the runtime image, setting
+`UNIFIED_WEB_DIR=/ui` so the controller serves it without any extra flags.
 
 ## How It Works
 
-```
-Browser → :5173/ui/*  → Vite dev server
-                /api/*  → proxy → :8080 (Go)
+unified-cd's controller can serve the UI three ways, selected by
+`--web-dir` / `UNIFIED_WEB_DIR` and `--ui-proxy-target` / `UNIFIED_UI_PROXY_TARGET`
+(`internal/controller/server.go`):
 
-Production:
-Browser → :8080/ui/*  → Go (serves index.html + assets via go:embed)
-          :8080/api/* → Go API
 ```
+1. Local dev (Option A):
+   Browser → :5173/ui/*  → Vite dev server (HMR)
+                  /api/*  → proxy → :8080 (Go)
+
+2. Production / Docker image:
+   Browser → :8080/ui/*  → Go http.FileServer over --web-dir (built web/dist)
+             :8080/api/* → Go API
+
+3. Docker Compose dev stack:
+   Browser → :8080/ui/*  → Go reverse-proxies to UI_PROXY_TARGET (a live Vite dev server)
+             :8080/api/* → Go API
+```
+
+Mode 3 is used when `--web-dir`/`UNIFIED_WEB_DIR` is **empty** but
+`--ui-proxy-target`/`UNIFIED_UI_PROXY_TARGET` is set: the Go server reverse-proxies
+every `/ui/*` request to that target instead of serving files itself, so
+`docker compose up` can point the controller at the Vite dev server container
+and still get HMR through the controller's own port. If neither is set,
+`/ui/*` returns `404`.
 
 Vite's `base: '/ui/'` setting makes built asset URLs `/ui/assets/...`, matching the Go server's `/ui` prefix.
 
@@ -119,8 +147,19 @@ Hash routing via `svelte-spa-router` (`#/` format).
 | `#/` | JobList |
 | `#/jobs/:name` | JobDetail |
 | `#/jobs/:name/run` | JobRun |
+| `#/jobs/:name/yaml` | JobYaml |
 | `#/runs/:id` | RunDetail |
+| `#/runs/:id/yaml` | RunYaml |
 | `#/agents` | AgentMonitor |
+| `#/agents/:id` | AgentDetail |
+| `#/tokens` | TokenList |
+| `#/resources/schedules` | ScheduleList |
+| `#/resources/webhooks` | WebhookList |
+| `#/resources/gitcredentials` | GitCredentialList |
+| `#/resources/appsources` | AppSourceList |
+| `#/resources/secrets` | SecretList |
+
+(See `web/src/App.svelte` for the authoritative route table.)
 
 ## Adding a New Page
 

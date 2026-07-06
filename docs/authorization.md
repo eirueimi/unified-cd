@@ -54,7 +54,12 @@ oidc:
 
 Scalars `rolesClaim` and `defaultRole` can also come from `UNIFIED_OIDC_ROLES_CLAIM` / `UNIFIED_OIDC_DEFAULT_ROLE`. **`roleMap`/`userMap` are maps and can only be set in the config file** (there is no env var for them).
 
-**Resolution order:** break-glass token (always admin) → `userMap` (email, then sub) → `roleMap` (highest-rank match wins) → `defaultRole` (`""`/`"deny"` ⇒ 403).
+Break-glass is not part of this resolution — it is a separate PAT-only
+short-circuit in `ServerAuth` (`internal/controller/auth.go`), checked before
+OIDC role resolution ever runs (see [Break-glass](#break-glass) below).
+**`resolveRole`'s resolution order** (`internal/controller/rbac.go`), for an
+OIDC-authenticated caller: `userMap` (email, then sub) → `roleMap`
+(highest-rank match wins) → `defaultRole` (`""`/`"deny"` ⇒ 403).
 
 > `groups` is NOT a standard OIDC claim — whether it exists and what it contains is entirely up to the IdP. `rolesClaim` lets you point at whatever claim your IdP emits (`groups`, `roles`, a namespaced claim, or even `email`).
 

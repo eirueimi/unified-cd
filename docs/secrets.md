@@ -67,8 +67,10 @@ read -s SECRET && echo -n "$SECRET" | unified-cli secret set DB_PASSWORD
 
 > **Naming rules**
 >
-> Secret names may contain alphanumerics, underscores, and hyphens (must start with a letter
-> or `_`). Both `{{ secrets.NAME }}` and `{{ .Secrets.NAME }}` work with hyphenated names —
+> Secret names must contain only alphanumerics, underscores, and hyphens and must start with a
+> letter or `_` (regex `^[A-Za-z_][A-Za-z0-9_-]*$`). This is enforced at creation — an invalid
+> name is rejected with HTTP 400 — so a stored name is always resolvable from a template.
+> Both `{{ secrets.NAME }}` and `{{ .Secrets.NAME }}` work with hyphenated names —
 > the template engine automatically rewrites hyphenated references to an index lookup
 > internally, since Go template dot-notation cannot address a map key containing a hyphen
 > directly.
@@ -224,7 +226,8 @@ Ciphertext (stored in DB)
 
 | Actor | Access |
 |-------|--------|
-| Admin CLI (static token / PAT / OIDC) | Create, list, delete ✓ (**cannot retrieve values**) |
+| Admin (static token / PAT / OIDC) | Create, delete ✓ (**cannot retrieve values**) |
+| Developer or Admin | List names ✓ (values never shown) |
 | Agent (agent token) | Fetch only the secrets needed for a run ✓ |
 | External API / browser | Retrieve values ✗ (no endpoint exists) |
 
@@ -237,7 +240,7 @@ Secret **values cannot be retrieved via the API** by design. If you lose a value
 | Symptom | Cause and fix |
 |---------|---------------|
 | `key manager not configured` | Controller started without `UNIFIED_CONTROLLER_KEY`. Set it and restart. |
-| `{{ secrets.NAME }}` appears unexpanded | The secret name doesn't match a registered secret, or contains a character other than alphanumerics/underscores/hyphens. Check the exact name with `unified-cd secret list`. |
+| `{{ secrets.NAME }}` appears unexpanded | The secret name doesn't match a registered secret, or contains a character other than alphanumerics/underscores/hyphens. Check the exact name with `unified-cli secret list`. |
 | Secret is referenced with `{{ secrets.NAME }}` but value is empty | Secret is not registered, or the name casing does not match. Check with `unified-cli secret list`. |
 | Info log: `controllerKey not set — generated a new key and persisted it to the database` | `UNIFIED_CONTROLLER_KEY` is not set. A key was auto-generated and stored in the `controller_settings` table (reused on subsequent restarts). To manage it explicitly, retrieve the value from the DB and set it as `UNIFIED_CONTROLLER_KEY`. |
 | `decrypt` errors in HA setup | Replicas are pointing to different DBs (`controller_settings`), or `UNIFIED_CONTROLLER_KEY` differs between replicas. Use the same DB and the same key value on all replicas. |

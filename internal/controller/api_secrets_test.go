@@ -45,6 +45,19 @@ func TestAPI_SetSecret(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 }
 
+func TestAPI_SetSecret_RejectsInvalidName(t *testing.T) {
+	s, _ := newTestServerWithKM(t)
+	// A space and '!' are not allowed; env-var-style names like AWS_KEY are.
+	body, _ := json.Marshal(api.SetSecretRequest{Name: "bad name!", Value: "x"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "invalid")
+}
+
 func TestAPI_ListSecrets(t *testing.T) {
 	s, _ := newTestServerWithKM(t)
 	body, _ := json.Marshal(api.SetSecretRequest{Name: "AWS_KEY", Value: "AKID1234"})

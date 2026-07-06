@@ -9,6 +9,7 @@ lifecycle and its registration/liveness semantics with the controller.
 - [Agent Labels](#agent-labels)
 - [agentSelector](#agentselector)
 - [Windows Agents](#windows-agents)
+- [Kubernetes Agent](#kubernetes-agent)
 - [Workspace lifecycle](#workspace-lifecycle)
 - [Registration and liveness](#registration-and-liveness)
 - [Matrix wire format upgrade note](#matrix-wire-format-upgrade-note)
@@ -47,8 +48,9 @@ no duplicate is added.
 ## agentSelector
 
 `spec.agentSelector` in a Job is the list of labels that a qualifying agent must have.
-The controller uses PostgreSQL's array containment operator to check
-"does the agent's label set contain all required labels" — this is an **AND match** (no OR support).
+The controller uses PostgreSQL's `<@` (contained-by) array operator to check
+`agent_selector <@ labels` — i.e. the selector must be a subset of the agent's label
+set (`internal/store/postgres.go`) — this is an **AND match** (no OR support).
 
 ```yaml
 apiVersion: unified-cd/v1
@@ -82,7 +84,7 @@ spec:
 ```
 
 ```bash
-unified-cd run trigger build --param pool=build-arm64
+unified-cli run trigger build --param pool=build-arm64
 # → agentSelector is expanded to ["pool:build-arm64"] at runtime;
 #   only agents with that label can claim the run
 ```
@@ -114,6 +116,12 @@ Fix: Install [Git for Windows](https://git-scm.com/download/win) or add `bash.ex
 Every `step.run` receives the `UNIFIED_AGENT_OS` environment variable (Go's `runtime.GOOS`:
 `windows` / `linux` / `darwin`). Job authors can use this to branch on OS.
 
+> **Isolated steps run in Linux regardless of host OS.** A `uses:`-scope step or a
+> step with `runsIn.image` always executes in a Linux container, so `UNIFIED_AGENT_OS`
+> is `linux` there even when the agent's host is Windows or macOS
+> (`internal/agent/agent_os.go: agentOSForStep`). Only steps running directly on
+> the host report the host's `runtime.GOOS`.
+
 ```yaml
 steps:
   - name: platform-specific
@@ -124,6 +132,23 @@ steps:
         echo "Running in native Unix shell"
       fi
 ```
+
+---
+
+## Kubernetes Agent
+
+The sections above are host-agent-centric; the k8s-agent participates in the same
+`agentSelector` routing with a few Kubernetes-specific differences:
+
+- It auto-registers a `kubernetes` label in addition to any configured `labels`
+  (`internal/k8sagent/agent.go`), so `agentSelector` can target k8s pools without
+  extra configuration.
+- It supports `call:` steps like the standard agent.
+- It runs job/scope steps as Pods and attaches an artifact sidecar
+  (`unified-artifact`) for `uploadArtifact`/`downloadArtifact`/`cache` steps.
+
+See [docs/kubernetes-integration.md](kubernetes-integration.md) for full setup,
+sidecar, and pod-lifecycle details.
 
 ---
 
@@ -156,8 +181,9 @@ before a Run starts executing in that slot), not at agent startup — so the
 very first Run after the agent starts still runs against whatever was left
 in the directory from before, unless it was cleaned by a previous claim.
 
-Every `run:` step also receives `UNIFIED_AGENT_OS` (Go's `runtime.GOOS`) in
-its environment, in addition to the workspace directory as its cwd — see
+Every `run:` step also receives `UNIFIED_AGENT_OS` (Go's `runtime.GOOS` on the host,
+but `linux` for a scoped/`runsIn.image` step regardless of host OS) in its
+environment, in addition to the workspace directory as its cwd — see
 [UNIFIED_AGENT_OS environment variable](#unified_agent_os-environment-variable) above.
 
 ---
