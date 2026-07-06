@@ -38,6 +38,7 @@ unified-cd-controller [FLAGS]
   --web-dir               string   Static web assets directory (env: UNIFIED_WEB_DIR)
   --ui-proxy-target       string   Vite dev server URL to proxy /ui/* (env: UNIFIED_UI_PROXY_TARGET)
   --log-level             string   Log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)
+  --log-stderr-plain      bool     Render run-log stderr the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)
   --audit-retention-days  int      Days to keep audit_logs rows; 0 = keep forever (default: 90, env: UNIFIED_AUDIT_RETENTION_DAYS)
 ```
 
@@ -56,6 +57,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_DATA_DIR` | No | Local directory used as object store fallback (alternative to S3, development only) |
 | `UNIFIED_WEB_DIR` | No | Path to static web assets directory. If unset, `/ui/*` returns 404. |
 | `UNIFIED_UI_PROXY_TARGET` | No | Proxy `/ui/*` to a Vite dev server (e.g. `http://localhost:5173`). Used during frontend development. |
+| `UNIFIED_LOG_STDERR_PLAIN` | No | When `true`, the web UI renders run-log stderr the same color as stdout instead of red. Default: red. |
 | `UNIFIED_OIDC_ISSUER` | No (SSO only) | OIDC issuer URL, e.g. `https://accounts.example.com` or `http://localhost:8080/dex` |
 | `UNIFIED_OIDC_ISSUER_INTERNAL` | No (SSO only) | Internal issuer URL for Docker/container scenarios where the public issuer URL is not reachable inside the container |
 | `UNIFIED_OIDC_EXTERNAL_URL` | No (SSO only) | External base URL for OIDC callbacks, e.g. `https://unified-cd.example.com`. Required when the controller is behind a reverse proxy with a different external URL. |
