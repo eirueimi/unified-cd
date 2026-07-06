@@ -1,5 +1,5 @@
 # Unity batch-mode build job template
-# Register with unified-cd apply examples/unity-build.yaml, then invoke via call.job
+# Register with unified-cd apply -f templates/unity-build.yaml, then invoke via call.job
 #
 # [Note — this cannot be run in this repository's CI]
 # This template only works on a physical/VM agent that has Unity Editor

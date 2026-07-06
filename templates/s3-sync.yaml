@@ -1,5 +1,5 @@
 # Object storage sync job template via AWS CLI (aws s3 sync)
-# After registering with unified-cd apply examples/s3-sync.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/s3-sync.yaml, invoke it via call.job
 #
 # Agent requirements: aws (AWS CLI v2)
 #

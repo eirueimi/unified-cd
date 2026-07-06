@@ -1,5 +1,5 @@
 # Generic webhook notification job template (JSON POST)
-# After registering with unified-cd apply examples/notify-webhook.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/notify-webhook.yaml, invoke it via call.job
 #
 # Required secrets (if using url_secret):
 #   unified-cd secret set my-webhook-url https://example.com/hooks/xxxx

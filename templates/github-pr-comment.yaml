@@ -1,5 +1,5 @@
 # GitHub PR comment posting job template
-# After registering with unified-cd apply examples/github-pr-comment.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/github-pr-comment.yaml, invoke it via call.job
 #
 # Required secrets:
 #   unified-cd secret set github-token ghp_xxxx

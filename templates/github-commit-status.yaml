@@ -1,5 +1,5 @@
 # GitHub Commit Status update job template
-# After registering with unified-cd apply examples/github-commit-status.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/github-commit-status.yaml, invoke it via call.job
 #
 # Required secrets:
 #   unified-cd secret set github-token ghp_xxxx

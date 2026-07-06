@@ -1,6 +1,6 @@
 # Job Template Collection
 
-A collection of reusable `Job` templates for `unified-cd`. Register them with `unified-cd apply templates/<file>.yaml`
+A collection of reusable `Job` templates for `unified-cd`. Register them with `unified-cd apply -f templates/<file>.yaml`
 and use them either by calling them via `call:`, or by inlining them via a `git://` URI with `uses:`.
 
 ```yaml
@@ -77,11 +77,11 @@ Each template follows the house style below (`git-checkout.yaml` / `slack-notify
   `"{{ if .Params.token_secret }}{{ index .Secrets .Params.token_secret }}{{ end }}"`
 - When writing sensitive information such as private keys or tokens to a file, create a temp file with `mktemp`,
   `chmod 600` it, and clean it up with `trap ... EXIT`.
-- The `key` / `restoreKeys` fields of a `cache:` step can expand template expressions (use `{{ hashFile "path/glob" }}`;
-  note that no function named `checksum` exists despite what some docs suggest), but `path` is a **fixed string** that
-  is not expanded (see `executeCacheStep` in `internal/agent/agent.go`). If you need a variable cache target path,
-  either split it into separate steps per cache target as in `setup-go.yaml`, or funnel it to a fixed path via a
-  symlink as in `setup-node.yaml`.
+- The `path` / `key` / `restoreKeys` fields of a `cache:` step all expand template expressions (use
+  `{{ hashFile "path/glob" }}` for the key; note that no function named `checksum` exists despite what some docs
+  suggest) — see `executeCacheStep` in `internal/agent/agent.go` and the equivalent in `internal/k8sagent/agent.go`.
+  A `cache:` step may only target a single `path`, though, so when you need to cache more than one directory (e.g.
+  Go's module cache and build cache), split it into separate steps per target as in `setup-go.yaml`.
 - For `type: array` input parameters, the value passed as a YAML array is delivered to the job at runtime as a
   newline-separated string in the environment variable (see `sparse_paths` in `git-checkout.yaml`). Declare the
   default value as an empty string `default: ""` rather than an empty array (using a string default even for

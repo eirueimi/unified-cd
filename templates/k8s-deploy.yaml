@@ -1,5 +1,5 @@
 # Kubernetes manifest apply job template
-# After registering with unified-cd apply examples/k8s-deploy.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/k8s-deploy.yaml, invoke it via call.job
 #
 # Agent requirements: kubectl
 #

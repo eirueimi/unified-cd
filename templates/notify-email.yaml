@@ -1,5 +1,5 @@
 # SMTP email notification job template (using curl's smtp(s):// support)
-# After registering with unified-cd apply examples/notify-email.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/notify-email.yaml, invoke it via call.job
 #
 # Required secrets:
 #   unified-cd secret set smtp-url smtps://smtp.example.com:465

@@ -1,5 +1,5 @@
 # Go module/build cache setup job template
-# After registering with unified-cd apply examples/setup-go.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/setup-go.yaml, invoke it via call.job
 #
 # Agent requirements: go (the go command must be on PATH)
 #

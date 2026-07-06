@@ -1,5 +1,5 @@
 # Helm upgrade --install job template
-# After registering with unified-cd apply examples/helm-upgrade.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/helm-upgrade.yaml, invoke it via call.job
 #
 # Agent requirements: helm, kubectl
 #

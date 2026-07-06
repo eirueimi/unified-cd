@@ -1,5 +1,5 @@
 # Docker image build & push job template
-# Register with unified-cd apply examples/docker-build-push.yaml, then invoke via call.job
+# Register with unified-cd apply -f templates/docker-build-push.yaml, then invoke via call.job
 #
 # Agent requirements: docker (buildx is also required for multi-platform builds)
 #

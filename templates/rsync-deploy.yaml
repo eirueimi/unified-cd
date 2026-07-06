@@ -1,5 +1,5 @@
 # Remote deploy job template via rsync
-# Register with unified-cd apply examples/rsync-deploy.yaml, then invoke via call.job
+# Register with unified-cd apply -f templates/rsync-deploy.yaml, then invoke via call.job
 #
 # Agent requirements: rsync, ssh
 #

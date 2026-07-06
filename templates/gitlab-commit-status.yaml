@@ -1,5 +1,5 @@
 # GitLab commit status update job template
-# After registering with unified-cd apply examples/gitlab-commit-status.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/gitlab-commit-status.yaml, invoke it via call.job
 #
 # Required secrets:
 #   unified-cd secret set gitlab-token glpat-xxxx

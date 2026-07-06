@@ -1,5 +1,5 @@
 # Semantic version calculation job template based on Conventional Commits
-# After registering with unified-cd apply examples/semver-bump.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/semver-bump.yaml, invoke it via call.job
 #
 # Scans the commit messages from the last tag to the current HEAD, and
 # increments the version as major if there is a BREAKING CHANGE (or `!:`

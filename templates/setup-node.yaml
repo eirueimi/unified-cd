@@ -1,5 +1,5 @@
 # Node.js dependency cache setup job template
-# After registering with unified-cd apply examples/setup-node.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/setup-node.yaml, invoke it via call.job
 #
 # Agent requirements: node, npm
 #

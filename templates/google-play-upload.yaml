@@ -1,5 +1,5 @@
 # Google Play AAB upload job template (via fastlane supply)
-# Register with unified-cd apply examples/google-play-upload.yaml, then invoke via call.job
+# Register with unified-cd apply -f templates/google-play-upload.yaml, then invoke via call.job
 #
 # [Prerequisites — this cannot be run in this repository's CI]
 # This template only works on an agent that has fastlane (and the supply

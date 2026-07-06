@@ -1,5 +1,5 @@
 # Post-deploy smoke test (URL polling) job template
-# After registering with unified-cd apply examples/smoke-check.yaml, invoke it via call.job
+# After registering with unified-cd apply -f templates/smoke-check.yaml, invoke it via call.job
 #
 # Agent requirements: curl
 #
