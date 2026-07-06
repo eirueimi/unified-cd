@@ -103,6 +103,12 @@ func (m *Metrics) WebhookEvent(name, outcome string) {
 	m.webhookEvents.WithLabelValues(name, outcome).Inc()
 }
 
+// WebhookEventsForTest returns the underlying counter for label assertions
+// in tests. Not for production use.
+func (m *Metrics) WebhookEventsForTest(name, outcome string) prometheus.Counter {
+	return m.webhookEvents.WithLabelValues(name, outcome)
+}
+
 // HTTPRequest records one served HTTP request.
 func (m *Metrics) HTTPRequest(method, route string, code int, seconds float64) {
 	m.httpRequests.WithLabelValues(method, route, strconv.Itoa(code)).Inc()

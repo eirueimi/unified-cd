@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -547,4 +550,46 @@ func TestWebhookIngress_TokenCustomHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// TestWebhookIngressMetricOutcomes verifies that handleWebhookIngress records
+// one metric outcome per return path: accepted (run created), filtered
+// (a filter evaluated false), error (invalid JSON payload), and rejected
+// (unknown receiver, recorded under name="unknown").
+func TestWebhookIngressMetricOutcomes(t *testing.T) {
+	s, pg := newTestServer(t)
+	m := metrics.New()
+	s.SetMetrics(m)
+
+	_, _ = pg.UpsertJob(t.Context(), "wh-metrics-job", "unified-cd/v1",
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+
+	// Receiver with no auth and a filter that only passes ref=="main".
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "wh-metrics-job"},
+		"auth":    map[string]any{"type": "none"},
+		"filters": []string{`{{ eq .Payload.ref "main" }}`},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "wh-metrics", spec)
+
+	post := func(path, body string) int {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	assert.Equal(t, http.StatusOK, post("/webhook/wh-metrics", `{"ref":"main"}`))
+	assert.Equal(t, http.StatusNoContent, post("/webhook/wh-metrics", `{"ref":"dev"}`))
+	assert.Equal(t, http.StatusBadRequest, post("/webhook/wh-metrics", `not-json`))
+	assert.Equal(t, http.StatusNotFound, post("/webhook/no-such-receiver", `{}`))
+
+	get := func(name, outcome string) float64 {
+		return testutil.ToFloat64(m.WebhookEventsForTest(name, outcome))
+	}
+	assert.Equal(t, 1.0, get("wh-metrics", "accepted"))
+	assert.Equal(t, 1.0, get("wh-metrics", "filtered"))
+	assert.Equal(t, 1.0, get("wh-metrics", "error"))
+	assert.Equal(t, 1.0, get("unknown", "rejected"))
 }

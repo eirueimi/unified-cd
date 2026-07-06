@@ -67,18 +67,27 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// countWebhookEvent records a webhook ingress outcome when metrics are enabled.
+func (s *Server) countWebhookEvent(name, outcome string) {
+	if s.metrics != nil {
+		s.metrics.WebhookEvent(name, outcome)
+	}
+}
+
 // handleWebhookIngress receives a webhook payload, performs signature verification, filter evaluation, and parameter mapping, then creates a Run.
 func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	wr, err := s.store.GetWebhookReceiver(r.Context(), name)
 	if err != nil {
+		s.countWebhookEvent("unknown", "rejected")
 		http.Error(w, "webhook receiver not found", http.StatusNotFound)
 		return
 	}
 
 	var spec dsl.WebhookReceiverSpec
 	if err := json.Unmarshal(wr.Spec, &spec); err != nil {
+		s.countWebhookEvent(name, "error")
 		http.Error(w, "invalid receiver spec", http.StatusInternalServerError)
 		return
 	}
@@ -86,6 +95,7 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	// Read the body (up to 1 MB).
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
+		s.countWebhookEvent(name, "error")
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -100,6 +110,7 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 			verr = s.verifyWebhookSignature(r, body, spec.Auth)
 		}
 		if verr != nil {
+			s.countWebhookEvent(name, "rejected")
 			http.Error(w, "signature verification failed: "+verr.Error(), http.StatusUnauthorized)
 			return
 		}
@@ -108,6 +119,7 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	// Parse the JSON payload.
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
+		s.countWebhookEvent(name, "error")
 		http.Error(w, "invalid JSON payload", http.StatusBadRequest)
 		return
 	}
@@ -118,11 +130,13 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	for i, filter := range spec.Filters {
 		result, err := dsl.ExpandWebhookTemplate(filter, tplData)
 		if err != nil {
+			s.countWebhookEvent(name, "error")
 			http.Error(w, fmt.Sprintf("filter[%d] error: %s", i, err), http.StatusBadRequest)
 			return
 		}
 		if strings.TrimSpace(result) != "true" {
 			// Filtered out — return 204, not an error.
+			s.countWebhookEvent(name, "filtered")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -132,13 +146,16 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	// paramsMapping does not apply here (there are no job inputs to fill).
 	if spec.Trigger.AppSource != "" {
 		if _, err := s.store.GetAppSource(r.Context(), spec.Trigger.AppSource); err != nil {
+			s.countWebhookEvent(name, "error")
 			http.Error(w, "appSource not found: "+spec.Trigger.AppSource, http.StatusBadRequest)
 			return
 		}
 		if err := s.store.ResetAppSourceCommit(r.Context(), spec.Trigger.AppSource); err != nil {
+			s.countWebhookEvent(name, "error")
 			http.Error(w, "trigger appSource sync: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.countWebhookEvent(name, "accepted")
 		writeJSON(w, http.StatusAccepted, map[string]string{
 			"appSource": spec.Trigger.AppSource,
 			"status":    "sync scheduled",
@@ -151,6 +168,7 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	for k, tpl := range spec.ParamsMapping {
 		val, err := dsl.ExpandWebhookTemplate(tpl, tplData)
 		if err != nil {
+			s.countWebhookEvent(name, "error")
 			http.Error(w, fmt.Sprintf("paramsMapping[%s] error: %s", k, err), http.StatusBadRequest)
 			return
 		}
@@ -160,6 +178,7 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	// Fetch the Job.
 	job, err := s.store.GetJob(r.Context(), spec.Trigger.Job)
 	if err != nil {
+		s.countWebhookEvent(name, "error")
 		http.Error(w, "job not found: "+spec.Trigger.Job, http.StatusBadRequest)
 		return
 	}
@@ -172,11 +191,13 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	}
 	params, err = resolveParams(jobSpec.Params.Inputs, params)
 	if err != nil {
+		s.countWebhookEvent(name, "error")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	agentSelector, err = dsl.ExpandAgentSelector(agentSelector, params)
 	if err != nil {
+		s.countWebhookEvent(name, "error")
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -184,10 +205,12 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	// Create the Run.
 	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, "webhook:"+name)
 	if err != nil {
+		s.countWebhookEvent(name, "error")
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	s.countWebhookEvent(name, "accepted")
 	writeJSON(w, http.StatusOK, run)
 }
 
