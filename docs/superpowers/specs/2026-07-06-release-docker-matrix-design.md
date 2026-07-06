@@ -56,8 +56,9 @@ Per image: download that image's digest artifacts → GHCR login →
 `...:${{ github.ref_name }}`, listing both per-arch digests → optional
 `imagetools inspect` sanity check.
 
-Because merge only runs when all its image's builds succeeded, a failed arch
-never produces a partial multi-arch manifest or moves the tags.
+The merge stage runs only when the whole `build` matrix succeeded
+(`needs: build` standard semantics), so a failed build never produces a
+partial multi-arch manifest — and no tags move at all on any failure.
 
 ### Permissions / triggers
 
@@ -66,9 +67,11 @@ both job kinds).
 
 ## Failure modes
 
-- One arch fails → that image's merge is skipped, tags untouched; other
-  images proceed independently (same blast radius as today, minus QEMU
-  flakiness).
+- Any build fails → ALL merge jobs are skipped and no tags move (stricter
+  than today's sequential flow, which can leave earlier images tagged and
+  later ones not — this is an atomicity improvement, not a regression).
+  `fail-fast: false` still lets the remaining builds finish and warm their
+  caches for the retry.
 - GHA cache miss/eviction → build falls back to a full native build; caches
   are best-effort only.
 - Digest artifact lost between jobs → merge fails loudly; re-run the workflow.
