@@ -4,6 +4,9 @@ export const token = writable(localStorage.getItem('ecd_token') || '');
 export const serverURL = writable(localStorage.getItem('ecd_server') || window.location.origin);
 export const browserSSOEnabled = writable(false);
 export const currentUser = writable(null);
+// Server-set display preference (from /api/v1/ui-config): when true, the run log
+// renders step stderr the same color as stdout instead of red. Default: red.
+export const stderrPlain = writable(false);
 // Resolves once the initial session check (initAuth) has completed, whether it
 // found a session or not. The router waits on this before rendering the
 // current route so a hard-navigated / deep-linked hash route (e.g. reloading
@@ -51,6 +54,13 @@ export async function initAuth() {
     const headers = t ? { Authorization: 'Bearer ' + t } : {};
     const resp = await fetch(url + '/api/v1/auth/me', { headers, credentials: 'include' });
     if (resp.ok) currentUser.set(await resp.json());
+  } catch { }
+  try {
+    const resp = await fetch(url + '/api/v1/ui-config');
+    if (resp.ok) {
+      const cfg = await resp.json();
+      stderrPlain.set(cfg.stderrPlain === true);
+    }
   } catch { }
   authReady.set(true);
 }
