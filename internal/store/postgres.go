@@ -62,7 +62,9 @@ func (p *Postgres) Migrate(dsn string) error {
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return err
 	}
-	return nil
+	// Guard against migration-renumbering drift: version numbers alone can
+	// claim a file is applied when its schema objects never materialized.
+	return verifySchema(db)
 }
 
 func (p *Postgres) Ping(ctx context.Context) error {

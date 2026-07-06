@@ -458,3 +458,36 @@ from inside any WSL2 distro:
 ```bash
 test -f /sys/fs/cgroup/cgroup.controllers && echo "cgroup v2 active"
 ```
+
+## Schema drift (migration renumbering)
+
+**Symptom:** the controller exits at startup with an error like:
+
+```
+schema drift: schema_migrations.version=7 claims 007_step_call_link is applied,
+but step_reports.child_run_id does not exist; migration files were likely
+renumbered after this database was migrated - see docs/troubleshooting.md
+("Schema drift") for recovery
+```
+
+**Cause:** migration files were renumbered (typically when parallel branches
+merged) after this database had already been migrated. golang-migrate compares
+only version numbers, so a database whose recorded version matches an older
+numbering silently skips the current file with that number.
+
+**Diagnosis:** compare `SELECT version FROM schema_migrations;` against
+`internal/store/migrations/`. The startup error names the first migration
+whose objects are missing; later ones may be missing too.
+
+**Recovery:**
+
+1. For each missing migration (start with the one named in the error), apply
+   its `.up.sql` statements manually, e.g.:
+
+   ```
+   psql "$DSN" -f internal/store/migrations/007_step_call_link.up.sql
+   ```
+
+2. Leave `schema_migrations.version` as-is when it already equals the highest
+   migration number; only the schema objects were missing.
+3. Restart the controller. Startup verification re-runs and confirms the fix.
