@@ -708,7 +708,7 @@ A semaphore — allows up to `capacity` runs to proceed simultaneously.
 ```yaml
 spec:
   concurrency:
-    namedLocks:
+    semaphores:
       - pool: test-environments    # pool name
         capacity: 3                # max concurrent holders
 ```
@@ -724,7 +724,7 @@ spec:
   concurrency:
     orLocks:
       - name: env                          # parameter name prefix
-        candidates:
+        in:                                # candidate resources (list, or a $param expression)
           - staging-a
           - staging-b
           - staging-c

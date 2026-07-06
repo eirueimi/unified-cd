@@ -40,12 +40,12 @@ spec:
     - <label>                     # e.g. "kind:linux"
   concurrency:
     mutex: <string>
-    namedLocks:
+    semaphores:
       - pool: <string>
         capacity: <int>
     orLocks:
       - name: <string>
-        candidates:
+        in:                       # list of candidate values, or a $param expression
           - <string>
   timeoutMinutes: <number>
   podTemplate:                    # k8s-agent only — see Kubernetes Integration Guide
