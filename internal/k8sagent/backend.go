@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path"
 	"strconv"
+	"strings"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -43,14 +44,36 @@ func (b *k8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, script 
 }
 
 // RunImage runs a step in a fresh, throwaway pod built from step.RunsIn.Image.
+// The pod's env is sourced from the orchestrator's already-expanded env
+// (KEY=VALUE pairs — the caller resolves {{ .Params.x }} etc. before calling
+// RunImage), NOT the raw step.Env map, so a templated value ships resolved
+// rather than as the literal template string. imageStepEnv still supplies any
+// k8s-specific extras (currently just UNIFIED_AGENT_OS=linux); since the
+// orchestrator's env already carries UNIFIED_AGENT_OS from b.DefaultAgentOS(),
+// envSliceToMap is merged in last so the caller's expanded value wins over
+// imageStepEnv's default and no duplicate key results.
 func (b *k8sBackend) RunImage(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	envMap := make(map[string]string, len(step.Env)+1)
-	for k, v := range step.Env {
+	envMap := imageStepEnv(step)
+	for k, v := range envSliceToMap(env) {
 		envMap[k] = v
 	}
-	envMap["UNIFIED_AGENT_OS"] = "linux"
 	deadline := imageStepDeadline(step)
 	return b.a.runImageStep(ctx, b.runID, step.RunsIn.Image, envMap, deadline, step.RunsIn.Resources, script, stdout, stderr)
+}
+
+// envSliceToMap converts "KEY=VALUE" pairs (as produced by the orchestrator's
+// already-template-expanded extraEnv) into a map. A malformed entry with no
+// "=" is skipped defensively; the orchestrator never produces one.
+func envSliceToMap(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // RunNamedContainer runs a step inside a specific named container of the

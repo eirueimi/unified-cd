@@ -17,19 +17,6 @@ func TestExecContainer_FromRunsIn(t *testing.T) {
 	assert.Equal(t, "", execContainer(api.ClaimStep{RunsIn: &dsl.RunsIn{Image: "golang:1.22"}}))
 }
 
-func TestExpandStepEnv(t *testing.T) {
-	td := dsl.TemplateData{Stdout: "v1"}
-	// literal passes through; a template value is expanded
-	out := expandStepEnv(map[string]string{
-		"LIT": "plain",
-		"TPL": "{{ .Stdout }}",
-	}, td)
-	assert.Equal(t, "plain", out["LIT"])
-	assert.Equal(t, "v1", out["TPL"])
-	// nil in, nil-safe out
-	assert.Nil(t, expandStepEnv(nil, td))
-}
-
 func TestImageStepEnv(t *testing.T) {
 	original := map[string]string{"FOO": "bar"}
 	step := api.ClaimStep{Env: original}

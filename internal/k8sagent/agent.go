@@ -274,23 +274,6 @@ func execContainer(s api.ClaimStep) string {
 	return ""
 }
 
-// expandStepEnv template-expands each env value against the run's template data
-// so a runsIn.image container receives resolved values (mirrors the host agent).
-func expandStepEnv(env map[string]string, td dsl.TemplateData) map[string]string {
-	if len(env) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(env)+1)
-	for k, v := range env {
-		ev, err := dsl.ExpandTemplate(v, td)
-		if err != nil {
-			ev = v
-		}
-		out[k] = ev
-	}
-	return out
-}
-
 // imageStepEnv returns a fresh env map for a runsIn.image container: the step's
 // env plus UNIFIED_AGENT_OS. Always a new map, so callers never mutate the claim.
 // The throwaway pod runs a Linux container image regardless of the agent's host
