@@ -55,6 +55,7 @@ type Run struct {
 	CreatedAt   time.Time         `json:"createdAt"`
 	UpdatedAt   time.Time         `json:"updatedAt"`
 	TriggeredBy string            `json:"triggeredBy"`
+	ClaimedBy   string            `json:"claimedBy,omitempty"` // Claiming agent's ID; empty until claimed.
 	CalledBy    *CalledBy         `json:"calledBy,omitempty"`
 }
 
@@ -426,15 +427,15 @@ type AppSourceSyncPolicy struct {
 
 // AppSourceMeta is the metadata for an AppSource (for API responses).
 type AppSourceMeta struct {
-	Name             string                `json:"name"`
-	RepoURL          string                `json:"repoURL"`
-	TargetRevision   string                `json:"targetRevision"`
-	Path             string                `json:"path"`
-	LastSyncedAt     *time.Time            `json:"lastSyncedAt,omitempty"`
-	LastCommit       string                `json:"lastCommit,omitempty"`
-	SyncStatus       string                `json:"syncStatus,omitempty"`
-	LastError        string                `json:"lastError,omitempty"`
-	UpdatedAt        time.Time             `json:"updatedAt"`
-	SyncPolicy       *AppSourceSyncPolicy  `json:"syncPolicy,omitempty"`
-	ManagedResources []ResourceRef         `json:"managedResources,omitempty"`
+	Name             string               `json:"name"`
+	RepoURL          string               `json:"repoURL"`
+	TargetRevision   string               `json:"targetRevision"`
+	Path             string               `json:"path"`
+	LastSyncedAt     *time.Time           `json:"lastSyncedAt,omitempty"`
+	LastCommit       string               `json:"lastCommit,omitempty"`
+	SyncStatus       string               `json:"syncStatus,omitempty"`
+	LastError        string               `json:"lastError,omitempty"`
+	UpdatedAt        time.Time            `json:"updatedAt"`
+	SyncPolicy       *AppSourceSyncPolicy `json:"syncPolicy,omitempty"`
+	ManagedResources []ResourceRef        `json:"managedResources,omitempty"`
 }

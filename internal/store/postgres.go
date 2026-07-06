@@ -195,12 +195,13 @@ func (p *Postgres) ListChildRunIDs(ctx context.Context, parentRunID string) ([]s
 var ErrRunNotFound = errors.New("run not found")
 
 func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
-	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by FROM runs WHERE id = $1`
+	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by, claimed_by FROM runs WHERE id = $1`
 	var r api.Run
 	var paramsOut []byte
 	var status string
+	var claimedBy *string
 	err := p.pool.QueryRow(ctx, q, id).
-		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy)
+		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &claimedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, id)
 	}
@@ -208,6 +209,9 @@ func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
 		return nil, fmt.Errorf("get run: %w", err)
 	}
 	r.Status = api.RunStatus(status)
+	if claimedBy != nil {
+		r.ClaimedBy = *claimedBy
+	}
 	_ = json.Unmarshal(paramsOut, &r.Params)
 	if r.Params == nil {
 		r.Params = map[string]string{}
