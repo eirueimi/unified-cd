@@ -618,6 +618,47 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				return
 			}
 
+			// call: launch a child Run and wait for it. Shared with the host
+			// agent via agentlib.ExecuteCallStep so the two backends cannot
+			// diverge; where the child actually runs is decided by the child
+			// job's own scheduling (k8s -> k8s or k8s -> a dedicated host).
+			if step.Call != nil {
+				outputs, childRunID, callErr := agentlib.ExecuteCallStep(execCtx, a.client, a.cfg.AgentID, c.RunID, step, tplData)
+				status := "Succeeded"
+				if callErr != nil {
+					slog.Error("k8s: call step failed", "step", step.Name, "error", callErr)
+					status = "Failed"
+				} else if len(outputs) > 0 {
+					if step.MatrixKey != "" {
+						sd := stepCtx.Steps[step.Name]
+						if sd.Outputs == nil {
+							sd.Outputs = map[string]any{}
+						}
+						for k, v := range outputs {
+							m, _ := sd.Outputs[k].(map[string]string)
+							if m == nil {
+								m = map[string]string{}
+							}
+							m[step.MatrixKey] = v
+							sd.Outputs[k] = m
+						}
+						stepCtx.Steps[step.Name] = sd
+					} else {
+						stepCtx.Steps[step.Name] = dsl.StepData{Outputs: dsl.StringOutputs(outputs)}
+					}
+					_ = a.client.SetStepOutputs(ctx, a.cfg.AgentID, c.RunID, step.Index, step.MatrixKey, outputs)
+				}
+				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
+					StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status,
+					ChildRunID: childRunID, CallJobName: step.Call.Job, EndedAt: time.Now().UTC(),
+				})
+				if status == "Failed" {
+					recordFailure(step)
+				}
+				return
+			}
+
 			started := time.Now().UTC()
 			_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
 				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
