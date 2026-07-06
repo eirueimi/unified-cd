@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/config"
-	"github.com/eirueimi/unified-cd/internal/gittemplate"
 	"github.com/eirueimi/unified-cd/internal/controller"
+	"github.com/eirueimi/unified-cd/internal/gittemplate"
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
@@ -111,6 +112,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Metrics: DB-backed gauges + store decorator counting run/step
+	// transitions. staleAfter=90s matches the stuck-run reaper's window.
+	m := metrics.New()
+	m.RegisterDBCollector(pg, 90*time.Second)
+	st := metrics.NewInstrumentedStore(pg, m)
+
 	// UNIFIED_TOKEN is synced to the DB as a PAT. This allows it to be listed
 	// and deleted (revoked) via /api/v1/tokens just like regular PATs. If the
 	// token is later unset, the previously synced row is removed.
@@ -166,7 +173,8 @@ func main() {
 		slog.Warn("no object store configured — log archival disabled")
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, AgentToken: *token, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax}, pg)
+	srv := controller.NewServer(controller.Config{Token: *token, AgentToken: *token, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax}, st)
+	srv.SetMetrics(m)
 	srv.SetKeyManager(km)
 	if obj != nil {
 		srv.SetObjectStore(obj)
@@ -193,7 +201,7 @@ func main() {
 		}
 	}
 
-	go controller.RunScheduler(ctx, pg, 200*time.Millisecond)
+	go controller.RunScheduler(ctx, st, 200*time.Millisecond)
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
@@ -226,25 +234,25 @@ func main() {
 		}
 	}()
 	if obj != nil {
-		go controller.RunLogArchiver(ctx, pg, obj, 30*time.Second)
-		go controller.RunCacheCleanup(ctx, pg, obj)
+		go controller.RunLogArchiver(ctx, st, obj, 30*time.Second)
+		go controller.RunCacheCleanup(ctx, st, obj)
 	}
-	go controller.RunApprovalReaper(ctx, pg, time.Minute)
-	go controller.RunStuckRunReaper(ctx, pg, 30*time.Second, 90*time.Second, 60*time.Second)
+	go controller.RunApprovalReaper(ctx, st, time.Minute)
+	go controller.RunStuckRunReaper(ctx, st, 30*time.Second, 90*time.Second, 60*time.Second)
 	// Fail runs that have sat Queued for >5m with no live agent able to claim
 	// them (the agent they need disconnected), so they don't stay "in progress"
 	// forever. staleAfter=90s matches the stuck-run reaper's agent-liveness window.
-	go controller.RunQueuedRunReaper(ctx, pg, 30*time.Second, 5*time.Minute, 90*time.Second)
+	go controller.RunQueuedRunReaper(ctx, st, 30*time.Second, 5*time.Minute, 90*time.Second)
 	// Reap AppSources stuck in "Syncing" (bug #33): the manual sync-trigger API sets
 	// sync_status="Syncing" synchronously, so a reconciler crash / restart / leadership
 	// change mid-sync can strand the row forever. Reset any Syncing row older than 5m.
-	go controller.RunAppSourceSyncReaper(ctx, pg, 30*time.Second, 5*time.Minute)
+	go controller.RunAppSourceSyncReaper(ctx, st, 30*time.Second, 5*time.Minute)
 	if *auditRetentionDays > 0 {
 		slog.Info("audit log retention enabled", "retentionDays", *auditRetentionDays)
 	} else {
 		slog.Info("audit log retention disabled (keep forever)")
 	}
-	go controller.RunAuditRetention(ctx, pg, time.Hour, *auditRetentionDays)
+	go controller.RunAuditRetention(ctx, st, time.Hour, *auditRetentionDays)
 	go func() {
 		var gitCache *gittemplate.Cache
 		if obj != nil {
@@ -252,11 +260,11 @@ func main() {
 		}
 		fetcher := gittemplate.NewFetcher()
 		resolver := gittemplate.NewResolver(fetcher, gitCache)
-		controller.RunGitResolver(ctx, pg, resolver, km, 200*time.Millisecond)
+		controller.RunGitResolver(ctx, st, resolver, km, 200*time.Millisecond)
 	}()
 	go func() {
 		fetcher := gittemplate.NewFetcher()
-		controller.RunAppSourceReconciler(ctx, pg, fetcher, km, 30*time.Second)
+		controller.RunAppSourceReconciler(ctx, st, fetcher, km, 30*time.Second)
 	}()
 
 	httpSrv := &http.Server{
