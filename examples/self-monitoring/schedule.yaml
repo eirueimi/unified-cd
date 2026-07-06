@@ -1,0 +1,7 @@
+apiVersion: unified-cd/v1
+kind: Schedule
+metadata:
+  name: self-monitor-every-5m
+spec:
+  cron: "*/5 * * * *"
+  job: self-monitor

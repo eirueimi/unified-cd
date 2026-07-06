@@ -1,0 +1,48 @@
+# Self-monitoring job: polls the controller's own /metrics endpoint and
+# alerts via the slack-notify template (templates/slack-notify.yaml) when
+# no agents are alive or the run queue backlog exceeds a threshold.
+#
+# Register the slack-notify template and its webhook secret first — see
+# examples/self-monitoring/README.md for setup steps.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: self-monitor
+spec:
+  params:
+    inputs:
+      - name: controller_url
+        type: string
+        default: "http://localhost:8080"
+      - name: backlog_threshold
+        type: int
+        default: "20"
+  steps:
+    - name: check
+      timeoutMinutes: 2
+      run: |
+        set -e
+        m=$(curl -fsS --max-time 10 "{{ .Params.controller_url }}/metrics")
+        alive=$(printf '%s\n' "$m" | awk '$1 == "unifiedcd_agents{state=\"alive\"}" {print int($2)}')
+        backlog=$(printf '%s\n' "$m" | awk '$1 == "unifiedcd_runs_current{status=\"Pending\"}" || $1 == "unifiedcd_runs_current{status=\"Queued\"}" {s += $2} END {print int(s)}')
+        msg=""
+        if [ "${alive:-0}" -eq 0 ]; then
+          msg="no alive agents"
+        fi
+        if [ "${backlog:-0}" -gt "{{ .Params.backlog_threshold }}" ]; then
+          msg="${msg:+$msg; }queue backlog ${backlog} exceeds {{ .Params.backlog_threshold }}"
+        fi
+        echo "ALIVE=${alive:-0}"
+        echo "BACKLOG=${backlog:-0}"
+        echo "ALERT=$msg"
+      outputs:
+        alert_message: '{{ .Stdout | grep "ALERT=" | cut "=" 2 | trim }}'
+    - name: notify
+      if: steps.check.outputs.alert_message != ""
+      call:
+        job: slack-notify
+        with:
+          status: "failure"
+          job_name: "self-monitor"
+          run_id: "{{ .RunID }}"
+          message: "{{ .Steps.check.Outputs.alert_message }}"
