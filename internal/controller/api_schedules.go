@@ -41,6 +41,7 @@ func (s *Server) handleApplySchedule(w http.ResponseWriter, r *http.Request) {
 		JobName:     stored.JobName,
 		LastFiredAt: stored.LastFiredAt,
 		UpdatedAt:   stored.UpdatedAt,
+		Params:      stored.Params,
 	})
 }
 
@@ -59,6 +60,7 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 			JobName:     sc.JobName,
 			LastFiredAt: sc.LastFiredAt,
 			UpdatedAt:   sc.UpdatedAt,
+			Params:      sc.Params,
 		})
 	}
 	writeJSON(w, http.StatusOK, result)

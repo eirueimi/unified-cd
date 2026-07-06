@@ -100,7 +100,7 @@ func (s *Server) handleSyncAppSource(w http.ResponseWriter, r *http.Request) {
 
 // appSourceToMeta converts a store.AppSource and dsl.AppSourceSpec into an api.AppSourceMeta.
 func appSourceToMeta(a *store.AppSource, spec dsl.AppSourceSpec) api.AppSourceMeta {
-	return api.AppSourceMeta{
+	m := api.AppSourceMeta{
 		Name:           a.Name,
 		RepoURL:        spec.RepoURL,
 		TargetRevision: spec.TargetRevision,
@@ -111,4 +111,15 @@ func appSourceToMeta(a *store.AppSource, spec dsl.AppSourceSpec) api.AppSourceMe
 		LastError:      a.LastError,
 		UpdatedAt:      a.UpdatedAt,
 	}
+	if spec.SyncPolicy != (dsl.AppSyncPolicy{}) {
+		m.SyncPolicy = &api.AppSourceSyncPolicy{
+			Interval:            spec.SyncPolicy.Interval,
+			Prune:               spec.SyncPolicy.Prune,
+			AllowManualOverride: spec.SyncPolicy.AllowManualOverride,
+		}
+	}
+	for _, ref := range a.ManagedResources {
+		m.ManagedResources = append(m.ManagedResources, api.ResourceRef{Kind: ref.Kind, Name: ref.Name})
+	}
+	return m
 }

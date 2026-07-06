@@ -43,7 +43,7 @@ func (s *Server) handleApplyWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, api.WebhookReceiverMeta{
-		ID: stored.ID, Name: stored.Name, UpdatedAt: stored.UpdatedAt,
+		ID: stored.ID, Name: stored.Name, UpdatedAt: stored.UpdatedAt, Spec: stored.Spec,
 	})
 }
 
@@ -56,7 +56,7 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]api.WebhookReceiverMeta, 0, len(list))
 	for _, wr := range list {
-		result = append(result, api.WebhookReceiverMeta{ID: wr.ID, Name: wr.Name, UpdatedAt: wr.UpdatedAt})
+		result = append(result, api.WebhookReceiverMeta{ID: wr.ID, Name: wr.Name, UpdatedAt: wr.UpdatedAt, Spec: wr.Spec})
 	}
 	writeJSON(w, http.StatusOK, result)
 }
