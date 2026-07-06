@@ -530,13 +530,51 @@ spec:
 | `spec.path` | string | Yes | Directory within the repo to scan for YAML files (recursive) |
 | `spec.syncPolicy.interval` | string | No | How often to check for changes (e.g. `5m`, `1h`). Default: `5m`, minimum: `1m` |
 | `spec.syncPolicy.prune` | bool | No | If `true`, resources that are removed from the repo are deleted from the controller. Default: `false` |
+| `spec.syncPolicy.allowManualOverride` | bool | No | If `true`, disables managed-resource protection for this AppSource's resources (direct apply/delete is allowed). Default: `false` |
+
+### Managed-resource protection
+
+Resources synced by an AppSource (listed in its managed resources) are
+protected from direct modification: `unified-cd apply` and REST API
+writes/deletes targeting them are rejected with **409 Conflict**, keeping Git
+the source of truth. The error names the managing AppSource and its repoURL.
+
+To edit such a resource, change it in the Git repository and let the AppSource
+sync it. To intentionally allow manual overrides (e.g. during an incident),
+set on the AppSource:
+
+```yaml
+spec:
+  syncPolicy:
+    allowManualOverride: true
+```
+
+Notes:
+
+- Matching is exact on `{kind, qualified name}`.
+- An AppSource that manages **itself** (app-of-apps root) can always be
+  re-applied directly, so a broken Git state stays repairable.
+- The guard fails closed: if the controller cannot check the management state
+  (DB error), the write is rejected.
+
+### Migrating manually-applied resources to Git
+
+1. `unified-cd export -o ./exported --unmanaged-only`
+2. Commit the directory to a Git repository.
+3. Apply an AppSource whose `path` points at the exported directory.
+4. On the first sync each resource is upserted under its existing name and
+   recorded as managed — no manual deletion is needed, and from then on the
+   resources are protected from direct writes. Within a sync, Jobs and
+   GitCredentials are applied before Schedules and WebhookReceivers, so a
+   Schedule or WebhookReceiver that references a Job by name resolves
+   correctly on the very first sync regardless of file path order.
 
 ### Sync behavior
 
 1. The controller clones or fetches the repository at every `interval`.
 2. All `.yaml` files under `path` are scanned recursively.
 3. AppSource syncs `Job`, `Schedule`, `WebhookReceiver`, `GitCredential`, and `AppSource` documents found (recursively) under `spec.path`. Files of other kinds, or files that fail to parse, are skipped with a per-file warning; the rest of the sync continues.
-4. Files are processed in sorted path order. If two files declare the same kind and name, the first (lexicographically earliest path) wins and the rest are skipped with a warning.
+4. Files are applied in two passes — GitCredentials and Jobs first, then Schedules, WebhookReceivers, and AppSources — so cross-references (e.g. a Schedule's `job`) resolve on the first sync. Within each pass, files are processed in sorted path order. If two files declare the same kind and name, the first (lexicographically earliest path) wins and the rest are skipped with a warning.
 5. If `prune: true`, resources that were previously managed by this AppSource but no longer appear in the repo are deleted. Pruning a nested `AppSource` removes only that AppSource; the resources it managed are left in place (non-cascading, matching Argo CD's default).
 
 Do not manage the same resource from two AppSources — the last sync wins.

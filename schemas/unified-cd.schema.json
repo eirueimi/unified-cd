@@ -54,6 +54,10 @@
     "AppSyncPolicy": {
       "additionalProperties": false,
       "properties": {
+        "allowManualOverride": {
+          "description": "AllowManualOverride disables the managed-resource write guard for\nresources managed by this AppSource (direct apply/delete is allowed).",
+          "type": "boolean"
+        },
         "interval": {
           "type": "string"
         },

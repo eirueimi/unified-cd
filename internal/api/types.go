@@ -284,6 +284,7 @@ type WebhookReceiverMeta struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	Spec      []byte    `json:"spec,omitempty"`
 }
 
 // ---- schedules ----
@@ -295,11 +296,12 @@ type ApplyScheduleRequest struct {
 
 // ScheduleMeta is the metadata for a Schedule (for API responses).
 type ScheduleMeta struct {
-	Name        string     `json:"name"`
-	Cron        string     `json:"cron"`
-	JobName     string     `json:"jobName"`
-	LastFiredAt *time.Time `json:"lastFiredAt,omitempty"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	Name        string            `json:"name"`
+	Cron        string            `json:"cron"`
+	JobName     string            `json:"jobName"`
+	LastFiredAt *time.Time        `json:"lastFiredAt,omitempty"`
+	UpdatedAt   time.Time         `json:"updatedAt"`
+	Params      map[string]string `json:"params,omitempty"`
 }
 
 // AgentInfo holds the status information of an agent.
@@ -408,15 +410,31 @@ type ApplyAppSourceRequest struct {
 	YAML string `json:"yaml"`
 }
 
+// ResourceRef identifies a resource managed by an AppSource
+// (API mirror of store.ResourceRef).
+type ResourceRef struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
+// AppSourceSyncPolicy is the API mirror of dsl.AppSyncPolicy.
+type AppSourceSyncPolicy struct {
+	Interval            string `json:"interval,omitempty"`
+	Prune               bool   `json:"prune,omitempty"`
+	AllowManualOverride bool   `json:"allowManualOverride,omitempty"`
+}
+
 // AppSourceMeta is the metadata for an AppSource (for API responses).
 type AppSourceMeta struct {
-	Name           string     `json:"name"`
-	RepoURL        string     `json:"repoURL"`
-	TargetRevision string     `json:"targetRevision"`
-	Path           string     `json:"path"`
-	LastSyncedAt   *time.Time `json:"lastSyncedAt,omitempty"`
-	LastCommit     string     `json:"lastCommit,omitempty"`
-	SyncStatus     string     `json:"syncStatus,omitempty"`
-	LastError      string     `json:"lastError,omitempty"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
+	Name             string                `json:"name"`
+	RepoURL          string                `json:"repoURL"`
+	TargetRevision   string                `json:"targetRevision"`
+	Path             string                `json:"path"`
+	LastSyncedAt     *time.Time            `json:"lastSyncedAt,omitempty"`
+	LastCommit       string                `json:"lastCommit,omitempty"`
+	SyncStatus       string                `json:"syncStatus,omitempty"`
+	LastError        string                `json:"lastError,omitempty"`
+	UpdatedAt        time.Time             `json:"updatedAt"`
+	SyncPolicy       *AppSourceSyncPolicy  `json:"syncPolicy,omitempty"`
+	ManagedResources []ResourceRef         `json:"managedResources,omitempty"`
 }

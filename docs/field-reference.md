@@ -425,6 +425,8 @@ the named AppSource on the next reconciler tick.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `allowManualOverride` | boolean | no | AllowManualOverride disables the managed-resource write guard for
+resources managed by this AppSource (direct apply/delete is allowed). |
 | `interval` | string | no |  |
 | `prune` | boolean | no |  |
 

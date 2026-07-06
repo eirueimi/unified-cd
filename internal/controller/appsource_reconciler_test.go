@@ -454,6 +454,53 @@ func TestReconciler_DirectoryBecomesQualifiedName(t *testing.T) {
 	}
 }
 
+// TestReconciler_SchedulesAppliedAfterJobsInSortedTree is the regression test
+// for the sorted-order FK wedge: schedules/nightly.yaml (a Schedule
+// referencing job "team-a/build") sorts lexicographically BEFORE
+// team-a/build.yaml (the Job it references). Applying strictly in sorted-path
+// order therefore tries to UpsertSchedule before the referenced job exists,
+// which hits the schedules.job_name FK and returns errStoreWrite, aborting the
+// whole sync before last_commit is ever set — the same failure repeats every
+// tick, forever. The fix applies GitCredential/Job files before
+// Schedule/WebhookReceiver/AppSource/unknown-kind files within a single sync,
+// regardless of path sort order, so the tree exported by `unified-cli export`
+// (which places schedules/ alongside qualified job paths) always syncs in one
+// pass.
+func TestReconciler_SchedulesAppliedAfterJobsInSortedTree(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.UpsertAppSource(ctx, "src", []byte(appSourceSpecJSON))
+	require.NoError(t, err)
+
+	jobDoc := []byte("apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: build\nspec:\n  steps:\n    - name: c\n      run: \"true\"\n")
+	scheduleDoc := []byte("apiVersion: unified-cd/v1\nkind: Schedule\nmetadata:\n  name: nightly\nspec:\n  cron: \"0 3 * * *\"\n  job: team-a/build\n")
+
+	fetcher := &mockAppSourceFetcher{
+		sha: "sha1",
+		files: map[string][]byte{
+			// Lexicographically, "schedules/nightly.yaml" < "team-a/build.yaml",
+			// so a naive sorted-order apply would try the Schedule (and its FK on
+			// job_name) before the Job exists.
+			"schedules/nightly.yaml": scheduleDoc,
+			"team-a/build.yaml":      jobDoc,
+		},
+	}
+
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	_, err = pg.GetJob(ctx, "team-a/build")
+	require.NoError(t, err, "job must be applied")
+	_, err = pg.GetSchedule(ctx, "nightly")
+	require.NoError(t, err, "schedule must be applied in the same sync as the job it references")
+
+	src, err := pg.GetAppSource(ctx, "src")
+	require.NoError(t, err)
+	assert.Equal(t, "sha1", src.LastCommit, "sync must succeed (last_commit set) in one pass")
+	assert.NotEqual(t, "Failed", src.SyncStatus)
+	require.Len(t, src.ManagedResources, 2)
+}
+
 // TestRedactURLCredentials covers bug #33: credentials embedded in a repoURL
 // (https://user:secret@host/...) must never leak into the persisted last_error.
 func TestRedactURLCredentials(t *testing.T) {

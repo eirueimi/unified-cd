@@ -1895,6 +1895,30 @@ func (p *Postgres) SetAppSourceSyncStatus(ctx context.Context, name, status, las
 	return err
 }
 
+// FindManagingAppSource returns the AppSource whose managed_resources contains
+// {kind,name}, or nil when the resource is not managed by any AppSource.
+func (p *Postgres) FindManagingAppSource(ctx context.Context, kind, name string) (*AppSource, error) {
+	ref, err := json.Marshal([]ResourceRef{{Kind: kind, Name: name}})
+	if err != nil {
+		return nil, err
+	}
+	const q = `SELECT name, spec, last_synced_at, last_commit, managed_resources, updated_at, sync_status, last_error
+FROM app_sources WHERE managed_resources @> $1::jsonb LIMIT 1`
+	var a AppSource
+	var mr []byte
+	err = p.pool.QueryRow(ctx, q, ref).Scan(&a.Name, &a.Spec, &a.LastSyncedAt, &a.LastCommit, &mr, &a.UpdatedAt, &a.SyncStatus, &a.LastError)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := unmarshalManagedResources(mr, &a); err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
 // stuckSyncingResetError is the last_error recorded on an AppSource that the
 // sync reaper reset after it was stuck in "Syncing" past the timeout.
 const stuckSyncingResetError = "sync reset by reaper: stuck in Syncing past timeout (previous sync did not complete — reconciler crash, process restart, or leadership change)"

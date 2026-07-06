@@ -27,6 +27,10 @@ func (s *Server) handleUpsertGitCredential(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "credType must be 'token' or 'sshKey'", http.StatusBadRequest)
 		return
 	}
+	if err := s.guardManagedResource(r.Context(), "GitCredential", req.Name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	if err := s.store.UpsertGitCredential(r.Context(), req.Name, req.Host, req.CredType, req.SecretRef); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -52,6 +56,10 @@ func (s *Server) handleListGitCredentials(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleDeleteGitCredential(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+	if err := s.guardManagedResource(r.Context(), "GitCredential", name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	if err := s.store.DeleteGitCredential(r.Context(), name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

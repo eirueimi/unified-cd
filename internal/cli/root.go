@@ -40,6 +40,7 @@ func NewRoot() *cobra.Command {
 	}
 
 	root.AddCommand(newApplyCmd(resolve))
+	root.AddCommand(newExportCmd(resolve))
 	root.AddCommand(newJobsCmd(resolve))
 	root.AddCommand(newRunCmd(resolve))
 	root.AddCommand(newLogsCmd(resolve))

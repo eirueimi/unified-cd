@@ -23,6 +23,10 @@ func (s *Server) handleApplyAppSource(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid yaml: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := s.guardManagedResource(r.Context(), "AppSource", as.Metadata.Name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	specJSON, err := json.Marshal(as.Spec)
 	if err != nil {
 		http.Error(w, "marshal spec: "+err.Error(), http.StatusInternalServerError)
@@ -68,6 +72,10 @@ func (s *Server) handleGetAppSource(w http.ResponseWriter, r *http.Request) {
 // handleDeleteAppSource deletes the AppSource with the given name.
 func (s *Server) handleDeleteAppSource(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+	if err := s.guardManagedResource(r.Context(), "AppSource", name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	if err := s.store.DeleteAppSource(r.Context(), name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -92,7 +100,7 @@ func (s *Server) handleSyncAppSource(w http.ResponseWriter, r *http.Request) {
 
 // appSourceToMeta converts a store.AppSource and dsl.AppSourceSpec into an api.AppSourceMeta.
 func appSourceToMeta(a *store.AppSource, spec dsl.AppSourceSpec) api.AppSourceMeta {
-	return api.AppSourceMeta{
+	m := api.AppSourceMeta{
 		Name:           a.Name,
 		RepoURL:        spec.RepoURL,
 		TargetRevision: spec.TargetRevision,
@@ -103,4 +111,15 @@ func appSourceToMeta(a *store.AppSource, spec dsl.AppSourceSpec) api.AppSourceMe
 		LastError:      a.LastError,
 		UpdatedAt:      a.UpdatedAt,
 	}
+	if spec.SyncPolicy != (dsl.AppSyncPolicy{}) {
+		m.SyncPolicy = &api.AppSourceSyncPolicy{
+			Interval:            spec.SyncPolicy.Interval,
+			Prune:               spec.SyncPolicy.Prune,
+			AllowManualOverride: spec.SyncPolicy.AllowManualOverride,
+		}
+	}
+	for _, ref := range a.ManagedResources {
+		m.ManagedResources = append(m.ManagedResources, api.ResourceRef{Kind: ref.Kind, Name: ref.Name})
+	}
+	return m
 }

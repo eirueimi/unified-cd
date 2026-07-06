@@ -257,6 +257,10 @@ type Store interface {
 	UpdateAppSourceSyncState(ctx context.Context, name, lastCommit string, syncedAt time.Time, managed []ResourceRef) error
 	ResetAppSourceCommit(ctx context.Context, name string) error
 	SetAppSourceSyncStatus(ctx context.Context, name, status, lastError string) error
+	// FindManagingAppSource returns the AppSource whose managed_resources
+	// contains {kind,name}, or nil when the resource is not managed by any
+	// AppSource. Exact match only (Job names are qualified).
+	FindManagingAppSource(ctx context.Context, kind, name string) (*AppSource, error)
 	// ResetStuckSyncingAppSources resets AppSources stuck in sync_status='Syncing'
 	// whose updated_at is older than olderThan to a retryable state (clears
 	// last_commit so the next reconcile tick re-syncs), returning the count reset.
