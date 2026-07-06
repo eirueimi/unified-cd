@@ -531,6 +531,31 @@ spec:
 | `spec.syncPolicy.interval` | string | No | How often to check for changes (e.g. `5m`, `1h`). Default: `5m`, minimum: `1m` |
 | `spec.syncPolicy.prune` | bool | No | If `true`, resources that are removed from the repo are deleted from the controller. Default: `false` |
 
+### Managed-resource protection
+
+Resources synced by an AppSource (listed in its managed resources) are
+protected from direct modification: `unified-cli apply` and REST API
+writes/deletes targeting them are rejected with **409 Conflict**, keeping Git
+the source of truth. The error names the managing AppSource and its repoURL.
+
+To edit such a resource, change it in the Git repository and let the AppSource
+sync it. To intentionally allow manual overrides (e.g. during an incident),
+set on the AppSource:
+
+```yaml
+spec:
+  syncPolicy:
+    allowManualOverride: true
+```
+
+Notes:
+
+- Matching is exact on `{kind, qualified name}`.
+- An AppSource that manages **itself** (app-of-apps root) can always be
+  re-applied directly, so a broken Git state stays repairable.
+- The guard fails closed: if the controller cannot check the management state
+  (DB error), the write is rejected.
+
 ### Sync behavior
 
 1. The controller clones or fetches the repository at every `interval`.
