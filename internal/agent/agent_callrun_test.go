@@ -19,16 +19,16 @@ import (
 // `call: { job: <jobName> }` through the mock-HTTP-server harness (mirroring
 // agent_finally_test.go / agent_if_test.go). The fake CreateRun returns a
 // fixed child run ID; the fake child run reports Succeeded so the call
-// completes. It returns the terminal StepReportRequest observed for the call
-// step (the one with Status Succeeded or Failed, i.e. not "Running").
-func runCallStepThroughFakeClient(t *testing.T, jobName, childRunID string) *api.StepReportRequest {
+// completes. It returns every StepReportRequest observed for the call step,
+// in arrival order.
+func runCallStepThroughFakeClient(t *testing.T, jobName, childRunID string) []api.StepReportRequest {
 	t.Helper()
 
 	const agentID = "call-agent"
 	const runID = "run-call"
 
 	var mu sync.Mutex
-	var terminalReport *api.StepReportRequest
+	var reports []api.StepReportRequest
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
@@ -37,12 +37,9 @@ func runCallStepThroughFakeClient(t *testing.T, jobName, childRunID string) *api
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
 		var req api.StepReportRequest
 		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
-		if req.Status == "Succeeded" || req.Status == "Failed" {
-			mu.Lock()
-			reqCopy := req
-			terminalReport = &reqCopy
-			mu.Unlock()
-		}
+		mu.Lock()
+		reports = append(reports, req)
+		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/v1/runs", func(w http.ResponseWriter, r *http.Request) {
@@ -86,7 +83,17 @@ func runCallStepThroughFakeClient(t *testing.T, jobName, childRunID string) *api
 
 	mu.Lock()
 	defer mu.Unlock()
-	return terminalReport
+	return reports
+}
+
+// terminalCallReport returns the terminal (Succeeded/Failed) report, or nil.
+func terminalCallReport(reports []api.StepReportRequest) *api.StepReportRequest {
+	for i := range reports {
+		if reports[i].Status == "Succeeded" || reports[i].Status == "Failed" {
+			return &reports[i]
+		}
+	}
+	return nil
 }
 
 func TestExecuteRun_CallStep_ReportsChildLink(t *testing.T) {
@@ -95,10 +102,37 @@ func TestExecuteRun_CallStep_ReportsChildLink(t *testing.T) {
 	// returns a known child id; the fake child run reports Succeeded so the
 	// call completes. Assert the terminal StepReport for the call step carries
 	// ChildRunID == <that id> and CallJobName == "child-job".
-	rec := runCallStepThroughFakeClient(t, "child-job", "fixed-child-run-id")
+	reports := runCallStepThroughFakeClient(t, "child-job", "fixed-child-run-id")
+	rec := terminalCallReport(reports)
 	require.NotNil(t, rec)
 	assert.Equal(t, "fixed-child-run-id", rec.ChildRunID)
 	assert.Equal(t, "child-job", rec.CallJobName)
+}
+
+// TestExecuteRun_CallStep_ReportsChildLinkWhileRunning pins that the child-run
+// link is visible while the call step is still in flight, not only on the
+// terminal report. Long-running child jobs are exactly when users need to
+// navigate to the child's logs, so the agent must report ChildRunID on a
+// non-terminal ("Running") report immediately after the child run is created.
+func TestExecuteRun_CallStep_ReportsChildLinkWhileRunning(t *testing.T) {
+	reports := runCallStepThroughFakeClient(t, "child-job", "fixed-child-run-id")
+
+	var earlyLink *api.StepReportRequest
+	for i := range reports {
+		if reports[i].Status == "Running" && reports[i].ChildRunID != "" {
+			earlyLink = &reports[i]
+			break
+		}
+	}
+	require.NotNil(t, earlyLink,
+		"expected a non-terminal (Running) step report carrying ChildRunID; got reports: %+v", reports)
+	assert.Equal(t, "fixed-child-run-id", earlyLink.ChildRunID)
+	assert.Equal(t, "child-job", earlyLink.CallJobName)
+	// The early link report must not carry a StartedAt: the controller maps a
+	// zero StartedAt to NULL, and the UPSERT's COALESCE then preserves the
+	// original started_at from the initial Running report.
+	assert.True(t, earlyLink.StartedAt.IsZero(),
+		"early link report must leave StartedAt zero so it cannot clobber the recorded start time")
 }
 
 // TestExecuteRun_CallStep_BadParamTemplate_FailsStep verifies that a call

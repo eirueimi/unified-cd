@@ -537,7 +537,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			var stepScopeHandle crt.ContainerHandle
 
 			if step.Call != nil {
-				childOutputs, childRunID, callErr := a.executeCallStep(stepCtx, step, tplData)
+				childOutputs, childRunID, callErr := a.executeCallStep(stepCtx, c.RunID, step, tplData)
 				callChildRunID = childRunID
 				callJobName = step.Call.Job
 				if callErr != nil {
@@ -798,7 +798,9 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 // template failure, or the create request itself failed); on every other
 // path (success, failure, cancellation, timeout) it is returned alongside
 // the error so the link is preserved even for failed calls.
-func (a *Agent) executeCallStep(ctx context.Context, step api.ClaimStep, tplData dsl.TemplateData) (outputs map[string]string, childRunID string, err error) {
+// runID is the PARENT run's ID, used to publish the child link on a
+// non-terminal step report as soon as the child is created (see below).
+func (a *Agent) executeCallStep(ctx context.Context, runID string, step api.ClaimStep, tplData dsl.TemplateData) (outputs map[string]string, childRunID string, err error) {
 	// Expand templates in the call parameters.
 	// Stdout is not exposed to prevent previous step output from leaking into child job parameters.
 	// Expansion errors fail the step: these values become the child run's
@@ -820,6 +822,18 @@ func (a *Agent) executeCallStep(ctx context.Context, step api.ClaimStep, tplData
 		return nil, "", fmt.Errorf("create child run for job %q: %w", step.Call.Job, err)
 	}
 	slog.Info("call: child run created", "childRunId", childRun.ID, "job", step.Call.Job)
+
+	// Publish the caller→child link immediately on a non-terminal report so the
+	// WebUI can navigate to the child while it is still running (long child jobs
+	// are exactly when the link matters). StartedAt/EndedAt stay zero: the
+	// controller maps zero times to NULL and the UPSERT's COALESCE preserves the
+	// values from the initial Running report. The terminal report re-sends the
+	// link, so a report lost here self-heals; failure to send is non-fatal.
+	_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
+		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex,
+		StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running",
+		ChildRunID: childRun.ID, CallJobName: step.Call.Job,
+	})
 
 	const maxWait = 30 * time.Minute
 	ticker := time.NewTicker(2 * time.Second)
