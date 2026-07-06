@@ -122,6 +122,13 @@ type Store interface {
 	ClaimNextRun(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error)
 	MarkRunRunning(ctx context.Context, runID string) error
 	MarkRunFinished(ctx context.Context, runID string, status api.RunStatus) error
+	// FinishRun is like MarkRunFinished but reports whether the run actually
+	// transitioned (false when it was already terminal).
+	FinishRun(ctx context.Context, runID string, status api.RunStatus) (updated bool, err error)
+	// CountRunsByStatus returns the number of non-terminal runs per status.
+	CountRunsByStatus(ctx context.Context) (map[api.RunStatus]int, error)
+	// CountAgentsByLiveness partitions registered agents by heartbeat freshness.
+	CountAgentsByLiveness(ctx context.Context, staleAfter time.Duration) (alive, stale int, err error)
 	DeleteRun(ctx context.Context, id string) error
 	UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) error
 	GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error)

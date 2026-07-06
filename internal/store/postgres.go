@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/golang-migrate/migrate/v4"
 	migpostgres "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
@@ -18,8 +20,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
-	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
 //go:embed migrations/*.sql
@@ -2015,4 +2015,37 @@ func (p *Postgres) ListRunApprovals(ctx context.Context, runID string) ([]api.Ru
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// CountRunsByStatus returns the number of non-terminal runs per status.
+// Terminal statuses are excluded so the result stays a bounded gauge input.
+func (p *Postgres) CountRunsByStatus(ctx context.Context) (map[api.RunStatus]int, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT status, COUNT(*) FROM runs
+		 WHERE status IN ('Pending','Queued','Running')
+		 GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[api.RunStatus]int{}
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		out[api.RunStatus(status)] = n
+	}
+	return out, rows.Err()
+}
+
+// CountAgentsByLiveness partitions registered agents by heartbeat freshness:
+// alive = last_seen_at within staleAfter, stale = older than staleAfter.
+func (p *Postgres) CountAgentsByLiveness(ctx context.Context, staleAfter time.Duration) (alive, stale int, err error) {
+	err = p.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FILTER (WHERE last_seen_at >= NOW() - make_interval(secs => $1)),
+		        COUNT(*) FILTER (WHERE last_seen_at <  NOW() - make_interval(secs => $1))
+		 FROM agents`, staleAfter.Seconds()).Scan(&alive, &stale)
+	return alive, stale, err
 }
