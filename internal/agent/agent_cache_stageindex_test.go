@@ -10,7 +10,6 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
-	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +40,7 @@ func TestExecuteCacheStep_ReportsStageIndex(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	require.NoError(t, a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, nil, crt.ContainerHandle{}))
+	require.NoError(t, a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", ""), ScopeHandle{}))
 
 	mu.Lock()
 	defer mu.Unlock()

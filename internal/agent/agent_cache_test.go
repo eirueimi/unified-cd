@@ -15,7 +15,6 @@ import (
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
-	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
 
 // newCacheTestAgent returns an Agent whose Client points at a stub controller
@@ -55,7 +54,7 @@ func TestExecuteCacheStep_PathTemplateExpandedOnRestore(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	require.NoError(t, a.executeCacheStep(ctx, step, "r1", sctx, &postHooksMu, &postHooks, nil, crt.ContainerHandle{}))
+	require.NoError(t, a.executeCacheStep(ctx, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", ""), ScopeHandle{}))
 
 	got, err := os.ReadFile(filepath.Join(dest, "f.txt"))
 	require.NoError(t, err, "cache should restore into the template-expanded path")
@@ -73,7 +72,7 @@ func TestExecuteCacheStep_PathTemplateExpandedOnDeferredSave(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	require.NoError(t, a.executeCacheStep(ctx, step, "r1", sctx, &postHooksMu, &postHooks, nil, crt.ContainerHandle{}))
+	require.NoError(t, a.executeCacheStep(ctx, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", ""), ScopeHandle{}))
 	require.Len(t, postHooks, 1)
 	postHooks[0](ctx)
 
@@ -93,7 +92,7 @@ func TestExecuteCacheStep_PathTemplateParseErrorFailsStep(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, nil, crt.ContainerHandle{})
+	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", ""), ScopeHandle{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cache path")
 	assert.Empty(t, postHooks, "no save should be registered when the path template is invalid")
@@ -106,7 +105,7 @@ func TestExecuteCacheStep_EmptyExpandedPathSkipsCache(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, nil, crt.ContainerHandle{})
+	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", ""), ScopeHandle{})
 	require.NoError(t, err, "an empty expanded path is warn+skip, not a step failure")
 	assert.Empty(t, postHooks, "no save should be registered when the path expands to empty")
 }
@@ -118,7 +117,7 @@ func TestExecuteCacheStep_EmptyExpandedKeySkipsCache(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, nil, crt.ContainerHandle{})
+	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", ""), ScopeHandle{})
 	require.NoError(t, err, "an empty expanded key is warn+skip, not a step failure")
 	assert.Empty(t, postHooks, "no save should be registered when the key expands to empty")
 }
