@@ -112,7 +112,6 @@ spec:
     - name: build
       run: go build ./...
     - name: test
-      needs: [build]
       run: go test ./...
 ```
 
@@ -163,7 +162,6 @@ spec:
       # container omitted → runs in the "job" container
 
     - name: scan
-      needs: [build]
       container: trivy                  # /workspace is shared across all containers
       run: trivy rootfs /workspace/app --exit-code 1
 ```
@@ -189,7 +187,6 @@ spec:
           go mod vendor
         fi
     - name: build
-      needs: [download-deps]
       run: go build ./...
 ```
 

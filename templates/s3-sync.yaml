@@ -4,8 +4,8 @@
 # Agent requirements: aws (AWS CLI v2)
 #
 # Required secrets:
-#   unified-cd secret set s3-access-key --value AKIAxxxxxxxx
-#   unified-cd secret set s3-secret-key --value xxxxxxxxxxxx
+#   unified-cd secret set s3-access-key AKIAxxxxxxxx
+#   unified-cd secret set s3-secret-key xxxxxxxxxxxx
 #
 # When using an S3-compatible storage such as MinIO / Garage, set endpoint
 # to a custom endpoint such as https://minio.example.com.

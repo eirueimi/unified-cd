@@ -4,7 +4,7 @@
 # Agent requirements: rsync, ssh
 #
 # Required secrets:
-#   unified-cd secret set deploy-ssh-key --value "$(cat ~/.ssh/id_ed25519)"
+#   unified-cd secret set deploy-ssh-key "$(cat ~/.ssh/id_ed25519)"
 #
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/rsync-deploy.yaml@v1

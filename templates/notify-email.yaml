@@ -2,9 +2,9 @@
 # After registering with unified-cd apply examples/notify-email.yaml, invoke it via call.job
 #
 # Required secrets:
-#   unified-cd secret set smtp-url --value smtps://smtp.example.com:465
-#   unified-cd secret set smtp-username --value user@example.com
-#   unified-cd secret set smtp-password --value xxxxxxxx
+#   unified-cd secret set smtp-url smtps://smtp.example.com:465
+#   unified-cd secret set smtp-username user@example.com
+#   unified-cd secret set smtp-password xxxxxxxx
 #
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/notify-email.yaml@v1

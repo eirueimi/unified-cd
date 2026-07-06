@@ -47,7 +47,6 @@ spec:
       - name: <string>
         candidates:
           - <string>
-  failFast: <bool>                # default: true
   timeoutMinutes: <number>
   podTemplate:                    # k8s-agent only — see Kubernetes Integration Guide
     name: <string>
@@ -67,7 +66,6 @@ spec:
   steps:
     - name: <string>              # required, unique within the job
       if: <CEL expression>        # e.g. params.env == "production"; see jobs.md
-      needs: [<step-name>, ...]
       env:
         <KEY>: <value>            # supports {{ secrets.NAME }} and {{ .Params.X }}
       run: <shell script>
@@ -105,6 +103,9 @@ spec:
           limits: { cpu: <string>, memory: <string> }
       continueOnError: <bool>     # default: false
       timeoutMinutes: <number>
+    - parallel:                   # OR: a group of steps that run concurrently; see jobs.md
+        - name: <string>          # ("Concurrent Steps (parallel)")
+          run: <shell script>
 ```
 
 ### `runsIn`

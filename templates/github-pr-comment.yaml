@@ -2,7 +2,7 @@
 # After registering with unified-cd apply examples/github-pr-comment.yaml, invoke it via call.job
 #
 # Required secrets:
-#   unified-cd secret set github-token --value ghp_xxxx
+#   unified-cd secret set github-token ghp_xxxx
 #   Required permission: pull-requests:write (the Issues comment API is also used for PRs)
 #
 # When referencing as a git:// template:

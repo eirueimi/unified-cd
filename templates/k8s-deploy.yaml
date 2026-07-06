@@ -4,7 +4,7 @@
 # Agent requirements: kubectl
 #
 # Required secrets:
-#   unified-cd secret set my-cluster-kubeconfig --value "$(cat ~/.kube/config)"
+#   unified-cd secret set my-cluster-kubeconfig "$(cat ~/.kube/config)"
 #
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/k8s-deploy.yaml@v1

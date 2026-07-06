@@ -57,7 +57,6 @@ spec:
   steps:
     - name: <string>              # step name (required, unique within job)
       if: <expression>            # run condition
-      needs: [step1, step2]       # prerequisite steps
       env: { KEY: VALUE }         # environment variables
       run: <shell script>         # shell command
       outputs: { key: expr }      # capture output values
@@ -70,6 +69,9 @@ spec:
       container: <string>         # target container (k8s multi-container)
       continueOnError: false      # don't fail the run if this step fails
       timeoutMinutes: 10          # step-level timeout in minutes
+    - parallel:                   # OR: a group of steps that run concurrently
+        - name: <string>          # (see "Concurrent Steps (parallel)")
+          run: <shell script>
 ```
 
 ---
@@ -152,8 +154,9 @@ unified-cd run trigger build --param image=myapp --param tag=v2.0 --param run_te
 
 ## Steps
 
-Steps are the individual execution units within a job. They run in dependency order (DAG).
-Steps with no `needs` dependencies run immediately and in parallel where agent concurrency permits.
+Steps are the individual execution units within a job. They run **sequentially, in the
+order listed** under `steps:`. To run steps concurrently, group them inside a `parallel:`
+block (see [Concurrent Steps (`parallel`)](#concurrent-steps-parallel)).
 
 ### Shell Execution (`run`)
 
@@ -170,27 +173,34 @@ steps:
 - Exit code non-zero fails the step.
 - Environment variable `UNIFIED_AGENT_OS` (`linux` / `darwin` / `windows`) is always injected.
 
-### Step Dependencies (`needs`)
+### Concurrent Steps (`parallel`)
+
+> **`needs:` is no longer supported.** Steps run sequentially in declaration
+> order by default. To run steps concurrently, group them inside a `parallel:`
+> block instead of declaring dependencies between them.
 
 ```yaml
 steps:
-  - name: lint
-    run: golangci-lint run
+  - parallel:
+      - name: lint
+        run: golangci-lint run
 
-  - name: test
-    run: go test ./...
+      - name: test
+        run: go test ./...
 
-  - name: build
-    needs: [lint, test]     # waits for both lint and test to succeed
+  - name: build       # starts only after both lint and test have succeeded
     run: go build ./...
 
   - name: publish
-    needs: [build]
     run: docker push myapp
 ```
 
-Steps without `needs` start immediately and may run in parallel.
-Steps only start when all their `needs` have succeeded (or if `continueOnError: true` is set on a failed predecessor).
+A `parallel:` entry is a top-level item under `steps:` (or `finally:`) that holds a list
+of steps under `parallel:` instead of a single `name:`/`run:` step. All steps inside the
+block start together and the block completes once every member has finished (or if
+`continueOnError: true` is set on a failed member). The next step after the block only
+starts once the whole block completes. A `parallel:` entry cannot also declare `name`,
+`run`, or the other concrete-step fields — it is exclusively a group of `Step`s.
 
 ### Conditional Execution (`if`)
 
@@ -210,12 +220,10 @@ Steps can be conditionally skipped based on a boolean expression.
 ```yaml
 steps:
   - name: deploy
-    needs: [build]
     if: 'params.env == "production"'
     run: ./deploy.sh
 
   - name: smoke-test
-    needs: [deploy]
     if: 'steps.deploy.outputs.result == "ok"'
     run: ./smoke-test.sh
 ```
@@ -262,7 +270,6 @@ steps:
       version: "{{ .Stdout | trim }}"   # capture stdout
 
   - name: build
-    needs: [get-version]
     run: |
       docker build -t myapp:{{ .Steps.get-version.Outputs.version }} .
 ```
@@ -310,13 +317,11 @@ steps:
       run: rm -rf /workspace/repo   # cleanup after entire run finishes
 
   - name: start-db
-    needs: [checkout]
     run: docker run -d --name test-db postgres:16
     post:
       run: docker rm -f test-db
 
   - name: test
-    needs: [start-db]
     run: go test ./...
 ```
 
@@ -424,22 +429,22 @@ Invoke another registered job as a step. The called job runs with its own DAG on
 
 ```yaml
 steps:
-  - name: build-frontend
-    call:
-      job: build                # name of another registered Job
-      with:
-        image: myapp-frontend
-        tag: "{{ .Params.tag }}"
+  - parallel:
+      - name: build-frontend
+        call:
+          job: build                # name of another registered Job
+          with:
+            image: myapp-frontend
+            tag: "{{ .Params.tag }}"
 
-  - name: build-backend
-    call:
-      job: build
-      with:
-        image: myapp-backend
-        tag: "{{ .Params.tag }}"
+      - name: build-backend
+        call:
+          job: build
+          with:
+            image: myapp-backend
+            tag: "{{ .Params.tag }}"
 
   - name: deploy
-    needs: [build-frontend, build-backend]
     run: ./deploy.sh
 ```
 
@@ -477,7 +482,6 @@ steps:
         target: ./...
 
   - name: security-scan
-    needs: [lint]
     uses:
       job: git://github.com/my-org/ci-templates/jobs/trivy.yaml@a1b2c3d4
       with:
@@ -592,7 +596,6 @@ steps:
     run: go build -o bin/app ./cmd/server
 
   - name: upload-binary
-    needs: [build]
     uploadArtifact:
       name: app-binary          # artifact name
       path: bin/app             # local path to upload
@@ -605,7 +608,6 @@ steps:
       destDir: /tmp/artifacts   # where to place the file (default: current directory)
 
   - name: run-binary
-    needs: [download-binary]
     run: /tmp/artifacts/app --version
 ```
 
@@ -667,14 +669,12 @@ steps:
       ttlDays: 30               # cache expiry (default: 30 days)
 
   - name: download-deps
-    needs: [restore-cache]
     run: |
       if [ ! -d vendor ]; then
         go mod vendor
       fi
 
   - name: build
-    needs: [download-deps]
     run: go build ./...
 ```
 
@@ -829,7 +829,6 @@ steps:
     run: go build ./...        # runs in first container (default)
 
   - name: scan
-    needs: [build]
     container: trivy           # runs in the "trivy" container
     run: trivy rootfs /workspace/app
 ```
@@ -1016,7 +1015,10 @@ steps:
 ```
 
 **Rules:**
-- Secret names must use only alphanumerics and underscores (no hyphens).
+- Secret names may contain hyphens (e.g. `slack-webhook-url`) as well as alphanumerics and
+  underscores. `{{ secrets.NAME }}` and `{{ .Secrets.NAME }}` both work with hyphenated
+  names — hyphenated references are automatically rewritten to an index lookup internally,
+  since Go template dot-notation can't address a map key containing a hyphen directly.
 - Secrets referenced in `env` values and `run` strings are auto-detected; no explicit declaration needed.
 - Secret values are transmitted to the agent over HTTPS at claim time.
 - All occurrences of the secret value in log output are automatically masked as `***`.
@@ -1026,6 +1028,7 @@ To create secrets:
 ```bash
 unified-cd secret set DATABASE_URL "postgres://user:pass@host/db"
 unified-cd secret set API_KEY_PROD "sk-..."
+unified-cd secret set slack-webhook-url "https://hooks.slack.com/services/..."
 ```
 
 See the [Secrets Management Guide](secrets.md) for the full encryption model.
@@ -1062,16 +1065,16 @@ spec:
   timeoutMinutes: 60
 
   steps:
-    - name: lint
-      run: golangci-lint run ./...
-      timeoutMinutes: 10
+    - parallel:
+        - name: lint
+          run: golangci-lint run ./...
+          timeoutMinutes: 10
 
-    - name: test
-      run: go test -race ./...
-      timeoutMinutes: 20
+        - name: test
+          run: go test -race ./...
+          timeoutMinutes: 20
 
     - name: build
-      needs: [lint, test]
       run: |
         go build -o bin/server ./cmd/server
         echo "Build successful"
@@ -1079,13 +1082,11 @@ spec:
         binary_path: bin/server
 
     - name: upload-binary
-      needs: [build]
       uploadArtifact:
         name: server-binary
         path: bin/server
 
     - name: build-image
-      needs: [upload-binary]
       env:
         REGISTRY_PASS: "{{ secrets.REGISTRY_PASS }}"
       run: |
@@ -1096,13 +1097,11 @@ spec:
         image_ref: "{{ .Params.image }}:{{ .Params.tag }}"
 
     - name: deploy-staging
-      needs: [build-image]
       if: 'params.deploy_env == "staging"'
       run: |
         ./deploy.sh --env staging --image {{ .Steps.build-image.Outputs.image_ref }}
 
     - name: deploy-production
-      needs: [build-image]
       if: 'params.deploy_env == "production"'
       run: |
         ./deploy.sh --env production --image {{ .Steps.build-image.Outputs.image_ref }}

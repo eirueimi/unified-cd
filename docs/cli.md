@@ -10,6 +10,7 @@ Complete reference for the `unified-cd` command-line tool.
 - [run](#run)
 - [logs](#logs)
 - [secret](#secret)
+- [schedule](#schedule)
 - [token](#token)
 - [artifact](#artifact)
 - [export](#export)
@@ -331,8 +332,9 @@ echo -n "mysecret" | unified-cd secret set DB_PASSWORD
 read -s SECRET && echo -n "$SECRET" | unified-cd secret set DB_PASSWORD
 ```
 
-**Naming rules:** alphanumerics and underscores only; must start with a letter or `_`.
-Hyphens are not allowed (template engine cannot parse them).
+**Naming rules:** alphanumerics, underscores, and hyphens; must start with a letter or `_`.
+Hyphenated names (e.g. `slack-webhook-url`) work with both `{{ secrets.NAME }}` and
+`{{ .Secrets.NAME }}` template syntax — see [Secrets Management Guide](secrets.md).
 
 ### secret list
 
@@ -357,6 +359,37 @@ unified-cd secret delete <name>
 ```bash
 unified-cd secret delete OLD_SECRET
 # => secret "OLD_SECRET" deleted
+```
+
+---
+
+## schedule
+
+Manage [Schedules](resources.md#schedule). Create/update a schedule with
+`apply -f` (`kind: Schedule`); the commands below operate on existing ones.
+
+### schedule list
+
+```
+unified-cd schedule list
+```
+
+Lists all registered schedules.
+
+```
+nightly-build    cron=0 2 * * * job=build
+weekly-report    cron=0 9 * * 1 job=report
+```
+
+### schedule delete
+
+```
+unified-cd schedule delete <name>
+```
+
+```bash
+unified-cd schedule delete nightly-build
+# => schedule deleted: nightly-build
 ```
 
 ---

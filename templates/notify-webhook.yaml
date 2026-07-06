@@ -2,7 +2,7 @@
 # After registering with unified-cd apply examples/notify-webhook.yaml, invoke it via call.job
 #
 # Required secrets (if using url_secret):
-#   unified-cd secret set my-webhook-url --value https://example.com/hooks/xxxx
+#   unified-cd secret set my-webhook-url https://example.com/hooks/xxxx
 #   * No secret is needed if passing the plaintext URL via the url parameter
 #
 # When referencing as a git:// template:

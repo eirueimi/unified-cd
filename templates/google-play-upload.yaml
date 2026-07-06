@@ -13,7 +13,7 @@
 #     higher permissions on the Google Play Console side
 #
 # Required secrets:
-#   unified-cd secret set google-play-service-account --value "$(cat service-account.json)"
+#   unified-cd secret set google-play-service-account "$(cat service-account.json)"
 #
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/google-play-upload.yaml@v1
