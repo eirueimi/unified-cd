@@ -420,3 +420,43 @@ describe('RunDetail — log virtualization', () => {
     expect(localStorage.getItem('ecd_log_wrap')).toBe('1');
   });
 });
+
+describe('RunDetail — artifacts', () => {
+  it('lists run artifacts and downloads one on click', async () => {
+    // jsdom lacks blob-URL plumbing; stub it.
+    const origCreate = URL.createObjectURL;
+    const origRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn(() => 'blob:x');
+    URL.revokeObjectURL = vi.fn();
+
+    let downloadUrl = null;
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return emptyEventsResponse();
+      if (u.includes('/artifacts/')) {
+        downloadUrl = u;
+        return Promise.resolve({ ok: true, status: 200, blob: async () => new Blob(['data']) });
+      }
+      if (u.endsWith('/artifacts')) return jsonResponse([{ name: 'build' }, { name: 'report' }]);
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-1', status: 'Succeeded', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll('.artifact-item').length).toBe(2);
+    });
+    const first = container.querySelector('.artifact-item');
+    expect(first.textContent).toContain('build');
+
+    await fireEvent.click(first);
+    await vi.waitFor(() => {
+      expect(downloadUrl).toContain('/runs/run-1/artifacts/build');
+    });
+
+    URL.createObjectURL = origCreate;
+    URL.revokeObjectURL = origRevoke;
+  });
+});

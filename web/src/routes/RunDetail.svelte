@@ -13,6 +13,7 @@
     logLines = [],
     steps = [],
     approvals = [],
+    artifacts = [],
     loading = true,
     error = "";
   let logBox,
@@ -269,6 +270,45 @@
       approvals = await apiFetch("/api/v1/runs/" + runID + "/approvals");
     } catch {}
   }
+  async function loadArtifacts() {
+    try {
+      artifacts = (await apiFetch("/api/v1/runs/" + runID + "/artifacts")) || [];
+    } catch {
+      artifacts = [];
+    }
+  }
+  // The artifact endpoint streams a binary tar.gz and needs the auth header, so a
+  // plain <a href> won't do for token auth — fetch it and save via a blob URL.
+  async function downloadArtifact(name) {
+    try {
+      const headers = {};
+      const t = get(token);
+      if (t) headers["Authorization"] = "Bearer " + t;
+      const resp = await fetch(
+        get(serverURL) +
+          "/api/v1/runs/" +
+          runID +
+          "/artifacts/" +
+          encodeURIComponent(name),
+        { credentials: "include", headers },
+      );
+      if (!resp.ok) {
+        error = "Artifact download failed (" + resp.status + ")";
+        return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name + ".tar.gz";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      error = e.message;
+    }
+  }
   async function decideApproval(stepIndex, decision, comment) {
     try {
       await apiFetch("/api/v1/runs/" + runID + "/approvals/" + stepIndex, {
@@ -289,7 +329,7 @@
   function startStepPolling() {
     stopStepPolling();
     stepsTimer = setInterval(async () => {
-      await Promise.all([loadSteps(), loadRun(), loadApprovals()]);
+      await Promise.all([loadSteps(), loadRun(), loadApprovals(), loadArtifacts()]);
       if (run && ["Succeeded", "Failed", "Cancelled"].includes(run.status))
         stopStepPolling();
     }, 3000);
@@ -360,6 +400,7 @@
         }
         if (terminalStatus) {
           await loadSteps();
+          await loadArtifacts();
           stopStepPolling();
           abortController.abort();
           return;
@@ -395,7 +436,7 @@
 
   async function init() {
     loading = true;
-    await Promise.all([loadRun(), loadSteps(), loadApprovals()]);
+    await Promise.all([loadRun(), loadSteps(), loadApprovals(), loadArtifacts()]);
     loading = false;
     await tick();
     measureLogMetrics();
@@ -597,6 +638,20 @@
         </div>
       {/each}
     {/if}
+    {#if artifacts.length}
+      <div class="artifacts">
+        <h2 style="margin-bottom:0.5rem">Artifacts</h2>
+        <div class="artifact-list">
+          {#each artifacts as a (a.name)}
+            <button
+              class="btn artifact-item"
+              on:click={() => downloadArtifact(a.name)}
+              title="Download {a.name}.tar.gz"
+            >⬇ {a.name}<span class="meta artifact-ext">.tar.gz</span></button>
+          {/each}
+        </div>
+      </div>
+    {/if}
     <div class="log-header">
       <h2>Logs</h2>
       {#if selectedStep !== null}
@@ -785,6 +840,22 @@
     color: var(--text);
     font-weight: 500;
     word-break: break-all;
+  }
+  .artifacts {
+    margin-bottom: 1rem;
+  }
+  .artifact-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .artifact-item {
+    font-family: monospace;
+    font-size: 0.8rem;
+    padding: 0.25rem 0.55rem;
+  }
+  .artifact-ext {
+    margin-left: 0.15rem;
   }
   .stage-group-header {
     display: flex;
