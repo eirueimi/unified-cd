@@ -32,6 +32,11 @@ func (s *Server) handleApplyJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.guardManagedResource(r.Context(), "Job", job.Metadata.QualifiedName()); err != nil {
+		writeGuardError(w, err)
+		return
+	}
+
 	stored, err := s.storeJob(r.Context(), job)
 	if err != nil {
 		var badReq errBadRequest
@@ -182,6 +187,10 @@ func (s *Server) serveJobYAML(w http.ResponseWriter, r *http.Request, name strin
 // handleDeleteJob deletes the Job with the given name. Associated Run history is also cascade-deleted.
 func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
 	name := extractJobName(chi.URLParam(r, "*"))
+	if err := s.guardManagedResource(r.Context(), "Job", name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	if err := s.store.DeleteJob(r.Context(), name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
