@@ -4,7 +4,7 @@
   import { get } from "svelte/store";
   import AuthSetup from "../components/AuthSetup.svelte";
   import { apiFetch, token, serverURL, stderrPlain } from "../lib/api.js";
-  import { statusBadge, fmtTime } from "../lib/utils.js";
+  import { statusBadge, fmtTime, collapseCarriageReturns } from "../lib/utils.js";
 
   export let params;
   $: runID = params.id;
@@ -377,7 +377,9 @@
           try {
             const data = JSON.parse(line);
             if (data.type === "log") {
-              batch.push(data);
+              // \r-progress output (git clone etc.) arrives as one long
+              // line; keep only its final redraw, like a terminal would.
+              batch.push({ ...data, line: collapseCarriageReturns(data.line) });
             } else if (data.type === "truncated") {
               logTruncated = true;
             } else if (data.type === "status") {
