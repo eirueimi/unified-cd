@@ -430,6 +430,11 @@ func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// A parent run that Failed/Cancelled should not leave its call: children
+		// (possibly still Queued) running or waiting.
+		if st == api.RunFailed || st == api.RunCancelled {
+			cancelDescendantRuns(r.Context(), s.store, id)
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -437,6 +442,9 @@ func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.MarkRunFinished(r.Context(), id, st); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if st == api.RunFailed || st == api.RunCancelled {
+		cancelDescendantRuns(r.Context(), s.store, id)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

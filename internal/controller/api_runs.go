@@ -200,21 +200,23 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	// child job doesn't keep running after its parent is cancelled. Best-effort:
 	// the executing agent picks up the Cancelled status the same way it does for
 	// a directly-cancelled run.
-	s.cancelDescendantRuns(r.Context(), id)
+	cancelDescendantRuns(r.Context(), s.store, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// cancelDescendantRuns walks the parent→child run tree breadth-first and marks
-// every descendant Cancelled. A visited set guards against cycles.
-func (s *Server) cancelDescendantRuns(ctx context.Context, rootID string) {
+// cancelDescendantRuns walks the parent→child run tree (call: steps, linked via
+// step_reports.child_run_id) breadth-first and marks every still-active
+// descendant Cancelled. A visited set guards against cycles. Used when a parent
+// run reaches a terminal Failed/Cancelled state so its children don't linger.
+func cancelDescendantRuns(ctx context.Context, st store.Store, rootID string) {
 	visited := map[string]bool{rootID: true}
 	queue := []string{rootID}
 	for len(queue) > 0 {
 		parent := queue[0]
 		queue = queue[1:]
-		children, err := s.store.ListChildRunIDs(ctx, parent)
+		children, err := st.ListChildRunIDs(ctx, parent)
 		if err != nil {
-			slog.Warn("cancel run: list child runs failed", "run", parent, "error", err)
+			slog.Warn("cascade cancel: list child runs failed", "run", parent, "error", err)
 			continue
 		}
 		for _, child := range children {
@@ -222,8 +224,8 @@ func (s *Server) cancelDescendantRuns(ctx context.Context, rootID string) {
 				continue
 			}
 			visited[child] = true
-			if err := s.store.MarkRunFinished(ctx, child, api.RunCancelled); err != nil {
-				slog.Warn("cancel run: cascade cancel failed", "run", child, "parent", parent, "error", err)
+			if err := st.MarkRunFinished(ctx, child, api.RunCancelled); err != nil {
+				slog.Warn("cascade cancel: mark cancelled failed", "run", child, "parent", parent, "error", err)
 			}
 			queue = append(queue, child)
 		}

@@ -155,6 +155,12 @@ type Store interface {
 	// not sent a heartbeat within staleAfter, excluding runs claimed within the grace
 	// window (to avoid reaping a just-claimed run before its first heartbeat).
 	ListStuckRunIDs(ctx context.Context, staleAfter, grace time.Duration) ([]string, error)
+	// ListUnclaimableQueuedRuns returns Queued runs older than minAge for which no
+	// live agent (last_seen within staleAfter) has labels satisfying the run's
+	// agentSelector — i.e. runs that can never be claimed because the agent they
+	// need is gone. Used by the queued-run reaper to fail them instead of leaving
+	// them "in progress" forever.
+	ListUnclaimableQueuedRuns(ctx context.Context, minAge, staleAfter time.Duration) ([]QueuedRunRef, error)
 
 	// Concurrency — mutex
 	AcquireMutex(ctx context.Context, mutexName, runID string) (bool, error)
@@ -322,4 +328,11 @@ type Session struct {
 type ClaimedRun struct {
 	api.Run
 	Spec []byte
+}
+
+// QueuedRunRef identifies a Queued run and the agent labels it requires, so the
+// queued-run reaper can report why it could not be claimed.
+type QueuedRunRef struct {
+	ID            string
+	AgentSelector []string
 }

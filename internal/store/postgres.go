@@ -928,6 +928,38 @@ func (p *Postgres) ListStuckRunIDs(ctx context.Context, staleAfter, grace time.D
 	return ids, rows.Err()
 }
 
+// ListUnclaimableQueuedRuns returns Queued runs older than minAge that no live
+// agent can claim: no agent with a heartbeat within staleAfter has labels that
+// satisfy the run's agent_selector (empty selector matches any agent). Mirrors
+// the claim predicate `agent_selector = '{}' OR agent_selector <@ labels`.
+func (p *Postgres) ListUnclaimableQueuedRuns(ctx context.Context, minAge, staleAfter time.Duration) ([]QueuedRunRef, error) {
+	const q = `
+		SELECT r.id, r.agent_selector
+		FROM runs r
+		WHERE r.status = 'Queued'
+		  AND r.created_at < NOW() - make_interval(secs => $1)
+		  AND NOT EXISTS (
+		    SELECT 1 FROM agents a
+		    WHERE a.last_seen_at >= NOW() - make_interval(secs => $2)
+		      AND (r.agent_selector = '{}' OR r.agent_selector <@ a.labels)
+		  )
+	`
+	rows, err := p.pool.Query(ctx, q, minAge.Seconds(), staleAfter.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("list unclaimable queued runs: %w", err)
+	}
+	defer rows.Close()
+	var out []QueuedRunRef
+	for rows.Next() {
+		var ref QueuedRunRef
+		if err := rows.Scan(&ref.ID, &ref.AgentSelector); err != nil {
+			return nil, err
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
 func (p *Postgres) AcquireMutex(ctx context.Context, mutexName, runID string) (bool, error) {
 	_, err := p.pool.Exec(ctx,
 		`INSERT INTO mutex_holders(mutex_name, run_id) VALUES ($1, $2)`,

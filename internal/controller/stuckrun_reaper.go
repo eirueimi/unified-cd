@@ -61,6 +61,8 @@ func runStuckRunReaperOnce(ctx context.Context, st store.Store, staleAfter, grac
 			slog.Error("stuck-run reaper: mark failed", "runId", id, "error", err)
 			continue
 		}
+		// A reaped parent should not leave its call: children running/queued.
+		cancelDescendantRuns(ctx, st, id)
 		slog.Warn("stuck-run reaper: failed orphaned run (agent lost)", "runId", id)
 	}
 	if len(ids) > 0 {

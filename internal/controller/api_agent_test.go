@@ -688,6 +688,32 @@ func TestAgentAPI_FinishRun_FreshTransition(t *testing.T) {
 	assert.Equal(t, api.RunSucceeded, got.Status)
 }
 
+// TestAgentAPI_FinishRun_FailedCancelsChildren verifies that when a parent run
+// (a call: step) is reported Failed, its still-active child runs are cascade
+// Cancelled so they don't linger.
+func TestAgentAPI_FinishRun_FailedCancelsChildren(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	// Link the parent's call step to the child run.
+	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
+
+	body, _ := json.Marshal(map[string]string{"status": string(api.RunFailed)})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/finish", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	p, err := pg.GetRun(t.Context(), parent.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunFailed, p.Status)
+	c, err := pg.GetRun(t.Context(), child.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunCancelled, c.Status, "child should be cascade-cancelled")
+}
+
 // TestAgentAPI_FinishRun_AlreadyTerminal verifies FIX #33: a late finish report on
 // an already-terminal run (e.g. the reaper Failed it first) is not falsely
 // reported as a fresh success. The handler responds 200 with a body flagging

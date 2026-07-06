@@ -231,6 +231,10 @@ func main() {
 	}
 	go controller.RunApprovalReaper(ctx, pg, time.Minute)
 	go controller.RunStuckRunReaper(ctx, pg, 30*time.Second, 90*time.Second, 60*time.Second)
+	// Fail runs that have sat Queued for >5m with no live agent able to claim
+	// them (the agent they need disconnected), so they don't stay "in progress"
+	// forever. staleAfter=90s matches the stuck-run reaper's agent-liveness window.
+	go controller.RunQueuedRunReaper(ctx, pg, 30*time.Second, 5*time.Minute, 90*time.Second)
 	// Reap AppSources stuck in "Syncing" (bug #33): the manual sync-trigger API sets
 	// sync_status="Syncing" synchronously, so a reconciler crash / restart / leadership
 	// change mid-sync can strand the row forever. Reset any Syncing row older than 5m.

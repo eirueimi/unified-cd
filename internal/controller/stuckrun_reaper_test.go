@@ -42,6 +42,12 @@ func (f *fakeReaperStore) MarkRunFinished(ctx context.Context, runID string, sta
 	return nil
 }
 
+// ListChildRunIDs is called by the cascade-cancel the reaper now runs after
+// failing a run; this fake has no children.
+func (f *fakeReaperStore) ListChildRunIDs(ctx context.Context, parentRunID string) ([]string, error) {
+	return nil, nil
+}
+
 func TestStuckRunReaper_FailsStuckRunsAsLeader(t *testing.T) {
 	st := &fakeReaperStore{
 		lockAcquired: true,

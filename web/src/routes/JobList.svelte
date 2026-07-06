@@ -101,9 +101,23 @@
             <td style="padding-left:{0.75 + (row.depth + 1) * 1.4}rem">
               <a href="#/jobs/{encodeURIComponent(row.job.name)}" on:click|stopPropagation>{row.job.leaf}</a>
               {#if activeRunsByJob[row.job.name]?.length}
-                <span class="badge badge-running" style="margin-left:0.5rem">
-                  ● Running {activeRunsByJob[row.job.name].length > 1 ? `(${activeRunsByJob[row.job.name].length})` : ''}
-                </span>
+                {@const _runs = activeRunsByJob[row.job.name]}
+                {@const _running = _runs.filter((r) => r.status === 'Running').length}
+                {@const _queued = _runs.filter((r) => r.status === 'Queued').length}
+                {#if _running}
+                  <span class="badge badge-running" style="margin-left:0.5rem">
+                    ● Running{_running > 1 ? ` (${_running})` : ''}
+                  </span>
+                {/if}
+                {#if _queued}
+                  <span
+                    class="badge badge-queued"
+                    style="margin-left:0.5rem"
+                    title="Waiting for an available agent"
+                  >
+                    ◷ Queued{_queued > 1 ? ` (${_queued})` : ''}
+                  </span>
+                {/if}
               {/if}
             </td>
             <td class="meta">{fmtTime(row.job.updatedAt)}</td>
