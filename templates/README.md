@@ -12,7 +12,10 @@ steps:
       with:
         status: success
         job_name: my-job
-        run_id: "{{ .RunID }}"
+        # Call params can only reference .Params and .Steps of the calling
+        # job — there is NO template variable for the caller's own run ID,
+        # so pass a static identifier here.
+        run_id: "my-job"
 
 # When inlining as a git template
 steps:
@@ -22,8 +25,16 @@ steps:
       with:
         status: success
         job_name: my-job
-        run_id: "{{ .RunID }}"
+        run_id: "my-job"
 ```
+
+> **Note:** `with:` values are Go templates expanded against the calling
+> job's `.Params` and `.Steps` (for `call:`; `uses:` additionally sees the
+> usual step context). A reference to a non-existent field (such as the
+> `{{ .RunID }}` these examples used to show) does not fail the step — the
+> raw unexpanded string is passed through to the target job, so the mistake
+> only surfaces downstream (e.g. as literal `{{ .RunID }}` text in a Slack
+> message).
 
 ## Template list
 
