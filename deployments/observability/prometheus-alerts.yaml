@@ -1,0 +1,51 @@
+# Prometheus alerting rules for unified-cd controller metrics.
+# Load via your Prometheus rule_files (or a managed-monitoring equivalent).
+# Aggregations use max()/sum() so they stay correct with multiple
+# controller replicas (gauges are identical per replica; counters are
+# per-replica partial counts).
+groups:
+  - name: unified-cd
+    rules:
+      - alert: UnifiedCDNoAliveAgents
+        expr: max(unifiedcd_agents{state="alive"}) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No alive unified-cd agents"
+          description: "No agent has sent a heartbeat within the liveness window for 5 minutes. Queued runs cannot start and will be failed once the queued-run reaper grace expires."
+
+      - alert: UnifiedCDQueueBacklog
+        expr: >
+          max(unifiedcd_runs_current{status="Pending"})
+            + max(unifiedcd_runs_current{status="Queued"}) > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "unified-cd run queue backlog"
+          description: "More than 20 runs have been waiting (Pending + Queued) for 10 minutes. Agents may be under-provisioned, mislabeled, or down."
+
+      - alert: UnifiedCDHighFailureRate
+        expr: >
+          (
+            sum(rate(unifiedcd_runs_finished_total{status="Failed"}[30m]))
+              /
+            clamp_min(sum(rate(unifiedcd_runs_finished_total[30m])), 1e-10)
+          ) > 0.5
+          and sum(rate(unifiedcd_runs_finished_total[30m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "unified-cd run failure rate above 50%"
+          description: "More than half of finished runs failed over the last 30 minutes. Check recent job changes, agent health, and external dependencies."
+
+      - alert: UnifiedCDScrapeCollectorErrors
+        expr: sum(rate(unifiedcd_scrape_collector_errors_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "unified-cd metrics collector cannot read its database"
+          description: "The controller's scrape-time DB collector has been erroring for 10 minutes; runs/agents gauges are missing from scrapes. Check controller-to-Postgres connectivity."

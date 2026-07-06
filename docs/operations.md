@@ -106,6 +106,7 @@ Key metrics:
 | `unifiedcd_step_duration_seconds{status}` | histogram | Step wall-clock duration |
 | `unifiedcd_webhook_events_total{name,outcome}` | counter | Webhook ingress outcomes |
 | `unifiedcd_http_requests_total{method,route,code}` | counter | API traffic by chi route pattern |
+| `unifiedcd_scrape_collector_errors_total` | counter | Errors collecting DB-backed gauges (`unifiedcd_runs_current`, `unifiedcd_agents`) at scrape time |
 
 With multiple controller replicas, gauges report identical values on every
 replica (aggregate with `max()`); counters count only events the scraped
@@ -128,6 +129,10 @@ max(unifiedcd_agents{state="alive"}) == 0
 # p95 step duration
 histogram_quantile(0.95, sum(rate(unifiedcd_step_duration_seconds_bucket[1h])) by (le))
 ```
+
+Ready-made Prometheus alerting rules for these metrics live in
+[`deployments/observability/prometheus-alerts.yaml`](../deployments/observability/prometheus-alerts.yaml)
+(no alive agents, queue backlog, high failure rate, collector errors).
 
 ---
 
