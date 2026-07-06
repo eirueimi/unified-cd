@@ -59,6 +59,22 @@ no copy step.
 
 ## Components & changes
 
+0. **`internal/agent/agent.go` — relax the podTemplate guard.**
+   `executeRun` currently hard-fails any claim with a `podTemplate`
+   (`if c.PodTemplate != nil { FinishRun(RunFailed); return }`), because a
+   podTemplate historically meant "needs the k8s agent." Routing to host-vs-k8s
+   is only by `agentSelector` labels (the controller hands `PodTemplate` to
+   whichever agent claims the run — `api_runs.go`), so a host agent can legally
+   claim such a run, and this guard is the sole thing blocking it. Replace the
+   hard fail with: accept the claim, log one WARN that host-unsupported
+   podTemplate features (PVC workspace, extra pod-spec containers/volumes,
+   sidecar) are ignored, and pass `c.PodTemplate` to `newHostBackend`. The
+   podTemplate is then consulted only to resolve `runsIn.container` definitions;
+   every other step runs on the host workspace exactly as before. A podTemplate
+   job with no `runsIn.container` step runs normally on the host (the WARN is the
+   only change). This extends decision #2 (supported subset + WARN) to the
+   podTemplate as a whole.
+
 1. **`internal/runtime` — bind mount + workdir in `CreateSpec`.**
    `CreateSpec` already carries `WorkDir` (from the uses-scope work). Add a
    workspace bind mount, e.g.:
@@ -140,6 +156,7 @@ no copy step.
 
 | Situation | Behavior |
 |---|---|
+| host claims a podTemplate job | Accepted (was: RunFailed); one WARN that host-unsupported podTemplate features are ignored |
 | Container runtime absent | Run-time hard error (no silent host fallback; same as `runsIn.image`) |
 | Step has no `podTemplate` | Error: `runsIn.container %q requires a podTemplate that defines it` |
 | Name not in `podTemplate.spec.containers` | Error: `container %q is not defined in the job's podTemplate` |
