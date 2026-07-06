@@ -18,8 +18,11 @@ sequential sum with 5-10x QEMU penalties on the Go and npm stages.
 - Atomicity across the four images (today a mid-run failure can also leave
   some images tagged and others not; unchanged).
 - A `workflow_dispatch` dry-run trigger (add later if needed).
-- The `artifact-sidecar` and dev/vite images (not released by this workflow
-  today; unchanged).
+- The dev/vite images (local-development only, never released).
+  Note: `artifact-sidecar` was originally listed here too, but that was a
+  pre-existing release gap — the k8s agent's default `sidecarImage` points at
+  `ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest`, which no workflow
+  published. It is now a fifth entry in both matrices.
 - `type=gha` build-cache (`cache-from`/`cache-to`) was evaluated and dropped.
   This workflow only runs on tag refs, and each release is a new, distinct
   ref; GitHub Actions cache scopes are ref-isolated, so a tag-ref run can

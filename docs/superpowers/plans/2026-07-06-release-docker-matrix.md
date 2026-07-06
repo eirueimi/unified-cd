@@ -54,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [controller, agent, k8s-agent, runner]
+        image: [controller, agent, k8s-agent, runner, artifact-sidecar]
         arch: [amd64, arm64]
         include:
           - arch: amd64
@@ -113,7 +113,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [controller, agent, k8s-agent, runner]
+        image: [controller, agent, k8s-agent, runner, artifact-sidecar]
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
