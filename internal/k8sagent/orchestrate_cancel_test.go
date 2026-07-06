@@ -92,16 +92,14 @@ func runOrchestrateCancel(
 	client := agentlib.NewClient(srv.URL, "tok")
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
 
-	stepExec := func(execCtx context.Context, step api.ClaimStep, _ string) (int, string, error) {
+	backend := newFakeK8sBackend()
+	backend.StepExecFn = func(execCtx context.Context, step api.ClaimStep, _ string) (int, error) {
 		if stepFn == nil {
-			return 0, "", nil
+			return 0, nil
 		}
-		return stepFn(h, &mu, execCtx, step), "", nil
+		return stepFn(h, &mu, execCtx, step), nil
 	}
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-	noopPostExec := func(_ context.Context, _, _, _ string, _ []string) error { return nil }
-	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, noopPostExec, "/workspace", noopEnsureScopePod, nil)
+	a.orchestrate(context.Background(), c, backend, nil)
 
 	mu.Lock()
 	defer mu.Unlock()

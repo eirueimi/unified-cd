@@ -91,16 +91,11 @@ func TestOrchestrate_ReportRetriesUntilSuccess(t *testing.T) {
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "echo", Run: "echo ok"}},
 	}}
 
-	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
-		return 0, "", nil
-	}
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-	noopPostExec := func(_ context.Context, _, _, _ string, _ []string) error { return nil }
-	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
+	backend := newFakeK8sBackend()
 
 	done := make(chan struct{})
 	go func() {
-		a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, noopPostExec, "/workspace", noopEnsureScopePod, nil)
+		a.orchestrate(context.Background(), c, backend, nil)
 		close(done)
 	}()
 

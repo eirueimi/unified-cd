@@ -18,7 +18,7 @@ import (
 )
 
 // orchestrateHarness stands up a mock controller, records step statuses by
-// name and the final run status, and runs orchestrate with a fake stepExec.
+// name and the final run status, and runs orchestrate with a fake backend.
 type orchestrateHarness struct {
 	statuses map[string]string
 	runState string // current run status served by GetRun
@@ -27,12 +27,6 @@ type orchestrateHarness struct {
 	// first (Pending) poll, e.g. "Approved" or "Rejected". Empty disables the
 	// approval endpoints' terminal transition (stays Pending).
 	approvalDecision string
-}
-
-// fakeStep describes what a fake step exec should return.
-type fakeStep struct {
-	exit   int
-	stdout string
 }
 
 func runOrchestrate(t *testing.T, c api.ClaimResponse, fakes map[string]fakeStep) (map[string]string, string) {
@@ -126,17 +120,9 @@ func runOrchestrateWithApproval(t *testing.T, c api.ClaimResponse, fakes map[str
 	client := agentlib.NewClient(srv.URL, "tok")
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
 
-	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
-		f, ok := fakes[step.Name]
-		if !ok {
-			return 0, "", nil
-		}
-		return f.exit, f.stdout, nil
-	}
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-	noopPostExec := func(_ context.Context, _, _, _ string, _ []string) error { return nil }
-	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, noopPostExec, "/workspace", noopEnsureScopePod, nil)
+	backend := newFakeK8sBackend()
+	backend.Fakes = fakes
+	a.orchestrate(context.Background(), c, backend, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -197,17 +183,9 @@ func runOrchestrateVariants(t *testing.T, c api.ClaimResponse, fakes map[string]
 	client := agentlib.NewClient(srv.URL, "tok")
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
 
-	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
-		f, ok := fakes[step.Name]
-		if !ok {
-			return 0, "", nil
-		}
-		return f.exit, f.stdout, nil
-	}
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-	noopPostExec := func(_ context.Context, _, _, _ string, _ []string) error { return nil }
-	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, noopPostExec, "/workspace", noopEnsureScopePod, nil)
+	backend := newFakeK8sBackend()
+	backend.Fakes = fakes
+	a.orchestrate(context.Background(), c, backend, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -400,17 +378,9 @@ func runOrchestrateCaptureOutputs(t *testing.T, c api.ClaimResponse, fakes map[s
 	client := agentlib.NewClient(srv.URL, "tok")
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
 
-	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
-		f, ok := fakes[step.Name]
-		if !ok {
-			return 0, "", nil
-		}
-		return f.exit, f.stdout, nil
-	}
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-	noopPostExec := func(_ context.Context, _, _, _ string, _ []string) error { return nil }
-	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, noopPostExec, "/workspace", noopEnsureScopePod, nil)
+	backend := newFakeK8sBackend()
+	backend.Fakes = fakes
+	a.orchestrate(context.Background(), c, backend, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -439,13 +409,6 @@ func TestOrchestrate_ApprovalRejectedSkipsLaterStep(t *testing.T) {
 	assert.Equal(t, "Failed", statuses["gate"], "rejected gate reports Failed")
 	assert.Equal(t, "Skipped", statuses["after"], "no-if step auto-skips after a rejected gate")
 	assert.Equal(t, "Failed", final)
-}
-
-// artifactCall records a single call to the fake sidecarExec.
-type artifactCall struct {
-	targetPod string
-	container string
-	argv      []string
 }
 
 // runOrchestrateArtifact is like runOrchestrate but injects a fake
@@ -503,24 +466,13 @@ func runOrchestrateArtifact(t *testing.T, c api.ClaimResponse, exitCode int) ([]
 	client := agentlib.NewClient(srv.URL, "tok")
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
 
-	fakeStepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
-		return 0, "", nil
-	}
-	fakeSidecarExec := func(_ context.Context, targetPod, container string, argv []string) (int, error) {
-		mu.Lock()
-		recorded = append(recorded, artifactCall{targetPod: targetPod, container: container, argv: argv})
-		mu.Unlock()
-		return exitCode, nil
-	}
-	fakeEnsureScopePod := func(_ context.Context, step api.ClaimStep) (string, error) {
-		return "scope-pod-" + step.ScopeID, nil
-	}
-	noopPostExec := func(_ context.Context, _, _, _ string, _ []string) error { return nil }
-
-	a.orchestrate(context.Background(), c, fakeStepExec, fakeSidecarExec, noopPostExec, "/workspace", fakeEnsureScopePod, nil)
+	backend := newFakeK8sBackend()
+	backend.SidecarExitCode = exitCode
+	a.orchestrate(context.Background(), c, backend, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
+	recorded = backend.ArtifactCalls
 	return recorded, h.statuses, h.final
 }
 

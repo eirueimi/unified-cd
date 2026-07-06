@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runOrchestrateTimeout is like runOrchestrate but takes a custom stepExec so
-// a test can supply one that blocks until its ctx is cancelled (simulating a
-// slow step for timeout tests without a real sleep).
-func runOrchestrateTimeout(t *testing.T, c api.ClaimResponse, stepExec podStepExec) (map[string]string, string) {
+// runOrchestrateTimeout is like runOrchestrate but takes a custom StepExecFn
+// so a test can supply one that blocks until its ctx is cancelled (simulating
+// a slow step for timeout tests without a real sleep).
+func runOrchestrateTimeout(t *testing.T, c api.ClaimResponse, stepExecFn func(ctx context.Context, step api.ClaimStep, script string) (int, error)) (map[string]string, string) {
 	t.Helper()
 
 	h := &orchestrateHarness{statuses: map[string]string{}, runState: "Running"}
@@ -63,25 +63,24 @@ func runOrchestrateTimeout(t *testing.T, c api.ClaimResponse, stepExec podStepEx
 	client := agentlib.NewClient(srv.URL, "tok")
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
 
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-	noopPostExec := func(_ context.Context, _, _, _ string, _ []string) error { return nil }
-	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, noopPostExec, "/workspace", noopEnsureScopePod, nil)
+	backend := newFakeK8sBackend()
+	backend.StepExecFn = stepExecFn
+	a.orchestrate(context.Background(), c, backend, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
 	return h.statuses, h.final
 }
 
-// blockingStepExec returns a podStepExec that blocks until its ctx is Done,
+// blockingStepExec returns a StepExecFn that blocks until its ctx is Done,
 // then returns the ctx error as an infrastructure error — mirroring the host
 // agent's runTreeKilled behavior when a step's context deadline is exceeded
 // (internal/agent/runner.go: RunStepCapture returns a non-nil runErr, which
 // the caller reports as Failed).
-func blockingStepExec() podStepExec {
-	return func(ctx context.Context, _ api.ClaimStep, _ string) (int, string, error) {
+func blockingStepExec() func(ctx context.Context, step api.ClaimStep, script string) (int, error) {
+	return func(ctx context.Context, _ api.ClaimStep, _ string) (int, error) {
 		<-ctx.Done()
-		return -1, "", ctx.Err()
+		return -1, ctx.Err()
 	}
 }
 
@@ -163,12 +162,12 @@ func TestOrchestrate_JobTimeout_FinallyStillRuns(t *testing.T) {
 		},
 	}
 
-	fakeExec := func(ctx context.Context, step api.ClaimStep, _ string) (int, string, error) {
+	fakeExec := func(ctx context.Context, step api.ClaimStep, _ string) (int, error) {
 		if step.Name == "slow" {
 			<-ctx.Done()
-			return -1, "", ctx.Err()
+			return -1, ctx.Err()
 		}
-		return 0, "", nil
+		return 0, nil
 	}
 
 	done := make(chan struct{})

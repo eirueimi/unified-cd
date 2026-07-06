@@ -248,47 +248,36 @@ func parityShell(t *testing.T) string {
 	return path
 }
 
-// parityStepExec builds a podStepExec that runs a step's script for real via
-// the discovered shell, mirroring execStepEnv's UNIFIED_AGENT_OS=linux
-// injection (internal/k8sagent/agent.go) since orchestrate's real stepExec
-// (built in executeRun) applies exactly that env before invoking
-// Executor.ExecStep. Honors ctx cancellation via exec.CommandContext, and
-// additionally kills the whole process tree on cancellation (see
-// parityKillTree) since exec.CommandContext alone only signals the direct
-// child (the shell), leaving a backgrounded `sleep` grandchild running — the
-// same class of problem the host agent's killTree/runTreeKilled solves
-// (internal/agent/exec_tree.go, exec_unix.go, exec_windows.go).
-//
-// Log shipping: production's real stepExec closure (built in executeRun,
-// internal/k8sagent/agent.go ~287-337) tees stdout through a logLineWriter
-// (single-line AppendLog, masked) and stderr through a LogPusher (bulk,
-// masked, auto-flushed). Since this driver calls orchestrate directly with
-// its own podStepExec, it replicates that shipping (and masking, via the
-// real internal/secrets.Masker) here — otherwise log-content assertions
-// (env-reaches-script, finally marker, secret masking) would observe nothing.
-func parityStepExec(t *testing.T, client *agentlib.Client, agentID, runID string, masker *secrets.Masker) podStepExec {
+// parityRunScript runs a step's script for real via the discovered shell,
+// mirroring execStepEnv's UNIFIED_AGENT_OS=linux injection
+// (internal/k8sagent/agent.go) since orchestrate's real RunDefault (built via
+// k8sBackend) applies exactly that env before invoking Executor.ExecStep.
+// Honors ctx cancellation via exec.CommandContext, and additionally kills the
+// whole process tree on cancellation (see parityKillTree) since
+// exec.CommandContext alone only signals the direct child (the shell),
+// leaving a backgrounded `sleep` grandchild running — the same class of
+// problem the host agent's killTree/runTreeKilled solves
+// (internal/agent/exec_tree.go, exec_unix.go, exec_windows.go). stdout/stderr
+// are the writers orchestrate hands to RunDefault (its own tee/shipping
+// wiring via ExecBackend.StepLogWriters), so this function just needs to
+// stream the real script's output into them.
+func parityRunScript(t *testing.T, shell string, step api.ClaimStep, expandedRun string, stdout, stderr io.Writer) func(ctx context.Context) (int, error) {
 	t.Helper()
-	shell := parityShell(t)
-	return func(ctx context.Context, step api.ClaimStep, expandedRun string) (int, string, error) {
+	return func(ctx context.Context) (int, error) {
 		env := append([]string{}, os.Environ()...)
 		env = append(env, "UNIFIED_AGENT_OS=linux")
 		for k, v := range step.Env {
 			env = append(env, k+"="+v)
 		}
 
-		var stdoutBuf strings.Builder
-		stdoutShip := &parityLineShipper{client: client, agentID: agentID, runID: runID, stepIdx: step.Index, stream: "stdout", masker: masker}
-		stdoutWriter := io.MultiWriter(&stdoutBuf, stdoutShip)
-		stderrShip := &parityLineShipper{client: client, agentID: agentID, runID: runID, stepIdx: step.Index, stream: "stderr", masker: masker}
-
 		cmd := exec.Command(shell, "-lc", expandedRun)
 		cmd.Env = env
-		cmd.Stdout = stdoutWriter
-		cmd.Stderr = stderrShip
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
 		paritySetupProcAttrs(cmd)
 
 		if startErr := cmd.Start(); startErr != nil {
-			return -1, "", startErr
+			return -1, startErr
 		}
 		waitDone := make(chan error, 1)
 		go func() { waitDone <- cmd.Wait() }()
@@ -301,8 +290,6 @@ func parityStepExec(t *testing.T, client *agentlib.Client, agentID, runID string
 			<-waitDone // reap
 			runErr = ctx.Err()
 		}
-		stdoutShip.flushRemainder()
-		stderrShip.flushRemainder()
 
 		exitCode := 0
 		if runErr != nil {
@@ -313,9 +300,98 @@ func parityStepExec(t *testing.T, client *agentlib.Client, agentID, runID string
 				exitCode = -1
 			}
 		}
-		return exitCode, stdoutBuf.String(), runErr
+		return exitCode, runErr
 	}
 }
+
+// parityK8sBackend is the real-execution ExecBackend used by
+// TestParity_K8sAgent: RunDefault (the only exec path any of the 10 parity
+// cases exercises) runs the step's script for real via parityRunScript, and
+// StepLogWriters ships real output through parityLineShipper (masked),
+// mirroring production's log-shipping shape closely enough for the parity
+// suite's log-content assertions (env-reaches-script, finally marker, secret
+// masking). Cache/artifact/scope methods are minimal recording stubs — none
+// of the 10 cases exercises them. postOrder/postMu record RunPostHook script
+// invocation order directly (unlike the host driver, this callback IS what
+// runs the script, so LIFO order can be observed with no marker-file
+// workaround).
+type parityK8sBackend struct {
+	t       *testing.T
+	client  *agentlib.Client
+	agentID string
+	runID   string
+	masker  *secrets.Masker
+	shell   string
+
+	postMu    sync.Mutex
+	postOrder []string
+}
+
+func (b *parityK8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
+	return parityRunScript(b.t, b.shell, step, script, stdout, stderr)(ctx)
+}
+
+func (b *parityK8sBackend) RunImage(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
+	return parityRunScript(b.t, b.shell, step, script, stdout, stderr)(ctx)
+}
+
+func (b *parityK8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
+	return parityRunScript(b.t, b.shell, step, script, stdout, stderr)(ctx)
+}
+
+func (b *parityK8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, env []string) (agentlib.ScopeHandle, error) {
+	return agentlib.NewScopeHandle("scope-pod-" + step.ScopeID), nil
+}
+
+func (b *parityK8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, env []string, stdout, stderr io.Writer) (int, error) {
+	return parityRunScript(b.t, b.shell, api.ClaimStep{}, script, stdout, stderr)(ctx)
+}
+
+func (b *parityK8sBackend) CloseScopes(ctx context.Context) {}
+
+func (b *parityK8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandle, key string, restoreKeys []string, path string) (bool, error) {
+	return false, nil
+}
+
+func (b *parityK8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, key, path string, ttlDays int) error {
+	return nil
+}
+
+func (b *parityK8sBackend) UploadArtifact(ctx context.Context, scope agentlib.ScopeHandle, runID, name, path string) error {
+	return nil
+}
+
+func (b *parityK8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeHandle, runID, name, destDir string) error {
+	return nil
+}
+
+// RunPostHook records the post hook's script in invocation order (so
+// post-hooks-lifo can assert LIFO order) and, since none of the 10 parity
+// cases' post hooks depend on their side effects being observed any other
+// way than the marker-file echoes already captured via log shipping in the
+// step body, does not itself execute the script.
+func (b *parityK8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, env []string) error {
+	b.postMu.Lock()
+	b.postOrder = append(b.postOrder, script)
+	b.postMu.Unlock()
+	return nil
+}
+
+func (b *parityK8sBackend) SetMasker(m *secrets.Masker) { b.masker = m }
+
+func (b *parityK8sBackend) StepLogWriters(ctx context.Context, stepIndex int) (stdout, stderr io.Writer, finish func(ctx context.Context)) {
+	stdoutShip := &parityLineShipper{client: b.client, agentID: b.agentID, runID: b.runID, stepIdx: stepIndex, stream: "stdout", masker: b.masker}
+	stderrShip := &parityLineShipper{client: b.client, agentID: b.agentID, runID: b.runID, stepIdx: stepIndex, stream: "stderr", masker: b.masker}
+	finish = func(context.Context) {
+		stdoutShip.flushRemainder()
+		stderrShip.flushRemainder()
+	}
+	return stdoutShip, stderrShip, finish
+}
+
+func (b *parityK8sBackend) ConcurrencyMode() agentlib.ConcurrencyMode { return agentlib.Sequential }
+
+var _ agentlib.ExecBackend = (*parityK8sBackend)(nil)
 
 // parityLineShipper is a minimal Writer that masks (if masker != nil) and
 // ships each newline-delimited line to the fake controller via AppendLog.
@@ -414,35 +490,13 @@ func runParityK8sCase(t *testing.T, tc paritycases.Case) {
 		masker = secrets.NoOpMasker
 	}
 
-	stepExec := parityStepExec(t, client, agentID, runID, masker)
-
-	// sidecarExec: recording no-op stub. orchestrate uses sidecarExec only
-	// for cache/artifact steps (dispatched via the unified-sidecar binary's
-	// argv protocol) — none of the 10 parity cases exercises cache/artifact
-	// behavior, so a no-op that always reports success is sufficient here.
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-
-	// postExec: records (script) invocation order directly, so
-	// post-hooks-lifo can assert LIFO order without any marker-file
-	// workaround (unlike the host driver — see parity_host_test.go — the k8s
-	// postExec callback IS the thing that runs the script, so we can observe
-	// it directly).
-	var postMu sync.Mutex
-	var postOrder []string
-	postExec := func(_ context.Context, _, _, script string, _ []string) error {
-		postMu.Lock()
-		postOrder = append(postOrder, script)
-		postMu.Unlock()
-		return nil
-	}
-
-	// ensureScopePod: none of the 10 cases uses uses-scope steps.
-	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
+	shell := parityShell(t)
+	backend := &parityK8sBackend{t: t, client: client, agentID: agentID, runID: runID, masker: masker, shell: shell}
 
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	a.orchestrate(ctx, claim, stepExec, noopSidecarExec, postExec, "/workspace", noopEnsureScopePod, tc.Secrets)
+	a.orchestrate(ctx, claim, backend, tc.Secrets)
 	elapsed := time.Since(start)
 
 	if tc.Name == "step-timeout-fails" {
@@ -461,9 +515,9 @@ func runParityK8sCase(t *testing.T, tc paritycases.Case) {
 	}
 
 	if tc.Name == "post-hooks-lifo" {
-		postMu.Lock()
-		order := append([]string(nil), postOrder...)
-		postMu.Unlock()
+		backend.postMu.Lock()
+		order := append([]string(nil), backend.postOrder...)
+		backend.postMu.Unlock()
 		wantOrder := []string{
 			`echo post-2 >> "$POSTHOOK_MARKER_FILE"`,
 			`echo post-1 >> "$POSTHOOK_MARKER_FILE"`,

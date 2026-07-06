@@ -68,51 +68,37 @@ func newOrchestrateClient(t *testing.T, mux *http.ServeMux) *agentlib.Client {
 	return agentlib.NewClient(srv.URL, "tok")
 }
 
-// postExecCall records a single call to a fake postExec.
-type postExecCall struct {
-	targetPod, container, script string
-	env                          []string
-}
-
-// runOrchestratePost is like runOrchestrate but injects a fake postExec that
-// records every call, so post: hook tests can assert on drain order/routing
-// without a real pod. stepExec lets each test control per-step exit/behavior.
-func runOrchestratePost(t *testing.T, c api.ClaimResponse, stepExec podStepExec) (map[string]string, string, []postExecCall) {
+// runOrchestratePost is like runOrchestrate but uses the shared fake backend
+// so post: hook tests can assert on drain order/routing without a real pod.
+// fakes lets each test control per-step exit/behavior.
+func runOrchestratePost(t *testing.T, c api.ClaimResponse, fakes map[string]fakeStep) (map[string]string, string, []postExecCall) {
 	t.Helper()
 
-	statuses, final, calls := runOrchestrateWithFakes(t, c, stepExec)
+	statuses, final, calls := runOrchestrateWithFakes(t, c, fakes)
 	return statuses, final, calls
 }
 
 // runOrchestrateWithFakes stands up the harness (reusing the same mock
 // controller endpoints as runOrchestrate) and returns step statuses, final
 // run status, and the recorded postExec calls in invocation order.
-func runOrchestrateWithFakes(t *testing.T, c api.ClaimResponse, stepExec podStepExec) (map[string]string, string, []postExecCall) {
+func runOrchestrateWithFakes(t *testing.T, c api.ClaimResponse, fakes map[string]fakeStep) (map[string]string, string, []postExecCall) {
 	t.Helper()
 
 	h := &orchestrateHarness{statuses: map[string]string{}, runState: "Running"}
 	var mu sync.Mutex
-	var postCalls []postExecCall
 
 	mux := newOrchestrateMux(t, c.RunID, h, &mu)
 	srvClient := newOrchestrateClient(t, mux)
 
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: srvClient}
 
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
-	fakePostExec := func(_ context.Context, targetPod, container, script string, env []string) error {
-		mu.Lock()
-		postCalls = append(postCalls, postExecCall{targetPod: targetPod, container: container, script: script, env: env})
-		mu.Unlock()
-		return nil
-	}
-
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, fakePostExec, "/workspace", noopEnsureScopePod, nil)
+	backend := newFakeK8sBackend()
+	backend.Fakes = fakes
+	a.orchestrate(context.Background(), c, backend, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
-	return h.statuses, h.final, postCalls
+	return h.statuses, h.final, backend.PostCalls
 }
 
 // TestOrchestrate_PostHooks_RunInLIFOOrderAfterMainSteps is a RED-first
@@ -129,11 +115,7 @@ func TestOrchestrate_PostHooks_RunInLIFOOrderAfterMainSteps(t *testing.T) {
 			Post: &api.PostStep{Run: "cleanup-second"}}},
 	}}
 
-	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
-		return 0, "", nil
-	}
-
-	statuses, final, postCalls := runOrchestratePost(t, c, stepExec)
+	statuses, final, postCalls := runOrchestratePost(t, c, nil)
 
 	assert.Equal(t, "Succeeded", statuses["first"])
 	assert.Equal(t, "Succeeded", statuses["second"])
@@ -153,11 +135,7 @@ func TestOrchestrate_PostHook_NotQueuedForFailedStep(t *testing.T) {
 			Post: &api.PostStep{Run: "should-not-run"}}},
 	}}
 
-	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
-		return 1, "", nil
-	}
-
-	statuses, final, postCalls := runOrchestratePost(t, c, stepExec)
+	statuses, final, postCalls := runOrchestratePost(t, c, map[string]fakeStep{"boom": {exit: 1}})
 
 	assert.Equal(t, "Failed", statuses["boom"])
 	assert.Equal(t, "Failed", final)
@@ -173,23 +151,18 @@ func TestOrchestrate_PostHookFailure_DoesNotFlipRunStatus(t *testing.T) {
 			Post: &api.PostStep{Run: "flaky-cleanup"}}},
 	}}
 
-	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
-		return 0, "", nil
-	}
-
 	h := &orchestrateHarness{statuses: map[string]string{}, runState: "Running"}
 	var mu sync.Mutex
 	mux := newOrchestrateMux(t, c.RunID, h, &mu)
 	client := newOrchestrateClient(t, mux)
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
 
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
-	failingPostExec := func(_ context.Context, _, _, _ string, _ []string) error {
+	backend := newFakeK8sBackend()
+	backend.PostExecFn = func(_ context.Context, _, _, _ string, _ []string) error {
 		return assert.AnError
 	}
 
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, failingPostExec, "/workspace", noopEnsureScopePod, nil)
+	a.orchestrate(context.Background(), c, backend, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -208,32 +181,18 @@ func TestOrchestrate_ScopedStepPostHook_RoutesToScopePod(t *testing.T) {
 			Post: &api.PostStep{Run: "scoped-cleanup"}}},
 	}}
 
-	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
-		return 0, "", nil
-	}
-
 	h := &orchestrateHarness{statuses: map[string]string{}, runState: "Running"}
 	var mu sync.Mutex
-	var postCalls []postExecCall
 	mux := newOrchestrateMux(t, c.RunID, h, &mu)
 	client := newOrchestrateClient(t, mux)
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
 
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-	fakeEnsureScopePod := func(_ context.Context, step api.ClaimStep) (string, error) {
-		return "scope-pod-" + step.ScopeID, nil
-	}
-	fakePostExec := func(_ context.Context, targetPod, container, script string, env []string) error {
-		mu.Lock()
-		postCalls = append(postCalls, postExecCall{targetPod: targetPod, container: container, script: script, env: env})
-		mu.Unlock()
-		return nil
-	}
-
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, fakePostExec, "/workspace", fakeEnsureScopePod, nil)
+	backend := newFakeK8sBackend()
+	a.orchestrate(context.Background(), c, backend, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
+	postCalls := backend.PostCalls
 	require.Len(t, postCalls, 1)
 	assert.Equal(t, "scope-pod-scope:build", postCalls[0].targetPod, "scoped step's post hook must target its scope pod")
 	assert.Equal(t, "step", postCalls[0].container)
@@ -248,11 +207,7 @@ func TestOrchestrate_PostHookEnvExpanded(t *testing.T) {
 			Post: &api.PostStep{Run: "cleanup", Env: map[string]string{"FOO": "bar"}}}},
 	}}
 
-	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
-		return 0, "", nil
-	}
-
-	_, _, postCalls := runOrchestratePost(t, c, stepExec)
+	_, _, postCalls := runOrchestratePost(t, c, nil)
 
 	require.Len(t, postCalls, 1)
 	assert.Contains(t, postCalls[0].env, "FOO=bar")

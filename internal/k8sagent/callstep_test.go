@@ -83,17 +83,15 @@ func TestOrchestrate_CallStepLaunchesChildRun(t *testing.T) {
 		},
 	}
 
-	stepExec := func(_ context.Context, step api.ClaimStep, _ string) (int, string, error) {
+	backend := newFakeK8sBackend()
+	backend.StepExecFn = func(_ context.Context, step api.ClaimStep, _ string) (int, error) {
 		if strings.Contains(step.Name, "callChild") {
 			stepExecCalled.Store(true)
 		}
-		return 0, "", nil
+		return 0, nil
 	}
-	noopSidecarExec := func(_ context.Context, _, _ string, _ []string) (int, error) { return 0, nil }
-	noopPostExec := func(_ context.Context, _, _, _ string, _ []string) error { return nil }
-	noopEnsureScopePod := func(_ context.Context, _ api.ClaimStep) (string, error) { return "", nil }
 
-	a.orchestrate(context.Background(), c, stepExec, noopSidecarExec, noopPostExec, "/workspace", noopEnsureScopePod, nil)
+	a.orchestrate(context.Background(), c, backend, nil)
 
 	mu.Lock()
 	defer mu.Unlock()
