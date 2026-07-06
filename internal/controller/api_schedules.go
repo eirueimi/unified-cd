@@ -67,6 +67,7 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteSchedule deletes the Schedule with the given name. Idempotent — returns 204 even if the schedule does not exist.
+// Returns 409 instead if the schedule is managed by an AppSource (see guardManagedResource).
 func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if err := s.guardManagedResource(r.Context(), "Schedule", name); err != nil {

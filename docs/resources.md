@@ -535,7 +535,7 @@ spec:
 ### Managed-resource protection
 
 Resources synced by an AppSource (listed in its managed resources) are
-protected from direct modification: `unified-cli apply` and REST API
+protected from direct modification: `unified-cd apply` and REST API
 writes/deletes targeting them are rejected with **409 Conflict**, keeping Git
 the source of truth. The error names the managing AppSource and its repoURL.
 
@@ -564,7 +564,10 @@ Notes:
 3. Apply an AppSource whose `path` points at the exported directory.
 4. On the first sync each resource is upserted under its existing name and
    recorded as managed — no manual deletion is needed, and from then on the
-   resources are protected from direct writes.
+   resources are protected from direct writes. Within a sync, Jobs and
+   GitCredentials are applied before Schedules and WebhookReceivers, so a
+   Schedule or WebhookReceiver that references a Job by name resolves
+   correctly on the very first sync regardless of file path order.
 
 ### Sync behavior
 
