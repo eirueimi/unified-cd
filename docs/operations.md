@@ -122,7 +122,7 @@ sum(rate(unifiedcd_runs_finished_total{status="Failed"}[1h]))
 max(unifiedcd_runs_current{status="Pending"})
   + max(unifiedcd_runs_current{status="Queued"})
 
-# No alive agents (alert on > 0 for 5m)
+# No alive agents (alert if this returns a result for 5m)
 max(unifiedcd_agents{state="alive"}) == 0
 
 # p95 step duration

@@ -11,6 +11,13 @@ import (
 // InstrumentedStore decorates a store.Store, counting run and step state
 // transitions. Every other method passes through via embedding, so reapers
 // and handlers are instrumented with a single wrap in main.go.
+//
+// Known blind spot: run-finish transitions performed internally by
+// *store.Postgres itself — e.g. TransitionPendingToQueued calling
+// MarkRunFinished directly when it fails a run on a concurrency template-
+// expansion error or an or-lock parameter conflict — call the underlying
+// Postgres method, not this decorator, so they bypass it and are not
+// counted in unifiedcd_runs_finished_total.
 type InstrumentedStore struct {
 	store.Store
 	m *Metrics

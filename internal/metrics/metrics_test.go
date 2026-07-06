@@ -33,6 +33,15 @@ func TestRecorders(t *testing.T) {
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.httpRequests.WithLabelValues("GET", "/api/v1/runs/{id}", "200")))
 }
 
+func TestHTTPRequestFoldsMethodLabel(t *testing.T) {
+	m := New()
+	m.HTTPRequest("GET", "/api/v1/runs/{id}", 200, 0.05)
+	m.HTTPRequest("FOO123", "/api/v1/runs/{id}", 200, 0.05)
+
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.httpRequests.WithLabelValues("GET", "/api/v1/runs/{id}", "200")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.httpRequests.WithLabelValues("other", "/api/v1/runs/{id}", "200")))
+}
+
 func TestHandlerServesTextFormat(t *testing.T) {
 	m := New()
 	m.RunCreated("api")

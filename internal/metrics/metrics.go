@@ -111,6 +111,7 @@ func (m *Metrics) WebhookEventsForTest(name, outcome string) prometheus.Counter 
 
 // HTTPRequest records one served HTTP request.
 func (m *Metrics) HTTPRequest(method, route string, code int, seconds float64) {
+	method = httpMethodLabel(method)
 	m.httpRequests.WithLabelValues(method, route, strconv.Itoa(code)).Inc()
 	m.httpDuration.WithLabelValues(method, route).Observe(seconds)
 }
@@ -125,5 +126,20 @@ func triggerLabel(triggeredBy string) string {
 		return "schedule"
 	default:
 		return "api"
+	}
+}
+
+// httpMethodLabel folds the request method into a bounded label set. Only
+// the standard HTTP methods pass through unchanged; anything else (typos,
+// probes, or garbage tokens sent at an internet-facing endpoint) folds into
+// "other" so it cannot mint unbounded label series.
+func httpMethodLabel(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodConnect,
+		http.MethodOptions, http.MethodTrace:
+		return method
+	default:
+		return "other"
 	}
 }
