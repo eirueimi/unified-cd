@@ -74,21 +74,37 @@ All flags can be specified in a YAML config file (`-f config.yaml`):
 dsn: postgres://unified:unified@localhost:5432/unified?sslmode=disable
 addr: :8080
 token: dev-secret
-controllerKey: a1b2c3d4...   # 32-byte hex
+controllerKey: a1b2c3d4...      # 32-byte hex (openssl rand -hex 32)
 
 s3Endpoint: garage.internal:3900
 s3Bucket: unified-cd
 s3Key: garageadmin
 s3Secret: garageadmin12345
+dataDir: /var/lib/unified-cd    # local object-store fallback (dev; alternative to S3)
 
-logLevel: info
+webDir: /srv/unified-cd/web         # static web assets; unset => /ui/* returns 404
+uiProxyTarget: http://localhost:5173 # dev only: proxy /ui/* to a Vite dev server
+stderrPlain: false                   # true => run-log stderr is the same color as stdout
 
-oidcIssuer: http://localhost:8080/dex
-oidcIssuerInternal: http://dex:5556/dex
-oidcClientID: unified-cd
-oidcClientSecret: unified-cd-secret
-oidcDeviceClientID: unified-cd-cli
+# Log level is a flag/env, not a config-file field: --log-level / UNIFIED_LOG_LEVEL
+
+# SSO (OIDC) is a nested block (not flat oidc* keys):
+oidc:
+  issuer: http://localhost:8080/dex
+  issuerInternal: http://dex:5556/dex   # in-container discovery URL
+  externalUrl: http://localhost:8080    # browser redirect base (behind a proxy)
+  clientId: unified-cd
+  clientSecret: unified-cd-secret        # set => browser SSO enabled
+  deviceClientId: unified-cd-cli         # public client for the CLI device flow
+  rolesClaim: groups
+  defaultRole: viewer
+  roleMap:                               # OIDC group/role -> unified-cd role
+    unified-admins: admin
+  userMap:                               # email/subject -> unified-cd role
+    alice@example.com: admin
 ```
+
+Config-file keys map 1:1 to the flags above (e.g. `dataDir` ↔ `--data-dir`), with OIDC settings under the nested `oidc:` block. See `internal/config/controller.go` for the authoritative field list.
 
 ---
 
@@ -172,10 +188,12 @@ Start with config file:
 ```
 unified-cd-k8s-agent [FLAGS]
 
-  -f    string   Config file path (env: UNIFIED_K8S_CONFIG)
+  --config       string   Config file path (env: UNIFIED_K8S_CONFIG)
+  --secret       string   Secret override file path, merged over the config (env: UNIFIED_K8S_SECRET)
+  --log-level    string   Log level: debug, info, warn, error (env: UNIFIED_K8S_LOG_LEVEL)
 ```
 
-All configuration is through the config file or `UNIFIED_K8S_CONFIG` environment variable.
+All agent settings live in the config file (`--config` / `UNIFIED_K8S_CONFIG`); sensitive values may be split into a Secret file (`--secret` / `UNIFIED_K8S_SECRET`) merged on top.
 
 ### K8s Agent Config File
 
@@ -198,7 +216,20 @@ podImage: alpine:3.19
 # Omit to use InClusterConfig (when running inside the cluster)
 # or ~/.kube/config (when running outside)
 
-logLevel: info
+# Artifact-transfer sidecar injected into every job/scope Pod
+# (default: ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest)
+sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest
+
+# Name of a Secret carrying UNIFIED_S3_* env for the sidecar. Enables
+# cache/artifact transfers; when unset, cache steps are no-ops (reported
+# Succeeded) and artifact upload/download steps fail.
+sidecarS3SecretName: unified-cd-s3
+
+# How long an idle pooled job Pod is kept for reuse before teardown
+# (Go duration, e.g. "10m"). Unset = no reuse window.
+poolIdleTimeout: 10m
+
+# Log level is a flag/env, not a config-file field: --log-level / UNIFIED_K8S_LOG_LEVEL
 
 # Named pod templates referenced in Job YAML via podTemplate.name
 podTemplates:
@@ -237,6 +268,25 @@ podTemplates:
         - name: pip-cache
           emptyDir: {}
 ```
+
+### K8s Agent config fields
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `server` | string | Yes | — | Controller base URL the agent claims runs from |
+| `token` | string | Yes | — | Agent bearer token (put in the Secret file, not the ConfigMap) |
+| `agentId` | string | Yes | — | Unique agent ID. Overridden by env `UNIFIED_K8S_AGENT_ID` (e.g. the pod name) |
+| `labels` | []string | No | — | Agent labels matched against a Job's `agentSelector` |
+| `namespace` | string | No | `default` | Namespace the agent creates job/scope Pods in |
+| `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Fallback job-container image when no `podTemplate` is referenced |
+| `sidecarImage` | string | No | `ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest` | Artifact-transfer sidecar image injected into every job/scope Pod |
+| `sidecarS3SecretName` | string | No | — | Secret carrying `UNIFIED_S3_*` for the sidecar. Without it, cache steps are no-ops (Succeeded) and artifact steps fail |
+| `kubeconfig` | string | No | in-cluster / `~/.kube/config` | Path to a kubeconfig; omit to use `InClusterConfig` (in cluster) or `~/.kube/config` (out of cluster) |
+| `maxConcurrent` | int | No | `5` | Max simultaneous job Pods |
+| `poolIdleTimeout` | string | No | `0` (no reuse) | Go duration an idle pooled Pod is kept for reuse before teardown (e.g. `10m`) |
+| `podTemplates` | map | No | — | Named Pod templates referenced from Job YAML via `podTemplate.name` (see below) |
+
+`token` (and any other sensitive value) may be placed in a separate Secret file (env `UNIFIED_K8S_SECRET`), whose fields are merged on top of the config file.
 
 ### Pod template fields
 
