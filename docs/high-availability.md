@@ -331,7 +331,7 @@ exceed the default in your environment.
 Horizontal scaling of agents (above) prevents *new* Runs from being starved when an agent dies,
 but it does not by itself resolve a Run that an agent had already claimed at the moment it died.
 Without the mechanisms below, such a Run would stay `Running` forever (and, on k8s, its pod-per-run
-Pod would leak). Three independent pieces close this gap:
+Pod would leak). Four independent pieces close this gap:
 
 ### 1. Agent heartbeat
 
@@ -372,7 +372,26 @@ duplicating side effects that already happened on the dead agent (e.g. a deploy 
 ran) — the same trade-off GitHub Actions and similar systems make when a runner is lost. Recovery
 is a human decision (inspect the run, then manually re-trigger the job if it's safe to repeat).
 
-### 3. k8s orphan-pod GC
+### 3. Agent-restart reconcile & force-shutdown report
+
+The reaper above cannot see one case: the agent process is **replaced** (SIGKILL, OOM, container
+restart) and the new process re-registers under the **same agent ID** within `staleAfter`. The
+heartbeat resumes immediately, so runs claimed by the previous process incarnation never look stuck
+— yet nothing is executing them anymore.
+
+Both agents therefore call `POST /api/v1/agents/{id}/runs/reconcile` on startup, after registering
+and **before the first claim**: the controller fails every `Running` run still claimed by that agent
+ID, with the same semantics as the reaper (`Failed`, never re-queued, locks released, `call:`
+descendants cascade-cancelled). The call is retried until it succeeds — claiming with unreconciled
+orphans would leave the hole open.
+
+The standard agent also calls the same endpoint best-effort (3s budget) on **force shutdown**
+(second SIGINT/SIGTERM), so an operator who skips the drain gets the abandoned runs failed
+immediately instead of after the reaper's 90s staleness window. A true SIGKILL still runs no
+handler — that case is covered by the startup reconcile (if the agent returns) or the reaper
+(if it does not).
+
+### 4. k8s orphan-pod GC
 
 The k8s-agent additionally leaks `ucd-run-*` Pods if not cleaned up, since pod-per-run does not
 reuse Pods across Runs. `internal/k8sagent/podgc.go` sweeps run Pods every **~1 minute** and deletes

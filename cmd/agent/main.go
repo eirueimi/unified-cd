@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/config"
@@ -93,12 +95,22 @@ func main() {
 		}
 	}
 
-	// First SIGINT/SIGTERM begins a graceful shutdown (drain in-flight runs up to
-	// DrainTimeout); a second signal forces an immediate shutdown.
-	ctx, cancel := agent.ShutdownContext()
-	defer cancel()
-
 	cli := agent.NewClient(*server, *token)
+
+	// First SIGINT/SIGTERM begins a graceful shutdown (drain in-flight runs up to
+	// DrainTimeout); a second signal forces an immediate shutdown. On the force
+	// path, best-effort report the abandoned in-flight runs so the controller
+	// fails them immediately instead of waiting for the stuck-run reaper.
+	ctx, cancel := agent.ShutdownContext(func() {
+		fctx, fcancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer fcancel()
+		if n, err := cli.ReconcileRuns(fctx, *id); err != nil {
+			slog.Warn("force shutdown: reconcile runs failed", "error", err)
+		} else if n > 0 {
+			slog.Warn("force shutdown: reported abandoned in-flight runs", "count", n)
+		}
+	})
+	defer cancel()
 	a := agent.NewWithLabels(*id, labels, cli)
 	a.ExposeEnv = exposeEnv
 	a.MaxConcurrent = *maxConcurrent

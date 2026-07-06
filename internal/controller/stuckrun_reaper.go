@@ -55,17 +55,29 @@ func runStuckRunReaperOnce(ctx context.Context, st store.Store, staleAfter, grac
 		return
 	}
 	for _, id := range ids {
-		// MarkRunFinished also releases the run's mutex/semaphore locks, so it
-		// must be called per-run rather than via a bulk UPDATE.
-		if err := st.MarkRunFinished(ctx, id, api.RunFailed); err != nil {
+		if err := failOrphanedRun(ctx, st, id); err != nil {
 			slog.Error("stuck-run reaper: mark failed", "runId", id, "error", err)
 			continue
 		}
-		// A reaped parent should not leave its call: children running/queued.
-		cancelDescendantRuns(ctx, st, id)
 		slog.Warn("stuck-run reaper: failed orphaned run (agent lost)", "runId", id)
 	}
 	if len(ids) > 0 {
 		slog.Info("stuck-run reaper: failed orphaned runs", "count", len(ids))
 	}
+}
+
+// failOrphanedRun marks a run Failed and cascade-cancels its call: descendants
+// — the shared semantics for a run whose executing agent process is gone.
+// Used by the stuck-run reaper (heartbeat loss / agent deleted) and the agent
+// reconcile endpoint (restart with the same ID / force shutdown). Failed, not
+// re-queued: re-running partially-executed steps could duplicate side effects.
+// MarkRunFinished also releases the run's mutex/semaphore locks, so it must be
+// called per-run rather than via a bulk UPDATE.
+func failOrphanedRun(ctx context.Context, st store.Store, runID string) error {
+	if err := st.MarkRunFinished(ctx, runID, api.RunFailed); err != nil {
+		return err
+	}
+	// An orphaned parent should not leave its call: children running/queued.
+	cancelDescendantRuns(ctx, st, runID)
+	return nil
 }

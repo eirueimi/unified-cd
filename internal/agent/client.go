@@ -81,6 +81,18 @@ func (c *Client) Register(ctx context.Context, req api.AgentRegisterRequest) err
 	return err
 }
 
+// ReconcileRuns asks the controller to fail Running runs still claimed by
+// this agent — orphans left behind by a previous process incarnation (the
+// stuck-run reaper cannot catch them because the same agent ID resumes
+// heartbeating immediately). Returns the number of runs failed.
+func (c *Client) ReconcileRuns(ctx context.Context, agentID string) (int, error) {
+	var out struct {
+		FailedRuns int `json:"failedRuns"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/runs/reconcile", nil, &out)
+	return out.FailedRuns, err
+}
+
 // Deregister removes the agent from the master server.
 func (c *Client) Deregister(ctx context.Context, agentID string) error {
 	_, err := c.do(ctx, http.MethodDelete, "/api/v1/agents/"+agentID, nil, nil)

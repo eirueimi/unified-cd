@@ -487,3 +487,29 @@ func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// handleAgentReconcileRuns fails Running runs still claimed by the calling
+// agent. An agent calls this BEFORE it starts claiming (startup reconcile: a
+// restarted process no longer executes runs its previous incarnation claimed
+// — the stuck-run reaper cannot catch this case because the same agent ID
+// immediately resumes heartbeating) and best-effort on force shutdown.
+// Semantics match the stuck-run reaper via failOrphanedRun: Failed (never
+// re-queued), locks released, call: descendants cascade-cancelled.
+func (s *Server) handleAgentReconcileRuns(w http.ResponseWriter, r *http.Request) {
+	agentID := chi.URLParam(r, "agentId")
+	ids, err := s.store.ListRunningRunIDsByAgent(r.Context(), agentID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	failed := 0
+	for _, id := range ids {
+		if err := failOrphanedRun(r.Context(), s.store, id); err != nil {
+			slog.Error("agent reconcile: mark failed", "runId", id, "agentId", agentID, "error", err)
+			continue
+		}
+		slog.Warn("agent reconcile: failed orphaned run (agent process replaced)", "runId", id, "agentId", agentID)
+		failed++
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"failedRuns": failed})
+}

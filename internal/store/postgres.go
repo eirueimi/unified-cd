@@ -169,6 +169,27 @@ func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[str
 	return &r, nil
 }
 
+// ListRunningRunIDsByAgent returns IDs of Running runs claimed by agentID.
+// Used by the agent-orphan recovery paths (startup reconcile / force
+// shutdown) to find runs a dead agent process left behind.
+func (p *Postgres) ListRunningRunIDsByAgent(ctx context.Context, agentID string) ([]string, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT id FROM runs WHERE claimed_by = $1 AND status = 'Running'`, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("list running runs by agent: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // ListChildRunIDs returns the IDs of runs directly spawned by parentRunID via
 // call: steps, read from the step reports that recorded each child_run_id.
 func (p *Postgres) ListChildRunIDs(ctx context.Context, parentRunID string) ([]string, error) {

@@ -88,6 +88,28 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	}
 	slog.Info("k8s agent registered", "agentId", a.cfg.AgentID, "labels", labels)
 
+	// Fail runs a previous process incarnation left behind BEFORE claiming
+	// anything (e.g. the Deployment's pod was replaced mid-run): the restarted
+	// agent re-registers under the same ID and resumes heartbeating, so the
+	// stuck-run reaper never sees those runs as orphaned. Retried until it
+	// succeeds — claiming with unreconciled orphans would leave them Running
+	// forever, and failing fatally would just crash-loop the pod.
+	for {
+		count, err := a.client.ReconcileRuns(ctx, a.cfg.AgentID)
+		if err == nil {
+			if count > 0 {
+				slog.Warn("k8s: failed orphaned runs left by previous agent process", "count", count)
+			}
+			break
+		}
+		slog.Warn("k8s: reconcile orphaned runs failed; retrying", "error", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+
 	// The k8s agent has no drain/cordon: ctx is cancelled only on full shutdown,
 	// so binding the heartbeat to ctx keeps it alive for the agent's whole lifetime
 	// and stops it cleanly on shutdown. (Unlike the host agent, there is no separate

@@ -148,6 +148,26 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	slog.Info("agent registered", "agentId", a.ID)
 
+	// Fail runs a previous process incarnation left behind BEFORE claiming
+	// anything. A restarted agent re-registers under the same ID and resumes
+	// heartbeating immediately, so the stuck-run reaper never sees those runs
+	// as orphaned — without this they stay Running forever. Retried until it
+	// succeeds: starting to claim with unreconciled orphans would leave the
+	// hole open.
+	retryUntilSuccess(ctx, func(ctx context.Context) error {
+		count, err := a.Client.ReconcileRuns(ctx, a.ID)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			slog.Warn("failed orphaned runs left by previous agent process", "count", count)
+		}
+		return nil
+	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	n := a.MaxConcurrent
 	if n <= 0 {
 		n = 1

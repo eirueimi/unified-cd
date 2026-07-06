@@ -114,6 +114,9 @@ type Store interface {
 	// call: steps (recorded as child_run_id on the parent's step reports), so a
 	// cancellation of the parent can cascade to its children.
 	ListChildRunIDs(ctx context.Context, parentRunID string) ([]string, error)
+	// ListRunningRunIDsByAgent returns IDs of Running runs claimed by agentID,
+	// so an agent can fail runs its previous process incarnation left behind.
+	ListRunningRunIDsByAgent(ctx context.Context, agentID string) ([]string, error)
 	GetRun(ctx context.Context, id string) (*api.Run, error)
 	GetRunSpec(ctx context.Context, id string) ([]byte, error)
 	ListRunsByJob(ctx context.Context, jobName string, limit int) ([]api.Run, error)

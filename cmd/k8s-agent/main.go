@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"os"
+	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/config"
@@ -66,8 +68,18 @@ func main() {
 	ag := k8sagent.NewK8sAgent(cfg, masterClient, pm, exec, pool)
 
 	// First SIGINT/SIGTERM begins a graceful shutdown; a second signal forces an
-	// immediate shutdown.
-	ctx, cancel := agentlib.ShutdownContext()
+	// immediate shutdown. On the force path, best-effort report the abandoned
+	// in-flight runs so the controller fails them immediately instead of
+	// waiting for the stuck-run reaper.
+	ctx, cancel := agentlib.ShutdownContext(func() {
+		fctx, fcancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer fcancel()
+		if n, err := masterClient.ReconcileRuns(fctx, cfg.AgentID); err != nil {
+			slog.Warn("force shutdown: reconcile runs failed", "error", err)
+		} else if n > 0 {
+			slog.Warn("force shutdown: reported abandoned in-flight runs", "count", n)
+		}
+	})
 	defer cancel()
 
 	pool.StartEviction(ctx)

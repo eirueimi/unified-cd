@@ -379,6 +379,7 @@ func (s *Server) routes() {
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/claim", s.handleAgentClaim)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/steps", s.handleAgentStepReport)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/logs", s.handleAgentLogAppend)
+		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/reconcile", s.handleAgentReconcileRuns)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/finish", s.handleAgentFinishRun)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", s.handleAgentSetStepOutputs)
 		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/outputs", s.handleAgentSetRunOutputs)

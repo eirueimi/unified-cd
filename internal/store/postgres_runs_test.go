@@ -282,3 +282,46 @@ func TestPostgres_ListActiveRuns(t *testing.T) {
 	assert.Contains(t, ids, r2.ID)
 	assert.NotContains(t, ids, r3.ID)
 }
+
+// TestPostgres_ListRunningRunIDsByAgent verifies the orphan-recovery query:
+// only runs that are BOTH claimed by the given agent AND still Running are
+// returned — other agents' runs and terminal runs are excluded.
+func TestPostgres_ListRunningRunIDsByAgent(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+
+	// Creation order drives FIFO claim order below.
+	mine, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	require.NoError(t, err)
+	other, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	require.NoError(t, err)
+	done, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	require.NoError(t, err)
+	_, err = pg.TransitionPendingToQueued(ctx, 10)
+	require.NoError(t, err)
+
+	c1, err := pg.ClaimNextRun(ctx, "agent-a", nil)
+	require.NoError(t, err)
+	require.Equal(t, mine.ID, c1.ID)
+	c2, err := pg.ClaimNextRun(ctx, "agent-b", nil)
+	require.NoError(t, err)
+	require.Equal(t, other.ID, c2.ID)
+	c3, err := pg.ClaimNextRun(ctx, "agent-a", nil)
+	require.NoError(t, err)
+	require.Equal(t, done.ID, c3.ID)
+
+	for _, id := range []string{mine.ID, other.ID, done.ID} {
+		require.NoError(t, pg.MarkRunRunning(ctx, id))
+	}
+	require.NoError(t, pg.MarkRunFinished(ctx, done.ID, api.RunSucceeded))
+
+	ids, err := pg.ListRunningRunIDsByAgent(ctx, "agent-a")
+	require.NoError(t, err)
+	assert.Equal(t, []string{mine.ID}, ids)
+
+	none, err := pg.ListRunningRunIDsByAgent(ctx, "agent-c")
+	require.NoError(t, err)
+	assert.Empty(t, none)
+}
