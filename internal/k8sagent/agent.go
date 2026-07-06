@@ -245,11 +245,11 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// + MatrixKey), lazily created on first use by a scoped step and GC'd when
 	// the claim ends (deferred below) regardless of how it finished. The main
 	// stage/step loop (orchestrate, further below) executes every step —
-	// including stage.Parallel groups — sequentially via a plain nested for
-	// loop with no goroutines (unlike the host agent's runParallel), so this
-	// map needs no mutex: ensureScopePod is never called concurrently within a
-	// claim. If the k8s agent ever gains goroutine-based parallel execution,
-	// this map and the check-then-create in ensureScopePod must be guarded by
+	// including stage.Parallel groups — one at a time via agentlib.RunPipeline
+	// in Sequential mode (no goroutines, unlike the host agent's runParallel),
+	// so this map needs no mutex: ensureScopePod is never called concurrently
+	// within a claim. If the k8s agent ever gains concurrent execution, this
+	// map and the check-then-create in ensureScopePod must be guarded by
 	// a mutex, mirroring the host scopeManager's fix (see internal/agent/scope.go).
 	scopePods := map[string]string{}
 	ensureScopePod := func(execCtx context.Context, step api.ClaimStep) (string, error) {
@@ -434,10 +434,11 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 	// drain below (after the main stages, before finally) can route the hook
 	// into the same container the step body ran in: the step's scope pod's
 	// "step" container when scopeID != "", otherwise the run pod's default
-	// container. The k8s agent runs a claim's steps sequentially (no
-	// goroutines within orchestrate — see the scopePods map's doc comment
-	// above in executeRun), so hookStack needs no mutex, unlike the host's
-	// postHooksMu (which guards concurrent `parallel:` step-runner goroutines).
+	// container. The k8s agent runs a claim's steps one at a time via
+	// agentlib.RunPipeline in Sequential mode (no goroutines within
+	// orchestrate — see the scopePods map's doc comment above in executeRun),
+	// so hookStack needs no mutex, unlike the host's postHooksMu (which guards
+	// concurrent `parallel:` step-runner goroutines).
 	type postHookEntry struct {
 		stepName  string
 		post      api.PostStep
@@ -854,21 +855,26 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 	// suppresses cancel-induced failures.
 	mainRun := makeRunStep(statusView, true, &anyStepFailed, runCtx, true)
 
+	// getData snapshots the current step outputs for RunPipeline's internal
+	// matrix expansion (mirrors the host agent's getData/sctx.snapshot). k8s
+	// runs steps sequentially (Sequential mode below), so stepCtx.Steps is
+	// never mutated concurrently with this read.
+	getData := func() dsl.TemplateData {
+		return dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps, Secrets: stepCtx.Secrets}
+	}
+
 	// Visit every stage/step; the if: auto-skip (implicit success()) handles
-	// post-failure behavior, so the loop never aborts on failure.
-	for _, stage := range c.Stages {
-		for _, step := range api.StageSteps(stage) {
-			data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps, Secrets: stepCtx.Secrets}
-			variants, err := agentlib.ExpandMatrixStep(step, data, c.MatrixMaxCombinations)
-			if err != nil {
-				slog.Error("k8s: matrix expansion failed", "step", step.Name, "error", err)
-				anyStepFailed.Store(true)
-				continue
-			}
-			for _, v := range variants {
-				mainRun(v)
-			}
-		}
+	// post-failure behavior, so the pipeline never aborts on failure. Matrix
+	// expansion is handled internally by RunPipeline; Sequential mode preserves
+	// the k8s agent's documented one-at-a-time execution (scopePods/hookStack
+	// are not concurrency-safe).
+	if err := agentlib.RunPipeline(runCtx, c.Stages, getData, c.MatrixMaxCombinations, agentlib.Sequential,
+		func(_ context.Context, step api.ClaimStep) error {
+			mainRun(step)
+			return nil
+		}); err != nil {
+		slog.Error("k8s: main pipeline structural error", "runId", c.RunID, "error", err)
+		anyStepFailed.Store(true)
 	}
 
 	// post: hooks run regardless of DAG success/failure (mirrors the host
@@ -954,19 +960,13 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		frozen := dsl.RunStatusView{Failed: mainFailed, Cancelled: cancelled}
 		finallyCtx := context.WithoutCancel(ctx)
 		finallyRun := makeRunStep(func() dsl.RunStatusView { return frozen }, false, &finallyFailed, finallyCtx, false)
-		for _, stage := range c.Finally {
-			for _, step := range api.StageSteps(stage) {
-				data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps, Secrets: stepCtx.Secrets}
-				variants, err := agentlib.ExpandMatrixStep(step, data, c.MatrixMaxCombinations)
-				if err != nil {
-					slog.Error("k8s: finally matrix expansion failed", "step", step.Name, "error", err)
-					finallyFailed.Store(true)
-					continue
-				}
-				for _, v := range variants {
-					finallyRun(v)
-				}
-			}
+		if err := agentlib.RunPipeline(finallyCtx, c.Finally, getData, c.MatrixMaxCombinations, agentlib.Sequential,
+			func(_ context.Context, step api.ClaimStep) error {
+				finallyRun(step)
+				return nil
+			}); err != nil {
+			slog.Error("k8s: finally pipeline structural error", "runId", c.RunID, "error", err)
+			finallyFailed.Store(true)
 		}
 	}
 
