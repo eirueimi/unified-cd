@@ -148,26 +148,28 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 	return name, nil
 }
 
-// resolveSidecarTarget returns the sidecar container name, workspace mount
-// path, and target pod name (empty = default pod) for a cache/artifact
-// operation against scope. A scoped operation targets its scope pod's private
-// scratch volume instead of the run pod's shared workspace.
-func (b *k8sBackend) resolveSidecarTarget(ctx context.Context, scope agentlib.ScopeHandle) (sidecar, mount, targetPod string, err error) {
+// resolveSidecarTarget returns the sidecar container name and target pod name
+// (empty = default pod) for a cache/artifact operation against scope. A
+// scoped operation targets its scope pod's private scratch volume instead of
+// the run pod's shared workspace; the mount path itself is resolved
+// separately via ResolveArtifactPath/ResolveCachePath, so it is not part of
+// this return.
+func (b *k8sBackend) resolveSidecarTarget(ctx context.Context, scope agentlib.ScopeHandle) (sidecar, targetPod string, err error) {
 	if scope.IsZero() {
-		return artifactSidecarName, b.mountPath, "", nil
+		return artifactSidecarName, "", nil
 	}
 	podName, ok := unwrapK8sScope(scope)
 	if !ok {
-		return "", "", "", fmt.Errorf("resolveSidecarTarget: invalid scope handle")
+		return "", "", fmt.Errorf("resolveSidecarTarget: invalid scope handle")
 	}
-	return artifactSidecarName, scopeMountPath, podName, nil
+	return artifactSidecarName, podName, nil
 }
 
 // CacheRestore execs the unified-sidecar binary's "cache restore" into the
 // target pod's sidecar. Best-effort: a miss/error is reported back to the
 // caller via (false, err) but callers treat cache as lenient.
 func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandle, key string, restoreKeys []string, path string) (bool, error) {
-	sidecar, _, targetPod, err := b.resolveSidecarTarget(ctx, scope)
+	sidecar, targetPod, err := b.resolveSidecarTarget(ctx, scope)
 	if err != nil {
 		return false, err
 	}
@@ -191,7 +193,7 @@ func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandl
 // CacheSave execs the unified-sidecar binary's "cache save" into the target
 // pod's sidecar.
 func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, key, path string, ttlDays int) error {
-	sidecar, _, targetPod, err := b.resolveSidecarTarget(ctx, scope)
+	sidecar, targetPod, err := b.resolveSidecarTarget(ctx, scope)
 	if err != nil {
 		return err
 	}
@@ -203,7 +205,7 @@ func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, 
 // UploadArtifact execs the unified-sidecar binary's "artifact upload" into
 // the target pod's sidecar.
 func (b *k8sBackend) UploadArtifact(ctx context.Context, scope agentlib.ScopeHandle, runID, name, path string) error {
-	sidecar, _, targetPod, err := b.resolveSidecarTarget(ctx, scope)
+	sidecar, targetPod, err := b.resolveSidecarTarget(ctx, scope)
 	if err != nil {
 		return err
 	}
@@ -221,7 +223,7 @@ func (b *k8sBackend) UploadArtifact(ctx context.Context, scope agentlib.ScopeHan
 // DownloadArtifact execs the unified-sidecar binary's "artifact download"
 // into the target pod's sidecar.
 func (b *k8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeHandle, runID, name, destDir string) error {
-	sidecar, _, targetPod, err := b.resolveSidecarTarget(ctx, scope)
+	sidecar, targetPod, err := b.resolveSidecarTarget(ctx, scope)
 	if err != nil {
 		return err
 	}

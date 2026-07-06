@@ -685,6 +685,14 @@ func executeCacheStep(
 	capturedKey := key
 	postHooksMu.Lock()
 	*postHooks = append(*postHooks, func(hookCtx context.Context) {
+		// NOTE: on the host backend with a nil CacheStore (cache disabled),
+		// b.CacheSave is a silent no-op that returns nil, so this still logs
+		// "cache saved" even though nothing was saved (hostBackend.CacheSave
+		// logs its own DEBUG-level "cache disabled; save skipped" instead).
+		// Fixing this precisely would require an ExecBackend interface change
+		// (e.g. a bool "did it actually save" return) or a type assertion
+		// across the host/k8s seam — too big a change for what is an
+		// imprecise log line with no functional impact, so it is left as-is.
 		if err := b.CacheSave(hookCtx, scope, capturedKey, capturedPath, ttlDays); err != nil {
 			slog.Warn("cache save failed", "key", capturedKey, "error", err)
 		} else {

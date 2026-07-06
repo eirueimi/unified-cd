@@ -354,6 +354,7 @@
   - matrix 展開の構造的エラーによる abort(残りのステップを打ち切る挙動)が k8s にも適用されるようになった(`RunPipeline` の stage-abort-on-error 契約を host/k8s 共通で採用、T5)。
   - `SetRunOutputs` のリトライと `cancelledByMaster` による Cancelled/Failed の判別ロジックを統一(T8)。
   - コミット範囲: `fbc48c9`〜本コミット(`feat-shared-orchestrator` ブランチ、Task 1〜9)。
+  - その他、共有ループ化に伴い k8s は細部でも host 意味論に統一(cache 保存ドレインと post: フックの順序、job 出力昇格のタイミング、報告コンテキストの扱い、空展開スクリプトのフォールバック廃止等)。
 
 ---
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"runtime"
 	"sync"
@@ -164,9 +165,14 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 }
 
 // CacheSave archives path (host workspace path, or scope-container path when
-// scope is non-zero) under key.
+// scope is non-zero) under key. A nil CacheStore (cache disabled) is a
+// silent no-op from this backend's point of view — see the doc comment on
+// the orchestrator's deferred-save log line (orchestrator.go) for why the
+// caller still logs "cache saved" in this case (imprecise but harmless: no
+// interface change was justified for a Minor-severity log message).
 func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, path string, ttlDays int) error {
 	if b.a.CacheStore == nil {
+		slog.Debug("cache disabled; save skipped", "key", key)
 		return nil
 	}
 	sm, h, ok := unwrapHostScope(scope)
