@@ -14,7 +14,8 @@ type sentinel struct {
 	version   int
 	migration string
 	table     string
-	column    string // empty = probe for the table itself
+	column    string // probe a column of table (when index is empty)
+	index     string // probe an index on table; takes precedence over column
 }
 
 // schemaSentinels must contain exactly one entry per migrations/*.up.sql,
@@ -25,13 +26,14 @@ type sentinel struct {
 // must, the sentinel entry has to be changed in the same commit, or older
 // binaries verifying a newer database will report false drift.
 var schemaSentinels = []sentinel{
-	{1, "001_init", "runs", ""},
-	{2, "002_add_role", "pats", "role"},
-	{3, "003_appsource_managed_resources", "app_sources", "managed_resources"},
-	{4, "004_audit_logs", "audit_logs", ""},
-	{5, "005_matrix_variant", "step_reports", "variant"},
-	{6, "006_appsource_sync_status", "app_sources", "sync_status"},
-	{7, "007_step_call_link", "step_reports", "child_run_id"},
+	{1, "001_init", "runs", "", ""},
+	{2, "002_add_role", "pats", "role", ""},
+	{3, "003_appsource_managed_resources", "app_sources", "managed_resources", ""},
+	{4, "004_audit_logs", "audit_logs", "", ""},
+	{5, "005_matrix_variant", "step_reports", "variant", ""},
+	{6, "006_appsource_sync_status", "app_sources", "sync_status", ""},
+	{7, "007_step_call_link", "step_reports", "child_run_id", ""},
+	{8, "008_run_indexes", "runs", "", "runs_job_name_created_idx"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel
@@ -65,23 +67,32 @@ func verifySchema(db *sql.DB) error {
 		// false-positive under a custom search_path (e.g. "app, public")
 		// and brick startup fleet-wide.
 		var exists bool
-		if s.column == "" {
+		switch {
+		case s.index != "":
 			err = db.QueryRow(
-				`SELECT EXISTS (SELECT 1 FROM information_schema.tables
-				 WHERE table_schema = 'public' AND table_name = $1)`,
-				s.table).Scan(&exists)
-		} else {
+				`SELECT EXISTS (SELECT 1 FROM pg_indexes
+				 WHERE schemaname = 'public' AND tablename = $1 AND indexname = $2)`,
+				s.table, s.index).Scan(&exists)
+		case s.column != "":
 			err = db.QueryRow(
 				`SELECT EXISTS (SELECT 1 FROM information_schema.columns
 				 WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2)`,
 				s.table, s.column).Scan(&exists)
+		default:
+			err = db.QueryRow(
+				`SELECT EXISTS (SELECT 1 FROM information_schema.tables
+				 WHERE table_schema = 'public' AND table_name = $1)`,
+				s.table).Scan(&exists)
 		}
 		if err != nil {
 			return fmt.Errorf("schema verification probe for %s: %w", s.migration, err)
 		}
 		if !exists {
 			obj := s.table
-			if s.column != "" {
+			switch {
+			case s.index != "":
+				obj = "index " + s.index
+			case s.column != "":
 				obj = s.table + "." + s.column
 			}
 			return fmt.Errorf(

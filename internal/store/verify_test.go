@@ -58,6 +58,24 @@ func TestVerifySchemaCleanAndDrifted(t *testing.T) {
 	assert.Contains(t, err.Error(), "docs/troubleshooting.md")
 }
 
+// An index-only migration is sentineled by index presence; dropping the
+// index on a DB that still claims version 8 must be reported as drift.
+func TestVerifySchemaDetectsMissingIndex(t *testing.T) {
+	pg := NewTestPostgres(t)
+	db := openSQL(t, pg)
+
+	require.NoError(t, verifySchema(db)) // fresh clone is clean
+
+	_, err := db.Exec(`DROP INDEX runs_job_name_created_idx`)
+	require.NoError(t, err)
+
+	err = verifySchema(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schema drift")
+	assert.Contains(t, err.Error(), "008_run_indexes")
+	assert.Contains(t, err.Error(), "runs_job_name_created_idx")
+}
+
 func TestVerifySchemaReportsDirtyState(t *testing.T) {
 	pg := NewTestPostgres(t)
 	db := openSQL(t, pg)
