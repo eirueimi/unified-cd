@@ -26,7 +26,7 @@ Complete reference for all environment variables, flags, and config files for th
 ```
 unified-cd-controller [FLAGS]
 
-  -f, --file              string   Config file path (YAML)
+  -f                      string   Config file path (YAML)
   --dsn                   string   PostgreSQL DSN (env: UNIFIED_DB_DSN)
   --addr                  string   Listen address (default: :8080)
   --token                 string   Static bearer token (env: UNIFIED_TOKEN)
@@ -143,6 +143,10 @@ unified-cd-agent [FLAGS]
 | `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps |
 | `UNIFIED_AGENT_WORKSPACE_DIR` | Base directory for run workspaces (default: `~/workspace`) |
 | `UNIFIED_AGENT_LOG_LEVEL` | Log level: `debug`, `info` (default), `warn`, `error` |
+| `UNIFIED_CACHE_ENDPOINT` | S3/MinIO endpoint for cache storage (env equivalent of `--cache-endpoint`) |
+| `UNIFIED_CACHE_KEY` | Cache storage access key ID (env equivalent of `--cache-key`) |
+| `UNIFIED_CACHE_SECRET` | Cache storage secret access key (env equivalent of `--cache-secret`) |
+| `UNIFIED_CACHE_BUCKET` | Cache storage bucket name (env equivalent of `--cache-bucket`) |
 
 Additionally, every step receives `UNIFIED_AGENT_OS` (`linux`, `darwin`, or `windows`) automatically.
 

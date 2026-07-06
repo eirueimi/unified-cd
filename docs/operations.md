@@ -49,7 +49,7 @@ This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Manage
 
 | Situation | Action |
 |---|---|
-| A run is stuck (e.g. no agent can claim it, or it's hung) | `unified-cd run cancel <run-id>` — moves the run to `Cancelled`. Verified live: triggering a `sleep 30` job and running `run cancel <id>` immediately transitioned it to status `Cancelled` in `run list`. |
+| A run is stuck (e.g. no agent can claim it, or it's hung) | `unified-cli run cancel <run-id>` — moves the run to `Cancelled`. Verified live: triggering a `sleep 30` job and running `run cancel <id>` immediately transitioned it to status `Cancelled` in `run list`. |
 | An agent dies mid-run | No action needed. The stuck-run reaper detects the stale heartbeat and fails the run automatically — see [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery) for the full heartbeat/staleness/grace timings. In short: heartbeat every 15s, a run is eligible for reaping once its agent's heartbeat is >90s stale, with a 60s grace window after claim, and the run is marked `Failed` (never re-queued, since re-running partially-executed steps can duplicate side effects). |
 | Leftover `ucd-run-*` pods on Kubernetes | No action needed in the common case — the k8s-agent's pod GC sweeps every ~1 minute and deletes pods whose run has reached a terminal state. A manual `kubectl delete pod ucd-run-...` is safe if you want it gone immediately; it will not resurrect or affect the run's recorded status. |
 | PostgreSQL restored from a backup | Start the controller against it; migrations run automatically (see [Upgrades](#upgrades)). Re-apply any resources created after the backup was taken, and confirm `UNIFIED_CONTROLLER_KEY` matches what was in use when secrets were encrypted. |
@@ -59,9 +59,10 @@ This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Manage
 ## Monitoring Points
 
 - **`/healthz`** — liveness endpoint; returns `200` when up, `503` while draining/shutting down. Verified live: returns `200` on the dev stack. Use as the load balancer / uptime check target ([High Availability Guide](high-availability.md#health-check-endpoints) also documents `/readyz`, which additionally checks DB connectivity).
-- **Agent freshness** — `unified-cd agent list` prints each agent's `last_seen_at` (refreshed by the 15s heartbeat) as the last column. An agent whose timestamp stops advancing is not accepting new claims and any run it's holding is on the clock toward the reaper's 90s staleness threshold.
-- **Runs stuck in `Running`** — periodically check for runs that have been `Running` far longer than the job normally takes (`unified-cd run list --job <job-name>`). This can indicate a hung step even before the reaper's agent-liveness check would kick in, since the reaper only acts on a *dead* agent, not a live one stuck in a bad step.
+- **Agent freshness** — `unified-cli agent list` prints each agent's `last_seen_at` (refreshed by the 15s heartbeat) as the last column. An agent whose timestamp stops advancing is not accepting new claims and any run it's holding is on the clock toward the reaper's 90s staleness threshold.
+- **Runs stuck in `Running`** — periodically check for runs that have been `Running` far longer than the job normally takes (`unified-cli run list --job <job-name>`). This can indicate a hung step even before the reaper's agent-liveness check would kick in, since the reaper only acts on a *dead* agent, not a live one stuck in a bad step.
 - **Controller logs: AppSource sync failures** — the AppSource reconciler runs on the leader replica only and logs a `WARN` when it fails to sync a Git repo (auth failure, unreachable host, malformed YAML). Watch controller logs for these if you rely on GitOps-style job sync.
+- **Approval-gate backlog** — visible via `unifiedcd_steps_completed_total{status="WaitingApproval"}`; a growing rate indicates approval gates are piling up faster than they're being actioned.
 
 ---
 
@@ -103,9 +104,11 @@ Key metrics:
 | `unifiedcd_agents{state}` | gauge | Agents by heartbeat liveness (alive / stale) |
 | `unifiedcd_runs_created_total{trigger}` | counter | Runs created (webhook / schedule / api) |
 | `unifiedcd_runs_finished_total{status}` | counter | Terminal run transitions |
+| `unifiedcd_steps_completed_total{status}` | counter | Step reports received with a non-Running status |
 | `unifiedcd_step_duration_seconds{status}` | histogram | Step wall-clock duration |
 | `unifiedcd_webhook_events_total{name,outcome}` | counter | Webhook ingress outcomes |
 | `unifiedcd_http_requests_total{method,route,code}` | counter | API traffic by chi route pattern |
+| `unifiedcd_http_request_duration_seconds{method,route}` | histogram | HTTP request duration by method and chi route pattern |
 | `unifiedcd_scrape_collector_errors_total` | counter | Errors collecting DB-backed gauges (`unifiedcd_runs_current`, `unifiedcd_agents`) at scrape time |
 
 With multiple controller replicas, gauges report identical values on every

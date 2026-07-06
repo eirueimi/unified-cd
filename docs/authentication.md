@@ -26,7 +26,7 @@ which tries the following **3 methods** in order. The first successful method gr
 | # | Method | Credential | Primary users |
 |---|--------|-----------|---------------|
 | 1 | PAT (Personal Access Token) | `Authorization: Bearer exc_...` | Long-lived scripts / CI / `UNIFIED_TOKEN` |
-| 2 | OIDC id_token | `Authorization: Bearer <JWT>` | CLI after `unified-cd login` (SSO setup) |
+| 2 | OIDC id_token | `Authorization: Bearer <JWT>` | CLI after `unified-cli login` (SSO setup) |
 | 3 | Session Cookie | `ucd_session` Cookie | Browser SSO login via Web UI |
 
 > The agent API (`/api/v1/agents/*`) uses a separate auth path: `UNIFIED_AGENT_TOKEN` (static token)
@@ -79,16 +79,16 @@ Pass the token via environment variable, flag, or config file.
 # Environment variable
 export UNIFIED_SERVER=http://localhost:8080
 export UNIFIED_TOKEN=dev-token-change-me
-unified-cd apply -f examples/hello.yaml
+unified-cli apply -f examples/hello.yaml
 
 # Or via flags
-unified-cd apply -f examples/hello.yaml \
+unified-cli apply -f examples/hello.yaml \
   --server http://localhost:8080 --token dev-token-change-me
 
 # Or via config file ~/.config/unified-cd/config.yaml
 #   server: http://localhost:8080
 #   token: dev-token-change-me
-unified-cd apply -f examples/hello.yaml
+unified-cli apply -f examples/hello.yaml
 ```
 
 ### Web UI access
@@ -104,7 +104,7 @@ Use the static token when calling protected APIs from the UI.
 If you don't want to distribute the shared token, issue individual PATs.
 
 ```bash
-unified-cd token create ci-bot --server http://localhost:8080 --token <UNIFIED_TOKEN>
+unified-cli token create ci-bot --server http://localhost:8080 --token <UNIFIED_TOKEN>
 # => displays exc_xxxxxxxx... once. Use this as the Bearer token going forward.
 # To set an expiry: --expires-in 720h
 ```
@@ -199,7 +199,7 @@ when less than 5 minutes remain. Logout via `POST /api/v1/auth/logout`.
 ### CLI login (device flow)
 
 ```bash
-unified-cd login --server http://localhost:8080
+unified-cli login --server http://localhost:8080
 ```
 
 1. CLI fetches issuer, `deviceClientId`, and endpoints from `/api/v1/auth/oidc-config`
@@ -210,7 +210,7 @@ unified-cd login --server http://localhost:8080
 
 ```bash
 # After login, no token flag needed
-unified-cd apply -f examples/hello.yaml --server http://localhost:8080
+unified-cli apply -f examples/hello.yaml --server http://localhost:8080
 ```
 
 > id_tokens expire (Dex default ~24 hours). Run `login` again after expiry.
@@ -236,7 +236,7 @@ For IdPs other than Dex (Auth0, Keycloak, Okta, etc.):
 2. Environment variables `UNIFIED_SERVER` / `UNIFIED_TOKEN` (applied only when config file field is empty)
 3. Flags `--server` / `--token` (highest priority)
 
-The token obtained via `unified-cd login` is written to the config file, so after login
+The token obtained via `unified-cli login` is written to the config file, so after login
 you only need `--server` (or `server` in the config file) without specifying a token.
 
 ---
@@ -245,7 +245,7 @@ you only need `--server` (or `server` in the config file) without specifying a t
 
 | Symptom | Cause and fix |
 |---------|---------------|
-| `server: unauthorized` (apply etc.) | Token not set or expired. For non-SSO: check `UNIFIED_TOKEN`. For SSO: re-run `unified-cd login`. id_tokens expire in ~24h. |
+| `server: unauthorized` (apply etc.) | Token not set or expired. For non-SSO: check `UNIFIED_TOKEN`. For SSO: re-run `unified-cli login`. id_tokens expire in ~24h. |
 | `OIDC provider discovery error: HTTP 404` | Controller is old or OIDC is not configured. Verify SSO compose is running and `/api/v1/auth/oidc-config` returns JSON. |
 | `Unregistered redirect_uri ("/device/callback")` | Dex is running with old config. Run `docker compose ... restart dex`. Check that `/device/callback` is registered in `dex-config.sso.yaml`. |
 | `invalid_client / Invalid client credentials` (device callback) | CLI is using the confidential client. Verify `UNIFIED_OIDC_DEVICE_CLIENT_ID=unified-cd-cli` (public, no secret) is set and that client exists in Dex. |

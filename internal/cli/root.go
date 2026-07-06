@@ -13,7 +13,7 @@ func NewRoot() *cobra.Command {
 	var serverOverride, tokenOverride string
 
 	root := &cobra.Command{
-		Use:     "unified-cd",
+		Use:     "unified-cli",
 		Short:   "CLI for the unified-cd CI/CD server",
 		Version: buildVersion(),
 	}

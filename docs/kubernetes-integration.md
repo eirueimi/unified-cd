@@ -93,12 +93,18 @@ podTemplates:
 
 ### 2. Starting the agent
 
+The k8s-agent has no `make build` target; build it from source or use its Docker image:
+
+```bash
+go build -o bin/unified-cd-k8s-agent ./cmd/k8s-agent
+```
+
 ```bash
 # Inside the cluster (running as a Pod, no kubeconfig needed)
-./k8s-agent --config k8s-agent-config.yaml
+./bin/unified-cd-k8s-agent --config k8s-agent-config.yaml
 
 # Via environment variable
-UNIFIED_K8S_CONFIG=k8s-agent-config.yaml ./k8s-agent
+UNIFIED_K8S_CONFIG=k8s-agent-config.yaml ./bin/unified-cd-k8s-agent
 ```
 
 The install manifests (`manifests/install.yaml`, `manifests/core-install.yaml`, `manifests/agent-only.yaml`) default the `unified-cd-k8s-agent` Deployment to `replicas: 2`, running active-active; see [Agent Redundancy](high-availability.md#agent-redundancy) in the HA guide for why this is safe.
@@ -299,7 +305,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   namespace: ci
-  name: unified-cd-agent
+  name: unified-cd-k8s-agent
 rules:
   - apiGroups: [""]
     resources: ["pods", "pods/exec", "pods/log"]
@@ -312,13 +318,13 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   namespace: ci
-  name: unified-cd-agent
+  name: unified-cd-k8s-agent
 subjects:
   - kind: ServiceAccount
-    name: unified-cd-agent
+    name: unified-cd-k8s-agent
     namespace: ci
 roleRef:
   kind: Role
-  name: unified-cd-agent
+  name: unified-cd-k8s-agent
   apiGroup: rbac.authorization.k8s.io
 ```

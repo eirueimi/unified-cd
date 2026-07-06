@@ -2,7 +2,7 @@
 
 Complete schema reference for all unified-cd resource kinds.
 
-All resources use `apiVersion: unified-cd/v1` and are applied with `unified-cd apply -f <file>`.
+All resources use `apiVersion: unified-cd/v1` and are applied with `unified-cli apply -f <file>`.
 
 ## Table of Contents
 
@@ -25,11 +25,13 @@ metadata:
   name: <string>                  # required
   labels:                         # optional
     <key>: <value>
+  annotations:                    # optional
+    <key>: <value>
 spec:
   params:
     inputs:
-      - name: <string>            # required
-        type: string | bool | int # required
+      - name: <string>                    # required
+        type: string | bool | int | array # required
         required: <bool>
         default: <any>
         description: <string>
@@ -106,6 +108,9 @@ spec:
     - parallel:                   # OR: a group of steps that run concurrently; see jobs.md
         - name: <string>          # ("Concurrent Steps (parallel)")
           run: <shell script>
+  finally:                        # optional — same structure as steps; see jobs.md#finally-block-finally
+    - name: <string>
+      run: <shell script>
 ```
 
 ### `runsIn`
@@ -208,6 +213,8 @@ apiVersion: unified-cd/v1
 kind: Schedule
 metadata:
   name: <string>                  # required
+  annotations:                    # optional
+    <key>: <value>
 spec:
   cron: <string>                  # required — 5-field cron expression
   job: <string>                   # required — name of the Job to trigger
@@ -220,6 +227,7 @@ spec:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `metadata.name` | string | Yes | Unique schedule name |
+| `metadata.annotations` | map[string]string | No | Arbitrary key/value metadata |
 | `spec.cron` | string | Yes | 5-field cron expression: `min hour day month weekday` |
 | `spec.job` | string | Yes | Name of the registered Job to trigger |
 | `spec.params` | map[string]string | No | Input parameters to pass to the triggered run |
@@ -248,7 +256,7 @@ If the controller is down during a scheduled fire time, the fire is caught up wi
 Apply a Schedule the same way as any other resource:
 
 ```bash
-unified-cd apply -f schedule.yaml
+unified-cli apply -f schedule.yaml
 ```
 
 Runs triggered by a Schedule show up with `triggeredBy: schedule:<name>`.
@@ -279,6 +287,8 @@ apiVersion: unified-cd/v1
 kind: WebhookReceiver
 metadata:
   name: <string>                  # required
+  annotations:                    # optional
+    <key>: <value>
 spec:
   trigger:                        # exactly one of job / appSource
     job: <string>                 # trigger a Job (creates a Run)
@@ -298,10 +308,11 @@ spec:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `metadata.name` | string | Yes | Unique receiver name. Also the URL path segment: `POST /webhook/<name>` |
+| `metadata.annotations` | map[string]string | No | Arbitrary key/value metadata |
 | `spec.trigger.job` | string | Cond. | Name of the Job to trigger. Exactly one of `job` / `appSource` is required |
 | `spec.trigger.appSource` | string | Cond. | Name of an AppSource to force-sync (resets its `lastCommit` so the next reconciler tick re-syncs). Exactly one of `job` / `appSource` is required |
 | `spec.auth.type` | string | Yes | Authentication method (see below) |
-| `spec.auth.secretRef` | string | No | Name of a StoredSecret containing the HMAC key (required for `hmac-sha256` and `github`) |
+| `spec.auth.secretRef` | string | No | Name of a StoredSecret; required unless `type` is `none`. Holds the HMAC key or shared token, depending on `type` |
 | `spec.filters` | []string | No | Template expressions that must all evaluate to `true` for the trigger to fire (applies to both `job` and `appSource` triggers) |
 | `spec.paramsMapping` | map[string]string | No | Maps payload fields to job input parameter names. Ignored for `appSource` triggers |
 
@@ -443,6 +454,8 @@ apiVersion: unified-cd/v1
 kind: GitCredential
 metadata:
   name: <string>                  # required
+  annotations:                    # optional
+    <key>: <value>
 spec:
   host: <string>                  # required — hostname to apply credentials to
   type: token | sshKey            # required
@@ -454,6 +467,7 @@ spec:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `metadata.name` | string | Yes | Unique credential name |
+| `metadata.annotations` | map[string]string | No | Arbitrary key/value metadata |
 | `spec.host` | string | Yes | Hostname to apply the credential to (e.g. `github.com`, `gitlab.example.com`) |
 | `spec.type` | string | Yes | `token` for HTTP PAT/OAuth token, `sshKey` for SSH private key |
 | `spec.secretRef` | string | Yes | Name of a StoredSecret holding the actual credential value |
@@ -474,7 +488,7 @@ metadata:
 spec:
   host: github.com
   type: token
-  secretRef: GITHUB_TOKEN        # created with: unified-cd secret set GITHUB_TOKEN ghp_...
+  secretRef: GITHUB_TOKEN        # created with: unified-cli secret set GITHUB_TOKEN ghp_...
 
 ---
 # GitLab SSH key
@@ -485,7 +499,7 @@ metadata:
 spec:
   host: gitlab.example.com
   type: sshKey
-  secretRef: GITLAB_SSH_KEY      # created with: unified-cd secret set GITLAB_SSH_KEY -f ~/.ssh/id_ed25519
+  secretRef: GITLAB_SSH_KEY      # created with: unified-cli secret set GITLAB_SSH_KEY -f ~/.ssh/id_ed25519
 ```
 
 Then reference in a job:
@@ -512,6 +526,8 @@ apiVersion: unified-cd/v1
 kind: AppSource
 metadata:
   name: <string>                  # required
+  annotations:                    # optional
+    <key>: <value>
 spec:
   repoURL: <string>               # required — Git repository URL (HTTPS or SSH)
   targetRevision: <string>        # required — branch, tag, or commit SHA
@@ -526,9 +542,10 @@ spec:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `metadata.name` | string | Yes | Unique AppSource name |
+| `metadata.annotations` | map[string]string | No | Arbitrary key/value metadata |
 | `spec.repoURL` | string | Yes | Git repository URL |
 | `spec.targetRevision` | string | Yes | Branch name, tag, or full commit SHA |
-| `spec.path` | string | Yes | Directory within the repo to scan for YAML files (recursive) |
+| `spec.path` | string | Yes | Directory within the repo to scan for `.yaml`/`.yml` files (recursive) |
 | `spec.syncPolicy.interval` | string | No | How often to check for changes (e.g. `5m`, `1h`). Default: `5m`, minimum: `1m` |
 | `spec.syncPolicy.prune` | bool | No | If `true`, resources that are removed from the repo are deleted from the controller. Default: `false` |
 | `spec.syncPolicy.allowManualOverride` | bool | No | If `true`, disables managed-resource protection for this AppSource's resources (direct apply/delete is allowed). Default: `false` |
@@ -536,7 +553,7 @@ spec:
 ### Managed-resource protection
 
 Resources synced by an AppSource (listed in its managed resources) are
-protected from direct modification: `unified-cd apply` and REST API
+protected from direct modification: `unified-cli apply` and REST API
 writes/deletes targeting them are rejected with **409 Conflict**, keeping Git
 the source of truth. The error names the managing AppSource and its repoURL.
 
@@ -560,7 +577,7 @@ Notes:
 
 ### Migrating manually-applied resources to Git
 
-1. `unified-cd export -o ./exported --unmanaged-only`
+1. `unified-cli export -o ./exported --unmanaged-only`
 2. Commit the directory to a Git repository.
 3. Apply an AppSource whose `path` points at the exported directory.
 4. On the first sync each resource is upserted under its existing name and
@@ -573,7 +590,7 @@ Notes:
 ### Sync behavior
 
 1. The controller clones or fetches the repository at every `interval`.
-2. All `.yaml` files under `path` are scanned recursively.
+2. All `.yaml`/`.yml` files under `path` are scanned recursively.
 3. AppSource syncs `Job`, `Schedule`, `WebhookReceiver`, `GitCredential`, and `AppSource` documents found (recursively) under `spec.path`. Files of other kinds, or files that fail to parse, are skipped with a per-file warning; the rest of the sync continues.
 4. Files are applied in two passes — GitCredentials and Jobs first, then Schedules, WebhookReceivers, and AppSources — so cross-references (e.g. a Schedule's `job`) resolve on the first sync. Within each pass, files are processed in sorted path order. If two files declare the same kind and name, the first (lexicographically earliest path) wins and the rest are skipped with a warning.
 5. If `prune: true`, resources that were previously managed by this AppSource but no longer appear in the repo are deleted. Pruning a nested `AppSource` removes only that AppSource; the resources it managed are left in place (non-cascading, matching Argo CD's default).
@@ -582,7 +599,7 @@ Do not manage the same resource from two AppSources — the last sync wins.
 
 **Private repositories:** authentication is resolved automatically by matching the host of `spec.repoURL` against a registered [GitCredential](#gitcredential) (`spec.host`). There is no per-AppSource credential field — register a `GitCredential` for the repo's host and it applies to every AppSource (and `git://` template) using that host.
 
-`secretRef` fields (on `GitCredential`/`WebhookReceiver`) reference a `StoredSecret` by name. Secret values are never stored in Git; create them with `unified-cd secret set` before syncing.
+`secretRef` fields (on `GitCredential`/`WebhookReceiver`) reference a `StoredSecret` by name. Secret values are never stored in Git; create them with `unified-cli secret set` before syncing.
 
 `spec.syncPolicy.interval` has a minimum of `1m`; values below that are rejected.
 

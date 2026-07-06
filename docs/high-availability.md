@@ -82,6 +82,10 @@ When the leader goes down, the lock is released and another replica picks it up 
 | Log archiver (`RunLogArchiver`) | advisory lock (`logArchiverLockKey`) | Only the leader archives logs |
 | Cache cleanup (`RunCacheCleanup`) | advisory lock (`cacheCleanupLockKey`) | Only the leader deletes expired cache entries |
 | AppSource reconciler (`RunAppSourceReconciler`) | advisory lock (`appSourceReconcilerLockKey`) | Only the leader reconciles |
+| Approval-timeout reaper (`internal/controller/approval_reaper.go`) | advisory lock (`approvalReaperLockKey`) | Only the leader times out expired approval gates |
+| Audit-log retention (`internal/controller/audit_retention.go`) | advisory lock (`auditRetentionLockKey`) | Only the leader prunes audit logs past the retention window |
+| Queued-run reaper (`internal/controller/queuedrun_reaper.go`) | advisory lock (`queuedRunReaperLockKey`) | Only the leader fails Queued runs that no live agent can claim within `UNIFIED_QUEUED_RUN_GRACE` |
+| AppSource sync reaper (`internal/controller/appsource_sync_reaper.go`) | advisory lock (`appSourceSyncReaperLockKey`) | Only the leader reaps stuck AppSource sync attempts |
 | Git resolver (`RunGitResolver`) | none (idempotent) | Runs on all replicas. `git://` URI resolution is idempotent and harmless if duplicated |
 | OIDC state cleanup | none (idempotent) | Runs on all replicas. Expired state deletion is idempotent |
 
@@ -93,8 +97,10 @@ When the leader goes down, the lock is released and another replica picks it up 
 
 ## Leader Failover Sequence
 
-Leadership is represented by a single PostgreSQL **session-level advisory lock**
-(key `0x65786364` = 'excd'). The holder of this lock is the leader.
+Leadership here refers specifically to the **scheduler's** leader, elected via its own
+PostgreSQL **session-level advisory lock** (key `0x65786364` = 'excd'). There is no single
+global process leader: each background job in the table above elects its own leader
+independently via its own advisory-lock key, using the same mechanism described below.
 No external coordinator is needed.
 
 ### Normal operation (200ms tick)

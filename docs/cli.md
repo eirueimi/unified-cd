@@ -1,6 +1,6 @@
 # CLI Reference
 
-Complete reference for the `unified-cd` command-line tool.
+Complete reference for the `unified-cli` command-line tool.
 
 ## Table of Contents
 
@@ -8,14 +8,17 @@ Complete reference for the `unified-cd` command-line tool.
 - [apply](#apply)
 - [jobs](#jobs)
 - [run](#run)
+- [approve / reject](#approve--reject)
 - [logs](#logs)
 - [secret](#secret)
+- [gitcredential](#gitcredential)
 - [schedule](#schedule)
 - [token](#token)
 - [artifact](#artifact)
 - [export](#export)
 - [appsource](#appsource)
 - [webhook](#webhook)
+- [audit](#audit)
 - [login](#login)
 - [agent](#agent)
 - [Configuration precedence](#configuration-precedence)
@@ -29,7 +32,7 @@ Complete reference for the `unified-cd` command-line tool.
 These flags apply to all subcommands.
 
 ```
-unified-cd [GLOBAL FLAGS] <subcommand>
+unified-cli [GLOBAL FLAGS] <subcommand>
 
   --config  string   Config file path (default: ~/.config/unified-cd/config.yaml)
   --server  string   Controller server URL (env: UNIFIED_SERVER)
@@ -52,7 +55,7 @@ Values are resolved in this order (highest wins):
 ```bash
 # Config file has server: http://localhost:8080
 # The env var points at a bad port, but the flag wins, so this succeeds:
-UNIFIED_SERVER=http://localhost:9 unified-cd --server http://localhost:8080 jobs list
+UNIFIED_SERVER=http://localhost:9 unified-cli --server http://localhost:8080 jobs list
 # => (lists jobs — the --server flag beat both UNIFIED_SERVER and the config file)
 ```
 
@@ -63,7 +66,7 @@ UNIFIED_SERVER=http://localhost:9 unified-cd --server http://localhost:8080 jobs
 Apply a YAML resource definition to the controller. Creates or updates the resource.
 
 ```
-unified-cd apply -f <file>
+unified-cli apply -f <file>
 
   -f, --file  string   Path to YAML file (required)
 ```
@@ -74,13 +77,13 @@ Multi-document YAML (separated by `---`) is supported — all resources in the f
 
 ```bash
 # Apply a single resource
-unified-cd apply -f job.yaml
+unified-cli apply -f job.yaml
 
 # Apply multiple resources in one file
-unified-cd apply -f all-resources.yaml
+unified-cli apply -f all-resources.yaml
 
 # Apply from stdin
-cat job.yaml | unified-cd apply -f -
+cat job.yaml | unified-cli apply -f -
 ```
 
 ---
@@ -92,7 +95,7 @@ Manage registered jobs.
 ### jobs list
 
 ```
-unified-cd jobs list
+unified-cli jobs list
 ```
 
 Lists all registered jobs.
@@ -106,7 +109,7 @@ ci-pipeline    (2026-06-20)
 ### jobs get
 
 ```
-unified-cd jobs get <name>
+unified-cli jobs get <name>
 ```
 
 Shows details of a job, including its input parameter definitions.
@@ -124,25 +127,25 @@ Inputs:
 ### jobs show-yaml
 
 ```
-unified-cd jobs show-yaml <name>
+unified-cli jobs show-yaml <name>
 ```
 
 Prints the job's YAML definition as stored on the controller.
 
 ```bash
-unified-cd jobs show-yaml build > build.yaml
+unified-cli jobs show-yaml build > build.yaml
 ```
 
 ### jobs delete
 
 ```
-unified-cd jobs delete <name>
+unified-cli jobs delete <name>
 ```
 
 Deletes a job and all its run history (steps, logs, artifacts).
 
 ```bash
-unified-cd jobs delete old-job
+unified-cli jobs delete old-job
 # => job "old-job" deleted
 ```
 
@@ -155,7 +158,7 @@ Trigger and manage job runs.
 ### run trigger
 
 ```
-unified-cd run trigger <job-name> [--param key=value ...]
+unified-cli run trigger <job-name> [--param key=value ...]
 
   --param  string   Input parameter in key=value format (repeatable)
 ```
@@ -164,20 +167,20 @@ Triggers a run of the specified job and prints the run ID.
 
 ```bash
 # Trigger with no parameters
-unified-cd run trigger hello
+unified-cli run trigger hello
 
 # Trigger with parameters
-unified-cd run trigger build --param image=myapp --param tag=v1.0
+unified-cli run trigger build --param image=myapp --param tag=v1.0
 
 # Capture the run ID
-RUN_ID=$(unified-cd run trigger build --param image=myapp)
+RUN_ID=$(unified-cli run trigger build --param image=myapp)
 echo "Run started: $RUN_ID"
 ```
 
 ### run cancel
 
 ```
-unified-cd run cancel <run-id>
+unified-cli run cancel <run-id>
 ```
 
 Cancel a run that is Pending, Queued, or Running. The agent interrupts the
@@ -185,14 +188,14 @@ in-flight step (reported as `Cancelled`), `finally:` steps still execute,
 and the run finishes as `Cancelled`.
 
 ```bash
-unified-cd run cancel run-abc123
+unified-cli run cancel run-abc123
 # => run "run-abc123" cancelled
 ```
 
 ### run list
 
 ```
-unified-cd run list --job <job-name>
+unified-cli run list --job <job-name>
 
   --job  string   Job name to list runs for (required)
 ```
@@ -208,7 +211,7 @@ run-ghi789   Running     2026-06-20 11:00   webhook:github-push
 ### run list-active
 
 ```
-unified-cd run list-active
+unified-cli run list-active
 ```
 
 Lists all runs in Pending, Queued, or Running state across all jobs.
@@ -218,17 +221,42 @@ run-abc123   build    Running   2026-06-20 11:00   manual
 run-def456   deploy   Queued    2026-06-20 11:01   webhook:github-push
 ```
 
+### run show <run-id>
+
+```
+unified-cli run show <run-id>
+```
+
+Shows the run's status, trigger source, timestamps, and input params, followed
+by a per-step table (index, name, status, exit code).
+
+```
+ID:          run-abc123
+Job:         build
+Status:      Succeeded
+Triggered:   manual
+Created:     2026-06-20 10:00:00
+Updated:     2026-06-20 10:02:15
+Params:
+  image=myapp
+  tag=v1.0
+Steps:
+  [0] checkout             Succeeded (exit 0)
+  [1] build                Succeeded (exit 0)
+  [2] deploy-gate          Approved
+```
+
 ### run outputs
 
 ```
-unified-cd run outputs <run-id>
+unified-cli run outputs <run-id>
 ```
 
 Shows run-level outputs reported by the job, one `key=value` per line
 (sorted by key).
 
 ```bash
-unified-cd run outputs run-abc123
+unified-cli run outputs run-abc123
 # => imageDigest=sha256:abcd...
 # => version=1.4.2
 ```
@@ -236,20 +264,20 @@ unified-cd run outputs run-abc123
 ### run show-yaml
 
 ```
-unified-cd run show-yaml <run-id>
+unified-cli run show-yaml <run-id>
 ```
 
 Prints the YAML definition the run was executed with (the job spec snapshot
 taken at trigger time).
 
 ```bash
-unified-cd run show-yaml run-abc123 > run-spec.yaml
+unified-cli run show-yaml run-abc123 > run-spec.yaml
 ```
 
 ### run approvals
 
 ```
-unified-cd run approvals <run-id>
+unified-cli run approvals <run-id>
 ```
 
 Lists the run's approval gates and their state
@@ -260,20 +288,42 @@ Lists the run's approval gates and their state
 [4]   step[4]       Pending
 ```
 
-Use [`approve` / `reject`](#run) (`unified-cd approve <run-id> <step-index>`)
+Use [`approve` / `reject`](#approve--reject) (`unified-cli approve <run-id> <step-index>`)
 to decide a pending gate.
 
 ### run delete
 
 ```
-unified-cd run delete <run-id>
+unified-cli run delete <run-id>
 ```
 
 Deletes a run that has reached a terminal state (Succeeded, Failed, or Cancelled).
 
 ```bash
-unified-cd run delete run-abc123
+unified-cli run delete run-abc123
 # => run "run-abc123" deleted
+```
+
+---
+
+## approve / reject
+
+Decide a pending approval gate on a run (see [`run approvals`](#run-approvals)
+for listing pending gates).
+
+```
+unified-cli approve <run-id> <step-index> [--comment string]
+unified-cli reject <run-id> <step-index> [--comment string]
+
+  --comment  string   Optional comment recorded with the decision
+```
+
+```bash
+unified-cli approve run-abc123 2
+# => approved step 2 of run run-abc123
+
+unified-cli reject run-abc123 2 --comment "needs a second review"
+# => rejected step 2 of run run-abc123
 ```
 
 ---
@@ -283,21 +333,21 @@ unified-cd run delete run-abc123
 Stream or retrieve logs for a run.
 
 ```
-unified-cd logs [-f] <run-id>
+unified-cli logs [-f] <run-id>
 
   -f, --follow   Follow log output until the run completes (polls every 300ms)
 ```
 
 ```bash
 # Print all available logs and exit
-unified-cd logs run-abc123
+unified-cli logs run-abc123
 
 # Follow live output until completion
-unified-cd logs -f run-abc123
+unified-cli logs -f run-abc123
 
 # Common pattern: trigger then follow
-RUN_ID=$(unified-cd run trigger build --param image=myapp)
-unified-cd logs -f "$RUN_ID"
+RUN_ID=$(unified-cli run trigger build --param image=myapp)
+unified-cli logs -f "$RUN_ID"
 ```
 
 Secret values that appear in output are automatically masked as `***`.
@@ -311,7 +361,7 @@ Manage encrypted secrets stored on the controller.
 ### secret set
 
 ```
-unified-cd secret set <name> [value]
+unified-cli secret set <name> [value]
 
   -f, --file  string   Read value from file instead of argument or stdin
 ```
@@ -320,16 +370,16 @@ Creates or updates a secret (idempotent).
 
 ```bash
 # Value as argument
-unified-cd secret set DB_PASSWORD "mysecret"
+unified-cli secret set DB_PASSWORD "mysecret"
 
 # Value from file (SSH keys, certificates, multiline values)
-unified-cd secret set DEPLOY_KEY -f ~/.ssh/id_rsa
+unified-cli secret set DEPLOY_KEY -f ~/.ssh/id_rsa
 
 # Value from stdin (avoids shell history)
-echo -n "mysecret" | unified-cd secret set DB_PASSWORD
+echo -n "mysecret" | unified-cli secret set DB_PASSWORD
 
 # Interactive (hidden input)
-read -s SECRET && echo -n "$SECRET" | unified-cd secret set DB_PASSWORD
+read -s SECRET && echo -n "$SECRET" | unified-cli secret set DB_PASSWORD
 ```
 
 **Naming rules:** alphanumerics, underscores, and hyphens; must start with a letter or `_`.
@@ -339,7 +389,7 @@ Hyphenated names (e.g. `slack-webhook-url`) work with both `{{ secrets.NAME }}` 
 ### secret list
 
 ```
-unified-cd secret list
+unified-cli secret list
 ```
 
 Lists secret names and creation dates. Values are never shown.
@@ -353,12 +403,42 @@ API_KEY_PROD    (2026-06-10)
 ### secret delete
 
 ```
-unified-cd secret delete <name>
+unified-cli secret delete <name>
 ```
 
 ```bash
-unified-cd secret delete OLD_SECRET
+unified-cli secret delete OLD_SECRET
 # => secret "OLD_SECRET" deleted
+```
+
+---
+
+## gitcredential
+
+Manage Git credentials used for `git://` template URIs and AppSource repos.
+There is no `set`/`create` subcommand — GitCredentials are created/updated with
+`apply -f` (`kind: GitCredential`); the commands below operate on existing ones.
+
+### gitcredential list
+
+```
+unified-cli gitcredential list
+```
+
+```bash
+unified-cli gitcredential list
+# => github-bot   host=github.com type=ssh secretRef=deploy-key
+```
+
+### gitcredential delete
+
+```
+unified-cli gitcredential delete <name>
+```
+
+```bash
+unified-cli gitcredential delete github-bot
+# => gitcredential deleted: github-bot
 ```
 
 ---
@@ -371,7 +451,7 @@ Manage [Schedules](resources.md#schedule). Create/update a schedule with
 ### schedule list
 
 ```
-unified-cd schedule list
+unified-cli schedule list
 ```
 
 Lists all registered schedules.
@@ -384,11 +464,11 @@ weekly-report    cron=0 9 * * 1 job=report
 ### schedule delete
 
 ```
-unified-cd schedule delete <name>
+unified-cli schedule delete <name>
 ```
 
 ```bash
-unified-cd schedule delete nightly-build
+unified-cli schedule delete nightly-build
 # => schedule deleted: nightly-build
 ```
 
@@ -401,23 +481,28 @@ Manage Personal Access Tokens (PATs) for authentication.
 ### token create
 
 ```
-unified-cd token create <name> [--expires-in duration]
+unified-cli token create <name> [--expires-in duration] [--role role]
 
   --expires-in  string   Token expiry duration (e.g. "720h", "8760h"). No expiry if omitted.
+  --role        string   Role for the token: admin, developer, or viewer
+                         (default: your own role; capped at your own role)
 ```
 
 Generates a new PAT. The token value is shown only once.
 
 ```bash
-unified-cd token create ci-bot
+unified-cli token create ci-bot
 # => Token created (shown only once):
 # =>
 # =>   exc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # =>
-# => Name: ci-bot  ID: 08c1779c-812f-4d68-9971-25ff3467637e
+# => Name: ci-bot  ID: 08c1779c-812f-4d68-9971-25ff3467637e  Role: developer
 
 # With expiry
-unified-cd token create deploy-bot --expires-in 8760h
+unified-cli token create deploy-bot --expires-in 8760h
+
+# With an explicit role (cannot exceed the caller's own role)
+unified-cli token create viewer-bot --role viewer
 ```
 
 Use the printed token as a bearer token in CLI, API calls, or agent configuration.
@@ -425,26 +510,26 @@ Use the printed token as a bearer token in CLI, API calls, or agent configuratio
 ### token list
 
 ```
-unified-cd token list
+unified-cli token list
 ```
 
-Lists all tokens (IDs and names only; values are never retrievable).
+Lists all tokens (IDs, names, and roles only; values are never retrievable).
 
 ```
-a7c3fec8-1922-4278-b7ca-1ec489839a61   env:UNIFIED_TOKEN   (2026-07-03)   ← bootstrap token from UNIFIED_TOKEN env var
-08c1779c-812f-4d68-9971-25ff3467637e   ci-bot               (2026-07-04)
+a7c3fec8-1922-4278-b7ca-1ec489839a61   env:UNIFIED_TOKEN   admin       (2026-07-03)   ← bootstrap token from UNIFIED_TOKEN env var
+08c1779c-812f-4d68-9971-25ff3467637e   ci-bot               developer   (2026-07-04)
 ```
 
 ### token delete
 
 ```
-unified-cd token delete <id>
+unified-cli token delete <id>
 ```
 
 Revokes a token immediately.
 
 ```bash
-unified-cd token delete 08c1779c-812f-4d68-9971-25ff3467637e
+unified-cli token delete 08c1779c-812f-4d68-9971-25ff3467637e
 # => token "08c1779c-812f-4d68-9971-25ff3467637e" revoked
 ```
 
@@ -459,20 +544,20 @@ fetches and extracts the archive for you.
 ### artifact list
 
 ```
-unified-cd artifact list <run-id>
+unified-cli artifact list <run-id>
 ```
 
 Lists artifact names produced by the run.
 
 ```bash
-unified-cd artifact list run-abc123
+unified-cli artifact list run-abc123
 # => cli-art
 ```
 
 ### artifact download
 
 ```
-unified-cd artifact download <run-id> <name> [--dest DIR]
+unified-cli artifact download <run-id> <name> [--dest DIR]
 
   --dest  string   Destination directory (default: current directory)
 ```
@@ -482,11 +567,11 @@ Downloads the named artifact and extracts its tar+zstd archive into `--dest`
 
 ```bash
 # Extract into the current directory
-unified-cd artifact download run-abc123 cli-art
+unified-cli artifact download run-abc123 cli-art
 # => extracted cli-art of run run-abc123 to .
 
 # Extract into a specific directory
-unified-cd artifact download run-abc123 cli-art --dest ./out
+unified-cli artifact download run-abc123 cli-art --dest ./out
 # => extracted cli-art of run run-abc123 to ./out
 ```
 
@@ -498,7 +583,7 @@ Export all resources (Jobs, Schedules, WebhookReceivers, GitCredentials,
 AppSources) as one YAML file per resource:
 
 ```bash
-unified-cd export -o ./exported/
+unified-cli export -o ./exported/
 ```
 
 - Jobs are written at their qualified path (`team-a/build` → `team-a/build.yaml`)
@@ -510,7 +595,7 @@ unified-cd export -o ./exported/
   AppSource (useful for migrating manually-applied resources to Git).
 - `--force` allows writing into a non-empty directory.
 - Secret **values** are never exported (they are not retrievable via the API);
-  re-create them with `unified-cd secret set` after a restore.
+  re-create them with `unified-cli secret set` after a restore.
 - Output is regenerated from the stored spec: comments and key order of the
   originally applied YAML are not preserved.
 
@@ -524,7 +609,7 @@ with `apply`; the commands below operate on existing ones.
 ### appsource sync
 
 ```
-unified-cd appsource sync <name>
+unified-cli appsource sync <name>
 ```
 
 Forces a re-sync: resets the AppSource's `lastCommit` so the next reconciler
@@ -532,25 +617,25 @@ tick (≤30s) re-syncs from Git. Returns immediately — it does not wait for th
 sync to finish. This is the CLI equivalent of `POST /api/v1/appsources/<name>/sync`.
 
 ```bash
-unified-cd appsource sync my-pipelines
+unified-cli appsource sync my-pipelines
 # => appsource sync scheduled: my-pipelines
 ```
 
 ### appsource list
 
 ```
-unified-cd appsource list
+unified-cli appsource list
 ```
 
 ```bash
-unified-cd appsource list
+unified-cli appsource list
 # => my-pipelines   repo=https://github.com/acme/pipelines rev=main lastCommit=abc1234
 ```
 
 ### appsource get
 
 ```
-unified-cd appsource get <name>
+unified-cli appsource get <name>
 ```
 
 Shows repoURL, targetRevision, path, last synced commit, and last sync time.
@@ -558,7 +643,7 @@ Shows repoURL, targetRevision, path, last synced commit, and last sync time.
 ### appsource delete
 
 ```
-unified-cd appsource delete <name>
+unified-cli appsource delete <name>
 ```
 
 Removes the AppSource. Jobs it previously synced are left in place (they are not
@@ -575,7 +660,7 @@ operate on existing ones.
 ### webhook list
 
 ```
-unified-cd webhook list
+unified-cli webhook list
 ```
 
 Lists registered webhook receivers.
@@ -588,15 +673,37 @@ gitlab-push    (2026-07-01)
 ### webhook delete
 
 ```
-unified-cd webhook delete <name>
+unified-cli webhook delete <name>
 ```
 
 Deletes a webhook receiver. Payloads sent to its `/webhook/<name>` URL will
 return 404 afterwards.
 
 ```bash
-unified-cd webhook delete github-push
+unified-cli webhook delete github-push
 # => webhook receiver "github-push" deleted
+```
+
+---
+
+## audit
+
+View the audit log. Admin only — the server returns 403 for non-admin tokens.
+
+### audit list
+
+```
+unified-cli audit list [--limit int]
+
+  --limit  int   Max number of entries to show (server default: 100)
+```
+
+Prints a table of time, actor, action, resource, and status, newest first.
+
+```bash
+unified-cli audit list --limit 5
+# => 2026-07-04T09:12:00Z   alice   token.create   token/ci-bot        200
+# => 2026-07-04T09:10:41Z   bob     run.cancel     run/run-abc123      200
 ```
 
 ---
@@ -607,7 +714,7 @@ Authenticate using OIDC (SSO) device flow and save the token to the config file.
 `--server` is required (or set `UNIFIED_SERVER`).
 
 ```
-unified-cd login --server <url>
+unified-cli login --server <url>
 
   --server     string   Controller server URL (required)
   --issuer     string   OIDC issuer URL (auto-discovered from server if omitted)
@@ -615,7 +722,7 @@ unified-cd login --server <url>
 ```
 
 ```bash
-unified-cd login --server http://unified-cd.example.com
+unified-cli login --server http://unified-cd.example.com
 # => Open the following URL in your browser:
 # =>   https://...
 # =>
@@ -642,7 +749,7 @@ Manage agents and install them as system services.
 ### agent install
 
 ```
-unified-cd agent install --server <url> --token <token> --id <id> [OPTIONS]
+unified-cli agent install --server <url> --token <token> --id <id> [OPTIONS]
 
   --server  string   Controller URL (required)
   --token   string   Agent bearer token (required)
@@ -657,7 +764,7 @@ Installs the agent as a system service:
 - **Windows**: prints manual Task Scheduler instructions
 
 ```bash
-unified-cd agent install \
+unified-cli agent install \
   --server http://unified-cd.example.com \
   --token my-agent-token \
   --id worker-01 \
@@ -669,7 +776,7 @@ unified-cd agent install \
 ### agent list
 
 ```
-unified-cd agent list
+unified-cli agent list
 ```
 
 Lists all registered agents and their status.
@@ -683,7 +790,7 @@ k8s-1      k8s-node-1     linux   kind:k8s            2026-06-20 10:55
 ### agent get
 
 ```
-unified-cd agent get <agent-id>
+unified-cli agent get <agent-id>
 ```
 
 Shows details of a registered agent.
@@ -702,7 +809,7 @@ Env:
 ### agent runs
 
 ```
-unified-cd agent runs <agent-id>
+unified-cli agent runs <agent-id>
 ```
 
 Lists recent runs claimed by the agent (most recent 50).
@@ -716,19 +823,36 @@ run-def456   deploy   Running    2026-06-20 11:00   schedule:nightly
 
 ## Configuration File
 
-Default path: `~/.config/unified-cd/config.yaml`
+There are two separate config files — do not confuse them.
+
+**CLI config** — `~/.config/unified-cd/config.yaml`, written by [`login`](#login)
+(or hand-edited). Read by every `unified-cli` invocation via the global
+`--config`/`--server`/`--token` flags.
 
 ```yaml
 server: http://localhost:8080
 token: dev-secret
-agentId: ""
 ```
 
 `token` holds either a manually-configured bearer token or the id_token written by
-`login` (OIDC device flow or PAT prompt) — both use the same field. `agentId` is
-populated only when this config file was written by `agent install`.
+`login` (OIDC device flow or PAT prompt) — both use the same field. There is no
+`agentId` field in this file.
 
 Override the path with `--config /path/to/config.yaml`.
+
+**Agent service config** — `~/.unified-cd/agent.yaml` (or `<dir>/agent.yaml` if
+`--dir` was passed), written by [`agent install`](#agent-install). Read by the
+`agent` service process, not by the `unified-cli` CLI commands above.
+
+```yaml
+server: http://localhost:8080
+token: agent-secret
+agentId: worker-01
+binPath: /usr/local/bin/unified-cli
+labels:
+  - kind:linux
+  - env:prod
+```
 
 ---
 

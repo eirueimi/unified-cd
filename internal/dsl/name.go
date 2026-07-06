@@ -24,3 +24,24 @@ func ValidateName(name string) error {
 	}
 	return nil
 }
+
+// secretNameRe is the env-var-style name pattern that a secret name must match.
+// It is the same character class the template engine recognizes for
+// {{ secrets.NAME }} references (see template.go), so a name that validates
+// here is always resolvable from a template.
+var secretNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
+
+// ValidateSecretName checks name against the secret-name rule: alphanumerics,
+// underscores, and hyphens, starting with a letter or underscore (e.g.
+// AWS_KEY, github-token). This differs from ValidateName (DNS-1123) because
+// secrets are referenced env-var style via {{ secrets.NAME }} and conventionally
+// use uppercase/underscore names. Callers wrap the error with their field name.
+func ValidateSecretName(name string) error {
+	if name == "" {
+		return fmt.Errorf("is required")
+	}
+	if !secretNameRe.MatchString(name) {
+		return fmt.Errorf("is invalid: %q must consist of letters, digits, '_' or '-', and start with a letter or '_'", name)
+	}
+	return nil
+}

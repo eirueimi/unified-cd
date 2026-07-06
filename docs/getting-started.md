@@ -19,21 +19,29 @@ make build
 # Produces:
 #   bin/unified-cd-controller
 #   bin/unified-cd-agent
-#   bin/unified-cd-k8s-agent
-#   bin/unified-cd            (CLI)
+#   bin/unified-cli           (CLI)
+#
+# The k8s-agent is not built by `make build`; build it separately:
+#   go build -o bin/unified-cd-k8s-agent ./cmd/k8s-agent
+# or use its Docker image.
 ```
 
 ---
 
-## 2. Start PostgreSQL
+## 2. Start the Stack (Docker Compose)
+
+The repo ships a full hot-reload stack (`docker-compose.yaml`) with PostgreSQL, Garage
+(S3-compatible storage), the controller (via `air`), Vite, Dex, and an agent:
 
 ```bash
-docker compose -f docker-compose.dev.yaml up -d
+cp .env.example .env
+docker compose up -d
 ```
 
-The dev compose file starts a PostgreSQL instance at `localhost:5432` with:
-- database: `unified`
-- user/password: `unified` / `unified`
+This brings up PostgreSQL at `localhost:5432` (database/user/password: `unified`) along with
+everything else needed to run the controller. If you'd rather build and run the controller and
+agent from source manually (steps 3-4 below), you only need PostgreSQL from this stack —
+run `docker compose up -d postgres` instead.
 
 ---
 
@@ -79,7 +87,7 @@ The agent registers itself with the controller and starts polling for jobs.
 
 | Environment variable | Description |
 |---|---|
-| `UNIFIED_AGENT_SERVER` | Controller URL |
+| `UNIFIED_SERVER` | Controller URL |
 | `UNIFIED_AGENT_TOKEN` | Bearer token (must match controller's `UNIFIED_TOKEN` or a PAT) |
 | `UNIFIED_AGENT_ID` | Unique agent identifier |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:linux,env:prod` |
@@ -99,7 +107,7 @@ EOF
 Verify the connection:
 
 ```bash
-./bin/unified-cd jobs list
+./bin/unified-cli jobs list
 # (empty — no jobs yet)
 ```
 
@@ -129,10 +137,10 @@ Steps run sequentially in the order listed. To run steps concurrently, group the
 Apply it, trigger a run, and follow the logs:
 
 ```bash
-./bin/unified-cd apply -f hello.yaml
+./bin/unified-cli apply -f hello.yaml
 
-RUN_ID=$(./bin/unified-cd run trigger hello)
-./bin/unified-cd logs -f "$RUN_ID"
+RUN_ID=$(./bin/unified-cli run trigger hello)
+./bin/unified-cli logs -f "$RUN_ID"
 ```
 
 Expected output:
@@ -178,8 +186,8 @@ spec:
 ```
 
 ```bash
-./bin/unified-cd apply -f build.yaml
-./bin/unified-cd run trigger build --param image=myapp --param tag=v1.0
+./bin/unified-cli apply -f build.yaml
+./bin/unified-cli run trigger build --param image=myapp --param tag=v1.0
 ```
 
 ---
@@ -223,7 +231,7 @@ Only agents with the `kind:docker` label will claim this job.
 Store sensitive values server-side and reference them in jobs:
 
 ```bash
-./bin/unified-cd secret set REGISTRY_PASS "s3cr3t"
+./bin/unified-cli secret set REGISTRY_PASS "s3cr3t"
 ```
 
 ```yaml
@@ -263,7 +271,7 @@ spec:
 ```
 
 ```bash
-./bin/unified-cd apply -f nightly.yaml
+./bin/unified-cli apply -f nightly.yaml
 ```
 
 ---
@@ -294,8 +302,8 @@ Store the shared secret first (any random string; it must match what you enter
 on GitHub), then apply:
 
 ```bash
-./bin/unified-cd secret set GITHUB_WEBHOOK_SECRET "$(openssl rand -hex 20)"
-./bin/unified-cd apply -f webhook.yaml
+./bin/unified-cli secret set GITHUB_WEBHOOK_SECRET "$(openssl rand -hex 20)"
+./bin/unified-cli apply -f webhook.yaml
 # Webhook endpoint: POST http://localhost:8080/webhook/github-push
 ```
 

@@ -26,7 +26,7 @@ agent has a free concurrency slot.
 Check which agents are connected and what labels they advertise:
 
 ```bash
-unified-cd agent list
+unified-cli agent list
 # docker-agent-1   c1e136ded609   linux         hostname:c1e136ded609,kind:docker,pool:default   2026-07-04 04:54
 # k8s-agent-1      DESKTOP-EMUF6H6 windows/k8s   kubernetes,kind:k8s,pool:default,hostname:...    2026-07-04 04:54
 ```
@@ -42,7 +42,7 @@ unified-cd agent list
   looks identical to this symptom but requires raising `--max-concurrent`
   instead of relabeling agents.
 
-Cancel a run stuck this way with `unified-cd run cancel <run-id>`.
+Cancel a run stuck this way with `unified-cli run cancel <run-id>`.
 
 ## Webhook returns 401
 
@@ -225,7 +225,7 @@ step referencing `out/report.txt` relative to the workspace root instead of
 
 **Symptom**
 
-`unified-cd artifact download <run-id> <name>` errors instead of extracting a
+`unified-cli artifact download <run-id> <name>` errors instead of extracting a
 file.
 
 **Cause**
@@ -239,15 +239,15 @@ are case-sensitive and must match exactly).
 Always list the run's artifacts first to get the exact name:
 
 ```bash
-unified-cd artifact list <run-id>
+unified-cli artifact list <run-id>
 # app-binary
 # test-report
 
-unified-cd artifact download <run-id> test-report --dest ./out
+unified-cli artifact download <run-id> test-report --dest ./out
 ```
 
 If the list is empty, the run never reached (or failed before) its
-`uploadArtifact` step — check `unified-cd logs <run-id>` for the upload step's
+`uploadArtifact` step — check `unified-cli logs <run-id>` for the upload step's
 outcome.
 
 ## Conditional step ran when it shouldn't
@@ -260,6 +260,10 @@ agent log contains:
 ```
 if: condition eval failed, running step
 ```
+
+(on the k8s agent, the same line is prefixed: `k8s: if condition eval failed,
+running step` — grep for `if condition eval failed, running step` to match
+both agents)
 
 with a nested compile error, e.g.:
 
@@ -318,7 +322,7 @@ This is expected recovery behavior, not a bug to work around — the run
 genuinely needs to be re-triggered once the underlying agent problem is
 fixed:
 
-- Confirm the agent is back and healthy: `unified-cd agent list`.
+- Confirm the agent is back and healthy: `unified-cli agent list`.
 - Re-trigger the job once the agent (or a replacement in the same pool) is
   available.
 - On Kubernetes, the run's `ucd-run-*` pod is garbage-collected separately;
@@ -326,66 +330,41 @@ fixed:
 - See [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery)
   for the full heartbeat/reaper timing and design.
 
-## Controller fails with `column "..." does not exist` after upgrading
+## Controller fails at startup with `schema drift: ... does not exist`
 
 **Symptom**
 
 After upgrading the controller binary/image against an existing database, the
-controller starts (migrations appear to run without error) but requests fail
-at runtime with errors such as:
+controller **fails fast at startup** (it never finishes booting) with an
+error such as:
 
 ```
-column "role" does not exist
-column "managed_resources" does not exist
-relation "audit_logs" does not exist
-column "sync_status" does not exist
+schema drift: schema_migrations.version=7 claims 007_step_call_link is applied,
+but step_reports.child_run_id does not exist; migration files were likely
+renumbered after this database was migrated - see docs/troubleshooting.md
+("Schema drift") for recovery
 ```
 
 **Cause**
 
-Commit `79c1074` squashed the original incremental migrations `001`-`017`
-into a single consolidated `001_init` (plus a new, renumbered `002`-`006`
-series for schema changes added after the squash). A database that was
-**provisioned before the squash** already has `schema_migrations.version`
-recorded as `17` (or wherever it had reached in the old numbering).
-`golang-migrate` only applies migrations with a version *greater than* the
-recorded one — since the new chain tops out at version `6`, `migrate up`
-against such a database is a **silent no-op**: it reports success and the
-controller starts normally, but none of the columns/tables introduced after
-the squash point (`role`, `managed_resources`, `audit_logs`, `sync_status`,
-etc.) ever get created.
+After running `golang-migrate`'s `Up()`, the controller calls `verifySchema()`
+(`internal/store/postgres.go`, `internal/store/verify.go`), which cross-checks
+`schema_migrations.version` against a sentinel object (a table, column, or
+index) for every migration it claims is applied. `golang-migrate` only
+compares version *numbers* — if migration files were renumbered (e.g. an
+old incremental series was squashed/re-sequenced) after a database was already
+migrated to the old numbering, `migrate up` treats that database as fully
+migrated and silently skips the renumbered files, even though their schema
+objects were never created. `verifySchema()` catches this by probing for the
+actual objects and fails startup immediately with a "schema drift" error
+instead of letting the controller boot with a stale schema and fail later,
+per-request, with errors like `column "role" does not exist`.
 
-This only affects databases created **before** the squash landed. A database
-initialized from the current migration set (fresh install) is unaffected.
-
-**Fix**
-
-In-place `migrate up` is **not a supported upgrade path** across the squash
-boundary. Choose one of:
-
-- **Fresh init (recommended when data loss is acceptable)** — provision a new
-  empty database and let the controller run the current migration set from
-  scratch (`001_init` through the latest). This is the simplest and
-  best-tested path; see [Operations Guide: Recovery Runbook](operations.md#recovery-runbook)
-  for re-applying resources afterward.
-- **Manual bridge (when the existing data must be preserved)** — inspect
-  `schema_migrations.version` on the old database, then manually apply the
-  DDL each pre-squash migration (`002`-`017` in the old numbering, as they
-  existed on the commit immediately before `79c1074`) would have added, and
-  finally set `schema_migrations` to match the new chain's head version so
-  `migrate up` treats the database as fully migrated. This must be done by
-  hand (or with a custom script) — there is no automated tool for it — and
-  should be tested against a copy of the database first.
-
-Check which case you're in before upgrading:
-
-```sql
-SELECT version, dirty FROM schema_migrations;
-```
-
-If `version` is `6` or lower on a database that predates commit `79c1074`,
-it silently skipped the squashed migrations and needs the bridge above rather
-than a plain restart.
+This is exactly the same class of drift described in
+[Schema drift (migration renumbering)](#schema-drift-migration-renumbering)
+below — see that section for full diagnosis and recovery steps (apply the
+missing migration's `.up.sql` by hand, then restart so `verifySchema()`
+re-checks and confirms the fix).
 
 ## Dev stack: controller container unhealthy, `vendor/modules.txt` errors
 
