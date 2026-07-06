@@ -4,8 +4,8 @@
 # Agent requirements: docker (buildx is also required for multi-platform builds)
 #
 # Required secrets (when pushing to a private registry / Docker Hub):
-#   unified-cd secret set dockerhub-username --value myuser
-#   unified-cd secret set dockerhub-password --value xxxxxxxx
+#   unified-cd secret set dockerhub-username myuser
+#   unified-cd secret set dockerhub-password xxxxxxxx
 #   * If username_secret is not set, push is attempted without authentication (e.g. for public anonymous pushes)
 #
 # When referencing as a git:// template:

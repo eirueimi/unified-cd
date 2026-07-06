@@ -2,7 +2,7 @@
 # After registering with unified-cd apply examples/slack-notify.yaml, invoke it via call.job
 #
 # Required secrets:
-#   unified-cd secret set slack-webhook-url --value https://hooks.slack.com/services/...
+#   unified-cd secret set slack-webhook-url https://hooks.slack.com/services/...
 #
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/slack-notify.yaml@v1

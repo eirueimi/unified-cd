@@ -2,7 +2,7 @@
 # Register with unified-cd apply examples/github-release.yaml, then invoke via call.job
 #
 # Required secrets:
-#   unified-cd secret set github-token --value ghp_xxxx
+#   unified-cd secret set github-token ghp_xxxx
 #   Required permission: contents:write
 #
 # When referencing as a git:// template:

@@ -2,7 +2,7 @@
 # After registering with unified-cd apply examples/gitlab-commit-status.yaml, invoke it via call.job
 #
 # Required secrets:
-#   unified-cd secret set gitlab-token --value glpat-xxxx
+#   unified-cd secret set gitlab-token glpat-xxxx
 #   Required scope: api (or a role of report-manager or higher)
 #
 # When referencing as a git:// template:

@@ -120,9 +120,11 @@ spec:
     - name: greet
       run: echo "Hello from unified-cd!"
     - name: info
-      needs: [greet]
       run: uname -a
 ```
+
+Steps run sequentially in the order listed. To run steps concurrently, group them under a
+`parallel:` block instead (see [Concurrent Steps (`parallel`)](jobs.md#concurrent-steps-parallel)).
 
 Apply it, trigger a run, and follow the logs:
 
@@ -172,7 +174,6 @@ spec:
         image_ref: "{{ .Params.image }}:{{ .Params.tag }}"
 
     - name: push
-      needs: [build]
       run: echo "Pushing {{ .Steps.build.Outputs.image_ref }}"
 ```
 

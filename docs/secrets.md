@@ -67,11 +67,13 @@ read -s SECRET && echo -n "$SECRET" | unified-cli secret set DB_PASSWORD
 
 > **Naming rules**
 >
-> To reference a secret in a job YAML template, the name must use **only alphanumerics and underscores**
-> (must start with a letter or `_`). Hyphens (`-`) cannot be parsed by the template engine — use underscores instead.
+> Secret names may contain alphanumerics, underscores, and hyphens (must start with a letter
+> or `_`). Both `{{ secrets.NAME }}` and `{{ .Secrets.NAME }}` work with hyphenated names —
+> the template engine automatically rewrites hyphenated references to an index lookup
+> internally, since Go template dot-notation cannot address a map key containing a hyphen
+> directly.
 >
-> ✓ Valid: `DATABASE_URL`, `deploy_key`, `API_KEY_PROD`
-> ✗ Invalid: `database-url`, `api-key-prod` (cannot be referenced in templates)
+> ✓ Valid: `DATABASE_URL`, `deploy_key`, `API_KEY_PROD`, `slack-webhook-url`, `gitlab-token`
 
 ### List
 
@@ -235,7 +237,7 @@ Secret **values cannot be retrieved via the API** by design. If you lose a value
 | Symptom | Cause and fix |
 |---------|---------------|
 | `key manager not configured` | Controller started without `UNIFIED_CONTROLLER_KEY`. Set it and restart. |
-| `{{ secrets.NAME }}` appears unexpanded | The secret name contains a hyphen (e.g. `my-key`). Rename it using underscores (`my_key`). |
+| `{{ secrets.NAME }}` appears unexpanded | The secret name doesn't match a registered secret, or contains a character other than alphanumerics/underscores/hyphens. Check the exact name with `unified-cd secret list`. |
 | Secret is referenced with `{{ secrets.NAME }}` but value is empty | Secret is not registered, or the name casing does not match. Check with `unified-cli secret list`. |
 | Info log: `controllerKey not set — generated a new key and persisted it to the database` | `UNIFIED_CONTROLLER_KEY` is not set. A key was auto-generated and stored in the `controller_settings` table (reused on subsequent restarts). To manage it explicitly, retrieve the value from the DB and set it as `UNIFIED_CONTROLLER_KEY`. |
 | `decrypt` errors in HA setup | Replicas are pointing to different DBs (`controller_settings`), or `UNIFIED_CONTROLLER_KEY` differs between replicas. Use the same DB and the same key value on all replicas. |

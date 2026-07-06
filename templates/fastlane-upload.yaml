@@ -16,9 +16,9 @@
 #     otherwise falls back to the plain `fastlane` command.
 #
 # Required secrets (when using App Store Connect API key authentication; optional):
-#   unified-cd secret set asc-key-id --value XXXXXXXXXX
-#   unified-cd secret set asc-issuer-id --value xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-#   unified-cd secret set asc-key-content --value "$(cat AuthKey_XXXXXXXXXX.p8)"
+#   unified-cd secret set asc-key-id XXXXXXXXXX
+#   unified-cd secret set asc-issuer-id xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+#   unified-cd secret set asc-key-content "$(cat AuthKey_XXXXXXXXXX.p8)"
 #
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/fastlane-upload.yaml@v1
