@@ -1,7 +1,6 @@
 package k8sagent
 
 import (
-	"runtime"
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -38,7 +37,7 @@ func TestImageStepEnv(t *testing.T) {
 	out := imageStepEnv(step)
 
 	assert.Equal(t, "bar", out["FOO"])
-	assert.Equal(t, runtime.GOOS, out["UNIFIED_AGENT_OS"])
+	assert.Equal(t, "linux", out["UNIFIED_AGENT_OS"], "runsIn.image pod is a linux container")
 	// must not mutate the input map (the claim's step.Env)
 	assert.Equal(t, map[string]string{"FOO": "bar"}, original)
 	_, hasKey := original["UNIFIED_AGENT_OS"]
@@ -47,7 +46,7 @@ func TestImageStepEnv(t *testing.T) {
 
 func TestImageStepEnv_NilEnv(t *testing.T) {
 	out := imageStepEnv(api.ClaimStep{})
-	assert.Equal(t, runtime.GOOS, out["UNIFIED_AGENT_OS"])
+	assert.Equal(t, "linux", out["UNIFIED_AGENT_OS"], "runsIn.image pod is a linux container")
 	assert.Len(t, out, 1)
 }
 

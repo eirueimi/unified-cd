@@ -560,8 +560,9 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 					expandedRun = step.Run
 				}
 
-				// UNIFIED_AGENT_OS allows job authors to determine the running OS from within a step.
-				extraEnv := []string{"UNIFIED_AGENT_OS=" + runtime.GOOS}
+				// UNIFIED_AGENT_OS lets job authors determine the running OS from within a step.
+				// Scoped / runsIn.image steps run in a Linux container, not on the host — see agentOSForStep.
+				extraEnv := []string{"UNIFIED_AGENT_OS=" + agentOSForStep(step)}
 				for k, v := range step.Env {
 					expanded, _ := dsl.ExpandTemplate(v, tplData)
 					extraEnv = append(extraEnv, k+"="+expanded)
