@@ -50,7 +50,7 @@ type podManager interface {
 }
 
 type stepExecutor interface {
-	ExecStep(ctx context.Context, podName, container, script string, stdout, stderr io.Writer) (int, error)
+	ExecStep(ctx context.Context, podName, container, script string, env []string, stdout, stderr io.Writer) (int, error)
 	ExecStepArgv(ctx context.Context, podName, container string, argv []string, stdout, stderr io.Writer) (int, error)
 }
 
@@ -187,7 +187,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 				break
 			}
 		}
-		_, _ = a.exec.ExecStep(ctx, podName, firstContainer, fmt.Sprintf("rm -rf %s/*", mountPath), io.Discard, io.Discard)
+		_, _ = a.exec.ExecStep(ctx, podName, firstContainer, fmt.Sprintf("rm -rf %s/*", mountPath), nil, io.Discard, io.Discard)
 	}
 
 	// scopePods tracks this claim's uses-scope pods (keyed by scopeKey: ScopeID
@@ -250,7 +250,13 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			if err != nil {
 				return -1, "", err
 			}
-			ec, execErr = a.exec.ExecStep(execCtx, podName, "step", expandedRun, stdoutWriter, stderrPusher)
+			// The scope pod already has env baked in at creation time from the
+			// FIRST scoped step to use this scopeKey (buildScopePod/imageStepEnv),
+			// but later steps sharing the same scope pod may carry different
+			// step.Env — per-step env must still win at exec time, so it is
+			// re-applied here via execStepEnv (exec-time env for a duplicate key
+			// overrides the pod-level value for that invocation only).
+			ec, execErr = a.exec.ExecStep(execCtx, podName, "step", expandedRun, execStepEnv(step), stdoutWriter, stderrPusher)
 		} else if step.RunsIn != nil && step.RunsIn.Image != "" {
 			// Isolated throwaway pod. UNIFIED_AGENT_OS mirrors the host agent's
 			// convention; step.Env arrives already template-expanded (orchestrate).
@@ -258,7 +264,10 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			deadline := imageStepDeadline(step)
 			ec, execErr = a.runImageStep(execCtx, c.RunID, step.RunsIn.Image, env, deadline, step.RunsIn.Resources, expandedRun, stdoutWriter, stderrPusher)
 		} else {
-			ec, execErr = a.exec.ExecStep(execCtx, podName, execContainer(step), expandedRun, stdoutWriter, stderrPusher)
+			// Default/main-pod (pooled or per-run) path: env has no native
+			// Kubernetes-exec equivalent, so it is applied inside the exec'd
+			// command itself (see execStepEnv/buildEnvShellCommand).
+			ec, execErr = a.exec.ExecStep(execCtx, podName, execContainer(step), expandedRun, execStepEnv(step), stdoutWriter, stderrPusher)
 		}
 
 		stderrPusher.Flush(execCtx)
@@ -840,6 +849,24 @@ func imageStepEnv(step api.ClaimStep) map[string]string {
 	return env
 }
 
+// execStepEnv returns the "KEY=VALUE" pairs to apply at exec time for a
+// default-pod or scope-pod step: UNIFIED_AGENT_OS=linux (pods are always
+// Linux containers, mirroring the host agent's agentOSForStep for scoped/
+// containerized steps — see internal/agent/agent.go:565) plus the step's own
+// env: map (already template-expanded by the caller). Kubernetes exec has no
+// native env option, so these pairs are threaded into the exec'd command via
+// the `env` binary (buildEnvShellCommand) rather than baked into the pod spec
+// — this keeps per-step env correct even when a step reuses a pooled/scope
+// pod that was created (and had its env baked) by a different step.
+func execStepEnv(step api.ClaimStep) []string {
+	env := make([]string, 0, len(step.Env)+1)
+	env = append(env, "UNIFIED_AGENT_OS=linux")
+	for k, v := range step.Env {
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
 // imageStepDeadline returns the throwaway pod's activeDeadlineSeconds: the step
 // timeout if set, else a 1-hour default.
 func imageStepDeadline(step api.ClaimStep) int64 {
@@ -877,7 +904,9 @@ func (a *K8sAgent) runImageStep(ctx context.Context, runID, image string, env ma
 	if err := a.pm.WaitForPodRunning(waitCtx, name); err != nil {
 		return -1, fmt.Errorf("runsIn.image %q: pod did not become ready within %s (image pull may have failed): %w", image, imagePodStartTimeout, err)
 	}
-	return a.exec.ExecStep(ctx, name, "step", script, stdout, stderr)
+	// env is already baked into the pod's container spec at creation time
+	// (buildImageStepPod/imageStepEnv), so no exec-time env is needed here.
+	return a.exec.ExecStep(ctx, name, "step", script, nil, stdout, stderr)
 }
 
 func appendLabelIfMissing(labels []string, label string) []string {
