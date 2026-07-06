@@ -71,6 +71,50 @@ func TestReconciler_AppliesJobsFromGit(t *testing.T) {
 	assert.NotNil(t, src.LastSyncedAt)
 }
 
+// TestReconciler_SkipsInvalidFileButAppliesValidOnes verifies that a file which
+// fails to apply (here: a job using the removed `needs:` field) is skipped with
+// a warning while the other valid files in the same sync are still applied and
+// the sync completes successfully.
+func TestReconciler_SkipsInvalidFileButAppliesValidOnes(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	ctx := context.Background()
+
+	_, err := pg.UpsertAppSource(ctx, "my-src", []byte(appSourceSpecJSON))
+	require.NoError(t, err)
+
+	badYAML := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad-job
+spec:
+  steps:
+    - name: a
+      run: echo a
+    - name: b
+      needs: [a]
+      run: echo b
+`
+	fetcher := &mockAppSourceFetcher{
+		sha: "sha-mix",
+		files: map[string][]byte{
+			"jobs/build.yaml": []byte(jobYAML),
+			"jobs/bad.yaml":   []byte(badYAML),
+		},
+	}
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	// The valid job is applied.
+	_, err = pg.GetJob(ctx, "build")
+	require.NoError(t, err)
+	// The invalid job (needs:) is skipped, not applied.
+	_, err = pg.GetJob(ctx, "bad-job")
+	require.Error(t, err)
+	// The sync still completes successfully despite the skipped file.
+	src, err := pg.GetAppSource(ctx, "my-src")
+	require.NoError(t, err)
+	assert.Equal(t, "sha-mix", src.LastCommit)
+}
+
 func TestReconciler_SkipsWhenSHAUnchanged(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	ctx := context.Background()

@@ -154,6 +154,7 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 
 	current := make([]store.ResourceRef, 0, len(paths))
 	seen := map[store.ResourceRef]bool{}
+	skipped := 0
 	for _, fp := range paths {
 		kind := probeKind(files[fp])
 		dir := relDir(spec.Path, fp)
@@ -174,12 +175,18 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 			if errors.Is(err, errStoreWrite) {
 				return fmt.Errorf("apply %s (%s): %w", kind, fp, err)
 			}
-			slog.Warn("appsource reconciler: skipping file", "name", src.Name, "file", fp, "kind", kind, "error", err)
+			slog.Warn("appsource reconciler: failed to apply resource, skipping",
+				"appsource", src.Name, "file", fp, "kind", kind, "resource", refName, "error", err)
+			skipped++
 			continue
 		}
 		ref := store.ResourceRef{Kind: kind, Name: name}
 		seen[ref] = true
 		current = append(current, ref)
+	}
+	if skipped > 0 {
+		slog.Warn("appsource reconciler: some resources failed to apply and were skipped",
+			"appsource", src.Name, "skipped", skipped, "applied", len(current))
 	}
 
 	// Prune resources managed previously but absent now.
