@@ -3,6 +3,7 @@ package k8sagent
 import (
 	"context"
 	"io"
+	"path"
 	"strconv"
 	"sync"
 
@@ -220,6 +221,27 @@ func (f *fakeK8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHa
 		return f.PostExecFn(ctx, targetPod, container, script, env)
 	}
 	return nil
+}
+
+// ResolveArtifactPath mirrors k8sBackend's default mount path ("/workspace",
+// the same default orchestrate/executeRun used pre-refactor when no
+// PodTemplate.Workspace.MountPath override is configured) so existing
+// argv-path assertions (e.g. "/workspace/bin/app") keep passing unchanged.
+func (f *fakeK8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p string) string {
+	if !scope.IsZero() {
+		return path.Join(scopeMountPath, p)
+	}
+	return path.Join("/workspace", p)
+}
+
+// ResolveCachePath mirrors k8sBackend: identical to ResolveArtifactPath.
+func (f *fakeK8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) string {
+	return f.ResolveArtifactPath(scope, p)
+}
+
+// DefaultAgentOS mirrors k8sBackend: every k8s exec path runs inside a Linux pod.
+func (f *fakeK8sBackend) DefaultAgentOS() string {
+	return "linux"
 }
 
 func (f *fakeK8sBackend) SetMasker(m *secrets.Masker) {}

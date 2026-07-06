@@ -65,7 +65,7 @@ func runOrchestrateTimeout(t *testing.T, c api.ClaimResponse, stepExecFn func(ct
 
 	backend := newFakeK8sBackend()
 	backend.StepExecFn = stepExecFn
-	a.orchestrate(context.Background(), c, backend, nil)
+	agentlib.RunClaim(context.Background(), client, a.cfg.AgentID, c, backend)
 
 	mu.Lock()
 	defer mu.Unlock()

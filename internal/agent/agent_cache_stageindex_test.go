@@ -40,7 +40,7 @@ func TestExecuteCacheStep_ReportsStageIndex(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	require.NoError(t, a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", ""), ScopeHandle{}))
+	require.NoError(t, executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", ""), ScopeHandle{}))
 
 	mu.Lock()
 	defer mu.Unlock()

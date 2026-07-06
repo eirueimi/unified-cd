@@ -91,7 +91,7 @@ func TestOrchestrate_CallStepLaunchesChildRun(t *testing.T) {
 		return 0, nil
 	}
 
-	a.orchestrate(context.Background(), c, backend, nil)
+	agentlib.RunClaim(context.Background(), client, a.cfg.AgentID, c, backend)
 
 	mu.Lock()
 	defer mu.Unlock()

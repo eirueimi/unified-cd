@@ -34,13 +34,14 @@ func runOrchestrateCancel(
 ) (map[string]string, string) {
 	t.Helper()
 
-	// Shorten poll intervals so tests are fast.
-	prevCancel := cancelPollInterval
-	cancelPollInterval = 5 * time.Millisecond
-	t.Cleanup(func() { cancelPollInterval = prevCancel })
-	prevPoll := approvalPollInterval
-	approvalPollInterval = 5 * time.Millisecond
-	t.Cleanup(func() { approvalPollInterval = prevPoll })
+	// Shorten poll intervals so tests are fast. Both are now owned by the
+	// shared orchestration loop (agentlib.RunClaim), not this package.
+	prevCancel := agentlib.CancelPollInterval
+	agentlib.CancelPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { agentlib.CancelPollInterval = prevCancel })
+	prevPoll := agentlib.ApprovalPollInterval
+	agentlib.ApprovalPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { agentlib.ApprovalPollInterval = prevPoll })
 
 	h := &cancelHarness{statuses: map[string]string{}, runState: "Running"}
 	var mu sync.Mutex
@@ -99,7 +100,7 @@ func runOrchestrateCancel(
 		}
 		return stepFn(h, &mu, execCtx, step), nil
 	}
-	a.orchestrate(context.Background(), c, backend, nil)
+	agentlib.RunClaim(context.Background(), client, a.cfg.AgentID, c, backend)
 
 	mu.Lock()
 	defer mu.Unlock()

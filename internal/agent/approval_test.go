@@ -24,9 +24,9 @@ func runApprovalJob(t *testing.T, stages []api.ClaimStage, decided string) (map[
 	t.Helper()
 
 	// Speed up polling so the Pending->decided transition is exercised quickly.
-	prevPoll := approvalPollInterval
-	approvalPollInterval = 10 * time.Millisecond
-	t.Cleanup(func() { approvalPollInterval = prevPoll })
+	prevPoll := ApprovalPollInterval
+	ApprovalPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { ApprovalPollInterval = prevPoll })
 
 	const agentID = "approval-agent"
 	const runID = "run-approval"

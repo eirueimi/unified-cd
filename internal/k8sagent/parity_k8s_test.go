@@ -377,6 +377,24 @@ func (b *parityK8sBackend) RunPostHook(ctx context.Context, scope agentlib.Scope
 	return nil
 }
 
+// ResolveArtifactPath is a minimal passthrough: none of the 10 parity cases
+// exercises cache/artifact paths, so exact resolution semantics don't matter
+// here (unlike fakeK8sBackend/k8sBackend, which have argv-path assertions).
+func (b *parityK8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p string) string {
+	return p
+}
+
+// ResolveCachePath is a minimal passthrough (see ResolveArtifactPath's doc
+// comment: none of the 10 parity cases exercises cache/artifact paths).
+func (b *parityK8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) string {
+	return p
+}
+
+// DefaultAgentOS mirrors k8sBackend: every k8s exec path runs inside a Linux pod.
+func (b *parityK8sBackend) DefaultAgentOS() string {
+	return "linux"
+}
+
 func (b *parityK8sBackend) SetMasker(m *secrets.Masker) { b.masker = m }
 
 func (b *parityK8sBackend) StepLogWriters(ctx context.Context, stepIndex int) (stdout, stderr io.Writer, finish func(ctx context.Context)) {
@@ -476,27 +494,17 @@ func runParityK8sCase(t *testing.T, tc paritycases.Case) {
 
 	claim := tc.Claim()
 
-	// Build the masker exactly as executeRun does (internal/k8sagent/agent.go):
-	// NewMasker over the case's secret VALUES when any are declared, else a
-	// no-op masker. secretsResolveAndMask is the only case that sets Secrets.
-	var masker *secrets.Masker
-	if len(tc.Secrets) > 0 {
-		vals := make([]string, 0, len(tc.Secrets))
-		for _, v := range tc.Secrets {
-			vals = append(vals, v)
-		}
-		masker = secrets.NewMasker(vals)
-	} else {
-		masker = secrets.NoOpMasker
-	}
-
+	// The masker is no longer pre-built here: agentlib.RunClaim fetches
+	// secrets itself (via the harness's /secrets/fetch endpoint, serving
+	// tc.Secrets — see h.secretsToServe above) and installs the masker on the
+	// backend via SetMasker, mirroring the host agent exactly.
 	shell := parityShell(t)
-	backend := &parityK8sBackend{t: t, client: client, agentID: agentID, runID: runID, masker: masker, shell: shell}
+	backend := &parityK8sBackend{t: t, client: client, agentID: agentID, runID: runID, shell: shell}
 
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	a.orchestrate(ctx, claim, backend, tc.Secrets)
+	agentlib.RunClaim(ctx, client, a.cfg.AgentID, claim, backend)
 	elapsed := time.Since(start)
 
 	if tc.Name == "step-timeout-fails" {

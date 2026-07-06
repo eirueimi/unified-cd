@@ -41,9 +41,10 @@ func runOrchestrateWithApproval(t *testing.T, c api.ClaimResponse, fakes map[str
 	t.Helper()
 
 	// Speed up approval polling so the Pending->decided transition is fast.
-	prevPoll := approvalPollInterval
-	approvalPollInterval = 10 * time.Millisecond
-	t.Cleanup(func() { approvalPollInterval = prevPoll })
+	// Owned by the shared orchestration loop (agentlib.RunClaim), not this package.
+	prevPoll := agentlib.ApprovalPollInterval
+	agentlib.ApprovalPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { agentlib.ApprovalPollInterval = prevPoll })
 
 	h := &orchestrateHarness{statuses: map[string]string{}, runState: "Running", approvalDecision: approvalDecision}
 	var mu sync.Mutex
@@ -122,7 +123,7 @@ func runOrchestrateWithApproval(t *testing.T, c api.ClaimResponse, fakes map[str
 
 	backend := newFakeK8sBackend()
 	backend.Fakes = fakes
-	a.orchestrate(context.Background(), c, backend, nil)
+	agentlib.RunClaim(context.Background(), client, a.cfg.AgentID, c, backend)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -185,7 +186,7 @@ func runOrchestrateVariants(t *testing.T, c api.ClaimResponse, fakes map[string]
 
 	backend := newFakeK8sBackend()
 	backend.Fakes = fakes
-	a.orchestrate(context.Background(), c, backend, nil)
+	agentlib.RunClaim(context.Background(), client, a.cfg.AgentID, c, backend)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -380,7 +381,7 @@ func runOrchestrateCaptureOutputs(t *testing.T, c api.ClaimResponse, fakes map[s
 
 	backend := newFakeK8sBackend()
 	backend.Fakes = fakes
-	a.orchestrate(context.Background(), c, backend, nil)
+	agentlib.RunClaim(context.Background(), client, a.cfg.AgentID, c, backend)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -468,7 +469,7 @@ func runOrchestrateArtifact(t *testing.T, c api.ClaimResponse, exitCode int) ([]
 
 	backend := newFakeK8sBackend()
 	backend.SidecarExitCode = exitCode
-	a.orchestrate(context.Background(), c, backend, nil)
+	agentlib.RunClaim(context.Background(), client, a.cfg.AgentID, c, backend)
 
 	mu.Lock()
 	defer mu.Unlock()

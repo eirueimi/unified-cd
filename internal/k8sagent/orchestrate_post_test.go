@@ -94,7 +94,7 @@ func runOrchestrateWithFakes(t *testing.T, c api.ClaimResponse, fakes map[string
 
 	backend := newFakeK8sBackend()
 	backend.Fakes = fakes
-	a.orchestrate(context.Background(), c, backend, nil)
+	agentlib.RunClaim(context.Background(), srvClient, a.cfg.AgentID, c, backend)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -162,7 +162,7 @@ func TestOrchestrate_PostHookFailure_DoesNotFlipRunStatus(t *testing.T) {
 		return assert.AnError
 	}
 
-	a.orchestrate(context.Background(), c, backend, nil)
+	agentlib.RunClaim(context.Background(), client, a.cfg.AgentID, c, backend)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -188,7 +188,7 @@ func TestOrchestrate_ScopedStepPostHook_RoutesToScopePod(t *testing.T) {
 	a := &K8sAgent{cfg: Config{AgentID: "k8s-1"}, client: client}
 
 	backend := newFakeK8sBackend()
-	a.orchestrate(context.Background(), c, backend, nil)
+	agentlib.RunClaim(context.Background(), client, a.cfg.AgentID, c, backend)
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -95,7 +95,7 @@ func TestOrchestrate_ReportRetriesUntilSuccess(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		a.orchestrate(context.Background(), c, backend, nil)
+		agentlib.RunClaim(context.Background(), client, a.cfg.AgentID, c, backend)
 		close(done)
 	}()
 
