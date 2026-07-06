@@ -15,7 +15,6 @@ Spec: `docs/superpowers/specs/2026-07-06-release-docker-matrix-design.md`
 - Trigger unchanged: `on.push.tags: 'v*'`. Tags unchanged: `latest` + `${{ github.ref_name }}` per image.
 - Images and Dockerfiles unchanged: `controller`, `agent`, `k8s-agent`, `runner` ↔ `docker/<image>.Dockerfile`; image names `ghcr.io/eirueimi/unified-cd-<image>`.
 - No QEMU step anywhere (all-native builds).
-- Cache: `type=gha` with `scope=<image>-<arch>`, `mode=max` on `cache-to`.
 - Permissions per job: `contents: read`, `packages: write`.
 - English only in the file (comments included).
 
@@ -86,8 +85,6 @@ jobs:
           file: docker/${{ matrix.image }}.Dockerfile
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=ghcr.io/eirueimi/unified-cd-${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
-          cache-to: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }},mode=max
 
       - name: Export digest
         run: |
@@ -101,7 +98,7 @@ jobs:
           name: digests-${{ matrix.image }}-${{ matrix.arch }}
           path: /tmp/digests/*
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   # Assemble the multi-arch manifest per image and apply the release tags.
   # Runs only when the entire build matrix succeeded, so a failed build
@@ -137,14 +134,18 @@ jobs:
 
       - name: Create multi-arch manifest and push tags
         working-directory: /tmp/digests
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           docker buildx imagetools create \
             -t ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:latest \
-            -t ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:${{ github.ref_name }} \
+            -t "ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:$TAG" \
             $(printf 'ghcr.io/eirueimi/unified-cd-${{ matrix.image }}@sha256:%s ' *)
 
       - name: Inspect manifest
-        run: docker buildx imagetools inspect ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:${{ github.ref_name }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: docker buildx imagetools inspect "ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:$TAG"
 ```
 
 - [ ] **Step 2: Validate the workflow file**
@@ -175,9 +176,8 @@ git add .github/workflows/release-docker.yml
 git commit -m "ci: parallelize release images across native amd64/arm64 runners
 
 4 images x 2 architectures build concurrently by digest (arm64 on
-ubuntu-24.04-arm - no QEMU), with type=gha layer caching, then a merge
-stage assembles the multi-arch manifests. No tags move unless every
-build succeeds."
+ubuntu-24.04-arm - no QEMU), then a merge stage assembles the
+multi-arch manifests. No tags move unless every build succeeds."
 ```
 
 ---

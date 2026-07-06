@@ -49,8 +49,6 @@ jobs:
           file: docker/${{ matrix.image }}.Dockerfile
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=ghcr.io/eirueimi/unified-cd-${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
-          cache-to: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }},mode=max
 
       - name: Export digest
         run: |
@@ -64,7 +62,7 @@ jobs:
           name: digests-${{ matrix.image }}-${{ matrix.arch }}
           path: /tmp/digests/*
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   # Assemble the multi-arch manifest per image and apply the release tags.
   # Runs only when the entire build matrix succeeded, so a failed build
@@ -100,11 +98,15 @@ jobs:
 
       - name: Create multi-arch manifest and push tags
         working-directory: /tmp/digests
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           docker buildx imagetools create \
             -t ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:latest \
-            -t ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:${{ github.ref_name }} \
+            -t "ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:$TAG" \
             $(printf 'ghcr.io/eirueimi/unified-cd-${{ matrix.image }}@sha256:%s ' *)
 
       - name: Inspect manifest
-        run: docker buildx imagetools inspect ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:${{ github.ref_name }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: docker buildx imagetools inspect "ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:$TAG"

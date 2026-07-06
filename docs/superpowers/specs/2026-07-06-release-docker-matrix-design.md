@@ -20,6 +20,16 @@ sequential sum with 5-10x QEMU penalties on the Go and npm stages.
 - A `workflow_dispatch` dry-run trigger (add later if needed).
 - The `artifact-sidecar` and dev/vite images (not released by this workflow
   today; unchanged).
+- `type=gha` build-cache (`cache-from`/`cache-to`) was evaluated and dropped.
+  This workflow only runs on tag refs, and each release is a new, distinct
+  ref; GitHub Actions cache scopes are ref-isolated, so a tag-ref run can
+  only restore a cache written by its own ref or by the default branch — and
+  nothing on `main` ever runs this workflow to warm those scopes. The cache
+  could therefore never hit across releases, while `mode=max` export still
+  costs build time and consumes the repo's shared 10GB Actions cache quota
+  (risking eviction of unrelated caches, e.g. CI's `setup-go` cache). If
+  caching is wanted later, the way to do it is a `main`-branch warming build
+  that writes the same cache scopes the release build reads from.
 
 ## Design
 
@@ -42,8 +52,6 @@ with:
 - `platforms:` the single matrix platform
 - `outputs: type=image,name=ghcr.io/eirueimi/unified-cd-<image>,push-by-digest=true,name-canonical=true,push=true`
   (no tags at this stage)
-- `cache-from`/`cache-to`: `type=gha` with `scope=<image>-<arch>` and
-  `mode=max`, so Go module download / npm ci layers carry across releases
 - Export the image digest as a job artifact
   (`digests-<image>-<arch>` containing an empty file named by digest —
   the standard docker-docs multi-platform pattern)
@@ -70,11 +78,23 @@ both job kinds).
 - Any build fails → ALL merge jobs are skipped and no tags move (stricter
   than today's sequential flow, which can leave earlier images tagged and
   later ones not — this is an atomicity improvement, not a regression).
-  `fail-fast: false` still lets the remaining builds finish and warm their
-  caches for the retry.
-- GHA cache miss/eviction → build falls back to a full native build; caches
-  are best-effort only.
+  `fail-fast: false` still lets the remaining builds finish so their digest
+  artifacts are available if only some jobs need retrying.
 - Digest artifact lost between jobs → merge fails loudly; re-run the workflow.
+
+## Operations note: GHCR untagged images are not orphans
+
+Push-by-digest plus provenance attestations means every release leaves
+several untagged package versions per image in GHCR (the per-arch digest
+images and their attestation manifests) alongside the tagged multi-arch
+index. These look orphaned in the GHCR UI because they carry no tag, but
+they are referenced by the tagged multi-arch index (`latest` and the
+release tag) — deleting them breaks pulls for one or more architectures.
+GHCR never garbage-collects on its own, so untagged versions accumulate
+release over release. Any future "delete untagged versions" cleanup
+(scripted or via a GitHub Action) must exclude digests referenced by a
+tagged index, or it will silently break `latest`/version pulls for at
+least one architecture.
 
 ## Verification
 
