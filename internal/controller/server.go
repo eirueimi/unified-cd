@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 // Config holds the configuration for the master server.
@@ -59,6 +60,7 @@ type Server struct {
 	oidcCfg      *OIDCConfig             // OIDC endpoints return 404 when nil.
 	dexProxy     *httputil.ReverseProxy  // /dex/* returns 404 when nil.
 	uiProxy      *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).
+	metrics      *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
 
 	// Cached provider for OIDC Bearer token verification (lazily initialized).
 	// Used to verify id_tokens obtained via the CLI device flow for API authentication.
@@ -117,6 +119,9 @@ func (s *Server) SetKeyManager(km secrets.KeyManager) {
 	s.km = km
 }
 
+// SetMetrics enables the /metrics endpoint and HTTP request instrumentation.
+func (s *Server) SetMetrics(m *metrics.Metrics) { s.metrics = m }
+
 // SetOIDCConfig configures the OIDC provider settings. OIDC endpoints return 404 when nil.
 // When IssuerInternal is set, initializes a reverse proxy that forwards /dex/* to IssuerInternal.
 func (s *Server) SetOIDCConfig(cfg *OIDCConfig) {
@@ -157,10 +162,45 @@ func accessLogMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// metricsMiddleware records request count and duration per chi route
+// pattern (never the raw path, to keep label cardinality bounded).
+// No-op until SetMetrics is called.
+//
+// The route pattern is resolved via a standalone s.r.Match lookup rather
+// than by reading chi.RouteContext(r.Context()).RoutePattern() after next
+// runs: when a route lives inside a mounted subrouter (e.g. /api/v1) whose
+// own middleware (auth) short-circuits before reaching that subrouter's
+// routeHTTP, chi never appends the leaf pattern segment to the request's
+// route context, and RoutePattern() would only report the parent mount's
+// wildcard (e.g. "/api/v1/*") instead of "/api/v1/runs/{id}". Mux.Match
+// walks the full routing tree structurally, without executing any
+// middleware or handlers, so it always yields the true leaf pattern.
+func (s *Server) metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.metrics == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		route := "unmatched"
+		if rctx := chi.NewRouteContext(); s.r.Match(rctx, r.Method, r.URL.Path) {
+			route = rctx.RoutePattern()
+		}
+		start := time.Now()
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+		code := ww.Status()
+		if code == 0 {
+			code = http.StatusOK
+		}
+		s.metrics.HTTPRequest(r.Method, route, code, time.Since(start).Seconds())
+	})
+}
+
 func (s *Server) routes() {
 	s.r.Use(middleware.Recoverer)
 	s.r.Use(middleware.RealIP)
 	s.r.Use(accessLogMiddleware)
+	s.r.Use(s.metricsMiddleware)
 
 	// Health-check endpoint (no auth required).
 	// Returns 503 while shutting down so the load balancer can drain traffic.
@@ -171,6 +211,16 @@ func (s *Server) routes() {
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+
+	// Prometheus metrics (no auth by design — block at the LB / firewall
+	// when the controller is internet-facing). 404 until SetMetrics.
+	s.r.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if s.metrics == nil {
+			http.NotFound(w, r)
+			return
+		}
+		s.metrics.Handler().ServeHTTP(w, r)
 	})
 
 	// Readiness-check endpoint (no auth required).
