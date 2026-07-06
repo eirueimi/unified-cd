@@ -557,6 +557,15 @@ Notes:
 - The guard fails closed: if the controller cannot check the management state
   (DB error), the write is rejected.
 
+### Migrating manually-applied resources to Git
+
+1. `unified-cd export -o ./exported --unmanaged-only`
+2. Commit the directory to a Git repository.
+3. Apply an AppSource whose `path` points at the exported directory.
+4. On the first sync each resource is upserted under its existing name and
+   recorded as managed — no manual deletion is needed, and from then on the
+   resources are protected from direct writes.
+
 ### Sync behavior
 
 1. The controller clones or fetches the repository at every `interval`.

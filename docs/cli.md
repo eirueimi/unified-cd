@@ -12,6 +12,7 @@ Complete reference for the `unified-cd` command-line tool.
 - [secret](#secret)
 - [token](#token)
 - [artifact](#artifact)
+- [export](#export)
 - [appsource](#appsource)
 - [webhook](#webhook)
 - [login](#login)
@@ -455,6 +456,30 @@ unified-cd artifact download run-abc123 cli-art
 unified-cd artifact download run-abc123 cli-art --dest ./out
 # => extracted cli-art of run run-abc123 to ./out
 ```
+
+---
+
+## export
+
+Export all resources (Jobs, Schedules, WebhookReceivers, GitCredentials,
+AppSources) as one YAML file per resource:
+
+```bash
+unified-cd export -o ./exported/
+```
+
+- Jobs are written at their qualified path (`team-a/build` → `team-a/build.yaml`)
+  so the output directory can be committed to Git and pointed at by an
+  AppSource `path` directly — re-importing reproduces the same names.
+- Non-Job kinds go under `schedules/`, `webhookreceivers/`,
+  `gitcredentials/`, `appsources/`.
+- `--unmanaged-only` exports only resources not already managed by an
+  AppSource (useful for migrating manually-applied resources to Git).
+- `--force` allows writing into a non-empty directory.
+- Secret **values** are never exported (they are not retrievable via the API);
+  re-create them with `unified-cd secret set` after a restore.
+- Output is regenerated from the stored spec: comments and key order of the
+  originally applied YAML are not preserved.
 
 ---
 
