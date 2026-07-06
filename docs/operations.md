@@ -77,4 +77,58 @@ Upgrade order: **controller first, then agents.**
 
 ---
 
+## Metrics
+
+The controller exposes Prometheus metrics at `GET /metrics` when metrics are
+enabled (they are wired in by default in `cmd/controller`).
+
+**Security:** `/metrics` is intentionally unauthenticated. If the controller
+is reachable from the internet (e.g. for webhook ingress), block `/metrics`
+at the load balancer or firewall.
+
+Scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: unified-cd
+    static_configs:
+      - targets: ["controller-1:8080", "controller-2:8080"]
+```
+
+Key metrics:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `unifiedcd_runs_current{status}` | gauge | Non-terminal runs (queue backlog = Pending + Queued) |
+| `unifiedcd_agents{state}` | gauge | Agents by heartbeat liveness (alive / stale) |
+| `unifiedcd_runs_created_total{trigger}` | counter | Runs created (webhook / schedule / api) |
+| `unifiedcd_runs_finished_total{status}` | counter | Terminal run transitions |
+| `unifiedcd_step_duration_seconds{status}` | histogram | Step wall-clock duration |
+| `unifiedcd_webhook_events_total{name,outcome}` | counter | Webhook ingress outcomes |
+| `unifiedcd_http_requests_total{method,route,code}` | counter | API traffic by chi route pattern |
+
+With multiple controller replicas, gauges report identical values on every
+replica (aggregate with `max()`); counters count only events the scraped
+replica processed (aggregate with `sum(rate(...))`).
+
+Example queries:
+
+```promql
+# Run failure rate over 1h, across replicas
+sum(rate(unifiedcd_runs_finished_total{status="Failed"}[1h]))
+  / sum(rate(unifiedcd_runs_finished_total[1h]))
+
+# Queue backlog
+max(unifiedcd_runs_current{status="Pending"})
+  + max(unifiedcd_runs_current{status="Queued"})
+
+# No alive agents (alert if this returns a result for 5m)
+max(unifiedcd_agents{state="alive"}) == 0
+
+# p95 step duration
+histogram_quantile(0.95, sum(rate(unifiedcd_step_duration_seconds_bucket[1h])) by (le))
+```
+
+---
+
 See also: [Secrets Management Guide](secrets.md) · [High Availability Guide](high-availability.md) · [Kubernetes Integration Guide](kubernetes-integration.md) · [Troubleshooting](troubleshooting.md)
