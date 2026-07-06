@@ -138,7 +138,11 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return cache.Restore(ctx, b.a.CacheStore, path, key, restoreKeys)
+		hit, err := cache.Restore(ctx, b.a.CacheStore, path, key, restoreKeys)
+		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
+			return false, err
+		}
+		return hit, nil
 	}
 	hostDir, err := os.MkdirTemp("", "ucd-scope-cache-restore-")
 	if err != nil {

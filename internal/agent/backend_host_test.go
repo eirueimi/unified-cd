@@ -74,3 +74,17 @@ func TestHostBackend_StepLogWriters_ReturnsLogPushers(t *testing.T) {
 	_, ok = stderr.(*LogPusher)
 	assert.True(t, ok, "stderr writer must be a *LogPusher on the host backend")
 }
+
+// TestHostBackend_CacheRestore_MissReturnsNil verifies that a non-scoped
+// CacheRestore against an empty cache returns (false, nil) on a miss, not an
+// error — matching the scoped-branch behavior.
+func TestHostBackend_CacheRestore_MissReturnsNil(t *testing.T) {
+	ctx := context.Background()
+	a := newCacheTestAgent(t)
+	b := newHostBackend(a, "r1", t.TempDir())
+	destPath := t.TempDir()
+
+	hit, err := b.CacheRestore(ctx, ScopeHandle{}, "nonexistent-key", nil, destPath)
+	require.NoError(t, err, "cache miss should not return an error")
+	assert.False(t, hit, "cache miss should report hit=false")
+}
