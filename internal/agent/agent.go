@@ -794,19 +794,23 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 // executeCallStep launches a child Run and polls until it completes.
 // Returns the child Run's outputs and the child Run's ID (so the caller can
 // report it on the step's terminal StepReport for caller→child linking in the
-// WebUI). childRunID is "" only if the child run could not be created at all;
-// on every other path (success, failure, cancellation, timeout) it is
-// returned alongside the error so the link is preserved even for failed calls.
+// WebUI). childRunID is "" only if the child run was never created (param
+// template failure, or the create request itself failed); on every other
+// path (success, failure, cancellation, timeout) it is returned alongside
+// the error so the link is preserved even for failed calls.
 func (a *Agent) executeCallStep(ctx context.Context, step api.ClaimStep, tplData dsl.TemplateData) (outputs map[string]string, childRunID string, err error) {
 	// Expand templates in the call parameters.
 	// Stdout is not exposed to prevent previous step output from leaking into child job parameters.
+	// Expansion errors fail the step: these values become the child run's
+	// inputs, and silently forwarding a raw unexpanded template (e.g. a
+	// literal "{{ .RunID }}") hides the mistake until it surfaces in the
+	// child job or an external webhook. Matches the cache-step precedent.
 	callCtx := dsl.TemplateData{Params: tplData.Params, Steps: tplData.Steps}
 	expandedParams := map[string]string{}
 	for k, v := range step.Call.Params {
 		expanded, err := dsl.ExpandTemplate(v, callCtx)
 		if err != nil {
-			slog.Warn("call param template expand failed", "step", step.Name, "key", k, "error", err)
-			expanded = v
+			return nil, "", fmt.Errorf("call param %q template: %w", k, err)
 		}
 		expandedParams[k] = expanded
 	}
