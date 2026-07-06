@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -57,7 +58,7 @@ type exportDoc struct {
 	APIVersion string         `yaml:"apiVersion"`
 	Kind       string         `yaml:"kind"`
 	Metadata   exportMetadata `yaml:"metadata"`
-	Spec       map[string]any `yaml:"spec"`
+	Spec       any            `yaml:"spec"`
 }
 
 type exportMetadata struct {
@@ -98,7 +99,7 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 		if first := strings.SplitN(j.Path, "/", 2)[0]; j.Path != "" && reservedExportDirs[first] {
 			return fmt.Errorf("job %q: path segment %q collides with a reserved export directory (%s); rename the job path", j.Name, first, first)
 		}
-		spec, err := specToMap(j.Spec)
+		spec, err := jobSpecForExport(j.Spec)
 		if err != nil {
 			return fmt.Errorf("job %q: parse spec: %w", j.Name, err)
 		}
@@ -142,7 +143,7 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 			skipped++
 			continue
 		}
-		spec, err := specToMap(wr.Spec)
+		spec, err := webhookSpecForExport(wr.Spec)
 		if err != nil {
 			return fmt.Errorf("webhookreceiver %q: parse spec: %w", wr.Name, err)
 		}
@@ -218,16 +219,33 @@ func ensureExportDir(dir string, force bool) error {
 	return nil
 }
 
-// specToMap converts stored spec JSON into a map for YAML rendering.
-func specToMap(spec []byte) (map[string]any, error) {
-	m := map[string]any{}
+// jobSpecForExport parses stored Job spec JSON into a typed dsl.Spec so
+// yaml.Marshal renders canonical lowercase yaml-tag keys, regardless of
+// whether the stored JSON itself has capitalized Go field names (the store
+// holds json.Marshal(job.Spec) on a yaml-tag-only struct, which produces
+// "Steps", "Name", etc.) or lowercase keys. json.Unmarshal is case-insensitive
+// on field names, so both forms decode correctly here.
+func jobSpecForExport(spec []byte) (dsl.Spec, error) {
+	var s dsl.Spec
 	if len(spec) == 0 {
-		return m, nil
+		return s, nil
 	}
-	if err := json.Unmarshal(spec, &m); err != nil {
-		return nil, err
+	if err := json.Unmarshal(spec, &s); err != nil {
+		return dsl.Spec{}, err
 	}
-	return m, nil
+	return s, nil
+}
+
+// webhookSpecForExport is the WebhookReceiver analog of jobSpecForExport.
+func webhookSpecForExport(spec []byte) (dsl.WebhookReceiverSpec, error) {
+	var s dsl.WebhookReceiverSpec
+	if len(spec) == 0 {
+		return s, nil
+	}
+	if err := json.Unmarshal(spec, &s); err != nil {
+		return dsl.WebhookReceiverSpec{}, err
+	}
+	return s, nil
 }
 
 func writeExportDoc(path string, doc exportDoc) error {

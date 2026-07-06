@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,8 +42,27 @@ func TestAPI_ListSchedules_IncludesParams(t *testing.T) {
 
 func TestAPI_ListWebhooks_IncludesSpec(t *testing.T) {
 	s, pg := newTestServer(t)
-	spec := []byte(`{"trigger":{"job":"hello"},"auth":{"type":"none"}}`)
-	_, err := pg.UpsertWebhookReceiver(context.Background(), "gh", spec)
+	// Seed with the REAL stored format: parse YAML through the dsl parser and
+	// json.Marshal the resulting typed spec, exactly as applyResource does. Since
+	// dsl.WebhookReceiverSpec only carries yaml tags, this produces capitalized
+	// Go field names ("Trigger", "Auth", ...) — the same shape the store holds
+	// in production, not a hand-written lowercase literal.
+	wr, err := dsl.ParseWebhookReceiver(strings.NewReader(`
+apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata:
+  name: gh
+spec:
+  trigger:
+    job: hello
+  auth:
+    type: none
+`))
+	require.NoError(t, err)
+	spec, err := json.Marshal(wr.Spec)
+	require.NoError(t, err)
+
+	_, err = pg.UpsertWebhookReceiver(context.Background(), "gh", spec)
 	require.NoError(t, err)
 
 	var got []api.WebhookReceiverMeta

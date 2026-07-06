@@ -9,14 +9,67 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/spf13/cobra"
 )
 
+// realJobSpecJSON parses jobYAML with the real DSL parser and marshals its Spec
+// with encoding/json, reproducing the CAPITALIZED-field JSON that the store
+// actually holds (json.Marshal on a yaml-tag-only struct uses Go field names).
+// Fixtures must use this instead of hand-written lowercase JSON so tests catch
+// key-casing bugs in export (see spec_yaml.go's specJSONToYAML precedent).
+func realJobSpecJSON(t *testing.T, jobYAML string) []byte {
+	t.Helper()
+	job, err := dsl.Parse(strings.NewReader(jobYAML))
+	if err != nil {
+		t.Fatalf("parse fixture job yaml: %v", err)
+	}
+	b, err := json.Marshal(job.Spec)
+	if err != nil {
+		t.Fatalf("marshal fixture job spec: %v", err)
+	}
+	return b
+}
+
+// realWebhookSpecJSON is the WebhookReceiver analog of realJobSpecJSON.
+func realWebhookSpecJSON(t *testing.T, whYAML string) []byte {
+	t.Helper()
+	wr, err := dsl.ParseWebhookReceiver(strings.NewReader(whYAML))
+	if err != nil {
+		t.Fatalf("parse fixture webhookreceiver yaml: %v", err)
+	}
+	b, err := json.Marshal(wr.Spec)
+	if err != nil {
+		t.Fatalf("marshal fixture webhookreceiver spec: %v", err)
+	}
+	return b
+}
+
 // exportFixtures returns a captureTransport serving a small consistent dataset.
 // managed controls whether AppSource src1 reports Job team-a/build as managed.
-func exportFixtures(managed bool) *captureTransport {
-	jobSpec, _ := json.Marshal(map[string]any{"steps": []map[string]any{{"name": "greet", "run": "echo hi"}}})
-	whSpec, _ := json.Marshal(map[string]any{"trigger": map[string]any{"job": "hello"}, "auth": map[string]any{"type": "none"}})
+func exportFixtures(t *testing.T, managed bool) *captureTransport {
+	t.Helper()
+	jobSpec := realJobSpecJSON(t, `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build
+spec:
+  steps:
+    - name: greet
+      run: echo hi
+`)
+	whSpec := realWebhookSpecJSON(t, `
+apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata:
+  name: gh
+spec:
+  trigger:
+    job: hello
+  auth:
+    type: none
+`)
 	return &captureTransport{
 		responseFor: func(path string) (int, []byte) {
 			switch path {
@@ -58,7 +111,7 @@ func newTestExportCmd(tr *captureTransport) (*cobra.Command, *strings.Builder) {
 
 func TestExport_WritesAllKinds(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "out")
-	cmd, out := newTestExportCmd(exportFixtures(false))
+	cmd, out := newTestExportCmd(exportFixtures(t, false))
 	cmd.SetArgs([]string{"-o", dir})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -98,7 +151,7 @@ func TestExport_WritesAllKinds(t *testing.T) {
 
 func TestExport_UnmanagedOnlySkipsManaged(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "out")
-	cmd, out := newTestExportCmd(exportFixtures(true))
+	cmd, out := newTestExportCmd(exportFixtures(t, true))
 	cmd.SetArgs([]string{"-o", dir, "--unmanaged-only"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -119,14 +172,14 @@ func TestExport_RefusesNonEmptyDirWithoutForce(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd, _ := newTestExportCmd(exportFixtures(false))
+	cmd, _ := newTestExportCmd(exportFixtures(t, false))
 	cmd.SetArgs([]string{"-o", dir})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "not empty") {
 		t.Fatalf("expected not-empty error, got %v", err)
 	}
 
 	// --force なら書ける
-	cmd2, _ := newTestExportCmd(exportFixtures(false))
+	cmd2, _ := newTestExportCmd(exportFixtures(t, false))
 	cmd2.SetArgs([]string{"-o", dir, "--force"})
 	if err := cmd2.Execute(); err != nil {
 		t.Fatalf("with --force: %v", err)
@@ -134,7 +187,16 @@ func TestExport_RefusesNonEmptyDirWithoutForce(t *testing.T) {
 }
 
 func TestExport_RejectsReservedDirCollision(t *testing.T) {
-	jobSpec, _ := json.Marshal(map[string]any{"steps": []map[string]any{{"name": "s", "run": "echo"}}})
+	jobSpec := realJobSpecJSON(t, `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: evil
+spec:
+  steps:
+    - name: s
+      run: echo
+`)
 	tr := &captureTransport{
 		responseFor: func(path string) (int, []byte) {
 			switch path {
