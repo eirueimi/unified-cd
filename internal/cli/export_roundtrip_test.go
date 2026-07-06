@@ -2,11 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"gopkg.in/yaml.v3"
 )
@@ -129,5 +133,90 @@ func TestExport_RoundTripAllKindsParse(t *testing.T) {
 		if parsed[kind] == 0 {
 			t.Errorf("expected at least one exported %s file, found none", kind)
 		}
+	}
+}
+
+// TestExport_RoundTripMatrixForeachJob pins the fidelity of matrix/foreach
+// steps through export → strict re-parse. MatrixDef and ForeachSource have
+// custom UnmarshalYAML (mapping form / sequence-or-string form); without
+// matching MarshalYAML, the typed re-marshal emits their raw struct shape
+// ("dimensions:", "literal:"), which the strict parser rejects — silently
+// breaking export for any repo that uses matrix or foreach.
+func TestExport_RoundTripMatrixForeachJob(t *testing.T) {
+	const matrixJobYAML = `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: matrix-build
+spec:
+  steps:
+    - name: build
+      matrix:
+        os: [linux, windows, darwin]
+        arch: [amd64, arm64]
+        exclude:
+          - os: windows
+            arch: arm64
+      run: echo build
+    - name: deploy
+      foreach:
+        key: env
+        in: "{{ .Params.envs }}"
+      run: echo deploy
+`
+	spec := realJobSpecJSON(t, matrixJobYAML)
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) {
+			switch path {
+			case "/api/v1/jobs":
+				b, _ := json.Marshal([]api.Job{
+					{Name: "matrix-build", Path: "", Leaf: "matrix-build", APIVersion: "unified-cd/v1", Spec: spec},
+				})
+				return http.StatusOK, b
+			}
+			return http.StatusOK, []byte(`[]`)
+		},
+	}
+	dir := filepath.Join(t.TempDir(), "out")
+	cmd, _ := newTestExportCmd(tr)
+	cmd.SetArgs([]string{"-o", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	b, err := os.ReadFile(filepath.Join(dir, "matrix-build.yaml"))
+	if err != nil {
+		t.Fatalf("read exported job: %v", err)
+	}
+	job, err := dsl.Parse(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("exported matrix job must re-parse with strict parser: %v\n--- exported yaml ---\n%s", err, b)
+	}
+
+	build := job.Spec.Steps[0]
+	if build.Matrix == nil {
+		t.Fatalf("matrix definition lost in round-trip:\n%s", b)
+	}
+	wantDims := []dsl.MatrixDimension{
+		{Name: "os", Source: dsl.ForeachSource{Literal: []string{"linux", "windows", "darwin"}}},
+		{Name: "arch", Source: dsl.ForeachSource{Literal: []string{"amd64", "arm64"}}},
+	}
+	if !reflect.DeepEqual(build.Matrix.Dimensions, wantDims) {
+		t.Errorf("matrix dimensions = %+v, want %+v", build.Matrix.Dimensions, wantDims)
+	}
+	wantExclude := []map[string]string{{"os": "windows", "arch": "arm64"}}
+	if !reflect.DeepEqual(build.Matrix.Exclude, wantExclude) {
+		t.Errorf("matrix exclude = %+v, want %+v", build.Matrix.Exclude, wantExclude)
+	}
+
+	deploy := job.Spec.Steps[1]
+	if deploy.Foreach == nil {
+		t.Fatalf("foreach definition lost in round-trip:\n%s", b)
+	}
+	if deploy.Foreach.Key != "env" {
+		t.Errorf("foreach key = %q, want %q", deploy.Foreach.Key, "env")
+	}
+	if deploy.Foreach.Source.Expr != "{{ .Params.envs }}" {
+		t.Errorf("foreach expr = %q, want %q", deploy.Foreach.Source.Expr, "{{ .Params.envs }}")
 	}
 }

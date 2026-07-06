@@ -208,6 +208,33 @@ func (m *MatrixDef) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+// MarshalYAML emits the same mapping form UnmarshalYAML accepts — each
+// dimension as "name: source" in declaration order, then the reserved
+// "exclude" key — so specs round-trip through yaml.Marshal (the job-YAML
+// endpoint and `unified-cd export`).
+func (m MatrixDef) MarshalYAML() (any, error) {
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	for _, d := range m.Dimensions {
+		var val yaml.Node
+		if err := val.Encode(d.Source); err != nil {
+			return nil, fmt.Errorf("matrix.%s: %w", d.Name, err)
+		}
+		node.Content = append(node.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: d.Name},
+			&val)
+	}
+	if len(m.Exclude) > 0 {
+		var val yaml.Node
+		if err := val.Encode(m.Exclude); err != nil {
+			return nil, fmt.Errorf("matrix.exclude: %w", err)
+		}
+		node.Content = append(node.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "exclude"},
+			&val)
+	}
+	return node, nil
+}
+
 // ForeachSource is either a literal list (YAML sequence) or a template expression (YAML string).
 //
 //   in: [prod, staging, dev]                    → Literal
@@ -217,6 +244,15 @@ func (m *MatrixDef) UnmarshalYAML(node *yaml.Node) error {
 type ForeachSource struct {
 	Literal []string `json:"literal,omitempty"`
 	Expr    string   `json:"expr,omitempty"`
+}
+
+// MarshalYAML emits the sequence-or-string form UnmarshalYAML accepts:
+// a plain string for an expression, otherwise the literal list.
+func (f ForeachSource) MarshalYAML() (any, error) {
+	if f.Expr != "" {
+		return f.Expr, nil
+	}
+	return f.Literal, nil
 }
 
 // UnmarshalYAML handles the sequence-or-string ambiguity.
