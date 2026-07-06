@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rewrite `.github/workflows/release-docker.yml` so the four release images build in an 8-way native matrix (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`) with GHA layer caching, followed by a 4-way manifest-merge stage.
+**Goal:** Rewrite `.github/workflows/release-docker.yml` so the four release images build in an 8-way native matrix (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`), followed by a 4-way manifest-merge stage.
 
 **Architecture:** Two job kinds — `build` pushes single-arch images by digest (no tags), `merge` (`needs: build`) assembles the multi-arch manifests and applies the `latest` + tag-name tags via `docker buildx imagetools create`. Digests travel between jobs as artifacts.
 
