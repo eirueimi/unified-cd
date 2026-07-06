@@ -30,11 +30,10 @@ steps:
 
 > **Note:** `with:` values are Go templates expanded against the calling
 > job's `.Params` and `.Steps` (for `call:`; `uses:` additionally sees the
-> usual step context). A reference to a non-existent field (such as the
-> `{{ .RunID }}` these examples used to show) does not fail the step — the
-> raw unexpanded string is passed through to the target job, so the mistake
-> only surfaces downstream (e.g. as literal `{{ .RunID }}` text in a Slack
-> message).
+> usual step context). For `call:` steps, a reference to a non-existent
+> field (such as the `{{ .RunID }}` these examples used to show) fails the
+> step with a `call param ... template` error before any child run is
+> created.
 
 ## Template list
 
