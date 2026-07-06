@@ -27,11 +27,15 @@ func NewExecutor(client kubernetes.Interface, restCfg *rest.Config, namespace st
 }
 
 // ExecStep runs a script inside the specified container of a Pod, streaming stdout/stderr.
-// If container is empty, the "job" container is used.
+// If container is empty, the "job" container is used. env is a list of
+// "KEY=VALUE" pairs applied to the exec'd process; when non-empty the command
+// is wrapped as `env K=V... bash -lc script` so values reach the script
+// without any shell-quoting/string-concatenation (Kubernetes exec has no
+// native env option — see buildEnvShellCommand).
 // Returns (exitCode, nil) when the command exits (including non-zero exit codes).
 // Returns (1, err) for infrastructure errors (network, protocol, etc.).
-func (e *Executor) ExecStep(ctx context.Context, podName, container, script string, stdout, stderr io.Writer) (int, error) {
-	return e.execArgv(ctx, podName, container, buildShellCommand(script), stdout, stderr)
+func (e *Executor) ExecStep(ctx context.Context, podName, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
+	return e.execArgv(ctx, podName, container, buildEnvShellCommand(script, env), stdout, stderr)
 }
 
 // ExecStepArgv runs argv directly (no shell) inside the specified container,
@@ -84,4 +88,22 @@ func (e *Executor) execArgv(ctx context.Context, podName, container string, cmd 
 // buildShellCommand converts a script string into a bash command array.
 func buildShellCommand(script string) []string {
 	return []string{"bash", "-lc", script}
+}
+
+// buildEnvShellCommand converts a script string and a list of "KEY=VALUE"
+// pairs into an argv that applies the env via the `env` binary before
+// invoking bash, e.g. ["env", "FOO=bar", "bash", "-lc", script]. Using `env`
+// (rather than string-concatenating `export FOO=bar;` onto the script) avoids
+// shell-quoting pitfalls entirely: values are passed as discrete argv
+// elements, never re-parsed by a shell (see TODO #30's known quoting-bug
+// class). With no env pairs this degrades to the plain buildShellCommand.
+func buildEnvShellCommand(script string, env []string) []string {
+	if len(env) == 0 {
+		return buildShellCommand(script)
+	}
+	cmd := make([]string, 0, len(env)+3)
+	cmd = append(cmd, "env")
+	cmd = append(cmd, env...)
+	cmd = append(cmd, "bash", "-lc", script)
+	return cmd
 }

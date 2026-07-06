@@ -55,7 +55,7 @@ type secretsExec struct {
 	scripts     []string
 }
 
-func (f *secretsExec) ExecStep(_ context.Context, _, _, script string, stdout, stderr io.Writer) (int, error) {
+func (f *secretsExec) ExecStep(_ context.Context, _, _, script string, _ []string, stdout, stderr io.Writer) (int, error) {
 	f.mu.Lock()
 	f.scripts = append(f.scripts, script)
 	f.mu.Unlock()

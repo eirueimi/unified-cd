@@ -49,7 +49,7 @@ type fakeExec struct {
 	err                             error
 }
 
-func (f *fakeExec) ExecStep(_ context.Context, podName, container, script string, stdout, _ io.Writer) (int, error) {
+func (f *fakeExec) ExecStep(_ context.Context, podName, container, script string, _ []string, stdout, _ io.Writer) (int, error) {
 	f.gotPod, f.gotContainer, f.gotScript = podName, container, script
 	_, _ = stdout.Write([]byte(f.stdout))
 	return f.exit, f.err
