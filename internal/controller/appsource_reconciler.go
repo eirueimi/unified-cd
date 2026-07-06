@@ -152,35 +152,46 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 	}
 	sort.Strings(paths)
 
+	// Apply in two passes by kind priority, not raw path sort order: a Schedule
+	// or WebhookReceiver can reference a Job by name (schedules.job_name FK), and
+	// the exported tree layout (schedules/nightly.yaml sorts before
+	// team-a/build.yaml) would otherwise try to apply the referencing resource
+	// before the Job it depends on exists, aborting the whole sync on the FK
+	// violation (errStoreWrite). GitCredential has no such inbound dependency but
+	// AppSources may reference it, so it is grouped with Job in the first pass.
+	// Within each pass, paths stay in sorted order, so dedup-on-first-in-sorted-
+	// order-wins is unaffected: it is keyed by {kind, name}, and reordering only
+	// ever moves same-kind files together, never past another file of the same
+	// kind that sorts earlier.
+	firstPassKind := map[string]bool{"GitCredential": true, "Job": true}
+	var firstPass, secondPass []string
+	for _, fp := range paths {
+		if firstPassKind[probeKind(files[fp])] {
+			firstPass = append(firstPass, fp)
+		} else {
+			secondPass = append(secondPass, fp)
+		}
+	}
+
 	current := make([]store.ResourceRef, 0, len(paths))
 	seen := map[store.ResourceRef]bool{}
 	skipped := 0
-	for _, fp := range paths {
-		kind := probeKind(files[fp])
-		dir := relDir(spec.Path, fp)
-		refName := probeName(files[fp])
-		if kind == "Job" {
-			refName = dsl.QualifyName(dir, refName)
-		}
-		// Skip duplicates BEFORE writing to the store, so the first file (sorted)
-		// wins. Dedup on the qualified name so team-a/build and team-b/build are
-		// distinct, not collapsed.
-		if ref := (store.ResourceRef{Kind: kind, Name: refName}); seen[ref] {
-			slog.Warn("appsource reconciler: duplicate resource, keeping first", "name", src.Name, "kind", kind, "resource", ref.Name, "file", fp)
-			continue
-		}
-		name, err := applyResource(ctx, st, kind, dir, files[fp])
+	for _, fp := range append(firstPass, secondPass...) {
+		ref, applied, err := applyTrackedResource(ctx, st, spec, src.Name, files[fp], fp, seen)
 		if err != nil {
 			// Store-write failures abort the whole sync; parse/unknown-kind skip one file.
 			if errors.Is(err, errStoreWrite) {
-				return fmt.Errorf("apply %s (%s): %w", kind, fp, err)
+				return fmt.Errorf("apply %s (%s): %w", ref.Kind, fp, err)
 			}
 			slog.Warn("appsource reconciler: failed to apply resource, skipping",
-				"appsource", src.Name, "file", fp, "kind", kind, "resource", refName, "error", err)
+				"appsource", src.Name, "file", fp, "kind", ref.Kind, "resource", ref.Name, "error", err)
 			skipped++
 			continue
 		}
-		ref := store.ResourceRef{Kind: kind, Name: name}
+		if !applied {
+			// Duplicate: already logged and skipped inside applyTrackedResource.
+			continue
+		}
 		seen[ref] = true
 		current = append(current, ref)
 	}
@@ -189,6 +200,43 @@ func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher
 			"appsource", src.Name, "skipped", skipped, "applied", len(current))
 	}
 
+	return finishSync(ctx, st, src, spec, headSHA, current, seen)
+}
+
+// applyTrackedResource probes, dedups, and applies a single file from the synced
+// tree. It returns the resource's {kind, name} ref (populated even on error, so
+// callers can log/wrap with the right kind and name), whether the resource was
+// actually applied (false for a duplicate, which is skipped before writing to
+// the store), and any error from applyResource.
+func applyTrackedResource(ctx context.Context, st store.Store, spec dsl.AppSourceSpec, srcName string, doc []byte, fp string, seen map[store.ResourceRef]bool) (store.ResourceRef, bool, error) {
+	kind := probeKind(doc)
+	dir := relDir(spec.Path, fp)
+	refName := probeName(doc)
+	if kind == "Job" {
+		refName = dsl.QualifyName(dir, refName)
+	}
+	ref := store.ResourceRef{Kind: kind, Name: refName}
+	// Skip duplicates BEFORE writing to the store, so the first file (sorted)
+	// wins. Dedup on the qualified name so team-a/build and team-b/build are
+	// distinct, not collapsed. Dedup is keyed by {kind, name}, so grouping files
+	// by kind-priority pass cannot change which same-kind file wins: two files
+	// of the same kind stay in their original relative (sorted) order.
+	if seen[ref] {
+		slog.Warn("appsource reconciler: duplicate resource, keeping first", "name", srcName, "kind", kind, "resource", ref.Name, "file", fp)
+		return ref, false, nil
+	}
+	name, err := applyResource(ctx, st, kind, dir, doc)
+	if err != nil {
+		return ref, false, err
+	}
+	ref.Name = name
+	return ref, true, nil
+}
+
+// finishSync prunes resources managed previously but absent now, then records
+// the new sync state. Split out of syncAppSource so the apply loop above stays
+// focused on ordering/dedup.
+func finishSync(ctx context.Context, st store.Store, src store.AppSource, spec dsl.AppSourceSpec, headSHA string, current []store.ResourceRef, seen map[store.ResourceRef]bool) error {
 	// Prune resources managed previously but absent now.
 	//
 	// Legacy re-keying guard (bug #25): before commit 51ce318, a Job in a
