@@ -525,8 +525,10 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				slog.Warn("k8s: if condition eval failed, running step", "step", step.Name, "error", err)
 			}
 			if !ok {
-				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Skipped",
+				agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+					return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
+						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Skipped",
+					})
 				})
 				return
 			}
@@ -580,8 +582,10 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					targetPod, err = ensureScopePod(execCtx, step)
 					if err != nil {
 						slog.Warn("k8s: cache scope pod unavailable; skipping cache for step", "step", step.Name, "error", err)
-						_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
-							RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
+						agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+							return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
+								RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
+							})
 						})
 						return
 					}
@@ -605,8 +609,10 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					}
 					slog.Error("k8s: cache template expansion failed; failing step", "step", step.Name, "which", which, "error", tplErr)
 					recordFailure(step)
-					_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
-						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", StartedAt: started, EndedAt: time.Now().UTC(),
+					agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+						return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
+							RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", StartedAt: started, EndedAt: time.Now().UTC(),
+						})
 					})
 					return
 				}
@@ -642,8 +648,10 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					registerCacheSave(cacheSaveSpec{key: key, ttlDays: ttlDays, path: cachePath, targetPod: targetPod, sidecar: sidecar})
 				}
 
-				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
+				agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+					return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
+						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
+					})
 				})
 				return
 			}
@@ -665,8 +673,10 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 						// Artifacts are fail-loud: a scope pod that never becomes
 						// available must fail the step, not silently upload from
 						// the wrong (run pod) filesystem.
-						_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
-							RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", StartedAt: started, EndedAt: time.Now().UTC(),
+						agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+							return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
+								RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", StartedAt: started, EndedAt: time.Now().UTC(),
+							})
 						})
 						recordFailure(step)
 						return
@@ -681,8 +691,10 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				if err != nil || ec != 0 {
 					status = "Failed"
 				}
-				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
+				agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+					return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
+						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
+					})
 				})
 				if status == "Failed" {
 					recordFailure(step)
@@ -707,8 +719,10 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 						// Artifacts are fail-loud: a scope pod that never becomes
 						// available must fail the step, not silently download into
 						// the wrong (run pod) filesystem.
-						_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
-							RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", StartedAt: started, EndedAt: time.Now().UTC(),
+						agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+							return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
+								RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", StartedAt: started, EndedAt: time.Now().UTC(),
+							})
 						})
 						recordFailure(step)
 						return
@@ -727,8 +741,10 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				if err != nil || ec != 0 {
 					status = "Failed"
 				}
-				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
+				agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+					return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
+						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
+					})
 				})
 				if status == "Failed" {
 					recordFailure(step)
@@ -749,12 +765,16 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				} else if len(outputs) > 0 {
 					// k8s runs steps sequentially, so no lock is needed here.
 					agentlib.ApplyStepOutputs(stepCtx.Steps, step.Name, step.MatrixKey, outputs)
-					_ = a.client.SetStepOutputs(ctx, a.cfg.AgentID, c.RunID, step.Index, step.MatrixKey, outputs)
+					agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+						return a.client.SetStepOutputs(callCtx, a.cfg.AgentID, c.RunID, step.Index, step.MatrixKey, outputs)
+					})
 				}
-				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
-					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
-					StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status,
-					ChildRunID: childRunID, CallJobName: step.Call.Job, EndedAt: time.Now().UTC(),
+				agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+					return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
+						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex,
+						StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status,
+						ChildRunID: childRunID, CallJobName: step.Call.Job, EndedAt: time.Now().UTC(),
+					})
 				})
 				if status == "Failed" {
 					recordFailure(step)
@@ -792,7 +812,9 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				if len(capturedOutputs) > 0 {
 					// k8s runs steps sequentially, so no lock is needed here.
 					agentlib.ApplyStepOutputs(stepCtx.Steps, step.Name, step.MatrixKey, capturedOutputs)
-					_ = a.client.SetStepOutputs(ctx, a.cfg.AgentID, c.RunID, step.Index, step.MatrixKey, capturedOutputs)
+					agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+						return a.client.SetStepOutputs(callCtx, a.cfg.AgentID, c.RunID, step.Index, step.MatrixKey, capturedOutputs)
+					})
 				}
 			}
 
@@ -807,16 +829,18 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			}
 
 			ended := time.Now().UTC()
-			_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
-				RunID:      c.RunID,
-				StepIndex:  step.Index,
-				StageIndex: step.StageIndex,
-				StepName:   step.DisplayName(),
-				Variant:    step.MatrixKey,
-				Status:     status,
-				ExitCode:   ec,
-				StartedAt:  started,
-				EndedAt:    ended,
+			agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+				return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
+					RunID:      c.RunID,
+					StepIndex:  step.Index,
+					StageIndex: step.StageIndex,
+					StepName:   step.DisplayName(),
+					Variant:    step.MatrixKey,
+					Status:     status,
+					ExitCode:   ec,
+					StartedAt:  started,
+					EndedAt:    ended,
+				})
 			})
 			if status == "Failed" {
 				recordFailure(step)
@@ -893,7 +917,9 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		}
 	}
 	if len(runOutputs) > 0 {
-		_ = a.client.SetRunOutputs(reportCtx, a.cfg.AgentID, c.RunID, runOutputs)
+		agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
+			return a.client.SetRunOutputs(callCtx, a.cfg.AgentID, c.RunID, runOutputs)
+		})
 	}
 
 	// Deferred cache saves: capture the final workspace after the main stages
@@ -955,8 +981,12 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		overallStatus = api.RunSucceeded
 	}
 	// Use a non-cancelling context so FinishRun is reliably delivered even when
-	// the run was cancelled.
-	_ = a.client.FinishRun(context.WithoutCancel(ctx), a.cfg.AgentID, c.RunID, overallStatus)
+	// the run was cancelled, and retry until the controller accepts it
+	// (mirroring the host agent — internal/agent/agent.go:809-811).
+	finishCtx := context.WithoutCancel(ctx)
+	agentlib.RetryUntilSuccess(finishCtx, func(callCtx context.Context) error {
+		return a.client.FinishRun(callCtx, a.cfg.AgentID, c.RunID, overallStatus)
+	})
 }
 
 // logLineWriter is a Writer that sends each line of stdout to the master server via AppendLog.
