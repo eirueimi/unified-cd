@@ -15,6 +15,15 @@ export function fmtRelative(ts) {
   if (s < 86400) return Math.floor(s / 3600) + 'h ago';
   return Math.floor(s / 86400) + 'd ago';
 }
+// Git and similar tools redraw progress in place with carriage returns
+// ("50%\r60%\r100%, done."), so a whole progress sequence arrives as one
+// stored log line. A terminal would show only the final redraw; approximate
+// that by keeping the text after the last \r (trailing \r stripped).
+export function collapseCarriageReturns(line) {
+  if (!line || !line.includes('\r')) return line;
+  const parts = line.replace(/\r+$/, '').split('\r');
+  return parts[parts.length - 1];
+}
 export function matchesFilter(name, query) {
   if (!query) return true;
   return name.toLowerCase().includes(query.toLowerCase());
