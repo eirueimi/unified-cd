@@ -302,6 +302,23 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 // cache/artifact step, so its sidecar call can target the scope pod's sidecar
 // and scratch volume instead of the run pod's.
 func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec, sidecarExec func(ctx context.Context, targetPod, container string, argv []string) (int, error), mountPath string, ensureScopePod func(ctx context.Context, step api.ClaimStep) (string, error)) {
+	// reportCtx is derived from the ORIGINAL incoming ctx (before any job-level
+	// timeout is applied below) via WithoutCancel, so a StepReportRequest for a
+	// step that failed BECAUSE its context deadline was exceeded can still
+	// reach the controller instead of itself being aborted by the very
+	// deadline it is reporting on. Used for every ReportStep call in this
+	// function; mirrors the host agent's per-report context.WithoutCancel
+	// pattern (internal/agent/agent.go:679).
+	reportCtx := context.WithoutCancel(ctx)
+
+	// Apply job-level timeout to the context if one is configured, mirroring
+	// the host agent (internal/agent/agent.go:264-268).
+	if c.TimeoutMinutes > 0 {
+		var jobCancel context.CancelFunc
+		ctx, jobCancel = context.WithTimeout(ctx, time.Duration(c.TimeoutMinutes*float64(time.Minute)))
+		defer jobCancel()
+	}
+
 	var anyStepFailed atomic.Bool
 	var cancelledByMaster atomic.Bool
 	statusView := func() dsl.RunStatusView {
@@ -408,10 +425,24 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				slog.Warn("k8s: if condition eval failed, running step", "step", step.Name, "error", err)
 			}
 			if !ok {
-				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Skipped",
 				})
 				return
+			}
+
+			// Apply step-level timeout to the exec context if one is configured,
+			// mirroring the host agent (internal/agent/agent.go:443-447). This
+			// covers every step kind below (approval, cache, artifact, run) just
+			// like the host. Not applied to runsIn.image steps' pod lifetime,
+			// which already gets its own bound via imageStepDeadline/
+			// ActiveDeadlineSeconds (podbuilder.go) — a shorter exec-context
+			// timeout here would only make that path fail earlier/redundantly,
+			// never later, so this is still safe to apply uniformly.
+			if step.TimeoutMinutes > 0 {
+				var stepCancel context.CancelFunc
+				execCtx, stepCancel = context.WithTimeout(execCtx, time.Duration(step.TimeoutMinutes*float64(time.Minute)))
+				defer stepCancel()
 			}
 
 			// approval gate: WaitForApproval reports WaitingApproval and polls
@@ -423,7 +454,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				if !approved {
 					status = "Failed"
 				}
-				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status, EndedAt: time.Now().UTC(),
 				})
 				if !approved {
@@ -437,7 +468,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			// matching save is deferred until after the main stages complete.
 			if step.Cache != nil {
 				started := time.Now().UTC()
-				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 				})
 				// A scoped step's cache targets its scope pod's sidecar and
@@ -449,7 +480,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					targetPod, err = ensureScopePod(execCtx, step)
 					if err != nil {
 						slog.Warn("k8s: cache scope pod unavailable; skipping cache for step", "step", step.Name, "error", err)
-						_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+						_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 							RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
 						})
 						return
@@ -474,7 +505,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					}
 					slog.Error("k8s: cache template expansion failed; failing step", "step", step.Name, "which", which, "error", tplErr)
 					recordFailure(step)
-					_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+					_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 						RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", StartedAt: started, EndedAt: time.Now().UTC(),
 					})
 					return
@@ -511,7 +542,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					registerCacheSave(cacheSaveSpec{key: key, ttlDays: ttlDays, path: cachePath, targetPod: targetPod, sidecar: sidecar})
 				}
 
-				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
 				})
 				return
@@ -521,7 +552,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			// sidecar. Artifacts are fail-loud (not best-effort).
 			if step.UploadArtifact != nil {
 				started := time.Now().UTC()
-				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 				})
 				// A scoped step's artifact upload reads from its scope pod's
@@ -534,7 +565,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 						// Artifacts are fail-loud: a scope pod that never becomes
 						// available must fail the step, not silently upload from
 						// the wrong (run pod) filesystem.
-						_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+						_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 							RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", StartedAt: started, EndedAt: time.Now().UTC(),
 						})
 						recordFailure(step)
@@ -550,7 +581,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				if err != nil || ec != 0 {
 					status = "Failed"
 				}
-				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
 				})
 				if status == "Failed" {
@@ -563,7 +594,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			// sidecar. Artifacts are fail-loud (not best-effort).
 			if step.DownloadArtifact != nil {
 				started := time.Now().UTC()
-				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 				})
 				// A scoped step's artifact download writes into its scope pod's
@@ -576,7 +607,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 						// Artifacts are fail-loud: a scope pod that never becomes
 						// available must fail the step, not silently download into
 						// the wrong (run pod) filesystem.
-						_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+						_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 							RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", StartedAt: started, EndedAt: time.Now().UTC(),
 						})
 						recordFailure(step)
@@ -596,7 +627,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				if err != nil || ec != 0 {
 					status = "Failed"
 				}
-				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+				_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 					RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: status, ExitCode: ec, StartedAt: started, EndedAt: time.Now().UTC(),
 				})
 				if status == "Failed" {
@@ -606,7 +637,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			}
 
 			started := time.Now().UTC()
-			_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+			_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 				RunID: c.RunID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 			})
 
@@ -655,7 +686,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			}
 
 			ended := time.Now().UTC()
-			_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
+			_ = a.client.ReportStep(reportCtx, a.cfg.AgentID, api.StepReportRequest{
 				RunID:      c.RunID,
 				StepIndex:  step.Index,
 				StageIndex: step.StageIndex,
@@ -709,7 +740,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		}
 	}
 	if len(runOutputs) > 0 {
-		_ = a.client.SetRunOutputs(ctx, a.cfg.AgentID, c.RunID, runOutputs)
+		_ = a.client.SetRunOutputs(reportCtx, a.cfg.AgentID, c.RunID, runOutputs)
 	}
 
 	// Deferred cache saves: capture the final workspace after the main stages
