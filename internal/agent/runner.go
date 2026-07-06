@@ -143,20 +143,25 @@ func RunStepCapture(ctx context.Context, script string, stderr io.Writer, extraE
 	return stdout, -1, runErr
 }
 
-// RunStepContainer runs script inside a fresh container via rt, capturing
-// stdout (like RunStepCapture) and streaming stderr to the provided writer.
-// No host workspace is mounted — this is the isolated runsIn.image path.
-func RunStepContainer(ctx context.Context, rt crt.ContainerRuntime, image, script string, stderr io.Writer, extraEnv []string, cpuLimit, memLimit string) (stdout string, exitCode int, err error) {
-	var buf bytes.Buffer
-	code, runErr := rt.Run(ctx, crt.RunSpec{
+// RunStepContainer runs script inside a fresh container via rt, writing stdout
+// and stderr to the provided writers (callers tee stdout when they also need
+// it captured). No host workspace is mounted — this is the isolated
+// runsIn.image path.
+func RunStepContainer(ctx context.Context, rt crt.ContainerRuntime, image, script string, stdout, stderr io.Writer, extraEnv []string, cpuLimit, memLimit string) (exitCode int, err error) {
+	return rt.Run(ctx, crt.RunSpec{
 		Image:    image,
 		Script:   script,
 		Env:      extraEnv,
 		CPULimit: cpuLimit,
 		MemLimit: memLimit,
-	}, &buf, stderr)
-	return buf.String(), code, runErr
+	}, stdout, stderr)
 }
+
+// logPusherAutoFlushEvery is how often StartAutoFlush ships buffered lines.
+// Without a timer a LogPusher only flushes on 4KB boundaries and at step end,
+// so sparse output would not reach the WebUI while a step runs. A var so
+// tests can shrink it.
+var logPusherAutoFlushEvery = 2 * time.Second
 
 // pendingBatch holds a batch of log requests that failed to send.
 type pendingBatch struct {
@@ -197,6 +202,57 @@ func (p *LogPusher) SetMasker(m *secrets.Masker) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.masker = m
+}
+
+// StartAutoFlush ships buffered lines every `every` until ctx is cancelled, so
+// output reaches the server while a step is still running. Only COMPLETE lines
+// are shipped on a tick — a partial trailing line stays buffered so a line is
+// never split across two log entries by flush timing. The caller's final
+// Flush ships any remainder.
+func (p *LogPusher) StartAutoFlush(ctx context.Context, every time.Duration) {
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				p.mu.Lock()
+				p.flushCompleteLinesLocked(ctx)
+				p.mu.Unlock()
+			}
+		}
+	}()
+}
+
+// flushCompleteLinesLocked flushes only up to the last newline in the buffer,
+// keeping any partial trailing line buffered. Caller must hold p.mu.
+func (p *LogPusher) flushCompleteLinesLocked(ctx context.Context) {
+	b := p.buf.Bytes()
+	i := bytes.LastIndexByte(b, '\n')
+	if i < 0 {
+		// No complete line yet; still retry previously failed batches.
+		if len(p.pending) > 0 {
+			p.flushPendingLocked(ctx)
+		}
+		return
+	}
+	tail := append([]byte(nil), b[i+1:]...)
+	p.buf.Truncate(i + 1)
+	p.flushLocked(ctx)
+	p.buf.Write(tail)
+}
+
+// flushPendingLocked retries previously failed batches. Caller must hold p.mu.
+func (p *LogPusher) flushPendingLocked(ctx context.Context) {
+	var stillPending []pendingBatch
+	for _, b := range p.pending {
+		if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, b.reqs); err != nil {
+			stillPending = append(stillPending, b)
+		}
+	}
+	p.pending = stillPending
 }
 
 // Write writes bytes into the buffer and flushes if the buffer exceeds the threshold.

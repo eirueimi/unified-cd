@@ -36,14 +36,14 @@ func (f *fakeRuntime) CopyIn(context.Context, crt.ContainerHandle, string, strin
 func (f *fakeRuntime) CopyOut(context.Context, crt.ContainerHandle, string, string) error { return nil }
 func (f *fakeRuntime) Remove(context.Context, crt.ContainerHandle) error                  { return nil }
 
-func TestRunStepContainer_CapturesStdoutAndPassesEnv(t *testing.T) {
+func TestRunStepContainer_StreamsStdoutAndPassesEnv(t *testing.T) {
 	f := &fakeRuntime{stdout: "built\n", exit: 0}
-	var stderr bytes.Buffer
-	out, code, err := RunStepContainer(context.Background(), f, "golang:1.22", "go build",
-		&stderr, []string{"FOO=bar"}, "", "")
+	var stdout, stderr bytes.Buffer
+	code, err := RunStepContainer(context.Background(), f, "golang:1.22", "go build",
+		&stdout, &stderr, []string{"FOO=bar"}, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, code)
-	assert.Equal(t, "built\n", out)
+	assert.Equal(t, "built\n", stdout.String())
 	assert.Equal(t, "golang:1.22", f.gotSpec.Image)
 	assert.Equal(t, "go build", f.gotSpec.Script)
 	assert.Contains(t, f.gotSpec.Env, "FOO=bar")

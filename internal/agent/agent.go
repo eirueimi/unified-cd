@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path"
@@ -570,7 +571,16 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 
 				stderrPusher := NewLogPusher(a.Client, a.ID, c.RunID, step.Index, "stderr")
 				stderrPusher.SetMasker(masker)
-				var capturedStdout string
+				// stdout is teed: streamed to the server while the step runs
+				// (mirroring the k8s agent's io.MultiWriter approach) AND kept in
+				// stdoutBuf for {{ .Stdout }} output-template evaluation below.
+				stdoutPusher := NewLogPusher(a.Client, a.ID, c.RunID, step.Index, "stdout")
+				stdoutPusher.SetMasker(masker)
+				flushCtx, stopAutoFlush := context.WithCancel(stepCtx)
+				stderrPusher.StartAutoFlush(flushCtx, logPusherAutoFlushEvery)
+				stdoutPusher.StartAutoFlush(flushCtx, logPusherAutoFlushEvery)
+				var stdoutBuf bytes.Buffer
+				stdoutTee := io.MultiWriter(&stdoutBuf, stdoutPusher)
 				var ec int
 				var runErr error
 				switch {
@@ -590,9 +600,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 						break
 					}
 					stepScope, stepScopeHandle = sm, h
-					var stdoutBuf bytes.Buffer
-					ec, runErr = sm.exec(stepCtx, h, expandedRun, extraEnv, &stdoutBuf, stderrPusher)
-					capturedStdout = stdoutBuf.String()
+					ec, runErr = sm.exec(stepCtx, h, expandedRun, extraEnv, stdoutTee, stderrPusher)
 				case step.RunsIn != nil && step.RunsIn.Container != "":
 					runErr = fmt.Errorf("runsIn.container (%q) is not supported on the host agent; use runsIn.image or the k8s agent", step.RunsIn.Container)
 					ec = -1
@@ -603,24 +611,16 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 						ec = -1
 					} else {
 						cpuLimit, memLimit := hostContainerLimits(step.RunsIn.Resources)
-						capturedStdout, ec, runErr = RunStepContainer(stepCtx, rt, step.RunsIn.Image, expandedRun, stderrPusher, extraEnv, cpuLimit, memLimit)
+						ec, runErr = RunStepContainer(stepCtx, rt, step.RunsIn.Image, expandedRun, stdoutTee, stderrPusher, extraEnv, cpuLimit, memLimit)
 					}
 				default:
-					capturedStdout, ec, runErr = RunStepCapture(stepCtx, expandedRun, stderrPusher, extraEnv, workDir)
+					ec, runErr = RunStep(stepCtx, expandedRun, stdoutTee, stderrPusher, extraEnv, workDir)
 				}
+				capturedStdout := stdoutBuf.String()
 				exitCode = ec
+				stopAutoFlush()
 				stderrPusher.Flush(stepCtx)
-
-				for _, line := range splitLines(capturedStdout) {
-					maskedLine := masker.Mask(line)
-					_ = a.Client.AppendLog(stepCtx, a.ID, api.LogAppendRequest{
-						RunID:     c.RunID,
-						StepIndex: step.Index,
-						Stream:    "stdout",
-						Timestamp: time.Now().UTC(),
-						Line:      maskedLine,
-					})
-				}
+				stdoutPusher.Flush(stepCtx)
 
 				if runErr != nil || ec != 0 {
 					status = "Failed"
