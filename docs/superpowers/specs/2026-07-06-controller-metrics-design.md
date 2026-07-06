@@ -53,7 +53,7 @@ not appear in `runs_current`; approval backlog is visible through
 
 | Metric | Labels | Instrumented at |
 |---|---|---|
-| `unifiedcd_runs_created_total` | `trigger` = `webhook`, `schedule`, `api`, `call` | Successful `CreateRun` (trigger derived from the `triggeredBy` prefix) |
+| `unifiedcd_runs_created_total` | `trigger` = `webhook`, `schedule`, `api` | Successful `CreateRun` (trigger derived from the `triggeredBy` prefix). (call-created child runs arrive via the API and fold into `api`) |
 | `unifiedcd_runs_finished_total` | `status` = `Succeeded`, `Failed`, `Cancelled` | Successful `MarkRunFinished` / `FinishRun` transition |
 | `unifiedcd_steps_completed_total` | `status` | Successful `UpsertStepReport` with a terminal step status |
 | `unifiedcd_step_duration_seconds` (histogram) | `status` | Same site, observed as `endedAt - startedAt` when both are present |
