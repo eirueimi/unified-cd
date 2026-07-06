@@ -8,7 +8,6 @@ import (
 	"os"
 	"path"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,10 +40,6 @@ var stderrAutoFlushInterval = 2 * time.Second
 // the wait would hang until the whole run is cancelled. This gives a bad
 // image a fast, explicit failure instead.
 const imagePodStartTimeout = 5 * time.Minute
-
-// podStepExec runs a single already-expanded step inside the pod and returns
-// the exit code, captured stdout, and any infrastructure error.
-type podStepExec func(ctx context.Context, step api.ClaimStep, expandedRun string) (exitCode int, stdout string, err error)
 
 // podManager and stepExecutor are the narrow slices of *PodManager / *Executor
 // that K8sAgent depends on. Interfaces (satisfied by the concrete types) make
@@ -241,148 +236,30 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		_, _ = a.exec.ExecStep(ctx, podName, firstContainer, fmt.Sprintf("rm -rf %s/*", mountPath), nil, io.Discard, io.Discard)
 	}
 
-	// scopePods tracks this claim's uses-scope pods (keyed by scopeKey: ScopeID
-	// + MatrixKey), lazily created on first use by a scoped step and GC'd when
-	// the claim ends (deferred below) regardless of how it finished. The main
-	// stage/step loop (orchestrate, further below) executes every step —
-	// including stage.Parallel groups — one at a time via agentlib.RunPipeline
-	// in Sequential mode (no goroutines, unlike the host agent's runParallel),
-	// so this map needs no mutex: ensureScopePod is never called concurrently
-	// within a claim. If the k8s agent ever gains concurrent execution, this
-	// map and the check-then-create in ensureScopePod must be guarded by
-	// a mutex, mirroring the host scopeManager's fix (see internal/agent/scope.go).
-	scopePods := map[string]string{}
-	ensureScopePod := func(execCtx context.Context, step api.ClaimStep) (string, error) {
-		key := scopeKey(step)
-		if name, ok := scopePods[key]; ok {
-			return name, nil
-		}
-		env := imageStepEnv(step)
-		pod := buildScopePod(c.RunID, a.cfg.Namespace, step.ScopeID, step.ScopeImage, env,
-			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName})
-		created, err := a.pm.CreatePod(execCtx, pod)
-		if err != nil {
-			return "", fmt.Errorf("uses-scope %q (image %q): create pod: %w", step.ScopeID, step.ScopeImage, err)
-		}
-		name := created.Name
-		waitCtx, cancel := context.WithTimeout(execCtx, imagePodStartTimeout)
-		defer cancel()
-		if err := a.pm.WaitForPodRunning(waitCtx, name); err != nil {
-			// Best-effort cleanup of the pod that never became ready; the claim
-			// end also sweeps scopePods, but this one never made it into the map.
-			_ = a.pm.DeletePod(context.WithoutCancel(execCtx), name)
-			return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready within %s: %w", step.ScopeID, step.ScopeImage, imagePodStartTimeout, err)
-		}
-		scopePods[key] = name
-		return name, nil
-	}
-	defer func() {
-		for key, name := range scopePods {
-			if err := a.pm.DeletePod(context.WithoutCancel(ctx), name); err != nil {
-				slog.Warn("k8s: failed to delete scope pod", "scopeKey", key, "pod", name, "error", err)
-			}
-		}
-	}()
-
-	stepExec := func(execCtx context.Context, step api.ClaimStep, expandedRun string) (int, string, error) {
-		var stdoutBuf strings.Builder
-		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, step.Index, "stderr")
-		stderrPusher.SetMasker(masker)
-		stdoutWriter := io.MultiWriter(&stdoutBuf, &logLineWriter{
-			client: a.client, agentID: a.cfg.AgentID, runID: c.RunID, stepIdx: step.Index, stream: "stdout",
-			masker: masker,
-		})
-
-		// Auto-flush stderr for the duration of the step so sparse output
-		// appears in the WebUI before the step completes (mirrors the host
-		// agent's stdout streaming behavior; k8s stdout already ships per
-		// line via logLineWriter, so only stderr needs this).
-		flushCtx, stopAutoFlush := context.WithCancel(execCtx)
-		stderrPusher.StartAutoFlush(flushCtx, stderrAutoFlushInterval)
-
-		var ec int
-		var execErr error
-		if step.ScopeID != "" {
-			// uses-scope: exec into the step's dedicated scope pod (Task 9's
-			// buildScopePod) instead of the pooled/run pod. Mutually exclusive
-			// with RunsIn at the DSL level, so this takes precedence.
-			podName, err := ensureScopePod(execCtx, step)
-			if err != nil {
-				stopAutoFlush()
-				return -1, "", err
-			}
-			// The scope pod already has env baked in at creation time from the
-			// FIRST scoped step to use this scopeKey (buildScopePod/imageStepEnv),
-			// but later steps sharing the same scope pod may carry different
-			// step.Env — per-step env must still win at exec time, so it is
-			// re-applied here via execStepEnv (exec-time env for a duplicate key
-			// overrides the pod-level value for that invocation only).
-			ec, execErr = a.exec.ExecStep(execCtx, podName, "step", expandedRun, execStepEnv(step), stdoutWriter, stderrPusher)
-		} else if step.RunsIn != nil && step.RunsIn.Image != "" {
-			// Isolated throwaway pod. UNIFIED_AGENT_OS mirrors the host agent's
-			// convention; step.Env arrives already template-expanded (orchestrate).
-			env := imageStepEnv(step)
-			deadline := imageStepDeadline(step)
-			ec, execErr = a.runImageStep(execCtx, c.RunID, step.RunsIn.Image, env, deadline, step.RunsIn.Resources, expandedRun, stdoutWriter, stderrPusher)
-		} else {
-			// Default/main-pod (pooled or per-run) path: env has no native
-			// Kubernetes-exec equivalent, so it is applied inside the exec'd
-			// command itself (see execStepEnv/buildEnvShellCommand).
-			ec, execErr = a.exec.ExecStep(execCtx, podName, execContainer(step), expandedRun, execStepEnv(step), stdoutWriter, stderrPusher)
-		}
-
-		stopAutoFlush()
-		stderrPusher.Flush(execCtx)
-		return ec, stdoutBuf.String(), execErr
-	}
-
 	mountPath := "/workspace"
 	if c.PodTemplate != nil && c.PodTemplate.Workspace != nil && c.PodTemplate.Workspace.MountPath != "" {
 		mountPath = c.PodTemplate.Workspace.MountPath
 	}
 
-	sidecarExec := func(execCtx context.Context, targetPod, container string, argv []string) (int, error) {
-		if targetPod == "" {
-			targetPod = podName
-		}
-		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, 0, "stderr")
-		stderrPusher.SetMasker(masker)
-		ec, err := a.exec.ExecStepArgv(execCtx, targetPod, container, argv, io.Discard, stderrPusher)
-		stderrPusher.Flush(execCtx)
-		return ec, err
-	}
+	// backend is the seam between the shared step-orchestration loop
+	// (orchestrate) and this pod's concrete execution environment. Its
+	// scope-pod map is torn down at claim end (deferred below) regardless of
+	// how the claim finished, mirroring the pre-refactor scopePods defer.
+	backend := newK8sBackend(a, c.RunID, podName, mountPath)
+	backend.SetMasker(masker)
+	defer backend.CloseScopes(context.WithoutCancel(ctx))
 
-	// postExec runs a post: hook's script in the given pod/container (empty
-	// targetPod means the default pooled/run pod, mirroring sidecarExec above).
-	// Used only by the post-hook drain in orchestrate.
-	postExec := func(execCtx context.Context, targetPod, container, script string, env []string) error {
-		if targetPod == "" {
-			targetPod = podName
-		}
-		_, err := a.exec.ExecStep(execCtx, targetPod, container, script, env, io.Discard, io.Discard)
-		return err
-	}
-
-	a.orchestrate(ctx, c, stepExec, sidecarExec, postExec, mountPath, ensureScopePod, secretValues)
+	a.orchestrate(ctx, c, backend, secretValues)
 }
 
-// orchestrate runs the claim's stages, reporting step/run status, using stepExec
-// to run each step's command. Pure of pod lifecycle so it is unit-testable.
-// sidecarExec dispatches cache/artifact commands (argv, no shell) into a pod's
-// unified-artifact sidecar container; its first argument selects the target
-// pod (empty string means the default pooled/run pod).
-// mountPath is the workspace volume's mount path inside the pod (default "/workspace").
-// ensureScopePod lazily creates (or returns the cached) scope pod for a scoped
-// cache/artifact step, so its sidecar call can target the scope pod's sidecar
-// and scratch volume instead of the run pod's.
-// postExec runs a post: hook's script (no shell wrapping beyond what ExecStep
-// itself does) in targetPod/container; empty targetPod means the default
-// pooled/run pod, mirroring sidecarExec's convention.
+// orchestrate runs the claim's stages, reporting step/run status, dispatching
+// each step's execution through b (the ExecBackend seam between this shared
+// step-orchestration loop and the pod's concrete execution environment).
 // secretValues holds the resolved values for c.SecretsNeeded (fetched by
 // executeRun before orchestrate is called); it is exposed to step templates
 // as {{ .Secrets.X }}, mirroring the standard host agent. May be nil/empty
 // when the claim needs no secrets.
-func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec, sidecarExec func(ctx context.Context, targetPod, container string, argv []string) (int, error), postExec func(ctx context.Context, targetPod, container, script string, env []string) error, mountPath string, ensureScopePod func(ctx context.Context, step api.ClaimStep) (string, error), secretValues map[string]string) {
+func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, b agentlib.ExecBackend, secretValues map[string]string) {
 	// reportCtx is derived from the ORIGINAL incoming ctx (before any job-level
 	// timeout is applied below) via WithoutCancel, so a StepReportRequest for a
 	// step that failed BECAUSE its context deadline was exceeded can still
@@ -400,6 +277,17 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		defer jobCancel()
 	}
 
+	// mountPath is the default pod's workspace volume mount path, used to join
+	// cache/artifact steps' relative paths (mirrors the same computation in
+	// executeRun, which also feeds it into the backend's own field for
+	// resolveSidecarTarget's non-scoped case). Duplicated here (rather than
+	// read off the backend) because ExecBackend does not expose it: tests
+	// construct a fake backend that has no notion of a pod's mount path.
+	mountPath := "/workspace"
+	if c.PodTemplate != nil && c.PodTemplate.Workspace != nil && c.PodTemplate.Workspace.MountPath != "" {
+		mountPath = c.PodTemplate.Workspace.MountPath
+	}
+
 	var anyStepFailed atomic.Bool
 	var cancelledByMaster atomic.Bool
 	statusView := func() dsl.RunStatusView {
@@ -409,16 +297,15 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 
 	// cacheSaveSpec captures a cache step's save parameters, deferred until
 	// after the main stages complete (so the save captures the final
-	// workspace state, matching the standard agent's cache semantics).
-	// targetPod/sidecar record where the matching restore ran (the run pod or
-	// a scoped step's scope pod), so the deferred save targets the same pod's
-	// sidecar and filesystem.
+	// workspace state, matching the standard agent's cache semantics). scope
+	// records where the matching restore ran (the run pod or a scoped step's
+	// scope pod), so the deferred save targets the same pod's sidecar and
+	// filesystem via backend.CacheSave.
 	type cacheSaveSpec struct {
-		key       string
-		ttlDays   int
-		path      string
-		targetPod string
-		sidecar   string
+		key     string
+		ttlDays int
+		path    string
+		scope   agentlib.ScopeHandle
 	}
 	var cacheSavesMu sync.Mutex
 	var cacheSaves []cacheSaveSpec
@@ -429,21 +316,20 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 	}
 
 	// postHookEntry is a post: hook queued after a step Succeeds, mirroring the
-	// host agent's postHookEntry (internal/agent/agent.go:57-69). scopeID
-	// carries the owning step's ScopeID (empty for a default-pod step) so the
-	// drain below (after the main stages, before finally) can route the hook
-	// into the same container the step body ran in: the step's scope pod's
-	// "step" container when scopeID != "", otherwise the run pod's default
-	// container. The k8s agent runs a claim's steps one at a time via
-	// agentlib.RunPipeline in Sequential mode (no goroutines within
-	// orchestrate — see the scopePods map's doc comment above in executeRun),
-	// so hookStack needs no mutex, unlike the host's postHooksMu (which guards
+	// host agent's postHookEntry (internal/agent/agent.go:57-69). scope carries
+	// the owning step's ScopeHandle (zero for a default-pod step) so the drain
+	// below (after the main stages, before finally) can route the hook via
+	// backend.RunPostHook into the same container the step body ran in: the
+	// step's scope pod's "step" container when scope is non-zero, otherwise
+	// the run pod's default container. The k8s agent runs a claim's steps one
+	// at a time via agentlib.RunPipeline in Sequential mode (no goroutines
+	// within orchestrate — see k8sBackend's scopePods map doc comment), so
+	// hookStack needs no mutex, unlike the host's postHooksMu (which guards
 	// concurrent `parallel:` step-runner goroutines).
 	type postHookEntry struct {
 		stepName  string
 		post      api.PostStep
-		scopeID   string
-		matrixKey string
+		scope     agentlib.ScopeHandle
 		container string
 	}
 	var hookStack []postHookEntry
@@ -577,10 +463,11 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				// A scoped step's cache targets its scope pod's sidecar and
 				// private scratch volume instead of the run pod's, so a scope's
 				// cache never leaks into (or collides with) the shared workspace.
-				sidecar, mount, targetPod := artifactSidecarName, mountPath, ""
+				mount := mountPath
+				var scope agentlib.ScopeHandle
 				if step.ScopeID != "" {
 					var err error
-					targetPod, err = ensureScopePod(execCtx, step)
+					scope, err = b.EnsureScope(execCtx, step, nil)
 					if err != nil {
 						slog.Warn("k8s: cache scope pod unavailable; skipping cache for step", "step", step.Name, "error", err)
 						agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
@@ -635,18 +522,16 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 						}
 					}
 					cachePath := path.Join(mount, expandedPath)
-					argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", cachePath}
-					for _, rk := range restoreKeys {
-						argv = append(argv, "--restore-key", rk)
+					// Best-effort: a miss/error never fails the step.
+					if _, err := b.CacheRestore(execCtx, scope, key, restoreKeys, cachePath); err != nil {
+						slog.Warn("k8s: cache restore failed", "step", step.Name, "error", err)
 					}
-					// Best-effort: a miss/error never fails the step (the binary exits 0).
-					_, _ = sidecarExec(execCtx, targetPod, sidecar, argv)
 
 					ttlDays := step.Cache.TTLDays
 					if ttlDays == 0 {
 						ttlDays = 30
 					}
-					registerCacheSave(cacheSaveSpec{key: key, ttlDays: ttlDays, path: cachePath, targetPod: targetPod, sidecar: sidecar})
+					registerCacheSave(cacheSaveSpec{key: key, ttlDays: ttlDays, path: cachePath, scope: scope})
 				}
 
 				agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
@@ -666,10 +551,11 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				})
 				// A scoped step's artifact upload reads from its scope pod's
 				// private scratch volume via its sidecar, not the run pod's.
-				sidecar, mount, targetPod := artifactSidecarName, mountPath, ""
+				mount := mountPath
+				var scope agentlib.ScopeHandle
 				if step.ScopeID != "" {
 					var err error
-					targetPod, err = ensureScopePod(execCtx, step)
+					scope, err = b.EnsureScope(execCtx, step, nil)
 					if err != nil {
 						// Artifacts are fail-loud: a scope pod that never becomes
 						// available must fail the step, not silently upload from
@@ -684,13 +570,13 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					}
 					mount = scopeMountPath
 				}
-				argv := []string{"unified-sidecar", "artifact", "upload",
-					"--run", c.RunID, "--name", step.UploadArtifact.Name,
-					"--path", path.Join(mount, step.UploadArtifact.Path)}
-				ec, err := sidecarExec(execCtx, targetPod, sidecar, argv)
+				artifactPath := path.Join(mount, step.UploadArtifact.Path)
+				err := b.UploadArtifact(execCtx, scope, c.RunID, step.UploadArtifact.Name, artifactPath)
 				status := "Succeeded"
-				if err != nil || ec != 0 {
+				ec := 0
+				if err != nil {
 					status = "Failed"
+					ec = 1
 				}
 				agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
 					return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
@@ -712,10 +598,11 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				})
 				// A scoped step's artifact download writes into its scope pod's
 				// private scratch volume via its sidecar, not the run pod's.
-				sidecar, mount, targetPod := artifactSidecarName, mountPath, ""
+				mount := mountPath
+				var scope agentlib.ScopeHandle
 				if step.ScopeID != "" {
 					var err error
-					targetPod, err = ensureScopePod(execCtx, step)
+					scope, err = b.EnsureScope(execCtx, step, nil)
 					if err != nil {
 						// Artifacts are fail-loud: a scope pod that never becomes
 						// available must fail the step, not silently download into
@@ -734,13 +621,13 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				if dest == "" {
 					dest = "."
 				}
-				argv := []string{"unified-sidecar", "artifact", "download",
-					"--run", c.RunID, "--name", step.DownloadArtifact.Name,
-					"--dest", path.Join(mount, dest)}
-				ec, err := sidecarExec(execCtx, targetPod, sidecar, argv)
+				destDir := path.Join(mount, dest)
+				err := b.DownloadArtifact(execCtx, scope, c.RunID, step.DownloadArtifact.Name, destDir)
 				status := "Succeeded"
-				if err != nil || ec != 0 {
+				ec := 0
+				if err != nil {
 					status = "Failed"
+					ec = 1
 				}
 				agentlib.RetryUntilSuccess(reportCtx, func(callCtx context.Context) error {
 					return a.client.ReportStep(callCtx, a.cfg.AgentID, api.StepReportRequest{
@@ -796,7 +683,42 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 
 			stepForExec := step
 			stepForExec.Env = expandStepEnv(step.Env, tplData)
-			ec, capturedStdout, execErr := stepExec(execCtx, stepForExec, expandedRun)
+
+			shippedStdout, shippedStderr, finishLogs := b.StepLogWriters(execCtx, step.Index)
+			// stdout is teed: streamed to the server while the step runs AND
+			// kept in stdoutBuf for {{ .Stdout }} output-template evaluation
+			// below (mirrors the pre-refactor stepExec closure's io.MultiWriter).
+			var stdoutBuf strings.Builder
+			stdoutTee := io.MultiWriter(&stdoutBuf, shippedStdout)
+
+			var ec int
+			var execErr error
+			var scope agentlib.ScopeHandle
+			if step.ScopeID != "" {
+				// uses-scope: exec into the step's dedicated scope pod instead of
+				// the pooled/run pod. Mutually exclusive with RunsIn at the DSL
+				// level, so this takes precedence.
+				h, herr := b.EnsureScope(execCtx, stepForExec, execStepEnv(stepForExec))
+				if herr != nil {
+					execErr = herr
+					ec = -1
+				} else {
+					scope = h
+					ec, execErr = b.RunInScope(execCtx, h, expandedRun, execStepEnv(stepForExec), stdoutTee, shippedStderr)
+				}
+			} else if step.RunsIn != nil && step.RunsIn.Image != "" {
+				// Isolated throwaway pod.
+				ec, execErr = b.RunImage(execCtx, stepForExec, expandedRun, nil, stdoutTee, shippedStderr)
+			} else if step.RunsIn != nil && step.RunsIn.Container != "" {
+				ec, execErr = b.RunNamedContainer(execCtx, stepForExec, step.RunsIn.Container, expandedRun, execStepEnv(stepForExec), stdoutTee, shippedStderr)
+			} else {
+				// Default/main-pod (pooled or per-run) path: env has no native
+				// Kubernetes-exec equivalent, so it is applied inside the exec'd
+				// command itself (see execStepEnv/buildEnvShellCommand).
+				ec, execErr = b.RunDefault(execCtx, stepForExec, expandedRun, execStepEnv(stepForExec), stdoutTee, shippedStderr)
+			}
+			finishLogs(execCtx)
+			capturedStdout := stdoutBuf.String()
 
 			status := "Succeeded"
 			if execErr != nil || ec != 0 {
@@ -823,8 +745,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 				hookStack = append(hookStack, postHookEntry{
 					stepName:  step.Name,
 					post:      *step.Post,
-					scopeID:   step.ScopeID,
-					matrixKey: step.MatrixKey,
+					scope:     scope,
 					container: execContainer(step),
 				})
 			}
@@ -868,7 +789,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 	// expansion is handled internally by RunPipeline; Sequential mode preserves
 	// the k8s agent's documented one-at-a-time execution (scopePods/hookStack
 	// are not concurrency-safe).
-	if err := agentlib.RunPipeline(runCtx, c.Stages, getData, c.MatrixMaxCombinations, agentlib.Sequential,
+	if err := agentlib.RunPipeline(runCtx, c.Stages, getData, c.MatrixMaxCombinations, b.ConcurrencyMode(),
 		func(_ context.Context, step api.ClaimStep) error {
 			mainRun(step)
 			return nil
@@ -891,20 +812,11 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			extraEnv = append(extraEnv, k+"="+v)
 		}
 		// Route the hook into the same container the step body ran in: the
-		// step's scope pod (if any) or the default run/pooled pod otherwise
-		// (empty targetPod resolves to the default pod inside postExec).
-		var targetPod string
-		container := entry.container
-		if entry.scopeID != "" {
-			scopePod, err := ensureScopePod(hookCtx, api.ClaimStep{ScopeID: entry.scopeID, MatrixKey: entry.matrixKey})
-			if err != nil {
-				slog.Warn("k8s: post step's scope pod unavailable; skipping hook", "step", entry.stepName, "error", err)
-				continue
-			}
-			targetPod = scopePod
-			container = "step"
-		}
-		if err := postExec(hookCtx, targetPod, container, entry.post.Run, extraEnv); err != nil {
+		// step's scope pod (if any, via entry.scope) or the default run/pooled
+		// pod otherwise. b.RunPostHook resolves scope/container the same way
+		// backend.RunInScope did at step-exec time (container is meaningful on
+		// k8s, unlike the host backend, which ignores it).
+		if err := b.RunPostHook(hookCtx, entry.scope, entry.container, entry.post.Run, extraEnv); err != nil {
 			slog.Warn("k8s: post step failed", "step", entry.stepName, "error", err)
 		}
 	}
@@ -935,12 +847,11 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 	// k8s finally block below.
 	saveCtx := context.WithoutCancel(ctx)
 	for _, s := range cacheSaves {
-		argv := []string{"unified-sidecar", "cache", "save", "--key", s.key, "--ttl-days", strconv.Itoa(s.ttlDays), "--path", s.path}
-		// s.targetPod/s.sidecar were captured at restore time: for a scoped
-		// step this is the scope pod (still alive here — it is only torn down
-		// by executeRun's defer, after orchestrate returns), for a non-scoped
-		// step it is the run pod (targetPod == "").
-		if _, err := sidecarExec(saveCtx, s.targetPod, s.sidecar, argv); err != nil {
+		// s.scope was captured at restore time: for a scoped step this is the
+		// scope pod (still alive here — it is only torn down by executeRun's
+		// deferred backend.CloseScopes, after orchestrate returns), for a
+		// non-scoped step it is the zero ScopeHandle (the run pod).
+		if err := b.CacheSave(saveCtx, s.scope, s.key, s.path, s.ttlDays); err != nil {
 			slog.Warn("k8s: cache save exec failed", "key", s.key, "error", err)
 		}
 	}
@@ -960,7 +871,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		frozen := dsl.RunStatusView{Failed: mainFailed, Cancelled: cancelled}
 		finallyCtx := context.WithoutCancel(ctx)
 		finallyRun := makeRunStep(func() dsl.RunStatusView { return frozen }, false, &finallyFailed, finallyCtx, false)
-		if err := agentlib.RunPipeline(finallyCtx, c.Finally, getData, c.MatrixMaxCombinations, agentlib.Sequential,
+		if err := agentlib.RunPipeline(finallyCtx, c.Finally, getData, c.MatrixMaxCombinations, b.ConcurrencyMode(),
 			func(_ context.Context, step api.ClaimStep) error {
 				finallyRun(step)
 				return nil

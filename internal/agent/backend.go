@@ -48,3 +48,23 @@ type ExecBackend interface {
 type ScopeHandle struct{ opaque any }
 
 func (h ScopeHandle) IsZero() bool { return h.opaque == nil }
+
+// NewScopeHandle wraps an arbitrary backend-specific payload as a
+// ScopeHandle, so an ExecBackend implementation living in another package
+// (e.g. the k8s agent) can construct one. A nil v yields the zero
+// ScopeHandle. Pair with ScopeHandlePayload to recover the payload.
+func NewScopeHandle(v any) ScopeHandle {
+	if v == nil {
+		return ScopeHandle{}
+	}
+	return ScopeHandle{opaque: v}
+}
+
+// ScopeHandlePayload returns the payload wrapped by NewScopeHandle. ok is
+// false for the zero ScopeHandle.
+func ScopeHandlePayload(h ScopeHandle) (v any, ok bool) {
+	if h.IsZero() {
+		return nil, false
+	}
+	return h.opaque, true
+}
