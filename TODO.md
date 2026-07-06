@@ -316,40 +316,39 @@
 
 標準エージェント(`internal/agent`)と k8s-agent(`internal/k8sagent`)は同じステップ DSL を独立実装しており、片側にしか無い機能が黙って発生する。全 20 観点の突き合わせ監査で発見した未文書ギャップ。**恒久対策(共通オーケストレータ化・パリティ適合テスト)は #44 参照。**
 
-### 37. k8s: `{{ .Secrets.X }}` が一切解決されない(Critical)
+### 37. k8s: `{{ .Secrets.X }}` が一切解決されない(Critical)— **対応済み(2026-07-06, b5521aa)**
 
 - ホストは claim 後に `FetchSecrets`(`internal/agent/agent.go:340`)。k8sagent は `ClaimResponse.SecretsNeeded` を参照すらせず、`tplData.Secrets` が常に空。secrets を使うジョブが k8s に載るとテンプレートが**黙って空文字**に展開される。出力テンプレート用 `outCtx` にも `Secrets` フィールド自体が無い。
 
-### 38. k8s: ログのシークレットマスキング無し(Critical)
+### 38. k8s: ログのシークレットマスキング無し(Critical)— **対応済み(2026-07-06, b5521aa)**
 
 - ホストは全 LogPusher に `SetMasker`。k8sagent は stderr 用 LogPusher に `SetMasker` を呼ばず、stdout 用 `logLineWriter`(`internal/k8sagent/agent.go:792` 付近)にはマスカーのフィールド自体が無い。#37 を直すと同時に必須(直さないとシークレットが平文でログに載る)。
 
-### 39. k8s: `call:` ステップが黙って成功する no-op(Critical)— **対応中**
+### 39. k8s: `call:` ステップが黙って成功する no-op(Critical)— **対応済み(2026-07-06, 6bd7a1a feat-k8s-call)**
 
 - k8sagent に `step.Call` の分岐が無く、空スクリプト実行で **Succeeded** を報告。別作業(branch `feat-k8s-call`, worktree `../unified-cd-k8s-call`)が対応中のため本監査からは着手しない。
 
-### 40. k8s: 通常ステップで `env:` と `UNIFIED_AGENT_OS` が消える(High)
+### 40. k8s: 通常ステップで `env:` と `UNIFIED_AGENT_OS` が消える(High)— **対応済み(2026-07-06, 9077735)**
 
 - メイン Pod exec 経路は `stepForExec.Env` を計算する(`agent.go:633` 付近)のに `ExecStep`(`executor.go:53-63`, `PodExecOptions` に Env 無し)へ渡さない。最頻出のステップ形状でユーザー定義 env が黙って落ち、`$UNIFIED_AGENT_OS` も未設定。`runsIn.image` / scope Pod は Pod 生成時に注入されるので無事。docs/jobs.md は `env:` を全エージェント共通と記載しており矛盾。
 
-### 41. k8s: `timeoutMinutes` が未執行(High)
+### 41. k8s: `timeoutMinutes` が未執行(High)— **対応済み(2026-07-06, 1488de8)**
 
 - ジョブレベル: `c.TimeoutMinutes` の参照ゼロ(ホストは `agent.go:285-289` で WithTimeout)。ステップレベル: 通常/scope exec に WithTimeout 無し(ホストは `agent.go:464-467`)。`runsIn.image` のみ Pod の `ActiveDeadlineSeconds` で近似あり。暴走ステップは手動キャンセルまで走り続ける。
 
-### 42. k8s: `post:` フックが一切実行されない(High)
+### 42. k8s: `post:` フックが一切実行されない(High)— **対応済み(2026-07-06, 06b7eef)**
 
 - `step.Post` の参照ゼロ(ホストは hookStack LIFO、`agent.go:684-694, 733-753`)。クリーンアップ処理が黙ってスキップされる。
 
-### 43. k8s: stderr が step 終了まで UI に出ないことがある(Medium)
+### 43. k8s: stderr が step 終了まで UI に出ないことがある(Medium)— **対応済み(2026-07-06, b5521aa)**
 
 - stdout は `logLineWriter` の行単位即時送信で無事。stderr は LogPusher を step 終端でしか Flush せず、`StartAutoFlush`(ホストは 2026-07-06 に導入、2 秒間隔)相当が無い。まばらな stderr 出力は step 終了まで滞留する。
 
-### 44. 恒久対策: 実行オーケストレーションの共通化 + パリティ適合テスト(Feature)
+### 44. 恒久対策: 実行オーケストレーションの共通化 + パリティ適合テスト(Feature)— **段階1・文書修正は対応済み(2026-07-06)、段階2が未着手**
 
-- ギャップの根因は `executeRun` 相当のオーケストレーション(ステップ分岐・DSL 意味論・報告)が両エージェントで二重実装されていること。すでに共有済みの部品(`ExpandMatrixStep` / `WaitForApproval` / `EvalCondition` / `LogPusher` / heartbeat / reconcile)の前例に沿って、実行基盤だけを差し替え可能にする:
-  - **段階1(即効・低リスク)**: パリティ適合テストスイート — 同じ ClaimResponse 群(if/env/timeout/post/finally/matrix/secrets/continueOnError…)をフェイク実行基盤を差した両エージェントのループに流し、ステップ報告・ログ・出力が一致することを表で検証。以後のドリフトを CI で機械的に検出。
-  - **段階2(本命)**: `agentlib` に共有オーケストレータを抽出し、`ExecBackend` インターフェース(script 実行・scope 確保・cache/artifact 転送)だけを host/k8s が実装。#37〜#43 の修正で持ち上げたロジックから漸進的に集約する。
-- **文書修正(即時)**: `docs/kubernetes-integration.md:31` の「違いは実行場所だけ」を実状に合わせて修正、`docs/jobs.md:681` の cache 失敗時挙動の陳腐化修正、`parallel:` の k8s 逐次実行を明記(matrix は記載済み)。
+- **段階1 実装済み(aa6841b)**: パリティ適合テストスイート — `internal/paritycases`(共有ケース定義+期待値+Assert)+ 両エージェントのドライバ(`internal/agent/parity_host_test.go` が実 executeRun、`internal/k8sagent/parity_k8s_test.go` が実 orchestrate をローカル bash 実行のフェイク executor で駆動)。10ケース(if / env / continueOnError / finally / post LIFO / matrix / secrets+マスキング / step timeout / stdout outputs / call+子リンク)が両エージェントで同一期待値をパス。**新しい DSL 挙動は両ドライバに同じケースを足すこと**。付随発見(未対応・Low): `post:` フックの stdout/stderr は両エージェントともログ配管に載らない(host は RunStepCapture に nil、k8s は io.Discard)— 対称なのでパリティ違反ではないが、フック失敗の調査がログからできない。
+- **文書修正 実装済み(fd5f25b)**: kubernetes-integration.md のパリティ主張を実差分の列挙に置換、jobs.md の cache 失敗時挙動と parallel: の k8s 逐次実行を明記。
+- **段階2 未着手(本 TODO の残項目)**: `agentlib` への共有オーケストレータ抽出。ギャップの根因は `executeRun` 相当のオーケストレーション(ステップ分岐・DSL 意味論・報告)が両エージェントで二重実装されていること。すでに共有済みの部品(`ExpandMatrixStep` / `WaitForApproval` / `EvalCondition` / `LogPusher` / heartbeat / reconcile)の前例に沿って、共有オーケストレータを抽出し、`ExecBackend` インターフェース(script 実行・scope 確保・cache/artifact 転送、5〜6メソッド想定)だけを host/k8s が実装する形にする。一撃ではなく機能単位(post/finally → timeout → …)で漸進的に集約し、各段階で段階1の適合スイートを回帰ゲートにする。
 
 ---
 
