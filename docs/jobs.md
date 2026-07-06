@@ -19,6 +19,9 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
   - [Matrix and Foreach Steps](#matrix-and-foreach-steps)
 - [Calling Other Jobs (`call`)](#calling-other-jobs-call)
 - [Git Template Inlining (`uses`)](#git-template-inlining-uses)
+- [Isolated Execution (`runsIn`)](#isolated-execution-runsin)
+  - [Step-level `runsIn.image`](#step-level-runsinimage)
+  - [Uses-level `runsIn.image` (scope)](#uses-level-runsinimage-scope)
 - [Artifacts](#artifacts)
 - [Cache](#cache)
 - [Concurrency Control](#concurrency-control)
@@ -490,6 +493,92 @@ steps:
 The referenced YAML file must be a valid Job definition. Its steps are inlined at the point of `uses`.
 
 For private repositories, create a [GitCredential](#gitcredential-resource) resource for the host.
+
+---
+
+## Isolated Execution (`runsIn`)
+
+`runsIn` runs a step in a reproducible container instead of directly on the
+agent host. It has two forms — `image` (a fresh isolated environment) and
+`container` (exec into a named, pre-provisioned k8s pod container). This guide
+covers the `image` form; see the [`runsIn` field reference](resources.md#runsin)
+for the full field table (including `runsIn.container` and `runsIn.resources`).
+
+An isolated `runsIn.image` step runs in a Linux container regardless of the
+agent's host OS, so `UNIFIED_AGENT_OS` reports `linux` inside it.
+
+### Step-level `runsIn.image`
+
+Put `runsIn.image` on a plain `run` step to run just that step in a fresh,
+throwaway container (the standard agent runs `<runtime> run --rm`; the k8s agent
+uses a throwaway pod):
+
+```yaml
+steps:
+  - name: lint
+    runsIn:
+      image: golangci/golangci-lint:latest
+    run: golangci-lint run ./...
+```
+
+A step-level isolated call is a **pure function**: it does **not** share the job
+workspace. Pass inputs via `with:`/`env` and return outputs via `outputs:` or
+stdout. It has no persistent filesystem, so `cache`/`uploadArtifact`/
+`downloadArtifact` are not supported on a step-level isolated step — use a
+uses-level scope (below) when you need those.
+
+### Uses-level `runsIn.image` (scope)
+
+Put `runsIn.image` on a `uses:` step to run the **entire inlined template** in
+**one** isolated environment — a "scope" — that stays alive across all of the
+template's steps (one container on the standard agent, one dedicated pod on
+k8s):
+
+```yaml
+steps:
+  - name: build
+    uses:
+      job: git://github.com/my-org/ci-templates/jobs/build.yaml@v1.0.0
+      with:
+        target: ./cmd/server
+    runsIn:
+      image: golang:1.22
+```
+
+Because the template's steps share one long-lived environment, `cache`,
+`uploadArtifact`, and `downloadArtifact` steps inside the template operate on
+**the scope's own filesystem**, not the outer job workspace. So if `build.yaml`
+restores a dependency cache, compiles, and uploads the resulting binary as an
+artifact, all three happen inside the `golang:1.22` scope — a template can build
+in its isolated environment and save the result without ever touching the outer
+workspace.
+
+The scope starts from a fresh, empty filesystem and never shares the outer job
+workspace:
+
+- **Inputs** enter via `with:` (env vars) and `downloadArtifact` (written into
+  the scope filesystem).
+- **Outputs** leave via `uploadArtifact` (pushed to the run's artifact store)
+  and `outputs:`/stdout.
+
+Artifacts are keyed by run, not by workspace path, so they cross the isolation
+boundary naturally — on Kubernetes a scoped `uses` needs no shared
+`ReadWriteMany` volume. Under `matrix`/`foreach`, each variant of a scoped
+`uses` gets its own independent scope (its own container/pod).
+
+A step-level `runsIn.container` (uses-level too) and a `uses` with no `runsIn`
+keep their existing behavior — scope mode is triggered only by a **uses-level
+`runsIn.image`**.
+
+**Not allowed inside a scoped `uses`** (parse errors, because they are
+incompatible with holding one isolated environment across the whole template):
+
+- an inlined step with its own `runsIn.image`/`runsIn.container` — the scope is
+  a single homogeneous environment;
+- an `approval:` step — it would pin the isolated container/pod open across a
+  human wait;
+- a `call:` step — the child run executes elsewhere and cannot see the scope's
+  filesystem.
 
 ---
 
