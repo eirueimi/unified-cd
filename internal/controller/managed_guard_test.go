@@ -195,6 +195,22 @@ spec:
 	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
 }
 
+// TestAPI_ApplyJob_RejectedWhenManaged_RedactsRepoURLCredentials is the
+// regression test for I1: errManagedResource.Error() embeds spec.RepoURL raw,
+// so a credentialed repoURL (https://user:token@host/repo) managing a Job
+// would leak the token straight into the 409 response body. The guard must
+// redact it the same way appsource_reconciler.go already does for last_error
+// (bug #33), via the shared redactURLCredentials helper.
+func TestAPI_ApplyJob_RejectedWhenManaged_RedactsRepoURLCredentials(t *testing.T) {
+	s, pg := newTestServer(t)
+	setupManagedJob(t, pg, `{"repoURL":"https://user:tok@example.com/r.git","targetRevision":"main","path":"jobs"}`)
+
+	rec := applyJob(t, s, helloJobYAML)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "***")
+	assert.NotContains(t, rec.Body.String(), "tok")
+}
+
 // app-of-apps: 自分自身をmanaged_resourcesに含むAppSourceのapplyは許可される。
 func TestAPI_ApplyAppSource_SelfManagedAllowed(t *testing.T) {
 	s, pg := newTestServer(t)

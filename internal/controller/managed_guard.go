@@ -51,7 +51,12 @@ func (s *Server) guardManagedResource(ctx context.Context, kind, name string) er
 	if spec.SyncPolicy.AllowManualOverride {
 		return nil
 	}
-	return errManagedResource{Kind: kind, Name: name, AppSource: src.Name, RepoURL: spec.RepoURL}
+	// Redact any userinfo (user:pass or token) embedded in RepoURL before it is
+	// placed on the errManagedResource — this becomes an HTTP 409 response body,
+	// so a credentialed repoURL (https://user:token@host/repo) must never leak
+	// the credential to an API caller. Same redaction used for last_error in
+	// appsource_reconciler.go (bug #33).
+	return errManagedResource{Kind: kind, Name: name, AppSource: src.Name, RepoURL: redactURLCredentials(spec.RepoURL)}
 }
 
 // writeGuardError maps a guardManagedResource error onto the HTTP response:
