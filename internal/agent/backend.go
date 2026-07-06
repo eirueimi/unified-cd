@@ -26,6 +26,39 @@ type ExecBackend interface {
 
 	RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, env []string) error
 
+	// ResolveArtifactPath resolves a cache/artifact step's relative path (as
+	// authored in the DSL) against the right root for scope: the claim's
+	// non-scoped workspace root (host workDir / k8s pod mount path) when scope
+	// is zero, or the scope container's fixed working directory
+	// ("/workspace", the same value both agents use) when scope is non-zero.
+	// An already-absolute p is returned unchanged. This is the one seam where
+	// the shared orchestration loop defers to backend-specific knowledge (the
+	// host uses OS-native path joining against an arbitrary host directory;
+	// k8s uses forward-slash joining against a configurable pod mount path),
+	// mirroring the pre-refactor host resolveWorkspacePath/resolveScopePath
+	// pair and the k8s agent's inline path.Join(mountPath, ...).
+	ResolveArtifactPath(scope ScopeHandle, p string) string
+
+	// ResolveCachePath resolves a cache step's relative path for the
+	// non-scoped case ONLY differently from ResolveArtifactPath: the host
+	// agent deliberately leaves a non-scoped cache path unresolved (as
+	// authored), since cache.Restore/cache.Save treat it as relative to the
+	// objectstore's own root rather than the workspace directory, while the
+	// k8s agent resolves it against the pod's mount path exactly like an
+	// artifact path. The scoped case is identical to ResolveArtifactPath on
+	// both backends (the scope container's fixed working directory).
+	ResolveCachePath(scope ScopeHandle, p string) string
+
+	// DefaultAgentOS reports the OS a non-scoped, non-runsIn.image step
+	// actually executes on, for the UNIFIED_AGENT_OS env var (scoped/
+	// runsIn.image steps always report "linux" regardless of backend, since
+	// they run in an isolated Linux container either way — see
+	// agentOSForStep). This legitimately differs per backend: the host agent
+	// executes such a step directly on its own OS (runtime.GOOS), while every
+	// k8s exec path — including the "default pod" case — runs inside a Linux
+	// pod, so k8sBackend always reports "linux".
+	DefaultAgentOS() string
+
 	// SetMasker installs the secret masker for all subsequently-created log
 	// writers. Called once by the shared loop right after it fetches secrets
 	// (the masker is born inside the loop, after backend construction).

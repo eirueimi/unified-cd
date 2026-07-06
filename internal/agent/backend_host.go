@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sync"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -214,6 +215,34 @@ func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, r
 		return fmt.Errorf("copy into scope: %w", err)
 	}
 	return nil
+}
+
+// ResolveArtifactPath resolves p against the host workDir (non-scoped) or the
+// scope container's fixed working directory (scoped), mirroring the
+// pre-refactor resolveWorkspacePath/resolveScopePath pair.
+func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) string {
+	if !scope.IsZero() {
+		return resolveScopePath(p)
+	}
+	return resolveWorkspacePath(b.workDir, p)
+}
+
+// ResolveCachePath resolves p against the scope container's fixed working
+// directory when scoped (identical to ResolveArtifactPath); a non-scoped p is
+// left UNRESOLVED (as authored), matching the pre-refactor host agent's
+// cache.Restore/cache.Save calls, which treat it as relative to the
+// objectstore's own root rather than the claim's workDir.
+func (b *hostBackend) ResolveCachePath(scope ScopeHandle, p string) string {
+	if !scope.IsZero() {
+		return resolveScopePath(p)
+	}
+	return p
+}
+
+// DefaultAgentOS reports the host process's own OS: a non-scoped,
+// non-runsIn.image step executes directly on the host.
+func (b *hostBackend) DefaultAgentOS() string {
+	return runtime.GOOS
 }
 
 // RunPostHook runs a step's post: script after the step succeeds. Scoped
