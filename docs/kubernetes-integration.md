@@ -28,8 +28,21 @@ unified-cd-master
   └──────────────────────────┘
 ```
 
-The only difference from a standard agent (`cmd/agent`) is where job steps run — locally vs. inside a Pod.
-The communication interface with the master is identical.
+The k8s agent implements the same step DSL and master-communication interface as the standard
+agent (`cmd/agent`); job steps run inside a Pod instead of locally. The remaining intentional
+differences are:
+
+- **Execution order** — `matrix:`/`foreach:` combinations and `parallel:` groups run
+  **sequentially** inside the Pod (the standard agent runs them in parallel goroutines).
+- **`runsIn.container`** — supported only here (the standard agent reports an explicit error).
+- **`runsIn.resources.requests`** — applied only here (docker has no request concept; the
+  standard agent maps limits only).
+- **No drain window** — on shutdown the k8s agent stops immediately (in-flight runs are
+  recovered by the startup reconcile / stuck-run reaper); the standard agent drains in-flight
+  runs up to `--drain-timeout`.
+
+Feature parity between the two agents is enforced by the shared conformance suite
+(`internal/paritycases`) — new DSL behavior must pass identical expectations on both agents.
 
 ---
 

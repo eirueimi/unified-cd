@@ -202,6 +202,10 @@ block start together and the block completes once every member has finished (or 
 starts once the whole block completes. A `parallel:` entry cannot also declare `name`,
 `run`, or the other concrete-step fields — it is exclusively a group of `Step`s.
 
+> **On the Kubernetes agent, members of a `parallel:` group run sequentially** inside the
+> Pod (same as matrix/foreach combinations); the completion semantics (block finishes when
+> every member has) are identical, only the wall-clock concurrency differs.
+
 ### Conditional Execution (`if`)
 
 Steps can be conditionally skipped based on a boolean expression.
@@ -678,7 +682,7 @@ steps:
     run: go build ./...
 ```
 
-The `path`, `key`, and `restoreKeys` strings support template expressions (e.g. `path: {{ .Params.working_dir }}/node_modules`, `key: go-vendor-{{ hashFile "go.sum" }}`). A `path` that fails to expand (or expands to empty) fails the step on the standard agent and skips the cache operation on the k8s agent.
+The `path`, `key`, and `restoreKeys` strings support template expressions (e.g. `path: {{ .Params.working_dir }}/node_modules`, `key: go-vendor-{{ hashFile "go.sum" }}`). A `path` or `key` that fails to expand (or expands to empty) fails the step on both agents.
 On hit, the cached directory is restored before the step runs. On miss, the directory is saved after the run completes.
 
 Cache is now supported on the k8s agent (previously a silent no-op) with the same `key`/`restoreKeys`/`ttlDays` semantics — see [Kubernetes Integration: Artifacts and Cache](kubernetes-integration.md#artifacts-and-cache) for how transfers work and the required S3 credentials. Restore is best-effort (a miss or error never fails the step); save is deferred until the run's main stages complete.
