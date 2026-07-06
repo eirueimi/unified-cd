@@ -99,7 +99,7 @@ func TestExecuteCacheStep_PathTemplateParseErrorFailsStep(t *testing.T) {
 	assert.Empty(t, postHooks, "no save should be registered when the path template is invalid")
 }
 
-func TestExecuteCacheStep_EmptyExpandedPathFailsStep(t *testing.T) {
+func TestExecuteCacheStep_EmptyExpandedPathSkipsCache(t *testing.T) {
 	a := newCacheTestAgent(t)
 	sctx := &safeStepCtx{data: dsl.TemplateData{Params: map[string]string{}}}
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.missing }}", Key: "k"})
@@ -107,7 +107,18 @@ func TestExecuteCacheStep_EmptyExpandedPathFailsStep(t *testing.T) {
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
 	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, nil, crt.ContainerHandle{})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "empty")
+	require.NoError(t, err, "an empty expanded path is warn+skip, not a step failure")
 	assert.Empty(t, postHooks, "no save should be registered when the path expands to empty")
+}
+
+func TestExecuteCacheStep_EmptyExpandedKeySkipsCache(t *testing.T) {
+	a := newCacheTestAgent(t)
+	sctx := &safeStepCtx{data: dsl.TemplateData{Params: map[string]string{}}}
+	step := cacheClaimStep(&dsl.CacheStep{Path: "/tmp/some-dir", Key: "{{ .Params.missing }}"})
+
+	var postHooksMu sync.Mutex
+	var postHooks []func(context.Context)
+	err := a.executeCacheStep(context.Background(), step, "r1", sctx, &postHooksMu, &postHooks, nil, crt.ContainerHandle{})
+	require.NoError(t, err, "an empty expanded key is warn+skip, not a step failure")
+	assert.Empty(t, postHooks, "no save should be registered when the key expands to empty")
 }

@@ -2,9 +2,10 @@ package paritycases
 
 import (
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
-// Cases returns the 10 shared DSL-conformance scenarios. Each Case's Claim
+// Cases returns the shared DSL-conformance scenarios. Each Case's Claim
 // func must be called independently by each driver (host, k8s) so the two
 // runs never share mutable ClaimResponse state.
 func Cases() []Case {
@@ -19,6 +20,7 @@ func Cases() []Case {
 		stepTimeoutFails(),
 		stdoutOutputs(),
 		callSucceedsWithLink(),
+		cacheEmptyKeySkips(),
 	}
 }
 
@@ -349,3 +351,45 @@ func callSucceedsWithLink() Case {
 // test files can wire their fake CreateRun/GetRun endpoints to the same
 // constant without duplicating a magic string).
 const ChildRunIDFixture = "child-run-123"
+
+// 11. cache-empty-key-skips: a cache step whose `path` template expands
+// SUCCESSFULLY to an empty string (Params.novalue == "") must not fail the
+// step or the run — per the approved spec, template expansion succeeding but
+// yielding an empty key/path is warn+skip (cache operation skipped), not a
+// hard failure, on BOTH agents. k8s already implements this (see
+// internal/k8sagent/agent.go's empty-key/empty-path branches); this case
+// pins the host agent to the same behavior. Pre-fix, the host agent's
+// executeCacheStep hard-failed the step when the expanded path was empty
+// (internal/agent/agent.go: `if cachePath == "" { return fmt.Errorf(...) }`),
+// which is the actual pre-fix drift this case targets — a fixed non-empty
+// literal path would not exercise that branch. A second step then runs to
+// confirm the pipeline continues normally past the cache step.
+func cacheEmptyKeySkips() Case {
+	return Case{
+		Name: "cache-empty-key-skips",
+		Claim: func() api.ClaimResponse {
+			return api.ClaimResponse{
+				RunID:   "run-cache-empty-key-skips",
+				JobName: "cache-empty-key-skips",
+				Params:  map[string]string{"novalue": ""},
+				Stages: []api.ClaimStage{
+					{Step: &api.ClaimStep{
+						Index: 0, StageIndex: 0, Name: "cacheit",
+						Cache: &dsl.CacheStep{Key: "some-key", Path: "{{ .Params.novalue }}"},
+					}},
+					{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "after", Run: "echo after-cache"}},
+				},
+			}
+		},
+		Expect: Expectation{
+			StepStatus: map[string]string{
+				"cacheit": "Succeeded",
+				"after":   "Succeeded",
+			},
+			RunFinished: "Succeeded",
+			LogMustContain: []LogLine{
+				{Step: "after", Stream: "stdout", Substring: "after-cache"},
+			},
+		},
+	}
+}

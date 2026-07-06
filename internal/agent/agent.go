@@ -999,8 +999,26 @@ func (a *Agent) executeCacheStep(
 	if err != nil {
 		return fmt.Errorf("cache path template: %w", err)
 	}
+	// A key/path template that expands SUCCESSFULLY to an empty string is
+	// warn+skip (cache operation skipped, step still Succeeded), matching the
+	// k8s agent's empty-key/empty-path branches (internal/k8sagent/agent.go).
+	// A valid-but-empty key must not silently collide caches across runs, and
+	// a valid-but-empty path would target the wrong directory (workspace
+	// root, mount root, etc.) — either way the safe behavior is to skip, not
+	// hard-fail: only a template EXPANSION ERROR (above) is a hard failure.
+	if key == "" {
+		slog.Warn("cache key expanded to empty; skipping cache for step", "step", step.Name, "keyTemplate", cs.Key)
+		_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
+			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
+		})
+		return nil
+	}
 	if cachePath == "" {
-		return fmt.Errorf("cache path template %q expanded to empty string", cs.Path)
+		slog.Warn("cache path expanded to empty; skipping cache for step", "step", step.Name, "pathTemplate", cs.Path)
+		_ = a.Client.ReportStep(ctx, a.ID, api.StepReportRequest{
+			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Succeeded", StartedAt: started, EndedAt: time.Now().UTC(),
+		})
+		return nil
 	}
 	// When scoped, cachePath is a CONTAINER-side path; resolve it against the
 	// scope container's working directory so it is always absolute before
