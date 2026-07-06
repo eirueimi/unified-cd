@@ -59,12 +59,12 @@ func (f *envCaptureExec) ExecStepArgv(_ context.Context, _, _ string, _ []string
 	return 0, nil
 }
 
-// TestExecuteRun_DefaultStep_EnvInjected is a RED-first regression test for
-// TODO #40: a step's env: map (and the UNIFIED_AGENT_OS convenience var) must
-// reach the pod exec for the default/main-pod path, mirroring the host
-// agent's extraEnv (internal/agent/agent.go:565-568). Before the fix,
-// stepExec's default branch calls a.exec.ExecStep with no env at all, so this
-// assertion fails against the current ExecStep signature/behavior.
+// TestExecuteRun_DefaultStep_EnvInjected is a regression test for TODO #40: a
+// step's env: map (and the UNIFIED_AGENT_OS convenience var) must reach the
+// pod exec for the default/main-pod path. The extraEnv construction
+// (agentOSForStep + step.Env) is done once by the shared orchestration loop
+// (agentlib.RunClaim, internal/agent/orchestrator.go) and passed down to
+// ExecBackend.RunDefault, so this is the same code path the host agent uses.
 func TestExecuteRun_DefaultStep_EnvInjected(t *testing.T) {
 	const agentID = "k8s-env-1"
 	const runID = "run-env-1"

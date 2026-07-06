@@ -84,12 +84,11 @@ func blockingStepExec() func(ctx context.Context, step api.ClaimStep, script str
 	}
 }
 
-// TestOrchestrate_StepTimeout_ReportsFailed is a RED-first regression test for
-// TODO #41: step.TimeoutMinutes must bound the step's exec context so a step
-// that never returns still fails fast, mirroring the host agent
-// (internal/agent/agent.go:443-447). Before the fix, no per-step WithTimeout
-// exists for the default/scope exec paths, so this test hangs (and the
-// bounded test context below fails it) against the current orchestrate.
+// TestOrchestrate_StepTimeout_ReportsFailed is a regression test for TODO #41:
+// step.TimeoutMinutes must bound the step's exec context so a step that never
+// returns still fails fast. The per-step WithTimeout is applied by the shared
+// orchestration loop (agentlib.RunClaim, internal/agent/orchestrator.go), so
+// this is the same code path the host agent uses.
 func TestOrchestrate_StepTimeout_ReportsFailed(t *testing.T) {
 	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "slow", Run: "sleep 100", TimeoutMinutes: 0.001}},
@@ -113,11 +112,11 @@ func TestOrchestrate_StepTimeout_ReportsFailed(t *testing.T) {
 	assert.Equal(t, "Failed", final)
 }
 
-// TestOrchestrate_JobTimeout_FailsRun is a RED-first regression test for TODO
-// #41: c.TimeoutMinutes must bound the whole run, mirroring the host agent
-// (internal/agent/agent.go:264-268). Before the fix, c.TimeoutMinutes is never
-// read in internal/k8sagent, so this test hangs against the current
-// orchestrate (no job-level deadline is ever applied).
+// TestOrchestrate_JobTimeout_FailsRun is a regression test for TODO #41:
+// c.TimeoutMinutes must bound the whole run. The job-level deadline is
+// applied by the shared orchestration loop (agentlib.RunClaim,
+// internal/agent/orchestrator.go), so this is the same code path the host
+// agent uses.
 func TestOrchestrate_JobTimeout_FailsRun(t *testing.T) {
 	c := api.ClaimResponse{
 		RunID:          "r1",
@@ -147,9 +146,11 @@ func TestOrchestrate_JobTimeout_FailsRun(t *testing.T) {
 }
 
 // TestOrchestrate_JobTimeout_FinallyStillRuns verifies a job-level timeout
-// still lets `finally` steps run (mirroring the host agent's
-// context.WithoutCancel(ctx) for finally, internal/agent/agent.go:750),
-// instead of the timed-out job context skipping cleanup entirely.
+// still lets `finally` steps run, instead of the timed-out job context
+// skipping cleanup entirely. `finally`'s context.WithoutCancel(ctx) is applied
+// by the shared orchestration loop (agentlib.RunClaim,
+// internal/agent/orchestrator.go), so this is the same code path the host
+// agent uses.
 func TestOrchestrate_JobTimeout_FinallyStillRuns(t *testing.T) {
 	c := api.ClaimResponse{
 		RunID:          "r1",

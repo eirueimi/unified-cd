@@ -37,17 +37,6 @@ func TestImageStepEnv_NilEnv(t *testing.T) {
 	assert.Len(t, out, 1)
 }
 
-func TestExecStepEnv(t *testing.T) {
-	out := execStepEnv(api.ClaimStep{Env: map[string]string{"FOO": "bar"}})
-	assert.Contains(t, out, "UNIFIED_AGENT_OS=linux", "pod-exec steps always run on linux")
-	assert.Contains(t, out, "FOO=bar")
-}
-
-func TestExecStepEnv_NilEnv(t *testing.T) {
-	out := execStepEnv(api.ClaimStep{})
-	assert.Equal(t, []string{"UNIFIED_AGENT_OS=linux"}, out)
-}
-
 func TestImageStepDeadline(t *testing.T) {
 	// zero TimeoutMinutes -> default 1h
 	assert.Equal(t, int64(3600), imageStepDeadline(api.ClaimStep{}))

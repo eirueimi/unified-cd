@@ -249,10 +249,11 @@ func parityShell(t *testing.T) string {
 }
 
 // parityRunScript runs a step's script for real via the discovered shell,
-// mirroring execStepEnv's UNIFIED_AGENT_OS=linux injection
-// (internal/k8sagent/agent.go) since orchestrate's real RunDefault (built via
-// k8sBackend) applies exactly that env before invoking Executor.ExecStep.
-// Honors ctx cancellation via exec.CommandContext, and additionally kills the
+// mirroring the UNIFIED_AGENT_OS=linux injection that the shared
+// orchestration loop (agentlib.RunClaim, internal/agent/orchestrator.go)
+// applies via agentOSForStep/b.DefaultAgentOS() before RunDefault (built via
+// k8sBackend) invokes Executor.ExecStep. Honors ctx cancellation via
+// exec.CommandContext, and additionally kills the
 // whole process tree on cancellation (see parityKillTree) since
 // exec.CommandContext alone only signals the direct child (the shell),
 // leaving a backgrounded `sleep` grandchild running — the same class of

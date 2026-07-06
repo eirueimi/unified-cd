@@ -101,12 +101,12 @@ func runOrchestrateWithFakes(t *testing.T, c api.ClaimResponse, fakes map[string
 	return h.statuses, h.final, backend.PostCalls
 }
 
-// TestOrchestrate_PostHooks_RunInLIFOOrderAfterMainSteps is a RED-first
-// regression test for TODO #42: step.Post is never referenced in
-// internal/k8sagent, so post: hooks never run. Mirrors the host agent
-// (internal/agent/agent.go:664-674, 707-734): two Succeeded steps with post
-// hooks must have their hooks drained in LIFO order (reverse of success
-// order) after the main steps complete.
+// TestOrchestrate_PostHooks_RunInLIFOOrderAfterMainSteps is a regression test
+// for TODO #42. post: hook drain (hookStack) is owned by the shared
+// orchestration loop (agentlib.RunClaim, internal/agent/orchestrator.go), so
+// this exercises the same LIFO-drain code path the host agent uses: two
+// Succeeded steps with post hooks must have their hooks drained in LIFO order
+// (reverse of success order) after the main steps complete.
 func TestOrchestrate_PostHooks_RunInLIFOOrderAfterMainSteps(t *testing.T) {
 	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "first", Run: "x",
@@ -127,8 +127,9 @@ func TestOrchestrate_PostHooks_RunInLIFOOrderAfterMainSteps(t *testing.T) {
 }
 
 // TestOrchestrate_PostHook_NotQueuedForFailedStep verifies a failed step's
-// post: hook is never queued (mirrors the host: hookStack is only appended
-// when status == "Succeeded").
+// post: hook is never queued (agentlib.RunClaim only appends to hookStack
+// when status == "Succeeded"; this is shared with the host agent, not
+// k8s-specific behavior).
 func TestOrchestrate_PostHook_NotQueuedForFailedStep(t *testing.T) {
 	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "x",
@@ -143,8 +144,8 @@ func TestOrchestrate_PostHook_NotQueuedForFailedStep(t *testing.T) {
 }
 
 // TestOrchestrate_PostHookFailure_DoesNotFlipRunStatus verifies a failing
-// post hook is only logged, never flips the run status (mirrors the host:
-// hookStack drain only slog.Warn's on error).
+// post hook is only logged, never flips the run status (agentlib.RunClaim's
+// hookStack drain only slog.Warn's on error; shared with the host agent).
 func TestOrchestrate_PostHookFailure_DoesNotFlipRunStatus(t *testing.T) {
 	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "ok", Run: "x",
@@ -172,8 +173,9 @@ func TestOrchestrate_PostHookFailure_DoesNotFlipRunStatus(t *testing.T) {
 
 // TestOrchestrate_ScopedStepPostHook_RoutesToScopePod verifies a scoped
 // step's post: hook is routed into its scope pod's "step" container, not the
-// default run pod (mirrors the host: a scoped step's post hook runs inside
-// the same scope container the step body ran in).
+// default run pod. The routing decision (run the post hook wherever the step
+// body ran) is made by agentlib.RunClaim and shared with the host agent; only
+// k8sBackend.RunPostHook's concrete pod/container lookup is k8s-specific.
 func TestOrchestrate_ScopedStepPostHook_RoutesToScopePod(t *testing.T) {
 	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "scoped", Run: "x",

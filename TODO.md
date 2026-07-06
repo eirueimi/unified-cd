@@ -344,11 +344,16 @@
 
 - stdout は `logLineWriter` の行単位即時送信で無事。stderr は LogPusher を step 終端でしか Flush せず、`StartAutoFlush`(ホストは 2026-07-06 に導入、2 秒間隔)相当が無い。まばらな stderr 出力は step 終了まで滞留する。
 
-### 44. 恒久対策: 実行オーケストレーションの共通化 + パリティ適合テスト(Feature)— **段階1・文書修正は対応済み(2026-07-06)、段階2が未着手**
+### 44. 恒久対策: 実行オーケストレーションの共通化 + パリティ適合テスト(Feature)— **段階1・文書修正・段階2 すべて対応済み(2026-07-07)**
 
 - **段階1 実装済み(aa6841b)**: パリティ適合テストスイート — `internal/paritycases`(共有ケース定義+期待値+Assert)+ 両エージェントのドライバ(`internal/agent/parity_host_test.go` が実 executeRun、`internal/k8sagent/parity_k8s_test.go` が実 orchestrate をローカル bash 実行のフェイク executor で駆動)。10ケース(if / env / continueOnError / finally / post LIFO / matrix / secrets+マスキング / step timeout / stdout outputs / call+子リンク)が両エージェントで同一期待値をパス。**新しい DSL 挙動は両ドライバに同じケースを足すこと**。付随発見(未対応・Low): `post:` フックの stdout/stderr は両エージェントともログ配管に載らない(host は RunStepCapture に nil、k8s は io.Discard)— 対称なのでパリティ違反ではないが、フック失敗の調査がログからできない。
 - **文書修正 実装済み(fd5f25b)**: kubernetes-integration.md のパリティ主張を実差分の列挙に置換、jobs.md の cache 失敗時挙動と parallel: の k8s 逐次実行を明記。
-- **段階2 未着手(本 TODO の残項目)**: `agentlib` への共有オーケストレータ抽出。ギャップの根因は `executeRun` 相当のオーケストレーション(ステップ分岐・DSL 意味論・報告)が両エージェントで二重実装されていること。すでに共有済みの部品(`ExpandMatrixStep` / `WaitForApproval` / `EvalCondition` / `LogPusher` / heartbeat / reconcile)の前例に沿って、共有オーケストレータを抽出し、`ExecBackend` インターフェース(script 実行・scope 確保・cache/artifact 転送、5〜6メソッド想定)だけを host/k8s が実装する形にする。一撃ではなく機能単位(post/finally → timeout → …)で漸進的に集約し、各段階で段階1の適合スイートを回帰ゲートにする。
+- **段階2 対応済み(2026-07-07)**: `agentlib` への共有オーケストレータ抽出。`internal/agent/orchestrator.go` の `RunClaim(ctx, client, agentID, c, b ExecBackend)` が host/k8s 共通のステップ分岐・DSL 意味論・報告ループを一本化し、host/k8s それぞれの `executeRun` は `ExecBackend`(script 実行・scope 確保・cache/artifact 転送)を組み立てて `RunClaim` に渡すだけの薄いラッパーになった。k8s 側の旧 `orchestrate`(約650行)は完全削除。9タスクに分けて段階的に集約し、各段階で段階1の適合スイート(`internal/paritycases`)を回帰ゲートに使用。移行過程で以下の挙動差分が発見・意図的に統一された:
+  - k8s の report(ステップ/FinishRun)リトライが host と同じ `RetryUntilSuccess` に統一(T2)。
+  - cache の空 key / 空 path 展開時のスキップ挙動を host/k8s で統一(T3)。
+  - matrix 展開の構造的エラーによる abort(残りのステップを打ち切る挙動)が k8s にも適用されるようになった(`RunPipeline` の stage-abort-on-error 契約を host/k8s 共通で採用、T5)。
+  - `SetRunOutputs` のリトライと `cancelledByMaster` による Cancelled/Failed の判別ロジックを統一(T8)。
+  - コミット範囲: `fbc48c9`〜本コミット(`feat-shared-orchestrator` ブランチ、Task 1〜9)。
 
 ---
 

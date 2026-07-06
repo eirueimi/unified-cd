@@ -287,24 +287,6 @@ func imageStepEnv(step api.ClaimStep) map[string]string {
 	return env
 }
 
-// execStepEnv returns the "KEY=VALUE" pairs to apply at exec time for a
-// default-pod or scope-pod step: UNIFIED_AGENT_OS=linux (pods are always
-// Linux containers, mirroring the host agent's agentOSForStep for scoped/
-// containerized steps — see internal/agent/agent.go:565) plus the step's own
-// env: map (already template-expanded by the caller). Kubernetes exec has no
-// native env option, so these pairs are threaded into the exec'd command via
-// the `env` binary (buildEnvShellCommand) rather than baked into the pod spec
-// — this keeps per-step env correct even when a step reuses a pooled/scope
-// pod that was created (and had its env baked) by a different step.
-func execStepEnv(step api.ClaimStep) []string {
-	env := make([]string, 0, len(step.Env)+1)
-	env = append(env, "UNIFIED_AGENT_OS=linux")
-	for k, v := range step.Env {
-		env = append(env, k+"="+v)
-	}
-	return env
-}
-
 // imageStepDeadline returns the throwaway pod's activeDeadlineSeconds: the step
 // timeout if set, else a 1-hour default.
 func imageStepDeadline(step api.ClaimStep) int64 {

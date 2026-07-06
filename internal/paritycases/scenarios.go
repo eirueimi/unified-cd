@@ -51,12 +51,15 @@ func ifSkipsStep() Case {
 }
 
 // 2. env-reaches-script: a step-level `env:` entry must be visible to the
-// script's environment, and UNIFIED_AGENT_OS must be injected (both agents
-// inject this for every non-scoped/non-image host-workspace step, see
-// agentOSForStep (host) / execStepEnv (k8s)). The OS value legitimately
-// differs between drivers (host: runtime.GOOS: "windows" here; k8s: "linux",
-// hardcoded for pod-exec steps) so it is asserted with a permissive regex
-// (any non-whitespace value) rather than pinned to one OS string.
+// script's environment, and UNIFIED_AGENT_OS must be injected. This is now
+// done once by the shared orchestration loop (agentlib.RunClaim,
+// internal/agent/orchestrator.go) via agentOSForStep(step, b.DefaultAgentOS())
+// for every non-scoped/non-image step, regardless of which agent's
+// ExecBackend is plugged in. The OS value legitimately differs between
+// drivers (host: runtime.GOOS: "windows" here; k8s: "linux", hardcoded via
+// k8sBackend.DefaultAgentOS for pod-exec steps) so it is asserted with a
+// permissive regex (any non-whitespace value) rather than pinned to one OS
+// string.
 func envReachesScript() Case {
 	return Case{
 		Name: "env-reaches-script",
