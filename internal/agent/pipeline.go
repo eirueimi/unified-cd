@@ -70,23 +70,7 @@ func (s *safeStepCtx) setStepMatrixOutputs(name, comboKey string, outputs map[st
 		newSteps[k] = v
 	}
 
-	sd := newSteps[name]
-	newOutputs := make(map[string]any, len(sd.Outputs))
-	for k, v := range sd.Outputs {
-		newOutputs[k] = v
-	}
-	for k, v := range outputs {
-		merged := map[string]string{comboKey: v}
-		if prev, ok := newOutputs[k].(map[string]string); ok {
-			for pk, pv := range prev {
-				merged[pk] = pv
-			}
-			merged[comboKey] = v
-		}
-		newOutputs[k] = merged
-	}
-	sd.Outputs = newOutputs
-	newSteps[name] = sd
+	ApplyStepOutputs(newSteps, name, comboKey, outputs)
 
 	s.data.Steps = newSteps
 }

@@ -747,23 +747,8 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					slog.Error("k8s: call step failed", "step", step.Name, "error", callErr)
 					status = "Failed"
 				} else if len(outputs) > 0 {
-					if step.MatrixKey != "" {
-						sd := stepCtx.Steps[step.Name]
-						if sd.Outputs == nil {
-							sd.Outputs = map[string]any{}
-						}
-						for k, v := range outputs {
-							m, _ := sd.Outputs[k].(map[string]string)
-							if m == nil {
-								m = map[string]string{}
-							}
-							m[step.MatrixKey] = v
-							sd.Outputs[k] = m
-						}
-						stepCtx.Steps[step.Name] = sd
-					} else {
-						stepCtx.Steps[step.Name] = dsl.StepData{Outputs: dsl.StringOutputs(outputs)}
-					}
+					// k8s runs steps sequentially, so no lock is needed here.
+					agentlib.ApplyStepOutputs(stepCtx.Steps, step.Name, step.MatrixKey, outputs)
 					_ = a.client.SetStepOutputs(ctx, a.cfg.AgentID, c.RunID, step.Index, step.MatrixKey, outputs)
 				}
 				_ = a.client.ReportStep(ctx, a.cfg.AgentID, api.StepReportRequest{
@@ -805,23 +790,8 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 					}
 				}
 				if len(capturedOutputs) > 0 {
-					if step.MatrixKey != "" {
-						sd := stepCtx.Steps[step.Name]
-						if sd.Outputs == nil {
-							sd.Outputs = map[string]any{}
-						}
-						for k, v := range capturedOutputs {
-							m, _ := sd.Outputs[k].(map[string]string)
-							if m == nil {
-								m = map[string]string{}
-							}
-							m[step.MatrixKey] = v
-							sd.Outputs[k] = m
-						}
-						stepCtx.Steps[step.Name] = sd
-					} else {
-						stepCtx.Steps[step.Name] = dsl.StepData{Outputs: dsl.StringOutputs(capturedOutputs)}
-					}
+					// k8s runs steps sequentially, so no lock is needed here.
+					agentlib.ApplyStepOutputs(stepCtx.Steps, step.Name, step.MatrixKey, capturedOutputs)
 					_ = a.client.SetStepOutputs(ctx, a.cfg.AgentID, c.RunID, step.Index, step.MatrixKey, capturedOutputs)
 				}
 			}
