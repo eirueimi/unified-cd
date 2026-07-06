@@ -335,6 +335,89 @@ func (p *LogPusher) flushLocked(ctx context.Context) {
 	}
 }
 
+// StartAutoFlush spawns a goroutine that periodically flushes complete
+// buffered lines to the master server while a step is still running, so
+// sparse output (e.g. stderr with long gaps between lines) appears in the
+// WebUI before the step completes rather than only at Flush (step end).
+// Only newline-terminated lines are shipped — an in-progress line with no
+// trailing '\n' yet is held back until it is completed or the caller calls
+// Flush. Returns immediately; the goroutine exits when ctx is done, so
+// callers should cancel ctx at step end (then call Flush for the final,
+// possibly-partial remainder).
+func (p *LogPusher) StartAutoFlush(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				p.mu.Lock()
+				p.flushCompleteLinesLocked(ctx)
+				p.mu.Unlock()
+			}
+		}
+	}()
+}
+
+// flushCompleteLinesLocked ships only complete (newline-terminated) lines
+// currently in the buffer, leaving any trailing partial line (no '\n' yet)
+// in place for a later flush. Used by StartAutoFlush so a line that is still
+// being written is never shipped truncated.
+func (p *LogPusher) flushCompleteLinesLocked(ctx context.Context) {
+	// 1. Retry pending batches first, same as flushLocked.
+	var stillPending []pendingBatch
+	for _, b := range p.pending {
+		if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, b.reqs); err != nil {
+			stillPending = append(stillPending, b)
+		}
+	}
+	p.pending = stillPending
+
+	full := p.buf.String()
+	lastNL := strings.LastIndexByte(full, '\n')
+	if lastNL < 0 {
+		// No complete line yet; nothing to ship.
+		return
+	}
+	complete := full[:lastNL+1]
+	remainder := full[lastNL+1:]
+
+	lines := splitLines(complete)
+	if len(lines) == 0 {
+		return
+	}
+
+	reqs := make([]api.LogAppendRequest, 0, len(lines))
+	now := time.Now().UTC()
+	for _, line := range lines {
+		maskedLine := line
+		if p.masker != nil {
+			maskedLine = p.masker.Mask(line)
+		}
+		reqs = append(reqs, api.LogAppendRequest{
+			RunID:     p.runID,
+			StepIndex: p.stepIndex,
+			Stream:    p.stream,
+			Timestamp: now,
+			Line:      maskedLine,
+		})
+	}
+
+	// Reset the buffer to just the held-back partial remainder before
+	// releasing the lock (caller holds p.mu), so Write appends after it.
+	p.buf.Reset()
+	p.buf.WriteString(remainder)
+
+	if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, reqs); err != nil {
+		p.appendPendingLocked(pendingBatch{reqs: reqs})
+	}
+}
+
 // appendPendingLocked appends a pending batch and discards old batches if the cap is exceeded.
 // At least one (the latest) batch is always retained even if it alone exceeds the cap.
 func (p *LogPusher) appendPendingLocked(b pendingBatch) {

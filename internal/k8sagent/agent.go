@@ -17,6 +17,7 @@ import (
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/secrets"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -27,6 +28,12 @@ var approvalPollInterval = 3 * time.Second
 // cancelPollInterval is how often the cancel poller polls the controller to
 // detect mid-run cancellation. It is a var (not a const) so tests can shorten it.
 var cancelPollInterval = 5 * time.Second
+
+// stderrAutoFlushInterval is how often a step's stderr LogPusher is flushed
+// while the step is still running, so sparse stderr output appears in the
+// WebUI before the step completes (mirrors the host agent's stdout streaming
+// behavior). It is a var (not a const) so tests can shorten it.
+var stderrAutoFlushInterval = 2 * time.Second
 
 // imagePodStartTimeout bounds how long runImageStep waits for a throwaway
 // image pod to reach Running. Under RestartPolicy: Never a pod stuck in
@@ -143,6 +150,28 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	slog.Info("k8s: executing Run", "runId", c.RunID, "job", c.JobName)
 
+	// Fetch the secrets needed for this Run and build the masker, mirroring
+	// the standard host agent (internal/agent/agent.go): on fetch failure,
+	// warn and continue without secrets rather than failing the run.
+	var secretValues map[string]string
+	var masker *secrets.Masker
+	if len(c.SecretsNeeded) > 0 {
+		var err error
+		secretValues, err = a.client.FetchSecrets(ctx, a.cfg.AgentID, c.SecretsNeeded)
+		if err != nil {
+			slog.Warn("k8s: failed to fetch secrets, continuing without secrets", "runId", c.RunID, "error", err)
+			secretValues = map[string]string{}
+		}
+		vals := make([]string, 0, len(secretValues))
+		for _, v := range secretValues {
+			vals = append(vals, v)
+		}
+		masker = secrets.NewMasker(vals)
+	} else {
+		secretValues = map[string]string{}
+		masker = secrets.NoOpMasker
+	}
+
 	usePool := c.PodTemplate != nil && c.PodTemplate.Reuse
 
 	var pooledPod *PooledPod
@@ -258,9 +287,18 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	stepExec := func(execCtx context.Context, step api.ClaimStep, expandedRun string) (int, string, error) {
 		var stdoutBuf strings.Builder
 		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, step.Index, "stderr")
+		stderrPusher.SetMasker(masker)
 		stdoutWriter := io.MultiWriter(&stdoutBuf, &logLineWriter{
 			client: a.client, agentID: a.cfg.AgentID, runID: c.RunID, stepIdx: step.Index, stream: "stdout",
+			masker: masker,
 		})
+
+		// Auto-flush stderr for the duration of the step so sparse output
+		// appears in the WebUI before the step completes (mirrors the host
+		// agent's stdout streaming behavior; k8s stdout already ships per
+		// line via logLineWriter, so only stderr needs this).
+		flushCtx, stopAutoFlush := context.WithCancel(execCtx)
+		stderrPusher.StartAutoFlush(flushCtx, stderrAutoFlushInterval)
 
 		var ec int
 		var execErr error
@@ -270,6 +308,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			// with RunsIn at the DSL level, so this takes precedence.
 			podName, err := ensureScopePod(execCtx, step)
 			if err != nil {
+				stopAutoFlush()
 				return -1, "", err
 			}
 			ec, execErr = a.exec.ExecStep(execCtx, podName, "step", expandedRun, stdoutWriter, stderrPusher)
@@ -283,6 +322,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			ec, execErr = a.exec.ExecStep(execCtx, podName, execContainer(step), expandedRun, stdoutWriter, stderrPusher)
 		}
 
+		stopAutoFlush()
 		stderrPusher.Flush(execCtx)
 		return ec, stdoutBuf.String(), execErr
 	}
@@ -297,12 +337,13 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			targetPod = podName
 		}
 		stderrPusher := agentlib.NewLogPusher(a.client, a.cfg.AgentID, c.RunID, 0, "stderr")
+		stderrPusher.SetMasker(masker)
 		ec, err := a.exec.ExecStepArgv(execCtx, targetPod, container, argv, io.Discard, stderrPusher)
 		stderrPusher.Flush(execCtx)
 		return ec, err
 	}
 
-	a.orchestrate(ctx, c, stepExec, sidecarExec, mountPath, ensureScopePod)
+	a.orchestrate(ctx, c, stepExec, sidecarExec, mountPath, ensureScopePod, secretValues)
 }
 
 // orchestrate runs the claim's stages, reporting step/run status, using stepExec
@@ -314,7 +355,11 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 // ensureScopePod lazily creates (or returns the cached) scope pod for a scoped
 // cache/artifact step, so its sidecar call can target the scope pod's sidecar
 // and scratch volume instead of the run pod's.
-func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec, sidecarExec func(ctx context.Context, targetPod, container string, argv []string) (int, error), mountPath string, ensureScopePod func(ctx context.Context, step api.ClaimStep) (string, error)) {
+// secretValues holds the resolved values for c.SecretsNeeded (fetched by
+// executeRun before orchestrate is called); it is exposed to step templates
+// as {{ .Secrets.X }}, mirroring the standard host agent. May be nil/empty
+// when the claim needs no secrets.
+func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExec podStepExec, sidecarExec func(ctx context.Context, targetPod, container string, argv []string) (int, error), mountPath string, ensureScopePod func(ctx context.Context, step api.ClaimStep) (string, error), secretValues map[string]string) {
 	var anyStepFailed atomic.Bool
 	var cancelledByMaster atomic.Bool
 	statusView := func() dsl.RunStatusView {
@@ -376,7 +421,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 	}()
 
 	// Accumulate step outputs for template expansion in subsequent steps
-	stepCtx := dsl.TemplateData{Params: c.Params, Steps: map[string]dsl.StepData{}}
+	stepCtx := dsl.TemplateData{Params: c.Params, Steps: map[string]dsl.StepData{}, Secrets: secretValues}
 
 	// makeRunStep builds the per-step execution function. It is reused for the
 	// main stages and for the finally block, parametrized by:
@@ -408,7 +453,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		}
 		return func(step api.ClaimStep) {
 			// Build template data; expose matrix/foreach values if set
-			tplData := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps}
+			tplData := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps, Secrets: stepCtx.Secrets}
 			if step.MatrixValues != nil {
 				tplData.Matrix = step.MatrixValues
 				tplData.Foreach = step.MatrixValues
@@ -680,7 +725,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 			} else {
 				// Evaluate output templates against the captured stdout
 				capturedOutputs := map[string]string{}
-				outCtx := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps, Stdout: capturedStdout, Matrix: tplData.Matrix, Foreach: tplData.Foreach}
+				outCtx := dsl.TemplateData{Params: stepCtx.Params, Steps: stepCtx.Steps, Stdout: capturedStdout, Matrix: tplData.Matrix, Foreach: tplData.Foreach, Secrets: stepCtx.Secrets}
 				for outKey, outTpl := range step.Outputs {
 					if val, err := dsl.ExpandTemplate(outTpl, outCtx); err == nil {
 						capturedOutputs[outKey] = val
@@ -736,7 +781,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 	// post-failure behavior, so the loop never aborts on failure.
 	for _, stage := range c.Stages {
 		for _, step := range api.StageSteps(stage) {
-			data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps}
+			data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps, Secrets: stepCtx.Secrets}
 			variants, err := agentlib.ExpandMatrixStep(step, data, c.MatrixMaxCombinations)
 			if err != nil {
 				slog.Error("k8s: matrix expansion failed", "step", step.Name, "error", err)
@@ -800,7 +845,7 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 		finallyRun := makeRunStep(func() dsl.RunStatusView { return frozen }, false, &finallyFailed, finallyCtx, false)
 		for _, stage := range c.Finally {
 			for _, step := range api.StageSteps(stage) {
-				data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps}
+				data := dsl.TemplateData{Params: c.Params, Steps: stepCtx.Steps, Secrets: stepCtx.Secrets}
 				variants, err := agentlib.ExpandMatrixStep(step, data, c.MatrixMaxCombinations)
 				if err != nil {
 					slog.Error("k8s: finally matrix expansion failed", "step", step.Name, "error", err)
@@ -830,12 +875,14 @@ func (a *K8sAgent) orchestrate(ctx context.Context, c api.ClaimResponse, stepExe
 }
 
 // logLineWriter is a Writer that sends each line of stdout to the master server via AppendLog.
+// A nil masker is a no-op (lines are shipped unmodified).
 type logLineWriter struct {
 	client  *agentlib.Client
 	agentID string
 	runID   string
 	stepIdx int
 	stream  string
+	masker  *secrets.Masker
 	buf     strings.Builder
 }
 
@@ -850,6 +897,9 @@ func (lw *logLineWriter) Write(p []byte) (int, error) {
 		}
 		line := s[:idx]
 		s = s[idx+1:]
+		if lw.masker != nil {
+			line = lw.masker.Mask(line)
+		}
 		_ = lw.client.AppendLog(context.Background(), lw.agentID, api.LogAppendRequest{
 			RunID:     lw.runID,
 			StepIndex: lw.stepIdx,
