@@ -44,5 +44,7 @@ spec:
         with:
           status: "failure"
           job_name: "self-monitor"
-          run_id: "{{ .RunID }}"
+          # A job has no template variable for its own run ID, so pass a static
+          # constant here — the Slack footer will show this value verbatim.
+          run_id: "self-monitor"
           message: "{{ .Steps.check.Outputs.alert_message }}"
