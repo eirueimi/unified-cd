@@ -829,12 +829,14 @@ func expandStepEnv(env map[string]string, td dsl.TemplateData) map[string]string
 
 // imageStepEnv returns a fresh env map for a runsIn.image container: the step's
 // env plus UNIFIED_AGENT_OS. Always a new map, so callers never mutate the claim.
+// The throwaway pod runs a Linux container image regardless of the agent's host
+// OS, so UNIFIED_AGENT_OS is "linux" — not the agent process's runtime.GOOS.
 func imageStepEnv(step api.ClaimStep) map[string]string {
 	env := make(map[string]string, len(step.Env)+1)
 	for k, v := range step.Env {
 		env[k] = v
 	}
-	env["UNIFIED_AGENT_OS"] = runtime.GOOS
+	env["UNIFIED_AGENT_OS"] = "linux"
 	return env
 }
 
