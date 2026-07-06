@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -43,4 +44,18 @@ func TestEnvIntOr(t *testing.T) {
 		got := envIntOr("UNIFIED_TEST_ENVINTOR", 64, nil)
 		assert.Equal(t, 64, got)
 	})
+}
+
+func TestQueuedRunGraceDefault(t *testing.T) {
+	t.Setenv("UNIFIED_QUEUED_RUN_GRACE", "")
+	assert.Equal(t, 5*time.Minute, queuedRunGraceDefault())
+
+	t.Setenv("UNIFIED_QUEUED_RUN_GRACE", "20m")
+	assert.Equal(t, 20*time.Minute, queuedRunGraceDefault())
+
+	t.Setenv("UNIFIED_QUEUED_RUN_GRACE", "bogus")
+	assert.Equal(t, 5*time.Minute, queuedRunGraceDefault())
+
+	t.Setenv("UNIFIED_QUEUED_RUN_GRACE", "-1m")
+	assert.Equal(t, 5*time.Minute, queuedRunGraceDefault())
 }

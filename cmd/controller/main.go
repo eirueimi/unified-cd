@@ -39,6 +39,26 @@ func auditRetentionDaysDefault() int {
 	return n
 }
 
+// queuedRunGraceDefault resolves the queued-run reaper grace period from
+// UNIFIED_QUEUED_RUN_GRACE (a Go duration string such as "5m" or "20m"),
+// falling back to 5 minutes when unset, invalid, or non-positive. This is
+// how long a run may sit Queued with no eligible live agent before being
+// failed - raise it in environments where a full agent outage (e.g. a
+// node-pool upgrade) can exceed the default.
+func queuedRunGraceDefault() time.Duration {
+	const def = 5 * time.Minute
+	v := os.Getenv("UNIFIED_QUEUED_RUN_GRACE")
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		slog.Warn("invalid UNIFIED_QUEUED_RUN_GRACE, using default", "value", v, "default", def)
+		return def
+	}
+	return d
+}
+
 func main() {
 	// Pre-scan os.Args for -f so we can load the config file before defining
 	// other flags. This gives priority: env vars → config file → CLI flags.
@@ -240,10 +260,12 @@ func main() {
 	}
 	go controller.RunApprovalReaper(ctx, st, time.Minute)
 	go controller.RunStuckRunReaper(ctx, st, 30*time.Second, 90*time.Second, 60*time.Second)
-	// Fail runs that have sat Queued for >5m with no live agent able to claim
-	// them (the agent they need disconnected), so they don't stay "in progress"
-	// forever. staleAfter=90s matches the stuck-run reaper's agent-liveness window.
-	go controller.RunQueuedRunReaper(ctx, st, 30*time.Second, 5*time.Minute, 90*time.Second)
+	// Fail runs that have sat Queued for longer than the grace period (default
+	// 5m, configurable via UNIFIED_QUEUED_RUN_GRACE) with no live agent able to
+	// claim them (the agent they need disconnected), so they don't stay
+	// "in progress" forever. staleAfter=90s matches the stuck-run reaper's
+	// agent-liveness window.
+	go controller.RunQueuedRunReaper(ctx, st, 30*time.Second, queuedRunGraceDefault(), 90*time.Second)
 	// Reap AppSources stuck in "Syncing" (bug #33): the manual sync-trigger API sets
 	// sync_status="Syncing" synchronously, so a reconciler crash / restart / leadership
 	// change mid-sync can strand the row forever. Reset any Syncing row older than 5m.
