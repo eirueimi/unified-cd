@@ -27,7 +27,7 @@ func TestRunPipeline_Sequential(t *testing.T) {
 	}
 	var order []string
 	var mu sync.Mutex
-	err := RunPipeline(t.Context(), stages, emptyData, 0,
+	err := RunPipeline(t.Context(), stages, emptyData, 0, Concurrent,
 		func(_ context.Context, s api.ClaimStep) error {
 			mu.Lock()
 			order = append(order, s.Name)
@@ -48,7 +48,7 @@ func TestRunPipeline_ParallelGroup(t *testing.T) {
 	var mu sync.Mutex
 	running := 0
 	maxConcurrent := 0
-	err := RunPipeline(t.Context(), stages, emptyData, 0,
+	err := RunPipeline(t.Context(), stages, emptyData, 0, Concurrent,
 		func(_ context.Context, s api.ClaimStep) error {
 			mu.Lock()
 			running++
@@ -75,7 +75,7 @@ func TestRunPipeline_ParallelGroupFailure(t *testing.T) {
 		{Step: &api.ClaimStep{Index: 2, StageIndex: 1, Name: "after", Run: "echo after"}},
 	}
 	var afterRan atomic.Bool
-	err := RunPipeline(t.Context(), stages, emptyData, 0,
+	err := RunPipeline(t.Context(), stages, emptyData, 0, Concurrent,
 		func(_ context.Context, s api.ClaimStep) error {
 			if s.Name == "fail" {
 				return errors.New("step failed")
@@ -95,7 +95,7 @@ func TestRunPipeline_ContinueOnError(t *testing.T) {
 		{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "after", Run: "echo after"}},
 	}
 	var afterRan atomic.Bool
-	err := RunPipeline(t.Context(), stages, emptyData, 0,
+	err := RunPipeline(t.Context(), stages, emptyData, 0, Concurrent,
 		func(_ context.Context, s api.ClaimStep) error {
 			if s.Name == "flaky" {
 				return errors.New("flaky failed")
@@ -117,7 +117,7 @@ func TestRunPipeline_MatrixExpansion(t *testing.T) {
 	}}}
 	var mu sync.Mutex
 	var keys []string
-	err := RunPipeline(t.Context(), stages, emptyData, 0, func(_ context.Context, s api.ClaimStep) error {
+	err := RunPipeline(t.Context(), stages, emptyData, 0, Concurrent, func(_ context.Context, s api.ClaimStep) error {
 		mu.Lock()
 		defer mu.Unlock()
 		keys = append(keys, s.MatrixKey)
@@ -139,7 +139,7 @@ func TestRunPipeline_MatrixInsideParallelExpands(t *testing.T) {
 	}}}
 	var mu sync.Mutex
 	count := map[string]int{}
-	err := RunPipeline(t.Context(), stages, emptyData, 0, func(_ context.Context, s api.ClaimStep) error {
+	err := RunPipeline(t.Context(), stages, emptyData, 0, Concurrent, func(_ context.Context, s api.ClaimStep) error {
 		mu.Lock()
 		defer mu.Unlock()
 		count[s.Name]++
@@ -157,7 +157,7 @@ func TestRunPipeline_MatrixCapFailsRun(t *testing.T) {
 			{Name: "a", Source: api.ClaimForeachSource{Literal: []string{"1", "2", "3"}}},
 		}},
 	}}}
-	err := RunPipeline(t.Context(), stages, emptyData, 2, func(_ context.Context, _ api.ClaimStep) error { return nil })
+	err := RunPipeline(t.Context(), stages, emptyData, 2, Concurrent, func(_ context.Context, _ api.ClaimStep) error { return nil })
 	require.ErrorContains(t, err, "exceed")
 }
 
@@ -182,6 +182,7 @@ func TestRunPipeline_MatrixExprParam(t *testing.T) {
 			}
 		},
 		0,
+		Concurrent,
 		func(_ context.Context, s api.ClaimStep) error {
 			mu.Lock()
 			seen = append(seen, s.MatrixValues["env"])
@@ -190,6 +191,99 @@ func TestRunPipeline_MatrixExprParam(t *testing.T) {
 		})
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"a", "b", "c"}, seen)
+}
+
+// TestRunPipeline_SequentialRunsMembersOneAtATime asserts that Sequential mode
+// runs parallel-group members one at a time (max-in-flight == 1) and in
+// declaration order.
+func TestRunPipeline_SequentialRunsMembersOneAtATime(t *testing.T) {
+	stages := []api.ClaimStage{
+		{Parallel: []api.ClaimStep{
+			{Index: 0, StageIndex: 0, Name: "a", Run: "echo a"},
+			{Index: 1, StageIndex: 0, Name: "b", Run: "echo b"},
+			{Index: 2, StageIndex: 0, Name: "c", Run: "echo c"},
+		}},
+	}
+	var inFlight int32
+	var maxInFlight int32
+	var mu sync.Mutex
+	var order []string
+	err := RunPipeline(t.Context(), stages, emptyData, 0, Sequential,
+		func(_ context.Context, s api.ClaimStep) error {
+			cur := atomic.AddInt32(&inFlight, 1)
+			for {
+				old := atomic.LoadInt32(&maxInFlight)
+				if cur <= old || atomic.CompareAndSwapInt32(&maxInFlight, old, cur) {
+					break
+				}
+			}
+			mu.Lock()
+			order = append(order, s.Name)
+			mu.Unlock()
+			time.Sleep(5 * time.Millisecond)
+			atomic.AddInt32(&inFlight, -1)
+			return nil
+		})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&maxInFlight))
+	assert.Equal(t, []string{"a", "b", "c"}, order)
+}
+
+// TestRunPipeline_ConcurrentRunsMembersTogether locks in the existing
+// (Concurrent) behavior: all members of a parallel group are in flight at
+// once. Uses a barrier channel so the assertion doesn't depend on timing —
+// each worker blocks until all N have arrived, with a deadlock-timeout guard
+// so a regression to sequential execution fails fast instead of hanging.
+func TestRunPipeline_ConcurrentRunsMembersTogether(t *testing.T) {
+	const n = 3
+	stages := []api.ClaimStage{
+		{Parallel: []api.ClaimStep{
+			{Index: 0, StageIndex: 0, Name: "a", Run: "echo a"},
+			{Index: 1, StageIndex: 0, Name: "b", Run: "echo b"},
+			{Index: 2, StageIndex: 0, Name: "c", Run: "echo c"},
+		}},
+	}
+	var inFlight int32
+	var maxInFlight int32
+	arrived := make(chan struct{}, n)
+	release := make(chan struct{})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunPipeline(t.Context(), stages, emptyData, 0, Concurrent,
+			func(_ context.Context, s api.ClaimStep) error {
+				cur := atomic.AddInt32(&inFlight, 1)
+				for {
+					old := atomic.LoadInt32(&maxInFlight)
+					if cur <= old || atomic.CompareAndSwapInt32(&maxInFlight, old, cur) {
+						break
+					}
+				}
+				arrived <- struct{}{}
+				<-release
+				atomic.AddInt32(&inFlight, -1)
+				return nil
+			})
+	}()
+
+	// Wait for all n members to be in flight simultaneously, with a
+	// deadlock-timeout guard in case a regression serializes execution.
+	for i := 0; i < n; i++ {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for all %d members to be in flight (deadlock guard)", n)
+		}
+	}
+	close(release)
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunPipeline did not return (deadlock guard)")
+	}
+	assert.Equal(t, int32(n), atomic.LoadInt32(&maxInFlight))
 }
 
 func TestSafeStepCtx_MatrixOutputAggregation(t *testing.T) {

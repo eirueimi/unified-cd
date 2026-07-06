@@ -75,15 +75,31 @@ func (s *safeStepCtx) setStepMatrixOutputs(name, comboKey string, outputs map[st
 	s.data.Steps = newSteps
 }
 
+// ConcurrencyMode controls how stage members (parallel groups / matrix
+// expansions) are executed.
+type ConcurrencyMode int
+
+const (
+	// Concurrent runs parallel-group / matrix-expanded members as goroutines
+	// (the host agent's historical behavior).
+	Concurrent ConcurrencyMode = iota
+	// Sequential runs them one at a time in declaration order (the k8s
+	// agent's documented behavior — its scope-pod map and hook stack are not
+	// concurrency-safe).
+	Sequential
+)
+
 // RunPipeline executes stages sequentially. Within a stage, matrix expansion
 // applies to the single step and to every member of a parallel group; all
-// resulting copies run concurrently. When a stage fails, subsequent stages are
-// not executed.
+// resulting copies run according to mode (concurrently as goroutines, or
+// sequentially in declaration order). When a stage fails, subsequent stages
+// are not executed.
 func RunPipeline(
 	ctx context.Context,
 	stages []api.ClaimStage,
 	getData func() dsl.TemplateData,
 	maxCombos int,
+	mode ConcurrencyMode,
 	run func(ctx context.Context, step api.ClaimStep) error,
 ) error {
 	for _, stage := range stages {
@@ -103,6 +119,12 @@ func RunPipeline(
 		// non-matrix single-step stage.
 		if stage.Step != nil && stage.Step.Matrix == nil {
 			if err := runOne(ctx, expanded[0], run); err != nil {
+				return err
+			}
+			continue
+		}
+		if mode == Sequential {
+			if err := runSequential(ctx, expanded, run); err != nil {
 				return err
 			}
 			continue
@@ -129,6 +151,17 @@ func runParallel(ctx context.Context, steps []api.ClaimStep, run func(context.Co
 	wg.Wait()
 	for _, err := range errs {
 		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runSequential runs each step one at a time, in declaration order, stopping
+// at (and returning) the first error not suppressed by ContinueOnError.
+func runSequential(ctx context.Context, steps []api.ClaimStep, run func(context.Context, api.ClaimStep) error) error {
+	for _, step := range steps {
+		if err := runOne(ctx, step, run); err != nil {
 			return err
 		}
 	}

@@ -722,7 +722,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}
 
 	mainRunner := makeStepRunner(statusView, true, &anyStepFailed, true)
-	dagErr := RunPipeline(runCtx, c.Stages, getData, c.MatrixMaxCombinations, mainRunner)
+	dagErr := RunPipeline(runCtx, c.Stages, getData, c.MatrixMaxCombinations, Concurrent, mainRunner)
 
 	// post-hooks run regardless of DAG success/failure (cache save should always attempt).
 	// Use WithoutCancel so a cancelled parent context doesn't skip cache saves.
@@ -768,7 +768,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		finallyRunner := makeStepRunner(finallyStatus, false, &finallyFailed, false)
 		// Use a non-cancelling context so finally runs even when the run was cancelled.
 		finallyCtx := context.WithoutCancel(ctx)
-		if err := RunPipeline(finallyCtx, c.Finally, getData, c.MatrixMaxCombinations, finallyRunner); err != nil {
+		if err := RunPipeline(finallyCtx, c.Finally, getData, c.MatrixMaxCombinations, Concurrent, finallyRunner); err != nil {
 			slog.Warn("finally: structural error", "runId", c.RunID, "error", err)
 			finallyFailed.Store(true)
 		}
