@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path"
 	"strconv"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
@@ -216,6 +217,31 @@ func (b *k8sBackend) sidecarExecArgv(ctx context.Context, targetPod, container s
 	ec, err := b.a.exec.ExecStepArgv(ctx, targetPod, container, argv, io.Discard, stderrPusher)
 	stderrPusher.Flush(ctx)
 	return ec, err
+}
+
+// ResolveArtifactPath resolves p against the run/pooled pod's workspace mount
+// path (non-scoped) or the scope pod's fixed working directory (scoped),
+// mirroring the pre-refactor orchestrate's inline path.Join(mountPath, ...) /
+// path.Join(scopeMountPath, ...) computation.
+func (b *k8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p string) string {
+	if !scope.IsZero() {
+		return path.Join(scopeMountPath, p)
+	}
+	return path.Join(b.mountPath, p)
+}
+
+// ResolveCachePath is identical to ResolveArtifactPath on k8s: a non-scoped
+// cache path is resolved against the pod's mount path exactly like an
+// artifact path (unlike the host agent, which leaves it unresolved).
+func (b *k8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) string {
+	return b.ResolveArtifactPath(scope, p)
+}
+
+// DefaultAgentOS always reports "linux": every k8s exec path — including the
+// "default pod" case — runs inside a Linux pod, unlike the host agent, which
+// executes a non-scoped, non-runsIn.image step directly on its own OS.
+func (b *k8sBackend) DefaultAgentOS() string {
+	return "linux"
 }
 
 // RunPostHook runs a post: hook's script in scope's pod (the "step"
