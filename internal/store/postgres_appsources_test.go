@@ -163,3 +163,43 @@ func TestUpsertAppSource_PreservesLastCommitOnIdenticalSpec(t *testing.T) {
 		t.Errorf("changed-spec upsert kept last_commit %q, want reset to \"\"", got2.LastCommit)
 	}
 }
+
+func TestPostgres_FindManagingAppSource(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	_, err := pg.UpsertAppSource(ctx, "src1", []byte(`{"repoURL":"https://x/y","targetRevision":"main","path":"jobs"}`))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	refs := []ResourceRef{{Kind: "Job", Name: "team-a/build"}, {Kind: "Schedule", Name: "nightly"}}
+	if err := pg.UpdateAppSourceSyncState(ctx, "src1", "sha1", time.Now(), refs); err != nil {
+		t.Fatalf("update sync state: %v", err)
+	}
+
+	// ヒット: 修飾名のJob
+	got, err := pg.FindManagingAppSource(ctx, "Job", "team-a/build")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if got == nil || got.Name != "src1" {
+		t.Fatalf("got %+v, want src1", got)
+	}
+
+	// ミス: leaf名だけでは一致しない（完全一致のみ）
+	got, err = pg.FindManagingAppSource(ctx, "Job", "build")
+	if err != nil || got != nil {
+		t.Fatalf("leaf-only lookup: got %+v, err %v; want nil, nil", got, err)
+	}
+
+	// ミス: kind不一致
+	got, err = pg.FindManagingAppSource(ctx, "Schedule", "team-a/build")
+	if err != nil || got != nil {
+		t.Fatalf("kind mismatch: got %+v, err %v; want nil, nil", got, err)
+	}
+
+	// ミス: どのAppSourceにも無い
+	got, err = pg.FindManagingAppSource(ctx, "Job", "unknown")
+	if err != nil || got != nil {
+		t.Fatalf("unknown: got %+v, err %v; want nil, nil", got, err)
+	}
+}
