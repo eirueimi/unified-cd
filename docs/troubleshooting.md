@@ -491,3 +491,6 @@ whose objects are missing; later ones may be missing too.
 2. Leave `schema_migrations.version` as-is when it already equals the highest
    migration number; only the schema objects were missing.
 3. Restart the controller. Startup verification re-runs and confirms the fix.
+
+**If the error says `schema_migrations is dirty` instead:**
+A previous migration attempt crashed midway, leaving the dirty flag set. Inspect which statements of the named version actually applied to the schema, repair them manually to a consistent state, then clear the flag with golang-migrate's `force` command or `UPDATE schema_migrations SET dirty = false` once the schema matches the version number. Then restart the controller.

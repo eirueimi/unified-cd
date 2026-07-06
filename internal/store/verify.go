@@ -44,6 +44,12 @@ func verifySchema(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("schema verification: read schema_migrations: %w", err)
 	}
+	if dirty {
+		return fmt.Errorf(
+			"schema verification: schema_migrations is dirty at version %d - a previous migration attempt crashed midway; "+
+				"resolve it manually (golang-migrate 'force' after repairing the schema), see docs/troubleshooting.md (\"Schema drift\")",
+			version)
+	}
 	for _, s := range schemaSentinels {
 		if s.version > version {
 			continue

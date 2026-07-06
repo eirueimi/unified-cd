@@ -57,3 +57,16 @@ func TestVerifySchemaCleanAndDrifted(t *testing.T) {
 	assert.Contains(t, err.Error(), "step_reports.child_run_id")
 	assert.Contains(t, err.Error(), "docs/troubleshooting.md")
 }
+
+func TestVerifySchemaReportsDirtyState(t *testing.T) {
+	pg := NewTestPostgres(t)
+	db := openSQL(t, pg)
+
+	_, err := db.Exec(`UPDATE schema_migrations SET dirty = true`)
+	require.NoError(t, err)
+
+	err = verifySchema(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dirty")
+	assert.NotContains(t, err.Error(), "schema drift")
+}
