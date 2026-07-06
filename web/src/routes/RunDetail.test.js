@@ -522,3 +522,55 @@ describe('RunDetail — artifacts', () => {
     URL.revokeObjectURL = origRevoke;
   });
 });
+
+// The SSE backfill for a large log keeps the TAIL (server: sseBackfillLimit +
+// "truncated" event). That only reads as "tail" in the UI if the log box is
+// scrolled to the bottom once the backfill lands — otherwise the user is left
+// looking at the OLDEST buffered lines. jsdom has no layout, so scroll
+// geometry is stubbed on Element.prototype: the test asserts the component
+// ASSIGNS scrollTop = scrollHeight after the backfill batch.
+describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  it('scrolls the log box to the bottom after a truncated backfill on a finished run', async () => {
+    try {
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(200, true);
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-tail', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+      const { container } = render(RunDetail, { props: { params: { id: 'run-tail' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+      });
+      const box = container.querySelector('.log-box');
+      expect(box).toBeTruthy();
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(4000);
+      });
+    } finally {
+      restore();
+    }
+  });
+});
