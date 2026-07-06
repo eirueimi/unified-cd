@@ -498,6 +498,12 @@
         <div class="meta">Triggered by</div>
         <div>{run.triggeredBy}</div>
       </div>
+      {#if run.claimedBy}
+        <div class="run-agent">
+          <div class="meta">Agent</div>
+          <div><a href="#/agents/{run.claimedBy}">{run.claimedBy} ↗</a></div>
+        </div>
+      {/if}
       <div>
         <div class="meta">Created</div>
         <div>{fmtTime(run.createdAt)}</div>

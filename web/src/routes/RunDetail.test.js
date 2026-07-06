@@ -108,6 +108,52 @@ function runWithStderrLog() {
 }
 
 describe('RunDetail — single SSE/events connection per run (TODO #10)', () => {
+  it("renders an Agent link when run.claimedBy is present", async () => {
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return emptyEventsResponse();
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({
+        id: 'run-3', status: 'Running', jobName: 'job-a', triggeredBy: 'x',
+        createdAt: null, params: {}, claimedBy: 'k8s-agent-1',
+      });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-3' } } });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('.run-agent')).toBeTruthy();
+    });
+    const link = container.querySelector('.run-agent a');
+    expect(link).toBeTruthy();
+    expect(link.getAttribute('href')).toBe('#/agents/k8s-agent-1');
+    expect(link.textContent).toContain('k8s-agent-1');
+  });
+
+  it("omits the Agent row when run.claimedBy is absent", async () => {
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return emptyEventsResponse();
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({
+        id: 'run-4', status: 'Queued', jobName: 'job-a', triggeredBy: 'x',
+        createdAt: null, params: {},
+      });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-4' } } });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('job-a');
+    });
+    expect(container.querySelector('.run-agent')).toBeFalsy();
+  });
+
+
   it('opens exactly one connection to /events when the view loads', async () => {
     const fetchMock = vi.fn((url) => {
       const u = String(url);
