@@ -530,6 +530,7 @@ spec:
 | `spec.path` | string | Yes | Directory within the repo to scan for YAML files (recursive) |
 | `spec.syncPolicy.interval` | string | No | How often to check for changes (e.g. `5m`, `1h`). Default: `5m`, minimum: `1m` |
 | `spec.syncPolicy.prune` | bool | No | If `true`, resources that are removed from the repo are deleted from the controller. Default: `false` |
+| `spec.syncPolicy.allowManualOverride` | bool | No | If `true`, disables managed-resource protection for this AppSource's resources (direct apply/delete is allowed). Default: `false` |
 
 ### Managed-resource protection
 
