@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -380,14 +379,6 @@ func (s *Server) handleAgentLogAppend(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// runFinisher is the optional store capability that reports whether a finish
-// actually transitioned the run (vs. a no-op because it was already terminal).
-// The concrete *store.Postgres implements it; we type-assert so the store.Store
-// interface does not have to change.
-type runFinisher interface {
-	FinishRun(ctx context.Context, runID string, status api.RunStatus) (bool, error)
-}
-
 // handleAgentFinishRun records the final status of a Run.
 //
 // When the run was already terminal (e.g. the orphaned-run reaper Failed it
@@ -414,35 +405,23 @@ func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid status", http.StatusBadRequest)
 		return
 	}
-	if rf, ok := s.store.(runFinisher); ok {
-		updated, err := rf.FinishRun(r.Context(), id, st)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if !updated {
-			// Late/CAS-miss report: the run was already terminal. Report the
-			// no-op distinctly instead of a false-success 204.
-			writeJSON(w, http.StatusOK, map[string]any{
-				"runId":            id,
-				"status":           string(st),
-				"alreadyFinalized": true,
-			})
-			return
-		}
-		// A parent run that Failed/Cancelled should not leave its call: children
-		// (possibly still Queued) running or waiting.
-		if st == api.RunFailed || st == api.RunCancelled {
-			cancelDescendantRuns(r.Context(), s.store, id)
-		}
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	// Fallback for stores that do not report RowsAffected (preserves prior behavior).
-	if err := s.store.MarkRunFinished(r.Context(), id, st); err != nil {
+	updated, err := s.store.FinishRun(r.Context(), id, st)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if !updated {
+		// Late/CAS-miss report: the run was already terminal. Report the
+		// no-op distinctly instead of a false-success 204.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"runId":            id,
+			"status":           string(st),
+			"alreadyFinalized": true,
+		})
+		return
+	}
+	// A parent run that Failed/Cancelled should not leave its call: children
+	// (possibly still Queued) running or waiting.
 	if st == api.RunFailed || st == api.RunCancelled {
 		cancelDescendantRuns(r.Context(), s.store, id)
 	}
