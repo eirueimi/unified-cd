@@ -54,14 +54,18 @@ var heartbeatInterval = DefaultHeartbeatInterval
 // postHookEntry is a post-processing entry executed after a step completes.
 // scope carries the owning step's scope handle, if any, so the post script
 // runs inside the same isolated environment the step body ran in rather than
-// on the host workspace. scope is only meaningful when scoped is true; the
-// scope container is still alive when hookStack is drained (see executeRun:
-// hookStack runs before the deferred backend.CloseScopes).
+// on the host workspace. The scope container is still alive when hookStack is
+// drained (see executeRun: hookStack runs before the deferred
+// backend.CloseScopes). container carries the step's RunsIn.Container (empty
+// for a plain/scoped/image step) so a runsIn.container step's post hook is
+// routed into the same named container the step body ran in, mirroring
+// pre-refactor k8s routing; the host backend ignores it (a runsIn.container
+// step errors on host, so its hook never queues there).
 type postHookEntry struct {
-	stepName string
-	post     api.PostStep
-	scoped   bool
-	scope    ScopeHandle
+	stepName  string
+	post      api.PostStep
+	scope     ScopeHandle
+	container string
 }
 
 // Agent represents an agent that communicates with the master server to execute jobs.

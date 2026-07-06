@@ -404,12 +404,16 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			}
 
 			if status == "Succeeded" && step.Post != nil {
+				container := ""
+				if step.RunsIn != nil {
+					container = step.RunsIn.Container
+				}
 				postHooksMu.Lock()
 				hookStack = append(hookStack, postHookEntry{
-					stepName: step.Name,
-					post:     *step.Post,
-					scoped:   isScopedStep(step),
-					scope:    stepScope,
+					stepName:  step.Name,
+					post:      *step.Post,
+					scope:     stepScope,
+					container: container,
 				})
 				postHooksMu.Unlock()
 			}
@@ -461,7 +465,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		// The owning step's scope (if any) is still alive here — hookStack is
 		// drained before the deferred b.CloseScopes runs (see the `defer`
 		// registered alongside masker installation above).
-		if runErr := b.RunPostHook(hookCtx, entry.scope, "", cmd, extraEnv); runErr != nil {
+		if runErr := b.RunPostHook(hookCtx, entry.scope, entry.container, cmd, extraEnv); runErr != nil {
 			slog.Warn("post step failed", "step", entry.stepName, "error", runErr)
 		}
 	}

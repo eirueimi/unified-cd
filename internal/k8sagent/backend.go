@@ -85,7 +85,7 @@ func (b *k8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, 
 // EnsureScope provisions (or reuses) the step's uses-scope pod, returning a
 // ScopeHandle whose opaque payload is the scope pod's name.
 func (b *k8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, env []string) (agentlib.ScopeHandle, error) {
-	name, err := b.ensureScopePod(ctx, step)
+	name, err := b.ensureScopePod(ctx, step, env)
 	if err != nil {
 		return agentlib.ScopeHandle{}, err
 	}
@@ -114,13 +114,22 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 // step, keyed by scopeKey. See executeRun's historical doc comment: this map
 // is only ever touched from orchestrate's single-goroutine, Sequential-mode
 // step loop, so no mutex is needed.
-func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep) (string, error) {
+//
+// The scope pod's env mirrors the RunImage fix (commit 9e09c76): the
+// orchestrator's already-template-expanded env (KEY=VALUE pairs) is merged
+// over imageStepEnv(step)'s k8s-specific defaults, so the caller's expanded
+// value wins over the raw, unexpanded step.Env map and a templated env value
+// (e.g. {{ .Params.x }}) ships resolved rather than as the literal template.
+func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env []string) (string, error) {
 	key := scopeKey(step)
 	if name, ok := b.scopePods[key]; ok {
 		return name, nil
 	}
-	env := imageStepEnv(step)
-	pod := buildScopePod(b.runID, b.a.cfg.Namespace, step.ScopeID, step.ScopeImage, env,
+	envMap := imageStepEnv(step)
+	for k, v := range envSliceToMap(env) {
+		envMap[k] = v
+	}
+	pod := buildScopePod(b.runID, b.a.cfg.Namespace, step.ScopeID, step.ScopeImage, envMap,
 		SidecarSpec{Image: b.a.cfg.SidecarImage, S3SecretName: b.a.cfg.SidecarS3SecretName})
 	created, err := b.a.pm.CreatePod(ctx, pod)
 	if err != nil {
