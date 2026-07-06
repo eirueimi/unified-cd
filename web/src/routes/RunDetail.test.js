@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
-import { token, serverURL } from '../lib/api.js';
+import { token, serverURL, stderrPlain } from '../lib/api.js';
 import RunDetail from './RunDetail.svelte';
 
 // Regression test for TODO #10: RunDetail used to call init() twice on load
@@ -70,7 +70,42 @@ function eventsResponseWithLogs(n, truncated = false) {
 beforeEach(() => {
   token.set('');
   serverURL.set('http://localhost:8080');
+  stderrPlain.set(false);
 });
+
+// A `/events` response streaming one stdout line and one stderr line, then ends.
+function stdoutStderrEventsResponse() {
+  const enc = new TextEncoder();
+  const payload =
+    `data: ${JSON.stringify({ type: 'log', seq: 1, stepIndex: 0, stream: 'stdout', line: 'out line' })}\n\n` +
+    `data: ${JSON.stringify({ type: 'log', seq: 2, stepIndex: 0, stream: 'stderr', line: 'err line' })}\n\n`;
+  let sent = false;
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        return {
+          read: async () => {
+            if (sent) return { done: true, value: undefined };
+            sent = true;
+            return { done: false, value: enc.encode(payload) };
+          },
+        };
+      },
+    },
+  });
+}
+
+function runWithStderrLog() {
+  return vi.fn((url) => {
+    const u = String(url);
+    if (u.includes('/events')) return stdoutStderrEventsResponse();
+    if (u.includes('/steps')) return jsonResponse([]);
+    if (u.includes('/approvals')) return jsonResponse([]);
+    return jsonResponse({ id: 'run-1', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+  });
+}
 
 describe('RunDetail — single SSE/events connection per run (TODO #10)', () => {
   it('opens exactly one connection to /events when the view loads', async () => {
@@ -418,6 +453,33 @@ describe('RunDetail — log virtualization', () => {
       expect(container.querySelector('.log-row-wrap')).toBeTruthy();
     });
     expect(localStorage.getItem('ecd_log_wrap')).toBe('1');
+  });
+});
+
+// The controller's UNIFIED_LOG_STDERR_PLAIN setting reaches the UI via the
+// `stderrPlain` store (loaded from /api/v1/ui-config at startup). Default:
+// stderr is red (.log-stderr). When the controller enables it, stderr renders
+// the same color as stdout (.log-stdout), with no per-user toggle in the UI.
+describe('RunDetail — stderr color (controller stderrPlain)', () => {
+  it('renders stderr red by default (.log-stderr)', async () => {
+    global.fetch = runWithStderrLog();
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+    await vi.waitFor(() => {
+      expect(container.querySelector('.log-row')).toBeTruthy();
+    });
+    expect(container.querySelector('.log-stderr')).toBeTruthy();
+  });
+
+  it('renders stderr the same as stdout when stderrPlain is enabled (no .log-stderr)', async () => {
+    stderrPlain.set(true);
+    global.fetch = runWithStderrLog();
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+    await vi.waitFor(() => {
+      expect(container.querySelector('.log-row')).toBeTruthy();
+    });
+    // No line is styled as stderr; both lines use the stdout class.
+    expect(container.querySelector('.log-stderr')).toBeFalsy();
+    expect(container.querySelectorAll('.log-stdout').length).toBeGreaterThanOrEqual(2);
   });
 });
 

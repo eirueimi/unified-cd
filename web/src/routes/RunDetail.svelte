@@ -3,7 +3,7 @@
   import { push } from "svelte-spa-router";
   import { get } from "svelte/store";
   import AuthSetup from "../components/AuthSetup.svelte";
-  import { apiFetch, token, serverURL } from "../lib/api.js";
+  import { apiFetch, token, serverURL, stderrPlain } from "../lib/api.js";
   import { statusBadge, fmtTime } from "../lib/utils.js";
 
   export let params;
@@ -729,7 +729,9 @@
             {#if selectedStep === null}<span class="meta log-step-label"
                 >{stepName(l.stepIndex)}</span
               >{/if}<span
-              class={l.stream === "stderr" ? "log-stderr" : "log-stdout"}
+              class={l.stream === "stderr" && !$stderrPlain
+                ? "log-stderr"
+                : "log-stdout"}
               >{#if logQuery}{#each highlightSegments(l.line, logQuery) as seg}{#if seg.hit}<mark class="log-hit" class:log-hit-current={logStart + i === curMatchRow}>{seg.t}</mark>{:else}{seg.t}{/if}{/each}{:else}{l.line}{/if}</span
             >
           </div>

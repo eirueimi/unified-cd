@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -43,7 +44,17 @@ type ControllerConfig struct {
 	ControllerKey string                `yaml:"controllerKey"`
 	WebDir        string                `yaml:"webDir"`
 	UIProxyTarget string                `yaml:"uiProxyTarget"`
-	OIDC          *ControllerOIDCConfig `yaml:"oidc"`
+	// StderrPlain, when true, tells the web UI to render step stderr in the run
+	// log with the same color as stdout instead of red. Default (false) = red.
+	StderrPlain bool                  `yaml:"stderrPlain"`
+	OIDC        *ControllerOIDCConfig `yaml:"oidc"`
+}
+
+// envBool parses a boolean environment variable (strconv.ParseBool semantics);
+// unset or malformed yields false.
+func envBool(name string) bool {
+	b, _ := strconv.ParseBool(os.Getenv(name))
+	return b
 }
 
 // OIDCConfigured returns whether SSO (OIDC) is configured to a usable state.
@@ -87,6 +98,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		ControllerKey: os.Getenv("UNIFIED_CONTROLLER_KEY"),
 		WebDir:        os.Getenv("UNIFIED_WEB_DIR"),
 		UIProxyTarget: os.Getenv("UNIFIED_UI_PROXY_TARGET"),
+		StderrPlain:   envBool("UNIFIED_LOG_STDERR_PLAIN"),
 	}
 	// OIDC from env vars
 	oidcIssuer := os.Getenv("UNIFIED_OIDC_ISSUER")
@@ -144,6 +156,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.UIProxyTarget != "" {
 		eff.UIProxyTarget = file.UIProxyTarget
+	}
+	if file.StderrPlain {
+		eff.StderrPlain = true
 	}
 	if file.OIDC != nil {
 		if eff.OIDC == nil {

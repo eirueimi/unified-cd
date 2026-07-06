@@ -29,6 +29,10 @@ type Config struct {
 
 	// MatrixMaxCombinations caps matrix step expansion; 0 means the default (64).
 	MatrixMaxCombinations int
+
+	// StderrPlain, when true, tells the web UI (via /api/v1/ui-config) to render
+	// step stderr in the run log the same color as stdout instead of red.
+	StderrPlain bool
 }
 
 // OIDCConfig holds the OIDC provider configuration.
@@ -353,6 +357,10 @@ func (s *Server) routes() {
 
 	// OIDC configuration endpoint (no auth required — public)
 	s.r.Get("/api/v1/auth/oidc-config", s.handleOIDCConfig)
+
+	// UI configuration endpoint (no auth required — public): server-set display
+	// preferences the web UI reads at startup.
+	s.r.Get("/api/v1/ui-config", s.handleUIConfig)
 
 	// OIDC browser SSO endpoints (no auth required)
 	s.r.Get("/api/v1/auth/oidc-login", s.handleOIDCLogin)
