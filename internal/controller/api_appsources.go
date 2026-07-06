@@ -23,6 +23,10 @@ func (s *Server) handleApplyAppSource(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid yaml: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := s.guardManagedResource(r.Context(), "AppSource", as.Metadata.Name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	specJSON, err := json.Marshal(as.Spec)
 	if err != nil {
 		http.Error(w, "marshal spec: "+err.Error(), http.StatusInternalServerError)
@@ -68,6 +72,10 @@ func (s *Server) handleGetAppSource(w http.ResponseWriter, r *http.Request) {
 // handleDeleteAppSource deletes the AppSource with the given name.
 func (s *Server) handleDeleteAppSource(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+	if err := s.guardManagedResource(r.Context(), "AppSource", name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	if err := s.store.DeleteAppSource(r.Context(), name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

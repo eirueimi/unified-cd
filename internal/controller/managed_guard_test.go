@@ -86,3 +86,136 @@ func TestAPI_ApplyJob_AllowedWhenUnmanaged(t *testing.T) {
 	rec := applyJob(t, s, helloJobYAML)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
+
+// manageResource marks {kind,name} as managed by AppSource "owner".
+func manageResource(t *testing.T, pg store.Store, kind, name string) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := pg.UpsertAppSource(ctx, "owner", []byte(`{"repoURL":"https://example.com/r.git","targetRevision":"main","path":"jobs"}`))
+	require.NoError(t, err)
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "owner", "sha", time.Now(),
+		[]store.ResourceRef{{Kind: kind, Name: name}}))
+}
+
+func TestAPI_DeleteManagedResources_Rejected(t *testing.T) {
+	cases := []struct {
+		kind, name, path string
+	}{
+		{"Schedule", "nightly", "/api/v1/schedules/nightly"},
+		{"WebhookReceiver", "gh", "/api/v1/webhooks/gh"},
+		{"GitCredential", "github", "/api/v1/gitcredentials/github"},
+		{"AppSource", "child", "/api/v1/appsources/child"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			s, pg := newTestServer(t)
+			manageResource(t, pg, tc.kind, tc.name)
+			req := httptest.NewRequest(http.MethodDelete, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer secret")
+			rec := httptest.NewRecorder()
+			s.Router().ServeHTTP(rec, req)
+			require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), `managed by AppSource "owner"`)
+		})
+	}
+}
+
+func TestAPI_ApplySchedule_RejectedWhenManaged(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(context.Background(), "hello", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	manageResource(t, pg, "Schedule", "nightly")
+	b, _ := json.Marshal(api.ApplyScheduleRequest{YAML: `
+apiVersion: unified-cd/v1
+kind: Schedule
+metadata:
+  name: nightly
+spec:
+  cron: "0 3 * * *"
+  job: hello
+`})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/schedules", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+}
+
+func TestAPI_ApplyWebhook_RejectedWhenManaged(t *testing.T) {
+	s, pg := newTestServer(t)
+	manageResource(t, pg, "WebhookReceiver", "gh")
+	b, _ := json.Marshal(api.ApplyWebhookRequest{YAML: `
+apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata:
+  name: gh
+spec:
+  trigger:
+    job: hello
+  auth:
+    type: none
+`})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+}
+
+func TestAPI_UpsertGitCredential_RejectedWhenManaged(t *testing.T) {
+	s, pg := newTestServer(t)
+	manageResource(t, pg, "GitCredential", "github")
+	b, _ := json.Marshal(api.UpsertGitCredentialRequest{
+		Name: "github", Host: "github.com", CredType: "token", SecretRef: "gh-token",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gitcredentials/", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+}
+
+func TestAPI_ApplyAppSource_RejectedWhenManagedByOther(t *testing.T) {
+	s, pg := newTestServer(t)
+	manageResource(t, pg, "AppSource", "child")
+	b, _ := json.Marshal(api.ApplyAppSourceRequest{YAML: `
+apiVersion: unified-cd/v1
+kind: AppSource
+metadata:
+  name: child
+spec:
+  repoURL: https://example.com/child.git
+  targetRevision: main
+  path: jobs
+`})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/appsources", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+}
+
+// app-of-apps: 自分自身をmanaged_resourcesに含むAppSourceのapplyは許可される。
+func TestAPI_ApplyAppSource_SelfManagedAllowed(t *testing.T) {
+	s, pg := newTestServer(t)
+	ctx := context.Background()
+	_, err := pg.UpsertAppSource(ctx, "root", []byte(`{"repoURL":"https://example.com/r.git","targetRevision":"main","path":"apps"}`))
+	require.NoError(t, err)
+	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "root", "sha", time.Now(),
+		[]store.ResourceRef{{Kind: "AppSource", Name: "root"}}))
+	b, _ := json.Marshal(api.ApplyAppSourceRequest{YAML: `
+apiVersion: unified-cd/v1
+kind: AppSource
+metadata:
+  name: root
+spec:
+  repoURL: https://example.com/r.git
+  targetRevision: main
+  path: apps
+`})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/appsources", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}

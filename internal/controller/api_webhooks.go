@@ -28,6 +28,10 @@ func (s *Server) handleApplyWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid yaml: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := s.guardManagedResource(r.Context(), "WebhookReceiver", wr.Metadata.Name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	specJSON, err := json.Marshal(wr.Spec)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -60,6 +64,10 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 // handleDeleteWebhook deletes the WebhookReceiver with the given name.
 func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+	if err := s.guardManagedResource(r.Context(), "WebhookReceiver", name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	if err := s.store.DeleteWebhookReceiver(r.Context(), name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

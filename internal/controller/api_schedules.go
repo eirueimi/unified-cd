@@ -22,6 +22,10 @@ func (s *Server) handleApplySchedule(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid yaml: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := s.guardManagedResource(r.Context(), "Schedule", sc.Metadata.Name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	if _, err := s.store.GetJob(r.Context(), sc.Spec.Job); err != nil {
 		http.Error(w, "job not found: "+sc.Spec.Job, http.StatusBadRequest)
 		return
@@ -63,6 +67,10 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 // handleDeleteSchedule deletes the Schedule with the given name. Idempotent — returns 204 even if the schedule does not exist.
 func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+	if err := s.guardManagedResource(r.Context(), "Schedule", name); err != nil {
+		writeGuardError(w, err)
+		return
+	}
 	if err := s.store.DeleteSchedule(r.Context(), name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
