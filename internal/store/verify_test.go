@@ -68,5 +68,5 @@ func TestVerifySchemaReportsDirtyState(t *testing.T) {
 	err = verifySchema(db)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dirty")
-	assert.NotContains(t, err.Error(), "schema drift")
+	assert.NotContains(t, err.Error(), "claims") // drift message's unique verb; dirty message must not use drift phrasing
 }

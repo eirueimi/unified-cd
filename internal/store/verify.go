@@ -20,6 +20,10 @@ type sentinel struct {
 // schemaSentinels must contain exactly one entry per migrations/*.up.sql,
 // in version order. TestSchemaSentinelsCoverAllMigrations enforces this:
 // adding a migration without a sentinel fails the suite.
+//
+// A later migration must never drop or rename a sentinel object; if one
+// must, the sentinel entry has to be changed in the same commit, or older
+// binaries verifying a newer database will report false drift.
 var schemaSentinels = []sentinel{
 	{1, "001_init", "runs", ""},
 	{2, "002_add_role", "pats", "role"},
@@ -46,24 +50,30 @@ func verifySchema(db *sql.DB) error {
 	}
 	if dirty {
 		return fmt.Errorf(
-			"schema verification: schema_migrations is dirty at version %d - a previous migration attempt crashed midway; "+
-				"resolve it manually (golang-migrate 'force' after repairing the schema), see docs/troubleshooting.md (\"Schema drift\")",
+			"schema verification: schema_migrations is dirty at version %d - either a previous migration attempt crashed midway "+
+				"or another replica's migration is currently in flight; if this error persists across restarts, repair the schema "+
+				"manually and clear the flag (golang-migrate 'force'), see docs/troubleshooting.md (\"Schema drift\")",
 			version)
 	}
 	for _, s := range schemaSentinels {
 		if s.version > version {
 			continue
 		}
+		// The migrations create all objects schema-qualified in public
+		// (see internal/store/migrations/*.up.sql), so verification pins
+		// that schema deliberately - using current_schema() would
+		// false-positive under a custom search_path (e.g. "app, public")
+		// and brick startup fleet-wide.
 		var exists bool
 		if s.column == "" {
 			err = db.QueryRow(
 				`SELECT EXISTS (SELECT 1 FROM information_schema.tables
-				 WHERE table_schema = current_schema() AND table_name = $1)`,
+				 WHERE table_schema = 'public' AND table_name = $1)`,
 				s.table).Scan(&exists)
 		} else {
 			err = db.QueryRow(
 				`SELECT EXISTS (SELECT 1 FROM information_schema.columns
-				 WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2)`,
+				 WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2)`,
 				s.table, s.column).Scan(&exists)
 		}
 		if err != nil {

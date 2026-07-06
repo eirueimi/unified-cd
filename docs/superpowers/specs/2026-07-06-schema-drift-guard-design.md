@@ -82,6 +82,8 @@ mentions `007_step_call_link` and the missing column. A happy-path assertion
   ran and found the object missing.
 - An empty/zero `schema_migrations` (fresh DB before first migration) skips
   verification — nothing is claimed applied.
+- `dirty=true` in schema_migrations is reported as a distinct error (crashed
+  or in-flight migration), never as drift.
 
 ## Documentation
 
