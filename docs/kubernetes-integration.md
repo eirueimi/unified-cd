@@ -88,6 +88,8 @@ podTemplates:
 UNIFIED_K8S_CONFIG=k8s-agent-config.yaml ./k8s-agent
 ```
 
+The install manifests (`manifests/install.yaml`, `manifests/core-install.yaml`, `manifests/agent-only.yaml`) default the `unified-cd-k8s-agent` Deployment to `replicas: 2`, running active-active; see [Agent Redundancy](high-availability.md#agent-redundancy) in the HA guide for why this is safe.
+
 ---
 
 ## podTemplate in Job YAML

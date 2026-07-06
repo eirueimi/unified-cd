@@ -311,6 +311,19 @@ Redundant controllers are not enough if PostgreSQL or S3 is a single point of fa
 - Agents also support graceful drain (stop claiming = cordon → finish in-progress Runs → exit).
 - Agents can connect to any controller replica (behind the LB URL).
 
+### k8s-agent replicas
+
+The k8s agent runs active-active: the install manifests default to
+`replicas: 2`. This is safe without leader election because run claiming is
+atomic (`FOR UPDATE SKIP LOCKED`), each pod registers under its own agent ID
+(`UNIFIED_K8S_AGENT_ID` from the Downward API), scope pods use
+`generateName`, and pod GC only touches pods whose runs are terminal or
+absent. During a *full* k8s-agent outage (for example a node-pool upgrade
+taking every replica down), queued runs are failed once they have waited
+longer than the queued-run reaper grace — configurable on the controller via
+`UNIFIED_QUEUED_RUN_GRACE` (default `5m`). Raise it if such outages can
+exceed the default in your environment.
+
 ---
 
 ## Orphaned-Run Recovery
