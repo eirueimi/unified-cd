@@ -19,6 +19,9 @@ type AppSourceSpec struct {
 type AppSyncPolicy struct {
 	Interval string `yaml:"interval,omitempty"`
 	Prune    bool   `yaml:"prune,omitempty"`
+	// AllowManualOverride disables the managed-resource write guard for
+	// resources managed by this AppSource (direct apply/delete is allowed).
+	AllowManualOverride bool `yaml:"allowManualOverride,omitempty"`
 }
 
 func (s AppSourceSpec) IntervalDuration() time.Duration {
