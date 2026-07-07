@@ -121,3 +121,48 @@ func shellQuote(s string) string {
 	}
 	return "\"" + s + "\""
 }
+
+// TestExecuteRun_PodTemplate_NotRejectedOnHost verifies the host agent no
+// longer hard-fails a claim merely because it carries a podTemplate: with the
+// guard relaxed, an empty-stage podTemplate claim finishes Succeeded (the
+// podTemplate is only consulted to resolve runsIn.container definitions).
+func TestExecuteRun_PodTemplate_NotRejectedOnHost(t *testing.T) {
+	const agentID = "pt-agent"
+	const runID = "run-podtemplate"
+
+	finishCh := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Status string `json:"status"`
+		}
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		select {
+		case finishCh <- body.Status:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	claim := api.ClaimResponse{
+		RunID:       runID,
+		JobName:     "pt-job",
+		PodTemplate: &dsl.PodTemplate{Spec: map[string]any{"containers": []any{}}},
+		// No stages: nothing to run, so the claim should finish Succeeded.
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	select {
+	case s := <-finishCh:
+		assert.Equal(t, "Succeeded", s, "a podTemplate claim must no longer be rejected on the host agent")
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+}

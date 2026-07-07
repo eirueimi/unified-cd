@@ -15,7 +15,7 @@ import (
 // no long-lived named-container / sidecar model (that is the k8s agent's
 // job), so this must never silently fall back to some other exec path.
 func TestHostBackend_RunNamedContainer_NotSupported(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1"}, "r1", t.TempDir())
+	b := newHostBackend(&Agent{ID: "a1"}, "r1", t.TempDir(), nil)
 	_, err := b.RunNamedContainer(context.Background(), api.ClaimStep{Name: "s"}, "sidecar", "echo hi", nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not supported on the host agent")
@@ -26,7 +26,7 @@ func TestHostBackend_RunNamedContainer_NotSupported(t *testing.T) {
 // sequential), matching the ConcurrencyMode contract executeRun relies on
 // when driving RunPipeline.
 func TestHostBackend_ConcurrencyMode(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1"}, "r1", t.TempDir())
+	b := newHostBackend(&Agent{ID: "a1"}, "r1", t.TempDir(), nil)
 	assert.Equal(t, Concurrent, b.ConcurrencyMode())
 }
 
@@ -37,7 +37,7 @@ func TestHostBackend_ConcurrencyMode(t *testing.T) {
 // executeRun; end-to-end shipping behavior stays covered by the existing
 // stdout-stream/parity suites.
 func TestHostBackend_StepLogWriters_FinishIsSafe(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", t.TempDir())
+	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", t.TempDir(), nil)
 	b.SetMasker(secrets.NoOpMasker)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -65,7 +65,7 @@ func TestHostBackend_StepLogWriters_FinishIsSafe(t *testing.T) {
 // StepLogWriters returns *LogPusher for both streams (per the ExecBackend
 // StepLogWriters doc comment: "host returns LogPusher for both streams").
 func TestHostBackend_StepLogWriters_ReturnsLogPushers(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", t.TempDir())
+	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", t.TempDir(), nil)
 	b.SetMasker(secrets.NoOpMasker)
 
 	stdout, stderr, _ := b.StepLogWriters(context.Background(), 0)
@@ -81,7 +81,7 @@ func TestHostBackend_StepLogWriters_ReturnsLogPushers(t *testing.T) {
 func TestHostBackend_CacheRestore_MissReturnsNil(t *testing.T) {
 	ctx := context.Background()
 	a := newCacheTestAgent(t)
-	b := newHostBackend(a, "r1", t.TempDir())
+	b := newHostBackend(a, "r1", t.TempDir(), nil)
 	destPath := t.TempDir()
 
 	hit, err := b.CacheRestore(ctx, ScopeHandle{}, "nonexistent-key", nil, destPath)

@@ -258,21 +258,25 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 // executeRun is the host agent's thin wrapper over the shared orchestration
 // loop (RunClaim, internal/agent/orchestrator.go): it handles the ONE thing
 // only the host agent needs to decide before the shared loop can run — a
-// podTemplate-bearing claim requires the k8s agent, so it is rejected here
-// rather than being silently mis-executed on the host — then constructs
-// hostBackend (the ExecBackend seam for a bare-process claim, rooted at
-// workDir) and hands off to RunClaim for everything else (secrets fetch,
-// cancellation, step dispatch, finally, output promotion, FinishRun).
+// podTemplate-bearing claim is accepted with a WARN (host-unsupported
+// features are ignored) and the podTemplate is threaded into hostBackend so
+// it can resolve runsIn.container definitions — then constructs hostBackend
+// (the ExecBackend seam for a bare-process claim, rooted at workDir) and
+// hands off to RunClaim for everything else (secrets fetch, cancellation,
+// step dispatch, finally, output promotion, FinishRun).
 func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir string) {
 	if c.PodTemplate != nil {
-		slog.Error("job requires k8s-agent (podTemplate set); this agent cannot execute it", "runId", c.RunID, "job", c.JobName)
-		retryUntilSuccess(ctx, func(callCtx context.Context) error {
-			return a.Client.FinishRun(callCtx, a.ID, c.RunID, api.RunFailed)
-		})
-		return
+		// The host cannot honor k8s-only podTemplate features (PVC workspace,
+		// extra pod-spec containers/volumes, the artifact sidecar). It uses the
+		// podTemplate only to resolve runsIn.container definitions; every other
+		// step runs on the host workspace. Warn once so a misrouted k8s job is
+		// diagnosable, but do not reject it (a host agent may legitimately be
+		// selected for a runsIn.container job).
+		slog.Warn("host agent ignores host-unsupported podTemplate features (PVC workspace, extra pod-spec containers/volumes, artifact sidecar); podTemplate is used only to resolve runsIn.container definitions",
+			"runId", c.RunID, "job", c.JobName)
 	}
 
-	backend := newHostBackend(a, c.RunID, workDir)
+	backend := newHostBackend(a, c.RunID, workDir, c.PodTemplate)
 	RunClaim(ctx, a.Client, a.ID, c, backend)
 }
 

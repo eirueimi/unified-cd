@@ -12,27 +12,36 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/cache"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
 // hostBackend is the ExecBackend implementation for the host (bare-process)
-// agent. It owns the claim-scoped scopeManager (lazily created on first
-// uses-scope step) and the secret masker used by StepLogWriters.
+// agent. It owns the claim-scoped scopeManager (uses-scope containers) and the
+// namedContainerManager (runsIn.container containers), both created lazily on
+// first use, plus the secret masker used by StepLogWriters. podTemplate is the
+// claim's podTemplate (nil for a plain claim); it is consulted only to resolve
+// runsIn.container definitions.
 type hostBackend struct {
-	a       *Agent
-	runID   string
-	workDir string
+	a           *Agent
+	runID       string
+	workDir     string
+	podTemplate *dsl.PodTemplate
 
 	scopesMu sync.Mutex
 	scopes   *scopeManager
+
+	namedMu sync.Mutex
+	named   *namedContainerManager
 
 	masker *secrets.Masker
 }
 
 // newHostBackend constructs the ExecBackend for one claim's executeRun call.
-func newHostBackend(a *Agent, runID, workDir string) *hostBackend {
-	return &hostBackend{a: a, runID: runID, workDir: workDir}
+// podTemplate is api.ClaimResponse.PodTemplate (nil when the claim has none).
+func newHostBackend(a *Agent, runID, workDir string, podTemplate *dsl.PodTemplate) *hostBackend {
+	return &hostBackend{a: a, runID: runID, workDir: workDir, podTemplate: podTemplate}
 }
 
 // hostScopeHandle is the concrete payload behind ScopeHandle on the host
