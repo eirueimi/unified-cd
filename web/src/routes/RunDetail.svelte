@@ -77,9 +77,10 @@
     if (windowLoading) return; // fetch already in flight; re-checked after it settles
     const token = ++windowFetchToken;
     windowLoading = true;
+    const center = Math.floor((firstRow + lastRow) / 2);
+    const start = Math.max(0, center - Math.floor(FETCH_CHUNK / 2));
+    let settledOK = false; // only the SUCCESS path re-checks the viewport
     try {
-      const center = Math.floor((firstRow + lastRow) / 2);
-      const start = Math.max(0, center - Math.floor(FETCH_CHUNK / 2));
       const lines = await apiFetch(
         `/api/v1/runs/${runID}/logs/range?offset=${start}&limit=${FETCH_CHUNK}${viewStepsQuery()}`,
       );
@@ -89,22 +90,42 @@
         startRow: start,
         lines: lines.map((l) => ({ ...l, line: collapseCarriageReturns(l.line) })),
       };
+      settledOK = true;
     } catch (e) {
       console.warn("log range fetch failed", e);
+      // Do NOT re-check on the catch path. A failed fetch left the window
+      // unchanged, so an unconditional re-check would recompute the identical
+      // request and refire it immediately → throw → re-check… a tight,
+      // zero-backoff request storm against a failing/offline server. Leaving
+      // it be restores the pre-fix recovery semantics: a later user scroll
+      // re-triggers the fetch via the reactive `$: ensureRowsLoaded`.
     } finally {
       if (token === windowFetchToken) {
         windowLoading = false;
-        // Re-check the CURRENT viewport now that the fetch has settled: while
-        // it was in flight, a scroll may have moved [logStart, logEnd) to a
-        // position the just-installed window doesn't cover, and that scroll's
-        // own ensureRowsLoaded was early-returned by the `windowLoading` guard
-        // above — nothing else will re-fire it (a finished run has no SSE
-        // appends to rescue the viewport). Re-invoke against the window as it
-        // stands NOW: if the viewport is covered (the steady state, e.g. a
-        // view smaller than FETCH_CHUNK the server returned whole) the
-        // in-window early-return terminates the recursion; only a genuinely
-        // uncovered viewport fires one more fetch.
-        ensureRowsLoaded(logStart, logEnd);
+        // Re-check the CURRENT viewport now that a SUCCESSFUL fetch has
+        // settled: while it was in flight, a scroll may have moved
+        // [logStart, logEnd) to a position the just-installed window doesn't
+        // cover, and that scroll's own ensureRowsLoaded was early-returned by
+        // the `windowLoading` guard above — nothing else will re-fire it (a
+        // finished run has no SSE appends to rescue the viewport). Re-invoke
+        // against the window as it stands NOW, but only if the recomputed
+        // request would make FORWARD PROGRESS — a different `start` than the
+        // one that just settled. If the viewport is still uncovered yet the
+        // next request would be the IDENTICAL fetch that just landed (e.g. an
+        // overstated totalCount whose range returns 0 rows so the window never
+        // covers the viewport), refiring it changes nothing and would loop
+        // forever; bail instead. When the viewport IS covered (the steady
+        // state, e.g. a view smaller than FETCH_CHUNK the server returned
+        // whole) the in-window early-return inside the recursive call
+        // terminates it normally.
+        if (settledOK) {
+          const rc = Math.floor((logStart + logEnd) / 2);
+          const nextStart = Math.max(0, rc - Math.floor(FETCH_CHUNK / 2));
+          const covered =
+            logStart >= logWindow.startRow &&
+            logEnd <= logWindow.startRow + logWindow.lines.length;
+          if (covered || nextStart !== start) ensureRowsLoaded(logStart, logEnd);
+        }
       }
     }
   }
@@ -610,7 +631,22 @@
           } catch {}
         }
         if (batch.length) {
-          if (!backfilled) {
+          if (!backfilled && viewSwitching) {
+            // A user-initiated switchLogView is ALREADY in flight when the
+            // initial SSE backfill lands (user clicked a step after steps
+            // rendered but before the backfill's first batch arrived). Do NOT
+            // bump the token or install this all-steps backfill: the bump
+            // would cancel the switch, and installing would render the
+            // all-steps tail under the step filter (logView.steps already
+            // points at the new view) with no self-correction. Just mark the
+            // backfill consumed and let the switch's own refreshStats()+range
+            // fetch install the window; later batches then take the
+            // live-append path below, which correctly filters by
+            // logView.steps. (The head-fetch race the bump was added for has
+            // NO switch in flight, so the bump still applies in that case —
+            // the `!backfilled` branch below.)
+            backfilled = true;
+          } else if (!backfilled) {
             // Initial SSE backfill becomes the initial window. totalCount
             // comes from refreshStats(); if that failed (or under-counts vs.
             // what the backfill itself delivered), fall back to the batch
@@ -761,6 +797,16 @@
     stopStepPolling();
     if (logSearchDebounce) clearTimeout(logSearchDebounce);
     logSearchToken++; // invalidate any in-flight search response
+    // Invalidate any in-flight range fetch and reset the window flags, so a
+    // settle re-check cannot outlive the component: each ensureRowsLoaded
+    // iteration takes a fresh token, so without a bump here a fetch loop
+    // survives destruction (only startSSE/switchLogView bump otherwise, and
+    // neither runs after unmount). Reset the flags synchronously for the same
+    // reason startSSE does — a superseded fetch's finally is gated on the
+    // now-stale token and will never reset them itself.
+    windowFetchToken++;
+    windowLoading = false;
+    viewSwitching = false;
     if (typeof window !== "undefined")
       window.removeEventListener("resize", measureLogMetrics);
   });

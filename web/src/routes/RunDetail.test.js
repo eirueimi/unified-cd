@@ -2132,3 +2132,237 @@ describe('RunDetail — switchLogView range-fetch failure degrades to empty, not
     }
   });
 });
+
+// Round-2 review finding 1: the settle re-check added to ensureRowsLoaded's
+// finally could loop forever with zero backoff. When a range fetch keeps
+// FAILING against an offline/failing server, the catch leaves the window
+// unchanged, the finally (token-matched) re-checks the still-uncovered
+// viewport and immediately refires the same fetch → throws → re-checks… a
+// tight, unbounded request storm. The fix skips the re-check on the catch
+// path (a failure no longer auto-retries; a user scroll re-triggers via the
+// reactive), while the SUCCESS-path re-check (the wedge-recovery case) stays.
+describe('RunDetail — a persistently failing range fetch does not storm-refire after settle (round-2 finding 1)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  it('a range fetch that always rejects is not refired in a tight loop after settle, and a later user scroll still retriggers exactly one retry', async () => {
+    try {
+      const TOTAL = 50000;
+      const BACKFILL = 200;
+      const makeLine = (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row });
+      // SSE backfill: tail 200 lines (rows 49800..49999) — the initial window.
+      const enc = new TextEncoder();
+      let payload = '';
+      for (let row = TOTAL - BACKFILL; row < TOTAL; row++) {
+        payload += `data: ${JSON.stringify({ type: 'log', ...makeLine(row) })}\n\n`;
+      }
+      let sent = false;
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: { getReader() { return { read: async () => sent ? { done: true, value: undefined } : (sent = true, { done: false, value: enc.encode(payload) }) } } },
+      });
+
+      // Every /logs/range REJECTS (offline/failing server). /logs/stats still
+      // succeeds so the scrollbar spans the full log and the viewport can be
+      // uncovered by a scroll into the middle.
+      const rangeCalls = () => fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        if (u.includes('/logs/range')) return Promise.reject(new Error('offline'));
+        if (u.includes('/logs/stats')) return jsonResponse({ count: TOTAL, minSeq: 1, maxSeq: TOTAL });
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-storm', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-storm' } } });
+      // The tail backfill installs (scrollbar spans the full 50000) even though
+      // the top-of-log viewport is uncovered and its offset-0 range fetch
+      // rejects — wait on the "N lines" counter, not on rendered rows.
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(`${TOTAL.toLocaleString()} lines`);
+      });
+
+      const box = container.querySelector('.log-box');
+
+      // Scroll into the middle (row ~25000): uncovered by the tail window, so
+      // ensureRowsLoaded fires a range fetch — which rejects.
+      box.scrollTop = 25000 * 20;
+      await fireEvent.scroll(box);
+      await vi.waitFor(() => {
+        expect(rangeCalls()).toBeGreaterThan(0);
+      });
+
+      // Let the rejection settle and give any (buggy) re-check loop time to
+      // storm. The range-fetch count must PLATEAU — no auto-retry after a
+      // failure (the finally re-check is skipped on the catch path).
+      await new Promise((r) => setTimeout(r, 80));
+      const afterSettle = rangeCalls();
+      await new Promise((r) => setTimeout(r, 80));
+      expect(rangeCalls()).toBe(afterSettle);
+
+      // A subsequent user scroll DOES retrigger one retry (recovery semantics
+      // preserved via the reactive), not a storm.
+      box.scrollTop = 24000 * 20;
+      await fireEvent.scroll(box);
+      await vi.waitFor(() => {
+        expect(rangeCalls()).toBeGreaterThan(afterSettle);
+      });
+      const afterScrollRetry = rangeCalls();
+      await new Promise((r) => setTimeout(r, 80));
+      // Still no storm after that one retry settles.
+      expect(rangeCalls()).toBe(afterScrollRetry);
+    } finally {
+      restore();
+    }
+  });
+});
+
+// Round-2 review finding 2: the `!backfilled` branch's token bump (added to
+// fix the initial head-fetch race) also cancels a user's IN-FLIGHT
+// switchLogView when the SSE backfill arrives mid-switch. The user clicks a
+// step after steps render but before the backfill's first batch lands;
+// switchLogView([idx]) is in flight; the bump invalidates it, then installs
+// the ALL-steps tail window while logView.steps already points at the step
+// view — filtered chrome over unfiltered content, no self-correction. The fix:
+// when `viewSwitching` is true at the `!backfilled` branch, do NOT bump/install
+// the backfill; set backfilled = true (so later batches take the live-append
+// path) and let the in-flight switch's install stand.
+describe('RunDetail — a deferred SSE backfill does not clobber an in-flight step switch (round-2 finding 2)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  it('clicking a step before the SSE backfill batch arrives keeps the step view (backfill does not install all-steps rows under the filtered view)', async () => {
+    try {
+      // Steps render immediately (from /steps). The SSE backfill's first batch
+      // (all-steps: step-0 lines) is GATED so the user can click a step first,
+      // driving switchLogView([1]) into flight. When the gate releases, the
+      // `!backfilled` branch runs while viewSwitching is true.
+      const enc = new TextEncoder();
+      let allStepsBackfill = '';
+      for (let i = 0; i < 200; i++) {
+        allStepsBackfill += `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'ALLSTEP-LINE ' + i })}\n\n`;
+      }
+      let releaseBackfill = null;
+      const backfillGate = new Promise((res) => { releaseBackfill = res; });
+      let readCount = 0;
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: {
+          getReader() {
+            return {
+              read: async () => {
+                readCount++;
+                if (readCount === 1) {
+                  await backfillGate;
+                  return { done: false, value: enc.encode(allStepsBackfill) };
+                }
+                return { done: true, value: undefined };
+              },
+            };
+          },
+        },
+      });
+
+      // step 1's server-side view: 200 lines, its own totalCount.
+      const step1Lines = Array.from({ length: 200 }, (_, i) => (
+        { seq: 5000 + i, stepIndex: 1, stream: 'stdout', line: 'STEP1-LINE ' + i }
+      ));
+      const step1StatsRange = statsAndRange(step1Lines.length, (row) => step1Lines[row]);
+
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        if (u.includes('steps=1')) {
+          const sr = step1StatsRange(u);
+          if (sr) return sr;
+        }
+        // All-steps stats: report 200 (the backfill total) so the initial
+        // reactive HEAD fetch path is the same as production.
+        if (u.includes('/logs/stats')) return jsonResponse({ count: 200, minSeq: 1, maxSeq: 200 });
+        if (u.includes('/logs/range')) return jsonResponse([]);
+        if (u.includes('/steps')) return jsonResponse([
+          { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
+          { index: 1, stageIndex: 1, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+        ]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-deferbackfill', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-deferbackfill' } } });
+
+      // Steps render before any log batch (backfill is gated).
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.step-row').length).toBeGreaterThan(0);
+      });
+
+      // Click step 1 (build) BEFORE the backfill batch arrives: switchLogView([1])
+      // goes in flight (viewSwitching true, its own token).
+      await fireEvent.click(container.querySelectorAll('.step-row')[1]);
+
+      // Now release the gated all-steps backfill: it hits the `!backfilled`
+      // branch while viewSwitching is true. It must NOT cancel the switch or
+      // install its all-steps rows under the step-1 filter.
+      releaseBackfill();
+
+      // The switch completes: step-1 lines render.
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+        expect(texts.some((t) => t.includes('STEP1-LINE'))).toBe(true);
+      });
+
+      // Give any lingering microtasks a chance, then assert the all-steps
+      // backfill rows never render under the step view, and the step chrome
+      // (filtered: no per-line labels, "All Steps" reset button present) stands.
+      await new Promise((r) => setTimeout(r, 20));
+      const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+      expect(texts.some((t) => t.includes('ALLSTEP-LINE'))).toBe(false);
+      expect(texts.some((t) => t.includes('STEP1-LINE'))).toBe(true);
+      // Filtered view: per-line step labels are hidden and the reset button shows.
+      expect(container.querySelector('.log-step-label')).toBeFalsy();
+      const allStepsBtn = [...container.querySelectorAll('.log-header .btn')].find((b) => b.textContent.includes('All Steps'));
+      expect(allStepsBtn).toBeTruthy();
+      // totalCount reflects the step view, not the all-steps backfill.
+      expect(container.textContent).toContain(`${step1Lines.length} lines`);
+    } finally {
+      restore();
+    }
+  });
+});
