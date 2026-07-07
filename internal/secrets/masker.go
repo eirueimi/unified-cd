@@ -3,8 +3,14 @@ package secrets
 import (
 	"encoding/base64"
 	"net/url"
+	"sort"
 	"strings"
 )
+
+// minMaskLineLen is the minimum trimmed length for a line of a multi-line
+// secret to become its own pattern. Shorter fragments (e.g. the "==" tail of
+// a base64 block) would catastrophically over-mask unrelated output.
+const minMaskLineLen = 4
 
 // Masker masks sensitive information in output.
 type Masker struct {
@@ -15,7 +21,12 @@ type Masker struct {
 var NoOpMasker = &Masker{}
 
 // NewMasker creates a Masker from a list of sensitive values.
-// It registers three patterns: exact match, Base64-encoded, and URL-encoded.
+// For every value it registers exact-match, Base64-encoded, and URL-encoded
+// patterns. Multi-line values additionally register each trimmed line
+// (>= minMaskLineLen) as its own pattern, because masking is applied per log
+// line and the whole value can never match a single line. Patterns are kept
+// longest-first so a secret that contains another secret as a substring is
+// replaced before the shorter one can split it.
 func NewMasker(values []string) *Masker {
 	seen := map[string]struct{}{}
 	var patterns []string
@@ -32,13 +43,19 @@ func NewMasker(values []string) *Masker {
 		if v == "" {
 			continue
 		}
-		// add exact-match pattern
 		add(v)
-		// add Base64-encoded version
 		add(base64.StdEncoding.EncodeToString([]byte(v)))
-		// add URL-encoded version
 		add(url.QueryEscape(v))
+		if strings.Contains(v, "\n") {
+			for _, ln := range strings.Split(v, "\n") {
+				ln = strings.TrimSpace(ln)
+				if len(ln) >= minMaskLineLen {
+					add(ln)
+				}
+			}
+		}
 	}
+	sort.SliceStable(patterns, func(i, j int) bool { return len(patterns[i]) > len(patterns[j]) })
 	return &Masker{patterns: patterns}
 }
 
@@ -48,4 +65,14 @@ func (m *Masker) Mask(line string) string {
 		line = strings.ReplaceAll(line, p, "***")
 	}
 	return line
+}
+
+// Detects reports whether s contains any registered secret pattern.
+func (m *Masker) Detects(s string) bool {
+	for _, p := range m.patterns {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	return false
 }
