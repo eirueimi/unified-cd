@@ -50,7 +50,9 @@ spec:
         in:                       # list of candidate values, or a $param expression
           - <string>
   timeoutMinutes: <number>
-  podTemplate:                    # k8s-agent only — see Kubernetes Integration Guide
+  podTemplate:                    # full pod config is k8s-agent only; the standard agent
+                                   # reads only spec.containers, to resolve runsIn.container
+                                   # (see Kubernetes Integration Guide)
     name: <string>
     spec: <PodSpec map>
     workspace:
@@ -123,11 +125,33 @@ default pod container on k8s).
 | Field | Behavior |
 |---|---|
 | `runsIn.image` | Run in a fresh, isolated environment from this image: the standard agent runs `<runtime> run --rm`, the k8s agent spins up a throwaway pod. This environment does **not** share the job workspace — it is a "pure function" call. Pass inputs via `with:`/`env`, and read outputs via `outputs:`/stdout. |
-| `runsIn.container` | Exec into a pre-provisioned, named container (k8s pod only — a hard error on the standard agent). |
+| `runsIn.container` | Exec into a named container defined in the job's `podTemplate.spec.containers`. Works on **both** agents: on k8s it execs into that container of the job pod; on the standard agent it provisions (once per claim) a container from the named `podTemplate` container definition, bind-mounting the job workspace into it so `cache`, `uploadArtifact`, `downloadArtifact`, and later steps see the same files. See [MVP limits](#runsincontainer-on-the-standard-agent-mvp-limits) below. |
 | `runsIn.resources` | Optional CPU/memory `requests`/`limits` (Kubernetes quantity strings, e.g. `"500m"`, `"1"`, `"256Mi"`, `"1Gi"`) applied to a `runsIn.image` step's container. |
 
 `runsIn` can be set on a plain step or on a `uses` step; the two placements
 have different meanings — see the next section.
+
+#### `runsIn.container` on the standard agent (MVP limits)
+
+On the standard (host) agent, `runsIn.container` provisions one long-lived
+container per named `podTemplate.spec.containers` entry, for the life of the
+claim, with the host's job workspace bind-mounted into it. Because the mount
+is shared, `cache`, `uploadArtifact`, `downloadArtifact`, and plain host steps
+before/after the `runsIn.container` step all see the same files — unlike a
+`runsIn.image` step, there is no isolated/pure-function filesystem here. The
+container also reports `UNIFIED_AGENT_OS=linux`, matching the k8s agent.
+
+This support has MVP limits, by design:
+
+- **Single-container only.** Each named container is independent; there is no
+  sidecar networking between named containers (no shared `localhost`/loopback
+  the way pod containers share a network namespace on k8s).
+- **Host-unsupported `podTemplate` fields are ignored with a WARN**, not
+  applied: a PVC-backed `workspace` (the host always uses its local workspace
+  directory), any pod-spec field other than the named container's `name`/
+  `image`/`env`/`resources.limits` (e.g. `command`, `args`, `volumeMounts`,
+  `securityContext`), and any container `env` entry without a literal `value`
+  (e.g. `valueFrom`/`fieldRef`, which the host cannot resolve).
 
 #### Step-level vs. uses-level `runsIn.image`
 

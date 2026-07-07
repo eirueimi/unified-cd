@@ -163,8 +163,12 @@ type MatrixDimension struct {
 //	image:     run in a fresh isolated env from this image (host: `<rt> run`;
 //	           k8s: a throwaway pod). No workspace is shared — pass inputs via
 //	           with:/env, return outputs via outputs:/stdout.
-//	container: exec into a pre-provisioned named env (k8s pod container only;
-//	           an error on the host agent).
+//	container: exec into a named container defined in the job's
+//	           podTemplate.spec.containers. Supported on both agents: k8s
+//	           execs into that pod container; the host provisions a
+//	           workspace-bind-mounted container from the same definition
+//	           (single-container MVP: no sidecar networking, and
+//	           host-unsupported podTemplate fields are ignored with a WARN).
 type RunsIn struct {
 	Image     string        `yaml:"image,omitempty" json:"image,omitempty"`
 	Container string        `yaml:"container,omitempty" json:"container,omitempty"`

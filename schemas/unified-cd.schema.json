@@ -497,7 +497,7 @@
     },
     "RunsIn": {
       "additionalProperties": false,
-      "description": "RunsIn declares the execution context for a step. Image and Container are\nmutually exclusive; both empty (or RunsIn nil) means the default/shared\nenvironment (host process, or the default pod container on k8s).\n\n\timage:     run in a fresh isolated env from this image (host: `\u003crt\u003e run`;\n\t           k8s: a throwaway pod). No workspace is shared — pass inputs via\n\t           with:/env, return outputs via outputs:/stdout.\n\tcontainer: exec into a pre-provisioned named env (k8s pod container only;\n\t           an error on the host agent).",
+      "description": "RunsIn declares the execution context for a step. Image and Container are\nmutually exclusive; both empty (or RunsIn nil) means the default/shared\nenvironment (host process, or the default pod container on k8s).\n\n\timage:     run in a fresh isolated env from this image (host: `\u003crt\u003e run`;\n\t           k8s: a throwaway pod). No workspace is shared — pass inputs via\n\t           with:/env, return outputs via outputs:/stdout.\n\tcontainer: exec into a named container defined in the job's\n\t           podTemplate.spec.containers. Supported on both agents: k8s\n\t           execs into that pod container; the host provisions a\n\t           workspace-bind-mounted container from the same definition\n\t           (single-container MVP: no sidecar networking, and\n\t           host-unsupported podTemplate fields are ignored with a WARN).",
       "properties": {
         "container": {
           "type": "string"
