@@ -8,7 +8,6 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +16,6 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
-	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // hostContainerLimits converts a validated runsIn.resources spec to the OCI-CLI
@@ -27,17 +25,7 @@ func hostContainerLimits(rs *dsl.ResourceSpec) (cpu, mem string) {
 	if rs == nil || rs.Limits == nil {
 		return "", ""
 	}
-	if rs.Limits.CPU != "" {
-		if q, err := resource.ParseQuantity(rs.Limits.CPU); err == nil {
-			cpu = strconv.FormatFloat(float64(q.MilliValue())/1000.0, 'g', -1, 64)
-		}
-	}
-	if rs.Limits.Memory != "" {
-		if q, err := resource.ParseQuantity(rs.Limits.Memory); err == nil {
-			mem = strconv.FormatInt(q.Value(), 10)
-		}
-	}
-	return cpu, mem
+	return limitStrings(rs.Limits.CPU, rs.Limits.Memory)
 }
 
 // ApprovalPollInterval is how often WaitForApproval polls the controller for a
