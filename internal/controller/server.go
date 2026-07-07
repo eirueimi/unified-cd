@@ -205,6 +205,11 @@ func (s *Server) routes() {
 	s.r.Use(middleware.RealIP)
 	s.r.Use(accessLogMiddleware)
 	s.r.Use(s.metricsMiddleware)
+	s.r.Use(securityHeadersMiddleware)
+	// Router-wide (not just /api/v1): the auth POST routes (e.g.
+	// /api/v1/auth/logout) are registered directly on s.r outside the
+	// /api/v1 group, and non-browser clients pass through anyway.
+	s.r.Use(s.originCheckMiddleware)
 
 	// Health-check endpoint (no auth required).
 	// Returns 503 while shutting down so the load balancer can drain traffic.
