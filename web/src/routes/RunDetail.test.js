@@ -404,11 +404,28 @@ describe('RunDetail — log virtualization', () => {
     expect(rows.length).toBeLessThanOrEqual(60);
   });
 
-  it('searches the full log (including off-screen lines) and highlights the match', async () => {
+  // Task 5: search is no longer client-side (scanning only the in-memory
+  // window) — it's a server call over the FULL view via
+  // `/logs/search?q=...`, which can find matches far outside the currently
+  // loaded window. This test's row (123) is deliberately off-screen from the
+  // initial (tail) window to prove the match still resolves: the server
+  // returns the absolute row, the component jumps the scroller there, and
+  // the scroll-driven range fetch (ensureRowsLoaded) loads it in so it can
+  // be highlighted.
+  it('searches the full log via the server (including off-screen lines) and highlights the match', async () => {
     const N = 500;
+    const makeLine = (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'line ' + row });
+    const statsRange = statsAndRange(N, makeLine);
     const fetchMock = vi.fn((url) => {
       const u = String(url);
       if (u.includes('/events')) return eventsResponseWithLogs(N);
+      if (u.includes('/logs/search')) {
+        const uu = new URL(u, 'http://localhost');
+        expect(uu.searchParams.get('q')).toBe('line 123');
+        return jsonResponse({ total: 1, matches: [{ row: 123, seq: 124, stepIndex: 0 }] });
+      }
+      const sr = statsRange(url);
+      if (sr) return sr;
       if (u.includes('/steps')) return jsonResponse([]);
       if (u.includes('/approvals')) return jsonResponse([]);
       return jsonResponse({ id: 'run-1', status: 'Succeeded', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
@@ -420,11 +437,16 @@ describe('RunDetail — log virtualization', () => {
       expect(container.textContent).toContain(`${N} lines`);
     });
 
-    // "line 123" is off-screen (row 123 is far below the initial window) yet the
-    // in-app search finds it — proving search covers the whole log, not just the
-    // rendered rows — and highlights it.
+    // "line 123" is off-screen (row 123 is far below the initial tail window)
+    // yet the server-backed search finds it — proving search covers the
+    // whole log, not just the rendered rows — and highlights it once the
+    // jump's range fetch brings it into the window.
     const input = container.querySelector('.log-search-input');
     await fireEvent.input(input, { target: { value: 'line 123' } });
+
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/logs/search'))).toBe(true);
+    });
 
     await vi.waitFor(() => {
       expect(container.textContent).toContain('1 / 1');
@@ -528,6 +550,215 @@ describe('RunDetail — log virtualization', () => {
       expect(container.querySelector('.log-row-wrap')).toBeTruthy();
     });
     expect(localStorage.getItem('ecd_log_wrap')).toBe('1');
+  });
+});
+
+// Task 5: the in-app search block now delegates to the server's
+// `/logs/search` endpoint (Task 2's contract: `{total, matches: [{row, seq,
+// stepIndex}]}`, capped at 1000, `total` reflecting the uncapped count) over
+// the CURRENT view (all-steps or a step/group filter, same `viewStepsQuery()`
+// used by range/stats fetches), instead of scanning only the in-memory
+// window. Typing debounces 300ms before firing the request; jumping to a
+// match sets `scrollTop` and lets the existing scroll handler's
+// `ensureRowsLoaded` bring the row into the window (no direct fetch call
+// from the jump itself).
+describe('RunDetail — server-side log search (Task 5)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  it('debounces input and calls /logs/search with the query and current view steps', async () => {
+    try {
+      const N = 300;
+      const makeLine = (row) => ({ seq: row + 1, stepIndex: 1, stream: 'stdout', line: 'build ' + row });
+      const statsRange = statsAndRange(N, makeLine);
+      const searchCalls = [];
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(N);
+        if (u.includes('/logs/search')) {
+          searchCalls.push(u);
+          return jsonResponse({ total: 0, matches: [] });
+        }
+        if (u.includes('steps=1')) {
+          const sr = statsRange(url);
+          if (sr) return sr;
+        }
+        if (u.includes('/steps')) return jsonResponse([
+          { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
+          { index: 1, stageIndex: 1, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+        ]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-search-debounce', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-search-debounce' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.step-row').length).toBeGreaterThan(0);
+      });
+
+      // Switch to the "build" step view (steps=1) so the search request must
+      // carry that view's steps filter, not the all-steps view.
+      await fireEvent.click(container.querySelectorAll('.step-row')[1]);
+      await vi.waitFor(() => {
+        expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/logs/range') && String(c[0]).includes('steps=1'))).toBe(true);
+      });
+
+      const input = container.querySelector('.log-search-input');
+      await fireEvent.input(input, { target: { value: 'err' } });
+
+      // Not called immediately — debounced.
+      expect(searchCalls.length).toBe(0);
+
+      await vi.waitFor(() => {
+        expect(searchCalls.length).toBeGreaterThan(0);
+      }, { timeout: 1000 });
+
+      const u = new URL(searchCalls[searchCalls.length - 1], 'http://localhost');
+      expect(u.searchParams.get('q')).toBe('err');
+      expect(u.searchParams.get('steps')).toBe('1');
+    } finally {
+      restore();
+    }
+  });
+
+  it('jumps to a match on Enter by setting scrollTop, and the scroll handler fetches the range', async () => {
+    try {
+      // TOTAL is deliberately bigger than FETCH_CHUNK (5000) so the initial
+      // tail window does NOT cover every row. Two matches: #0 sits inside the
+      // tail backfill (already loaded — the initial auto-jump-to-first-match
+      // is a no-op fetch-wise), #1 (row 10) is far outside it, so pressing
+      // Enter to advance 0 -> 1 must trigger a genuinely new range fetch via
+      // the scroll handler, not just render from what's already loaded.
+      const TOTAL = 50000;
+      const BACKFILL = 200;
+      const makeLine = (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row });
+      const statsRange = statsAndRange(TOTAL, makeLine);
+      const enc = new TextEncoder();
+      let payload = '';
+      for (let row = TOTAL - BACKFILL; row < TOTAL; row++) {
+        payload += `data: ${JSON.stringify({ type: 'log', ...makeLine(row) })}\n\n`;
+      }
+      let sent = false;
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: { getReader() { return { read: async () => sent ? { done: true, value: undefined } : (sent = true, { done: false, value: enc.encode(payload) }) } } },
+      });
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        if (u.includes('/logs/search')) {
+          return jsonResponse({
+            total: 2,
+            matches: [
+              { row: TOTAL - 5, seq: TOTAL - 4, stepIndex: 0 },
+              { row: 10, seq: 11, stepIndex: 0 },
+            ],
+          });
+        }
+        const sr = statsRange(url);
+        if (sr) return sr;
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-search-jump', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-search-jump' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+      });
+
+      const input = container.querySelector('.log-search-input');
+      await fireEvent.input(input, { target: { value: 'row' } });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain('1 / 2');
+      }, { timeout: 1000 });
+
+      const box = container.querySelector('.log-box');
+      const rangeCallsBefore = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
+
+      await fireEvent.keyDown(input, { key: 'Enter' });
+
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain('2 / 2');
+      });
+
+      // scrollTop lands near row * LOG_ROW_H (centered in the viewport), not
+      // at some other position — the jump itself must not call ensureRowsLoaded
+      // directly; it just moves the scrollbar and lets the scroll handler do it.
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(Math.max(0, 10 * 20 - box.clientHeight / 2));
+      });
+
+      await fireEvent.scroll(box);
+      await vi.waitFor(() => {
+        const rangeCallsAfter = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
+        expect(rangeCallsAfter).toBeGreaterThan(rangeCallsBefore);
+      });
+
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+        expect(texts.some((t) => t.includes('row 10'))).toBe(true);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('shows a capped-results note when total exceeds the returned matches', async () => {
+    try {
+      const N = 300;
+      const makeLine = (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'x ' + row });
+      const statsRange = statsAndRange(N, makeLine);
+      const matches = Array.from({ length: 1000 }, (_, i) => ({ row: i, seq: i + 1, stepIndex: 0 }));
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(N);
+        if (u.includes('/logs/search')) {
+          return jsonResponse({ total: 1500, matches });
+        }
+        const sr = statsRange(url);
+        if (sr) return sr;
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-search-cap', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-search-cap' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+      });
+
+      const input = container.querySelector('.log-search-input');
+      await fireEvent.input(input, { target: { value: 'x' } });
+
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain('1 / 1,000+');
+      }, { timeout: 1000 });
+    } finally {
+      restore();
+    }
   });
 });
 

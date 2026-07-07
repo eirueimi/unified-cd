@@ -172,8 +172,15 @@
   // Clamp the absolute [logStart, logEnd) request down to what's actually
   // materialized in `logWindow.lines` — the window may not cover the full
   // visible range yet (a range fetch is in flight, fired below).
+  // `visibleLogsSliceStart` is the actual slice() start index used below; the
+  // template derives each rendered line's ABSOLUTE row number from
+  // `logWindow.startRow + visibleLogsSliceStart + i` (NOT `logStart + i`,
+  // which is only correct once logStart >= logWindow.startRow — the steady
+  // state, but not the transient case right after a window jump/reload where
+  // it's clamped to 0).
+  $: visibleLogsSliceStart = Math.max(0, logStart - logWindow.startRow);
   $: visibleLogs = logWindow.lines.slice(
-    Math.max(0, logStart - logWindow.startRow),
+    visibleLogsSliceStart,
     Math.max(0, logEnd - logWindow.startRow),
   );
   $: logTopPad = logWrap
@@ -292,38 +299,70 @@
     }
     if (token !== windowFetchToken) return;
     await tick();
+    if (logQuery) runSearch(); // re-run over the new view (Task 5)
     if (!logBox) return;
     logBox.scrollTop = logBox.scrollHeight;
     logScrollTop = logBox.scrollTop;
   }
 
-  // ---- In-app log search ----
+  // ---- Server-side log search (Task 5) ----
   // Native Ctrl+F only sees the virtualized (visible) rows, so we provide search
-  // over the FULL log: it scans every line in memory, counts matches, jumps the
-  // virtual list to each match, and highlights the hits.
-  // NOTE: this scans only the currently-loaded WINDOW, not the full server-side
-  // log (Task 5 replaces it with a server /logs/search call over the whole
-  // view). Match positions are ABSOLUTE row numbers (window-relative index +
-  // logWindow.startRow), matching the absolute addressing used by
-  // logStart/logEnd/curMatchRow elsewhere.
+  // over the FULL log via the server: `GET /logs/search?q=...${viewStepsQuery()}`
+  // returns `{total, matches: [{row, seq, stepIndex}, ...]}` over the CURRENT
+  // view (all-steps or a step/group filter — the same view range/stats fetches
+  // use), with `matches` capped at 1000 while `total` reflects the true
+  // (uncapped) count. `logMatches` holds just the `row` numbers (ABSOLUTE row
+  // numbers within the current view, directly usable by the virtual scroller).
+  // Jumping to a match only moves `logBox.scrollTop` — it does not fetch a
+  // range itself; the existing scroll handler's `ensureRowsLoaded` (fired
+  // reactively off `logStart`/`logEnd`) brings the row's window in, so the
+  // jump doesn't fight the race discipline (windowFetchToken/windowLoading/
+  // viewSwitching) already governing scroll/view-switch/SSE-reconnect fetches.
   let logQuery = "";
   let logMatchPos = 0;
-  $: logMatches = logQuery
-    ? logWindow.lines.reduce((acc, l, idx) => {
-        if (l.line && l.line.toLowerCase().includes(logQuery.toLowerCase()))
-          acc.push(idx + logWindow.startRow);
-        return acc;
-      }, [])
-    : [];
-  // Keep the cursor in range when the match set changes (new logs, filter, edit).
+  let logMatches = []; // absolute row numbers, from the server
+  let logSearchTotal = 0; // true (uncapped) match count reported by the server
+  let logSearchToken = 0; // guards against out-of-order debounced responses
+  let logSearchDebounce = null;
+  const LOG_SEARCH_DEBOUNCE_MS = 300;
+
+  // Keep the cursor in range when the match set changes (new search, filter, edit).
   $: if (logMatchPos >= logMatches.length) logMatchPos = 0;
   $: curMatchRow = logMatches.length ? logMatches[logMatchPos] : -1;
-  $: logQuery, resetMatchPos();
-  function resetMatchPos() {
-    logMatchPos = 0;
-    tick().then(() => {
-      if (logQuery && logMatches.length) gotoMatch(0);
-    });
+  $: logQuery, scheduleSearch();
+  function scheduleSearch() {
+    if (logSearchDebounce) clearTimeout(logSearchDebounce);
+    if (!logQuery) {
+      // Empty query: clear state locally, never call the server (it 400s on
+      // an empty q anyway).
+      logSearchToken++; // invalidate any in-flight search response
+      logMatches = [];
+      logSearchTotal = 0;
+      logMatchPos = 0;
+      return;
+    }
+    logSearchDebounce = setTimeout(runSearch, LOG_SEARCH_DEBOUNCE_MS);
+  }
+  async function runSearch() {
+    const q = logQuery;
+    if (!q) return;
+    const token = ++logSearchToken;
+    try {
+      const resp = await apiFetch(
+        `/api/v1/runs/${runID}/logs/search?q=${encodeURIComponent(q)}${viewStepsQuery()}`,
+      );
+      if (token !== logSearchToken) return; // superseded by a newer query/view/reconnect
+      logMatches = (resp?.matches || []).map((m) => m.row);
+      logSearchTotal = typeof resp?.total === "number" ? resp.total : logMatches.length;
+      logMatchPos = 0;
+      if (logMatches.length) gotoMatch(0);
+    } catch (e) {
+      console.warn("log search failed", e);
+      if (token !== logSearchToken) return;
+      logMatches = [];
+      logSearchTotal = 0;
+      logMatchPos = 0;
+    }
   }
   function gotoMatch(pos) {
     if (!logMatches.length) return;
@@ -333,11 +372,12 @@
     logStick = false; // don't fight the jump with auto-scroll
     tick().then(() => {
       if (!logBox) return;
-      const rel = rowIdx - logWindow.startRow;
-      const targetY =
-        logWrap && logOffsets && rel >= 0 && rel < logOffsets.length
-          ? logOffsets[rel] + logWindow.startRow * LOG_ROW_H
-          : rowIdx * LOG_ROW_H;
+      // Jump by absolute row * LOG_ROW_H — same fixed-row-height addressing
+      // ensureRowsLoaded/logStart/logEnd use outside wrap mode. (Wrap mode's
+      // per-line offsets are only known for rows already in the window, which
+      // an off-window match generally isn't yet — this is a known v1
+      // approximation, consistent with logContentH's own wrap-mode note.)
+      const targetY = rowIdx * LOG_ROW_H;
       logBox.scrollTop = Math.max(0, targetY - logBox.clientHeight / 2);
       logScrollTop = logBox.scrollTop;
     });
@@ -489,6 +529,7 @@
     windowLoading = false;
     viewSwitching = false;
     await refreshStats();
+    if (logQuery) runSearch(); // re-run over the reconnected run (Task 5)
     let backfilled = false; // first non-empty batch is the SSE backfill, not a live append
     abortController = new AbortController();
     const headers = {};
@@ -664,6 +705,8 @@
   onDestroy(() => {
     if (abortController) abortController.abort();
     stopStepPolling();
+    if (logSearchDebounce) clearTimeout(logSearchDebounce);
+    logSearchToken++; // invalidate any in-flight search response
     if (typeof window !== "undefined")
       window.removeEventListener("resize", measureLogMetrics);
   });
@@ -899,7 +942,9 @@
         />
         {#if logQuery}
           <span class="meta log-search-count"
-            >{logMatches.length ? logMatchPos + 1 : 0} / {logMatches.length}</span
+            >{logMatches.length ? logMatchPos + 1 : 0} / {logSearchTotal > logMatches.length
+              ? `${logMatches.length.toLocaleString()}+`
+              : logSearchTotal.toLocaleString()}</span
           >
           <button
             class="btn log-search-btn"
@@ -936,10 +981,11 @@
       {:else}
         <div style="height:{logTopPad}px" aria-hidden="true"></div>
         {#each visibleLogs as l, i (l.seq)}
+          {@const absRow = logWindow.startRow + visibleLogsSliceStart + i}
           <div
             class="log-row"
             class:log-row-wrap={logWrap}
-            class:log-row-current={logStart + i === curMatchRow}
+            class:log-row-current={absRow === curMatchRow}
           >
             {#if selectedStep === null}<span class="meta log-step-label"
                 >{stepName(l.stepIndex)}</span
@@ -947,7 +993,7 @@
               class={l.stream === "stderr" && !$stderrPlain
                 ? "log-stderr"
                 : "log-stdout"}
-              >{#if logQuery}{#each highlightSegments(l.line, logQuery) as seg}{#if seg.hit}<mark class="log-hit" class:log-hit-current={logStart + i === curMatchRow}>{seg.t}</mark>{:else}{seg.t}{/if}{/each}{:else}{l.line}{/if}</span
+              >{#if logQuery}{#each highlightSegments(l.line, logQuery) as seg}{#if seg.hit}<mark class="log-hit" class:log-hit-current={absRow === curMatchRow}>{seg.t}</mark>{:else}{seg.t}{/if}{/each}{:else}{l.line}{/if}</span
             >
           </div>
         {/each}
