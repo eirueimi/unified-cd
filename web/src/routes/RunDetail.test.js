@@ -835,11 +835,14 @@ describe('RunDetail — step-filtered log view tails (jump to end on select)', (
   };
 
 
-   it('backfills a truncated-away step from the server when selected', async () => {
+   it('selecting a step switches to a server-side filtered view', async () => {
     try {
       // SSE buffer: 200 lines, ALL for step 1 (the huge build), truncated —
       // step 0 (checkout) has zero buffered lines, mirroring the real case
-      // where an early quiet step falls outside the tail window.
+      // where an early quiet step falls outside the tail window. Selecting
+      // step 0 must now re-query the server for a STEPS-FILTERED view
+      // (/logs/stats?steps=0 + /logs/range?...&steps=0) rather than merging
+      // a one-off per-step backfill into the existing window.
       const enc = new TextEncoder();
       let payload = `data: ${JSON.stringify({ type: 'truncated' })}
 
@@ -854,15 +857,19 @@ describe('RunDetail — step-filtered log view tails (jump to end on select)', (
         ok: true, status: 200,
         body: { getReader() { return { read: async () => sent ? { done: true, value: undefined } : (sent = true, { done: false, value: enc.encode(payload) }) } } },
       });
-      // The on-demand endpoint returns checkout's lines (older seqs). 250 so
-      // the virtual window (offset ~185 under the fixed-4000 stub) has rows.
+      // checkout's lines (older seqs, own view). 250 so the virtual window
+      // (offset ~185 under the fixed-4000 stub) has rows.
       const checkoutLines = Array.from({ length: 250 }, (_, i) => (
         { seq: 100 + i, stepIndex: 0, stream: 'stdout', line: 'checkout ' + i, timestamp: '2026-01-01T00:00:00Z' }
       ));
+      const statsRange = statsAndRange(checkoutLines.length, (row) => checkoutLines[row]);
       const fetchMock = vi.fn((url) => {
         const u = String(url);
         if (u.includes('/events')) return eventsResp;
-        if (u.includes('/steps/0/logs')) return jsonResponse(checkoutLines);
+        if (u.includes('steps=0')) {
+          const sr = statsRange(url);
+          if (sr) return sr;
+        }
         if (u.includes('/steps')) return jsonResponse([
           { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
           { index: 1, stageIndex: 1, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
@@ -880,9 +887,10 @@ describe('RunDetail — step-filtered log view tails (jump to end on select)', (
 
       await fireEvent.click(container.querySelectorAll('.step-row')[0]); // checkout
       await vi.waitFor(() => {
-        // The on-demand endpoint was hit...
-        expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/steps/0/logs'))).toBe(true);
-        // ...and the merged checkout lines render in the filtered view.
+        // The steps-filtered stats + range endpoints were hit...
+        expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/logs/stats') && String(c[0]).includes('steps=0'))).toBe(true);
+        expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/logs/range') && String(c[0]).includes('steps=0'))).toBe(true);
+        // ...and the server-filtered checkout lines render in the view.
         const texts = [...container.querySelectorAll('.log-row')].map(r => r.textContent);
         expect(texts.some(t => t.includes('checkout'))).toBe(true);
       });
@@ -895,6 +903,13 @@ describe('RunDetail — step-filtered log view tails (jump to end on select)', (
 
   it('jumps to the bottom when a step filter is applied', async () => {
     try {
+      // Step 1's own view (queried via /logs/stats?steps=1 + /logs/range?...
+      // steps=1 on selection): 200 lines so the virtual window (offset ~185
+      // under the fixed-4000 scrollHeight stub) has rows to render.
+      const stepLines = Array.from({ length: 200 }, (_, i) => (
+        { seq: i + 1, stepIndex: 1, stream: 'stdout', line: 'test line ' + i }
+      ));
+      const statsRange = statsAndRange(stepLines.length, (row) => stepLines[row]);
       const fetchMock = vi.fn((url) => {
         const u = String(url);
         // 200 lines, not a handful: the scrollHeight stub is a fixed 4000,
@@ -903,6 +918,10 @@ describe('RunDetail — step-filtered log view tails (jump to end on select)', (
         // render zero rows under the stub (a stub artifact; real browsers
         // clamp scrollTop). Keep the fixture bigger than the window offset.
         if (u.includes('/events')) return eventsResponseWithLogs(200, false);
+        if (u.includes('steps=1')) {
+          const sr = statsRange(url);
+          if (sr) return sr;
+        }
         if (u.includes('/steps')) return jsonResponse([
           { index: 0, stageIndex: 0, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
           { index: 1, stageIndex: 1, name: 'test', status: 'Succeeded', kind: 'run', section: 'main' },

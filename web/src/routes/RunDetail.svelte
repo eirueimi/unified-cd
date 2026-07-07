@@ -27,8 +27,10 @@
   // single contiguous slice [startRow, startRow+lines.length) of the current
   // view's rows (0-based, absolute row numbers within that view), fetched
   // on demand from the server as the user scrolls. `logView.steps` selects
-  // which view (null = all steps; Task 4 wires selectedStep/selectedParallelGroup
-  // into it). `WINDOW_MAX`/`FETCH_CHUNK` bound how much is held/fetched at once.
+  // which view (null = all steps; a single step or parallel group selects a
+  // server-filtered view — see `switchLogView` below, driven by
+  // selectedStep/selectedParallelGroup). `WINDOW_MAX`/`FETCH_CHUNK` bound how
+  // much is held/fetched at once.
   let logView = { steps: null };
   let logWindow = { startRow: 0, lines: [], totalCount: 0 };
   let windowLoading = false; // range fetch in flight (drives the Loading… row)
@@ -105,13 +107,6 @@
       out.push({ section: "finally", label: "Finally", groups: group(bySection.finally) });
     return out;
   })();
-
-  // Task 3: the client-side filter is retired in favor of a server-side VIEW
-  // (logView.steps, wired up in Task 4). Until then this stays an identity so
-  // the rest of the rendering pipeline (which still reads `filteredLogs`)
-  // continues to work unchanged; `selectedStep`/`selectedParallelGroup` keep
-  // driving the legacy per-step backfill below (superseded in Task 4).
-  $: filteredLogs = logWindow.lines;
 
   // ---- Virtualized log rendering ----
   // Logs can reach tens of thousands of lines (e.g. Unity's `-logFile -`), which
@@ -230,19 +225,51 @@
       logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight <
       LOG_ROW_H * 2;
   }
-  // Jump to the END when the step/parallel filter changes: the most common
-  // reason to filter is following a running step's output, so the filtered
-  // view tails by default — scroll up to release, exactly like the
-  // unfiltered view. (This used to reset to the TOP, which disabled tailing
-  // entirely while a step was selected.)
-  $: resetLogScrollOnFilter(selectedStep, selectedParallelGroup);
-  function resetLogScrollOnFilter() {
+  // selectedStep/selectedParallelGroup select which server-side VIEW is
+  // active (Task 4): null → all steps, a single step → [idx], a parallel
+  // group → its indices. Switching views re-fetches stats + a fresh tail
+  // range from the server — the window's contents are never client-filtered.
+  let viewInitialized = false; // skip the initial mount value: startSSE() already
+  // establishes the all-steps window/tail, so firing here too would just be a
+  // redundant (and racy) duplicate fetch before the SSE connection even opens.
+  $: viewSteps = selectedParallelGroup !== null
+    ? selectedParallelGroup
+    : selectedStep !== null
+      ? [selectedStep]
+      : null;
+  $: {
+    if (viewInitialized) switchLogView(viewSteps);
+    viewInitialized = true;
+  }
+  async function switchLogView(stepsSel) {
+    logView = { steps: stepsSel };
     logStick = true;
-    tick().then(() => {
-      if (!logBox) return;
-      logBox.scrollTop = logBox.scrollHeight;
-      logScrollTop = logBox.scrollTop;
-    });
+    const token = ++windowFetchToken; // invalidate any in-flight range fetch for the old view
+    await refreshStats();
+    if (token !== windowFetchToken) return; // superseded by a newer view switch
+    windowLoading = true;
+    try {
+      const count = logWindow.totalCount;
+      const start = Math.max(0, count - FETCH_CHUNK);
+      const lines = await apiFetch(
+        `/api/v1/runs/${runID}/logs/range?offset=${start}&limit=${FETCH_CHUNK}${viewStepsQuery()}`,
+      );
+      if (token !== windowFetchToken) return; // superseded (another view switch, etc.)
+      logWindow = {
+        ...logWindow,
+        startRow: start,
+        lines: lines.map((l) => ({ ...l, line: collapseCarriageReturns(l.line) })),
+      };
+    } catch (e) {
+      console.warn("log view range fetch failed", e);
+    } finally {
+      if (token === windowFetchToken) windowLoading = false;
+    }
+    if (token !== windowFetchToken) return;
+    await tick();
+    if (!logBox) return;
+    logBox.scrollTop = logBox.scrollHeight;
+    logScrollTop = logBox.scrollTop;
   }
 
   // ---- In-app log search ----
@@ -425,8 +452,6 @@
       abortController = null;
     }
     logWindow = { startRow: 0, lines: [], totalCount: 0 };
-    logTruncated = false;
-    fetchedSteps = new Set(); // buffer reset invalidates prior step backfills
     windowFetchToken++; // invalidate any in-flight range fetch from the old connection
     await refreshStats();
     let backfilled = false; // first non-empty batch is the SSE backfill, not a live append
@@ -472,9 +497,8 @@
             } else if (data.type === "truncated") {
               // No longer surfaced as a banner: the scrollbar itself spans
               // the full log via logWindow.totalCount, and older lines are
-              // reachable by scrolling up (ensureRowsLoaded fetches them).
-              // Still recorded for backfillSelectedStepLogs (pre-Task-4).
-              logTruncated = true;
+              // reachable by scrolling up (ensureRowsLoaded fetches them),
+              // or via a step view's own server-side range (switchLogView).
             } else if (data.type === "status") {
               if (run) run = { ...run, status: data.status };
               if (["Succeeded", "Failed", "Cancelled"].includes(data.status)) {
@@ -497,18 +521,25 @@
               totalCount,
             };
           } else {
+            // While a step/group view is active, only lines that belong to
+            // the view are appended to the window; the rest are ignored here
+            // (the all-steps view's totalCount catches up via refreshStats()
+            // when the user switches back to it — see switchLogView).
+            const inView = logView.steps
+              ? batch.filter((l) => logView.steps.includes(l.stepIndex))
+              : batch;
             const atTail = logWindow.startRow + logWindow.lines.length >= logWindow.totalCount;
             if (atTail) {
-              let lines = logWindow.lines.concat(batch);
+              let lines = logWindow.lines.concat(inView);
               let startRow = logWindow.startRow;
               if (lines.length > WINDOW_MAX) {
                 const evict = lines.length - WINDOW_MAX;
                 lines = lines.slice(evict);
                 startRow += evict;
               }
-              logWindow = { ...logWindow, startRow, lines, totalCount: logWindow.totalCount + batch.length };
+              logWindow = { ...logWindow, startRow, lines, totalCount: logWindow.totalCount + inView.length };
             } else {
-              logWindow = { ...logWindow, totalCount: logWindow.totalCount + batch.length };
+              logWindow = { ...logWindow, totalCount: logWindow.totalCount + inView.length };
             }
           }
           // Stick-scroll applies to filtered views too: if the incoming
@@ -556,59 +587,6 @@
   function selectStep(idx) {
     selectedParallelGroup = null;
     selectedStep = selectedStep === idx ? null : idx;
-  }
-
-  // On-demand step-log backfill (pre-Task-3 behavior, superseded by Task 4's
-  // view-switching): the SSE backfill keeps only the last N lines of the
-  // WHOLE run, so a short early step (e.g. checkout before a 20k-line build)
-  // can have ZERO buffered lines even though the DB has them. When the user
-  // selects such a step on a truncated view, fetch its tail directly from
-  // the controller (once per step) and merge it into the current WINDOW by
-  // seq. Left in place per Task 3 scope (Task 4 replaces it with a proper
-  // server-side view switch via logView.steps); it only touches
-  // `logWindow.lines`, so it can't fight the window model — worst case it's
-  // a merge that gets overwritten by the next range fetch.
-  let fetchedSteps = new Set();
-  let stepLogsLoading = false;
-  let logTruncated = false; // set from the SSE "truncated" event; no longer shown as a banner
-  $: backfillSelectedStepLogs(selectedStep, selectedParallelGroup);
-  async function backfillSelectedStepLogs() {
-    if (!logTruncated) return;
-    const indices =
-      selectedStep !== null
-        ? [selectedStep]
-        : selectedParallelGroup !== null
-          ? selectedParallelGroup
-          : [];
-    const missing = indices.filter((i) => !fetchedSteps.has(i));
-    if (!missing.length) return;
-    stepLogsLoading = true;
-    try {
-      for (const idx of missing) {
-        fetchedSteps.add(idx);
-        const lines = await apiFetch(`/api/v1/runs/${runID}/steps/${idx}/logs`);
-        if (!Array.isArray(lines) || !lines.length) continue;
-        const have = new Set(logWindow.lines.map((l) => l.seq));
-        const merged = logWindow.lines.concat(
-          lines
-            .filter((l) => !have.has(l.seq))
-            .map((l) => ({ ...l, line: collapseCarriageReturns(l.line) })),
-        );
-        merged.sort((a, b) => a.seq - b.seq);
-        logWindow = { ...logWindow, lines: merged };
-      }
-    } catch (e) {
-      // Best-effort: the panel just stays empty; don't break the page.
-      console.warn("step log backfill failed", e);
-    } finally {
-      stepLogsLoading = false;
-      // Land at the end of the newly filled filtered view.
-      await tick();
-      if (logBox && logStick) {
-        logBox.scrollTop = logBox.scrollHeight;
-        logScrollTop = logBox.scrollTop;
-      }
-    }
   }
 
   async function init() {
@@ -896,8 +874,6 @@
       {#if !visibleLogs.length}
         {#if windowLoading}
           <span style="color:var(--text-muted)">Loading…</span>
-        {:else if stepLogsLoading}
-          <span style="color:var(--text-muted)">Loading this step's logs…</span>
         {:else if selectedStep !== null || selectedParallelGroup !== null}
           <span style="color:var(--text-muted)">No log lines for this selection.</span>
         {:else if logTotal === 0}
