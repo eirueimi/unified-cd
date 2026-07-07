@@ -1353,3 +1353,131 @@ describe('RunDetail — log view switch atomicity (review findings)', () => {
     }
   });
 });
+
+// Review finding (round 3): startSSE() bumps windowFetchToken to invalidate
+// any in-flight switchLogView from the OLD run, but never resets
+// windowLoading/viewSwitching. Those flags are only reset in switchLogView's
+// `finally` block, gated on `token === windowFetchToken` — and since startSSE
+// already bumped the token past that switch's own token, the gate never
+// passes for the superseded switch. With nothing else to reset them, they get
+// stuck `true` forever once the user navigates to a different run while a
+// switchLogView is in flight: `viewSwitching` stuck true makes the SSE reader
+// drop every future batch for the NEW run (live updates silently dead), and
+// `windowLoading` stuck true permanently blocks ensureRowsLoaded.
+describe('RunDetail — window flags reset when startSSE supersedes an in-flight view switch (review finding round 3)', () => {
+  it('navigating to a new run while a switchLogView is in flight still lets the new run\'s SSE backfill render', async () => {
+    const steps1 = [
+      { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
+      { index: 1, stageIndex: 1, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+    ];
+
+    // run-1's all-steps SSE backfill (small; only needs to render enough to
+    // click a step and kick off switchLogView).
+    const enc = new TextEncoder();
+    const run1Backfill =
+      `data: ${JSON.stringify({ type: 'log', seq: 1, stepIndex: 0, stream: 'stdout', line: 'run1 line0' })}\n\n`;
+    let run1Sent = false;
+    const run1EventsResp = Promise.resolve({
+      ok: true, status: 200,
+      body: {
+        getReader() {
+          return {
+            read: async () => run1Sent
+              ? { done: true, value: undefined }
+              : (run1Sent = true, { done: false, value: enc.encode(run1Backfill) }),
+          };
+        },
+      },
+    });
+
+    // run-2's SSE stream: a first batch (the initial backfill — accepted
+    // unconditionally by the `!backfilled` branch regardless of
+    // viewSwitching/windowLoading) followed by a SECOND, genuinely live
+    // batch. That second batch is the one that actually exercises the bug:
+    // the SSE reader's live-append path drops batches outright while
+    // `viewSwitching` is true, so if startSSE left it stuck true this line
+    // never renders no matter how long the test waits.
+    const run2Backfill =
+      `data: ${JSON.stringify({ type: 'log', seq: 1, stepIndex: 1, stream: 'stdout', line: 'run2 backfill' })}\n\n`;
+    const run2Live =
+      `data: ${JSON.stringify({ type: 'log', seq: 2, stepIndex: 1, stream: 'stdout', line: 'RUN2-LIVE' })}\n\n`;
+    let run2ReadCount = 0;
+    const run2EventsResp = Promise.resolve({
+      ok: true, status: 200,
+      body: {
+        getReader() {
+          return {
+            read: async () => {
+              run2ReadCount++;
+              if (run2ReadCount === 1) return { done: false, value: enc.encode(run2Backfill) };
+              if (run2ReadCount === 2) return { done: false, value: enc.encode(run2Live) };
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      },
+    });
+
+    // Gate run-1's steps=1 /logs/stats fetch so switchLogView([1]) is still
+    // in flight (windowLoading/viewSwitching already true, windowFetchToken
+    // already bumped) when we navigate away to run-2.
+    let releaseRun1Step1Stats = null;
+    const run1Step1StatsGate = new Promise((res) => { releaseRun1Step1Stats = res; });
+
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      const runID = u.match(/\/runs\/([^/]+)/)?.[1];
+      if (u.includes('/events')) return runID === 'run-2' ? run2EventsResp : run1EventsResp;
+      if (runID === 'run-1' && u.includes('/logs/stats') && u.includes('steps=1')) {
+        // Never actually resolves within this test — the switch is left
+        // permanently in flight, exactly like a switch superseded by
+        // navigation before its own round-trip completes.
+        return run1Step1StatsGate.then(() => jsonResponse({ count: 0, minSeq: 0, maxSeq: 0 }));
+      }
+      if (u.includes('/logs/stats') || u.includes('/logs/range')) {
+        return jsonResponse({ count: 0, minSeq: 0, maxSeq: 0 });
+      }
+      if (u.includes('/steps')) return jsonResponse(runID === 'run-1' ? steps1 : []);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      if (u.includes('/artifacts')) return jsonResponse([]);
+      return jsonResponse({ id: runID, status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container, rerender } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll('.step-row').length).toBeGreaterThan(0);
+    });
+
+    // Click step 1 (build): kicks off switchLogView([1]), gated forever on
+    // the steps=1 stats fetch above. windowLoading/viewSwitching are now
+    // true and windowFetchToken has been bumped past its previous value.
+    await fireEvent.click(container.querySelectorAll('.step-row')[1]);
+
+    // Give switchLogView's synchronous pre-await block a tick to run.
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Navigate to a different run while that switch is still stuck in
+    // flight — this is the reactive `$: runID, init()` path real navigation
+    // takes, reusing the same component instance. init() calls startSSE(),
+    // which bumps windowFetchToken again (superseding the stuck switch) but,
+    // before the fix, never resets windowLoading/viewSwitching.
+    await rerender({ params: { id: 'run-2' } });
+
+    // run-2's SSE backfill must render: if the flags were left stuck true by
+    // startSSE, the SSE reader's `viewSwitching` branch drops every batch
+    // for run-2 forever, and windowLoading stuck true means ensureRowsLoaded
+    // is permanently blocked too. With the fix, startSSE resets both flags
+    // as the new token owner, so the backfill installs normally.
+    await vi.waitFor(() => {
+      const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+      expect(texts.some((t) => t.includes('RUN2-LIVE'))).toBe(true);
+    });
+
+    // Cleanup: release the gate so the never-resolving promise doesn't leak
+    // across tests (its `finally` will see a stale token and correctly
+    // no-op — that's fine, the assertion above already covers the fix).
+    releaseRun1Step1Stats();
+  });
+});

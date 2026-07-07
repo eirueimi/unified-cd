@@ -478,6 +478,16 @@
     }
     logWindow = { startRow: 0, lines: [], totalCount: 0 };
     windowFetchToken++; // invalidate any in-flight range fetch from the old connection
+    // startSSE is now the sole owner of the (new) token, so it must also
+    // reset the flags a superseded switchLogView would otherwise have reset
+    // itself: that switch's `finally` is gated on `token === windowFetchToken`,
+    // which can never pass again once we've bumped past its token here — left
+    // alone, windowLoading/viewSwitching would stay stuck true forever (SSE
+    // batches for THIS run dropped permanently, ensureRowsLoaded permanently
+    // blocked). Reset synchronously, before the await below, so nothing else
+    // can observe a mismatched state in between.
+    windowLoading = false;
+    viewSwitching = false;
     await refreshStats();
     let backfilled = false; // first non-empty batch is the SSE backfill, not a live append
     abortController = new AbortController();
