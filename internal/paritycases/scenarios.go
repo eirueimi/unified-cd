@@ -21,6 +21,7 @@ func Cases() []Case {
 		stdoutOutputs(),
 		callSucceedsWithLink(),
 		cacheEmptyKeySkips(),
+		matrixStructuralErrorAborts(),
 	}
 }
 
@@ -393,6 +394,44 @@ func cacheEmptyKeySkips() Case {
 			LogMustContain: []LogLine{
 				{Step: "after", Stream: "stdout", Substring: "after-cache"},
 			},
+		},
+	}
+}
+
+// 12. matrix-structural-error-aborts: a step whose matrix dimension carries a
+// malformed template expression fails EXPANSION (not execution). The shared
+// RunPipeline contract — established on the host and adopted by the k8s agent
+// in the shared-orchestrator refactor (TODO #44 stage 2, task 5) — is that a
+// structural expansion error aborts ALL remaining steps/stages of that
+// pipeline immediately (the pre-refactor k8s loop instead skipped the broken
+// step and kept going). The later step's marker must therefore never be
+// executed or shipped, and the run must finish Failed.
+func matrixStructuralErrorAborts() Case {
+	return Case{
+		Name: "matrix-structural-error-aborts",
+		Claim: func() api.ClaimResponse {
+			return api.ClaimResponse{
+				RunID:   "run-matrix-structural-error",
+				JobName: "matrix-structural-error",
+				Stages: []api.ClaimStage{
+					{Step: &api.ClaimStep{
+						Index: 0, StageIndex: 0, Name: "broken",
+						Run: "echo broken-ran",
+						Matrix: &api.ClaimMatrixDef{Dimensions: []api.ClaimMatrixDimension{
+							// Unclosed template action: EvalForeachSource fails to
+							// parse it, so ExpandMatrixStep returns an error before
+							// any variant exists.
+							{Name: "v", Source: api.ClaimForeachSource{Expr: "{{ .Params.envs"}},
+						}},
+					}},
+					{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "later", Run: "echo never-ran-marker"}},
+				},
+			}
+		},
+		Expect: Expectation{
+			RunFinished: "Failed",
+			// Neither the broken step's body nor anything after it may run.
+			LogMustNotContain: []string{"broken-ran", "never-ran-marker"},
 		},
 	}
 }
