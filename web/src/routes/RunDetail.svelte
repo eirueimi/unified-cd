@@ -345,6 +345,7 @@
     }
     logLines = [];
     logTruncated = false;
+    fetchedSteps = new Set(); // buffer reset invalidates prior step backfills
     abortController = new AbortController();
     const headers = {};
     const t = get(token);
@@ -441,6 +442,53 @@
   function selectStep(idx) {
     selectedParallelGroup = null;
     selectedStep = selectedStep === idx ? null : idx;
+  }
+
+  // On-demand step-log backfill: the SSE backfill keeps only the last N lines
+  // of the WHOLE run, so a short early step (e.g. checkout before a 20k-line
+  // build) can have ZERO buffered lines even though the DB has them. When the
+  // user selects such a step on a truncated view, fetch its tail directly
+  // from the controller (once per step) and merge it into the buffer by seq.
+  let fetchedSteps = new Set();
+  let stepLogsLoading = false;
+  $: backfillSelectedStepLogs(selectedStep, selectedParallelGroup);
+  async function backfillSelectedStepLogs() {
+    if (!logTruncated) return;
+    const indices =
+      selectedStep !== null
+        ? [selectedStep]
+        : selectedParallelGroup !== null
+          ? selectedParallelGroup
+          : [];
+    const missing = indices.filter((i) => !fetchedSteps.has(i));
+    if (!missing.length) return;
+    stepLogsLoading = true;
+    try {
+      for (const idx of missing) {
+        fetchedSteps.add(idx);
+        const lines = await apiFetch(`/api/v1/runs/${runID}/steps/${idx}/logs`);
+        if (!Array.isArray(lines) || !lines.length) continue;
+        const have = new Set(logLines.map((l) => l.seq));
+        const merged = logLines.concat(
+          lines
+            .filter((l) => !have.has(l.seq))
+            .map((l) => ({ ...l, line: collapseCarriageReturns(l.line) })),
+        );
+        merged.sort((a, b) => a.seq - b.seq);
+        logLines = merged;
+      }
+    } catch (e) {
+      // Best-effort: the panel just stays empty; don't break the page.
+      console.warn("step log backfill failed", e);
+    } finally {
+      stepLogsLoading = false;
+      // Land at the end of the newly filled filtered view.
+      await tick();
+      if (logBox && logStick) {
+        logBox.scrollTop = logBox.scrollHeight;
+        logScrollTop = logBox.scrollTop;
+      }
+    }
   }
 
   async function init() {
@@ -732,7 +780,13 @@
       on:scroll={onLogScroll}
     >
       {#if !filteredLogs.length}
-        <span style="color:var(--text-muted)">Waiting for logs…</span>
+        {#if stepLogsLoading}
+          <span style="color:var(--text-muted)">Loading this step's logs…</span>
+        {:else if selectedStep !== null || selectedParallelGroup !== null}
+          <span style="color:var(--text-muted)">No log lines for this selection.</span>
+        {:else}
+          <span style="color:var(--text-muted)">Waiting for logs…</span>
+        {/if}
       {:else}
         <div style="height:{logTopPad}px" aria-hidden="true"></div>
         {#each visibleLogs as l, i (l.seq)}

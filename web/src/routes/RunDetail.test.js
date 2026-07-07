@@ -647,7 +647,65 @@ describe('RunDetail — step-filtered log view tails (jump to end on select)', (
   };
 
 
-   it('jumps to the bottom when a step filter is applied', async () => {
+   it('backfills a truncated-away step from the server when selected', async () => {
+    try {
+      // SSE buffer: 200 lines, ALL for step 1 (the huge build), truncated —
+      // step 0 (checkout) has zero buffered lines, mirroring the real case
+      // where an early quiet step falls outside the tail window.
+      const enc = new TextEncoder();
+      let payload = `data: ${JSON.stringify({ type: 'truncated' })}
+
+`;
+      for (let i = 0; i < 200; i++) {
+        payload += `data: ${JSON.stringify({ type: 'log', seq: 1000 + i, stepIndex: 1, stream: 'stdout', line: 'build ' + i })}
+
+`;
+      }
+      let sent = false;
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: { getReader() { return { read: async () => sent ? { done: true, value: undefined } : (sent = true, { done: false, value: enc.encode(payload) }) } } },
+      });
+      // The on-demand endpoint returns checkout's lines (older seqs). 250 so
+      // the virtual window (offset ~185 under the fixed-4000 stub) has rows.
+      const checkoutLines = Array.from({ length: 250 }, (_, i) => (
+        { seq: 100 + i, stepIndex: 0, stream: 'stdout', line: 'checkout ' + i, timestamp: '2026-01-01T00:00:00Z' }
+      ));
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        if (u.includes('/steps/0/logs')) return jsonResponse(checkoutLines);
+        if (u.includes('/steps')) return jsonResponse([
+          { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
+          { index: 1, stageIndex: 1, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+        ]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-stepfill', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+      const { container } = render(RunDetail, { props: { params: { id: 'run-stepfill' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+        expect(container.querySelectorAll('.step-row').length).toBeGreaterThan(0);
+      });
+
+      await fireEvent.click(container.querySelectorAll('.step-row')[0]); // checkout
+      await vi.waitFor(() => {
+        // The on-demand endpoint was hit...
+        expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/steps/0/logs'))).toBe(true);
+        // ...and the merged checkout lines render in the filtered view.
+        const texts = [...container.querySelectorAll('.log-row')].map(r => r.textContent);
+        expect(texts.some(t => t.includes('checkout'))).toBe(true);
+      });
+      const box = container.querySelector('.log-box');
+      expect(box.scrollTop).toBe(4000);
+    } finally {
+      restore();
+    }
+  });
+
+  it('jumps to the bottom when a step filter is applied', async () => {
     try {
       const fetchMock = vi.fn((url) => {
         const u = String(url);

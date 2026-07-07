@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -292,4 +293,34 @@ func appendLabelIfMissing(labels []string, label string) []string {
 		}
 	}
 	return append(labels, label)
+}
+
+// handleStepLogs returns the most recent `limit` (default: the SSE backfill
+// cap) log lines of ONE step, ascending seq. The WebUI calls this when the
+// user selects a step whose lines fell outside the SSE tail window on a huge
+// log — the live view keeps only the last N lines of the WHOLE run, so an
+// early quiet step (e.g. checkout before a 20k-line build) may have zero
+// buffered lines client-side even though the DB has them.
+func (s *Server) handleStepLogs(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	stepIndex, err := strconv.Atoi(chi.URLParam(r, "stepIndex"))
+	if err != nil {
+		http.Error(w, "invalid step index: "+chi.URLParam(r, "stepIndex"), http.StatusBadRequest)
+		return
+	}
+	limit := sseBackfillLimit
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	lines, err := s.store.TailLogsRecentByStep(r.Context(), id, stepIndex, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if lines == nil {
+		lines = []api.LogLine{}
+	}
+	writeJSON(w, http.StatusOK, lines)
 }

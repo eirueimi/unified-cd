@@ -144,6 +144,10 @@ type Store interface {
 	// ascending seq order (the tail of the log), so a bounded backfill can keep
 	// the end of a huge log rather than its beginning.
 	TailLogsRecent(ctx context.Context, runID string, limit int) ([]api.LogLine, error)
+	// TailLogsRecentByStep is TailLogsRecent restricted to one step, for the
+	// WebUI's on-demand backfill of a step whose lines fell outside the SSE
+	// backfill window.
+	TailLogsRecentByStep(ctx context.Context, runID string, stepIndex, limit int) ([]api.LogLine, error)
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
 	// os/version/env wholesale (a registration is the authoritative identity).
 	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error
