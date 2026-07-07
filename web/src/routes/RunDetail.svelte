@@ -698,7 +698,7 @@
   // runs via "Rerun", which svelte-spa-router handles by reusing this component
   // instance rather than recreating it). Do NOT also call init() from onMount —
   // that caused a duplicate concurrent SSE connection/log fetch on first load,
-  // where the second connection's `logLines = []` reset could wipe out or race
+  // where the second connection's `logWindow` reset could wipe out or race
   // with logs already delivered by the first, leaving the panel stuck empty.
   if (typeof window !== "undefined")
     window.addEventListener("resize", measureLogMetrics);
@@ -1073,18 +1073,6 @@
   .log-wrap-btn.active {
     background: var(--primary-light, #e8f0fe);
     border-color: var(--primary, #4285f4);
-  }
-  .log-truncated {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    background: var(--surface-alt, var(--surface));
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0.3rem 0.6rem;
-    margin-bottom: 0.4rem;
-  }
-  .log-truncated code {
-    font-size: 0.72rem;
   }
   .log-row-current {
     background: rgba(255, 150, 50, 0.12);

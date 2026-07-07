@@ -26,6 +26,12 @@ type sseEvent struct {
 // lines) otherwise cost a multi-megabyte burst to transfer and parse. It is a
 // var (not a const) so tests can shrink it. Live lines after connect are not
 // affected by this cap.
+//
+// This backfill is only the initial window: the client can browse the full
+// log regardless of size via the windowed viewer (GET /runs/{id}/logs/stats,
+// /logs/range, /logs/search), which fetches ranges by row number as the user
+// scrolls. This cap does not limit what's reachable, only what's replayed
+// up front over SSE.
 var sseBackfillLimit = 10_000
 
 func writeSSE(w http.ResponseWriter, event sseEvent) {
