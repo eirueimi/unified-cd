@@ -245,10 +245,17 @@
     logView = { steps: stepsSel };
     logStick = true;
     const token = ++windowFetchToken; // invalidate any in-flight range fetch for the old view
-    await refreshStats();
-    if (token !== windowFetchToken) return; // superseded by a newer view switch
+    // Set BEFORE the first await so ensureRowsLoaded's `if (windowLoading)
+    // return` guard covers the ENTIRE switch (refreshStats + tail range
+    // fetch), not just the range-fetch leg. Otherwise a scroll-driven
+    // ensureRowsLoaded can fire during `await refreshStats()` below, bump
+    // windowFetchToken itself, and cause this switch's token checks to
+    // observe a mismatch and silently abort (no tail fetch, no jump to
+    // bottom) — see the "log view switch atomicity" tests.
     windowLoading = true;
     try {
+      await refreshStats();
+      if (token !== windowFetchToken) return; // superseded by a newer view switch
       const count = logWindow.totalCount;
       const start = Math.max(0, count - FETCH_CHUNK);
       const lines = await apiFetch(
@@ -520,6 +527,16 @@
               lines: batch,
               totalCount,
             };
+          } else if (windowLoading) {
+            // A view switch (switchLogView) or a range fetch
+            // (ensureRowsLoaded) is in flight: `logWindow` may still hold a
+            // stale/about-to-be-replaced view (e.g. mid-switchLogView,
+            // logView.steps already points at the NEW view while logWindow's
+            // contents are still the OLD one). Appending here would mix the
+            // two and inflate totalCount transiently — and permanently if
+            // this fetch turns out to be superseded. Drop the batch instead:
+            // the in-flight fetch's own result (plus its refreshStats, for a
+            // view switch) supersedes it and totalCount catches up.
           } else {
             // While a step/group view is active, only lines that belong to
             // the view are appended to the window; the rest are ignored here

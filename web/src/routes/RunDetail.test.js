@@ -949,3 +949,273 @@ describe('RunDetail — step-filtered log view tails (jump to end on select)', (
     }
   });
 });
+
+// Review findings on Task 4's switchLogView: it awaits refreshStats() and then
+// a tail range fetch while `logWindow` still holds the PREVIOUS view's lines.
+// Two windows of vulnerability during those awaits:
+//   1. The SSE reader's live-append path is not switch-aware, so a batch that
+//      arrives mid-switch gets concatenated onto the OLD window/totalCount
+//      even though it was filtered for the NEW view — a transient (and, if
+//      the switch itself is superseded, permanent) corruption of the window.
+//   2. `windowLoading` is still false during the `await refreshStats()` leg,
+//      so a scroll-driven `ensureRowsLoaded` can bump `windowFetchToken` out
+//      from under the switch, causing it to silently abort (no tail fetch, no
+//      jump to bottom) once its post-refreshStats token check fails.
+describe('RunDetail — log view switch atomicity (review findings)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  it('an SSE batch arriving between switch start and its stats resolution does not mix into the old window', async () => {
+    try {
+      // All-steps SSE backfill: 200 lines for step 0 only (kept >= the
+      // virtual window's offset under the fixed-4000 scrollHeight stub — see
+      // the "jumps to the bottom" test above for why fewer lines render
+      // zero rows under jsdom). Selecting step 1 (which has NO buffered
+      // lines, like the existing "truncated-away step" scenario) drives
+      // switchLogView([1]) into its server round-trips.
+      const enc = new TextEncoder();
+      let backfillPayload = '';
+      for (let i = 0; i < 200; i++) {
+        backfillPayload += `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'step0 ' + i })}\n\n`;
+      }
+      // A live batch for step 1 (the NEW view being switched to), encoded so
+      // it can be delivered on a later reader.read() call, i.e. AFTER the
+      // user clicks step 1 but potentially before switchLogView's stats/range
+      // awaits resolve.
+      const liveBatchPayload = `data: ${JSON.stringify({ type: 'log', seq: 9001, stepIndex: 1, stream: 'stdout', line: 'LIVE-INTRUDER' })}\n\n`;
+
+      let readCount = 0;
+      let releaseLiveBatch = null;
+      const liveBatchGate = new Promise((res) => { releaseLiveBatch = res; });
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: {
+          getReader() {
+            return {
+              read: async () => {
+                readCount++;
+                if (readCount === 1) return { done: false, value: enc.encode(backfillPayload) };
+                if (readCount === 2) {
+                  await liveBatchGate;
+                  return { done: false, value: enc.encode(liveBatchPayload) };
+                }
+                return { done: true, value: undefined };
+              },
+            };
+          },
+        },
+      });
+
+      // step 1's server-side view: 200 lines (>= the virtual window's offset
+      // under the fixed-4000 scrollHeight stub, same reasoning as the
+      // 200-line all-steps backfill above), its own totalCount (unrelated to
+      // the live-intruder line, which must NOT be folded into it).
+      const step1Lines = Array.from({ length: 200 }, (_, i) => (
+        { seq: 5000 + i, stepIndex: 1, stream: 'stdout', line: 'step1 ' + i }
+      ));
+      const step1StatsRange = statsAndRange(step1Lines.length, (row) => step1Lines[row]);
+
+      // Gate the steps=1 /logs/stats response so the test can deliver the SSE
+      // live batch WHILE switchLogView's `await refreshStats()` is pending.
+      let releaseStep1Stats = null;
+      const step1StatsGate = new Promise((res) => { releaseStep1Stats = res; });
+
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        if (u.includes('/logs/stats') && u.includes('steps=1')) {
+          return step1StatsGate.then(() => jsonResponse({ count: step1Lines.length, minSeq: 1, maxSeq: step1Lines.length }));
+        }
+        if (u.includes('steps=1')) {
+          const sr = step1StatsRange(u);
+          if (sr) return sr;
+        }
+        if (u.includes('/steps')) return jsonResponse([
+          { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
+          { index: 1, stageIndex: 1, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+        ]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-atomic', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-atomic' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+        expect(container.querySelectorAll('.step-row').length).toBeGreaterThan(0);
+      });
+      expect(container.textContent).toContain('200 lines');
+
+      // Click step 1 (build): kicks off switchLogView([1]), which awaits the
+      // (gated) /logs/stats?steps=1 call.
+      await fireEvent.click(container.querySelectorAll('.step-row')[1]);
+
+      // While that stats fetch is still pending, let the SSE reader deliver
+      // the live batch for step 1 — this used to get concat'd straight onto
+      // the OLD (step-0) window and its totalCount, since the live-append
+      // path didn't know a switch was in flight.
+      releaseLiveBatch();
+      await vi.waitFor(() => expect(readCount).toBeGreaterThanOrEqual(2));
+      // Give the SSE .then()/tick microtasks a chance to run before the
+      // switch's stats call resolves — this is the transient window where
+      // the corruption is observable: the switch has started (logView.steps
+      // is already [1]) but refreshStats()/the tail range fetch for the new
+      // view haven't landed yet, so `logWindow` is still the OLD (step-0)
+      // window. A switch-aware SSE append must not touch it at all.
+      await new Promise((r) => setTimeout(r, 20));
+
+      const midTexts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+      expect(midTexts.some((t) => t.includes('LIVE-INTRUDER'))).toBe(false);
+      // totalCount (rendered as "N lines") must not have been bumped by the
+      // dropped live batch while still showing the stale step-0 total.
+      expect(container.textContent).toContain('200 lines');
+
+      // Now let the switch's stats fetch resolve, and let the range fetch
+      // (unguarded) complete the switch.
+      releaseStep1Stats();
+
+      await vi.waitFor(() => {
+        // The switch must complete: step1's own lines land in the view.
+        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+        expect(texts.some((t) => t.includes('step1 '))).toBe(true);
+      });
+
+      // Final state: the live-intruder line must never appear anywhere in
+      // the rendered window (it should have been dropped, not merged into
+      // either the old or the new window), and totalCount must be exactly
+      // step1Lines.length — not inflated by the dropped/misrouted live batch.
+      const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+      expect(texts.some((t) => t.includes('LIVE-INTRUDER'))).toBe(false);
+      expect(texts.some((t) => t.includes('step0'))).toBe(false);
+      expect(container.textContent).toContain(`${step1Lines.length} lines`);
+    } finally {
+      restore();
+    }
+  });
+
+  it('a scroll-driven fetch during switchLogView\'s refreshStats does not abort the switch', async () => {
+    try {
+      // All-steps view: a huge total (50000) with only the tail 300 lines
+      // backfilled via SSE — mirroring the Task 3 "scrolling above the
+      // window fetches an earlier range" test. This matters here because
+      // scrolling to the top must be OUTSIDE the currently-loaded window (so
+      // it actually triggers a real ensureRowsLoaded range fetch that bumps
+      // windowFetchToken) rather than a same-window no-op.
+      const ALL_TOTAL = 50000;
+      const BACKFILL = 300;
+      const enc = new TextEncoder();
+      let backfillPayload = '';
+      for (let row = ALL_TOTAL - BACKFILL; row < ALL_TOTAL; row++) {
+        backfillPayload += `data: ${JSON.stringify({ type: 'log', seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'all ' + row })}\n\n`;
+      }
+      let sent = false;
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: { getReader() { return { read: async () => sent ? { done: true, value: undefined } : (sent = true, { done: false, value: enc.encode(backfillPayload) }) } } },
+      });
+
+      const step1Lines = Array.from({ length: 200 }, (_, i) => (
+        { seq: 9000 + i, stepIndex: 1, stream: 'stdout', line: 'step1 ' + i }
+      ));
+      const step1StatsRange = statsAndRange(step1Lines.length, (row) => step1Lines[row]);
+      const allStatsRange = statsAndRange(ALL_TOTAL, (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'all ' + row }));
+
+      // Gate the steps=1 stats fetch so a scroll (against the OLD, all-steps
+      // window that's still installed) can be fired while it's pending —
+      // that scroll's ensureRowsLoaded must not be able to steal the token
+      // and silently no-op the switch.
+      let releaseStep1Stats = null;
+      const step1StatsGate = new Promise((res) => { releaseStep1Stats = res; });
+
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        if (u.includes('/logs/stats') && u.includes('steps=1')) {
+          return step1StatsGate.then(() => jsonResponse({ count: step1Lines.length, minSeq: 1, maxSeq: step1Lines.length }));
+        }
+        if (u.includes('steps=1')) {
+          const sr = step1StatsRange(u);
+          if (sr) return sr;
+        }
+        // All-steps stats/range (used by startSSE's initial refreshStats and
+        // by the scroll-driven ensureRowsLoaded against the OLD view before
+        // the switch installs the new one).
+        if (!u.includes('steps=')) {
+          const sr = allStatsRange(u);
+          if (sr) return sr;
+        }
+        if (u.includes('/steps')) return jsonResponse([
+          { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
+          { index: 1, stageIndex: 1, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+        ]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-scrollrace', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-scrollrace' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+        expect(container.querySelectorAll('.step-row').length).toBeGreaterThan(0);
+      });
+
+      const box = container.querySelector('.log-box');
+
+      // Click step 1 (build): switchLogView([1]) starts, awaiting the gated
+      // steps=1 stats fetch.
+      await fireEvent.click(container.querySelectorAll('.step-row')[1]);
+
+      // While that's pending, scroll the box to the MIDDLE of the log (row
+      // ~25000 under the fixed 20px row height) — well outside both the
+      // SSE-backfilled tail window [ALL_TOTAL-300, ALL_TOTAL) AND whatever
+      // the mount-time ensureRowsLoaded may have already fetched around row
+      // 0. Before the fix, this fired a genuinely new, real
+      // ensureRowsLoaded range fetch that could steal windowFetchToken out
+      // from under the in-flight switch (windowLoading was still false
+      // during switchLogView's `await refreshStats()`), silently aborting
+      // the switch. With the fix, `windowLoading` is already true for the
+      // whole switch, so ensureRowsLoaded's own guard suppresses this
+      // scroll-driven fetch entirely — no race, no extra request.
+      const rangeCallsBeforeScroll = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
+      box.scrollTop = 25000 * 20;
+      await fireEvent.scroll(box);
+      await new Promise((r) => setTimeout(r, 20));
+      const rangeCallsAfterScroll = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
+      expect(rangeCallsAfterScroll).toBe(rangeCallsBeforeScroll);
+
+      // Now let the switch's stats fetch resolve.
+      releaseStep1Stats();
+
+      // The switch must still complete: step1's own lines land in the view,
+      // and the box jumps back to the bottom (tail) as switchLogView always
+      // does on success — NOT silently no-op due to a stolen token.
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+        expect(texts.some((t) => t.includes('step1 '))).toBe(true);
+      });
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(4000);
+      });
+    } finally {
+      restore();
+    }
+  });
+});
