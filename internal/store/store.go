@@ -152,10 +152,6 @@ type Store interface {
 	// ascending seq order (the tail of the log), so a bounded backfill can keep
 	// the end of a huge log rather than its beginning.
 	TailLogsRecent(ctx context.Context, runID string, limit int) ([]api.LogLine, error)
-	// TailLogsRecentByStep is TailLogsRecent restricted to one step, for the
-	// WebUI's on-demand backfill of a step whose lines fell outside the SSE
-	// backfill window.
-	TailLogsRecentByStep(ctx context.Context, runID string, stepIndex, limit int) ([]api.LogLine, error)
 	// CountLogs returns the number of log lines (and the min/max seq) for the
 	// run, optionally restricted to the given step indexes (nil/empty = all).
 	CountLogs(ctx context.Context, runID string, steps []int) (count, minSeq, maxSeq int64, err error)

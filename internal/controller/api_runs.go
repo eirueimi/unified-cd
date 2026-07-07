@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -295,26 +296,65 @@ func appendLabelIfMissing(labels []string, label string) []string {
 	return append(labels, label)
 }
 
-// handleStepLogs returns the most recent `limit` (default: the SSE backfill
-// cap) log lines of ONE step, ascending seq. The WebUI calls this when the
-// user selects a step whose lines fell outside the SSE tail window on a huge
-// log — the live view keeps only the last N lines of the WHOLE run, so an
-// early quiet step (e.g. checkout before a 20k-line build) may have zero
-// buffered lines client-side even though the DB has them.
-func (s *Server) handleStepLogs(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	stepIndex, err := strconv.Atoi(chi.URLParam(r, "stepIndex"))
+// parseStepsParam parses the optional comma-separated steps=0,2 view filter.
+func parseStepsParam(r *http.Request) ([]int, error) {
+	raw := r.URL.Query().Get("steps")
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil {
+			return nil, fmt.Errorf("invalid steps value %q", p)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// handleLogStats returns the total line count and min/max seq for a run's
+// windowed log view (optionally restricted to a set of steps).
+func (s *Server) handleLogStats(w http.ResponseWriter, r *http.Request) {
+	steps, err := parseStepsParam(r)
 	if err != nil {
-		http.Error(w, "invalid step index: "+chi.URLParam(r, "stepIndex"), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	limit := sseBackfillLimit
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
+	count, minSeq, maxSeq, err := s.store.CountLogs(r.Context(), chi.URLParam(r, "id"), steps)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"count": count, "minSeq": minSeq, "maxSeq": maxSeq})
+}
+
+// handleLogRange returns `limit` lines starting at 0-based view row `offset`
+// for the windowed log viewer, optionally restricted to a set of steps.
+func (s *Server) handleLogRange(w http.ResponseWriter, r *http.Request) {
+	steps, err := parseStepsParam(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	offset, limit := 0, 1000
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if offset, err = strconv.Atoi(v); err != nil || offset < 0 {
+			http.Error(w, "invalid offset", http.StatusBadRequest)
+			return
 		}
 	}
-	lines, err := s.store.TailLogsRecentByStep(r.Context(), id, stepIndex, limit)
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if limit, err = strconv.Atoi(v); err != nil || limit <= 0 {
+			http.Error(w, "invalid limit", http.StatusBadRequest)
+			return
+		}
+	}
+	if limit > 10000 {
+		limit = 10000
+	}
+	lines, err := s.store.ListLogsRange(r.Context(), chi.URLParam(r, "id"), steps, offset, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -323,4 +363,29 @@ func (s *Server) handleStepLogs(w http.ResponseWriter, r *http.Request) {
 		lines = []api.LogLine{}
 	}
 	writeJSON(w, http.StatusOK, lines)
+}
+
+// handleLogSearch performs a server-side substring search over a run's log
+// lines (optionally restricted to a set of steps), returning up to a capped
+// number of matches plus the total match count.
+func (s *Server) handleLogSearch(w http.ResponseWriter, r *http.Request) {
+	steps, err := parseStepsParam(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		http.Error(w, "q is required", http.StatusBadRequest)
+		return
+	}
+	total, matches, err := s.store.SearchLogs(r.Context(), chi.URLParam(r, "id"), steps, q, 1000)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if matches == nil {
+		matches = []store.LogSearchMatch{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "matches": matches})
 }

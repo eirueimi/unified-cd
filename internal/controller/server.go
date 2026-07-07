@@ -274,9 +274,11 @@ func (s *Server) routes() {
 		r.With(dev).Delete("/runs/{id}", s.handleDeleteRun)
 		r.With(view).Get("/runs/{id}/logs", s.handleTailLogs)
 		r.With(view).Get("/runs/{id}/steps", s.handleGetRunSteps)
-		r.With(view).Get("/runs/{id}/steps/{stepIndex}/logs", s.handleStepLogs)
 		r.With(view).Get("/runs/{id}/outputs", s.handleGetRunOutputs)
 		r.With(view).Get("/runs/{id}/logs/archive", s.handleLogsArchive)
+		r.With(view).Get("/runs/{id}/logs/stats", s.handleLogStats)
+		r.With(view).Get("/runs/{id}/logs/range", s.handleLogRange)
+		r.With(view).Get("/runs/{id}/logs/search", s.handleLogSearch)
 		r.With(view).Get("/runs/{runID}/approvals", s.handleListRunApprovals)
 		r.With(dev).Post("/runs/{runID}/approvals/{stepIndex}", s.handleDecideApproval)
 

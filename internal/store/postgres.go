@@ -771,35 +771,6 @@ func (p *Postgres) TailLogsRecent(ctx context.Context, runID string, limit int) 
 	return out, rows.Err()
 }
 
-// TailLogsRecentByStep is TailLogsRecent restricted to one step: up to the
-// last `limit` lines of stepIndex, ascending seq order. Used by the WebUI's
-// on-demand backfill when a selected step's lines fell outside the SSE
-// backfill window of a huge log.
-func (p *Postgres) TailLogsRecentByStep(ctx context.Context, runID string, stepIndex, limit int) ([]api.LogLine, error) {
-	const q = `
-		SELECT seq, step_index, stream, ts, line FROM (
-			SELECT seq, step_index, stream, ts, line
-			FROM logs WHERE run_id = $1 AND step_index = $2
-			ORDER BY seq DESC LIMIT $3
-		) recent
-		ORDER BY seq ASC;
-	`
-	rows, err := p.pool.Query(ctx, q, runID, stepIndex, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []api.LogLine
-	for rows.Next() {
-		var l api.LogLine
-		if err := rows.Scan(&l.Seq, &l.StepIndex, &l.Stream, &l.Timestamp, &l.Line); err != nil {
-			return nil, err
-		}
-		out = append(out, l)
-	}
-	return out, rows.Err()
-}
-
 // logsStepFilter renders the optional step_index filter shared by the
 // windowed-viewer queries. steps nil/empty = no filter.
 // Returns the SQL fragment and the arg (or nil).
