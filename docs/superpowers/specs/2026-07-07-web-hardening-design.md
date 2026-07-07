@@ -31,7 +31,7 @@ CSRF/セッション保護の監査で3つのギャップを確認した。
   3. 両方無い場合: 許可(CLI・agent・curl は送らない。ブラウザは unsafe メソッドで必ず Origin を送るため、ブラウザ経由の攻撃はここに落ちない)。
 - 許可 host 集合: リクエストの `r.Host` +(設定されていれば)`OIDCConfig.ExternalURL` の host。scheme は比較しない(TLS 終端プロキシで歪むため)。
 - `Origin: null`(サンドボックス iframe 等)は不一致として 403。
-- 適用位置: `/api/v1` ルータ全体(agent エンドポイントは Origin を送らないため素通り。GET/HEAD/OPTIONS は対象外)。
+- 適用位置: **ルータ全体**(`s.r.Use`)。auth 系 POST(`/api/v1/auth/logout` 等)が `/api/v1` グループ外に直接登録されているため、全体適用でカバーする。agent・CLI・webhook 類は Origin を送らないため素通り、`/dex` プロキシへのブラウザ POST は同一ホストなので通る。GET/HEAD/OPTIONS は対象外。
 
 ### 3. セキュリティヘッダ・ミドルウェア — `internal/controller/` 新規ファイル(2 と同居可)
 
