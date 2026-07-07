@@ -1,9 +1,15 @@
 package agent
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
 
 func podTmpl(containers ...map[string]any) *dsl.PodTemplate {
@@ -67,5 +73,97 @@ func TestLimitStrings(t *testing.T) {
 	}
 	if c, m := limitStrings("", ""); c != "" || m != "" {
 		t.Fatalf("empty in must yield empty out, got %q %q", c, m)
+	}
+}
+
+// recordingRT records every CreateSpec it is asked to Create, and is safe for
+// concurrent use.
+type recordingRT struct {
+	mu      sync.Mutex
+	specs   []crt.CreateSpec
+	creates atomic.Int64
+	removes atomic.Int64
+}
+
+func (r *recordingRT) Name() string                                   { return "recording" }
+func (r *recordingRT) Available() bool                                { return true }
+func (r *recordingRT) Pull(context.Context, string) error            { return nil }
+func (r *recordingRT) Run(context.Context, crt.RunSpec, io.Writer, io.Writer) (int, error) {
+	return 0, nil
+}
+func (r *recordingRT) Create(_ context.Context, spec crt.CreateSpec) (crt.ContainerHandle, error) {
+	r.creates.Add(1)
+	r.mu.Lock()
+	r.specs = append(r.specs, spec)
+	n := len(r.specs)
+	r.mu.Unlock()
+	return crt.ContainerHandle{ID: fmt.Sprintf("c%d", n)}, nil
+}
+func (r *recordingRT) Exec(context.Context, crt.ContainerHandle, crt.ExecSpec, io.Writer, io.Writer) (int, error) {
+	return 0, nil
+}
+func (r *recordingRT) CopyIn(context.Context, crt.ContainerHandle, string, string) error  { return nil }
+func (r *recordingRT) CopyOut(context.Context, crt.ContainerHandle, string, string) error { return nil }
+func (r *recordingRT) Remove(context.Context, crt.ContainerHandle) error {
+	r.removes.Add(1)
+	return nil
+}
+
+func TestNamedContainerManager_ReusesPerNameAndBindMounts(t *testing.T) {
+	rt := &recordingRT{}
+	m := newNamedContainerManager(rt, "/host/ws", "/workspace")
+	ctx := context.Background()
+	def := containerDef{Name: "tools", Image: "node:20"}
+
+	h1, err := m.ensure(ctx, def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := m.ensure(ctx, def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h1 != h2 {
+		t.Fatalf("expected same handle for same name, got %v and %v", h1, h2)
+	}
+	if got := rt.creates.Load(); got != 1 {
+		t.Fatalf("expected 1 Create for a reused name, got %d", got)
+	}
+	spec := rt.specs[0]
+	if spec.WorkDir != "/workspace" {
+		t.Fatalf("WorkDir = %q, want /workspace", spec.WorkDir)
+	}
+	if len(spec.Mounts) != 1 || spec.Mounts[0].HostPath != "/host/ws" || spec.Mounts[0].ContainerPath != "/workspace" {
+		t.Fatalf("Mounts = %+v, want one /host/ws:/workspace", spec.Mounts)
+	}
+
+	m.closeAll(ctx)
+	if got := rt.removes.Load(); got != 1 {
+		t.Fatalf("expected 1 Remove, got %d", got)
+	}
+}
+
+// TestNamedContainerManager_ConcurrentSameName must be run with -race: many
+// goroutines racing to ensure() the same name (parallel: steps sharing a
+// container) must produce exactly one Create.
+func TestNamedContainerManager_ConcurrentSameName(t *testing.T) {
+	rt := &recordingRT{}
+	m := newNamedContainerManager(rt, "/host/ws", "/workspace")
+	def := containerDef{Name: "tools", Image: "node:20"}
+
+	const n = 50
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := m.ensure(context.Background(), def); err != nil {
+				t.Errorf("ensure: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := rt.creates.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 Create under concurrency, got %d", got)
 	}
 }
