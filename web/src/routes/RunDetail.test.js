@@ -620,3 +620,67 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
     }
   });
 });
+
+// Selecting a step used to reset the log view to the TOP and disable stick-
+// scroll entirely (the old resetLogScrollOnFilter + the `selectedStep ===
+// null` gate) — the exact opposite of the most common use: clicking the
+// running step to follow its output. The filtered view must now jump to the
+// END on selection and keep tailing.
+describe('RunDetail — step-filtered log view tails (jump to end on select)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+
+   it('jumps to the bottom when a step filter is applied', async () => {
+    try {
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        // 200 lines, not a handful: the scrollHeight stub is a fixed 4000,
+        // and the component now jumps to the bottom on mount, so the virtual
+        // scroller's window sits at row ~185 — fewer lines than that would
+        // render zero rows under the stub (a stub artifact; real browsers
+        // clamp scrollTop). Keep the fixture bigger than the window offset.
+        if (u.includes('/events')) return eventsResponseWithLogs(200, false);
+        if (u.includes('/steps')) return jsonResponse([
+          { index: 0, stageIndex: 0, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+          { index: 1, stageIndex: 1, name: 'test', status: 'Succeeded', kind: 'run', section: 'main' },
+        ]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-filter-tail', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+      const { container } = render(RunDetail, { props: { params: { id: 'run-filter-tail' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+        expect(container.querySelectorAll('.step-row').length).toBeGreaterThan(0);
+      });
+      const box = container.querySelector('.log-box');
+      // Simulate the user having scrolled away from the end.
+      box.scrollTop = 0;
+
+      await fireEvent.click(container.querySelectorAll('.step-row')[1]);
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(4000);
+      });
+    } finally {
+      restore();
+    }
+  });
+});

@@ -157,14 +157,18 @@
       logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight <
       LOG_ROW_H * 2;
   }
-  // Reset the scroll position when the step/parallel filter changes so the newly
-  // filtered log starts from the top.
+  // Jump to the END when the step/parallel filter changes: the most common
+  // reason to filter is following a running step's output, so the filtered
+  // view tails by default — scroll up to release, exactly like the
+  // unfiltered view. (This used to reset to the TOP, which disabled tailing
+  // entirely while a step was selected.)
   $: resetLogScrollOnFilter(selectedStep, selectedParallelGroup);
   function resetLogScrollOnFilter() {
-    logScrollTop = 0;
     logStick = true;
     tick().then(() => {
-      if (logBox) logBox.scrollTop = 0;
+      if (!logBox) return;
+      logBox.scrollTop = logBox.scrollHeight;
+      logScrollTop = logBox.scrollTop;
     });
   }
 
@@ -392,7 +396,10 @@
         }
         if (batch.length) {
           logLines = logLines.length ? logLines.concat(batch) : batch;
-          if (logStick && selectedStep === null) {
+          // Stick-scroll applies to filtered views too: if the incoming
+          // batch is filtered out, scrollHeight is unchanged and the
+          // assignment is a no-op.
+          if (logStick) {
             await tick();
             if (logBox) {
               logBox.scrollTop = logBox.scrollHeight;
