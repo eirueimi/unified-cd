@@ -1882,3 +1882,129 @@ describe('RunDetail — ensureRowsLoaded re-checks the viewport after an in-flig
     }
   });
 });
+
+// Final review finding 2: selectedStep/selectedParallelGroup (and thus
+// logView) were never reset when runID changed. Navigating from run A with a
+// step selected to run B reused the component instance with logView.steps
+// still set, so run B rendered a step-filtered chrome (labels hidden, "All
+// Steps" reset button shown) while its SSE backfill was the ALL-steps tail —
+// a filtered view showing every step's lines, with an internally inconsistent
+// totalCount and no self-correction until the user toggled the selection.
+// Step indices are per-run, so a carried-over selection is meaningless; init()
+// now resets it when runID changes (suppressing the view-switch reactive the
+// same way the initial mount does, since startSSE installs the all-view
+// window anyway).
+describe('RunDetail — cross-run navigation resets the step selection (final review finding 2)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  it('navigating to a new run clears a step selection and renders the all-steps view', async () => {
+    try {
+      const enc = new TextEncoder();
+      // run-1: 2 steps, all-steps SSE backfill of 200 step-0 lines.
+      let run1Backfill = '';
+      for (let i = 0; i < 200; i++) {
+        run1Backfill += `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'run1 ' + i })}\n\n`;
+      }
+      let run1Sent = false;
+      const run1EventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: { getReader() { return { read: async () => run1Sent ? { done: true, value: undefined } : (run1Sent = true, { done: false, value: enc.encode(run1Backfill) }) } } },
+      });
+      // run-2: all-steps SSE backfill of 200 step-0 lines (its own run).
+      let run2Backfill = '';
+      for (let i = 0; i < 200; i++) {
+        run2Backfill += `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'run2 ' + i })}\n\n`;
+      }
+      let run2Sent = false;
+      const run2EventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: { getReader() { return { read: async () => run2Sent ? { done: true, value: undefined } : (run2Sent = true, { done: false, value: enc.encode(run2Backfill) }) } } },
+      });
+
+      // run-1's step-0 filtered view (queried on selection).
+      const step0Lines = Array.from({ length: 200 }, (_, i) => (
+        { seq: 500 + i, stepIndex: 0, stream: 'stdout', line: 'run1-step0 ' + i }
+      ));
+      const step0StatsRange = statsAndRange(step0Lines.length, (row) => step0Lines[row]);
+
+      const run2StatsUrls = [];
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        const runID = u.match(/\/runs\/([^/]+)/)?.[1];
+        if (u.includes('/events')) return runID === 'run-2' ? run2EventsResp : run1EventsResp;
+        if (runID === 'run-2' && u.includes('/logs/stats')) run2StatsUrls.push(u);
+        if (runID === 'run-1' && u.includes('steps=0')) {
+          const sr = step0StatsRange(u);
+          if (sr) return sr;
+        }
+        if (u.includes('/logs/stats')) return jsonResponse({ count: 200, minSeq: 1, maxSeq: 200 });
+        if (u.includes('/logs/range')) return jsonResponse([]);
+        if (u.includes('/steps')) return jsonResponse(runID === 'run-1' ? [
+          { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
+          { index: 1, stageIndex: 1, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+        ] : []);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: runID, status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container, rerender } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.step-row').length).toBeGreaterThan(0);
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+      });
+
+      // Select step 0 (checkout) on run-1 → step-filtered view: the "All Steps"
+      // reset button appears and per-line step labels disappear.
+      await fireEvent.click(container.querySelectorAll('.step-row')[0]);
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+        expect(texts.some((t) => t.includes('run1-step0'))).toBe(true);
+      });
+      const allStepsBtn = [...container.querySelectorAll('.log-header .btn')].find((b) => b.textContent.includes('All Steps'));
+      expect(allStepsBtn).toBeTruthy();
+      expect(container.querySelector('.log-step-label')).toBeFalsy();
+
+      const run2StatsBefore = run2StatsUrls.length;
+
+      // Navigate to run-2 while step 0 is selected — the reactive
+      // `$: runID, init()` path, reusing this component instance.
+      await rerender({ params: { id: 'run-2' } });
+
+      // run-2 renders its all-steps view: per-line step labels are back and
+      // the "All Steps" reset button is gone (selection cleared).
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+        expect(texts.some((t) => t.includes('run2 '))).toBe(true);
+      });
+      expect(container.querySelector('.log-step-label')).toBeTruthy();
+      const allStepsBtnAfter = [...container.querySelectorAll('.log-header .btn')].find((b) => b.textContent.includes('All Steps'));
+      expect(allStepsBtnAfter).toBeFalsy();
+
+      // run-2's stats fetch(es) must NOT carry a stale steps= filter from run-1.
+      const run2StatsAfter = run2StatsUrls.slice(run2StatsBefore);
+      expect(run2StatsAfter.length).toBeGreaterThan(0);
+      expect(run2StatsAfter.every((s) => !s.includes('steps='))).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+});

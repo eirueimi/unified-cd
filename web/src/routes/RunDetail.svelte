@@ -709,6 +709,21 @@
   }
 
   async function init() {
+    // Reset the per-run log-view selection: step indices are per-run, so a
+    // selection carried over from the previously-viewed run (this component
+    // instance is REUSED across runID changes — see the `$: runID, init()`
+    // note below) is meaningless and, left set, renders run B's all-steps
+    // backfill under run A's step filter (labels hidden, inconsistent
+    // totalCount). On the INITIAL mount both are already null, so this is a
+    // no-op and the view-switch reactive stays dormant (guarded by
+    // viewInitialized). On a cross-run navigation with a step selected,
+    // clearing it here flips viewSteps back to null and lets the view-switch
+    // reactive fire switchLogView(null) — which is benign: it fetches the NEW
+    // run's ALL-steps view (runID already points at run B by now), the same
+    // view startSSE() below installs, so at worst it is a redundant same-view
+    // fetch, never a cross-view mix.
+    selectedStep = null;
+    selectedParallelGroup = null;
     loading = true;
     await Promise.all([loadRun(), loadSteps(), loadApprovals(), loadArtifacts()]);
     loading = false;
