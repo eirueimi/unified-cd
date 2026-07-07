@@ -304,6 +304,19 @@
       };
     } catch (e) {
       console.warn("log view range fetch failed", e);
+      // The switch already replaced logView (and, via refreshStats, may have
+      // replaced totalCount) with the NEW view's, but the tail range fetch
+      // failed — so logWindow.lines still holds the OLD view's rows. Leaving
+      // them would render the wrong view's logs addressed as the new view's
+      // rows, and because the window would "cover" [0, newCount) the scroll-
+      // driven ensureRowsLoaded would never refetch. Install an empty window
+      // instead: the view degrades to empty (the pre-branch failure mode) and,
+      // with no rows covering the viewport, a later scroll's ensureRowsLoaded
+      // sees it as uncovered and recovers. Keep whatever totalCount stands so
+      // the scrollbar spans the new view (0 if refreshStats also failed).
+      if (token === windowFetchToken) {
+        logWindow = { startRow: 0, lines: [], totalCount: logWindow.totalCount };
+      }
     } finally {
       if (token === windowFetchToken) {
         windowLoading = false;

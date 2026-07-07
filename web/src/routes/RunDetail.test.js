@@ -2008,3 +2008,127 @@ describe('RunDetail — cross-run navigation resets the step selection (final re
     }
   });
 });
+
+// Final review finding 3: switchLogView set logView (the new view) immediately
+// but kept the OLD window's lines until the new range fetch landed. If that
+// range fetch THREW, the catch only reset flags — logWindow.lines still held
+// the OLD view's rows while totalCount had already been replaced by the NEW
+// view's stats. The result: the wrong step's logs rendered under the new
+// selection as if they were its rows, and because the window "covered" rows
+// 0..newCount, ensureRowsLoaded never refetched — a coherent-looking WRONG
+// view with no recovery except re-toggling. The fix installs an empty window
+// in the catch so the view degrades to empty (matching the pre-branch failure
+// mode) and a later scroll can recover it.
+describe('RunDetail — switchLogView range-fetch failure degrades to empty, not stale content (final review finding 3)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  it('a failed switch does not show the old view\'s lines as the new view, and a later scroll recovers', async () => {
+    try {
+      // All-steps SSE backfill: 200 step-0 lines (rows 0..199). Selecting
+      // step 1 switches to a view whose stats succeed (count 3000) but whose
+      // tail range fetch FAILS the first time — the exact catch path.
+      const enc = new TextEncoder();
+      let backfill = '';
+      for (let i = 0; i < 200; i++) {
+        backfill += `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'STEP0-LINE ' + i })}\n\n`;
+      }
+      let sent = false;
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: { getReader() { return { read: async () => sent ? { done: true, value: undefined } : (sent = true, { done: false, value: enc.encode(backfill) }) } } },
+      });
+
+      // step 1's server view: 3000 lines. The FIRST steps=1 range fetch
+      // (switchLogView's tail fetch) fails; later ones (a recovery scroll)
+      // succeed, so the fix's "later scroll recovers" claim is exercised.
+      const STEP1_TOTAL = 3000;
+      const step1Line = (row) => ({ seq: 10000 + row, stepIndex: 1, stream: 'stdout', line: 'STEP1-LINE ' + row });
+      let step1RangeFailed = false;
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        if (u.includes('/logs/stats') && u.includes('steps=1')) {
+          return jsonResponse({ count: STEP1_TOTAL, minSeq: 1, maxSeq: STEP1_TOTAL });
+        }
+        if (u.includes('/logs/range') && u.includes('steps=1')) {
+          if (!step1RangeFailed) {
+            step1RangeFailed = true;
+            // First steps=1 range fetch (the switch's tail fetch) fails.
+            return Promise.resolve({ ok: false, status: 500, text: async () => 'boom' });
+          }
+          // Recovery fetch succeeds.
+          const uu = new URL(u, 'http://localhost');
+          const offset = Number(uu.searchParams.get('offset') || '0');
+          const limit = Number(uu.searchParams.get('limit') || '1000');
+          const end = Math.min(STEP1_TOTAL, offset + limit);
+          const lines = [];
+          for (let row = offset; row < end; row++) lines.push(step1Line(row));
+          return jsonResponse(lines);
+        }
+        if (u.includes('/logs/stats')) return jsonResponse({ count: 200, minSeq: 1, maxSeq: 200 });
+        if (u.includes('/logs/range')) return jsonResponse([]);
+        if (u.includes('/steps')) return jsonResponse([
+          { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
+          { index: 1, stageIndex: 1, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+        ]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-switchfail', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-switchfail' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.step-row').length).toBeGreaterThan(0);
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+      });
+      // Sanity: the all-steps view shows step-0 lines before the switch.
+      expect([...container.querySelectorAll('.log-row')].some((r) => r.textContent.includes('STEP0-LINE'))).toBe(true);
+
+      // Select step 1 (build): switchLogView([1]) — stats succeed, range fails.
+      await fireEvent.click(container.querySelectorAll('.step-row')[1]);
+
+      // Wait for the failed range fetch to have been attempted.
+      await vi.waitFor(() => {
+        expect(step1RangeFailed).toBe(true);
+      });
+
+      // After the failure the window must NOT still be showing the old
+      // all-steps (step-0) lines addressed as step-1 rows.
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+        expect(texts.some((t) => t.includes('STEP0-LINE'))).toBe(false);
+      });
+
+      // The view is recoverable: scroll to the top of the (now empty) step-1
+      // view — the scroll-driven ensureRowsLoaded fires a fresh range fetch,
+      // which succeeds and brings step-1 lines in.
+      const box = container.querySelector('.log-box');
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+        expect(texts.some((t) => t.includes('STEP1-LINE'))).toBe(true);
+      });
+    } finally {
+      restore();
+    }
+  });
+});
