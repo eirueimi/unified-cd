@@ -15,6 +15,14 @@ type LogArchive struct {
 	ArchivedAt time.Time
 }
 
+// LogSearchMatch locates one search hit: Row is the 0-based row number
+// within the same view ListLogsRange addresses.
+type LogSearchMatch struct {
+	Row       int64 `json:"row"`
+	Seq       int64 `json:"seq"`
+	StepIndex int   `json:"stepIndex"`
+}
+
 // PAT holds Personal Access Token metadata (does not include the token_hash).
 type PAT struct {
 	ID         string
@@ -148,6 +156,17 @@ type Store interface {
 	// WebUI's on-demand backfill of a step whose lines fell outside the SSE
 	// backfill window.
 	TailLogsRecentByStep(ctx context.Context, runID string, stepIndex, limit int) ([]api.LogLine, error)
+	// CountLogs returns the number of log lines (and the min/max seq) for the
+	// run, optionally restricted to the given step indexes (nil/empty = all).
+	CountLogs(ctx context.Context, runID string, steps []int) (count, minSeq, maxSeq int64, err error)
+	// ListLogsRange returns `limit` lines starting at 0-based row `offset` in
+	// seq order, optionally restricted to steps. Row numbering is per-view:
+	// with steps set, offset 0 is the view's first line.
+	ListLogsRange(ctx context.Context, runID string, steps []int, offset, limit int) ([]api.LogLine, error)
+	// SearchLogs returns up to `capN` case-insensitive substring matches plus the
+	// TOTAL match count (which may exceed capN). q is a raw substring; ILIKE
+	// metacharacters are escaped internally.
+	SearchLogs(ctx context.Context, runID string, steps []int, q string, capN int) (total int64, matches []LogSearchMatch, err error)
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
 	// os/version/env wholesale (a registration is the authoritative identity).
 	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error

@@ -800,6 +800,93 @@ func (p *Postgres) TailLogsRecentByStep(ctx context.Context, runID string, stepI
 	return out, rows.Err()
 }
 
+// logsStepFilter renders the optional step_index filter shared by the
+// windowed-viewer queries. steps nil/empty = no filter.
+// Returns the SQL fragment and the arg (or nil).
+func logsStepFilter(steps []int) (string, any) {
+	if len(steps) == 0 {
+		return "", nil
+	}
+	return " AND step_index = ANY($2)", steps
+}
+
+func (p *Postgres) CountLogs(ctx context.Context, runID string, steps []int) (count, minSeq, maxSeq int64, err error) {
+	frag, arg := logsStepFilter(steps)
+	q := `SELECT COUNT(*), COALESCE(MIN(seq),0), COALESCE(MAX(seq),0) FROM logs WHERE run_id = $1` + frag
+	args := []any{runID}
+	if arg != nil {
+		args = append(args, arg)
+	}
+	err = p.pool.QueryRow(ctx, q, args...).Scan(&count, &minSeq, &maxSeq)
+	return count, minSeq, maxSeq, err
+}
+
+func (p *Postgres) ListLogsRange(ctx context.Context, runID string, steps []int, offset, limit int) ([]api.LogLine, error) {
+	frag, arg := logsStepFilter(steps)
+	args := []any{runID}
+	n := 2
+	if arg != nil {
+		args = append(args, arg)
+		n = 3
+	}
+	q := fmt.Sprintf(`SELECT seq, step_index, stream, ts, line FROM logs
+		WHERE run_id = $1%s ORDER BY seq OFFSET $%d LIMIT $%d`, frag, n, n+1)
+	args = append(args, offset, limit)
+	rows, err := p.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []api.LogLine
+	for rows.Next() {
+		var l api.LogLine
+		if err := rows.Scan(&l.Seq, &l.StepIndex, &l.Stream, &l.Timestamp, &l.Line); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// escapeILIKE makes q a literal ILIKE substring pattern.
+func escapeILIKE(q string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + r.Replace(q) + "%"
+}
+
+func (p *Postgres) SearchLogs(ctx context.Context, runID string, steps []int, q string, capN int) (int64, []LogSearchMatch, error) {
+	frag, arg := logsStepFilter(steps)
+	args := []any{runID}
+	n := 2
+	if arg != nil {
+		args = append(args, arg)
+		n = 3
+	}
+	// Row numbers are computed over the VIEW (same ordering/filter as
+	// ListLogsRange) BEFORE the match filter, so they are addressable rows.
+	sql := fmt.Sprintf(`
+		SELECT COUNT(*) OVER (), rn - 1, seq, step_index FROM (
+			SELECT seq, step_index, line, ROW_NUMBER() OVER (ORDER BY seq) AS rn
+			FROM logs WHERE run_id = $1%s
+		) v WHERE line ILIKE $%d ESCAPE '\' ORDER BY seq LIMIT $%d`, frag, n, n+1)
+	args = append(args, escapeILIKE(q), capN)
+	rows, err := p.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	var total int64
+	var out []LogSearchMatch
+	for rows.Next() {
+		var m LogSearchMatch
+		if err := rows.Scan(&total, &m.Row, &m.Seq, &m.StepIndex); err != nil {
+			return 0, nil, err
+		}
+		out = append(out, m)
+	}
+	return total, out, rows.Err()
+}
+
 // UpsertAgent is the REGISTRATION path. A registration is the authoritative
 // statement of an agent's identity, so on conflict it REPLACES hostname/os/labels/
 // version/env wholesale rather than merging. In particular, if a label present in a
