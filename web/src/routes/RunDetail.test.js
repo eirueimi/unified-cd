@@ -40,6 +40,30 @@ function countEventsCalls(fetchMock) {
   return fetchMock.mock.calls.filter(([url]) => String(url).includes('/events')).length;
 }
 
+// Builds a fetch-mock handler pair for the windowed-log HTTP contract
+// (`/logs/stats` and `/logs/range`) so Task 3+ tests can simulate a run whose
+// total log size is much larger than the SSE backfill window. `totalCount` is
+// what `/logs/stats` reports; `makeLine(seq)` builds one api.LogLine-shaped
+// object for a given absolute row/seq number, used to answer `/logs/range`
+// requests by slicing `[offset, offset+limit)`.
+function statsAndRange(totalCount, makeLine) {
+  return (url) => {
+    const u = new URL(String(url), 'http://localhost');
+    if (u.pathname.endsWith('/logs/stats')) {
+      return jsonResponse({ count: totalCount, minSeq: 1, maxSeq: totalCount });
+    }
+    if (u.pathname.endsWith('/logs/range')) {
+      const offset = Number(u.searchParams.get('offset') || '0');
+      const limit = Number(u.searchParams.get('limit') || '1000');
+      const end = Math.min(totalCount, offset + limit);
+      const lines = [];
+      for (let row = offset; row < end; row++) lines.push(makeLine(row));
+      return jsonResponse(lines);
+    }
+    return null;
+  };
+}
+
 // A `/events` response that streams `n` log lines in a single chunk, then ends.
 // When `truncated` is true it leads with a "truncated" event, mimicking the
 // server dropping older lines from a capped backfill.
@@ -408,7 +432,13 @@ describe('RunDetail — log virtualization', () => {
     });
   });
 
-  it('shows a truncation banner when the server drops older backfill lines', async () => {
+  // Task 3: truncation is no longer surfaced as a banner — the windowed log
+  // model means the scrollbar itself spans the FULL server-side log (via
+  // logWindow.totalCount) and older lines are reachable by scrolling up
+  // (ensureRowsLoaded fetches them), so there's nothing to warn about. The
+  // SSE "truncated" event is still consumed (it just no longer renders a
+  // banner); the backfilled lines still show up normally.
+  it('renders no truncation banner when the server drops older backfill lines (windowed viewer supersedes it)', async () => {
     const fetchMock = vi.fn((url) => {
       const u = String(url);
       if (u.includes('/events')) return eventsResponseWithLogs(10, true);
@@ -421,10 +451,9 @@ describe('RunDetail — log virtualization', () => {
     const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
 
     await vi.waitFor(() => {
-      const banner = container.querySelector('.log-truncated');
-      expect(banner).toBeTruthy();
-      expect(banner.textContent).toContain('truncated');
+      expect(container.querySelector('.log-row')).toBeTruthy();
     });
+    expect(container.querySelector('.log-truncated')).toBeFalsy();
   });
 
   it('ingests a full chunk of logs even when it ends with a terminal status', async () => {
@@ -499,6 +528,165 @@ describe('RunDetail — log virtualization', () => {
       expect(container.querySelector('.log-row-wrap')).toBeTruthy();
     });
     expect(localStorage.getItem('ecd_log_wrap')).toBe('1');
+  });
+});
+
+// Task 3: the log data layer is now a single contiguous WINDOW over the full
+// server-side log, not a full in-memory array. Scrolling outside the current
+// window must fetch a fresh range from the server; live lines while scrolled
+// away from the tail must only grow the total (scrollbar length), not fetch.
+describe('RunDetail — windowed log data model (Task 3)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  it('scrolling above the window fetches an earlier range', async () => {
+    try {
+      const TOTAL = 50000;
+      const BACKFILL = 200;
+      const makeLine = (row) => ({
+        seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row,
+      });
+      const statsRange = statsAndRange(TOTAL, makeLine);
+      // SSE backfill: tail 200 lines, absolute rows 49800..49999.
+      const enc = new TextEncoder();
+      let payload = '';
+      for (let row = TOTAL - BACKFILL; row < TOTAL; row++) {
+        payload += `data: ${JSON.stringify({ type: 'log', ...makeLine(row) })}\n\n`;
+      }
+      let sent = false;
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: { getReader() { return { read: async () => sent ? { done: true, value: undefined } : (sent = true, { done: false, value: enc.encode(payload) }) } } },
+      });
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        const sr = statsRange(url);
+        if (sr) return sr;
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-scroll', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-scroll' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+      });
+
+      const box = container.querySelector('.log-box');
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+
+      await vi.waitFor(() => {
+        expect(fetchMock.mock.calls.some((c) => {
+          const cu = String(c[0]);
+          return cu.includes('/logs/range') && cu.includes('offset=0');
+        })).toBe(true);
+      });
+
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+        expect(texts.some((t) => t.includes('row 0'))).toBe(true);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('live lines while scrolled up only grow the total, without fetching a range', async () => {
+    try {
+      const TOTAL = 300;
+      const makeLine = (row) => ({
+        seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row,
+      });
+      const statsRange = statsAndRange(TOTAL, makeLine);
+      // SSE: backfill the tail, then (after the initial read) stream one more
+      // live line — but only once the test has scrolled away from the tail.
+      const enc = new TextEncoder();
+      let backfillPayload = '';
+      for (let row = 0; row < TOTAL; row++) {
+        backfillPayload += `data: ${JSON.stringify({ type: 'log', ...makeLine(row) })}\n\n`;
+      }
+      let readCount = 0;
+      let releaseLive = null;
+      const liveGate = new Promise((res) => { releaseLive = res; });
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: {
+          getReader() {
+            return {
+              read: async () => {
+                readCount++;
+                if (readCount === 1) {
+                  return { done: false, value: enc.encode(backfillPayload) };
+                }
+                if (readCount === 2) {
+                  await liveGate;
+                  const liveLine = JSON.stringify({ type: 'log', seq: TOTAL + 1, stepIndex: 0, stream: 'stdout', line: 'live line' });
+                  return { done: false, value: enc.encode(`data: ${liveLine}\n\n`) };
+                }
+                return { done: true, value: undefined };
+              },
+            };
+          },
+        },
+      });
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        const sr = statsRange(url);
+        if (sr) return sr;
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-live', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-live' } } });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(`${TOTAL} lines`);
+      });
+
+      // Scroll away from the tail (releases stick) before the live line lands.
+      const box = container.querySelector('.log-box');
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+      await vi.waitFor(() => {
+        expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/logs/range'))).toBe(true);
+      });
+      const rangeCallsBefore = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
+
+      // Now let the live line arrive while scrolled away from the tail.
+      releaseLive();
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(`${TOTAL + 1} lines`);
+      });
+
+      // No additional range fetch was triggered by the live line itself.
+      const rangeCallsAfter = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
+      expect(rangeCallsAfter).toBe(rangeCallsBefore);
+    } finally {
+      restore();
+    }
   });
 });
 

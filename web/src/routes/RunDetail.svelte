@@ -10,7 +10,6 @@
   $: runID = params.id;
 
   let run = null,
-    logLines = [],
     steps = [],
     approvals = [],
     artifacts = [],
@@ -22,6 +21,69 @@
     abortController = null,
     stepsTimer = null;
   let approvalComments = {};
+
+  // ---- Windowed log data model (Task 3) ----
+  // The client no longer holds the full log in memory. `logWindow` is a
+  // single contiguous slice [startRow, startRow+lines.length) of the current
+  // view's rows (0-based, absolute row numbers within that view), fetched
+  // on demand from the server as the user scrolls. `logView.steps` selects
+  // which view (null = all steps; Task 4 wires selectedStep/selectedParallelGroup
+  // into it). `WINDOW_MAX`/`FETCH_CHUNK` bound how much is held/fetched at once.
+  let logView = { steps: null };
+  let logWindow = { startRow: 0, lines: [], totalCount: 0 };
+  let windowLoading = false; // range fetch in flight (drives the Loading… row)
+  const WINDOW_MAX = 30000;
+  const FETCH_CHUNK = 5000;
+
+  // logView.steps → "&steps=0,2" (or "" for the all-steps view).
+  function viewStepsQuery() {
+    return logView.steps && logView.steps.length
+      ? `&steps=${logView.steps.join(",")}`
+      : "";
+  }
+
+  async function refreshStats() {
+    try {
+      const s = await apiFetch(
+        `/api/v1/runs/${runID}/logs/stats?_=${Date.now()}${viewStepsQuery()}`,
+      );
+      // Test fixtures (and any other endpoint returning 200 with an
+      // unrelated JSON body) may not have `.count` as a number — treat that
+      // the same as a failed stats fetch so the SSE-backfill-length fallback
+      // below still kicks in, instead of poisoning totalCount with NaN.
+      if (typeof s?.count === "number" && Number.isFinite(s.count)) {
+        logWindow = { ...logWindow, totalCount: s.count };
+      }
+    } catch (e) {
+      console.warn("log stats failed", e);
+    }
+  }
+
+  let windowFetchToken = 0;
+  async function ensureRowsLoaded(firstRow, lastRow) {
+    const w = logWindow;
+    if (firstRow >= w.startRow && lastRow <= w.startRow + w.lines.length) return; // already in window
+    if (windowLoading) return; // fetch already in flight; re-checked after it settles
+    const token = ++windowFetchToken;
+    windowLoading = true;
+    try {
+      const center = Math.floor((firstRow + lastRow) / 2);
+      const start = Math.max(0, center - Math.floor(FETCH_CHUNK / 2));
+      const lines = await apiFetch(
+        `/api/v1/runs/${runID}/logs/range?offset=${start}&limit=${FETCH_CHUNK}${viewStepsQuery()}`,
+      );
+      if (token !== windowFetchToken) return; // superseded (view switch, etc.)
+      logWindow = {
+        ...logWindow,
+        startRow: start,
+        lines: lines.map((l) => ({ ...l, line: collapseCarriageReturns(l.line) })),
+      };
+    } catch (e) {
+      console.warn("log range fetch failed", e);
+    } finally {
+      if (token === windowFetchToken) windowLoading = false;
+    }
+  }
 
   $: stepSections = (() => {
     const bySection = { main: [], finally: [] };
@@ -44,24 +106,27 @@
     return out;
   })();
 
-  $: filteredLogs =
-    selectedStep !== null
-      ? logLines.filter((l) => l.stepIndex === selectedStep)
-      : selectedParallelGroup !== null
-      ? logLines.filter((l) => selectedParallelGroup.includes(l.stepIndex))
-      : logLines;
+  // Task 3: the client-side filter is retired in favor of a server-side VIEW
+  // (logView.steps, wired up in Task 4). Until then this stays an identity so
+  // the rest of the rendering pipeline (which still reads `filteredLogs`)
+  // continues to work unchanged; `selectedStep`/`selectedParallelGroup` keep
+  // driving the legacy per-step backfill below (superseded in Task 4).
+  $: filteredLogs = logWindow.lines;
 
   // ---- Virtualized log rendering ----
   // Logs can reach tens of thousands of lines (e.g. Unity's `-logFile -`), which
   // freezes the browser if every line becomes a DOM node. We render only the
   // rows inside the scroll viewport (plus a small overscan) using fixed-height
   // rows and top/bottom spacer divs, so the scrollbar still reflects the full log.
+  // Since Task 3, `logStart`/`logEnd` are ABSOLUTE row numbers (0..logTotal)
+  // over the current view, not indices into an in-memory array — the actual
+  // rows come from `logWindow`, a server-fetched slice that may not cover
+  // [logStart, logEnd) yet (see `ensureRowsLoaded`).
   const LOG_ROW_H = 20; // px — must match .log-row height in <style>
   const LOG_OVERSCAN = 15; // extra rows rendered above and below the viewport
   let logScrollTop = 0;
   let logViewportH = 600;
   let logStick = true; // keep auto-scrolling to the bottom while the user is there
-  let logTruncated = false; // server dropped older lines from the backfill
 
   // Wrap long lines instead of scrolling horizontally. Wrapping makes rows a
   // VARIABLE height, so the virtual scroller switches from a fixed row height to
@@ -81,35 +146,43 @@
   let logInnerW = 800; // log-box content width (px), minus padding
   $: logCols = Math.max(20, Math.floor(logInnerW / logCharW));
 
-  $: logTotal = filteredLogs.length;
-  // In wrap mode: cumulative pixel offsets, offs[i] = top of line i (null otherwise).
-  $: logOffsets = logWrap ? buildLogOffsets(filteredLogs, logCols) : null;
-  $: logContentH = logWrap
-    ? logOffsets && logOffsets.length
-      ? logOffsets[logOffsets.length - 1]
-      : 0
-    : logTotal * LOG_ROW_H;
+  $: logTotal = logWindow.totalCount;
+  // In wrap mode: cumulative pixel offsets WITHIN THE WINDOW ONLY —
+  // offs[i] = top of window-relative line i (null otherwise). The full
+  // scroll extent outside the window is approximated with LOG_ROW_H (v1
+  // known limitation, per spec); a range fetch re-anchors it once it lands.
+  $: logOffsets = logWrap ? buildLogOffsets(logWindow.lines, logCols) : null;
+  $: logContentH = logTotal * LOG_ROW_H;
   $: logStart = logWrap
-    ? Math.max(0, offsetIndex(logOffsets, logScrollTop) - LOG_OVERSCAN)
+    ? Math.max(0, logWindow.startRow + offsetIndex(logOffsets, logScrollTop - logWindow.startRow * LOG_ROW_H) - LOG_OVERSCAN)
     : Math.max(0, Math.floor(logScrollTop / LOG_ROW_H) - LOG_OVERSCAN);
   $: logEnd = logWrap
     ? Math.min(
         logTotal,
-        offsetIndex(logOffsets, logScrollTop + logViewportH) + 1 + LOG_OVERSCAN,
+        logWindow.startRow + offsetIndex(logOffsets, logScrollTop + logViewportH - logWindow.startRow * LOG_ROW_H) + 1 + LOG_OVERSCAN,
       )
     : Math.min(
         logTotal,
         Math.ceil((logScrollTop + logViewportH) / LOG_ROW_H) + LOG_OVERSCAN,
       );
-  $: visibleLogs = filteredLogs.slice(logStart, logEnd);
+  // Clamp the absolute [logStart, logEnd) request down to what's actually
+  // materialized in `logWindow.lines` — the window may not cover the full
+  // visible range yet (a range fetch is in flight, fired below).
+  $: visibleLogs = logWindow.lines.slice(
+    Math.max(0, logStart - logWindow.startRow),
+    Math.max(0, logEnd - logWindow.startRow),
+  );
   $: logTopPad = logWrap
-    ? logOffsets
-      ? logOffsets[logStart]
-      : 0
+    ? (logOffsets ? logOffsets[Math.max(0, logStart - logWindow.startRow)] : 0) +
+      logWindow.startRow * LOG_ROW_H
     : logStart * LOG_ROW_H;
   $: logBotPad = logWrap
-    ? logContentH - (logOffsets ? logOffsets[logEnd] : 0)
+    ? logContentH - logTopPad - visibleLogs.reduce((h, l) => h + (l.line && l.line.length > logCols ? Math.ceil(l.line.length / logCols) : 1) * LOG_ROW_H, 0)
     : (logTotal - logEnd) * LOG_ROW_H;
+
+  // Scroll-driven (or filter-driven) window refill: fire-and-forget, and
+  // re-checked whenever the visible absolute range changes.
+  $: ensureRowsLoaded(logStart, logEnd);
 
   function buildLogOffsets(lines, cols) {
     const n = lines.length;
@@ -176,12 +249,17 @@
   // Native Ctrl+F only sees the virtualized (visible) rows, so we provide search
   // over the FULL log: it scans every line in memory, counts matches, jumps the
   // virtual list to each match, and highlights the hits.
+  // NOTE: this scans only the currently-loaded WINDOW, not the full server-side
+  // log (Task 5 replaces it with a server /logs/search call over the whole
+  // view). Match positions are ABSOLUTE row numbers (window-relative index +
+  // logWindow.startRow), matching the absolute addressing used by
+  // logStart/logEnd/curMatchRow elsewhere.
   let logQuery = "";
   let logMatchPos = 0;
   $: logMatches = logQuery
-    ? filteredLogs.reduce((acc, l, idx) => {
+    ? logWindow.lines.reduce((acc, l, idx) => {
         if (l.line && l.line.toLowerCase().includes(logQuery.toLowerCase()))
-          acc.push(idx);
+          acc.push(idx + logWindow.startRow);
         return acc;
       }, [])
     : [];
@@ -203,8 +281,11 @@
     logStick = false; // don't fight the jump with auto-scroll
     tick().then(() => {
       if (!logBox) return;
+      const rel = rowIdx - logWindow.startRow;
       const targetY =
-        logWrap && logOffsets ? logOffsets[rowIdx] : rowIdx * LOG_ROW_H;
+        logWrap && logOffsets && rel >= 0 && rel < logOffsets.length
+          ? logOffsets[rel] + logWindow.startRow * LOG_ROW_H
+          : rowIdx * LOG_ROW_H;
       logBox.scrollTop = Math.max(0, targetY - logBox.clientHeight / 2);
       logScrollTop = logBox.scrollTop;
     });
@@ -343,9 +424,12 @@
       abortController.abort();
       abortController = null;
     }
-    logLines = [];
+    logWindow = { startRow: 0, lines: [], totalCount: 0 };
     logTruncated = false;
     fetchedSteps = new Set(); // buffer reset invalidates prior step backfills
+    windowFetchToken++; // invalidate any in-flight range fetch from the old connection
+    await refreshStats();
+    let backfilled = false; // first non-empty batch is the SSE backfill, not a live append
     abortController = new AbortController();
     const headers = {};
     const t = get(token);
@@ -370,10 +454,10 @@
         const parts = buf.split("\n\n");
         buf = parts.pop();
         // Collect this chunk's log lines and flush them in ONE reactive update.
-        // Appending per line (logLines = [...logLines, data]) plus a per-line
-        // tick + scrollHeight read is O(n^2) array copies and O(n) forced
-        // layout reflows — a 10k-line backfill (one chunk) would freeze the tab.
-        // The backfill usually arrives in a single read, so this is one flush.
+        // Appending per line plus a per-line tick + scrollHeight read is
+        // O(n^2) array copies and O(n) forced layout reflows — a 10k-line
+        // backfill (one chunk) would freeze the tab. The backfill usually
+        // arrives in a single read, so this is one flush.
         const batch = [];
         let terminalStatus = null;
         for (const part of parts) {
@@ -386,6 +470,10 @@
               // line; keep only its final redraw, like a terminal would.
               batch.push({ ...data, line: collapseCarriageReturns(data.line) });
             } else if (data.type === "truncated") {
+              // No longer surfaced as a banner: the scrollbar itself spans
+              // the full log via logWindow.totalCount, and older lines are
+              // reachable by scrolling up (ensureRowsLoaded fetches them).
+              // Still recorded for backfillSelectedStepLogs (pre-Task-4).
               logTruncated = true;
             } else if (data.type === "status") {
               if (run) run = { ...run, status: data.status };
@@ -396,7 +484,33 @@
           } catch {}
         }
         if (batch.length) {
-          logLines = logLines.length ? logLines.concat(batch) : batch;
+          if (!backfilled) {
+            // Initial SSE backfill becomes the initial window. totalCount
+            // comes from refreshStats(); if that failed (or under-counts vs.
+            // what the backfill itself delivered), fall back to the batch
+            // length so tests/environments without a stats mock still work.
+            backfilled = true;
+            const totalCount = Math.max(logWindow.totalCount, batch.length);
+            logWindow = {
+              startRow: Math.max(0, totalCount - batch.length),
+              lines: batch,
+              totalCount,
+            };
+          } else {
+            const atTail = logWindow.startRow + logWindow.lines.length >= logWindow.totalCount;
+            if (atTail) {
+              let lines = logWindow.lines.concat(batch);
+              let startRow = logWindow.startRow;
+              if (lines.length > WINDOW_MAX) {
+                const evict = lines.length - WINDOW_MAX;
+                lines = lines.slice(evict);
+                startRow += evict;
+              }
+              logWindow = { ...logWindow, startRow, lines, totalCount: logWindow.totalCount + batch.length };
+            } else {
+              logWindow = { ...logWindow, totalCount: logWindow.totalCount + batch.length };
+            }
+          }
           // Stick-scroll applies to filtered views too: if the incoming
           // batch is filtered out, scrollHeight is unchanged and the
           // assignment is a no-op.
@@ -444,13 +558,19 @@
     selectedStep = selectedStep === idx ? null : idx;
   }
 
-  // On-demand step-log backfill: the SSE backfill keeps only the last N lines
-  // of the WHOLE run, so a short early step (e.g. checkout before a 20k-line
-  // build) can have ZERO buffered lines even though the DB has them. When the
-  // user selects such a step on a truncated view, fetch its tail directly
-  // from the controller (once per step) and merge it into the buffer by seq.
+  // On-demand step-log backfill (pre-Task-3 behavior, superseded by Task 4's
+  // view-switching): the SSE backfill keeps only the last N lines of the
+  // WHOLE run, so a short early step (e.g. checkout before a 20k-line build)
+  // can have ZERO buffered lines even though the DB has them. When the user
+  // selects such a step on a truncated view, fetch its tail directly from
+  // the controller (once per step) and merge it into the current WINDOW by
+  // seq. Left in place per Task 3 scope (Task 4 replaces it with a proper
+  // server-side view switch via logView.steps); it only touches
+  // `logWindow.lines`, so it can't fight the window model — worst case it's
+  // a merge that gets overwritten by the next range fetch.
   let fetchedSteps = new Set();
   let stepLogsLoading = false;
+  let logTruncated = false; // set from the SSE "truncated" event; no longer shown as a banner
   $: backfillSelectedStepLogs(selectedStep, selectedParallelGroup);
   async function backfillSelectedStepLogs() {
     if (!logTruncated) return;
@@ -468,14 +588,14 @@
         fetchedSteps.add(idx);
         const lines = await apiFetch(`/api/v1/runs/${runID}/steps/${idx}/logs`);
         if (!Array.isArray(lines) || !lines.length) continue;
-        const have = new Set(logLines.map((l) => l.seq));
-        const merged = logLines.concat(
+        const have = new Set(logWindow.lines.map((l) => l.seq));
+        const merged = logWindow.lines.concat(
           lines
             .filter((l) => !have.has(l.seq))
             .map((l) => ({ ...l, line: collapseCarriageReturns(l.line) })),
         );
         merged.sort((a, b) => a.seq - b.seq);
-        logLines = merged;
+        logWindow = { ...logWindow, lines: merged };
       }
     } catch (e) {
       // Best-effort: the panel just stays empty; don't break the page.
@@ -767,25 +887,23 @@
       </div>
       <span class="meta" style="font-size:0.75rem">SSE</span>
     </div>
-    {#if logTruncated}
-      <div class="log-truncated">
-        Older lines were truncated — showing the most recent {logTotal.toLocaleString()}.
-        Use <code>unified-cli logs {runID}</code> for the full log.
-      </div>
-    {/if}
     <div
       class="log-box"
       class:wrap={logWrap}
       bind:this={logBox}
       on:scroll={onLogScroll}
     >
-      {#if !filteredLogs.length}
-        {#if stepLogsLoading}
+      {#if !visibleLogs.length}
+        {#if windowLoading}
+          <span style="color:var(--text-muted)">Loading…</span>
+        {:else if stepLogsLoading}
           <span style="color:var(--text-muted)">Loading this step's logs…</span>
         {:else if selectedStep !== null || selectedParallelGroup !== null}
           <span style="color:var(--text-muted)">No log lines for this selection.</span>
-        {:else}
+        {:else if logTotal === 0}
           <span style="color:var(--text-muted)">Waiting for logs…</span>
+        {:else}
+          <span style="color:var(--text-muted)">Loading…</span>
         {/if}
       {:else}
         <div style="height:{logTopPad}px" aria-hidden="true"></div>
