@@ -690,6 +690,140 @@ describe('RunDetail — windowed log data model (Task 3)', () => {
   });
 });
 
+// Review finding (round 2): `windowLoading` was shared by BOTH switchLogView
+// AND the ordinary same-view scroll fetch in ensureRowsLoaded, so the SSE
+// reader's `else if (windowLoading)` drop branch (added to fix the Task 4
+// atomicity findings) also dropped live batches during a plain scroll-driven
+// range fetch — permanently losing their contribution to totalCount, since
+// ensureRowsLoaded never touches totalCount and refreshStats() is only called
+// from startSSE/switchLogView. Scrolling back while a job is actively logging
+// is core usage, so live totals must keep growing during a same-view fetch.
+describe('RunDetail — SSE totals keep growing during a same-view scroll fetch (review finding round 2)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  it('an SSE line arriving while a same-view ensureRowsLoaded fetch is in flight still grows the total', async () => {
+    try {
+      const TOTAL = 50000;
+      const BACKFILL = 300;
+      const makeLine = (row) => ({
+        seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row,
+      });
+      const statsRange = statsAndRange(TOTAL, makeLine);
+
+      // SSE: backfill the tail, then (after the initial read, gated) stream
+      // one more live line — released only once the test has fired a
+      // scroll-driven range fetch and confirmed it's still pending.
+      const enc = new TextEncoder();
+      let backfillPayload = '';
+      for (let row = TOTAL - BACKFILL; row < TOTAL; row++) {
+        backfillPayload += `data: ${JSON.stringify({ type: 'log', ...makeLine(row) })}\n\n`;
+      }
+      let readCount = 0;
+      let releaseLive = null;
+      const liveGate = new Promise((res) => { releaseLive = res; });
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: {
+          getReader() {
+            return {
+              read: async () => {
+                readCount++;
+                if (readCount === 1) {
+                  return { done: false, value: enc.encode(backfillPayload) };
+                }
+                if (readCount === 2) {
+                  await liveGate;
+                  const liveLine = JSON.stringify({ type: 'log', seq: TOTAL + 1, stepIndex: 0, stream: 'stdout', line: 'live line' });
+                  return { done: false, value: enc.encode(`data: ${liveLine}\n\n`) };
+                }
+                return { done: true, value: undefined };
+              },
+            };
+          },
+        },
+      });
+
+      // Gate the scroll-driven /logs/range fetch (offset=0, the top of the
+      // log) so it's still in flight when the live SSE line arrives — the
+      // deferred-promise pattern used elsewhere in this file to make an SSE
+      // event genuinely overlap an in-flight fetch.
+      let releaseRangeFetch = null;
+      const rangeFetchGate = new Promise((res) => { releaseRangeFetch = res; });
+
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        if (u.includes('/logs/range') && u.includes('offset=0')) {
+          return rangeFetchGate.then(() => {
+            const sr = statsRange(url);
+            return sr;
+          });
+        }
+        const sr = statsRange(url);
+        if (sr) return sr;
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-samefetch', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-samefetch' } } });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(`${TOTAL.toLocaleString()} lines`);
+      });
+
+      // Scroll away from the tail to a range outside the loaded window — a
+      // real ensureRowsLoaded range fetch (NOT a view switch) fires and gets
+      // gated on rangeFetchGate.
+      const box = container.querySelector('.log-box');
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+      await vi.waitFor(() => {
+        expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/logs/range') && String(c[0]).includes('offset=0'))).toBe(true);
+      });
+
+      // While that same-view range fetch is still pending, let the live SSE
+      // line land.
+      releaseLive();
+      await vi.waitFor(() => expect(readCount).toBeGreaterThanOrEqual(2));
+
+      // The total must grow even though a same-view ensureRowsLoaded fetch is
+      // in flight — unlike a view switch, this is NOT a view-switch and must
+      // not suppress the SSE contribution to totalCount.
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(`${(TOTAL + 1).toLocaleString()} lines`);
+      });
+
+      // Let the in-flight range fetch complete too, and confirm the window
+      // is left in a consistent state (no crash, some rows still render).
+      releaseRangeFetch();
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+      });
+    } finally {
+      restore();
+    }
+  });
+});
+
 // The controller's UNIFIED_LOG_STDERR_PLAIN setting reaches the UI via the
 // `stderrPlain` store (loaded from /api/v1/ui-config at startup). Default:
 // stderr is red (.log-stderr). When the controller enables it, stderr renders

@@ -34,6 +34,15 @@
   let logView = { steps: null };
   let logWindow = { startRow: 0, lines: [], totalCount: 0 };
   let windowLoading = false; // range fetch in flight (drives the Loading… row)
+  // True only while switchLogView's body (refreshStats + tail range fetch) is
+  // in flight — NOT during an ordinary same-view ensureRowsLoaded fetch. The
+  // SSE reader uses this (not windowLoading) to decide whether to drop a live
+  // batch outright: during a view switch `logWindow` may still hold the OLD
+  // view's contents while `logView.steps` already points at the new one, so
+  // appending would corrupt it. A plain scroll-driven ensureRowsLoaded fetch
+  // never changes logView, so live batches must keep counting into
+  // totalCount while it's in flight (see the else-branch below).
+  let viewSwitching = false;
   const WINDOW_MAX = 30000;
   const FETCH_CHUNK = 5000;
 
@@ -253,6 +262,12 @@
     // observe a mismatch and silently abort (no tail fetch, no jump to
     // bottom) — see the "log view switch atomicity" tests.
     windowLoading = true;
+    // Also set before the first await, alongside windowLoading: this is what
+    // the SSE reader actually checks to decide whether to drop a live batch
+    // outright (see startSSE below) — narrower than windowLoading, which is
+    // also true during a plain same-view ensureRowsLoaded fetch where drops
+    // would lose totalCount growth permanently.
+    viewSwitching = true;
     try {
       await refreshStats();
       if (token !== windowFetchToken) return; // superseded by a newer view switch
@@ -270,7 +285,10 @@
     } catch (e) {
       console.warn("log view range fetch failed", e);
     } finally {
-      if (token === windowFetchToken) windowLoading = false;
+      if (token === windowFetchToken) {
+        windowLoading = false;
+        viewSwitching = false;
+      }
     }
     if (token !== windowFetchToken) return;
     await tick();
@@ -527,16 +545,15 @@
               lines: batch,
               totalCount,
             };
-          } else if (windowLoading) {
-            // A view switch (switchLogView) or a range fetch
-            // (ensureRowsLoaded) is in flight: `logWindow` may still hold a
-            // stale/about-to-be-replaced view (e.g. mid-switchLogView,
-            // logView.steps already points at the NEW view while logWindow's
-            // contents are still the OLD one). Appending here would mix the
-            // two and inflate totalCount transiently — and permanently if
-            // this fetch turns out to be superseded. Drop the batch instead:
-            // the in-flight fetch's own result (plus its refreshStats, for a
-            // view switch) supersedes it and totalCount catches up.
+          } else if (viewSwitching) {
+            // A view switch (switchLogView) is in flight: `logWindow` may
+            // still hold the OLD view's contents while `logView.steps`
+            // already points at the NEW view (e.g. mid-switchLogView, before
+            // its refreshStats/tail range fetch have landed). Appending here
+            // would mix the two and inflate totalCount transiently — and
+            // permanently if this fetch turns out to be superseded. Drop the
+            // batch instead: the switch's own refreshStats() + range fetch
+            // supersede it and totalCount catches up.
           } else {
             // While a step/group view is active, only lines that belong to
             // the view are appended to the window; the rest are ignored here
@@ -546,7 +563,15 @@
               ? batch.filter((l) => logView.steps.includes(l.stepIndex))
               : batch;
             const atTail = logWindow.startRow + logWindow.lines.length >= logWindow.totalCount;
-            if (atTail) {
+            // A plain scroll-driven ensureRowsLoaded fetch (windowLoading
+            // true, but NOT a view switch) is in flight: `lines`/`startRow`
+            // are about to be replaced wholesale by that fetch's own result
+            // (which doesn't touch totalCount), so appending to `lines` here
+            // would either be clobbered a moment later or, worse, get
+            // stitched onto a window that fetch is about to discard. Only
+            // totalCount is safe to grow — same as the "not at tail" case
+            // below, which this reuses.
+            if (atTail && !windowLoading) {
               let lines = logWindow.lines.concat(inView);
               let startRow = logWindow.startRow;
               if (lines.length > WINDOW_MAX) {
