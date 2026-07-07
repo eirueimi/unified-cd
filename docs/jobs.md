@@ -53,7 +53,9 @@ spec:
   agentSelector: [ ... ]          # required agent label filters
   concurrency: { ... }            # concurrency control
   timeoutMinutes: 60              # job-level timeout in minutes
-  podTemplate: { ... }            # Kubernetes pod config (k8s-agent only)
+  podTemplate: { ... }            # Kubernetes pod config; full pod config is k8s-agent
+                                   # only, but the standard agent also reads
+                                   # spec.containers to resolve runsIn.container
   steps:
     - name: <string>              # step name (required, unique within job)
       if: <expression>            # run condition
@@ -508,9 +510,14 @@ For private repositories, create a [GitCredential](#gitcredential-resource) reso
 
 `runsIn` runs a step in a reproducible container instead of directly on the
 agent host. It has two forms — `image` (a fresh isolated environment) and
-`container` (exec into a named, pre-provisioned k8s pod container). This guide
-covers the `image` form; see the [`runsIn` field reference](resources.md#runsin)
-for the full field table (including `runsIn.container` and `runsIn.resources`).
+`container` (exec into a named container defined in the job's `podTemplate`).
+`runsIn.container` works on both agents: on k8s it execs into that container
+of the job pod, and on the standard agent it provisions a workspace-bind-mounted
+container from the same `podTemplate.spec.containers` entry, so surrounding
+steps still see files it writes. This guide covers the `image` form; see the
+[`runsIn` field reference](resources.md#runsin) for the full field table
+(including `runsIn.container` and its standard-agent MVP limits, and
+`runsIn.resources`).
 
 An isolated `runsIn.image` step runs in a Linux container regardless of the
 agent's host OS, so `UNIFIED_AGENT_OS` reports `linux` inside it.
@@ -778,7 +785,11 @@ If `agentSelector` is omitted, any available agent can claim the run.
 
 ## Kubernetes Pod Template (`podTemplate`)
 
-For jobs running on the `k8s-agent`. Defines the Kubernetes Pod that executes the steps.
+Defines the Kubernetes Pod that executes the steps, for jobs running on the
+`k8s-agent`. The standard agent does not use the rest of `podTemplate`, but it
+does read `spec.containers` to resolve `runsIn.container` (see
+[Isolated Execution](#isolated-execution-runsin) and the
+[`runsIn` field reference](resources.md#runsincontainer-on-the-standard-agent-mvp-limits)).
 
 See the [Kubernetes Integration Guide](kubernetes-integration.md) for full details.
 

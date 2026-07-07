@@ -39,9 +39,10 @@ var CancelPollInterval = 5 * time.Second
 // client/agentID identify who reports progress; c is the claimed run. Callers
 // (the host and k8s executeRun wrappers) are responsible for everything
 // backend-specific that must happen BEFORE this call: acquiring the execution
-// environment (workDir / pod), constructing b, and any host/k8s-only
-// rejection (e.g. the host agent's podTemplate rejection, which stays in its
-// wrapper since only the host cares).
+// environment (workDir / pod), constructing b, and any host/k8s-only handling
+// (e.g. the host agent's podTemplate handling — it warns that host-unsupported
+// features are ignored and threads the podTemplate into hostBackend for
+// runsIn.container resolution).
 func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimResponse, b ExecBackend) {
 	slog.Info("running", "runId", c.RunID, "job", c.JobName)
 

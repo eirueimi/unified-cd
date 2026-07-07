@@ -37,3 +37,21 @@ func TestAppleCreateArgv_NoWorkDirWhenEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestAppleCreateArgv_Mounts(t *testing.T) {
+	a := &appleContainer{}
+	got := a.createArgs(CreateSpec{
+		Image:   "alpine",
+		WorkDir: "/workspace",
+		Mounts:  []Mount{{HostPath: "/host/ws", ContainerPath: "/workspace"}},
+	})
+	found := false
+	for i, s := range got {
+		if s == "-v" && i+1 < len(got) && got[i+1] == "/host/ws:/workspace" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected -v /host/ws:/workspace, argv = %v", got)
+	}
+}

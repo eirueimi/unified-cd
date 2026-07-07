@@ -5,20 +5,65 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestHostBackend_RunNamedContainer_NotSupported verifies that runsIn.container
-// is rejected on the host agent with a clear, actionable error — the host has
-// no long-lived named-container / sidecar model (that is the k8s agent's
-// job), so this must never silently fall back to some other exec path.
-func TestHostBackend_RunNamedContainer_NotSupported(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1"}, "r1", t.TempDir())
-	_, err := b.RunNamedContainer(context.Background(), api.ClaimStep{Name: "s"}, "sidecar", "echo hi", nil, nil, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not supported on the host agent")
+// TestHostBackend_RunNamedContainer_ExecsIntoNamedContainer verifies that a
+// runsIn.container step, when its container is defined in the claim's
+// podTemplate, execs into a long-lived container bind-mounted at the host
+// workspace — and that CloseScopes (claim end) tears it down. This replaces
+// the former TestHostBackend_RunNamedContainer_NotSupported: runsIn.container
+// is now supported on the host agent (see RunNamedContainer).
+func TestHostBackend_RunNamedContainer_ExecsIntoNamedContainer(t *testing.T) {
+	rt := &recordingRT{}
+	a := &Agent{ID: "a1"}
+	a.runtimeOnce.Do(func() {}) // mark runtime as resolved
+	a.resolvedRuntime = rt
+
+	pt := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{
+		map[string]any{"name": "tools", "image": "node:20"},
+	}}}
+	b := newHostBackend(a, "r1", "/host/ws", pt)
+
+	step := api.ClaimStep{Index: 0, Name: "s", RunsIn: &dsl.RunsIn{Container: "tools"}}
+	ec, err := b.RunNamedContainer(context.Background(), step, "tools", "echo hi", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("RunNamedContainer: %v", err)
+	}
+	if ec != 0 {
+		t.Fatalf("exit = %d, want 0", ec)
+	}
+	if got := rt.creates.Load(); got != 1 {
+		t.Fatalf("expected 1 Create, got %d", got)
+	}
+	if len(rt.specs) != 1 || len(rt.specs[0].Mounts) != 1 || rt.specs[0].Mounts[0].HostPath != "/host/ws" {
+		t.Fatalf("expected workspace bind mount from /host/ws, got %+v", rt.specs)
+	}
+	b.CloseScopes(context.Background())
+	if got := rt.removes.Load(); got != 1 {
+		t.Fatalf("expected teardown Remove, got %d", got)
+	}
+}
+
+// TestHostBackend_RunNamedContainer_UnknownContainer verifies that a
+// runsIn.container step whose container name is absent from the claim's
+// podTemplate fails with a clear error rather than falling back to some
+// other exec path.
+func TestHostBackend_RunNamedContainer_UnknownContainer(t *testing.T) {
+	rt := &recordingRT{}
+	a := &Agent{ID: "a1"}
+	a.runtimeOnce.Do(func() {})
+	a.resolvedRuntime = rt
+	pt := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{}}}
+	b := newHostBackend(a, "r1", "/host/ws", pt)
+
+	step := api.ClaimStep{Name: "s", RunsIn: &dsl.RunsIn{Container: "missing"}}
+	if _, err := b.RunNamedContainer(context.Background(), step, "missing", "echo hi", nil, nil, nil); err == nil {
+		t.Fatal("expected error for a container not in the podTemplate")
+	}
 }
 
 // TestHostBackend_ConcurrencyMode verifies the host agent reports Concurrent
@@ -26,7 +71,7 @@ func TestHostBackend_RunNamedContainer_NotSupported(t *testing.T) {
 // sequential), matching the ConcurrencyMode contract executeRun relies on
 // when driving RunPipeline.
 func TestHostBackend_ConcurrencyMode(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1"}, "r1", t.TempDir())
+	b := newHostBackend(&Agent{ID: "a1"}, "r1", t.TempDir(), nil)
 	assert.Equal(t, Concurrent, b.ConcurrencyMode())
 }
 
@@ -37,7 +82,7 @@ func TestHostBackend_ConcurrencyMode(t *testing.T) {
 // executeRun; end-to-end shipping behavior stays covered by the existing
 // stdout-stream/parity suites.
 func TestHostBackend_StepLogWriters_FinishIsSafe(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", t.TempDir())
+	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", t.TempDir(), nil)
 	b.SetMasker(secrets.NoOpMasker)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -65,7 +110,7 @@ func TestHostBackend_StepLogWriters_FinishIsSafe(t *testing.T) {
 // StepLogWriters returns *LogPusher for both streams (per the ExecBackend
 // StepLogWriters doc comment: "host returns LogPusher for both streams").
 func TestHostBackend_StepLogWriters_ReturnsLogPushers(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", t.TempDir())
+	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", t.TempDir(), nil)
 	b.SetMasker(secrets.NoOpMasker)
 
 	stdout, stderr, _ := b.StepLogWriters(context.Background(), 0)
@@ -81,7 +126,7 @@ func TestHostBackend_StepLogWriters_ReturnsLogPushers(t *testing.T) {
 func TestHostBackend_CacheRestore_MissReturnsNil(t *testing.T) {
 	ctx := context.Background()
 	a := newCacheTestAgent(t)
-	b := newHostBackend(a, "r1", t.TempDir())
+	b := newHostBackend(a, "r1", t.TempDir(), nil)
 	destPath := t.TempDir()
 
 	hit, err := b.CacheRestore(ctx, ScopeHandle{}, "nonexistent-key", nil, destPath)
