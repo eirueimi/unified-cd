@@ -1712,3 +1712,173 @@ describe('RunDetail — window flags reset when startSSE supersedes an in-flight
     releaseRun1Step1Stats();
   });
 });
+
+// Final review finding 1: ensureRowsLoaded's `if (windowLoading) return` guard
+// dropped a scroll request while a range fetch was in flight, but nothing
+// re-checked the viewport once that fetch settled. If the user scrolled to a
+// new, uncovered position while a fetch was pending (its own request
+// early-returned), the settling fetch installed a window centered on the OLD
+// scroll target and cleared windowLoading WITHOUT re-invoking itself — the new
+// viewport was left uncovered ("Loading…") with no fetch in flight and nothing
+// that would ever fire one (no SSE appends on a finished run to rescue it).
+// The fix re-checks the CURRENT logStart/logEnd in ensureRowsLoaded's finally
+// and refetches if still uncovered, terminating via the same in-window
+// early-return once the viewport is covered (so a view smaller than
+// FETCH_CHUNK does not loop forever).
+describe('RunDetail — ensureRowsLoaded re-checks the viewport after an in-flight fetch settles (final review finding 1)', () => {
+  let descST, descSH;
+  beforeEach(() => {
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  it('a scroll to a new uncovered position that landed while a fetch was in flight is served once that fetch settles', async () => {
+    try {
+      const TOTAL = 50000;
+      const BACKFILL = 200;
+      const makeLine = (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row });
+      const statsRange = statsAndRange(TOTAL, makeLine);
+      // SSE backfill: tail 200 lines (rows 49800..49999).
+      const enc = new TextEncoder();
+      let payload = '';
+      for (let row = TOTAL - BACKFILL; row < TOTAL; row++) {
+        payload += `data: ${JSON.stringify({ type: 'log', ...makeLine(row) })}\n\n`;
+      }
+      let sent = false;
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: { getReader() { return { read: async () => sent ? { done: true, value: undefined } : (sent = true, { done: false, value: enc.encode(payload) }) } } },
+      });
+
+      // The mount installs a window around the tail-anchored center; scrolling
+      // to row 40000 (deep in the log, uncovered) fires a range fetch we GATE
+      // so it stays in flight. Any /logs/range with a high offset (>= 30000)
+      // is that gated first-target fetch; the later (low-offset) fetch for the
+      // second scroll target is left ungated. The mount fetch has a low offset
+      // and is never gated, so the initial window renders.
+      let releaseFarFetch = null;
+      const farFetchGate = new Promise((res) => { releaseFarFetch = res; });
+      const isFarRange = (u) => {
+        if (!u.includes('/logs/range')) return false;
+        const off = Number(new URL(u, 'http://localhost').searchParams.get('offset') || '0');
+        return off >= 30000;
+      };
+
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        if (isFarRange(u)) {
+          return farFetchGate.then(() => statsRange(url));
+        }
+        const sr = statsRange(url);
+        if (sr) return sr;
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-recheck', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-recheck' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+      });
+
+      const box = container.querySelector('.log-box');
+
+      // Scroll DEEP into the log (row ~40000): fires ensureRowsLoaded for a
+      // high offset, which is gated and stays in flight (windowLoading = true).
+      box.scrollTop = 40000 * 20;
+      await fireEvent.scroll(box);
+      await vi.waitFor(() => {
+        expect(fetchMock.mock.calls.some((c) => isFarRange(String(c[0])))).toBe(true);
+      });
+
+      // While the far fetch is still in flight, scroll to row ~10000 (a LOW
+      // offset, uncovered by any installed window). This request is
+      // early-returned by the `windowLoading` guard — nothing fetches it yet.
+      const lowCallsBefore = fetchMock.mock.calls.filter((c) => {
+        const cu = String(c[0]);
+        return cu.includes('/logs/range') && !isFarRange(cu);
+      }).length;
+      box.scrollTop = 10000 * 20;
+      await fireEvent.scroll(box);
+      await new Promise((r) => setTimeout(r, 20));
+      // Confirm the row-10000 range was NOT fetched while the far fetch was gated.
+      const lowCallsDuring = fetchMock.mock.calls.filter((c) => {
+        const cu = String(c[0]);
+        return cu.includes('/logs/range') && !isFarRange(cu);
+      }).length;
+      expect(lowCallsDuring).toBe(lowCallsBefore);
+
+      // Release the far fetch. Its finally must re-check the CURRENT viewport
+      // (now row ~10000, uncovered by the far window it just installed) and
+      // fire a fresh range fetch for it.
+      releaseFarFetch();
+
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
+        expect(texts.some((t) => t.includes('row 10000'))).toBe(true);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('a view smaller than FETCH_CHUNK does not loop forever re-fetching after settle', async () => {
+    try {
+      // Total is far smaller than FETCH_CHUNK (5000): the server legitimately
+      // returns fewer rows than requested, and every row fits in a single
+      // window. The re-check must compare against what the window NOW covers
+      // and early-return, NOT keep firing because the fetch returned < limit.
+      // (250, not a handful: under the fixed-4000 scrollHeight stub the
+      // virtual window sits around row ~185, so fewer rows would render zero
+      // — a stub artifact, see the step-filtered tests above.)
+      const TOTAL = 250;
+      const makeLine = (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'small ' + row });
+      const statsRange = statsAndRange(TOTAL, makeLine);
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(TOTAL);
+        const sr = statsRange(url);
+        if (sr) return sr;
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-small', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-small' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+      });
+
+      const box = container.querySelector('.log-box');
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+      // Let any re-check settle and confirm it stabilizes (no runaway fetch
+      // loop) — the range-fetch count must plateau.
+      await new Promise((r) => setTimeout(r, 60));
+      const c1 = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
+      await new Promise((r) => setTimeout(r, 60));
+      const c2 = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
+      expect(c2).toBe(c1);
+    } finally {
+      restore();
+    }
+  });
+});

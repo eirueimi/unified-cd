@@ -92,7 +92,20 @@
     } catch (e) {
       console.warn("log range fetch failed", e);
     } finally {
-      if (token === windowFetchToken) windowLoading = false;
+      if (token === windowFetchToken) {
+        windowLoading = false;
+        // Re-check the CURRENT viewport now that the fetch has settled: while
+        // it was in flight, a scroll may have moved [logStart, logEnd) to a
+        // position the just-installed window doesn't cover, and that scroll's
+        // own ensureRowsLoaded was early-returned by the `windowLoading` guard
+        // above — nothing else will re-fire it (a finished run has no SSE
+        // appends to rescue the viewport). Re-invoke against the window as it
+        // stands NOW: if the viewport is covered (the steady state, e.g. a
+        // view smaller than FETCH_CHUNK the server returned whole) the
+        // in-window early-return terminates the recursion; only a genuinely
+        // uncovered viewport fires one more fetch.
+        ensureRowsLoaded(logStart, logEnd);
+      }
     }
   }
 
@@ -590,6 +603,19 @@
             // what the backfill itself delivered), fall back to the batch
             // length so tests/environments without a stats mock still work.
             backfilled = true;
+            // startSSE()'s `await refreshStats()` set totalCount while the
+            // window was still empty and logScrollTop was 0, so the reactive
+            // `$: ensureRowsLoaded(logStart, logEnd)` may have already fired a
+            // HEAD range fetch (offset 0) that is still in flight. Left alone,
+            // its token is still valid, so when it lands it would replace this
+            // tail window with rows 0..FETCH_CHUNK — but stick-scroll has
+            // already parked the viewport at the bottom, leaving a blank
+            // "Loading…" on open. Invalidate any such in-flight range fetch
+            // the same way startSSE does (token bump + synchronous flag
+            // reset), so this tail install wins and the head fetch no-ops.
+            windowFetchToken++;
+            windowLoading = false;
+            viewSwitching = false;
             const totalCount = Math.max(logWindow.totalCount, batch.length);
             logWindow = {
               startRow: Math.max(0, totalCount - batch.length),
