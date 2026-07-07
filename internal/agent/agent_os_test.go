@@ -19,6 +19,15 @@ func TestAgentOSForStep(t *testing.T) {
 		"a step-level runsIn.image step runs in a linux container")
 	assert.Equal(t, runtime.GOOS, agentOSForStep(api.ClaimStep{}, runtime.GOOS),
 		"a plain step reports the backend's default OS (runtime.GOOS on the host)")
-	assert.Equal(t, runtime.GOOS, agentOSForStep(api.ClaimStep{RunsIn: &dsl.RunsIn{Container: "named"}}, runtime.GOOS),
-		"runsIn.container (no image) is not an isolated-image step")
+}
+
+// TestAgentOSForStep_RunsInContainer verifies a runsIn.container step also
+// reports "linux": it executes in a named Linux container on the host agent
+// (see hostBackend.RunNamedContainer) just like runsIn.image and uses-scope
+// steps do.
+func TestAgentOSForStep_RunsInContainer(t *testing.T) {
+	step := api.ClaimStep{RunsIn: &dsl.RunsIn{Container: "tools"}}
+	if got := agentOSForStep(step, "windows"); got != "linux" {
+		t.Fatalf("agentOSForStep = %q, want linux for runsIn.container", got)
+	}
 }

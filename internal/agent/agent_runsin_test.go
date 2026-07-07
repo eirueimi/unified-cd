@@ -16,16 +16,21 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestExecuteRun_RunsInContainer_HostAgentHardError verifies the deterministic
+// TestExecuteRun_RunsInContainer_NoPodTemplate verifies the deterministic
 // error branch in the host agent's step-dispatch switch (agent.go ~line 452):
-// a step with runsIn.container on a plain host agent must hard-fail rather
-// than silently falling back to executing the command on the host. This
+// a runsIn.container step whose container is not defined in any podTemplate
+// must fail (exit -1), never silently running its command on the host. This
 // mirrors the runJobStages harness pattern from agent_finally_test.go
 // (mock controller server driven via executeRun), extended to also capture
 // ExitCode and to prove the step's Run command never executed on the host.
-func TestExecuteRun_RunsInContainer_HostAgentHardError(t *testing.T) {
+//
+// This replaces the former TestExecuteRun_RunsInContainer_HostAgentHardError:
+// its premise ("runsIn.container is never supported on the host") is now
+// false — see TestHostBackend_RunNamedContainer_ExecsIntoNamedContainer and
+// TestExecuteRun_PodTemplate_NotRejectedOnHost's neighbors in this package.
+func TestExecuteRun_RunsInContainer_NoPodTemplate(t *testing.T) {
 	const agentID = "runsin-agent"
-	const runID = "run-runsin-container"
+	const runID = "run-runsin-nopt"
 
 	var mu sync.Mutex
 	var reportedStatus string
@@ -36,9 +41,7 @@ func TestExecuteRun_RunsInContainer_HostAgentHardError(t *testing.T) {
 	markerPath := filepath.Join(tmpDir, "marker.txt")
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
+	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
 		var req api.StepReportRequest
 		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
@@ -52,13 +55,10 @@ func TestExecuteRun_RunsInContainer_HostAgentHardError(t *testing.T) {
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/steps/0/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/logs/bulk", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/steps/0/logs/bulk", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/finish", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Status string `json:"status"`
-		}
+		var body struct{ Status string `json:"status"` }
 		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
 		select {
 		case finishCh <- body.Status:
@@ -66,50 +66,35 @@ func TestExecuteRun_RunsInContainer_HostAgentHardError(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	a := &Agent{
-		ID:     agentID,
-		Client: NewClient(srv.URL, "tok"),
-	}
-
-	// The Run command would create a marker file if it were ever executed on
-	// the host. runsIn.container must short-circuit before that happens.
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
 	claim := api.ClaimResponse{
 		RunID:   runID,
 		JobName: "test-runsin",
-		Stages: []api.ClaimStage{
-			{Step: &api.ClaimStep{
-				Index:      0,
-				StageIndex: 0,
-				Name:       "container-step",
-				RunsIn:     &dsl.RunsIn{Container: "job"},
-				Run:        "echo ran > " + shellQuote(markerPath),
-			}},
-		},
+		Stages: []api.ClaimStage{{Step: &api.ClaimStep{
+			Index: 0, StageIndex: 0, Name: "container-step",
+			RunsIn: &dsl.RunsIn{Container: "tools"},
+			Run:    "echo ran > " + shellQuote(markerPath),
+		}}},
 	}
 
 	a.executeRun(context.Background(), claim, tmpDir)
 
 	select {
 	case s := <-finishCh:
-		assert.Equal(t, "Failed", s, "run must not succeed when runsIn.container is used on the host agent")
+		assert.Equal(t, "Failed", s, "runsIn.container without a defining podTemplate must fail")
 	default:
 		t.Fatal("FinishRun was not called")
 	}
-
 	mu.Lock()
-	status := reportedStatus
-	exitCode := reportedExitCode
+	status, exitCode := reportedStatus, reportedExitCode
 	mu.Unlock()
-
-	assert.Equal(t, "Failed", status, "step should be reported Failed, not silently run on host")
-	assert.Equal(t, -1, exitCode, "host dispatch guard reports exit code -1 for the unsupported-container branch")
-
+	assert.Equal(t, "Failed", status)
+	assert.Equal(t, -1, exitCode)
 	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
-		t.Fatalf("marker file should not exist; runsIn.container step must not execute its Run command on the host agent (stat err: %v)", err)
+		t.Fatalf("marker must not exist; step must not run on host (stat err: %v)", err)
 	}
 }
 

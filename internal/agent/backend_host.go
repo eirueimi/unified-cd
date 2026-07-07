@@ -102,11 +102,51 @@ func (b *hostBackend) RunImage(ctx context.Context, step api.ClaimStep, script s
 	return RunStepContainer(ctx, rt, step.RunsIn.Image, script, stdout, stderr, env, cpuLimit, memLimit)
 }
 
-// RunNamedContainer is not supported on the host agent: runsIn.container
-// targets a long-lived named container that only the k8s agent's sidecar
-// model can provide.
+// hostNamedMountPath is the in-container path the host workspace is bind-mounted
+// at for runsIn.container containers. It mirrors the k8s workspace mount
+// (podbuilder.injectWorkspace): /workspace unless the podTemplate overrides it.
+func hostNamedMountPath(pt *dsl.PodTemplate) string {
+	if pt != nil && pt.Workspace != nil && pt.Workspace.MountPath != "" {
+		return pt.Workspace.MountPath
+	}
+	return "/workspace"
+}
+
+// namedContainers returns the claim's namedContainerManager, creating it lazily
+// on first use (mirrors getScopes). A missing container runtime is a hard error
+// surfaced to the step (no silent host fallback).
+func (b *hostBackend) namedContainers() (*namedContainerManager, error) {
+	b.namedMu.Lock()
+	defer b.namedMu.Unlock()
+	if b.named != nil {
+		return b.named, nil
+	}
+	rt, err := b.a.containerRuntime()
+	if err != nil {
+		return nil, fmt.Errorf("runsIn.container requires a container runtime: %w", err)
+	}
+	b.named = newNamedContainerManager(rt, b.workDir, hostNamedMountPath(b.podTemplate))
+	return b.named, nil
+}
+
+// RunNamedContainer runs a runsIn.container step in a long-lived container named
+// `container`, defined in the claim's podTemplate and sharing the host
+// workspace via a bind mount. This is the host counterpart to the k8s agent's
+// exec-into-named-pod-container behavior.
 func (b *hostBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	return -1, fmt.Errorf("runsIn.container (%q) is not supported on the host agent; use runsIn.image or the k8s agent", container)
+	def, err := namedContainerDef(b.podTemplate, container)
+	if err != nil {
+		return -1, err
+	}
+	nm, err := b.namedContainers()
+	if err != nil {
+		return -1, err
+	}
+	h, err := nm.ensure(ctx, def)
+	if err != nil {
+		return -1, err
+	}
+	return nm.exec(ctx, h, script, env, stdout, stderr)
 }
 
 // EnsureScope provisions (or reuses) the step's uses-scope container.
@@ -131,13 +171,21 @@ func (b *hostBackend) RunInScope(ctx context.Context, h ScopeHandle, script stri
 	return sm.exec(ctx, handle, script, env, stdout, stderr)
 }
 
-// CloseScopes tears down every scope container opened during the claim.
+// CloseScopes tears down every scope container and every named runsIn.container
+// container opened during the claim.
 func (b *hostBackend) CloseScopes(ctx context.Context) {
 	b.scopesMu.Lock()
 	scopes := b.scopes
 	b.scopesMu.Unlock()
 	if scopes != nil {
 		scopes.closeAll(ctx)
+	}
+
+	b.namedMu.Lock()
+	named := b.named
+	b.namedMu.Unlock()
+	if named != nil {
+		named.closeAll(ctx)
 	}
 }
 
@@ -260,14 +308,30 @@ func (b *hostBackend) DefaultAgentOS() string {
 	return runtime.GOOS
 }
 
-// RunPostHook runs a step's post: script after the step succeeds. Scoped
-// steps run their post hook inside the same scope container the step body
-// ran in; container is unused on the host backend (named containers are not
-// supported here — see RunNamedContainer).
+// RunPostHook runs a step's post: script after the step succeeds. A scoped step
+// runs its post inside the same scope container; a runsIn.container step
+// (container != "") runs its post inside that named container, which is still
+// alive (torn down only at claim end); every other step runs on the host
+// workspace.
 func (b *hostBackend) RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, env []string) error {
-	sm, h, ok := unwrapHostScope(scope)
-	if ok {
+	if sm, h, ok := unwrapHostScope(scope); ok {
 		_, err := sm.exec(ctx, h, script, env, nil, nil)
+		return err
+	}
+	if container != "" {
+		def, err := namedContainerDef(b.podTemplate, container)
+		if err != nil {
+			return err
+		}
+		nm, err := b.namedContainers()
+		if err != nil {
+			return err
+		}
+		h, err := nm.ensure(ctx, def) // returns the container already opened by the step
+		if err != nil {
+			return err
+		}
+		_, err = nm.exec(ctx, h, script, env, nil, nil)
 		return err
 	}
 	_, _, err := RunStepCapture(ctx, script, nil, env, b.workDir)
