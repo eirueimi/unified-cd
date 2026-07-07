@@ -9,7 +9,13 @@ import (
 
 // minMaskLineLen is the minimum trimmed length for a line of a multi-line
 // secret to become its own pattern. Shorter fragments (e.g. the "==" tail of
-// a base64 block) would catastrophically over-mask unrelated output.
+// a base64 block) would catastrophically over-mask unrelated output. This
+// still leaves a residual trade at >= minMaskLineLen: a generic short line
+// inside a multi-line secret (e.g. a bare "true" in a JSON-shaped secret)
+// becomes a pattern too, so unrelated log text containing that same line can
+// be over-masked, and an unrelated output value containing it can be dropped
+// by Detects — a cost that is at least discoverable via the outputs skip
+// warning rather than silent data loss.
 const minMaskLineLen = 4
 
 // Masker masks sensitive information in output.
