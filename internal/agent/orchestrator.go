@@ -124,6 +124,20 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	// via SetMasker rather than passed to the backend's constructor.
 	b.SetMasker(masker)
 
+	// warnSkippedOutput surfaces a dropped output both to the agent log and
+	// into the run's own logs (stepIndex -1 renders as "System" in the UI).
+	warnSkippedOutput := func(ctx context.Context, stepIndex int, key string) {
+		slog.Warn("output skipped: value may contain a secret",
+			"runId", c.RunID, "stepIndex", stepIndex, "key", key)
+		_ = client.AppendLogBulk(ctx, agentID, c.RunID, stepIndex, []api.LogAppendRequest{{
+			RunID:     c.RunID,
+			StepIndex: stepIndex,
+			Stream:    "stderr",
+			Timestamp: time.Now().UTC(),
+			Line:      fmt.Sprintf("output %q skipped: value may contain a secret", key),
+		}})
+	}
+
 	// deferred hooks: run after RunPipeline completes (cache save, etc.)
 	//
 	// parallel: steps in the same claim run concurrently as goroutines under
@@ -315,7 +329,12 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 						sctx.setStep(step.Name, dsl.StepData{Outputs: dsl.StringOutputs(childOutputs)})
 					}
 					if len(childOutputs) > 0 {
-						_ = client.SetStepOutputs(stepCtx, agentID, c.RunID, step.Index, step.MatrixKey, childOutputs)
+						safe := FilterSecretOutputs(childOutputs, masker, func(k string) {
+							warnSkippedOutput(stepCtx, step.Index, k)
+						})
+						if len(safe) > 0 {
+							_ = client.SetStepOutputs(stepCtx, agentID, c.RunID, step.Index, step.MatrixKey, safe)
+						}
 					}
 				}
 			} else {
@@ -399,7 +418,12 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 						sctx.setStep(step.Name, dsl.StepData{Outputs: dsl.StringOutputs(capturedOutputs)})
 					}
 					if len(capturedOutputs) > 0 {
-						_ = client.SetStepOutputs(stepCtx, agentID, c.RunID, step.Index, step.MatrixKey, capturedOutputs)
+						safe := FilterSecretOutputs(capturedOutputs, masker, func(k string) {
+							warnSkippedOutput(stepCtx, step.Index, k)
+						})
+						if len(safe) > 0 {
+							_ = client.SetStepOutputs(stepCtx, agentID, c.RunID, step.Index, step.MatrixKey, safe)
+						}
 					}
 				}
 			}
@@ -521,13 +545,18 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		}
 	}
 	if len(runOutputs) > 0 {
-		// Retried until success (unlike the pre-refactor host single-shot
-		// call): a transient failure here must not silently drop job outputs,
-		// matching the pre-refactor k8s agent's RetryUntilSuccess wrapping.
-		// Deliberate reconciliation pick — see Task 8 report.
-		retryUntilSuccess(finishCtx, func(callCtx context.Context) error {
-			return client.SetRunOutputs(callCtx, agentID, c.RunID, runOutputs)
+		safeRunOutputs := FilterSecretOutputs(runOutputs, masker, func(k string) {
+			warnSkippedOutput(finishCtx, -1, k)
 		})
+		if len(safeRunOutputs) > 0 {
+			// Retried until success (unlike the pre-refactor host single-shot
+			// call): a transient failure here must not silently drop job outputs,
+			// matching the pre-refactor k8s agent's RetryUntilSuccess wrapping.
+			// Deliberate reconciliation pick — see Task 8 report.
+			retryUntilSuccess(finishCtx, func(callCtx context.Context) error {
+				return client.SetRunOutputs(callCtx, agentID, c.RunID, safeRunOutputs)
+			})
+		}
 	}
 
 	retryUntilSuccess(finishCtx, func(callCtx context.Context) error {
