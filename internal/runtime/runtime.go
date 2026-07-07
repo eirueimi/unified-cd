@@ -35,6 +35,19 @@ type CreateSpec struct {
 	// instead of an undefined working directory. Empty means "no -w flag"
 	// (driver default). See scope.go's scopeWorkDir for the host agent's value.
 	WorkDir string
+	// Mounts are host-path bind mounts (docker `run -v`). Empty means no bind
+	// mounts (an isolated uses-scope container); a named runsIn.container
+	// container sets one mount to share the host workspace.
+	Mounts []Mount
+}
+
+// Mount is a host-path bind mount for a long-lived container: the host
+// directory HostPath is made available inside the container at ContainerPath
+// (docker/podman/Apple container's `run -v host:container`). Used to share the
+// host workspace with a named runsIn.container container.
+type Mount struct {
+	HostPath      string
+	ContainerPath string
 }
 
 // ExecSpec describes one script execution inside a running container.

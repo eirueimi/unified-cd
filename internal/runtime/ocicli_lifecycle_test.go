@@ -92,3 +92,34 @@ func TestOCICLICreateArgv_NoWorkDirWhenEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestOCICLICreateArgv_Mounts(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{
+		Image:   "alpine",
+		WorkDir: "/workspace",
+		Mounts:  []Mount{{HostPath: "/host/ws", ContainerPath: "/workspace"}},
+	})
+	found := false
+	for i, a := range got {
+		if a == "-v" {
+			found = true
+			if i+1 >= len(got) || got[i+1] != "/host/ws:/workspace" {
+				t.Fatalf("expected -v /host/ws:/workspace, argv = %v", got)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected -v in argv, got %v", got)
+	}
+}
+
+func TestOCICLICreateArgv_NoMountsWhenEmpty(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{Image: "alpine"})
+	for _, a := range got {
+		if a == "-v" {
+			t.Fatalf("expected no -v flag when Mounts is empty, argv = %v", got)
+		}
+	}
+}
