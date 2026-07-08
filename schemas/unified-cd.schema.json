@@ -497,7 +497,7 @@
     },
     "RunsIn": {
       "additionalProperties": false,
-      "description": "RunsIn declares the execution context for a step. Image and Container are\nmutually exclusive; both empty (or RunsIn nil) means the default/shared\nenvironment (host process, or the default pod container on k8s).\n\n\timage:     run in a fresh isolated env from this image (host: `\u003crt\u003e run`;\n\t           k8s: a throwaway pod). No workspace is shared — pass inputs via\n\t           with:/env, return outputs via outputs:/stdout.\n\tcontainer: exec into a named container defined in the job's\n\t           podTemplate.spec.containers. Supported on both agents: k8s\n\t           execs into that pod container; the host provisions a\n\t           workspace-bind-mounted container from the same definition\n\t           (single-container MVP: no sidecar networking, and\n\t           host-unsupported podTemplate fields are ignored with a WARN).",
+      "description": "RunsIn declares the execution context for a uses: template entry. It is no\nlonger legal on a plain step (step-level runsIn: was removed; the flat\ncontainer: field is the canonical way to pin a plain step to a podTemplate\ncontainer). On a uses: entry, only the image form is accepted: it declares\nthat the whole inlined template runs in one fresh isolated scope built from\nthis image (host: `\u003crt\u003e run`; k8s: a throwaway pod). No workspace is shared\n— pass inputs via with:/env, return outputs via outputs:/stdout.\nrunsIn.container on a uses: entry is rejected; set container: on the\ntemplate's own steps instead.",
       "properties": {
         "container": {
           "type": "string"
@@ -595,6 +595,10 @@
             "$ref": "#/definitions/StepEntry"
           },
           "type": "array"
+        },
+        "native": {
+          "description": "Native opts the whole job into host-process execution (no claim pod,\nno podTemplate, no container: steps). Host agents only; the default\n(false) is the isolated pod model on both backends.",
+          "type": "boolean"
         },
         "params": {
           "$ref": "#/definitions/Params"

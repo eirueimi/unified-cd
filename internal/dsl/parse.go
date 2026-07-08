@@ -131,12 +131,18 @@ func (j *Job) Validate() error {
 		return fmt.Errorf("spec.steps must contain at least one step")
 	}
 
+	if j.Spec.Native {
+		if j.Spec.PodTemplate != nil {
+			return fmt.Errorf("spec.native: true is incompatible with spec.podTemplate — a native job runs host processes only")
+		}
+	}
+
 	// Collect step names for duplicate detection across steps and finally.
 	nameSet := map[string]bool{}
-	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet, true); err != nil {
+	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet, true, j.Spec.Native); err != nil {
 		return err
 	}
-	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet, false); err != nil {
+	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet, false, j.Spec.Native); err != nil {
 		return err
 	}
 
@@ -197,7 +203,9 @@ func (j *Job) Validate() error {
 // allowDeferredHooks controls whether cache: and post: are permitted; pass
 // false for finally entries because the agent drains postHooks/hookStack
 // BEFORE running finally, so deferred hooks registered there never execute.
-func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[string]bool, allowDeferredHooks bool) error {
+// native mirrors spec.native: when true, no step in this job may set
+// container: (a native job runs host processes only, with no podTemplate).
+func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[string]bool, allowDeferredHooks bool, native bool) error {
 	for i, entry := range entries {
 		if len(entry.Parallel) > 0 {
 			if entry.Name != "" || entry.Run != "" || entry.Call != nil || entry.Uses != nil {
@@ -228,13 +236,12 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				if st.Post != nil && st.Post.Run == "" {
 					return fmt.Errorf("step %q: post.run is required when post is specified", st.Name)
 				}
-				ri, err := normalizeRunsIn(st.Container, st.RunsIn, subPath, st.Name)
-				if err != nil {
+				if err := checkStepExecTarget(st.Container, st.RunsIn, st.Uses != nil, subPath, st.Name); err != nil {
 					return err
 				}
-				st.RunsIn = ri
-				st.Container = ""
-				entry.Parallel[j2] = st
+				if native && st.Container != "" {
+					return fmt.Errorf("%s (%s): container: requires an isolated job — remove spec.native", subPath, st.Name)
+				}
 			}
 		} else {
 			if entry.Name == "" {
@@ -264,39 +271,42 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 			if entry.Post != nil && entry.Post.Run == "" {
 				return fmt.Errorf("step %q: post.run is required when post is specified", entry.Name)
 			}
-			ri, err := normalizeRunsIn(entry.Container, entry.RunsIn, entryPath, entry.Name)
-			if err != nil {
+			if err := checkStepExecTarget(entry.Container, entry.RunsIn, entry.Uses != nil, entryPath, entry.Name); err != nil {
 				return err
 			}
-			entry.RunsIn = ri
-			entry.Container = ""
-			entries[i] = entry
+			if native && entry.Container != "" {
+				return fmt.Errorf("%s (%s): container: requires an isolated job — remove spec.native", entryPath, entry.Name)
+			}
 		}
 	}
 	return nil
 }
 
-// normalizeRunsIn folds the deprecated flat `container:` into RunsIn.Container
-// and rejects conflicting/exclusive combinations. path/name are for error text.
-func normalizeRunsIn(container string, runsIn *RunsIn, path, name string) (*RunsIn, error) {
-	if container != "" && runsIn != nil {
-		return nil, fmt.Errorf("%s (%s): cannot set both container: and runsIn:", path, name)
+// checkStepExecTarget enforces the post-2026-07-08 rules: a plain step may
+// use container: (canonical); step-level runsIn: is removed. A uses: entry
+// may carry runsIn.image (the template's isolated scope) but nothing else.
+func checkStepExecTarget(container string, runsIn *RunsIn, isUses bool, path, name string) error {
+	if runsIn == nil {
+		return nil
+	}
+	if !isUses {
+		return fmt.Errorf("%s (%s): step-level runsIn: is no longer supported — use container: <podTemplate container name>, or move image isolation to the job's podTemplate or a uses: template", path, name)
+	}
+	if runsIn.Container != "" {
+		return fmt.Errorf("%s (%s): runsIn.container is not valid on a uses: step — set container: on the template's steps instead", path, name)
+	}
+	if runsIn.Image == "" {
+		return fmt.Errorf("%s (%s): uses runsIn: requires image:", path, name)
 	}
 	if container != "" {
-		return &RunsIn{Container: container}, nil
+		return fmt.Errorf("%s (%s): cannot set both container: and runsIn:", path, name)
 	}
-	if runsIn != nil && runsIn.Image != "" && runsIn.Container != "" {
-		return nil, fmt.Errorf("%s (%s): runsIn.image and runsIn.container are mutually exclusive", path, name)
-	}
-	if runsIn != nil && runsIn.Resources != nil {
-		if runsIn.Image == "" {
-			return nil, fmt.Errorf("%s (%s): runsIn.resources requires runsIn.image", path, name)
-		}
+	if runsIn.Resources != nil {
 		if err := validateResources(runsIn.Resources); err != nil {
-			return nil, fmt.Errorf("%s (%s): %w", path, name, err)
+			return fmt.Errorf("%s (%s): %w", path, name, err)
 		}
 	}
-	return runsIn, nil
+	return nil
 }
 
 // validateResources parses every non-empty cpu/memory quantity, rejecting

@@ -16,32 +16,34 @@ func parseSteps(t *testing.T, stepsYAML string) *Job {
 	return job
 }
 
-func TestRunsIn_Image(t *testing.T) {
-	job := parseSteps(t, "    - name: build\n      run: go build\n      runsIn:\n        image: golang:1.22\n")
-	ri := job.Spec.Steps[0].RunsIn
-	require.NotNil(t, ri)
-	assert.Equal(t, "golang:1.22", ri.Image)
-	assert.Equal(t, "", ri.Container)
+func TestRunsIn_StepLevelRejected(t *testing.T) {
+	// Step-level runsIn: was removed post-2026-07-08; container: is canonical.
+	input := "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: j\nspec:\n  steps:\n    - name: build\n      run: go build\n      runsIn:\n        image: golang:1.22\n"
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "runsIn")
+	assert.Contains(t, err.Error(), "container:")
 }
 
-func TestRunsIn_FlatContainerNormalized(t *testing.T) {
+func TestRunsIn_FlatContainerStillWorks(t *testing.T) {
 	job := parseSteps(t, "    - name: build\n      run: go build\n      container: job\n")
-	ri := job.Spec.Steps[0].RunsIn
-	require.NotNil(t, ri)
-	assert.Equal(t, "job", ri.Container)
-	assert.Equal(t, "", job.Spec.Steps[0].Container, "flat container must be cleared after normalization")
+	assert.Equal(t, "job", job.Spec.Steps[0].Container)
+	assert.Nil(t, job.Spec.Steps[0].RunsIn)
 }
 
 func TestRunsIn_ImageAndContainerMutuallyExclusive(t *testing.T) {
-	input := "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: j\nspec:\n  steps:\n    - name: s\n      run: x\n      runsIn:\n        image: golang:1.22\n        container: job\n"
+	// Mutual exclusion now applies to a uses: entry's runsIn.
+	input := "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: j\nspec:\n  steps:\n    - name: s\n      uses: { job: \"git://example.com/x/tpl.yaml@main\" }\n      runsIn:\n        image: golang:1.22\n        container: job\n"
 	_, err := Parse(strings.NewReader(input))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "runsIn.image and runsIn.container are mutually exclusive")
+	assert.Contains(t, err.Error(), "runsIn.container")
 }
 
 func TestRunsIn_FlatAndRunsInConflict(t *testing.T) {
 	input := "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: j\nspec:\n  steps:\n    - name: s\n      run: x\n      container: job\n      runsIn:\n        image: golang:1.22\n"
 	_, err := Parse(strings.NewReader(input))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot set both container: and runsIn:")
+	// plain step: step-level runsIn: is rejected outright before the
+	// container conflict would even be considered.
+	assert.Contains(t, err.Error(), "runsIn")
 }

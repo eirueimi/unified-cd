@@ -40,6 +40,9 @@
 cancellation. Same structure as Steps. A finally step's `if:` defaults to
 always-run; use if: failure()/success() to filter. A finally step that
 fails marks the run Failed (after all finally steps run). |
+| `native` | boolean | no | Native opts the whole job into host-process execution (no claim pod,
+no podTemplate, no container: steps). Host agents only; the default
+(false) is the isolated pod model on both backends. |
 | `params` | Params | yes |  |
 | `podTemplate` | PodTemplate | no |  |
 | `steps` | []StepEntry | yes | Steps is the main DAG of steps to execute.
@@ -209,19 +212,15 @@ Executed in LIFO order after RunDAG completes.
 
 ### RunsIn
 
-RunsIn declares the execution context for a step. Image and Container are
-mutually exclusive; both empty (or RunsIn nil) means the default/shared
-environment (host process, or the default pod container on k8s).
-
-	image:     run in a fresh isolated env from this image (host: `<rt> run`;
-	           k8s: a throwaway pod). No workspace is shared — pass inputs via
-	           with:/env, return outputs via outputs:/stdout.
-	container: exec into a named container defined in the job's
-	           podTemplate.spec.containers. Supported on both agents: k8s
-	           execs into that pod container; the host provisions a
-	           workspace-bind-mounted container from the same definition
-	           (single-container MVP: no sidecar networking, and
-	           host-unsupported podTemplate fields are ignored with a WARN).
+RunsIn declares the execution context for a uses: template entry. It is no
+longer legal on a plain step (step-level runsIn: was removed; the flat
+container: field is the canonical way to pin a plain step to a podTemplate
+container). On a uses: entry, only the image form is accepted: it declares
+that the whole inlined template runs in one fresh isolated scope built from
+this image (host: `<rt> run`; k8s: a throwaway pod). No workspace is shared
+— pass inputs via with:/env, return outputs via outputs:/stdout.
+runsIn.container on a uses: entry is rejected; set container: on the
+template's own steps instead.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
