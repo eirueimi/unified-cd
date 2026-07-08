@@ -147,7 +147,11 @@ func TestClaimPod_Integration_SidecarLocalhostAndWorkspace(t *testing.T) {
 			}},
 			{Step: &api.ClaimStep{
 				Index: 2, StageIndex: 2, Name: "fetch-via-localhost",
-				Run: "wget -qO- http://localhost:12080/hello.txt | grep hello " +
+				// httpd (step 2) may not have bound port 12080 yet when this
+				// step starts executing; retry briefly instead of racing the
+				// bind (avoids a rare flake where the first request loses
+				// the race and the step fails on a healthy setup).
+				Run: "for i in $(seq 1 20); do wget -qO- http://localhost:12080/hello.txt && break; sleep 0.5; done | grep hello " +
 					"&& echo \"UNIFIED_AGENT_OS=$UNIFIED_AGENT_OS\"",
 			}},
 		},
@@ -202,9 +206,14 @@ func TestClaimPod_Integration_ConcurrentClaimsNoPortCollision(t *testing.T) {
 			Stages: []api.ClaimStage{
 				{Step: &api.ClaimStep{
 					Index: 0, StageIndex: 0, Name: "serve-and-wait",
+					// httpd daemonizes (forks to background) and returns
+					// immediately, so the very first wget can race the
+					// listener bind; retry briefly instead of asserting on
+					// a single attempt (avoids a rare flake on a healthy
+					// setup).
 					Run: "mkdir -p /workspace/www && echo ok > /workspace/www/ok.txt && " +
 						"httpd -p 12080 -h /workspace/www && " +
-						"wget -qO- http://localhost:12080/ok.txt | grep ok",
+						"for i in $(seq 1 20); do wget -qO- http://localhost:12080/ok.txt && break; sleep 0.5; done | grep ok",
 				}},
 			},
 		}

@@ -22,11 +22,12 @@ import (
 // behavior). It is a var (not a const) so tests can shorten it.
 var stderrAutoFlushInterval = 2 * time.Second
 
-// imagePodStartTimeout bounds how long runImageStep waits for a throwaway
-// image pod to reach Running. Under RestartPolicy: Never a pod stuck in
-// Pending/ImagePullBackOff never transitions to Failed, so without a bound
-// the wait would hang until the whole run is cancelled. This gives a bad
-// image a fast, explicit failure instead.
+// imagePodStartTimeout bounds how long ensureScopePod (k8sBackend, backend.go)
+// waits for a throwaway uses-scope pod to reach Running. Under
+// RestartPolicy: Never a pod stuck in Pending/ImagePullBackOff never
+// transitions to Failed, so without a bound the wait would hang until the
+// whole run is cancelled. This gives a bad image a fast, explicit failure
+// instead.
 const imagePodStartTimeout = 5 * time.Minute
 
 // podManager and stepExecutor are the narrow slices of *PodManager / *Executor

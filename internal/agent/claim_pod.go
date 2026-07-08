@@ -101,8 +101,17 @@ const primaryContainerName = "job"
 // podTemplate order, injecting the default runner as the "job" (primary)
 // container when the template does not define one. A nil podTemplate yields
 // just the injected primary — the host twin of k8s defaultPodSpec.
+//
+// A podTemplate with two containers sharing the same name is malformed, but
+// is not rejected at apply time (k8s itself would reject it as a Pod spec,
+// but the host agent parses the raw map itself). Rather than silently
+// letting a later duplicate overwrite an earlier container's handle (which
+// would leak the first container — started, but no longer reachable via
+// Exec's name lookup, and never torn down by name), the first definition
+// for a given name wins and every later duplicate is dropped with a WARN.
 func claimContainerDefs(pt *dsl.PodTemplate, runnerImage string) []containerDef {
 	var defs []containerDef
+	seen := map[string]bool{}
 	if pt != nil {
 		containers, _ := pt.Spec["containers"].([]any)
 		for _, raw := range containers {
@@ -114,6 +123,11 @@ func claimContainerDefs(pt *dsl.PodTemplate, runnerImage string) []containerDef 
 			if name == "" {
 				continue
 			}
+			if seen[name] {
+				slog.Warn("podTemplate has more than one container with the same name; keeping the first and dropping the duplicate", "container", name)
+				continue
+			}
+			seen[name] = true
 			defs = append(defs, parseContainerDef(name, c))
 		}
 	}

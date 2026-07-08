@@ -47,3 +47,15 @@ func TestRunsIn_FlatAndRunsInConflict(t *testing.T) {
 	// container conflict would even be considered.
 	assert.Contains(t, err.Error(), "runsIn")
 }
+
+// TestRunsIn_UsesContainerAndRunsInConflict covers checkStepExecTarget's
+// uses-entry branch: unlike a plain step (rejected outright above), a uses:
+// entry may legally carry container: doesn't apply to it — instead
+// container: alongside runsIn: on the same uses: entry hits the
+// "cannot set both container: and runsIn:" branch specifically.
+func TestRunsIn_UsesContainerAndRunsInConflict(t *testing.T) {
+	input := "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: j\nspec:\n  steps:\n    - name: s\n      uses: { job: \"git://example.com/x/tpl.yaml@main\" }\n      container: job\n      runsIn:\n        image: golang:1.22\n"
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot set both container: and runsIn:")
+}

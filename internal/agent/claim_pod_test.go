@@ -154,6 +154,25 @@ func TestClaimContainerDefs_JobPresentNotDuplicated(t *testing.T) {
 	assert.Equal(t, "golang:1.22", defs[0].Image)
 }
 
+// TestClaimContainerDefs_DuplicateNameKeepsFirst covers a malformed
+// podTemplate that defines two containers with the same name: the first
+// definition wins (deterministic) and the later duplicate is dropped with a
+// WARN, rather than silently overwriting the earlier container's handle.
+func TestClaimContainerDefs_DuplicateNameKeepsFirst(t *testing.T) {
+	pt := &dsl.PodTemplate{Spec: map[string]any{
+		"containers": []any{
+			map[string]any{"name": "tools", "image": "node:18"},
+			map[string]any{"name": "tools", "image": "node:20"},
+		},
+	}}
+	defs := claimContainerDefs(pt, "runner:img")
+	// tools (first def kept) + injected "job" primary.
+	require.Len(t, defs, 2)
+	assert.Equal(t, "tools", defs[0].Name)
+	assert.Equal(t, "node:18", defs[0].Image, "first definition for a duplicate name must win")
+	assert.Equal(t, containerDef{Name: "job", Image: "runner:img"}, defs[1])
+}
+
 // TestParseContainerDef_WarnsOnUnsupportedField documents (via absence of a
 // panic/error — WARN is a log side effect) that unsupported podTemplate
 // container fields are ignored rather than rejected. This is exercised
