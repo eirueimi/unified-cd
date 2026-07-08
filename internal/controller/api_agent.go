@@ -113,7 +113,21 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 		if claimed != nil {
 			resp, cerr := buildClaimResponse(claimed)
 			if cerr != nil {
-				http.Error(w, cerr.Error(), http.StatusInternalServerError)
+				// ClaimNextRun already flipped this run to Running in the same SQL
+				// statement, so leaving it as-is here would strand it Running forever:
+				// the claiming agent is alive and heartbeating, so ListStuckRunIDs'
+				// last_seen_at predicate would never select it for reaping. cerr is
+				// deterministic (buildClaimResponse is pure computation over the
+				// already-stored spec bytes — e.g. the pre-migration runsIn guard),
+				// so retrying the claim can never succeed either; fail fast now rather
+				// than treat it as a transient error.
+				if _, logErr := s.store.AppendLog(r.Context(), claimed.ID, -1, "stderr", time.Now().UTC(), cerr.Error()); logErr != nil {
+					slog.Error("agent claim: append claim-build failure reason", "runId", claimed.ID, "error", logErr)
+				}
+				if failErr := failOrphanedRun(r.Context(), s.store, claimed.ID); failErr != nil {
+					slog.Error("agent claim: mark failed after claim build error", "runId", claimed.ID, "error", failErr)
+				}
+				writeJSON(w, http.StatusOK, api.ClaimResponse{})
 				return
 			}
 			resp.MatrixMaxCombinations = s.cfg.MatrixMaxCombinations

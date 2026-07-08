@@ -338,6 +338,52 @@ func TestAgentAPI_ClaimResponse_CollectsSecretsNeeded(t *testing.T) {
 	assert.Equal(t, `{{ secrets.AWS_ACCESS_KEY_ID }}`, got.Stages[0].Step.Env["AWS_KEY"])
 }
 
+// TestAgentAPI_Claim_FailsRunWhenBuildClaimResponseErrors verifies the fix for
+// the "stranded Running" bug: when a run's stored spec fails buildClaimResponse
+// (e.g. a pre-migration step-level runsIn:), ClaimNextRun has already flipped
+// the run to Running in the same SQL statement, and the claiming agent is
+// alive and heartbeating — so ListStuckRunIDs' last_seen_at predicate would
+// never select it for reaping and it would sit Running forever. The handler
+// must instead fail the run immediately (buildClaimResponse errors are
+// deterministic, so there is nothing to retry), log the reason on the run,
+// and hand the agent an empty claim so it just keeps polling.
+func TestAgentAPI_Claim_FailsRunWhenBuildClaimResponseErrors(t *testing.T) {
+	s, pg := newTestServer(t)
+	specJSON := []byte(`{"steps":[{"name":"compile","run":"go build ./...","runsIn":{"image":"golang:1.22"}}]}`)
+	_, _ = pg.UpsertJob(t.Context(), "legacy-job", "unified-cd/v1", specJSON)
+	run, _ := pg.CreateRun(t.Context(), "legacy-job", nil, specJSON, nil, "")
+	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=2s", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var got api.ClaimResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Empty(t, got.RunID, "claim response must be empty so the agent just keeps polling")
+
+	updated, err := pg.GetRun(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunFailed, updated.Status, "run must be Failed, not left stranded Running")
+
+	lines, err := pg.TailLogs(context.Background(), run.ID, 0, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, lines)
+	found := false
+	for _, l := range lines {
+		if l.StepIndex == -1 && l.Stream == "stderr" && strings.Contains(l.Line, "re-apply") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a stepIndex -1 System log line with the migration hint, got: %+v", lines)
+
+	// Lock release on failure is exercised and asserted by failOrphanedRun's own
+	// tests (stuckrun_reaper_test.go); not re-verified here to avoid duplicating
+	// that scaffolding.
+}
+
 func TestAgentAPI_LogBulk(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
