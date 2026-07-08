@@ -244,14 +244,11 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 		}
 		clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
 		if err := prepareWorkspace(runCtx, workDir, mode, clean, a.containerRuntime); err != nil {
-			slog.Error("prepare workspace failed", "dir", workDir, "error", err, "runId", resp.RunID)
 			// The claim is ours but its workspace could not be prepared, so the
 			// run can never start. Fail it on the controller (retried until it
 			// lands) rather than leaving it Running until the stuck-run reaper
 			// trips — the same failure path executeRun uses.
-			retryUntilSuccess(runCtx, func(cc context.Context) error {
-				return a.Client.FinishRun(cc, a.ID, resp.RunID, api.RunFailed)
-			})
+			a.failRun(runCtx, resp.RunID, fmt.Sprintf("prepare workspace failed: %v", err))
 			continue
 		}
 		a.executeRun(runCtx, resp, workDir)
@@ -274,10 +271,7 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 // output promotion, FinishRun — is delegated to RunClaim via hostBackend.
 func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir string) {
 	failClaim := func(msg string, err error) {
-		slog.Error(msg, "runId", c.RunID, "error", err)
-		retryUntilSuccess(ctx, func(cc context.Context) error {
-			return a.Client.FinishRun(cc, a.ID, c.RunID, api.RunFailed)
-		})
+		a.failRun(ctx, c.RunID, fmt.Sprintf("%s: %v", msg, err))
 	}
 
 	var pod *claimPodManager
@@ -296,6 +290,30 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}
 	backend := newHostBackend(a, c.RunID, workDir, pod)
 	RunClaim(ctx, a.Client, a.ID, c, backend)
+}
+
+// failRun fails a claim that could not even begin executing (workspace
+// preparation failed, the isolated job's container runtime is missing, or its
+// claim pod failed to start). reason is surfaced into the run's own logs
+// (stepIndex -1, rendered as "System" in the UI) via AppendLogBulk — the same
+// mechanism the orchestrator's warnSkippedOutput uses (see
+// internal/agent/orchestrator.go) — before FinishRun(Failed), so the actual
+// cause isn't limited to the agent's local slog. Both calls are best-effort /
+// retried-until-success respectively: the log line is fire-and-forget (a
+// missing system log line must not block failing the run), while FinishRun is
+// retried until it lands so the run never sits stuck as Running.
+func (a *Agent) failRun(ctx context.Context, runID, reason string) {
+	slog.Error(reason, "runId", runID)
+	_ = a.Client.AppendLogBulk(ctx, a.ID, runID, -1, []api.LogAppendRequest{{
+		RunID:     runID,
+		StepIndex: -1,
+		Stream:    "stderr",
+		Timestamp: time.Now().UTC(),
+		Line:      reason,
+	}})
+	retryUntilSuccess(ctx, func(cc context.Context) error {
+		return a.Client.FinishRun(cc, a.ID, runID, api.RunFailed)
+	})
 }
 
 // resolveScope returns the ScopeHandle for a scoped step's cache/artifact
