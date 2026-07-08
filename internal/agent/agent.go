@@ -214,7 +214,6 @@ func (a *Agent) Run(ctx context.Context) error {
 
 // runLoop runs the claim loop for a single slot.
 func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string) {
-	workDir := filepath.Join(wsBase, fmt.Sprintf("working%d", slot))
 	for {
 		if claimCtx.Err() != nil {
 			return
@@ -232,13 +231,16 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 		if resp.RunID == "" {
 			continue
 		}
-		if a.CleanWorkspace {
-			if err := os.RemoveAll(workDir); err != nil {
-				slog.Warn("clean workspace failed", "dir", workDir, "error", err)
-			}
-			if err := os.MkdirAll(workDir, 0o755); err != nil {
-				slog.Warn("recreate workspace failed", "dir", workDir, "error", err)
-			}
+		workDir := claimWorkDir(wsBase, slot, resp.JobName)
+		mode := "isolated"
+		if resp.Native {
+			mode = "native"
+		}
+		clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
+		if err := prepareWorkspace(runCtx, workDir, mode, clean, a.containerRuntime); err != nil {
+			slog.Error("prepare workspace failed", "dir", workDir, "error", err)
+			// TODO(task-7): report run failure to the controller
+			continue
 		}
 		a.executeRun(runCtx, resp, workDir)
 	}

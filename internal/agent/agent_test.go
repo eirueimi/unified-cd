@@ -260,10 +260,11 @@ func TestAgent_CleanWorkspace(t *testing.T) {
 	// Verify that when CleanWorkspace=true, the workspace is recreated before each run.
 	// Place a sentinel file and have the run's step confirm its absence.
 	wsDir := t.TempDir()
-	slot0 := filepath.Join(wsDir, "working0")
-	require.NoError(t, os.MkdirAll(slot0, 0o755))
+	// claimResp sets JobName "test", so the per-job workDir is working0/test.
+	jobDir := filepath.Join(wsDir, "working0", "test")
+	require.NoError(t, os.MkdirAll(jobDir, 0o755))
 	// sentinel: a file that should be deleted by CleanWorkspace
-	require.NoError(t, os.WriteFile(filepath.Join(slot0, "sentinel.txt"), []byte("dirty"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(jobDir, "sentinel.txt"), []byte("dirty"), 0o644))
 
 	// step: exit 1 if sentinel exists (test failure), exit 0 otherwise
 	stepScript := "test ! -f sentinel.txt"
