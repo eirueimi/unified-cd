@@ -39,6 +39,12 @@ type CreateSpec struct {
 	// mounts (an isolated uses-scope container); a named runsIn.container
 	// container sets one mount to share the host workspace.
 	Mounts []Mount
+	// NetworkContainer joins the created container into another container's
+	// network namespace (docker/podman/nerdctl `--network container:<id>`).
+	// Used by the host agent's claim pod: every claim container joins the
+	// pause container's netns so sidecars are reachable on localhost,
+	// mirroring a k8s pod. Empty = default network.
+	NetworkContainer string
 }
 
 // Mount is a host-path bind mount for a long-lived container: the host

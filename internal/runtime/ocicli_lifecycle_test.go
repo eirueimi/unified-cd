@@ -5,7 +5,10 @@ import (
 	"context"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // noopCmd returns a command that is guaranteed to exist and exit 0 on every
@@ -134,4 +137,22 @@ func TestOCICLICreateArgv_NoMountsWhenEmpty(t *testing.T) {
 			t.Fatalf("expected no -v flag when Mounts is empty, argv = %v", got)
 		}
 	}
+}
+
+// TestCreateArgs_NetworkContainer is the regression test for job isolation:
+// the claim pod's per-job containers must join the pause container's netns
+// (docker/podman/nerdctl `--network container:<id>`) so sidecars are
+// reachable on localhost, mirroring a k8s pod's shared network namespace.
+func TestCreateArgs_NetworkContainer(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	args := r.createArgs(CreateSpec{Image: "busybox", NetworkContainer: "abc123"})
+	assert.Contains(t, strings.Join(args, " "), "--network container:abc123")
+}
+
+// TestCreateArgs_NoNetworkByDefault confirms empty NetworkContainer omits
+// --network entirely (preserves prior behavior / driver default).
+func TestCreateArgs_NoNetworkByDefault(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	args := r.createArgs(CreateSpec{Image: "busybox"})
+	assert.NotContains(t, strings.Join(args, " "), "--network")
 }

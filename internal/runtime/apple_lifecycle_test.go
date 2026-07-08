@@ -1,7 +1,11 @@
 // internal/runtime/apple_lifecycle_test.go
 package runtime
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestAppleSatisfiesInterface(t *testing.T) {
 	var _ ContainerRuntime = &appleContainer{}
@@ -53,5 +57,21 @@ func TestAppleCreateArgv_Mounts(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected -v /host/ws:/workspace, argv = %v", got)
+	}
+}
+
+// TestAppleCreate_RejectsNetworkContainer confirms Apple's `container` CLI
+// cannot join another container's netns (no --network container:<id>
+// equivalent), so the claim pod's per-job containers require
+// docker/podman/nerdctl. Create must fail fast with an explanatory error
+// instead of silently ignoring NetworkContainer.
+func TestAppleCreate_RejectsNetworkContainer(t *testing.T) {
+	a := &appleContainer{}
+	_, err := a.Create(context.Background(), CreateSpec{Image: "alpine", NetworkContainer: "abc123"})
+	if err == nil {
+		t.Fatalf("expected error when NetworkContainer is set, got nil")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("expected error to mention 'not supported', got %q", err.Error())
 	}
 }

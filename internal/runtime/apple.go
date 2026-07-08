@@ -82,6 +82,9 @@ func (a *appleContainer) createArgs(spec CreateSpec) []string {
 }
 
 func (a *appleContainer) Create(ctx context.Context, spec CreateSpec) (ContainerHandle, error) {
+	if spec.NetworkContainer != "" {
+		return ContainerHandle{}, fmt.Errorf("apple container: joining another container's network namespace is not supported (claim pod requires docker/podman/nerdctl)")
+	}
 	args := a.createArgs(spec)
 	out, err := execCommand(ctx, "container", args...).Output()
 	if err != nil {

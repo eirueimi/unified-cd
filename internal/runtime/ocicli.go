@@ -81,6 +81,9 @@ func (r *ociCLI) createArgs(spec CreateSpec) []string {
 	for _, m := range spec.Mounts {
 		args = append(args, "-v", m.HostPath+":"+m.ContainerPath)
 	}
+	if spec.NetworkContainer != "" {
+		args = append(args, "--network", "container:"+spec.NetworkContainer)
+	}
 	for _, e := range spec.Env {
 		args = append(args, "-e", e)
 	}
