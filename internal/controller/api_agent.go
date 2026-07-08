@@ -145,6 +145,13 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 		return api.ClaimResponse{}, err
 	}
 
+	if err := rejectPreMigrationRunsIn(c.JobName, spec.Steps); err != nil {
+		return api.ClaimResponse{}, err
+	}
+	if err := rejectPreMigrationRunsIn(c.JobName, spec.Finally); err != nil {
+		return api.ClaimResponse{}, err
+	}
+
 	resp := api.ClaimResponse{
 		RunID:          c.ID,
 		JobName:        c.JobName,
@@ -168,6 +175,34 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 		resp.SecretsNeeded = append(resp.SecretsNeeded, name)
 	}
 	return resp, nil
+}
+
+// rejectPreMigrationRunsIn guards against a job that was applied before the
+// 2026-07-08 job-isolation release, whose stored spec JSON may still carry a
+// step-level runsIn: (image/container) on a non-uses step. Step-level
+// runsIn: was removed from the DSL (see dsl.checkStepExecTarget); apply-time
+// validation now rejects it on new applies, but a job stored before the
+// migration was never re-validated, so its persisted JSON can still contain
+// the removed field. buildOneClaimStep has no wire field for it, so without
+// this guard the step would silently run on the default runner/container
+// instead of the image/container the job author declared — a silent
+// semantic drift. A uses: entry's runsIn.image is still legal (validated at
+// apply time) and is intentionally not re-checked here.
+func rejectPreMigrationRunsIn(jobName string, entries []dsl.StepEntry) error {
+	for _, entry := range entries {
+		if len(entry.Parallel) > 0 {
+			for _, st := range entry.Parallel {
+				if st.RunsIn != nil && st.Uses == nil {
+					return fmt.Errorf("job %q: step %q uses the removed step-level runsIn: — re-apply the job after migrating to container: (see docs/migration-2026-07-job-isolation.md)", jobName, st.Name)
+				}
+			}
+			continue
+		}
+		if entry.RunsIn != nil && entry.Uses == nil {
+			return fmt.Errorf("job %q: step %q uses the removed step-level runsIn: — re-apply the job after migrating to container: (see docs/migration-2026-07-job-isolation.md)", jobName, entry.Name)
+		}
+	}
+	return nil
 }
 
 // buildStages compiles a list of StepEntry into ClaimStages, advancing the

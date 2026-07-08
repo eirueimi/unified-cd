@@ -466,6 +466,71 @@ func TestBuildClaimResponse_ThreadsNative(t *testing.T) {
 	assert.True(t, resp.Native)
 }
 
+// TestBuildClaimResponse_RejectsPreMigrationStepRunsIn verifies a job stored
+// before the 2026-07-08 job-isolation release (whose persisted spec JSON
+// still carries the removed step-level runsIn: on a non-uses step) fails
+// claim building with an actionable error instead of silently dropping the
+// field and running the step on the default runner/container.
+func TestBuildClaimResponse_RejectsPreMigrationStepRunsIn(t *testing.T) {
+	spec := dsl.Spec{Steps: []dsl.StepEntry{
+		{Name: "compile", Run: "go build ./...", RunsIn: &dsl.RunsIn{Image: "golang:1.22"}},
+	}}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "runsIn")
+	assert.Contains(t, err.Error(), "re-apply")
+}
+
+// TestBuildClaimResponse_RejectsPreMigrationParallelStepRunsIn verifies the
+// same guard also walks parallel: sub-steps, not just top-level steps.
+func TestBuildClaimResponse_RejectsPreMigrationParallelStepRunsIn(t *testing.T) {
+	spec := dsl.Spec{Steps: []dsl.StepEntry{
+		{Parallel: []dsl.Step{
+			{Name: "a", Run: "echo a"},
+			{Name: "b", Run: "echo b", RunsIn: &dsl.RunsIn{Container: "mysql"}},
+		}},
+	}}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "runsIn")
+	assert.Contains(t, err.Error(), "re-apply")
+}
+
+// TestBuildClaimResponse_RejectsPreMigrationFinallyStepRunsIn verifies the
+// guard also walks spec.Finally, not just spec.Steps.
+func TestBuildClaimResponse_RejectsPreMigrationFinallyStepRunsIn(t *testing.T) {
+	spec := dsl.Spec{
+		Steps: []dsl.StepEntry{{Name: "build", Run: "make build"}},
+		Finally: []dsl.StepEntry{
+			{Name: "cleanup", Run: "make clean", RunsIn: &dsl.RunsIn{Image: "alpine:3"}},
+		},
+	}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "runsIn")
+	assert.Contains(t, err.Error(), "re-apply")
+}
+
+// TestBuildClaimResponse_UsesStepRunsInStillBuilds verifies a uses: entry's
+// runsIn.image (validated at apply time, still legal today) is not
+// re-rejected by the pre-migration guard.
+func TestBuildClaimResponse_UsesStepRunsInStillBuilds(t *testing.T) {
+	spec := dsl.Spec{Steps: []dsl.StepEntry{
+		{Name: "build-in-image", Uses: &dsl.UsesStep{Job: "git://example.com/tpl.yaml"}, RunsIn: &dsl.RunsIn{Image: "golang:1.22"}},
+	}}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	require.NoError(t, err)
+	require.Len(t, resp.Stages, 1)
+}
+
 // TestBuildClaimResponse_StepContainerThreaded verifies a step's container:
 // exec target is threaded onto the ClaimStep (the sole exec-target field on
 // the wire type).
