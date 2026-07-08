@@ -132,7 +132,7 @@ CLI / Browser / Webhook
 ```
 
 - **Controller** — stateless HTTP server; schedules and dispatches jobs; manages all resources
-- **Agent** — connects to controller via long-polling; executes job steps in a workspace directory
+- **Agent** — connects to controller via long-polling; executes job steps in a per-job workspace directory. Jobs are isolated by default: each claim runs inside a container ("claim pod": a pause container + `podTemplate` sidecars sharing one network namespace), the same model as the k8s-agent's real Pod. Jobs that need the host itself opt out with `spec.native: true` — see [Job Isolation](docs/jobs.md#job-isolation-native-and-the-claim-pod).
 - **k8s-agent** — Kubernetes-native agent; creates a Pod per job and exec's steps inside it
 - **CLI** — `unified-cli` — apply YAML, trigger runs, stream logs, manage secrets and tokens
 
@@ -160,6 +160,7 @@ CLI / Browser / Webhook
 - **[Audit Log Guide](docs/audit.md)** — what's recorded/excluded, `GET /api/v1/audit`, `audit list`, retention
 - **[Frontend Development Guide](docs/frontend-development.md)** — Svelte + Vite setup, hot reload, routing
 - **[Troubleshooting](docs/troubleshooting.md)** — symptom-indexed fixes for common failures
+- **[Migration: job-level isolation](docs/migration-2026-07-job-isolation.md)** — upgrading to isolated-by-default jobs, `native: true`, and the removal of step-level `runsIn:`
 
 ### Infrastructure
 - **[Kubernetes Manifests](manifests/README.md)** — install manifests for production and evaluation

@@ -66,7 +66,8 @@
 
 ### 9. ワークスペースがラン間で掃除されず再利用される
 
-- 別ジョブ・別ランでも `working0` が使い回され、前のランのファイルが残留するのを確認。`--clean-workspace` フラグ(オプトイン)は存在する。デフォルト挙動としてよいかの判断と、ジョブ間の情報漏えいリスク(シークレットを書いたファイル等)の文書化が必要。
+- **状態: 別ジョブ間の漏えいは 2026-07-08 のジョブ単位分離実装で解消。** `working<slot>` 配下にジョブ名でサブディレクトリを切る(`working<slot>/<sanitized-job-name>`)ようになり、別ジョブが同じスロットを使い回してもファイルが混ざらなくなった(`internal/agent/workspace.go`)。加えてジョブ単位の `podTemplate.cleanWorkspace: true`(エージェント全体の `--clean-workspace` と OR)、モードが native/isolated で切り替わった際の自動ディレクトリリセット(`.ucd-mode` マーカー)も追加。詳細: `docs/agents.md`(Workspace lifecycle)。
+- **残る論点(同一ジョブ内の carry-over):** 同一ジョブの連続ランでは引き続きデフォルトでファイルが持ち越される(意図的な既定動作 — carry-over)。シークレットを書き込むジョブは `--clean-workspace` / `podTemplate.cleanWorkspace: true` を有効化するか `finally:` で消すこと。この情報漏えいリスクの文書化は `docs/agents.md` に記載済み。
 
 ### 9b. エージェントのワークスペース位置が `~/workspace` にハードコード
 
@@ -292,11 +293,11 @@
 ### 35. テストの正しさ・網羅性のギャップ
 
 - **タウトロジーなテスト:** `internal/agent/heartbeat_test.go:33` の条件 `!= got && < got` は `hits` が単調増加のため**永久に成立せず**、キャンセル後に heartbeat が止まる保証を何も検証していない(`edee77c`)。
-- **目玉機能の分岐が未テスト:** ①runsIn の image/container ディスパッチ分岐が両エージェントとも未カバー(リーフ関数のみ、条件反転しても全テスト通過)②AppSource の再キー/prune/孤児化の移行パス(#25)③matrix の `GetStepOutputs` が variant を last-wins で潰す件(現状本番呼び出し元なしだが将来の地雷、`postgres.go:901`)④アーティファクト名トラバーサル(#26)⑤人向けアーティファクトダウンロードの非エージェント認証パス。
+- **目玉機能の分岐が未テスト:** ①AppSource の再キー/prune/孤児化の移行パス(#25)②matrix の `GetStepOutputs` が variant を last-wins で潰す件(現状本番呼び出し元なしだが将来の地雷、`postgres.go:901`)③アーティファクト名トラバーサル(#26)④人向けアーティファクトダウンロードの非エージェント認証パス。(旧①「runsIn の image/container ディスパッチ分岐が両エージェントとも未カバー」は 2026-07-08 のジョブ単位分離実装で該当コード自体(`RunImage`/`buildImageStepPod`)が削除されたため解消 — 新しい claim pod / `container:` ディスパッチは専用のユニット・統合・パリティテストでカバー済み。詳細: `docs/superpowers/specs/2026-07-08-job-isolation-design.md`)
 - **CLI テストが HTTP メソッド未検証:** `captureTransport` が path/body のみ記録し GET/POST 取り違えを検知不能。appsource 系・一部 run 系に非 2xx テストも欠落。
 - **`http.NewRequest` のエラー握り潰し:** 新 CLI コマンド全般で `req, _ :=` により不正 URL 時に `Do(nil)` で nil パニック(`jobs.go:40` 他)。
 - **参考(正しく機能しているもの):** SSE 単一初期化回帰テスト(`66faecf`)は本物、matrix のデータ競合修正は CI の `-race` で検証済み、Windows Job Object のプロセスツリー kill、store 共有 Postgres コンテナの分離、RBAC の拒否パス・per-route ロール・監査ログ(シークレット非記録・apply/delete 発火)、PAT ロール clamp、AppSource dedupe(決定的・ログ出力)などは実挙動を検証できている。
-- **実装:** heartbeat タウトロジーを実 assert に書き換え、CLI の `captureTransport` にメソッド記録+検証追加、全 CLI コマンドの `http.NewRequest` エラー握り潰しを修正。runsIn ディスパッチ/matrix GetStepOutputs/人向けDL認証の網羅は follow-up 候補として残置。
+- **実装:** heartbeat タウトロジーを実 assert に書き換え、CLI の `captureTransport` にメソッド記録+検証追加、全 CLI コマンドの `http.NewRequest` エラー握り潰しを修正。matrix GetStepOutputs/人向けDL認証の網羅は follow-up 候補として残置(runsIn ディスパッチは上記のとおり解消)。
 
 ### 36. 親ジョブのキャンセルが子ジョブ(call: ステップ)に伝播しない
 

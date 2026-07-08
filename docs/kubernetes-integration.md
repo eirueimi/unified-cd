@@ -35,16 +35,22 @@ seam) — only the execution backend differs per agent. The remaining intentiona
 
 - **Execution order** — `matrix:`/`foreach:` combinations and `parallel:` groups run
   **sequentially** inside the Pod (the standard agent runs them in parallel goroutines).
-- **`runsIn.container`** — supported on both agents. On k8s it execs into the named
-  container of the job Pod. On the standard agent it provisions a container from the
-  same `podTemplate.spec.containers` entry, bind-mounting the job workspace into it so
-  cache/artifacts/outputs are shared with the rest of the run; see the
-  [`runsIn` field reference](resources.md#runsincontainer-on-the-standard-agent-mvp-limits)
-  for its single-container MVP limits (no sidecar networking; host-unsupported
-  `podTemplate` fields such as a PVC workspace, extra pod-spec, `command`, or non-literal
-  env are ignored with a WARN).
-- **`runsIn.resources.requests`** — applied only here (docker has no request concept; the
-  standard agent maps limits only).
+- **`container:`** — supported on both agents as the canonical way to target a named
+  `podTemplate` container. On k8s it execs into the named container of the job Pod. On
+  the standard agent it execs into the corresponding container of the claim pod (see
+  [Job Isolation: `native` and the claim
+  pod](jobs.md#job-isolation-native-and-the-claim-pod)); host-unsupported `podTemplate`
+  fields (a PVC workspace, extra pod-spec, `command`, or non-literal env) are ignored
+  with a WARN rather than applied. Unlike k8s, the standard agent's claim-pod containers
+  share one network namespace (via the pause container), so — unlike the old MVP
+  single-container form this replaces — sidecars **are** reachable at `localhost` from
+  every claim-pod container, matching k8s.
+- **Resource `requests`** (`podTemplate.spec.containers[].resources.requests`) — applied
+  only here (docker/podman/nerdctl have no request concept; the standard agent maps
+  `resources.limits` only).
+- **`native: true`** — host-only. A `native: true` job claimed by the k8s-agent fails the
+  run immediately with a clear error; route native jobs away from k8s-agents (and to host
+  agents) via `agentSelector`.
 - **No drain window** — on shutdown the k8s agent stops immediately (in-flight runs are
   recovered by the startup reconcile / stuck-run reaper); the standard agent drains in-flight
   runs up to `--drain-timeout`.

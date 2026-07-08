@@ -10,6 +10,7 @@ lifecycle and its registration/liveness semantics with the controller.
 - [agentSelector](#agentselector)
 - [Windows Agents](#windows-agents)
 - [Kubernetes Agent](#kubernetes-agent)
+- [Job isolation on the standard agent (claim pod)](#job-isolation-on-the-standard-agent-claim-pod)
 - [Workspace lifecycle](#workspace-lifecycle)
 - [Registration and liveness](#registration-and-liveness)
 - [Matrix wire format upgrade note](#matrix-wire-format-upgrade-note)
@@ -116,11 +117,13 @@ Fix: Install [Git for Windows](https://git-scm.com/download/win) or add `bash.ex
 Every `step.run` receives the `UNIFIED_AGENT_OS` environment variable (Go's `runtime.GOOS`:
 `windows` / `linux` / `darwin`). Job authors can use this to branch on OS.
 
-> **Isolated steps run in Linux regardless of host OS.** A `uses:`-scope step or a
-> step with `runsIn.image` always executes in a Linux container, so `UNIFIED_AGENT_OS`
-> is `linux` there even when the agent's host is Windows or macOS
-> (`internal/agent/agent_os.go: agentOSForStep`). Only steps running directly on
-> the host report the host's `runtime.GOOS`.
+> **Isolated jobs and scopes always run in Linux, regardless of host OS.** A
+> step in an isolated job (the default — see [Job Isolation: `native` and the
+> claim pod](jobs.md#job-isolation-native-and-the-claim-pod)) or a `uses:`
+> scope step always executes in a Linux container, so `UNIFIED_AGENT_OS` is
+> `linux` there even when the agent's host is Windows or macOS
+> (`internal/agent/agent_os.go: agentOSForStep`). Only steps in a `native:
+> true` job run directly on the host and report the host's `runtime.GOOS`.
 
 ```yaml
 steps:
@@ -152,39 +155,129 @@ sidecar, and pod-lifecycle details.
 
 ---
 
+## Job isolation on the standard agent (claim pod)
+
+By default (unless a job sets `spec.native: true`), the standard agent runs
+a claim's steps inside a per-claim "claim pod": a pause container that owns
+a network namespace, plus one container per `podTemplate.spec.containers`
+entry (and an injected primary container if none is defined), all joined to
+the pause container's netns and sharing the claim's per-job workspace via a
+bind mount. This mirrors the Kubernetes agent's real Pod: `podTemplate`
+sidecars are reachable at `localhost` from a default step, and no host ports
+are ever published, so concurrent claims never collide. See [Job Isolation:
+`native` and the claim pod](jobs.md#job-isolation-native-and-the-claim-pod)
+in the Job Reference for the full model and YAML examples.
+
+**Supported container runtimes:** docker, podman, nerdctl. Apple's
+`container` CLI is **not** supported for isolated jobs — there is no
+reliable `--network container:<id>` equivalent for it, so it remains usable
+only for whatever it was already used for (it is not used by the claim
+pod). macOS hosts run isolated jobs via docker or podman.
+
+**Agent flags/config for the claim pod:**
+
+| Flag | Config key | Default | Purpose |
+|---|---|---|---|
+| `--pause-image` | `pauseImage` | `busybox:1.36` | Image for the pause (netns-holder) container, one per claim. |
+| `--runner-image` | `runnerImage` | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Primary container image injected when the job's `podTemplate` defines none. |
+
+See [Configuration Reference: Agent Flags](configuration.md#agent-flags) for
+the full flag list.
+
+### Troubleshooting isolated claims
+
+If a claim fails before any step runs — no container runtime found, the
+claim pod failed to start (e.g. image pull failure), or workspace
+preparation failed — the agent fails the run immediately and writes the
+reason as a **"System"** line in the run's own logs (internally `stepIndex
+-1`, shown in the Web UI/CLI logs as a system-level entry rather than
+attached to any step). Check the run's log output first, even if no step
+appears to have started; the actionable error (e.g. "isolated job requires a
+container runtime (docker/podman/nerdctl); mark the job native: true or
+route it via agentSelector") is there, not just in the agent's own process
+log.
+
+---
+
 ## Workspace lifecycle
 
-Each concurrency slot owns one workspace directory:
+Each concurrency slot owns one slot directory:
 `<workspace-dir>/working<N>` (default `~/workspace`, override with
 `--workspace-dir`, `UNIFIED_AGENT_WORKSPACE_DIR`, or the `workspaceDir`
-config key). `run:` steps execute with this directory as their working
-directory, and relative artifact/cache paths resolve against it.
+config key). Within that slot directory, **every job gets its own
+subdirectory**, named after a sanitized form of the job's `metadata.name`:
+`working<N>/<sanitized-job-name>`. `run:` steps execute with this per-job
+directory as their working directory (bind-mounted at `/workspace` — or
+`podTemplate.workspace.mountPath` — into every claim-pod container for an
+isolated job), and relative artifact/cache paths resolve against it.
 
 `N` ranges from `0` to `--max-concurrent - 1`; each slot's claim loop always
-uses the same `working<N>` directory for every run it executes, so
-concurrent slots never share a directory.
+uses the same `working<N>/<job>` directory for every run of that job, so
+concurrent slots never share a directory, and — because the subdirectory is
+per-job — two different jobs sharing a slot over time never mix files either
+(this also closes the pre-isolation cross-job file mixing within a slot).
 
-**Workspaces are reused across runs and jobs.** Files from previous runs
-remain unless the agent is started with `--clean-workspace`. If your jobs
-write credentials or other secrets to disk, enable `--clean-workspace` or
-delete them in a `finally:` step — otherwise later jobs on the same agent
-can read them.
+**Workspaces are reused (carry over) across runs of the same job.** This is
+the default and is unchanged by job isolation: files from a job's previous
+run remain in its per-job directory unless cleaned. Two knobs control
+cleaning, and they OR together (either one triggers a clean at claim start):
 
-> **Security warning:** because workspaces persist by default, secrets
-> written to disk by one Run (e.g. a checked-out credential file, a
-> decrypted key) are readable by any later Run claimed into the same slot,
-> even a Run from a different Job. Treat the workspace as a shared,
-> semi-trusted directory unless `--clean-workspace` is enabled.
+- **Agent-level `--clean-workspace`** (`UNIFIED_AGENT_WORKSPACE_DIR` sibling
+  flag) — wipes every job's directory on every claim, agent-wide.
+- **Job-level `podTemplate.cleanWorkspace: true`** — wipes only that job's
+  directory, on every claim of that job, on **both** agents (the host agent
+  now honors the same per-job knob the k8s-agent pool already did).
 
-`--clean-workspace` removes and recreates `working<N>` at claim time (right
-before a Run starts executing in that slot), not at agent startup — so the
-very first Run after the agent starts still runs against whatever was left
-in the directory from before, unless it was cleaned by a previous claim.
+If your jobs write credentials or other secrets to disk and you don't use
+either cleaning knob, delete them in a `finally:` step — otherwise later runs
+of the same job (or, without per-job isolation this no longer applies across
+*different* jobs) can still read files left in a stale carry-over directory.
 
-Every `run:` step also receives `UNIFIED_AGENT_OS` (Go's `runtime.GOOS` on the host,
-but `linux` for a scoped/`runsIn.image` step regardless of host OS) in its
-environment, in addition to the workspace directory as its cwd — see
-[UNIFIED_AGENT_OS environment variable](#unified_agent_os-environment-variable) above.
+> **Security note:** because workspaces persist by default, secrets written
+> to disk by one Run of a job are readable by a later Run of **that same
+> job** claimed into the same slot, unless cleaning is enabled. Per-job
+> directories mean this no longer crosses job boundaries.
+
+**Mode marker (`.ucd-mode`).** Each per-job directory carries a
+`.ucd-mode` file recording whether the job last ran `native` or isolated. If
+a job's definition flips modes between runs (e.g. `native: true` added or
+removed), the directory is reset before the next claim — this closes the one
+remaining root-ownership leftover hole described below.
+
+**Root-owned files (Linux, rootful docker).** Containers created by rootful
+docker write as root inside the bind-mounted workspace; the agent process
+(usually non-root) can then fail to clean or overwrite those files
+(`EPERM`). When a plain `os.RemoveAll` clean fails this way, the agent falls
+back to a throwaway root cleanup container (`<runtime> run --rm -v
+<workDir>:/w busybox rm -rf /w/. ...`) before recreating the directory; if
+that also fails, it WARNs and proceeds with whatever is left (the previous,
+pre-isolation behavior). **Recommended fix: run rootless podman.** With
+rootless podman, the container's root maps to the agent's own user, so this
+class of problem does not occur in the first place — it is the first-choice
+deployment for Linux hosts running isolated jobs.
+
+**Disk usage is an operator responsibility.** Per-job directories accumulate
+under each `working<N>/` over time (one subdirectory per distinct job name
+ever run in that slot); there is no automatic workspace GC. Include
+`wsBase` in your normal disk-usage monitoring/cleanup.
+
+**macOS/Windows file-sharing requirement.** For isolated jobs, `wsBase` (the
+`--workspace-dir` root) must live under a path the container runtime's file
+sharing exposes to containers — e.g. under `/Users` for Docker Desktop on
+macOS, or an equivalent shared drive on Windows. A `wsBase` outside the
+runtime's shared paths will fail to bind-mount into the claim pod.
+
+`--clean-workspace` removes and recreates a job's directory at claim time
+(right before a Run starts executing in that slot), not at agent startup —
+so the very first Run of a job after the agent starts still runs against
+whatever was left in the directory from before, unless it was cleaned by a
+previous claim.
+
+Every `run:` step also receives `UNIFIED_AGENT_OS` (Go's `runtime.GOOS` on
+the host for a `native: true` job, but `linux` for an isolated job or a
+`uses:` scope regardless of host OS) in its environment, in addition to the
+workspace directory as its cwd — see [UNIFIED_AGENT_OS environment
+variable](#unified_agent_os-environment-variable) above.
 
 ---
 

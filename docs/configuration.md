@@ -139,8 +139,16 @@ unified-cd-agent [FLAGS]
   --clean-workspace       bool      Wipe workspace before each run
   --workspace-dir         string    Base directory for run workspaces (default: ~/workspace; env: UNIFIED_AGENT_WORKSPACE_DIR)
   --drain-timeout         duration  Max wait after SIGTERM before forced shutdown (0 = wait forever)
+  --pause-image           string    Image for the claim pod's pause (netns-holder) container (default: busybox:1.36)
+  --runner-image          string    Default primary container image for isolated jobs without a podTemplate job container (default: ghcr.io/eirueimi/unified-cd-runner:v0.0.3)
   --log-level             string    Log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)
 ```
+
+`--pause-image` and `--runner-image` configure the standard agent's [claim
+pod](agents.md#job-isolation-on-the-standard-agent-claim-pod), built for
+every isolated (non-`native`) job claim. They have no dedicated environment
+variable — set them via flag or the `pauseImage`/`runnerImage` config-file
+keys below.
 
 ### Agent Environment Variables
 
@@ -184,6 +192,8 @@ maxConcurrent: 4
 cleanWorkspace: false
 workspaceDir: /data/unified-cd/workspace
 drainTimeout: 60s
+pauseImage: busybox:1.36                              # claim pod pause container (default shown)
+runnerImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3 # default primary container (default shown)
 logLevel: info
 ```
 
@@ -192,6 +202,24 @@ Start with config file:
 ```bash
 ./bin/unified-cd-agent -f unified-agent.yaml
 ```
+
+### Job isolation notes
+
+Every job is isolated by default (see [Job Isolation: `native` and the claim
+pod](jobs.md#job-isolation-native-and-the-claim-pod)); the standard agent
+needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
+
+- **Rootless podman is the recommended runtime on Linux hosts.** It avoids
+  root-owned files leaking into the bind-mounted workspace (the container's
+  root maps to the agent's own user), sidestepping the EPERM-fallback
+  cleanup path entirely — see [Agent Labels and Routing: Workspace
+  lifecycle](agents.md#workspace-lifecycle).
+- **On macOS/Windows, `--workspace-dir`/`workspaceDir` must live under a
+  path your container runtime's file sharing exposes** — e.g. under
+  `/Users` for Docker Desktop on macOS. A workspace root outside the
+  runtime's shared paths fails to bind-mount into the claim pod.
+- Apple's `container` CLI is not a supported runtime for isolated jobs; use
+  docker or podman.
 
 ---
 

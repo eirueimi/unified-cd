@@ -19,9 +19,10 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
   - [Matrix and Foreach Steps](#matrix-and-foreach-steps)
 - [Calling Other Jobs (`call`)](#calling-other-jobs-call)
 - [Git Template Inlining (`uses`)](#git-template-inlining-uses)
-- [Isolated Execution (`runsIn`)](#isolated-execution-runsin)
-  - [Step-level `runsIn.image`](#step-level-runsinimage)
-  - [Uses-level `runsIn.image` (scope)](#uses-level-runsinimage-scope)
+- [Job Isolation: `native` and the claim pod](#job-isolation-native-and-the-claim-pod)
+  - [`container:` — targeting a podTemplate container](#container--targeting-a-podtemplate-container)
+  - [`native: true` — host-process jobs](#native-true--host-process-jobs)
+- [Uses-level `runsIn.image` (scope)](#uses-level-runsinimage-scope)
 - [Artifacts](#artifacts)
 - [Cache](#cache)
 - [Concurrency Control](#concurrency-control)
@@ -53,9 +54,8 @@ spec:
   agentSelector: [ ... ]          # required agent label filters
   concurrency: { ... }            # concurrency control
   timeoutMinutes: 60              # job-level timeout in minutes
-  podTemplate: { ... }            # Kubernetes pod config; full pod config is k8s-agent
-                                   # only, but the standard agent also reads
-                                   # spec.containers to resolve runsIn.container
+  native: false                   # true = host-process job, no containers at all (see below)
+  podTemplate: { ... }            # sidecar containers for an isolated job (both agents honor this)
   steps:
     - name: <string>              # step name (required, unique within job)
       if: <expression>            # run condition
@@ -68,7 +68,7 @@ spec:
       uploadArtifact: { ... }     # upload a file as an artifact
       downloadArtifact: { ... }   # download a previously uploaded artifact
       post: { ... }               # post-run cleanup hook
-      container: <string>         # target container (k8s multi-container); shorthand for runsIn: { container: ... }, cannot combine with runsIn:
+      container: <string>         # exec into a named podTemplate container instead of the primary
       continueOnError: false      # don't fail the run if this step fails
       timeoutMinutes: 10          # step-level timeout in minutes
     - parallel:                   # OR: a group of steps that run concurrently
@@ -506,43 +506,130 @@ For private repositories, create a [GitCredential](#gitcredential-resource) reso
 
 ---
 
-## Isolated Execution (`runsIn`)
+## Job Isolation: `native` and the claim pod
 
-`runsIn` runs a step in a reproducible container instead of directly on the
-agent host. It has two forms — `image` (a fresh isolated environment) and
-`container` (exec into a named container defined in the job's `podTemplate`).
-`runsIn.container` works on both agents: on k8s it execs into that container
-of the job pod, and on the standard agent it provisions a workspace-bind-mounted
-container from the same `podTemplate.spec.containers` entry, so surrounding
-steps still see files it writes. This guide covers the `image` form; see the
-[`runsIn` field reference](resources.md#runsin) for the full field table
-(including `runsIn.container` and its standard-agent MVP limits, and
-`runsIn.resources`).
+**Every job is isolated by default, on both agents.** An unmarked job runs
+its steps inside a container — a Kubernetes Pod on the k8s-agent, and an
+equivalent "claim pod" built from a pause container + one or more per-step
+containers on the standard (host) agent. This is the same model on both
+backends: a default (`container:`-less) step execs into the job's primary
+container, `podTemplate` sidecars are reachable at `localhost` from that
+step, and concurrent runs never collide because each claim gets its own
+network namespace.
 
-An isolated `runsIn.image` step runs in a Linux container regardless of the
-agent's host OS, so `UNIFIED_AGENT_OS` reports `linux` inside it.
+```yaml
+apiVersion: unified-cd/v1
+kind: Job
+metadata: { name: integration-test }
+spec:
+  podTemplate:
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8
+          env: [{ name: MYSQL_ALLOW_EMPTY_PASSWORD, value: "1" }]
+  steps:
+    - name: test
+      run: ./gradlew test          # default step: primary container, mysql on localhost:3306
+    - name: dump
+      container: mysql             # exec into the named sidecar
+      run: mysqldump ...
+```
 
-### Step-level `runsIn.image`
+On the standard agent, the claim pod is built lazily at claim start: a
+minimal pause container (`--pause-image`, default `busybox:1.36`) owns the
+network namespace; the primary container (the target of default steps) and
+every `podTemplate` container join it with `--network container:<pause>`
+and share the claim's workspace via a bind mount. If the `podTemplate`
+defines no container, the agent injects its configured default runner image
+(`--runner-image`, default `ghcr.io/eirueimi/unified-cd-runner:v0.0.3`) as
+the primary. Supported container runtimes are **docker, podman, and
+nerdctl** — Apple's `container` CLI is not supported for isolated jobs (no
+reliable network-namespace-join equivalent), so macOS hosts must use
+docker/podman (typically a Linux VM) to run isolated jobs.
 
-Put `runsIn.image` on a plain `run` step to run just that step in a fresh,
-throwaway container (the standard agent runs `<runtime> run --rm`; the k8s agent
-uses a throwaway pod):
+Sidecar containers are started eagerly and kept alive for the life of the
+claim; there are **no readiness probes** — if a step connects to a sidecar
+before it's ready, the step must retry/wait on its own (documented MVP
+limitation, matching Kubernetes' own lack of built-in dependency ordering).
+No host ports are ever published, so two concurrent claims of the same job
+(or different jobs with the same sidecar image) never collide — this is the
+core problem job isolation solves.
+
+An isolated job runs every step in a Linux container regardless of the
+agent's host OS, so `UNIFIED_AGENT_OS` always reports `linux` there.
+
+### `container:` — targeting a podTemplate container
+
+Use `container:` on a step to exec into a specific `podTemplate` container
+instead of the primary. This is the **canonical** way to pin a step to a
+named container — it replaces the old step-level `runsIn:` field, which has
+been removed:
 
 ```yaml
 steps:
-  - name: lint
-    runsIn:
-      image: golangci/golangci-lint:latest
-    run: golangci-lint run ./...
+  - name: build
+    run: go build ./...        # default: primary container
+
+  - name: dump-db
+    container: mysql           # exec into the "mysql" podTemplate container
+    run: mysqldump ...
 ```
 
-A step-level isolated call is a **pure function**: it does **not** share the job
-workspace. Pass inputs via `with:`/`env` and return outputs via `outputs:` or
-stdout. It has no persistent filesystem, so `cache`/`uploadArtifact`/
-`downloadArtifact` are not supported on a step-level isolated step — use a
-uses-level scope (below) when you need those.
+`container: X` requires a `podTemplate` that defines a container named `X`;
+this is checked at apply time. See [Kubernetes Pod Template
+(`podTemplate`)](#kubernetes-pod-template-podtemplate) below for the
+container fields the standard agent understands.
 
-### Uses-level `runsIn.image` (scope)
+> **Migrating from step-level `runsIn.image`/`runsIn.container`:** those
+> forms are gone. A step-level `runsIn:` key is now a parse error with a
+> migration hint. See [the migration
+> guide](migration-2026-07-job-isolation.md) for the mapping to `podTemplate`
+> + `container:` (or a `uses:` template — see below). The **uses-level**
+> `runsIn.image` (a scope spanning an entire inlined template) is unaffected
+> and still works exactly as before — see the next section.
+
+### `native: true` — host-process jobs
+
+Jobs that exist to use the host itself — Xcode/signing on macOS, attached
+hardware, anything that isn't containerizable — opt out of isolation
+entirely with `spec.native: true`. A native job runs every step as a plain
+host process, exactly like today's pre-isolation behavior: no claim pod, no
+`podTemplate`, no `container:` steps, no container runtime required.
+
+```yaml
+apiVersion: unified-cd/v1
+kind: Job
+metadata: { name: ios-release }
+spec:
+  native: true                     # host processes; no container features
+  agentSelector: [macos]
+  steps:
+    - name: build
+      run: xcodebuild ...
+```
+
+Rules, enforced at apply time:
+
+- `native: true` + `podTemplate` → error.
+- `native: true` + any step `container:` → error.
+- **`native` is host-only.** The k8s-agent has no concept of running outside
+  a Pod — a `native: true` job claimed by a k8s-agent fails the run
+  immediately with a clear error. Route native jobs to host agents (and away
+  from k8s-agents) via `agentSelector`.
+- Conversely, an isolated job claimed by a host agent with **no container
+  runtime installed** (docker/podman/nerdctl all missing) fails the run
+  immediately rather than silently falling back to host execution — mark
+  the job `native: true`, or route it to an agent that has a runtime, via
+  `agentSelector`.
+
+`uses:` scope steps (below) still work inside a native job if a container
+runtime happens to be present — scopes have always required a runtime
+independent of the job's own isolation mode.
+
+---
+
+## Uses-level `runsIn.image` (scope)
 
 Put `runsIn.image` on a `uses:` step to run the **entire inlined template** in
 **one** isolated environment — a "scope" — that stays alive across all of the
@@ -581,15 +668,16 @@ boundary naturally — on Kubernetes a scoped `uses` needs no shared
 `ReadWriteMany` volume. Under `matrix`/`foreach`, each variant of a scoped
 `uses` gets its own independent scope (its own container/pod).
 
-A step-level `runsIn.container` (uses-level too) and a `uses` with no `runsIn`
-keep their existing behavior — scope mode is triggered only by a **uses-level
-`runsIn.image`**.
+A `uses:` step with no `runsIn` keeps its existing (non-scope) inlining
+behavior — scope mode is triggered only by a **uses-level `runsIn.image`**.
+`runsIn.container` on a `uses:` entry is rejected (a parse error); target a
+named container from the template's own steps with `container:` instead.
 
 **Not allowed inside a scoped `uses`** (parse errors, because they are
 incompatible with holding one isolated environment across the whole template):
 
-- an inlined step with its own `runsIn.image`/`runsIn.container` — the scope is
-  a single homogeneous environment;
+- a nested `runsIn:` (any form) on an inlined step — the scope is a single
+  homogeneous environment, not a per-step override;
 - an `approval:` step — it would pin the isolated container/pod open across a
   human wait;
 - a `call:` step — the child run executes elsewhere and cannot see the scope's
@@ -785,11 +873,15 @@ If `agentSelector` is omitted, any available agent can claim the run.
 
 ## Kubernetes Pod Template (`podTemplate`)
 
-Defines the Kubernetes Pod that executes the steps, for jobs running on the
-`k8s-agent`. The standard agent does not use the rest of `podTemplate`, but it
-does read `spec.containers` to resolve `runsIn.container` (see
-[Isolated Execution](#isolated-execution-runsin) and the
-[`runsIn` field reference](resources.md#runsincontainer-on-the-standard-agent-mvp-limits)).
+Defines the sidecar containers for an isolated job. On the `k8s-agent`, this
+is (mostly) a real Kubernetes PodSpec. On the standard agent, the same
+`podTemplate` drives the claim pod described in [Job Isolation: `native` and
+the claim pod](#job-isolation-native-and-the-claim-pod) — it reads
+`spec.containers` (name/image/env/`resources.limits`) to build one
+network-namespace-joined container per entry; unsupported PodSpec fields
+(PVC workspace, `command`/`args`/`volumeMounts`/`securityContext`, `env`
+entries without a literal `value`) are ignored with a WARN rather than
+applied.
 
 See the [Kubernetes Integration Guide](kubernetes-integration.md) for full details.
 
@@ -836,9 +928,9 @@ spec:
 | `override.containers` | []map | Additional containers to merge into the pod spec |
 | `override.volumes` | []map | Additional volumes to merge into the pod spec |
 
-Use `container:` in a step to target a specific container. It is shorthand for
-`runsIn: { container: ... }` and cannot be combined with `runsIn:` on the same
-step (parse-time error).
+Use `container:` in a step to target a specific container (see
+[`container:` — targeting a podTemplate
+container](#container--targeting-a-podtemplate-container)).
 
 ```yaml
 steps:

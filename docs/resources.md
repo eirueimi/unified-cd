@@ -50,9 +50,12 @@ spec:
         in:                       # list of candidate values, or a $param expression
           - <string>
   timeoutMinutes: <number>
-  podTemplate:                    # full pod config is k8s-agent only; the standard agent
-                                   # reads only spec.containers, to resolve runsIn.container
-                                   # (see Kubernetes Integration Guide)
+  native: <bool>                  # true = host-process job, no containers, host-agent only
+                                   # (mutually exclusive with podTemplate and step container:)
+  podTemplate:                    # sidecar containers for an isolated job (default when native
+                                   # is unset/false); full pod config is k8s-agent only, the
+                                   # standard agent reads only spec.containers to build its claim
+                                   # pod (see Kubernetes Integration Guide)
     name: <string>
     spec: <PodSpec map>
     workspace:
@@ -98,13 +101,7 @@ spec:
         run: <shell script>
         env:
           <KEY>: <value>
-      container: <string>         # k8s multi-container: target container name
-      runsIn:                     # see "runsIn" below
-        image: <string>
-        container: <string>
-        resources:
-          requests: { cpu: <string>, memory: <string> }
-          limits: { cpu: <string>, memory: <string> }
+      container: <string>          # exec into a named podTemplate container instead of the primary
       continueOnError: <bool>     # default: false
       timeoutMinutes: <number>
     - parallel:                   # OR: a group of steps that run concurrently; see jobs.md
@@ -115,56 +112,39 @@ spec:
       run: <shell script>
 ```
 
-### `runsIn`
+### Job isolation: `native` and `container:`
 
-`runsIn` declares an isolated execution context for a step. `image` and
-`container` are mutually exclusive; a step with no `runsIn` (or `runsIn: null`)
-runs in the default/shared environment (the host agent process, or the
-default pod container on k8s).
+Every job is isolated by default on both agents — see [Job Isolation:
+`native` and the claim pod](jobs.md#job-isolation-native-and-the-claim-pod)
+in the Job Reference for the full model (claim pod construction, supported
+runtimes, sidecar behavior). The schema-level surface is small:
 
 | Field | Behavior |
 |---|---|
-| `runsIn.image` | Run in a fresh, isolated environment from this image: the standard agent runs `<runtime> run --rm`, the k8s agent spins up a throwaway pod. This environment does **not** share the job workspace — it is a "pure function" call. Pass inputs via `with:`/`env`, and read outputs via `outputs:`/stdout. |
-| `runsIn.container` | Exec into a named container defined in the job's `podTemplate.spec.containers`. Works on **both** agents: on k8s it execs into that container of the job pod; on the standard agent it provisions (once per claim) a container from the named `podTemplate` container definition, bind-mounting the job workspace into it so `cache`, `uploadArtifact`, `downloadArtifact`, and later steps see the same files. See [MVP limits](#runsincontainer-on-the-standard-agent-mvp-limits) below. |
-| `runsIn.resources` | Optional CPU/memory `requests`/`limits` (Kubernetes quantity strings, e.g. `"500m"`, `"1"`, `"256Mi"`, `"1Gi"`) applied to a `runsIn.image` step's container. |
+| `spec.native` | `true` opts the whole job out of isolation: every step runs as a host process, exactly like pre-isolation behavior. Host-agent only (a k8s-agent fails a `native: true` claim fast). Mutually exclusive with `podTemplate` and any step `container:` (apply-time errors). |
+| `podTemplate` | Sidecar container definitions for an isolated job. Full PodSpec is k8s-agent only; the standard agent reads `spec.containers` (name/image/env/`resources.limits`) to build its claim pod — see [Kubernetes Pod Template (`podTemplate`)](jobs.md#kubernetes-pod-template-podtemplate) in the Job Reference. |
+| `step.container` | Exec into a named `podTemplate` container instead of the job's primary container. Requires a `podTemplate` defining that container name (checked at apply time for isolated jobs). This is the **canonical** field for targeting a container — the old step-level `runsIn: { image / container }` is **removed**; see the [migration guide](migration-2026-07-job-isolation.md). |
 
-`runsIn` can be set on a plain step or on a `uses` step; the two placements
-have different meanings — see the next section.
+Resource limits for a `podTemplate` container (previously `runsIn.resources`)
+now live directly on the container definition, matching Kubernetes:
+`podTemplate.spec.containers[].resources.limits`. The standard agent applies
+CPU/memory limits from there the same way k8s does.
 
-#### `runsIn.container` on the standard agent (MVP limits)
+The **uses-level** `runsIn.image` (an isolated "scope" spanning an entire
+inlined `uses:` template) is a separate, unaffected code path — see the next
+section.
 
-On the standard (host) agent, `runsIn.container` provisions one long-lived
-container per named `podTemplate.spec.containers` entry, for the life of the
-claim, with the host's job workspace bind-mounted into it. Because the mount
-is shared, `cache`, `uploadArtifact`, `downloadArtifact`, and plain host steps
-before/after the `runsIn.container` step all see the same files — unlike a
-`runsIn.image` step, there is no isolated/pure-function filesystem here. The
-container also reports `UNIFIED_AGENT_OS=linux`, matching the k8s agent.
+#### Uses-level `runsIn.image` (scope)
 
-This support has MVP limits, by design:
-
-- **Single-container only.** Each named container is independent; there is no
-  sidecar networking between named containers (no shared `localhost`/loopback
-  the way pod containers share a network namespace on k8s).
-- **Host-unsupported `podTemplate` fields are ignored with a WARN**, not
-  applied: a PVC-backed `workspace` (the host always uses its local workspace
-  directory), any pod-spec field other than the named container's `name`/
-  `image`/`env`/`resources.limits` (e.g. `command`, `args`, `volumeMounts`,
-  `securityContext`), and any container `env` entry without a literal `value`
-  (e.g. `valueFrom`/`fieldRef`, which the host cannot resolve).
-
-#### Step-level vs. uses-level `runsIn.image`
-
-- **Step-level** `runsIn.image` (on a `run` step): unchanged, single throwaway
-  isolated call as described above. No artifact/cache support — it is a pure
-  function with no persistent filesystem.
 - **Uses-level** `runsIn.image` (on a `uses:` step): **scope mode**. The whole
   inlined template runs inside **one** isolated environment (a "scope") that
   stays alive for all of the template's steps, instead of each inlined step
-  getting its own independent throwaway environment.
-- **Uses-level** `runsIn.container`: unchanged — exec into a named
-  pre-provisioned container; not scope mode.
-- A `uses` step without `runsIn`: unchanged current inlining behavior.
+  running against the outer job's environment.
+- **Uses-level** `runsIn.container` is rejected (a parse error) — target a
+  named container from the template's own steps with `container:` instead.
+- A `uses` step without `runsIn`: unchanged current inlining behavior
+  (inlined steps run in the outer job's environment, isolated or native
+  depending on the job).
 
 #### Uses-level scope: artifacts & cache in the isolated environment
 
@@ -216,15 +196,15 @@ one isolated environment open for the template's steps:**
 
 | Inside a scoped `uses` | Why it's a parse error |
 |---|---|
-| A nested `runsIn.image` or `runsIn.container` on an inlined step | A scope must be homogeneous — one environment for the whole template, not a per-step override. |
+| A nested `runsIn:` (any form) on an inlined step | A scope must be homogeneous — one environment for the whole template, not a per-step override. |
 | An `approval:` step | An approval pause would hold the scope's container/pod alive across a human wait (up to the approval timeout), wasting resources and risking a k8s pod deadline killing it mid-wait. |
 | A `call:` step | `call:` spawns a separate child run on another agent/workspace that cannot see the scope's isolated filesystem — undefined semantics inside a scope. |
 
 These checks apply to both concrete steps and members of a `parallel:` block,
-and are inert outside scope mode — a plain `uses` or a `uses` with
-`runsIn.container` still allows `approval:`/`call:` unchanged. `parallel:`
-sub-steps inside a scoped `uses` execute concurrently, but all still target
-the same shared scope environment.
+and are inert outside scope mode — a plain `uses` (with no `runsIn`) still
+allows `approval:`/`call:` unchanged. `parallel:` sub-steps inside a scoped
+`uses` execute concurrently, but all still target the same shared scope
+environment.
 
 ---
 
