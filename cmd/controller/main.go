@@ -88,6 +88,7 @@ func main() {
 	webDir := flag.String("web-dir", eff.WebDir, "static web assets directory; if empty /ui/* returns 404 (env: UNIFIED_WEB_DIR)")
 	uiProxyTarget := flag.String("ui-proxy-target", eff.UIProxyTarget, "Vite dev server URL to reverse-proxy /ui/* to when --web-dir is empty, e.g. http://localhost:5173 (env: UNIFIED_UI_PROXY_TARGET)")
 	stderrPlain := flag.Bool("log-stderr-plain", eff.StderrPlain, "render step stderr in the run log the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)")
+	insecureCookies := flag.Bool("insecure-cookies", eff.InsecureCookies, "do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
 	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
 	var matrixMaxEnvWarning string
@@ -194,7 +195,7 @@ func main() {
 		slog.Warn("no object store configured — log archival disabled")
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, AgentToken: *token, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain}, st)
+	srv := controller.NewServer(controller.Config{Token: *token, AgentToken: *token, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
 	srv.SetMetrics(m)
 	srv.SetKeyManager(km)
 	if obj != nil {

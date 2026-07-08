@@ -33,6 +33,12 @@ type Config struct {
 	// StderrPlain, when true, tells the web UI (via /api/v1/ui-config) to render
 	// step stderr in the run log the same color as stdout instead of red.
 	StderrPlain bool
+
+	// InsecureCookies disables the Secure attribute on session cookies.
+	// Default (false) sets Secure — Chrome/Firefox treat http://localhost as
+	// trustworthy so local dev keeps working; opt out only for plain-HTTP
+	// deployments (LAN access, Safari-based local dev).
+	InsecureCookies bool
 }
 
 // OIDCConfig holds the OIDC provider configuration.
