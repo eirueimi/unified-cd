@@ -12,8 +12,17 @@ export default defineConfig({
     host: true,
     port: 5173,
     proxy: {
-      '/api': process.env.VITE_API_URL || 'http://localhost:8080',
-      '/webhook': process.env.VITE_API_URL || 'http://localhost:8080',
+      // changeOrigin must stay off (default false) for both entries below:
+      // the controller's originCheckMiddleware (internal/controller/hardening.go)
+      // compares the browser's Origin header host against the request's Host
+      // header. String-shorthand proxy entries (e.g. '/api': 'http://...') are
+      // expanded by Vite to `{ target, changeOrigin: true }`, which rewrites
+      // Host to the target (localhost:8080) while Origin still says
+      // localhost:5173 — a mismatch that gets every POST/PUT/DELETE 403'd.
+      // Object form without changeOrigin preserves the browser's Host end to
+      // end so it matches Origin.
+      '/api': { target: process.env.VITE_API_URL || 'http://localhost:8080' },
+      '/webhook': { target: process.env.VITE_API_URL || 'http://localhost:8080' },
     },
     allowedHosts: [
       "vite"

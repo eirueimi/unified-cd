@@ -1,7 +1,7 @@
 # Web ハードニング(Secure Cookie・Origin 検証・セキュリティヘッダ)設計
 
 - 日付: 2026-07-07
-- ステータス: 設計レビュー中
+- ステータス: 実装済み
 
 ## 背景と動機
 
@@ -53,3 +53,11 @@ CSRF/セッション保護の監査で3つのギャップを確認した。
 - Cookie(`internal/controller/`): ログイン callback 相当の SetCookie で `Secure` が付くこと、`InsecureCookies: true` で外れること、logout 側も同様。
 - Origin ミドルウェア: (1) Origin host 一致 → pass、(2) Origin host 不一致 → 403、(3) Origin 無し・Referer 無し → pass、(4) Origin 無し・Referer 不一致 → 403、(5) GET は Origin 不一致でも pass、(6) `ExternalURL` の host に一致する Origin → pass、(7) `Origin: null` → 403。
 - ヘッダ: 任意のエンドポイントのレスポンスに 3 ヘッダが付くこと。
+
+## 追記(最終レビュー反映)
+
+最終レビューで見つかった3件を反映した。
+
+1. Vite dev プロキシ(`web/vite.config.js`)は `changeOrigin` を無効(デフォルト)のまま Host ヘッダを保存する前提で動作する。文字列省略形の proxy エントリ(`'/api': 'http://...'`)は Vite により `{ target, changeOrigin: true }` に展開され、Host が target(`localhost:8080`)に書き換わる一方でブラウザの `Origin` は `http://localhost:5173` のままになるため、`originCheckMiddleware` が Host と Origin の不一致を検知して全ての POST/PUT/DELETE を 403 にしてしまう。`/api` `/webhook` の両エントリをオブジェクト形式・`changeOrigin` なしに変更し、理由をコメントで明記した。合わせて `internal/controller/hardening_test.go` に `TestOriginCheck_ViteDevProxyHostPreserved` を追加し、この契約を固定した。
+2. リバースプロキシ配下で動かす場合、`Host` ヘッダの転送が必須であることが未記載だった。`docs/configuration.md` に、originCheckMiddleware がブラウザの Origin host と Request Host を比較する仕組み上、プロキシは元の Host を転送する必要がある旨(例: nginx `proxy_set_header Host $host;`)を追記した。OIDC 使用時は `externalUrl`(`UNIFIED_OIDC_EXTERNAL_URL`)も許可 host として扱われる点も明記した。
+3. `insecureCookies` / `UNIFIED_INSECURE_COOKIES` / `--insecure-cookies` が設定リファレンスに存在しなかった。`docs/configuration.md` のフラグ一覧・環境変数表・YAML 例に追加し、`docs/authentication.md` に平文 HTTP + 非 localhost ホストでの SSO ログインループ(Secure Cookie がブラウザに保存されず callback 後もセッションが確立しない)についての説明を追加した。

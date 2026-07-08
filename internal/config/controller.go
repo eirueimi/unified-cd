@@ -15,9 +15,9 @@ type ControllerOIDCConfig struct {
 	// ExternalURL is the base URL for browser SSO redirect URIs (e.g. http://localhost:8080).
 	// Must be set explicitly when accessed through a reverse proxy such as Vite, because r.Host
 	// will be the container-internal name. Falls back to the request's Host header when not set.
-	ExternalURL    string `yaml:"externalUrl"`
-	ClientID       string `yaml:"clientId"`
-	ClientSecret   string `yaml:"clientSecret"`
+	ExternalURL  string `yaml:"externalUrl"`
+	ClientID     string `yaml:"clientId"`
+	ClientSecret string `yaml:"clientSecret"`
 	// DeviceClientID is the public client ID used for the CLI device flow.
 	// Using a separate secret-less public client distinct from the confidential ClientID (for browser SSO)
 	// allows the device flow to work without exposing secrets to the CLI. Falls back to ClientID when not set.
@@ -33,21 +33,23 @@ type ControllerOIDCConfig struct {
 // ControllerConfig holds all configuration for the controller binary.
 // Populated from a YAML file via LoadController; zero-value fields mean "not set".
 type ControllerConfig struct {
-	DSN           string                `yaml:"dsn"`
-	Addr          string                `yaml:"addr"`
-	Token         string                `yaml:"token"`
-	S3Endpoint    string                `yaml:"s3Endpoint"`
-	S3Bucket      string                `yaml:"s3Bucket"`
-	S3Key         string                `yaml:"s3Key"`
-	S3Secret      string                `yaml:"s3Secret"`
-	DataDir       string                `yaml:"dataDir"`
-	ControllerKey string                `yaml:"controllerKey"`
-	WebDir        string                `yaml:"webDir"`
-	UIProxyTarget string                `yaml:"uiProxyTarget"`
+	DSN           string `yaml:"dsn"`
+	Addr          string `yaml:"addr"`
+	Token         string `yaml:"token"`
+	S3Endpoint    string `yaml:"s3Endpoint"`
+	S3Bucket      string `yaml:"s3Bucket"`
+	S3Key         string `yaml:"s3Key"`
+	S3Secret      string `yaml:"s3Secret"`
+	DataDir       string `yaml:"dataDir"`
+	ControllerKey string `yaml:"controllerKey"`
+	WebDir        string `yaml:"webDir"`
+	UIProxyTarget string `yaml:"uiProxyTarget"`
 	// StderrPlain, when true, tells the web UI to render step stderr in the run
 	// log with the same color as stdout instead of red. Default (false) = red.
 	StderrPlain bool                  `yaml:"stderrPlain"`
 	OIDC        *ControllerOIDCConfig `yaml:"oidc"`
+	// InsecureCookies disables the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES).
+	InsecureCookies bool `yaml:"insecureCookies"`
 }
 
 // envBool parses a boolean environment variable (strconv.ParseBool semantics);
@@ -88,17 +90,18 @@ func LoadController(path string) (*ControllerConfig, error) {
 // Priority (lowest to highest): env vars → config file → CLI flags.
 func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	eff := &ControllerConfig{
-		DSN:           os.Getenv("UNIFIED_DB_DSN"),
-		Token:         os.Getenv("UNIFIED_TOKEN"),
-		S3Endpoint:    os.Getenv("UNIFIED_S3_ENDPOINT"),
-		S3Bucket:      os.Getenv("UNIFIED_S3_BUCKET"),
-		S3Key:         os.Getenv("UNIFIED_S3_KEY"),
-		S3Secret:      os.Getenv("UNIFIED_S3_SECRET"),
-		DataDir:       os.Getenv("UNIFIED_DATA_DIR"),
-		ControllerKey: os.Getenv("UNIFIED_CONTROLLER_KEY"),
-		WebDir:        os.Getenv("UNIFIED_WEB_DIR"),
-		UIProxyTarget: os.Getenv("UNIFIED_UI_PROXY_TARGET"),
-		StderrPlain:   envBool("UNIFIED_LOG_STDERR_PLAIN"),
+		DSN:             os.Getenv("UNIFIED_DB_DSN"),
+		Token:           os.Getenv("UNIFIED_TOKEN"),
+		S3Endpoint:      os.Getenv("UNIFIED_S3_ENDPOINT"),
+		S3Bucket:        os.Getenv("UNIFIED_S3_BUCKET"),
+		S3Key:           os.Getenv("UNIFIED_S3_KEY"),
+		S3Secret:        os.Getenv("UNIFIED_S3_SECRET"),
+		DataDir:         os.Getenv("UNIFIED_DATA_DIR"),
+		ControllerKey:   os.Getenv("UNIFIED_CONTROLLER_KEY"),
+		WebDir:          os.Getenv("UNIFIED_WEB_DIR"),
+		UIProxyTarget:   os.Getenv("UNIFIED_UI_PROXY_TARGET"),
+		StderrPlain:     envBool("UNIFIED_LOG_STDERR_PLAIN"),
+		InsecureCookies: envBool("UNIFIED_INSECURE_COOKIES"),
 	}
 	// OIDC from env vars
 	oidcIssuer := os.Getenv("UNIFIED_OIDC_ISSUER")
@@ -159,6 +162,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.StderrPlain {
 		eff.StderrPlain = true
+	}
+	if file.InsecureCookies {
+		eff.InsecureCookies = true
 	}
 	if file.OIDC != nil {
 		if eff.OIDC == nil {

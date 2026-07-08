@@ -33,6 +33,12 @@ type Config struct {
 	// StderrPlain, when true, tells the web UI (via /api/v1/ui-config) to render
 	// step stderr in the run log the same color as stdout instead of red.
 	StderrPlain bool
+
+	// InsecureCookies disables the Secure attribute on session cookies.
+	// Default (false) sets Secure — Chrome/Firefox treat http://localhost as
+	// trustworthy so local dev keeps working; opt out only for plain-HTTP
+	// deployments (LAN access, Safari-based local dev).
+	InsecureCookies bool
 }
 
 // OIDCConfig holds the OIDC provider configuration.
@@ -205,6 +211,11 @@ func (s *Server) routes() {
 	s.r.Use(middleware.RealIP)
 	s.r.Use(accessLogMiddleware)
 	s.r.Use(s.metricsMiddleware)
+	s.r.Use(securityHeadersMiddleware)
+	// Router-wide (not just /api/v1): the auth POST routes (e.g.
+	// /api/v1/auth/logout) are registered directly on s.r outside the
+	// /api/v1 group, and non-browser clients pass through anyway.
+	s.r.Use(s.originCheckMiddleware)
 
 	// Health-check endpoint (no auth required).
 	// Returns 503 while shutting down so the load balancer can drain traffic.

@@ -51,6 +51,22 @@ const sessionDuration = 24 * time.Hour
 const stateTTL = 10 * time.Minute
 const refreshThreshold = 5 * time.Minute
 
+// sessionCookie builds the ucd_session cookie with the shared attributes.
+// maxAge < 0 deletes the cookie (logout); maxAge == 0 omits Max-Age (login,
+// which uses Expires instead).
+func (s *Server) sessionCookie(value string, expires time.Time, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    value,
+		Path:     "/",
+		Expires:  expires,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   !s.cfg.InsecureCookies,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
 // generateState generates a random state string for CSRF protection.
 func generateState() (string, error) {
 	b := make([]byte, 16)
@@ -245,14 +261,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    sessionToken,
-		Path:     "/",
-		Expires:  expiresAt,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	http.SetCookie(w, s.sessionCookie(sessionToken, expiresAt, 0))
 	http.Redirect(w, r, savedState.RedirectTo, http.StatusFound)
 }
 
@@ -264,14 +273,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			_ = s.store.DeleteSession(r.Context(), sess.ID)
 		}
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	http.SetCookie(w, s.sessionCookie("", time.Time{}, -1))
 	w.WriteHeader(http.StatusNoContent)
 }
 

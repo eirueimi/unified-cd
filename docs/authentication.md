@@ -216,6 +216,17 @@ unified-cli apply -f examples/hello.yaml --server http://localhost:8080
 > id_tokens expire (Dex default ~24 hours). Run `login` again after expiry.
 > Automatic refresh via refresh token is not currently supported.
 
+### Cookies over plain HTTP (`--insecure-cookies`)
+
+Session cookies (`ucd_session`) are `Secure` by default, so browsers will only send them back over
+HTTPS. If you deploy on plain HTTP with a non-`localhost` host (`localhost` gets a browser exemption),
+the browser silently drops the cookie after `oidc-callback` sets it. With SSO this manifests as an
+endless login redirect loop: the callback appears to succeed, but the next request has no session, so
+the UI redirects back to Dex, which redirects back to the callback, forever. If you must run such a
+deployment (e.g. an internal network without TLS), pass `--insecure-cookies`
+(env `UNIFIED_INSECURE_COOKIES`, config file `insecureCookies`) to drop the `Secure` attribute. Prefer
+terminating TLS in front of the controller instead whenever possible.
+
 ### Production / External IdP
 
 For IdPs other than Dex (Auth0, Keycloak, Okta, etc.):
