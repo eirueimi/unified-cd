@@ -23,17 +23,21 @@ var stepRefCondRe = regexp.MustCompile(`\bsteps\.([A-Za-z_][A-Za-z0-9_]*)\.outpu
 
 // checkScopeStepAllowed rejects step shapes that don't make sense inside a
 // scoped uses (uses-level runsIn.image, i.e. a single shared environment):
-//   - nested runsIn (image/container): the scope IS the environment, a step
-//     can't declare a second one.
+//   - container: the scope IS the environment, a step can't declare a second
+//     exec target.
 //   - approval: would hold the isolated scope environment (container/pod)
 //     alive across a human wait, wasting resources and risking the k8s pod
 //     deadline killing it mid-wait.
 //   - call: spawns a separate child run on another agent/workspace that
 //     cannot see the scope's isolated filesystem, so it has undefined
 //     semantics inside a scope.
-func checkScopeStepAllowed(name string, r *dsl.RunsIn, hasApproval, hasCall bool) error {
-	if r != nil && (r.Image != "" || r.Container != "") {
-		return fmt.Errorf("step %q: runsIn is not allowed inside a uses running with runsIn.image (the scope is a single environment)", name)
+//
+// Template step-level runsIn: is rejected earlier and unconditionally (in both
+// scope and non-scope mode) — this function only guards the exec-target field
+// that can still legally appear on a template step, container:.
+func checkScopeStepAllowed(name string, container string, hasApproval, hasCall bool) error {
+	if container != "" {
+		return fmt.Errorf("step %q: container: is not allowed inside a uses running with runsIn.image (the scope is a single environment)", name)
 	}
 	if hasApproval {
 		return fmt.Errorf("step %q: approval is not allowed inside a uses running with runsIn.image (it would hold the scope environment alive across a human wait)", name)
@@ -109,9 +113,14 @@ func rewriteMap(m map[string]string, usesName string, innerNames map[string]bool
 // with is the already-stringified `uses.with` map (via UsesStep.WithAsStrings).
 // tplSpec must have at least one step (the caller is responsible for having already
 // validated the fetched job, e.g. via dsl.Job.Validate()).
-// outerRunsIn is the RunsIn declared on the outer `uses` step (may be nil); each
-// inlined template step keeps its own RunsIn if set, otherwise inherits outerRunsIn.
-func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn) ([]dsl.StepEntry, error) {
+// outerRunsIn is the RunsIn declared on the outer `uses` step (may be nil); per
+// Task 1's DSL rules this can only be image-only (runsIn.image), which puts the
+// whole expansion in scope mode. outerContainer is the outer `uses` step's flat
+// container: field (may be ""); in non-scope mode each inlined template step
+// keeps its own container: if set, otherwise inherits outerContainer. A template
+// step that still carries runsIn: is always rejected — step-level runsIn: was
+// removed in favor of container:.
+func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn, outerContainer string) ([]dsl.StepEntry, error) {
 	if len(tplSpec.Steps) == 0 {
 		return nil, fmt.Errorf("template job has no steps")
 	}
@@ -195,18 +204,18 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				if ps.Uses != nil {
 					return nil, fmt.Errorf("internal error: parallel step %q has unresolved nested uses; must be resolved before expandUsesStep", ps.Name)
 				}
+				if ps.RunsIn != nil {
+					return nil, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", ps.Name)
+				}
 				if scopeMode {
-					if err := checkScopeStepAllowed(ps.Name, ps.RunsIn, ps.Approval != nil, ps.Call != nil); err != nil {
+					if err := checkScopeStepAllowed(ps.Name, ps.Container, ps.Approval != nil, ps.Call != nil); err != nil {
 						return nil, err
 					}
 					ns.ScopeID = scopeID
 					ns.ScopeImage = scopeImage
 					ns.RunsIn = nil
-				} else {
-					ns.RunsIn = ps.RunsIn
-					if ns.RunsIn == nil {
-						ns.RunsIn = outerRunsIn
-					}
+				} else if ns.Container == "" {
+					ns.Container = outerContainer
 				}
 				rp[i] = ns
 			}
@@ -223,18 +232,18 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				Container:       inner.Container,
 				TimeoutMinutes:  inner.TimeoutMinutes,
 			}
+			if inner.RunsIn != nil {
+				return nil, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", inner.Name)
+			}
 			if scopeMode {
-				if err := checkScopeStepAllowed(inner.Name, inner.RunsIn, inner.Approval != nil, inner.Call != nil); err != nil {
+				if err := checkScopeStepAllowed(inner.Name, inner.Container, inner.Approval != nil, inner.Call != nil); err != nil {
 					return nil, err
 				}
 				ns.ScopeID = scopeID
 				ns.ScopeImage = scopeImage
 				ns.RunsIn = nil
-			} else {
-				ns.RunsIn = inner.RunsIn
-				if ns.RunsIn == nil {
-					ns.RunsIn = outerRunsIn
-				}
+			} else if ns.Container == "" {
+				ns.Container = outerContainer
 			}
 			if inner.Cache != nil {
 				c := *inner.Cache

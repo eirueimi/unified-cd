@@ -166,7 +166,7 @@ func (r *Resolver) resolveSteps(
 		}
 		job.Spec.Steps = nestedSteps
 
-		expanded, err := expandUsesStep(s.Name, s.Uses.WithAsStrings(), job.Spec, s.RunsIn)
+		expanded, err := expandUsesStep(s.Name, s.Uses.WithAsStrings(), job.Spec, s.RunsIn, s.Container)
 		if err != nil {
 			return nil, newResolveError("step %q: expand uses: %v", s.Name, err)
 		}

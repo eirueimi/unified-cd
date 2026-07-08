@@ -29,7 +29,7 @@ func TestExpandUsesStep_LinearChainAndOutputs(t *testing.T) {
 	}
 
 	expanded, err := expandUsesStep("buildWithTemplate",
-		map[string]string{"image": "myapp", "tag": "latest"}, tplSpec, nil)
+		map[string]string{"image": "myapp", "tag": "latest"}, tplSpec, nil, "")
 	require.NoError(t, err)
 	require.Len(t, expanded, 4)
 
@@ -64,7 +64,7 @@ func TestExpandUsesStep_ParallelRootsBothFeedCapture(t *testing.T) {
 		},
 	}
 
-	expanded, err := expandUsesStep("ci", nil, tplSpec, nil)
+	expanded, err := expandUsesStep("ci", nil, tplSpec, nil, "")
 	require.NoError(t, err)
 	require.Len(t, expanded, 4) // inputs, lint, test, capture
 
@@ -80,7 +80,7 @@ func TestExpandUsesStep_NoDeclaredOutputs_StillProducesCaptureStep(t *testing.T)
 	tplSpec := dsl.Spec{
 		Steps: []dsl.StepEntry{{Name: "only", Run: "echo hi"}},
 	}
-	expanded, err := expandUsesStep("simple", nil, tplSpec, nil)
+	expanded, err := expandUsesStep("simple", nil, tplSpec, nil, "")
 	require.NoError(t, err)
 	require.Len(t, expanded, 3)
 	capture := expanded[2]
@@ -99,7 +99,7 @@ func TestExpandUsesStep_RewritesIfConditionAndEnv(t *testing.T) {
 			},
 		},
 	}
-	expanded, err := expandUsesStep("rollout", map[string]string{"env": "production"}, tplSpec, nil)
+	expanded, err := expandUsesStep("rollout", map[string]string{"env": "production"}, tplSpec, nil, "")
 	require.NoError(t, err)
 	inner := expanded[1]
 	assert.Equal(t, `steps.rollout__inputs.outputs.env == "production"`, inner.If)
@@ -119,7 +119,7 @@ func TestExpandUsesStep_PreservesAndRewritesPostHook(t *testing.T) {
 			},
 		},
 	}
-	expanded, err := expandUsesStep("fetchRepo", map[string]string{"repoURL": "https://example.com/x.git"}, tplSpec, nil)
+	expanded, err := expandUsesStep("fetchRepo", map[string]string{"repoURL": "https://example.com/x.git"}, tplSpec, nil, "")
 	require.NoError(t, err)
 	inner := expanded[1]
 	require.NotNil(t, inner.Post)
@@ -140,7 +140,7 @@ func TestExpandUsesStep_RewritesCacheStep(t *testing.T) {
 			},
 		},
 	}
-	expanded, err := expandUsesStep("gobuild", map[string]string{"goVersion": "1.24"}, tplSpec, nil)
+	expanded, err := expandUsesStep("gobuild", map[string]string{"goVersion": "1.24"}, tplSpec, nil, "")
 	require.NoError(t, err)
 	restore := expanded[1]
 	require.NotNil(t, restore.Cache)
