@@ -22,6 +22,7 @@ func Cases() []Case {
 		callSucceedsWithLink(),
 		cacheEmptyKeySkips(),
 		matrixStructuralErrorAborts(),
+		isolatedDispatch(),
 	}
 }
 
@@ -35,6 +36,7 @@ func ifSkipsStep() Case {
 			return api.ClaimResponse{
 				RunID:   "run-if-skips-step",
 				JobName: "if-skips-step",
+				Native:  true,
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "first", Run: "echo first-ran"}},
 					{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "second", If: "false", Run: "echo should-not-run"}},
@@ -68,6 +70,7 @@ func envReachesScript() Case {
 			return api.ClaimResponse{
 				RunID:   "run-env-reaches-script",
 				JobName: "env-reaches-script",
+				Native:  true,
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{
 						Index: 0, StageIndex: 0, Name: "envstep",
@@ -107,6 +110,7 @@ func continueOnError() Case {
 			return api.ClaimResponse{
 				RunID:   "run-continue-on-error",
 				JobName: "continue-on-error",
+				Native:  true,
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "flaky", Run: "exit 1", ContinueOnError: true}},
 					{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "after", Run: "echo after-ran"}},
@@ -132,6 +136,7 @@ func finallyRunsOnFailure() Case {
 			return api.ClaimResponse{
 				RunID:   "run-finally-runs-on-failure",
 				JobName: "finally-runs-on-failure",
+				Native:  true,
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "exit 1"}},
 				},
@@ -179,6 +184,7 @@ func postHooksLIFO() Case {
 			return api.ClaimResponse{
 				RunID:   "run-post-hooks-lifo",
 				JobName: "post-hooks-lifo",
+				Native:  true,
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{
 						Index: 0, StageIndex: 0, Name: "step1", Run: "echo step1-ran",
@@ -214,6 +220,7 @@ func matrixVariants() Case {
 			return api.ClaimResponse{
 				RunID:   "run-matrix-variants",
 				JobName: "matrix-variants",
+				Native:  true,
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{
 						Index: 0, StageIndex: 0, Name: "build", Run: "echo building-{{ .Matrix.version }}",
@@ -246,6 +253,7 @@ func secretsResolveAndMask() Case {
 			return api.ClaimResponse{
 				RunID:         "run-secrets-resolve-and-mask",
 				JobName:       "secrets-resolve-and-mask",
+				Native:        true,
 				SecretsNeeded: []string{"TOKEN"},
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "leaky", Run: "echo tok={{ .Secrets.TOKEN }}"}},
@@ -280,6 +288,7 @@ func stepTimeoutFails() Case {
 			return api.ClaimResponse{
 				RunID:   "run-step-timeout-fails",
 				JobName: "step-timeout-fails",
+				Native:  true,
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "slow", Run: "sleep 10", TimeoutMinutes: 0.02}},
 				},
@@ -303,6 +312,7 @@ func stdoutOutputs() Case {
 			return api.ClaimResponse{
 				RunID:   "run-stdout-outputs",
 				JobName: "stdout-outputs",
+				Native:  true,
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{
 						Index: 0, StageIndex: 0, Name: "printer", Run: "printf hello",
@@ -335,6 +345,7 @@ func callSucceedsWithLink() Case {
 			return api.ClaimResponse{
 				RunID:   "run-call-succeeds-with-link",
 				JobName: "call-succeeds-with-link",
+				Native:  true,
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{
 						Index: 0, StageIndex: 0, Name: "callChild",
@@ -375,6 +386,7 @@ func cacheEmptyKeySkips() Case {
 			return api.ClaimResponse{
 				RunID:   "run-cache-empty-key-skips",
 				JobName: "cache-empty-key-skips",
+				Native:  true,
 				Params:  map[string]string{"novalue": ""},
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{
@@ -413,6 +425,7 @@ func matrixStructuralErrorAborts() Case {
 			return api.ClaimResponse{
 				RunID:   "run-matrix-structural-error",
 				JobName: "matrix-structural-error",
+				Native:  true,
 				Stages: []api.ClaimStage{
 					{Step: &api.ClaimStep{
 						Index: 0, StageIndex: 0, Name: "broken",
@@ -432,6 +445,47 @@ func matrixStructuralErrorAborts() Case {
 			RunFinished: "Failed",
 			// Neither the broken step's body nor anything after it may run.
 			LogMustNotContain: []string{"broken-ran", "never-ran-marker"},
+		},
+	}
+}
+
+// 13. isolated dispatch: this is the one case that deliberately leaves
+// Native unset (Native == false), so BOTH backends run it through the
+// isolated/job-container path rather than the native host-process path. It
+// proves the two backends dispatch identically: a default step (no
+// container:) lands in the primary "job" container, while a `container: X`
+// step lands in the named container X, and each step's stdout still flows
+// through the log pipeline. The observable log/status contract lives here in
+// the shared Expectation; each driver additionally asserts its own dispatch
+// TARGET (host: the exec'd claim-pod container handle; k8s: the exec'd
+// container name) in its test file, since the concrete dispatch surface
+// differs per backend even though the semantics are identical.
+func isolatedDispatch() Case {
+	return Case{
+		Name: "isolated dispatch: default step hits the job container, container: hits the named one",
+		Claim: func() api.ClaimResponse {
+			return api.ClaimResponse{
+				RunID: "run-isolated", JobName: "isolated-job",
+				PodTemplate: &dsl.PodTemplate{Spec: map[string]any{
+					"containers": []any{
+						map[string]any{"name": "tools", "image": "busybox"},
+					},
+				}},
+				Stages: []api.ClaimStage{
+					{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "main",
+						Run: "echo from-primary"}},
+					{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "side",
+						Container: "tools", Run: "echo from-tools"}},
+				},
+			}
+		},
+		Expect: Expectation{
+			StepStatus:  map[string]string{"main": "Succeeded", "side": "Succeeded"},
+			RunFinished: "Succeeded",
+			LogMustContain: []LogLine{
+				{Step: "main", Stream: "stdout", Substring: "from-primary"},
+				{Step: "side", Stream: "stdout", Substring: "from-tools"},
+			},
 		},
 	}
 }

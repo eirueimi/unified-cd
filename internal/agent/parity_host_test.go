@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,7 +18,98 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/paritycases"
+	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
+
+// shellFakeRT is a crt.ContainerRuntime for the isolated-dispatch parity case.
+// It backs the host driver's claim pod: Create records each CreateSpec and
+// returns sequential handles ("c0", "c1", ...), Exec runs the script through
+// the SAME local shell the native host path uses (RunStep, rooted at the
+// driver's workDir) so real echo output flows into the captured logs while the
+// (handle, script) pair is recorded for dispatch assertions, and Remove
+// records teardown. It deliberately does NOT isolate anything — it exists only
+// to let the real claimPodManager/hostBackend dispatch logic run against a
+// recordable, script-executing runtime, mirroring podFakeRT (claim_pod_test.go)
+// but executing scripts (podFakeRT discards them).
+type shellFakeRT struct {
+	workDir string
+
+	mu      sync.Mutex
+	created []crt.CreateSpec
+	execs   []struct{ handle, script string }
+	removed []string
+}
+
+func newShellFakeRT(workDir string) *shellFakeRT { return &shellFakeRT{workDir: workDir} }
+
+func (f *shellFakeRT) Name() string                      { return "shell-fake" }
+func (f *shellFakeRT) Available() bool                   { return true }
+func (f *shellFakeRT) Pull(context.Context, string) error { return nil }
+func (f *shellFakeRT) Run(context.Context, crt.RunSpec, io.Writer, io.Writer) (int, error) {
+	return 0, nil
+}
+
+func (f *shellFakeRT) Create(_ context.Context, s crt.CreateSpec) (crt.ContainerHandle, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := "c" + strconv.Itoa(len(f.created))
+	f.created = append(f.created, s)
+	return crt.ContainerHandle{ID: id}, nil
+}
+
+func (f *shellFakeRT) Exec(ctx context.Context, h crt.ContainerHandle, s crt.ExecSpec, stdout, stderr io.Writer) (int, error) {
+	f.mu.Lock()
+	f.execs = append(f.execs, struct{ handle, script string }{h.ID, s.Script})
+	f.mu.Unlock()
+	// Run the script through the same local shell the native host path uses so
+	// echo output flows into the captured logs. RunStep tolerates nil writers
+	// (post hooks pass nil), matching the native path exactly.
+	return RunStep(ctx, s.Script, stdout, stderr, s.Env, f.workDir)
+}
+
+func (f *shellFakeRT) CopyIn(context.Context, crt.ContainerHandle, string, string) error  { return nil }
+func (f *shellFakeRT) CopyOut(context.Context, crt.ContainerHandle, string, string) error { return nil }
+
+func (f *shellFakeRT) Remove(_ context.Context, h crt.ContainerHandle) error {
+	f.mu.Lock()
+	f.removed = append(f.removed, h.ID)
+	f.mu.Unlock()
+	return nil
+}
+
+// handleByCreateIndex returns the handle id assigned to the i-th Create call
+// (Create returns "c<index>", so this is just "c<i>", but going through the
+// recorded slice keeps the mapping honest if the id scheme ever changes).
+func (f *shellFakeRT) handleByCreateIndex(i int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i < 0 || i >= len(f.created) {
+		return ""
+	}
+	return "c" + strconv.Itoa(i)
+}
+
+// execHandleForScript returns the handle the given script was exec'd into.
+func (f *shellFakeRT) execHandleForScript(script string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, e := range f.execs {
+		if e.script == script {
+			return e.handle, true
+		}
+	}
+	return "", false
+}
+
+func (f *shellFakeRT) execScripts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.execs))
+	for _, e := range f.execs {
+		out = append(out, e.handle+":"+e.script)
+	}
+	return out
+}
 
 // parityHostHarness is a fake controller server mirroring the patterns used
 // throughout agent_callrun_test.go / agent_stdout_stream_test.go /
@@ -271,13 +363,13 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 	}
 
 	claim := tc.Claim()
-	// This suite asserts NATIVE host-agent parity: real bash execution on the
-	// host workspace, no claim pod. Mark the claim native so executeRun keeps
-	// the host-process path (an isolated claim would try to build a claim pod,
-	// which needs a real container runtime this unit test does not provide).
-	// Isolated-claim behavior is covered by backend_isolated_test.go and the
-	// Task 8 integration suite.
-	claim.Native = true
+	// Native vs isolated is now carried by each Case's claim (Native: true for
+	// the host-process cases, unset for the isolated-dispatch case) rather than
+	// forced here — see paritycases/scenarios.go. A native claim runs real bash
+	// on the host workspace via executeRun's host-process path; the one
+	// isolated case (Native == false) is driven below through a claim pod
+	// backed by shellFakeRT, whose Exec still runs the script through the same
+	// local shell so echo output flows into the captured logs.
 
 	// post-hooks-lifo: the host agent's post: hook drain runs the script via
 	// RunStepCapture with stdout/stderr never shipped to the log pipeline
@@ -293,10 +385,31 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 
 	workDir := t.TempDir()
 
+	// fakeRT is non-nil only for the isolated claim; it records the claim pod's
+	// exec dispatch so the driver can assert which container each step landed in.
+	var fakeRT *shellFakeRT
+
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	a.executeRun(ctx, claim, workDir)
+	if claim.Native {
+		// Native host-agent parity: real bash execution on the host workspace,
+		// no claim pod. executeRun keeps the host-process path.
+		a.executeRun(ctx, claim, workDir)
+	} else {
+		// Isolated claim: executeRun would demand a real container runtime, so
+		// we reproduce its isolated-claim wiring here with a shellFakeRT whose
+		// Exec runs each step's script through the SAME local shell (RunStep)
+		// the native path uses — so echo output still flows into captured logs,
+		// while Create/Exec/Remove are recorded for the dispatch assertions.
+		fakeRT = newShellFakeRT(workDir)
+		pod := newClaimPodManager(fakeRT, workDir, hostNamedMountPath(claim.PodTemplate), "pause:img", "runner:img")
+		if err := pod.Start(ctx, claim.PodTemplate); err != nil {
+			t.Fatalf("isolated claim: claim pod start failed: %v", err)
+		}
+		backend := newHostBackend(a, claim.RunID, workDir, pod)
+		RunClaim(ctx, a.Client, a.ID, claim, backend)
+	}
 	elapsed := time.Since(start)
 
 	if tc.Name == "step-timeout-fails" {
@@ -316,6 +429,44 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 
 	if tc.Name == "post-hooks-lifo" {
 		assertPostHookLIFOFromMarkerFile(t, markerFile)
+	}
+
+	if !claim.Native {
+		assertIsolatedDispatch(t, fakeRT)
+	}
+}
+
+// assertIsolatedDispatch verifies the claim pod dispatched each step into the
+// right container: the default "main" step (no container:) into the primary
+// "job" container, and the "side" step (container: tools) into "tools". It
+// asserts against the recorded Create/Exec handles rather than the container
+// name directly, mirroring how the pod resolves a name to a handle
+// (claimPodManager.Exec): the "job" container is the LAST created (injected
+// after every podTemplate container — see claimContainerDefs), and "tools" is
+// created in podTemplate order. This is the host twin of the k8s driver's
+// container-name assertion.
+func assertIsolatedDispatch(t *testing.T, rt *shellFakeRT) {
+	t.Helper()
+	// Create order for this case's podTemplate: [pause, tools, job].
+	// createByName maps each recorded container back to its handle id so we can
+	// match execs to the container the pod would have resolved.
+	jobHandle := rt.handleByCreateIndex(2)  // pause(0), tools(1), job(2)
+	toolsHandle := rt.handleByCreateIndex(1)
+
+	mainHandle, ok := rt.execHandleForScript("echo from-primary")
+	if !ok {
+		t.Fatalf("isolated dispatch: no exec recorded for the default \"main\" step (execs: %v)", rt.execScripts())
+	}
+	if mainHandle != jobHandle {
+		t.Errorf("isolated dispatch: default \"main\" step exec'd container %q, want the primary \"job\" container %q", mainHandle, jobHandle)
+	}
+
+	sideHandle, ok := rt.execHandleForScript("echo from-tools")
+	if !ok {
+		t.Fatalf("isolated dispatch: no exec recorded for the \"side\" step (execs: %v)", rt.execScripts())
+	}
+	if sideHandle != toolsHandle {
+		t.Errorf("isolated dispatch: \"side\" (container: tools) step exec'd container %q, want the \"tools\" container %q", sideHandle, toolsHandle)
 	}
 }
 

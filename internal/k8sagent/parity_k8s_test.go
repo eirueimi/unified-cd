@@ -356,13 +356,35 @@ type parityK8sBackend struct {
 
 	postMu    sync.Mutex
 	postOrder []string
+
+	// dispatchMu/dispatch records the (container, script) each exec targeted so
+	// the isolated-dispatch case can assert which container each step landed in
+	// — the k8s twin of the host driver's exec-handle assertion.
+	dispatchMu sync.Mutex
+	dispatch   []struct{ container, script string }
+}
+
+func (b *parityK8sBackend) recordDispatch(container, script string) {
+	b.dispatchMu.Lock()
+	b.dispatch = append(b.dispatch, struct{ container, script string }{container, script})
+	b.dispatchMu.Unlock()
 }
 
 func (b *parityK8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
+	// The real k8sBackend.RunDefault passes execContainer(step) (== step.Container,
+	// "" for a default step) to Executor.ExecStep, and execArgv falls back "" ->
+	// "job" (internal/k8sagent/executor.go). Mirror that fallback here so the
+	// fake faithfully records the container the production exec would have used.
+	container := step.Container
+	if container == "" {
+		container = "job"
+	}
+	b.recordDispatch(container, script)
 	return parityRunScript(b.t, b.shell, step, script, stdout, stderr)(ctx)
 }
 
 func (b *parityK8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
+	b.recordDispatch(container, script)
 	return parityRunScript(b.t, b.shell, step, script, stdout, stderr)(ctx)
 }
 
@@ -566,6 +588,47 @@ func runParityK8sCase(t *testing.T, tc paritycases.Case) {
 				break
 			}
 		}
+	}
+
+	if !claim.Native {
+		assertK8sIsolatedDispatch(t, backend)
+	}
+}
+
+// assertK8sIsolatedDispatch verifies each step of the isolated-dispatch case
+// was exec'd into the right container NAME: the default "main" step into the
+// primary "job" container (RunDefault normalizes "" -> "job", mirroring the
+// real Executor.execArgv fallback), and the "side" step into "tools". This is
+// the k8s twin of the host driver's exec-handle assertion (assertIsolatedDispatch).
+func assertK8sIsolatedDispatch(t *testing.T, b *parityK8sBackend) {
+	t.Helper()
+	b.dispatchMu.Lock()
+	dispatch := append([]struct{ container, script string }(nil), b.dispatch...)
+	b.dispatchMu.Unlock()
+
+	find := func(script string) (string, bool) {
+		for _, d := range dispatch {
+			if d.script == script {
+				return d.container, true
+			}
+		}
+		return "", false
+	}
+
+	mainC, ok := find("echo from-primary")
+	if !ok {
+		t.Fatalf("isolated dispatch: no exec recorded for the default \"main\" step (dispatch: %v)", dispatch)
+	}
+	if mainC != "job" {
+		t.Errorf("isolated dispatch: default \"main\" step exec'd container %q, want the primary \"job\" container", mainC)
+	}
+
+	sideC, ok := find("echo from-tools")
+	if !ok {
+		t.Fatalf("isolated dispatch: no exec recorded for the \"side\" step (dispatch: %v)", dispatch)
+	}
+	if sideC != "tools" {
+		t.Errorf("isolated dispatch: \"side\" (container: tools) step exec'd container %q, want the \"tools\" container", sideC)
 	}
 }
 
