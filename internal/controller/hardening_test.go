@@ -79,6 +79,24 @@ func TestOriginCheck_ExternalURLHostAllowed(t *testing.T) {
 	assert.Equal(t, http.StatusOK, originCheckStatus(t, s, http.MethodPost, "https://ci.example.com", ""))
 }
 
+// TestOriginCheck_ViteDevProxyHostPreserved pins the dev-proxy contract
+// documented in web/vite.config.js: the Vite proxy entries for /api and
+// /webhook must NOT set changeOrigin, so the browser's Host (localhost:5173)
+// reaches the controller unchanged and matches the browser's Origin header.
+// If changeOrigin were enabled, the controller would see Host: localhost:8080
+// (rewritten to the proxy target) against Origin: http://localhost:5173, and
+// this request would be rejected. Flipping req.Host to "localhost:8080" below
+// reproduces that regression and was manually verified to 403.
+func TestOriginCheck_ViteDevProxyHostPreserved(t *testing.T) {
+	s := &Server{}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://localhost:5173/api/v1/runs", nil)
+	req.Host = "localhost:5173"
+	req.Header.Set("Origin", "http://localhost:5173")
+	s.originCheckMiddleware(hardeningOKHandler()).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestSessionCookie_SecureByDefault(t *testing.T) {
 	s := &Server{cfg: Config{}}
 	c := s.sessionCookie("tok", time.Now().Add(time.Hour), 0)

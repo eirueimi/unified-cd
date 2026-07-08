@@ -40,6 +40,7 @@ unified-cd-controller [FLAGS]
   --log-level             string   Log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)
   --log-stderr-plain      bool     Render run-log stderr the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)
   --audit-retention-days  int      Days to keep audit_logs rows; 0 = keep forever (default: 90, env: UNIFIED_AUDIT_RETENTION_DAYS)
+  --insecure-cookies      bool     Do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)
 ```
 
 ### Controller Environment Variables
@@ -61,10 +62,18 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_OIDC_ISSUER` | No (SSO only) | OIDC issuer URL, e.g. `https://accounts.example.com` or `http://localhost:8080/dex` |
 | `UNIFIED_OIDC_ISSUER_INTERNAL` | No (SSO only) | Internal issuer URL for Docker/container scenarios where the public issuer URL is not reachable inside the container |
 | `UNIFIED_OIDC_EXTERNAL_URL` | No (SSO only) | External base URL for OIDC callbacks, e.g. `https://unified-cd.example.com`. Required when the controller is behind a reverse proxy with a different external URL. |
+| `UNIFIED_INSECURE_COOKIES` | No | When `true`, omits the `Secure` attribute from session cookies. Only for plain-HTTP deployments (see [Authentication](authentication.md)); leave unset (default `false`) whenever TLS is terminated anywhere in front of the controller. |
 | `UNIFIED_OIDC_CLIENT_ID` | No (SSO only) | OIDC client ID for browser SSO (confidential client) |
 | `UNIFIED_OIDC_CLIENT_SECRET` | No (SSO only) | OIDC client secret |
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | No (SSO only) | OIDC public client ID for CLI device flow. Falls back to `UNIFIED_OIDC_CLIENT_ID` if unset. |
 | `UNIFIED_AUDIT_RETENTION_DAYS` | No | Days to keep `audit_logs` rows before a leader-only background task deletes them. Default `90`. `0` = keep forever. See [docs/audit.md](audit.md). |
+
+> **Reverse proxy note**: the controller rejects cross-origin state-changing requests by comparing the
+> browser's `Origin` header host against the request's `Host` header. If you put a reverse proxy in
+> front of the controller, it **must forward the original `Host` header** (e.g. nginx:
+> `proxy_set_header Host $host;`), or every POST/PUT/DELETE from the Web UI will be rejected with 403.
+> With OIDC enabled, `UNIFIED_OIDC_EXTERNAL_URL` (`externalUrl` in the config file) additionally
+> whitelists the public host for this same check.
 
 ### Controller Config File
 
@@ -85,6 +94,7 @@ dataDir: /var/lib/unified-cd    # local object-store fallback (dev; alternative 
 webDir: /srv/unified-cd/web         # static web assets; unset => /ui/* returns 404
 uiProxyTarget: http://localhost:5173 # dev only: proxy /ui/* to a Vite dev server
 stderrPlain: false                   # true => run-log stderr is the same color as stdout
+insecureCookies: false                # true => drop Secure attribute on session cookies (plain-HTTP deployments only)
 
 # Log level is a flag/env, not a config-file field: --log-level / UNIFIED_LOG_LEVEL
 
