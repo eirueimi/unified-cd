@@ -197,6 +197,25 @@ container runtime (docker/podman/nerdctl); mark the job native: true or
 route it via agentSelector") is there, not just in the agent's own process
 log.
 
+### Crash-orphaned claim containers
+
+The claim pod's pause and sidecar containers are started as long-lived
+processes (`sleep infinity`, not `--rm`) and are torn down by the agent
+itself when the claim finishes. If the agent process exits ungracefully
+mid-claim — killed, OOM, host reboot — that teardown never runs, and the
+pause container plus every podTemplate sidecar for that claim are left
+running on the host. Unlike the Kubernetes agent, where an orphaned pod is
+eventually reaped by the cluster's own pod garbage collection, **the host
+agent has no automatic container GC**: nothing on the host notices or
+cleans up an orphaned claim pod on its own. Operators running the host
+agent should treat this as routine hygiene — periodically prune
+claim-pod-shaped containers (e.g. a `docker container prune`-style sweep,
+or one scoped to containers made from `pauseImage`/`runnerImage`/podTemplate
+images) rather than assuming the agent will clean up after a crash. A
+labelled restart-time sweep — the agent tagging its own claim-pod
+containers and removing any stale ones with its own label on startup — is
+possible future work, not implemented today.
+
 ---
 
 ## Workspace lifecycle
