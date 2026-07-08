@@ -4,16 +4,28 @@ package runtime
 import (
 	"context"
 	"os/exec"
+	"runtime"
 	"testing"
 )
+
+// noopCmd returns a command that is guaranteed to exist and exit 0 on every
+// platform we test on, so fakes don't depend on a `true` binary being on
+// PATH (absent by default on Windows).
+func noopCmd(ctx context.Context) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.CommandContext(ctx, "cmd", "/c", "exit 0")
+	}
+	return exec.CommandContext(ctx, "true")
+}
 
 func withFakeExec(t *testing.T, record *[][]string) {
 	t.Helper()
 	orig := execCommand
 	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		*record = append(*record, append([]string{name}, args...))
-		// `true` exists on the test host (Linux/macOS/Git-Bash) and exits 0.
-		return orig(ctx, "true")
+		// Use a cross-platform no-op in place of the real argv so the fake
+		// doesn't depend on a `true` binary being present on PATH.
+		return noopCmd(ctx)
 	}
 	t.Cleanup(func() { execCommand = orig })
 }

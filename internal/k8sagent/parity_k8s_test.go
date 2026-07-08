@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -236,16 +237,45 @@ func parityKillTree(cmd *exec.Cmd) {
 // parityShell resolves the shell used to run a step's script for real. The
 // host agent's shell-discovery helper (findShell in internal/agent/runner.go)
 // is unexported, so it cannot be imported here; this mirrors its production
-// fallback behavior (bash on PATH) directly via exec.LookPath, which is
-// sufficient for this Windows dev box's Git Bash-on-PATH setup and for any
-// Unix CI runner.
+// behavior directly: prefer well-known Git-for-Windows install locations,
+// then fall back to bash on PATH — EXCLUDING the Windows 10+ WSL launcher
+// (%SystemRoot%\System32\bash.exe). That launcher also matches "bash" on
+// PATH but silently runs the script inside the WSL Linux environment, where
+// the Go process's cmd.Env additions (e.g. FOO=bar, UNIFIED_AGENT_OS=linux)
+// do not cross into WSL's environment — reproducing exactly the observed
+// "got= os=" failure (env vars read as empty) instead of a hard error.
+// Without this exclusion, exec.LookPath("bash") can resolve to the WSL
+// launcher ahead of real Git Bash depending on PATH ordering, which is what
+// caused this test to fail.
 func parityShell(t *testing.T) string {
 	t.Helper()
-	path, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skipf("parity k8s driver needs bash on PATH to run real step scripts: %v", err)
+	candidates := []string{
+		`C:\Program Files\Git\bin\bash.exe`,
+		`C:\Program Files (x86)\Git\bin\bash.exe`,
+		`C:\Git\bin\bash.exe`,
 	}
-	return path
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, `AppData\Local\Programs\Git\bin\bash.exe`))
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	if path, err := exec.LookPath("bash"); err == nil && !isWSLLauncherK8s(path) {
+		return path
+	}
+	t.Skipf("parity k8s driver needs bash (non-WSL) on PATH to run real step scripts")
+	return ""
+}
+
+// isWSLLauncherK8s reports whether path is the WSL launcher
+// (%SystemRoot%\System32\bash.exe), mirroring internal/agent/runner.go's
+// unexported isWSLLauncher so this test driver gets the same protection the
+// production host agent has via findShell/locateGitBash.
+func isWSLLauncherK8s(path string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(path, "/", `\`))
+	return strings.HasSuffix(normalized, `\system32\bash.exe`)
 }
 
 // parityRunScript runs a step's script for real via the discovered shell,
