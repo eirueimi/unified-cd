@@ -92,16 +92,6 @@ func (b *hostBackend) RunDefault(ctx context.Context, step api.ClaimStep, script
 	return RunStep(ctx, script, stdout, stderr, env, b.workDir)
 }
 
-// RunImage runs a step in a fresh, unmounted container (runsIn.image).
-func (b *hostBackend) RunImage(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	rt, err := b.a.containerRuntime()
-	if err != nil {
-		return -1, fmt.Errorf("runsIn.image %q requires a container runtime: %w", step.RunsIn.Image, err)
-	}
-	cpuLimit, memLimit := hostContainerLimits(step.RunsIn.Resources)
-	return RunStepContainer(ctx, rt, step.RunsIn.Image, script, stdout, stderr, env, cpuLimit, memLimit)
-}
-
 // hostNamedMountPath is the in-container path the host workspace is bind-mounted
 // at for runsIn.container containers. It mirrors the k8s workspace mount
 // (podbuilder.injectWorkspace): /workspace unless the podTemplate overrides it.
@@ -303,7 +293,7 @@ func (b *hostBackend) ResolveCachePath(scope ScopeHandle, p string) string {
 }
 
 // DefaultAgentOS reports the host process's own OS: a non-scoped,
-// non-runsIn.image step executes directly on the host.
+// non-container: step executes directly on the host.
 func (b *hostBackend) DefaultAgentOS() string {
 	return runtime.GOOS
 }

@@ -14,9 +14,9 @@ import (
 // env parameter (the orchestrator's already-template-expanded "KEY=VALUE"
 // pairs, e.g. internal/agent/orchestrator.go's extraEnv) and instead baked
 // the raw, unexpanded step.Env map straight into the scope pod's container
-// spec. A runsIn env value containing a template (e.g. {{ .Params.x }})
+// spec. A scope env value containing a template (e.g. {{ .Params.x }})
 // therefore shipped to the scope pod as the literal template string instead
-// of its resolved value — the same class of bug fixed for RunImage in
+// of its resolved value — the same class of expanded-env bug fixed in
 // 9e09c76. This drives the REAL k8sBackend.EnsureScope (not the parity fake,
 // whose fake podManager bypasses ensureScopePod's env-merge logic entirely)
 // with a fake podManager that records the created pod spec.
@@ -51,7 +51,7 @@ func TestK8sBackend_EnsureScope_HonorsExpandedEnv(t *testing.T) {
 // TestK8sBackend_EnsureScope_KeepsK8sDefaultsWhenNoOverride verifies
 // imageStepEnv's k8s-specific defaults (e.g. UNIFIED_AGENT_OS) still land in
 // the scope pod's env when the orchestrator's env slice doesn't override
-// them, mirroring RunImage's merge semantics (env param wins, else fall back
+// them, following the env-merge semantics (env param wins, else fall back
 // to imageStepEnv(step)).
 func TestK8sBackend_EnsureScope_KeepsK8sDefaultsWhenNoOverride(t *testing.T) {
 	pm := &fakePM{}

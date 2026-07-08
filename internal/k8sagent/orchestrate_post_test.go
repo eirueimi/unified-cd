@@ -9,7 +9,6 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -218,18 +217,18 @@ func TestOrchestrate_PostHookEnvExpanded(t *testing.T) {
 
 // TestOrchestrate_NamedContainerStepPostHook_RoutesToSameContainer is a
 // regression test for the post-refactor bug where a non-scoped
-// runsIn.container step's post: hook lost its container routing: the shared
+// container: step's post: hook lost its container routing: the shared
 // orchestrator (agentlib.RunClaim) drained every post hook with an empty
 // container string, so a hook that must run in the same named container the
 // step body ran in was instead routed to the default pod's default
-// container. The fix threads step.RunsIn.Container through postHookEntry at
+// container. The fix threads step.Container through postHookEntry at
 // queue time (internal/agent/orchestrator.go) so it reaches
 // k8sBackend.RunPostHook at drain time.
 func TestOrchestrate_NamedContainerStepPostHook_RoutesToSameContainer(t *testing.T) {
 	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
 		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "build", Run: "x",
-			RunsIn: &dsl.RunsIn{Container: "build"},
-			Post:   &api.PostStep{Run: "cleanup-build"}}},
+			Container: "build",
+			Post:      &api.PostStep{Run: "cleanup-build"}}},
 	}}
 
 	_, _, postCalls := runOrchestratePost(t, c, nil)

@@ -362,10 +362,6 @@ func (b *parityK8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, s
 	return parityRunScript(b.t, b.shell, step, script, stdout, stderr)(ctx)
 }
 
-func (b *parityK8sBackend) RunImage(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	return parityRunScript(b.t, b.shell, step, script, stdout, stderr)(ctx)
-}
-
 func (b *parityK8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
 	return parityRunScript(b.t, b.shell, step, script, stdout, stderr)(ctx)
 }

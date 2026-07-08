@@ -12,7 +12,6 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -265,18 +264,15 @@ func (lw *logLineWriter) Write(p []byte) (int, error) {
 }
 
 // execContainer returns the pod container a step should exec into. After DSL
-// normalization the canonical source is RunsIn.Container (the flat Container
-// field is cleared at validation time); nil/absent means the default container.
+// normalization the canonical exec target is the flat Container field; an empty
+// string means the default container.
 func execContainer(s api.ClaimStep) string {
-	if s.RunsIn != nil {
-		return s.RunsIn.Container
-	}
-	return ""
+	return s.Container
 }
 
-// imageStepEnv returns a fresh env map for a runsIn.image container: the step's
-// env plus UNIFIED_AGENT_OS. Always a new map, so callers never mutate the claim.
-// The throwaway pod runs a Linux container image regardless of the agent's host
+// imageStepEnv returns a fresh env map for a Linux scope pod: the step's env
+// plus UNIFIED_AGENT_OS. Always a new map, so callers never mutate the claim.
+// The scope pod runs a Linux container image regardless of the agent's host
 // OS, so UNIFIED_AGENT_OS is "linux" — not the agent process's runtime.GOOS.
 func imageStepEnv(step api.ClaimStep) map[string]string {
 	env := make(map[string]string, len(step.Env)+1)
@@ -285,48 +281,6 @@ func imageStepEnv(step api.ClaimStep) map[string]string {
 	}
 	env["UNIFIED_AGENT_OS"] = "linux"
 	return env
-}
-
-// imageStepDeadline returns the throwaway pod's activeDeadlineSeconds: the step
-// timeout if set, else a 1-hour default.
-func imageStepDeadline(step api.ClaimStep) int64 {
-	if step.TimeoutMinutes > 0 {
-		return int64(step.TimeoutMinutes * 60)
-	}
-	return 3600
-}
-
-// runImageStep runs a runsIn.image step in a throwaway, isolated pod: create a
-// pod from the image (the pod, built by buildImageStepPod, stays alive via
-// sleep infinity), wait until it is running, exec the step's script into the
-// single "step" container, then delete the pod. The pod is always deleted
-// (defer, non-cancellable context) so a cancelled or failed step never leaks a
-// pod. A failure to create/start the pod is a hard error surfaced to the step
-// — never a silent fallback. The start wait is bounded by imagePodStartTimeout
-// so a bad image (stuck Pending/ImagePullBackOff, which never reaches Failed
-// under RestartPolicy: Never) fails fast instead of hanging until the run is
-// cancelled.
-func (a *K8sAgent) runImageStep(ctx context.Context, runID, image string, env map[string]string, deadlineSeconds int64, resources *dsl.ResourceSpec, script string, stdout, stderr io.Writer) (int, error) {
-	pod := buildImageStepPod(runID, a.cfg.Namespace, image, env, deadlineSeconds, resources)
-	created, err := a.pm.CreatePod(ctx, pod)
-	if err != nil {
-		return -1, fmt.Errorf("runsIn.image %q: create pod: %w", image, err)
-	}
-	name := created.Name
-	defer func() {
-		if derr := a.pm.DeletePod(context.WithoutCancel(ctx), name); derr != nil {
-			slog.Warn("k8s: failed to delete image-step pod", "pod", name, "error", derr)
-		}
-	}()
-
-	waitCtx, cancel := context.WithTimeout(ctx, imagePodStartTimeout)
-	defer cancel()
-	if err := a.pm.WaitForPodRunning(waitCtx, name); err != nil {
-		return -1, fmt.Errorf("runsIn.image %q: pod did not become ready within %s (image pull may have failed): %w", image, imagePodStartTimeout, err)
-	}
-	// env is already baked into the pod's container spec at creation time
-	// (buildImageStepPod/imageStepEnv), so no exec-time env is needed here.
-	return a.exec.ExecStep(ctx, name, "step", script, nil, stdout, stderr)
 }
 
 func appendLabelIfMissing(labels []string, label string) []string {

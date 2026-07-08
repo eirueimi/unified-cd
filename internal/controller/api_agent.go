@@ -151,6 +151,7 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 		Params:         c.Params,
 		TimeoutMinutes: spec.TimeoutMinutes,
 		PodTemplate:    spec.PodTemplate,
+		Native:         spec.Native,
 	}
 
 	for _, o := range spec.Params.Outputs {
@@ -208,7 +209,6 @@ func stepToStepEntry(st dsl.Step) dsl.StepEntry {
 		Outputs: st.Outputs, Call: st.Call, Uses: st.Uses, Cache: st.Cache,
 		UploadArtifact: st.UploadArtifact, DownloadArtifact: st.DownloadArtifact,
 		Post: st.Post, ContinueOnError: st.ContinueOnError, Container: st.Container,
-		RunsIn:         st.RunsIn,
 		ScopeID:        st.ScopeID,
 		ScopeImage:     st.ScopeImage,
 		TimeoutMinutes: st.TimeoutMinutes, Foreach: st.Foreach, Matrix: st.Matrix,
@@ -228,7 +228,6 @@ func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry) api.ClaimStep
 		Cache:           entry.Cache,
 		ContinueOnError: entry.ContinueOnError,
 		Container:       entry.Container,
-		RunsIn:          entry.RunsIn,
 		ScopeID:         entry.ScopeID,
 		ScopeImage:      entry.ScopeImage,
 		TimeoutMinutes:  entry.TimeoutMinutes,

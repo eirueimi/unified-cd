@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
-	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
@@ -141,20 +140,6 @@ func RunStepCapture(ctx context.Context, script string, stderr io.Writer, extraE
 		return stdout, ee.ExitCode(), nil
 	}
 	return stdout, -1, runErr
-}
-
-// RunStepContainer runs script inside a fresh container via rt, writing stdout
-// and stderr to the provided writers (callers tee stdout when they also need
-// it captured). No host workspace is mounted — this is the isolated
-// runsIn.image path.
-func RunStepContainer(ctx context.Context, rt crt.ContainerRuntime, image, script string, stdout, stderr io.Writer, extraEnv []string, cpuLimit, memLimit string) (exitCode int, err error) {
-	return rt.Run(ctx, crt.RunSpec{
-		Image:    image,
-		Script:   script,
-		Env:      extraEnv,
-		CPULimit: cpuLimit,
-		MemLimit: memLimit,
-	}, stdout, stderr)
 }
 
 // logPusherAutoFlushEvery is how often StartAutoFlush ships buffered lines.

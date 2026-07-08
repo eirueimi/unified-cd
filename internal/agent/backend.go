@@ -12,7 +12,6 @@ import (
 // and a concrete execution environment (host process / k8s pod).
 type ExecBackend interface {
 	RunDefault(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error)
-	RunImage(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error)
 	RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error)
 
 	EnsureScope(ctx context.Context, step api.ClaimStep, env []string) (ScopeHandle, error)
@@ -49,9 +48,9 @@ type ExecBackend interface {
 	// both backends (the scope container's fixed working directory).
 	ResolveCachePath(scope ScopeHandle, p string) string
 
-	// DefaultAgentOS reports the OS a non-scoped, non-runsIn.image step
+	// DefaultAgentOS reports the OS a non-scoped, non-container: step
 	// actually executes on, for the UNIFIED_AGENT_OS env var (scoped/
-	// runsIn.image steps always report "linux" regardless of backend, since
+	// container: steps always report "linux" regardless of backend, since
 	// they run in an isolated Linux container either way — see
 	// agentOSForStep). This legitimately differs per backend: the host agent
 	// executes such a step directly on its own OS (runtime.GOOS), while every

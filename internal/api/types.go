@@ -86,6 +86,7 @@ type ClaimResponse struct {
 	// FailFast removed
 	TimeoutMinutes        float64          `json:"timeoutMinutes,omitempty"`
 	PodTemplate           *dsl.PodTemplate `json:"podTemplate,omitempty"`
+	Native                bool             `json:"native,omitempty"`
 	MatrixMaxCombinations int              `json:"matrixMaxCombinations,omitempty"`
 }
 
@@ -111,7 +112,6 @@ type ClaimStep struct {
 	// Needs removed — use parallel: or foreach:
 	ContinueOnError  bool                  `json:"continueOnError,omitempty"`
 	Container        string                `json:"container,omitempty"`
-	RunsIn           *dsl.RunsIn           `json:"runsIn,omitempty"`
 	ScopeID          string                `json:"scopeID,omitempty"`
 	ScopeImage       string                `json:"scopeImage,omitempty"`
 	TimeoutMinutes   float64               `json:"timeoutMinutes,omitempty"`

@@ -75,8 +75,8 @@ func TestExecuteRun_RunsInContainer_NoPodTemplate(t *testing.T) {
 		JobName: "test-runsin",
 		Stages: []api.ClaimStage{{Step: &api.ClaimStep{
 			Index: 0, StageIndex: 0, Name: "container-step",
-			RunsIn: &dsl.RunsIn{Container: "tools"},
-			Run:    "echo ran > " + shellQuote(markerPath),
+			Container: "tools",
+			Run:       "echo ran > " + shellQuote(markerPath),
 		}}},
 	}
 

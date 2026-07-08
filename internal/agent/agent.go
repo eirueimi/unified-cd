@@ -13,20 +13,9 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
-
-// hostContainerLimits converts a validated runsIn.resources spec to the OCI-CLI
-// limit values: cpu as a core decimal, memory as bytes. Only limits map on the
-// host (docker has no request concept); requests are k8s-scheduling-only.
-func hostContainerLimits(rs *dsl.ResourceSpec) (cpu, mem string) {
-	if rs == nil || rs.Limits == nil {
-		return "", ""
-	}
-	return limitStrings(rs.Limits.CPU, rs.Limits.Memory)
-}
 
 // ApprovalPollInterval is how often WaitForApproval polls the controller for a
 // human decision. It is an exported var (not a const) so tests — in this

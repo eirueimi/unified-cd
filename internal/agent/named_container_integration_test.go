@@ -107,7 +107,7 @@ func TestHostRunsInContainer_SharesWorkspace(t *testing.T) {
 				Index:      0,
 				StageIndex: 0,
 				Name:       "write-in-named-container",
-				RunsIn:     &dsl.RunsIn{Container: "tools"},
+				Container:  "tools",
 				Run: "echo -n '" + markerContent + "' > " + markerFile +
 					" && echo \"$UNIFIED_AGENT_OS\"",
 			}},

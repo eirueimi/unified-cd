@@ -45,13 +45,13 @@ type postExecCall struct {
 type fakeK8sBackend struct {
 	mu sync.Mutex
 
-	// Fakes keyed by step name for the default run path (RunDefault/RunImage/
+	// Fakes keyed by step name for the default run path (RunDefault/
 	// RunNamedContainer/RunInScope all consult this map identically — none of
 	// the existing tests exercise more than one of these paths per step).
 	Fakes map[string]fakeStep
 
 	// StepExecFn, when set, overrides Fakes entirely and is invoked for every
-	// exec path (RunDefault/RunImage/RunNamedContainer/RunInScope), receiving
+	// exec path (RunDefault/RunNamedContainer/RunInScope), receiving
 	// the execCtx passed in — used by the cancel/timeout tests to observe or
 	// block on ctx.
 	StepExecFn func(ctx context.Context, step api.ClaimStep, script string) (exitCode int, err error)
@@ -92,7 +92,7 @@ func (f *fakeK8sBackend) recordPostCall(c postExecCall) {
 	f.PostCalls = append(f.PostCalls, c)
 }
 
-// runFake is the shared implementation behind RunDefault/RunImage/
+// runFake is the shared implementation behind RunDefault/
 // RunNamedContainer/RunInScope: it dispatches to StepExecFn if set, else
 // looks the step up in Fakes (default: exit 0, no output).
 func (f *fakeK8sBackend) runFake(ctx context.Context, step api.ClaimStep, script string, stdout, stderr io.Writer) (int, error) {
@@ -111,10 +111,6 @@ func (f *fakeK8sBackend) runFake(ctx context.Context, step api.ClaimStep, script
 }
 
 func (f *fakeK8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	return f.runFake(ctx, step, script, stdout, stderr)
-}
-
-func (f *fakeK8sBackend) RunImage(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
 	return f.runFake(ctx, step, script, stdout, stderr)
 }
 

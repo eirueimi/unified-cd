@@ -454,6 +454,31 @@ func TestBuildClaimResponse_CarriesScopeFields(t *testing.T) {
 	assert.Equal(t, "", resp.Stages[1].Parallel[1].ScopeImage)
 }
 
+// TestBuildClaimResponse_ThreadsNative verifies the job-level native: flag
+// (dsl.Spec.Native) is threaded onto the ClaimResponse so the agent knows to
+// run the claim as a host-process job rather than in a claim pod.
+func TestBuildClaimResponse_ThreadsNative(t *testing.T) {
+	spec := dsl.Spec{Native: true, Steps: []dsl.StepEntry{{Name: "s", Run: "true"}}}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	require.NoError(t, err)
+	assert.True(t, resp.Native)
+}
+
+// TestBuildClaimResponse_StepContainerThreaded verifies a step's container:
+// exec target is threaded onto the ClaimStep (the sole exec-target field on
+// the wire type).
+func TestBuildClaimResponse_StepContainerThreaded(t *testing.T) {
+	spec := dsl.Spec{Steps: []dsl.StepEntry{{Name: "s", Run: "true", Container: "mysql"}}}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Stages[0].Step)
+	assert.Equal(t, "mysql", resp.Stages[0].Step.Container)
+}
+
 func TestBuildClaimResponse_Finally(t *testing.T) {
 	spec := dsl.Spec{
 		Steps: []dsl.StepEntry{

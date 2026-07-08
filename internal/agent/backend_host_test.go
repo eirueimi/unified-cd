@@ -28,7 +28,7 @@ func TestHostBackend_RunNamedContainer_ExecsIntoNamedContainer(t *testing.T) {
 	}}}
 	b := newHostBackend(a, "r1", "/host/ws", pt)
 
-	step := api.ClaimStep{Index: 0, Name: "s", RunsIn: &dsl.RunsIn{Container: "tools"}}
+	step := api.ClaimStep{Index: 0, Name: "s", Container: "tools"}
 	ec, err := b.RunNamedContainer(context.Background(), step, "tools", "echo hi", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("RunNamedContainer: %v", err)
@@ -60,7 +60,7 @@ func TestHostBackend_RunNamedContainer_UnknownContainer(t *testing.T) {
 	pt := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{}}}
 	b := newHostBackend(a, "r1", "/host/ws", pt)
 
-	step := api.ClaimStep{Name: "s", RunsIn: &dsl.RunsIn{Container: "missing"}}
+	step := api.ClaimStep{Name: "s", Container: "missing"}
 	if _, err := b.RunNamedContainer(context.Background(), step, "missing", "echo hi", nil, nil, nil); err == nil {
 		t.Fatal("expected error for a container not in the podTemplate")
 	}

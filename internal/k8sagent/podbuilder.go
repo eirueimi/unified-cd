@@ -3,7 +3,6 @@ package k8sagent
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -310,53 +309,6 @@ func buildWorkspaceVolume(wsCfg *dsl.WorkspaceConfig) corev1.Volume {
 		},
 	}
 	return vol
-}
-
-// buildImageStepPod builds a throwaway pod that runs a single runsIn.image step
-// in isolation: one container from the given image, kept alive with
-// `sleep infinity` so the step script can be exec'd into it. No workspace
-// volume and no artifact sidecar are attached (inputs arrive via env, output
-// via stdout). imagePullSecrets are intentionally NOT set — the pod uses the
-// namespace's default ServiceAccount, exactly like BuildPod.
-func buildImageStepPod(runID, namespace, image string, env map[string]string, deadlineSeconds int64, resources *dsl.ResourceSpec) *corev1.Pod {
-	suffix := runID
-	if len(suffix) > 16 {
-		suffix = suffix[:16]
-	}
-
-	// Deterministic, sorted env for a stable PodSpec (and stable tests).
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	envVars := make([]corev1.EnvVar, 0, len(keys))
-	for _, k := range keys {
-		envVars = append(envVars, corev1.EnvVar{Name: k, Value: env[k]})
-	}
-
-	deadline := deadlineSeconds
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: fmt.Sprintf("ucd-img-%s-", suffix),
-			Namespace:    namespace,
-			Labels: map[string]string{
-				"app":              "unified-cd-agent",
-				"unified-cd/runId": runID,
-			},
-		},
-		Spec: corev1.PodSpec{
-			RestartPolicy:         corev1.RestartPolicyNever,
-			ActiveDeadlineSeconds: &deadline,
-			Containers: []corev1.Container{{
-				Name:      "step",
-				Image:     image,
-				Command:   []string{"sleep", "infinity"},
-				Env:       envVars,
-				Resources: toResourceRequirements(resources),
-			}},
-		},
-	}
 }
 
 // toResourceRequirements converts a validated dsl.ResourceSpec to k8s

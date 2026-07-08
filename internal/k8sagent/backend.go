@@ -43,24 +43,6 @@ func (b *k8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, script 
 	return b.a.exec.ExecStep(ctx, b.podName, execContainer(step), script, env, stdout, stderr)
 }
 
-// RunImage runs a step in a fresh, throwaway pod built from step.RunsIn.Image.
-// The pod's env is sourced from the orchestrator's already-expanded env
-// (KEY=VALUE pairs — the caller resolves {{ .Params.x }} etc. before calling
-// RunImage), NOT the raw step.Env map, so a templated value ships resolved
-// rather than as the literal template string. imageStepEnv still supplies any
-// k8s-specific extras (currently just UNIFIED_AGENT_OS=linux); since the
-// orchestrator's env already carries UNIFIED_AGENT_OS from b.DefaultAgentOS(),
-// envSliceToMap is merged in last so the caller's expanded value wins over
-// imageStepEnv's default and no duplicate key results.
-func (b *k8sBackend) RunImage(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	envMap := imageStepEnv(step)
-	for k, v := range envSliceToMap(env) {
-		envMap[k] = v
-	}
-	deadline := imageStepDeadline(step)
-	return b.a.runImageStep(ctx, b.runID, step.RunsIn.Image, envMap, deadline, step.RunsIn.Resources, script, stdout, stderr)
-}
-
 // envSliceToMap converts "KEY=VALUE" pairs (as produced by the orchestrator's
 // already-template-expanded extraEnv) into a map. A malformed entry with no
 // "=" is skipped defensively; the orchestrator never produces one.
@@ -115,7 +97,7 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 // is only ever touched from orchestrate's single-goroutine, Sequential-mode
 // step loop, so no mutex is needed.
 //
-// The scope pod's env mirrors the RunImage fix (commit 9e09c76): the
+// The scope pod's env mirrors the expanded-env fix (commit 9e09c76): the
 // orchestrator's already-template-expanded env (KEY=VALUE pairs) is merged
 // over imageStepEnv(step)'s k8s-specific defaults, so the caller's expanded
 // value wins over the raw, unexpanded step.Env map and a templated env value

@@ -99,7 +99,7 @@ func parseContainerDef(name string, c map[string]any) containerDef {
 // limitStrings converts k8s quantity strings (e.g. "500m", "256Mi") to the
 // CreateSpec representation: CPU in cores ("0.5") and memory in bytes
 // ("268435456"). An empty or unparseable input yields an empty output (no
-// limit). Shared by namedContainerDef and hostContainerLimits.
+// limit). Used by namedContainerDef.
 func limitStrings(cpu, mem string) (cpuCores, memBytes string) {
 	if cpu != "" {
 		if q, err := resource.ParseQuantity(cpu); err == nil {

@@ -363,8 +363,9 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				var runErr error
 				switch {
 				case isScopedStep(step):
-					// Scoped steps never carry RunsIn (mutually exclusive at the DSL
-					// level), so this case takes precedence over the RunsIn cases below.
+					// Scoped steps never carry a container: exec target (mutually
+					// exclusive at the DSL level), so this case takes precedence over
+					// the container case below.
 					h, herr := b.EnsureScope(stepCtx, step, extraEnv)
 					if herr != nil {
 						runErr = herr
@@ -373,10 +374,8 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					}
 					stepScope = h
 					ec, runErr = b.RunInScope(stepCtx, h, expandedRun, extraEnv, stdoutTee, shippedStderr)
-				case step.RunsIn != nil && step.RunsIn.Container != "":
-					ec, runErr = b.RunNamedContainer(stepCtx, step, step.RunsIn.Container, expandedRun, extraEnv, stdoutTee, shippedStderr)
-				case step.RunsIn != nil && step.RunsIn.Image != "":
-					ec, runErr = b.RunImage(stepCtx, step, expandedRun, extraEnv, stdoutTee, shippedStderr)
+				case step.Container != "":
+					ec, runErr = b.RunNamedContainer(stepCtx, step, step.Container, expandedRun, extraEnv, stdoutTee, shippedStderr)
 				default:
 					ec, runErr = b.RunDefault(stepCtx, step, expandedRun, extraEnv, stdoutTee, shippedStderr)
 				}
@@ -429,10 +428,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			}
 
 			if status == "Succeeded" && step.Post != nil {
-				container := ""
-				if step.RunsIn != nil {
-					container = step.RunsIn.Container
-				}
+				container := step.Container
 				postHooksMu.Lock()
 				hookStack = append(hookStack, postHookEntry{
 					stepName:  step.Name,
