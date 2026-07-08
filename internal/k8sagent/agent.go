@@ -139,6 +139,22 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	slog.Info("k8s: executing Run", "runId", c.RunID, "job", c.JobName)
 
+	if c.Native {
+		reason := "native: true jobs are host-only; the k8s agent cannot run them"
+		slog.Error(reason, "runId", c.RunID)
+		_ = a.client.AppendLogBulk(ctx, a.cfg.AgentID, c.RunID, -1, []api.LogAppendRequest{{
+			RunID:     c.RunID,
+			StepIndex: -1,
+			Stream:    "stderr",
+			Timestamp: time.Now().UTC(),
+			Line:      reason,
+		}})
+		agentlib.RetryUntilSuccess(ctx, func(cc context.Context) error {
+			return a.client.FinishRun(cc, a.cfg.AgentID, c.RunID, api.RunFailed)
+		})
+		return
+	}
+
 	usePool := c.PodTemplate != nil && c.PodTemplate.Reuse
 
 	var pooledPod *PooledPod
