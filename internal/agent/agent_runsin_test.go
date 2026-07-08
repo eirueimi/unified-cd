@@ -17,17 +17,14 @@ import (
 )
 
 // TestExecuteRun_RunsInContainer_NoPodTemplate verifies the deterministic
-// error branch in the host agent's step-dispatch switch (agent.go ~line 452):
-// a runsIn.container step whose container is not defined in any podTemplate
-// must fail (exit -1), never silently running its command on the host. This
-// mirrors the runJobStages harness pattern from agent_finally_test.go
-// (mock controller server driven via executeRun), extended to also capture
-// ExitCode and to prove the step's Run command never executed on the host.
-//
-// This replaces the former TestExecuteRun_RunsInContainer_HostAgentHardError:
-// its premise ("runsIn.container is never supported on the host") is now
-// false — see TestHostBackend_RunNamedContainer_ExecsIntoNamedContainer and
-// TestExecuteRun_PodTemplate_NotRejectedOnHost's neighbors in this package.
+// error branch for a NATIVE claim: a container: step must fail (exit -1),
+// never silently running its command on the host, because a native claim has
+// no claim pod to exec into. This mirrors the runJobStages harness pattern
+// from agent_finally_test.go (mock controller server driven via executeRun),
+// extended to also capture ExitCode and to prove the step's Run command never
+// executed on the host. The claim is marked Native so executeRun does not try
+// to build a claim pod (which needs a real container runtime the test lacks);
+// the isolated container: path is covered by backend_isolated_test.go.
 func TestExecuteRun_RunsInContainer_NoPodTemplate(t *testing.T) {
 	const agentID = "runsin-agent"
 	const runID = "run-runsin-nopt"
@@ -58,7 +55,9 @@ func TestExecuteRun_RunsInContainer_NoPodTemplate(t *testing.T) {
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/logs/bulk", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/steps/0/logs/bulk", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/finish", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Status string `json:"status"` }
+		var body struct {
+			Status string `json:"status"`
+		}
 		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
 		select {
 		case finishCh <- body.Status:
@@ -73,6 +72,7 @@ func TestExecuteRun_RunsInContainer_NoPodTemplate(t *testing.T) {
 	claim := api.ClaimResponse{
 		RunID:   runID,
 		JobName: "test-runsin",
+		Native:  true,
 		Stages: []api.ClaimStage{{Step: &api.ClaimStep{
 			Index: 0, StageIndex: 0, Name: "container-step",
 			Container: "tools",
@@ -108,9 +108,10 @@ func shellQuote(s string) string {
 }
 
 // TestExecuteRun_PodTemplate_NotRejectedOnHost verifies the host agent no
-// longer hard-fails a claim merely because it carries a podTemplate: with the
-// guard relaxed, an empty-stage podTemplate claim finishes Succeeded (the
-// podTemplate is only consulted to resolve runsIn.container definitions).
+// longer hard-fails a claim merely because it carries a podTemplate: an
+// empty-stage claim finishes Succeeded. The claim is marked Native so the run
+// needs no claim pod (and thus no real container runtime); the point under
+// test is that a podTemplate on the claim is not itself a rejection reason.
 func TestExecuteRun_PodTemplate_NotRejectedOnHost(t *testing.T) {
 	const agentID = "pt-agent"
 	const runID = "run-podtemplate"
@@ -138,6 +139,7 @@ func TestExecuteRun_PodTemplate_NotRejectedOnHost(t *testing.T) {
 	claim := api.ClaimResponse{
 		RunID:       runID,
 		JobName:     "pt-job",
+		Native:      true,
 		PodTemplate: &dsl.PodTemplate{Spec: map[string]any{"containers": []any{}}},
 		// No stages: nothing to run, so the claim should finish Succeeded.
 	}

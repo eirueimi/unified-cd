@@ -61,6 +61,12 @@ type Agent struct {
 	// (docker|podman|nerdctl|wslc|container); empty = auto-detect.
 	RuntimePref string
 
+	// PauseImage / RunnerImage back isolated claims' pods: PauseImage holds
+	// the claim netns; RunnerImage is the injected "job" primary when the
+	// podTemplate defines none (host twin of the k8s fallback image).
+	PauseImage  string
+	RunnerImage string
+
 	resolvedRuntime crt.ContainerRuntime
 	runtimeErr      error
 	runtimeOnce     sync.Once
@@ -238,8 +244,14 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 		}
 		clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
 		if err := prepareWorkspace(runCtx, workDir, mode, clean, a.containerRuntime); err != nil {
-			slog.Error("prepare workspace failed", "dir", workDir, "error", err)
-			// TODO(task-7): report run failure to the controller
+			slog.Error("prepare workspace failed", "dir", workDir, "error", err, "runId", resp.RunID)
+			// The claim is ours but its workspace could not be prepared, so the
+			// run can never start. Fail it on the controller (retried until it
+			// lands) rather than leaving it Running until the stuck-run reaper
+			// trips — the same failure path executeRun uses.
+			retryUntilSuccess(runCtx, func(cc context.Context) error {
+				return a.Client.FinishRun(cc, a.ID, resp.RunID, api.RunFailed)
+			})
 			continue
 		}
 		a.executeRun(runCtx, resp, workDir)
@@ -247,27 +259,42 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 }
 
 // executeRun is the host agent's thin wrapper over the shared orchestration
-// loop (RunClaim, internal/agent/orchestrator.go): it handles the ONE thing
-// only the host agent needs to decide before the shared loop can run — a
-// podTemplate-bearing claim is accepted with a WARN (host-unsupported
-// features are ignored) and the podTemplate is threaded into hostBackend so
-// it can resolve runsIn.container definitions — then constructs hostBackend
-// (the ExecBackend seam for a bare-process claim, rooted at workDir) and
-// hands off to RunClaim for everything else (secrets fetch, cancellation,
-// step dispatch, finally, output promotion, FinishRun).
+// loop (RunClaim, internal/agent/orchestrator.go). It branches on the claim
+// kind before handing off:
+//
+//   - native (c.Native): no pod is built; the backend runs default steps as
+//     host processes exactly as before.
+//   - isolated: it resolves the container runtime and eagerly builds the claim
+//     pod (pause netns owner + every podTemplate container + the injected
+//     "job" primary), which becomes the execution target for every default and
+//     container: step. A missing runtime or a failed pod build fails the run
+//     fast (the isolated job cannot run without its pod).
+//
+// Everything else — secrets fetch, cancellation, step dispatch, finally,
+// output promotion, FinishRun — is delegated to RunClaim via hostBackend.
 func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir string) {
-	if c.PodTemplate != nil {
-		// The host cannot honor k8s-only podTemplate features (PVC workspace,
-		// extra pod-spec containers/volumes, the artifact sidecar). It uses the
-		// podTemplate only to resolve runsIn.container definitions; every other
-		// step runs on the host workspace. Warn once so a misrouted k8s job is
-		// diagnosable, but do not reject it (a host agent may legitimately be
-		// selected for a runsIn.container job).
-		slog.Warn("host agent ignores host-unsupported podTemplate features (PVC workspace, extra pod-spec containers/volumes, artifact sidecar); podTemplate is used only to resolve runsIn.container definitions",
-			"runId", c.RunID, "job", c.JobName)
+	failClaim := func(msg string, err error) {
+		slog.Error(msg, "runId", c.RunID, "error", err)
+		retryUntilSuccess(ctx, func(cc context.Context) error {
+			return a.Client.FinishRun(cc, a.ID, c.RunID, api.RunFailed)
+		})
 	}
 
-	backend := newHostBackend(a, c.RunID, workDir, c.PodTemplate)
+	var pod *claimPodManager
+	if !c.Native {
+		rt, err := a.containerRuntime()
+		if err != nil {
+			failClaim("isolated job requires a container runtime (docker/podman/nerdctl); mark the job native: true or route it via agentSelector", err)
+			return
+		}
+		pod = newClaimPodManager(rt, workDir, hostNamedMountPath(c.PodTemplate), a.PauseImage, a.RunnerImage)
+		if err := pod.Start(ctx, c.PodTemplate); err != nil {
+			pod.CloseAll(context.WithoutCancel(ctx))
+			failClaim("claim pod construction failed", err)
+			return
+		}
+	}
+	backend := newHostBackend(a, c.RunID, workDir, pod)
 	RunClaim(ctx, a.Client, a.ID, c, backend)
 }
 

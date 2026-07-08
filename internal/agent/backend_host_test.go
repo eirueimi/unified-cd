@@ -11,22 +11,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestHostBackend_RunNamedContainer_ExecsIntoNamedContainer verifies that a
-// runsIn.container step, when its container is defined in the claim's
-// podTemplate, execs into a long-lived container bind-mounted at the host
-// workspace — and that CloseScopes (claim end) tears it down. This replaces
-// the former TestHostBackend_RunNamedContainer_NotSupported: runsIn.container
-// is now supported on the host agent (see RunNamedContainer).
-func TestHostBackend_RunNamedContainer_ExecsIntoNamedContainer(t *testing.T) {
+// TestHostBackend_RunNamedContainer_ExecsIntoPodContainer verifies that a
+// container: step on an isolated claim execs into the claim pod's named
+// container (bind-mounted at the workspace) and that CloseScopes (claim end)
+// tears the pod down. This is the container: dispatch case, now routed through
+// the claim pod that replaced the retired namedContainerManager.
+func TestHostBackend_RunNamedContainer_ExecsIntoPodContainer(t *testing.T) {
 	rt := &recordingRT{}
-	a := &Agent{ID: "a1"}
-	a.runtimeOnce.Do(func() {}) // mark runtime as resolved
-	a.resolvedRuntime = rt
-
 	pt := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{
 		map[string]any{"name": "tools", "image": "node:20"},
 	}}}
-	b := newHostBackend(a, "r1", "/host/ws", pt)
+	pod := newClaimPodManager(rt, "/host/ws", "/workspace", "pause:img", "runner:img")
+	require.NoError(t, pod.Start(context.Background(), pt))
+	b := newHostBackend(&Agent{ID: "a1"}, "r1", "/host/ws", pod)
 
 	step := api.ClaimStep{Index: 0, Name: "s", Container: "tools"}
 	ec, err := b.RunNamedContainer(context.Background(), step, "tools", "echo hi", nil, nil, nil)
@@ -36,33 +33,44 @@ func TestHostBackend_RunNamedContainer_ExecsIntoNamedContainer(t *testing.T) {
 	if ec != 0 {
 		t.Fatalf("exit = %d, want 0", ec)
 	}
-	if got := rt.creates.Load(); got != 1 {
-		t.Fatalf("expected 1 Create, got %d", got)
+	// pause + tools + injected "job" = 3 containers, all bind-mounting the workspace.
+	if got := rt.creates.Load(); got != 3 {
+		t.Fatalf("expected 3 Create (pause + tools + job), got %d", got)
 	}
-	if len(rt.specs) != 1 || len(rt.specs[0].Mounts) != 1 || rt.specs[0].Mounts[0].HostPath != "/host/ws" {
-		t.Fatalf("expected workspace bind mount from /host/ws, got %+v", rt.specs)
+	toolsSpec := rt.specs[1] // pause is [0]
+	if len(toolsSpec.Mounts) != 1 || toolsSpec.Mounts[0].HostPath != "/host/ws" {
+		t.Fatalf("expected workspace bind mount from /host/ws, got %+v", toolsSpec)
 	}
 	b.CloseScopes(context.Background())
-	if got := rt.removes.Load(); got != 1 {
-		t.Fatalf("expected teardown Remove, got %d", got)
+	if got := rt.removes.Load(); got != 3 {
+		t.Fatalf("expected pod teardown (3 Remove), got %d", got)
 	}
 }
 
 // TestHostBackend_RunNamedContainer_UnknownContainer verifies that a
-// runsIn.container step whose container name is absent from the claim's
-// podTemplate fails with a clear error rather than falling back to some
-// other exec path.
+// container: step whose name is absent from the claim pod fails with a clear
+// error rather than falling back to some other exec path.
 func TestHostBackend_RunNamedContainer_UnknownContainer(t *testing.T) {
 	rt := &recordingRT{}
-	a := &Agent{ID: "a1"}
-	a.runtimeOnce.Do(func() {})
-	a.resolvedRuntime = rt
 	pt := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{}}}
-	b := newHostBackend(a, "r1", "/host/ws", pt)
+	pod := newClaimPodManager(rt, "/host/ws", "/workspace", "pause:img", "runner:img")
+	require.NoError(t, pod.Start(context.Background(), pt))
+	b := newHostBackend(&Agent{ID: "a1"}, "r1", "/host/ws", pod)
 
 	step := api.ClaimStep{Name: "s", Container: "missing"}
 	if _, err := b.RunNamedContainer(context.Background(), step, "missing", "echo hi", nil, nil, nil); err == nil {
-		t.Fatal("expected error for a container not in the podTemplate")
+		t.Fatal("expected error for a container not in the claim pod")
+	}
+}
+
+// TestHostBackend_Native_RunNamedContainer_Errors verifies a native claim
+// (nil pod) rejects a container: step rather than silently running it on the
+// host.
+func TestHostBackend_Native_RunNamedContainer_Errors(t *testing.T) {
+	b := newHostBackend(&Agent{ID: "a1"}, "r1", "/host/ws", nil)
+	step := api.ClaimStep{Name: "s", Container: "tools"}
+	if _, err := b.RunNamedContainer(context.Background(), step, "tools", "echo hi", nil, nil, nil); err == nil {
+		t.Fatal("expected error: container: step on a native claim")
 	}
 }
 

@@ -60,6 +60,7 @@ func TestExecuteRun_CancelPropagation(t *testing.T) {
 	}
 
 	claim := api.ClaimResponse{
+		Native:  true,
 		RunID:   "run-cancel",
 		JobName: "test",
 		Stages:  []api.ClaimStage{{Step: &api.ClaimStep{Name: "s1", Index: 0, Run: "sleep 30"}}},
@@ -141,6 +142,7 @@ func TestExecuteRun_CancelledStepReportsCancelledStatus(t *testing.T) {
 	}
 
 	claim := api.ClaimResponse{
+		Native:  true,
 		RunID:   "run-cancel",
 		JobName: "test",
 		Stages:  []api.ClaimStage{{Step: &api.ClaimStep{Name: "long-step", Index: 0, Run: "sleep 30"}}},
@@ -222,6 +224,7 @@ func TestExecuteRun_FinallyRunsOnCancel(t *testing.T) {
 	}
 
 	claim := api.ClaimResponse{
+		Native:  true,
 		RunID:   "run-cancel",
 		JobName: "test",
 		Stages:  []api.ClaimStage{{Step: &api.ClaimStep{Name: "s1", Index: 0, Run: "sleep 30"}}},

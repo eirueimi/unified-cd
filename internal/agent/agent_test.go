@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/eirueimi/unified-cd/internal/api"
 )
 
 // registerHandler returns 204 for /api/v1/agents/{id}/register.
@@ -36,6 +36,7 @@ func finishHandler(w http.ResponseWriter, r *http.Request) {
 
 func claimResp(runID, script string) api.ClaimResponse {
 	return api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test",
 		Stages:  []api.ClaimStage{{Step: &api.ClaimStep{Name: "s1", Index: 0, Run: script}}},
@@ -370,6 +371,7 @@ func TestAgent_StepTimeout(t *testing.T) {
 	}
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-step-timeout",
 		Stages: []api.ClaimStage{
@@ -415,6 +417,7 @@ func TestAgent_JobTimeout(t *testing.T) {
 	}
 
 	resp := api.ClaimResponse{
+		Native:         true,
 		RunID:          runID,
 		JobName:        "test-job-timeout",
 		TimeoutMinutes: 0.001, // ~60ms (job level)
@@ -458,6 +461,7 @@ func TestAgent_ExposesAgentOSEnvVar(t *testing.T) {
 	}
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-os-env",
 		Stages: []api.ClaimStage{
@@ -512,6 +516,7 @@ func TestAgent_CallStep_NonexistentJob_FailsRun(t *testing.T) {
 	}
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-call-missing-job",
 		Stages: []api.ClaimStage{
@@ -591,6 +596,7 @@ func TestAgent_UploadArtifact_RelativePath(t *testing.T) {
 	}
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-upload-artifact",
 		Stages: []api.ClaimStage{

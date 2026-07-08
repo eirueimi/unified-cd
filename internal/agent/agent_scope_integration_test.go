@@ -71,6 +71,7 @@ func TestExecuteRun_ScopedStep_RealRuntimeRoundTrip(t *testing.T) {
 	}
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-scoped-integration",
 		Stages: []api.ClaimStage{

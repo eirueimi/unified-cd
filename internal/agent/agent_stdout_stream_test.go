@@ -89,6 +89,7 @@ func TestExecuteRun_StdoutStreamsWhileStepRuns(t *testing.T) {
 		Client: NewClient(srv.URL, "tok"),
 	}
 	claim := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-stdout-stream",
 		Stages: []api.ClaimStage{

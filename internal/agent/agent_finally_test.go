@@ -68,6 +68,7 @@ func runJobStages(t *testing.T, stages []api.ClaimStage, finally []api.ClaimStag
 	}
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-finally",
 		Stages:  stages,

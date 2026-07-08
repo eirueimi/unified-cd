@@ -93,6 +93,7 @@ func runApprovalJob(t *testing.T, stages []api.ClaimStage, decided string) (map[
 	}
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-approval",
 		Stages:  stages,

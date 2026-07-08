@@ -271,6 +271,13 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 	}
 
 	claim := tc.Claim()
+	// This suite asserts NATIVE host-agent parity: real bash execution on the
+	// host workspace, no claim pod. Mark the claim native so executeRun keeps
+	// the host-process path (an isolated claim would try to build a claim pod,
+	// which needs a real container runtime this unit test does not provide).
+	// Isolated-claim behavior is covered by backend_isolated_test.go and the
+	// Task 8 integration suite.
+	claim.Native = true
 
 	// post-hooks-lifo: the host agent's post: hook drain runs the script via
 	// RunStepCapture with stdout/stderr never shipped to the log pipeline

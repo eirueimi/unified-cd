@@ -54,6 +54,7 @@ func TestExecuteRun_IfFalse_StepSkipped(t *testing.T) {
 
 	a := &Agent{ID: "a1", Client: NewClient(srv.URL, "tok")}
 	claim := api.ClaimResponse{
+		Native:  true,
 		RunID:   "run-if",
 		JobName: "test",
 		Stages: []api.ClaimStage{
@@ -122,6 +123,7 @@ func TestExecuteRun_IfFalse_DownstreamStillRuns(t *testing.T) {
 
 	a := &Agent{ID: "a1", Client: NewClient(srv.URL, "tok")}
 	claim := api.ClaimResponse{
+		Native:  true,
 		RunID:   "run-downstream",
 		JobName: "test",
 		Stages: []api.ClaimStage{
@@ -184,6 +186,7 @@ func TestExecuteRun_IfTrue_StepRuns(t *testing.T) {
 
 	a := &Agent{ID: "a1", Client: NewClient(srv.URL, "tok")}
 	claim := api.ClaimResponse{
+		Native:  true,
 		RunID:   "run-iftrue",
 		JobName: "test",
 		Stages: []api.ClaimStage{

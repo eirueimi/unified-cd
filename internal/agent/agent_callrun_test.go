@@ -67,6 +67,7 @@ func runCallStepThroughFakeClient(t *testing.T, jobName, childRunID string) []ap
 	}
 
 	claim := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-call",
 		Stages: []api.ClaimStage{
@@ -192,6 +193,7 @@ func TestExecuteRun_CallStep_BadParamTemplate_FailsStep(t *testing.T) {
 	}
 
 	claim := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-call-badparam",
 		Stages: []api.ClaimStage{

@@ -18,30 +18,34 @@ import (
 )
 
 // hostBackend is the ExecBackend implementation for the host (bare-process)
-// agent. It owns the claim-scoped scopeManager (uses-scope containers) and the
-// namedContainerManager (runsIn.container containers), both created lazily on
-// first use, plus the secret masker used by StepLogWriters. podTemplate is the
-// claim's podTemplate (nil for a plain claim); it is consulted only to resolve
-// runsIn.container definitions.
+// agent. It owns the claim-scoped scopeManager (uses-scope containers), created
+// lazily on first use, plus the secret masker used by StepLogWriters.
+//
+// pod is the claim pod backing an ISOLATED claim (nil for native: true). When
+// set, every default step execs into its primary "job" container, container:
+// steps exec into the named container, DefaultAgentOS reports "linux", and
+// non-scoped cache paths resolve against the claim workspace (the bind mount
+// makes the host workDir and the in-container mountPath the same tree). When
+// nil, the backend keeps today's native behavior exactly: default steps run as
+// host processes, container: steps error, DefaultAgentOS is runtime.GOOS, and
+// non-scoped cache paths are left as authored.
 type hostBackend struct {
-	a           *Agent
-	runID       string
-	workDir     string
-	podTemplate *dsl.PodTemplate
+	a       *Agent
+	runID   string
+	workDir string
+	pod     *claimPodManager
 
 	scopesMu sync.Mutex
 	scopes   *scopeManager
-
-	namedMu sync.Mutex
-	named   *namedContainerManager
 
 	masker *secrets.Masker
 }
 
 // newHostBackend constructs the ExecBackend for one claim's executeRun call.
-// podTemplate is api.ClaimResponse.PodTemplate (nil when the claim has none).
-func newHostBackend(a *Agent, runID, workDir string, podTemplate *dsl.PodTemplate) *hostBackend {
-	return &hostBackend{a: a, runID: runID, workDir: workDir, podTemplate: podTemplate}
+// pod is the claim pod for an isolated claim, or nil for a native (native:
+// true) claim.
+func newHostBackend(a *Agent, runID, workDir string, pod *claimPodManager) *hostBackend {
+	return &hostBackend{a: a, runID: runID, workDir: workDir, pod: pod}
 }
 
 // hostScopeHandle is the concrete payload behind ScopeHandle on the host
@@ -87,13 +91,18 @@ func (b *hostBackend) getScopes() (*scopeManager, error) {
 	return b.scopes, nil
 }
 
-// RunDefault runs a step directly on the host workspace.
+// RunDefault runs a default step: for an isolated claim it execs into the
+// pod's primary ("job") container; for a native claim it runs directly on the
+// host workspace.
 func (b *hostBackend) RunDefault(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
+	if b.pod != nil {
+		return b.pod.Exec(ctx, "", script, env, stdout, stderr)
+	}
 	return RunStep(ctx, script, stdout, stderr, env, b.workDir)
 }
 
 // hostNamedMountPath is the in-container path the host workspace is bind-mounted
-// at for runsIn.container containers. It mirrors the k8s workspace mount
+// at for the claim pod's containers. It mirrors the k8s workspace mount
 // (podbuilder.injectWorkspace): /workspace unless the podTemplate overrides it.
 func hostNamedMountPath(pt *dsl.PodTemplate) string {
 	if pt != nil && pt.Workspace != nil && pt.Workspace.MountPath != "" {
@@ -102,41 +111,16 @@ func hostNamedMountPath(pt *dsl.PodTemplate) string {
 	return "/workspace"
 }
 
-// namedContainers returns the claim's namedContainerManager, creating it lazily
-// on first use (mirrors getScopes). A missing container runtime is a hard error
-// surfaced to the step (no silent host fallback).
-func (b *hostBackend) namedContainers() (*namedContainerManager, error) {
-	b.namedMu.Lock()
-	defer b.namedMu.Unlock()
-	if b.named != nil {
-		return b.named, nil
-	}
-	rt, err := b.a.containerRuntime()
-	if err != nil {
-		return nil, fmt.Errorf("runsIn.container requires a container runtime: %w", err)
-	}
-	b.named = newNamedContainerManager(rt, b.workDir, hostNamedMountPath(b.podTemplate))
-	return b.named, nil
-}
-
-// RunNamedContainer runs a runsIn.container step in a long-lived container named
-// `container`, defined in the claim's podTemplate and sharing the host
-// workspace via a bind mount. This is the host counterpart to the k8s agent's
-// exec-into-named-pod-container behavior.
+// RunNamedContainer runs a container: step in the claim pod's named container,
+// defined in the claim's podTemplate and sharing the workspace via the pod
+// bind mount. This is the host counterpart to the k8s agent's
+// exec-into-named-pod-container behavior. A native claim has no pod, so a
+// container: step is an error there (no silent host fallback).
 func (b *hostBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	def, err := namedContainerDef(b.podTemplate, container)
-	if err != nil {
-		return -1, err
+	if b.pod == nil {
+		return -1, fmt.Errorf("container: %q requires an isolated job (this claim is native)", container)
 	}
-	nm, err := b.namedContainers()
-	if err != nil {
-		return -1, err
-	}
-	h, err := nm.ensure(ctx, def)
-	if err != nil {
-		return -1, err
-	}
-	return nm.exec(ctx, h, script, env, stdout, stderr)
+	return b.pod.Exec(ctx, container, script, env, stdout, stderr)
 }
 
 // EnsureScope provisions (or reuses) the step's uses-scope container.
@@ -161,8 +145,8 @@ func (b *hostBackend) RunInScope(ctx context.Context, h ScopeHandle, script stri
 	return sm.exec(ctx, handle, script, env, stdout, stderr)
 }
 
-// CloseScopes tears down every scope container and every named runsIn.container
-// container opened during the claim.
+// CloseScopes tears down every scope container opened during the claim and, for
+// an isolated claim, the claim pod (all containers plus the pause netns owner).
 func (b *hostBackend) CloseScopes(ctx context.Context) {
 	b.scopesMu.Lock()
 	scopes := b.scopes
@@ -171,11 +155,8 @@ func (b *hostBackend) CloseScopes(ctx context.Context) {
 		scopes.closeAll(ctx)
 	}
 
-	b.namedMu.Lock()
-	named := b.named
-	b.namedMu.Unlock()
-	if named != nil {
-		named.closeAll(ctx)
+	if b.pod != nil {
+		b.pod.CloseAll(ctx)
 	}
 }
 
@@ -281,47 +262,49 @@ func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) string {
 }
 
 // ResolveCachePath resolves p against the scope container's fixed working
-// directory when scoped (identical to ResolveArtifactPath); a non-scoped p is
-// left UNRESOLVED (as authored), matching the pre-refactor host agent's
-// cache.Restore/cache.Save calls, which treat it as relative to the
-// objectstore's own root rather than the claim's workDir.
+// directory when scoped (identical to ResolveArtifactPath). For a non-scoped p
+// the behavior branches on the claim kind:
+//   - isolated: resolve against the claim workspace like the k8s backend joins
+//     the pod mount path; the bind mount makes the host workDir and the
+//     in-container mountPath the same tree, so a relative cache path must be
+//     anchored to it (matching every other pod-semantics path).
+//   - native: leave p UNRESOLVED (as authored), matching the pre-refactor host
+//     agent's cache.Restore/cache.Save calls, which treat it as relative to the
+//     objectstore's own root rather than the claim's workDir.
 func (b *hostBackend) ResolveCachePath(scope ScopeHandle, p string) string {
 	if !scope.IsZero() {
 		return resolveScopePath(p)
 	}
+	if b.pod != nil {
+		return resolveWorkspacePath(b.workDir, p)
+	}
 	return p
 }
 
-// DefaultAgentOS reports the host process's own OS: a non-scoped,
-// non-container: step executes directly on the host.
+// DefaultAgentOS reports "linux" for an isolated claim (its default steps exec
+// inside the Linux claim pod, mirroring the k8s agent) and the host process's
+// own OS for a native claim (its default steps run directly on the host).
 func (b *hostBackend) DefaultAgentOS() string {
+	if b.pod != nil {
+		return "linux"
+	}
 	return runtime.GOOS
 }
 
 // RunPostHook runs a step's post: script after the step succeeds. A scoped step
-// runs its post inside the same scope container; a runsIn.container step
-// (container != "") runs its post inside that named container, which is still
-// alive (torn down only at claim end); every other step runs on the host
-// workspace.
+// runs its post inside the same scope container. For an isolated claim every
+// other post runs in the claim pod — into the step's named container
+// (container != "") or the primary "job" container (container == ""), matching
+// k8s where every default exec targets the primary; the container is still
+// alive (the pod is torn down only at claim end). For a native claim a
+// non-scoped post runs on the host workspace.
 func (b *hostBackend) RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, env []string) error {
 	if sm, h, ok := unwrapHostScope(scope); ok {
 		_, err := sm.exec(ctx, h, script, env, nil, nil)
 		return err
 	}
-	if container != "" {
-		def, err := namedContainerDef(b.podTemplate, container)
-		if err != nil {
-			return err
-		}
-		nm, err := b.namedContainers()
-		if err != nil {
-			return err
-		}
-		h, err := nm.ensure(ctx, def) // returns the container already opened by the step
-		if err != nil {
-			return err
-		}
-		_, err = nm.exec(ctx, h, script, env, nil, nil)
+	if b.pod != nil {
+		_, err := b.pod.Exec(ctx, container, script, env, nil, nil)
 		return err
 	}
 	_, _, err := RunStepCapture(ctx, script, nil, env, b.workDir)

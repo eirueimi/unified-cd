@@ -25,6 +25,8 @@ type AgentConfig struct {
 	CleanWorkspace bool          `yaml:"cleanWorkspace"`
 	WorkspaceDir   string        `yaml:"workspaceDir"`
 	DrainTimeout   time.Duration `yaml:"drainTimeout"`
+	PauseImage     string        `yaml:"pauseImage"`
+	RunnerImage    string        `yaml:"runnerImage"`
 }
 
 // LoadAgent reads a YAML config file and returns an AgentConfig.
@@ -122,6 +124,12 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.DrainTimeout != 0 {
 		eff.DrainTimeout = file.DrainTimeout
+	}
+	if file.PauseImage != "" {
+		eff.PauseImage = file.PauseImage
+	}
+	if file.RunnerImage != "" {
+		eff.RunnerImage = file.RunnerImage
 	}
 	return eff, nil
 }

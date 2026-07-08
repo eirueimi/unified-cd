@@ -13,6 +13,16 @@ import (
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
 
+// orDefault returns s if it is non-empty, otherwise def. Used to give
+// image flags a built-in default when neither env, config file, nor an
+// explicit flag supplied one.
+func orDefault(s, def string) string {
+	if s != "" {
+		return s
+	}
+	return def
+}
+
 func main() {
 	// Pre-scan os.Args for -f so we can load the config file before defining
 	// other flags. This gives priority: env vars → config file → CLI flags.
@@ -58,6 +68,8 @@ func main() {
 	drainTimeout := flag.Duration("drain-timeout", eff.DrainTimeout, "maximum drain wait time after SIGTERM (0=wait indefinitely). Applies to running steps; post-hooks such as cache saves always wait for completion to preserve data")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_AGENT_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)")
 	containerRuntime := flag.String("container-runtime", "", "container runtime for runsIn.image steps (docker|podman|nerdctl|wslc|container); empty = auto-detect")
+	pauseImage := flag.String("pause-image", orDefault(eff.PauseImage, "busybox:1.36"), "image for the claim pod's pause (netns-holder) container")
+	runnerImage := flag.String("runner-image", orDefault(eff.RunnerImage, "ghcr.io/eirueimi/unified-cd-runner:v0.0.3"), "default primary container image for isolated jobs without a podTemplate job container")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
 
@@ -118,6 +130,8 @@ func main() {
 	a.WorkspaceDir = *workspaceDir
 	a.DrainTimeout = *drainTimeout
 	a.RuntimePref = *containerRuntime
+	a.PauseImage = *pauseImage
+	a.RunnerImage = *runnerImage
 
 	if *cacheEndpoint != "" && *cacheKey != "" && *cacheSecret != "" && *cacheBucket != "" {
 		cs, err := objectstore.NewS3ObjectStore(ctx, objectstore.S3Config{

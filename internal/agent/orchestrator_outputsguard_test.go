@@ -126,6 +126,7 @@ func TestRunClaim_StepOutputsGuard_SkipsSecretKeyKeepsCleanKey(t *testing.T) {
 	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
 
 	claim := api.ClaimResponse{
+		Native:        true,
 		RunID:         runID,
 		JobName:       "test-step-outputs-guard",
 		SecretsNeeded: []string{"MY_SECRET"},
@@ -185,6 +186,7 @@ func TestRunClaim_StepOutputsGuard_AllSecretSkipsSetOutputsEntirely(t *testing.T
 	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
 
 	claim := api.ClaimResponse{
+		Native:        true,
 		RunID:         runID,
 		JobName:       "test-step-outputs-guard-allsecret",
 		SecretsNeeded: []string{"MY_SECRET"},
@@ -238,6 +240,7 @@ func TestRunClaim_RunOutputsGuard_SkipsSecretKeyWithSystemLog(t *testing.T) {
 	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
 
 	claim := api.ClaimResponse{
+		Native:        true,
 		RunID:         runID,
 		JobName:       "test-run-outputs-guard",
 		SecretsNeeded: []string{"MY_SECRET"},

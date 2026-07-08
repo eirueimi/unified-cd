@@ -140,6 +140,7 @@ func TestExecuteRun_UploadArtifact_ScopedRoutesToScopeContainer(t *testing.T) {
 	a.resolvedRuntime = rt
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-scoped-upload",
 		Stages: []api.ClaimStage{
@@ -254,6 +255,7 @@ func TestExecuteRun_DownloadArtifact_ScopedUsesAbsoluteContainerPath(t *testing.
 	a.resolvedRuntime = rt
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-scoped-download",
 		Stages: []api.ClaimStage{
@@ -353,6 +355,7 @@ func TestExecuteRun_ScopedCache_ScopeUnavailable_WarnAndSkip(t *testing.T) {
 	a.resolvedRuntime = rt
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-scoped-cache-unavailable",
 		Stages: []api.ClaimStage{
@@ -435,6 +438,7 @@ func TestExecuteRun_ScopedStep_RunsInScopeContainer(t *testing.T) {
 	a.resolvedRuntime = rt
 
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-scoped-run",
 		Stages: []api.ClaimStage{
@@ -585,6 +589,7 @@ func TestExecuteRun_ParallelScopedSteps_ConcurrentProvisioning(t *testing.T) {
 	// get its own. All three race to call getScopes()/ensure() concurrently
 	// via runParallel's goroutines.
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-parallel-scoped",
 		Stages: []api.ClaimStage{
@@ -673,6 +678,7 @@ func TestExecuteRun_ScopedStep_PostHookRunsInScopeContainer(t *testing.T) {
 
 	postScript := "echo posted > " + markerPath
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-scoped-post",
 		Stages: []api.ClaimStage{
@@ -784,6 +790,7 @@ func TestGetScopes_ConcurrentLazyInit(t *testing.T) {
 		members[i] = api.ClaimStep{Index: i, StageIndex: 0, Name: fmt.Sprintf("member-%d", i), ScopeID: "scope:shared", ScopeImage: "img", Run: "echo hi"}
 	}
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-lazy-init",
 		Stages:  []api.ClaimStage{{Parallel: members}},
@@ -884,6 +891,7 @@ func TestExecuteRun_ParallelPostHooks_ConcurrentAppendIsSafe(t *testing.T) {
 		}
 	}
 	resp := api.ClaimResponse{
+		Native:  true,
 		RunID:   runID,
 		JobName: "test-parallel-post",
 		Stages:  []api.ClaimStage{{Parallel: members}},
