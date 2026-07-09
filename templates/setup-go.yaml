@@ -3,10 +3,14 @@
 #
 # Agent requirements: go (the go command must be on PATH)
 #
-# Note: `go env -w` persists settings into the agent's user environment
-# ($HOME/.config/go/env). The GOMODCACHE/GOCACHE changes will carry over
-# to subsequent jobs run on the same agent, so be aware of this side
-# effect when using a shared agent.
+# Note: `go env -w` persists settings into the current user environment
+# ($HOME/.config/go/env). That only carries over to subsequent jobs on a
+# `native: true` job — a native job's $HOME is the agent host's own user
+# environment, shared across runs. In an isolated job (the default), the
+# primary container's $HOME is fresh per run; only the per-job workspace
+# directory persists across runs of the same job, which is why the cache
+# steps below key off `working_dir` rather than relying on `go env -w`
+# to survive between runs.
 #
 # cache: since a cache step can only specify a single path, this is split
 # into two cache steps, one for GOMODCACHE and one for GOCACHE.

@@ -1,0 +1,53 @@
+# Demonstrates: podTemplate sidecars on an isolated job — the headline
+# job-isolation feature.
+# Usage:
+#   unified-cd apply -f examples/jobs/pod-sidecar.yaml
+#   unified-cd run trigger integration-test
+#
+# This job has no native: true, so it runs isolated (the default) — steps
+# execute inside a per-claim pod: a real Kubernetes Pod on the k8s-agent, or
+# an equivalent "claim pod" (pause container + one container per
+# podTemplate.spec.containers entry, sharing a network namespace) on the
+# standard agent. The SAME yaml runs unmodified on either backend: no
+# k8s-only agentSelector is needed here, because both agents build the same
+# claim-pod shape from this one podTemplate.
+#
+# - A default (container:-less) step execs into the injected primary
+#   container and reaches the mysql sidecar at localhost — no host ports are
+#   ever published, so concurrent claims of this job never collide.
+# - The "dump" step uses container: to exec into the mysql sidecar directly.
+#
+# See docs/jobs.md#job-isolation-native-and-the-claim-pod for the full model.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: integration-test
+spec:
+  podTemplate:
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8
+          env:
+            - name: MYSQL_ALLOW_EMPTY_PASSWORD
+              value: "1"
+            - name: MYSQL_DATABASE
+              value: app_test
+  steps:
+    - name: wait-for-mysql
+      # sidecars have no readiness probes — a step that depends on one must
+      # wait/retry on its own (documented MVP limitation)
+      run: |
+        for i in $(seq 1 30); do
+          mysqladmin ping -h 127.0.0.1 -u root --silent && exit 0
+          sleep 1
+        done
+        echo "mysql never became ready" >&2
+        exit 1
+
+    - name: test
+      run: ./gradlew test   # default step: primary container, mysql reachable at localhost:3306
+
+    - name: dump
+      container: mysql       # exec into the named sidecar instead of the primary container
+      run: mysqldump -u root app_test > /workspace/app_test.sql

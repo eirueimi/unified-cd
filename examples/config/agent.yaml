@@ -11,6 +11,13 @@ labels:
   - kind:linux
   - env:prod
 
+# pauseImage: image for the claim pod's pause (netns-holder) container, one per claim.
+# pauseImage: busybox:1.36
+
+# runnerImage: primary container image injected into the claim pod when an isolated job's
+# podTemplate defines no container of its own.
+# runnerImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3
+
 # Garage cache (all fields required to enable cache; omit section to disable)
 cacheEndpoint: garage:3900
 cacheKey: garageadmin

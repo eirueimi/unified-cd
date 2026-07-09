@@ -1,0 +1,50 @@
+# Demonstrates: a native: true job for host-only build/signing toolchains
+# Usage:
+#   unified-cd apply -f examples/jobs/native-build.yaml
+#   unified-cd run trigger ios-release
+#
+# native: true opts a job out of isolation entirely: no claim pod, no
+# podTemplate, no container: steps, no container runtime required. Use it
+# when a job genuinely needs the agent host itself — a toolchain that can't
+# reasonably be containerized (Xcode/xcodebuild + code-signing identities in
+# the host keychain), attached hardware (a physical device for on-device
+# testing), or anything else host-specific. If a job doesn't need any of
+# that, prefer leaving it isolated (the default) and installing a container
+# runtime on the agent instead — native: true should be the exception, not
+# the default choice.
+#
+# native jobs are host-only: route them away from k8s-agents (which cannot
+# run them at all) and onto host agents that actually have the toolchain,
+# via agentSelector. See docs/migration-2026-07-job-isolation.md and
+# docs/jobs.md#native-true--host-process-jobs for the full model.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: ios-release
+spec:
+  native: true                     # host processes; no container features
+  agentSelector:
+    - macos                        # route to a macOS host agent with Xcode installed
+  params:
+    inputs:
+      - name: scheme
+        type: string
+        default: Release
+  steps:
+    - name: build
+      run: |
+        xcodebuild -workspace App.xcworkspace -scheme "{{ .Params.scheme }}" \
+          -configuration Release -archivePath build/App.xcarchive archive
+
+    - name: export
+      run: |
+        xcodebuild -exportArchive -archivePath build/App.xcarchive \
+          -exportPath build/export -exportOptionsPlist ExportOptions.plist
+
+    - name: upload
+      env:
+        ASC_API_KEY: "{{ .Secrets.asc-api-key }}"
+        ASC_ISSUER_ID: "{{ .Secrets.asc-issuer-id }}"
+      run: |
+        xcrun altool --upload-app -f build/export/App.ipa -t ios \
+          --apiKey "$ASC_API_KEY" --apiIssuer "$ASC_ISSUER_ID"

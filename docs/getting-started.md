@@ -8,6 +8,14 @@ This guide walks you through installing unified-cd, running your first job, and 
 - **Docker** — to run PostgreSQL locally
 - **Git** — for source checkout
 
+Separately, jobs are isolated by default: an unmarked job runs its steps inside a container, so
+the **agent host** also needs a container runtime (docker, podman, or nerdctl) to run jobs —
+unless a job opts out with `spec.native: true`. See [Job Isolation: `native` and the claim
+pod](jobs.md#job-isolation-native-and-the-claim-pod) and the [job-isolation migration
+guide](migration-2026-07-job-isolation.md) for the full model. This guide's examples use
+`native: true` so you can follow along without installing a runtime first — see the callout in
+step 6.
+
 ---
 
 ## 1. Build
@@ -124,12 +132,20 @@ kind: Job
 metadata:
   name: hello
 spec:
+  native: true   # see callout below
   steps:
     - name: greet
       run: echo "Hello from unified-cd!"
     - name: info
       run: uname -a
 ```
+
+> **Why `native: true`?** Jobs are isolated by default — steps run inside a container (a
+> per-claim "claim pod" on the standard agent, mirrored by a real Pod on the k8s-agent).
+> `native: true` runs steps directly on the agent host instead, which is what lets this
+> quickstart work without a container runtime installed. Remove `native: true` (and install
+> docker/podman/nerdctl) to get the default isolated behavior — see [Job Isolation: `native` and
+> the claim pod](jobs.md#job-isolation-native-and-the-claim-pod).
 
 Steps run sequentially in the order listed. To run steps concurrently, group them under a
 `parallel:` block instead (see [Concurrent Steps (`parallel`)](jobs.md#concurrent-steps-parallel)).
@@ -163,6 +179,7 @@ kind: Job
 metadata:
   name: build
 spec:
+  native: true   # as in step 6 — runs without a container runtime
   params:
     inputs:
       - name: image
@@ -215,6 +232,7 @@ kind: Job
 metadata:
   name: docker-build
 spec:
+  native: true   # as in step 6 — runs without a container runtime
   agentSelector:
     - kind:docker
   steps:

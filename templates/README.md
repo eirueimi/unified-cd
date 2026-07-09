@@ -86,3 +86,12 @@ Each template follows the house style below (`git-checkout.yaml` / `slack-notify
   newline-separated string in the environment variable (see `sparse_paths` in `git-checkout.yaml`). Declare the
   default value as an empty string `default: ""` rather than an empty array (using a string default even for
   array-typed params is the existing convention).
+- **Isolation and native jobs.** Jobs are isolated by default: an unmarked job (or a job that calls/inlines a
+  template without `native: true`) runs its steps in a container, so a template can only use tools the runner
+  image (or the job's own `podTemplate`) actually provides. Templates that need a host toolchain —
+  `fastlane-upload.yaml`, `google-play-upload.yaml`, `unity-build.yaml`, `docker-build-push.yaml` — must be
+  called from a `native: true` job; note that requirement in the template's own header comment alongside its
+  other tool prerequisites. Container-friendly templates (curl/git/go/node-based ones) run fine in the default
+  isolated job and need no `native: true`. When a template's steps target a specific `podTemplate` container,
+  use the flat `container:` field — step-level `runsIn:` was removed (see the
+  [job-isolation migration guide](../docs/migration-2026-07-job-isolation.md)).

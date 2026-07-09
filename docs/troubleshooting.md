@@ -44,6 +44,111 @@ unified-cli agent list
 
 Cancel a run stuck this way with `unified-cli run cancel <run-id>`.
 
+## Job isolation
+
+Jobs are isolated by default (see [Job Isolation: `native` and the claim
+pod](jobs.md#job-isolation-native-and-the-claim-pod)); most of the failures below are an
+isolation setup gap surfacing as a run failure. If you're migrating an existing job, also see the
+[job-isolation migration guide](migration-2026-07-job-isolation.md).
+
+### Run fails immediately: "isolated job requires a container runtime"
+
+**Symptom**
+
+A run fails immediately — no step ever starts — with a **System** log line (`stepIndex -1`):
+
+```
+isolated job requires a container runtime (docker/podman/nerdctl); mark the job native: true or route it via agentSelector
+```
+
+**Cause**
+
+The job is isolated (no `spec.native: true`) and was claimed by a standard agent whose host has
+none of docker, podman, or nerdctl installed. An isolated job needs a container runtime to build
+its claim pod; without one, the agent fails the run immediately instead of silently running the
+steps on the host (`internal/agent/agent.go`).
+
+**Fix**
+
+- Install docker, podman, or nerdctl on the agent host, or
+- Add `spec.native: true` to the job if it's meant to run as host processes, or
+- Route the job to an agent that has a runtime via `agentSelector`.
+
+### Run fails immediately on Kubernetes: "native: true jobs are host-only"
+
+**Symptom**
+
+A run fails immediately with:
+
+```
+native: true jobs are host-only; the k8s agent cannot run them
+```
+
+**Cause**
+
+The job sets `spec.native: true`, but it was claimed by a k8s-agent. `native` opts a job out of
+containerization entirely, and the k8s-agent has no concept of running outside a Pod, so it
+cannot honor that (`internal/k8sagent/agent.go`).
+
+**Fix**
+
+Route `native: true` jobs away from k8s-agents (and toward host agents with the tools the job
+needs) via `agentSelector`.
+
+### Workspace cleaning warnings after a job flips native ↔ isolated
+
+**Symptom**
+
+The agent log shows `workspace clean failed; retrying via cleanup container` and/or `cleanup
+container failed; proceeding with dirty workspace`, often right after a job's `native: true` was
+added or removed.
+
+**Cause**
+
+Each per-job workspace directory carries a `.ucd-mode` marker recording whether the job last ran
+native or isolated; when a job's mode flips, the agent resets the directory before the next claim
+(`internal/agent/workspace.go`). This is also where root-owned leftovers can appear: containers
+created by **rootful docker** write files as root inside the bind-mounted workspace, which the
+agent's own process can't remove. The agent retries via a throwaway root cleanup container; if
+that also fails, it **WARNs** and proceeds with whatever is left rather than failing the run.
+
+**Fix**
+
+- Run **rootless podman** on the agent host — the container's root maps to the agent's own user,
+  so root-owned leftovers don't occur in the first place.
+- If you see the WARN with rootful docker, manually clean the affected per-job workspace
+  directory with elevated permissions — see [Workspace lifecycle](agents.md#workspace-lifecycle).
+
+### Stray `sleep infinity` containers on an agent host after an agent crash
+
+**Symptom**
+
+`docker ps` (or `podman ps`) on an agent host shows pause and/or sidecar containers still running
+`sleep infinity` long after the runs that created them finished — typically noticed after the
+agent process was killed, OOM'd, or the host rebooted.
+
+**Cause**
+
+This is expected, not a bug. Claim pod containers are long-lived (`sleep infinity`, not `--rm`)
+and are torn down by the agent itself when a claim finishes; if the agent exits ungracefully
+mid-claim, that teardown never runs. Unlike the k8s-agent, whose orphaned pods are eventually
+reaped by the cluster's own pod garbage collection, **the host agent has no automatic container
+GC** — see [Crash-orphaned claim containers](agents.md#crash-orphaned-claim-containers).
+
+**Fix**
+
+Treat this as routine hygiene: periodically prune claim-pod-shaped containers on agent hosts
+(e.g. a `docker container prune`-style sweep, or one scoped to containers made from the
+`pauseImage`/`runnerImage`/podTemplate images), rather than assuming a crash cleans up after
+itself.
+
+---
+
+Compile-time migration errors — removed step-level `runsIn:`, `native: true` combined with
+`podTemplate`, `native: true` combined with a step `container:` — are cataloged in the
+[migration guide's validation error
+table](migration-2026-07-job-isolation.md#validation-errors-you-may-see-after-upgrading).
+
 ## Webhook returns 401
 
 **Symptom** — one of these `signature verification failed: …` messages:

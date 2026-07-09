@@ -7,6 +7,8 @@ kind: Job
 metadata:
   name: build
 spec:
+  # docker builds need the host's docker daemon — run natively (see docs/migration-2026-07-job-isolation.md)
+  native: true
   params:
     inputs:
       - name: image

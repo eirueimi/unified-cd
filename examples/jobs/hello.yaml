@@ -2,6 +2,11 @@
 # Usage:
 #   unified-cd apply -f examples/jobs/hello.yaml
 #   unified-cd run trigger hello-docker
+#
+# This job is isolated by default (no native: true) — its steps run in the
+# default runner image inside a per-claim pod, not directly on the agent
+# host. Add `native: true` to spec: to run the steps as host processes
+# instead (see docs/jobs.md#job-isolation-native-and-the-claim-pod).
 apiVersion: unified-cd/v1
 kind: Job
 metadata:

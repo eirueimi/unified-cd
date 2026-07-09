@@ -48,6 +48,8 @@ kind: Job
 metadata:
   name: post-step-demo
 spec:
+  # needs the host's git/go toolchain directly — run natively (see docs/migration-2026-07-job-isolation.md)
+  native: true
   steps:
     - name: checkout
       run: |

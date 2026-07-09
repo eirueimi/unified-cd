@@ -56,6 +56,26 @@ This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Manage
 
 ---
 
+## Workspace and Claim-Container Hygiene
+
+Two pieces of standard-agent state accumulate on the agent host over time and, unlike the
+k8s-agent's pod GC (see the Recovery Runbook above), are **not** cleaned up automatically:
+
+- **Per-job workspace directories.** Every job gets its own subdirectory under each concurrency
+  slot (`wsBase/working<N>/<job-name>`, where `wsBase` is `--workspace-dir` /
+  `UNIFIED_AGENT_WORKSPACE_DIR` / the `workspaceDir` config key), and a directory persists for
+  every distinct job name ever run in that slot. Disk usage is an operator responsibility —
+  include `wsBase` in your normal disk-usage monitoring/cleanup (see [Agent Labels and Routing:
+  Workspace lifecycle](agents.md#workspace-lifecycle)).
+- **Crash-orphaned claim containers.** If the standard agent process exits ungracefully
+  mid-claim (killed, OOM, host reboot), the claim pod's pause and sidecar containers are left
+  running (`sleep infinity`) instead of being torn down. The host agent has no automatic
+  container GC for these — periodically prune claim-pod-shaped containers on agent hosts (see
+  [Agent Labels and Routing: Crash-orphaned claim
+  containers](agents.md#crash-orphaned-claim-containers)).
+
+---
+
 ## Monitoring Points
 
 - **`/healthz`** — liveness endpoint; returns `200` when up, `503` while draining/shutting down. Verified live: returns `200` on the dev stack. Use as the load balancer / uptime check target ([High Availability Guide](high-availability.md#health-check-endpoints) also documents `/readyz`, which additionally checks DB connectivity).
