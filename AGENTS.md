@@ -31,6 +31,19 @@ git worktree remove ../unified-cd-<change-name>
 
 This keeps the main working tree clean and allows parallel development without branch-switching side effects.
 
+## Docs, Examples, and Templates Hygiene
+
+**After implementing any change to behavior, the DSL schema, CLI flags, or configuration, verify the user-facing material before considering the work done.** Docs that contradict the code are worse than no docs. Check each of these:
+
+1. **`docs/*.md`** — grep for every field/flag/behavior you added, renamed, or removed. Beyond the obvious reference pages (`jobs.md`, `resources.md`, `agents.md`, `configuration.md`, `kubernetes-integration.md`), always check the narrative docs: **`getting-started.md`** (do the quickstart steps still work end-to-end for a new user?), **`troubleshooting.md`** (add symptom entries for any new failure mode, with the exact grep-able error string), and **`operations.md`** (any new operator responsibility, e.g. disk/container hygiene).
+2. **`docs/field-reference.md` is generated** — never hand-edit; run `go generate ./...` and commit the diff.
+3. **`examples/**`** — every `kind: Job` YAML must parse under the current `dsl.Parse` AND still make semantic sense under current defaults (a parsing example that fails at runtime is still broken). Non-Job kinds and `examples/config/*.yaml`: check for removed/renamed fields and stale comments.
+4. **`templates/`** — uses-template files are resolved through their own path; check them against any step-level schema change.
+5. **Breaking changes** — add or update a `docs/migration-*.md` guide with a before→after table and the exact validation-error strings users will see.
+6. **`README.md`** and `schemas/unified-cd.schema.json` — keep the feature summary and JSON schema in lockstep with the DSL.
+
+A cheap final sweep: `grep -rn "<removed-field>" docs/ examples/ templates/ README.md` for every removed or renamed identifier — zero hits (outside historical specs/plans) before you finish.
+
 ## Project Overview
 
 unified-cd is an open-source CI/CD tool (Jenkins alternative) written in Go. Key components:
