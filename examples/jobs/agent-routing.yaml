@@ -18,6 +18,15 @@
 # The parent then prints the host the child actually ran on (read back from the
 # child's output), closing the loop: requested agent == actual host proves the
 # routing worked.
+#
+# WARNING - single-agent deadlock: the parent holds an agent execution slot
+# for the entire time it waits on `call:` for the child to finish, and the
+# child is pinned by hostname to a specific agent. If the parent and child
+# both land on the SAME agent, and that agent has fewer execution slots than
+# the call depth (e.g. only 1 slot), the parent occupies the only slot while
+# waiting on a child that can never be claimed — a deadlock. Run this example
+# on a fleet where the target agent has >= 2 slots, or route the parent to a
+# different agent than the child (e.g. via agentSelector) to avoid this.
 ---
 # parent: picks the target agent and passes it down to the child
 apiVersion: unified-cd/v1
