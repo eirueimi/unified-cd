@@ -295,15 +295,6 @@ func (s *Server) handleLogsArchive(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, rc)
 }
 
-func appendLabelIfMissing(labels []string, label string) []string {
-	for _, l := range labels {
-		if l == label {
-			return labels
-		}
-	}
-	return append(labels, label)
-}
-
 // parseStepsParam parses the optional comma-separated steps=0,2 view filter.
 func parseStepsParam(r *http.Request) ([]int, error) {
 	raw := r.URL.Query().Get("steps")
