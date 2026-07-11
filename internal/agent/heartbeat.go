@@ -18,12 +18,16 @@ const heartbeatTimeout = 10 * time.Second
 // the controller's last_seen_at stays fresh even when all execution slots are
 // busy (and claim polling has paused). Best-effort: a failed heartbeat is logged
 // and retried on the next tick. Returns immediately; the goroutine exits when ctx
-// is done.
-func StartHeartbeat(ctx context.Context, client *Client, agentID string, interval time.Duration) {
+// is done. The returned channel is closed once the goroutine has fully stopped,
+// letting a caller cancel ctx and then join it to guarantee no further heartbeat
+// fires (e.g. Agent.Run joins before returning so a beat can't outlive shutdown).
+func StartHeartbeat(ctx context.Context, client *Client, agentID string, interval time.Duration) <-chan struct{} {
 	if interval <= 0 {
 		interval = DefaultHeartbeatInterval
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -40,4 +44,5 @@ func StartHeartbeat(ctx context.Context, client *Client, agentID string, interva
 			}
 		}
 	}()
+	return done
 }
