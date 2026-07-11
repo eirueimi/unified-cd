@@ -1,0 +1,95 @@
+# Demonstrates: a parent job choosing WHICH AGENT its child job runs on, by
+# passing the target agent as a call parameter. The child's agentSelector is
+# templated from that parameter, so routing is decided per-call by the parent.
+#
+# How it works:
+#   - Agents auto-register a `hostname:<name>` label, so an agent can be pinned
+#     by hostname via agentSelector.
+#   - The child job's agentSelector is `hostname:{{ .Params.agent }}`. When the
+#     child run is created, the controller expands agentSelector with the
+#     child's params (ExpandAgentSelector), so the child is routed to exactly
+#     the agent the parent named.
+#
+# Usage:
+#   unified-cd apply -f examples/jobs/agent-routing.yaml
+#   # route the child to the agent whose hostname is "build-01":
+#   unified-cd run trigger agent-routing-parent --param target_agent=build-01
+#
+# The parent then prints the host the child actually ran on (read back from the
+# child's output), closing the loop: requested agent == actual host proves the
+# routing worked.
+---
+# parent: picks the target agent and passes it down to the child
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: agent-routing-parent
+spec:
+  # This job only orchestrates (call: + echo), so it can run anywhere; keep it
+  # native so it needs no container runtime to demonstrate the routing.
+  native: true
+  # native: true jobs are host-only — the k8s agent REJECTS them ("native: true
+  # jobs are host-only"). agentSelector only routes, it does not exempt a job
+  # from that rule, so a native job with no agentSelector can still be claimed
+  # (and then rejected) by a k8s agent in a mixed fleet. Excluding k8s agents
+  # here guarantees this parent only lands on a standard/host agent.
+  agentSelector:
+    - kind:docker
+  params:
+    inputs:
+      - name: target_agent
+        type: string
+        required: true
+        description: Hostname of the agent the child job should run on.
+  steps:
+    - name: dispatch
+      call:
+        job: agent-routing-child
+        with:
+          # forward the chosen agent to the child as a parameter
+          agent: "{{ .Params.target_agent }}"
+
+    - name: report
+      run: |
+        echo "requested agent : {{ .Params.target_agent }}"
+        echo "child ran on    : {{ .Steps.dispatch.Outputs.actual_host }}"
+
+---
+# child: routed to the agent named by its `agent` parameter
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: agent-routing-child
+spec:
+  # native so `hostname` reports the agent HOST (not a container), making the
+  # routing visually verifiable.
+  native: true
+  params:
+    inputs:
+      - name: agent
+        type: string
+        required: true
+        description: Hostname of the agent this run must be claimed by.
+    outputs:
+      - name: actual_host
+        type: string
+  # The parent controls this via the `agent` param it passes in `call.with`.
+  # ExpandAgentSelector resolves it at child-run creation time, so the run is
+  # only claimable by the agent whose `hostname:` label matches.
+  # NOTE: the named agent MUST be a standard/host agent — this job is
+  # native: true, and a native job cannot run on the k8s agent regardless of
+  # what hostname it's routed to.
+  agentSelector:
+    - "hostname:{{ .Params.agent }}"
+  steps:
+    - name: show
+      run: |
+        echo "requested agent : {{ .Params.agent }}"
+        echo "running on host : $(hostname)"
+
+    - name: capture
+      run: hostname
+      outputs:
+        # promoted to the job output `actual_host` (same name) so the parent
+        # can read it back via .Steps.dispatch.Outputs.actual_host
+        actual_host: "{{ .Stdout | trim }}"

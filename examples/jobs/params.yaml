@@ -25,6 +25,7 @@ spec:
   steps:
     - name: build
       run: |
+        set -e
         docker build -t {{ .Params.image }}:{{ .Params.tag }} .
         echo "Built: {{ .Params.image }}:{{ .Params.tag }}"
       outputs:

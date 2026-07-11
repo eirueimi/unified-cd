@@ -2,7 +2,7 @@
 # job-isolation feature.
 # Usage:
 #   unified-cd apply -f examples/jobs/pod-sidecar.yaml
-#   unified-cd run trigger integration-test
+#   unified-cd run trigger sidecar-integration-test
 #
 # This job has no native: true, so it runs isolated (the default) — steps
 # execute inside a per-claim pod: a real Kubernetes Pod on the k8s-agent, or
@@ -12,16 +12,22 @@
 # k8s-only agentSelector is needed here, because both agents build the same
 # claim-pod shape from this one podTemplate.
 #
-# - A default (container:-less) step execs into the injected primary
-#   container and reaches the mysql sidecar at localhost — no host ports are
-#   ever published, so concurrent claims of this job never collide.
-# - The "dump" step uses container: to exec into the mysql sidecar directly.
+# Two steps, two ways of reaching the sidecar (this dual demonstration is the
+# point of the example):
+# - "wait-for-mysql" is a default (container:-less) step: it execs into the
+#   injected primary container (the runner image, which has bash but no mysql
+#   client) and polls the mysql sidecar at localhost:3306 using bash's
+#   /dev/tcp — no external tool required, since host ports are never
+#   published and concurrent claims of this job never collide.
+# - "seed-and-verify" uses container: mysql to exec directly INTO the mysql
+#   sidecar (which has the mysql client) and runs a real query against the
+#   app_test database.
 #
 # See docs/jobs.md#job-isolation-native-and-the-claim-pod for the full model.
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
-  name: integration-test
+  name: sidecar-integration-test
 spec:
   podTemplate:
     spec:
@@ -36,18 +42,21 @@ spec:
   steps:
     - name: wait-for-mysql
       # sidecars have no readiness probes — a step that depends on one must
-      # wait/retry on its own (documented MVP limitation)
+      # wait/retry on its own (documented MVP limitation). This runs in the
+      # runner image (has bash, no mysql client), so poll with bash's
+      # /dev/tcp instead of mysqladmin/nc.
       run: |
-        for i in $(seq 1 30); do
-          mysqladmin ping -h 127.0.0.1 -u root --silent && exit 0
-          sleep 1
+        set -e
+        echo "waiting for mysql sidecar on localhost:3306 (shared claim-pod netns)"
+        for i in $(seq 1 60); do
+          (exec 3<>/dev/tcp/127.0.0.1/3306) 2>/dev/null && { echo "mysql reachable on localhost:3306"; exit 0; }
+          sleep 2
         done
-        echo "mysql never became ready" >&2
+        echo "mysql did not become ready in time" >&2
         exit 1
 
-    - name: test
-      run: ./gradlew test   # default step: primary container, mysql reachable at localhost:3306
-
-    - name: dump
-      container: mysql       # exec into the named sidecar instead of the primary container
-      run: mysqldump -u root app_test > /workspace/app_test.sql
+    - name: seed-and-verify
+      container: mysql       # exec into the mysql sidecar, where the mysql client is available
+      run: |
+        set -e
+        mysql -u root app_test -e "CREATE TABLE IF NOT EXISTS t (id INT); INSERT INTO t VALUES (1); SELECT COUNT(*) AS rows_in_t FROM t;"
