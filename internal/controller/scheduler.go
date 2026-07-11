@@ -79,7 +79,9 @@ func RunScheduler(ctx context.Context, st store.Store, tick time.Duration) {
 // Called every minute while RunScheduler holds the leader lock.
 //   - Fires a Run when next ∈ [now-1h, now].
 //   - Advances last_fired_at without creating a Run when next < now-1h (missed while down).
-//   - Does not update last_fired_at on CreateRun failure (allows retry on the next tick).
+//   - Does not update last_fired_at when the due job can't be loaded, when
+//     param validation fails, or on CreateRun failure (allows retry on the
+//     next tick in all three cases).
 func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 	schedules, err := st.ListSchedules(ctx)
 	if err != nil {
@@ -101,32 +103,36 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 		case next.After(now):
 			// Not yet due — do nothing.
 		case !next.Before(windowStart):
-			// next ∈ [windowStart, now] → fire
-			params := sc.Params
-			// requiredCaps stays nil when the job spec can't be loaded/parsed —
-			// best-effort inference; the k8s native-rejection safety net still
-			// catches a mis-route in that case (see api_webhooks.go/api_runs.go
-			// for the same inference on the other trigger paths).
-			var requiredCaps []string
-			if job, jerr := st.GetJob(ctx, sc.JobName); jerr == nil {
-				inputs := inputsFromSpecJSON(job.Spec)
-				resolved, perr := resolveParams(inputs, sc.Params)
-				if perr != nil {
-					slog.Warn("checkAndFireSchedules: param validation failed", "schedule", sc.Name, "error", perr)
-					continue // Do not update last_fired_at — allow retry on the next tick.
-				}
-				params = resolved
-
-				var jobSpec dsl.Spec
-				if serr := json.Unmarshal(job.Spec, &jobSpec); serr == nil {
-					requiredCaps = dsl.RequiredCaps(jobSpec)
-				} else {
-					slog.Warn("checkAndFireSchedules: failed to parse job spec for capability inference", "schedule", sc.Name, "job", sc.JobName, "error", serr)
-				}
-			} else {
-				slog.Warn("checkAndFireSchedules: failed to load job for param validation", "schedule", sc.Name, "job", sc.JobName, "error", jerr)
+			// next ∈ [windowStart, now] → fire.
+			// The job must be loaded before firing: its spec becomes the
+			// run's stored SPEC (buildClaimResponse in api_agent.go builds
+			// all stages/finally/podTemplate/native from that column, so a
+			// run created with an empty spec silently executes no steps),
+			// its input defs are needed to resolve/validate params, and
+			// dsl.RequiredCaps needs it for capability inference. If the
+			// job can't be loaded there is nothing useful to fire, so skip
+			// this tick and retry on the next one rather than create an
+			// empty-spec run (mirrors the param-validation-failure skip
+			// below).
+			job, jerr := st.GetJob(ctx, sc.JobName)
+			if jerr != nil {
+				slog.Warn("checkAndFireSchedules: failed to load job, skipping fire", "schedule", sc.Name, "job", sc.JobName, "error", jerr)
+				continue // Do not update last_fired_at — allow retry on the next tick.
 			}
-			_, err := st.CreateRun(ctx, sc.JobName, params, []byte(`{}`), nil, requiredCaps, "schedule:"+sc.Name)
+			inputs := inputsFromSpecJSON(job.Spec)
+			params, perr := resolveParams(inputs, sc.Params)
+			if perr != nil {
+				slog.Warn("checkAndFireSchedules: param validation failed", "schedule", sc.Name, "error", perr)
+				continue // Do not update last_fired_at — allow retry on the next tick.
+			}
+			var requiredCaps []string
+			var jobSpec dsl.Spec
+			if serr := json.Unmarshal(job.Spec, &jobSpec); serr == nil {
+				requiredCaps = dsl.RequiredCaps(jobSpec)
+			} else {
+				slog.Warn("checkAndFireSchedules: failed to parse job spec for capability inference", "schedule", sc.Name, "job", sc.JobName, "error", serr)
+			}
+			_, err := st.CreateRun(ctx, sc.JobName, params, job.Spec, nil, requiredCaps, "schedule:"+sc.Name)
 			if err != nil {
 				slog.Warn("checkAndFireSchedules: failed to create Run", "schedule", sc.Name, "error", err)
 				continue // Do not update last_fired_at — allow retry on the next tick.
