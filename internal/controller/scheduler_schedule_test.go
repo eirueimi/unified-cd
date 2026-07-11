@@ -19,9 +19,14 @@ type mockScheduleFireStore struct {
 	store.Store // nil embedding — other method calls will panic
 	schedules   []store.Schedule
 	created     []*api.Run
-	updated     map[string]time.Time
-	createErr   error
-	jobs        map[string]*api.Job // optional; GetJob returns "not found" when absent
+	// createdRequiredCaps parallels created — the requiredCaps slice
+	// checkAndFireSchedules passed to CreateRun for each fired schedule, so
+	// tests can assert capability inference without a real Postgres
+	// required_caps column to read back.
+	createdRequiredCaps [][]string
+	updated             map[string]time.Time
+	createErr           error
+	jobs                map[string]*api.Job // optional; GetJob returns "not found" when absent
 }
 
 func (m *mockScheduleFireStore) ListSchedules(_ context.Context) ([]store.Schedule, error) {
@@ -38,12 +43,13 @@ func (m *mockScheduleFireStore) GetJob(_ context.Context, name string) (*api.Job
 	return nil, fmt.Errorf("job not found: %s", name)
 }
 
-func (m *mockScheduleFireStore) CreateRun(_ context.Context, jobName string, params map[string]string, _ []byte, _ []string, _ []string, triggeredBy string) (*api.Run, error) {
+func (m *mockScheduleFireStore) CreateRun(_ context.Context, jobName string, params map[string]string, _ []byte, _ []string, requiredCaps []string, triggeredBy string) (*api.Run, error) {
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
 	r := &api.Run{JobName: jobName, TriggeredBy: triggeredBy}
 	m.created = append(m.created, r)
+	m.createdRequiredCaps = append(m.createdRequiredCaps, requiredCaps)
 	return r, nil
 }
 
@@ -154,6 +160,88 @@ func TestCheckAndFireSchedules_MissingRequiredParam_SkipsAndDoesNotAdvance(t *te
 
 	assert.Empty(t, m.created)
 	assert.Empty(t, m.updated)
+}
+
+// TestCheckAndFireSchedules_PersistsRequiredCaps verifies that a fired
+// schedule infers dsl.RequiredCaps from the job spec loaded via GetJob and
+// passes it into CreateRun, mirroring the direct-trigger and webhook paths
+// (see api_runs.go's handleTriggerRun and api_webhooks.go's
+// handleWebhookIngress). Before this fix checkAndFireSchedules always passed
+// nil for required_caps, so a scheduled run of a native-only or
+// kubernetes-only-podTemplate job could be wrongly claimed by any agent
+// regardless of its advertised capabilities — required_caps='{}' is a
+// subset of every agent's capabilities.
+func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
+	t.Run("native job infers native capability", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "native-sched", Cron: "0 10 * * *", JobName: "nativejob", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"nativejob": {Name: "nativejob", Spec: []byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`)},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		require.Len(t, m.created, 1)
+		require.Len(t, m.createdRequiredCaps, 1)
+		assert.Equal(t, []string{"native"}, m.createdRequiredCaps[0])
+	})
+
+	t.Run("kubernetes-only podTemplate infers pod capability", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		podSpec := `{"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","command":["sleep","1"]}]}},` +
+			`"steps":[{"name":"s","run":"echo x"}]}`
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "pod-sched", Cron: "0 10 * * *", JobName: "podjob", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"podjob": {Name: "podjob", Spec: []byte(podSpec)},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		require.Len(t, m.created, 1)
+		require.Len(t, m.createdRequiredCaps, 1)
+		assert.Equal(t, []string{"pod"}, m.createdRequiredCaps[0])
+	})
+
+	t.Run("plain job infers container capability", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "plain-sched", Cron: "0 10 * * *", JobName: "plainjob", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"plainjob": {Name: "plainjob", Spec: []byte(`{"steps":[{"name":"s","run":"echo x"}]}`)},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		require.Len(t, m.created, 1)
+		require.Len(t, m.createdRequiredCaps, 1)
+		assert.Equal(t, []string{"container"}, m.createdRequiredCaps[0])
+	})
+
+	t.Run("job spec unavailable falls back to nil required_caps", func(t *testing.T) {
+		// GetJob fails (job not in the mock's jobs map) — checkAndFireSchedules
+		// cannot infer a capability without the spec, so it passes nil
+		// (best-effort; the run still fires with param validation skipped, same
+		// as TestCheckAndFireSchedules_FiresWhenDue).
+		lastFired := testNow.Add(-25 * time.Hour)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		require.Len(t, m.created, 1)
+		require.Len(t, m.createdRequiredCaps, 1)
+		assert.Nil(t, m.createdRequiredCaps[0])
+	})
 }
 
 func TestCheckAndFireSchedules_CreateRunError_DoesNotUpdateLastFiredAt(t *testing.T) {

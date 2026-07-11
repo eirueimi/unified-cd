@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -102,6 +103,11 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 		case !next.Before(windowStart):
 			// next ∈ [windowStart, now] → fire
 			params := sc.Params
+			// requiredCaps stays nil when the job spec can't be loaded/parsed —
+			// best-effort inference; the k8s native-rejection safety net still
+			// catches a mis-route in that case (see api_webhooks.go/api_runs.go
+			// for the same inference on the other trigger paths).
+			var requiredCaps []string
 			if job, jerr := st.GetJob(ctx, sc.JobName); jerr == nil {
 				inputs := inputsFromSpecJSON(job.Spec)
 				resolved, perr := resolveParams(inputs, sc.Params)
@@ -110,10 +116,17 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 					continue // Do not update last_fired_at — allow retry on the next tick.
 				}
 				params = resolved
+
+				var jobSpec dsl.Spec
+				if serr := json.Unmarshal(job.Spec, &jobSpec); serr == nil {
+					requiredCaps = dsl.RequiredCaps(jobSpec)
+				} else {
+					slog.Warn("checkAndFireSchedules: failed to parse job spec for capability inference", "schedule", sc.Name, "job", sc.JobName, "error", serr)
+				}
 			} else {
 				slog.Warn("checkAndFireSchedules: failed to load job for param validation", "schedule", sc.Name, "job", sc.JobName, "error", jerr)
 			}
-			_, err := st.CreateRun(ctx, sc.JobName, params, []byte(`{}`), nil, nil, "schedule:"+sc.Name)
+			_, err := st.CreateRun(ctx, sc.JobName, params, []byte(`{}`), nil, requiredCaps, "schedule:"+sc.Name)
 			if err != nil {
 				slog.Warn("checkAndFireSchedules: failed to create Run", "schedule", sc.Name, "error", err)
 				continue // Do not update last_fired_at — allow retry on the next tick.
