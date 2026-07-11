@@ -174,6 +174,10 @@ steps:
 - Uses `/bin/sh` on Linux/macOS, Git Bash on Windows.
 - Exit code non-zero fails the step.
 - Environment variable `UNIFIED_AGENT_OS` (`linux` / `darwin` / `windows`) is always injected.
+- Multi-line `run: |` scripts are executed **without** `set -e`: a failing
+  intermediate command does not fail the step as long as the script's last
+  command exits 0. Add `set -e` as the first line of your script (or check
+  exit codes yourself) if you want an early failure to fail the step.
 
 ### Concurrent Steps (`parallel`)
 
