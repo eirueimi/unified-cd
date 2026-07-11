@@ -15,10 +15,11 @@
 # Two steps, two ways of reaching the sidecar (this dual demonstration is the
 # point of the example):
 # - "wait-for-mysql" is a default (container:-less) step: it execs into the
-#   injected primary container (the runner image, which has bash but no mysql
-#   client) and polls the mysql sidecar at localhost:3306 using bash's
-#   /dev/tcp — no external tool required, since host ports are never
-#   published and concurrent claims of this job never collide.
+#   injected primary container (the runner image, which has curl but no mysql
+#   client) and polls the mysql sidecar at localhost:3306 using `curl
+#   telnet://` — steps run under sh, not bash, so bash-only features like
+#   /dev/tcp are not portable here; host ports are never published and
+#   concurrent claims of this job never collide.
 # - "seed-and-verify" uses container: mysql to exec directly INTO the mysql
 #   sidecar (which has the mysql client) and runs a real query against the
 #   app_test database.
@@ -41,18 +42,16 @@ spec:
               value: app_test
   steps:
     - name: wait-for-mysql
-      # sidecars have no readiness probes — a step that depends on one must
-      # wait/retry on its own (documented MVP limitation). This runs in the
-      # runner image (has bash, no mysql client), so poll with bash's
-      # /dev/tcp instead of mysqladmin/nc.
+      # sidecars have no readiness probes — wait/retry on our own. Steps run
+      # under sh, so use curl (present in the runner image) rather than bash's
+      # /dev/tcp; `curl telnet://` exits 0 once the TCP port accepts.
       run: |
         set -e
-        echo "waiting for mysql sidecar on localhost:3306 (shared claim-pod netns)"
         for i in $(seq 1 60); do
-          (exec 3<>/dev/tcp/127.0.0.1/3306) 2>/dev/null && { echo "mysql reachable on localhost:3306"; exit 0; }
+          curl -sS --connect-timeout 2 telnet://127.0.0.1:3306 </dev/null >/dev/null 2>&1 && { echo "mysql reachable on localhost:3306"; exit 0; }
           sleep 2
         done
-        echo "mysql did not become ready in time" >&2
+        echo "mysql sidecar did not become ready in time" >&2
         exit 1
 
     - name: seed-and-verify
