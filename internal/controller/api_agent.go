@@ -26,6 +26,16 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentId is required", http.StatusBadRequest)
 		return
 	}
+	// Validate every advertised capability against the known vocabulary before
+	// persisting. An unrecognized capability string would silently never match
+	// any run's required_caps (or worse, mean something unintended), so reject
+	// the whole registration rather than accept a partially-bogus set.
+	for _, c := range req.Capabilities {
+		if !dsl.ValidCapability(c) {
+			http.Error(w, "unknown capability: "+c, http.StatusBadRequest)
+			return
+		}
+	}
 	// Use an empty slice when labels is nil to avoid a NULL constraint violation.
 	labels := req.Labels
 	if labels == nil {
@@ -45,7 +55,7 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 			labels = append(labels, "hostname:"+req.Hostname)
 		}
 	}
-	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, nil, req.Env); err != nil {
+	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, req.Capabilities, req.Env); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

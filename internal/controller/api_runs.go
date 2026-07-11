@@ -49,21 +49,23 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	// A podTemplate that uses features the host agent's claim pod cannot honor
-	// (named template, override, pod-level spec beyond containers, or a
-	// host-unsupported container field) can only run on Kubernetes, so pin it
-	// there by auto-appending the "kubernetes" label. A host-runnable
-	// podTemplate (e.g. plain name/image containers, workspace.pvc — which the
-	// host degrades to a bind mount) is left to route by the author's
-	// agentSelector, so it can run on a standard agent too.
-	if dsl.PodTemplateNeedsKubernetes(spec.PodTemplate) {
-		agentSelector = appendLabelIfMissing(agentSelector, "kubernetes")
-	}
+	// Infer the capability a run of this spec needs from an agent (native /
+	// container / pod). A podTemplate that uses features the host agent's
+	// claim pod cannot honor (named template, override, pod-level spec beyond
+	// containers, or a host-unsupported container field) can only run on
+	// Kubernetes, so RequiredCaps yields "pod" for it — the agent-side
+	// capability match (ClaimNextRun) then restricts the run to a
+	// pod-capable agent instead of the old blanket "kubernetes" label pin. A
+	// host-runnable podTemplate (e.g. plain name/image containers,
+	// workspace.pvc — which the host degrades to a bind mount) yields
+	// "container" and is left to route by the author's agentSelector, so it
+	// can run on a standard agent too.
+	requiredCaps := dsl.RequiredCaps(spec)
 	triggeredBy := "api"
 	if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
 		triggeredBy = p.Name
 	}
-	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, nil, triggeredBy)
+	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, requiredCaps, triggeredBy)
 	if err != nil {
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
 		return
