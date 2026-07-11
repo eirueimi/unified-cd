@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -250,6 +251,141 @@ func TestExecuteRun_Isolated_PodStartFailure_TeardownAndFailsRun(t *testing.T) {
 	assert.Equal(t, 2, f.calls, "both the pause and the failing mysql create were attempted")
 	assert.Len(t, f.removed, 1, "the pause container was torn down; double-teardown didn't duplicate removals")
 	assert.Equal(t, "c0", f.removed[0])
+}
+
+// TestExecuteRun_Isolated_MissingPauseImage_FailsRunNoContainer verifies that
+// an isolated (Native:false) claim on an agent whose PauseImage was never
+// configured (e.g. an Agent built via agent.New, which — unlike cmd/agent —
+// does not default it) fails the run fast with an actionable reason, instead of
+// letting the claim pod try to start a pause container with an empty image and
+// surfacing a cryptic `docker run -d ...: exit status 125`. The guard must fire
+// before any container is created.
+func TestExecuteRun_Isolated_MissingPauseImage_FailsRunNoContainer(t *testing.T) {
+	const agentID = "isolated-empty-pause-agent"
+	const runID = "run-isolated-empty-pause"
+
+	h := newIsolatedHarness()
+	srv := newIsolatedServer(t, agentID, h)
+
+	// The container runtime resolves fine; the misconfiguration is the empty
+	// PauseImage. RunnerImage is set so this isolates the pause-image case.
+	f := &podFakeRT{}
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok"), RunnerImage: "runner:img"}
+	a.runtimeOnce.Do(func() {})
+	a.resolvedRuntime = f
+
+	claim := api.ClaimResponse{
+		Native:  false,
+		RunID:   runID,
+		JobName: "test-isolated-empty-pause",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, Name: "s1", Run: "echo hi"}},
+		},
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	assert.True(t, h.finishCalled)
+	assert.Equal(t, "Failed", h.finishStatus)
+
+	lines := h.logsByStep[-1]
+	require.NotEmpty(t, lines, "expected an actionable system log line (stepIndex -1)")
+	found := false
+	for _, l := range lines {
+		if l.Stream == "stderr" && l.StepIndex == -1 &&
+			strings.Contains(l.Line, "pause image") && strings.Contains(l.Line, "native: true") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a system log line naming the missing pause image, got: %+v", lines)
+
+	assert.Empty(t, f.created, "no claim-pod container should be created when the pause image is unconfigured")
+}
+
+// TestExecuteRun_Isolated_MissingRunnerImage_FailsWhenPrimaryInjected verifies
+// that when the claim pod would inject the default "job" primary (no podTemplate
+// job container) but the agent's RunnerImage is unconfigured, the run fails fast
+// with an actionable reason rather than starting the primary with an empty image.
+func TestExecuteRun_Isolated_MissingRunnerImage_FailsWhenPrimaryInjected(t *testing.T) {
+	const agentID = "isolated-empty-runner-agent"
+	const runID = "run-isolated-empty-runner"
+
+	h := newIsolatedHarness()
+	srv := newIsolatedServer(t, agentID, h)
+
+	// Pause image configured; runner image is not. With no podTemplate the claim
+	// pod injects the default "job" primary from RunnerImage.
+	f := &podFakeRT{}
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok"), PauseImage: "pause:img"}
+	a.runtimeOnce.Do(func() {})
+	a.resolvedRuntime = f
+
+	claim := api.ClaimResponse{
+		Native:  false,
+		RunID:   runID,
+		JobName: "test-isolated-empty-runner",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, Name: "s1", Run: "echo hi"}},
+		},
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	assert.Equal(t, "Failed", h.finishStatus)
+	lines := h.logsByStep[-1]
+	found := false
+	for _, l := range lines {
+		if l.Stream == "stderr" && l.StepIndex == -1 &&
+			strings.Contains(l.Line, "runner image") && strings.Contains(l.Line, "native: true") {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a system log line naming the missing runner image, got: %+v", lines)
+	assert.Empty(t, f.created, "no claim-pod container should be created when the runner image is unconfigured")
+}
+
+// TestExecuteRun_Isolated_EmptyRunnerImage_OKWhenPodTemplateSuppliesJob pins the
+// conditional nature of the runner-image guard: when the podTemplate provides
+// its own "job" container, RunnerImage is unused and may be empty — the claim
+// must still run. Guards against the guard becoming an over-broad blanket check.
+func TestExecuteRun_Isolated_EmptyRunnerImage_OKWhenPodTemplateSuppliesJob(t *testing.T) {
+	const agentID = "isolated-runner-optional-agent"
+	const runID = "run-isolated-runner-optional"
+
+	h := newIsolatedHarness()
+	srv := newIsolatedServer(t, agentID, h)
+
+	f := &podFakeRT{}
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok"), PauseImage: "pause:img"}
+	a.runtimeOnce.Do(func() {})
+	a.resolvedRuntime = f
+
+	// podTemplate supplies the "job" primary, so RunnerImage is not needed.
+	jobTemplate := &dsl.PodTemplate{Spec: map[string]any{
+		"containers": []any{
+			map[string]any{"name": "job", "image": "golang:1.22"},
+		},
+	}}
+	claim := api.ClaimResponse{
+		Native:      false,
+		RunID:       runID,
+		JobName:     "test-isolated-runner-optional",
+		PodTemplate: jobTemplate,
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, Name: "s1", Run: "echo hi"}},
+		},
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	assert.Equal(t, "Succeeded", h.finishStatus, "podTemplate supplies the job container; empty RunnerImage is fine")
+	require.Len(t, f.created, 2, "pause + podTemplate-supplied job (no injected primary)")
 }
 
 // failOnNthCreateRT wraps podFakeRT's recording behavior but fails Create on
