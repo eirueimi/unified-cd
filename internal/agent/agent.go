@@ -195,7 +195,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// perfectly healthy draining run. runCtx outlives claimCtx during drain and is
 	// cancelled on full shutdown (defer runCancel / DrainTimeout), so heartbeats
 	// continue through the whole drain window and stop cleanly on shutdown — no leak.
-	StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval)
+	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval)
 
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
@@ -206,6 +206,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		}(i)
 	}
 	wg.Wait()
+
+	// All slots are done: stop the heartbeat and JOIN it before returning, so a
+	// beat can't outlive Run. runCancel is deferred too, but that only signals
+	// the goroutine asynchronously — without this join a late tick could fire
+	// after Run returned (a leak the drain regression test observes).
+	runCancel()
+	<-hbDone
 
 	// ctx is already cancelled, so use a new context for deregistration.
 	deregCtx, deregCancel := context.WithTimeout(context.Background(), 5*time.Second)
