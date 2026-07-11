@@ -200,7 +200,7 @@ func TestAPI_DeleteJob(t *testing.T) {
 func TestAPI_DeleteJob_CascadesRuns(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "to-delete-with-runs", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "to-delete-with-runs", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "to-delete-with-runs", nil, []byte(`{}`), nil, nil, "")
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/to-delete-with-runs", nil)
 	req.Header.Set("Authorization", "Bearer secret")

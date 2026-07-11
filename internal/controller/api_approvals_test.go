@@ -23,7 +23,7 @@ func TestApprovals_DecideFlow(t *testing.T) {
 
 	// Create a job and run to hang approvals off.
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "api")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api")
 	require.NoError(t, err)
 
 	// Create a pending approval for step 0 directly via the store.
@@ -71,7 +71,7 @@ func TestApprovals_ListRunApprovals(t *testing.T) {
 	s, pg := newTestServer(t)
 
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "api")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api")
 	require.NoError(t, err)
 
 	require.NoError(t, pg.CreatePendingApproval(t.Context(), run.ID, 0, "gate-a", "msg a", nil))
@@ -93,11 +93,11 @@ func TestApprovals_AgentCreateAndGet(t *testing.T) {
 	s, pg := newTestServer(t)
 
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "api")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api")
 	require.NoError(t, err)
 
 	// Register an agent so agentId exists.
-	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil))
+	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil, nil))
 
 	// Agent creates an approval.
 	createBody, _ := json.Marshal(api.CreateApprovalRequest{
@@ -132,10 +132,10 @@ func TestApprovals_AgentGet_NotFound(t *testing.T) {
 	s, pg := newTestServer(t)
 
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "api")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api")
 	require.NoError(t, err)
 
-	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil))
+	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil, nil))
 
 	req := httptest.NewRequest(http.MethodGet,
 		fmt.Sprintf("/api/v1/agents/ag1/runs/%s/approvals/99", run.ID), nil)
@@ -149,7 +149,7 @@ func TestApprovals_DecideFlow_BadDecision(t *testing.T) {
 	s, pg := newTestServer(t)
 
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "api")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api")
 	require.NoError(t, err)
 	require.NoError(t, pg.CreatePendingApproval(t.Context(), run.ID, 0, "gate", "msg", nil))
 

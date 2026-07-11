@@ -22,7 +22,7 @@ func mustCreateRun(t *testing.T, pg store.Store, jobName string) string {
 	_, err := pg.UpsertJob(ctx, jobName, "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
 
-	run, err := pg.CreateRun(ctx, jobName, nil, []byte(`{}`), nil, "")
+	run, err := pg.CreateRun(ctx, jobName, nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	return run.ID
 }

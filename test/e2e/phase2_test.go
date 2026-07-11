@@ -157,7 +157,7 @@ spec:
 
 	// mutex should be released after both runs finish
 	// Create a temporary run for verification and call AcquireMutex (because run_id is a UUID type + foreign key constraint)
-	verifyRun, err := pg.CreateRun(ctx, "exclusive", nil, []byte(`{}`), nil, "")
+	verifyRun, err := pg.CreateRun(ctx, "exclusive", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	ok, err := pg.AcquireMutex(ctx, "exclusive-lock", verifyRun.ID)
 	require.NoError(t, err)

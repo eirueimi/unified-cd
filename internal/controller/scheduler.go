@@ -25,7 +25,7 @@ func RunScheduler(ctx context.Context, st store.Store, tick time.Duration) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 
-	var release func()          // non-nil when this instance is the leader
+	var release func()              // non-nil when this instance is the leader
 	var lastScheduleCheck time.Time // time of the last schedule check
 
 	defer func() {
@@ -113,7 +113,7 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 			} else {
 				slog.Warn("checkAndFireSchedules: failed to load job for param validation", "schedule", sc.Name, "job", sc.JobName, "error", jerr)
 			}
-			_, err := st.CreateRun(ctx, sc.JobName, params, []byte(`{}`), nil, "schedule:"+sc.Name)
+			_, err := st.CreateRun(ctx, sc.JobName, params, []byte(`{}`), nil, nil, "schedule:"+sc.Name)
 			if err != nil {
 				slog.Warn("checkAndFireSchedules: failed to create Run", "schedule", sc.Name, "error", err)
 				continue // Do not update last_fired_at — allow retry on the next tick.

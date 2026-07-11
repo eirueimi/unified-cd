@@ -13,7 +13,7 @@ import (
 
 func TestAPI_ListAgents(t *testing.T) {
 	s, pg := newTestServer(t)
-	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:linux"}, nil))
+	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:linux"}, nil, nil))
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()

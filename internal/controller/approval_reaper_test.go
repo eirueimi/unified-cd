@@ -18,7 +18,7 @@ func TestRunApprovalReaperAsLeader_MarksExpired(t *testing.T) {
 	ctx := context.Background()
 	_, _ = pg.UpsertJob(ctx, "jrr", "unified-cd/v1", []byte(`{}`))
 
-	run, err := pg.CreateRun(ctx, "jrr", nil, []byte(`{}`), nil, "")
+	run, err := pg.CreateRun(ctx, "jrr", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	past := time.Now().Add(-time.Hour)
 	require.NoError(t, pg.CreatePendingApproval(ctx, run.ID, 0, "gate", "ok?", &past))

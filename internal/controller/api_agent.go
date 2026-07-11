@@ -45,7 +45,7 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 			labels = append(labels, "hostname:"+req.Hostname)
 		}
 	}
-	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, req.Env); err != nil {
+	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, nil, req.Env); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

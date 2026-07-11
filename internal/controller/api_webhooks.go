@@ -216,7 +216,7 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create the Run.
-	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, "webhook:"+name)
+	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, nil, "webhook:"+name)
 	if err != nil {
 		s.countWebhookEvent(name, "error")
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)

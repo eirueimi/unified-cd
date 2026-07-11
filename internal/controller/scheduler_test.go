@@ -6,17 +6,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/gittemplate"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestScheduler_MovesPendingToQueued(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	_, _ = pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -31,7 +31,7 @@ func TestScheduler_MovesPendingToQueued(t *testing.T) {
 func TestScheduler_OnlyOneLeaderQueues(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	_, _ = pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -66,7 +66,7 @@ func TestResolveGitPendingRuns_DeterministicErrorFailsRun(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
-	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "")
 	require.NoError(t, err)
 
 	resolver := gittemplate.NewResolver(badYAMLFetcher{}, nil)
@@ -81,7 +81,7 @@ func TestResolveGitPendingRuns_TransientErrorKeepsPending(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
-	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "")
 	require.NoError(t, err)
 
 	resolver := gittemplate.NewResolver(erroringFetcher{}, nil)

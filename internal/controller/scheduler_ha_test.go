@@ -39,7 +39,7 @@ func TestHA_SchedulerFailover(t *testing.T) {
 	ctxA, cancelA := context.WithCancel(context.Background())
 	go RunScheduler(ctxA, pg, 50*time.Millisecond)
 
-	runA, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	runA, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	waitQueued(t, pg, runA.ID, 3*time.Second) // A is leader
 
@@ -51,7 +51,7 @@ func TestHA_SchedulerFailover(t *testing.T) {
 	defer cancelB()
 	go RunScheduler(ctxB, pg, 50*time.Millisecond)
 
-	runB, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	runB, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	waitQueued(t, pg, runB.ID, 5*time.Second) // B took over
 }

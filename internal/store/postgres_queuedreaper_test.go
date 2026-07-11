@@ -17,9 +17,9 @@ func TestPostgres_ListUnclaimableQueuedRuns(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	unityRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{"unity"}, "")
+	unityRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{"unity"}, nil, "")
 	require.NoError(t, err)
-	anyRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	anyRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -42,13 +42,13 @@ func TestPostgres_ListUnclaimableQueuedRuns(t *testing.T) {
 
 	// A live docker agent (no unity label): the empty-selector run becomes
 	// claimable; the unity run still cannot be claimed.
-	require.NoError(t, pg.UpsertAgent(ctx, "docker-1", "h", "linux", "dev", []string{"kind:docker"}, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "docker-1", "h", "linux", "dev", []string{"kind:docker"}, nil, nil))
 	m = collect()
 	assert.Contains(t, m, unityRun.ID)
 	assert.NotContains(t, m, anyRun.ID)
 
 	// A live unity agent: the unity run is now claimable too.
-	require.NoError(t, pg.UpsertAgent(ctx, "unity-1", "h2", "windows", "dev", []string{"unity", "macos"}, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "unity-1", "h2", "windows", "dev", []string{"unity", "macos"}, nil, nil))
 	m = collect()
 	assert.NotContains(t, m, unityRun.ID)
 	assert.NotContains(t, m, anyRun.ID)

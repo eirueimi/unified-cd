@@ -63,7 +63,7 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 	if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
 		triggeredBy = p.Name
 	}
-	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, triggeredBy)
+	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, nil, triggeredBy)
 	if err != nil {
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
 		return

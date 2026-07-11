@@ -27,8 +27,8 @@ func NewInstrumentedStore(s store.Store, m *Metrics) *InstrumentedStore {
 	return &InstrumentedStore{Store: s, m: m}
 }
 
-func (s *InstrumentedStore) CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, triggeredBy string) (*api.Run, error) {
-	run, err := s.Store.CreateRun(ctx, jobName, params, spec, agentSelector, triggeredBy)
+func (s *InstrumentedStore) CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string) (*api.Run, error) {
+	run, err := s.Store.CreateRun(ctx, jobName, params, spec, agentSelector, requiredCaps, triggeredBy)
 	if err == nil {
 		s.m.RunCreated(triggeredBy)
 	}

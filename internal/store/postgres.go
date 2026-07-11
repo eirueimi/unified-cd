@@ -134,12 +134,15 @@ func (p *Postgres) ListJobs(ctx context.Context) ([]api.Job, error) {
 	}
 	return out, rows.Err()
 }
-func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, triggeredBy string) (*api.Run, error) {
+func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string) (*api.Run, error) {
 	if params == nil {
 		params = map[string]string{}
 	}
 	if agentSelector == nil {
 		agentSelector = []string{}
+	}
+	if requiredCaps == nil {
+		requiredCaps = []string{}
 	}
 	if triggeredBy == "" {
 		triggeredBy = "api"
@@ -149,14 +152,14 @@ func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[str
 		return nil, err
 	}
 	const q = `
-		INSERT INTO runs(job_name, params, spec, agent_selector, triggered_by)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO runs(job_name, params, spec, agent_selector, required_caps, triggered_by)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, job_name, status, params, created_at, updated_at, triggered_by;
 	`
 	var r api.Run
 	var paramsOut []byte
 	var status string
-	err = p.pool.QueryRow(ctx, q, jobName, paramsJSON, spec, agentSelector, triggeredBy).
+	err = p.pool.QueryRow(ctx, q, jobName, paramsJSON, spec, agentSelector, requiredCaps, triggeredBy).
 		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy)
 	if err != nil {
 		return nil, fmt.Errorf("create run: %w", err)
@@ -542,17 +545,26 @@ func (p *Postgres) ClaimNextRun(ctx context.Context, agentID string, agentLabels
 	if agentLabels == nil {
 		agentLabels = []string{}
 	}
+	// LEFT JOIN (rather than an inner join against a "me" CTE) is deliberate:
+	// if the claiming agent has no row yet in `agents`, a.capabilities is NULL,
+	// which falls into the "skip cap check" branch below (treated as legacy)
+	// rather than an inner join silently excluding every run because the
+	// agent side of the join is empty. In practice the claim handler always
+	// upserts the agent before calling ClaimNextRun, but tests/callers that
+	// invoke this directly for an unregistered agent ID must still fall back
+	// to label-only matching.
 	const q = `
 		WITH picked AS (
-			SELECT id FROM runs
-			WHERE status = 'Queued'
-			  AND (agent_selector = '{}' OR agent_selector <@ $2::TEXT[])
-			ORDER BY created_at
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED
+		    SELECT r.id FROM runs r
+		    LEFT JOIN agents a ON a.id = $1
+		    WHERE r.status = 'Queued'
+		      AND (r.agent_selector = '{}' OR r.agent_selector <@ $2::TEXT[])
+		      AND (a.capabilities IS NULL OR r.required_caps <@ a.capabilities)
+		    ORDER BY r.created_at
+		    LIMIT 1
+		    FOR UPDATE OF r SKIP LOCKED
 		)
-		UPDATE runs r
-		SET claimed_by = $1, claimed_at = NOW(), updated_at = NOW(), status = 'Running'
+		UPDATE runs r SET claimed_by = $1, claimed_at = NOW(), updated_at = NOW(), status = 'Running'
 		FROM picked WHERE r.id = picked.id
 		RETURNING r.id, r.job_name, r.status, r.params, r.spec, r.created_at, r.updated_at;
 	`
@@ -864,7 +876,7 @@ func (p *Postgres) SearchLogs(ctx context.Context, runID string, steps []int, q 
 // prior registration is absent here, it is dropped — this is required so removing a
 // label from an agent's config and restarting actually takes effect (see TODO #23).
 // Use UpsertAgentOnClaim for the lightweight, non-destructive claim-time upsert.
-func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error {
+func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, env map[string]string) error {
 	if labels == nil {
 		labels = []string{}
 	}
@@ -876,17 +888,20 @@ func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, versi
 		return err
 	}
 	const q = `
-		INSERT INTO agents(id, hostname, os, labels, version, env, last_seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		INSERT INTO agents(id, hostname, os, labels, version, capabilities, env, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		ON CONFLICT (id) DO UPDATE
 		  SET hostname     = EXCLUDED.hostname,
 		      os           = EXCLUDED.os,
 		      labels       = EXCLUDED.labels,
 		      version      = EXCLUDED.version,
+		      capabilities = EXCLUDED.capabilities,
 		      env          = EXCLUDED.env,
 		      last_seen_at = NOW();
 	`
-	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON)
+	// capabilities is stored as-is: nil stays SQL NULL (legacy agent, cap check
+	// skipped by ClaimNextRun); do NOT coerce to []string{} here.
+	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, capabilities, envJSON)
 	return err
 }
 
@@ -933,7 +948,7 @@ func (p *Postgres) DeleteAgent(ctx context.Context, agentID string) error {
 }
 
 func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
-	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at FROM agents ORDER BY last_seen_at DESC`
+	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities FROM agents ORDER BY last_seen_at DESC`
 	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -943,7 +958,7 @@ func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
 	for rows.Next() {
 		var a api.AgentInfo
 		var envJSON []byte
-		if err := rows.Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(envJSON, &a.Env)
@@ -956,11 +971,11 @@ func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
 }
 
 func (p *Postgres) GetAgent(ctx context.Context, id string) (*api.AgentInfo, error) {
-	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at FROM agents WHERE id = $1`
+	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities FROM agents WHERE id = $1`
 	var a api.AgentInfo
 	var envJSON []byte
 	err := p.pool.QueryRow(ctx, q, id).
-		Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt)
+		Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

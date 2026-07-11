@@ -67,12 +67,13 @@ type CalledBy struct {
 }
 
 type AgentRegisterRequest struct {
-	AgentID  string            `json:"agentId"`
-	Hostname string            `json:"hostname"`
-	OS       string            `json:"os"`
-	Labels   []string          `json:"labels,omitempty"`
-	Version  string            `json:"version,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
+	AgentID      string            `json:"agentId"`
+	Hostname     string            `json:"hostname"`
+	OS           string            `json:"os"`
+	Labels       []string          `json:"labels,omitempty"`
+	Version      string            `json:"version,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	Capabilities []string          `json:"capabilities,omitempty"`
 }
 
 type ClaimResponse struct {
@@ -307,13 +308,14 @@ type ScheduleMeta struct {
 
 // AgentInfo holds the status information of an agent.
 type AgentInfo struct {
-	ID         string            `json:"id"`
-	Hostname   string            `json:"hostname"`
-	OS         string            `json:"os"`
-	Labels     []string          `json:"labels"`
-	Version    string            `json:"version"`
-	Env        map[string]string `json:"env"`
-	LastSeenAt time.Time         `json:"lastSeenAt"`
+	ID           string            `json:"id"`
+	Hostname     string            `json:"hostname"`
+	OS           string            `json:"os"`
+	Labels       []string          `json:"labels"`
+	Version      string            `json:"version"`
+	Env          map[string]string `json:"env"`
+	LastSeenAt   time.Time         `json:"lastSeenAt"`
+	Capabilities []string          `json:"capabilities,omitempty"`
 }
 
 type UploadArtifactStep struct {

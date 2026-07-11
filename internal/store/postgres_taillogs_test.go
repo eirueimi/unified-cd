@@ -15,9 +15,9 @@ func TestPostgres_LogsRangeStatsSearch(t *testing.T) {
 	ctx := context.Background()
 	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
-	other, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	other, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	// 他 run の行が混入しないことの検証用

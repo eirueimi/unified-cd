@@ -68,7 +68,7 @@ func TestAPI_TriggerRun_UnknownJob(t *testing.T) {
 func TestAPI_GetRun(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID, nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -97,7 +97,7 @@ func TestAPI_GetRun_NotFound(t *testing.T) {
 func TestAPI_GetRunOutputs_Empty(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID+"/outputs", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -114,8 +114,8 @@ func TestAPI_GetRunOutputs_Empty(t *testing.T) {
 func TestAPI_ListRunsByJob(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
-	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, "api")
-	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, "api")
+	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api")
+	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?jobName=myjob", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -129,7 +129,7 @@ func TestAPI_ListRunsByJob(t *testing.T) {
 func TestAPI_CancelRun(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "api")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil)
 	require.NoError(t, pg.MarkRunRunning(t.Context(), run.ID))
@@ -145,7 +145,7 @@ func TestAPI_CancelRun(t *testing.T) {
 func TestAPI_RunEvents_SSE_ReceivesExistingLogs(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 
 	now := time.Now().UTC()
 	_, _ = pg.AppendLog(t.Context(), run.ID, 0, "stdout", now, "hello SSE")
@@ -180,7 +180,7 @@ func TestAPI_RunEvents_SSE_BackfillTruncatesToTail(t *testing.T) {
 
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	now := time.Now().UTC()
 	for _, ln := range []string{"line-1", "line-2", "line-3", "line-4", "line-5"} {
 		_, _ = pg.AppendLog(t.Context(), run.ID, 0, "stdout", now, ln)
@@ -209,7 +209,7 @@ func TestAPI_GetRunYAML(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"deploy","run":"echo deploy"}]}`)
 	_, _ = pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", specJSON)
-	r, _ := pg.CreateRun(t.Context(), "deploy", map[string]string{"env": "prod"}, specJSON, nil, "api")
+	r, _ := pg.CreateRun(t.Context(), "deploy", map[string]string{"env": "prod"}, specJSON, nil, nil, "api")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID+"/yaml", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -238,7 +238,7 @@ func TestAPI_GetRunYAML_BadSpec(t *testing.T) {
 	s, pg := newTestServer(t)
 	badSpecJSON := []byte(`{"steps":"broken"}`)
 	_, _ = pg.UpsertJob(t.Context(), "broken-run", "unified-cd/v1", badSpecJSON)
-	r, _ := pg.CreateRun(t.Context(), "broken-run", nil, badSpecJSON, nil, "api")
+	r, _ := pg.CreateRun(t.Context(), "broken-run", nil, badSpecJSON, nil, nil, "api")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID+"/yaml", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -253,7 +253,7 @@ func TestAPI_GetRunYAML_BadSpec(t *testing.T) {
 func TestAPI_DeleteRun_TerminalState(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunSucceeded))
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/runs/"+run.ID, nil)
@@ -269,7 +269,7 @@ func TestAPI_DeleteRun_TerminalState(t *testing.T) {
 func TestAPI_DeleteRun_RejectsNonTerminalState(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	// CreateRun creates the Run in Pending state (not a terminal state).
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/runs/"+run.ID, nil)
@@ -298,9 +298,9 @@ func TestAPI_DeleteRun_NotFound(t *testing.T) {
 func TestAPI_CancelRun_CascadesToChildRuns(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
-	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
-	grandchild, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	grandchild, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	// Link parent→child→grandchild via call: step reports (child_run_id).
 	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
 	require.NoError(t, pg.UpsertStepReport(t.Context(), child.ID, 0, 0, "call-grandchild", "", "Running", nil, nil, nil, grandchild.ID, "j"))
