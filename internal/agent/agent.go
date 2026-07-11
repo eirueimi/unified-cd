@@ -281,6 +281,22 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			failClaim("isolated job requires a container runtime (docker/podman/nerdctl); mark the job native: true or route it via agentSelector", err)
 			return
 		}
+		// The claim pod needs a pause image to hold the netns. cmd/agent
+		// defaults it, but an Agent built directly (agent.New) leaves it empty;
+		// starting a container with an empty image only surfaces as a cryptic
+		// `docker run -d: exit status 125`, so fail fast with an actionable
+		// reason instead.
+		if a.PauseImage == "" {
+			a.failRun(ctx, c.RunID, "isolated job requires the agent's pause image to be configured (set --pause-image / config pauseImage) or mark the job native: true")
+			return
+		}
+		// The injected primary "job" container is backed by RunnerImage — but
+		// only when the podTemplate doesn't supply its own "job" container.
+		// Guard the empty-image case with the same actionable reason.
+		if a.RunnerImage == "" && claimNeedsRunnerImage(c.PodTemplate) {
+			a.failRun(ctx, c.RunID, `isolated job requires the agent's runner image to be configured (set --runner-image / config runnerImage), or supply a "job" container in the podTemplate, or mark the job native: true`)
+			return
+		}
 		pod = newClaimPodManager(rt, workDir, hostNamedMountPath(c.PodTemplate), a.PauseImage, a.RunnerImage)
 		if err := pod.Start(ctx, c.PodTemplate); err != nil {
 			pod.CloseAll(context.WithoutCancel(ctx))

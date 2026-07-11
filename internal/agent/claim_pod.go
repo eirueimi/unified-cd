@@ -139,6 +139,28 @@ func claimContainerDefs(pt *dsl.PodTemplate, runnerImage string) []containerDef 
 	return append(defs, containerDef{Name: primaryContainerName, Image: runnerImage})
 }
 
+// claimNeedsRunnerImage reports whether building the claim pod for pt would
+// inject the default primary "job" container backed by RunnerImage. It mirrors
+// claimContainerDefs' injection rule: false when pt already defines a container
+// named primaryContainerName, in which case RunnerImage is unused and may be
+// empty.
+func claimNeedsRunnerImage(pt *dsl.PodTemplate) bool {
+	if pt == nil {
+		return true
+	}
+	containers, _ := pt.Spec["containers"].([]any)
+	for _, raw := range containers {
+		c, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := c["name"].(string); name == primaryContainerName {
+			return false
+		}
+	}
+	return true
+}
+
 // claimPodManager emulates a k8s pod on the host runtime for one claim: a
 // pause container owns the network namespace; every podTemplate container
 // (plus the injected "job" primary) joins it via --network container: and
