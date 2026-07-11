@@ -126,6 +126,28 @@ services:
       - "5556:5556"
     restart: unless-stopped
 
+  # ---- Docker-in-Docker (container runtime for isolated jobs) ----
+  # The host agent runs isolated (non-native) jobs by shelling out to `docker`,
+  # which talks to this daemon via DOCKER_HOST. Job containers live inside dind,
+  # not on the host. The ucd-workspaces volume is mounted at the SAME path here
+  # and in the agent so `docker run -v <workspace>:...` (resolved by THIS daemon)
+  # sees the files the agent wrote.
+  dind:
+    image: docker:27-dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - ucd-workspaces:/ucd-workspaces
+      - dind-storage:/var/lib/docker
+    healthcheck:
+      test: [ "CMD", "docker", "info" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
   # ---- agent (Linux/Docker) ----
   agent:
     build:
@@ -135,9 +157,12 @@ services:
       - .:/app
       - gocache:/gocache
       - gomodcache:/gomodcache
+      - ucd-workspaces:/ucd-workspaces
     command: air -c .air.agent.toml
     depends_on:
       controller:
+        condition: service_healthy
+      dind:
         condition: service_healthy
     environment:
       GOCACHE: /gocache
@@ -146,6 +171,8 @@ services:
       UNIFIED_AGENT_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
       UNIFIED_AGENT_ID: docker-agent-1
       UNIFIED_AGENT_LABELS: kind:docker,pool:default
+      DOCKER_HOST: tcp://dind:2375
+      UNIFIED_AGENT_WORKSPACE_DIR: /ucd-workspaces
     restart: unless-stopped
 
 volumes:
@@ -153,3 +180,5 @@ volumes:
   garagedata:
   gocache:
   gomodcache:
+  ucd-workspaces:
+  dind-storage:
