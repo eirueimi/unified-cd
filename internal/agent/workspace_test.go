@@ -59,3 +59,17 @@ func TestPrepareWorkspace_ModeFlipResets(t *testing.T) {
 }
 
 func noRuntime() (crt.ContainerRuntime, error) { return nil, os.ErrNotExist }
+
+// TestContainerCleanup_KeepAliveCommand is the regression test for the
+// sidecar-sleep-infinity fix: containerCleanup creates a busybox container
+// then Execs a cleanup script into it. Since CreateSpec.Command no longer
+// defaults to "sleep infinity", this caller must set it explicitly, or
+// busybox's default entrypoint reads stdin, hits EOF immediately, and the
+// container exits before Exec can run the cleanup script.
+func TestContainerCleanup_KeepAliveCommand(t *testing.T) {
+	f := &podFakeRT{}
+	err := containerCleanup(context.Background(), t.TempDir(), func() (crt.ContainerRuntime, error) { return f, nil })
+	require.NoError(t, err)
+	require.Len(t, f.created, 1)
+	assert.Equal(t, []string{"sleep", "infinity"}, f.created[0].Command)
+}

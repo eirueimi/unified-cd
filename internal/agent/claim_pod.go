@@ -23,22 +23,36 @@ type containerDef struct {
 	Env      []string // KEY=VALUE
 	CPULimit string   // cores, e.g. "0.5" (CreateSpec.CPULimit); empty = no limit
 	MemLimit string   // bytes, e.g. "268435456" (CreateSpec.MemLimit); empty = no limit
+	// Command is this container's argv (CreateSpec.Command): the podTemplate
+	// container's command followed by its args, if either is set; nil
+	// otherwise. nil means "run the image's default entrypoint" — the
+	// correct behavior for a service sidecar (mysql, redis, ...) with no
+	// explicit command. claimPodManager.Start ignores this for the primary
+	// "job" container, which always gets the sleep-infinity keep-alive
+	// regardless of what (if anything) the podTemplate set here.
+	Command []string
 }
 
 // parseContainerDef extracts a containerDef from a raw podTemplate container
-// map, keeping only host-supported fields. Host-unsupported fields (command,
-// args, volumeMounts, ports, securityContext, envFrom, ...) are logged once
-// per container and dropped.
+// map, keeping only host-supported fields. command/args are parsed into
+// Command (see the containerDef.Command doc comment) — routing (whether a
+// podTemplate using them is even scheduled to the host agent) is unaffected;
+// see dsl.HostSupportedContainerFields. Other host-unsupported fields
+// (volumeMounts, ports, securityContext, envFrom, ...) are logged once per
+// container and dropped.
 func parseContainerDef(name string, c map[string]any) containerDef {
 	def := containerDef{Name: name}
 	def.Image, _ = c["image"].(string)
 
 	for k := range c {
-		if !dsl.HostSupportedContainerFields[k] {
+		if !dsl.HostSupportedContainerFields[k] && k != "command" && k != "args" {
 			slog.Warn("podTemplate container field is not supported on the host agent and is ignored",
 				"container", name, "field", k)
 		}
 	}
+
+	def.Command = append(def.Command, stringSlice(c["command"])...)
+	def.Command = append(def.Command, stringSlice(c["args"])...)
 
 	if envs, ok := c["env"].([]any); ok {
 		for _, raw := range envs {
@@ -69,6 +83,24 @@ func parseContainerDef(name string, c map[string]any) containerDef {
 		}
 	}
 	return def
+}
+
+// stringSlice converts a raw podTemplate container's "command" or "args"
+// value (decoded as []any of strings, mirroring k8s' []string fields) to
+// []string, skipping non-string entries. A missing/wrong-typed key or an
+// empty list yields nil. Used by parseContainerDef.
+func stringSlice(raw any) []string {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // limitStrings converts k8s quantity strings (e.g. "500m", "256Mi") to the
@@ -178,18 +210,39 @@ func newClaimPodManager(rt crt.ContainerRuntime, workDir, mountPath, pauseImage,
 		pauseImage: pauseImage, runnerImage: runnerImage, open: map[string]crt.ContainerHandle{}}
 }
 
+// sleepInfinity is the explicit keep-alive command for containers that must
+// stay running as an exec target rather than run their image's own
+// entrypoint (see crt.CreateSpec.Command): the pause container (owns the
+// claim pod's netns for its whole lifetime) and the primary "job" container
+// (the exec target for container:-less steps).
+var sleepInfinity = []string{"sleep", "infinity"}
+
 // Start builds the claim pod eagerly: pause first (netns owner), then every
 // container def. Sidecars must be listening before any step runs, which is
 // why this is claim-start eager, not step-time lazy.
 func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	pause, err := m.rt.Create(ctx, crt.CreateSpec{Image: m.pauseImage})
+	// The pause container only owns the netns (nothing execs into it), but it
+	// must outlive the whole claim: without an explicit keep-alive it would
+	// run its image's default entrypoint and could exit immediately,
+	// collapsing the netns every other claim container shares.
+	pause, err := m.rt.Create(ctx, crt.CreateSpec{Image: m.pauseImage, Command: sleepInfinity})
 	if err != nil {
 		return fmt.Errorf("claim pod: start pause container (image %q): %w", m.pauseImage, err)
 	}
 	m.pause = pause
 	for _, def := range claimContainerDefs(pt, m.runnerImage) {
+		// The primary "job" container is the exec target for container:-less
+		// steps, so it always gets the sleep-infinity keep-alive regardless
+		// of any command the podTemplate set on it. Every other container is
+		// a sidecar: it runs its own podTemplate command/args if set, else
+		// its image's default entrypoint (def.Command, possibly nil) — so a
+		// mysql/redis sidecar with no command actually runs its service.
+		cmd := def.Command
+		if def.Name == primaryContainerName {
+			cmd = sleepInfinity
+		}
 		h, err := m.rt.Create(ctx, crt.CreateSpec{
 			Image:            def.Image,
 			Env:              def.Env,
@@ -198,6 +251,7 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 			WorkDir:          m.mountPath,
 			Mounts:           []crt.Mount{{HostPath: m.workDir, ContainerPath: m.mountPath}},
 			NetworkContainer: pause.ID,
+			Command:          cmd,
 		})
 		if err != nil {
 			m.closeAllLocked(ctx)

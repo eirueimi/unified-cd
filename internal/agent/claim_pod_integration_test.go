@@ -130,9 +130,15 @@ func TestClaimPod_Integration_SidecarLocalhostAndWorkspace(t *testing.T) {
 		Native:  false,
 		RunID:   runID,
 		JobName: "test-claim-pod-integration",
+		// "web" explicitly requests the keep-alive command: this test drives
+		// httpd from a later STEP (not the sidecar's own entrypoint), so it
+		// must opt in to staying alive rather than relying on the (fixed)
+		// bug where every claim-pod container used to get "sleep infinity"
+		// regardless of role. See TestClaimPod_Integration_RedisSidecarEntrypointRuns
+		// below for the real-entrypoint-sidecar case this masked.
 		PodTemplate: &dsl.PodTemplate{Spec: map[string]any{
 			"containers": []any{
-				map[string]any{"name": "web", "image": "busybox:1.36"},
+				map[string]any{"name": "web", "image": "busybox:1.36", "command": []any{"sleep", "infinity"}},
 			},
 		}},
 		Stages: []api.ClaimStage{
@@ -173,6 +179,80 @@ func TestClaimPod_Integration_SidecarLocalhostAndWorkspace(t *testing.T) {
 		"step 3 must read back the file the default step wrote and the web container served, got: %q", step3Stdout)
 	assert.Contains(t, step3Stdout, "UNIFIED_AGENT_OS=linux",
 		"default steps in an isolated claim must report linux, got: %q", step3Stdout)
+}
+
+// TestClaimPod_Integration_RedisSidecarEntrypointRuns is the regression test
+// for the sidecar-sleep-infinity bug (see sidecar-sleep-fix-brief.md): a
+// podTemplate sidecar with NO explicit command must run its image's own
+// entrypoint — that IS the sidecar's service — not "sleep infinity". Uses
+// redis:7 (starts fast, no datadir init, unlike mysql:8) as a real service
+// sidecar. A default (container:-less) step polls it on localhost with
+// busybox's `nc` (portable under `sh`, no curl dependency on the RunnerImage
+// used here). Before the fix, every claim-pod container — including
+// sidecars — was started with `sleep infinity`, so redis-server never ran and
+// this poll would time out and fail the step.
+func TestClaimPod_Integration_RedisSidecarEntrypointRuns(t *testing.T) {
+	if _, err := crt.Detect(""); err != nil {
+		t.Skipf("no container runtime available, skipping: %v", err)
+	}
+
+	const agentID = "claim-pod-redis-sidecar-agent"
+	const runID = "run-claim-pod-redis-sidecar"
+
+	h := newClaimIntegrationHarness()
+	srv := newClaimIntegrationServer(t, agentID, h)
+
+	a := &Agent{
+		ID:          agentID,
+		Client:      NewClient(srv.URL, "tok"),
+		PauseImage:  "busybox:1.36",
+		RunnerImage: "busybox:1.36",
+	}
+
+	claim := api.ClaimResponse{
+		Native:  false,
+		RunID:   runID,
+		JobName: "test-claim-pod-redis-sidecar",
+		// No "command" on the redis container: this is the exact real-world
+		// shape (see examples/jobs/pod-sidecar.yaml's mysql sidecar) that
+		// exposed the bug — a sidecar's image entrypoint must run untouched.
+		PodTemplate: &dsl.PodTemplate{Spec: map[string]any{
+			"containers": []any{
+				map[string]any{"name": "redis", "image": "redis:7"},
+			},
+		}},
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0, StageIndex: 0, Name: "wait-for-redis",
+				// redis has no readiness probe here — poll our own way.
+				// nc -z reports success only once redis-server has actually
+				// bound port 6379, which only happens if the sidecar ran its
+				// own entrypoint instead of "sleep infinity".
+				Run: `set -e
+for i in $(seq 1 30); do
+  nc -z -w 2 127.0.0.1 6379 && { echo "redis reachable on localhost:6379"; exit 0; }
+  sleep 1
+done
+echo "redis sidecar did not become ready in time" >&2
+exit 1`,
+			}},
+		},
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	select {
+	case status := <-h.finishCh:
+		require.Equal(t, "Succeeded", status, "run should finish Succeeded: the redis sidecar must run its own entrypoint (redis-server), not sleep infinity")
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	step1Stdout := strings.Join(h.stepStdout[0], "\n")
+	assert.Contains(t, step1Stdout, "redis reachable on localhost:6379",
+		"default step must observe the redis sidecar listening, proving its entrypoint ran, got: %q", step1Stdout)
 }
 
 // TestClaimPod_Integration_ConcurrentClaimsNoPortCollision proves claim pods

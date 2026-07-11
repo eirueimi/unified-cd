@@ -69,7 +69,10 @@ func (m *scopeManager) ensure(ctx context.Context, step api.ClaimStep, env []str
 	if h, ok := m.open[k]; ok {
 		return h, nil
 	}
-	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir})
+	// Command is explicit sleep-infinity keep-alive: this container is an exec
+	// target for scoped steps (see crt.CreateSpec.Command), not a service
+	// sidecar, so it must not run the image's default entrypoint.
+	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir, Command: []string{"sleep", "infinity"}})
 	if err != nil {
 		return crt.ContainerHandle{}, fmt.Errorf("provision scope %q (image %q): %w", step.ScopeID, step.ScopeImage, err)
 	}

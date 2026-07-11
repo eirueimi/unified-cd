@@ -59,7 +59,8 @@ func (a *appleContainer) Run(ctx context.Context, spec RunSpec, stdout, stderr i
 // change).
 // createArgs builds the argv for `run -d`; extracted from Create so tests can
 // assert on the argv (notably -w for spec.WorkDir) without depending on
-// exec.Cmd.Output()'s stdout plumbing. Mirrors ociCLI.createArgs.
+// exec.Cmd.Output()'s stdout plumbing. Mirrors ociCLI.createArgs, including
+// spec.Command semantics (nil/empty = image's default entrypoint).
 func (a *appleContainer) createArgs(spec CreateSpec) []string {
 	args := []string{"run", "-d"}
 	if spec.CPULimit != "" {
@@ -77,7 +78,8 @@ func (a *appleContainer) createArgs(spec CreateSpec) []string {
 	for _, e := range spec.Env {
 		args = append(args, "-e", e)
 	}
-	args = append(args, spec.Image, "sleep", "infinity")
+	args = append(args, spec.Image)
+	args = append(args, spec.Command...)
 	return args
 }
 

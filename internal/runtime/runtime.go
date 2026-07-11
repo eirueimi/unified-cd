@@ -45,6 +45,15 @@ type CreateSpec struct {
 	// pause container's netns so sidecars are reachable on localhost,
 	// mirroring a k8s pod. Empty = default network.
 	NetworkContainer string
+	// Command is the container's argv, appended after the image in `run -d`
+	// (docker/podman/Apple container semantics: overrides the image's CMD,
+	// keeping ENTRYPOINT intact). Nil/empty means the image's default
+	// entrypoint/CMD runs unmodified — required for podTemplate sidecars
+	// (e.g. mysql, redis) whose own image entrypoint IS their service.
+	// Callers that need a long-lived exec target (the uses-scope container,
+	// the claim pod's primary "job" container, the claim pod's pause
+	// container) must set this explicitly, e.g. []string{"sleep", "infinity"}.
+	Command []string
 }
 
 // Mount is a host-path bind mount for a long-lived container: the host

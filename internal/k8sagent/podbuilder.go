@@ -13,6 +13,11 @@ import (
 
 const artifactSidecarName = "unified-artifact"
 
+// primaryContainerName is the exec target for container:-less steps —
+// mirrors internal/agent.primaryContainerName (the host claim pod's twin
+// constant) and internal/k8sagent/executor.go's "" -> "job" fallback.
+const primaryContainerName = "job"
+
 // SidecarSpec configures the injected artifact-transfer sidecar.
 type SidecarSpec struct {
 	Image        string
@@ -131,11 +136,23 @@ func defaultPodSpec(image string) *corev1.PodSpec {
 	}
 }
 
-// injectSleepInfinity injects "sleep infinity" into containers that have no command set.
-// This is necessary to keep template-defined containers alive so the agent can exec into them.
+// injectSleepInfinity injects "sleep infinity" into the primary "job"
+// container if it has no command set, so container:-less steps always have a
+// live exec target regardless of whether the podTemplate defined "job"
+// explicitly (see defaultPodSpec) or the user did (without setting a
+// command).
+//
+// It deliberately does NOT touch any other container: a podTemplate sidecar
+// (e.g. mysql, redis) with no command must run its image's own
+// entrypoint/CMD — that IS the sidecar's service. Forcing sleep infinity on
+// every container (the previous behavior) silently broke every sidecar with
+// no explicit command: its entrypoint (e.g. mysqld) never ran, so the
+// service was unreachable. This mirrors the host claim pod's fix in
+// internal/agent/claim_pod.go (claimPodManager.Start): only the primary
+// "job" container gets the keep-alive.
 func injectSleepInfinity(podSpec *corev1.PodSpec) {
 	for i := range podSpec.Containers {
-		if len(podSpec.Containers[i].Command) == 0 {
+		if podSpec.Containers[i].Name == primaryContainerName && len(podSpec.Containers[i].Command) == 0 {
 			podSpec.Containers[i].Command = []string{"sleep", "infinity"}
 		}
 	}

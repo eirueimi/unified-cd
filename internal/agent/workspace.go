@@ -82,10 +82,15 @@ func containerCleanup(ctx context.Context, workDir string, rtFn func() (crt.Cont
 	if err != nil {
 		return fmt.Errorf("no container runtime for cleanup: %w", err)
 	}
+	// Command is explicit sleep-infinity keep-alive: this container must stay
+	// running between Create and the Exec below (see
+	// crt.CreateSpec.Command) — busybox's default entrypoint would otherwise
+	// read stdin, hit EOF immediately, and exit before Exec runs.
 	h, err := rt.Create(ctx, crt.CreateSpec{
 		Image:   "busybox",
 		WorkDir: "/w",
 		Mounts:  []crt.Mount{{HostPath: workDir, ContainerPath: "/w"}},
+		Command: []string{"sleep", "infinity"},
 	})
 	if err != nil {
 		return err

@@ -13,17 +13,19 @@ import (
 )
 
 type fakeRT struct {
-	created  int
-	removed  int
-	lastExec string
+	created    int
+	removed    int
+	lastExec   string
+	lastCreate crt.CreateSpec
 }
 
 func (f *fakeRT) Name() string                                                      { return "fake" }
 func (f *fakeRT) Available() bool                                                   { return true }
 func (f *fakeRT) Pull(context.Context, string) error                                { return nil }
 func (f *fakeRT) Run(context.Context, crt.RunSpec, io.Writer, io.Writer) (int, error) { return 0, nil }
-func (f *fakeRT) Create(context.Context, crt.CreateSpec) (crt.ContainerHandle, error) {
+func (f *fakeRT) Create(_ context.Context, spec crt.CreateSpec) (crt.ContainerHandle, error) {
 	f.created++
+	f.lastCreate = spec
 	return crt.ContainerHandle{ID: "c1"}, nil
 }
 func (f *fakeRT) Exec(_ context.Context, _ crt.ContainerHandle, spec crt.ExecSpec, _, _ io.Writer) (int, error) {
@@ -52,6 +54,25 @@ func TestScopeManagerReusesEnvPerKey(t *testing.T) {
 	m.closeAll(ctx)
 	if f.removed != 1 {
 		t.Fatalf("expected 1 Remove, got %d", f.removed)
+	}
+}
+
+// TestScopeManagerEnsure_KeepAliveCommand is the regression test for the
+// sidecar-sleep-infinity fix: since CreateSpec.Command now defaults to nil
+// (image entrypoint) instead of the runtime hardcoding "sleep infinity", the
+// uses-scope container — a step exec target, not a service sidecar — must
+// set Command explicitly so it doesn't regress into running its image's
+// default entrypoint and exiting immediately.
+func TestScopeManagerEnsure_KeepAliveCommand(t *testing.T) {
+	f := &fakeRT{}
+	m := newScopeManager(f)
+	s := api.ClaimStep{ScopeID: "scope:build", ScopeImage: "img", MatrixKey: ""}
+
+	if _, err := m.ensure(context.Background(), s, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.lastCreate.Command; len(got) != 2 || got[0] != "sleep" || got[1] != "infinity" {
+		t.Fatalf("expected scope container Command = [sleep infinity], got %v", got)
 	}
 }
 

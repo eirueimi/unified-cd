@@ -63,10 +63,12 @@ func (r *ociCLI) Run(ctx context.Context, spec RunSpec, stdout, stderr io.Writer
 	return -1, err
 }
 
-// createArgs builds the argv for `run -d` (the long-lived scope container
-// used to back a uses-level runsIn.image scope). Extracted from Create so
-// tests can assert on the argv (notably -w for spec.WorkDir) without
-// depending on exec.Cmd.Output()'s stdout plumbing.
+// createArgs builds the argv for `run -d` (a long-lived container: a
+// uses-level runsIn.image scope, or one of a claim pod's containers).
+// spec.Command (if set) is appended after the image; nil/empty runs the
+// image's default entrypoint — see the CreateSpec.Command doc comment.
+// Extracted from Create so tests can assert on the argv (notably -w for
+// spec.WorkDir) without depending on exec.Cmd.Output()'s stdout plumbing.
 func (r *ociCLI) createArgs(spec CreateSpec) []string {
 	args := []string{"run", "-d"}
 	if spec.CPULimit != "" {
@@ -87,7 +89,8 @@ func (r *ociCLI) createArgs(spec CreateSpec) []string {
 	for _, e := range spec.Env {
 		args = append(args, "-e", e)
 	}
-	args = append(args, spec.Image, "sleep", "infinity")
+	args = append(args, spec.Image)
+	args = append(args, spec.Command...)
 	return args
 }
 
