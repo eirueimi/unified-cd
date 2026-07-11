@@ -17,27 +17,27 @@ func TestListStuckRunIDs(t *testing.T) {
 	require.NoError(t, err)
 
 	// stuckRun: claimed long ago by an agent that hasn't been seen in a while.
-	stuckRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	stuckRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	stuckRunID := stuckRun.ID
 
 	// freshRun: claimed long ago, but the claiming agent has a fresh heartbeat.
-	freshRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	freshRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	freshRunID := freshRun.ID
 
 	// recentRun: claimed just now by a stale agent -- still within the grace window.
-	recentRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	recentRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	recentRunID := recentRun.ID
 
 	// pendingRun: never claimed, still Pending.
-	pendingRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	pendingRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	pendingRunID := pendingRun.ID
 
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-stale", "host", "linux", "dev", nil, nil))
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-fresh", "host", "linux", "dev", nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-stale", "host", "linux", "dev", nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-fresh", "host", "linux", "dev", nil, nil, nil))
 
 	_, err = pg.pool.Exec(ctx,
 		`UPDATE agents SET last_seen_at = NOW() - interval '5 minutes' WHERE id = $1`, "agent-stale")
@@ -75,7 +75,7 @@ func TestListStuckRunIDs_MissingAgentCountsAsLost(t *testing.T) {
 	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
 
-	orphanRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	orphanRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	orphanRunID := orphanRun.ID
 

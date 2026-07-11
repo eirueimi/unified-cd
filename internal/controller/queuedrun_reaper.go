@@ -18,9 +18,14 @@ const queuedRunReaperLockKey = int64(0x71756575) // 'queu'
 // RunQueuedRunReaper periodically fails runs that have sat Queued past minAge
 // and that no live agent (heartbeat within staleAfter) can ever claim, because
 // no registered agent's labels satisfy the run's agentSelector — e.g. the agent
-// they need has disconnected. Without this, such runs stay "in progress" forever.
-// Leader-elected via an advisory lock so only one replica acts. Returns
-// immediately if st is nil.
+// they need has disconnected. This unclaimability check is label-only by
+// design: it does not consider agent capabilities, so a run that is
+// label-claimable but capability-unschedulable (e.g. a native job when only a
+// k8s agent is live) is intentionally left Queued rather than auto-failed by
+// this reaper — that case is surfaced instead via the JobDetail unschedulable
+// banner. Without this reaper, label-unclaimable runs would stay "in
+// progress" forever. Leader-elected via an advisory lock so only one replica
+// acts. Returns immediately if st is nil.
 func RunQueuedRunReaper(ctx context.Context, st store.Store, interval, minAge, staleAfter time.Duration) {
 	if st == nil {
 		return

@@ -113,7 +113,7 @@ func TestAPI_GetRunSteps_MergesPlanned(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"a","run":"echo a"},{"name":"b","cache":{"path":"p","key":"k"}}]}`)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", specJSON)
-	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, "api")
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "api")
 	require.NoError(t, err)
 
 	// Only step 0 ("a") has been reported so far.

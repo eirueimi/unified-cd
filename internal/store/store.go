@@ -117,7 +117,7 @@ type Store interface {
 	// treated as an orphan: run history is repointed to newName and the orphan is
 	// deleted. Idempotent: a missing oldName is a no-op.
 	RenameJob(ctx context.Context, oldName, newName string) error
-	CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, triggeredBy string) (*api.Run, error)
+	CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string) (*api.Run, error)
 	// ListChildRunIDs returns the IDs of runs directly spawned by parentRunID via
 	// call: steps (recorded as child_run_id on the parent's step reports), so a
 	// cancellation of the parent can cascade to its children.
@@ -165,7 +165,7 @@ type Store interface {
 	SearchLogs(ctx context.Context, runID string, steps []int, q string, capN int) (total int64, matches []LogSearchMatch, err error)
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
 	// os/version/env wholesale (a registration is the authoritative identity).
-	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error
+	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, env map[string]string) error
 	// UpsertAgentOnClaim is the CLAIM path: a lightweight, non-destructive upsert that
 	// merges labels and only overwrites scalar fields when non-empty, so a claim never
 	// clobbers richer data recorded at registration time.

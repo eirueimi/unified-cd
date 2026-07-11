@@ -1,5 +1,12 @@
 # Migration: job-level isolation (native opt-out, claim pod)
 
+> **Related:** a later release replaced this migration's `podTemplate →
+> kubernetes`-label routing pin with capability-based routing — see
+> [Migration: agent capability
+> routing](migration-2026-07-agent-capability-routing.md) if you're running
+> a version that includes it (agent `capabilities`, the `pod` capability,
+> and the unschedulable-job warning).
+
 This release makes **every job isolated by default, on both agents** — an
 unmarked job now runs its steps inside a container (a real Kubernetes Pod on
 the k8s-agent, an equivalent "claim pod" on the standard agent), instead of

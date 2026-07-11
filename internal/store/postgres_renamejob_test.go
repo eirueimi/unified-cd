@@ -19,7 +19,7 @@ func TestPostgres_RenameJob_SimpleRename(t *testing.T) {
 	_, err := pg.UpsertJob(ctx, "build", "unified-cd/v1", spec)
 	require.NoError(t, err)
 
-	run, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, "")
+	run, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 
 	require.NoError(t, pg.RenameJob(ctx, "build", "team-a/build"))
@@ -54,7 +54,7 @@ func TestPostgres_RenameJob_QualifiedAlreadyExists(t *testing.T) {
 	require.NoError(t, err)
 
 	// A run referencing the bare name (legacy history).
-	run, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, "")
+	run, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 
 	// The qualified row already exists (as applyResource would have created it).

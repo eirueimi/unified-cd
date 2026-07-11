@@ -12,6 +12,7 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -54,6 +55,10 @@ type K8sAgent struct {
 	pool   *PodPool
 }
 
+// k8sAgentCapabilities reports what the k8s agent can execute: it always
+// builds a Kubernetes Pod, and that pod always has a runnable container.
+func k8sAgentCapabilities() []string { return []string{dsl.CapPod, dsl.CapContainer} }
+
 // NewK8sAgent creates a new K8sAgent.
 func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec *Executor, pool *PodPool) *K8sAgent {
 	return &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool}
@@ -66,10 +71,11 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	host, _ := os.Hostname()
 	labels := appendLabelIfMissing(a.cfg.Labels, "kubernetes")
 	if err := a.client.Register(ctx, api.AgentRegisterRequest{
-		AgentID:  a.cfg.AgentID,
-		Hostname: host,
-		OS:       runtime.GOOS + "/k8s",
-		Labels:   labels,
+		AgentID:      a.cfg.AgentID,
+		Hostname:     host,
+		OS:           runtime.GOOS + "/k8s",
+		Labels:       labels,
+		Capabilities: k8sAgentCapabilities(),
 	}); err != nil {
 		return err
 	}

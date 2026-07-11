@@ -24,7 +24,7 @@ func TestHA_NoDoubleClaim(t *testing.T) {
 	require.NoError(t, err)
 	spec := []byte(`{"steps":[{"name":"s","run":"echo x"}]}`)
 	for i := 0; i < runs; i++ {
-		_, err := pg.CreateRun(ctx, "j", nil, spec, nil, "")
+		_, err := pg.CreateRun(ctx, "j", nil, spec, nil, nil, "")
 		require.NoError(t, err)
 	}
 	// Move all Pending -> Queued so ClaimNextRun can pick them up.

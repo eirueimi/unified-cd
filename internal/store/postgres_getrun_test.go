@@ -16,7 +16,7 @@ func TestGetRun_ClaimedByReflectsClaimingAgent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Unclaimed run: ClaimedBy is empty.
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "api")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "api")
 	require.NoError(t, err)
 	got, err := pg.GetRun(ctx, run.ID)
 	require.NoError(t, err)

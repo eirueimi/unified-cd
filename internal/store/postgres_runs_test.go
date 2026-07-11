@@ -35,13 +35,13 @@ func TestPostgres_RunParentLinkage(t *testing.T) {
 
 	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	parent, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	parent, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
-	childA, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	childA, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
-	childB, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	childB, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
-	unrelated, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	unrelated, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 
 	// The parent's call: step reports record each spawned child via child_run_id.
@@ -67,7 +67,7 @@ func TestPostgres_FinishRun_ReportsUpdated(t *testing.T) {
 
 	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 
 	updated, err := pg.FinishRun(ctx, run.ID, api.RunSucceeded)
@@ -91,7 +91,7 @@ func TestPostgres_CreateAndGetRun(t *testing.T) {
 	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
 
-	run, err := pg.CreateRun(ctx, "hello", map[string]string{"k": "v"}, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, "")
+	run, err := pg.CreateRun(ctx, "hello", map[string]string{"k": "v"}, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, api.RunPending, run.Status)
 	assert.Equal(t, "v", run.Params["k"])
@@ -107,8 +107,8 @@ func TestPostgres_TransitionPendingToQueued(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
-	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
+	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 
 	n, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -126,7 +126,7 @@ func TestPostgres_TransitionPendingToQueued_SkipsUnresolvedUses(t *testing.T) {
 
 	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(ctx, "hello", nil,
-		[]byte(`{"steps":[{"name":"s","uses":{"job":"git://github.com/org/repo/x.yaml@v1"}}]}`), nil, "")
+		[]byte(`{"steps":[{"name":"s","uses":{"job":"git://github.com/org/repo/x.yaml@v1"}}]}`), nil, nil, "")
 
 	n, err := pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -142,7 +142,7 @@ func TestPostgres_ClaimNextRun(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, "")
+	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 
 	claimed, err := pg.ClaimNextRun(ctx, "agent-1", nil)
@@ -160,7 +160,7 @@ func TestPostgres_MarkRunFinished(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil)
 	require.NoError(t, pg.MarkRunRunning(ctx, run.ID))
@@ -176,7 +176,7 @@ func TestMarkRunFinished_Idempotent(t *testing.T) {
 
 	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, "")
+	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -212,7 +212,7 @@ func TestPostgres_GetRunSpec(t *testing.T) {
 
 	_, err := pg.UpsertJob(ctx, "deploy", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "deploy", nil, specJSON, nil, "api")
+	run, err := pg.CreateRun(ctx, "deploy", nil, specJSON, nil, nil, "api")
 	require.NoError(t, err)
 
 	got, err := pg.GetRunSpec(ctx, run.ID)
@@ -228,7 +228,7 @@ func TestPostgres_DeleteJob_CascadesToRuns(t *testing.T) {
 
 	_, err := pg.UpsertJob(ctx, "cascade-job", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "cascade-job", nil, []byte(`{}`), nil, "")
+	run, err := pg.CreateRun(ctx, "cascade-job", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 
 	require.NoError(t, pg.DeleteJob(ctx, "cascade-job"))
@@ -246,7 +246,7 @@ func TestPostgres_DeleteRun(t *testing.T) {
 	_, err := pg.UpsertJob(ctx, "del-run-job", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
 	run, err := pg.CreateRun(ctx, "del-run-job", nil,
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, "")
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "")
 	require.NoError(t, err)
 	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "s", "", "Succeeded", nil, nil, nil, "", ""))
 
@@ -267,17 +267,19 @@ func TestPostgres_ListActiveRuns(t *testing.T) {
 	_, _ = pg.UpsertJob(ctx, "job-b", "unified-cd/v1", []byte(`{}`))
 
 	// Active Runs (created in Pending state)
-	r1, _ := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, "")
-	r2, _ := pg.CreateRun(ctx, "job-b", nil, []byte(`{}`), nil, "")
+	r1, _ := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "")
+	r2, _ := pg.CreateRun(ctx, "job-b", nil, []byte(`{}`), nil, nil, "")
 	// A Run in a terminal state
-	r3, _ := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, "")
+	r3, _ := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "")
 	_ = pg.MarkRunFinished(ctx, r3.ID, api.RunSucceeded)
 
 	runs, err := pg.ListActiveRuns(ctx)
 	require.NoError(t, err)
 
 	ids := make([]string, len(runs))
-	for i, r := range runs { ids[i] = r.ID }
+	for i, r := range runs {
+		ids[i] = r.ID
+	}
 	assert.Contains(t, ids, r1.ID)
 	assert.Contains(t, ids, r2.ID)
 	assert.NotContains(t, ids, r3.ID)
@@ -293,11 +295,11 @@ func TestPostgres_ListRunningRunIDsByAgent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Creation order drives FIFO claim order below.
-	mine, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	mine, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
-	other, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	other, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
-	done, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	done, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

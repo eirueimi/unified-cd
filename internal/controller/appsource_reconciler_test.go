@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 type mockAppSourceFetcher struct {
@@ -338,7 +338,7 @@ func TestReconciler_LegacyBareJobNameNotPrunedOnUpgrade(t *testing.T) {
 	require.NoError(t, err)
 	// A run recorded against the BARE legacy name; it must be repointed to the
 	// qualified name so run history survives the re-key (bug #25 follow-up).
-	legacyRun, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, "")
+	legacyRun, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute),
 		[]store.ResourceRef{{Kind: "Job", Name: "build"}}))

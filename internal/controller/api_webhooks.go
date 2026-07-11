@@ -209,14 +209,16 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	// A podTemplate that only a Kubernetes agent can honor is pinned there
-	// (mirrors handleTriggerRun); a host-runnable one routes by agentSelector.
-	if dsl.PodTemplateNeedsKubernetes(jobSpec.PodTemplate) {
-		agentSelector = appendLabelIfMissing(agentSelector, "kubernetes")
-	}
+	// Infer the capability a run of this spec needs from an agent (native /
+	// container / pod), mirroring handleTriggerRun. A podTemplate that uses
+	// features the host agent's claim pod cannot honor can only run on
+	// Kubernetes, so RequiredCaps yields "pod" for it — the agent-side
+	// capability match (ClaimNextRun) then restricts the run to a
+	// pod-capable agent instead of the old blanket "kubernetes" label pin.
+	requiredCaps := dsl.RequiredCaps(jobSpec)
 
 	// Create the Run.
-	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, "webhook:"+name)
+	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, requiredCaps, "webhook:"+name)
 	if err != nil {
 		s.countWebhookEvent(name, "error")
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)

@@ -15,9 +15,9 @@ func TestPostgres_ClaimNextRun_LabelFilter(t *testing.T) {
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 
 	// run that requires the kubernetes label
-	run1, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{"kind:kubernetes"}, "")
+	run1, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{"kind:kubernetes"}, nil, "")
 	// no selector (any agent can run it)
-	run2, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	run2, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 
@@ -39,7 +39,7 @@ func TestPostgres_ClaimNextRun_NoLabels_AnyAgent(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 
 	claimed, err := pg.ClaimNextRun(ctx, "any-agent", []string{})

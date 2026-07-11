@@ -12,8 +12,8 @@ import (
 func TestPostgres_ListAgents(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-1", "host1", "linux", "dev", []string{"kind:linux"}, nil))
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-2", "host2", "darwin", "dev", []string{"kind:mac"}, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-1", "host1", "linux", "dev", []string{"kind:linux"}, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-2", "host2", "darwin", "dev", []string{"kind:mac"}, nil, nil))
 	agents, err := pg.ListAgents(ctx)
 	require.NoError(t, err)
 	require.Len(t, agents, 2)
@@ -31,7 +31,7 @@ func TestGetAgent_ReturnsAgent(t *testing.T) {
 	ctx := context.Background()
 
 	err := st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0",
-		[]string{"kind:docker"}, map[string]string{"PATH": "/usr/bin", "HOME": "/root"})
+		[]string{"kind:docker"}, nil, map[string]string{"PATH": "/usr/bin", "HOME": "/root"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +62,8 @@ func TestUpsertAgent_ReRegistrationReplacesLabels(t *testing.T) {
 	st := NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"a", "b"}, nil))
-	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"a"}, nil))
+	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"a", "b"}, nil, nil))
+	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"a"}, nil, nil))
 
 	a, err := st.GetAgent(ctx, "agent-1")
 	require.NoError(t, err)
@@ -79,7 +79,7 @@ func TestUpsertAgentOnClaim_MergesLabelsAndDoesNotClobber(t *testing.T) {
 	st := NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"kind:linux", "hostname:host1"}, nil))
+	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"kind:linux", "hostname:host1"}, nil, nil))
 	require.NoError(t, st.UpsertAgentOnClaim(ctx, "agent-1", "", "", "", []string{"kind:linux"}, nil))
 
 	a, err := st.GetAgent(ctx, "agent-1")
@@ -108,7 +108,7 @@ func TestDeleteStaleAgents(t *testing.T) {
 	ctx := context.Background()
 
 	for _, id := range []string{"agent-old", "agent-new"} {
-		if err := st.UpsertAgent(ctx, id, "host", "linux", "dev", nil, nil); err != nil {
+		if err := st.UpsertAgent(ctx, id, "host", "linux", "dev", nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -144,7 +144,7 @@ func TestListRunsByAgent(t *testing.T) {
 	if _, err := st.UpsertJob(ctx, "test-job", "v1", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	run, err := st.CreateRun(ctx, "test-job", nil, []byte(`{}`), nil, "api")
+	run, err := st.CreateRun(ctx, "test-job", nil, []byte(`{}`), nil, nil, "api")
 	if err != nil {
 		t.Fatal(err)
 	}

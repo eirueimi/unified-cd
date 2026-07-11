@@ -122,7 +122,7 @@ func TestAgentAPI_Claim_ReturnsQueuedRun(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1",
 		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil,
-		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, "")
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=2s", nil)
@@ -210,7 +210,7 @@ func TestAgentAPI_Claim_DoesNotClobberRegisteredAgent(t *testing.T) {
 func TestAgentAPI_ReportStep(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	body, _ := json.Marshal(api.StepReportRequest{
 		RunID: run.ID, StepIndex: 0, Status: "Running", StartedAt: time.Now(),
 	})
@@ -224,7 +224,7 @@ func TestAgentAPI_ReportStep(t *testing.T) {
 func TestAgentAPI_AppendLog(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	body, _ := json.Marshal(api.LogAppendRequest{
 		RunID: run.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "hello",
 	})
@@ -250,7 +250,7 @@ func TestAgentAPI_Claim_IncludesOutputsAndCall(t *testing.T) {
 		]
 	}`)
 	_, _ = pg.UpsertJob(t.Context(), "multi", "unified-cd/v1", specJSON)
-	_, _ = pg.CreateRun(t.Context(), "multi", map[string]string{"env": "prod"}, specJSON, nil, "")
+	_, _ = pg.CreateRun(t.Context(), "multi", map[string]string{"env": "prod"}, specJSON, nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=2s", nil)
@@ -274,7 +274,7 @@ func TestAgentAPI_Claim_IncludesOutputsAndCall(t *testing.T) {
 func TestAgentAPI_SetStepOutputs(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 
 	body, _ := json.Marshal(api.SetOutputsRequest{
 		Outputs: map[string]string{"artifact_url": "s3://bucket/a.tar.gz"},
@@ -295,7 +295,7 @@ func TestAgentAPI_SetStepOutputs(t *testing.T) {
 func TestAgentAPI_SetRunOutputs(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 
 	body, _ := json.Marshal(api.SetOutputsRequest{
 		Outputs: map[string]string{"result": "ok"},
@@ -322,7 +322,7 @@ func TestAgentAPI_ClaimResponse_CollectsSecretsNeeded(t *testing.T) {
 		]
 	}`)
 	_, _ = pg.UpsertJob(t.Context(), "s", "unified-cd/v1", specJSON)
-	_, _ = pg.CreateRun(t.Context(), "s", nil, specJSON, nil, "")
+	_, _ = pg.CreateRun(t.Context(), "s", nil, specJSON, nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=2s", nil)
@@ -351,7 +351,7 @@ func TestAgentAPI_Claim_FailsRunWhenBuildClaimResponseErrors(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"compile","run":"go build ./...","runsIn":{"image":"golang:1.22"}}]}`)
 	_, _ = pg.UpsertJob(t.Context(), "legacy-job", "unified-cd/v1", specJSON)
-	run, _ := pg.CreateRun(t.Context(), "legacy-job", nil, specJSON, nil, "")
+	run, _ := pg.CreateRun(t.Context(), "legacy-job", nil, specJSON, nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=2s", nil)
@@ -387,7 +387,7 @@ func TestAgentAPI_Claim_FailsRunWhenBuildClaimResponseErrors(t *testing.T) {
 func TestAgentAPI_LogBulk(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 
 	lines := []api.LogAppendRequest{
 		{RunID: run.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "line1"},
@@ -810,7 +810,7 @@ func TestClaimDrainBroadcast(t *testing.T) {
 func TestAgentAPI_FinishRun_FreshTransition(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 
 	body, _ := json.Marshal(map[string]string{"status": string(api.RunSucceeded)})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+run.ID+"/finish", bytes.NewReader(body))
@@ -830,8 +830,8 @@ func TestAgentAPI_FinishRun_FreshTransition(t *testing.T) {
 func TestAgentAPI_FinishRun_FailedCancelsChildren(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
-	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	// Link the parent's call step to the child run.
 	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
 
@@ -857,7 +857,7 @@ func TestAgentAPI_FinishRun_FailedCancelsChildren(t *testing.T) {
 func TestAgentAPI_FinishRun_AlreadyTerminal(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	// Simulate the reaper finalizing the run as Failed before the agent's late report.
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunFailed))
 
@@ -884,7 +884,7 @@ func TestAgentAPI_FinishRun_AlreadyTerminal(t *testing.T) {
 func TestAgentAPI_ReportStep_AlreadyTerminal(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunFailed))
 
 	body, _ := json.Marshal(api.StepReportRequest{

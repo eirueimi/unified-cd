@@ -23,7 +23,7 @@ func TestAPI_LogWindow(t *testing.T) {
 	ctx := context.Background()
 	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	for i := 0; i < 3; i++ {

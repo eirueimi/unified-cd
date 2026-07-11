@@ -22,7 +22,7 @@ func TestInstrumentedStoreCountsTransitions(t *testing.T) {
 	_, err := pg.UpsertJob(ctx, "job-a", "v1", []byte(`{}`))
 	require.NoError(t, err)
 
-	run, err := st.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, "webhook:push")
+	run, err := st.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "webhook:push")
 	require.NoError(t, err)
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.runsCreated.WithLabelValues("webhook")))
 

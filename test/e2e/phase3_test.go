@@ -26,7 +26,7 @@ func TestPhase3_AdvisoryLockScheduler(t *testing.T) {
 	}
 	pg := store.NewTestPostgres(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	_, _ = pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, "")
+	_, _ = pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

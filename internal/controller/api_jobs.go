@@ -140,13 +140,20 @@ func extractJobNameAndYAML(wild string) (name string, yaml bool) {
 	return wild, false
 }
 
-// NOTE: a job whose leaf is literally "yaml" (qualified name ".../yaml") is
-// unreachable via GET as a job — the suffix is read as the YAML discriminator.
-// Such names are not expected; direct apply can still create/delete them.
+// NOTE: a job whose leaf is literally "yaml" or "schedulability" (qualified
+// name ".../yaml" or ".../schedulability") is unreachable via GET as a job —
+// the suffix is read as the YAML/schedulability discriminator. Such names are
+// not expected; direct apply can still create/delete them.
 
-// handleGetJobOrYAML dispatches GET /jobs/* to the job or its YAML.
+// handleGetJobOrYAML dispatches GET /jobs/* to the job, its YAML, or its
+// schedulability evaluation.
 func (s *Server) handleGetJobOrYAML(w http.ResponseWriter, r *http.Request) {
-	name, yaml := extractJobNameAndYAML(chi.URLParam(r, "*"))
+	wild := strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+	if strings.HasSuffix(wild, "/schedulability") {
+		s.serveJobSchedulability(w, r, strings.TrimSuffix(wild, "/schedulability"))
+		return
+	}
+	name, yaml := extractJobNameAndYAML(wild)
 	if yaml {
 		s.serveJobYAML(w, r, name)
 		return
@@ -182,6 +189,31 @@ func (s *Server) serveJobYAML(w http.ResponseWriter, r *http.Request, name strin
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(yamlBytes)
+}
+
+// serveJobSchedulability evaluates whether any registered agent can currently
+// run the named Job and returns the Schedulability report as JSON. The stored
+// spec is self-produced via json.Marshal when the Job was saved, so a failure
+// to unmarshal it here indicates corruption rather than a user input error;
+// in that case the request fails with 500 rather than being evaluated as
+// requiring nothing.
+func (s *Server) serveJobSchedulability(w http.ResponseWriter, r *http.Request, name string) {
+	job, err := s.store.GetJob(r.Context(), name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	var spec dsl.Spec
+	if err := json.Unmarshal(job.Spec, &spec); err != nil {
+		http.Error(w, "invalid stored spec: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	agents, err := s.store.ListAgents(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, EvaluateSchedulability(spec, agents))
 }
 
 // handleDeleteJob deletes the Job with the given name. Associated Run history is also cascade-deleted.

@@ -20,11 +20,11 @@ func TestCountRunsByStatus(t *testing.T) {
 
 	// Two Pending (CreateRun default), one of them moved to Running,
 	// one finished (must not be counted).
-	r1, err := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, "api")
+	r1, err := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "api")
 	require.NoError(t, err)
-	_, err = pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, "api")
+	_, err = pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "api")
 	require.NoError(t, err)
-	r3, err := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, "api")
+	r3, err := pg.CreateRun(ctx, "job-a", nil, []byte(`{}`), nil, nil, "api")
 	require.NoError(t, err)
 	require.NoError(t, pg.MarkRunRunning(ctx, r1.ID))
 	require.NoError(t, pg.MarkRunFinished(ctx, r3.ID, api.RunSucceeded))
@@ -40,8 +40,8 @@ func TestCountAgentsByLiveness(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-fresh", "h1", "linux", "v1", nil, nil))
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-stale", "h2", "linux", "v1", nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-fresh", "h1", "linux", "v1", nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-stale", "h2", "linux", "v1", nil, nil, nil))
 	_, err := pg.pool.Exec(ctx,
 		`UPDATE agents SET last_seen_at = NOW() - interval '10 minutes' WHERE id = $1`,
 		"agent-stale")
