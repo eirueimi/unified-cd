@@ -47,6 +47,7 @@ kind: Job
 metadata:
   name: matrix-smoke
 spec:
+  native: true
   params:
     outputs:
       - name: tag

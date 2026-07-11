@@ -72,6 +72,7 @@ kind: Job
 metadata:
   name: archive-test
 spec:
+  native: true
   steps:
     - name: hello
       run: 'printf "ARCHIVED_LOG_LINE\n"'
@@ -145,6 +146,7 @@ kind: Job
 metadata:
   name: sse-test
 spec:
+  native: true
   steps:
     - name: hello
       run: 'printf "SSE_TEST_LINE\n"'
@@ -215,6 +217,7 @@ kind: Job
 metadata:
   name: bulk-test
 spec:
+  native: true
   steps:
     - name: multiline
       run: 'for i in 1 2 3 4 5; do printf "LINE_%d\n" $i; done'
