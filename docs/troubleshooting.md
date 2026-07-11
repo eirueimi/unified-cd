@@ -44,6 +44,68 @@ unified-cli agent list
 
 Cancel a run stuck this way with `unified-cli run cancel <run-id>`.
 
+## Job stays Queued / unschedulable warning
+
+**Symptom**
+
+A run stays `Queued` and never gets claimed, and the job's page in the Web
+UI shows a warning banner near the top:
+
+```
+⚠ This job can't be scheduled right now: no registered agent provides
+capability [pod]. Runs will stay Queued until a matching agent registers.
+```
+
+**Cause**
+
+This is a stronger, more specific version of the generic ["Run stays Queued
+forever"](#run-stays-queued-forever) symptom above. Every job now has an
+inferred capability requirement — `native`, `container`, or `pod` — derived
+from its spec (see [Capabilities and
+routing](agents.md#capabilities-and-routing)), on top of any hand-written
+`agentSelector`. The banner means the controller checked the **current
+agent inventory** via `GET /api/v1/jobs/{name}/schedulability` and found
+that no registered agent satisfies **both**: capabilities ⊇ the job's
+required capability, AND labels ⊇ the job's `agentSelector`. Unlike the
+generic Queued symptom (which can also just mean "every matching agent is
+busy"), this banner only fires when the mismatch is structural — no
+currently-connected agent could ever claim this run, busy or not.
+
+The `Reason` field (and banner text) tells you which half failed:
+
+- `no registered agent provides capability [...]` — no connected agent
+  reports the needed capability at all (e.g. a `podTemplate` that needs
+  Kubernetes, but no k8s-agent is registered; or a `native: true` job with
+  only k8s-agents online).
+- `no registered agent matches labels [...]` — at least one agent has the
+  right capability, but none also carries every label in `agentSelector`.
+
+If `agentSelector` contains a `{{ .Params.X }}` expression, the label half
+can't be evaluated from the job definition alone (it only resolves at
+trigger time with real parameter values); the banner is suppressed for the
+label part and the API response sets `selectorDependsOnParams: true` —
+schedulability isn't falsely reported just because a selector is
+parameterized.
+
+**Fix**
+
+- Register (or start) an agent that reports the missing capability — a
+  standard agent reports `native` (+ `container` with a runtime installed),
+  a Kubernetes agent reports `pod` + `container`. See [Capabilities and
+  routing](agents.md#capabilities-and-routing) for the full model.
+- Or adjust the job: drop an `agentSelector` label that no connected agent
+  carries, or change `native`/`podTemplate` so the job's inferred
+  requirement matches an agent you actually have (e.g. remove a
+  Kubernetes-only `podTemplate` feature so the job infers `container`
+  instead of `pod`, letting it run on a standard agent too).
+- Legacy agents (pre-upgrade binaries reporting no `capabilities`) are not
+  counted against you here — they match by label only, same as before this
+  feature shipped, so they don't need to be re-registered just to clear the
+  warning.
+- Once a satisfying agent registers, the banner disappears on the job page's
+  next load and the run is claimed on the matching agent's next poll — no
+  need to re-trigger it.
+
 ## Job isolation
 
 Jobs are isolated by default (see [Job Isolation: `native` and the claim

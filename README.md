@@ -153,7 +153,7 @@ CLI / Browser / Webhook
 ### Feature Guides
 - **[Authentication Guide](docs/authentication.md)** — static tokens, PATs, OIDC SSO (Dex), CLI login
 - **[Secrets Management Guide](docs/secrets.md)** — create, reference, and encrypt secrets; log masking
-- **[Agent Labels and Routing](docs/agents.md)** — agentSelector, hostname labels, Windows agents
+- **[Agent Labels and Routing](docs/agents.md)** — agentSelector, capability-based routing, hostname labels, Windows agents
 - **[Kubernetes Integration Guide](docs/kubernetes-integration.md)** — k8s-agent setup, podTemplate patterns, RBAC
 - **[High Availability Guide](docs/high-availability.md)** — controller redundancy, leader election, rolling deploys
 - **[Operations Guide](docs/operations.md)** — state layout, backup, recovery runbook, monitoring
@@ -161,6 +161,7 @@ CLI / Browser / Webhook
 - **[Frontend Development Guide](docs/frontend-development.md)** — Svelte + Vite setup, hot reload, routing
 - **[Troubleshooting](docs/troubleshooting.md)** — symptom-indexed fixes for common failures
 - **[Migration: job-level isolation](docs/migration-2026-07-job-isolation.md)** — upgrading to isolated-by-default jobs, `native: true`, and the removal of step-level `runsIn:`
+- **[Migration: agent capability routing](docs/migration-2026-07-agent-capability-routing.md)** — agent `capabilities`, the `pod` capability replacing the old `kubernetes`-label pin, and rolling upgrades
 
 ### Infrastructure
 - **[Kubernetes Manifests](manifests/README.md)** — install manifests for production and evaluation

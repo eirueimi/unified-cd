@@ -618,14 +618,24 @@ Rules, enforced at apply time:
 - `native: true` + `podTemplate` → error.
 - `native: true` + any step `container:` → error.
 - **`native` is host-only.** The k8s-agent has no concept of running outside
-  a Pod — a `native: true` job claimed by a k8s-agent fails the run
-  immediately with a clear error. Route native jobs to host agents (and away
-  from k8s-agents) via `agentSelector`.
-- Conversely, an isolated job claimed by a host agent with **no container
-  runtime installed** (docker/podman/nerdctl all missing) fails the run
-  immediately rather than silently falling back to host execution — mark
-  the job `native: true`, or route it to an agent that has a runtime, via
-  `agentSelector`.
+  a Pod. A `native: true` job is auto-routed to only the standard (host)
+  agent by capability: the controller infers `requiredCaps: [native]` for it
+  at trigger time, and only an agent reporting the `native` capability can
+  claim it — see [Capabilities and
+  routing](agents.md#capabilities-and-routing). **You do not need to
+  hand-write a k8s-excluding `agentSelector` for this** on a fully-upgraded
+  fleet. This capability check is skipped only for a legacy agent that
+  reports no capabilities at all (pre-upgrade binary); if such an agent is a
+  k8s-agent and claims a native job by label match alone, it fails the run
+  immediately with a clear error as a safety net.
+- Conversely, an isolated job (the default — no `native: true`) is
+  auto-routed to a `container`- or `pod`-capable agent, so it lands on a
+  host with a runtime or on Kubernetes. If a legacy, capability-unaware host
+  agent still claims it with **no container runtime installed**
+  (docker/podman/nerdctl all missing), it fails the run immediately rather
+  than silently falling back to host execution — install a runtime, mark the
+  job `native: true`, or upgrade the agent so capability routing keeps it
+  away from runtime-less hosts.
 
 `uses:` scope steps (below) still work inside a native job if a container
 runtime happens to be present — scopes have always required a runtime
@@ -886,6 +896,21 @@ network-namespace-joined container per entry; unsupported PodSpec fields
 (PVC workspace, `command`/`args`/`volumeMounts`/`securityContext`, `env`
 entries without a literal `value`) are ignored with a WARN rather than
 applied.
+
+**Routing is automatic and capability-based**, not selector-based: the
+controller infers whether a `podTemplate` needs real Kubernetes (a named
+agent-side template, an `override` patch, `reuse`, a pod-spec field beyond
+`containers`, or a container field the host claim pod can't honor) or is
+host-runnable (plain `name`/`image`/`env`/`resources.limits` containers,
+`workspace.pvc` — which degrades to a host bind mount). A host-runnable
+`podTemplate` can run on **either** a standard agent or a k8s-agent with no
+hand-written selector required to make that work; a Kubernetes-only
+`podTemplate` is routed to a k8s-agent only. See [Capabilities and
+routing](agents.md#capabilities-and-routing) for the full model. The
+`agentSelector: [kind:k8s]` in the example below is only needed if you
+specifically want to *force* this job onto Kubernetes (e.g. to always use a
+named agent-side template) rather than let a host-runnable one run
+anywhere.
 
 See the [Kubernetes Integration Guide](kubernetes-integration.md) for full details.
 

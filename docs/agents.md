@@ -8,6 +8,7 @@ lifecycle and its registration/liveness semantics with the controller.
 
 - [Agent Labels](#agent-labels)
 - [agentSelector](#agentselector)
+- [Capabilities and routing](#capabilities-and-routing)
 - [Windows Agents](#windows-agents)
 - [Kubernetes Agent](#kubernetes-agent)
 - [Job isolation on the standard agent (claim pod)](#job-isolation-on-the-standard-agent-claim-pod)
@@ -92,6 +93,79 @@ unified-cli run trigger build --param pool=build-arm64
 
 > Schedule (cron) triggers do not currently pass `agentSelector` to the Run,
 > so parameter expansion is not supported for scheduled runs.
+
+---
+
+## Capabilities and routing
+
+Alongside labels, every agent advertises a typed `capabilities` list —
+`native`, `container`, or `pod` — describing what kind of step execution it
+can actually perform. Unlike labels (author-chosen, free-form topology tags),
+capabilities are machine-determined at agent startup and cannot be
+mistyped or forgotten by a job author:
+
+| Capability | Meaning | Reported by |
+|---|---|---|
+| `native` | Can run a step as a plain host process | Standard agent (always) |
+| `container` | Can run a step inside an isolated container | Standard agent (when a container runtime — docker/podman/nerdctl — is detected), Kubernetes agent (always) |
+| `pod` | Can build a Kubernetes Pod | Kubernetes agent (always) |
+
+The standard agent reports `["native"]`, or `["native", "container"]` once it
+detects a container runtime at startup. The Kubernetes agent reports
+`["pod", "container"]`.
+
+### Automatic routing
+
+At trigger time (a direct `POST /runs/trigger`, a webhook delivery, or a
+`call:` step's child run — all three go through the same inference), the
+controller looks at the job's spec and works out which capability a run of
+it needs:
+
+- `spec.native: true` → `native`.
+- `spec.podTemplate` is set and uses a feature the standard agent's claim pod
+  can't honor (a named agent-side template, an `override` patch, `reuse`, a
+  pod-spec field beyond `containers`, or a container field outside what the
+  host degrades — see [Kubernetes Pod
+  Template](jobs.md#kubernetes-pod-template-podtemplate)) → `pod`.
+- Everything else (the isolated default, or a host-runnable `podTemplate`) →
+  `container`.
+
+That inferred requirement travels with the run and gates claiming: an agent
+may only claim a run if its `capabilities` are a superset of the run's
+required capability, **in addition to** the existing `agentSelector` label
+match — both must pass. In practice this means:
+
+- A `native: true` job is only ever claimed by a standard agent, never by a
+  Kubernetes agent (which has no concept of running outside a Pod).
+- A `podTemplate` job that only Kubernetes can satisfy (a PVC-backed
+  workspace, a named template, `override`, etc.) is only claimed by a
+  Kubernetes agent.
+- A `podTemplate` job built entirely from features the standard agent's claim
+  pod already supports (plain `name`/`image`/`env`/`resources.limits`
+  containers) can be claimed by **either** agent type.
+
+This is automatic — you don't need to hand-write an `agentSelector` just to
+keep native jobs off Kubernetes or podTemplate jobs off the standard agent
+the way earlier releases required.
+
+**Legacy agents** (an agent binary from before capability routing, or a
+freshly-registered agent that reports no `capabilities` at all) are treated
+as capability-agnostic: the capability check is skipped for them, and they
+match purely on `agentSelector` labels, same as before this feature shipped.
+This is deliberate — it means a rolling upgrade (some agents already on the
+new binary, some not) never strands a run that an old agent could otherwise
+still run correctly.
+
+An unknown capability string in an agent's registration request (anything
+other than `native`/`container`/`pod`) is rejected with `400` — the agent is
+not recorded, rather than silently accepted with a capability set that would
+never match anything.
+
+**If no registered agent can satisfy a job's inferred capability and
+selector**, the run stays `Queued` indefinitely rather than failing — see
+[Job stays Queued / unschedulable
+warning](troubleshooting.md#job-stays-queued--unschedulable-warning) in the
+Troubleshooting guide for how the Web UI surfaces this and how to fix it.
 
 ---
 
