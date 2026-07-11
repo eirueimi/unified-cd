@@ -16,6 +16,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
+	go.uber.org/goleak v1.3.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.44.0
 	golang.org/x/term v0.43.0
