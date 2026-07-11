@@ -169,9 +169,13 @@ func TestAgent_DrainTimeout(t *testing.T) {
 	select {
 	case <-done:
 		elapsed := time.Since(start)
-		// Run() should return within DrainTimeout (200ms), allowing up to 1s for margin
-		assert.Less(t, elapsed, time.Second, "Run() should return within DrainTimeout")
-	case <-time.After(3 * time.Second):
+		// Run() should return shortly after DrainTimeout (200ms), not wait out
+		// the 60s step sleep. The margin is generous (3s) because shared CI
+		// runners schedule the drain goroutine with enough latency that a
+		// tighter bound flakes — 1.2s was observed on ubuntu/macos — while 3s
+		// still cleanly distinguishes "drained" from "waited for the 60s sleep".
+		assert.Less(t, elapsed, 3*time.Second, "Run() should return within DrainTimeout, not wait out the step")
+	case <-time.After(10 * time.Second):
 		t.Fatal("Run() did not return after DrainTimeout")
 	}
 }
