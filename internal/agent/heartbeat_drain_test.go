@@ -104,6 +104,11 @@ func TestAgent_HeartbeatContinuesDuringDrain(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run() did not return after drain")
 	}
+	// Run has returned, which joins the heartbeat goroutine. A single beat may
+	// have been in flight at shutdown (the server can count an aborted request a
+	// touch later), so absorb that with a settle before capturing the baseline,
+	// then assert no further growth — a leaked goroutine would keep beating.
+	time.Sleep(100 * time.Millisecond)
 	afterReturn := atomic.LoadInt32(&hits)
 	time.Sleep(100 * time.Millisecond)
 	if grown := atomic.LoadInt32(&hits); grown != afterReturn {
