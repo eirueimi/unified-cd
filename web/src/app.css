@@ -110,6 +110,7 @@ tr:hover td { background: var(--bg-elev); }
 .tab-link:hover { color: var(--text); text-decoration: none; }
 .tab-active { color: var(--accent); border-bottom-color: var(--accent); }
 .banner-success { background: var(--banner-success-bg); border: 1px solid var(--success-border); border-radius: 0.375rem; padding: 0.75rem 1rem; margin-bottom: 1rem; color: var(--success); font-size: 0.9rem; }
+.banner-warn { background: var(--badge-queued-bg); border: 1px solid var(--badge-queued-fg); border-radius: 0.375rem; padding: 0.75rem 1rem; margin-bottom: 1rem; color: var(--badge-queued-fg); font-size: 0.9rem; }
 .form-hint { color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.25rem; }
 .dropdown { position: relative; }
 .dropdown-trigger { color: var(--text-muted); font-size: 0.9rem; cursor: pointer; user-select: none; }

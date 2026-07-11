@@ -10,6 +10,7 @@
   let runs = [],
     loading = true,
     error = "";
+  let sched = null;
 
   $: hasParams = runs.some(
     (r) => r.params && Object.keys(r.params).length > 0,
@@ -35,8 +36,21 @@
       loading = false;
     }
   }
-  onMount(load);
+  async function loadSched() {
+    try {
+      sched = await apiFetch(
+        "/api/v1/jobs/" + encodeURIComponent(jobName) + "/schedulability",
+      );
+    } catch (_) {
+      sched = null;
+    }
+  }
+  onMount(() => {
+    load();
+    loadSched();
+  });
   $: jobName, load();
+  $: jobName, loadSched();
 </script>
 
 <div class="container">
@@ -50,6 +64,11 @@
     <a href="#/jobs/{encodeURIComponent(jobName)}/run" class="tab-link">▶ Run</a>
     <a href="#/jobs/{encodeURIComponent(jobName)}/yaml" class="tab-link">YAML</a>
   </div>
+  {#if sched && !sched.satisfiable}
+    <div class="banner-warn" role="alert">
+      ⚠ This job can't be scheduled right now: {sched.reason}. Runs will stay Queued until a matching agent registers.
+    </div>
+  {/if}
   {#if loading}<div class="loading">Loading...</div>
   {:else if error}<div class="error">{error}</div>
   {:else if !runs.length}<div class="empty">No runs yet.</div>
