@@ -24,18 +24,24 @@ type mockScheduleFireStore struct {
 	// tests can assert capability inference without a real Postgres
 	// required_caps column to read back.
 	createdRequiredCaps [][]string
-	updated             map[string]time.Time
-	createErr           error
-	jobs                map[string]*api.Job // optional; GetJob returns "not found" when absent
+	// createdSpecs parallels created — the spec []byte checkAndFireSchedules
+	// passed to CreateRun for each fired schedule, so tests can assert the
+	// job's actual spec is used instead of a literal `{}`.
+	createdSpecs [][]byte
+	updated      map[string]time.Time
+	createErr    error
+	jobs         map[string]*api.Job // optional; GetJob returns "not found" when absent
 }
 
 func (m *mockScheduleFireStore) ListSchedules(_ context.Context) ([]store.Schedule, error) {
 	return m.schedules, nil
 }
 
-// GetJob returns the job spec used for param validation before firing a
-// scheduled Run. Returns an error when the job isn't registered in the mock
-// (checkAndFireSchedules tolerates this by skipping param validation).
+// GetJob returns the job whose spec supplies the run's SPEC, its input defs
+// (for param validation), and its capability inference. Returns an error
+// when the job isn't registered in the mock, which checkAndFireSchedules
+// handles by skipping the fire entirely (see the "job spec unavailable"
+// subtest below).
 func (m *mockScheduleFireStore) GetJob(_ context.Context, name string) (*api.Job, error) {
 	if job, ok := m.jobs[name]; ok {
 		return job, nil
@@ -43,13 +49,14 @@ func (m *mockScheduleFireStore) GetJob(_ context.Context, name string) (*api.Job
 	return nil, fmt.Errorf("job not found: %s", name)
 }
 
-func (m *mockScheduleFireStore) CreateRun(_ context.Context, jobName string, params map[string]string, _ []byte, _ []string, requiredCaps []string, triggeredBy string) (*api.Run, error) {
+func (m *mockScheduleFireStore) CreateRun(_ context.Context, jobName string, params map[string]string, spec []byte, _ []string, requiredCaps []string, triggeredBy string) (*api.Run, error) {
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
 	r := &api.Run{JobName: jobName, TriggeredBy: triggeredBy}
 	m.created = append(m.created, r)
 	m.createdRequiredCaps = append(m.createdRequiredCaps, requiredCaps)
+	m.createdSpecs = append(m.createdSpecs, spec)
 	return r, nil
 }
 
@@ -68,9 +75,13 @@ func TestCheckAndFireSchedules_FiresWhenDue(t *testing.T) {
 	// cron "0 10 * * *" fires at 10:00 UTC every day
 	// last_fired_at = yesterday 10:00 → next = today 10:00 → within [now-1h, now] → fires
 	lastFired := testNow.Add(-25 * time.Hour) // yesterday 10:00 (25 hours ago)
+	jobSpec := []byte(`{"steps":[{"name":"s","run":"echo hi"}]}`)
 	m := &mockScheduleFireStore{
 		schedules: []store.Schedule{
 			{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+		},
+		jobs: map[string]*api.Job{
+			"build": {Name: "build", Spec: jobSpec},
 		},
 	}
 	checkAndFireSchedules(context.Background(), m, testNow)
@@ -78,6 +89,8 @@ func TestCheckAndFireSchedules_FiresWhenDue(t *testing.T) {
 	require.Len(t, m.created, 1)
 	assert.Equal(t, "build", m.created[0].JobName)
 	assert.Equal(t, "schedule:daily", m.created[0].TriggeredBy)
+	require.Len(t, m.createdSpecs, 1)
+	assert.Equal(t, jobSpec, m.createdSpecs[0], "the run's spec must be the job's spec, not an empty {}")
 	require.NotNil(t, m.updated["daily"])
 }
 
@@ -103,6 +116,9 @@ func TestCheckAndFireSchedules_NullLastFiredAt(t *testing.T) {
 	m := &mockScheduleFireStore{
 		schedules: []store.Schedule{
 			{Name: "new", Cron: "30 10 * * *", JobName: "build", LastFiredAt: nil},
+		},
+		jobs: map[string]*api.Job{
+			"build": {Name: "build", Spec: []byte(`{"steps":[{"name":"s","run":"echo hi"}]}`)},
 		},
 	}
 	checkAndFireSchedules(context.Background(), m, testNow)
@@ -174,12 +190,13 @@ func TestCheckAndFireSchedules_MissingRequiredParam_SkipsAndDoesNotAdvance(t *te
 func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 	t.Run("native job infers native capability", func(t *testing.T) {
 		lastFired := testNow.Add(-25 * time.Hour)
+		jobSpec := []byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`)
 		m := &mockScheduleFireStore{
 			schedules: []store.Schedule{
 				{Name: "native-sched", Cron: "0 10 * * *", JobName: "nativejob", LastFiredAt: &lastFired},
 			},
 			jobs: map[string]*api.Job{
-				"nativejob": {Name: "nativejob", Spec: []byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`)},
+				"nativejob": {Name: "nativejob", Spec: jobSpec},
 			},
 		}
 		checkAndFireSchedules(context.Background(), m, testNow)
@@ -187,18 +204,20 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		require.Len(t, m.created, 1)
 		require.Len(t, m.createdRequiredCaps, 1)
 		assert.Equal(t, []string{"native"}, m.createdRequiredCaps[0])
+		require.Len(t, m.createdSpecs, 1)
+		assert.Equal(t, jobSpec, m.createdSpecs[0])
 	})
 
 	t.Run("kubernetes-only podTemplate infers pod capability", func(t *testing.T) {
 		lastFired := testNow.Add(-25 * time.Hour)
-		podSpec := `{"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","command":["sleep","1"]}]}},` +
-			`"steps":[{"name":"s","run":"echo x"}]}`
+		podSpec := []byte(`{"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","command":["sleep","1"]}]}},` +
+			`"steps":[{"name":"s","run":"echo x"}]}`)
 		m := &mockScheduleFireStore{
 			schedules: []store.Schedule{
 				{Name: "pod-sched", Cron: "0 10 * * *", JobName: "podjob", LastFiredAt: &lastFired},
 			},
 			jobs: map[string]*api.Job{
-				"podjob": {Name: "podjob", Spec: []byte(podSpec)},
+				"podjob": {Name: "podjob", Spec: podSpec},
 			},
 		}
 		checkAndFireSchedules(context.Background(), m, testNow)
@@ -206,16 +225,19 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		require.Len(t, m.created, 1)
 		require.Len(t, m.createdRequiredCaps, 1)
 		assert.Equal(t, []string{"pod"}, m.createdRequiredCaps[0])
+		require.Len(t, m.createdSpecs, 1)
+		assert.Equal(t, podSpec, m.createdSpecs[0])
 	})
 
 	t.Run("plain job infers container capability", func(t *testing.T) {
 		lastFired := testNow.Add(-25 * time.Hour)
+		jobSpec := []byte(`{"steps":[{"name":"s","run":"echo x"}]}`)
 		m := &mockScheduleFireStore{
 			schedules: []store.Schedule{
 				{Name: "plain-sched", Cron: "0 10 * * *", JobName: "plainjob", LastFiredAt: &lastFired},
 			},
 			jobs: map[string]*api.Job{
-				"plainjob": {Name: "plainjob", Spec: []byte(`{"steps":[{"name":"s","run":"echo x"}]}`)},
+				"plainjob": {Name: "plainjob", Spec: jobSpec},
 			},
 		}
 		checkAndFireSchedules(context.Background(), m, testNow)
@@ -223,13 +245,18 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		require.Len(t, m.created, 1)
 		require.Len(t, m.createdRequiredCaps, 1)
 		assert.Equal(t, []string{"container"}, m.createdRequiredCaps[0])
+		require.Len(t, m.createdSpecs, 1)
+		assert.Equal(t, jobSpec, m.createdSpecs[0])
 	})
 
-	t.Run("job spec unavailable falls back to nil required_caps", func(t *testing.T) {
+	t.Run("job spec unavailable skips firing entirely", func(t *testing.T) {
 		// GetJob fails (job not in the mock's jobs map) — checkAndFireSchedules
-		// cannot infer a capability without the spec, so it passes nil
-		// (best-effort; the run still fires with param validation skipped, same
-		// as TestCheckAndFireSchedules_FiresWhenDue).
+		// can no longer fire best-effort with nil required_caps, because the
+		// job spec is also the run's SPEC: firing without it would create a
+		// Run with an empty {} spec that buildClaimResponse (api_agent.go)
+		// turns into zero stages/steps, silently running nothing. So it skips
+		// the fire and leaves last_fired_at untouched, allowing a retry once
+		// the job/schedule is fixed.
 		lastFired := testNow.Add(-25 * time.Hour)
 		m := &mockScheduleFireStore{
 			schedules: []store.Schedule{
@@ -238,20 +265,26 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		}
 		checkAndFireSchedules(context.Background(), m, testNow)
 
-		require.Len(t, m.created, 1)
-		require.Len(t, m.createdRequiredCaps, 1)
-		assert.Nil(t, m.createdRequiredCaps[0])
+		assert.Empty(t, m.created)
+		assert.Empty(t, m.createdRequiredCaps)
+		assert.Empty(t, m.createdSpecs)
+		assert.Empty(t, m.updated)
 	})
 }
 
 func TestCheckAndFireSchedules_CreateRunError_DoesNotUpdateLastFiredAt(t *testing.T) {
-	// CreateRun fails → last_fired_at is not updated (retry on next tick).
+	// The job loads fine (so this exercises the CreateRun failure path, not
+	// the GetJob-failure skip path), but CreateRun itself fails →
+	// last_fired_at is not updated (retry on next tick).
 	lastFired := testNow.Add(-25 * time.Hour)
 	m := &mockScheduleFireStore{
 		schedules: []store.Schedule{
-			{Name: "daily", Cron: "0 10 * * *", JobName: "missing-job", LastFiredAt: &lastFired},
+			{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
 		},
-		createErr: fmt.Errorf("job not found"),
+		jobs: map[string]*api.Job{
+			"build": {Name: "build", Spec: []byte(`{"steps":[{"name":"s","run":"echo hi"}]}`)},
+		},
+		createErr: fmt.Errorf("db unavailable"),
 	}
 	checkAndFireSchedules(context.Background(), m, testNow)
 
