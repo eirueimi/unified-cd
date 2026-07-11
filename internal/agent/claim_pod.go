@@ -25,12 +25,6 @@ type containerDef struct {
 	MemLimit string   // bytes, e.g. "268435456" (CreateSpec.MemLimit); empty = no limit
 }
 
-// containerSupportedFields lists the podTemplate container keys the host honors.
-// Anything else present on a container triggers a WARN (see parseContainerDef).
-var containerSupportedFields = map[string]bool{
-	"name": true, "image": true, "env": true, "resources": true,
-}
-
 // parseContainerDef extracts a containerDef from a raw podTemplate container
 // map, keeping only host-supported fields. Host-unsupported fields (command,
 // args, volumeMounts, ports, securityContext, envFrom, ...) are logged once
@@ -40,7 +34,7 @@ func parseContainerDef(name string, c map[string]any) containerDef {
 	def.Image, _ = c["image"].(string)
 
 	for k := range c {
-		if !containerSupportedFields[k] {
+		if !dsl.HostSupportedContainerFields[k] {
 			slog.Warn("podTemplate container field is not supported on the host agent and is ignored",
 				"container", name, "field", k)
 		}

@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/go-chi/chi/v5"
 )
 
 // handleTriggerRun creates a new Run and returns it in Pending state.
@@ -49,8 +49,14 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	// podTemplate requires a Kubernetes agent; add "kubernetes" to the selector automatically.
-	if spec.PodTemplate != nil {
+	// A podTemplate that uses features the host agent's claim pod cannot honor
+	// (named template, override, pod-level spec beyond containers, or a
+	// host-unsupported container field) can only run on Kubernetes, so pin it
+	// there by auto-appending the "kubernetes" label. A host-runnable
+	// podTemplate (e.g. plain name/image containers, workspace.pvc — which the
+	// host degrades to a bind mount) is left to route by the author's
+	// agentSelector, so it can run on a standard agent too.
+	if dsl.PodTemplateNeedsKubernetes(spec.PodTemplate) {
 		agentSelector = appendLabelIfMissing(agentSelector, "kubernetes")
 	}
 	triggeredBy := "api"
