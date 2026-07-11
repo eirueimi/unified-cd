@@ -192,9 +192,11 @@ func (s *Server) serveJobYAML(w http.ResponseWriter, r *http.Request, name strin
 }
 
 // serveJobSchedulability evaluates whether any registered agent can currently
-// run the named Job and returns the Schedulability report as JSON. Spec
-// parsing mirrors handleTriggerRun: an unparseable stored spec is treated as
-// requiring nothing rather than failing the request.
+// run the named Job and returns the Schedulability report as JSON. The stored
+// spec is self-produced via json.Marshal when the Job was saved, so a failure
+// to unmarshal it here indicates corruption rather than a user input error;
+// in that case the request fails with 500 rather than being evaluated as
+// requiring nothing.
 func (s *Server) serveJobSchedulability(w http.ResponseWriter, r *http.Request, name string) {
 	job, err := s.store.GetJob(r.Context(), name)
 	if err != nil {

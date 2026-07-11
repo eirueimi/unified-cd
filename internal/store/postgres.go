@@ -1059,8 +1059,15 @@ func (p *Postgres) ListStuckRunIDs(ctx context.Context, staleAfter, grace time.D
 
 // ListUnclaimableQueuedRuns returns Queued runs older than minAge that no live
 // agent can claim: no agent with a heartbeat within staleAfter has labels that
-// satisfy the run's agent_selector (empty selector matches any agent). Mirrors
-// the claim predicate `agent_selector = '{}' OR agent_selector <@ labels`.
+// satisfy the run's agent_selector (empty selector matches any agent). This
+// check is label-only by design and deliberately omits the capability clause
+// that ClaimNextRun ANDs in (`a.capabilities IS NULL OR r.required_caps <@
+// a.capabilities`): capabilities only make claiming stricter, so a
+// label-unclaimable run is also cap-unclaimable, while a run that's
+// label-claimable but capability-unschedulable (e.g. a native job when only a
+// k8s agent is live) is intentionally left Queued rather than auto-failed
+// here — it is surfaced instead via the JobDetail unschedulable banner
+// (see serveJobSchedulability). Do not add a capability clause to this query.
 func (p *Postgres) ListUnclaimableQueuedRuns(ctx context.Context, minAge, staleAfter time.Duration) ([]QueuedRunRef, error) {
 	const q = `
 		SELECT r.id, r.agent_selector
