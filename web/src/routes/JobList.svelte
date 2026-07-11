@@ -99,6 +99,12 @@
         {:else}
           <tr style="cursor:pointer" on:click={() => toggleExpand(row.job.name)}>
             <td style="padding-left:{0.75 + (row.depth + 1) * 1.4}rem">
+              <span
+                class="meta expand-caret"
+                style="display:inline-block;width:1em"
+                title={expandedJob === row.job.name ? 'Hide recent runs' : 'Show recent runs'}
+                aria-label={expandedJob === row.job.name ? 'Collapse recent runs' : 'Expand recent runs'}
+              >{expandedJob === row.job.name ? '▾' : '▸'}</span>
               <a href="#/jobs/{encodeURIComponent(row.job.name)}" on:click|stopPropagation>{row.job.leaf}</a>
               {#if activeRunsByJob[row.job.name]?.length}
                 {@const _runs = activeRunsByJob[row.job.name]}

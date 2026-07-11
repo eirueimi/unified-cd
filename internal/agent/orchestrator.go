@@ -68,10 +68,30 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	}
 
 	runCtx, cancelRun := context.WithCancel(ctx)
-	defer cancelRun()
 
+	// The cancel poller lives for the duration of the claim. Two things matter
+	// for its lifecycle — the second is what keeps `go test -race` honest:
+	//
+	//  1. Read CancelPollInterval HERE, on RunClaim's own goroutine, not inside
+	//     the poller. The poller then never touches package-level state.
+	//  2. JOIN the poller before returning. In a fast run the whole DAG can
+	//     finish and RunClaim can return before the scheduler has even run the
+	//     poller's first line; without a join the goroutine would start late and
+	//     read package state after RunClaim returned, racing a caller that
+	//     mutates CancelPollInterval between runs (e.g. a test restoring it in
+	//     Cleanup). It would also outlive the httptest server a test closes on
+	//     teardown. Cancel first, then wait.
+	pollInterval := CancelPollInterval
+	var pollerWG sync.WaitGroup
+	defer func() {
+		cancelRun()
+		pollerWG.Wait()
+	}()
+
+	pollerWG.Add(1)
 	go func() {
-		ticker := time.NewTicker(CancelPollInterval)
+		defer pollerWG.Done()
+		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
 		for {
 			select {

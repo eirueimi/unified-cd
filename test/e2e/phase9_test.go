@@ -74,6 +74,7 @@ kind: Job
 metadata:
   name: parallel-test
 spec:
+  native: true
   agentSelector: [kind:test]
   steps:
     - parallel:
@@ -135,6 +136,7 @@ kind: Job
 metadata:
   name: parallel-fail-test
 spec:
+  native: true
   agentSelector: [kind:test]
   steps:
     - parallel:
@@ -194,6 +196,7 @@ kind: Job
 metadata:
   name: continue-on-error-test
 spec:
+  native: true
   agentSelector: [kind:test]
   steps:
     - name: flaky

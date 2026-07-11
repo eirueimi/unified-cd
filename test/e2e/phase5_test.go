@@ -70,6 +70,7 @@ kind: Job
 metadata:
   name: secret-test
 spec:
+  native: true
   steps:
     - name: use-secret
       env:
@@ -150,6 +151,7 @@ kind: Job
 metadata:
   name: mask-test
 spec:
+  native: true
   steps:
     - name: leak-attempt
       env:

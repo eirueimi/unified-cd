@@ -112,13 +112,42 @@ services:
     depends_on:
       controller:
         condition: service_healthy
+      dind:
+        condition: service_healthy
     environment:
       UNIFIED_SERVER: http://controller:8080
       UNIFIED_AGENT_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
       UNIFIED_AGENT_ID: ${UNIFIED_AGENT_ID:-docker-agent-1}
       UNIFIED_AGENT_LABELS: ${UNIFIED_AGENT_LABELS:-kind:docker,pool:default}
+      DOCKER_HOST: tcp://dind:2375
+      UNIFIED_AGENT_WORKSPACE_DIR: /ucd-workspaces
+    volumes:
+      - ucd-workspaces:/ucd-workspaces
+    restart: unless-stopped
+
+  # ---- Docker-in-Docker (container runtime for isolated jobs) ----
+  # The agent runs isolated (non-native) jobs by shelling out to `docker`, which
+  # talks to this daemon via DOCKER_HOST. Job containers live inside dind. The
+  # ucd-workspaces volume is mounted at the SAME path here and in the agent so
+  # bind mounts resolved by this daemon see the agent's workspace files.
+  dind:
+    image: docker:27-dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - ucd-workspaces:/ucd-workspaces
+      - dind-storage:/var/lib/docker
+    healthcheck:
+      test: [ "CMD", "docker", "info" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     restart: unless-stopped
 
 volumes:
   pgdata:
   garagedata:
+  ucd-workspaces:
+  dind-storage:

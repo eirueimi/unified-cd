@@ -174,6 +174,17 @@ reliable `--network container:<id>` equivalent for it, so it remains usable
 only for whatever it was already used for (it is not used by the claim
 pod). macOS hosts run isolated jobs via docker or podman.
 
+**docker-compose deployments:** The bundled compose stacks (repo-root
+`docker-compose.yaml` and `deployments/docker/docker-compose.yaml`) run a
+Docker-in-Docker (`dind`, `privileged: true`) sidecar so the host agent can
+execute isolated jobs, not just `native: true` ones. The agent reaches the
+dind daemon via `DOCKER_HOST=tcp://dind:2375` and shares the `ucd-workspaces`
+volume with dind at the same path (`UNIFIED_AGENT_WORKSPACE_DIR=/ucd-workspaces`)
+so a job container's workspace bind mount — resolved by the dind daemon —
+sees the files the agent wrote. The dind daemon listens on plain TCP 2375 on
+the compose network; this is for local/dev use, so do not expose it beyond
+the compose network.
+
 **Agent flags/config for the claim pod:**
 
 | Flag | Config key | Default | Purpose |

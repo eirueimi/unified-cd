@@ -44,6 +44,7 @@ kind: Job
 metadata:
   name: build-with-output
 spec:
+  native: true
   params:
     outputs:
       - name: artifact_url
@@ -111,6 +112,7 @@ kind: Job
 metadata:
   name: exclusive
 spec:
+  native: true
   concurrency:
     mutex: exclusive-lock
   steps:
@@ -190,6 +192,7 @@ kind: Job
 metadata:
   name: parallel-limited
 spec:
+  native: true
   concurrency:
     semaphores:
       - pool: deploy-tokens
@@ -263,6 +266,7 @@ kind: Job
 metadata:
   name: child-job
 spec:
+  native: true
   params:
     inputs:
       - name: greeting
@@ -292,6 +296,7 @@ kind: Job
 metadata:
   name: parent-job
 spec:
+  native: true
   params:
     inputs:
       - name: name

@@ -98,6 +98,7 @@ kind: Job
 metadata:
   name: any-agent-job
 spec:
+  native: true
   steps:
     - name: run
       run: echo hello
@@ -151,6 +152,7 @@ kind: Job
 metadata:
   name: k8s-targeted
 spec:
+  native: true
   agentSelector:
     - kind:kubernetes
   steps:

@@ -83,6 +83,7 @@ kind: Job
 metadata:
   name: webhook-triggered
 spec:
+  native: true
   steps:
     - name: run
       run: echo hello-from-webhook
@@ -162,6 +163,7 @@ kind: Job
 metadata:
   name: hmac-job
 spec:
+  native: true
   steps:
     - name: run
       run: echo ok
@@ -237,6 +239,7 @@ kind: Job
 metadata:
   name: filter-job
 spec:
+  native: true
   steps:
     - name: run
       run: echo filtered

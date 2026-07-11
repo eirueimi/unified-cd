@@ -43,6 +43,7 @@ kind: Job
 metadata:
   name: e2e
 spec:
+  native: true
   steps:
     - name: hello
       run: printf "hello-from-step\n"

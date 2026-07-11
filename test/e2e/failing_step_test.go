@@ -53,6 +53,7 @@ kind: Job
 metadata:
   name: failing-step-job
 spec:
+  native: true
   steps:
     - name: step-one-fails
       run: exit 1
