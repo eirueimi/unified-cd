@@ -68,7 +68,7 @@ func TestAPI_TriggerRun_HostRunnablePodTemplate_NotPinnedToKubernetes(t *testing
 
 // TestAPI_TriggerRun_KubernetesOnlyPodTemplate_RequiresPodCapability verifies
 // the other half: a podTemplate that uses a host-unsupported field (here a
-// container command:) makes dsl.RequiredCaps infer "pod". Routing this to
+// container volumeMounts:) makes dsl.RequiredCaps infer "pod". Routing this to
 // Kubernetes now happens via the required_caps/capabilities match rather than
 // an auto-appended "kubernetes" agentSelector label (that pin was removed): an
 // agent that explicitly advertises capabilities without "pod" cannot claim it,
@@ -76,7 +76,7 @@ func TestAPI_TriggerRun_HostRunnablePodTemplate_NotPinnedToKubernetes(t *testing
 func TestAPI_TriggerRun_KubernetesOnlyPodTemplate_RequiresPodCapability(t *testing.T) {
 	s, pg := newTestServer(t)
 	spec := `{"agentSelector":["kind:docker"],` +
-		`"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","command":["sleep","1"]}]}},` +
+		`"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","volumeMounts":[]}]}},` +
 		`"steps":[{"name":"s","run":"echo x"}]}`
 	_, _ = pg.UpsertJob(t.Context(), "podjob-k8sonly", "unified-cd/v1", []byte(spec))
 

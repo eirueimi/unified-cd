@@ -79,7 +79,7 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 	t.Run("kubernetes-only podTemplate requires pod", func(t *testing.T) {
 		s, pg := newTestServer(t)
 		spec := `{"agentSelector":["kind:docker"],` +
-			`"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","command":["sleep","1"]}]}},` +
+			`"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","volumeMounts":[]}]}},` +
 			`"steps":[{"name":"s","run":"echo x"}]}`
 		_, _ = pg.UpsertJob(t.Context(), "podjob-k8sonly-caps", "unified-cd/v1", []byte(spec))
 		triggerAndQueue(t, s, "podjob-k8sonly-caps")

@@ -35,17 +35,18 @@ type containerDef struct {
 
 // parseContainerDef extracts a containerDef from a raw podTemplate container
 // map, keeping only host-supported fields. command/args are parsed into
-// Command (see the containerDef.Command doc comment) — routing (whether a
-// podTemplate using them is even scheduled to the host agent) is unaffected;
-// see dsl.HostSupportedContainerFields. Other host-unsupported fields
-// (volumeMounts, ports, securityContext, envFrom, ...) are logged once per
-// container and dropped.
+// Command (see the containerDef.Command doc comment); they are listed in
+// dsl.HostSupportedContainerFields, so a podTemplate that sets them is
+// host-supported and is no longer forced onto a Kubernetes agent by
+// PodTemplateNeedsKubernetes. Other host-unsupported fields (volumeMounts,
+// ports, securityContext, envFrom, ...) are logged once per container and
+// dropped.
 func parseContainerDef(name string, c map[string]any) containerDef {
 	def := containerDef{Name: name}
 	def.Image, _ = c["image"].(string)
 
 	for k := range c {
-		if !dsl.HostSupportedContainerFields[k] && k != "command" && k != "args" {
+		if !dsl.HostSupportedContainerFields[k] {
 			slog.Warn("podTemplate container field is not supported on the host agent and is ignored",
 				"container", name, "field", k)
 		}
