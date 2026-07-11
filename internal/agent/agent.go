@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
@@ -82,6 +83,16 @@ func (a *Agent) containerRuntime() (crt.ContainerRuntime, error) {
 	return a.resolvedRuntime, a.runtimeErr
 }
 
+// agentCapabilities reports what this standard agent can execute: always
+// native (host process), plus container when a container runtime is present.
+func agentCapabilities(runtimeAvailable bool) []string {
+	caps := []string{dsl.CapNative}
+	if runtimeAvailable {
+		caps = append(caps, dsl.CapContainer)
+	}
+	return caps
+}
+
 // New creates a new agent with the given ID and client.
 func New(id string, client *Client) *Agent {
 	return &Agent{ID: id, Client: client}
@@ -109,13 +120,16 @@ func collectEnv(exposeEnv []string) map[string]string {
 // When ctx (claimCtx) is cancelled, new claims are stopped (cordon) and the agent waits for in-flight Runs to complete before exiting (drain).
 func (a *Agent) Run(ctx context.Context) error {
 	host, _ := os.Hostname()
+	_, rtErr := a.containerRuntime()
+	runtimeAvailable := rtErr == nil
 	req := api.AgentRegisterRequest{
-		AgentID:  a.ID,
-		Hostname: host,
-		OS:       runtime.GOOS,
-		Labels:   a.Labels,
-		Version:  Version,
-		Env:      collectEnv(a.ExposeEnv),
+		AgentID:      a.ID,
+		Hostname:     host,
+		OS:           runtime.GOOS,
+		Labels:       a.Labels,
+		Version:      Version,
+		Env:          collectEnv(a.ExposeEnv),
+		Capabilities: agentCapabilities(runtimeAvailable),
 	}
 	var registerErr error
 	retryUntilSuccess(ctx, func(ctx context.Context) error {
