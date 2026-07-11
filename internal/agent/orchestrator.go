@@ -401,6 +401,22 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				}
 				capturedStdout := stdoutBuf.String()
 				exitCode = ec
+
+				// A non-nil runErr means the step's process never ran to
+				// completion — the exec itself failed (target container has no
+				// shell, the pod/container is not running, the exec stream
+				// broke, etc.) rather than the command exiting non-zero. The
+				// command produced no output in that case, so the step log
+				// would otherwise be empty and the run would show an opaque
+				// failure with nothing to debug. Surface the reason on the
+				// step's own stderr stream before flushing. A master
+				// cancellation is expected shutdown, not a diagnosable fault,
+				// so it is excluded.
+				if runErr != nil && !cancelledByMaster.Load() {
+					fmt.Fprintf(shippedStderr, "unified-cd: step %q failed to execute: %v\n", step.Name, runErr)
+					slog.Warn("step exec error",
+						"run", c.RunID, "step", step.Name, "container", step.Container, "error", runErr)
+				}
 				finishLogs(stepCtx)
 
 				if runErr != nil || ec != 0 {
