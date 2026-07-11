@@ -116,16 +116,16 @@ detects a container runtime at startup. The Kubernetes agent reports
 
 ### Automatic routing
 
-At trigger time (a direct `POST /runs/trigger`, a webhook delivery, or a
-`call:` step's child run — all three go through the same inference), the
-controller looks at the job's spec and works out which capability a run of
-it needs:
+At trigger time (a direct `POST /runs/trigger`, a webhook delivery, a
+`call:` step's child run, or a fired Schedule (cron) trigger — all four go
+through the same inference), the controller looks at the job's spec and
+works out which capability a run of it needs:
 
 - `spec.native: true` → `native`.
 - `spec.podTemplate` is set and uses a feature the standard agent's claim pod
-  can't honor (a named agent-side template, an `override` patch, `reuse`, a
-  pod-spec field beyond `containers`, or a container field outside what the
-  host degrades — see [Kubernetes Pod
+  can't honor (a named agent-side template, an `override` patch, a pod-spec
+  field beyond `containers`, or a container field outside what the host
+  degrades — see [Kubernetes Pod
   Template](jobs.md#kubernetes-pod-template-podtemplate)) → `pod`.
 - Everything else (the isolated default, or a host-runnable `podTemplate`) →
   `container`.
