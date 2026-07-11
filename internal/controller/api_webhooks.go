@@ -209,6 +209,11 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	// A podTemplate that only a Kubernetes agent can honor is pinned there
+	// (mirrors handleTriggerRun); a host-runnable one routes by agentSelector.
+	if dsl.PodTemplateNeedsKubernetes(jobSpec.PodTemplate) {
+		agentSelector = appendLabelIfMissing(agentSelector, "kubernetes")
+	}
 
 	// Create the Run.
 	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, "webhook:"+name)
