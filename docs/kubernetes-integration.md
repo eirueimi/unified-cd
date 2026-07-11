@@ -39,9 +39,10 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   `podTemplate` container. On k8s it execs into the named container of the job Pod. On
   the standard agent it execs into the corresponding container of the claim pod (see
   [Job Isolation: `native` and the claim
-  pod](jobs.md#job-isolation-native-and-the-claim-pod)); host-unsupported `podTemplate`
-  fields (a PVC workspace, extra pod-spec, `command`, or non-literal env) are ignored
-  with a WARN rather than applied. Unlike k8s, the standard agent's claim-pod containers
+  pod](jobs.md#job-isolation-native-and-the-claim-pod)); a sidecar's `command`/`args`
+  are honored (they become the container's entrypoint), while host-unsupported
+  `podTemplate` fields (a PVC workspace, extra pod-spec, `volumeMounts`, or non-literal
+  env) are ignored with a WARN rather than applied. Unlike k8s, the standard agent's claim-pod containers
   share one network namespace (via the pause container), so — unlike the old MVP
   single-container form this replaces — sidecars **are** reachable at `localhost` from
   every claim-pod container, matching k8s.

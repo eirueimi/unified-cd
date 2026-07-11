@@ -60,6 +60,40 @@ func TestAppleCreateArgv_Mounts(t *testing.T) {
 	}
 }
 
+// TestAppleCreateArgv_CommandEmitsSleepInfinity mirrors
+// TestOCICLICreateArgv_CommandEmitsSleepInfinity: an explicit keep-alive
+// Command must be emitted after the image.
+func TestAppleCreateArgv_CommandEmitsSleepInfinity(t *testing.T) {
+	a := &appleContainer{}
+	got := a.createArgs(CreateSpec{Image: "golang:1.22", Command: []string{"sleep", "infinity"}})
+	want := []string{"run", "-d", "golang:1.22", "sleep", "infinity"}
+	if len(got) != len(want) {
+		t.Fatalf("argv = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("argv = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestAppleCreateArgv_NilCommandRunsImageEntrypoint mirrors
+// TestOCICLICreateArgv_NilCommandRunsImageEntrypoint: apple parity for the
+// sidecar-sleep-infinity fix — a nil Command must not append "sleep infinity".
+func TestAppleCreateArgv_NilCommandRunsImageEntrypoint(t *testing.T) {
+	a := &appleContainer{}
+	got := a.createArgs(CreateSpec{Image: "mysql:8"})
+	want := []string{"run", "-d", "mysql:8"}
+	if len(got) != len(want) {
+		t.Fatalf("argv = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("argv = %v, want %v", got, want)
+		}
+	}
+}
+
 // TestAppleCreate_RejectsNetworkContainer confirms Apple's `container` CLI
 // cannot join another container's netns (no --network container:<id>
 // equivalent), so the claim pod's per-job containers require

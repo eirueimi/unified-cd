@@ -61,11 +61,18 @@ func TestPodTemplateNeedsKubernetes(t *testing.T) {
 			false,
 		},
 		{
-			"container command is host-unsupported",
+			"container command is host-OK",
 			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
 				container(map[string]any{"name": "job", "image": "x", "command": []any{"sleep", "1"}}),
 			}}}),
-			true,
+			false,
+		},
+		{
+			"container args is host-OK",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "x", "args": []any{"--foo"}}),
+			}}}),
+			false,
 		},
 		{
 			"container volumeMounts is host-unsupported",

@@ -891,10 +891,11 @@ Defines the sidecar containers for an isolated job. On the `k8s-agent`, this
 is (mostly) a real Kubernetes PodSpec. On the standard agent, the same
 `podTemplate` drives the claim pod described in [Job Isolation: `native` and
 the claim pod](#job-isolation-native-and-the-claim-pod) — it reads
-`spec.containers` (name/image/env/`resources.limits`) to build one
-network-namespace-joined container per entry; unsupported PodSpec fields
-(PVC workspace, `command`/`args`/`volumeMounts`/`securityContext`, `env`
-entries without a literal `value`) are ignored with a WARN rather than
+`spec.containers` (name/image/`command`/`args`/env/`resources.limits`) to
+build one network-namespace-joined container per entry; a sidecar's
+`command`/`args` are honored (they become the container's entrypoint), while
+unsupported PodSpec fields (PVC workspace, `volumeMounts`/`securityContext`,
+`env` entries without a literal `value`) are ignored with a WARN rather than
 applied.
 
 **Routing is automatic and capability-based**, not selector-based: the

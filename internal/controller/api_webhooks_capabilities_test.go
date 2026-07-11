@@ -63,7 +63,7 @@ func TestWebhookIngress_PersistsRequiredCaps(t *testing.T) {
 	t.Run("kubernetes-only podTemplate requires pod capability, not a kubernetes label", func(t *testing.T) {
 		s, pg := newTestServer(t)
 		podSpec := `{"agentSelector":["kind:docker"],` +
-			`"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","command":["sleep","1"]}]}},` +
+			`"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","volumeMounts":[]}]}},` +
 			`"steps":[{"name":"s","run":"echo x"}]}`
 		_, _ = pg.UpsertJob(t.Context(), "podjob-k8sonly-hook", "unified-cd/v1", []byte(podSpec))
 		spec, _ := json.Marshal(map[string]any{

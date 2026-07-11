@@ -156,3 +156,37 @@ func TestCreateArgs_NoNetworkByDefault(t *testing.T) {
 	args := r.createArgs(CreateSpec{Image: "busybox"})
 	assert.NotContains(t, strings.Join(args, " "), "--network")
 }
+
+// TestOCICLICreateArgv_CommandEmitsSleepInfinity is the regression test for
+// the sidecar-sleep-infinity bug: a caller that explicitly asks for the
+// keep-alive command (uses-scope containers, the claim pod's primary "job"
+// container) must still get "sleep infinity" appended after the image.
+func TestOCICLICreateArgv_CommandEmitsSleepInfinity(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{Image: "golang:1.22", Command: []string{"sleep", "infinity"}})
+	want := []string{"run", "-d", "golang:1.22", "sleep", "infinity"}
+	assert.Equal(t, want, got)
+}
+
+// TestOCICLICreateArgv_NilCommandRunsImageEntrypoint is the core fix under
+// test: a claim-pod sidecar (mysql, redis, ...) created with no Command must
+// NOT have "sleep infinity" appended — the image's own entrypoint/CMD must
+// run unmodified, or the sidecar's service (e.g. mysqld) never starts.
+func TestOCICLICreateArgv_NilCommandRunsImageEntrypoint(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{Image: "mysql:8"})
+	want := []string{"run", "-d", "mysql:8"}
+	assert.Equal(t, want, got)
+	assert.NotContains(t, strings.Join(got, " "), "sleep",
+		"a sidecar with no explicit Command must run its image's default entrypoint, not sleep infinity")
+}
+
+// TestOCICLICreateArgv_CommandHonorsCustomArgv confirms a sidecar's own
+// podTemplate command/args (carried through as CreateSpec.Command) is
+// emitted verbatim, not silently replaced by sleep infinity.
+func TestOCICLICreateArgv_CommandHonorsCustomArgv(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{Image: "redis:7", Command: []string{"redis-server", "--port", "6380"}})
+	want := []string{"run", "-d", "redis:7", "redis-server", "--port", "6380"}
+	assert.Equal(t, want, got)
+}

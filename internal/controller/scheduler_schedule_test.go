@@ -210,7 +210,7 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 
 	t.Run("kubernetes-only podTemplate infers pod capability", func(t *testing.T) {
 		lastFired := testNow.Add(-25 * time.Hour)
-		podSpec := []byte(`{"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","command":["sleep","1"]}]}},` +
+		podSpec := []byte(`{"podTemplate":{"spec":{"containers":[{"name":"job","image":"busybox","volumeMounts":[]}]}},` +
 			`"steps":[{"name":"s","run":"echo x"}]}`)
 		m := &mockScheduleFireStore{
 			schedules: []store.Schedule{
