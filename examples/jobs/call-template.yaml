@@ -1,0 +1,39 @@
+# Demonstrates: using a bundled templates/ job as a library via call:.
+# Templates are plain Jobs — register one, then call it by name with params.
+#
+# call: vs uses: — which fits a template?
+#   call:  runs the template as an INDEPENDENT child run with its own
+#          workspace. Right for param-only templates (smoke-check,
+#          notify-webhook, ...). Note the child needs a free agent slot, so a
+#          lone agent must allow >=2 concurrent runs (--max-concurrent 2).
+#   uses:  inlines the template's steps into THIS run, sharing its workspace.
+#          Required for templates that expect a checked-out repo (semver-bump,
+#          git-checkout, ...) — via call: they would see an empty workspace.
+#          See examples/jobs/git-template.yaml for the uses: form.
+# Usage:
+#   unified-cd apply -f templates/smoke-check.yaml     # register the template
+#   unified-cd apply -f examples/jobs/call-template.yaml
+#   unified-cd run trigger deploy-and-verify
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: deploy-and-verify
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: deploy
+      run: echo "deployed (pretend)"
+
+    # Post-deploy gate: poll the service until it answers as expected, or fail
+    # the run. github.com stands in for your deployed service here (the local
+    # demo has no external endpoint of its own; use https://, http:// is a 301).
+    - name: verify
+      call:
+        job: smoke-check
+        with:
+          url: "https://github.com"
+          expect_status: "200"
+          retries: "3"
+          interval_seconds: "2"
+          body_contains: "GitHub"   # response body must contain this string
