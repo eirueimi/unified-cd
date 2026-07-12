@@ -9,23 +9,22 @@
 # host claim pod can't honor (securityContext/args), the run is auto-pinned to a
 # Kubernetes agent (see dsl.PodTemplateNeedsKubernetes) — no agentSelector needed.
 #
-# The step container is debian (bash), NOT the buildkit image: the k8s agent
-# execs steps with `bash -lc`, and moby/buildkit is alpine/busybox (no bash), so
-# an init container copies the static `buildctl` binary into a shared volume the
-# step puts on PATH.
+# The step container is the buildkit image itself (it ships buildctl). It has no
+# bash, which is fine: the Kubernetes agent execs steps through its injected
+# `ucd-sh` shim (a POSIX interpreter), so no shell binary is required in the
+# image. Verified end-to-end on a real k8s agent (rootless build + push).
 #
 # Cluster requirements (rootless BuildKit, no privileged):
 #   - seccomp + AppArmor Unconfined for the buildkitd container (set below via
 #     securityContext). `appArmorProfile` is a securityContext field on k8s >= 1.30;
 #     on older clusters use the equivalent pod annotation instead.
 #   - the node must allow user namespaces / rootless (most modern clusters do).
-#   - buildkitd validates registry TLS with the CA bundle baked into ITS image,
-#     independently of the node/host. Docker Hub's token endpoint (auth.docker.io)
-#     uses a current Let's Encrypt chain, so an OLD buildkit image can fail the
-#     pull with "x509: certificate signed by unknown authority" even though the
-#     host and kubelet pull fine. Fix: pin a recent moby/buildkit image (refreshed
-#     ca-certificates), or mount an up-to-date CA bundle into the buildkitd
-#     container. (Only mount a corporate CA if your network actually re-signs TLS.)
+#   - buildkitd validates registry TLS with the CA bundle in its own image,
+#     independently of the node. If your base-image registry sits behind a TLS-
+#     intercepting proxy, or buildkitd can't validate its chain, point buildkitd
+#     at a pull-through mirror or mount an appropriate CA/buildkitd.toml
+#     (`--config`) — a plain `docker pull` on the node succeeding does not
+#     guarantee buildkitd's in-pod pull will.
 #
 # Required secrets (when pushing to a private registry / Docker Hub):
 #   unified-cd secret set dockerhub-username myuser
@@ -83,32 +82,16 @@ spec:
         description: "Multi-platform targets (e.g. linux/amd64,linux/arm64). BuildKit builds these natively — no buildx needed. Empty builds the host platform"
   podTemplate:
     spec:
-      # buildctl is a static binary; copy it out of the buildkit image into a
-      # shared volume so the bash-capable step container can run it. The k8s
-      # agent execs every step with `bash -lc`, and moby/buildkit is alpine
-      # (busybox, no bash) — running the step directly in it fails with exit 127.
-      initContainers:
-        - name: copy-buildctl
-          image: moby/buildkit:v0.15.2-rootless
-          command: ["sh", "-c", "cp /usr/bin/buildctl /tools/buildctl"]
-          volumeMounts:
-            - name: buildkit-tools
-              mountPath: /tools
       containers:
-        # Step-execution container (the primary "job"): a bash-capable image
-        # with buildctl mounted from the init container. The agent runs the step
-        # here (a `sleep infinity` command is injected automatically). The step
-        # puts /tools on PATH so `buildctl` resolves.
+        # Step-execution container (the primary "job"): the buildkit image, which
+        # ships buildctl. No bash — the agent's ucd-sh shim runs the step.
         - name: job
-          image: debian:bookworm-slim
-          volumeMounts:
-            - name: buildkit-tools
-              mountPath: /tools
+          image: moby/buildkit:v0.31.1-rootless
         # Rootless BuildKit daemon — NO privileged. Listens on localhost:1234,
         # which the job container reaches (same pod netns). --oci-worker-no-process-sandbox
         # is what makes it work without privileged.
         - name: buildkitd
-          image: moby/buildkit:v0.15.2-rootless
+          image: moby/buildkit:v0.31.1-rootless
           args:
             - --addr
             - tcp://0.0.0.0:1234
@@ -120,9 +103,6 @@ spec:
               type: Unconfined
             runAsUser: 1000
             runAsGroup: 1000
-      volumes:
-        - name: buildkit-tools
-          emptyDir: {}
   steps:
     - name: build-and-push
       env:
@@ -141,7 +121,6 @@ spec:
       run: |
         #!/usr/bin/env sh
         set -eu
-        export PATH="/tools:$PATH"   # buildctl copied here by the init container
 
         # Wait for the rootless buildkitd sidecar to accept connections.
         i=0
