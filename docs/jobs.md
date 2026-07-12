@@ -549,9 +549,9 @@ and share the claim's workspace via a bind mount. If the `podTemplate`
 defines no container, the agent injects its configured default runner image
 (`--runner-image`, default `ghcr.io/eirueimi/unified-cd-runner:v0.0.3`) as
 the primary. Supported container runtimes are **docker, podman, and
-nerdctl** — Apple's `container` CLI is not supported for isolated jobs (no
-reliable network-namespace-join equivalent), so macOS hosts must use
-docker/podman (typically a Linux VM) to run isolated jobs.
+nerdctl** — Apple's `container` CLI is not auto-detected and not supported
+for isolated jobs (no reliable network-namespace-join equivalent), so macOS
+hosts must use docker/podman (typically a Linux VM) to run isolated jobs.
 
 Sidecar containers are started eagerly and kept alive for the life of the
 claim; there are **no readiness probes** — if a step connects to a sidecar

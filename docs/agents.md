@@ -246,10 +246,11 @@ are ever published, so concurrent claims never collide. See [Job Isolation:
 in the Job Reference for the full model and YAML examples.
 
 **Supported container runtimes:** docker, podman, nerdctl. Apple's
-`container` CLI is **not** supported for isolated jobs — there is no
-reliable `--network container:<id>` equivalent for it, so it remains usable
-only for whatever it was already used for (it is not used by the claim
-pod). macOS hosts run isolated jobs via docker or podman.
+`container` CLI is **not** auto-detected and is **not** supported for
+isolated jobs — there is no reliable `--network container:<id>` equivalent
+for it, so it can't back a claim pod. It is selectable only via an explicit
+`--container-runtime container`, and only for non-isolated `runsIn.image`
+steps. macOS hosts run isolated jobs via docker or podman.
 
 **docker-compose deployments:** The bundled compose stacks (repo-root
 `docker-compose.yaml` and `deployments/docker/docker-compose.yaml`) run a

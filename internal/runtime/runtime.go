@@ -88,8 +88,12 @@ type ContainerRuntime interface {
 	Remove(ctx context.Context, h ContainerHandle) error
 }
 
-// detectOrder is the auto-detection preference order.
-var detectOrder = []string{"docker", "podman", "nerdctl", "wslc", "container"}
+// detectOrder is the auto-detection preference order. Apple's `container` is
+// deliberately excluded: its runtime can't join another container's network
+// namespace, so it cannot back a claim pod (see appleContainer.Create), and
+// silently auto-selecting it would strand isolated jobs. It remains selectable
+// explicitly via --container-runtime container (driverFor still knows it).
+var detectOrder = []string{"docker", "podman", "nerdctl", "wslc"}
 
 // Detect returns the first available runtime. If preferred is non-empty, only
 // that runtime is considered (and it must be a known driver).
