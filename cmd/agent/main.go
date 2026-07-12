@@ -91,9 +91,11 @@ func main() {
 	}
 
 	// InstallShim writes the embedded ucd-sh binary into the agent's tools
-	// dir (a sibling of --workspace-dir), which every claim-pod/uses-scope/
-	// cleanup container this agent creates afterward bind-mounts read-only
-	// at /.ucd. Called here (not inside agent.Run) so unit tests driving
+	// dir (a ".ucd-tools" subdirectory INSIDE --workspace-dir, so it shares
+	// whatever mount makes --workspace-dir visible to a possibly-remote
+	// container runtime), which every claim-pod/uses-scope/cleanup
+	// container this agent creates afterward bind-mounts read-only at
+	// /.ucd. Called here (not inside agent.Run) so unit tests driving
 	// Run() directly are unaffected by whether the two-stage build
 	// populated internal/shim/embedded — see agent.InstallShim's doc
 	// comment. A zero-byte embed is a hard, actionable startup failure.
