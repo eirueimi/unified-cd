@@ -78,8 +78,12 @@ spec:
 
 ### Resolution priority (most specific wins)
 
-1. `step.shell` — steps inside `parallel:` and `finally:` count as steps;
-   a `post:` hook inherits its owning step's effective shell (no own field).
+1. `step.shell` — steps inside `parallel:` and `finally:` count as steps.
+   A `post:` hook may declare its own optional `shell:` (same array form);
+   when absent it inherits its owning step's effective shell. The override
+   exists because inheritance alone breaks down for non-shell interpreters:
+   a `shell: [python3, -c]` step with a shell-script cleanup hook needs
+   `post: {shell: [sh, -c], run: ...}` to be expressible at all.
 2. A `uses:` template's own declared shell, materialized at expansion time:
    a template step's own `shell:` survives as-is, and a template-level
    `spec.shell` is stamped onto each inlined step that lacks one. The caller
