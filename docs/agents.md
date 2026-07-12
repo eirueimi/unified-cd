@@ -72,7 +72,7 @@ spec:
 
 Each element of `agentSelector` supports `{{ .Params.X }}` expansion using the Run's input
 parameters (defined in `spec.params.inputs`). The params available at run creation time
-(whether triggered via API or webhook) are used for expansion.
+(whether triggered via API, webhook, `call:`, or the cron scheduler) are used for expansion.
 
 ```yaml
 spec:
@@ -91,8 +91,11 @@ unified-cli run trigger build --param pool=build-arm64
 #   only agents with that label can claim the run
 ```
 
-> Schedule (cron) triggers do not currently pass `agentSelector` to the Run,
-> so parameter expansion is not supported for scheduled runs.
+All four run-trigger paths route runs identically: each resolves the Run's
+params first, then expands `agentSelector` with those params before creating
+the Run. Scheduled (cron) runs use the schedule's configured params (falling
+back to each input's declared `default`) as the expansion context, the same
+as any other trigger.
 
 ---
 
