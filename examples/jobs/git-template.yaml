@@ -31,8 +31,12 @@ spec:
         job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@v0.1.0
         with:
           url: "https://github.com"
-          # NOTE: pass every param you rely on — template input defaults are
-          # currently NOT applied on the uses: (inline) path, unlike call:.
+          # NOTE: template input defaults ARE applied on the uses: (inline)
+          # path, same as call: — smoke-check.yaml declares expect_status
+          # (default "200") and body_contains (default ""), so both could be
+          # omitted here. They're spelled out explicitly for documentation;
+          # a non-empty with: value overrides the template's declared default
+          # (an empty string counts as unset and falls back to the default).
           expect_status: "200"
           retries: "3"
           interval_seconds: "2"

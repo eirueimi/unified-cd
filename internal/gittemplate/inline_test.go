@@ -3,9 +3,9 @@ package gittemplate
 import (
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
 func TestExpandUsesStep_LinearChainAndOutputs(t *testing.T) {
@@ -127,6 +127,82 @@ func TestExpandUsesStep_PreservesAndRewritesPostHook(t *testing.T) {
 	assert.Equal(t, "{{ .Steps.fetchRepo__inputs.Outputs.repoURL }}", inner.Post.Env["REPO"])
 }
 
+func TestExpandUsesStep_OmittedInputWithDefault_InputsStepCarriesDefault(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Params: dsl.Params{
+			Inputs: []dsl.Input{
+				{Name: "expect_status", Type: "string", Default: "200"},
+			},
+		},
+		Steps: []dsl.StepEntry{
+			{Name: "poll", Run: "curl {{ .Params.expect_status }}"},
+		},
+	}
+
+	expanded, err := expandUsesStep("smoke", map[string]string{}, tplSpec, nil, "")
+	require.NoError(t, err)
+
+	inputs := expanded[0]
+	assert.Equal(t, "smoke__inputs", inputs.Name)
+	assert.Equal(t, "200", inputs.Outputs["expect_status"])
+}
+
+func TestExpandUsesStep_WithValueOverridesDefault(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Params: dsl.Params{
+			Inputs: []dsl.Input{
+				{Name: "expect_status", Type: "string", Default: "200"},
+			},
+		},
+		Steps: []dsl.StepEntry{
+			{Name: "poll", Run: "curl {{ .Params.expect_status }}"},
+		},
+	}
+
+	expanded, err := expandUsesStep("smoke", map[string]string{"expect_status": "204"}, tplSpec, nil, "")
+	require.NoError(t, err)
+
+	inputs := expanded[0]
+	assert.Equal(t, "204", inputs.Outputs["expect_status"])
+}
+
+func TestExpandUsesStep_RequiredInputMissingNoDefault_Errors(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Params: dsl.Params{
+			Inputs: []dsl.Input{
+				{Name: "url", Type: "string", Required: true},
+			},
+		},
+		Steps: []dsl.StepEntry{
+			{Name: "poll", Run: "curl {{ .Params.url }}"},
+		},
+	}
+
+	_, err := expandUsesStep("smoke", map[string]string{}, tplSpec, nil, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "url")
+}
+
+func TestExpandUsesStep_NilDefaultOptionalInputOmitted_KeyAbsent(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Params: dsl.Params{
+			Inputs: []dsl.Input{
+				{Name: "note", Type: "string"}, // optional, no default
+			},
+		},
+		Steps: []dsl.StepEntry{
+			{Name: "poll", Run: "curl"},
+		},
+	}
+
+	expanded, err := expandUsesStep("smoke", map[string]string{}, tplSpec, nil, "")
+	require.NoError(t, err)
+
+	inputs := expanded[0]
+	_, ok := inputs.Outputs["note"]
+	assert.False(t, ok, "optional input with nil Default should be absent, not rendered as <nil>")
+}
+
 func TestExpandUsesStep_RewritesCacheStep(t *testing.T) {
 	tplSpec := dsl.Spec{
 		Steps: []dsl.StepEntry{
@@ -145,4 +221,67 @@ func TestExpandUsesStep_RewritesCacheStep(t *testing.T) {
 	restore := expanded[1]
 	require.NotNil(t, restore.Cache)
 	assert.Equal(t, "mod-{{ .Steps.gobuild__inputs.Outputs.goVersion }}", restore.Cache.Key)
+}
+
+func TestExpandUsesStep_EmptyWithValueForRequiredInput_Errors(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Params: dsl.Params{
+			Inputs: []dsl.Input{
+				{Name: "url", Type: "string", Required: true},
+			},
+		},
+		Steps: []dsl.StepEntry{
+			{Name: "poll", Run: "curl {{ .Params.url }}"},
+		},
+	}
+
+	// Mirroring resolveParams: an explicit empty string does not satisfy a
+	// required input.
+	_, err := expandUsesStep("smoke", map[string]string{"url": ""}, tplSpec, nil, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "url")
+}
+
+func TestExpandUsesStep_EmptyWithValueFallsBackToDefault(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Params: dsl.Params{
+			Inputs: []dsl.Input{
+				{Name: "tags", Type: "string", Default: "latest"},
+			},
+		},
+		Steps: []dsl.StepEntry{
+			{Name: "build", Run: "docker build -t app:{{ .Params.tags }} ."},
+		},
+	}
+
+	// Mirroring resolveParams: an explicit empty string is unset, so the
+	// declared default wins.
+	expanded, err := expandUsesStep("build", map[string]string{"tags": ""}, tplSpec, nil, "")
+	require.NoError(t, err)
+
+	inputs := expanded[0]
+	assert.Equal(t, "latest", inputs.Outputs["tags"])
+}
+
+func TestExpandUsesStep_EmptyWithValueNoDefault_PassesThrough(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Params: dsl.Params{
+			Inputs: []dsl.Input{
+				{Name: "note", Type: "string"}, // optional, no default
+			},
+		},
+		Steps: []dsl.StepEntry{
+			{Name: "poll", Run: "curl"},
+		},
+	}
+
+	// Mirroring resolveParams: with no default to fall back to, an explicit
+	// empty string is kept as-is.
+	expanded, err := expandUsesStep("smoke", map[string]string{"note": ""}, tplSpec, nil, "")
+	require.NoError(t, err)
+
+	inputs := expanded[0]
+	v, ok := inputs.Outputs["note"]
+	assert.True(t, ok, "explicit empty string without a default should pass through")
+	assert.Equal(t, "", v)
 }
