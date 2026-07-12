@@ -103,14 +103,22 @@ func rewriteMap(m map[string]string, usesName string, innerNames map[string]bool
 // expandUsesStep replaces a single `uses` step with a flat, sequenced step
 // list that can be spliced directly into the parent spec's Steps in its place:
 //
-//	<usesName>__inputs              synthetic: captures `with` (evaluated in the
-//	                                 parent's runtime context at this position)
+//	<usesName>__inputs              synthetic: captures tplSpec.Params.Inputs defaults
+//	                                 overlaid by `with` (evaluated in the parent's
+//	                                 runtime context at this position)
 //	<usesName>__<innerStep...>       tplSpec's own steps, renamed + reference-rewritten
 //	<usesName>                       synthetic: captures tplSpec's declared
 //	                                 spec.params.outputs (always present, even if empty)
 //
 // Order is sequential (array position); Needs is no longer used.
 // with is the already-stringified `uses.with` map (via UsesStep.WithAsStrings).
+// Declared input defaults (tplSpec.Params.Inputs[i].Default) are seeded into the
+// __inputs step first and then overridden by a matching non-empty with: entry,
+// mirroring call:'s resolveParams defaulting behavior — like resolveParams, an
+// explicit empty-string with: value counts as unset (it falls back to a declared
+// default and does not satisfy a required input). A declared-required input with
+// no default and no non-empty with: entry is a hard error (see the missing-inputs
+// check below) instead of silently rendering "<no value>" inside the inlined steps.
 // tplSpec must have at least one step (the caller is responsible for having already
 // validated the fetched job, e.g. via dsl.Job.Validate()).
 // outerRunsIn is the RunsIn declared on the outer `uses` step (may be nil); per
@@ -144,8 +152,42 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 		}
 	}
 
-	inputsOutputs := make(map[string]string, len(with))
+	// Required inputs mirror call:'s resolveParams semantics (internal/controller/params.go):
+	// a required input with no default and no explicit non-empty with: value is
+	// an error, not a silent "<no value>" render. Like resolveParams, an
+	// explicit empty string counts as unset.
+	var missing []string
+	for _, in := range tplSpec.Params.Inputs {
+		if !in.Required || in.Default != nil {
+			continue
+		}
+		if v, ok := with[in.Name]; ok && v != "" {
+			continue
+		}
+		missing = append(missing, in.Name)
+	}
+	if len(missing) == 1 {
+		return nil, fmt.Errorf("uses %q: missing required input: %s", usesName, missing[0])
+	}
+	if len(missing) > 1 {
+		return nil, fmt.Errorf("uses %q: missing required inputs: %v", usesName, missing)
+	}
+
+	// Seed the inputs map from the template's declared input defaults, then
+	// overlay the explicit with: values — a non-empty with: value always wins
+	// over a default, but (mirroring resolveParams) an explicit empty string is
+	// treated as unset and falls back to the declared default when one exists.
+	defaults := tplSpec.Params.InputDefaultsAsStrings()
+	inputsOutputs := make(map[string]string, len(with)+len(tplSpec.Params.Inputs))
+	for k, v := range defaults {
+		inputsOutputs[k] = v
+	}
 	for k, v := range with {
+		if v == "" {
+			if _, hasDefault := defaults[k]; hasDefault {
+				continue
+			}
+		}
 		inputsOutputs[k] = v
 	}
 	inputsStep := dsl.StepEntry{

@@ -322,6 +322,31 @@ func (u *UsesStep) WithAsStrings() map[string]string {
 	return withAsStrings(u.With)
 }
 
+// InputDefaultsAsStrings returns a map of input name to stringified default
+// value, for every declared input that carries a non-nil default. Inputs with
+// a nil Default (no `default:` in the YAML) are omitted from the result rather
+// than rendered as the literal "<nil>".
+//
+// It uses the same value-to-string conversion as with: (see stringifyValue),
+// so a template's uses: (inline) and call: (child-run) paths stringify a given
+// default identically.
+func (p Params) InputDefaultsAsStrings() map[string]string {
+	if len(p.Inputs) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(p.Inputs))
+	for _, in := range p.Inputs {
+		if in.Default == nil {
+			continue
+		}
+		result[in.Name] = stringifyValue(in.Default)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 // withAsStrings is the shared conversion used by CallStep.WithAsStrings and
 // UsesStep.WithAsStrings.
 func withAsStrings(with map[string]any) map[string]string {
@@ -330,20 +355,29 @@ func withAsStrings(with map[string]any) map[string]string {
 	}
 	result := make(map[string]string, len(with))
 	for k, v := range with {
-		switch val := v.(type) {
-		case string:
-			result[k] = val
-		case []any:
-			parts := make([]string, len(val))
-			for i, item := range val {
-				parts[i] = fmt.Sprintf("%v", item)
-			}
-			result[k] = strings.Join(parts, "\n")
-		default:
-			result[k] = fmt.Sprintf("%v", val)
-		}
+		result[k] = stringifyValue(v)
 	}
 	return result
+}
+
+// stringifyValue converts a single YAML-decoded value (string, []any, or other
+// scalar) to its string form. []any (YAML array) values are joined with
+// newlines; other scalars are converted via fmt.Sprintf. Shared by
+// withAsStrings (with: values) and InputDefaultsAsStrings (input defaults) so
+// both stringify the same way.
+func stringifyValue(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case []any:
+		parts := make([]string, len(val))
+		for i, item := range val {
+			parts[i] = fmt.Sprintf("%v", item)
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }
 
 type CacheStep struct {
