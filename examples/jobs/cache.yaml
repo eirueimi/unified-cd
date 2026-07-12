@@ -1,0 +1,42 @@
+# Demonstrates: cache: — restore a directory before the step runs (on key or
+# restoreKeys prefix match) and save it after the run completes on a miss.
+# Requires the agent to have a cache store configured (UNIFIED_CACHE_ENDPOINT /
+# _KEY / _SECRET / _BUCKET); with no store the step is a no-op. The dev
+# docker-compose agent is wired to the bundled garage S3, so this works there.
+#
+# Run twice: the first run misses and "builds" the deps; the second run
+# restores them and skips the work.
+# Usage:
+#   unified-cd apply -f examples/jobs/cache.yaml
+#   unified-cd run trigger cache-demo
+#   unified-cd run trigger cache-demo   # second run logs "cache hit — using restored deps"
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: cache-demo
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: restore-deps
+      cache:
+        path: deps/              # directory to cache (template expansion supported)
+        # A real job would derive the key from a lockfile, e.g.
+        #   key: go-vendor-{{ hashFile "go.sum" }}
+        # This demo has no source checkout, so the key is static.
+        key: cache-demo-deps-v1
+        restoreKeys:             # fallback prefixes when the exact key misses
+          - cache-demo-deps-
+        ttlDays: 7               # default 30
+
+    - name: install-deps
+      run: |
+        set -e
+        if [ -f deps/marker ]; then
+          echo "cache hit — using restored deps"
+          cat deps/marker
+        else
+          echo "cache miss — building deps (slow path)"
+          mkdir -p deps
+          date > deps/marker
+        fi

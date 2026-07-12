@@ -1,0 +1,39 @@
+# Demonstrates: uploadArtifact / downloadArtifact — pass files between steps
+# through the S3-compatible object store. downloadArtifact fetches by name from
+# the current run, so a later step (or a parallel branch on another agent) can
+# consume what an earlier step produced. Humans can also list/fetch a run's
+# artifacts: unified-cli artifact list <run-id> / download <run-id> <name>.
+# Usage:
+#   unified-cd apply -f examples/jobs/artifacts.yaml
+#   unified-cd run trigger artifact-roundtrip
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: artifact-roundtrip
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: build
+      run: |
+        set -e
+        mkdir -p bin
+        echo "demo-binary v1" > bin/app
+        echo "built bin/app"
+
+    - name: upload-binary
+      uploadArtifact:
+        name: app-binary     # artifact name (unique within the run)
+        path: bin/app        # file or directory to upload (tar+zstd in the object store)
+
+    - name: download-binary
+      downloadArtifact:
+        name: app-binary     # must match the upload name
+        destDir: restored    # default: current directory
+
+    - name: verify
+      run: |
+        set -e
+        cat restored/app
+        grep -q "demo-binary v1" restored/app
+        echo "artifact round-trip OK"
