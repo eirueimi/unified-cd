@@ -1,0 +1,32 @@
+# Demonstrates: spec.finally — steps that run after the main steps DAG
+# completes, whether it succeeded or failed. A step with no if: always runs;
+# failure() gates rollback-style steps. (cache: and post: are not allowed in
+# finally — they register deferred hooks that run before it.)
+# Usage:
+#   unified-cd apply -f examples/jobs/finally.yaml
+#   unified-cd run trigger finally-demo                      # success path
+#   unified-cd run trigger finally-demo --param fail=true    # failure path: rollback runs, run is Failed
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: finally-demo
+spec:
+  params:
+    inputs:
+      - name: fail
+        type: bool
+        default: false
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: deploy
+      run: |
+        set -e
+        echo "deploying (fail={{ .Params.fail }})"
+        [ "{{ .Params.fail }}" != "true" ]
+  finally:
+    - name: notify          # no if: → always runs, success or failure
+      run: echo "notify — deploy finished (this line always appears)"
+    - name: rollback
+      if: failure()         # only when a main step failed
+      run: echo "rolling back the failed deploy"
