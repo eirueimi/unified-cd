@@ -90,6 +90,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// InstallShim writes the embedded ucd-sh binary into the agent's tools
+	// dir (a sibling of --workspace-dir), which every claim-pod/uses-scope/
+	// cleanup container this agent creates afterward bind-mounts read-only
+	// at /.ucd. Called here (not inside agent.Run) so unit tests driving
+	// Run() directly are unaffected by whether the two-stage build
+	// populated internal/shim/embedded — see agent.InstallShim's doc
+	// comment. A zero-byte embed is a hard, actionable startup failure.
+	toolsDir, err := agent.InstallShim(*workspaceDir)
+	if err != nil {
+		slog.Error("install ucd-sh shim failed", "error", err)
+		os.Exit(1)
+	}
+
 	var labels []string
 	if *labelsStr != "" {
 		for _, l := range strings.Split(*labelsStr, ",") {
@@ -132,6 +145,7 @@ func main() {
 	a.RuntimePref = *containerRuntime
 	a.PauseImage = *pauseImage
 	a.RunnerImage = *runnerImage
+	a.ToolsDir = toolsDir
 
 	if *cacheEndpoint != "" && *cacheKey != "" && *cacheSecret != "" && *cacheBucket != "" {
 		cs, err := objectstore.NewS3ObjectStore(ctx, objectstore.S3Config{

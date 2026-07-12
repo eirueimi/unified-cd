@@ -29,13 +29,18 @@ import (
 // without the lock. Scope provisioning happens once per key per claim, so
 // this serialization is not expected to be a meaningful bottleneck.
 type scopeManager struct {
-	rt   crt.ContainerRuntime
-	mu   sync.Mutex
-	open map[string]crt.ContainerHandle
+	rt crt.ContainerRuntime
+	// toolsDir is the host tools dir the agent wrote the embedded ucd-sh
+	// shim into (see Agent.InstallShim); every scope container bind-mounts
+	// it read-only at /.ucd, same as claim-pod containers (claim_pod.go).
+	// Empty means "no shim mount" (see ucdToolsMount).
+	toolsDir string
+	mu       sync.Mutex
+	open     map[string]crt.ContainerHandle
 }
 
-func newScopeManager(rt crt.ContainerRuntime) *scopeManager {
-	return &scopeManager{rt: rt, open: map[string]crt.ContainerHandle{}}
+func newScopeManager(rt crt.ContainerRuntime, toolsDir string) *scopeManager {
+	return &scopeManager{rt: rt, toolsDir: toolsDir, open: map[string]crt.ContainerHandle{}}
 }
 
 // isScopedStep reports whether step targets an isolated uses-scope container
@@ -69,10 +74,12 @@ func (m *scopeManager) ensure(ctx context.Context, step api.ClaimStep, env []str
 	if h, ok := m.open[k]; ok {
 		return h, nil
 	}
-	// Command is explicit sleep-infinity keep-alive: this container is an exec
-	// target for scoped steps (see crt.CreateSpec.Command), not a service
-	// sidecar, so it must not run the image's default entrypoint.
-	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir, Command: []string{"sleep", "infinity"}})
+	// Command is the explicit ucd-sh pause keep-alive: this container is an
+	// exec target for scoped steps (see crt.CreateSpec.Command), not a
+	// service sidecar, so it must not run the image's default entrypoint.
+	// The /.ucd mount makes the keep-alive binary (and the default step
+	// shell) available without any image requirement.
+	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir, Command: ucdShPause, Mounts: ucdToolsMount(m.toolsDir)})
 	if err != nil {
 		return crt.ContainerHandle{}, fmt.Errorf("provision scope %q (image %q): %w", step.ScopeID, step.ScopeImage, err)
 	}
@@ -80,8 +87,11 @@ func (m *scopeManager) ensure(ctx context.Context, step api.ClaimStep, env []str
 	return h, nil
 }
 
-func (m *scopeManager) exec(ctx context.Context, h crt.ContainerHandle, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	return m.rt.Exec(ctx, h, crt.ExecSpec{Script: script, Env: env}, stdout, stderr)
+// exec runs script inside h. shell is the step's effective interpreter argv
+// (nil/empty resolves to the shim default — see effectiveShell), always set
+// explicitly so the runtime layer stays dumb.
+func (m *scopeManager) exec(ctx context.Context, h crt.ContainerHandle, script string, shell, env []string, stdout, stderr io.Writer) (int, error) {
+	return m.rt.Exec(ctx, h, crt.ExecSpec{Script: script, Shell: effectiveShell(shell), Env: env}, stdout, stderr)
 }
 
 // copyOutToTemp copies a container path to a fresh host temp dir and returns

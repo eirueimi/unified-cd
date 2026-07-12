@@ -69,6 +69,54 @@ func TestRunStepCapture_WorkDir(t *testing.T) {
 	assert.Contains(t, stdout, "world")
 }
 
+// TestRunStepWithShell_UsesGivenArgv verifies RunStepWithShell execs the
+// declared interpreter argv (not findShell()'s bash) as argv + [script],
+// mirroring the container exec contract (shell + [run script], never
+// re-parsed). bash is used here as the declared shell (available in this
+// dev/CI environment via Git Bash on Windows) purely as a stand-in for "any
+// explicit shell:" — the point under test is that the argv is honored
+// verbatim, not that it differs from the native default.
+func TestRunStepWithShell_UsesGivenArgv(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, "echo from-explicit-shell", &stdout, &stderr, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	assert.Contains(t, stdout.String(), "from-explicit-shell")
+}
+
+// TestRunStepWithShell_NonZeroExit mirrors TestRunStep_NonZeroExit for the
+// explicit-shell path.
+func TestRunStepWithShell_NonZeroExit(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, "exit 7", &stdout, &stderr, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, 7, exit)
+}
+
+// TestRunStepWithShell_WorkDir mirrors TestRunStep_WorkDir for the
+// explicit-shell path.
+func TestRunStepWithShell_WorkDir(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, `echo hello > ./marker.txt`, &stdout, &stderr, nil, dir)
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	content, readErr := os.ReadFile(filepath.Join(dir, "marker.txt"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(content), "hello")
+}
+
+// TestRunStepWithShell_MultiArgPrefixPreserved verifies extra argv elements
+// before the script (e.g. [bash, -euo, pipefail, -c]) are all threaded
+// through, not just a two-element [interpreter, flag] pair.
+func TestRunStepWithShell_MultiArgPrefixPreserved(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-euo", "pipefail", "-c"}, "false; echo unreachable", &stdout, &stderr, nil, "")
+	require.NoError(t, err)
+	assert.NotEqual(t, 0, exit, "set -e must abort the script on the first failing command")
+	assert.NotContains(t, stdout.String(), "unreachable")
+}
+
 func TestFindShell_NonWindows(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("non-Windows test")

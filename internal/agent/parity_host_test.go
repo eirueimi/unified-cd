@@ -406,7 +406,7 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 		// the native path uses — so echo output still flows into captured logs,
 		// while Create/Exec/Remove are recorded for the dispatch assertions.
 		fakeRT = newShellFakeRT(workDir)
-		pod := newClaimPodManager(fakeRT, workDir, hostNamedMountPath(claim.PodTemplate), "pause:img", "runner:img")
+		pod := newClaimPodManager(fakeRT, workDir, hostNamedMountPath(claim.PodTemplate), "pause:img", "runner:img", "")
 		if err := pod.Start(ctx, claim.PodTemplate); err != nil {
 			t.Fatalf("isolated claim: claim pod start failed: %v", err)
 		}

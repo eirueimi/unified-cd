@@ -30,7 +30,7 @@ func TestK8sBackend_RunPostHook_ExecsIntoGivenContainer(t *testing.T) {
 	a := &K8sAgent{exec: ex}
 	b := newK8sBackend(a, "run-1", "pod-default", "/workspace")
 
-	err := b.RunPostHook(context.Background(), agentlib.ScopeHandle{}, "build", "cleanup.sh", nil, io.Discard, io.Discard)
+	err := b.RunPostHook(context.Background(), agentlib.ScopeHandle{}, "build", "cleanup.sh", nil, nil, io.Discard, io.Discard)
 	require.NoError(t, err)
 
 	assert.Equal(t, "pod-default", ex.gotPod, "non-scoped post hook must target the default pod")
@@ -47,7 +47,7 @@ func TestK8sBackend_RunPostHook_DefaultContainerWhenEmpty(t *testing.T) {
 	a := &K8sAgent{exec: ex}
 	b := newK8sBackend(a, "run-1", "pod-default", "/workspace")
 
-	err := b.RunPostHook(context.Background(), agentlib.ScopeHandle{}, "", "cleanup.sh", nil, io.Discard, io.Discard)
+	err := b.RunPostHook(context.Background(), agentlib.ScopeHandle{}, "", "cleanup.sh", nil, nil, io.Discard, io.Discard)
 	require.NoError(t, err)
 
 	assert.Equal(t, "pod-default", ex.gotPod)
@@ -116,7 +116,7 @@ func TestK8sBackend_RunPostHook_StreamsOutputToGivenWriters(t *testing.T) {
 	// (the orchestrator's hookStack drain) opened writers for, not hardcoded
 	// to 0.
 	stdout, stderr, finish := b.StepLogWriters(context.Background(), 2)
-	err := b.RunPostHook(context.Background(), agentlib.ScopeHandle{}, "", "cleanup.sh", nil, stdout, stderr)
+	err := b.RunPostHook(context.Background(), agentlib.ScopeHandle{}, "", "cleanup.sh", nil, nil, stdout, stderr)
 	require.NoError(t, err)
 	finish(context.Background())
 

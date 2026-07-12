@@ -73,7 +73,11 @@ func (a *appleContainer) createArgs(spec CreateSpec) []string {
 		args = append(args, "-w", spec.WorkDir)
 	}
 	for _, m := range spec.Mounts {
-		args = append(args, "-v", m.HostPath+":"+m.ContainerPath)
+		v := m.HostPath + ":" + m.ContainerPath
+		if m.ReadOnly {
+			v += ":ro"
+		}
+		args = append(args, "-v", v)
 	}
 	for _, e := range spec.Env {
 		args = append(args, "-e", e)

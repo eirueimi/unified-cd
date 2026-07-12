@@ -181,6 +181,41 @@ func TestOCICLICreateArgv_NilCommandRunsImageEntrypoint(t *testing.T) {
 		"a sidecar with no explicit Command must run its image's default entrypoint, not sleep infinity")
 }
 
+// TestOCICLICreateArgv_ReadOnlyMount is the regression test for the /.ucd
+// shim injection: a Mount with ReadOnly:true must emit the `:ro` suffix on
+// `-v host:container`, so the shim binary can never be modified/deleted from
+// inside a container that shares it.
+func TestOCICLICreateArgv_ReadOnlyMount(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{
+		Image:  "alpine",
+		Mounts: []Mount{{HostPath: "/host/tools", ContainerPath: "/.ucd", ReadOnly: true}},
+	})
+	assert.Contains(t, got, "-v")
+	found := false
+	for i, a := range got {
+		if a == "-v" && i+1 < len(got) {
+			if got[i+1] == "/host/tools:/.ucd:ro" {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "expected -v /host/tools:/.ucd:ro in argv, got %v", got)
+}
+
+// TestOCICLICreateArgv_MountNotReadOnlyOmitsRO confirms a plain (non-readonly)
+// mount keeps its prior two-segment form — no accidental `:ro` on the
+// existing workspace bind mount.
+func TestOCICLICreateArgv_MountNotReadOnlyOmitsRO(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{
+		Image:  "alpine",
+		Mounts: []Mount{{HostPath: "/host/ws", ContainerPath: "/workspace"}},
+	})
+	assert.Contains(t, got, "/host/ws:/workspace")
+	assert.NotContains(t, got, "/host/ws:/workspace:ro")
+}
+
 // TestOCICLICreateArgv_CommandHonorsCustomArgv confirms a sidecar's own
 // podTemplate command/args (carried through as CreateSpec.Command) is
 // emitted verbatim, not silently replaced by sleep infinity.

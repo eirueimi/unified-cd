@@ -16,6 +16,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
+	"github.com/eirueimi/unified-cd/internal/shim/embedded"
 )
 
 // ApprovalPollInterval is how often WaitForApproval polls the controller for a
@@ -43,13 +44,18 @@ var heartbeatInterval = DefaultHeartbeatInterval
 // (ExecBackend.StepLogWriters) attributed to that step: a post hook's
 // stdout/stderr is shipped as more output appended to the OWNING step's log,
 // not a separate pseudo-step, since post: is documented as cleanup for that
-// step rather than an independent unit of work.
+// step rather than an independent unit of work. shell is the hook's
+// effective interpreter argv, resolved once when the entry is appended (see
+// makeStepRunner in orchestrator.go): post.Shell if the post: hook declared
+// its own, else the owning step's effective ClaimStep.Shell — nil/empty
+// means "apply the shim default" at exec time, same as every step.
 type postHookEntry struct {
 	stepName  string
 	post      api.PostStep
 	scope     ScopeHandle
 	container string
 	stepIndex int
+	shell     []string
 }
 
 // Agent represents an agent that communicates with the master server to execute jobs.
@@ -73,6 +79,18 @@ type Agent struct {
 	// podTemplate defines none (host twin of the k8s fallback image).
 	PauseImage  string
 	RunnerImage string
+
+	// ToolsDir is the host directory holding the embedded ucd-sh shim
+	// (written by InstallShim), bind-mounted read-only at /.ucd into every
+	// container this agent creates (claim-pod containers, uses-scope
+	// containers, the workspace-cleanup container). cmd/agent sets this by
+	// calling InstallShim before Run, mirroring RequireShell — NOT called
+	// from Run itself, so tests that drive Run()/executeRun() directly
+	// without a container runtime (native-only claims) are unaffected by
+	// whether the two-stage build populated internal/shim/embedded. Empty
+	// means "no shim mount" (see claim_pod.go's ucdToolsMount) — a real
+	// deployed agent always has this set.
+	ToolsDir string
 
 	resolvedRuntime crt.ContainerRuntime
 	runtimeErr      error
@@ -270,7 +288,7 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			mode = "native"
 		}
 		clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
-		if err := prepareWorkspace(runCtx, workDir, mode, clean, a.containerRuntime); err != nil {
+		if err := prepareWorkspace(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
 			// The claim is ours but its workspace could not be prepared, so the
 			// run can never start. Fail it on the controller (retried until it
 			// lands) rather than leaving it Running until the stuck-run reaper
@@ -324,7 +342,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			a.failRun(ctx, c.RunID, `isolated job requires the agent's runner image to be configured (set --runner-image / config runnerImage), or supply a "job" container in the podTemplate, or mark the job native: true`)
 			return
 		}
-		pod = newClaimPodManager(rt, workDir, hostNamedMountPath(c.PodTemplate), a.PauseImage, a.RunnerImage)
+		pod = newClaimPodManager(rt, workDir, hostNamedMountPath(c.PodTemplate), a.PauseImage, a.RunnerImage, a.ToolsDir)
 		if err := pod.Start(ctx, c.PodTemplate); err != nil {
 			pod.CloseAll(context.WithoutCancel(ctx))
 			failClaim("claim pod construction failed", err)
@@ -410,4 +428,52 @@ func expandHome(path string) (string, error) {
 		return "", fmt.Errorf("expand ~ in workspace-dir: %w", err)
 	}
 	return filepath.Join(home, path[2:]), nil
+}
+
+// shimBytes is indirected for testability: InstallShim's unit tests fake a
+// non-empty payload without needing a real two-stage build (`make
+// embed-shim`) to have populated internal/shim/embedded first.
+var shimBytes = embedded.Bytes
+
+// InstallShim writes the embedded ucd-sh binary into a tools directory
+// derived from workspaceDir (the same "~/workspace" default/expansion Run
+// applies to a.WorkspaceDir — see expandHome), one level above it:
+// <dirname(expanded workspaceDir)>/tools/ucd-sh, mode 0755. It returns the
+// tools directory so the caller can set Agent.ToolsDir, which every
+// container-creating path (claim_pod.go, scope.go, workspace.go) reads to
+// bind-mount /.ucd read-only.
+//
+// Called once at startup by cmd/agent's main(), mirroring RequireShell —
+// deliberately NOT from Agent.Run, so unit tests driving Run()/executeRun()
+// directly (native claims, or isolated claims against a fake runtime) are
+// unaffected by whether internal/shim/embedded holds a real binary or the
+// committed zero-byte placeholder (see that package's doc comment).
+//
+// A zero-length shimBytes() is a hard, actionable error: since the default
+// container step shell is now /.ucd/ucd-sh -c and every keep-alive is
+// /.ucd/ucd-sh pause, an agent that starts without the shim would fail every
+// isolated job's first exec with an opaque "no such file" — better to refuse
+// to start and name the fix.
+func InstallShim(workspaceDir string) (toolsDir string, err error) {
+	payload := shimBytes()
+	if len(payload) == 0 {
+		return "", fmt.Errorf("ucd-sh shim is not embedded in this agent binary (0 bytes): build with `make embed-shim` (or `make build`), or run scripts/build-shims.sh, before starting the agent")
+	}
+	wsBase := workspaceDir
+	if wsBase == "" {
+		wsBase = "~/workspace"
+	}
+	wsBase, err = expandHome(wsBase)
+	if err != nil {
+		return "", err
+	}
+	toolsDir = filepath.Join(filepath.Dir(wsBase), "tools")
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		return "", fmt.Errorf("create tools dir %s: %w", toolsDir, err)
+	}
+	shimPath := filepath.Join(toolsDir, "ucd-sh")
+	if err := os.WriteFile(shimPath, payload, 0o755); err != nil {
+		return "", fmt.Errorf("write shim to %s: %w", shimPath, err)
+	}
+	return toolsDir, nil
 }

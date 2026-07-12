@@ -59,17 +59,36 @@ type CreateSpec struct {
 // Mount is a host-path bind mount for a long-lived container: the host
 // directory HostPath is made available inside the container at ContainerPath
 // (docker/podman/Apple container's `run -v host:container`). Used to share the
-// host workspace with a named runsIn.container container.
+// host workspace with a named runsIn.container container, and to inject the
+// ucd-sh shim read-only at /.ucd (see ReadOnly).
 type Mount struct {
 	HostPath      string
 	ContainerPath string
+	// ReadOnly emits the `:ro` suffix on the `-v host:container` mount arg
+	// (docker/podman/Apple container semantics). Used for the /.ucd shim
+	// mount, which must never be writable inside the container: the shim
+	// binary is shared read-only from the agent's tools dir across every
+	// container of a claim, and a writable mount would let a step
+	// overwrite or delete it out from under sibling containers.
+	ReadOnly bool
 }
 
 // ExecSpec describes one script execution inside a running container.
 type ExecSpec struct {
 	Script string
 	Env    []string // KEY=VALUE, injected as -e on exec
-	Shell  []string // defaults to {"sh","-c"}
+	// Shell is the interpreter argv the script is appended to (exec'd as
+	// Shell + [Script], verbatim, never re-parsed or quoted). The agent is
+	// the layer that decides the effective shell (step.shell resolved by
+	// the controller onto api.ClaimStep.Shell, defaulting to the injected
+	// shim's ["/.ucd/ucd-sh", "-c"] when unset) and always sets this field
+	// explicitly on every exec it issues — see internal/agent/claim_pod.go
+	// and scope.go — so this runtime package stays free of any shim/DSL
+	// knowledge. Empty/nil is a fallback for callers outside the agent
+	// (direct package users, tests) that don't set it explicitly; ociCLI
+	// and appleContainer both fall back to {"sh","-c"} in that case, NOT
+	// the shim default, since this package has no notion of /.ucd.
+	Shell []string
 }
 
 // ContainerRuntime runs a step in a fresh, isolated container. No host

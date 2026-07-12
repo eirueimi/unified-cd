@@ -200,23 +200,59 @@ type claimPodManager struct {
 	mountPath   string
 	pauseImage  string
 	runnerImage string
+	// toolsDir is the host directory the agent wrote the embedded ucd-sh
+	// shim into at startup (see Agent.InstallShim). Every container the
+	// claim pod creates bind-mounts it read-only at /.ucd (ucdToolsMount),
+	// so the shim is available as the exec target for the shell argv
+	// default and as the pause/keep-alive binary. Empty means "no shim
+	// mount" — used by tests that never exec anything shim-dependent; a
+	// real agent (via cmd/agent's InstallShim wiring) always sets it.
+	toolsDir string
 
 	mu    sync.Mutex
 	pause crt.ContainerHandle
 	open  map[string]crt.ContainerHandle // container name → handle
 }
 
-func newClaimPodManager(rt crt.ContainerRuntime, workDir, mountPath, pauseImage, runnerImage string) *claimPodManager {
+func newClaimPodManager(rt crt.ContainerRuntime, workDir, mountPath, pauseImage, runnerImage, toolsDir string) *claimPodManager {
 	return &claimPodManager{rt: rt, workDir: workDir, mountPath: mountPath,
-		pauseImage: pauseImage, runnerImage: runnerImage, open: map[string]crt.ContainerHandle{}}
+		pauseImage: pauseImage, runnerImage: runnerImage, toolsDir: toolsDir, open: map[string]crt.ContainerHandle{}}
 }
 
-// sleepInfinity is the explicit keep-alive command for containers that must
-// stay running as an exec target rather than run their image's own
-// entrypoint (see crt.CreateSpec.Command): the pause container (owns the
-// claim pod's netns for its whole lifetime) and the primary "job" container
-// (the exec target for container:-less steps).
-var sleepInfinity = []string{"sleep", "infinity"}
+// ucdShPause is the Go keep-alive: it replaces "sleep infinity" for every
+// container that must stay running as an exec target rather than run its
+// image's own entrypoint (see crt.CreateSpec.Command) — the pause container
+// (owns the claim pod's netns for its whole lifetime) and the primary "job"
+// container (the exec target for container:-less steps). Unlike sleep
+// infinity it requires no binary in the target image (it IS the shim,
+// bind-mounted read-only at /.ucd — see ucdToolsMount), reaps zombies as
+// PID 1, and exits promptly on SIGTERM instead of having to be killed.
+var ucdShPause = []string{"/.ucd/ucd-sh", "pause"}
+
+// ucdDefaultShell is the effective shell argv a container-targeted exec uses
+// when the step carries no ClaimStep.Shell (the controller never writes
+// this path itself — see api.ClaimStep.Shell's doc comment — so the agent
+// applies it here, the one place that knows about /.ucd).
+var ucdDefaultShell = []string{"/.ucd/ucd-sh", "-c"}
+
+// effectiveShell returns shell if non-empty, else the shim default. Shared
+// by every host exec path (claim pod, scope containers) so "nil/empty Shell
+// means the shim default" is decided in exactly one place.
+func effectiveShell(shell []string) []string {
+	if len(shell) > 0 {
+		return shell
+	}
+	return ucdDefaultShell
+}
+
+// ucdToolsMount returns the read-only /.ucd bind mount for toolsDir, or nil
+// when toolsDir is empty (see claimPodManager.toolsDir's doc comment).
+func ucdToolsMount(toolsDir string) []crt.Mount {
+	if toolsDir == "" {
+		return nil
+	}
+	return []crt.Mount{{HostPath: toolsDir, ContainerPath: "/.ucd", ReadOnly: true}}
+}
 
 // Start builds the claim pod eagerly: pause first (netns owner), then every
 // container def. Sidecars must be listening before any step runs, which is
@@ -227,30 +263,33 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 	// The pause container only owns the netns (nothing execs into it), but it
 	// must outlive the whole claim: without an explicit keep-alive it would
 	// run its image's default entrypoint and could exit immediately,
-	// collapsing the netns every other claim container shares.
-	pause, err := m.rt.Create(ctx, crt.CreateSpec{Image: m.pauseImage, Command: sleepInfinity})
+	// collapsing the netns every other claim container shares. It also needs
+	// the /.ucd mount: ucdShPause IS the shim binary, not something the pause
+	// image is expected to provide.
+	pause, err := m.rt.Create(ctx, crt.CreateSpec{Image: m.pauseImage, Command: ucdShPause, Mounts: ucdToolsMount(m.toolsDir)})
 	if err != nil {
 		return fmt.Errorf("claim pod: start pause container (image %q): %w", m.pauseImage, err)
 	}
 	m.pause = pause
 	for _, def := range claimContainerDefs(pt, m.runnerImage) {
 		// The primary "job" container is the exec target for container:-less
-		// steps, so it always gets the sleep-infinity keep-alive regardless
-		// of any command the podTemplate set on it. Every other container is
-		// a sidecar: it runs its own podTemplate command/args if set, else
-		// its image's default entrypoint (def.Command, possibly nil) — so a
+		// steps, so it always gets the ucd-sh pause keep-alive regardless of
+		// any command the podTemplate set on it. Every other container is a
+		// sidecar: it runs its own podTemplate command/args if set, else its
+		// image's default entrypoint (def.Command, possibly nil) — so a
 		// mysql/redis sidecar with no command actually runs its service.
 		cmd := def.Command
 		if def.Name == primaryContainerName {
-			cmd = sleepInfinity
+			cmd = ucdShPause
 		}
+		mounts := append([]crt.Mount{{HostPath: m.workDir, ContainerPath: m.mountPath}}, ucdToolsMount(m.toolsDir)...)
 		h, err := m.rt.Create(ctx, crt.CreateSpec{
 			Image:            def.Image,
 			Env:              def.Env,
 			CPULimit:         def.CPULimit,
 			MemLimit:         def.MemLimit,
 			WorkDir:          m.mountPath,
-			Mounts:           []crt.Mount{{HostPath: m.workDir, ContainerPath: m.mountPath}},
+			Mounts:           mounts,
 			NetworkContainer: pause.ID,
 			Command:          cmd,
 		})
@@ -265,8 +304,11 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 
 // Exec runs script in the named claim-pod container; "" targets the primary
 // ("job") container, mirroring k8s exec's empty-container fallback
-// (internal/k8sagent/executor.go).
-func (m *claimPodManager) Exec(ctx context.Context, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
+// (internal/k8sagent/executor.go). shell is the step's effective interpreter
+// argv (nil/empty resolves to the shim default — see effectiveShell); it is
+// always set explicitly here so the runtime layer stays dumb (crt.ExecSpec's
+// own fallback is only for callers outside the agent).
+func (m *claimPodManager) Exec(ctx context.Context, container, script string, shell, env []string, stdout, stderr io.Writer) (int, error) {
 	if container == "" {
 		container = primaryContainerName
 	}
@@ -276,7 +318,7 @@ func (m *claimPodManager) Exec(ctx context.Context, container, script string, en
 	if !ok {
 		return -1, fmt.Errorf("container %q is not defined in the job's podTemplate", container)
 	}
-	return m.rt.Exec(ctx, h, crt.ExecSpec{Script: script, Env: env}, stdout, stderr)
+	return m.rt.Exec(ctx, h, crt.ExecSpec{Script: script, Shell: effectiveShell(shell), Env: env}, stdout, stderr)
 }
 
 func (m *claimPodManager) CloseAll(ctx context.Context) {

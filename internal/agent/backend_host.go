@@ -17,6 +17,15 @@ import (
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
+// runStepFn / runStepWithShellFn are indirected for testability, mirroring
+// this codebase's existing exec-seam pattern (e.g. runtime.execCommand,
+// runtime.lookPath): hostBackend's native-path dispatch tests (nil step.Shell
+// -> RunStep, non-nil -> RunStepWithShell with the declared argv) swap these
+// to observe which path was taken and with what arguments, without spawning
+// a real host process.
+var runStepFn = RunStep
+var runStepWithShellFn = RunStepWithShell
+
 // hostBackend is the ExecBackend implementation for the host (bare-process)
 // agent. It owns the claim-scoped scopeManager (uses-scope containers), created
 // lazily on first use, plus the secret masker used by StepLogWriters.
@@ -87,18 +96,23 @@ func (b *hostBackend) getScopes() (*scopeManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("uses-scope requires a container runtime: %w", err)
 	}
-	b.scopes = newScopeManager(rt)
+	b.scopes = newScopeManager(rt, b.a.ToolsDir)
 	return b.scopes, nil
 }
 
 // RunDefault runs a default step: for an isolated claim it execs into the
-// pod's primary ("job") container; for a native claim it runs directly on the
-// host workspace.
+// pod's primary ("job") container (with step.Shell threaded through, nil
+// meaning the shim default); for a native claim it runs directly on the host
+// workspace — today's bash path (RunStep) when step.Shell is unset, or the
+// declared interpreter argv (RunStepWithShell) when set.
 func (b *hostBackend) RunDefault(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
 	if b.pod != nil {
-		return b.pod.Exec(ctx, "", script, env, stdout, stderr)
+		return b.pod.Exec(ctx, "", script, step.Shell, env, stdout, stderr)
 	}
-	return RunStep(ctx, script, stdout, stderr, env, b.workDir)
+	if len(step.Shell) > 0 {
+		return runStepWithShellFn(ctx, step.Shell, script, stdout, stderr, env, b.workDir)
+	}
+	return runStepFn(ctx, script, stdout, stderr, env, b.workDir)
 }
 
 // hostNamedMountPath is the in-container path the host workspace is bind-mounted
@@ -120,7 +134,7 @@ func (b *hostBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep,
 	if b.pod == nil {
 		return -1, fmt.Errorf("container: %q requires an isolated job (this claim is native)", container)
 	}
-	return b.pod.Exec(ctx, container, script, env, stdout, stderr)
+	return b.pod.Exec(ctx, container, script, step.Shell, env, stdout, stderr)
 }
 
 // EnsureScope provisions (or reuses) the step's uses-scope container.
@@ -137,12 +151,12 @@ func (b *hostBackend) EnsureScope(ctx context.Context, step api.ClaimStep, env [
 }
 
 // RunInScope executes script inside the scope container identified by h.
-func (b *hostBackend) RunInScope(ctx context.Context, h ScopeHandle, script string, env []string, stdout, stderr io.Writer) (int, error) {
+func (b *hostBackend) RunInScope(ctx context.Context, h ScopeHandle, script string, shell []string, env []string, stdout, stderr io.Writer) (int, error) {
 	sm, handle, ok := unwrapHostScope(h)
 	if !ok {
 		return -1, fmt.Errorf("RunInScope: no scope handle")
 	}
-	return sm.exec(ctx, handle, script, env, stdout, stderr)
+	return sm.exec(ctx, handle, script, shell, env, stdout, stderr)
 }
 
 // CloseScopes tears down every scope container opened during the claim and, for
@@ -301,16 +315,20 @@ func (b *hostBackend) DefaultAgentOS() string {
 // step's shipping writers (see ExecBackend.RunPostHook's doc comment) — every
 // path below feeds the script's real output into them instead of discarding
 // it.
-func (b *hostBackend) RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, env []string, stdout, stderr io.Writer) error {
+func (b *hostBackend) RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, shell []string, env []string, stdout, stderr io.Writer) error {
 	if sm, h, ok := unwrapHostScope(scope); ok {
-		_, err := sm.exec(ctx, h, script, env, stdout, stderr)
+		_, err := sm.exec(ctx, h, script, shell, env, stdout, stderr)
 		return err
 	}
 	if b.pod != nil {
-		_, err := b.pod.Exec(ctx, container, script, env, stdout, stderr)
+		_, err := b.pod.Exec(ctx, container, script, shell, env, stdout, stderr)
 		return err
 	}
-	_, err := RunStep(ctx, script, stdout, stderr, env, b.workDir)
+	if len(shell) > 0 {
+		_, err := runStepWithShellFn(ctx, shell, script, stdout, stderr, env, b.workDir)
+		return err
+	}
+	_, err := runStepFn(ctx, script, stdout, stderr, env, b.workDir)
 	return err
 }
 

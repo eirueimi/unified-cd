@@ -75,7 +75,14 @@ func (b *k8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, env []
 }
 
 // RunInScope execs script into the scope pod's "step" container.
-func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, env []string, stdout, stderr io.Writer) (int, error) {
+//
+// shell is the owning step's effective interpreter argv (agentlib.ExecBackend
+// interface addition for the step-shell-shim feature); the k8s executor does
+// not yet thread it into ExecStep (buildEnvShellCommand still hardcodes
+// `bash -lc` — see internal/k8sagent/executor.go), so it is accepted here to
+// satisfy the interface but not yet used. Wiring it through ExecStep is
+// tracked separately (k8s executor argv task).
+func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, shell []string, env []string, stdout, stderr io.Writer) (int, error) {
 	podName, ok := unwrapK8sScope(h)
 	if !ok {
 		return -1, fmt.Errorf("RunInScope: no scope handle")
@@ -268,7 +275,11 @@ func (b *k8sBackend) DefaultAgentOS() string {
 // shipping writers (see agentlib.ExecBackend.RunPostHook's doc comment); they
 // replace what used to be a hardcoded io.Discard, io.Discard pair that threw
 // post-hook output away.
-func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, env []string, stdout, stderr io.Writer) error {
+//
+// shell is the hook's effective interpreter argv (agentlib.ExecBackend
+// interface addition for the step-shell-shim feature); not yet threaded into
+// ExecStep, same caveat as RunInScope above.
+func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, shell []string, env []string, stdout, stderr io.Writer) error {
 	targetPod := ""
 	if !scope.IsZero() {
 		podName, ok := unwrapK8sScope(scope)

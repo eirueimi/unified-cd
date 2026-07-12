@@ -94,6 +94,26 @@ func TestAppleCreateArgv_NilCommandRunsImageEntrypoint(t *testing.T) {
 	}
 }
 
+// TestAppleCreateArgv_ReadOnlyMount mirrors
+// TestOCICLICreateArgv_ReadOnlyMount: Apple's `container` CLI must also emit
+// `:ro` for a ReadOnly mount (the /.ucd shim injection).
+func TestAppleCreateArgv_ReadOnlyMount(t *testing.T) {
+	a := &appleContainer{}
+	got := a.createArgs(CreateSpec{
+		Image:  "alpine",
+		Mounts: []Mount{{HostPath: "/host/tools", ContainerPath: "/.ucd", ReadOnly: true}},
+	})
+	found := false
+	for i, s := range got {
+		if s == "-v" && i+1 < len(got) && got[i+1] == "/host/tools:/.ucd:ro" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected -v /host/tools:/.ucd:ro, argv = %v", got)
+	}
+}
+
 // TestAppleCreate_RejectsNetworkContainer confirms Apple's `container` CLI
 // cannot join another container's netns (no --network container:<id>
 // equivalent), so the claim pod's per-job containers require

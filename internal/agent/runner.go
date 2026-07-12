@@ -115,6 +115,36 @@ func RunStep(ctx context.Context, script string, stdout, stderr io.Writer, extra
 	return -1, err
 }
 
+// RunStepWithShell executes script as a host process using an explicit
+// interpreter argv (shell) instead of the host bash findShell() picks: the
+// argv is exec'd verbatim as shell + [script] (mirroring the container exec
+// contract — never re-parsed or quoted), so a native step's own `shell:`
+// (e.g. [python3, -c]) runs the interpreter the author asked for rather than
+// always going through bash -lc. shell must be non-empty; callers gate on
+// len(step.Shell) > 0 and fall back to RunStep (today's unconditional bash
+// path) otherwise. Cancellation/process-tree-kill semantics mirror RunStep
+// (see runTreeKilled).
+func RunStepWithShell(ctx context.Context, shell []string, script string, stdout, stderr io.Writer, extraEnv []string, workDir string) (int, error) {
+	argv := append(append([]string{}, shell[1:]...), script)
+	cmd := exec.Command(shell[0], argv...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
+	err := runTreeKilled(ctx, cmd)
+	if err == nil {
+		return 0, nil
+	}
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode(), nil
+	}
+	return -1, err
+}
+
 // RunStepCapture executes a script and returns the captured stdout string and exit code.
 // stderr is written to the provided writer (for log shipping).
 // On cancellation the whole process tree is killed (not just the shell) — see runTreeKilled.
