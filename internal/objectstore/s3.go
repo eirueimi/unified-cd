@@ -1,9 +1,11 @@
 package objectstore
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -58,13 +60,43 @@ func (s *S3ObjectStore) Put(ctx context.Context, key string, content io.Reader, 
 	return nil
 }
 
+// Get implements ObjectStore.Get. See the ErrNotFound doc comment for the
+// eager-detection contract this method must satisfy.
+//
+// minio-go's GetObject never errors for a missing key at call time — the
+// underlying HTTP request is deferred until the first Read of the returned
+// object. To honor the eager contract, Get forces that request now by
+// peeking a single byte and translates a NotFound response into ErrNotFound
+// before returning, instead of letting it surface later on Read. Peeking
+// (rather than obj.Stat()) keeps the cost to ONE HTTP request per fetch:
+// Stat issues a separate HEAD and the caller's first Read would still open
+// its own GET. An io.EOF peek is a present-but-empty object, not an error.
 func (s *S3ObjectStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("get object %q: %w", key, err)
 	}
-	return obj, nil
+	br := bufio.NewReader(obj)
+	if _, err := br.Peek(1); err != nil && err != io.EOF {
+		_ = obj.Close()
+		errResp := minio.ToErrorResponse(err)
+		if errResp.StatusCode == http.StatusNotFound || errResp.Code == "NoSuchKey" || errResp.Code == "NoSuchBucket" {
+			return nil, fmt.Errorf("get object %q: %w", key, ErrNotFound)
+		}
+		return nil, fmt.Errorf("get object %q: %w", key, err)
+	}
+	return &bufferedObject{r: br, c: obj}, nil
 }
+
+// bufferedObject keeps the peeked byte readable while delegating Close to
+// the underlying minio object.
+type bufferedObject struct {
+	r *bufio.Reader
+	c io.Closer
+}
+
+func (b *bufferedObject) Read(p []byte) (int, error) { return b.r.Read(p) }
+func (b *bufferedObject) Close() error               { return b.c.Close() }
 
 func (s *S3ObjectStore) Delete(ctx context.Context, key string) error {
 	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {

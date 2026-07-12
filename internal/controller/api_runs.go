@@ -13,6 +13,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -286,6 +287,14 @@ func (s *Server) handleLogsArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	rc, err := s.objStore.Get(r.Context(), arch.ObjectKey)
 	if err != nil {
+		// The archive record exists in the DB, so a NotFound here means the
+		// underlying object is gone (inconsistency) rather than "never
+		// archived" — still surfaced as 404 since that's what the client
+		// cares about; other errors (e.g. transient backend failure) stay 500.
+		if errors.Is(err, objectstore.ErrNotFound) {
+			http.Error(w, "log archive object not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, "fetch archive: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -2,6 +2,7 @@ package objectstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -35,10 +36,17 @@ func (s *LocalObjectStore) Put(_ context.Context, key string, content io.Reader,
 	return nil
 }
 
+// Get implements ObjectStore.Get, including the ErrNotFound contract: os.Open
+// already fails eagerly (not lazily) for a missing file, so this only needs
+// to translate that into the shared sentinel that S3ObjectStore also uses,
+// so fakes/tests backed by LocalObjectStore match real S3 behavior.
 func (s *LocalObjectStore) Get(_ context.Context, key string) (io.ReadCloser, error) {
 	path := filepath.Join(s.baseDir, filepath.FromSlash(key))
 	f, err := os.Open(path)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("open %q: %w", key, ErrNotFound)
+		}
 		return nil, fmt.Errorf("open %q: %w", key, err)
 	}
 	return f, nil

@@ -77,6 +77,12 @@ func Restore(ctx context.Context, store objectstore.ObjectStore, path, key strin
 		}
 		return true, nil
 	}
+	if !errors.Is(err, objectstore.ErrNotFound) {
+		// A non-NotFound error (e.g. a transient network failure) must not be
+		// silently swallowed into a restoreKeys fallback attempt — that would
+		// make a transient failure indistinguishable from a genuine miss.
+		return false, fmt.Errorf("get cache object: %w", err)
+	}
 
 	if len(restoreKeys) > 0 {
 		fallbackKey, err := findBestMatch(ctx, store, restoreKeys)
@@ -85,6 +91,9 @@ func Restore(ctx context.Context, store objectstore.ObjectStore, path, key strin
 		}
 		rc, err := store.Get(ctx, fallbackKey+".tar.zst")
 		if err != nil {
+			if !errors.Is(err, objectstore.ErrNotFound) {
+				return false, fmt.Errorf("get fallback cache object: %w", err)
+			}
 			return false, ErrCacheMiss
 		}
 		defer rc.Close()
