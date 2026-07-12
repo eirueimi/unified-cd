@@ -30,6 +30,20 @@ import (
 // Sanitizer warnings are written to stderr, one per line, prefixed
 // "[ucd-sh] ".
 func Run(ctx context.Context, script string, stdin io.Reader, stdout, stderr io.Writer, env []string, dir string) (int, error) {
+	return RunWithHandlers(ctx, script, stdin, stdout, stderr, env, dir)
+}
+
+// RunWithHandlers is Run plus the ability to install interp.ExecHandlers
+// middlewares. It exists so callers that need to intercept or stub external
+// command execution (e.g. the compatibility corpus gate in
+// corpus_test.go, which stubs every external command so shipped scripts can
+// be exercised without git/docker/aws/helm/... actually being installed on
+// the test machine) can reuse the exact same parse -> SanitizeTraps ->
+// interp.New -> Run pipeline as production, instead of maintaining a second,
+// hand-rolled copy of it that can drift out of sync. Run(ctx, ...) is just
+// RunWithHandlers(ctx, ..., ) with zero handlers installed — its signature
+// and behavior are unchanged.
+func RunWithHandlers(ctx context.Context, script string, stdin io.Reader, stdout, stderr io.Writer, env []string, dir string, handlers ...interp.ExecHandlerFunc) (int, error) {
 	parser := syntax.NewParser()
 	file, err := parser.Parse(strings.NewReader(script), "")
 	if err != nil {
@@ -47,6 +61,18 @@ func Run(ctx context.Context, script string, stdin io.Reader, stdout, stderr io.
 	}
 	if env != nil {
 		opts = append(opts, interp.Env(expand.ListEnviron(env...)))
+	}
+	if len(handlers) > 0 {
+		// Each supplied handlers[i] fully handles its own commands (never
+		// calls "next" — see stubExecHandler in corpus_test.go, the only
+		// current caller); wrap each as a middleware that ignores the chain
+		// passed to it and always runs the supplied handler directly.
+		middlewares := make([]func(interp.ExecHandlerFunc) interp.ExecHandlerFunc, len(handlers))
+		for i, h := range handlers {
+			h := h
+			middlewares[i] = func(interp.ExecHandlerFunc) interp.ExecHandlerFunc { return h }
+		}
+		opts = append(opts, interp.ExecHandlers(middlewares...))
 	}
 
 	runner, err := interp.New(opts...)

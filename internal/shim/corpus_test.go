@@ -3,7 +3,6 @@ package shim
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,9 +14,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"gopkg.in/yaml.v3"
-	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
-	"mvdan.cc/sh/v3/syntax"
 )
 
 // -----------------------------------------------------------------------
@@ -26,22 +23,23 @@ import (
 // TestCorpus walks every *.yaml file under examples/ and templates/,
 // extracts every `run:` script reachable from a Job's spec.steps (including
 // parallel: sub-steps), spec.finally, and post: hooks, and executes each one
-// through the same parse -> SanitizeTraps -> interp pipeline shim.Run uses.
+// through the exact same parse -> SanitizeTraps -> interp pipeline shim.Run
+// uses in production, via shim.RunWithHandlers (see run.go) plus one extra
+// exec handler: stubExecHandler, which treats every external (non-builtin)
+// command as an immediate success with empty output instead of actually
+// exec-ing it. That's the whole point of this gate: execute shipped scripts
+// WITHOUT depending on the external programs they invoke (git, docker, aws,
+// helm, ...) actually being installed on whatever machine happens to run
+// `go test`. "Builtins stay real" because builtins (cd, echo, printf, true,
+// false, test/[, set, export, ...) are implemented inside the interp
+// package itself and never reach the ExecHandler chain at all — only a
+// genuine external command name does.
 //
-// It does NOT call shim.Run itself: shim.Run's RunnerOption set is fixed
-// (StdIO/Dir/Env only — see run.go) and does not expose a way to install a
-// custom interp.ExecHandlers stub, but the whole point of this gate is to
-// execute shipped scripts WITHOUT depending on the external programs they
-// invoke (git, docker, aws, helm, ...) actually being installed on whatever
-// machine happens to run `go test`. So runCorpusScript below reimplements
-// shim.Run's pipeline verbatim (parse with syntax.NewParser, sanitize with
-// the exported SanitizeTraps, run with interp.New) plus one extra
-// RunnerOption: interp.ExecHandlers with a middleware that treats every
-// external (non-builtin) command as an immediate success with empty output.
-// "Builtins stay real" because builtins (cd, echo, printf, true, false,
-// test/[, set, export, ...) are implemented inside the interp package
-// itself and never reach the ExecHandler chain at all — only a genuine
-// external command name does.
+// This used to be a hand-rolled reimplementation of shim.Run's pipeline
+// (parse/sanitize/interp.New wired up a second time in this file) because
+// shim.Run had no way to install a custom exec handler. RunWithHandlers
+// closes that gap so there is exactly one pipeline, exercised both in
+// production and here.
 // -----------------------------------------------------------------------
 
 // corpusScript is one extracted `run:` script plus enough provenance to
@@ -59,6 +57,17 @@ type corpusScript struct {
 // ship — not template-RENDERING semantics (that's dsl/template's job), so
 // {{ .Params.x }}, {{ .Secrets.y }}, {{ eq .Foreach.z "a" }}, etc. all
 // collapse to the same inert bareword "X" rather than being rendered.
+//
+// Caveat for future editors: this per-action substitution has no concept of
+// template CONTROL FLOW. A `{{ range .Foreach.items }}...{{ end }}` loop
+// body is not aware it's inside a loop — `{{ range ... }}` and `{{ end }}`
+// each collapse to their own standalone "X" the same as any other action,
+// so the body between them survives verbatim and appears exactly ONCE in
+// the neutralized script, never repeated. If a shipped script's loop body
+// contains shell syntax that's only valid when concatenated with itself
+// (e.g. an unbalanced quote or heredoc meant to be closed by a later
+// iteration), this test would not catch it. Nothing in the corpus uses
+// {{ range }} today.
 var templateExprRe = regexp.MustCompile(`\{\{[^}]*\}\}`)
 
 func neutralizeTemplates(script string) string {
@@ -88,21 +97,43 @@ func walkYAMLFiles(t *testing.T, root string) []string {
 	return files
 }
 
+// jobDoc pairs a parsed Job document with its own raw (post-split) text, so
+// callers can independently cross-check the parsed form against the raw
+// source (see the run:-count self-check in TestCorpus).
+type jobDoc struct {
+	job  *dsl.Job
+	text string // this document's own text, CRLF already normalized to LF
+	idx  int    // 0-based document index within the file, for error messages
+}
+
 // jobDocsInFile splits path's contents on the "\n---\n" document separator
 // (same convention as dsl/examples_parse_test.go) and parses every document
 // whose `kind:` is Job. Non-Job documents (WebhookReceiver, AppSource,
 // Schedule, GitCredential, or files with no `kind:` at all, e.g.
 // examples/config/*.yaml) are silently skipped: they carry no steps: and so
 // contribute no run: scripts.
-func jobDocsInFile(t *testing.T, path string) []*dsl.Job {
+//
+// CRLF handling: every file in this corpus is checked out CRLF on Windows.
+// splitting on the literal "\n---\n" never matches "\r\n---\r\n", so an
+// un-normalized split silently collapses every multi-doc file down to its
+// first document — the rest of the docs (and every run: script inside them)
+// vanish with no error. We normalize \r\n -> \n on the whole file up front,
+// before splitting, rather than switching to a CRLF-tolerant split regexp
+// (`\r?\n---\r?\n`), because normalizing first also hardens everything
+// downstream of the split: dsl.Parse, the raw-text run:-count regexp below,
+// and any future consumer of a document's text all then operate on
+// consistently-LF text instead of each having to independently worry about
+// stray \r bytes (e.g. in a heredoc or a regexp anchor).
+func jobDocsInFile(t *testing.T, path string) []jobDoc {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
+	normalized := strings.ReplaceAll(string(data), "\r\n", "\n")
 
-	var jobs []*dsl.Job
-	docs := strings.Split(string(data), "\n---\n")
+	var jobs []jobDoc
+	docs := strings.Split(normalized, "\n---\n")
 	for i, doc := range docs {
 		doc = strings.TrimSpace(doc)
 		if doc == "" {
@@ -121,10 +152,15 @@ func jobDocsInFile(t *testing.T, path string) []*dsl.Job {
 		if err != nil {
 			t.Fatalf("%s: doc %d: dsl.Parse: %v", path, i, err)
 		}
-		jobs = append(jobs, job)
+		jobs = append(jobs, jobDoc{job: job, text: doc, idx: i})
 	}
 	return jobs
 }
+
+// runFieldRe matches a top-level (possibly indented) `run:` field key on its
+// own line. Used only as an independent, dumb cross-check against the
+// structured extractScripts walk below — see the self-check in TestCorpus.
+var runFieldRe = regexp.MustCompile(`(?m)^\s*run:`)
 
 // extractScripts walks job's spec.steps (including parallel: sub-steps),
 // spec.finally, and each step's post: hook, collecting every non-empty
@@ -170,20 +206,19 @@ func extractScripts(job *dsl.Job, file string) (scripts []corpusScript, skipped 
 	return scripts, skipped
 }
 
-// stubExecHandlers makes every external (non-builtin) command in a script
+// stubExecHandler makes every external (non-builtin) command in a script
 // succeed instantly with no output — see the file-level doc comment above
-// for why. It never calls "next", so DefaultExecHandler (which would
+// for why. It never delegates to a "next" handler (RunWithHandlers wires it
+// as the sole, terminal handler), so DefaultExecHandler (which would
 // os/exec.LookPath + actually spawn a process) never runs.
-func stubExecHandlers(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
-	return func(ctx context.Context, args []string) error {
-		return nil
-	}
+var stubExecHandler interp.ExecHandlerFunc = func(ctx context.Context, args []string) error {
+	return nil
 }
 
 // corpusEnv is a minimal, deterministic fake environment for corpus
 // scripts: just enough that $PATH/$HOME-consulting builtins (command -v,
 // type, hash) see defined values. No real program on this PATH is ever
-// invoked — stubExecHandlers intercepts every external command before any
+// invoked — stubExecHandler intercepts every external command before any
 // exec would happen.
 func corpusEnv(homeDir string) []string {
 	return []string{
@@ -195,51 +230,61 @@ func corpusEnv(homeDir string) []string {
 	}
 }
 
-// runCorpusScript parses, sanitizes, and runs script the same way shim.Run
-// does, except with stubExecHandlers installed. It returns the
-// interpreter's own error un-mapped (unlike shim.Run, which maps everything
-// down to an int exit code) so the caller can distinguish a parse error /
-// non-ExitStatus interpreter error (a real compatibility break) from a
-// plain nonzero exit status (a script legitimately exiting nonzero along a
-// stubbed-condition branch, e.g. `some-tool --check || exit 1` where
-// some-tool is stubbed to "succeed" — not a compatibility problem).
-func runCorpusScript(t *testing.T, script string, dir string) (exitCode int, runErr error, parseErr error) {
+// runCorpusScript runs script through shim.RunWithHandlers — the exact same
+// parse -> SanitizeTraps -> interp.New -> Run pipeline production code
+// (shim.Run) uses, plus stubExecHandler so external commands never actually
+// execute. There is no longer a second, hand-rolled copy of that pipeline
+// here (see run.go's RunWithHandlers doc comment for why one previously
+// existed and why it was removed).
+//
+// It returns the interpreter's own error un-mapped by exit-status (unlike
+// the raw exit code alone) so the caller can distinguish a parse error /
+// context-cancellation / non-ExitStatus interpreter error (a real
+// compatibility break) from a plain nonzero exit status (a script
+// legitimately exiting nonzero along a stubbed-condition branch, e.g.
+// `some-tool --check || exit 1` where some-tool is stubbed to "succeed" —
+// not a compatibility problem): RunWithHandlers (via Run's contract) returns
+// a nil error precisely when the script parsed and ran to completion with
+// nothing worse than a plain exit status, and a non-nil error for a parse
+// failure, a context cancellation/timeout (mapped to 124/130, same as
+// production), or any other interpreter-internal error.
+func runCorpusScript(t *testing.T, script string, dir string) (exitCode int, err error) {
 	t.Helper()
 
-	parser := syntax.NewParser()
-	file, perr := parser.Parse(strings.NewReader(script), "")
-	if perr != nil {
-		return 2, nil, perr
-	}
-
-	SanitizeTraps(file, func(msg string) {
-		t.Logf("sanitizer warning: %s", msg)
-	})
-
 	var stdout, stderr bytes.Buffer
-	runner, err := interp.New(
-		interp.StdIO(strings.NewReader(""), &stdout, &stderr),
-		interp.Dir(dir),
-		interp.Env(expand.ListEnviron(corpusEnv(dir)...)),
-		interp.ExecHandlers(stubExecHandlers),
-	)
-	if err != nil {
-		t.Fatalf("interp.New: %v", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	runErr = runner.Run(ctx, file)
-	if runErr == nil {
-		return 0, nil, nil
+	code, runErr := RunWithHandlers(ctx, script, strings.NewReader(""), &stdout, &stderr,
+		corpusEnv(dir), dir, stubExecHandler)
+	if stderr.Len() > 0 {
+		// Sanitizer warnings (and nothing else — scripts don't otherwise
+		// write to stderr under a successful/plain-exit-status run without
+		// it being their own business) land here via shim's "[ucd-sh] "
+		// prefix plumbing; surface them the same way the old inline
+		// SanitizeTraps callback used to.
+		t.Logf("stderr:\n%s", stderr.String())
 	}
-	var status interp.ExitStatus
-	if errors.As(runErr, &status) {
-		return int(status), nil, nil
-	}
-	return 1, runErr, nil
+	return code, runErr
 }
+
+// wantFilesWithJobDocs and wantTotalScripts are the corpus's known-good
+// totals as of this writing (recounted independently of extractScripts —
+// via `grep -c '^\s*run:'` per Job doc — while fixing the CRLF bug that
+// used to silently collapse every multi-doc *.yaml file down to its first
+// document, undercounting both). TestCorpus asserts the walker reproduces
+// these exact numbers as a drift trip-wire: a silent regression in the
+// walker (e.g. this CRLF bug's shape recurring, or a future refactor that
+// breaks doc-splitting again) changes these numbers instead of failing
+// silently.
+//
+// ** Adding a new example or template with a Job doc? Update these two
+// constants to match (and re-derive them independently — don't just copy
+// whatever the test prints) as part of that change. **
+const (
+	wantFilesWithJobDocs = 47
+	wantTotalScripts     = 83
+)
 
 // TestCorpus is the compatibility corpus gate: every run: script shipped in
 // examples/ and templates/ must parse and execute under the interp package
@@ -257,6 +302,13 @@ func runCorpusScript(t *testing.T, script string, dir string) (exitCode int, run
 //   - the resulting exit code is recorded (t.Log) but never asserted to be
 //     any particular value — deliberately, since a stub-influenced branch
 //     can legitimately end in `exit 1`.
+//
+// It also self-checks its own extraction, per Job doc and corpus-wide, so a
+// class of bug like the CRLF doc-splitting bug this test previously had
+// (which silently dropped 12 of 83 scripts down to 71, misclassifying 2
+// files in the process) cannot hide again: see the raw-text run:-count
+// cross-check inside the loop below, and the wantFilesWithJobDocs /
+// wantTotalScripts trip-wire after it.
 func TestCorpus(t *testing.T) {
 	var allFiles []string
 	for _, root := range []string{"../../examples", "../../templates"} {
@@ -270,6 +322,7 @@ func TestCorpus(t *testing.T) {
 		filesWithJobDocs int
 		totalScripts     int
 		totalSkipped     int
+		totalPostScripts int
 	)
 
 	for _, path := range allFiles {
@@ -280,21 +333,43 @@ func TestCorpus(t *testing.T) {
 		}
 		filesWithJobDocs++
 
-		for _, job := range jobs {
-			scripts, skipped := extractScripts(job, norm)
+		for _, jd := range jobs {
+			scripts, skipped := extractScripts(jd.job, norm)
 			totalSkipped += skipped
+
+			// Self-check: an independent, dumb raw-text regexp count of
+			// `run:` fields in this doc's own text must equal the number
+			// of run: fields the structured walk (extractScripts) found
+			// in it (scripts it will execute, plus any it skipped for a
+			// non-nil shell: override — both are still "a run: field the
+			// walker saw"). A mismatch means extraction and the raw
+			// source have diverged — e.g. a doc-splitting bug silently
+			// dropping part of this document, or extractScripts failing
+			// to walk some path that has a run: field (a new step shape,
+			// a new post: location, etc.) — and must fail loudly, naming
+			// exactly which file and doc, rather than just quietly
+			// undercounting the corpus-wide totals below.
+			rawCount := len(runFieldRe.FindAllString(jd.text, -1))
+			extractedCount := len(scripts) + skipped
+			if rawCount != extractedCount {
+				t.Fatalf("%s: doc %d (Job %q): raw-text `run:` field count = %d, but extraction found %d "+
+					"(%d executable + %d skipped) — extraction disagrees with the document's own source; "+
+					"a run: script may have been silently dropped or double-counted",
+					norm, jd.idx, jd.job.Metadata.Name, rawCount, extractedCount, len(scripts), skipped)
+			}
+
 			for _, sc := range scripts {
 				sc := sc
 				totalScripts++
+				if strings.HasSuffix(sc.locator, ".post") {
+					totalPostScripts++
+				}
 				t.Run(norm+"/"+sc.locator, func(t *testing.T) {
 					dir := t.TempDir()
 					neutralized := neutralizeTemplates(sc.script)
-					code, runErr, parseErr := runCorpusScript(t, neutralized, dir)
-					if parseErr != nil {
-						t.Fatalf("parse error: %v\nscript:\n%s", parseErr, neutralized)
-					}
-					if runErr != nil {
-						t.Fatalf("non-exit-status interp error: %v\nscript:\n%s", runErr, neutralized)
+					code, err := runCorpusScript(t, neutralized, dir)
+					if err != nil {
+						t.Fatalf("non-exit-status error (parse failure, timeout, or interp-internal error): %v\nscript:\n%s", err, neutralized)
 					}
 					t.Logf("exit code %d", code)
 				})
@@ -322,8 +397,34 @@ func TestCorpus(t *testing.T) {
 		t.Fatal("extracted zero run: scripts from examples/ and templates/ — walker is broken")
 	}
 
-	t.Logf("corpus stats: %d yaml files walked, %d contained at least one Job doc, %d run: scripts executed, %d skipped (shell: override)",
-		len(allFiles), filesWithJobDocs, totalScripts, totalSkipped)
+	// post: hooks are a distinct extraction path (see extractScripts'
+	// walkEntries: e.Post / s.Post, separate from the plain run: walk) that
+	// the CRLF bug this test previously had completely blinded: every post:
+	// hook in the corpus lived in git-template.yaml's second document,
+	// which the un-normalized split silently dropped, so this path had zero
+	// coverage despite the corpus containing post: examples all along.
+	// Assert at least one is extracted so that class of gap can't recur
+	// unnoticed.
+	if totalPostScripts == 0 {
+		t.Fatal("zero post: hook scripts were extracted corpus-wide — the post: extraction path " +
+			"has silently lost coverage (examples/jobs/git-template.yaml's post-step-demo doc ships " +
+			"3 post: hooks today; if it or an equivalent example was removed, either restore post: " +
+			"coverage in the corpus or explain why this path is legitimately untested)")
+	}
+
+	if filesWithJobDocs != wantFilesWithJobDocs {
+		t.Fatalf("files containing >=1 Job doc = %d, want %d (hardcoded trip-wire — see the "+
+			"wantFilesWithJobDocs doc comment; update it if this change is an intentional corpus edit)",
+			filesWithJobDocs, wantFilesWithJobDocs)
+	}
+	if totalScripts != wantTotalScripts {
+		t.Fatalf("total run: scripts extracted = %d, want %d (hardcoded trip-wire — see the "+
+			"wantTotalScripts doc comment; update it if this change is an intentional corpus edit)",
+			totalScripts, wantTotalScripts)
+	}
+
+	t.Logf("corpus stats: %d yaml files walked, %d contained at least one Job doc, %d run: scripts executed (%d from post: hooks), %d skipped (shell: override)",
+		len(allFiles), filesWithJobDocs, totalScripts, totalPostScripts, totalSkipped)
 }
 
 // -----------------------------------------------------------------------
