@@ -81,15 +81,17 @@ type Agent struct {
 	RunnerImage string
 
 	// ToolsDir is the host directory holding the embedded ucd-sh shim
-	// (written by InstallShim), bind-mounted read-only at /.ucd into every
-	// container this agent creates (claim-pod containers, uses-scope
-	// containers, the workspace-cleanup container). cmd/agent sets this by
-	// calling InstallShim before Run, mirroring RequireShell — NOT called
-	// from Run itself, so tests that drive Run()/executeRun() directly
-	// without a container runtime (native-only claims) are unaffected by
-	// whether the two-stage build populated internal/shim/embedded. Empty
-	// means "no shim mount" (see claim_pod.go's ucdToolsMount) — a real
-	// deployed agent always has this set.
+	// (written by InstallShim, INSIDE the workspace base — see that func's
+	// doc comment for why it must not be a sibling of the workspace dir),
+	// bind-mounted read-only at /.ucd into every container this agent
+	// creates (claim-pod containers, uses-scope containers, the
+	// workspace-cleanup container). cmd/agent sets this by calling
+	// InstallShim before Run, mirroring RequireShell — NOT called from Run
+	// itself, so tests that drive Run()/executeRun() directly without a
+	// container runtime (native-only claims) are unaffected by whether the
+	// two-stage build populated internal/shim/embedded. Empty means "no
+	// shim mount" (see claim_pod.go's ucdToolsMount) — a real deployed
+	// agent always has this set.
 	ToolsDir string
 
 	resolvedRuntime crt.ContainerRuntime
@@ -437,11 +439,29 @@ var shimBytes = embedded.Bytes
 
 // InstallShim writes the embedded ucd-sh binary into a tools directory
 // derived from workspaceDir (the same "~/workspace" default/expansion Run
-// applies to a.WorkspaceDir — see expandHome), one level above it:
-// <dirname(expanded workspaceDir)>/tools/ucd-sh, mode 0755. It returns the
-// tools directory so the caller can set Agent.ToolsDir, which every
+// applies to a.WorkspaceDir — see expandHome): a dot-prefixed subdirectory
+// INSIDE it, <expanded workspaceDir>/.ucd-tools/ucd-sh, mode 0755. It returns
+// the tools directory so the caller can set Agent.ToolsDir, which every
 // container-creating path (claim_pod.go, scope.go, workspace.go) reads to
 // bind-mount /.ucd read-only.
+//
+// toolsDir MUST live under wsBase, not beside it. This agent's container
+// runtime (crt.ContainerRuntime) may be a REMOTE docker daemon (e.g.
+// DOCKER_HOST=tcp://...) whose filesystem is not the agent's — the only
+// reason any bind mount this agent creates works at all is that wsBase is a
+// volume/mount SHARED between the agent and that daemon (the same invariant
+// the per-claim workspace bind mount relies on). A toolsDir computed as a
+// sibling of wsBase (e.g. filepath.Dir(wsBase)/tools) is only guaranteed
+// visible to the agent's own filesystem; against a remote daemon it silently
+// bind-mounts an empty directory at /.ucd (no error — docker happily creates
+// the missing host path), and every container's ucd-sh keep-alive/entrypoint
+// then fails with "exit status 127" (binary not found). Placing toolsDir
+// inside wsBase inherits the same shared-mount guarantee the workspace
+// itself depends on. The ".ucd-tools" name is dot-prefixed so it can never
+// collide with a job workspace directory (claimWorkDir only ever creates
+// "working<slot>/<job>" segments directly under wsBase) and is never swept
+// by prepareWorkspace's cleanup, which only os.RemoveAll's a specific
+// per-job workDir, never wsBase itself (see workspace.go).
 //
 // Called once at startup by cmd/agent's main(), mirroring RequireShell —
 // deliberately NOT from Agent.Run, so unit tests driving Run()/executeRun()
@@ -467,7 +487,7 @@ func InstallShim(workspaceDir string) (toolsDir string, err error) {
 	if err != nil {
 		return "", err
 	}
-	toolsDir = filepath.Join(filepath.Dir(wsBase), "tools")
+	toolsDir = filepath.Join(wsBase, ".ucd-tools")
 	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
 		return "", fmt.Errorf("create tools dir %s: %w", toolsDir, err)
 	}

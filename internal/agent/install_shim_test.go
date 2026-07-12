@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,10 +37,12 @@ func TestInstallShim_EmptyBytesIsHardError(t *testing.T) {
 	assert.Contains(t, err.Error(), "embed-shim", "error must name the two-stage build fix")
 }
 
-// TestInstallShim_WritesExecutableFileNextToWorkspaceDir verifies InstallShim
-// writes the payload to <dirname(workspaceDir)>/tools/ucd-sh, mode 0755, and
-// returns that tools directory.
-func TestInstallShim_WritesExecutableFileNextToWorkspaceDir(t *testing.T) {
+// TestInstallShim_WritesExecutableFileUnderWorkspaceDir verifies InstallShim
+// writes the payload to <workspaceDir>/.ucd-tools/ucd-sh, mode 0755, and
+// returns that tools directory. toolsDir must live UNDER workspaceDir (not
+// beside it) so it shares whatever mount makes workspaceDir visible to a
+// possibly-remote container runtime — see InstallShim's doc comment.
+func TestInstallShim_WritesExecutableFileUnderWorkspaceDir(t *testing.T) {
 	payload := []byte("#!/bin/sh\necho fake-shim\n")
 	withFakeShimBytes(t, payload)
 
@@ -48,7 +51,9 @@ func TestInstallShim_WritesExecutableFileNextToWorkspaceDir(t *testing.T) {
 
 	toolsDir, err := InstallShim(wsDir)
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(base, "tools"), toolsDir)
+	assert.Equal(t, filepath.Join(wsDir, ".ucd-tools"), toolsDir)
+	assert.True(t, strings.HasPrefix(toolsDir, filepath.Clean(wsDir)+string(filepath.Separator)),
+		"toolsDir %q must be nested under workspaceDir %q so a remote container runtime sharing workspaceDir's mount can also see toolsDir", toolsDir, wsDir)
 
 	shimPath := filepath.Join(toolsDir, "ucd-sh")
 	got, err := os.ReadFile(shimPath)
@@ -84,5 +89,5 @@ func TestInstallShim_DefaultsEmptyWorkspaceDir(t *testing.T) {
 
 	toolsDir, err := InstallShim("")
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(fakeHome, "tools"), toolsDir)
+	assert.Equal(t, filepath.Join(fakeHome, "workspace", ".ucd-tools"), toolsDir)
 }
