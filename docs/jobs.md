@@ -215,9 +215,12 @@ script appended as the final element, never re-parsed or re-quoted.
 `shell: [bash, -lc]` execs `bash -lc "<script>"`; `shell: [python3, -c]`
 execs `python3 -c "<script>"`. Validation at apply time only checks the
 shape (non-empty array of non-empty strings); a program missing from the
-target image/host is a **runtime** step failure with an actionable message
-(e.g. `step "build": exec "python3": not found in the container image —
-check shell: or the image`), not an apply-time error.
+target image/host surfaces at **runtime** as a failed step, not an
+apply-time error — the container runtime's own error (e.g.
+`OCI runtime exec failed: ... exec: "python3": executable file not found
+in $PATH`, typically exit code 126 or 127) appears in the step's log. If a
+step fails that way, check the `shell:` argv against what the target image
+actually contains.
 
 **Resolution priority** (most specific wins):
 
