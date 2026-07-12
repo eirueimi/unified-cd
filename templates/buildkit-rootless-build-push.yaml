@@ -19,10 +19,13 @@
 #     securityContext). `appArmorProfile` is a securityContext field on k8s >= 1.30;
 #     on older clusters use the equivalent pod annotation instead.
 #   - the node must allow user namespaces / rootless (most modern clusters do).
-#   - buildkitd pulls base images directly from the registry: behind a TLS-
-#     intercepting proxy, mount your corporate CA into the buildkitd container
-#     (e.g. /etc/ssl/certs) or it fails with "x509: certificate signed by
-#     unknown authority".
+#   - buildkitd validates registry TLS with the CA bundle baked into ITS image,
+#     independently of the node/host. Docker Hub's token endpoint (auth.docker.io)
+#     uses a current Let's Encrypt chain, so an OLD buildkit image can fail the
+#     pull with "x509: certificate signed by unknown authority" even though the
+#     host and kubelet pull fine. Fix: pin a recent moby/buildkit image (refreshed
+#     ca-certificates), or mount an up-to-date CA bundle into the buildkitd
+#     container. (Only mount a corporate CA if your network actually re-signs TLS.)
 #
 # Required secrets (when pushing to a private registry / Docker Hub):
 #   unified-cd secret set dockerhub-username myuser
