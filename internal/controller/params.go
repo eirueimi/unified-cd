@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
@@ -53,15 +52,4 @@ func resolveParams(inputs []dsl.Input, supplied map[string]string) (map[string]s
 	}
 
 	return resolved, nil
-}
-
-// inputsFromSpecJSON extracts the declared params.inputs from a stored job spec
-// JSON blob. Returns nil (no validation performed) when parsing fails or there
-// are no inputs — callers should tolerate a nil/empty slice.
-func inputsFromSpecJSON(specJSON []byte) []dsl.Input {
-	var spec dsl.Spec
-	if err := json.Unmarshal(specJSON, &spec); err != nil {
-		return nil
-	}
-	return spec.Params.Inputs
 }

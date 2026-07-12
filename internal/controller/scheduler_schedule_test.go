@@ -28,9 +28,14 @@ type mockScheduleFireStore struct {
 	// passed to CreateRun for each fired schedule, so tests can assert the
 	// job's actual spec is used instead of a literal `{}`.
 	createdSpecs [][]byte
-	updated      map[string]time.Time
-	createErr    error
-	jobs         map[string]*api.Job // optional; GetJob returns "not found" when absent
+	// createdAgentSelectors parallels created — the agentSelector slice
+	// checkAndFireSchedules passed to CreateRun for each fired schedule, so
+	// tests can assert the job's agentSelector (expanded with schedule
+	// params) is propagated instead of nil.
+	createdAgentSelectors [][]string
+	updated               map[string]time.Time
+	createErr             error
+	jobs                  map[string]*api.Job // optional; GetJob returns "not found" when absent
 }
 
 func (m *mockScheduleFireStore) ListSchedules(_ context.Context) ([]store.Schedule, error) {
@@ -49,7 +54,7 @@ func (m *mockScheduleFireStore) GetJob(_ context.Context, name string) (*api.Job
 	return nil, fmt.Errorf("job not found: %s", name)
 }
 
-func (m *mockScheduleFireStore) CreateRun(_ context.Context, jobName string, params map[string]string, spec []byte, _ []string, requiredCaps []string, triggeredBy string) (*api.Run, error) {
+func (m *mockScheduleFireStore) CreateRun(_ context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string) (*api.Run, error) {
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
@@ -57,6 +62,7 @@ func (m *mockScheduleFireStore) CreateRun(_ context.Context, jobName string, par
 	m.created = append(m.created, r)
 	m.createdRequiredCaps = append(m.createdRequiredCaps, requiredCaps)
 	m.createdSpecs = append(m.createdSpecs, spec)
+	m.createdAgentSelectors = append(m.createdAgentSelectors, agentSelector)
 	return r, nil
 }
 
@@ -105,8 +111,8 @@ func TestCheckAndFireSchedules_SkipsWhenTooOld(t *testing.T) {
 	}
 	checkAndFireSchedules(context.Background(), m, testNow)
 
-	assert.Empty(t, m.created)             // Run is not created
-	assert.NotNil(t, m.updated["old"])     // last_fired_at is advanced
+	assert.Empty(t, m.created)         // Run is not created
+	assert.NotNil(t, m.updated["old"]) // last_fired_at is advanced
 }
 
 func TestCheckAndFireSchedules_NullLastFiredAt(t *testing.T) {
@@ -290,4 +296,134 @@ func TestCheckAndFireSchedules_CreateRunError_DoesNotUpdateLastFiredAt(t *testin
 
 	assert.Empty(t, m.created)
 	assert.Empty(t, m.updated) // not updated — allows retry on the next tick
+}
+
+// TestCheckAndFireSchedules_PropagatesAgentSelector covers the bug this
+// change fixes: before this fix, checkAndFireSchedules always passed nil for
+// agentSelector to CreateRun, so a scheduled run of a job with
+// `agentSelector: [pool:build]` could be claimed by ANY agent — the job
+// author's explicit routing was silently dropped. It now mirrors the
+// API-trigger and webhook paths (api_runs.go's handleTriggerRun,
+// api_webhooks.go's handleWebhookIngress): parse the job spec, expand
+// agentSelector with the resolved params, and pass the expanded selector to
+// CreateRun.
+func TestCheckAndFireSchedules_PropagatesAgentSelector(t *testing.T) {
+	t.Run("static selector is passed through unchanged", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		jobSpec := []byte(`{"agentSelector":["pool:build","kind:linux"],"steps":[{"name":"s","run":"echo hi"}]}`)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"build": {Name: "build", Spec: jobSpec},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		require.Len(t, m.created, 1)
+		require.Len(t, m.createdAgentSelectors, 1)
+		assert.Equal(t, []string{"pool:build", "kind:linux"}, m.createdAgentSelectors[0])
+		require.NotNil(t, m.updated["daily"])
+	})
+
+	t.Run("templated selector is expanded with schedule params", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		jobSpec := []byte(`{"agentSelector":["pool:{{ .Params.pool }}"],` +
+			`"params":{"inputs":[{"name":"pool","type":"string","default":"default-pool"}]},` +
+			`"steps":[{"name":"s","run":"echo hi"}]}`)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired, Params: map[string]string{"pool": "gpu-pool"}},
+			},
+			jobs: map[string]*api.Job{
+				"build": {Name: "build", Spec: jobSpec},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		require.Len(t, m.created, 1)
+		require.Len(t, m.createdAgentSelectors, 1)
+		assert.Equal(t, []string{"pool:gpu-pool"}, m.createdAgentSelectors[0], "the EXPANDED selector must be used, not the raw template")
+		require.NotNil(t, m.updated["daily"])
+	})
+
+	// A selector template that fails to expand (malformed {{ }} syntax) is
+	// the only way dsl.ExpandAgentSelector returns an error: a *missing*
+	// param key does not error (text/template's `missingkey=zero` option
+	// renders it as an empty string — see
+	// internal/dsl/template_test.go's TestExpandAgentSelector_PropagatesTemplateError
+	// vs. TestExpandConcurrency_MissingParamKeyExpandsToEmpty for the same
+	// distinction on a sibling expansion function). So a merely-missing param
+	// renders a degenerate-but-valid selector (e.g. "pool:") and the run
+	// fires normally — matching what the API/webhook trigger paths would
+	// also do, since they don't special-case an empty-rendered selector
+	// either. Only a genuine template syntax error is a deterministic
+	// failure worth blocking the fire for.
+	t.Run("selector template syntax error skips fire and does not advance last_fired_at", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		jobSpec := []byte(`{"agentSelector":["pool:{{ .Params.pool"],` + // unclosed template action — parse error
+			`"steps":[{"name":"s","run":"echo hi"}]}`)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"build": {Name: "build", Spec: jobSpec},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		assert.Empty(t, m.created, "no Run should be created when the agentSelector template fails to expand")
+		assert.Empty(t, m.updated, "last_fired_at must not advance — allow retry on the next tick once the spec is fixed")
+	})
+
+	// Complements the syntax-error case above: a param referenced by the
+	// selector template that simply isn't supplied (and has no default)
+	// still renders to an empty string rather than erroring, so the run
+	// fires with the degenerate selector instead of being blocked.
+	t.Run("selector template with a missing param renders empty and still fires", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		jobSpec := []byte(`{"agentSelector":["pool:{{ .Params.pool }}"],"steps":[{"name":"s","run":"echo hi"}]}`)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"build": {Name: "build", Spec: jobSpec},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		require.Len(t, m.created, 1)
+		require.Len(t, m.createdAgentSelectors, 1)
+		assert.Equal(t, []string{"pool:"}, m.createdAgentSelectors[0])
+		require.NotNil(t, m.updated["daily"])
+	})
+}
+
+// TestCheckAndFireSchedules_SpecParseFailure_FiresWithNilCapsAndSelector
+// covers the degraded branch documented in checkAndFireSchedules: when the
+// job's stored spec fails to parse as JSON, the fire proceeds best-effort
+// (the raw spec bytes are still valid as the run's SPEC) but both
+// requiredCaps and agentSelector fall back to nil, since neither can be
+// derived without a parsed dsl.Spec.
+func TestCheckAndFireSchedules_SpecParseFailure_FiresWithNilCapsAndSelector(t *testing.T) {
+	lastFired := testNow.Add(-25 * time.Hour)
+	m := &mockScheduleFireStore{
+		schedules: []store.Schedule{
+			{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+		},
+		jobs: map[string]*api.Job{
+			"build": {Name: "build", Spec: []byte(`not valid json`)},
+		},
+	}
+	checkAndFireSchedules(context.Background(), m, testNow)
+
+	require.Len(t, m.created, 1, "an unparseable spec still fires best-effort")
+	require.Len(t, m.createdRequiredCaps, 1)
+	assert.Empty(t, m.createdRequiredCaps[0])
+	require.Len(t, m.createdAgentSelectors, 1)
+	assert.Empty(t, m.createdAgentSelectors[0])
+	require.NotNil(t, m.updated["daily"])
 }

@@ -80,8 +80,8 @@ func RunScheduler(ctx context.Context, st store.Store, tick time.Duration) {
 //   - Fires a Run when next ∈ [now-1h, now].
 //   - Advances last_fired_at without creating a Run when next < now-1h (missed while down).
 //   - Does not update last_fired_at when the due job can't be loaded, when
-//     param validation fails, or on CreateRun failure (allows retry on the
-//     next tick in all three cases).
+//     param validation fails, when agentSelector template expansion fails, or
+//     on CreateRun failure (allows retry on the next tick in all four cases).
 func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 	schedules, err := st.ListSchedules(ctx)
 	if err != nil {
@@ -119,20 +119,51 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 				slog.Warn("checkAndFireSchedules: failed to load job, skipping fire", "schedule", sc.Name, "job", sc.JobName, "error", jerr)
 				continue // Do not update last_fired_at — allow retry on the next tick.
 			}
-			inputs := inputsFromSpecJSON(job.Spec)
+			// Parse the job spec once and reuse it for input defs (param
+			// resolution), agentSelector expansion, and capability inference —
+			// mirrors the API/webhook trigger paths (api_runs.go,
+			// api_webhooks.go), which derive all three from a single parse of
+			// the stored spec.
+			var jobSpec dsl.Spec
+			serr := json.Unmarshal(job.Spec, &jobSpec)
+			if serr != nil {
+				// Best-effort degraded path: the stored spec doesn't even parse
+				// as JSON. Unlike the GetJob failure above, the spec bytes
+				// exist and are still usable as the run's SPEC (job.Spec is
+				// passed to CreateRun as-is), so we still fire rather than
+				// skip — but capability inference and agentSelector expansion
+				// both need a parsed dsl.Spec, so both degrade to their zero
+				// value (nil requiredCaps, nil agentSelector) rather than
+				// blocking the fire. A nil agentSelector matches every agent's
+				// labels, which is the same best-effort routing this path
+				// already used for requiredCaps before this fix.
+				slog.Warn("checkAndFireSchedules: failed to parse job spec, firing with best-effort nil caps/selector", "schedule", sc.Name, "job", sc.JobName, "error", serr)
+			}
+			inputs := jobSpec.Params.Inputs
 			params, perr := resolveParams(inputs, sc.Params)
 			if perr != nil {
 				slog.Warn("checkAndFireSchedules: param validation failed", "schedule", sc.Name, "error", perr)
 				continue // Do not update last_fired_at — allow retry on the next tick.
 			}
 			var requiredCaps []string
-			var jobSpec dsl.Spec
-			if serr := json.Unmarshal(job.Spec, &jobSpec); serr == nil {
+			var agentSelector []string
+			if serr == nil {
 				requiredCaps = dsl.RequiredCaps(jobSpec)
-			} else {
-				slog.Warn("checkAndFireSchedules: failed to parse job spec for capability inference", "schedule", sc.Name, "job", sc.JobName, "error", serr)
+				var selErr error
+				agentSelector, selErr = dsl.ExpandAgentSelector(jobSpec.AgentSelector, params)
+				if selErr != nil {
+					// Deterministic template error (e.g. malformed {{ }}
+					// syntax) — same treatment as the param-validation failure
+					// above: retrying without a spec/schedule fix won't help,
+					// so skip this tick and leave last_fired_at untouched
+					// rather than fire with a broken selector. This mirrors
+					// the API/webhook trigger paths, which reject the request
+					// outright (400) instead of creating the Run.
+					slog.Warn("checkAndFireSchedules: agentSelector expansion failed", "schedule", sc.Name, "error", selErr)
+					continue // Do not update last_fired_at — allow retry on the next tick.
+				}
 			}
-			_, err := st.CreateRun(ctx, sc.JobName, params, job.Spec, nil, requiredCaps, "schedule:"+sc.Name)
+			_, err := st.CreateRun(ctx, sc.JobName, params, job.Spec, agentSelector, requiredCaps, "schedule:"+sc.Name)
 			if err != nil {
 				slog.Warn("checkAndFireSchedules: failed to create Run", "schedule", sc.Name, "error", err)
 				continue // Do not update last_fired_at — allow retry on the next tick.
