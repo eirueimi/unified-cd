@@ -297,17 +297,20 @@ func (b *hostBackend) DefaultAgentOS() string {
 // (container != "") or the primary "job" container (container == ""), matching
 // k8s where every default exec targets the primary; the container is still
 // alive (the pod is torn down only at claim end). For a native claim a
-// non-scoped post runs on the host workspace.
-func (b *hostBackend) RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, env []string) error {
+// non-scoped post runs on the host workspace. stdout/stderr are the owning
+// step's shipping writers (see ExecBackend.RunPostHook's doc comment) — every
+// path below feeds the script's real output into them instead of discarding
+// it.
+func (b *hostBackend) RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, env []string, stdout, stderr io.Writer) error {
 	if sm, h, ok := unwrapHostScope(scope); ok {
-		_, err := sm.exec(ctx, h, script, env, nil, nil)
+		_, err := sm.exec(ctx, h, script, env, stdout, stderr)
 		return err
 	}
 	if b.pod != nil {
-		_, err := b.pod.Exec(ctx, container, script, env, nil, nil)
+		_, err := b.pod.Exec(ctx, container, script, env, stdout, stderr)
 		return err
 	}
-	_, _, err := RunStepCapture(ctx, script, nil, env, b.workDir)
+	_, err := RunStep(ctx, script, stdout, stderr, env, b.workDir)
 	return err
 }
 

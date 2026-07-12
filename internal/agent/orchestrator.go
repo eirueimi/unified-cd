@@ -471,6 +471,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					post:      *step.Post,
 					scope:     stepScope,
 					container: container,
+					stepIndex: step.Index,
 				})
 				postHooksMu.Unlock()
 			}
@@ -522,7 +523,18 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		// The owning step's scope (if any) is still alive here — hookStack is
 		// drained before the deferred b.CloseScopes runs (see the `defer`
 		// registered alongside masker installation above).
-		if runErr := b.RunPostHook(hookCtx, entry.scope, entry.container, cmd, extraEnv); runErr != nil {
+		//
+		// Post-hook output is shipped into the OWNING step's log (entry.stepIndex),
+		// the same way a main step's output is: open writers via StepLogWriters
+		// (which applies the masker, same as every other step's writers) and call
+		// finish to flush/stop auto-flush once the hook has run. This is opened
+		// fresh per hook (not reused from the step's own StepLogWriters call,
+		// which already finished when the step itself completed) so post output
+		// gets its own flush lifecycle independent of the step body's.
+		postStdout, postStderr, finishPostLogs := b.StepLogWriters(hookCtx, entry.stepIndex)
+		runErr := b.RunPostHook(hookCtx, entry.scope, entry.container, cmd, extraEnv, postStdout, postStderr)
+		finishPostLogs(hookCtx)
+		if runErr != nil {
 			slog.Warn("post step failed", "step", entry.stepName, "error", runErr)
 		}
 	}

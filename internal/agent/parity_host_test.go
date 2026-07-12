@@ -42,8 +42,8 @@ type shellFakeRT struct {
 
 func newShellFakeRT(workDir string) *shellFakeRT { return &shellFakeRT{workDir: workDir} }
 
-func (f *shellFakeRT) Name() string                      { return "shell-fake" }
-func (f *shellFakeRT) Available() bool                   { return true }
+func (f *shellFakeRT) Name() string                       { return "shell-fake" }
+func (f *shellFakeRT) Available() bool                    { return true }
 func (f *shellFakeRT) Pull(context.Context, string) error { return nil }
 func (f *shellFakeRT) Run(context.Context, crt.RunSpec, io.Writer, io.Writer) (int, error) {
 	return 0, nil
@@ -371,12 +371,15 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 	// backed by shellFakeRT, whose Exec still runs the script through the same
 	// local shell so echo output flows into the captured logs.
 
-	// post-hooks-lifo: the host agent's post: hook drain runs the script via
-	// RunStepCapture with stdout/stderr never shipped to the log pipeline
-	// (see paritycases.postHooksLIFO's doc comment), so this case observes
+	// post-hooks-lifo: the host agent's post: hook drain now streams the
+	// script's stdout/stderr into the owning step's shipped log (see
+	// paritycases.postHooksLIFO's doc comment), but this case still observes
 	// LIFO order out-of-band: each post script appends a line to a real file
 	// via $POSTHOOK_MARKER_FILE (inherited from the test process env, since
-	// RunStepCapture's cmd.Env = append(os.Environ(), extraEnv...)).
+	// RunStep's cmd.Env = append(os.Environ(), extraEnv...)) — one file's
+	// append order is a simpler ordering signal than diffing two log streams.
+	// Dedicated coverage of post output reaching the shipped logs lives in
+	// post_hook_logs_test.go.
 	var markerFile string
 	if tc.Name == "post-hooks-lifo" {
 		markerFile = filepath.Join(t.TempDir(), "posthook-order.txt")
@@ -450,7 +453,7 @@ func assertIsolatedDispatch(t *testing.T, rt *shellFakeRT) {
 	// Create order for this case's podTemplate: [pause, tools, job].
 	// createByName maps each recorded container back to its handle id so we can
 	// match execs to the container the pod would have resolved.
-	jobHandle := rt.handleByCreateIndex(2)  // pause(0), tools(1), job(2)
+	jobHandle := rt.handleByCreateIndex(2) // pause(0), tools(1), job(2)
 	toolsHandle := rt.handleByCreateIndex(1)
 
 	mainHandle, ok := rt.execHandleForScript("echo from-primary")

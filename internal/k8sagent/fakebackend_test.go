@@ -207,7 +207,13 @@ func (f *fakeK8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.Sc
 	return nil
 }
 
-func (f *fakeK8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, env []string) error {
+// RunPostHook records the call (as before) and, per the shared ExecBackend
+// interface, now also accepts the owning step's stdout/stderr writers.
+// This fake doesn't itself execute the post script (Fakes/StepExecFn only
+// cover the main-step exec paths), so it leaves the writers untouched;
+// TestK8sBackend_RunPostHook_StreamsOutputToGivenWriters (backend_posthook_test.go)
+// exercises the REAL k8sBackend.RunPostHook end-to-end for output capture.
+func (f *fakeK8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, env []string, stdout, stderr io.Writer) error {
 	targetPod := f.scopePodName(scope)
 	if targetPod != "" {
 		container = "step"

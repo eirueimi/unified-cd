@@ -38,12 +38,18 @@ var heartbeatInterval = DefaultHeartbeatInterval
 // for a plain/scoped/image step) so a runsIn.container step's post hook is
 // routed into the same named container the step body ran in, mirroring
 // pre-refactor k8s routing; the host backend ignores it (a runsIn.container
-// step errors on host, so its hook never queues there).
+// step errors on host, so its hook never queues there). stepIndex carries the
+// owning step's ClaimStep.Index, so the hookStack drain can open log writers
+// (ExecBackend.StepLogWriters) attributed to that step: a post hook's
+// stdout/stderr is shipped as more output appended to the OWNING step's log,
+// not a separate pseudo-step, since post: is documented as cleanup for that
+// step rather than an independent unit of work.
 type postHookEntry struct {
 	stepName  string
 	post      api.PostStep
 	scope     ScopeHandle
 	container string
+	stepIndex int
 }
 
 // Agent represents an agent that communicates with the master server to execute jobs.
