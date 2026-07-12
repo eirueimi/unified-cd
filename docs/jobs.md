@@ -256,9 +256,16 @@ unified-cd agent binary and injected into every job/scope container at the
 reserved path **`/.ucd`** (see below) — that interprets the script using
 [`mvdan.cc/sh`](https://github.com/mvdan/sh), a pure-Go POSIX-ish shell
 implementation. It requires **no shell binary in the target image**:
-`scratch`, distroless, and other bash-less/sh-less images work as step
-containers by default (see [Configuration Reference](configuration.md) for
-the `podImage`/`podTemplate` implications).
+bash-less/sh-less images with basic coreutils (`alpine`, busybox-based
+images) work as step containers by default. Truly empty images (`scratch`,
+distroless-static) can host the keep-alive and remain exec-able, but on the
+**Kubernetes agent** they cannot run steps that carry environment variables
+— every step does (the agent always injects `UNIFIED_AGENT_OS`), and the
+k8s exec path applies env by prepending the `env` binary, which those
+images lack (the step fails with exit 127). The host agent applies env via
+the container runtime and is unaffected. (See
+[Configuration Reference](configuration.md) for the `podImage`/`podTemplate`
+implications.)
 
 **Verified interpreter constraints** — supported vs. not, and what to do
 about the gaps:

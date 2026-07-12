@@ -27,11 +27,24 @@ working `bash`, and this very docs set recommended bash-less images
 (`golang:1.24-alpine`, `alpine:3.19`) as `podImage` — a standing doc bug.
 The new default, the injected `ucd-sh` shim (a static Go binary embedding
 [`mvdan.cc/sh`](https://github.com/mvdan/sh)), needs **no shell binary in
-the image at all** — `scratch`, distroless, and other bash-less/sh-less
-images now work as step containers with zero extra configuration. See
-[Kubernetes Integration: Step execution
-mechanism](kubernetes-integration.md#step-execution-mechanism) for the full
-exec-model rewrite.
+the image** — bash-less/sh-less images with coreutils (`alpine`,
+busybox-based) now work as step containers with zero extra configuration.
+(Truly empty images — `scratch`, distroless-static — remain limited on the
+k8s agent: env application prepends the `env` binary they lack, so
+env-carrying steps fail with exit 127.) See [Kubernetes Integration: Step
+execution mechanism](kubernetes-integration.md#step-execution-mechanism)
+for the full exec-model rewrite.
+
+## Upgrade ordering (mixed-version fleets)
+
+- **Upgrade the k8s-agent image (or point `shimImage` at an image
+  containing `/ucd-sh`) together with or before the new agent.** The new
+  agent's `ucd-shim` init container runs `shimImage` (default: the
+  k8s-agent image itself); an image predating this feature has no
+  `/ucd-sh`, and every job pod would hang at init.
+- An **old agent behind a new controller** is safe: it silently ignores the
+  `shell` field on claim steps and keeps its old defaults (`bash -lc` on
+  k8s, `sh -c` in host claim pods) until upgraded.
 
 ## What you need to do
 

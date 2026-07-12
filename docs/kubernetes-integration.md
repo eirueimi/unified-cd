@@ -265,8 +265,12 @@ of this agent exec'd steps with `bash -lc "<script>"`, which meant every
 the DSL never stated and this doc's own `golang:1.24-alpine`/`alpine`
 examples silently violated. Steps now exec via the injected `ucd-sh` shim by
 default (`/.ucd/ucd-sh -c "<script>"`), which requires **no shell binary in
-the image at all** — `scratch`, distroless, and other bash-less/sh-less
-images are valid `job`/sidecar images. A job that relies on real bash
+the image** — bash-less/sh-less images with coreutils (`alpine`,
+busybox-based) are valid `job`/sidecar images. One remaining requirement on
+this agent: exec-time environment variables are applied by prepending the
+`env` binary, and every step carries at least `UNIFIED_AGENT_OS` — so a
+truly empty image (`scratch`, distroless-static) can host the keep-alive
+but fails env-carrying steps with exit 127. A job that relies on real bash
 semantics (login-shell profile sourcing, `wait -n`, `PIPESTATUS`, signal
 traps, ...) opts back in explicitly with `spec.shell: [bash, -lc]` or a
 step-level override — see the [interpreter constraints
