@@ -9,11 +9,20 @@
 # host claim pod can't honor (securityContext/args), the run is auto-pinned to a
 # Kubernetes agent (see dsl.PodTemplateNeedsKubernetes) — no agentSelector needed.
 #
+# The step container is debian (bash), NOT the buildkit image: the k8s agent
+# execs steps with `bash -lc`, and moby/buildkit is alpine/busybox (no bash), so
+# an init container copies the static `buildctl` binary into a shared volume the
+# step puts on PATH.
+#
 # Cluster requirements (rootless BuildKit, no privileged):
 #   - seccomp + AppArmor Unconfined for the buildkitd container (set below via
 #     securityContext). `appArmorProfile` is a securityContext field on k8s >= 1.30;
 #     on older clusters use the equivalent pod annotation instead.
 #   - the node must allow user namespaces / rootless (most modern clusters do).
+#   - buildkitd pulls base images directly from the registry: behind a TLS-
+#     intercepting proxy, mount your corporate CA into the buildkitd container
+#     (e.g. /etc/ssl/certs) or it fails with "x509: certificate signed by
+#     unknown authority".
 #
 # Required secrets (when pushing to a private registry / Docker Hub):
 #   unified-cd secret set dockerhub-username myuser
@@ -71,12 +80,27 @@ spec:
         description: "Multi-platform targets (e.g. linux/amd64,linux/arm64). BuildKit builds these natively — no buildx needed. Empty builds the host platform"
   podTemplate:
     spec:
-      containers:
-        # Step-execution container: has buildctl; talks to the sidecar daemon.
-        # It is the primary "job" container, so the agent runs it as the step
-        # target (a `sleep infinity` command is injected automatically).
-        - name: job
+      # buildctl is a static binary; copy it out of the buildkit image into a
+      # shared volume so the bash-capable step container can run it. The k8s
+      # agent execs every step with `bash -lc`, and moby/buildkit is alpine
+      # (busybox, no bash) — running the step directly in it fails with exit 127.
+      initContainers:
+        - name: copy-buildctl
           image: moby/buildkit:v0.15.2-rootless
+          command: ["sh", "-c", "cp /usr/bin/buildctl /tools/buildctl"]
+          volumeMounts:
+            - name: buildkit-tools
+              mountPath: /tools
+      containers:
+        # Step-execution container (the primary "job"): a bash-capable image
+        # with buildctl mounted from the init container. The agent runs the step
+        # here (a `sleep infinity` command is injected automatically). The step
+        # puts /tools on PATH so `buildctl` resolves.
+        - name: job
+          image: debian:bookworm-slim
+          volumeMounts:
+            - name: buildkit-tools
+              mountPath: /tools
         # Rootless BuildKit daemon — NO privileged. Listens on localhost:1234,
         # which the job container reaches (same pod netns). --oci-worker-no-process-sandbox
         # is what makes it work without privileged.
@@ -93,6 +117,9 @@ spec:
               type: Unconfined
             runAsUser: 1000
             runAsGroup: 1000
+      volumes:
+        - name: buildkit-tools
+          emptyDir: {}
   steps:
     - name: build-and-push
       env:
@@ -111,6 +138,7 @@ spec:
       run: |
         #!/usr/bin/env sh
         set -eu
+        export PATH="/tools:$PATH"   # buildctl copied here by the init container
 
         # Wait for the rootless buildkitd sidecar to accept connections.
         i=0
