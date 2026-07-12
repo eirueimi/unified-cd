@@ -218,8 +218,11 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
   path your container runtime's file sharing exposes** — e.g. under
   `/Users` for Docker Desktop on macOS. A workspace root outside the
   runtime's shared paths fails to bind-mount into the claim pod.
-- Apple's `container` CLI is not a supported runtime for isolated jobs; use
-  docker or podman.
+- Apple's `container` CLI is **not auto-detected** and is not supported for
+  isolated jobs (its runtime can't join another container's network
+  namespace). Select it explicitly with `--container-runtime container` only
+  for non-isolated `runsIn.image` steps; use docker or podman for isolated
+  jobs.
 
 ---
 
