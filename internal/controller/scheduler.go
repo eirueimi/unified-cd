@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -162,6 +163,22 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 					slog.Warn("checkAndFireSchedules: agentSelector expansion failed", "schedule", sc.Name, "error", selErr)
 					continue // Do not update last_fired_at — allow retry on the next tick.
 				}
+				// A selector element that expanded to an empty key or value
+				// (e.g. "pool:" when the schedule does not define the param a
+				// "pool:{{ .Params.pool }}" template needs) can never match an
+				// agent label: firing would deterministically produce a run
+				// the queued-run reaper fails after its grace period — once
+				// per fire, forever, until the schedule or job is fixed. Skip
+				// the fire loudly instead (mirroring the agent's "cache key
+				// expanded to empty; skipping" precedent). The API/webhook
+				// paths intentionally keep creating such runs: there the
+				// caller sees the Queued run immediately, while a schedule is
+				// unattended.
+				if bad, ok := degenerateSelectorElement(agentSelector); ok {
+					slog.Warn("checkAndFireSchedules: agentSelector element expanded empty; skipping fire",
+						"schedule", sc.Name, "element", bad)
+					continue // Do not update last_fired_at — warn again next tick.
+				}
 			}
 			_, err := st.CreateRun(ctx, sc.JobName, params, job.Spec, agentSelector, requiredCaps, "schedule:"+sc.Name)
 			if err != nil {
@@ -294,4 +311,19 @@ func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittem
 			slog.Warn("git resolver: update spec failed", "runID", r.ID, "error", err)
 		}
 	}
+}
+
+// degenerateSelectorElement returns the first agentSelector element that can
+// never match an agent label: an empty string, or a "key:value" form whose
+// key or value is empty (e.g. "pool:" after a template expanded against a
+// schedule that does not define the referenced param). Bare labels without a
+// colon (e.g. "kubernetes") are fine. Used by checkAndFireSchedules to skip
+// deterministically-unclaimable fires.
+func degenerateSelectorElement(sel []string) (string, bool) {
+	for _, s := range sel {
+		if s == "" || strings.HasPrefix(s, ":") || strings.HasSuffix(s, ":") {
+			return s, true
+		}
+	}
+	return "", false
 }
