@@ -10,14 +10,19 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
+// testShimImage is the shimImage argument used throughout this file's
+// BuildPod calls; only the tests specifically about the ucd-shim init
+// container assert on its exact value.
+const testShimImage = "ghcr.io/eirueimi/unified-cd-k8s-agent:test"
+
 func TestBuildPod_Fallback(t *testing.T) {
-	pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{})
+	pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
 	require.NoError(t, err)
 	require.Len(t, pod.Spec.Containers, 1)
 	assert.Equal(t, "job", pod.Spec.Containers[0].Name)
 	assert.Equal(t, "golang:1.24-alpine", pod.Spec.Containers[0].Image)
-	// workspace emptyDir is automatically injected
-	assert.Len(t, pod.Spec.Volumes, 1)
+	// workspace emptyDir and the ucd-tools emptyDir are both automatically injected
+	assert.Len(t, pod.Spec.Volumes, 2)
 	assert.Equal(t, "workspace", pod.Spec.Volumes[0].Name)
 	assert.NotNil(t, pod.Spec.Volumes[0].EmptyDir)
 	assert.Equal(t, "/workspace", pod.Spec.Containers[0].VolumeMounts[0].MountPath)
@@ -39,7 +44,7 @@ func TestBuildPod_TemplateRef(t *testing.T) {
 	}
 	jobTmpl := &dsl.PodTemplate{Name: "golang"}
 
-	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, jobTmpl, "fallback:latest", SidecarSpec{})
+	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
 	require.NoError(t, err)
 	assert.Equal(t, "golang:1.24-alpine", pod.Spec.Containers[0].Image)
 }
@@ -63,7 +68,7 @@ func TestBuildPod_Override(t *testing.T) {
 		},
 	}
 
-	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, jobTmpl, "fallback:latest", SidecarSpec{})
+	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
 	require.NoError(t, err)
 	assert.Len(t, pod.Spec.Containers, 2)
 	names := []string{pod.Spec.Containers[0].Name, pod.Spec.Containers[1].Name}
@@ -80,7 +85,7 @@ func TestBuildPod_InlineSpec(t *testing.T) {
 		},
 	}
 
-	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{})
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
 	require.NoError(t, err)
 	assert.Equal(t, "python:3.12-slim", pod.Spec.Containers[0].Image)
 }
@@ -96,16 +101,16 @@ func TestBuildPod_WorkspacePVC(t *testing.T) {
 			},
 		},
 	}
-	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{})
+	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
 	require.NoError(t, err)
-	require.Len(t, pod.Spec.Volumes, 1)
+	require.Len(t, pod.Spec.Volumes, 2)
 	require.NotNil(t, pod.Spec.Volumes[0].PersistentVolumeClaim)
 	assert.Equal(t, "my-pvc", pod.Spec.Volumes[0].PersistentVolumeClaim.ClaimName)
 }
 
 func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 	t.Run("defaults to /workspace", func(t *testing.T) {
-		pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{})
+		pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 1)
 		assert.Equal(t, "/workspace", pod.Spec.Containers[0].WorkingDir)
@@ -122,7 +127,7 @@ func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 				},
 			},
 		}
-		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{})
+		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 1)
 		assert.Equal(t, "/custom-ws", pod.Spec.Containers[0].WorkingDir)
@@ -144,7 +149,7 @@ func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 				},
 			},
 		}
-		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{})
+		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 1)
 		assert.Equal(t, "/app", pod.Spec.Containers[0].WorkingDir, "user-set WorkingDir must not be overwritten")
@@ -167,7 +172,7 @@ func TestInjectWorkspace_AllContainers(t *testing.T) {
 
 func TestBuildPod_InjectsArtifactSidecar(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"})
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage)
 	require.NoError(t, err)
 
 	var sidecar *corev1.Container
@@ -197,7 +202,7 @@ func TestBuildPod_InjectsArtifactSidecar(t *testing.T) {
 
 func TestBuildPod_SidecarSecretEnvAndIdle(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"})
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,15 +223,17 @@ func TestBuildPod_SidecarSecretEnvAndIdle(t *testing.T) {
 	}
 }
 
-// TestInjectSleepInfinity_OnlyJobContainerKeptAlive is the k8s-side
-// regression test for the sidecar-sleep-infinity bug (see
-// sidecar-sleep-fix-brief.md): a podTemplate sidecar (e.g. mysql, redis)
-// with no explicit command must run its image's own entrypoint — that IS
-// the sidecar's service — not "sleep infinity". Only the primary "job"
-// container (the exec target for container:-less steps) gets the
-// keep-alive when it has no command of its own. Mirrors the host claim
-// pod's fix (internal/agent/claim_pod.go's claimPodManager.Start).
-func TestInjectSleepInfinity_OnlyJobContainerKeptAlive(t *testing.T) {
+// TestInjectKeepAlive_OnlyJobContainerKeptAlive is the k8s-side regression
+// test for the sidecar-sleep-infinity bug (see sidecar-sleep-fix-brief.md): a
+// podTemplate sidecar (e.g. mysql, redis) with no explicit command must run
+// its image's own entrypoint — that IS the sidecar's service — not the
+// keep-alive. Only the primary "job" container (the exec target for
+// container:-less steps) gets the keep-alive when it has no command of its
+// own. Mirrors the host claim pod's fix (internal/agent/claim_pod.go's
+// claimPodManager.Start). The keep-alive itself is now the injected shim's
+// pause subcommand (Component 4 of the step-shell-shim design spec), not
+// "sleep infinity".
+func TestInjectKeepAlive_OnlyJobContainerKeptAlive(t *testing.T) {
 	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
 		"containers": []any{
 			map[string]any{"name": "job", "image": "golang:1.24-alpine"},
@@ -234,7 +241,7 @@ func TestInjectSleepInfinity_OnlyJobContainerKeptAlive(t *testing.T) {
 		},
 	}}
 
-	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{})
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
 	require.NoError(t, err)
 
 	var job, mysql *corev1.Container
@@ -249,25 +256,103 @@ func TestInjectSleepInfinity_OnlyJobContainerKeptAlive(t *testing.T) {
 	require.NotNil(t, job, "job container must be present")
 	require.NotNil(t, mysql, "mysql sidecar must be present")
 
-	assert.Equal(t, []string{"sleep", "infinity"}, job.Command,
-		"the primary job container must be kept alive as the exec target")
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, job.Command,
+		"the primary job container must be kept alive as the exec target, via the ucd-sh shim's pause subcommand")
 	assert.Empty(t, mysql.Command,
-		"a sidecar with no explicit command must run its image's default entrypoint (mysqld), not sleep infinity")
+		"a sidecar with no explicit command must run its image's default entrypoint (mysqld), not the keep-alive")
 }
 
-// TestInjectSleepInfinity_JobKeepsExplicitCommand confirms a "job" container
+// TestInjectKeepAlive_JobKeepsExplicitCommand confirms a "job" container
 // that already sets its own command is left untouched (existing behavior,
 // exercised throughout this file's other tests via explicit "sleep 3600").
-func TestInjectSleepInfinity_JobKeepsExplicitCommand(t *testing.T) {
+func TestInjectKeepAlive_JobKeepsExplicitCommand(t *testing.T) {
 	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
 		"containers": []any{
 			map[string]any{"name": "job", "image": "golang:1.24-alpine", "command": []any{"go", "version"}},
 		},
 	}}
-	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{})
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
 	require.NoError(t, err)
 	require.Len(t, pod.Spec.Containers, 1)
 	assert.Equal(t, []string{"go", "version"}, pod.Spec.Containers[0].Command)
+}
+
+// TestInjectKeepAlive_JobKeepsExplicitArgs is the args-clobber regression
+// test: a "job" container that sets Args only (no Command — e.g. relying on
+// the image's own ENTRYPOINT, with Args supplying its arguments) must NOT
+// have its Args silently ignored by the keep-alive injection. Before this
+// fix, injectSleepInfinity only checked len(Command) == 0, so such a
+// container's intended entrypoint invocation was clobbered with
+// "sleep infinity" and Args was left dangling, unused.
+func TestInjectKeepAlive_JobKeepsExplicitArgs(t *testing.T) {
+	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
+		"containers": []any{
+			map[string]any{"name": "job", "image": "golang:1.24-alpine", "args": []any{"--serve"}},
+		},
+	}}
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	require.NoError(t, err)
+	require.Len(t, pod.Spec.Containers, 1)
+	assert.Empty(t, pod.Spec.Containers[0].Command,
+		"a job container with Args-only must not have Command injected")
+	assert.Equal(t, []string{"--serve"}, pod.Spec.Containers[0].Args,
+		"the author's Args must survive untouched (args-clobber fix)")
+}
+
+// TestBuildPod_UcdShimInitContainer asserts the ucd-shim init container is
+// prepended with the exact image/command the spec requires, and that it
+// mounts the ucd-tools volume at /.ucd.
+func TestBuildPod_UcdShimInitContainer(t *testing.T) {
+	pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{}, "ghcr.io/eirueimi/unified-cd-k8s-agent:latest")
+	require.NoError(t, err)
+
+	require.Len(t, pod.Spec.InitContainers, 1)
+	initC := pod.Spec.InitContainers[0]
+	assert.Equal(t, "ucd-shim", initC.Name)
+	assert.Equal(t, "ghcr.io/eirueimi/unified-cd-k8s-agent:latest", initC.Image)
+	assert.Equal(t, []string{"/ucd-sh", "--install", "/.ucd/ucd-sh"}, initC.Command)
+
+	require.Len(t, initC.VolumeMounts, 1)
+	assert.Equal(t, "ucd-tools", initC.VolumeMounts[0].Name)
+	assert.Equal(t, "/.ucd", initC.VolumeMounts[0].MountPath)
+
+	var ucdVol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == "ucd-tools" {
+			ucdVol = &pod.Spec.Volumes[i]
+		}
+	}
+	require.NotNil(t, ucdVol, "pod must declare the ucd-tools emptyDir volume")
+	assert.NotNil(t, ucdVol.EmptyDir)
+}
+
+// TestBuildPod_UcdShimMountOnEveryContainer asserts /.ucd is mounted on the
+// primary "job" container, every podTemplate sidecar, AND the injected
+// artifact sidecar — a sidecar is itself a container: exec target, so it
+// needs the shim just like the primary (Component 3 of the step-shell-shim
+// design spec).
+func TestBuildPod_UcdShimMountOnEveryContainer(t *testing.T) {
+	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
+		"containers": []any{
+			map[string]any{"name": "job", "image": "golang:1.24-alpine"},
+			map[string]any{"name": "mysql", "image": "mysql:8"},
+			map[string]any{"name": "redis", "image": "redis:7"},
+		},
+	}}
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest",
+		SidecarSpec{Image: "sidecar:latest"}, testShimImage)
+	require.NoError(t, err)
+
+	require.Len(t, pod.Spec.Containers, 4, "job, mysql, redis, and the artifact sidecar")
+	for _, c := range pod.Spec.Containers {
+		var hasUcdMount bool
+		for _, m := range c.VolumeMounts {
+			if m.Name == "ucd-tools" && m.MountPath == "/.ucd" {
+				hasUcdMount = true
+			}
+		}
+		assert.True(t, hasUcdMount, "container %q must mount /.ucd", c.Name)
+	}
 }
 
 func TestMergeContainers(t *testing.T) {

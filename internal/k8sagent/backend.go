@@ -38,9 +38,11 @@ func newK8sBackend(a *K8sAgent, runID, podName, mountPath string) *k8sBackend {
 	return &k8sBackend{a: a, runID: runID, podName: podName, mountPath: mountPath, scopePods: map[string]string{}}
 }
 
-// RunDefault runs a step in the default (pooled/per-run) pod's container.
+// RunDefault runs a step in the default (pooled/per-run) pod's container,
+// threading step.Shell (the controller-resolved effective interpreter argv;
+// nil means "apply the shim default") through to Executor.ExecStep.
 func (b *k8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	return b.a.exec.ExecStep(ctx, b.podName, execContainer(step), script, env, stdout, stderr)
+	return b.a.exec.ExecStep(ctx, b.podName, execContainer(step), script, step.Shell, env, stdout, stderr)
 }
 
 // envSliceToMap converts "KEY=VALUE" pairs (as produced by the orchestrator's
@@ -59,9 +61,10 @@ func envSliceToMap(env []string) map[string]string {
 }
 
 // RunNamedContainer runs a step inside a specific named container of the
-// default pod (runsIn.container), via the same ExecStep path as RunDefault.
+// default pod (runsIn.container), via the same ExecStep path as RunDefault,
+// threading step.Shell through identically.
 func (b *k8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	return b.a.exec.ExecStep(ctx, b.podName, container, script, env, stdout, stderr)
+	return b.a.exec.ExecStep(ctx, b.podName, container, script, step.Shell, env, stdout, stderr)
 }
 
 // EnsureScope provisions (or reuses) the step's uses-scope pod, returning a
@@ -77,17 +80,15 @@ func (b *k8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, env []
 // RunInScope execs script into the scope pod's "step" container.
 //
 // shell is the owning step's effective interpreter argv (agentlib.ExecBackend
-// interface addition for the step-shell-shim feature); the k8s executor does
-// not yet thread it into ExecStep (buildEnvShellCommand still hardcodes
-// `bash -lc` — see internal/k8sagent/executor.go), so it is accepted here to
-// satisfy the interface but not yet used. Wiring it through ExecStep is
-// tracked separately (k8s executor argv task).
+// interface addition for the step-shell-shim feature; nil/empty means "apply
+// the shim default"), threaded through to Executor.ExecStep exactly like
+// RunDefault/RunNamedContainer thread step.Shell.
 func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, shell []string, env []string, stdout, stderr io.Writer) (int, error) {
 	podName, ok := unwrapK8sScope(h)
 	if !ok {
 		return -1, fmt.Errorf("RunInScope: no scope handle")
 	}
-	return b.a.exec.ExecStep(ctx, podName, "step", script, env, stdout, stderr)
+	return b.a.exec.ExecStep(ctx, podName, "step", script, shell, env, stdout, stderr)
 }
 
 // CloseScopes deletes every scope pod opened during the claim.
@@ -277,8 +278,11 @@ func (b *k8sBackend) DefaultAgentOS() string {
 // post-hook output away.
 //
 // shell is the hook's effective interpreter argv (agentlib.ExecBackend
-// interface addition for the step-shell-shim feature); not yet threaded into
-// ExecStep, same caveat as RunInScope above.
+// interface addition for the step-shell-shim feature: post.Shell if the
+// post: hook declared its own, else the owning step's effective
+// ClaimStep.Shell — already resolved into this parameter by the
+// orchestrator's hookStack, see orchestrator.go's hookShell computation),
+// threaded through to Executor.ExecStep exactly like every other exec path.
 func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, shell []string, env []string, stdout, stderr io.Writer) error {
 	targetPod := ""
 	if !scope.IsZero() {
@@ -292,7 +296,7 @@ func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle
 	if targetPod == "" {
 		targetPod = b.podName
 	}
-	_, err := b.a.exec.ExecStep(ctx, targetPod, container, script, env, stdout, stderr)
+	_, err := b.a.exec.ExecStep(ctx, targetPod, container, script, shell, env, stdout, stderr)
 	return err
 }
 

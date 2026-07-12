@@ -18,6 +18,29 @@ const artifactSidecarName = "unified-artifact"
 // constant) and internal/k8sagent/executor.go's "" -> "job" fallback.
 const primaryContainerName = "job"
 
+// ucdMountPath is the reserved path (documented, see
+// docs/superpowers/specs/2026-07-12-step-shell-shim-design.md Component 3)
+// the ucd-sh shim shares volume is mounted at in every container of a pod.
+// A podTemplate mounting over it is user error — fails loudly at exec.
+const ucdMountPath = "/.ucd"
+
+// ucdToolsVolume is the name of the emptyDir volume shared between the
+// ucd-shim init container and every other container in the pod, carrying the
+// self-installed ucd-sh binary (the Tekton/Argo emissary init-container
+// pattern — a pod has no host filesystem to bind-mount from, unlike the host
+// agent's claim pod, which bind-mounts its tools dir read-only).
+const ucdToolsVolume = "ucd-tools"
+
+// ucdShimContainerName names the init container that installs ucd-sh onto
+// ucdToolsVolume before any other container starts.
+const ucdShimContainerName = "ucd-shim"
+
+// ucdShimBinary is the path the k8s-agent's own image ships /ucd-sh at (see
+// docker/k8s-agent.Dockerfile), used as the init container's own command —
+// distinct from ucdMountPath+"/ucd-sh", the path it installs TO on the
+// shared volume.
+const ucdShimBinary = "/ucd-sh"
+
 // SidecarSpec configures the injected artifact-transfer sidecar.
 type SidecarSpec struct {
 	Image        string
@@ -43,7 +66,9 @@ func buildArtifactSidecarContainer(sidecar SidecarSpec) corev1.Container {
 }
 
 // BuildPod constructs a Pod object from the agent template and Job template.
-func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec) (*corev1.Pod, error) {
+// shimImage is the image the prepended ucd-shim init container runs (see
+// injectUcdShim) — normally cfg.ShimImage (the k8s-agent's own image).
+func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string) (*corev1.Pod, error) {
 	suffix := runID
 	if len(suffix) > 16 {
 		suffix = suffix[:16]
@@ -100,7 +125,7 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 	}
 
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
-	injectSleepInfinity(podSpec)
+	injectKeepAlive(podSpec)
 
 	// Guard against user-supplied containers using the reserved sidecar name.
 	for _, c := range podSpec.Containers {
@@ -113,6 +138,7 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 	}
 
 	injectWorkspace(podSpec, wsCfg)
+	injectUcdShim(podSpec, shimImage)
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -136,26 +162,79 @@ func defaultPodSpec(image string) *corev1.PodSpec {
 	}
 }
 
-// injectSleepInfinity injects "sleep infinity" into the primary "job"
-// container if it has no command set, so container:-less steps always have a
-// live exec target regardless of whether the podTemplate defined "job"
-// explicitly (see defaultPodSpec) or the user did (without setting a
-// command).
+// injectKeepAlive injects the ucd-sh keep-alive (["/.ucd/ucd-sh","pause"])
+// into the primary "job" container if it has no command AND no args set, so
+// container:-less steps always have a live exec target regardless of whether
+// the podTemplate defined "job" explicitly (see defaultPodSpec) or the user
+// did (without setting a command). Replaces the previous "sleep infinity"
+// (see Component 4 of the step-shell-shim design spec): no `sleep` binary
+// requirement, zombie reaping (ucd-sh pause is PID-1-aware), prompt SIGTERM
+// exit.
 //
 // It deliberately does NOT touch any other container: a podTemplate sidecar
 // (e.g. mysql, redis) with no command must run its image's own
-// entrypoint/CMD — that IS the sidecar's service. Forcing sleep infinity on
-// every container (the previous behavior) silently broke every sidecar with
+// entrypoint/CMD — that IS the sidecar's service. Forcing the keep-alive on
+// every container (the pre-fix behavior) silently broke every sidecar with
 // no explicit command: its entrypoint (e.g. mysqld) never ran, so the
 // service was unreachable. This mirrors the host claim pod's fix in
 // internal/agent/claim_pod.go (claimPodManager.Start): only the primary
 // "job" container gets the keep-alive.
-func injectSleepInfinity(podSpec *corev1.PodSpec) {
+//
+// The check also now covers Args, not just Command (the args-clobber fix): a
+// "job" container that sets Args only (e.g. relying on the image's own
+// ENTRYPOINT, with Args supplying its arguments) previously had that Args
+// value silently ignored — the container ran "sleep infinity" instead of the
+// author's intended entrypoint invocation, since only len(Command) was
+// checked. Skipping injection when EITHER is set respects the author's
+// explicit choice either way.
+func injectKeepAlive(podSpec *corev1.PodSpec) {
 	for i := range podSpec.Containers {
-		if podSpec.Containers[i].Name == primaryContainerName && len(podSpec.Containers[i].Command) == 0 {
-			podSpec.Containers[i].Command = []string{"sleep", "infinity"}
+		c := &podSpec.Containers[i]
+		if c.Name == primaryContainerName && len(c.Command) == 0 && len(c.Args) == 0 {
+			c.Command = ucdKeepAliveArgv()
 		}
 	}
+}
+
+// ucdKeepAliveArgv returns a fresh copy of the keep-alive argv each call, so
+// callers can never accidentally alias/mutate a shared backing array.
+func ucdKeepAliveArgv() []string {
+	return []string{ucdMountPath + "/ucd-sh", "pause"}
+}
+
+// injectUcdShim adds the reserved /.ucd shared volume (ucdToolsVolume, an
+// emptyDir) and its mount to EVERY container in podSpec — the primary "job"
+// container and any podTemplate sidecars, since a sidecar is itself a
+// container: exec target and needs the shim just like the primary — and
+// prepends an init container that self-installs the shimImage's own /ucd-sh
+// binary onto that volume (`/ucd-sh --install /.ucd/ucd-sh`) before any other
+// container starts. This is the k8s side of Component 3 of the
+// step-shell-shim design spec: the Tekton/Argo emissary "init container
+// populates an emptyDir" carrier pattern, since a pod has no host filesystem
+// to bind-mount from the way the host agent's claim pod does (read-only bind
+// mount of the agent's own tools dir).
+func injectUcdShim(podSpec *corev1.PodSpec, shimImage string) {
+	podSpec.Volumes = append(podSpec.Volumes, corev1.Volume{
+		Name:         ucdToolsVolume,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	})
+
+	mount := corev1.VolumeMount{Name: ucdToolsVolume, MountPath: ucdMountPath}
+	for i := range podSpec.Containers {
+		podSpec.Containers[i].VolumeMounts = append(podSpec.Containers[i].VolumeMounts, mount)
+	}
+
+	initContainer := corev1.Container{
+		Name:         ucdShimContainerName,
+		Image:        shimImage,
+		Command:      []string{ucdShimBinary, "--install", ucdMountPath + "/ucd-sh"},
+		VolumeMounts: []corev1.VolumeMount{mount},
+	}
+	// Prepend: the shim must be installed before any other init container
+	// that might itself need /.ucd, and well before every regular container
+	// starts (Kubernetes always runs InitContainers, in order, before any
+	// container in podSpec.Containers).
+	podSpec.InitContainers = append([]corev1.Container{initContainer}, podSpec.InitContainers...)
 }
 
 func podSpecFromMap(m map[string]any) (*corev1.PodSpec, error) {

@@ -78,7 +78,9 @@ func newTestNamespace(t *testing.T, client *kubernetes.Clientset) string {
 func podReadyOrSkip(t *testing.T, pm *PodManager, runID string) string {
 	t.Helper()
 	ctx := context.Background()
-	pod, err := BuildPod(runID, pm.namespace, nil, nil, testImage, SidecarSpec{})
+	// See podmanager_integration_test.go's note: testImage stands in for a
+	// real shim image here purely to compile; not ucd-sh-capable.
+	pod, err := BuildPod(runID, pm.namespace, nil, nil, testImage, SidecarSpec{}, testImage)
 	if err != nil {
 		t.Fatalf("BuildPod: %v", err)
 	}
