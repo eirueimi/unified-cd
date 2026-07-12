@@ -19,6 +19,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: shim placeholders must be empty in git
+        if: runner.os == 'Linux'
+        run: |
+          test "$(git cat-file -s HEAD:internal/shim/embedded/ucd-sh-amd64)" = "0"
+          test "$(git cat-file -s HEAD:internal/shim/embedded/ucd-sh-arm64)" = "0"
       - name: Run unit tests
         run: go test ./... -short -race -count=1
 
