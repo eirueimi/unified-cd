@@ -45,6 +45,10 @@ no podTemplate, no container: steps). Host agents only; the default
 (false) is the isolated pod model on both backends. |
 | `params` | Params | yes |  |
 | `podTemplate` | PodTemplate | no |  |
+| `shell` | []string | no | Shell overrides the default interpreter argv for every step in this
+job that does not declare its own step-level shell:. Array-only (no
+scalar shorthand); the run: script is appended as the final argv
+element. See Step.Shell for the full resolution priority. |
 | `steps` | []StepEntry | yes | Steps is the main DAG of steps to execute.
 (failFast was removed — all started steps run to completion.) |
 | `timeoutMinutes` | number | no |  |
@@ -113,6 +117,8 @@ The two forms are mutually exclusive; Validate enforces this.
 makes the whole template one isolated scope. Steps sharing ScopeID run
 in one environment. Not user-authored. |
 | `scopeImage` | string | no |  |
+| `shell` | []string | no | Shell overrides the effective interpreter argv for this step. See
+Step.Shell for the full resolution priority. |
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
@@ -196,6 +202,12 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 makes the whole template one isolated scope. Steps sharing ScopeID run
 in one environment. Not user-authored. |
 | `scopeImage` | string | no |  |
+| `shell` | []string | no | Shell overrides the effective interpreter argv for this step. Array
+form only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is
+appended as the final argv element. Resolution priority (most specific
+wins): step.shell > a uses: template's own declared shell > spec.shell
+(job-level) > system default. Steps inside parallel: and finally:
+count as steps for this purpose. |
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
@@ -209,6 +221,12 @@ Executed in LIFO order after RunDAG completes.
 |-------|------|----------|-------------|
 | `env` | map[string]string | no |  |
 | `run` | string | no |  |
+| `shell` | []string | no | Shell overrides the interpreter argv for this post hook. When absent,
+the hook inherits its owning step's effective shell. The override
+exists because inheritance alone breaks down for non-shell
+interpreters: a step running under shell: [python3, -c] with a
+shell-script cleanup hook needs post: {shell: [sh, -c], run: ...} to
+be expressible at all. |
 
 ### RunsIn
 

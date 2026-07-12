@@ -16,6 +16,26 @@ const SupportedAPIVersion = "unified-cd/v1"
 var orLockNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var matrixDimNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// validShellArgv validates the shell: field's runtime shape: nil (unset) is
+// valid — the field falls through to the resolution chain's next tier — but
+// once set, it must be a non-empty array of non-empty strings. v1 accepts
+// the array form only; a bare scalar (`shell: bash`) fails at YAML decode
+// time (type mismatch against []string) before this function ever runs.
+func validShellArgv(argv []string) error {
+	if argv == nil {
+		return nil
+	}
+	if len(argv) == 0 {
+		return fmt.Errorf("shell must be a non-empty array of non-empty strings")
+	}
+	for i, s := range argv {
+		if s == "" {
+			return fmt.Errorf("shell[%d] must not be empty", i)
+		}
+	}
+	return nil
+}
+
 // validateArtifactName rejects artifact names that could be used for path
 // traversal (or otherwise corrupt the object-store key) once they reach
 // internal/artifact's artifactKey. It intentionally rejects "/", "\\", "..",
@@ -130,6 +150,9 @@ func (j *Job) Validate() error {
 	if len(j.Spec.Steps) == 0 {
 		return fmt.Errorf("spec.steps must contain at least one step")
 	}
+	if err := validShellArgv(j.Spec.Shell); err != nil {
+		return fmt.Errorf("spec.shell: %w", err)
+	}
 
 	if j.Spec.Native {
 		if j.Spec.PodTemplate != nil {
@@ -233,8 +256,16 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				if err := validateUsesStep(st.Name, st.Uses, st.Call); err != nil {
 					return err
 				}
+				if err := validShellArgv(st.Shell); err != nil {
+					return fmt.Errorf("%s (%s): shell: %w", subPath, st.Name, err)
+				}
 				if st.Post != nil && st.Post.Run == "" {
 					return fmt.Errorf("step %q: post.run is required when post is specified", st.Name)
+				}
+				if st.Post != nil {
+					if err := validShellArgv(st.Post.Shell); err != nil {
+						return fmt.Errorf("%s (%s): post.shell: %w", subPath, st.Name, err)
+					}
 				}
 				if err := checkStepExecTarget(st.Container, st.RunsIn, st.Uses != nil, subPath, st.Name); err != nil {
 					return err
@@ -268,8 +299,16 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 			if err := validateUsesStep(entry.Name, entry.Uses, entry.Call); err != nil {
 				return err
 			}
+			if err := validShellArgv(entry.Shell); err != nil {
+				return fmt.Errorf("%s (%s): shell: %w", entryPath, entry.Name, err)
+			}
 			if entry.Post != nil && entry.Post.Run == "" {
 				return fmt.Errorf("step %q: post.run is required when post is specified", entry.Name)
+			}
+			if entry.Post != nil {
+				if err := validShellArgv(entry.Post.Shell); err != nil {
+					return fmt.Errorf("%s (%s): post.shell: %w", entryPath, entry.Name, err)
+				}
 			}
 			if err := checkStepExecTarget(entry.Container, entry.RunsIn, entry.Uses != nil, entryPath, entry.Name); err != nil {
 				return err

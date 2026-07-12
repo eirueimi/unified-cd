@@ -465,6 +465,13 @@
         },
         "run": {
           "type": "string"
+        },
+        "shell": {
+          "description": "Shell overrides the interpreter argv for this post hook. When absent,\nthe hook inherits its owning step's effective shell. The override\nexists because inheritance alone breaks down for non-shell\ninterpreters: a step running under shell: [python3, -c] with a\nshell-script cleanup hook needs post: {shell: [sh, -c], run: ...} to\nbe expressible at all.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -606,6 +613,13 @@
         "podTemplate": {
           "$ref": "#/definitions/PodTemplate"
         },
+        "shell": {
+          "description": "Shell overrides the default interpreter argv for every step in this\njob that does not declare its own step-level shell:. Array-only (no\nscalar shorthand); the run: script is appended as the final argv\nelement. See Step.Shell for the full resolution priority.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "steps": {
           "description": "Steps is the main DAG of steps to execute.\n(failFast was removed — all started steps run to completion.)",
           "items": {
@@ -684,6 +698,13 @@
         },
         "scopeImage": {
           "type": "string"
+        },
+        "shell": {
+          "description": "Shell overrides the effective interpreter argv for this step. Array\nform only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is\nappended as the final argv element. Resolution priority (most specific\nwins): step.shell \u003e a uses: template's own declared shell \u003e spec.shell\n(job-level) \u003e system default. Steps inside parallel: and finally:\ncount as steps for this purpose.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "timeoutMinutes": {
           "type": "number"
@@ -769,6 +790,13 @@
         },
         "scopeImage": {
           "type": "string"
+        },
+        "shell": {
+          "description": "Shell overrides the effective interpreter argv for this step. See\nStep.Shell for the full resolution priority.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "timeoutMinutes": {
           "type": "number"
