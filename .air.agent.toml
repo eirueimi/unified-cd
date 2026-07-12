@@ -4,6 +4,9 @@ tmp_dir = "tmp"
 [build]
   cmd = "go build -mod=vendor -o ./tmp/unified-agent ./cmd/agent"
   bin = "./tmp/unified-agent"
+  # Run two slots so a parent job (e.g. examples/jobs/call-job.yaml) and the child
+  # runs it calls can execute concurrently on this single dev agent.
+  full_bin = "./tmp/unified-agent --max-concurrent 2"
   delay = 1000
   include_ext = ["go"]
   exclude_dir = ["vendor", ".git", "tmp", "docs", "deployments", "web", "example", "manifests"]

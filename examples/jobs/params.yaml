@@ -23,6 +23,12 @@ spec:
   agentSelector:
     - kind:docker
   steps:
+    # Demo scaffolding so this example builds anywhere: write a throwaway Dockerfile.
+    # A real job would already have its own Dockerfile in the checked-out source.
+    - name: prepare
+      run: |
+        set -e
+        printf 'FROM alpine:3\nCMD ["true"]\n' > Dockerfile
     - name: build
       run: |
         set -e
@@ -31,5 +37,7 @@ spec:
       outputs:
         image_ref: "{{ .Params.image }}:{{ .Params.tag }}"
 
+    # There is no registry in the local demo, so this only echoes. A real job would run:
+    #   docker push {{ .Steps.build.Outputs.image_ref }}
     - name: push
-      run: docker push {{ .Steps.build.Outputs.image_ref }}
+      run: echo "Would push {{ .Steps.build.Outputs.image_ref }}"
