@@ -157,7 +157,22 @@ func defaultPodSpec(image string) *corev1.PodSpec {
 	}
 	return &corev1.PodSpec{
 		Containers: []corev1.Container{
-			{Name: "job", Image: image, Command: []string{"sleep", "infinity"}},
+			// Command is intentionally left unset here. injectKeepAlive is
+			// the single source of keep-alive truth for the "job" container
+			// (see its doc comment) and BuildPod calls it unconditionally
+			// right after this function returns; injectKeepAlive only
+			// injects ucdKeepAliveArgv() when Command AND Args are both
+			// empty. Baking "sleep infinity" (the old behavior) or even
+			// ucdKeepAliveArgv() directly into this literal would duplicate
+			// that decision in two places and risk them drifting — worse,
+			// the old "sleep infinity" literal counted as an explicit
+			// Command, so injectKeepAlive's skip-when-set guard silently
+			// fired and the bare "podImage, no podTemplate" fallback path
+			// (no jobTmpl at all) never got the ucd-sh pause keep-alive,
+			// unlike every podTemplate-based path. Leaving Command empty
+			// routes this path through the exact same injectKeepAlive logic
+			// as a user-supplied podTemplate's "job" container.
+			{Name: "job", Image: image},
 		},
 	}
 }

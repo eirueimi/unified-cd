@@ -131,4 +131,54 @@ agentId: agent-1
 	if got.PodImage != "ghcr.io/eirueimi/unified-cd-runner:v0.0.3" {
 		t.Errorf("PodImage = %q, want %q", got.PodImage, "ghcr.io/eirueimi/unified-cd-runner:v0.0.3")
 	}
+	if got.ShimImage != defaultShimImage {
+		t.Errorf("ShimImage = %q, want %q", got.ShimImage, defaultShimImage)
+	}
+}
+
+// TestDefaultConfig_ShimImage confirms DefaultConfig() itself (not just
+// LoadConfig, which starts from it) sets ShimImage to the k8s-agent's own
+// image.
+func TestDefaultConfig_ShimImage(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.ShimImage != defaultShimImage {
+		t.Errorf("ShimImage = %q, want %q", cfg.ShimImage, defaultShimImage)
+	}
+}
+
+// TestValidate_ShimImageFallback confirms Config.Validate() fills in the
+// default ShimImage when a config file was loaded without one set (e.g. an
+// older config predating the step-shell-shim feature), mirroring the
+// fallback Validate() already does for PodImage/SidecarImage.
+func TestValidate_ShimImageFallback(t *testing.T) {
+	cfg := Config{
+		Server:  "http://localhost:8080",
+		Token:   "t",
+		AgentID: "agent-1",
+		// ShimImage intentionally left zero-value.
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ShimImage != defaultShimImage {
+		t.Errorf("ShimImage = %q, want %q", cfg.ShimImage, defaultShimImage)
+	}
+}
+
+// TestValidate_ShimImagePreserved confirms Validate() does not clobber an
+// explicitly configured ShimImage (e.g. an air-gapped registry's mirrored
+// copy) with the default.
+func TestValidate_ShimImagePreserved(t *testing.T) {
+	cfg := Config{
+		Server:    "http://localhost:8080",
+		Token:     "t",
+		AgentID:   "agent-1",
+		ShimImage: "registry.internal/mirror/ucd-k8s-agent:v1",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ShimImage != "registry.internal/mirror/ucd-k8s-agent:v1" {
+		t.Errorf("ShimImage = %q, want it preserved", cfg.ShimImage)
+	}
 }

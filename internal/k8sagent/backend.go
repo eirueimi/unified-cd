@@ -120,7 +120,7 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 		envMap[k] = v
 	}
 	pod := buildScopePod(b.runID, b.a.cfg.Namespace, step.ScopeID, step.ScopeImage, envMap,
-		SidecarSpec{Image: b.a.cfg.SidecarImage, S3SecretName: b.a.cfg.SidecarS3SecretName})
+		SidecarSpec{Image: b.a.cfg.SidecarImage, S3SecretName: b.a.cfg.SidecarS3SecretName}, b.a.cfg.ShimImage)
 	created, err := b.a.pm.CreatePod(ctx, pod)
 	if err != nil {
 		return "", fmt.Errorf("uses-scope %q (image %q): create pod: %w", step.ScopeID, step.ScopeImage, err)

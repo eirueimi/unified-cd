@@ -26,6 +26,13 @@ func TestBuildPod_Fallback(t *testing.T) {
 	assert.Equal(t, "workspace", pod.Spec.Volumes[0].Name)
 	assert.NotNil(t, pod.Spec.Volumes[0].EmptyDir)
 	assert.Equal(t, "/workspace", pod.Spec.Containers[0].VolumeMounts[0].MountPath)
+	// FIX 2 regression: the bare "podImage, no podTemplate" fallback path
+	// must still land on the ucd-sh pause keep-alive via injectKeepAlive —
+	// defaultPodSpec used to bake in a literal "sleep infinity" Command,
+	// which made injectKeepAlive's skip-when-Command-set guard fire and this
+	// path never got ucd-sh. This assertion was previously missing entirely,
+	// which is how the bug hid.
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, pod.Spec.Containers[0].Command)
 }
 
 func TestBuildPod_TemplateRef(t *testing.T) {
@@ -353,6 +360,29 @@ func TestBuildPod_UcdShimMountOnEveryContainer(t *testing.T) {
 		}
 		assert.True(t, hasUcdMount, "container %q must mount /.ucd", c.Name)
 	}
+}
+
+// TestBuildPod_UcdShimInitContainerIsFirst is the init-container ORDERING
+// regression test: a podTemplate that already declares its own
+// initContainers must still end up with ucd-shim FIRST, since Kubernetes
+// runs InitContainers strictly in order and every later init container (or
+// regular container) may itself want to rely on /.ucd being installed.
+func TestBuildPod_UcdShimInitContainerIsFirst(t *testing.T) {
+	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
+		"containers": []any{
+			map[string]any{"name": "job", "image": "golang:1.24-alpine"},
+		},
+		"initContainers": []any{
+			map[string]any{"name": "warmup", "image": "busybox:1.36", "command": []any{"echo", "warm"}},
+		},
+	}}
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	require.NoError(t, err)
+
+	require.Len(t, pod.Spec.InitContainers, 2, "ucd-shim plus the podTemplate's own initContainer")
+	assert.Equal(t, "ucd-shim", pod.Spec.InitContainers[0].Name,
+		"ucd-shim must run before any podTemplate-declared init container")
+	assert.Equal(t, "warmup", pod.Spec.InitContainers[1].Name)
 }
 
 func TestMergeContainers(t *testing.T) {
