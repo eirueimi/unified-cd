@@ -1,5 +1,12 @@
 # Demonstrates: calling one job from another using call:, passing params and reading outputs.
 # Also demonstrates foreach: for multi-target deployment.
+# The callee "build" job is simplified to echoes so the pipeline runs anywhere; for a
+# real docker build/push callee see examples/jobs/params.yaml.
+#
+# Single-agent note: deploy-pipeline occupies an agent slot while it waits for the
+# build runs it calls, so a lone agent must allow at least two concurrent runs
+# (agent flag --max-concurrent 2) or you need a second agent — otherwise the child
+# runs stay Queued and the parent waits forever.
 # Usage:
 #   unified-cd apply -f examples/jobs/call-job.yaml
 #   unified-cd run trigger deploy-pipeline --param version=v1.2.3
@@ -40,14 +47,12 @@ spec:
         echo "Deploying version {{ .Params.version }}..."
 
 ---
-# callee: reusable build job
+# callee: reusable build job (echoes so it runs anywhere; params.yaml shows the real docker build)
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
   name: build
 spec:
-  # docker builds need the host's docker daemon — run natively (see docs/migration-2026-07-job-isolation.md)
-  native: true
   params:
     inputs:
       - name: image
@@ -63,12 +68,12 @@ spec:
     - kind:docker
   steps:
     - name: build
-      run: docker build -t {{ .Params.image }}:{{ .Params.tag }} .
+      run: echo "Building {{ .Params.image }}:{{ .Params.tag }}"
       outputs:
         image_ref: "{{ .Params.image }}:{{ .Params.tag }}"
 
     - name: push
-      run: docker push {{ .Steps.build.Outputs.image_ref }}
+      run: echo "Would push {{ .Steps.build.Outputs.image_ref }}"
 ---
 # foreach example: deploy to multiple environments in parallel
 apiVersion: unified-cd/v1
@@ -76,8 +81,6 @@ kind: Job
 metadata:
   name: multi-env-deploy
 spec:
-  # docker builds need the host's docker daemon — run natively (see docs/migration-2026-07-job-isolation.md)
-  native: true
   params:
     inputs:
       - name: envs
@@ -86,7 +89,7 @@ spec:
     - kind:docker
   steps:
     - name: build
-      run: docker build -t myapp .
+      run: echo "Building myapp"
 
     - name: deploy
       foreach:

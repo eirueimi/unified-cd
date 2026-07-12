@@ -1,4 +1,6 @@
 # Demonstrates: conditional step execution using if: expressions
+# The commands below are simplified to echoes so the example runs anywhere; the
+# point is which steps run for a given env, not what each command does.
 # Usage:
 #   unified-cd apply -f examples/jobs/step-condition.yaml
 #   unified-cd run trigger build-and-deploy --param env=staging
@@ -18,7 +20,6 @@ spec:
   steps:
     - name: build
       run: |
-        make build
         echo "ok"
       outputs:
         result: "{{ .Stdout | grep \"ok\" | trim }}"
@@ -26,18 +27,18 @@ spec:
     - parallel:
       - name: integrationTest
         if: 'params.env != "production"'
-        run: make integration-test
+        run: echo "Running integration tests (env={{ .Params.env }})"
 
       - name: deploy
         if: 'params.env == "production"'
-        run: ./deploy.sh
+        run: echo "Deploying to production"
 
+      # Note: use {{ .Params.env }} (rendered before the shell runs), not the
+      # shell form ${params.env}, which sh rejects as a bad substitution.
       - name: notify
         if: 'steps.build.outputs.result == "ok"'
-        run: |
-          curl -s -X POST $SLACK_WEBHOOK \
-            -d "{\"text\":\"Build finished for env=${params.env}\"}"
+        run: echo "Notify build finished for env={{ .Params.env }}"
 
     - name: smokeTest
       if: 'params.env in ["production", "staging"]'
-      run: ./smoke-test.sh
+      run: echo "Running smoke tests (env={{ .Params.env }})"
