@@ -1,7 +1,14 @@
-# Demonstrates: reusing job steps from a remote Git repository using uses:
+# Demonstrates: reusing job steps from a remote Git repository using uses:.
+# The referenced YAML's steps are inlined into THIS run (sharing its workspace)
+# by the controller before the run is queued — contrast with call:, which runs
+# a registered job as an independent child run (see examples/jobs/call-template.yaml).
+#
+# The three steps below fetch the same real template (this repository's
+# templates/smoke-check.yaml) via the three supported ref forms, so this
+# example actually runs.
 # Usage:
 #   unified-cd apply -f examples/jobs/git-template.yaml
-#   unified-cd apply -f examples/resources/gitcredential.yaml  # for private repos
+#   unified-cd apply -f examples/resources/gitcredential.yaml  # for private repos only
 #   unified-cd run trigger git-template-demo
 #
 # URI format: git://host/owner/repo/path/to/job.yaml@ref
@@ -14,73 +21,91 @@ kind: Job
 metadata:
   name: git-template-demo
 spec:
+  agentSelector:
+    - kind:docker
   steps:
     # public repo template — no authentication needed
-    - name: lintFromTemplate
+    - name: smokeFromTag
       uses:
         # semver tag → cached in the object store after the first fetch
-        job: git://github.com/example-org/ci-templates/jobs/lint.yaml@v2.1.0
+        job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@v0.1.0
         with:
-          language: go
-          target: ./...
+          url: "https://github.com"
+          # NOTE: pass every param you rely on — template input defaults are
+          # currently NOT applied on the uses: (inline) path, unlike call:.
+          expect_status: "200"
+          retries: "3"
+          interval_seconds: "2"
+          body_contains: "GitHub"
 
     # branch reference — always fetches the latest commit, never cached
-    - name: securityScanFromTemplate
+    - name: smokeFromBranch
       uses:
-        job: git://github.com/example-org/ci-templates/jobs/security-scan.yaml@main
+        job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@main
         with:
-          severity: HIGH
+          url: "https://github.com"
+          expect_status: "200"
+          retries: "3"
+          interval_seconds: "2"
+          body_contains: "GitHub"
 
     # commit SHA reference — fully pinned, cached like a semver tag
-    - name: buildFromTemplate
+    - name: smokeFromSHA
       uses:
-        # 40-char commit SHA → cached the same way as semver tags
-        job: git://github.com/example-org/ci-templates/jobs/docker-build.yaml@a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+        # 40-char commit SHA (the commit v0.1.0 points at) → cached the same way as semver tags
+        job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@66b4551f1b0e0e09c6b86e0e2ca7295bf52a4ad4
         with:
-          image: myapp
-          tag: latest
+          url: "https://github.com"
+          expect_status: "200"
+          retries: "3"
+          interval_seconds: "2"
+          body_contains: "GitHub"
 
 ---
 # Demonstrates: post: steps — cleanup that runs in LIFO order after the DAG completes.
-# post: failures do not affect the overall Run status.
+# post: failures do not affect the overall Run status. The commands are local
+# file operations so the example runs anywhere.
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
   name: post-step-demo
 spec:
-  # needs the host's git/go toolchain directly — run natively (see docs/migration-2026-07-job-isolation.md)
-  native: true
+  agentSelector:
+    - kind:docker
   steps:
     - name: checkout
       run: |
         set -e
-        git clone https://github.com/example-org/myapp /workspace/myapp
-        echo "Cloned successfully"
+        mkdir -p myapp
+        echo "package main" > myapp/main.txt
+        echo "Checked out (pretend)"
       # cleanup runs in reverse order after the DAG finishes
       post:
-        run: rm -rf /workspace/myapp
+        run: |
+          echo "post(checkout): removing myapp"
+          rm -rf myapp
 
     - name: build
       run: |
         set -e
-        cd /workspace/myapp
-        go build ./...
+        mkdir -p myapp/bin
+        echo "binary" > myapp/bin/app
+        echo "Built (pretend)"
       post:
         run: |
-          echo "Build artifacts cleaned up"
-          rm -rf /workspace/myapp/bin
+          echo "post(build): cleaning build artifacts"
+          rm -rf myapp/bin
 
     - name: test
       run: |
         set -e
-        cd /workspace/myapp
-        go test ./...
+        test -f myapp/bin/app
+        echo "Tests passed (pretend)"
       post:
         env:
-          WORKSPACE: /workspace/myapp
+          WORKSPACE: myapp
         run: |
-          echo "Removing test cache in $WORKSPACE"
-          go clean -testcache
+          echo "post(test): clearing test cache in $WORKSPACE"
 
 # Execution order: checkout → build → test
 # Post execution order (LIFO): test.post → build.post → checkout.post
