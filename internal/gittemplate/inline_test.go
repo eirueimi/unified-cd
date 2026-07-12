@@ -285,3 +285,76 @@ func TestExpandUsesStep_EmptyWithValueNoDefault_PassesThrough(t *testing.T) {
 	assert.True(t, ok, "explicit empty string without a default should pass through")
 	assert.Equal(t, "", v)
 }
+
+// TestExpandUsesStep_StepOwnShellSurvives verifies a template step's own
+// shell: is preserved as-is through inlining, even when the template also
+// declares a template-level spec.shell (the step's own value must win).
+func TestExpandUsesStep_StepOwnShellSurvives(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Shell: []string{"bash", "-lc"},
+		Steps: []dsl.StepEntry{
+			{Name: "build", Run: "print('hi')", Shell: []string{"python3", "-c"}},
+		},
+	}
+	expanded, err := expandUsesStep("tpl", nil, tplSpec, nil, "")
+	require.NoError(t, err)
+	build := expanded[1]
+	assert.Equal(t, "tpl__build", build.Name)
+	assert.Equal(t, []string{"python3", "-c"}, build.Shell, "step's own shell: must survive by copy")
+}
+
+// TestExpandUsesStep_TemplateLevelShellStampedOntoUndeclaredStep verifies a
+// template-level spec.shell is stamped onto an inlined step that declares no
+// step-level shell: of its own.
+func TestExpandUsesStep_TemplateLevelShellStampedOntoUndeclaredStep(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Shell: []string{"bash", "-lc"},
+		Steps: []dsl.StepEntry{
+			{Name: "build", Run: "make"},
+		},
+	}
+	expanded, err := expandUsesStep("tpl", nil, tplSpec, nil, "")
+	require.NoError(t, err)
+	build := expanded[1]
+	assert.Equal(t, "tpl__build", build.Name)
+	assert.Equal(t, []string{"bash", "-lc"}, build.Shell, "template-level spec.shell must be stamped onto the inlined step")
+}
+
+// TestExpandUsesStep_NoTemplateShell_InlinedStepLeftNil verifies a template
+// declaring no spec.shell leaves an undeclared step's Shell nil after
+// inlining — caller-level resolution (spec.shell of the outer job hosting
+// the uses: step) happens later, at claim build time.
+func TestExpandUsesStep_NoTemplateShell_InlinedStepLeftNil(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Steps: []dsl.StepEntry{
+			{Name: "build", Run: "make"},
+		},
+	}
+	expanded, err := expandUsesStep("tpl", nil, tplSpec, nil, "")
+	require.NoError(t, err)
+	build := expanded[1]
+	assert.Nil(t, build.Shell, "no template shell declared: inlined step must be left nil for caller-level resolution")
+}
+
+// TestExpandUsesStep_ParallelSteps_ShellSurvivesAndStamps verifies both the
+// step's-own-shell-survives and template-level-stamping rules apply inside a
+// parallel: block, not just top-level steps.
+func TestExpandUsesStep_ParallelSteps_ShellSurvivesAndStamps(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Shell: []string{"bash", "-lc"},
+		Steps: []dsl.StepEntry{
+			{Parallel: []dsl.Step{
+				{Name: "a", Run: "echo a", Shell: []string{"python3", "-c"}},
+				{Name: "b", Run: "echo b"},
+			}},
+		},
+	}
+	expanded, err := expandUsesStep("tpl", nil, tplSpec, nil, "")
+	require.NoError(t, err)
+	// expanded[0] = inputs, expanded[1] = the parallel StepEntry, expanded[2] = capture
+	require.Len(t, expanded, 3)
+	par := expanded[1]
+	require.Len(t, par.Parallel, 2)
+	assert.Equal(t, []string{"python3", "-c"}, par.Parallel[0].Shell, "parallel step's own shell survives")
+	assert.Equal(t, []string{"bash", "-lc"}, par.Parallel[1].Shell, "template-level shell stamped onto undeclared parallel step")
+}
