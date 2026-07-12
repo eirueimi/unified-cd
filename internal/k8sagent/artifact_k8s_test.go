@@ -48,6 +48,7 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 	if s3Secret == "" {
 		t.Skip("UNIFIED_TEST_S3_SECRET not set; skipping direct-S3 artifact round-trip (needs a pre-created Secret with UNIFIED_S3_* env in the test namespace)")
 	}
+	shimImage := testShimImageOrSkip(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -108,6 +109,7 @@ func TestK8sAgent_ArtifactRoundTrip_Integration(t *testing.T) {
 		AgentID:             agentID,
 		Namespace:           ns,
 		PodImage:            testImage,
+		ShimImage:           shimImage,
 		SidecarImage:        "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
 		Server:              srv.URL,
 		Token:               "tok",

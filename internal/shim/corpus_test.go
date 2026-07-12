@@ -1,7 +1,6 @@
 package shim
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -251,7 +250,13 @@ func corpusEnv(homeDir string) []string {
 func runCorpusScript(t *testing.T, script string, dir string) (exitCode int, err error) {
 	t.Helper()
 
-	var stdout, stderr bytes.Buffer
+	// syncBuffer (defined in run_test.go), not a bare bytes.Buffer: corpus
+	// scripts are shipped shell scripts, and nothing here statically
+	// guarantees none of them ever backgrounds a command (`&`) — the interp
+	// package documents that Stdout/Stderr writes may then happen
+	// concurrently from background-command goroutines. See syncBuffer's doc
+	// comment for the full rationale.
+	var stdout, stderr syncBuffer
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -655,7 +660,12 @@ func TestPin_BackgroundJobStillRunningAtScriptEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var stdout, stderr bytes.Buffer
+	// syncBuffer, not bytes.Buffer: this script backgrounds a job it never
+	// waits for, so the orphaned goroutine may still be writing to
+	// stdout/stderr (e.g. its own late writes racing this test's later
+	// stdout.String() reads) after Run returns — see syncBuffer's doc
+	// comment in run_test.go.
+	var stdout, stderr syncBuffer
 	script := "(while true; do :; done) &\necho done\n"
 
 	done := make(chan struct{})

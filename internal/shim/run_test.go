@@ -7,13 +7,52 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
+// syncBuffer wraps bytes.Buffer with a mutex so it's safe to use as the
+// Stdout/Stderr writer for a script that may run commands in the background
+// (`cmd &`). mvdan.cc/sh's interp package documents that Stdout/Stderr may be
+// written concurrently from background-command goroutines once a script uses
+// `&` — the caller owns synchronization. Production is safe (agent.LogPusher
+// is mutex-guarded); a plain bytes.Buffer, which these tests used to hand to
+// Run/RunWithHandlers directly, is not, and races under -race for any pin or
+// corpus script that backgrounds anything (e.g. TestPin_FanOutJoin's
+// `(echo a) & (echo b) & wait`).
+//
+// runScript (used by every construct pin in corpus_test.go) and
+// runCorpusScript (the corpus walker) both route through syncBuffer
+// unconditionally — not just the pins that background something today —
+// so a future pin or a corpus script gaining a `&` doesn't silently
+// reintroduce this race; it's safe by default rather than by audit.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *syncBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
 func runScript(t *testing.T, script string) (stdout, stderr string, code int, err error) {
 	t.Helper()
-	var outBuf, errBuf bytes.Buffer
+	var outBuf, errBuf syncBuffer
 	code, err = Run(context.Background(), script, strings.NewReader(""), &outBuf, &errBuf, nil, "")
 	return outBuf.String(), errBuf.String(), code, err
 }
