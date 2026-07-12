@@ -40,11 +40,11 @@ type parityK8sHarness struct {
 	secretsToServe map[string]string
 	fetchedNames   []string
 
-	// postOrder records each post-hook script's text in invocation order (the
-	// k8s agent's postExec callback runs the script directly — unlike the
-	// host, which discards post-hook stdout/stderr, we can observe the k8s
-	// post-hook invocation order directly through the fake postExec below,
-	// no marker-file workaround needed).
+	// postOrder records each post-hook script's text in invocation order: this
+	// fake's RunPostHook only records the script (it never executes it), so
+	// invocation order is observable directly — no marker-file workaround
+	// needed, unlike the host parity driver, which runs the real hostBackend
+	// and asserts order via $POSTHOOK_MARKER_FILE.
 	postOrder []string
 }
 
@@ -418,8 +418,12 @@ func (b *parityK8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.
 // post-hooks-lifo can assert LIFO order) and, since none of the 10 parity
 // cases' post hooks depend on their side effects being observed any other
 // way than the marker-file echoes already captured via log shipping in the
-// step body, does not itself execute the script.
-func (b *parityK8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, env []string) error {
+// step body, does not itself execute the script. stdout/stderr are accepted
+// (the shared ExecBackend interface now requires them, since production
+// RunPostHook implementations stream a post hook's real output into them —
+// see internal/agent/backend.go / internal/k8sagent/backend.go) but
+// deliberately unused here, matching this fake's documented no-exec design.
+func (b *parityK8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, env []string, stdout, stderr io.Writer) error {
 	b.postMu.Lock()
 	b.postOrder = append(b.postOrder, script)
 	b.postMu.Unlock()

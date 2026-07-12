@@ -61,10 +61,10 @@ func TestHostBackend_Native_ResolveCachePathUnresolved(t *testing.T) {
 
 func TestHostBackend_Isolated_PostHookRunsInStepContainer(t *testing.T) {
 	b, f := isolatedBackendForTest(t)
-	require.NoError(t, b.RunPostHook(context.Background(), ScopeHandle{}, "mysql", "echo post", nil))
+	require.NoError(t, b.RunPostHook(context.Background(), ScopeHandle{}, "mysql", "echo post", nil, io.Discard, io.Discard))
 	assert.Equal(t, "c1", f.execs[0].id)
 	// container=="" post hook goes to the primary
-	require.NoError(t, b.RunPostHook(context.Background(), ScopeHandle{}, "", "echo post2", nil))
+	require.NoError(t, b.RunPostHook(context.Background(), ScopeHandle{}, "", "echo post2", nil, io.Discard, io.Discard))
 	assert.Equal(t, "c2", f.execs[1].id)
 }
 

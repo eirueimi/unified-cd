@@ -337,6 +337,7 @@ steps:
 
 Post hooks run after the main DAG finishes (regardless of success or failure), in reverse declaration order.
 Use them for cleanup tasks (delete temp files, stop containers, release resources).
+A post hook's stdout/stderr appears in its owning step's run log, after that step's main output (a failing post hook itself does not fail the run — it's only logged).
 
 ---
 

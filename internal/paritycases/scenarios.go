@@ -162,21 +162,29 @@ func finallyRunsOnFailure() Case {
 // hooks must drain in LIFO order (step2's post fires before step1's post)
 // after the main DAG completes.
 //
-// IMPORTANT: neither agent ships a post: hook's stdout/stderr through the log
-// pipeline — the host's drain calls RunStepCapture(hookCtx, cmd, nil, ...)
-// (internal/agent/agent.go: stderr writer is nil, and the returned stdout is
-// never forwarded to a LogPusher), and the k8s drain's postExec calls
-// a.exec.ExecStep(..., io.Discard, io.Discard) (internal/k8sagent/agent.go).
-// So this case cannot be verified via Expectation.LogMustContain/Logs at all;
-// LogMustContain is intentionally left empty here. Instead each driver's test
-// must independently capture post-hook invocation order via its own fake
-// (host: wrap RunStepCapture's call site is not feasible without touching
-// production code, so the host driver instead gives each post script a
-// side-effect the test can observe out-of-band — e.g. writing a marker file
-// into the run's workDir — and asserts the file-write order; k8s: the fake
-// postExec function the driver already supplies records (script, order)
-// directly). See parity_host_test.go / parity_k8s_test.go for exactly how
-// each driver observes and asserts the LIFO order for this case.
+// IMPORTANT: both PRODUCTION backends now stream a post: hook's stdout/stderr
+// into the log pipeline, attributed to the owning step's index (see
+// ExecBackend.RunPostHook's doc comment, internal/agent/backend.go, and the
+// hookStack drain in internal/agent/orchestrator.go, which opens the owning
+// step's StepLogWriters around each hook invocation). This case's own two
+// TEST DRIVERS, however, still don't exercise that path end-to-end: the host
+// driver (parity_host_test.go) runs the real hostBackend with the writers
+// wired, but this case's post scripts redirect ALL their output into the
+// marker file (`>> "$POSTHOOK_MARKER_FILE"`), so no bytes reach the shipped
+// logs for this particular case — LIFO order is verified out-of-band via that
+// file (one file's append order is a simpler ordering signal than diffing
+// timestamps across two log streams); the k8s driver's
+// parityK8sBackend.RunPostHook (parity_k8s_test.go)
+// is a fake that deliberately does NOT execute the post script at all — it
+// only records invocation order — so LogMustContain still cannot be used
+// for this case without first teaching that fake to actually run scripts.
+// LogMustContain is therefore intentionally left empty here; each driver's
+// test independently asserts LIFO order via its own mechanism (host: marker
+// file; k8s: the fake's recorded postOrder). See parity_host_test.go /
+// parity_k8s_test.go for exactly how each driver observes and asserts LIFO
+// order for this case. See internal/agent/post_hook_logs_test.go and
+// internal/k8sagent's post-hook-output test for dedicated coverage of the
+// output-reaches-the-owning-step's-log behavior itself.
 func postHooksLIFO() Case {
 	return Case{
 		Name: "post-hooks-lifo",

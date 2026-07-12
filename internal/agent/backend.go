@@ -23,7 +23,13 @@ type ExecBackend interface {
 	UploadArtifact(ctx context.Context, scope ScopeHandle, runID, name, path string) error
 	DownloadArtifact(ctx context.Context, scope ScopeHandle, runID, name, destDir string) error
 
-	RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, env []string) error
+	// RunPostHook runs a step's post: hook. stdout/stderr are the SHIPPING
+	// writers for the owning step's log (see the hookStack drain in
+	// orchestrator.go: opened via StepLogWriters against the owning step's
+	// index, same as a main step's writers, so post output is masked and
+	// streamed identically) — RunPostHook must feed the script's actual
+	// stdout/stderr into them, not discard them.
+	RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, env []string, stdout, stderr io.Writer) error
 
 	// ResolveArtifactPath resolves a cache/artifact step's relative path (as
 	// authored in the DSL) against the right root for scope: the claim's

@@ -264,8 +264,11 @@ func (b *k8sBackend) DefaultAgentOS() string {
 // container) when scope is non-zero, else in targetPod/container (the
 // default pod's routing decided by the caller — container is meaningful on
 // k8s, unlike the host backend, since a post hook must run in the same
-// container the step body ran in).
-func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, env []string) error {
+// container the step body ran in). stdout/stderr are the owning step's
+// shipping writers (see agentlib.ExecBackend.RunPostHook's doc comment); they
+// replace what used to be a hardcoded io.Discard, io.Discard pair that threw
+// post-hook output away.
+func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, env []string, stdout, stderr io.Writer) error {
 	targetPod := ""
 	if !scope.IsZero() {
 		podName, ok := unwrapK8sScope(scope)
@@ -278,7 +281,7 @@ func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle
 	if targetPod == "" {
 		targetPod = b.podName
 	}
-	_, err := b.a.exec.ExecStep(ctx, targetPod, container, script, env, io.Discard, io.Discard)
+	_, err := b.a.exec.ExecStep(ctx, targetPod, container, script, env, stdout, stderr)
 	return err
 }
 
