@@ -354,12 +354,12 @@ func TestCheckAndFireSchedules_PropagatesAgentSelector(t *testing.T) {
 	// renders it as an empty string — see
 	// internal/dsl/template_test.go's TestExpandAgentSelector_PropagatesTemplateError
 	// vs. TestExpandConcurrency_MissingParamKeyExpandsToEmpty for the same
-	// distinction on a sibling expansion function). So a merely-missing param
-	// renders a degenerate-but-valid selector (e.g. "pool:") and the run
-	// fires normally — matching what the API/webhook trigger paths would
-	// also do, since they don't special-case an empty-rendered selector
-	// either. Only a genuine template syntax error is a deterministic
-	// failure worth blocking the fire for.
+	// distinction on a sibling expansion function). A merely-missing param
+	// therefore renders a degenerate selector element (e.g. "pool:") — which
+	// the scheduler ALSO skips (see the degenerate-element case below):
+	// unlike the API/webhook paths, where the caller immediately sees the
+	// Queued run, an unattended schedule would deterministically produce a
+	// reaper-failed run once per fire, forever.
 	t.Run("selector template syntax error skips fire and does not advance last_fired_at", func(t *testing.T) {
 		lastFired := testNow.Add(-25 * time.Hour)
 		jobSpec := []byte(`{"agentSelector":["pool:{{ .Params.pool"],` + // unclosed template action — parse error
@@ -380,9 +380,12 @@ func TestCheckAndFireSchedules_PropagatesAgentSelector(t *testing.T) {
 
 	// Complements the syntax-error case above: a param referenced by the
 	// selector template that simply isn't supplied (and has no default)
-	// still renders to an empty string rather than erroring, so the run
-	// fires with the degenerate selector instead of being blocked.
-	t.Run("selector template with a missing param renders empty and still fires", func(t *testing.T) {
+	// renders to an empty string rather than erroring — the element becomes
+	// degenerate ("pool:"), which can never match an agent label, so the
+	// scheduler skips the fire (warn + retry next tick) instead of producing
+	// a run the queued-run reaper would deterministically fail, once per
+	// fire, forever.
+	t.Run("selector element expanding empty skips fire and does not advance last_fired_at", func(t *testing.T) {
 		lastFired := testNow.Add(-25 * time.Hour)
 		jobSpec := []byte(`{"agentSelector":["pool:{{ .Params.pool }}"],"steps":[{"name":"s","run":"echo hi"}]}`)
 		m := &mockScheduleFireStore{
@@ -395,9 +398,47 @@ func TestCheckAndFireSchedules_PropagatesAgentSelector(t *testing.T) {
 		}
 		checkAndFireSchedules(context.Background(), m, testNow)
 
+		assert.Empty(t, m.created, "no Run should be created for a selector element that expanded empty")
+		assert.Empty(t, m.updated, "last_fired_at must not advance — warn and retry next tick")
+	})
+
+	// A statically-authored degenerate element ("pool:") is skipped the same
+	// way — the guard looks at the EXPANDED selector, however it got there.
+	t.Run("static empty-value selector element also skips fire", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		jobSpec := []byte(`{"agentSelector":["pool:"],"steps":[{"name":"s","run":"echo hi"}]}`)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"build": {Name: "build", Spec: jobSpec},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		assert.Empty(t, m.created)
+		assert.Empty(t, m.updated)
+	})
+
+	// Bare labels without a colon (e.g. "kubernetes") are NOT degenerate and
+	// must keep firing normally.
+	t.Run("bare label selector element fires normally", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		jobSpec := []byte(`{"agentSelector":["kubernetes"],"steps":[{"name":"s","run":"echo hi"}]}`)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"build": {Name: "build", Spec: jobSpec},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
 		require.Len(t, m.created, 1)
 		require.Len(t, m.createdAgentSelectors, 1)
-		assert.Equal(t, []string{"pool:"}, m.createdAgentSelectors[0])
+		assert.Equal(t, []string{"kubernetes"}, m.createdAgentSelectors[0])
 		require.NotNil(t, m.updated["daily"])
 	})
 }
