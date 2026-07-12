@@ -9,6 +9,7 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
 - [Parameters (inputs / outputs)](#parameters-inputs--outputs)
 - [Steps](#steps)
   - [Shell Execution (`run`)](#shell-execution-run)
+  - [Shell (`shell:`)](#shell-shell)
   - [Step Dependencies (`needs`)](#step-dependencies-needs)
   - [Conditional Execution (`if`)](#conditional-execution-if)
   - [Environment Variables (`env`)](#environment-variables-env)
@@ -171,13 +172,152 @@ steps:
 ```
 
 - Runs in a temporary workspace directory on the agent.
-- Uses `/bin/sh` on Linux/macOS, Git Bash on Windows.
+- **Isolated jobs (the default — see [Job Isolation](#job-isolation-native-and-the-claim-pod)
+  below):** the script execs into a container using the step's effective
+  interpreter argv. The system default is the injected `ucd-sh` shim
+  (`["/.ucd/ucd-sh", "-c"]`) — no shell binary is required in the step's
+  image. See [Shell (`shell:`)](#shell-shell) to override it.
+- **`native: true` jobs:** the script runs as a host process under host
+  `bash -lc` (Git Bash on Windows) by default, unless overridden with
+  `shell:`.
 - Exit code non-zero fails the step.
 - Environment variable `UNIFIED_AGENT_OS` (`linux` / `darwin` / `windows`) is always injected.
 - Multi-line `run: |` scripts are executed **without** `set -e`: a failing
   intermediate command does not fail the step as long as the script's last
   command exits 0. Add `set -e` as the first line of your script (or check
   exit codes yourself) if you want an early failure to fail the step.
+
+### Shell (`shell:`)
+
+Override the interpreter argv used to execute a step's (or a whole job's) `run:` script.
+
+```yaml
+spec:
+  shell: [bash, -lc]                       # job-level default (optional)
+  steps:
+    - name: build
+      shell: [bash, -euo, pipefail, -c]    # step-level override
+      run: |
+        make build | tee build.log
+
+    - name: quick
+      shell: [python3, -c]                 # any interpreter, not just a shell
+      run: print("hi")
+
+    - name: default
+      run: echo hi                         # -> ["/.ucd/ucd-sh", "-c", "echo hi"]
+```
+
+**Shape.** `shell:` is a non-empty array of non-empty strings — the array
+form only. There is no scalar/string shorthand and no re-splitting of a
+single string; the array is exec'd **verbatim as argv**, with the `run:`
+script appended as the final element, never re-parsed or re-quoted.
+`shell: [bash, -lc]` execs `bash -lc "<script>"`; `shell: [python3, -c]`
+execs `python3 -c "<script>"`. Validation at apply time only checks the
+shape (non-empty array of non-empty strings); a program missing from the
+target image/host is a **runtime** step failure with an actionable message
+(e.g. `step "build": exec "python3": not found in the container image —
+check shell: or the image`), not an apply-time error.
+
+**Resolution priority** (most specific wins):
+
+| Priority | Source | Notes |
+|---|---|---|
+| 1 (highest) | `step.shell` | Steps inside `parallel:` and `finally:` count as steps for this purpose. |
+| 1 | `post.shell` | A `post:` hook may declare its own `shell:`; when absent, it **inherits its owning step's effective shell** (not the job default). This exists because inheritance alone breaks down for non-shell interpreters — a `shell: [python3, -c]` step with a shell-script cleanup hook needs `post: {shell: [sh, -c], run: ...}` to be expressible at all. |
+| 2 | A `uses:` template's own declared shell | A template step's own `shell:` survives inlining as-is; a template-level `spec.shell` is stamped onto every inlined step that doesn't already declare one, at expansion time. The caller of the `uses:` step **cannot override either** — the template author chose it because the script needs it. A template that declares neither inherits the caller's job-level default, resolved at claim-build time. |
+| 3 | `spec.shell` (job-level) | Applies to every step in the job that doesn't declare its own `shell:` (or wasn't stamped by a `uses:` template). |
+| 4 (lowest) | System default | `["/.ucd/ucd-sh", "-c"]` for container execution (any job that isn't `native: true`); host `bash -lc` (Git Bash on Windows) for `native: true` steps — unchanged in v1 (see [Non-goals](#native-true--host-process-jobs)). |
+
+Two special cases fall outside the table above:
+
+- **`call:` does not inherit.** A called job's steps resolve `shell:`
+  entirely from the called job's own spec — never from the calling step's
+  or job's `shell:`. This is consistent with every other job-level spec
+  field: a `call:` child is a separate run.
+- **`container:` resolves inside the target container.** A step with
+  `container: X` needs its interpreter argv present in `X`'s image, exactly
+  like the primary container — the same priority table applies; only the
+  exec target differs.
+
+#### The default: the `ucd-sh` shim
+
+The system default for every container-executed step is:
+
+```
+["/.ucd/ucd-sh", "-c"]
+```
+
+`ucd-sh` is a small, statically-linked Go binary — embedded into every
+unified-cd agent binary and injected into every job/scope container at the
+reserved path **`/.ucd`** (see below) — that interprets the script using
+[`mvdan.cc/sh`](https://github.com/mvdan/sh), a pure-Go POSIX-ish shell
+implementation. It requires **no shell binary in the target image**:
+`scratch`, distroless, and other bash-less/sh-less images work as step
+containers by default (see [Configuration Reference](configuration.md) for
+the `podImage`/`podTemplate` implications).
+
+**Verified interpreter constraints** — supported vs. not, and what to do
+about the gaps:
+
+| Category | Supported | Not supported — declare `shell: [bash, -lc]` if needed |
+|---|---|---|
+| Control flow | `if`/`case`/`for`/`while`/`until`, functions, `local` | — |
+| Tests / expansion | `[[ ]]`, arithmetic `$(( ))`, most parameter expansions | — |
+| Data | arrays, associative arrays, `set --` argv manipulation, IFS-based word splitting | — |
+| Pipes / redirects / substitution | pipes, redirects, heredocs, command substitution, process substitution (Unix) | `/dev/tcp` (Bash's `/dev/tcp/host/port` pseudo-device) |
+| `set` options | `set -e`, `-u`, `-x`, `-o pipefail` | — |
+| Job control | fan-out/join (`cmd & cmd & wait`); `wait $!` (a virtual job handle — returns the backgrounded command's real exit status) | `wait -n`, `wait -p` (rejected immediately: exit status 2, error message names `wait` and the rejected flag); `jobs`; `kill $!` (no `kill` builtin — `$!` is a virtual `gN` handle no external `kill` understands); `PIPESTATUS` |
+| `trap` | `trap ... EXIT`, `trap ... ERR` | Any other condition (signal name or number) — see the sanitizer below |
+| `shopt` | a 6-option subset | anything beyond that subset |
+| Process model | subshells run as goroutines | no real fork/PID semantics — nothing a script spawns is a real OS process with a kernel PID |
+
+**Pinned background-job behavior:** a script that backgrounds a job and does
+**not** `wait` for it (e.g. `long-running-daemon &`) is not awaited when the
+script body finishes — `ucd-sh` returns as soon as the main script body
+completes, leaving the backgrounded job running as an orphaned in-process
+goroutine bounded only by the step's own context (a step timeout or run
+cancellation eventually stops it; a step with no timeout that backgrounds an
+infinite-looping job **reports success and moves on** while that job keeps
+running). Add an explicit `wait` if the step must block until a backgrounded
+job finishes.
+
+#### `trap` sanitizer
+
+`mvdan.cc/sh`'s `trap` builtin only implements the `EXIT` and `ERR`
+conditions; any other condition (`TERM`, `INT`, a bare signal number, ...)
+errors with exit status 2 — which, under `set -e`, would kill the script at
+the `trap` line before it does anything. `ucd-sh` sanitizes every `trap`
+call before running the script:
+
+- Unsupported condition words (signal names/numbers) are stripped; `EXIT`
+  and `ERR` are always kept.
+- Each stripped condition emits one `[ucd-sh] `-prefixed warning line to
+  stderr, naming the signal and recommending `shell: [bash, -lc]` for steps
+  that need real signal traps.
+- The bare two-word form (`trap SIGNAL`, no handler — POSIX resets the
+  condition to its default disposition) is sanitized the same way: an
+  unsupported signal there is stripped rather than left to error.
+- If every condition on a `trap` call is stripped, the call becomes a no-op
+  (`true`) rather than erroring.
+
+This is graceful degradation, not silent data loss: the warning tells you
+exactly what happened and what to change if the step actually needs the
+trap.
+
+#### `/.ucd` — reserved path
+
+`/.ucd` is injected into every container a job or scope creates (the
+primary container, every `podTemplate`/sidecar container, `uses:`-scope
+containers) and holds the `ucd-sh` binary. It is **reserved**: a
+`podTemplate` (or claim-pod container) that mounts something else over
+`/.ucd` is user error and fails loudly the first time the agent execs into
+that container. See [Kubernetes Integration: Step execution
+mechanism](kubernetes-integration.md#step-execution-mechanism) and [Agent
+Labels and Routing](agents.md) for how `/.ucd` is populated on each
+backend.
+
+---
 
 ### Concurrent Steps (`parallel`)
 

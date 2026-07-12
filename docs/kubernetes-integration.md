@@ -79,8 +79,14 @@ labels:
 namespace: ci          # Kubernetes namespace where job Pods are created
 maxConcurrent: 5       # maximum number of concurrent Pods
 
-# Fallback image when no podTemplate is specified
+# Fallback image when no podTemplate is specified. Bash-less images (as here)
+# work fine by default — steps exec via the injected ucd-sh shim, not bash.
 podImage: golang:1.24-alpine
+
+# Image the prepended init container runs to install the ucd-sh shim onto
+# the shared /.ucd volume (see "Step execution mechanism" below). Defaults
+# to the k8s-agent's own image, which ships /ucd-sh at its root.
+# shimImage: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
 
 # kubeconfig omitted → uses InClusterConfig if running inside the cluster,
 #                       or ~/.kube/config if running outside
@@ -95,7 +101,7 @@ podTemplates:
       containers:
         - name: job
           image: golang:1.24-alpine
-          # command omitted → agent auto-injects "sleep infinity"
+          # command omitted → agent auto-injects ["/.ucd/ucd-sh", "pause"]
 
   node:
     workspace:
@@ -189,7 +195,7 @@ spec:
     override:
       containers:
         - name: trivy
-          image: aquasec/trivy:latest   # agent auto-injects "sleep infinity"
+          image: aquasec/trivy:latest   # agent auto-injects ["/.ucd/ucd-sh", "pause"]
   steps:
     - name: build
       run: go build -o /workspace/app ./cmd/server
@@ -242,12 +248,73 @@ All containers in the Pod mount the same path (`mountPath`), so files are shared
 
 The k8s-agent follows these steps:
 
-1. Create the Pod (auto-inject `command: ["sleep", "infinity"]`)
-2. Send each step into the Pod via the equivalent of `kubectl exec`
+1. Create the Pod: prepend the `ucd-shim` init container (see below), inject
+   the `["/.ucd/ucd-sh", "pause"]` keep-alive into the primary `job`
+   container when it has no explicit `command`/`args`
+2. Send each step into the Pod via the equivalent of `kubectl exec`, running
+   `/.ucd/ucd-sh -c <script>` by default (or the step's effective `shell:`
+   argv — see [Job Reference: Shell (`shell:`)](jobs.md#shell-shell))
 3. Report results and logs to the master in real time
 4. After all steps complete, delete the Pod (or return to pool if `reuse: true`)
 
 Use `container:` to switch the execution container per step. When omitted, the first container (`job`) is used.
+
+**`bash -lc` is gone as the hardcoded exec wrapper.** Every earlier version
+of this agent exec'd steps with `bash -lc "<script>"`, which meant every
+`podImage`/`podTemplate` container needed a working `bash` — a requirement
+the DSL never stated and this doc's own `golang:1.24-alpine`/`alpine`
+examples silently violated. Steps now exec via the injected `ucd-sh` shim by
+default (`/.ucd/ucd-sh -c "<script>"`), which requires **no shell binary in
+the image at all** — `scratch`, distroless, and other bash-less/sh-less
+images are valid `job`/sidecar images. A job that relies on real bash
+semantics (login-shell profile sourcing, `wait -n`, `PIPESTATUS`, signal
+traps, ...) opts back in explicitly with `spec.shell: [bash, -lc]` or a
+step-level override — see the [interpreter constraints
+table](jobs.md#the-default-the-ucd-sh-shim) for exactly what the default
+shim does and doesn't support.
+
+### `/.ucd` shim injection
+
+Every Pod this agent builds — job Pods, scope Pods (from a `uses:`-level
+`runsIn.image`), and pool-reused Pods — gets:
+
+- An `emptyDir` volume named `ucd-tools`, mounted at `/.ucd` on **every**
+  container in the pod (the primary `job` container and every
+  `podTemplate`/`override` sidecar — a sidecar is itself a `container:` exec
+  target and needs the shim too).
+- A **prepended** init container, `ucd-shim`, running the agent's
+  `shimImage` (config field `shimImage`, default the k8s-agent's own image,
+  which ships `/ucd-sh` at its root) with `command: ["/ucd-sh", "--install",
+  "/.ucd/ucd-sh"]` — it self-copies onto the shared volume before any other
+  container starts. This is the Tekton/Argo emissary init-container pattern:
+  a Pod has no host filesystem to bind-mount the shim from, unlike the
+  standard agent's claim pod (which bind-mounts its own tools directory
+  read-only).
+- If the `podTemplate`/`override` already declares `initContainers:`,
+  `ucd-shim` is **prepended** ahead of them — the shim must be on disk
+  before any user init container (or any regular container) that might also
+  need it.
+- `shimImage` is configurable specifically for air-gapped registries that
+  mirror the k8s-agent image under a different name/tag.
+
+`/.ucd` is therefore a **reserved path**: a `podTemplate` that mounts
+something else there is user error and fails loudly (an exec into that
+container looks for `/.ucd/ucd-sh` and won't find it) the first time a step
+runs.
+
+### Keep-alive: `ucd-sh pause`
+
+The primary `job` container's keep-alive — injected only when the container
+has **neither** `command` nor `args` set, so an author-supplied entrypoint
+or a sidecar's own service command (e.g. `mysqld`) is never clobbered —
+changed from `["sleep", "infinity"]` to `["/.ucd/ucd-sh", "pause"]`. This
+applies uniformly, including the **bare `podImage` fallback** (no
+`podTemplate` at all): that path routes through the same injection logic as
+a `podTemplate`-defined `job` container, so it also gets the shim
+keep-alive rather than being left uninjected. `ucd-sh pause` blocks until
+SIGTERM/SIGINT, reaps zombie children while running as PID 1, and needs no
+`sleep` binary in the image — the `scratch`/distroless keep-alive case that
+`sleep infinity` could never satisfy.
 
 ---
 

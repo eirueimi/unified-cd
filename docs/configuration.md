@@ -254,8 +254,16 @@ labels:
 namespace: ci               # Kubernetes namespace for job Pods
 maxConcurrent: 10           # max simultaneous Pods
 
-# Fallback image when no podTemplate is referenced
+# Fallback image when no podTemplate is referenced. Bash-less/sh-less images
+# (as here) work fine by default — steps exec via the injected ucd-sh shim,
+# not a shell that has to exist in the image (see the podImage guidance
+# under "K8s Agent config fields" below).
 podImage: alpine:3.19
+
+# Image the prepended init container runs to install the ucd-sh shim onto
+# the shared /.ucd volume. Defaults to the k8s-agent's own image (below);
+# override for air-gapped registries that mirror it under another name.
+# shimImage: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
 
 # kubeconfig: /path/to/kubeconfig
 # Omit to use InClusterConfig (when running inside the cluster)
@@ -286,7 +294,7 @@ podTemplates:
       containers:
         - name: job
           image: golang:1.24-alpine
-          # command omitted → agent injects ["sleep", "infinity"]
+          # command omitted → agent injects ["/.ucd/ucd-sh", "pause"]
 
   node:
     workspace:
@@ -323,7 +331,8 @@ podTemplates:
 | `agentId` | string | Yes | — | Unique agent ID. Overridden by env `UNIFIED_K8S_AGENT_ID` (e.g. the pod name) |
 | `labels` | []string | No | — | Agent labels matched against a Job's `agentSelector` |
 | `namespace` | string | No | `default` | Namespace the agent creates job/scope Pods in |
-| `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Fallback job-container image when no `podTemplate` is referenced |
+| `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Fallback job-container image when no `podTemplate` is referenced. Any image works, including bash-less/sh-less ones (`alpine`, distroless, `scratch`) — steps exec via the injected `ucd-sh` shim by default, not a shell the image must provide. See [Job Reference: Shell (`shell:`)](jobs.md#shell-shell). |
+| `shimImage` | string | No | `ghcr.io/eirueimi/unified-cd-k8s-agent:latest` | Image the prepended `ucd-shim` init container runs to install the `ucd-sh` shim onto the shared `/.ucd` `emptyDir`. Override for air-gapped registries mirroring the k8s-agent image under another name. |
 | `sidecarImage` | string | No | `ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest` | Artifact-transfer sidecar image injected into every job/scope Pod |
 | `sidecarS3SecretName` | string | No | — | Secret carrying `UNIFIED_S3_*` for the sidecar. Without it, cache steps are no-ops (Succeeded) and artifact steps fail |
 | `kubeconfig` | string | No | in-cluster / `~/.kube/config` | Path to a kubeconfig; omit to use `InClusterConfig` (in cluster) or `~/.kube/config` (out of cluster) |
@@ -344,7 +353,7 @@ podTemplates:
 | `workspace.pvc.accessMode` | string | `ReadWriteOnce`, `ReadOnlyMany`, or `ReadWriteMany` |
 | `spec` | map | Kubernetes PodSpec (containers, volumes, etc.) |
 
-All containers that have no `command` field automatically receive `["sleep", "infinity"]` injected by the agent.
+The primary `job` container, when it declares neither `command` nor `args`, automatically receives `["/.ucd/ucd-sh", "pause"]` as its keep-alive command (previously `["sleep", "infinity"]`) — a Go-implemented keep-alive that needs no `sleep` binary in the image, reaps zombie children as PID 1, and exits promptly on SIGTERM. Sidecars with their own `command`/`args` (or none at all, relying on the image's own entrypoint — e.g. a `mysql`/`redis` service container) are left untouched; only the primary container's injection is conditional on having neither set. Every container in the Pod also gets `/.ucd` mounted read-only, carrying the `ucd-sh` binary installed by a prepended `ucd-shim` init container — see [Kubernetes Integration: `/.ucd` shim injection](kubernetes-integration.md#ucd-shim-injection).
 
 ---
 

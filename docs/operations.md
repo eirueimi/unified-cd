@@ -69,7 +69,7 @@ k8s-agent's pod GC (see the Recovery Runbook above), are **not** cleaned up auto
   Workspace lifecycle](agents.md#workspace-lifecycle)).
 - **Crash-orphaned claim containers.** If the standard agent process exits ungracefully
   mid-claim (killed, OOM, host reboot), the claim pod's pause and sidecar containers are left
-  running (`sleep infinity`) instead of being torn down. The host agent has no automatic
+  running (`/.ucd/ucd-sh pause`) instead of being torn down. The host agent has no automatic
   container GC for these — periodically prune claim-pod-shaped containers on agent hosts (see
   [Agent Labels and Routing: Crash-orphaned claim
   containers](agents.md#crash-orphaned-claim-containers)).
