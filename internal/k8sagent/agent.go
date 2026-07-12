@@ -42,7 +42,7 @@ type podManager interface {
 }
 
 type stepExecutor interface {
-	ExecStep(ctx context.Context, podName, container, script string, env []string, stdout, stderr io.Writer) (int, error)
+	ExecStep(ctx context.Context, podName, container, script string, shell []string, env []string, stdout, stderr io.Writer) (int, error)
 	ExecStepArgv(ctx context.Context, podName, container string, argv []string, stdout, stderr io.Writer) (int, error)
 }
 
@@ -173,7 +173,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			templateName = c.PodTemplate.Name
 		}
 		pp, err := a.pool.ClaimPod(ctx, c.RunID, templateName, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
-			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName})
+			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName}, a.cfg.ShimImage)
 		if err != nil {
 			slog.Error("k8s: failed to acquire Pod", "runId", c.RunID, "error", err)
 			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
@@ -188,7 +188,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		}()
 	} else {
 		pod, err := BuildPod(c.RunID, a.cfg.Namespace, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
-			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName})
+			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName}, a.cfg.ShimImage)
 		if err != nil {
 			slog.Error("k8s: failed to build Pod spec", "runId", c.RunID, "error", err)
 			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
@@ -228,7 +228,10 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 				break
 			}
 		}
-		_, _ = a.exec.ExecStep(ctx, podName, firstContainer, fmt.Sprintf("rm -rf %s/*", mountPath), nil, io.Discard, io.Discard)
+		// nil shell: this is an internal maintenance script (not user-authored
+		// run:), so the shim default (["/.ucd/ucd-sh","-c"], POSIX-compatible)
+		// is always sufficient regardless of any step's declared shell:.
+		_, _ = a.exec.ExecStep(ctx, podName, firstContainer, fmt.Sprintf("rm -rf %s/*", mountPath), nil, nil, io.Discard, io.Discard)
 	}
 
 	mountPath := "/workspace"

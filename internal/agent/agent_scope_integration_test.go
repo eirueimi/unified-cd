@@ -66,8 +66,9 @@ func TestExecuteRun_ScopedStep_RealRuntimeRoundTrip(t *testing.T) {
 	defer srv.Close()
 
 	a := &Agent{
-		ID:     agentID,
-		Client: NewClient(srv.URL, "tok"),
+		ID:       agentID,
+		Client:   NewClient(srv.URL, "tok"),
+		ToolsDir: installShimOrSkip(t),
 	}
 
 	resp := api.ClaimResponse{

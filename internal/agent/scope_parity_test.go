@@ -27,7 +27,7 @@ import (
 // from silently diverging. This cross-links Task 7 (host) and Task 10 (k8s)
 // coverage under one explicit parity check, per the Task 11 brief.
 func TestScopeRoutingParity_HostVsK8s(t *testing.T) {
-	m := newScopeManager(&fakeRT{})
+	m := newScopeManager(&fakeRT{}, "")
 
 	cases := []struct {
 		name       string

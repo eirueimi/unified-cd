@@ -49,8 +49,11 @@ func claimWorkDir(wsBase string, slot int, jobName string) string {
 // the recorded mode flipped, falling back to a root cleanup container when a
 // plain RemoveAll hits permission errors (root-owned files written by
 // rootful-docker containers), then ensures the directory exists and records
-// the mode marker.
-func prepareWorkspace(ctx context.Context, workDir, mode string, clean bool, rtFn func() (crt.ContainerRuntime, error)) error {
+// the mode marker. toolsDir is threaded through to containerCleanup so the
+// cleanup container carries the same /.ucd mount as every other container
+// this agent creates (see claim_pod.go's ucdToolsMount); empty means no
+// shim mount.
+func prepareWorkspace(ctx context.Context, workDir, mode string, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
 	prev, _ := os.ReadFile(filepath.Join(workDir, modeMarkerFile))
 	flipped := len(prev) > 0 && string(prev) != mode
 	if clean || flipped {
@@ -59,7 +62,7 @@ func prepareWorkspace(ctx context.Context, workDir, mode string, clean bool, rtF
 		}
 		if err := os.RemoveAll(workDir); err != nil {
 			slog.Warn("workspace clean failed; retrying via cleanup container", "dir", workDir, "error", err)
-			if cerr := containerCleanup(ctx, workDir, rtFn); cerr != nil {
+			if cerr := containerCleanup(ctx, workDir, rtFn, toolsDir); cerr != nil {
 				slog.Warn("cleanup container failed; proceeding with dirty workspace", "dir", workDir, "error", cerr)
 			} else if err := os.RemoveAll(workDir); err != nil {
 				slog.Warn("workspace clean still failing after cleanup container", "dir", workDir, "error", err)
@@ -77,20 +80,22 @@ func prepareWorkspace(ctx context.Context, workDir, mode string, clean bool, rtF
 
 // containerCleanup deletes workDir's contents as root via a throwaway
 // container, for files a rootful container runtime left owned by root.
-func containerCleanup(ctx context.Context, workDir string, rtFn func() (crt.ContainerRuntime, error)) error {
+func containerCleanup(ctx context.Context, workDir string, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
 	rt, err := rtFn()
 	if err != nil {
 		return fmt.Errorf("no container runtime for cleanup: %w", err)
 	}
-	// Command is explicit sleep-infinity keep-alive: this container must stay
-	// running between Create and the Exec below (see
+	// Command is the explicit ucd-sh pause keep-alive: this container must
+	// stay running between Create and the Exec below (see
 	// crt.CreateSpec.Command) — busybox's default entrypoint would otherwise
-	// read stdin, hit EOF immediately, and exit before Exec runs.
+	// read stdin, hit EOF immediately, and exit before Exec runs. The /.ucd
+	// mount is what makes that keep-alive binary available.
+	mounts := append([]crt.Mount{{HostPath: workDir, ContainerPath: "/w"}}, ucdToolsMount(toolsDir)...)
 	h, err := rt.Create(ctx, crt.CreateSpec{
 		Image:   "busybox",
 		WorkDir: "/w",
-		Mounts:  []crt.Mount{{HostPath: workDir, ContainerPath: "/w"}},
-		Command: []string{"sleep", "infinity"},
+		Mounts:  mounts,
+		Command: ucdShPause,
 	})
 	if err != nil {
 		return err

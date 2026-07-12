@@ -273,6 +273,50 @@ the compose network.
 See [Configuration Reference: Agent Flags](configuration.md#agent-flags) for
 the full flag list.
 
+### Shim installation (`ucd-sh`)
+
+Every claim-pod container (the primary `job` container, `podTemplate`
+sidecars), every `uses:`-scope container, and the workspace-cleanup
+container needs the `ucd-sh` shim binary to exec into: it's both the
+default `run:` interpreter (`/.ucd/ucd-sh -c`) and the keep-alive
+(`/.ucd/ucd-sh pause`, replacing `sleep infinity`). Unlike the k8s-agent
+(which self-installs the shim into an `emptyDir` via a prepended init
+container — see [Kubernetes Integration: `/.ucd` shim
+injection](kubernetes-integration.md#ucd-shim-injection)), the standard
+agent has a real host filesystem, so it takes a simpler path:
+
+1. **At startup**, before serving any claims, `cmd/agent`'s `main()` writes
+   the `ucd-sh` binary embedded in the agent's own binary (`internal/shim/
+   embedded`) to `<tools-dir>/ucd-sh` (mode `0755`) — `tools-dir` is a
+   sibling of `--workspace-dir` (e.g. `--workspace-dir ~/workspace` →
+   `~/tools`).
+2. **Every container the agent creates afterward** — claim-pod containers,
+   `uses:`-scope containers, the workspace-cleanup container — bind-mounts
+   that tools directory **read-only** at `/.ucd`, the same reserved path the
+   k8s-agent uses.
+3. **A zero-byte embed is a hard startup failure**, not a first-exec
+   surprise. The `ucd-sh` binary is embedded via a two-stage build (`go
+   generate`/`go:embed` can't cross-compile a second binary in one pass): a
+   freshly cloned or plain `go build`'d agent has an empty placeholder
+   embedded, and `InstallShim` refuses to start rather than let every
+   isolated job fail its first exec with an opaque "no such file" error.
+   Build the shim in with **`make embed-shim`** (bundled into `make build`)
+   or **`scripts/build-shims.sh`** (used by the release pipeline) before
+   starting the agent. The failure is logged and the process exits
+   immediately:
+
+   ```
+   install ucd-sh shim failed error="ucd-sh shim is not embedded in this agent binary (0 bytes): build with `make embed-shim` (or `make build`), or run scripts/build-shims.sh, before starting the agent"
+   ```
+
+This check runs alongside — but independently of — the Windows Git Bash
+`RequireShell` check (see [Windows Agents](#windows-agents)): both are
+startup-time hard-fails so a misconfigured agent never silently degrades
+into a confusing per-step failure. **Native steps are unaffected**: a
+`native: true` job's steps still run as plain host processes under host
+`bash -lc` (or an explicit `shell:`), never touching `/.ucd` or the shim —
+see [Job Reference: `native: true`](jobs.md#native-true--host-process-jobs).
+
 ### Troubleshooting isolated claims
 
 If a claim fails before any step runs — no container runtime found, the
@@ -289,7 +333,7 @@ log.
 ### Crash-orphaned claim containers
 
 The claim pod's pause and sidecar containers are started as long-lived
-processes (`sleep infinity`, not `--rm`) and are torn down by the agent
+processes (`/.ucd/ucd-sh pause`, not `--rm`) and are torn down by the agent
 itself when the claim finishes. If the agent process exits ungracefully
 mid-claim — killed, OOM, host reboot — that teardown never runs, and the
 pause container plus every podTemplate sidecar for that claim are left

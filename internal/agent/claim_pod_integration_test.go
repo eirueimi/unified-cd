@@ -96,6 +96,24 @@ func newClaimIntegrationServer(t *testing.T, agentID string, h *claimIntegration
 	return srv
 }
 
+// installShimOrSkip installs the real embedded ucd-sh into a fresh temp
+// tools dir and returns it, for real-Docker/Podman integration tests: every
+// claim-pod/scope container's keep-alive is now "/.ucd/ucd-sh pause" (see
+// claim_pod.go's ucdShPause), so a claim pod cannot start without a real
+// (non-placeholder) shim mounted at /.ucd. Skips the test — rather than
+// failing — when internal/shim/embedded still holds the committed
+// zero-byte placeholder (the two-stage build, `make embed-shim`, has not
+// been run), mirroring the crt.Detect "no runtime" skip pattern used
+// throughout this file.
+func installShimOrSkip(t *testing.T) string {
+	t.Helper()
+	toolsDir, err := InstallShim(t.TempDir())
+	if err != nil {
+		t.Skipf("ucd-sh shim not embedded (run `make embed-shim` first): %v", err)
+	}
+	return toolsDir
+}
+
 // TestClaimPod_Integration_SidecarLocalhostAndWorkspace is a real-Docker/
 // Podman round-trip proving the claim pod's three isolation guarantees at
 // once: (1) every container shares the workspace bind mount (a default step
@@ -124,6 +142,7 @@ func TestClaimPod_Integration_SidecarLocalhostAndWorkspace(t *testing.T) {
 		Client:      NewClient(srv.URL, "tok"),
 		PauseImage:  "busybox:1.36",
 		RunnerImage: "busybox:1.36",
+		ToolsDir:    installShimOrSkip(t),
 	}
 
 	claim := api.ClaimResponse{
@@ -207,6 +226,7 @@ func TestClaimPod_Integration_RedisSidecarEntrypointRuns(t *testing.T) {
 		Client:      NewClient(srv.URL, "tok"),
 		PauseImage:  "busybox:1.36",
 		RunnerImage: "busybox:1.36",
+		ToolsDir:    installShimOrSkip(t),
 	}
 
 	claim := api.ClaimResponse{
@@ -255,6 +275,121 @@ exit 1`,
 		"default step must observe the redis sidecar listening, proving its entrypoint ran, got: %q", step1Stdout)
 }
 
+// TestClaimPod_Integration_Shim_DefaultShellRunsInBashlessAlpine is the
+// headline end-to-end proof for the step-shell-shim feature (spec Testing
+// summary, "Integration (docker-gated)"): a claim-pod job whose primary
+// ("job") container is alpine:3 — no bash, only busybox ash — runs a
+// default (no shell: declared) step to success. This can only work if (1)
+// InstallShim actually wrote a real ucd-sh to toolsDir, (2) claimPodManager
+// bind-mounted it read-only at /.ucd on the primary container, (3) the
+// primary's keep-alive ("/.ucd/ucd-sh pause") actually started and kept the
+// container alive without a "sleep" binary, and (4) the step's exec used the
+// shim default (["/.ucd/ucd-sh", "-c"]) rather than a "sh"/"bash" this image
+// doesn't have beyond busybox ash. The pause container is alpine:3 too, for
+// the same "no bash, no sleep, must work anyway" proof on that container.
+func TestClaimPod_Integration_Shim_DefaultShellRunsInBashlessAlpine(t *testing.T) {
+	if _, err := crt.Detect(""); err != nil {
+		t.Skipf("no container runtime available, skipping: %v", err)
+	}
+
+	const agentID = "claim-pod-shim-alpine-agent"
+	const runID = "run-claim-pod-shim-alpine"
+
+	h := newClaimIntegrationHarness()
+	srv := newClaimIntegrationServer(t, agentID, h)
+
+	a := &Agent{
+		ID:          agentID,
+		Client:      NewClient(srv.URL, "tok"),
+		PauseImage:  "alpine:3",
+		RunnerImage: "alpine:3",
+		ToolsDir:    installShimOrSkip(t),
+	}
+
+	claim := api.ClaimResponse{
+		Native:  false,
+		RunID:   runID,
+		JobName: "test-claim-pod-shim-alpine",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0, StageIndex: 0, Name: "no-shell-declared",
+				// No Shell field set: must resolve to the shim default
+				// (["/.ucd/ucd-sh", "-c"]) at the agent, not any "sh"/"bash"
+				// this alpine image happens to provide via busybox.
+				Run: "echo hello-from-shim-default",
+			}},
+		},
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	select {
+	case status := <-h.finishCh:
+		require.Equal(t, "Succeeded", status,
+			"a default (shim) step must succeed in a bash-less alpine primary — proves shim install+mount+exec+pause end-to-end")
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	step0Stdout := strings.Join(h.stepStdout[0], "\n")
+	assert.Contains(t, step0Stdout, "hello-from-shim-default")
+}
+
+// TestClaimPod_Integration_Shim_ExplicitBashShellRunsInDebian is the
+// companion proof for the `shell:` override (spec Component 1): a step that
+// declares shell: [bash, -lc] in a debian:bookworm-slim primary must
+// actually run under real bash (not the shim's interp), evidenced by
+// $BASH_VERSION being set — a variable only a real bash process populates.
+func TestClaimPod_Integration_Shim_ExplicitBashShellRunsInDebian(t *testing.T) {
+	if _, err := crt.Detect(""); err != nil {
+		t.Skipf("no container runtime available, skipping: %v", err)
+	}
+
+	const agentID = "claim-pod-shim-debian-agent"
+	const runID = "run-claim-pod-shim-debian"
+
+	h := newClaimIntegrationHarness()
+	srv := newClaimIntegrationServer(t, agentID, h)
+
+	a := &Agent{
+		ID:          agentID,
+		Client:      NewClient(srv.URL, "tok"),
+		PauseImage:  "alpine:3",
+		RunnerImage: "debian:bookworm-slim",
+		ToolsDir:    installShimOrSkip(t),
+	}
+
+	claim := api.ClaimResponse{
+		Native:  false,
+		RunID:   runID,
+		JobName: "test-claim-pod-shim-debian",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0, StageIndex: 0, Name: "explicit-bash-shell",
+				Shell: []string{"bash", "-lc"},
+				Run:   `echo "BASH_VERSION=$BASH_VERSION"`,
+			}},
+		},
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	select {
+	case status := <-h.finishCh:
+		require.Equal(t, "Succeeded", status, "a shell: [bash, -lc] step must succeed in a debian primary")
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	step0Stdout := strings.Join(h.stepStdout[0], "\n")
+	assert.Regexp(t, `BASH_VERSION=\d`, step0Stdout,
+		"expected a real bash-populated BASH_VERSION, proving shell: [bash, -lc] ran under actual bash, not the shim's interp; got: %q", step0Stdout)
+}
+
 // TestClaimPod_Integration_ConcurrentClaimsNoPortCollision proves claim pods
 // give each claim its own network namespace: two concurrent claims of the
 // same job shape each bind port 12080 in their own "job" container, with no
@@ -277,6 +412,7 @@ func TestClaimPod_Integration_ConcurrentClaimsNoPortCollision(t *testing.T) {
 			Client:      NewClient(srv.URL, "tok"),
 			PauseImage:  "busybox:1.36",
 			RunnerImage: "busybox:1.36",
+			ToolsDir:    installShimOrSkip(t),
 		}
 
 		claim := api.ClaimResponse{

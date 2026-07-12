@@ -181,18 +181,19 @@ that also fails, it **WARNs** and proceeds with whatever is left rather than fai
 - If you see the WARN with rootful docker, manually clean the affected per-job workspace
   directory with elevated permissions — see [Workspace lifecycle](agents.md#workspace-lifecycle).
 
-### Stray `sleep infinity` containers on an agent host after an agent crash
+### Stray `ucd-sh pause` containers on an agent host after an agent crash
 
 **Symptom**
 
 `docker ps` (or `podman ps`) on an agent host shows pause and/or sidecar containers still running
-`sleep infinity` long after the runs that created them finished — typically noticed after the
-agent process was killed, OOM'd, or the host rebooted.
+`/.ucd/ucd-sh pause` long after the runs that created them finished — typically noticed after the
+agent process was killed, OOM'd, or the host rebooted. (Older agent versions ran `sleep infinity`
+instead — same symptom, different command.)
 
 **Cause**
 
-This is expected, not a bug. Claim pod containers are long-lived (`sleep infinity`, not `--rm`)
-and are torn down by the agent itself when a claim finishes; if the agent exits ungracefully
+This is expected, not a bug. Claim pod containers are long-lived (`/.ucd/ucd-sh pause`, not
+`--rm`) and are torn down by the agent itself when a claim finishes; if the agent exits ungracefully
 mid-claim, that teardown never runs. Unlike the k8s-agent, whose orphaned pods are eventually
 reaped by the cluster's own pod garbage collection, **the host agent has no automatic container
 GC** — see [Crash-orphaned claim containers](agents.md#crash-orphaned-claim-containers).

@@ -10,6 +10,8 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeRT struct {
@@ -17,6 +19,10 @@ type fakeRT struct {
 	removed    int
 	lastExec   string
 	lastCreate crt.CreateSpec
+	// lastExecSpec keeps the full ExecSpec (notably Shell) from the most
+	// recent Exec call, for tests asserting on shell-argv threading
+	// (shell_threading_test.go).
+	lastExecSpec crt.ExecSpec
 }
 
 func (f *fakeRT) Name() string                                                      { return "fake" }
@@ -30,6 +36,7 @@ func (f *fakeRT) Create(_ context.Context, spec crt.CreateSpec) (crt.ContainerHa
 }
 func (f *fakeRT) Exec(_ context.Context, _ crt.ContainerHandle, spec crt.ExecSpec, _, _ io.Writer) (int, error) {
 	f.lastExec = spec.Script
+	f.lastExecSpec = spec
 	return 0, nil
 }
 func (f *fakeRT) CopyIn(context.Context, crt.ContainerHandle, string, string) error  { return nil }
@@ -38,7 +45,7 @@ func (f *fakeRT) Remove(context.Context, crt.ContainerHandle) error             
 
 func TestScopeManagerReusesEnvPerKey(t *testing.T) {
 	f := &fakeRT{}
-	m := newScopeManager(f)
+	m := newScopeManager(f, "")
 	ctx := context.Background()
 	s := api.ClaimStep{ScopeID: "scope:build", ScopeImage: "img", MatrixKey: ""}
 
@@ -59,25 +66,42 @@ func TestScopeManagerReusesEnvPerKey(t *testing.T) {
 
 // TestScopeManagerEnsure_KeepAliveCommand is the regression test for the
 // sidecar-sleep-infinity fix: since CreateSpec.Command now defaults to nil
-// (image entrypoint) instead of the runtime hardcoding "sleep infinity", the
+// (image entrypoint) instead of the runtime hardcoding a keep-alive, the
 // uses-scope container — a step exec target, not a service sidecar — must
 // set Command explicitly so it doesn't regress into running its image's
-// default entrypoint and exiting immediately.
+// default entrypoint and exiting immediately. The keep-alive itself is now
+// the ucd-sh shim's pause mode (Component 4 of the step-shell-shim design),
+// not sleep infinity.
 func TestScopeManagerEnsure_KeepAliveCommand(t *testing.T) {
 	f := &fakeRT{}
-	m := newScopeManager(f)
+	m := newScopeManager(f, "")
 	s := api.ClaimStep{ScopeID: "scope:build", ScopeImage: "img", MatrixKey: ""}
 
 	if _, err := m.ensure(context.Background(), s, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.lastCreate.Command; len(got) != 2 || got[0] != "sleep" || got[1] != "infinity" {
-		t.Fatalf("expected scope container Command = [sleep infinity], got %v", got)
+	if got := f.lastCreate.Command; len(got) != 2 || got[0] != "/.ucd/ucd-sh" || got[1] != "pause" {
+		t.Fatalf("expected scope container Command = [/.ucd/ucd-sh pause], got %v", got)
 	}
 }
 
+// TestScopeManagerEnsure_MountsToolsDirReadOnly verifies the scope container
+// carries the read-only /.ucd shim mount when toolsDir is set (mirroring the
+// claim pod's ucdToolsMount — see claim_pod.go).
+func TestScopeManagerEnsure_MountsToolsDirReadOnly(t *testing.T) {
+	f := &fakeRT{}
+	m := newScopeManager(f, "/host/tools")
+	s := api.ClaimStep{ScopeID: "scope:build", ScopeImage: "img"}
+
+	if _, err := m.ensure(context.Background(), s, nil); err != nil {
+		t.Fatal(err)
+	}
+	require.Len(t, f.lastCreate.Mounts, 1)
+	assert.Equal(t, crt.Mount{HostPath: "/host/tools", ContainerPath: "/.ucd", ReadOnly: true}, f.lastCreate.Mounts[0])
+}
+
 func TestScopeManagerKeyIncludesMatrix(t *testing.T) {
-	m := newScopeManager(&fakeRT{})
+	m := newScopeManager(&fakeRT{}, "")
 	a := m.key(api.ClaimStep{ScopeID: "s", MatrixKey: "linux"})
 	b := m.key(api.ClaimStep{ScopeID: "s", MatrixKey: "windows"})
 	if a == b {
@@ -133,7 +157,7 @@ func (c *counterRT) Remove(context.Context, crt.ContainerHandle) error {
 // asserts the "one Create per key" semantics survive concurrency.
 func TestScopeManagerEnsure_ConcurrentSameKey(t *testing.T) {
 	rt := &counterRT{}
-	m := newScopeManager(rt)
+	m := newScopeManager(rt, "")
 	step := api.ClaimStep{ScopeID: "scope:shared", ScopeImage: "img:shared"}
 
 	const n = 50
@@ -172,7 +196,7 @@ func TestScopeManagerEnsure_ConcurrentSameKey(t *testing.T) {
 // map. Must be run with -race.
 func TestScopeManagerEnsure_ConcurrentDistinctKeys(t *testing.T) {
 	rt := &counterRT{}
-	m := newScopeManager(rt)
+	m := newScopeManager(rt, "")
 
 	const n = 50
 	var wg sync.WaitGroup

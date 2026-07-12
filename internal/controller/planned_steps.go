@@ -30,8 +30,8 @@ func plannedSteps(spec dsl.Spec) []api.StepReport {
 			}
 		}
 	}
-	add(buildStages(spec.Steps, &stepIdx, secrets), "main")
-	add(buildStages(spec.Finally, &stepIdx, secrets), "finally")
+	add(buildStages(spec.Steps, &stepIdx, secrets, spec.Shell), "main")
+	add(buildStages(spec.Finally, &stepIdx, secrets, spec.Shell), "finally")
 	return out
 }
 

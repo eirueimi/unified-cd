@@ -23,13 +23,20 @@ func scopeKey(step api.ClaimStep) string { return step.ScopeID + "\x00" + step.M
 
 // buildScopePod builds a dedicated, isolated pod for a uses-level
 // runsIn.image scope: a "step" container running the scope image (kept
-// alive with `sleep infinity` so scope steps can be exec'd into it) and,
+// alive via the shared ucdKeepAliveArgv() — the injected ucd-sh shim's pause
+// subcommand, see injectUcdShim — so scope steps can be exec'd into it) and,
 // when configured, the artifact sidecar — both mounting the SAME private
 // `emptyDir` scratch volume named "workspace". Unlike BuildPod, this pod
 // intentionally has NO outer-workspace PVC: the scratch volume is scoped to
 // this pod only and is discarded when the pod is torn down, isolating the
 // scope's filesystem from the run's shared workspace.
-func buildScopePod(runID, namespace, scopeID, image string, env map[string]string, sidecar SidecarSpec) *corev1.Pod {
+//
+// shimImage is the image the prepended ucd-shim init container runs (see
+// injectUcdShim) — normally cfg.ShimImage, threaded through exactly like
+// BuildPod's shimImage parameter, so a uses-scope pod gets the same /.ucd
+// shim carrier as the run/pooled pod: a uses-scope step is itself an
+// exec-target container and needs ucd-sh just like every other one.
+func buildScopePod(runID, namespace, scopeID, image string, env map[string]string, sidecar SidecarSpec, shimImage string) *corev1.Pod {
 	suffix := runID
 	if len(suffix) > 16 {
 		suffix = suffix[:16]
@@ -51,7 +58,7 @@ func buildScopePod(runID, namespace, scopeID, image string, env map[string]strin
 	containers := []corev1.Container{{
 		Name:         "step",
 		Image:        image,
-		Command:      []string{"sleep", "infinity"},
+		Command:      ucdKeepAliveArgv(),
 		Env:          envVars,
 		WorkingDir:   scopeMountPath,
 		VolumeMounts: []corev1.VolumeMount{scratchMount},
@@ -63,7 +70,7 @@ func buildScopePod(runID, namespace, scopeID, image string, env map[string]strin
 		containers = append(containers, sc)
 	}
 
-	return &corev1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("ucd-scope-%s-", suffix),
 			Namespace:    namespace,
@@ -86,4 +93,14 @@ func buildScopePod(runID, namespace, scopeID, image string, env map[string]strin
 			},
 		},
 	}
+
+	// Reuse the exact same /.ucd shim carrier pattern BuildPod uses
+	// (Component 3 of the step-shell-shim design spec) instead of
+	// duplicating its init-container/volume/mount literals here: prepends
+	// the ucd-shim init container and mounts the ucd-tools volume on every
+	// container in pod.Spec — here, "step" and the scope's own artifact
+	// sidecar (when configured).
+	injectUcdShim(&pod.Spec, shimImage)
+
+	return pod
 }

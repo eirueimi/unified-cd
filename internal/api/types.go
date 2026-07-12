@@ -122,6 +122,11 @@ type ClaimStep struct {
 	MatrixValues     map[string]string     `json:"matrixValues,omitempty"`
 	MatrixKey        string                `json:"matrixKey,omitempty"`
 	Approval         *ClaimApproval        `json:"approval,omitempty"`
+	// Shell is the effective interpreter argv resolved by the controller
+	// (step.shell if set, else spec.shell, else nil). Nil means "the agent
+	// applies the shim default" — the controller never writes the /.ucd
+	// path itself; that is agent territory.
+	Shell []string `json:"shell,omitempty"`
 }
 
 // DisplayName returns the human-facing step name: matrix copies get the
@@ -334,6 +339,10 @@ type DownloadArtifactStep struct {
 type PostStep struct {
 	Run string            `json:"run,omitempty"`
 	Env map[string]string `json:"env,omitempty"`
+	// Shell is carried only when the dsl post: hook declares its own
+	// shell:. Nil means the agent inherits the owning step's effective
+	// ClaimStep.Shell.
+	Shell []string `json:"shell,omitempty"`
 }
 
 // ---- gitcredential ----

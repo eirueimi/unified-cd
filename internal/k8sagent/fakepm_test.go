@@ -43,13 +43,14 @@ func (f *fakePM) ListPods(_ context.Context, _ string) (*corev1.PodList, error) 
 
 type fakeExec struct {
 	gotPod, gotContainer, gotScript string
+	gotShell                        []string
 	stdout                          string
 	exit                            int
 	err                             error
 }
 
-func (f *fakeExec) ExecStep(_ context.Context, podName, container, script string, _ []string, stdout, _ io.Writer) (int, error) {
-	f.gotPod, f.gotContainer, f.gotScript = podName, container, script
+func (f *fakeExec) ExecStep(_ context.Context, podName, container, script string, shell []string, _ []string, stdout, _ io.Writer) (int, error) {
+	f.gotPod, f.gotContainer, f.gotScript, f.gotShell = podName, container, script, shell
 	_, _ = stdout.Write([]byte(f.stdout))
 	return f.exit, f.err
 }

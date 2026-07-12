@@ -23,6 +23,7 @@ func TestK8sAgent_ExecuteRun_Integration(t *testing.T) {
 	defer cancel()
 
 	client, restCfg := newTestKubeClient(t)
+	shimImage := testShimImageOrSkip(t)
 	ns := newTestNamespace(t, client)
 
 	const agentID = "k8s-e2e"
@@ -85,6 +86,7 @@ func TestK8sAgent_ExecuteRun_Integration(t *testing.T) {
 		AgentID:   agentID,
 		Namespace: ns,
 		PodImage:  testImage,
+		ShimImage: shimImage,
 	}
 	a := NewK8sAgent(cfg, agentClient, pm, exec, pool)
 
@@ -123,6 +125,7 @@ func TestK8sAgent_ExecuteRun_StepFailure_Integration(t *testing.T) {
 	defer cancel()
 
 	client, restCfg := newTestKubeClient(t)
+	shimImage := testShimImageOrSkip(t)
 	ns := newTestNamespace(t, client)
 
 	const agentID = "k8s-e2e-fail"
@@ -158,7 +161,7 @@ func TestK8sAgent_ExecuteRun_StepFailure_Integration(t *testing.T) {
 	pool := NewPodPool(client, ns, pm)
 	agentClient := agentlib.NewClient(srv.URL, "tok")
 
-	cfg := Config{AgentID: agentID, Namespace: ns, PodImage: testImage}
+	cfg := Config{AgentID: agentID, Namespace: ns, PodImage: testImage, ShimImage: shimImage}
 	a := NewK8sAgent(cfg, agentClient, pm, exec, pool)
 
 	claim := api.ClaimResponse{

@@ -67,7 +67,7 @@ type scopeLifecycleExec struct {
 	}
 }
 
-func (f *scopeLifecycleExec) ExecStep(_ context.Context, podName, container, script string, _ []string, stdout, _ io.Writer) (int, error) {
+func (f *scopeLifecycleExec) ExecStep(_ context.Context, podName, container, script string, _ []string, _ []string, stdout, _ io.Writer) (int, error) {
 	f.mu.Lock()
 	f.execCalls = append(f.execCalls, struct{ pod, container, script string }{podName, container, script})
 	f.mu.Unlock()

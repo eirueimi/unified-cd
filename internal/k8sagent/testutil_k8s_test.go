@@ -5,6 +5,7 @@ package k8sagent
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,6 +20,33 @@ import (
 var runSeq atomic.Int64
 
 const testImage = "ubuntu:22.04"
+
+// shimImageEnvVar is the environment variable pod-creating k8s integration
+// tests read a REAL ucd-sh-capable shim image from — one that actually
+// contains /ucd-sh, so the prepended ucd-shim init container BuildPod adds
+// (see podbuilder.go's injectUcdShim) can install it. ubuntu:22.04
+// (testImage) is not such an image: it stands in for the podTemplate/job
+// image only.
+//
+// ci.yml's k8s job builds internal/shim's ucd-sh binary into a minimal
+// image, loads it into the kind cluster, and exports this var before running
+// `go test -tags k8s`. Locally, without a prepared image, tests that would
+// create a pod skip via testShimImageOrSkip rather than fail — leaving
+// ShimImage empty would make Kubernetes reject the pod outright
+// ("spec.initContainers[0].image: Required value").
+const shimImageEnvVar = "UCD_K8S_TEST_SHIM_IMAGE"
+
+// testShimImageOrSkip returns the real shim image UCD_K8S_TEST_SHIM_IMAGE
+// points at, or skips the calling test if it is unset. Call this before
+// doing any other (potentially expensive) test setup.
+func testShimImageOrSkip(t *testing.T) string {
+	t.Helper()
+	img := os.Getenv(shimImageEnvVar)
+	if img == "" {
+		t.Skipf("%s not set; skipping pod-creating k8s integration test (see ci.yml's k8s job for how CI builds and kind-loads a real shim image, or export it yourself pointing at an image containing /ucd-sh)", shimImageEnvVar)
+	}
+	return img
+}
 
 // newTestKubeClient returns a kubernetes client and rest config for integration tests.
 // Skips the test if no cluster is reachable via the default kubeconfig.
@@ -77,8 +105,9 @@ func newTestNamespace(t *testing.T, client *kubernetes.Clientset) string {
 // Returns the created pod name. Registers cleanup to delete the pod on test completion.
 func podReadyOrSkip(t *testing.T, pm *PodManager, runID string) string {
 	t.Helper()
+	shimImage := testShimImageOrSkip(t)
 	ctx := context.Background()
-	pod, err := BuildPod(runID, pm.namespace, nil, nil, testImage, SidecarSpec{})
+	pod, err := BuildPod(runID, pm.namespace, nil, nil, testImage, SidecarSpec{}, shimImage)
 	if err != nil {
 		t.Fatalf("BuildPod: %v", err)
 	}

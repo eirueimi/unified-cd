@@ -48,6 +48,14 @@ func checkScopeStepAllowed(name string, container string, hasApproval, hasCall b
 	return nil
 }
 
+// ExpandUsesStep is the exported form of expandUsesStep, for callers outside
+// this package (e.g. internal/controller) that need to inline a uses:
+// template's steps directly — such as verifying shell: composition
+// end-to-end against api.ClaimStep.
+func ExpandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn, outerContainer string) ([]dsl.StepEntry, error) {
+	return expandUsesStep(usesName, with, tplSpec, outerRunsIn, outerContainer)
+}
+
 func prefixedName(usesName, innerName string) string {
 	return usesName + usesPrefixSep + innerName
 }
@@ -273,6 +281,10 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				ContinueOnError: inner.ContinueOnError,
 				Container:       inner.Container,
 				TimeoutMinutes:  inner.TimeoutMinutes,
+				// The step's own shell: survives inlining as-is; a
+				// template-level tplSpec.Shell is stamped onto steps
+				// lacking one below, after all steps are renamed.
+				Shell: inner.Shell,
 			}
 			if inner.RunsIn != nil {
 				return nil, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", inner.Name)
@@ -326,6 +338,28 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				return nil, fmt.Errorf("internal error: step %q has unresolved nested uses; must be resolved before expandUsesStep", inner.Name)
 			}
 			renamed[idx] = ns
+		}
+	}
+
+	// A template-level spec.shell is stamped onto every inlined step (and
+	// parallel sub-step) that declares no shell: of its own. A step's own
+	// shell: (already carried onto ns/rp above by copy or explicit field)
+	// always wins — the template author declared it because the script
+	// needs it, and the caller cannot override either value (caller-level
+	// spec.shell resolution happens later, at claim build time, and only
+	// fills steps still nil after this stamping — see
+	// internal/controller/api_agent.go's resolveShell).
+	if len(tplSpec.Shell) > 0 {
+		for i := range renamed {
+			if renamed[i].Parallel != nil {
+				for j := range renamed[i].Parallel {
+					if len(renamed[i].Parallel[j].Shell) == 0 {
+						renamed[i].Parallel[j].Shell = tplSpec.Shell
+					}
+				}
+			} else if len(renamed[i].Shell) == 0 {
+				renamed[i].Shell = tplSpec.Shell
+			}
 		}
 	}
 

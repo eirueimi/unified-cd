@@ -20,7 +20,10 @@ type podFakeRT struct {
 		id     string
 		script string
 	}
-	removed []string
+	// execSpecs mirrors execs but keeps the full ExecSpec (notably Shell),
+	// for tests asserting on shell-argv threading (claim_pod_shim_test.go).
+	execSpecs []crt.ExecSpec
+	removed   []string
 }
 
 func (f *podFakeRT) Name() string                                  { return "fake" }
@@ -35,6 +38,7 @@ func (f *podFakeRT) Create(_ context.Context, s crt.CreateSpec) (crt.ContainerHa
 }
 func (f *podFakeRT) Exec(_ context.Context, h crt.ContainerHandle, s crt.ExecSpec, _, _ io.Writer) (int, error) {
 	f.execs = append(f.execs, struct{ id, script string }{h.ID, s.Script})
+	f.execSpecs = append(f.execSpecs, s)
 	return 0, nil
 }
 func (f *podFakeRT) CopyIn(context.Context, crt.ContainerHandle, string, string) error  { return nil }
@@ -55,15 +59,15 @@ func mysqlTemplate() *dsl.PodTemplate {
 
 func TestClaimPod_StartPauseFirstThenEager(t *testing.T) {
 	f := &podFakeRT{}
-	m := newClaimPodManager(f, "/host/w", "/workspace", "pause:img", "runner:img")
+	m := newClaimPodManager(f, "/host/w", "/workspace", "pause:img", "runner:img", "")
 	require.NoError(t, m.Start(context.Background(), mysqlTemplate()))
 
 	require.Len(t, f.created, 3) // pause, mysql, injected "job"
 	pause := f.created[0]
 	assert.Equal(t, "pause:img", pause.Image)
 	assert.Empty(t, pause.NetworkContainer)
-	assert.Empty(t, pause.Mounts, "pause carries no workspace mount")
-	assert.Equal(t, []string{"sleep", "infinity"}, pause.Command,
+	assert.Empty(t, pause.Mounts, "pause carries no /.ucd mount when toolsDir is empty (this test's newClaimPodManager call)")
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, pause.Command,
 		"pause container must be kept alive explicitly or the netns it owns collapses")
 
 	for _, spec := range f.created[1:] {
@@ -75,9 +79,9 @@ func TestClaimPod_StartPauseFirstThenEager(t *testing.T) {
 	}
 	assert.Equal(t, "mysql:8", f.created[1].Image)
 	assert.Nil(t, f.created[1].Command,
-		"a sidecar with no podTemplate command must run its image's default entrypoint (mysqld), not sleep infinity")
+		"a sidecar with no podTemplate command must run its image's default entrypoint (mysqld), not the pause keep-alive")
 	assert.Equal(t, "runner:img", f.created[2].Image, "job container injected from runner image")
-	assert.Equal(t, []string{"sleep", "infinity"}, f.created[2].Command,
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, f.created[2].Command,
 		"the primary job container is the exec target and must always be kept alive")
 }
 
@@ -97,7 +101,7 @@ func TestClaimPod_SidecarCommandHonored(t *testing.T) {
 			},
 		},
 	}}
-	m := newClaimPodManager(f, "/host/w", "/workspace", "pause:img", "runner:img")
+	m := newClaimPodManager(f, "/host/w", "/workspace", "pause:img", "runner:img", "")
 	require.NoError(t, m.Start(context.Background(), pt))
 
 	require.Len(t, f.created, 3) // pause, redis, injected "job"
@@ -108,8 +112,8 @@ func TestClaimPod_SidecarCommandHonored(t *testing.T) {
 
 // TestClaimPod_PrimaryJobIgnoresTemplateCommand covers a podTemplate that
 // defines its own "job" container with an explicit (non-keep-alive) command:
-// the primary container is always forced to sleep infinity regardless, since
-// it is the exec target for every container:-less step.
+// the primary container is always forced to the ucd-sh pause keep-alive
+// regardless, since it is the exec target for every container:-less step.
 func TestClaimPod_PrimaryJobIgnoresTemplateCommand(t *testing.T) {
 	f := &podFakeRT{}
 	pt := &dsl.PodTemplate{Spec: map[string]any{
@@ -117,12 +121,12 @@ func TestClaimPod_PrimaryJobIgnoresTemplateCommand(t *testing.T) {
 			map[string]any{"name": "job", "image": "golang:1.22", "command": []any{"go", "version"}},
 		},
 	}}
-	m := newClaimPodManager(f, "/w", "/workspace", "pause:img", "runner:img")
+	m := newClaimPodManager(f, "/w", "/workspace", "pause:img", "runner:img", "")
 	require.NoError(t, m.Start(context.Background(), pt))
 
 	require.Len(t, f.created, 2) // pause + job (no injection)
 	assert.Equal(t, "golang:1.22", f.created[1].Image)
-	assert.Equal(t, []string{"sleep", "infinity"}, f.created[1].Command,
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, f.created[1].Command,
 		"the primary job container must always keep-alive, even if the podTemplate set its own command")
 }
 
@@ -133,7 +137,7 @@ func TestClaimPod_JobFromTemplateNotInjected(t *testing.T) {
 			map[string]any{"name": "job", "image": "golang:1.22"},
 		},
 	}}
-	m := newClaimPodManager(f, "/w", "/workspace", "pause:img", "runner:img")
+	m := newClaimPodManager(f, "/w", "/workspace", "pause:img", "runner:img", "")
 	require.NoError(t, m.Start(context.Background(), pt))
 	require.Len(t, f.created, 2) // pause + job (no injection)
 	assert.Equal(t, "golang:1.22", f.created[1].Image)
@@ -141,7 +145,7 @@ func TestClaimPod_JobFromTemplateNotInjected(t *testing.T) {
 
 func TestClaimPod_NilTemplateGetsDefaultJob(t *testing.T) {
 	f := &podFakeRT{}
-	m := newClaimPodManager(f, "/w", "/workspace", "pause:img", "runner:img")
+	m := newClaimPodManager(f, "/w", "/workspace", "pause:img", "runner:img", "")
 	require.NoError(t, m.Start(context.Background(), nil))
 	require.Len(t, f.created, 2) // pause + injected job
 	assert.Equal(t, "runner:img", f.created[1].Image)
@@ -149,14 +153,14 @@ func TestClaimPod_NilTemplateGetsDefaultJob(t *testing.T) {
 
 func TestClaimPod_ExecTargets(t *testing.T) {
 	f := &podFakeRT{}
-	m := newClaimPodManager(f, "/w", "/workspace", "p", "r")
+	m := newClaimPodManager(f, "/w", "/workspace", "p", "r", "")
 	require.NoError(t, m.Start(context.Background(), mysqlTemplate()))
 
-	_, err := m.Exec(context.Background(), "", "echo default", nil, io.Discard, io.Discard)
+	_, err := m.Exec(context.Background(), "", "echo default", nil, nil, io.Discard, io.Discard)
 	require.NoError(t, err)
-	_, err = m.Exec(context.Background(), "mysql", "echo sidecar", nil, io.Discard, io.Discard)
+	_, err = m.Exec(context.Background(), "mysql", "echo sidecar", nil, nil, io.Discard, io.Discard)
 	require.NoError(t, err)
-	_, err = m.Exec(context.Background(), "nope", "x", nil, io.Discard, io.Discard)
+	_, err = m.Exec(context.Background(), "nope", "x", nil, nil, io.Discard, io.Discard)
 	require.Error(t, err, "unknown container name")
 
 	// default targeted the injected job container (created 3rd → id c2),
@@ -167,7 +171,7 @@ func TestClaimPod_ExecTargets(t *testing.T) {
 
 func TestClaimPod_CloseAllRemovesContainersThenPause(t *testing.T) {
 	f := &podFakeRT{}
-	m := newClaimPodManager(f, "/w", "/workspace", "p", "r")
+	m := newClaimPodManager(f, "/w", "/workspace", "p", "r", "")
 	require.NoError(t, m.Start(context.Background(), mysqlTemplate()))
 	m.CloseAll(context.Background())
 	require.Len(t, f.removed, 3)

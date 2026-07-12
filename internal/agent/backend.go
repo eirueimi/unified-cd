@@ -11,11 +11,19 @@ import (
 // ExecBackend is the narrow seam between the shared step-orchestration loop
 // and a concrete execution environment (host process / k8s pod).
 type ExecBackend interface {
+	// RunDefault and RunNamedContainer receive the full step, so they can
+	// read step.Shell (the controller-resolved effective interpreter argv,
+	// nil meaning "apply the shim default") without a separate parameter.
 	RunDefault(ctx context.Context, step api.ClaimStep, script string, env []string, stdout, stderr io.Writer) (int, error)
 	RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error)
 
 	EnsureScope(ctx context.Context, step api.ClaimStep, env []string) (ScopeHandle, error)
-	RunInScope(ctx context.Context, h ScopeHandle, script string, env []string, stdout, stderr io.Writer) (int, error)
+	// RunInScope executes script inside the scope container/pod identified
+	// by h. shell is the owning step's effective interpreter argv
+	// (api.ClaimStep.Shell — nil/empty means "apply the shim default"); the
+	// orchestrator passes it explicitly since RunInScope, unlike
+	// RunDefault/RunNamedContainer, does not otherwise receive the step.
+	RunInScope(ctx context.Context, h ScopeHandle, script string, shell []string, env []string, stdout, stderr io.Writer) (int, error)
 	CloseScopes(ctx context.Context)
 
 	CacheRestore(ctx context.Context, scope ScopeHandle, key string, restoreKeys []string, path string) (bool, error)
@@ -23,13 +31,18 @@ type ExecBackend interface {
 	UploadArtifact(ctx context.Context, scope ScopeHandle, runID, name, path string) error
 	DownloadArtifact(ctx context.Context, scope ScopeHandle, runID, name, destDir string) error
 
-	// RunPostHook runs a step's post: hook. stdout/stderr are the SHIPPING
-	// writers for the owning step's log (see the hookStack drain in
-	// orchestrator.go: opened via StepLogWriters against the owning step's
-	// index, same as a main step's writers, so post output is masked and
-	// streamed identically) — RunPostHook must feed the script's actual
-	// stdout/stderr into them, not discard them.
-	RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, env []string, stdout, stderr io.Writer) error
+	// RunPostHook runs a step's post: hook. shell is the hook's effective
+	// interpreter argv: post.Shell if the post: hook declared its own, else
+	// the owning step's effective ClaimStep.Shell (resolved by the
+	// orchestrator into the hookStack entry — see postHookEntry.shell in
+	// orchestrator.go); nil/empty means "apply the shim default", same as
+	// every other exec path. stdout/stderr are the SHIPPING writers for the
+	// owning step's log (see the hookStack drain in orchestrator.go: opened
+	// via StepLogWriters against the owning step's index, same as a main
+	// step's writers, so post output is masked and streamed identically) —
+	// RunPostHook must feed the script's actual stdout/stderr into them, not
+	// discard them.
+	RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, shell []string, env []string, stdout, stderr io.Writer) error
 
 	// ResolveArtifactPath resolves a cache/artifact step's relative path (as
 	// authored in the DSL) against the right root for scope: the claim's

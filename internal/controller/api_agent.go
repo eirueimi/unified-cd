@@ -192,8 +192,8 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 	secretsNeeded := map[string]struct{}{}
 	stepIdx := 0 // flat step counter across steps and finally
 
-	resp.Stages = buildStages(spec.Steps, &stepIdx, secretsNeeded)
-	resp.Finally = buildStages(spec.Finally, &stepIdx, secretsNeeded)
+	resp.Stages = buildStages(spec.Steps, &stepIdx, secretsNeeded, spec.Shell)
+	resp.Finally = buildStages(spec.Finally, &stepIdx, secretsNeeded, spec.Shell)
 
 	for name := range secretsNeeded {
 		resp.SecretsNeeded = append(resp.SecretsNeeded, name)
@@ -230,14 +230,17 @@ func rejectPreMigrationRunsIn(jobName string, entries []dsl.StepEntry) error {
 }
 
 // buildStages compiles a list of StepEntry into ClaimStages, advancing the
-// shared flat step index and collecting referenced secret names.
-func buildStages(entries []dsl.StepEntry, stepIdx *int, secretsNeeded map[string]struct{}) []api.ClaimStage {
+// shared flat step index and collecting referenced secret names. jobShell is
+// the job-level spec.shell default (may be nil); it applies identically to
+// top-level steps, parallel: sub-steps, and finally: steps — buildStages is
+// used for all three (see buildClaimResponse).
+func buildStages(entries []dsl.StepEntry, stepIdx *int, secretsNeeded map[string]struct{}, jobShell []string) []api.ClaimStage {
 	stages := make([]api.ClaimStage, 0, len(entries))
 	for stageIdx, entry := range entries {
 		if len(entry.Parallel) > 0 {
 			stage := api.ClaimStage{Parallel: make([]api.ClaimStep, 0, len(entry.Parallel))}
 			for _, st := range entry.Parallel {
-				cs := buildOneClaimStep(*stepIdx, stageIdx, stepToStepEntry(st))
+				cs := buildOneClaimStep(*stepIdx, stageIdx, stepToStepEntry(st), jobShell)
 				stage.Parallel = append(stage.Parallel, cs)
 				collectSecretNames(st.Run, secretsNeeded)
 				for _, v := range st.Env {
@@ -247,7 +250,7 @@ func buildStages(entries []dsl.StepEntry, stepIdx *int, secretsNeeded map[string
 			}
 			stages = append(stages, stage)
 		} else {
-			cs := buildOneClaimStep(*stepIdx, stageIdx, entry)
+			cs := buildOneClaimStep(*stepIdx, stageIdx, entry, jobShell)
 			stages = append(stages, api.ClaimStage{Step: &cs})
 			collectSecretNames(entry.Run, secretsNeeded)
 			for _, v := range entry.Env {
@@ -272,10 +275,11 @@ func stepToStepEntry(st dsl.Step) dsl.StepEntry {
 		ScopeImage:     st.ScopeImage,
 		TimeoutMinutes: st.TimeoutMinutes, Foreach: st.Foreach, Matrix: st.Matrix,
 		Approval: st.Approval,
+		Shell:    st.Shell,
 	}
 }
 
-func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry) api.ClaimStep {
+func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry, jobShell []string) api.ClaimStep {
 	cs := api.ClaimStep{
 		Index:           stepIdx,
 		StageIndex:      stageIdx,
@@ -290,6 +294,7 @@ func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry) api.ClaimStep
 		ScopeID:         entry.ScopeID,
 		ScopeImage:      entry.ScopeImage,
 		TimeoutMinutes:  entry.TimeoutMinutes,
+		Shell:           resolveShell(entry.Shell, jobShell),
 	}
 	if entry.Call != nil {
 		cs.Call = &api.ClaimCallStep{Job: entry.Call.Job, Params: entry.Call.WithAsStrings()}
@@ -300,7 +305,11 @@ func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry) api.ClaimStep
 		cs.Call = &api.ClaimCallStep{Job: entry.Uses.Job, Params: entry.Uses.WithAsStrings()}
 	}
 	if entry.Post != nil {
-		cs.Post = &api.PostStep{Run: entry.Post.Run, Env: entry.Post.Env}
+		// post.Shell is carried through as-is: present only when the dsl
+		// post: hook declares its own shell:. Nil (post declares none) means
+		// the agent inherits the owning step's effective cs.Shell above —
+		// no resolution against jobShell happens here.
+		cs.Post = &api.PostStep{Run: entry.Post.Run, Env: entry.Post.Env, Shell: entry.Post.Shell}
 	}
 	if entry.UploadArtifact != nil {
 		cs.UploadArtifact = &api.UploadArtifactStep{Name: entry.UploadArtifact.Name, Path: entry.UploadArtifact.Path}
@@ -332,6 +341,24 @@ func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry) api.ClaimStep
 		cs.Approval = &api.ClaimApproval{Message: entry.Approval.Message, TimeoutMinutes: timeout}
 	}
 	return cs
+}
+
+// resolveShell computes the effective interpreter argv for a step: the
+// step's own shell: if declared, else the job-level spec.shell, else nil.
+// Nil means "the agent applies the shim default" — the controller never
+// resolves in a hardcoded default of its own. A uses: template's own
+// declared shell (step-level or template-level spec.shell) has already been
+// stamped onto stepShell by expandUsesStep before this ever runs (see
+// internal/gittemplate/inline.go), so it naturally takes priority here too:
+// stepShell is non-empty and jobShell (the caller's spec.shell) is skipped.
+func resolveShell(stepShell, jobShell []string) []string {
+	if len(stepShell) > 0 {
+		return stepShell
+	}
+	if len(jobShell) > 0 {
+		return jobShell
+	}
+	return nil
 }
 
 // collectSecretNames scans a template string for secret name references and

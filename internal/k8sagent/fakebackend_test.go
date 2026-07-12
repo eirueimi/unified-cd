@@ -133,7 +133,7 @@ func (f *fakeK8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, en
 	return agentlib.NewScopeHandle(name), nil
 }
 
-func (f *fakeK8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, env []string, stdout, stderr io.Writer) (int, error) {
+func (f *fakeK8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, shell, env []string, stdout, stderr io.Writer) (int, error) {
 	step := api.ClaimStep{}
 	if v, ok := agentlib.ScopeHandlePayload(h); ok {
 		if name, ok := v.(string); ok {
@@ -213,7 +213,7 @@ func (f *fakeK8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.Sc
 // cover the main-step exec paths), so it leaves the writers untouched;
 // TestK8sBackend_RunPostHook_StreamsOutputToGivenWriters (backend_posthook_test.go)
 // exercises the REAL k8sBackend.RunPostHook end-to-end for output capture.
-func (f *fakeK8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, env []string, stdout, stderr io.Writer) error {
+func (f *fakeK8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, shell, env []string, stdout, stderr io.Writer) error {
 	targetPod := f.scopePodName(scope)
 	if targetPod != "" {
 		container = "step"

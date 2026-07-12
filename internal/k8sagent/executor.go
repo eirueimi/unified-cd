@@ -26,16 +26,20 @@ func NewExecutor(client kubernetes.Interface, restCfg *rest.Config, namespace st
 	return &Executor{client: client, restCfg: restCfg, namespace: namespace}
 }
 
-// ExecStep runs a script inside the specified container of a Pod, streaming stdout/stderr.
-// If container is empty, the "job" container is used. env is a list of
-// "KEY=VALUE" pairs applied to the exec'd process; when non-empty the command
-// is wrapped as `env K=V... bash -lc script` so values reach the script
-// without any shell-quoting/string-concatenation (Kubernetes exec has no
-// native env option — see buildEnvShellCommand).
+// ExecStep runs a script inside the specified container of a Pod, streaming
+// stdout/stderr. If container is empty, the "job" container is used. shell is
+// the effective interpreter argv (api.ClaimStep.Shell / the hook's resolved
+// shell — nil/empty means "apply the shim default", ["/.ucd/ucd-sh","-c"],
+// injected into the pod at /.ucd by podbuilder.go's injectUcdShim); a non-nil
+// value is used verbatim, e.g. ["bash","-lc"]. env is a list of "KEY=VALUE"
+// pairs applied to the exec'd process; when non-empty the command is wrapped
+// as `env K=V... <shell...> script` so values reach the script without any
+// shell-quoting/string-concatenation (Kubernetes exec has no native env
+// option — see buildEnvShellCommand).
 // Returns (exitCode, nil) when the command exits (including non-zero exit codes).
 // Returns (1, err) for infrastructure errors (network, protocol, etc.).
-func (e *Executor) ExecStep(ctx context.Context, podName, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
-	return e.execArgv(ctx, podName, container, buildEnvShellCommand(script, env), stdout, stderr)
+func (e *Executor) ExecStep(ctx context.Context, podName, container, script string, shell []string, env []string, stdout, stderr io.Writer) (int, error) {
+	return e.execArgv(ctx, podName, container, buildEnvShellCommand(shell, script, env), stdout, stderr)
 }
 
 // ExecStepArgv runs argv directly (no shell) inside the specified container,
@@ -85,25 +89,50 @@ func (e *Executor) execArgv(ctx context.Context, podName, container string, cmd 
 	return 0, nil
 }
 
-// buildShellCommand converts a script string into a bash command array.
-func buildShellCommand(script string) []string {
-	return []string{"bash", "-lc", script}
+// ucdShimPath is the reserved path (see docs/superpowers/specs/2026-07-12-
+// step-shell-shim-design.md Component 3) the ucd-sh shim is installed at by
+// podbuilder.go's injectUcdShim init container, shared with executor.go so
+// the default shell argv below stays in sync with the injection path.
+const ucdShimPath = "/.ucd/ucd-sh"
+
+// ucdDefaultShell returns a fresh copy of the shim's default interpreter
+// argv, ["/.ucd/ucd-sh", "-c"] — the system default applied whenever a
+// step/hook has no effective shell: (nil/empty ClaimStep.Shell). A function
+// (rather than a package-level slice) so callers never share/mutate the same
+// backing array by appending to it.
+func ucdDefaultShell() []string {
+	return []string{ucdShimPath, "-c"}
 }
 
-// buildEnvShellCommand converts a script string and a list of "KEY=VALUE"
-// pairs into an argv that applies the env via the `env` binary before
-// invoking bash, e.g. ["env", "FOO=bar", "bash", "-lc", script]. Using `env`
-// (rather than string-concatenating `export FOO=bar;` onto the script) avoids
+// buildShellCommand converts an interpreter argv and a script string into the
+// exec argv: shell (or the shim default when shell is nil/empty) followed by
+// the script as its final element, verbatim — never re-parsed or quoted (see
+// Component 1 of the step-shell-shim design spec).
+func buildShellCommand(shell []string, script string) []string {
+	if len(shell) == 0 {
+		shell = ucdDefaultShell()
+	}
+	cmd := make([]string, 0, len(shell)+1)
+	cmd = append(cmd, shell...)
+	cmd = append(cmd, script)
+	return cmd
+}
+
+// buildEnvShellCommand converts an interpreter argv, a script string, and a
+// list of "KEY=VALUE" pairs into an argv that applies the env via the `env`
+// binary before invoking the shell, e.g.
+// ["env", "FOO=bar", "/.ucd/ucd-sh", "-c", script]. Using `env` (rather than
+// string-concatenating `export FOO=bar;` onto the script) avoids
 // shell-quoting pitfalls entirely: values are passed as discrete argv
 // elements, never re-parsed by a shell (see TODO #30's known quoting-bug
 // class). With no env pairs this degrades to the plain buildShellCommand.
-func buildEnvShellCommand(script string, env []string) []string {
+func buildEnvShellCommand(shell []string, script string, env []string) []string {
 	if len(env) == 0 {
-		return buildShellCommand(script)
+		return buildShellCommand(shell, script)
 	}
-	cmd := make([]string, 0, len(env)+3)
+	cmd := make([]string, 0, len(env)+len(shell)+2)
 	cmd = append(cmd, "env")
 	cmd = append(cmd, env...)
-	cmd = append(cmd, "bash", "-lc", script)
+	cmd = append(cmd, buildShellCommand(shell, script)...)
 	return cmd
 }

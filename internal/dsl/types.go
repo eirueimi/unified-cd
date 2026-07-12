@@ -38,6 +38,11 @@ type Spec struct {
 	// no podTemplate, no container: steps). Host agents only; the default
 	// (false) is the isolated pod model on both backends.
 	Native bool `yaml:"native,omitempty" json:"native,omitempty"`
+	// Shell overrides the default interpreter argv for every step in this
+	// job that does not declare its own step-level shell:. Array-only (no
+	// scalar shorthand); the run: script is appended as the final argv
+	// element. See Step.Shell for the full resolution priority.
+	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
 }
 
 type Params struct {
@@ -101,11 +106,14 @@ type StepEntry struct {
 	// Scope tagging: set by inline expansion when a uses-level runsIn.image
 	// makes the whole template one isolated scope. Steps sharing ScopeID run
 	// in one environment. Not user-authored.
-	ScopeID    string `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
-	ScopeImage string `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
-	TimeoutMinutes   float64               `yaml:"timeoutMinutes,omitempty"`
-	Foreach          *ForeachDef           `yaml:"foreach,omitempty"`
-	Matrix           *MatrixDef            `yaml:"matrix,omitempty"`
+	ScopeID        string      `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
+	ScopeImage     string      `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
+	TimeoutMinutes float64     `yaml:"timeoutMinutes,omitempty"`
+	Foreach        *ForeachDef `yaml:"foreach,omitempty"`
+	Matrix         *MatrixDef  `yaml:"matrix,omitempty"`
+	// Shell overrides the effective interpreter argv for this step. See
+	// Step.Shell for the full resolution priority.
+	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
 
 	// Parallel group (mutually exclusive with all concrete step fields above)
 	Parallel []Step `yaml:"parallel,omitempty"`
@@ -131,11 +139,18 @@ type Step struct {
 	// Scope tagging: set by inline expansion when a uses-level runsIn.image
 	// makes the whole template one isolated scope. Steps sharing ScopeID run
 	// in one environment. Not user-authored.
-	ScopeID    string `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
-	ScopeImage string `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
-	TimeoutMinutes   float64               `yaml:"timeoutMinutes,omitempty"`
-	Foreach          *ForeachDef           `yaml:"foreach,omitempty"`
-	Matrix           *MatrixDef            `yaml:"matrix,omitempty"`
+	ScopeID        string      `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
+	ScopeImage     string      `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
+	TimeoutMinutes float64     `yaml:"timeoutMinutes,omitempty"`
+	Foreach        *ForeachDef `yaml:"foreach,omitempty"`
+	Matrix         *MatrixDef  `yaml:"matrix,omitempty"`
+	// Shell overrides the effective interpreter argv for this step. Array
+	// form only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is
+	// appended as the final argv element. Resolution priority (most specific
+	// wins): step.shell > a uses: template's own declared shell > spec.shell
+	// (job-level) > system default. Steps inside parallel: and finally:
+	// count as steps for this purpose.
+	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
 	// Needs removed — use parallel: blocks instead
 }
 
@@ -296,6 +311,13 @@ type ApprovalStep struct {
 type PostStep struct {
 	Run string            `yaml:"run,omitempty"`
 	Env map[string]string `yaml:"env,omitempty"`
+	// Shell overrides the interpreter argv for this post hook. When absent,
+	// the hook inherits its owning step's effective shell. The override
+	// exists because inheritance alone breaks down for non-shell
+	// interpreters: a step running under shell: [python3, -c] with a
+	// shell-script cleanup hook needs post: {shell: [sh, -c], run: ...} to
+	// be expressible at all.
+	Shell []string `yaml:"shell,omitempty"`
 }
 
 type CallStep struct {
@@ -388,12 +410,12 @@ type CacheStep struct {
 }
 
 type PodTemplate struct {
-	Name           string                 `yaml:"name,omitempty" json:"name,omitempty"`
-	Reuse          bool                   `yaml:"reuse,omitempty" json:"reuse,omitempty"`
-	CleanWorkspace bool                   `yaml:"cleanWorkspace,omitempty" json:"cleanWorkspace,omitempty"`
-	Workspace      *WorkspaceConfig       `yaml:"workspace,omitempty" json:"workspace,omitempty"`
-	Override       *PodSpecPatch          `yaml:"override,omitempty" json:"override,omitempty"`
-	Spec           map[string]any `yaml:"spec,omitempty" json:"spec,omitempty"`
+	Name           string           `yaml:"name,omitempty" json:"name,omitempty"`
+	Reuse          bool             `yaml:"reuse,omitempty" json:"reuse,omitempty"`
+	CleanWorkspace bool             `yaml:"cleanWorkspace,omitempty" json:"cleanWorkspace,omitempty"`
+	Workspace      *WorkspaceConfig `yaml:"workspace,omitempty" json:"workspace,omitempty"`
+	Override       *PodSpecPatch    `yaml:"override,omitempty" json:"override,omitempty"`
+	Spec           map[string]any   `yaml:"spec,omitempty" json:"spec,omitempty"`
 }
 
 type WorkspaceConfig struct {

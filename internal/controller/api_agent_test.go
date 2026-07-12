@@ -12,6 +12,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/eirueimi/unified-cd/internal/gittemplate"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -684,7 +685,7 @@ func TestBuildClaimStep_MatrixAndForeachNormalization(t *testing.T) {
 			Exclude: []map[string]string{{"os": "windows"}},
 		},
 	}
-	cs := buildOneClaimStep(0, 0, entry)
+	cs := buildOneClaimStep(0, 0, entry, nil)
 	require.NotNil(t, cs.Matrix)
 	require.Len(t, cs.Matrix.Dimensions, 2)
 	require.Equal(t, "os", cs.Matrix.Dimensions[0].Name)
@@ -698,7 +699,7 @@ func TestBuildClaimStep_MatrixAndForeachNormalization(t *testing.T) {
 		Run:     "echo",
 		Foreach: &dsl.ForeachDef{Key: "env", Source: dsl.ForeachSource{Literal: []string{"dev", "prod"}}},
 	}
-	cs = buildOneClaimStep(1, 1, fe)
+	cs = buildOneClaimStep(1, 1, fe, nil)
 	require.NotNil(t, cs.Matrix)
 	require.Len(t, cs.Matrix.Dimensions, 1)
 	require.Equal(t, "env", cs.Matrix.Dimensions[0].Name)
@@ -903,4 +904,166 @@ func TestAgentAPI_ReportStep_AlreadyTerminal(t *testing.T) {
 	steps, err := pg.GetRunSteps(t.Context(), run.ID)
 	require.NoError(t, err)
 	assert.Empty(t, steps, "no step report should be written under an already-terminal run")
+}
+
+// TestBuildClaimResponse_Shell_JobLevelDefaultApplied verifies a step with no
+// shell: of its own inherits the job-level spec.shell.
+func TestBuildClaimResponse_Shell_JobLevelDefaultApplied(t *testing.T) {
+	spec := dsl.Spec{
+		Shell: []string{"bash", "-lc"},
+		Steps: []dsl.StepEntry{{Name: "build", Run: "make"}},
+	}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Stages[0].Step)
+	assert.Equal(t, []string{"bash", "-lc"}, resp.Stages[0].Step.Shell)
+}
+
+// TestBuildClaimResponse_Shell_StepOverrideWins verifies a step-level shell:
+// takes priority over the job-level spec.shell.
+func TestBuildClaimResponse_Shell_StepOverrideWins(t *testing.T) {
+	spec := dsl.Spec{
+		Shell: []string{"bash", "-lc"},
+		Steps: []dsl.StepEntry{{Name: "quick", Run: "print('hi')", Shell: []string{"sh", "-c"}}},
+	}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Stages[0].Step)
+	assert.Equal(t, []string{"sh", "-c"}, resp.Stages[0].Step.Shell)
+}
+
+// TestBuildClaimResponse_Shell_NilWhenNeitherDeclared verifies a bare step
+// under a bare job carries a nil Shell — "agent applies the shim default".
+func TestBuildClaimResponse_Shell_NilWhenNeitherDeclared(t *testing.T) {
+	spec := dsl.Spec{
+		Steps: []dsl.StepEntry{{Name: "bare", Run: "echo hi"}},
+	}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Stages[0].Step)
+	assert.Nil(t, resp.Stages[0].Step.Shell)
+}
+
+// TestBuildClaimResponse_Shell_FinallyAndParallelCovered verifies the same
+// resolution applies inside parallel: blocks and finally:.
+func TestBuildClaimResponse_Shell_FinallyAndParallelCovered(t *testing.T) {
+	spec := dsl.Spec{
+		Shell: []string{"bash", "-lc"},
+		Steps: []dsl.StepEntry{
+			{Parallel: []dsl.Step{
+				{Name: "a", Run: "echo a", Shell: []string{"python3", "-c"}},
+				{Name: "b", Run: "echo b"},
+			}},
+		},
+		Finally: []dsl.StepEntry{
+			{Name: "cleanup", Run: "echo cleanup"},
+			{Name: "notify", Run: "echo notify", Shell: []string{"sh", "-c"}},
+		},
+	}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	require.NoError(t, err)
+
+	require.Len(t, resp.Stages[0].Parallel, 2)
+	assert.Equal(t, []string{"python3", "-c"}, resp.Stages[0].Parallel[0].Shell, "parallel step override wins")
+	assert.Equal(t, []string{"bash", "-lc"}, resp.Stages[0].Parallel[1].Shell, "parallel step inherits job default")
+
+	require.Len(t, resp.Finally, 2)
+	assert.Equal(t, []string{"bash", "-lc"}, resp.Finally[0].Step.Shell, "finally step inherits job default")
+	assert.Equal(t, []string{"sh", "-c"}, resp.Finally[1].Step.Shell, "finally step override wins")
+}
+
+// TestBuildClaimResponse_Shell_PostCarriedOnlyWhenDeclared verifies post.Shell
+// is copied through as-is: present when the dsl post declares one, nil
+// otherwise (nil signals the agent should inherit the owning step's Shell).
+func TestBuildClaimResponse_Shell_PostCarriedOnlyWhenDeclared(t *testing.T) {
+	spec := dsl.Spec{
+		Steps: []dsl.StepEntry{
+			{Name: "checkout", Run: "git clone", Shell: []string{"python3", "-c"},
+				Post: &dsl.PostStep{Run: "rm -rf ws", Shell: []string{"sh", "-c"}}},
+			{Name: "build", Run: "make", Shell: []string{"python3", "-c"},
+				Post: &dsl.PostStep{Run: "rm -rf build"}},
+		},
+	}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	require.NoError(t, err)
+
+	require.NotNil(t, resp.Stages[0].Step.Post)
+	assert.Equal(t, []string{"sh", "-c"}, resp.Stages[0].Step.Post.Shell, "post declares its own shell")
+
+	require.NotNil(t, resp.Stages[1].Step.Post)
+	assert.Nil(t, resp.Stages[1].Step.Post.Shell, "post without shell: is nil on the wire (agent inherits)")
+}
+
+// TestBuildClaimResponse_Shell_UsesComposition_TemplateShellWinsOverCaller
+// covers the uses: composition end-to-end: a template that declares its own
+// spec.shell has that value stamped onto its inlined steps at expansion
+// time, and the caller's own spec.shell (present on the outer job that
+// hosted the uses: step) does not override it — the inlined step already
+// carries a non-empty Shell by the time claim-level resolution runs.
+func TestBuildClaimResponse_Shell_UsesComposition_TemplateShellWinsOverCaller(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Shell: []string{"python3", "-c"},
+		Steps: []dsl.StepEntry{{Name: "build", Run: "print('hi')"}},
+	}
+	expanded, err := gittemplate.ExpandUsesStep("tpl", nil, tplSpec, nil, "")
+	require.NoError(t, err)
+
+	spec := dsl.Spec{
+		Shell: []string{"bash", "-lc"}, // caller job-level default
+		Steps: expanded,
+	}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	require.NoError(t, err)
+
+	var build *api.ClaimStep
+	for _, st := range resp.Stages {
+		if st.Step != nil && st.Step.Name == "tpl__build" {
+			build = st.Step
+		}
+	}
+	require.NotNil(t, build, "expected inlined step tpl__build")
+	assert.Equal(t, []string{"python3", "-c"}, build.Shell, "template spec.shell must win over caller spec.shell")
+}
+
+// TestBuildClaimResponse_Shell_UsesComposition_CallerFillsUndeclaredTemplate
+// covers the other composition case: a template that declares neither its
+// own step-level shell nor a template-level spec.shell leaves its inlined
+// step with a nil Shell after expansion, so the caller's spec.shell resolves
+// onto the final ClaimStep at claim-build time.
+func TestBuildClaimResponse_Shell_UsesComposition_CallerFillsUndeclaredTemplate(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Steps: []dsl.StepEntry{{Name: "build", Run: "make"}},
+	}
+	expanded, err := gittemplate.ExpandUsesStep("tpl", nil, tplSpec, nil, "")
+	require.NoError(t, err)
+
+	spec := dsl.Spec{
+		Shell: []string{"bash", "-lc"}, // caller job-level default
+		Steps: expanded,
+	}
+	b, err := json.Marshal(spec)
+	require.NoError(t, err)
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	require.NoError(t, err)
+
+	var build *api.ClaimStep
+	for _, st := range resp.Stages {
+		if st.Step != nil && st.Step.Name == "tpl__build" {
+			build = st.Step
+		}
+	}
+	require.NotNil(t, build, "expected inlined step tpl__build")
+	assert.Equal(t, []string{"bash", "-lc"}, build.Shell, "undeclared template step must pick up the caller's spec.shell")
 }

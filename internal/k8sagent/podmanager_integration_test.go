@@ -16,10 +16,11 @@ func TestPodManager_WaitForPodRunning_Integration(t *testing.T) {
 	defer cancel()
 
 	client, _ := newTestKubeClient(t)
+	shimImage := testShimImageOrSkip(t)
 	ns := newTestNamespace(t, client)
 	pm := NewPodManager(client, ns, testImage)
 
-	pod, err := BuildPod(uniqueRunID("wait"), ns, nil, nil, testImage, SidecarSpec{})
+	pod, err := BuildPod(uniqueRunID("wait"), ns, nil, nil, testImage, SidecarSpec{}, shimImage)
 	require.NoError(t, err)
 	created, err := pm.CreatePod(ctx, pod)
 	require.NoError(t, err)
@@ -34,10 +35,11 @@ func TestPodManager_WaitForPodRunning_ContextCancelled_Integration(t *testing.T)
 	defer cancel()
 
 	client, _ := newTestKubeClient(t)
+	shimImage := testShimImageOrSkip(t)
 	ns := newTestNamespace(t, client)
 	pm := NewPodManager(client, ns, testImage)
 
-	pod, err := BuildPod(uniqueRunID("waitcancel"), ns, nil, nil, testImage, SidecarSpec{})
+	pod, err := BuildPod(uniqueRunID("waitcancel"), ns, nil, nil, testImage, SidecarSpec{}, shimImage)
 	require.NoError(t, err)
 	created, err := pm.CreatePod(ctx, pod)
 	require.NoError(t, err)

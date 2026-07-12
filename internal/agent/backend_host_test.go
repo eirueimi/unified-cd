@@ -21,7 +21,7 @@ func TestHostBackend_RunNamedContainer_ExecsIntoPodContainer(t *testing.T) {
 	pt := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{
 		map[string]any{"name": "tools", "image": "node:20"},
 	}}}
-	pod := newClaimPodManager(rt, "/host/ws", "/workspace", "pause:img", "runner:img")
+	pod := newClaimPodManager(rt, "/host/ws", "/workspace", "pause:img", "runner:img", "")
 	require.NoError(t, pod.Start(context.Background(), pt))
 	b := newHostBackend(&Agent{ID: "a1"}, "r1", "/host/ws", pod)
 
@@ -53,7 +53,7 @@ func TestHostBackend_RunNamedContainer_ExecsIntoPodContainer(t *testing.T) {
 func TestHostBackend_RunNamedContainer_UnknownContainer(t *testing.T) {
 	rt := &recordingRT{}
 	pt := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{}}}
-	pod := newClaimPodManager(rt, "/host/ws", "/workspace", "pause:img", "runner:img")
+	pod := newClaimPodManager(rt, "/host/ws", "/workspace", "pause:img", "runner:img", "")
 	require.NoError(t, pod.Start(context.Background(), pt))
 	b := newHostBackend(&Agent{ID: "a1"}, "r1", "/host/ws", pod)
 

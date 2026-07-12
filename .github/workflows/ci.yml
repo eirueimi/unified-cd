@@ -19,6 +19,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: shim placeholders must be empty in git
+        if: runner.os == 'Linux'
+        run: |
+          test "$(git cat-file -s HEAD:internal/shim/embedded/ucd-sh-amd64)" = "0"
+          test "$(git cat-file -s HEAD:internal/shim/embedded/ucd-sh-arm64)" = "0"
       - name: Run unit tests
         run: go test ./... -short -race -count=1
 
@@ -47,9 +52,37 @@ jobs:
         uses: helm/kind-action@v1
         with:
           cluster_name: ci
-      - name: Load test image into kind
+      - name: Load test pod image into kind
         run: |
           docker pull ubuntu:22.04
           kind load docker-image ubuntu:22.04 --name ci
+      - name: Build and load a real shim image into kind
+        # The k8s job's tests build real Pods, and BuildPod (internal/k8sagent/podbuilder.go)
+        # always prepends a ucd-shim init container that runs
+        # "/ucd-sh --install /.ucd/ucd-sh" from whatever image Config.ShimImage
+        # names. Without a real image containing /ucd-sh, Kubernetes rejects
+        # the pod outright ("spec.initContainers[0].image: Required value" if
+        # empty, or an ImagePullBackOff if non-empty but unreachable). Build
+        # the shim binary from this checkout, package it into a minimal
+        # scratch image (ucd-sh is a static Go binary — its --install mode
+        # execs itself, no shell needed), and load it into the kind cluster
+        # so no registry pull is required. The Dockerfile is generated inline
+        # (not committed) so there is no stray tracked file to maintain.
+        run: |
+          set -euo pipefail
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o ucd-sh ./cmd/ucd-sh
+          workdir="$(mktemp -d)"
+          cp ucd-sh "$workdir/ucd-sh"
+          rm -f ucd-sh
+          printf 'FROM scratch\nCOPY ucd-sh /ucd-sh\n' > "$workdir/Dockerfile.shim-test"
+          docker build -t ucd-shim-test:ci -f "$workdir/Dockerfile.shim-test" "$workdir"
+          rm -rf "$workdir"
+          kind load docker-image ucd-shim-test:ci --name ci
       - name: Run k8s integration tests
+        env:
+          # kind-loaded images are not on any registry; the init container's
+          # default pull policy (no policy is set in podbuilder.go, and this
+          # tag is not ":latest") resolves to IfNotPresent, which is
+          # satisfied by a kind-loaded image without a pull attempt.
+          UCD_K8S_TEST_SHIM_IMAGE: ucd-shim-test:ci
         run: go test -tags k8s ./internal/k8sagent/... -timeout 10m -v

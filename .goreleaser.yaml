@@ -1,6 +1,20 @@
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json
 version: 2
 
+# cmd/agent go:embeds internal/shim/embedded/ucd-sh-<arch> (arch-tagged via
+# embed_amd64.go / embed_arm64.go — see the package doc comment in
+# internal/shim/embedded/embed.go) to inject into every job container it
+# creates. The files checked into git are empty placeholders; both real
+# linux shim binaries must be built before the `agent` build id below runs
+# for any goos/goarch, or every released agent ships with no shim.
+# goreleaser's `before.hooks` entries are plain commands run without a
+# shell, so GOOS/GOARCH env vars can't be set inline per-hook — build both
+# arches from a small POSIX sh script instead. Release CI runs on ubuntu;
+# this isn't exercised from a Windows dev machine.
+before:
+  hooks:
+    - sh scripts/build-shims.sh
+
 builds:
   - id: unified-cli
     binary: unified-cli

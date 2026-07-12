@@ -105,7 +105,7 @@ func (p *PodPool) evictExpired(ctx context.Context) {
 
 // ClaimPod acquires a Pod corresponding to the given template name.
 // Reuses an idle Pod if available; otherwise creates a new one.
-func (p *PodPool) ClaimPod(ctx context.Context, runID, templateName string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec) (*PooledPod, error) {
+func (p *PodPool) ClaimPod(ctx context.Context, runID, templateName string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string) (*PooledPod, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -122,7 +122,7 @@ func (p *PodPool) ClaimPod(ctx context.Context, runID, templateName string, agen
 		if err != nil {
 			// conflict or fetch failure → fall back to creating a new pod
 			slog.Warn("pool: pod claim conflict, creating new pod", "pod", pp.PodName, "error", err)
-			return p.createPoolPod(ctx, runID, templateName, agentTmpls, jobTmpl, fallbackImage, sidecar)
+			return p.createPoolPod(ctx, runID, templateName, agentTmpls, jobTmpl, fallbackImage, sidecar, shimImage)
 		}
 		pod, _ := p.client.CoreV1().Pods(p.namespace).Get(ctx, pp.PodName, metav1.GetOptions{})
 		if pod != nil {
@@ -131,11 +131,11 @@ func (p *PodPool) ClaimPod(ctx context.Context, runID, templateName string, agen
 		return pp, nil
 	}
 
-	return p.createPoolPod(ctx, runID, templateName, agentTmpls, jobTmpl, fallbackImage, sidecar)
+	return p.createPoolPod(ctx, runID, templateName, agentTmpls, jobTmpl, fallbackImage, sidecar, shimImage)
 }
 
-func (p *PodPool) createPoolPod(ctx context.Context, runID, templateName string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec) (*PooledPod, error) {
-	pod, err := BuildPod(runID, p.namespace, agentTmpls, jobTmpl, fallbackImage, sidecar)
+func (p *PodPool) createPoolPod(ctx context.Context, runID, templateName string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string) (*PooledPod, error) {
+	pod, err := BuildPod(runID, p.namespace, agentTmpls, jobTmpl, fallbackImage, sidecar, shimImage)
 	if err != nil {
 		return nil, err
 	}

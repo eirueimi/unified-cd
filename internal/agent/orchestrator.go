@@ -393,7 +393,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 						break
 					}
 					stepScope = h
-					ec, runErr = b.RunInScope(stepCtx, h, expandedRun, extraEnv, stdoutTee, shippedStderr)
+					ec, runErr = b.RunInScope(stepCtx, h, expandedRun, step.Shell, extraEnv, stdoutTee, shippedStderr)
 				case step.Container != "":
 					ec, runErr = b.RunNamedContainer(stepCtx, step, step.Container, expandedRun, extraEnv, stdoutTee, shippedStderr)
 				default:
@@ -465,6 +465,14 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 
 			if status == "Succeeded" && step.Post != nil {
 				container := step.Container
+				// The hook's effective shell: its own declared shell: if set,
+				// else the owning step's effective ClaimStep.Shell (inherit).
+				// Resolved once here so the hookStack drain (which runs after
+				// the step's own ClaimStep is out of scope) doesn't need to.
+				hookShell := step.Post.Shell
+				if len(hookShell) == 0 {
+					hookShell = step.Shell
+				}
 				postHooksMu.Lock()
 				hookStack = append(hookStack, postHookEntry{
 					stepName:  step.Name,
@@ -472,6 +480,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					scope:     stepScope,
 					container: container,
 					stepIndex: step.Index,
+					shell:     hookShell,
 				})
 				postHooksMu.Unlock()
 			}
@@ -532,7 +541,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		// which already finished when the step itself completed) so post output
 		// gets its own flush lifecycle independent of the step body's.
 		postStdout, postStderr, finishPostLogs := b.StepLogWriters(hookCtx, entry.stepIndex)
-		runErr := b.RunPostHook(hookCtx, entry.scope, entry.container, cmd, extraEnv, postStdout, postStderr)
+		runErr := b.RunPostHook(hookCtx, entry.scope, entry.container, cmd, entry.shell, extraEnv, postStdout, postStderr)
 		finishPostLogs(hookCtx)
 		if runErr != nil {
 			slog.Warn("post step failed", "step", entry.stepName, "error", runErr)

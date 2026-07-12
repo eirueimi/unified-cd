@@ -48,7 +48,7 @@ type envExecCall struct {
 	env                    []string
 }
 
-func (f *envCaptureExec) ExecStep(_ context.Context, podName, container, script string, env []string, stdout, _ io.Writer) (int, error) {
+func (f *envCaptureExec) ExecStep(_ context.Context, podName, container, script string, _ []string, env []string, stdout, _ io.Writer) (int, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, envExecCall{pod: podName, container: container, script: script, env: env})
 	f.mu.Unlock()

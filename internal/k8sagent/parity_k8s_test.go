@@ -392,7 +392,7 @@ func (b *parityK8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, 
 	return agentlib.NewScopeHandle("scope-pod-" + step.ScopeID), nil
 }
 
-func (b *parityK8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, env []string, stdout, stderr io.Writer) (int, error) {
+func (b *parityK8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, shell, env []string, stdout, stderr io.Writer) (int, error) {
 	return parityRunScript(b.t, b.shell, api.ClaimStep{}, script, stdout, stderr)(ctx)
 }
 
@@ -423,7 +423,7 @@ func (b *parityK8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.
 // RunPostHook implementations stream a post hook's real output into them —
 // see internal/agent/backend.go / internal/k8sagent/backend.go) but
 // deliberately unused here, matching this fake's documented no-exec design.
-func (b *parityK8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, env []string, stdout, stderr io.Writer) error {
+func (b *parityK8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle, container, script string, shell, env []string, stdout, stderr io.Writer) error {
 	b.postMu.Lock()
 	b.postOrder = append(b.postOrder, script)
 	b.postMu.Unlock()

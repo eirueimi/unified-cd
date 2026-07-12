@@ -53,7 +53,7 @@ func TestPodManager_CreatePod_FromBuilt(t *testing.T) {
 	fakeClient := fake.NewSimpleClientset()
 	pm := NewPodManager(fakeClient, "default", "golang:1.24-alpine")
 
-	pod, err := BuildPod("run-abc999", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{})
+	pod, err := BuildPod("run-abc999", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
 	require.NoError(t, err)
 
 	created, err := pm.CreatePod(context.Background(), pod)
@@ -66,7 +66,7 @@ func TestPodManager_UpdatePodAnnotations(t *testing.T) {
 	fakeClient := fake.NewSimpleClientset()
 	pm := NewPodManager(fakeClient, "default", "golang:1.24-alpine")
 
-	pod, _ := BuildPod("run-abc999", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{})
+	pod, _ := BuildPod("run-abc999", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
 	created, _ := pm.CreatePod(context.Background(), pod)
 
 	err := pm.UpdatePodAnnotations(context.Background(), created.Name, map[string]string{

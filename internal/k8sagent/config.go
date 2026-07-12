@@ -11,13 +11,20 @@ import (
 
 // Config holds the configuration for the Kubernetes agent.
 type Config struct {
-	Server              string                      `yaml:"server"`
-	Token               string                      `yaml:"token"`
-	AgentID             string                      `yaml:"agentId"`
-	Labels              []string                    `yaml:"labels"`
-	Namespace           string                      `yaml:"namespace"`
-	PodImage            string                      `yaml:"podImage"`
-	SidecarImage        string                      `yaml:"sidecarImage"`
+	Server       string   `yaml:"server"`
+	Token        string   `yaml:"token"`
+	AgentID      string   `yaml:"agentId"`
+	Labels       []string `yaml:"labels"`
+	Namespace    string   `yaml:"namespace"`
+	PodImage     string   `yaml:"podImage"`
+	SidecarImage string   `yaml:"sidecarImage"`
+	// ShimImage is the image the init container that installs the ucd-sh
+	// shim onto the /.ucd emptyDir runs (see podbuilder.go's injectUcdShim
+	// and docs/superpowers/specs/2026-07-12-step-shell-shim-design.md
+	// Component 3). It defaults to the k8s-agent's own image, which ships
+	// /ucd-sh at its root (docker/k8s-agent.Dockerfile) — configurable so
+	// air-gapped registries can point it at a mirrored copy.
+	ShimImage           string                      `yaml:"shimImage"`
 	Kubeconfig          string                      `yaml:"kubeconfig"`
 	MaxConcurrent       int                         `yaml:"maxConcurrent"`
 	PoolIdleTimeout     string                      `yaml:"poolIdleTimeout,omitempty"`
@@ -31,12 +38,17 @@ type AgentPodTemplate struct {
 	Spec      map[string]any       `yaml:"spec"`
 }
 
+// defaultShimImage is the default value of Config.ShimImage: the k8s-agent's
+// own image, which ships /ucd-sh at its root (see docker/k8s-agent.Dockerfile).
+const defaultShimImage = "ghcr.io/eirueimi/unified-cd-k8s-agent:latest"
+
 // DefaultConfig returns a Config with default values.
 func DefaultConfig() Config {
 	return Config{
 		Namespace:     "default",
 		PodImage:      "ghcr.io/eirueimi/unified-cd-runner:v0.0.3",
 		SidecarImage:  "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
+		ShimImage:     defaultShimImage,
 		MaxConcurrent: 5,
 	}
 }
@@ -106,6 +118,9 @@ func (c *Config) Validate() error {
 	}
 	if c.SidecarImage == "" {
 		c.SidecarImage = "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest"
+	}
+	if c.ShimImage == "" {
+		c.ShimImage = defaultShimImage
 	}
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = 5
