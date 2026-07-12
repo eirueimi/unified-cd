@@ -150,3 +150,25 @@ func TestArtifactDownload_MissingArtifact_Returns404(t *testing.T) {
 		t.Fatalf("missing-artifact download = %d, want 404 (body=%q)", rr.Code, rr.Body.String())
 	}
 }
+
+// TestLogsArchive_MissingObject_Returns404 covers handleLogsArchive's
+// ErrNotFound branch: the archive record exists in the DB but the underlying
+// object is gone from the store — the client gets a clean 404 instead of a
+// broken stream (possible only since ObjectStore.Get detects missing keys
+// eagerly).
+func TestLogsArchive_MissingObject_Returns404(t *testing.T) {
+	s, st := newTestServer(t)
+	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
+
+	_, _ = st.UpsertJob(t.Context(), "arch404-job", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	run, err := st.CreateRun(t.Context(), "arch404-job", nil, []byte(`{}`), nil, nil, "test")
+	require.NoError(t, err)
+	require.NoError(t, st.CreateLogArchive(t.Context(), run.ID, "logs/"+run.ID+".ndjson", 42))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/logs/archive", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "not found")
+}

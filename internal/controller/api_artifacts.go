@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -48,24 +48,23 @@ func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) 
 
 	rc, err := s.objStore.Get(r.Context(), key)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		// ObjectStore.Get detects a missing key eagerly (before any bytes are
+		// read), so a missing artifact yields a clean 404 here rather than a
+		// 200 that breaks mid-stream. Only a genuine miss becomes 404; any
+		// other error (e.g. a transient backend failure) is a 500 so it isn't
+		// mistaken for "artifact doesn't exist".
+		if errors.Is(err, objectstore.ErrNotFound) {
+			http.Error(w, "artifact not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer rc.Close()
 
-	// The S3 backend's Get is lazy: a missing key does not error until the first
-	// read. Probe one byte before committing a 200 so a missing artifact yields
-	// a 404 instead of 200 + an empty body (humans request bad names far more
-	// often than the agent did). EOF means the object exists but is empty — still 200.
-	br := bufio.NewReader(rc)
-	if _, err := br.Peek(1); err != nil && !errors.Is(err, io.EOF) {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, br)
+	_, _ = io.Copy(w, rc)
 }
 
 // handleArtifactList handles GET /api/v1/runs/{runID}/artifacts.
