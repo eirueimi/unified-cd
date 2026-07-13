@@ -1,0 +1,60 @@
+# Demonstrates: the shell: field — overriding the default step interpreter.
+#
+# By default every run: script executes under the injected ucd-sh shim
+# (a static build of mvdan.cc/sh), so no shell binary is required in the image.
+# shell: replaces that with an explicit argv array: the run: script is appended
+# as the final argument, and the array is exec'd verbatim (never re-parsed).
+# Reach for it when a step needs real bash semantics the shim's subset does not
+# cover (signal traps, wait -n, PIPESTATUS, ...) or a non-shell interpreter
+# entirely. Priority: step.shell > spec.shell > the ucd-sh default.
+# See docs/jobs.md#shell-shell for the full priority and constraints table.
+# Usage:
+#   unified-cd apply -f examples/jobs/shell-override.yaml
+#   unified-cd run trigger shell-bash-demo
+#   unified-cd run trigger shell-python-demo
+---
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: shell-bash-demo
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: default-shim
+      # No shell: — this runs under the ucd-sh shim (the default). Portable,
+      # POSIX-ish, needs no shell binary in the image.
+      run: echo "default step ran under the ucd-sh shim"
+    - name: real-bash
+      # Opt into real bash: BASH_VERSION and bash-only syntax (arrays, [[ ]])
+      # work here, unlike under the shim. This is the migration escape hatch
+      # for scripts that were written against bash.
+      shell: [bash, -lc]
+      run: |
+        set -euo pipefail
+        echo "bash version: ${BASH_VERSION}"
+        arr=(alpha beta gamma)
+        echo "array element [1]: ${arr[1]}"
+        [[ -n "${BASH_VERSION}" ]] && echo "confirmed running under real bash"
+---
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: shell-python-demo
+spec:
+  agentSelector:
+    - kind:docker
+  # shell: can point at ANY interpreter, not just a shell. The default runner
+  # image has no python3, so run the step in an image that does, via podTemplate.
+  podTemplate:
+    spec:
+      containers:
+        - name: job
+          image: python:3.12-slim
+  steps:
+    - name: run-python
+      shell: [python3, -c]
+      run: |
+        import sys, json
+        print("hello from python", sys.version.split()[0])
+        print(json.dumps({"interpreter": "python3", "via": "shell: [python3, -c]"}))

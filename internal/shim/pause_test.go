@@ -60,7 +60,13 @@ func testPauseSignal(t *testing.T, sig syscall.Signal) {
 		if err != nil {
 			t.Fatalf("helper process exited with error, want exit 0: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
+		// Generous ceiling, not an expected wait: the helper is a fresh
+		// `go test` subprocess, and on a loaded CI runner its startup +
+		// signal delivery can exceed a few seconds (a 5s bound flaked twice
+		// on the Integration-tests job). Pause exits as soon as the signal
+		// lands, so a large timeout costs nothing on the passing path and
+		// only guards against runner contention.
 		cmd.Process.Kill()
 		t.Fatal("helper process did not exit after signal")
 	}

@@ -283,12 +283,25 @@ func runCorpusScript(t *testing.T, script string, dir string) (exitCode int, err
 // breaks doc-splitting again) changes these numbers instead of failing
 // silently.
 //
-// ** Adding a new example or template with a Job doc? Update these two
+// wantTotalScripts counts scripts the walker EXECUTES under interp; scripts
+// skipped for a non-default shell: are counted by wantSkipped instead, not
+// here.
+//
+// ** Adding a new example or template with a Job doc? Update these
 // constants to match (and re-derive them independently — don't just copy
 // whatever the test prints) as part of that change. **
 const (
-	wantFilesWithJobDocs = 48
-	wantTotalScripts     = 84
+	wantFilesWithJobDocs = 49
+	wantTotalScripts     = 85
+
+	// wantSkipped is the number of run: scripts the gate legitimately does
+	// NOT execute under interp because their step declares a non-default
+	// shell:. Today that is exactly the two shell: steps in
+	// examples/jobs/shell-override.yaml (real-bash → [bash, -lc];
+	// run-python → [python3, -c]) — those opt into a specific interpreter,
+	// so interp compatibility is out of scope for them by design. Adding or
+	// removing a shell:-declared step in the corpus must update this count.
+	wantSkipped = 2
 )
 
 // TestCorpus is the compatibility corpus gate: every run: script shipped in
@@ -391,11 +404,12 @@ func TestCorpus(t *testing.T) {
 	// to either grow real handling for exercising it (as that shell, not
 	// interp) or an explicit, reviewed exemption here — instead of
 	// silently skipping it forever.
-	if totalSkipped != 0 {
-		t.Fatalf("extractScripts skipped %d script(s) due to a non-nil shell: override; "+
-			"the corpus is assumed to contain none today — either that assumption is now false "+
-			"(teach this test to handle non-default shells) or something is misclassifying a script",
-			totalSkipped)
+	if totalSkipped != wantSkipped {
+		t.Fatalf("extractScripts skipped %d script(s) due to a non-nil shell: override, want %d; "+
+			"a shell:-declared step was added or removed in the corpus (or a script is being "+
+			"misclassified) — update wantSkipped and confirm which steps it accounts for "+
+			"(see examples/jobs/shell-override.yaml)",
+			totalSkipped, wantSkipped)
 	}
 
 	if totalScripts == 0 {
