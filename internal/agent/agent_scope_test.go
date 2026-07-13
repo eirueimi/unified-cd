@@ -521,6 +521,9 @@ func (c *concurrentRT) Remove(context.Context, crt.ContainerHandle) error {
 	c.removeCalls.Add(1)
 	return nil
 }
+func (c *concurrentRT) Logs(context.Context, crt.ContainerHandle, io.Writer, io.Writer) error {
+	return nil
+}
 
 func (c *concurrentRT) execScripts() []string {
 	c.mu.Lock()

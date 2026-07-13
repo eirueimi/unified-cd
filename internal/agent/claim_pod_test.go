@@ -47,6 +47,9 @@ func (f *podFakeRT) Remove(_ context.Context, h crt.ContainerHandle) error {
 	f.removed = append(f.removed, h.ID)
 	return nil
 }
+func (f *podFakeRT) Logs(context.Context, crt.ContainerHandle, io.Writer, io.Writer) error {
+	return nil
+}
 func fmtID(i int) string { return "c" + string(rune('0'+i)) }
 
 func mysqlTemplate() *dsl.PodTemplate {

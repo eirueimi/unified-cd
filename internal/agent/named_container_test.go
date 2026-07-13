@@ -56,3 +56,6 @@ func (r *recordingRT) Remove(context.Context, crt.ContainerHandle) error {
 	r.removes.Add(1)
 	return nil
 }
+func (r *recordingRT) Logs(context.Context, crt.ContainerHandle, io.Writer, io.Writer) error {
+	return nil
+}

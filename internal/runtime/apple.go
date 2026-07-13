@@ -148,3 +148,17 @@ func (a *appleContainer) CopyOut(ctx context.Context, h ContainerHandle, contain
 func (a *appleContainer) Remove(ctx context.Context, h ContainerHandle) error {
 	return execCommand(ctx, "container", "rm", "-f", h.ID).Run()
 }
+
+func (a *appleContainer) Logs(ctx context.Context, h ContainerHandle, stdout, stderr io.Writer) error {
+	cmd := execCommand(ctx, "container", "logs", "-f", h.ID)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	if err == nil || ctx.Err() != nil {
+		return nil
+	}
+	if _, ok := err.(*exec.ExitError); ok {
+		return nil
+	}
+	return fmt.Errorf("container logs -f: %w", err)
+}

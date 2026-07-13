@@ -77,6 +77,10 @@ func (f *shellFakeRT) Remove(_ context.Context, h crt.ContainerHandle) error {
 	return nil
 }
 
+func (f *shellFakeRT) Logs(context.Context, crt.ContainerHandle, io.Writer, io.Writer) error {
+	return nil
+}
+
 // handleByCreateIndex returns the handle id assigned to the i-th Create call
 // (Create returns "c<index>", so this is just "c<i>", but going through the
 // recorded slice keeps the mapping honest if the id scheme ever changes).

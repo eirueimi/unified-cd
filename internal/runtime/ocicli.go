@@ -180,3 +180,19 @@ func (r *ociCLI) CopyOut(ctx context.Context, h ContainerHandle, containerPath, 
 func (r *ociCLI) Remove(ctx context.Context, h ContainerHandle) error {
 	return execCommand(ctx, r.bin, "rm", "-f", h.ID).Run()
 }
+
+func (r *ociCLI) Logs(ctx context.Context, h ContainerHandle, stdout, stderr io.Writer) error {
+	cmd := execCommand(ctx, r.bin, "logs", "-f", h.ID)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	// `logs -f` exits 0 when the container stops; ctx cancellation kills it.
+	// Neither is an error for the caller (the stream simply ended).
+	if err == nil || ctx.Err() != nil {
+		return nil
+	}
+	if _, ok := err.(*exec.ExitError); ok {
+		return nil // container gone / logs ended non-zero — not our failure
+	}
+	return fmt.Errorf("%s logs -f: %w", r.bin, err)
+}

@@ -107,6 +107,14 @@ type ContainerRuntime interface {
 	CopyIn(ctx context.Context, h ContainerHandle, hostPath, containerPath string) error
 	CopyOut(ctx context.Context, h ContainerHandle, containerPath, hostPath string) error
 	Remove(ctx context.Context, h ContainerHandle) error
+
+	// Logs streams a running container's output — stdout to the stdout writer,
+	// stderr to the stderr writer — starting from container start and following
+	// until the container exits or ctx is cancelled. Blocking; callers run it in
+	// a goroutine. Used by the host claim pod to ship user sidecar logs. A
+	// non-nil return is an infrastructure error (the follow command failed to
+	// start); a normal container exit or a ctx cancellation returns nil.
+	Logs(ctx context.Context, h ContainerHandle, stdout, stderr io.Writer) error
 }
 
 // detectOrder is the auto-detection preference order. Apple's `container` is
