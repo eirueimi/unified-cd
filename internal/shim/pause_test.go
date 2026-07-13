@@ -8,7 +8,6 @@ package shim
 import (
 	"os"
 	"os/exec"
-	"os/signal"
 	"syscall"
 	"testing"
 	"time"
@@ -60,13 +59,15 @@ func testPauseSignal(t *testing.T, sig syscall.Signal) {
 		if err != nil {
 			t.Fatalf("helper process exited with error, want exit 0: %v", err)
 		}
-	case <-time.After(30 * time.Second):
-		// Generous ceiling, not an expected wait: the helper is a fresh
-		// `go test` subprocess, and on a loaded CI runner its startup +
-		// signal delivery can exceed a few seconds (a 5s bound flaked twice
-		// on the Integration-tests job). Pause exits as soon as the signal
-		// lands, so a large timeout costs nothing on the passing path and
-		// only guards against runner contention.
+	case <-time.After(10 * time.Second):
+		// Safety ceiling only. Readiness is now announced from inside
+		// pauseUntilSignal (after sigCh is registered), so once we've read
+		// "ready" the signal is guaranteed to reach Pause and it exits
+		// immediately — this branch should never fire. It previously did (a
+		// 30s timeout flaking on the loaded Integration runner) because the
+		// helper announced readiness before Pause registered, letting a
+		// throwaway handler swallow the signal in the window; that race is now
+		// structurally closed, so a hit here means Pause genuinely hung.
 		cmd.Process.Kill()
 		t.Fatal("helper process did not exit after signal")
 	}
@@ -91,13 +92,14 @@ func TestHelperProcessPause(t *testing.T) {
 	if os.Getenv("UCD_SH_HELPER_PROCESS") != "1" {
 		return
 	}
-	// Pre-register a throwaway handler BEFORE announcing readiness: once any
-	// signal.Notify registration exists, Go disables the default terminate
-	// disposition process-wide, so a signal landing in the window between
-	// the ready write and Pause's own Notify call can no longer kill the
-	// helper — it is simply delivered to Pause's channel once registered.
-	signal.Notify(make(chan os.Signal, 1), syscall.SIGTERM, syscall.SIGINT)
-	os.Stderr.WriteString("ready")
-	Pause()
+	// Announce readiness from INSIDE pauseUntilSignal, after it has installed
+	// its signal handler and just before it blocks. This closes the
+	// signal-theft race: the parent only sends the signal after reading
+	// "ready", by which point sigCh is registered, so the signal always
+	// reaches Pause instead of being lost in a pre-registration window. (The
+	// old structure wrote "ready" before Pause registered and relied on a
+	// throwaway signal.Notify to avoid the default kill — but that throwaway
+	// channel swallowed any signal arriving in the window, hanging Pause.)
+	pauseUntilSignal(func() { os.Stderr.WriteString("ready") })
 	os.Exit(0)
 }
