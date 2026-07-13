@@ -2,6 +2,10 @@
 
 An open-source CI/CD tool (Jenkins alternative) written in Go.
 
+<p align="center">
+  <img src=".github/assets/demo-pipeline.gif" alt="unified-cd Web UI running a multi-step DAG pipeline: build, then unit-tests / integration-tests / lint in parallel, then deploy" width="820">
+</p>
+
 **GitHub:** https://github.com/eirueimi/unified-cd
 
 **Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO
