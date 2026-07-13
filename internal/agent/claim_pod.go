@@ -289,6 +289,7 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 	m.pause = pause
 	defs, err := claimContainerDefs(pt, m.runnerImage)
 	if err != nil {
+		m.closeAllLocked(ctx)
 		return fmt.Errorf("claim pod: %w", err)
 	}
 	for _, def := range defs {
