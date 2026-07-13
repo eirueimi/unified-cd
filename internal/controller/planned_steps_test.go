@@ -151,3 +151,54 @@ func TestAPI_GetRunSteps_MergesPlanned(t *testing.T) {
 	assert.Equal(t, "Pending", got[1].Status)
 	assert.Equal(t, "cache", got[1].Kind)
 }
+
+// TestAPI_GetRunSteps_OverlaysSidecarStatus verifies the handler-level overlay
+// in handleGetRunSteps: given a run whose spec has a podTemplate sidecar and a
+// persisted sidecar status, GET /runs/{id}/steps returns the sidecar
+// pseudo-step (synthesized by plannedSteps) with its Status/ExitCode replaced
+// by the reported Phase/ExitCode. This exercises the GetSidecarStatuses fetch +
+// index-match + field copy that TestPlannedSteps_IncludesSidecars never reaches.
+func TestAPI_GetRunSteps_OverlaysSidecarStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	s, pg := newTestServer(t)
+	// A podTemplate whose containers are the primary "job" plus a user sidecar
+	// "mysql"; plannedSteps synthesizes a sidecar pseudo-step for mysql at
+	// dsl.SidecarLogIndex(0).
+	specJSON := []byte(`{"podTemplate":{"spec":{"containers":[` +
+		`{"name":"job","image":"golang"},` +
+		`{"name":"mysql","image":"mysql:8"}]}}}`)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", specJSON)
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "api")
+	require.NoError(t, err)
+
+	// Persist the sidecar's exited status so the handler overlay has something
+	// to copy onto the pseudo-step.
+	exitCode := 1
+	require.NoError(t, pg.UpsertSidecarStatus(t.Context(), run.ID, dsl.SidecarLogIndex(0), "mysql", "exited", &exitCode))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/steps", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var got []api.StepReport
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+
+	var mysql *api.StepReport
+	for i := range got {
+		if got[i].Kind == "sidecar" && got[i].Name == "mysql" {
+			mysql = &got[i]
+		}
+	}
+	require.NotNil(t, mysql, "expected a sidecar-kind step for mysql in %+v", got)
+	assert.Equal(t, dsl.SidecarLogIndex(0), mysql.Index)
+	assert.Equal(t, "sidecars", mysql.Section)
+	// The overlay replaced the synthesized "Running" placeholder with the
+	// reported phase and copied the exit code through.
+	assert.Equal(t, "exited", mysql.Status)
+	require.NotNil(t, mysql.ExitCode)
+	assert.Equal(t, 1, *mysql.ExitCode)
+}
