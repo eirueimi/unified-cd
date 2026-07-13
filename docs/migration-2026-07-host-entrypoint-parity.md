@@ -169,9 +169,9 @@ changes; the fifth is a log-accuracy-only fix with no user action.
 |---|---|---|---|
 | 1 | Primary `job` container keep-alive | k8s only injected `ucd-sh pause` when the `job` container had neither `command` nor `args` set — a `podTemplate` command on `job` actually ran on k8s (but was always overridden on the host). | **Both backends** unconditionally force `ucd-sh pause` on the primary `job` container, discarding any `command`/`args` set on it. |
 | 2 | `resources.requests` on the host | Silently dropped with no diagnostic (`resources` is a host-supported field, so no WARN loop fired). | Host logs one WARN and ignores `resources.requests`; `resources.limits` is unaffected and still applies on both backends. |
-| 3 | Non-string `env` `value` | Host silently dropped it with a misleading "no literal value" WARN; k8s already hard-failed. | **Both backends** hard-error at job start: `podTemplate container %q env %q: value must be a string (got %T); quote the value`. |
+| 3 | Non-string `env` `value` | Host silently dropped it with a misleading "no literal value" WARN; k8s already hard-failed. | **Both backends** hard-error at job start when an env value is not a string (e.g., unquoted number or boolean). The host reports `podTemplate container %q env %q: value must be a string (got %T); quote the value`, while k8s fails with a generic JSON type-mismatch error. |
 | 4 | k8s cache hit/miss log | A genuine cache miss on k8s was logged as `"cache hit"` (the sidecar's exit-0-always contract was mapped straight to `hit=true`). | The log is now accurate — a miss logs `"cache miss"`. **Log-accuracy only** — caching behavior, exit codes, and the never-fail-on-miss policy are unchanged. No user action needed. |
-| 5 | Unnamed `podTemplate` container | Host silently skipped it (`continue`); k8s sent it to the API server, which rejected it late, as a run-creation failure. | **Both backends** hard-error at pod-build time: `podTemplate container at index N has no name`. |
+| 5 | Unnamed `podTemplate` container | Host silently skipped it (`continue`); k8s sent it to the API server, which rejected it late, as a run-creation failure. | **Both backends** hard-error at job start: `podTemplate container at index N has no name`. |
 
 ### What you need to do
 

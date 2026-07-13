@@ -1084,7 +1084,7 @@ standard agent and the k8s-agent:
   `valueFrom`-style entry, unsupported on the standard agent) is still
   only a WARN + skip on the host, not an error.
 - **Every container needs a `name`.** A `podTemplate` container with no
-  `name` is a **hard error at pod-build time on both backends**
+  `name` is a **hard error at job start on both backends**
   (`podTemplate container at index N has no name`) — add a `name` to every
   entry in `spec.containers`.
 
