@@ -79,8 +79,14 @@ ordinal in `podTemplate.spec.containers` (declared order, skipping the primary
 read the same podTemplate and compute the same `100000 + k`, so no mapping needs to
 be exchanged. Indices are per-run (logs are keyed by `run_id`), so cross-run
 stability is irrelevant; within a run both sides see the same container list.
-Duplicate container names are already a hard error (host `claimContainerDefs` /
-k8s `BuildPod`), so name↔ordinal is unambiguous.
+Duplicate container names are NOT a hard error: the host `claimContainerDefs`
+warns and drops the duplicate (keeping the first definition) rather than
+rejecting the podTemplate, and this is a malformed-input path, not something
+either backend validates against. What keeps name↔ordinal unambiguous despite
+that is the shared-helper enumeration described below — both sides walk the
+same un-deduplicated `dsl.SidecarContainerNames(pt)` list, so a duplicate name
+still yields the same two ordinals on both sides (agent and controller agree,
+even though only one container actually runs).
 
 A single shared helper computes the mapping so agent and controller cannot drift:
 

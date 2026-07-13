@@ -471,14 +471,17 @@
   };
   // Sidecar rows carry their own running/exited status (not one of the run
   // step statuses statusBadge() understands), so map it to the existing
-  // badge color tokens directly: running → success/green, exited 0 → muted,
-  // exited non-zero → danger/red.
+  // badge color tokens directly: running → success/green, exited with a
+  // null/undefined exit code (best-effort outcome: host inspect error, or
+  // k8s container not yet terminated / Get failed) → muted (same as exited
+  // 0 — not an error signal), exited non-zero → danger/red.
   function sidecarDotClass(s) {
-    if (s.status === "exited") return s.exitCode === 0 ? "dot-muted" : "dot-danger";
+    if (s.status === "exited") return s.exitCode ? "dot-danger" : "dot-muted";
     return "dot-success"; // "running" / "Running"
   }
   function sidecarStatusLabel(s) {
-    return s.status === "exited" ? `exited ${s.exitCode}` : "running";
+    if (s.status !== "exited") return "running";
+    return s.exitCode == null ? "exited" : `exited ${s.exitCode}`;
   }
   function stepDuration(s) {
     if (!s.startedAt) return "";

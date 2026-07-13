@@ -229,7 +229,13 @@ type claimPodManager struct {
 	pause crt.ContainerHandle
 	open  map[string]crt.ContainerHandle // container name → handle
 
-	sidecarOrder []string // non-"job" container names, in podTemplate declared order
+	// podTemplate is the pt Start was called with, retained so SidecarHandles
+	// can enumerate sidecar ordinals via dsl.SidecarContainerNames — the SAME
+	// helper the controller and the k8s agent use. Deriving order any other
+	// way (e.g. from claimContainerDefs, which de-dups same-named containers)
+	// would let the host's ordinals diverge from the controller's for a
+	// malformed podTemplate with duplicate container names.
+	podTemplate *dsl.PodTemplate
 }
 
 func newClaimPodManager(rt crt.ContainerRuntime, workDir, mountPath, pauseImage, runnerImage, toolsDir string) *claimPodManager {
@@ -278,6 +284,7 @@ func ucdToolsMount(toolsDir string) []crt.Mount {
 func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.podTemplate = pt
 	// The pause container only owns the netns (nothing execs into it), but it
 	// must outlive the whole claim: without an explicit keep-alive it would
 	// run its image's default entrypoint and could exit immediately,
@@ -320,23 +327,30 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 			return fmt.Errorf("claim pod: start container %q (image %q): %w", def.Name, def.Image, err)
 		}
 		m.open[def.Name] = h
-		if def.Name != primaryContainerName {
-			m.sidecarOrder = append(m.sidecarOrder, def.Name)
-		}
 	}
 	return nil
 }
 
 // SidecarHandles returns the live user sidecar containers (every non-"job"
-// container) in podTemplate declared order, each tagged with its ordinal so the
-// caller can compute its log index via dsl.SidecarLogIndex.
+// container), each tagged with its ordinal so the caller can compute its log
+// index via dsl.SidecarLogIndex. Ordinals are derived from
+// dsl.SidecarContainerNames(m.podTemplate) — the SAME helper the controller
+// (planned_steps.go) and the k8s agent use — rather than from
+// claimContainerDefs' de-duplicated order, so a malformed podTemplate with a
+// duplicate container name still yields ordinals the controller agrees with:
+// a duplicate name here produces two SidecarHandle entries (ordinals k and
+// k+1) that both resolve to the single open handle claimContainerDefs
+// actually created (it keeps the first and drops the duplicate with a WARN —
+// see claimContainerDefs' doc comment). Names with no open handle (should not
+// happen in practice, since claimContainerDefs creates one for every name
+// SidecarContainerNames returns) are skipped.
 func (m *claimPodManager) SidecarHandles() []SidecarHandle {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []SidecarHandle
-	for i, name := range m.sidecarOrder {
+	for k, name := range dsl.SidecarContainerNames(m.podTemplate) {
 		if h, ok := m.open[name]; ok {
-			out = append(out, SidecarHandle{Name: name, Ordinal: i, Handle: h})
+			out = append(out, SidecarHandle{Name: name, Ordinal: k, Handle: h})
 		}
 	}
 	return out
