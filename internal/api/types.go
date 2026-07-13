@@ -189,7 +189,7 @@ type StepReport struct {
 	ChildRunID  string `json:"childRunId,omitempty"`
 	CallJobName string `json:"callJobName,omitempty"`
 
-	Kind    string `json:"kind,omitempty"`    // run|cache|call|uses|uploadArtifact|downloadArtifact|approval
+	Kind    string `json:"kind,omitempty"`    // run|cache|call|uses|uploadArtifact|downloadArtifact|approval|sidecar
 	Section string `json:"section,omitempty"` // main|finally
 	Matrix  bool   `json:"matrix,omitempty"`  // true if the (planned) step is a matrix/foreach step
 }

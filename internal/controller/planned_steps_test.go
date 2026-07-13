@@ -101,6 +101,23 @@ spec:
 	assert.Equal(t, "Pending", m[2].Status) // c not reported → pending
 }
 
+func TestPlannedSteps_IncludesSidecars(t *testing.T) {
+	spec := dsl.Spec{PodTemplate: &dsl.PodTemplate{Spec: map[string]any{"containers": []any{
+		map[string]any{"name": "job", "image": "golang"},
+		map[string]any{"name": "mysql", "image": "mysql:8"},
+	}}}}
+	got := plannedSteps(spec)
+	var mysql *api.StepReport
+	for i := range got {
+		if got[i].Kind == "sidecar" && got[i].Name == "mysql" {
+			mysql = &got[i]
+		}
+	}
+	require.NotNil(t, mysql)
+	assert.Equal(t, dsl.SidecarLogIndex(0), mysql.Index)
+	assert.Equal(t, "sidecars", mysql.Section)
+}
+
 // TestAPI_GetRunSteps_MergesPlanned verifies that GET /runs/{id}/steps overlays
 // reported step statuses onto the full planned step list from the run's stored
 // spec, so steps the agent hasn't reported yet still show up as Pending. Uses

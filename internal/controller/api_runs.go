@@ -194,6 +194,24 @@ func (s *Server) handleGetRunSteps(w http.ResponseWriter, r *http.Request) {
 			steps = mergedRunSteps(steps, spec)
 		}
 	}
+	// Overlay live sidecar phase/exit-code (from Task 5's sidecar_status
+	// reports) onto the sidecar pseudo-steps synthesized by plannedSteps.
+	// Best-effort: a store error here should not fail the whole steps response.
+	if scs, scErr := s.store.GetSidecarStatuses(r.Context(), id); scErr == nil {
+		byIdx := map[int]api.SidecarStatusRequest{}
+		for _, sc := range scs {
+			byIdx[sc.Index] = sc
+		}
+		for i := range steps {
+			if steps[i].Kind != "sidecar" {
+				continue
+			}
+			if sc, ok := byIdx[steps[i].Index]; ok {
+				steps[i].Status = sc.Phase // "running" / "exited"
+				steps[i].ExitCode = sc.ExitCode
+			}
+		}
+	}
 	if steps == nil {
 		steps = []api.StepReport{}
 	}
