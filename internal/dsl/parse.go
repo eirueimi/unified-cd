@@ -427,6 +427,12 @@ func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *C
 		if foreach.Key == "" {
 			return fmt.Errorf("%s (%s): foreach.key is required", path, name)
 		}
+		// foreach.key is exposed as {{ .Foreach.<key> }}; require an identifier
+		// so the reference is a valid template selector (same rule as matrix
+		// dimension names — otherwise a hyphenated key renders unresolved).
+		if !matrixDimNameRe.MatchString(foreach.Key) {
+			return fmt.Errorf("%s (%s): foreach.key %q must match %s", path, name, foreach.Key, matrixDimNameRe.String())
+		}
 		if len(foreach.Source.Literal) == 0 && foreach.Source.Expr == "" {
 			return fmt.Errorf("%s (%s): foreach.in must be a non-empty list or expression", path, name)
 		}

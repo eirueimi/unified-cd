@@ -345,6 +345,29 @@ spec:
 	assert.Contains(t, err.Error(), `orLocks[0].name "env-1"`)
 }
 
+// TestParse_RejectsForeachInvalidKeyName mirrors the matrix dimension-name rule:
+// foreach.key is exposed to steps as {{ .Foreach.<key> }}, so a key with a
+// hyphen (or any non-identifier char) would silently render as an unresolved
+// template rather than the item value. Reject it at parse time instead.
+func TestParse_RejectsForeachInvalidKeyName(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  steps:
+    - name: fe
+      foreach:
+        key: "my-item"
+        in: [a, b]
+      run: echo x
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `foreach.key "my-item"`)
+}
+
 func TestParse_RejectsOrLockDuplicateName(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1
