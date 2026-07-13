@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -195,4 +196,12 @@ func (r *ociCLI) Logs(ctx context.Context, h ContainerHandle, stdout, stderr io.
 		return nil // container gone / logs ended non-zero — not our failure
 	}
 	return fmt.Errorf("%s logs -f: %w", r.bin, err)
+}
+
+func (r *ociCLI) ExitCode(ctx context.Context, h ContainerHandle) (int, error) {
+	out, err := execCommand(ctx, r.bin, "inspect", "-f", "{{.State.ExitCode}}", h.ID).Output()
+	if err != nil {
+		return 0, fmt.Errorf("%s inspect exitcode: %w", r.bin, err)
+	}
+	return strconv.Atoi(strings.TrimSpace(string(out)))
 }

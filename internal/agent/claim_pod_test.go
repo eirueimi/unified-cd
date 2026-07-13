@@ -50,6 +50,7 @@ func (f *podFakeRT) Remove(_ context.Context, h crt.ContainerHandle) error {
 func (f *podFakeRT) Logs(context.Context, crt.ContainerHandle, io.Writer, io.Writer) error {
 	return nil
 }
+func (f *podFakeRT) ExitCode(context.Context, crt.ContainerHandle) (int, error) { return 0, nil }
 func fmtID(i int) string { return "c" + string(rune('0'+i)) }
 
 func mysqlTemplate() *dsl.PodTemplate {

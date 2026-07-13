@@ -45,6 +45,7 @@ func (crtNoop) Remove(ctx context.Context, h crt.ContainerHandle) error { return
 func (crtNoop) Logs(ctx context.Context, h crt.ContainerHandle, stdout, stderr io.Writer) error {
 	return nil
 }
+func (crtNoop) ExitCode(ctx context.Context, h crt.ContainerHandle) (int, error) { return 0, nil }
 
 // logFakeRT.Logs writes one stdout line then returns (container "exited").
 type logFakeRT struct{ crtNoop }
@@ -57,19 +58,22 @@ func (logFakeRT) Logs(_ context.Context, h crt.ContainerHandle, stdout, _ io.Wri
 // recordingClient wraps a *Client pointed at an httptest.Server that records
 // every logs/bulk request body, keyed by the step index parsed out of the URL
 // path — mirroring claim_pod_integration_test.go's claimIntegrationHarness.
+// It also records every sidecar status report, in arrival order.
 type recordingClient struct {
 	client *Client
 	srv    *httptest.Server
 
-	mu    sync.Mutex
-	lines map[int][]string
+	mu       sync.Mutex
+	lines    map[int][]string
+	statuses []api.SidecarStatusRequest
 }
 
 func newRecordingClient() *recordingClient {
 	rec := &recordingClient{lines: map[int][]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/logs/bulk") {
+		switch {
+		case strings.Contains(r.URL.Path, "/logs/bulk"):
 			parts := strings.Split(r.URL.Path, "/")
 			stepIndex := 0
 			for i, p := range parts {
@@ -89,6 +93,13 @@ func newRecordingClient() *recordingClient {
 				}
 				rec.mu.Unlock()
 			}
+		case strings.HasSuffix(r.URL.Path, "/sidecars"):
+			var s api.SidecarStatusRequest
+			if err := json.NewDecoder(r.Body).Decode(&s); err == nil {
+				rec.mu.Lock()
+				rec.statuses = append(rec.statuses, s)
+				rec.mu.Unlock()
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -105,6 +116,14 @@ func (r *recordingClient) linesForStep(idx int) []string {
 	return out
 }
 
+func (r *recordingClient) statusReports() []api.SidecarStatusRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]api.SidecarStatusRequest, len(r.statuses))
+	copy(out, r.statuses)
+	return out
+}
+
 func TestSidecarLogPump_ShipsAtSidecarIndex(t *testing.T) {
 	rec := newRecordingClient()
 	defer rec.srv.Close()
@@ -116,4 +135,38 @@ func TestSidecarLogPump_ShipsAtSidecarIndex(t *testing.T) {
 	lines := rec.linesForStep(dsl.SidecarLogIndex(0))
 	require.NotEmpty(t, lines)
 	assert.Contains(t, lines[0], "sidecar line for c1")
+}
+
+// exitCodeFakeRT is a logFakeRT variant whose ExitCode returns a
+// distinguishable non-zero code, so a test can prove the reported "exited"
+// status carries the runtime's real exit code.
+type exitCodeFakeRT struct {
+	logFakeRT
+	code int
+}
+
+func (f exitCodeFakeRT) ExitCode(context.Context, crt.ContainerHandle) (int, error) {
+	return f.code, nil
+}
+
+func TestSidecarLogPump_ReportsRunningThenExited(t *testing.T) {
+	rec := newRecordingClient()
+	defer rec.srv.Close()
+	pump := newSidecarLogPump(exitCodeFakeRT{code: 7}, rec.client, "agent-1", "run-1", nil,
+		[]SidecarHandle{{Name: "mysql", Ordinal: 0, Handle: crt.ContainerHandle{ID: "c1"}}})
+	pump.Start(context.Background())
+	pump.Stop(context.Background())
+
+	statuses := rec.statusReports()
+	require.Len(t, statuses, 2)
+
+	assert.Equal(t, "run-1", statuses[0].RunID)
+	assert.Equal(t, "mysql", statuses[0].Name)
+	assert.Equal(t, dsl.SidecarLogIndex(0), statuses[0].Index)
+	assert.Equal(t, "running", statuses[0].Phase)
+	assert.Nil(t, statuses[0].ExitCode)
+
+	assert.Equal(t, "exited", statuses[1].Phase)
+	require.NotNil(t, statuses[1].ExitCode)
+	assert.Equal(t, 7, *statuses[1].ExitCode)
 }

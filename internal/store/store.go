@@ -163,6 +163,14 @@ type Store interface {
 	// TOTAL match count (which may exceed capN). q is a raw substring; ILIKE
 	// metacharacters are escaped internally.
 	SearchLogs(ctx context.Context, runID string, steps []int, q string, capN int) (total int64, matches []LogSearchMatch, err error)
+	// UpsertSidecarStatus records a user sidecar container's phase (running/
+	// exited) and exit code (set only on exit) for display, keyed by
+	// (runID, idx). Idempotent: a later report for the same key overwrites
+	// the earlier one.
+	UpsertSidecarStatus(ctx context.Context, runID string, idx int, name, phase string, exitCode *int) error
+	// GetSidecarStatuses returns every reported sidecar status for a run,
+	// ordered by idx.
+	GetSidecarStatuses(ctx context.Context, runID string) ([]api.SidecarStatusRequest, error)
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
 	// os/version/env wholesale (a registration is the authoritative identity).
 	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, env map[string]string) error

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -161,4 +162,12 @@ func (a *appleContainer) Logs(ctx context.Context, h ContainerHandle, stdout, st
 		return nil
 	}
 	return fmt.Errorf("container logs -f: %w", err)
+}
+
+func (a *appleContainer) ExitCode(ctx context.Context, h ContainerHandle) (int, error) {
+	out, err := execCommand(ctx, "container", "inspect", "-f", "{{.State.ExitCode}}", h.ID).Output()
+	if err != nil {
+		return 0, fmt.Errorf("container inspect exitcode: %w", err)
+	}
+	return strconv.Atoi(strings.TrimSpace(string(out)))
 }

@@ -115,6 +115,10 @@ type ContainerRuntime interface {
 	// non-nil return is an infrastructure error (the follow command failed to
 	// start); a normal container exit or a ctx cancellation returns nil.
 	Logs(ctx context.Context, h ContainerHandle, stdout, stderr io.Writer) error
+
+	// ExitCode returns a stopped/exited container's exit code. Used by the host
+	// claim pod to report a sidecar's final status once its Logs stream ends.
+	ExitCode(ctx context.Context, h ContainerHandle) (int, error)
 }
 
 // detectOrder is the auto-detection preference order. Apple's `container` is

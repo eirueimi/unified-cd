@@ -190,6 +190,14 @@ func (c *Client) AppendLogBulk(ctx context.Context, agentID, runID string, stepI
 	return err
 }
 
+// ReportSidecarStatus reports a user sidecar container's phase/exit-code to
+// the master server for UI display.
+func (c *Client) ReportSidecarStatus(ctx context.Context, agentID string, req api.SidecarStatusRequest) error {
+	path := fmt.Sprintf("/api/v1/agents/%s/runs/%s/sidecars", agentID, req.RunID)
+	_, err := c.do(ctx, http.MethodPost, path, req, nil)
+	return err
+}
+
 // CreateApproval creates a pending approval record for an approval gate step.
 func (c *Client) CreateApproval(ctx context.Context, agentID, runID string, req api.CreateApprovalRequest) error {
 	_, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/runs/"+runID+"/approvals", req, nil)

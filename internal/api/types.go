@@ -202,6 +202,17 @@ type LogAppendRequest struct {
 	Line      string    `json:"line"`
 }
 
+// SidecarStatusRequest reports one user sidecar container's phase/exit to the
+// controller for display. Phase is "running" or "exited". ExitCode is set only
+// when Phase == "exited".
+type SidecarStatusRequest struct {
+	RunID    string `json:"runId"`
+	Name     string `json:"name"`
+	Index    int    `json:"index"`
+	Phase    string `json:"phase"`
+	ExitCode *int   `json:"exitCode,omitempty"`
+}
+
 type LogLine struct {
 	Seq       int64     `json:"seq"`
 	StepIndex int       `json:"stepIndex"`

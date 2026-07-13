@@ -716,6 +716,37 @@ func (p *Postgres) GetRunParent(ctx context.Context, childRunID string) (*api.Ca
 	return &cb, nil
 }
 
+// UpsertSidecarStatus records a user sidecar container's phase/exit code for
+// display, keyed by (runID, idx). ON CONFLICT overwrites phase/exit_code so
+// the row always reflects the most recently reported transition.
+func (p *Postgres) UpsertSidecarStatus(ctx context.Context, runID string, idx int, name, phase string, exitCode *int) error {
+	const q = `INSERT INTO sidecar_status (run_id, idx, name, phase, exit_code, updated_at)
+	           VALUES ($1,$2,$3,$4,$5, now())
+	           ON CONFLICT (run_id, idx) DO UPDATE SET phase=$4, exit_code=$5, updated_at=now()`
+	_, err := p.pool.Exec(ctx, q, runID, idx, name, phase, exitCode)
+	return err
+}
+
+// GetSidecarStatuses returns every reported sidecar status for a run, ordered
+// by idx (declared sidecar order).
+func (p *Postgres) GetSidecarStatuses(ctx context.Context, runID string) ([]api.SidecarStatusRequest, error) {
+	const q = `SELECT run_id, idx, name, phase, exit_code FROM sidecar_status WHERE run_id=$1 ORDER BY idx`
+	rows, err := p.pool.Query(ctx, q, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []api.SidecarStatusRequest
+	for rows.Next() {
+		var s api.SidecarStatusRequest
+		if err := rows.Scan(&s.RunID, &s.Index, &s.Name, &s.Phase, &s.ExitCode); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 func (p *Postgres) AppendLog(ctx context.Context, runID string, stepIndex int, stream string, ts time.Time, line string) (int64, error) {
 	const q = `
 		INSERT INTO logs(run_id, step_index, stream, ts, line)
