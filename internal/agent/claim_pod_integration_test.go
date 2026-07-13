@@ -461,3 +461,149 @@ func TestClaimPod_Integration_ConcurrentClaimsNoPortCollision(t *testing.T) {
 		assert.Equal(t, "Succeeded", status, "claim %d (%s) should succeed: isolated netns means both can bind port 12080", i, runIDs[i])
 	}
 }
+
+// TestClaimPod_Integration_EntrypointImagePrimaryKeepsAlive is the regression
+// test for the Entrypoint/Args split (see the host/k8s entrypoint-parity
+// plan): a primary "job" container whose IMAGE declares its own ENTRYPOINT
+// must still keep alive under ucd-sh pause. httpd:2.4's ENTRYPOINT is
+// ["httpd-foreground"] — a long-running foreground process, not a shell.
+// Before the split, claimPodManager.Start only ever appended ucdShPause as
+// the container's Args/CMD, so this primary would have actually run
+// "httpd-foreground /.ucd/ucd-sh pause" (the image ENTRYPOINT plus the
+// pause command as its arguments, which httpd-foreground does not accept)
+// and the pod would never become exec-able. With the fix, ucdShPause is set
+// as CreateSpec.Entrypoint, which clears httpd-foreground (--entrypoint "")
+// before setting the shim as the new entrypoint, so a default step can exec
+// into the container normally.
+func TestClaimPod_Integration_EntrypointImagePrimaryKeepsAlive(t *testing.T) {
+	if _, err := crt.Detect(""); err != nil {
+		t.Skipf("no container runtime available, skipping: %v", err)
+	}
+
+	const agentID = "claim-pod-entrypoint-primary-agent"
+	const runID = "run-claim-pod-entrypoint-primary"
+
+	h := newClaimIntegrationHarness()
+	srv := newClaimIntegrationServer(t, agentID, h)
+
+	a := &Agent{
+		ID:         agentID,
+		Client:     NewClient(srv.URL, "tok"),
+		PauseImage: "busybox:1.36",
+		// The primary "job" container is injected from RunnerImage (no
+		// podTemplate "job" container defined below), and httpd:2.4's own
+		// ENTRYPOINT (httpd-foreground) is exactly the case under test.
+		RunnerImage: "docker.io/library/httpd:2.4",
+		ToolsDir:    installShimOrSkip(t),
+	}
+
+	claim := api.ClaimResponse{
+		Native:  false,
+		RunID:   runID,
+		JobName: "test-claim-pod-entrypoint-primary",
+		// No podTemplate: claimContainerDefs injects the default "job"
+		// primary backed by RunnerImage (httpd:2.4).
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0, StageIndex: 0, Name: "echo-alive",
+				Run: "echo alive",
+			}},
+		},
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	select {
+	case status := <-h.finishCh:
+		require.Equal(t, "Succeeded", status,
+			"a default step must succeed against a primary whose image (httpd:2.4) declares its own ENTRYPOINT: ucd-sh pause must clear httpd-foreground via CreateSpec.Entrypoint, or the pod never becomes exec-able")
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	step0Stdout := strings.Join(h.stepStdout[0], "\n")
+	assert.Contains(t, step0Stdout, "alive",
+		"default step on an ENTRYPOINT-bearing primary must run to completion and report its output, got: %q", step0Stdout)
+}
+
+// TestClaimPod_Integration_SidecarCommandOverridesImageEntrypoint proves a
+// sidecar's podTemplate command: actually overrides its image's ENTRYPOINT —
+// the host now matches k8s container semantics (command replaces
+// ENTRYPOINT, not appends to it). httpd:2.4's ENTRYPOINT is
+// ["httpd-foreground"]; the sidecar here overrides it with a shell script
+// that writes a marker file and sleeps. Before the Entrypoint split, the
+// override would have run as arguments to httpd-foreground instead of
+// replacing it, so the marker file would never appear (httpd-foreground
+// does not accept "sh -c ..." as arguments and would fail or ignore them).
+func TestClaimPod_Integration_SidecarCommandOverridesImageEntrypoint(t *testing.T) {
+	if _, err := crt.Detect(""); err != nil {
+		t.Skipf("no container runtime available, skipping: %v", err)
+	}
+
+	const agentID = "claim-pod-sidecar-override-agent"
+	const runID = "run-claim-pod-sidecar-override"
+
+	h := newClaimIntegrationHarness()
+	srv := newClaimIntegrationServer(t, agentID, h)
+
+	a := &Agent{
+		ID:          agentID,
+		Client:      NewClient(srv.URL, "tok"),
+		PauseImage:  "busybox:1.36",
+		RunnerImage: "busybox:1.36",
+		ToolsDir:    installShimOrSkip(t),
+	}
+
+	claim := api.ClaimResponse{
+		Native:  false,
+		RunID:   runID,
+		JobName: "test-claim-pod-sidecar-override",
+		// "web" overrides httpd:2.4's ENTRYPOINT (httpd-foreground) with a
+		// command: that writes a marker file to the shared workspace mount
+		// and then stays alive. If command: only appended to (rather than
+		// replaced) the image ENTRYPOINT, httpd-foreground would run
+		// instead and the marker would never be written.
+		PodTemplate: &dsl.PodTemplate{Spec: map[string]any{
+			"containers": []any{
+				map[string]any{
+					"name":    "web",
+					"image":   "docker.io/library/httpd:2.4",
+					"command": []any{"sh", "-c", "echo OVERRIDE > /workspace/marker.txt && sleep infinity"},
+				},
+			},
+		}},
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0, StageIndex: 0, Name: "wait-for-marker",
+				// The "web" sidecar's overridden command needs a moment to
+				// start and write the marker; retry briefly instead of
+				// racing the write (avoids a rare flake on a healthy setup).
+				Run: `set -e
+for i in $(seq 1 30); do
+  [ -f /workspace/marker.txt ] && { cat /workspace/marker.txt; exit 0; }
+  sleep 1
+done
+echo "sidecar command override never wrote the marker file" >&2
+exit 1`,
+			}},
+		},
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	select {
+	case status := <-h.finishCh:
+		require.Equal(t, "Succeeded", status,
+			"run should finish Succeeded: sidecar command: must override httpd:2.4's ENTRYPOINT (httpd-foreground), not run alongside/instead of it")
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	step0Stdout := strings.Join(h.stepStdout[0], "\n")
+	assert.Contains(t, step0Stdout, "OVERRIDE",
+		"default step must observe the marker file the sidecar's overridden command wrote, proving command: replaced the image ENTRYPOINT rather than running alongside/after it, got: %q", step0Stdout)
+}
