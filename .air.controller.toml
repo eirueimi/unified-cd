@@ -2,7 +2,7 @@ root = "."
 tmp_dir = "tmp"
 
 [build]
-  cmd = "go build -mod=vendor -o ./tmp/unified-cd-controller ./cmd/controller"
+  cmd = "go build -o ./tmp/unified-cd-controller ./cmd/controller"
   bin = "./tmp/unified-cd-controller"
   delay = 1000
   include_ext = ["go"]

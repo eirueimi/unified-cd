@@ -10,7 +10,7 @@ tmp_dir = "tmp"
   # needed (contrast the Makefile's embed-shim target, which cross-compiles
   # from the Windows host). `$(go env GOARCH)` resolves the container's
   # native arch at build time via the shell air invokes this cmd through.
-  cmd = "go build -mod=vendor -o internal/shim/embedded/ucd-sh-$(go env GOARCH) ./cmd/ucd-sh && go build -mod=vendor -o ./tmp/unified-agent ./cmd/agent"
+  cmd = "go build -o internal/shim/embedded/ucd-sh-$(go env GOARCH) ./cmd/ucd-sh && go build -o ./tmp/unified-agent ./cmd/agent"
   bin = "./tmp/unified-agent"
   # Run two slots so a parent job (e.g. examples/jobs/call-job.yaml) and the child
   # runs it calls can execute concurrently on this single dev agent.
