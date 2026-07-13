@@ -62,10 +62,10 @@ func TestAppleCreateArgv_Mounts(t *testing.T) {
 
 // TestAppleCreateArgv_CommandEmitsSleepInfinity mirrors
 // TestOCICLICreateArgv_CommandEmitsSleepInfinity: an explicit keep-alive
-// Command must be emitted after the image.
+// (CreateSpec.Args) must be emitted after the image.
 func TestAppleCreateArgv_CommandEmitsSleepInfinity(t *testing.T) {
 	a := &appleContainer{}
-	got := a.createArgs(CreateSpec{Image: "golang:1.22", Command: []string{"sleep", "infinity"}})
+	got := a.createArgs(CreateSpec{Image: "golang:1.22", Args: []string{"sleep", "infinity"}})
 	want := []string{"run", "-d", "golang:1.22", "sleep", "infinity"}
 	if len(got) != len(want) {
 		t.Fatalf("argv = %v, want %v", got, want)

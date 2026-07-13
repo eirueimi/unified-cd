@@ -67,7 +67,7 @@ func TestClaimPod_StartPauseFirstThenEager(t *testing.T) {
 	assert.Equal(t, "pause:img", pause.Image)
 	assert.Empty(t, pause.NetworkContainer)
 	assert.Empty(t, pause.Mounts, "pause carries no /.ucd mount when toolsDir is empty (this test's newClaimPodManager call)")
-	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, pause.Command,
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, pause.Entrypoint,
 		"pause container must be kept alive explicitly or the netns it owns collapses")
 
 	for _, spec := range f.created[1:] {
@@ -78,17 +78,20 @@ func TestClaimPod_StartPauseFirstThenEager(t *testing.T) {
 		assert.Equal(t, "/workspace", spec.WorkDir)
 	}
 	assert.Equal(t, "mysql:8", f.created[1].Image)
-	assert.Nil(t, f.created[1].Command,
+	assert.Nil(t, f.created[1].Entrypoint,
 		"a sidecar with no podTemplate command must run its image's default entrypoint (mysqld), not the pause keep-alive")
+	assert.Nil(t, f.created[1].Args,
+		"a sidecar with no podTemplate args must run its image's default CMD")
 	assert.Equal(t, "runner:img", f.created[2].Image, "job container injected from runner image")
-	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, f.created[2].Command,
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, f.created[2].Entrypoint,
 		"the primary job container is the exec target and must always be kept alive")
+	assert.Nil(t, f.created[2].Args, "keep-alive is Entrypoint-only, no trailing Args")
 }
 
 // TestClaimPod_SidecarCommandHonored covers a podTemplate sidecar with an
 // explicit command/args: the claim pod must run the sidecar's own
-// command/args (via containerDef.Command), not sleep infinity and not the
-// image's default entrypoint.
+// command/args (via containerDef.Entrypoint/Args), not sleep infinity and
+// not the image's default entrypoint.
 func TestClaimPod_SidecarCommandHonored(t *testing.T) {
 	f := &podFakeRT{}
 	pt := &dsl.PodTemplate{Spec: map[string]any{
@@ -106,8 +109,10 @@ func TestClaimPod_SidecarCommandHonored(t *testing.T) {
 
 	require.Len(t, f.created, 3) // pause, redis, injected "job"
 	assert.Equal(t, "redis:7", f.created[1].Image)
-	assert.Equal(t, []string{"redis-server", "--port", "6380"}, f.created[1].Command,
-		"sidecar's own podTemplate command+args must be honored, not dropped or replaced")
+	assert.Equal(t, []string{"redis-server"}, f.created[1].Entrypoint,
+		"sidecar's own podTemplate command must be honored, not dropped or replaced")
+	assert.Equal(t, []string{"--port", "6380"}, f.created[1].Args,
+		"sidecar's own podTemplate args must be honored, not dropped or replaced")
 }
 
 // TestClaimPod_PrimaryJobIgnoresTemplateCommand covers a podTemplate that
@@ -126,8 +131,10 @@ func TestClaimPod_PrimaryJobIgnoresTemplateCommand(t *testing.T) {
 
 	require.Len(t, f.created, 2) // pause + job (no injection)
 	assert.Equal(t, "golang:1.22", f.created[1].Image)
-	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, f.created[1].Command,
+	assert.Equal(t, []string{"/.ucd/ucd-sh", "pause"}, f.created[1].Entrypoint,
 		"the primary job container must always keep-alive, even if the podTemplate set its own command")
+	assert.Nil(t, f.created[1].Args,
+		"the primary job container's keep-alive clears any podTemplate args too")
 }
 
 func TestClaimPod_JobFromTemplateNotInjected(t *testing.T) {
@@ -252,8 +259,8 @@ func TestParseContainerDef_WarnsOnUnsupportedField(t *testing.T) {
 // TestParseContainerDef_CommandAndArgsCarried is the regression test for the
 // sidecar-sleep-infinity fix's parseContainerDef change: command/args are no
 // longer host-unsupported/WARN-dropped fields — they are parsed into
-// containerDef.Command (command tokens then args tokens) so a sidecar's own
-// entrypoint override can be honored by claimPodManager.Start.
+// containerDef.Entrypoint (command) and containerDef.Args (args) so a
+// sidecar's own entrypoint override can be honored by claimPodManager.Start.
 func TestParseContainerDef_CommandAndArgsCarried(t *testing.T) {
 	def := parseContainerDef("redis", map[string]any{
 		"name":    "redis",
@@ -261,24 +268,57 @@ func TestParseContainerDef_CommandAndArgsCarried(t *testing.T) {
 		"command": []any{"redis-server"},
 		"args":    []any{"--port", "6380"},
 	})
-	assert.Equal(t, []string{"redis-server", "--port", "6380"}, def.Command)
+	assert.Equal(t, []string{"redis-server"}, def.Entrypoint)
+	assert.Equal(t, []string{"--port", "6380"}, def.Args)
 }
 
 // TestParseContainerDef_CommandOnlyNoArgs covers the command-with-no-args
-// shape (the common sidecar override case).
+// shape (the common sidecar override case): Entrypoint is set, Args is nil.
 func TestParseContainerDef_CommandOnlyNoArgs(t *testing.T) {
 	def := parseContainerDef("tools", map[string]any{
 		"name":    "tools",
 		"image":   "node:20",
 		"command": []any{"/bin/sh", "-c", "node server.js"},
 	})
-	assert.Equal(t, []string{"/bin/sh", "-c", "node server.js"}, def.Command)
+	assert.Equal(t, []string{"/bin/sh", "-c", "node server.js"}, def.Entrypoint)
+	assert.Nil(t, def.Args)
 }
 
 // TestParseContainerDef_NoCommandIsNil covers the default (most common
-// sidecar) case: no command/args set at all means Command is nil, so
-// CreateSpec.Command stays nil and the image's default entrypoint runs.
+// sidecar) case: no command/args set at all means both Entrypoint and Args
+// are nil, so CreateSpec.Entrypoint/Args stay nil and the image's default
+// entrypoint+CMD run unmodified.
 func TestParseContainerDef_NoCommandIsNil(t *testing.T) {
 	def := parseContainerDef("mysql", map[string]any{"name": "mysql", "image": "mysql:8"})
-	assert.Nil(t, def.Command)
+	assert.Nil(t, def.Entrypoint)
+	assert.Nil(t, def.Args)
+}
+
+// TestParseContainerDef_CommandArgsSplit covers a podTemplate container that
+// sets both command and args: they land in separate fields (ENTRYPOINT
+// override vs CMD override), not merged into one slice.
+func TestParseContainerDef_CommandArgsSplit(t *testing.T) {
+	def := parseContainerDef("web", map[string]any{
+		"image":   "nginx",
+		"command": []any{"nginx"},
+		"args":    []any{"-g", "daemon off;"},
+	})
+	assert.Equal(t, []string{"nginx"}, def.Entrypoint)
+	assert.Equal(t, []string{"-g", "daemon off;"}, def.Args)
+}
+
+// TestParseContainerDef_ArgsOnly covers args-only: Entrypoint stays nil (the
+// image's own ENTRYPOINT is used), Args carries the CMD override.
+func TestParseContainerDef_ArgsOnly(t *testing.T) {
+	def := parseContainerDef("web", map[string]any{"image": "nginx", "args": []any{"-t"}})
+	assert.Nil(t, def.Entrypoint)
+	assert.Equal(t, []string{"-t"}, def.Args)
+}
+
+// TestParseContainerDef_Neither_BothNil covers the no-command-no-args shape:
+// both fields nil, image default entrypoint+CMD run unmodified.
+func TestParseContainerDef_Neither_BothNil(t *testing.T) {
+	def := parseContainerDef("db", map[string]any{"image": "mysql:8"})
+	assert.Nil(t, def.Entrypoint)
+	assert.Nil(t, def.Args)
 }

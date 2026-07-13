@@ -3,13 +3,13 @@ package dsl
 // HostSupportedContainerFields lists the podTemplate container keys the host
 // (standard) agent's claim pod honors. command/args are honored: the host
 // claim-pod builder (parseContainerDef in internal/agent/claim_pod.go) carries
-// them into containerDef.Command, which becomes the container's argv. Every
-// other key on a container (volumeMounts, ports, securityContext, envFrom,
-// ...) is silently dropped by the host backend, so its presence means the job
-// can only run correctly on a Kubernetes agent. This is the single source of
-// truth for that set: the host claim-pod builder (internal/agent/claim_pod.go)
-// and the controller's routing predicate (PodTemplateNeedsKubernetes) both
-// read it.
+// them into containerDef.Entrypoint/Args (ENTRYPOINT/CMD override,
+// respectively), which become the container's argv. Every other key on a
+// container (volumeMounts, ports, securityContext, envFrom, ...) is silently
+// dropped by the host backend, so its presence means the job can only run
+// correctly on a Kubernetes agent. This is the single source of truth for
+// that set: the host claim-pod builder (internal/agent/claim_pod.go) and the
+// controller's routing predicate (PodTemplateNeedsKubernetes) both read it.
 var HostSupportedContainerFields = map[string]bool{
 	"name": true, "image": true, "env": true, "resources": true,
 	"command": true, "args": true,

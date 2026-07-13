@@ -4,12 +4,20 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"strings"
 )
 
 // execCommand is indirected for testability.
 var execCommand = exec.CommandContext
+
+// noEmptyEntrypointClear names runtimes whose CLI does NOT support the
+// `--entrypoint ""` empty-clear form. For those, an Entrypoint override
+// degrades to positional args (the image ENTRYPOINT still runs) plus a WARN.
+// Seeded empty; add a runtime only when real-binary verification proves it
+// necessary (see the host-entrypoint-parity design doc).
+var noEmptyEntrypointClear = map[string]bool{}
 
 // ociCLI drives any runtime whose CLI is docker-compatible:
 // docker, podman, nerdctl, and Microsoft's wslc.
@@ -65,10 +73,11 @@ func (r *ociCLI) Run(ctx context.Context, spec RunSpec, stdout, stderr io.Writer
 
 // createArgs builds the argv for `run -d` (a long-lived container: a
 // uses-level runsIn.image scope, or one of a claim pod's containers).
-// spec.Command (if set) is appended after the image; nil/empty runs the
-// image's default entrypoint — see the CreateSpec.Command doc comment.
-// Extracted from Create so tests can assert on the argv (notably -w for
-// spec.WorkDir) without depending on exec.Cmd.Output()'s stdout plumbing.
+// spec.Entrypoint/spec.Args (if set) are appended after the image; nil/empty
+// runs the image's default entrypoint/CMD — see the CreateSpec.Entrypoint
+// and CreateSpec.Args doc comments. Extracted from Create so tests can
+// assert on the argv (notably -w for spec.WorkDir) without depending on
+// exec.Cmd.Output()'s stdout plumbing.
 func (r *ociCLI) createArgs(spec CreateSpec) []string {
 	args := []string{"run", "-d"}
 	if spec.CPULimit != "" {
@@ -93,8 +102,21 @@ func (r *ociCLI) createArgs(spec CreateSpec) []string {
 	for _, e := range spec.Env {
 		args = append(args, "-e", e)
 	}
+	// An Entrypoint override clears the image ENTRYPOINT (docker
+	// `--entrypoint ""`, which must precede the image) and runs
+	// Entrypoint+Args as positional argv. Args-only leaves the image
+	// ENTRYPOINT in place. See CreateSpec.Entrypoint/Args.
+	if len(spec.Entrypoint) > 0 {
+		if noEmptyEntrypointClear[r.bin] {
+			slog.Warn("runtime does not support clearing the image ENTRYPOINT (--entrypoint \"\"); "+
+				"running command as positional args — the image's own ENTRYPOINT still applies", "runtime", r.bin)
+		} else {
+			args = append(args, "--entrypoint", "")
+		}
+	}
 	args = append(args, spec.Image)
-	args = append(args, spec.Command...)
+	args = append(args, spec.Entrypoint...)
+	args = append(args, spec.Args...)
 	return args
 }
 

@@ -23,24 +23,25 @@ type containerDef struct {
 	Env      []string // KEY=VALUE
 	CPULimit string   // cores, e.g. "0.5" (CreateSpec.CPULimit); empty = no limit
 	MemLimit string   // bytes, e.g. "268435456" (CreateSpec.MemLimit); empty = no limit
-	// Command is this container's argv (CreateSpec.Command): the podTemplate
-	// container's command followed by its args, if either is set; nil
-	// otherwise. nil means "run the image's default entrypoint" — the
-	// correct behavior for a service sidecar (mysql, redis, ...) with no
-	// explicit command. claimPodManager.Start ignores this for the primary
-	// "job" container, which always gets the sleep-infinity keep-alive
-	// regardless of what (if anything) the podTemplate set here.
-	Command []string
+	// Entrypoint is the podTemplate container's command (ENTRYPOINT override,
+	// CreateSpec.Entrypoint); nil = use the image's ENTRYPOINT. Args is its
+	// args (CMD override, CreateSpec.Args); nil = use the image's CMD. A
+	// service sidecar (mysql, redis, ...) that sets neither runs its image's
+	// own entrypoint. claimPodManager.Start forces the primary "job"
+	// container's Entrypoint to ucd-sh pause regardless of what the
+	// podTemplate set, so it stays alive as an exec target.
+	Entrypoint []string
+	Args       []string
 }
 
 // parseContainerDef extracts a containerDef from a raw podTemplate container
 // map, keeping only host-supported fields. command/args are parsed into
-// Command (see the containerDef.Command doc comment); they are listed in
-// dsl.HostSupportedContainerFields, so a podTemplate that sets them is
-// host-supported and is no longer forced onto a Kubernetes agent by
-// PodTemplateNeedsKubernetes. Other host-unsupported fields (volumeMounts,
-// ports, securityContext, envFrom, ...) are logged once per container and
-// dropped.
+// Entrypoint/Args respectively (see the containerDef.Entrypoint/Args doc
+// comment); they are listed in dsl.HostSupportedContainerFields, so a
+// podTemplate that sets them is host-supported and is no longer forced onto
+// a Kubernetes agent by PodTemplateNeedsKubernetes. Other host-unsupported
+// fields (volumeMounts, ports, securityContext, envFrom, ...) are logged
+// once per container and dropped.
 func parseContainerDef(name string, c map[string]any) containerDef {
 	def := containerDef{Name: name}
 	def.Image, _ = c["image"].(string)
@@ -52,8 +53,8 @@ func parseContainerDef(name string, c map[string]any) containerDef {
 		}
 	}
 
-	def.Command = append(def.Command, stringSlice(c["command"])...)
-	def.Command = append(def.Command, stringSlice(c["args"])...)
+	def.Entrypoint = stringSlice(c["command"])
+	def.Args = stringSlice(c["args"])
 
 	if envs, ok := c["env"].([]any); ok {
 		for _, raw := range envs {
@@ -221,7 +222,7 @@ func newClaimPodManager(rt crt.ContainerRuntime, workDir, mountPath, pauseImage,
 
 // ucdShPause is the Go keep-alive: it replaces "sleep infinity" for every
 // container that must stay running as an exec target rather than run its
-// image's own entrypoint (see crt.CreateSpec.Command) — the pause container
+// image's own entrypoint (see crt.CreateSpec.Entrypoint) — the pause container
 // (owns the claim pod's netns for its whole lifetime) and the primary "job"
 // container (the exec target for container:-less steps). Unlike sleep
 // infinity it requires no binary in the target image (it IS the shim,
@@ -266,21 +267,19 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 	// collapsing the netns every other claim container shares. It also needs
 	// the /.ucd mount: ucdShPause IS the shim binary, not something the pause
 	// image is expected to provide.
-	pause, err := m.rt.Create(ctx, crt.CreateSpec{Image: m.pauseImage, Command: ucdShPause, Mounts: ucdToolsMount(m.toolsDir)})
+	pause, err := m.rt.Create(ctx, crt.CreateSpec{Image: m.pauseImage, Entrypoint: ucdShPause, Mounts: ucdToolsMount(m.toolsDir)})
 	if err != nil {
 		return fmt.Errorf("claim pod: start pause container (image %q): %w", m.pauseImage, err)
 	}
 	m.pause = pause
 	for _, def := range claimContainerDefs(pt, m.runnerImage) {
-		// The primary "job" container is the exec target for container:-less
-		// steps, so it always gets the ucd-sh pause keep-alive regardless of
-		// any command the podTemplate set on it. Every other container is a
-		// sidecar: it runs its own podTemplate command/args if set, else its
-		// image's default entrypoint (def.Command, possibly nil) — so a
-		// mysql/redis sidecar with no command actually runs its service.
-		cmd := def.Command
+		// A service sidecar runs its own entrypoint/CMD (Entrypoint/Args from
+		// its podTemplate); the primary "job" container is forced to the
+		// ucd-sh pause keep-alive via Entrypoint (clearing whatever ENTRYPOINT
+		// its image declares) so it stays alive as the step exec target.
+		entrypoint, cargs := def.Entrypoint, def.Args
 		if def.Name == primaryContainerName {
-			cmd = ucdShPause
+			entrypoint, cargs = ucdShPause, nil
 		}
 		mounts := append([]crt.Mount{{HostPath: m.workDir, ContainerPath: m.mountPath}}, ucdToolsMount(m.toolsDir)...)
 		h, err := m.rt.Create(ctx, crt.CreateSpec{
@@ -291,7 +290,8 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 			WorkDir:          m.mountPath,
 			Mounts:           mounts,
 			NetworkContainer: pause.ID,
-			Command:          cmd,
+			Entrypoint:       entrypoint,
+			Args:             cargs,
 		})
 		if err != nil {
 			m.closeAllLocked(ctx)

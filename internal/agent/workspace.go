@@ -85,17 +85,17 @@ func containerCleanup(ctx context.Context, workDir string, rtFn func() (crt.Cont
 	if err != nil {
 		return fmt.Errorf("no container runtime for cleanup: %w", err)
 	}
-	// Command is the explicit ucd-sh pause keep-alive: this container must
+	// Entrypoint is the explicit ucd-sh pause keep-alive: this container must
 	// stay running between Create and the Exec below (see
-	// crt.CreateSpec.Command) — busybox's default entrypoint would otherwise
-	// read stdin, hit EOF immediately, and exit before Exec runs. The /.ucd
-	// mount is what makes that keep-alive binary available.
+	// crt.CreateSpec.Entrypoint) — busybox's default entrypoint would
+	// otherwise read stdin, hit EOF immediately, and exit before Exec runs.
+	// The /.ucd mount is what makes that keep-alive binary available.
 	mounts := append([]crt.Mount{{HostPath: workDir, ContainerPath: "/w"}}, ucdToolsMount(toolsDir)...)
 	h, err := rt.Create(ctx, crt.CreateSpec{
-		Image:   "busybox",
-		WorkDir: "/w",
-		Mounts:  mounts,
-		Command: ucdShPause,
+		Image:      "busybox",
+		WorkDir:    "/w",
+		Mounts:     mounts,
+		Entrypoint: ucdShPause,
 	})
 	if err != nil {
 		return err
