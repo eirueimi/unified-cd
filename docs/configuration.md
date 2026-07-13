@@ -353,7 +353,18 @@ podTemplates:
 | `workspace.pvc.accessMode` | string | `ReadWriteOnce`, `ReadOnlyMany`, or `ReadWriteMany` |
 | `spec` | map | Kubernetes PodSpec (containers, volumes, etc.) |
 
-The primary `job` container, when it declares neither `command` nor `args`, automatically receives `["/.ucd/ucd-sh", "pause"]` as its keep-alive command (previously `["sleep", "infinity"]`) — a Go-implemented keep-alive that needs no `sleep` binary in the image, reaps zombie children as PID 1, and exits promptly on SIGTERM. Sidecars with their own `command`/`args` (or none at all, relying on the image's own entrypoint — e.g. a `mysql`/`redis` service container) are left untouched; only the primary container's injection is conditional on having neither set. Every container in the Pod also gets `/.ucd` mounted read-only, carrying the `ucd-sh` binary installed by a prepended `ucd-shim` init container — see [Kubernetes Integration: `/.ucd` shim injection](kubernetes-integration.md#ucd-shim-injection).
+The primary `job` container always receives `["/.ucd/ucd-sh", "pause"]` as
+its keep-alive command (previously `["sleep", "infinity"]`), unconditionally
+overriding any `command`/`args` a `podTemplate` set on it — a Go-implemented
+keep-alive that needs no `sleep` binary in the image, reaps zombie children
+as PID 1, and exits promptly on SIGTERM. Sidecars are left untouched: a
+sidecar with its own `command`/`args` (or none at all, relying on the
+image's own entrypoint — e.g. a `mysql`/`redis` service container) runs
+exactly as declared; only the primary container's injection is
+unconditional. Every container in the Pod also gets `/.ucd` mounted
+read-only, carrying the `ucd-sh` binary installed by a prepended
+`ucd-shim` init container — see [Kubernetes Integration: `/.ucd` shim
+injection](kubernetes-integration.md#ucd-shim-injection).
 
 ---
 

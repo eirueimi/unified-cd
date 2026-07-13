@@ -50,8 +50,10 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   single-container form this replaces — sidecars **are** reachable at `localhost` from
   every claim-pod container, matching k8s.
 - **Resource `requests`** (`podTemplate.spec.containers[].resources.requests`) — applied
-  only here (docker/podman/nerdctl have no request concept; the standard agent maps
-  `resources.limits` only).
+  only here (docker/podman/nerdctl have no request concept). The standard agent maps
+  `resources.limits` only and logs one WARN when `resources.requests` is present
+  (`podTemplate container resources.requests is not supported on the host agent
+  ... and is ignored; use resources.limits or route to a Kubernetes agent`).
 - **`native: true`** — host-only. A `native: true` job claimed by the k8s-agent fails the
   run immediately with a clear error; route native jobs away from k8s-agents (and to host
   agents) via `agentSelector`.
@@ -81,17 +83,17 @@ regardless of `command` — see the [migration
 guide](migration-2026-07-host-entrypoint-parity.md) if a job relied on the
 old merge behavior.
 
-**On the standard agent, the primary `job` container's own image `ENTRYPOINT`
+**On both backends, the primary `job` container's own image `ENTRYPOINT`
 is always ignored**, regardless of any `command`/`args` a `podTemplate` sets
-on it — the claim pod unconditionally forces it to the `ucd-sh pause`
-keep-alive via an `ENTRYPOINT` override, so it stays alive as the exec
-target for `container:`-less steps. (On k8s, the primary `job` container's
-keep-alive is currently still injected only when the container has neither
-`command` nor `args` set — see [Keep-alive:
-`ucd-sh pause`](#keep-alive-ucd-sh-pause) below; bringing k8s to the same
-always-force behavior is tracked separately and is not part of this
-release.) Sidecar containers on both backends honor `command`/`args` as
-described in the table above.
+on it — the pod build unconditionally forces it to the `ucd-sh pause`
+keep-alive (via an `ENTRYPOINT` override on the standard agent, via a
+`Command` override on k8s), so it stays alive as the exec target for
+`container:`-less steps. This applies uniformly to the primary `job`
+container on **both** the standard agent's claim pod and the k8s-agent's
+job Pod — see [Keep-alive: `ucd-sh pause`](#keep-alive-ucd-sh-pause) below.
+Sidecar containers on both backends still honor `command`/`args` as
+described in the table above; only the primary `job` container's
+`command`/`args` are discarded.
 
 #### Per-runtime support for the ENTRYPOINT clear (standard agent only)
 
@@ -306,9 +308,10 @@ All containers in the Pod mount the same path (`mountPath`), so files are shared
 
 The k8s-agent follows these steps:
 
-1. Create the Pod: prepend the `ucd-shim` init container (see below), inject
-   the `["/.ucd/ucd-sh", "pause"]` keep-alive into the primary `job`
-   container when it has no explicit `command`/`args`
+1. Create the Pod: prepend the `ucd-shim` init container (see below),
+   unconditionally inject the `["/.ucd/ucd-sh", "pause"]` keep-alive into
+   the primary `job` container, discarding any `command`/`args` a
+   `podTemplate` set on it
 2. Send each step into the Pod via the equivalent of `kubectl exec`, running
    `/.ucd/ucd-sh -c <script>` by default (or the step's effective `shell:`
    argv — see [Job Reference: Shell (`shell:`)](jobs.md#shell-shell))
@@ -366,9 +369,14 @@ runs.
 
 ### Keep-alive: `ucd-sh pause`
 
-The primary `job` container's keep-alive — injected only when the container
-has **neither** `command` nor `args` set, so an author-supplied entrypoint
-or a sidecar's own service command (e.g. `mysqld`) is never clobbered —
+The primary `job` container's keep-alive is **unconditionally injected**,
+discarding any `command`/`args` the container has set — a `podTemplate`
+that sets `command`/`args` on the container named `job` has that command
+silently overridden by the keep-alive on both backends; put the actual
+workload in `steps:` instead. (Sidecar containers are unaffected: a
+sidecar with no `command`/`args` still runs its own image entrypoint, and a
+sidecar's own service command, e.g. `mysqld`, is never clobbered — only the
+primary `job` container is forced.) The keep-alive argv itself
 changed from `["sleep", "infinity"]` to `["/.ucd/ucd-sh", "pause"]`. This
 applies uniformly, including the **bare `podImage` fallback** (no
 `podTemplate` at all): that path routes through the same injection logic as
@@ -377,6 +385,20 @@ keep-alive rather than being left uninjected. `ucd-sh pause` blocks until
 SIGTERM/SIGINT, reaps zombie children while running as PID 1, and needs no
 `sleep` binary in the image — the `scratch`/distroless keep-alive case that
 `sleep infinity` could never satisfy.
+
+### podTemplate container validation
+
+`BuildPod` validates every `podTemplate` container before the Pod is sent
+to the API server — matching validation the standard agent's claim pod
+also performs (see [Job Reference: podTemplate container parity
+notes](jobs.md#podtemplate-container-parity-notes-host-and-k8s)):
+
+- **Every container must have a `name`.** An empty/missing `name` is a
+  hard error at pod-build time (`podTemplate container at index N has no
+  name`) rather than being sent to the API server and rejected late.
+- **An `env` entry's `value` must be a string.** An unquoted number or
+  boolean (`value: 8080`) fails Pod-spec decoding; quote it
+  (`value: "8080"`).
 
 ---
 

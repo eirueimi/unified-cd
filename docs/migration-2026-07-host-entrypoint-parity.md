@@ -12,12 +12,14 @@ pod](jobs.md#job-isolation-native-and-the-claim-pod)).
 | Primary `job` container keep-alive, standard agent only | Set via `Command`, positionally appended after whatever `ENTRYPOINT` the image declared — a latent bug for an ENTRYPOINT-bearing primary image | Set via an `Entrypoint` override — the image's own `ENTRYPOINT` is now actually cleared, not just appended to |
 
 The k8s-agent's primary `job` container keep-alive is unaffected by this
-release: it already used a native `Command` override (a real `ENTRYPOINT`
-replacement, not a positional append), so it was never subject to the
-host-only latent bug described below. It also still only injects the
-keep-alive when the `job` container has neither `command` nor `args` set —
-bringing k8s to the standard agent's always-force behavior is a separate,
-later piece of work and is not part of this release.
+particular release: it already used a native `Command` override (a real
+`ENTRYPOINT` replacement, not a positional append), so it was never subject
+to the host-only latent bug described below. At the time of this release it
+still only injected the keep-alive when the `job` container had neither
+`command` nor `args` set; a later release (see [parity-fixes
+addendum](#addendum-2026-07-host-k8s-container-parity-fixes-1-5) below)
+brought k8s to the standard agent's always-force behavior, so this
+divergence no longer exists.
 
 This is a **breaking change** for standard-agent (host) jobs whose
 `podTemplate` sidecars set `command:` on an image that also declares its own
@@ -125,17 +127,19 @@ verified and, if necessary, added to the docs matrix.
 - k8s-agent `command`/`args` semantics — already native, already correct;
   nothing in this release touches the k8s Pod-build path for sidecar
   `command`/`args`.
-- k8s-agent primary `job` container keep-alive injection — still guarded
-  (injected only when the container has neither `command` nor `args` set),
-  unlike the standard agent's now-unconditional force. Bringing k8s to the
-  same always-force behavior is separate, later work, not part of this
-  release.
+- k8s-agent primary `job` container keep-alive injection — at the time of
+  this release, still guarded (injected only when the container had neither
+  `command` nor `args` set), unlike the standard agent's now-unconditional
+  force. That divergence was closed in a later release — see the
+  [parity-fixes addendum](#addendum-2026-07-host-k8s-container-parity-fixes-1-5)
+  below.
 - `dsl.HostSupportedContainerFields` — `command` and `args` were already
   host-supported fields (routing to a host vs. k8s agent is unaffected by
   this release).
 - `resources.requests`, non-string `env` values, unnamed `podTemplate`
   containers, and the k8s cache hit/miss log — separate host/k8s parity
-  fixes tracked independently; not part of this migration.
+  fixes, not part of this release; see the [parity-fixes
+  addendum](#addendum-2026-07-host-k8s-container-parity-fixes-1-5) below.
 - `shell:` (the step interpreter) — orthogonal: `shell:` decides how a
   `run:` script is exec'd *into* a running container; `command`/`args`
   decide what the container's own process is.
@@ -151,3 +155,107 @@ verified and, if necessary, added to the docs matrix.
 - [Job Reference: Job Isolation: `native` and the claim
   pod](jobs.md#job-isolation-native-and-the-claim-pod) — how the claim pod
   is built and how `container:` targets its containers.
+
+---
+
+## Addendum (2026-07): host-k8s container parity fixes (#1-#5)
+
+A follow-up audit found five more places where the standard agent and the
+k8s-agent diverged on the same `podTemplate` input. All five are now fixed
+so both backends behave identically. Four are user-visible behavior
+changes; the fifth is a log-accuracy-only fix with no user action.
+
+| # | What changed | Before | After |
+|---|---|---|---|
+| 1 | Primary `job` container keep-alive | k8s only injected `ucd-sh pause` when the `job` container had neither `command` nor `args` set — a `podTemplate` command on `job` actually ran on k8s (but was always overridden on the host). | **Both backends** unconditionally force `ucd-sh pause` on the primary `job` container, discarding any `command`/`args` set on it. |
+| 2 | `resources.requests` on the host | Silently dropped with no diagnostic (`resources` is a host-supported field, so no WARN loop fired). | Host logs one WARN and ignores `resources.requests`; `resources.limits` is unaffected and still applies on both backends. |
+| 3 | Non-string `env` `value` | Host silently dropped it with a misleading "no literal value" WARN; k8s already hard-failed. | **Both backends** hard-error at job start: `podTemplate container %q env %q: value must be a string (got %T); quote the value`. |
+| 4 | k8s cache hit/miss log | A genuine cache miss on k8s was logged as `"cache hit"` (the sidecar's exit-0-always contract was mapped straight to `hit=true`). | The log is now accurate — a miss logs `"cache miss"`. **Log-accuracy only** — caching behavior, exit codes, and the never-fail-on-miss policy are unchanged. No user action needed. |
+| 5 | Unnamed `podTemplate` container | Host silently skipped it (`continue`); k8s sent it to the API server, which rejected it late, as a run-creation failure. | **Both backends** hard-error at pod-build time: `podTemplate container at index N has no name`. |
+
+### What you need to do
+
+**#1 — Move the `job` container's workload into `steps:`.** If a
+`podTemplate` set `command`/`args` on the container named `job` expecting
+it to run (this only ever worked on k8s — the host always overrode it),
+that command is now silently replaced by the keep-alive on k8s too. Put
+the build/test/deploy commands as `steps:` (optionally with
+`container: job`, though that's already the default) instead:
+
+```yaml
+# Before — only ever ran on k8s; the host already ignored this
+podTemplate:
+  spec:
+    containers:
+      - name: job
+        image: golang:1.24-alpine
+        command: ["go", "build", "./..."]
+
+# After — put the workload in steps: on both backends
+podTemplate:
+  spec:
+    containers:
+      - name: job
+        image: golang:1.24-alpine
+steps:
+  - name: build
+    run: go build ./...
+```
+
+**#2 — No action required unless you relied on the silent drop.** If a
+`podTemplate` container set `resources.requests` on the host agent
+expecting it to have an effect, it never did (it was already ignored) —
+you'll now see a WARN making that explicit. Use `resources.limits`
+instead, or route the job to a Kubernetes agent (`agentSelector:
+[kind:k8s]`) if you need real CPU/memory requests.
+
+**#3 — Quote non-string env values.** An `env` entry like `value: 8080` (an
+unquoted number, decoded as YAML `int`) now fails the job at start on
+**both** backends instead of silently vanishing on the host. Quote it:
+
+```yaml
+# Before — silently dropped on the host, already failed on k8s
+env:
+  - name: PORT
+    value: 8080
+
+# After — works on both backends
+env:
+  - name: PORT
+    value: "8080"
+```
+
+**#4 — No action needed.** This is a log-accuracy fix on k8s only; nothing
+about cache behavior, step success/failure, or exit codes changed.
+
+**#5 — Add a `name` to every `podTemplate` container.** A container entry
+with no `name` now fails the job at pod-build time on both backends
+instead of being silently dropped (host) or rejected late by the
+Kubernetes API server (k8s):
+
+```yaml
+# Before — silently skipped on the host, rejected late by k8s
+podTemplate:
+  spec:
+    containers:
+      - image: aquasec/trivy:latest   # no name
+
+# After — add a name
+podTemplate:
+  spec:
+    containers:
+      - name: trivy
+        image: aquasec/trivy:latest
+```
+
+### Reference
+
+- [Job Reference: podTemplate container parity
+  notes](jobs.md#podtemplate-container-parity-notes-host-and-k8s) — the
+  consolidated behavior for #1/#2/#3/#5.
+- [Kubernetes Integration Guide: Keep-alive
+  `ucd-sh pause`](kubernetes-integration.md#keep-alive-ucd-sh-pause) — #1
+  detail.
+- [Kubernetes Integration Guide: podTemplate container
+  validation](kubernetes-integration.md#podtemplate-container-validation)
+  — #3/#5 detail on the k8s side.
