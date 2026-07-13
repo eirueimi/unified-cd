@@ -15,6 +15,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // stderrAutoFlushInterval is how often a step's stderr LogPusher is flushed
@@ -162,6 +163,12 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		return
 	}
 
+	// Capture the claim's start time up front, before pod acquisition. The
+	// sidecar log pump uses it as GetLogs' SinceTime so a reused pooled pod
+	// (whose sidecar containers are never restarted between runs) replays only
+	// THIS run's sidecar output, not a previous claim's history.
+	claimSince := metav1.Now()
+
 	usePool := c.PodTemplate != nil && c.PodTemplate.Reuse
 
 	var pooledPod *PooledPod
@@ -214,26 +221,6 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		return
 	}
 
-	// The pod is Running, so every container (including user podTemplate
-	// sidecars) has started: begin streaming their logs now. Started with a
-	// nil masker — the masker is installed on the backend later (by
-	// agentlib.RunClaim, after secrets fetch) and k8s sidecar service logs
-	// rarely carry job secrets; GetLogs replays from container start, so
-	// nothing streamed before that point is lost. Best-effort and torn down
-	// before the pod is deleted: registered after the create branches' pod
-	// delete/release defer, so it runs first (defers are LIFO).
-	if pm, ok := a.pm.(*PodManager); ok {
-		if sidecars := dsl.SidecarContainerNames(c.PodTemplate); len(sidecars) > 0 {
-			sidecarPump := &k8sSidecarPump{
-				client: pm.Client(), logs: a.client, ns: a.cfg.Namespace,
-				pod: podName, agentID: a.cfg.AgentID, runID: c.RunID,
-				sidecars: sidecars,
-			}
-			sidecarPump.Start(ctx)
-			defer sidecarPump.Stop()
-		}
-	}
-
 	// If cleanWorkspace is true, clear the workspace before the first step
 	if usePool && c.PodTemplate != nil && c.PodTemplate.CleanWorkspace {
 		mountPath := "/workspace"
@@ -265,7 +252,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// b.CloseScopes, mirroring the pre-refactor scopePods defer (RunClaim
 	// installs the masker itself via SetMasker after fetching secrets, so
 	// this wrapper does neither).
-	backend := newK8sBackend(a, c.RunID, podName, mountPath)
+	backend := newK8sBackend(a, c.RunID, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
 
 	agentlib.RunClaim(ctx, a.client, a.cfg.AgentID, c, backend)
 }

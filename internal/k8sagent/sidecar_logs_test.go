@@ -18,7 +18,7 @@ func TestStreamPodContainerLogs_CopiesStream(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "ns"},
 	})
 	var out bytes.Buffer
-	err := streamPodContainerLogs(context.Background(), client, "ns", "p1", "mysql", &out)
+	err := streamPodContainerLogs(context.Background(), client, "ns", "p1", "mysql", metav1.Now(), &out)
 	require.NoError(t, err)
 	assert.NotEmpty(t, out.String()) // fake returns a canned body
 }

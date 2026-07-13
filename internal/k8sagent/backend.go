@@ -14,6 +14,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // k8sBackend is the ExecBackend implementation for the k8s agent. It owns the
@@ -32,12 +33,28 @@ type k8sBackend struct {
 	scopePods map[string]string
 
 	masker *secrets.Masker
+
+	// sidecarNames/claimSince/sidecarPump drive user-sidecar log streaming.
+	// The pump is constructed (and started) lazily in SetMasker, once the
+	// masker is known, and stopped in CloseScopes — mirroring the host
+	// backend's pump ownership model (see backend_host.go). claimSince bounds
+	// GetLogs' replay to this run's window so a reused pooled pod doesn't
+	// re-emit a previous claim's sidecar output.
+	sidecarNames []string
+	claimSince   metav1.Time
+	sidecarPump  *k8sSidecarPump
 }
 
 // newK8sBackend constructs the ExecBackend for one claim's executeRun call,
-// after the run/pooled pod has been acquired and is Running.
-func newK8sBackend(a *K8sAgent, runID, podName, mountPath string) *k8sBackend {
-	return &k8sBackend{a: a, runID: runID, podName: podName, mountPath: mountPath, scopePods: map[string]string{}}
+// after the run/pooled pod has been acquired and is Running. sidecarNames are
+// the user podTemplate sidecar container names (declared order); claimSince is
+// the claim's start time, used as the sidecar log stream's SinceTime.
+func newK8sBackend(a *K8sAgent, runID, podName, mountPath string, sidecarNames []string, claimSince metav1.Time) *k8sBackend {
+	return &k8sBackend{
+		a: a, runID: runID, podName: podName, mountPath: mountPath,
+		scopePods:    map[string]string{},
+		sidecarNames: sidecarNames, claimSince: claimSince,
+	}
 }
 
 // RunDefault runs a step in the default (pooled/per-run) pod's container,
@@ -93,8 +110,14 @@ func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, scr
 	return b.a.exec.ExecStep(ctx, podName, "step", script, shell, env, stdout, stderr)
 }
 
-// CloseScopes deletes every scope pod opened during the claim.
+// CloseScopes deletes every scope pod opened during the claim. It first stops
+// the sidecar log pump (cancelling all sidecar streams and flushing remainders)
+// so streams end before the pod is deleted/released — RunClaim defers
+// CloseScopes and returns before agent.go's pod-teardown defer fires.
 func (b *k8sBackend) CloseScopes(ctx context.Context) {
+	if b.sidecarPump != nil {
+		b.sidecarPump.Stop()
+	}
 	for key, name := range b.scopePods {
 		if err := b.a.pm.DeletePod(context.WithoutCancel(ctx), name); err != nil {
 			slog.Warn("k8s: failed to delete scope pod", "scopeKey", key, "pod", name, "error", err)
@@ -324,9 +347,30 @@ func (b *k8sBackend) RunPostHook(ctx context.Context, scope agentlib.ScopeHandle
 }
 
 // SetMasker installs the secret masker used by subsequently-created log
-// writers (see StepLogWriters) and sidecar-exec stderr shipping.
+// writers (see StepLogWriters) and sidecar-exec stderr shipping. It also starts
+// the user-sidecar log pump now that the masker is known, so sidecar logs are
+// masked like every other stream (mirrors the host backend). GetLogs replays
+// from claimSince regardless of when Start runs, so starting here — after
+// secrets fetch — loses no history. Best-effort: if the underlying podManager
+// is not a *PodManager (e.g. a test fake), streaming is skipped with a warning.
 func (b *k8sBackend) SetMasker(m *secrets.Masker) {
 	b.masker = m
+	if len(b.sidecarNames) == 0 {
+		return
+	}
+	pm, ok := b.a.pm.(*PodManager)
+	if !ok {
+		slog.Warn("k8s: sidecar log streaming skipped: podManager is not *PodManager", "runId", b.runID)
+		return
+	}
+	b.sidecarPump = &k8sSidecarPump{
+		client: pm.Client(), logs: b.a.client, ns: b.a.cfg.Namespace,
+		pod: b.podName, agentID: b.a.cfg.AgentID, runID: b.runID,
+		masker: b.masker, sidecars: b.sidecarNames, since: b.claimSince,
+	}
+	// context.Background(): the streams must outlive per-step cancellation;
+	// Stop (called from CloseScopes) cancels them at claim end.
+	b.sidecarPump.Start(context.Background())
 }
 
 // StepLogWriters returns a per-line logLineWriter for stdout and a

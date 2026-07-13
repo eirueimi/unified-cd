@@ -5,9 +5,9 @@ import (
 	"io"
 	"log/slog"
 	"sync"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
@@ -17,9 +17,12 @@ import (
 
 // streamPodContainerLogs copies a single pod container's log stream (k8s merges
 // stdout+stderr) to w, following until the container ends or ctx is cancelled.
+// SinceTime bounds the replay to logs at or after `since` — essential for
+// pooled pods, whose sidecar containers are reused (never restarted) across
+// runs, so without it every claim would replay a previous run's output.
 // Best-effort: returns the stream-open error, if any.
-func streamPodContainerLogs(ctx context.Context, client kubernetes.Interface, ns, pod, container string, w io.Writer) error {
-	req := client.CoreV1().Pods(ns).GetLogs(pod, &corev1.PodLogOptions{Container: container, Follow: true})
+func streamPodContainerLogs(ctx context.Context, client kubernetes.Interface, ns, pod, container string, since metav1.Time, w io.Writer) error {
+	req := client.CoreV1().Pods(ns).GetLogs(pod, &corev1.PodLogOptions{Container: container, Follow: true, SinceTime: &since})
 	rc, err := req.Stream(ctx)
 	if err != nil {
 		return err
@@ -39,7 +42,8 @@ type k8sSidecarPump struct {
 	agentID  string
 	runID    string
 	masker   *secrets.Masker
-	sidecars []string // user sidecar container names, declared order
+	sidecars []string    // user sidecar container names, declared order
+	since    metav1.Time // stream only logs at/after this run's claim time
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -67,8 +71,8 @@ func (p *k8sSidecarPump) stream(ctx context.Context, ordinal int, name string) {
 	if p.masker != nil {
 		pusher.SetMasker(p.masker)
 	}
-	pusher.StartAutoFlush(ctx, 2*time.Second) // reuse agentlib's cadence
-	if err := streamPodContainerLogs(ctx, p.client, p.ns, p.pod, name, pusher); err != nil {
+	pusher.StartAutoFlush(ctx, stderrAutoFlushInterval) // reuse the package's cadence (test-shortenable)
+	if err := streamPodContainerLogs(ctx, p.client, p.ns, p.pod, name, p.since, pusher); err != nil {
 		slog.Warn("k8s sidecar log stream error", "container", name, "error", err)
 	}
 	pusher.Flush(context.WithoutCancel(ctx))
