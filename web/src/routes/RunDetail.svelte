@@ -131,9 +131,10 @@
   }
 
   $: stepSections = (() => {
-    const bySection = { main: [], finally: [] };
+    const bySection = { main: [], finally: [], sidecars: [] };
     for (const s of steps) {
-      (s.section === "finally" ? bySection.finally : bySection.main).push(s);
+      if (s.kind === "sidecar") bySection.sidecars.push(s);
+      else (s.section === "finally" ? bySection.finally : bySection.main).push(s);
     }
     const group = (arr) => {
       const map = new Map();
@@ -148,6 +149,8 @@
     const out = [{ section: "main", label: "Steps", groups: group(bySection.main) }];
     if (bySection.finally.length)
       out.push({ section: "finally", label: "Finally", groups: group(bySection.finally) });
+    if (bySection.sidecars.length)
+      out.push({ section: "sidecars", label: "Sidecars", groups: [{ stageIndex: 0, steps: bySection.sidecars }] });
     return out;
   })();
 
@@ -466,6 +469,17 @@
     const s = steps.find((s) => s.index === idx);
     return s ? s.name : "step " + idx;
   };
+  // Sidecar rows carry their own running/exited status (not one of the run
+  // step statuses statusBadge() understands), so map it to the existing
+  // badge color tokens directly: running → success/green, exited 0 → muted,
+  // exited non-zero → danger/red.
+  function sidecarDotClass(s) {
+    if (s.status === "exited") return s.exitCode === 0 ? "dot-muted" : "dot-danger";
+    return "dot-success"; // "running" / "Running"
+  }
+  function sidecarStatusLabel(s) {
+    return s.status === "exited" ? `exited ${s.exitCode}` : "running";
+  }
   function stepDuration(s) {
     if (!s.startedAt) return "";
     const start = new Date(s.startedAt).getTime();
@@ -872,6 +886,21 @@
       {#each stepSections as sec (sec.section)}
         <h2 style="margin-bottom:0.5rem">{sec.label}</h2>
         <div class="step-list">
+          {#if sec.section === "sidecars"}
+            {#each sec.groups[0].steps as s (s.index)}
+              <div
+                class="step-row {selectedStep === s.index ? 'active' : ''}"
+                on:click={() => selectStep(s.index)}
+                role="button"
+                tabindex="0"
+                on:keydown={(e) => e.key === 'Enter' && selectStep(s.index)}
+              >
+                <span class="sidecar-dot {sidecarDotClass(s)}" title={s.status}></span>
+                <span class="step-name">{s.name}</span>
+                <span class="step-exit meta">{sidecarStatusLabel(s)}</span>
+              </div>
+            {/each}
+          {:else}
           {#each sec.groups as group (group.stageIndex)}
             {#if group.steps.length > 1}
               <!-- Parallel group header -->
@@ -991,6 +1020,7 @@
               {/if}
             {/if}
           {/each}
+          {/if}
         </div>
       {/each}
     {/if}
@@ -1234,6 +1264,26 @@
   }
   .step-row-indented {
     margin-left: 1.2rem;
+  }
+  /* Sidecar rows show a small status dot instead of the full status badge
+     text (no run-step status applies); reuse the existing badge color
+     tokens (success/pending/failed) so the palette stays consistent with
+     the rest of the step list. */
+  .sidecar-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .sidecar-dot.dot-success {
+    background: var(--badge-success-fg);
+  }
+  .sidecar-dot.dot-muted {
+    background: var(--badge-pending-fg);
+  }
+  .sidecar-dot.dot-danger {
+    background: var(--badge-failed-fg);
   }
   .approval-panel {
     padding: 0.6rem 0.75rem;
