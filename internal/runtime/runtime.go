@@ -46,9 +46,11 @@ type CreateSpec struct {
 	// mirroring a k8s pod. Empty = default network.
 	NetworkContainer string
 	// Entrypoint overrides the image's ENTRYPOINT (k8s container.command).
-	// nil means "use the image's ENTRYPOINT". When non-nil, the runtime
+	// nil/empty means "use the image's ENTRYPOINT". When non-empty, the runtime
 	// clears the image ENTRYPOINT (docker `--entrypoint ""`) and runs
-	// Entrypoint followed by Args as the container's argv.
+	// Entrypoint followed by Args as the container's argv. (An explicit empty
+	// slice is treated the same as nil, matching k8s, where an empty command
+	// means unset.)
 	Entrypoint []string
 	// Args overrides the image's CMD (k8s container.args): positional
 	// arguments after the (possibly overridden) entrypoint. nil means "use

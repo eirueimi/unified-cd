@@ -17,6 +17,17 @@ var execCommand = exec.CommandContext
 // degrades to positional args (the image ENTRYPOINT still runs) plus a WARN.
 // Seeded empty; add a runtime only when real-binary verification proves it
 // necessary (see the host-entrypoint-parity design doc).
+//
+// WARNING when populating this set: the degrade is only "diagnosed-wrong" for
+// SIDECARS (command becomes CMD, image ENTRYPOINT still runs — the pre-parity
+// behavior plus a WARN). For a KEEP-ALIVE container (Entrypoint=ucd-sh pause on
+// the primary "job"/pause/scope/cleanup containers) whose IMAGE declares its own
+// ENTRYPOINT, degrading reintroduces the exact latent bug this parity work fixed:
+// the container would run `<image-entrypoint> /.ucd/ucd-sh pause` and never
+// become an exec-able keep-alive. This is harmless today only because the set is
+// empty AND the default runner/pause images are ENTRYPOINT-less. Before adding a
+// runtime here, gate keep-alive/primary containers on the runtime supporting the
+// clear (or require an ENTRYPOINT-less keep-alive image on that runtime).
 var noEmptyEntrypointClear = map[string]bool{}
 
 // ociCLI drives any runtime whose CLI is docker-compatible:
