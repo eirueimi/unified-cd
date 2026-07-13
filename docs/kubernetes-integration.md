@@ -417,6 +417,8 @@ Object key layout is unchanged from the controller-relay model:
 
 Job-container steps (`run:` commands) are unaffected — the sidecar runs in its own container and is invisible to the main step execution.
 
+The `unified-artifact` sidecar's own `exec` output (the transfers themselves) is streamed into the run's logs under its own "Sidecars" group entry (named `artifact`) in the run detail UI, the same as any user-declared `podTemplate` sidecar — see [Job Reference: Sidecar container logs](jobs.md#sidecar-container-logs). It no longer ships mixed into the first step's log stream.
+
 **Cache** is best-effort: a `cache:` step restores at step time if a matching key exists, but a miss or restore error never fails the step. The matching save is deferred until the end of the run (after all stages complete, mirroring the standard agent's cache semantics) and is also best-effort — a save error is logged but never fails the run. **Artifacts are not best-effort** — a failed `uploadArtifact`/`downloadArtifact` transfer fails the step, same as the pre-existing k8s behavior.
 
 ### Reserved container name
