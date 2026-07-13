@@ -895,9 +895,13 @@
                 tabindex="0"
                 on:keydown={(e) => e.key === 'Enter' && selectStep(s.index)}
               >
-                <span class="sidecar-dot {sidecarDotClass(s)}" title={s.status}></span>
+                {#if s.status}
+                  <span class="sidecar-dot {sidecarDotClass(s)}" title={s.status}></span>
+                {/if}
                 <span class="step-name">{s.name}</span>
-                <span class="step-exit meta">{sidecarStatusLabel(s)}</span>
+                {#if s.status}
+                  <span class="step-exit meta">{sidecarStatusLabel(s)}</span>
+                {/if}
               </div>
             {/each}
           {:else}

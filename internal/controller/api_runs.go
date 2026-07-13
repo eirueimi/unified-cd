@@ -212,6 +212,27 @@ func (s *Server) handleGetRunSteps(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// The artifact/cache sidecar is injected per-agent (not in the run spec), so
+	// surface it as a Sidecars entry only when it actually produced output (log
+	// lines at dsl.ArtifactLogIndex). It has no phase report, so it carries no
+	// live status.
+	if cnt, _, _, cErr := s.store.CountLogs(r.Context(), id, []int{dsl.ArtifactLogIndex}); cErr == nil && cnt > 0 {
+		present := false
+		for i := range steps {
+			if steps[i].Index == dsl.ArtifactLogIndex {
+				present = true
+				break
+			}
+		}
+		if !present {
+			steps = append(steps, api.StepReport{
+				Index:   dsl.ArtifactLogIndex,
+				Name:    "artifact",
+				Kind:    "sidecar",
+				Section: "sidecars",
+			})
+		}
+	}
 	if steps == nil {
 		steps = []api.StepReport{}
 	}
