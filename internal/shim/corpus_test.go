@@ -291,8 +291,8 @@ func runCorpusScript(t *testing.T, script string, dir string) (exitCode int, err
 // constants to match (and re-derive them independently — don't just copy
 // whatever the test prints) as part of that change. **
 const (
-	wantFilesWithJobDocs = 49
-	wantTotalScripts     = 85
+	wantFilesWithJobDocs = 50
+	wantTotalScripts     = 87
 
 	// wantSkipped is the number of run: scripts the gate legitimately does
 	// NOT execute under interp because their step declares a non-default

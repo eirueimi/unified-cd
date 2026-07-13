@@ -1,0 +1,43 @@
+# Demonstrates: multiple containers in one Pod WITHOUT a named template or
+# override — every container is declared inline under podTemplate.spec.containers.
+# Contrast pod-multi-container.yaml, which grafts the extra container onto a
+# named agent-side template via override:. Use this inline form when you are
+# not reusing a shared named template.
+# Usage:
+#   unified-cd apply -f examples/jobs/k8s/pod-multi-container-inline.yaml
+#   unified-cd run trigger build-and-scan-inline
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: build-and-scan-inline
+spec:
+  agentSelector:
+    - kind:k8s
+  # no name + no override → the Pod is exactly the containers listed here
+  podTemplate:
+    spec:
+      containers:
+        # "job" is the primary container: container:-less steps run here, and the
+        # agent always keeps it alive (any command/args set on "job" are ignored).
+        - name: job
+          image: golang:1.24
+        # trivy is a tool sidecar you exec into (see the scan step's container:
+        # trivy). Only the "job" container is auto-kept-alive; every other
+        # container runs its image's own entrypoint. trivy's entrypoint is
+        # ["trivy"], which prints help and exits immediately — so give it an
+        # explicit long-running command to stay alive as an exec target. (sleep
+        # exists in trivy's Alpine-based image; use ["/bin/sh","-c","sleep inf"]
+        # or a similar keep-alive for images that lack a bare `sleep`.)
+        - name: trivy
+          image: aquasec/trivy:latest
+          command: ["sleep", "infinity"]
+  steps:
+    # omitting container: → runs in the "job" container
+    - name: build
+      run: cd /workspace && go build -o /workspace/app ./cmd/server
+
+    # container: trivy → switches execution to the trivy sidecar.
+    # /workspace is mounted into every container, so the built artifact is visible.
+    - name: scan
+      container: trivy
+      run: trivy rootfs /workspace/app --exit-code 1 --severity HIGH,CRITICAL
