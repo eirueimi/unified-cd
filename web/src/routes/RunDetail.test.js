@@ -374,6 +374,57 @@ describe('RunDetail — planned steps display (Task 3)', () => {
   });
 });
 
+// Sidecar rows: a sidecar reporting phase "exited" with a NULL exitCode (a
+// normal best-effort outcome — host inspect error, or a k8s container whose
+// Get failed / hasn't terminated yet) must render just "exited" (no number)
+// with a MUTED dot, not "exited undefined" with a danger dot. Distinguish
+// from an actual non-zero exit (danger dot, number shown) and a clean exit 0
+// (muted dot, number shown).
+describe('RunDetail — sidecar status rendering (exited with missing exit code)', () => {
+  it('renders "exited" (no number) with a muted dot when exitCode is null', async () => {
+    const steps = [
+      { index: 100000, stageIndex: 0, name: 'mysql', kind: 'sidecar', status: 'exited', exitCode: null },
+      { index: 100001, stageIndex: 0, name: 'redis', kind: 'sidecar', status: 'exited', exitCode: 0 },
+      { index: 100002, stageIndex: 0, name: 'nginx', kind: 'sidecar', status: 'exited', exitCode: 137 },
+      { index: 100003, stageIndex: 0, name: 'proxy', kind: 'sidecar', status: 'running' },
+    ];
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return emptyEventsResponse();
+      if (u.includes('/steps')) return jsonResponse(steps);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-1', status: 'Running', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-1' } } });
+
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll('.sidecar-dot').length).toBe(4);
+    });
+
+    const rows = [...container.querySelectorAll('.step-row')];
+    const rowFor = (name) => rows.find((r) => r.querySelector('.step-name')?.textContent === name);
+
+    const mysqlRow = rowFor('mysql');
+    expect(mysqlRow.querySelector('.step-exit').textContent).toBe('exited');
+    expect(mysqlRow.textContent).not.toContain('undefined');
+    expect(mysqlRow.querySelector('.sidecar-dot').className).toContain('dot-muted');
+
+    const redisRow = rowFor('redis');
+    expect(redisRow.querySelector('.step-exit').textContent).toBe('exited 0');
+    expect(redisRow.querySelector('.sidecar-dot').className).toContain('dot-muted');
+
+    const nginxRow = rowFor('nginx');
+    expect(nginxRow.querySelector('.step-exit').textContent).toBe('exited 137');
+    expect(nginxRow.querySelector('.sidecar-dot').className).toContain('dot-danger');
+
+    const proxyRow = rowFor('proxy');
+    expect(proxyRow.querySelector('.step-exit').textContent).toBe('running');
+    expect(proxyRow.querySelector('.sidecar-dot').className).toContain('dot-success');
+  });
+});
+
 // A huge log (e.g. Unity's `-logFile -`) used to render every line as a DOM
 // node, freezing the tab. RunDetail now virtualizes the log: it ingests every
 // line (the "N lines" counter reflects the full total) but only keeps a small

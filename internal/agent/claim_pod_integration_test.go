@@ -607,3 +607,76 @@ exit 1`,
 	assert.Contains(t, step0Stdout, "OVERRIDE",
 		"default step must observe the marker file the sidecar's overridden command wrote, proving command: replaced the image ENTRYPOINT rather than running alongside/after it, got: %q", step0Stdout)
 }
+
+// TestClaimPod_Integration_SidecarLogsStreamed proves the host claim pod
+// actually streams a user podTemplate sidecar's own stdout into the run log
+// store, not just the primary "job" container's output. The "marker"
+// sidecar's ENTRYPOINT (no command: override) prints SIDECAR_MARKER and
+// sleeps; nothing in the step graph ever execs into or reads from it — the
+// only way SIDECAR_MARKER can reach the fake controller is the
+// hostBackend.SetMasker-installed sidecarLogPump following the sidecar's
+// `docker logs -f` and shipping lines under its sentinel step index
+// (dsl.SidecarLogIndex(0), the sidecar's ordinal among non-"job" containers,
+// since it is the only sidecar declared). Uses the same
+// claimIntegrationHarness/newClaimIntegrationServer used by every other test
+// in this file, which already buckets shipped stdout lines by the step index
+// parsed out of the logs/bulk URL path — dsl.SidecarLogIndex(0) is just
+// another (very large) "step index" as far as that bucketing is concerned.
+func TestClaimPod_Integration_SidecarLogsStreamed(t *testing.T) {
+	if _, err := crt.Detect(""); err != nil {
+		t.Skipf("no container runtime available, skipping: %v", err)
+	}
+
+	const agentID = "claim-pod-sidecar-logs-agent"
+	const runID = "run-claim-pod-sidecar-logs"
+
+	h := newClaimIntegrationHarness()
+	srv := newClaimIntegrationServer(t, agentID, h)
+
+	a := &Agent{
+		ID:          agentID,
+		Client:      NewClient(srv.URL, "tok"),
+		PauseImage:  "busybox:1.36",
+		RunnerImage: "busybox:1.36",
+		ToolsDir:    installShimOrSkip(t),
+	}
+
+	claim := api.ClaimResponse{
+		Native:  false,
+		RunID:   runID,
+		JobName: "test-claim-pod-sidecar-logs",
+		// No "command" on the marker container: its own entrypoint (busybox's
+		// default sh) runs the script, printing SIDECAR_MARKER on its own
+		// stdout before any step exists to observe it directly.
+		PodTemplate: &dsl.PodTemplate{Spec: map[string]any{
+			"containers": []any{
+				map[string]any{
+					"name":    "marker",
+					"image":   "busybox:1.36",
+					"command": []any{"sh", "-c", "echo SIDECAR_MARKER; sleep infinity"},
+				},
+			},
+		}},
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0, StageIndex: 0, Name: "trivial-default-step",
+				Run: "echo default-step-ran",
+			}},
+		},
+	}
+
+	a.executeRun(context.Background(), claim, t.TempDir())
+
+	select {
+	case status := <-h.finishCh:
+		require.Equal(t, "Succeeded", status, "run should finish Succeeded")
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	sidecarStdout := strings.Join(h.stepStdout[dsl.SidecarLogIndex(0)], "\n")
+	assert.Contains(t, sidecarStdout, "SIDECAR_MARKER",
+		"expected the marker sidecar's own stdout to reach the run log store at dsl.SidecarLogIndex(0), got: %q", sidecarStdout)
+}

@@ -42,6 +42,10 @@ func (f *fakeRT) Exec(_ context.Context, _ crt.ContainerHandle, spec crt.ExecSpe
 func (f *fakeRT) CopyIn(context.Context, crt.ContainerHandle, string, string) error  { return nil }
 func (f *fakeRT) CopyOut(context.Context, crt.ContainerHandle, string, string) error { return nil }
 func (f *fakeRT) Remove(context.Context, crt.ContainerHandle) error                  { f.removed++; return nil }
+func (f *fakeRT) Logs(context.Context, crt.ContainerHandle, io.Writer, io.Writer) error {
+	return nil
+}
+func (f *fakeRT) ExitCode(context.Context, crt.ContainerHandle) (int, error) { return 0, nil }
 
 func TestScopeManagerReusesEnvPerKey(t *testing.T) {
 	f := &fakeRT{}
@@ -150,6 +154,10 @@ func (c *counterRT) Remove(context.Context, crt.ContainerHandle) error {
 	c.removeCalls.Add(1)
 	return nil
 }
+func (c *counterRT) Logs(context.Context, crt.ContainerHandle, io.Writer, io.Writer) error {
+	return nil
+}
+func (c *counterRT) ExitCode(context.Context, crt.ContainerHandle) (int, error) { return 0, nil }
 
 // TestScopeManagerEnsure_ConcurrentSameKey exercises many goroutines racing to
 // ensure() the *same* scope key at once, as happens when several members of a

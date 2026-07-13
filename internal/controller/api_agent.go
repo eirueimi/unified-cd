@@ -573,6 +573,21 @@ func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleAgentSidecarStatus records a user sidecar container's phase/exit-code
+// report sent by an agent (host or k8s pump), for UI display.
+func (s *Server) handleAgentSidecarStatus(w http.ResponseWriter, r *http.Request) {
+	var req api.SidecarStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpsertSidecarStatus(r.Context(), req.RunID, req.Index, req.Name, req.Phase, req.ExitCode); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleAgentReconcileRuns fails Running runs still claimed by the calling
 // agent. An agent calls this BEFORE it starts claiming (startup reconcile: a
 // restarted process no longer executes runs its previous incarnation claimed

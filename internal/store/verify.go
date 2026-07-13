@@ -35,6 +35,7 @@ var schemaSentinels = []sentinel{
 	{7, "007_step_call_link", "step_reports", "child_run_id", ""},
 	{8, "008_run_indexes", "runs", "", "runs_job_name_created_idx"},
 	{9, "009_agent_capabilities", "agents", "capabilities", ""},
+	{10, "010_sidecar_status", "sidecar_status", "", ""},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

@@ -7,6 +7,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TestK8sBackend_EnsureScope_HonorsExpandedEnv locks in the fix for the
@@ -23,7 +24,7 @@ import (
 func TestK8sBackend_EnsureScope_HonorsExpandedEnv(t *testing.T) {
 	pm := &fakePM{}
 	a := &K8sAgent{cfg: Config{Namespace: "default"}, pm: pm}
-	b := newK8sBackend(a, "run-1", "pod-default", "/workspace")
+	b := newK8sBackend(a, "run-1", "pod-default", "/workspace", nil, metav1.Time{})
 
 	step := api.ClaimStep{
 		ScopeID:    "scope:build",
@@ -56,7 +57,7 @@ func TestK8sBackend_EnsureScope_HonorsExpandedEnv(t *testing.T) {
 func TestK8sBackend_EnsureScope_KeepsK8sDefaultsWhenNoOverride(t *testing.T) {
 	pm := &fakePM{}
 	a := &K8sAgent{cfg: Config{Namespace: "default"}, pm: pm}
-	b := newK8sBackend(a, "run-1", "pod-default", "/workspace")
+	b := newK8sBackend(a, "run-1", "pod-default", "/workspace", nil, metav1.Time{})
 
 	step := api.ClaimStep{
 		ScopeID:    "scope:build",

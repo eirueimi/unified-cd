@@ -356,6 +356,35 @@ in the tag, or the tag was deleted), the pod can never become Ready.
 - See [Kubernetes Integration Guide](kubernetes-integration.md) for the full
   sidecar contract and `sidecarS3SecretName` configuration.
 
+## A sidecar failed to start
+
+**Symptom**
+
+A step that talks to a `podTemplate` sidecar (a database, a tool container)
+fails or hangs — connection refused, timeout, or similar — and it's unclear
+whether the sidecar's own process ever came up.
+
+**Cause**
+
+There are no readiness probes for `podTemplate` sidecars (see [Job Isolation:
+`native` and the claim pod](jobs.md#job-isolation-native-and-the-claim-pod)),
+so a step can easily run before its sidecar is ready — or the sidecar's
+process may have failed to start at all (bad config, missing env var, crash
+on boot).
+
+**Fix**
+
+Open the run in the Web UI and select the sidecar in the **Sidecars** group
+in the step sidebar (a separate group from "Steps") to read its own
+stdout/stderr — this is the sidecar's own process output (e.g. `mysqld`'s
+startup log), not step output. The status dot and label next to its name
+show whether it's still `running` or has `exited N`; a non-zero `N` is the
+container's exit code and points straight at why it never came up. This
+works even after the run finishes and the pod/container is torn down — the
+sidecar's log lines persist in the run's log store. See [Job Reference:
+Sidecar container logs](jobs.md#sidecar-container-logs) for the full
+behavior.
+
 ## Artifact step fails `no such file`
 
 **Symptom**

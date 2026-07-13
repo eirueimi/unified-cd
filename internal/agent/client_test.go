@@ -47,6 +47,27 @@ func TestClient_AppendLog(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
+func TestClient_ReportSidecarStatus(t *testing.T) {
+	var gotPath string
+	var got api.SidecarStatusRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "t")
+	exitCode := 3
+	req := api.SidecarStatusRequest{RunID: "r1", Name: "mysql", Index: 100, Phase: "exited", ExitCode: &exitCode}
+	require.NoError(t, c.ReportSidecarStatus(t.Context(), "a1", req))
+	assert.Equal(t, "/api/v1/agents/a1/runs/r1/sidecars", gotPath)
+	assert.Equal(t, "mysql", got.Name)
+	assert.Equal(t, 100, got.Index)
+	assert.Equal(t, "exited", got.Phase)
+	require.NotNil(t, got.ExitCode)
+	assert.Equal(t, 3, *got.ExitCode)
+}
+
 func TestClient_CreateRun(t *testing.T) {
 	var got api.TriggerRunRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -140,6 +140,15 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		masker = secrets.NoOpMasker
 	}
 
+	// Register scope/pod/pump teardown BEFORE SetMasker starts the host
+	// sidecar pump (SetMasker spawns `docker logs -f` goroutines when
+	// b.pod != nil — see hostBackend.SetMasker). CloseScopes is nil-safe (it
+	// guards sidecarPump/scopes/pod independently), so deferring it this
+	// early is free today; the point is that ANY future early-return between
+	// here and the pump's start can no longer skip teardown and leak the
+	// pump's subprocesses/goroutines.
+	defer b.CloseScopes(context.WithoutCancel(ctx))
+
 	// The masker is born here (after secrets are fetched), so it is installed
 	// via SetMasker rather than passed to the backend's constructor.
 	b.SetMasker(masker)
@@ -177,8 +186,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	// scopes: one scope-tracking structure for the whole claim, created lazily
 	// on first use by a uses-scope step (owned by b). Torn down at claim end
 	// regardless of how the claim finished (success, failure, or
-	// cancellation).
-	defer b.CloseScopes(context.WithoutCancel(ctx))
+	// cancellation) — see the defer registered above, before SetMasker.
 
 	getData := func() dsl.TemplateData { return sctx.snapshot() }
 

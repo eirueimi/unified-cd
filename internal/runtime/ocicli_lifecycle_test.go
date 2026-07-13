@@ -2,6 +2,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"os/exec"
 	"runtime"
@@ -266,4 +267,27 @@ func TestOCICLICreateArgs_EntrypointOverride_DegradesOnNoClearRuntime(t *testing
 	got := r.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get"}})
 	assert.NotContains(t, got, "--entrypoint")
 	assert.Equal(t, []string{"img", "kubectl", "get"}, got[len(got)-3:])
+}
+
+// TestOCICLILogs_ArgvAndStreams asserts Logs shells out to `docker logs -f
+// <id>` and wires stdout/stderr through. The stand-in command is `go version`
+// (not `printf`, per the brief's note): `go test` runs natively on Windows,
+// outside Git Bash, so printf isn't guaranteed on PATH there, while `go` is
+// always present in this dev environment. Only the argv assertion on
+// gotArgs matters, not the stand-in's own output.
+func TestOCICLILogs_ArgvAndStreams(t *testing.T) {
+	var gotArgs []string
+	orig := execCommand
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		gotArgs = append([]string{name}, args...)
+		// A command that prints to stdout and exits 0, so Logs returns nil.
+		return exec.CommandContext(ctx, "go", "version")
+	}
+	defer func() { execCommand = orig }()
+
+	r := &ociCLI{bin: "docker"}
+	var out, errBuf bytes.Buffer
+	err := r.Logs(context.Background(), ContainerHandle{ID: "abc"}, &out, &errBuf)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"docker", "logs", "-f", "abc"}, gotArgs)
 }

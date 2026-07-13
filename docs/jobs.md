@@ -21,6 +21,7 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
 - [Calling Other Jobs (`call`)](#calling-other-jobs-call)
 - [Git Template Inlining (`uses`)](#git-template-inlining-uses)
 - [Job Isolation: `native` and the claim pod](#job-isolation-native-and-the-claim-pod)
+  - [Sidecar container logs](#sidecar-container-logs)
   - [`container:` — targeting a podTemplate container](#container--targeting-a-podtemplate-container)
   - [`native: true` — host-process jobs](#native-true--host-process-jobs)
 - [Uses-level `runsIn.image` (scope)](#uses-level-runsinimage-scope)
@@ -713,6 +714,34 @@ core problem job isolation solves.
 
 An isolated job runs every step in a Linux container regardless of the
 agent's host OS, so `UNIFIED_AGENT_OS` always reports `linux` there.
+
+### Sidecar container logs
+
+Every user-declared `podTemplate` sidecar — every non-`job` container in
+`podTemplate.spec.containers` — has its own stdout/stderr streamed into the
+run's logs for the whole life of the run, on both the standard agent and the
+k8s-agent. This is the sidecar's **own** process output (e.g. `mysqld`'s
+startup log), not step output. The run detail UI shows it in a separate
+"Sidecars" group in the step sidebar (distinct from "Steps"): one row per
+sidecar, with a status dot and label — `running` while the run is live,
+`exited N` once the sidecar's container terminates (`N` is its exit code).
+Clicking a sidecar row filters the log view to that sidecar's own output,
+same as clicking a step filters to that step.
+
+- Only user-declared sidecars are streamed this way. The primary `job`
+  container (already covered by step logs), the pause container, and the
+  shim init container are not.
+- A non-zero sidecar exit (`exited 1`, etc.) is shown but does **not** fail
+  the run — a sidecar is a user-owned service, independent of step success.
+- Sidecar logs persist in the run's log store after the pod/container is torn
+  down, so a sidecar that crashed on startup can still be inspected after the
+  run finishes.
+- Sidecar logs are secret-masked the same way step logs are.
+- On the k8s-agent, the auto-injected artifact/cache sidecar (see
+  [Kubernetes Integration Guide: Artifacts and
+  Cache](kubernetes-integration.md#artifacts-and-cache)) also gets its own
+  entry in the Sidecars group (named `artifact`); its `exec` output used to
+  be mixed into the first step's log stream and no longer is.
 
 ### `container:` — targeting a podTemplate container
 

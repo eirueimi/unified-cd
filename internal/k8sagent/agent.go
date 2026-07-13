@@ -15,6 +15,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // stderrAutoFlushInterval is how often a step's stderr LogPusher is flushed
@@ -162,6 +163,12 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		return
 	}
 
+	// Capture the claim's start time up front, before pod acquisition. The
+	// sidecar log pump uses it as GetLogs' SinceTime so a reused pooled pod
+	// (whose sidecar containers are never restarted between runs) replays only
+	// THIS run's sidecar output, not a previous claim's history.
+	claimSince := metav1.Now()
+
 	usePool := c.PodTemplate != nil && c.PodTemplate.Reuse
 
 	var pooledPod *PooledPod
@@ -245,7 +252,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// b.CloseScopes, mirroring the pre-refactor scopePods defer (RunClaim
 	// installs the masker itself via SetMasker after fetching secrets, so
 	// this wrapper does neither).
-	backend := newK8sBackend(a, c.RunID, podName, mountPath)
+	backend := newK8sBackend(a, c.RunID, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
 
 	agentlib.RunClaim(ctx, a.client, a.cfg.AgentID, c, backend)
 }

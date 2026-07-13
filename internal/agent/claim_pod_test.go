@@ -47,6 +47,10 @@ func (f *podFakeRT) Remove(_ context.Context, h crt.ContainerHandle) error {
 	f.removed = append(f.removed, h.ID)
 	return nil
 }
+func (f *podFakeRT) Logs(context.Context, crt.ContainerHandle, io.Writer, io.Writer) error {
+	return nil
+}
+func (f *podFakeRT) ExitCode(context.Context, crt.ContainerHandle) (int, error) { return 0, nil }
 func fmtID(i int) string { return "c" + string(rune('0'+i)) }
 
 func mysqlTemplate() *dsl.PodTemplate {
@@ -183,6 +187,67 @@ func TestClaimPod_CloseAllRemovesContainersThenPause(t *testing.T) {
 	m.CloseAll(context.Background())
 	require.Len(t, f.removed, 3)
 	assert.Equal(t, "c0", f.removed[len(f.removed)-1], "pause removed last")
+}
+
+// TestClaimPod_SidecarHandlesMatchesSidecarContainerNamesOrder covers Fix 1:
+// SidecarHandles must derive ordinals from dsl.SidecarContainerNames — the
+// SAME helper the controller (planned_steps.go) and the k8s agent
+// (dsl.SidecarContainerNames(c.PodTemplate)) use — not from a host-only order
+// tracked separately, so the two sides can never compute different indices
+// for the same podTemplate.
+func TestClaimPod_SidecarHandlesMatchesSidecarContainerNamesOrder(t *testing.T) {
+	f := &podFakeRT{}
+	pt := &dsl.PodTemplate{Spec: map[string]any{
+		"containers": []any{
+			map[string]any{"name": "mysql", "image": "mysql:8"},
+			map[string]any{"name": "redis", "image": "redis:7"},
+		},
+	}}
+	m := newClaimPodManager(f, "/w", "/workspace", "p", "r", "")
+	require.NoError(t, m.Start(context.Background(), pt))
+
+	names := dsl.SidecarContainerNames(pt)
+	require.Equal(t, []string{"mysql", "redis"}, names)
+
+	handles := m.SidecarHandles()
+	require.Len(t, handles, len(names))
+	for k, name := range names {
+		assert.Equal(t, name, handles[k].Name)
+		assert.Equal(t, k, handles[k].Ordinal, "ordinal must match dsl.SidecarContainerNames' index for %q", name)
+	}
+}
+
+// TestClaimPod_SidecarHandlesDuplicateName_MatchesControllerOrdinals is the
+// Fix 1 regression case: a malformed podTemplate with two containers sharing
+// a name. claimContainerDefs (container CREATION) keeps only the first and
+// drops the duplicate with a WARN, so only one container is actually running
+// — but SidecarHandles must still enumerate two entries (ordinals 0 and 1,
+// both resolving to that single open handle), because that's what the
+// controller does too (it emits two pseudo-steps from the un-deduplicated
+// dsl.SidecarContainerNames list). Agent and controller must agree on
+// ordinals even though the input is malformed.
+func TestClaimPod_SidecarHandlesDuplicateName_MatchesControllerOrdinals(t *testing.T) {
+	f := &podFakeRT{}
+	pt := &dsl.PodTemplate{Spec: map[string]any{
+		"containers": []any{
+			map[string]any{"name": "tools", "image": "node:18"},
+			map[string]any{"name": "tools", "image": "node:20"},
+		},
+	}}
+	m := newClaimPodManager(f, "/w", "/workspace", "p", "r", "")
+	require.NoError(t, m.Start(context.Background(), pt))
+
+	// Only one "tools" container was actually created (the duplicate was
+	// dropped by claimContainerDefs): pause + tools + injected job.
+	require.Len(t, f.created, 3)
+
+	handles := m.SidecarHandles()
+	require.Len(t, handles, 2, "two ordinals for the two declared names, even though only one container exists")
+	assert.Equal(t, "tools", handles[0].Name)
+	assert.Equal(t, 0, handles[0].Ordinal)
+	assert.Equal(t, "tools", handles[1].Name)
+	assert.Equal(t, 1, handles[1].Ordinal)
+	assert.Equal(t, handles[0].Handle, handles[1].Handle, "both ordinals resolve to the single open handle")
 }
 
 // TestClaimContainerDefs_InjectsJobWhenAbsent covers claimContainerDefs

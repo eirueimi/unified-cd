@@ -189,7 +189,7 @@ type StepReport struct {
 	ChildRunID  string `json:"childRunId,omitempty"`
 	CallJobName string `json:"callJobName,omitempty"`
 
-	Kind    string `json:"kind,omitempty"`    // run|cache|call|uses|uploadArtifact|downloadArtifact|approval
+	Kind    string `json:"kind,omitempty"`    // run|cache|call|uses|uploadArtifact|downloadArtifact|approval|sidecar
 	Section string `json:"section,omitempty"` // main|finally
 	Matrix  bool   `json:"matrix,omitempty"`  // true if the (planned) step is a matrix/foreach step
 }
@@ -200,6 +200,17 @@ type LogAppendRequest struct {
 	Stream    string    `json:"stream"`
 	Timestamp time.Time `json:"timestamp"`
 	Line      string    `json:"line"`
+}
+
+// SidecarStatusRequest reports one user sidecar container's phase/exit to the
+// controller for display. Phase is "running" or "exited". ExitCode is set only
+// when Phase == "exited".
+type SidecarStatusRequest struct {
+	RunID    string `json:"runId"`
+	Name     string `json:"name"`
+	Index    int    `json:"index"`
+	Phase    string `json:"phase"`
+	ExitCode *int   `json:"exitCode,omitempty"`
 }
 
 type LogLine struct {

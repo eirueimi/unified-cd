@@ -194,6 +194,45 @@ func (s *Server) handleGetRunSteps(w http.ResponseWriter, r *http.Request) {
 			steps = mergedRunSteps(steps, spec)
 		}
 	}
+	// Overlay live sidecar phase/exit-code (from Task 5's sidecar_status
+	// reports) onto the sidecar pseudo-steps synthesized by plannedSteps.
+	// Best-effort: a store error here should not fail the whole steps response.
+	if scs, scErr := s.store.GetSidecarStatuses(r.Context(), id); scErr == nil {
+		byIdx := map[int]api.SidecarStatusRequest{}
+		for _, sc := range scs {
+			byIdx[sc.Index] = sc
+		}
+		for i := range steps {
+			if steps[i].Kind != "sidecar" {
+				continue
+			}
+			if sc, ok := byIdx[steps[i].Index]; ok {
+				steps[i].Status = sc.Phase // "running" / "exited"
+				steps[i].ExitCode = sc.ExitCode
+			}
+		}
+	}
+	// The artifact/cache sidecar is injected per-agent (not in the run spec), so
+	// surface it as a Sidecars entry only when it actually produced output (log
+	// lines at dsl.ArtifactLogIndex). It has no phase report, so it carries no
+	// live status.
+	if cnt, _, _, cErr := s.store.CountLogs(r.Context(), id, []int{dsl.ArtifactLogIndex}); cErr == nil && cnt > 0 {
+		present := false
+		for i := range steps {
+			if steps[i].Index == dsl.ArtifactLogIndex {
+				present = true
+				break
+			}
+		}
+		if !present {
+			steps = append(steps, api.StepReport{
+				Index:   dsl.ArtifactLogIndex,
+				Name:    "artifact",
+				Kind:    "sidecar",
+				Section: "sidecars",
+			})
+		}
+	}
 	if steps == nil {
 		steps = []api.StepReport{}
 	}

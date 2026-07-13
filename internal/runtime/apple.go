@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -147,4 +148,26 @@ func (a *appleContainer) CopyOut(ctx context.Context, h ContainerHandle, contain
 
 func (a *appleContainer) Remove(ctx context.Context, h ContainerHandle) error {
 	return execCommand(ctx, "container", "rm", "-f", h.ID).Run()
+}
+
+func (a *appleContainer) Logs(ctx context.Context, h ContainerHandle, stdout, stderr io.Writer) error {
+	cmd := execCommand(ctx, "container", "logs", "-f", h.ID)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	if err == nil || ctx.Err() != nil {
+		return nil
+	}
+	if _, ok := err.(*exec.ExitError); ok {
+		return nil
+	}
+	return fmt.Errorf("container logs -f: %w", err)
+}
+
+func (a *appleContainer) ExitCode(ctx context.Context, h ContainerHandle) (int, error) {
+	out, err := execCommand(ctx, "container", "inspect", "-f", "{{.State.ExitCode}}", h.ID).Output()
+	if err != nil {
+		return 0, fmt.Errorf("container inspect exitcode: %w", err)
+	}
+	return strconv.Atoi(strings.TrimSpace(string(out)))
 }
