@@ -241,11 +241,21 @@ func anyOtherController(leader string) string {
 
 // jobYAML is the idempotent workload: a single-step job that sleeps briefly. The
 // agentSelector [kind:linux] makes it claimable by the compose agents.
+//
+// native: true runs the step as a host process on the (containerized) compose
+// agent. Without it the standard agent tries to build an isolated claim pod by
+// shelling out to `docker run` for the pause container — but the compose agent
+// image has no Docker daemon, so claim-pod construction fails with
+// `docker run -d: exit status 125` and every run Fails before any failover is
+// even injected. The HA driver verifies failover invariants (no lost/phantom
+// runs, fast leader re-election), which are orthogonal to the step's execution
+// mechanism, so native execution is the right fit here.
 const jobYAML = `apiVersion: unified-cd/v1
 kind: Job
 metadata:
   name: ha-workload
 spec:
+  native: true
   agentSelector:
     - kind:linux
   steps:
