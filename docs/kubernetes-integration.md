@@ -40,9 +40,12 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   the standard agent it execs into the corresponding container of the claim pod (see
   [Job Isolation: `native` and the claim
   pod](jobs.md#job-isolation-native-and-the-claim-pod)); a sidecar's `command`/`args`
-  are honored (they become the container's entrypoint), while host-unsupported
-  `podTemplate` fields (a PVC workspace, extra pod-spec, `volumeMounts`, or non-literal
-  env) are ignored with a WARN rather than applied. Unlike k8s, the standard agent's claim-pod containers
+  now match standard Kubernetes/OCI ENTRYPOINT/CMD semantics on **both** backends —
+  see [Host container command/args
+  semantics](#host-container-commandargs-semantics) below for the full truth table
+  and per-runtime support matrix. Other host-unsupported `podTemplate` fields (a PVC
+  workspace, extra pod-spec, `volumeMounts`, or non-literal env) are ignored with a
+  WARN rather than applied. Unlike k8s, the standard agent's claim-pod containers
   share one network namespace (via the pause container), so — unlike the old MVP
   single-container form this replaces — sidecars **are** reachable at `localhost` from
   every claim-pod container, matching k8s.
@@ -58,6 +61,61 @@ seam) — only the execution backend differs per agent. The remaining intentiona
 
 Feature parity between the two agents is enforced by the shared conformance suite
 (`internal/paritycases`) — new DSL behavior must pass identical expectations on both agents.
+
+### Host container command/args semantics
+
+A `podTemplate` container's `command:`/`args:` mean the same thing on both
+backends now — standard Kubernetes/OCI ENTRYPOINT/CMD override semantics:
+
+| `command` | `args` | Resulting process (both backends) |
+|---|---|---|
+| unset | unset | The image's own `ENTRYPOINT` + `CMD`, unmodified (e.g. a sidecar's own service command, `mysqld`). |
+| unset | set | The image's own `ENTRYPOINT`, invoked with `args` as its arguments (image `CMD` replaced). |
+| set | unset or set | `command` replaces the image `ENTRYPOINT`; `args` (if also set) follow as its arguments. The image `ENTRYPOINT` is never invoked. |
+
+On k8s this was already native `corev1.Container` behavior and is
+unchanged. On the standard agent, this is a **breaking change** from the
+previous behavior, where `command` and `args` were merged into one
+positional `CMD` override and the image's `ENTRYPOINT` always ran
+regardless of `command` — see the [migration
+guide](migration-2026-07-host-entrypoint-parity.md) if a job relied on the
+old merge behavior.
+
+**On the standard agent, the primary `job` container's own image `ENTRYPOINT`
+is always ignored**, regardless of any `command`/`args` a `podTemplate` sets
+on it — the claim pod unconditionally forces it to the `ucd-sh pause`
+keep-alive via an `ENTRYPOINT` override, so it stays alive as the exec
+target for `container:`-less steps. (On k8s, the primary `job` container's
+keep-alive is currently still injected only when the container has neither
+`command` nor `args` set — see [Keep-alive:
+`ucd-sh pause`](#keep-alive-ucd-sh-pause) below; bringing k8s to the same
+always-force behavior is tracked separately and is not part of this
+release.) Sidecar containers on both backends honor `command`/`args` as
+described in the table above.
+
+#### Per-runtime support for the ENTRYPOINT clear (standard agent only)
+
+On the standard agent, replacing a container's `ENTRYPOINT` (the `command`
+column above) requires the container CLI to support the empty-clear form
+(docker's `--entrypoint ""`, emitted before the image). Support is recorded
+per runtime, verified on real binaries — not assumed:
+
+| Runtime | `--entrypoint ""` empty-clear | Status |
+|---|---|---|
+| docker | Supported | Verified (Docker 29.6.1) |
+| podman | Unverified | Not present on the verification machine; not tested |
+| nerdctl | Unverified | Not present on the verification machine; not tested |
+| wslc | Unverified | Not present on the verification machine; not tested |
+| Apple `container` | Unverified | Not available on the verification machine (Windows); not tested |
+
+A runtime confirmed **not** to support the empty clear is added to
+`internal/runtime`'s `noEmptyEntrypointClear` set (currently empty — no
+runtime has failed verification). For a runtime in that set, a `command`
+override degrades to the pre-parity behavior: `command`+`args` run as
+positional `CMD` and the image's own `ENTRYPOINT` still executes, plus one
+`WARN` log naming the runtime and the limitation. This never silently
+produces a broken command — it produces a diagnosed fallback to the old,
+still-functional-if-imprecise behavior.
 
 ---
 

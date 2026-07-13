@@ -1043,11 +1043,19 @@ is (mostly) a real Kubernetes PodSpec. On the standard agent, the same
 `podTemplate` drives the claim pod described in [Job Isolation: `native` and
 the claim pod](#job-isolation-native-and-the-claim-pod) — it reads
 `spec.containers` (name/image/`command`/`args`/env/`resources.limits`) to
-build one network-namespace-joined container per entry; a sidecar's
-`command`/`args` are honored (they become the container's entrypoint), while
-unsupported PodSpec fields (PVC workspace, `volumeMounts`/`securityContext`,
-`env` entries without a literal `value`) are ignored with a WARN rather than
-applied.
+build one network-namespace-joined container per entry. A sidecar's
+`command`/`args` now match standard Kubernetes/OCI semantics on **both**
+backends: `command` overrides the image's `ENTRYPOINT` and `args` overrides
+its `CMD`. See [Kubernetes Integration Guide: Host container command/args
+semantics](kubernetes-integration.md#host-container-commandargs-semantics)
+for the full truth table and the per-runtime support matrix for the
+standard agent's `--entrypoint ""` clear (docker: verified; podman,
+nerdctl, wslc, Apple `container`: unverified). On the standard agent, the
+primary `job` container's own image `ENTRYPOINT` is always ignored — it is
+unconditionally forced to the `ucd-sh pause` keep-alive regardless of any
+`command`/`args` set on it. Other unsupported PodSpec fields (PVC workspace,
+`volumeMounts`/`securityContext`, `env` entries without a literal `value`)
+are ignored with a WARN rather than applied.
 
 **Routing is automatic and capability-based**, not selector-based: the
 controller infers whether a `podTemplate` needs real Kubernetes (a named
