@@ -1,0 +1,193 @@
+# Rootless BuildKit image build & push job template (no privileged, Kubernetes)
+# Register with: unified-cd apply -f templates/buildkit-rootless-build-push.yaml
+# then invoke via call.job.
+#
+# Why this template: docker-build-push.yaml needs a Docker daemon (a DinD sidecar
+# with privileged: true on Kubernetes). This one builds with rootless BuildKit
+# instead — a `buildkitd` sidecar that runs WITHOUT privileged, plus `buildctl`
+# in the step container. Because the podTemplate carries container fields the
+# host claim pod can't honor (securityContext/args), the run is auto-pinned to a
+# Kubernetes agent (see dsl.PodTemplateNeedsKubernetes) — no agentSelector needed.
+#
+# The step container is the buildkit image itself (it ships buildctl). It has no
+# bash, which is fine: the Kubernetes agent execs steps through its injected
+# `ucd-sh` shim (a POSIX interpreter), so no shell binary is required in the
+# image. Verified end-to-end on a real k8s agent (rootless build + push).
+#
+# Cluster requirements (rootless BuildKit, no privileged):
+#   - seccomp + AppArmor Unconfined for the buildkitd container (set below via
+#     securityContext). `appArmorProfile` is a securityContext field on k8s >= 1.30;
+#     on older clusters use the equivalent pod annotation instead.
+#   - the node must allow user namespaces / rootless (most modern clusters do).
+#   - buildkitd validates registry TLS with the CA bundle in its own image,
+#     independently of the node. If your base-image registry sits behind a TLS-
+#     intercepting proxy, or buildkitd can't validate its chain, point buildkitd
+#     at a pull-through mirror or mount an appropriate CA/buildkitd.toml
+#     (`--config`) — a plain `docker pull` on the node succeeding does not
+#     guarantee buildkitd's in-pod pull will.
+#
+# Required secrets (when pushing to a private registry / Docker Hub):
+#   unified-cd secret set dockerhub-username myuser
+#   unified-cd secret set dockerhub-password xxxxxxxx
+#   * If username_secret is not set, the build runs without registry auth.
+#
+# When referencing as a git:// template:
+#   job: git://github.com/your-org/ci-templates/buildkit-rootless-build-push.yaml@v1
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: buildkit-rootless-build-push
+spec:
+  params:
+    inputs:
+      - name: image
+        type: string
+        required: true
+        description: "Image name in registry/repo form (e.g. myorg/myapp)"
+      - name: tags
+        type: array
+        default: "latest"
+        description: "List of tags to apply (YAML array)"
+      - name: context
+        type: string
+        default: "."
+        description: "Path to the build context"
+      - name: dockerfile
+        type: string
+        default: "Dockerfile"
+        description: "Path to the Dockerfile (relative to context)"
+      - name: registry
+        type: string
+        default: ""
+        description: "Registry hostname (e.g. ghcr.io; empty means Docker Hub)"
+      - name: username_secret
+        type: string
+        default: ""
+        description: "Secret name holding the registry auth username (empty skips auth)"
+      - name: password_secret
+        type: string
+        default: ""
+        description: "Secret name holding the registry auth password/token"
+      - name: push
+        type: string
+        default: "true"
+        description: "Whether to push after building (true/false)"
+      - name: build_args
+        type: array
+        default: ""
+        description: "List of KEY=VALUE pairs passed as --opt build-arg (YAML array)"
+      - name: platform
+        type: string
+        default: ""
+        description: "Multi-platform targets (e.g. linux/amd64,linux/arm64). BuildKit builds these natively — no buildx needed. Empty builds the host platform"
+  podTemplate:
+    spec:
+      containers:
+        # Step-execution container (the primary "job"): the buildkit image, which
+        # ships buildctl. No bash — the agent's ucd-sh shim runs the step.
+        - name: job
+          image: moby/buildkit:v0.31.1-rootless
+        # Rootless BuildKit daemon — NO privileged. Listens on localhost:1234,
+        # which the job container reaches (same pod netns). --oci-worker-no-process-sandbox
+        # is what makes it work without privileged.
+        - name: buildkitd
+          image: moby/buildkit:v0.31.1-rootless
+          args:
+            - --addr
+            - tcp://0.0.0.0:1234
+            - --oci-worker-no-process-sandbox
+          securityContext:
+            seccompProfile:
+              type: Unconfined
+            appArmorProfile:
+              type: Unconfined
+            runAsUser: 1000
+            runAsGroup: 1000
+  steps:
+    - name: build-and-push
+      env:
+        BUILDKIT_HOST: "tcp://localhost:1234"
+        DOCKER_CONFIG: "/tmp/.docker"
+        IMAGE: "{{ .Params.image }}"
+        TAGS: "{{ .Params.tags }}"
+        CONTEXT: "{{ .Params.context }}"
+        DOCKERFILE: "{{ .Params.dockerfile }}"
+        REGISTRY: "{{ .Params.registry }}"
+        REGISTRY_USERNAME: "{{ if .Params.username_secret }}{{ index .Secrets .Params.username_secret }}{{ end }}"
+        REGISTRY_PASSWORD: "{{ if .Params.password_secret }}{{ index .Secrets .Params.password_secret }}{{ end }}"
+        DO_PUSH: "{{ .Params.push }}"
+        BUILD_ARGS: "{{ .Params.build_args }}"
+        PLATFORM: "{{ .Params.platform }}"
+      run: |
+        #!/usr/bin/env sh
+        set -eu
+
+        # Wait for the rootless buildkitd sidecar to accept connections.
+        i=0
+        until buildctl debug workers >/dev/null 2>&1; do
+          i=$((i + 1))
+          [ "$i" -gt 60 ] && echo "[buildkit] buildkitd not ready after 60s" && exit 1
+          sleep 1
+        done
+
+        _FULL_IMAGE="$IMAGE"
+        if [ -n "$REGISTRY" ]; then
+          _FULL_IMAGE="${REGISTRY}/${IMAGE}"
+        fi
+
+        # Registry auth: buildctl forwards creds from $DOCKER_CONFIG/config.json.
+        if [ -n "$REGISTRY_USERNAME" ]; then
+          _KEY="$REGISTRY"
+          [ -z "$_KEY" ] && _KEY="https://index.docker.io/v1/"   # Docker Hub key
+          _AUTH=$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_PASSWORD" | base64 | tr -d '\n')
+          mkdir -p "$DOCKER_CONFIG"
+          printf '{"auths":{"%s":{"auth":"%s"}}}' "$_KEY" "$_AUTH" > "$DOCKER_CONFIG/config.json"
+        fi
+
+        # Build the comma-separated tag list: repo:tag1,repo:tag2,...
+        # (array params arrive newline-separated).
+        _NAMES=""
+        _OLD_IFS="$IFS"
+        IFS='
+        '
+        for _tag in $TAGS; do
+          [ -z "$_tag" ] && continue
+          if [ -z "$_NAMES" ]; then
+            _NAMES="${_FULL_IMAGE}:${_tag}"
+          else
+            _NAMES="${_NAMES},${_FULL_IMAGE}:${_tag}"
+          fi
+        done
+        IFS="$_OLD_IFS"
+        [ -z "$_NAMES" ] && _NAMES="${_FULL_IMAGE}:latest"
+
+        # Assemble the buildctl invocation.
+        set -- build \
+          --frontend dockerfile.v0 \
+          --local context="$CONTEXT" \
+          --local dockerfile="$CONTEXT" \
+          --opt filename="$DOCKERFILE"
+
+        if [ -n "$PLATFORM" ]; then
+          set -- "$@" --opt platform="$PLATFORM"
+        fi
+
+        # Convert the build-arg list into --opt build-arg:KEY=VALUE.
+        _OLD_IFS="$IFS"
+        IFS='
+        '
+        for _ba in $BUILD_ARGS; do
+          [ -z "$_ba" ] && continue
+          set -- "$@" --opt build-arg:"$_ba"
+        done
+        IFS="$_OLD_IFS"
+
+        _PUSH=false
+        [ "$DO_PUSH" = "true" ] && _PUSH=true
+
+        # A quoted "name=..." field keeps the comma-separated tags in one attr.
+        set -- "$@" --output "type=image,\"name=${_NAMES}\",push=${_PUSH}"
+
+        echo "[buildkit] buildctl $*"
+        buildctl "$@"
+        echo "[buildkit] done: ${_NAMES} (push=${_PUSH})"

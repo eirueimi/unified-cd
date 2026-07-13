@@ -287,8 +287,8 @@ func runCorpusScript(t *testing.T, script string, dir string) (exitCode int, err
 // constants to match (and re-derive them independently — don't just copy
 // whatever the test prints) as part of that change. **
 const (
-	wantFilesWithJobDocs = 47
-	wantTotalScripts     = 83
+	wantFilesWithJobDocs = 48
+	wantTotalScripts     = 84
 )
 
 // TestCorpus is the compatibility corpus gate: every run: script shipped in
