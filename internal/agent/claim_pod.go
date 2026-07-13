@@ -228,6 +228,8 @@ type claimPodManager struct {
 	mu    sync.Mutex
 	pause crt.ContainerHandle
 	open  map[string]crt.ContainerHandle // container name → handle
+
+	sidecarOrder []string // non-"job" container names, in podTemplate declared order
 }
 
 func newClaimPodManager(rt crt.ContainerRuntime, workDir, mountPath, pauseImage, runnerImage, toolsDir string) *claimPodManager {
@@ -318,8 +320,26 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 			return fmt.Errorf("claim pod: start container %q (image %q): %w", def.Name, def.Image, err)
 		}
 		m.open[def.Name] = h
+		if def.Name != primaryContainerName {
+			m.sidecarOrder = append(m.sidecarOrder, def.Name)
+		}
 	}
 	return nil
+}
+
+// SidecarHandles returns the live user sidecar containers (every non-"job"
+// container) in podTemplate declared order, each tagged with its ordinal so the
+// caller can compute its log index via dsl.SidecarLogIndex.
+func (m *claimPodManager) SidecarHandles() []SidecarHandle {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []SidecarHandle
+	for i, name := range m.sidecarOrder {
+		if h, ok := m.open[name]; ok {
+			out = append(out, SidecarHandle{Name: name, Ordinal: i, Handle: h})
+		}
+	}
+	return out
 }
 
 // Exec runs script in the named claim-pod container; "" targets the primary

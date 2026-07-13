@@ -47,7 +47,8 @@ type hostBackend struct {
 	scopesMu sync.Mutex
 	scopes   *scopeManager
 
-	masker *secrets.Masker
+	masker      *secrets.Masker
+	sidecarPump *sidecarLogPump
 }
 
 // newHostBackend constructs the ExecBackend for one claim's executeRun call.
@@ -162,6 +163,10 @@ func (b *hostBackend) RunInScope(ctx context.Context, h ScopeHandle, script stri
 // CloseScopes tears down every scope container opened during the claim and, for
 // an isolated claim, the claim pod (all containers plus the pause netns owner).
 func (b *hostBackend) CloseScopes(ctx context.Context) {
+	if b.sidecarPump != nil {
+		b.sidecarPump.Stop(ctx)
+	}
+
 	b.scopesMu.Lock()
 	scopes := b.scopes
 	b.scopesMu.Unlock()
@@ -336,6 +341,10 @@ func (b *hostBackend) RunPostHook(ctx context.Context, scope ScopeHandle, contai
 // writers (see StepLogWriters).
 func (b *hostBackend) SetMasker(m *secrets.Masker) {
 	b.masker = m
+	if b.pod != nil {
+		b.sidecarPump = newSidecarLogPump(b.pod.rt, b.a.Client, b.a.ID, b.runID, b.masker, b.pod.SidecarHandles())
+		b.sidecarPump.Start(context.Background())
+	}
 }
 
 // StepLogWriters returns LogPushers for stdout/stderr, auto-flushing every
