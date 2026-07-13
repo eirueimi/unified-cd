@@ -188,7 +188,8 @@ func TestClaimPod_CloseAllRemovesContainersThenPause(t *testing.T) {
 // TestClaimContainerDefs_InjectsJobWhenAbsent covers claimContainerDefs
 // directly: no "job" container in the template → injected primary appended.
 func TestClaimContainerDefs_InjectsJobWhenAbsent(t *testing.T) {
-	defs := claimContainerDefs(mysqlTemplate(), "runner:img")
+	defs, err := claimContainerDefs(mysqlTemplate(), "runner:img")
+	require.NoError(t, err)
 	require.Len(t, defs, 2)
 	assert.Equal(t, "mysql", defs[0].Name)
 	assert.Equal(t, containerDef{Name: "job", Image: "runner:img"}, defs[1])
@@ -197,7 +198,8 @@ func TestClaimContainerDefs_InjectsJobWhenAbsent(t *testing.T) {
 // TestClaimContainerDefs_NilTemplate covers the nil-podTemplate case: just
 // the injected primary, the host twin of k8s defaultPodSpec.
 func TestClaimContainerDefs_NilTemplate(t *testing.T) {
-	defs := claimContainerDefs(nil, "runner:img")
+	defs, err := claimContainerDefs(nil, "runner:img")
+	require.NoError(t, err)
 	require.Len(t, defs, 1)
 	assert.Equal(t, containerDef{Name: "job", Image: "runner:img"}, defs[0])
 }
@@ -211,7 +213,8 @@ func TestClaimContainerDefs_JobPresentNotDuplicated(t *testing.T) {
 			map[string]any{"name": "job", "image": "golang:1.22"},
 		},
 	}}
-	defs := claimContainerDefs(pt, "runner:img")
+	defs, err := claimContainerDefs(pt, "runner:img")
+	require.NoError(t, err)
 	require.Len(t, defs, 1)
 	assert.Equal(t, "golang:1.22", defs[0].Image)
 }
@@ -227,7 +230,8 @@ func TestClaimContainerDefs_DuplicateNameKeepsFirst(t *testing.T) {
 			map[string]any{"name": "tools", "image": "node:20"},
 		},
 	}}
-	defs := claimContainerDefs(pt, "runner:img")
+	defs, err := claimContainerDefs(pt, "runner:img")
+	require.NoError(t, err)
 	// tools (first def kept) + injected "job" primary.
 	require.Len(t, defs, 2)
 	assert.Equal(t, "tools", defs[0].Name)
@@ -250,7 +254,8 @@ func TestParseContainerDef_WarnsOnUnsupportedField(t *testing.T) {
 			},
 		},
 	}}
-	defs := claimContainerDefs(pt, "runner:img")
+	defs, err := claimContainerDefs(pt, "runner:img")
+	require.NoError(t, err)
 	require.Len(t, defs, 2)
 	assert.Equal(t, "tools", defs[0].Name)
 	assert.Equal(t, "node:20", defs[0].Image)
@@ -262,12 +267,13 @@ func TestParseContainerDef_WarnsOnUnsupportedField(t *testing.T) {
 // containerDef.Entrypoint (command) and containerDef.Args (args) so a
 // sidecar's own entrypoint override can be honored by claimPodManager.Start.
 func TestParseContainerDef_CommandAndArgsCarried(t *testing.T) {
-	def := parseContainerDef("redis", map[string]any{
+	def, err := parseContainerDef("redis", map[string]any{
 		"name":    "redis",
 		"image":   "redis:7",
 		"command": []any{"redis-server"},
 		"args":    []any{"--port", "6380"},
 	})
+	require.NoError(t, err)
 	assert.Equal(t, []string{"redis-server"}, def.Entrypoint)
 	assert.Equal(t, []string{"--port", "6380"}, def.Args)
 }
@@ -275,11 +281,12 @@ func TestParseContainerDef_CommandAndArgsCarried(t *testing.T) {
 // TestParseContainerDef_CommandOnlyNoArgs covers the command-with-no-args
 // shape (the common sidecar override case): Entrypoint is set, Args is nil.
 func TestParseContainerDef_CommandOnlyNoArgs(t *testing.T) {
-	def := parseContainerDef("tools", map[string]any{
+	def, err := parseContainerDef("tools", map[string]any{
 		"name":    "tools",
 		"image":   "node:20",
 		"command": []any{"/bin/sh", "-c", "node server.js"},
 	})
+	require.NoError(t, err)
 	assert.Equal(t, []string{"/bin/sh", "-c", "node server.js"}, def.Entrypoint)
 	assert.Nil(t, def.Args)
 }
@@ -289,7 +296,8 @@ func TestParseContainerDef_CommandOnlyNoArgs(t *testing.T) {
 // are nil, so CreateSpec.Entrypoint/Args stay nil and the image's default
 // entrypoint+CMD run unmodified.
 func TestParseContainerDef_NoCommandIsNil(t *testing.T) {
-	def := parseContainerDef("mysql", map[string]any{"name": "mysql", "image": "mysql:8"})
+	def, err := parseContainerDef("mysql", map[string]any{"name": "mysql", "image": "mysql:8"})
+	require.NoError(t, err)
 	assert.Nil(t, def.Entrypoint)
 	assert.Nil(t, def.Args)
 }
@@ -298,11 +306,12 @@ func TestParseContainerDef_NoCommandIsNil(t *testing.T) {
 // sets both command and args: they land in separate fields (ENTRYPOINT
 // override vs CMD override), not merged into one slice.
 func TestParseContainerDef_CommandArgsSplit(t *testing.T) {
-	def := parseContainerDef("web", map[string]any{
+	def, err := parseContainerDef("web", map[string]any{
 		"image":   "nginx",
 		"command": []any{"nginx"},
 		"args":    []any{"-g", "daemon off;"},
 	})
+	require.NoError(t, err)
 	assert.Equal(t, []string{"nginx"}, def.Entrypoint)
 	assert.Equal(t, []string{"-g", "daemon off;"}, def.Args)
 }
@@ -310,7 +319,8 @@ func TestParseContainerDef_CommandArgsSplit(t *testing.T) {
 // TestParseContainerDef_ArgsOnly covers args-only: Entrypoint stays nil (the
 // image's own ENTRYPOINT is used), Args carries the CMD override.
 func TestParseContainerDef_ArgsOnly(t *testing.T) {
-	def := parseContainerDef("web", map[string]any{"image": "nginx", "args": []any{"-t"}})
+	def, err := parseContainerDef("web", map[string]any{"image": "nginx", "args": []any{"-t"}})
+	require.NoError(t, err)
 	assert.Nil(t, def.Entrypoint)
 	assert.Equal(t, []string{"-t"}, def.Args)
 }
@@ -318,7 +328,63 @@ func TestParseContainerDef_ArgsOnly(t *testing.T) {
 // TestParseContainerDef_Neither_BothNil covers the no-command-no-args shape:
 // both fields nil, image default entrypoint+CMD run unmodified.
 func TestParseContainerDef_Neither_BothNil(t *testing.T) {
-	def := parseContainerDef("db", map[string]any{"image": "mysql:8"})
+	def, err := parseContainerDef("db", map[string]any{"image": "mysql:8"})
+	require.NoError(t, err)
 	assert.Nil(t, def.Entrypoint)
 	assert.Nil(t, def.Args)
+}
+
+// TestParseContainerDef_ResourcesRequestsWarnsIgnored covers parity fix #2:
+// resources.requests has no docker/podman equivalent, so it is WARN-logged
+// and ignored (not an error) while resources.limits is still honored.
+func TestParseContainerDef_ResourcesRequestsWarnsIgnored(t *testing.T) {
+	// requests present → parsed OK (no error), limits still applied, requests ignored.
+	def, err := parseContainerDef("web", map[string]any{
+		"image": "nginx",
+		"resources": map[string]any{
+			"requests": map[string]any{"cpu": "500m", "memory": "256Mi"},
+			"limits":   map[string]any{"cpu": "1", "memory": "512Mi"},
+		},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, def.CPULimit) // limits honored
+	assert.NotEmpty(t, def.MemLimit)
+}
+
+// TestParseContainerDef_NonStringEnvValueErrors covers parity fix #3: a
+// non-string env value (e.g. an unquoted number) hard-errors on the host,
+// matching k8s' json.Unmarshal-into-string behavior, instead of being
+// silently dropped.
+func TestParseContainerDef_NonStringEnvValueErrors(t *testing.T) {
+	_, err := parseContainerDef("web", map[string]any{
+		"image": "nginx",
+		"env":   []any{map[string]any{"name": "PORT", "value": 8080}}, // number, not string
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "value must be a string")
+}
+
+// TestParseContainerDef_MissingEnvValueStillSkipsNoError covers the
+// valueFrom-style case (no "value" key at all): still WARN+skip, NOT an
+// error — distinct from the non-string-value hard error above.
+func TestParseContainerDef_MissingEnvValueStillSkipsNoError(t *testing.T) {
+	// No `value` key at all (valueFrom-style) → still WARN+skip, NOT an error.
+	def, err := parseContainerDef("web", map[string]any{
+		"image": "nginx",
+		"env":   []any{map[string]any{"name": "SECRET"}},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, def.Env)
+}
+
+// TestClaimContainerDefs_UnnamedContainerErrors covers parity fix #5: an
+// unnamed podTemplate container hard-errors at pod-build time on the host,
+// matching the k8s side (BuildPod), instead of being silently skipped.
+func TestClaimContainerDefs_UnnamedContainerErrors(t *testing.T) {
+	pt := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{
+		map[string]any{"image": "nginx"}, // no name
+	}}}
+	_, err := claimContainerDefs(pt, "runner:latest")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no name")
 }

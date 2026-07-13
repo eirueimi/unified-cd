@@ -127,8 +127,14 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
 	injectKeepAlive(podSpec)
 
-	// Guard against user-supplied containers using the reserved sidecar name.
-	for _, c := range podSpec.Containers {
+	// Guard against user-supplied containers using the reserved sidecar name
+	// or having no name (k8s would otherwise reject the latter only later, at
+	// the API server, as an opaque run-creation failure — fail early here to
+	// match the host claimContainerDefs check).
+	for i, c := range podSpec.Containers {
+		if c.Name == "" {
+			return nil, fmt.Errorf("podTemplate container at index %d has no name", i)
+		}
 		if c.Name == artifactSidecarName {
 			return nil, fmt.Errorf("container name %q is reserved for the artifact sidecar", artifactSidecarName)
 		}

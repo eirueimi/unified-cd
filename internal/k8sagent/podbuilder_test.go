@@ -97,6 +97,24 @@ func TestBuildPod_InlineSpec(t *testing.T) {
 	assert.Equal(t, "python:3.12-slim", pod.Spec.Containers[0].Image)
 }
 
+// TestBuildPod_UnnamedContainerErrors covers host/k8s parity fix #5: an
+// unnamed podTemplate container hard-errors at pod-build time, matching the
+// host claimContainerDefs check, instead of being rejected only later by the
+// k8s API server as an opaque run-creation failure.
+func TestBuildPod_UnnamedContainerErrors(t *testing.T) {
+	jobTmpl := &dsl.PodTemplate{
+		Spec: map[string]any{
+			"containers": []any{
+				map[string]any{"image": "nginx"}, // no name
+			},
+		},
+	}
+
+	_, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no name")
+}
+
 func TestBuildPod_WorkspacePVC(t *testing.T) {
 	agentTmpls := map[string]AgentPodTemplate{
 		"golang": {

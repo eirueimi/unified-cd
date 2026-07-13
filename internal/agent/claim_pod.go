@@ -42,7 +42,7 @@ type containerDef struct {
 // a Kubernetes agent by PodTemplateNeedsKubernetes. Other host-unsupported
 // fields (volumeMounts, ports, securityContext, envFrom, ...) are logged
 // once per container and dropped.
-func parseContainerDef(name string, c map[string]any) containerDef {
+func parseContainerDef(name string, c map[string]any) (containerDef, error) {
 	def := containerDef{Name: name}
 	def.Image, _ = c["image"].(string)
 
@@ -63,15 +63,21 @@ func parseContainerDef(name string, c map[string]any) containerDef {
 				continue
 			}
 			en, _ := e["name"].(string)
-			ev, hasVal := e["value"].(string)
 			if en == "" {
 				continue
 			}
-			if !hasVal {
+			rawVal, present := e["value"]
+			if !present {
 				// valueFrom / fieldRef etc. — not resolvable on the host.
 				slog.Warn("podTemplate container env without a literal value is ignored on the host agent",
 					"container", name, "env", en)
 				continue
+			}
+			ev, ok := rawVal.(string)
+			if !ok {
+				// A malformed job: k8s hard-errors on this (json.Unmarshal into
+				// EnvVar{Value string}); the host matches instead of silently dropping.
+				return containerDef{}, fmt.Errorf("podTemplate container %q env %q: value must be a string (got %T); quote the value", name, en, rawVal)
 			}
 			def.Env = append(def.Env, en+"="+ev)
 		}
@@ -83,8 +89,13 @@ func parseContainerDef(name string, c map[string]any) containerDef {
 			mem, _ := lim["memory"].(string)
 			def.CPULimit, def.MemLimit = limitStrings(cpu, mem)
 		}
+		if reqs, ok := res["requests"].(map[string]any); ok && len(reqs) > 0 {
+			slog.Warn("podTemplate container resources.requests is not supported on the host agent "+
+				"(docker/podman have no request concept) and is ignored; use resources.limits or route to a Kubernetes agent",
+				"container", name)
+		}
 	}
-	return def
+	return def, nil
 }
 
 // stringSlice converts a raw podTemplate container's "command" or "args"
@@ -137,34 +148,38 @@ const primaryContainerName = "job"
 // would leak the first container — started, but no longer reachable via
 // Exec's name lookup, and never torn down by name), the first definition
 // for a given name wins and every later duplicate is dropped with a WARN.
-func claimContainerDefs(pt *dsl.PodTemplate, runnerImage string) []containerDef {
+func claimContainerDefs(pt *dsl.PodTemplate, runnerImage string) ([]containerDef, error) {
 	var defs []containerDef
 	seen := map[string]bool{}
 	if pt != nil {
 		containers, _ := pt.Spec["containers"].([]any)
-		for _, raw := range containers {
+		for idx, raw := range containers {
 			c, ok := raw.(map[string]any)
 			if !ok {
 				continue
 			}
 			name, _ := c["name"].(string)
 			if name == "" {
-				continue
+				return nil, fmt.Errorf("podTemplate container at index %d has no name", idx)
 			}
 			if seen[name] {
 				slog.Warn("podTemplate has more than one container with the same name; keeping the first and dropping the duplicate", "container", name)
 				continue
 			}
 			seen[name] = true
-			defs = append(defs, parseContainerDef(name, c))
+			def, err := parseContainerDef(name, c)
+			if err != nil {
+				return nil, err
+			}
+			defs = append(defs, def)
 		}
 	}
 	for _, d := range defs {
 		if d.Name == primaryContainerName {
-			return defs
+			return defs, nil
 		}
 	}
-	return append(defs, containerDef{Name: primaryContainerName, Image: runnerImage})
+	return append(defs, containerDef{Name: primaryContainerName, Image: runnerImage}), nil
 }
 
 // claimNeedsRunnerImage reports whether building the claim pod for pt would
@@ -272,7 +287,11 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 		return fmt.Errorf("claim pod: start pause container (image %q): %w", m.pauseImage, err)
 	}
 	m.pause = pause
-	for _, def := range claimContainerDefs(pt, m.runnerImage) {
+	defs, err := claimContainerDefs(pt, m.runnerImage)
+	if err != nil {
+		return fmt.Errorf("claim pod: %w", err)
+	}
+	for _, def := range defs {
 		// A service sidecar runs its own entrypoint/CMD (Entrypoint/Args from
 		// its podTemplate); the primary "job" container is forced to the
 		// ucd-sh pause keep-alive via Entrypoint (clearing whatever ENTRYPOINT
