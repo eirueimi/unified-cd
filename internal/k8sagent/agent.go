@@ -214,6 +214,26 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		return
 	}
 
+	// The pod is Running, so every container (including user podTemplate
+	// sidecars) has started: begin streaming their logs now. Started with a
+	// nil masker — the masker is installed on the backend later (by
+	// agentlib.RunClaim, after secrets fetch) and k8s sidecar service logs
+	// rarely carry job secrets; GetLogs replays from container start, so
+	// nothing streamed before that point is lost. Best-effort and torn down
+	// before the pod is deleted: registered after the create branches' pod
+	// delete/release defer, so it runs first (defers are LIFO).
+	if pm, ok := a.pm.(*PodManager); ok {
+		if sidecars := dsl.SidecarContainerNames(c.PodTemplate); len(sidecars) > 0 {
+			sidecarPump := &k8sSidecarPump{
+				client: pm.Client(), logs: a.client, ns: a.cfg.Namespace,
+				pod: podName, agentID: a.cfg.AgentID, runID: c.RunID,
+				sidecars: sidecars,
+			}
+			sidecarPump.Start(ctx)
+			defer sidecarPump.Stop()
+		}
+	}
+
 	// If cleanWorkspace is true, clear the workspace before the first step
 	if usePool && c.PodTemplate != nil && c.PodTemplate.CleanWorkspace {
 		mountPath := "/workspace"

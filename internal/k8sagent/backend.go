@@ -12,6 +12,7 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
@@ -236,13 +237,14 @@ func (b *k8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeH
 
 // sidecarExecArgv execs argv (no shell) into the sidecar container of
 // targetPod (empty means the default pooled/run pod), shipping stderr via a
-// LogPusher on stepIndex 0 (mirroring the pre-refactor sidecarExec closure —
+// LogPusher on the artifact sidecar's dsl.ArtifactLogIndex (its own identity,
+// not step 0's stream) (mirroring the pre-refactor sidecarExec closure —
 // cache/artifact steps have no per-step log stream of their own).
 func (b *k8sBackend) sidecarExecArgv(ctx context.Context, targetPod, container string, argv []string) (int, error) {
 	if targetPod == "" {
 		targetPod = b.podName
 	}
-	stderrPusher := agentlib.NewLogPusher(b.a.client, b.a.cfg.AgentID, b.runID, 0, "stderr")
+	stderrPusher := agentlib.NewLogPusher(b.a.client, b.a.cfg.AgentID, b.runID, dsl.ArtifactLogIndex, "stderr")
 	stderrPusher.SetMasker(b.masker)
 	ec, err := b.a.exec.ExecStepArgv(ctx, targetPod, container, argv, io.Discard, stderrPusher)
 	stderrPusher.Flush(ctx)
@@ -256,7 +258,7 @@ func (b *k8sBackend) sidecarExecArgvCapturingStdout(ctx context.Context, targetP
 	if targetPod == "" {
 		targetPod = b.podName
 	}
-	stderrPusher := agentlib.NewLogPusher(b.a.client, b.a.cfg.AgentID, b.runID, 0, "stderr")
+	stderrPusher := agentlib.NewLogPusher(b.a.client, b.a.cfg.AgentID, b.runID, dsl.ArtifactLogIndex, "stderr")
 	stderrPusher.SetMasker(b.masker)
 	var stdout bytes.Buffer
 	ec, err := b.a.exec.ExecStepArgv(ctx, targetPod, container, argv, &stdout, stderrPusher)

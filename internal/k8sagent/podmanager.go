@@ -22,6 +22,11 @@ func NewPodManager(client kubernetes.Interface, namespace, podImage string) *Pod
 	return &PodManager{client: client, namespace: namespace, podImage: podImage}
 }
 
+// Client returns the underlying Kubernetes client, for callers (e.g. the
+// sidecar log pump) that need direct API access beyond PodManager's own
+// pod-lifecycle methods.
+func (pm *PodManager) Client() kubernetes.Interface { return pm.client }
+
 // CreateJobPod creates a Pod corresponding to the given runID.
 func (pm *PodManager) CreateJobPod(ctx context.Context, runID string, labels map[string]string) (*corev1.Pod, error) {
 	pod := pm.buildPodSpec(runID)
