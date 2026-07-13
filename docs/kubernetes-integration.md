@@ -40,15 +40,20 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   the standard agent it execs into the corresponding container of the claim pod (see
   [Job Isolation: `native` and the claim
   pod](jobs.md#job-isolation-native-and-the-claim-pod)); a sidecar's `command`/`args`
-  are honored (they become the container's entrypoint), while host-unsupported
-  `podTemplate` fields (a PVC workspace, extra pod-spec, `volumeMounts`, or non-literal
-  env) are ignored with a WARN rather than applied. Unlike k8s, the standard agent's claim-pod containers
+  now match standard Kubernetes/OCI ENTRYPOINT/CMD semantics on **both** backends —
+  see [Host container command/args
+  semantics](#host-container-commandargs-semantics) below for the full truth table
+  and per-runtime support matrix. Other host-unsupported `podTemplate` fields (a PVC
+  workspace, extra pod-spec, `volumeMounts`, or non-literal env) are ignored with a
+  WARN rather than applied. Unlike k8s, the standard agent's claim-pod containers
   share one network namespace (via the pause container), so — unlike the old MVP
   single-container form this replaces — sidecars **are** reachable at `localhost` from
   every claim-pod container, matching k8s.
 - **Resource `requests`** (`podTemplate.spec.containers[].resources.requests`) — applied
-  only here (docker/podman/nerdctl have no request concept; the standard agent maps
-  `resources.limits` only).
+  only here (docker/podman/nerdctl have no request concept). The standard agent maps
+  `resources.limits` only and logs one WARN when `resources.requests` is present
+  (`podTemplate container resources.requests is not supported on the host agent
+  ... and is ignored; use resources.limits or route to a Kubernetes agent`).
 - **`native: true`** — host-only. A `native: true` job claimed by the k8s-agent fails the
   run immediately with a clear error; route native jobs away from k8s-agents (and to host
   agents) via `agentSelector`.
@@ -58,6 +63,61 @@ seam) — only the execution backend differs per agent. The remaining intentiona
 
 Feature parity between the two agents is enforced by the shared conformance suite
 (`internal/paritycases`) — new DSL behavior must pass identical expectations on both agents.
+
+### Host container command/args semantics
+
+A `podTemplate` container's `command:`/`args:` mean the same thing on both
+backends now — standard Kubernetes/OCI ENTRYPOINT/CMD override semantics:
+
+| `command` | `args` | Resulting process (both backends) |
+|---|---|---|
+| unset | unset | The image's own `ENTRYPOINT` + `CMD`, unmodified (e.g. a sidecar's own service command, `mysqld`). |
+| unset | set | The image's own `ENTRYPOINT`, invoked with `args` as its arguments (image `CMD` replaced). |
+| set | unset or set | `command` replaces the image `ENTRYPOINT`; `args` (if also set) follow as its arguments. The image `ENTRYPOINT` is never invoked. |
+
+On k8s this was already native `corev1.Container` behavior and is
+unchanged. On the standard agent, this is a **breaking change** from the
+previous behavior, where `command` and `args` were merged into one
+positional `CMD` override and the image's `ENTRYPOINT` always ran
+regardless of `command` — see the [migration
+guide](migration-2026-07-host-entrypoint-parity.md) if a job relied on the
+old merge behavior.
+
+**On both backends, the primary `job` container's own image `ENTRYPOINT`
+is always ignored**, regardless of any `command`/`args` a `podTemplate` sets
+on it — the pod build unconditionally forces it to the `ucd-sh pause`
+keep-alive (via an `ENTRYPOINT` override on the standard agent, via a
+`Command` override on k8s), so it stays alive as the exec target for
+`container:`-less steps. This applies uniformly to the primary `job`
+container on **both** the standard agent's claim pod and the k8s-agent's
+job Pod — see [Keep-alive: `ucd-sh pause`](#keep-alive-ucd-sh-pause) below.
+Sidecar containers on both backends still honor `command`/`args` as
+described in the table above; only the primary `job` container's
+`command`/`args` are discarded.
+
+#### Per-runtime support for the ENTRYPOINT clear (standard agent only)
+
+On the standard agent, replacing a container's `ENTRYPOINT` (the `command`
+column above) requires the container CLI to support the empty-clear form
+(docker's `--entrypoint ""`, emitted before the image). Support is recorded
+per runtime, verified on real binaries — not assumed:
+
+| Runtime | `--entrypoint ""` empty-clear | Status |
+|---|---|---|
+| docker | Supported | Verified (Docker 29.6.1) |
+| podman | Unverified | Not present on the verification machine; not tested |
+| nerdctl | Unverified | Not present on the verification machine; not tested |
+| wslc | Unverified | Not present on the verification machine; not tested |
+| Apple `container` | Unverified | Not available on the verification machine (Windows); not tested |
+
+A runtime confirmed **not** to support the empty clear is added to
+`internal/runtime`'s `noEmptyEntrypointClear` set (currently empty — no
+runtime has failed verification). For a runtime in that set, a `command`
+override degrades to the pre-parity behavior: `command`+`args` run as
+positional `CMD` and the image's own `ENTRYPOINT` still executes, plus one
+`WARN` log naming the runtime and the limitation. This never silently
+produces a broken command — it produces a diagnosed fallback to the old,
+still-functional-if-imprecise behavior.
 
 ---
 
@@ -248,9 +308,10 @@ All containers in the Pod mount the same path (`mountPath`), so files are shared
 
 The k8s-agent follows these steps:
 
-1. Create the Pod: prepend the `ucd-shim` init container (see below), inject
-   the `["/.ucd/ucd-sh", "pause"]` keep-alive into the primary `job`
-   container when it has no explicit `command`/`args`
+1. Create the Pod: prepend the `ucd-shim` init container (see below),
+   unconditionally inject the `["/.ucd/ucd-sh", "pause"]` keep-alive into
+   the primary `job` container, discarding any `command`/`args` a
+   `podTemplate` set on it
 2. Send each step into the Pod via the equivalent of `kubectl exec`, running
    `/.ucd/ucd-sh -c <script>` by default (or the step's effective `shell:`
    argv — see [Job Reference: Shell (`shell:`)](jobs.md#shell-shell))
@@ -308,9 +369,14 @@ runs.
 
 ### Keep-alive: `ucd-sh pause`
 
-The primary `job` container's keep-alive — injected only when the container
-has **neither** `command` nor `args` set, so an author-supplied entrypoint
-or a sidecar's own service command (e.g. `mysqld`) is never clobbered —
+The primary `job` container's keep-alive is **unconditionally injected**,
+discarding any `command`/`args` the container has set — a `podTemplate`
+that sets `command`/`args` on the container named `job` has that command
+silently overridden by the keep-alive on both backends; put the actual
+workload in `steps:` instead. (Sidecar containers are unaffected: a
+sidecar with no `command`/`args` still runs its own image entrypoint, and a
+sidecar's own service command, e.g. `mysqld`, is never clobbered — only the
+primary `job` container is forced.) The keep-alive argv itself
 changed from `["sleep", "infinity"]` to `["/.ucd/ucd-sh", "pause"]`. This
 applies uniformly, including the **bare `podImage` fallback** (no
 `podTemplate` at all): that path routes through the same injection logic as
@@ -319,6 +385,20 @@ keep-alive rather than being left uninjected. `ucd-sh pause` blocks until
 SIGTERM/SIGINT, reaps zombie children while running as PID 1, and needs no
 `sleep` binary in the image — the `scratch`/distroless keep-alive case that
 `sleep infinity` could never satisfy.
+
+### podTemplate container validation
+
+`BuildPod` validates every `podTemplate` container before the Pod is sent
+to the API server — matching validation the standard agent's claim pod
+also performs (see [Job Reference: podTemplate container parity
+notes](jobs.md#podtemplate-container-parity-notes-host-and-k8s)):
+
+- **Every container must have a `name`.** An empty/missing `name` is a
+  hard error at pod-build time (`podTemplate container at index N has no
+  name`) rather than being sent to the API server and rejected late.
+- **An `env` entry's `value` must be a string.** An unquoted number or
+  boolean (`value: 8080`) fails Pod-spec decoding; quote it
+  (`value: "8080"`).
 
 ---
 

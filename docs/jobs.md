@@ -1043,11 +1043,50 @@ is (mostly) a real Kubernetes PodSpec. On the standard agent, the same
 `podTemplate` drives the claim pod described in [Job Isolation: `native` and
 the claim pod](#job-isolation-native-and-the-claim-pod) — it reads
 `spec.containers` (name/image/`command`/`args`/env/`resources.limits`) to
-build one network-namespace-joined container per entry; a sidecar's
-`command`/`args` are honored (they become the container's entrypoint), while
-unsupported PodSpec fields (PVC workspace, `volumeMounts`/`securityContext`,
-`env` entries without a literal `value`) are ignored with a WARN rather than
+build one network-namespace-joined container per entry. A sidecar's
+`command`/`args` now match standard Kubernetes/OCI semantics on **both**
+backends: `command` overrides the image's `ENTRYPOINT` and `args` overrides
+its `CMD`. See [Kubernetes Integration Guide: Host container command/args
+semantics](kubernetes-integration.md#host-container-commandargs-semantics)
+for the full truth table and the per-runtime support matrix for the
+standard agent's `--entrypoint ""` clear (docker: verified; podman,
+nerdctl, wslc, Apple `container`: unverified). **On both backends**, the
+primary `job` container's own image `ENTRYPOINT`/`command`/`args` are
+always ignored — it is unconditionally forced to the `ucd-sh pause`
+keep-alive regardless of any `command`/`args` a `podTemplate` sets on it,
+so it stays alive as the exec target for `container:`-less steps. Put your
+actual workload in `steps:`, not on the `job` container's `command`/`args`
+— a `command` set there never runs. Sidecar containers still honor
+`command`/`args` as described in the table above. Other unsupported
+PodSpec fields (PVC workspace, `volumeMounts`/`securityContext`, `env`
+entries without a literal `value`) are ignored with a WARN rather than
 applied.
+
+### podTemplate container parity notes (host and k8s)
+
+The following podTemplate container behaviors are now identical on the
+standard agent and the k8s-agent:
+
+- **Primary container keep-alive (see above).** The `job` container's
+  `command`/`args` are always overridden by the `ucd-sh pause` keep-alive
+  on both backends — workload belongs in `steps:`.
+- **`resources.requests` is host-only-ignored.** The standard agent has no
+  concept of a resource *request* (only a *limit*) on docker/podman, so
+  `podTemplate.spec.containers[].resources.requests` is ignored with a
+  WARN (`podTemplate container resources.requests is not supported on the
+  host agent ... and is ignored; use resources.limits or route to a
+  Kubernetes agent`) — `resources.limits` still applies on both backends.
+  Route a job that needs real CPU/memory requests to a Kubernetes agent.
+- **Env `value` must be a string.** A container `env` entry's `value` must
+  be a YAML string. An unquoted number or boolean (e.g. `value: 8080`) is
+  a **hard error at job start on both backends** — quote it
+  (`value: "8080"`). An env entry with no `value` key at all (i.e. a
+  `valueFrom`-style entry, unsupported on the standard agent) is still
+  only a WARN + skip on the host, not an error.
+- **Every container needs a `name`.** A `podTemplate` container with no
+  `name` is a **hard error at job start on both backends**
+  (`podTemplate container at index N has no name`) — add a `name` to every
+  entry in `spec.containers`.
 
 **Routing is automatic and capability-based**, not selector-based: the
 controller infers whether a `podTemplate` needs real Kubernetes (a named

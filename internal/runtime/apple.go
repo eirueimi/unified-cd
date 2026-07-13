@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"strings"
 )
@@ -60,7 +61,8 @@ func (a *appleContainer) Run(ctx context.Context, spec RunSpec, stdout, stderr i
 // createArgs builds the argv for `run -d`; extracted from Create so tests can
 // assert on the argv (notably -w for spec.WorkDir) without depending on
 // exec.Cmd.Output()'s stdout plumbing. Mirrors ociCLI.createArgs, including
-// spec.Command semantics (nil/empty = image's default entrypoint).
+// spec.Entrypoint/spec.Args semantics (nil/empty = image's default
+// entrypoint/CMD).
 func (a *appleContainer) createArgs(spec CreateSpec) []string {
 	args := []string{"run", "-d"}
 	if spec.CPULimit != "" {
@@ -82,8 +84,15 @@ func (a *appleContainer) createArgs(spec CreateSpec) []string {
 	for _, e := range spec.Env {
 		args = append(args, "-e", e)
 	}
+	if len(spec.Entrypoint) > 0 && !noEmptyEntrypointClear["container"] {
+		args = append(args, "--entrypoint", "")
+	} else if len(spec.Entrypoint) > 0 {
+		slog.Warn("runtime does not support clearing the image ENTRYPOINT (--entrypoint \"\"); "+
+			"running command as positional args — the image's own ENTRYPOINT still applies", "runtime", "container")
+	}
 	args = append(args, spec.Image)
-	args = append(args, spec.Command...)
+	args = append(args, spec.Entrypoint...)
+	args = append(args, spec.Args...)
 	return args
 }
 

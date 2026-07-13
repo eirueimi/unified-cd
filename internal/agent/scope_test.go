@@ -65,10 +65,10 @@ func TestScopeManagerReusesEnvPerKey(t *testing.T) {
 }
 
 // TestScopeManagerEnsure_KeepAliveCommand is the regression test for the
-// sidecar-sleep-infinity fix: since CreateSpec.Command now defaults to nil
+// sidecar-sleep-infinity fix: since CreateSpec.Entrypoint now defaults to nil
 // (image entrypoint) instead of the runtime hardcoding a keep-alive, the
 // uses-scope container — a step exec target, not a service sidecar — must
-// set Command explicitly so it doesn't regress into running its image's
+// set Entrypoint explicitly so it doesn't regress into running its image's
 // default entrypoint and exiting immediately. The keep-alive itself is now
 // the ucd-sh shim's pause mode (Component 4 of the step-shell-shim design),
 // not sleep infinity.
@@ -80,8 +80,8 @@ func TestScopeManagerEnsure_KeepAliveCommand(t *testing.T) {
 	if _, err := m.ensure(context.Background(), s, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.lastCreate.Command; len(got) != 2 || got[0] != "/.ucd/ucd-sh" || got[1] != "pause" {
-		t.Fatalf("expected scope container Command = [/.ucd/ucd-sh pause], got %v", got)
+	if got := f.lastCreate.Entrypoint; len(got) != 2 || got[0] != "/.ucd/ucd-sh" || got[1] != "pause" {
+		t.Fatalf("expected scope container Entrypoint = [/.ucd/ucd-sh pause], got %v", got)
 	}
 }
 

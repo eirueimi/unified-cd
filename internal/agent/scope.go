@@ -74,12 +74,12 @@ func (m *scopeManager) ensure(ctx context.Context, step api.ClaimStep, env []str
 	if h, ok := m.open[k]; ok {
 		return h, nil
 	}
-	// Command is the explicit ucd-sh pause keep-alive: this container is an
-	// exec target for scoped steps (see crt.CreateSpec.Command), not a
+	// Entrypoint is the explicit ucd-sh pause keep-alive: this container is an
+	// exec target for scoped steps (see crt.CreateSpec.Entrypoint), not a
 	// service sidecar, so it must not run the image's default entrypoint.
 	// The /.ucd mount makes the keep-alive binary (and the default step
 	// shell) available without any image requirement.
-	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir, Command: ucdShPause, Mounts: ucdToolsMount(m.toolsDir)})
+	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir, Entrypoint: ucdShPause, Mounts: ucdToolsMount(m.toolsDir)})
 	if err != nil {
 		return crt.ContainerHandle{}, fmt.Errorf("provision scope %q (image %q): %w", step.ScopeID, step.ScopeImage, err)
 	}

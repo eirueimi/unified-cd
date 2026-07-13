@@ -127,8 +127,14 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
 	injectKeepAlive(podSpec)
 
-	// Guard against user-supplied containers using the reserved sidecar name.
-	for _, c := range podSpec.Containers {
+	// Guard against user-supplied containers using the reserved sidecar name
+	// or having no name (k8s would otherwise reject the latter only later, at
+	// the API server, as an opaque run-creation failure — fail early here to
+	// match the host claimContainerDefs check).
+	for i, c := range podSpec.Containers {
+		if c.Name == "" {
+			return nil, fmt.Errorf("podTemplate container at index %d has no name", i)
+		}
 		if c.Name == artifactSidecarName {
 			return nil, fmt.Errorf("container name %q is reserved for the artifact sidecar", artifactSidecarName)
 		}
@@ -160,29 +166,34 @@ func defaultPodSpec(image string) *corev1.PodSpec {
 			// Command is intentionally left unset here. injectKeepAlive is
 			// the single source of keep-alive truth for the "job" container
 			// (see its doc comment) and BuildPod calls it unconditionally
-			// right after this function returns; injectKeepAlive only
-			// injects ucdKeepAliveArgv() when Command AND Args are both
-			// empty. Baking "sleep infinity" (the old behavior) or even
+			// right after this function returns; injectKeepAlive
+			// unconditionally overwrites the primary "job" container's
+			// Command/Args with ucdKeepAliveArgv(), regardless of what's set
+			// here. Baking "sleep infinity" (the old behavior) or even
 			// ucdKeepAliveArgv() directly into this literal would duplicate
-			// that decision in two places and risk them drifting — worse,
-			// the old "sleep infinity" literal counted as an explicit
-			// Command, so injectKeepAlive's skip-when-set guard silently
-			// fired and the bare "podImage, no podTemplate" fallback path
-			// (no jobTmpl at all) never got the ucd-sh pause keep-alive,
-			// unlike every podTemplate-based path. Leaving Command empty
-			// routes this path through the exact same injectKeepAlive logic
-			// as a user-supplied podTemplate's "job" container.
+			// that decision in two places and risk them drifting. Leaving
+			// Command empty routes this path through the exact same
+			// injectKeepAlive logic as a user-supplied podTemplate's "job"
+			// container.
 			{Name: "job", Image: image},
 		},
 	}
 }
 
-// injectKeepAlive injects the ucd-sh keep-alive (["/.ucd/ucd-sh","pause"])
-// into the primary "job" container if it has no command AND no args set, so
-// container:-less steps always have a live exec target regardless of whether
-// the podTemplate defined "job" explicitly (see defaultPodSpec) or the user
-// did (without setting a command). Replaces the previous "sleep infinity"
-// (see Component 4 of the step-shell-shim design spec): no `sleep` binary
+// injectKeepAlive unconditionally forces the primary "job" container's argv
+// to the ucd-sh keep-alive (["/.ucd/ucd-sh","pause"]), discarding any
+// Command/Args the podTemplate set on it, so container:-less steps always
+// have a live exec target regardless of whether the podTemplate defined
+// "job" explicitly (see defaultPodSpec) or the user did (with or without
+// setting a command/args of their own). Honoring a non-persistent
+// user-supplied command would let the container exit and break every later
+// step's exec-in — the execution model requires "job" to stay alive as the
+// exec target. This matches the host claim pod's behavior in
+// internal/agent/claim_pod.go (claimPodManager.Start), which always forces
+// the primary's Entrypoint to ucd-sh pause too (host/k8s parity fix #1; see
+// docs/superpowers/specs/2026-07-13-host-entrypoint-parity-design.md, "Fix
+// #1"). The keep-alive itself replaces the old "sleep infinity" (see
+// Component 4 of the step-shell-shim design spec): no `sleep` binary
 // requirement, zombie reaping (ucd-sh pause is PID-1-aware), prompt SIGTERM
 // exit.
 //
@@ -191,22 +202,24 @@ func defaultPodSpec(image string) *corev1.PodSpec {
 // entrypoint/CMD — that IS the sidecar's service. Forcing the keep-alive on
 // every container (the pre-fix behavior) silently broke every sidecar with
 // no explicit command: its entrypoint (e.g. mysqld) never ran, so the
-// service was unreachable. This mirrors the host claim pod's fix in
-// internal/agent/claim_pod.go (claimPodManager.Start): only the primary
-// "job" container gets the keep-alive.
-//
-// The check also now covers Args, not just Command (the args-clobber fix): a
-// "job" container that sets Args only (e.g. relying on the image's own
-// ENTRYPOINT, with Args supplying its arguments) previously had that Args
-// value silently ignored — the container ran "sleep infinity" instead of the
-// author's intended entrypoint invocation, since only len(Command) was
-// checked. Skipping injection when EITHER is set respects the author's
-// explicit choice either way.
+// service was unreachable. A sidecar with its own command still overrides
+// its entrypoint, unchanged. Only the primary "job" container is forced to
+// keep-alive.
 func injectKeepAlive(podSpec *corev1.PodSpec) {
 	for i := range podSpec.Containers {
 		c := &podSpec.Containers[i]
-		if c.Name == primaryContainerName && len(c.Command) == 0 && len(c.Args) == 0 {
+		if c.Name == primaryContainerName {
+			// The primary "job" container is the exec target for
+			// container:-less steps, so it ALWAYS runs ucd-sh pause,
+			// discarding any command/args the podTemplate set on it —
+			// honoring a non-persistent user command would let the
+			// container exit and break every later step's exec-in. This
+			// matches the host claim pod (claimPodManager.Start forces the
+			// primary's Entrypoint to ucd-sh pause). Sidecars are left
+			// untouched: a sidecar with no command runs its image's own
+			// entrypoint (its service); one with a command overrides it.
 			c.Command = ucdKeepAliveArgv()
+			c.Args = nil
 		}
 	}
 }

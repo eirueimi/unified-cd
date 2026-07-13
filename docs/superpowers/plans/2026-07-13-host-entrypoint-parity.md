@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go, docker/podman/nerdctl/wslc CLI (internal/runtime/ocicli.go), Apple `container` CLI (apple.go), the host claim pod (internal/agent).
 
-**Spec:** docs/superpowers/specs/2026-07-13-host-entrypoint-parity-design.md — read it first; it is the authority on semantics.
+**Spec:** docs/superpowers/specs/2026-07-13-host-entrypoint-parity-design.md — read it first; it is the authority on semantics. Tasks 1–3 implement the entrypoint/args split; Tasks 4–7 implement the five additional host/k8s parity fixes in the spec's "Additional host/k8s parity fixes (audit findings #1–#5)" section.
 
 ## Global Constraints
 
@@ -16,7 +16,9 @@
 - createArgs tail, after `spec.Image`, is EXACTLY: nil/nil ⇒ nothing; Entrypoint nil + Args non-nil ⇒ `<args...>`; Entrypoint non-nil ⇒ `--entrypoint "" <entrypoint...> <args...>` (empty-string clear only — never a multi-element `--entrypoint` value).
 - Degrade: a runtime whose name is in a package-level no-empty-clear set omits `--entrypoint ""` when Entrypoint is non-nil (emits `<entrypoint...> <args...>` positionally) and logs ONE WARN. That set starts EMPTY — add a runtime only after the manual verification in Task 2 proves it necessary.
 - Keep-alive argv is EXACTLY `["/.ucd/ucd-sh","pause"]` and is set via `Entrypoint`, `Args` nil, for: claim-pod pause + primary "job" containers, uses-scope containers, workspace-cleanup container.
-- k8s backend (internal/k8sagent) is NOT modified — it is already correct.
+- k8s backend (internal/k8sagent) command/args handling for SIDECARS is NOT modified — it is already correct. The ONLY k8s changes in this work are: the primary `job` keep-alive (Task 4, fix #1), an early unnamed-container validation (Task 5, fix #5), and cache-restore hit/miss accuracy (Task 6, fix #4).
+- Parity-fix directions are FIXED (spec §"Additional host/k8s parity fixes"): #1 both backends always force `ucd-sh pause` on the primary `job` container; #2 host WARNs and ignores `resources.requests` (limits unchanged); #3 non-string env `value` hard-errors on both backends; #4 k8s cache log made honest via a `UCD_CACHE_RESULT=hit|miss` stdout marker (exit code stays 0); #5 unnamed container hard-errors at pod-build time on both backends.
+- Keep-alive argv is EXACTLY `["/.ucd/ucd-sh","pause"]` (`ucdShPause` host / `ucdKeepAliveArgv()` k8s) everywhere it appears.
 - The repo vendors deps; local runs may need `GOFLAGS=-mod=mod` but must NOT commit go.mod/go.sum/vendor changes. English prose everywhere. Gates per task: `go build ./...`, `go vet ./...`, named test packages `-count=1`.
 
 ---
@@ -355,10 +357,461 @@ git add docs/ CHANGELOG.md
 git commit -m "docs: host command/args now match k8s ENTRYPOINT/CMD semantics + runtime matrix"
 ```
 
+### Task 4: k8s primary `job` keep-alive always forces pause (fix #1)
+
+Make k8s match the host: the primary `job` container always runs `ucd-sh pause`, discarding any `command`/`args` the podTemplate set on it, so it stays a live exec target. Sidecars are untouched.
+
+**Files:**
+- Modify: `internal/k8sagent/podbuilder.go` (`injectKeepAlive` ~205-212, and its doc comment ~180-204)
+- Test: `internal/k8sagent/podbuilder_test.go` (invert `TestInjectKeepAlive_JobKeepsExplicitCommand` / `...KeepsExplicitArgs`; keep the sidecar-untouched cases)
+
+**Interfaces:**
+- Consumes: `ucdKeepAliveArgv()`, `primaryContainerName` (unchanged).
+
+- [ ] **Step 1: Invert the two failing tests**
+
+In `podbuilder_test.go`, replace the bodies of `TestInjectKeepAlive_JobKeepsExplicitCommand` and `TestInjectKeepAlive_JobKeepsExplicitArgs` (rename each to `..._JobForcesPauseOverExplicitCommand` / `..._JobForcesPauseOverExplicitArgs`) to assert the primary is FORCED to pause even when it arrived with a command/args:
+
+```go
+func TestInjectKeepAlive_JobForcesPauseOverExplicitCommand(t *testing.T) {
+	spec := &corev1.PodSpec{Containers: []corev1.Container{
+		{Name: "job", Image: "img", Command: []string{"my-server", "--port", "80"}},
+	}}
+	injectKeepAlive(spec)
+	// The primary job's own command is discarded — it must keep-alive.
+	assert.Equal(t, []string{ucdMountPath + "/ucd-sh", "pause"}, spec.Containers[0].Command)
+	assert.Nil(t, spec.Containers[0].Args)
+}
+
+func TestInjectKeepAlive_JobForcesPauseOverExplicitArgs(t *testing.T) {
+	spec := &corev1.PodSpec{Containers: []corev1.Container{
+		{Name: "job", Image: "img", Args: []string{"--flag"}},
+	}}
+	injectKeepAlive(spec)
+	assert.Equal(t, []string{ucdMountPath + "/ucd-sh", "pause"}, spec.Containers[0].Command)
+	assert.Nil(t, spec.Containers[0].Args)
+}
+```
+
+Leave the sidecar-untouched test(s) (a non-`job` container with/without a command keeps its own command/nil) exactly as they are — grep `TestInjectKeepAlive` to find and preserve them.
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `go test ./internal/k8sagent/ -run 'InjectKeepAlive' -count=1`
+Expected: the two inverted tests FAIL (current code skips injection when a command/args is set), sidecar tests PASS.
+
+- [ ] **Step 3: Change injectKeepAlive**
+
+Replace the loop body so the primary is unconditional and clears Args:
+
+```go
+func injectKeepAlive(podSpec *corev1.PodSpec) {
+	for i := range podSpec.Containers {
+		c := &podSpec.Containers[i]
+		if c.Name == primaryContainerName {
+			// The primary "job" container is the exec target for
+			// container:-less steps, so it ALWAYS runs ucd-sh pause,
+			// discarding any command/args the podTemplate set on it —
+			// honoring a non-persistent user command would let the
+			// container exit and break every later step's exec-in. This
+			// matches the host claim pod (claimPodManager.Start forces the
+			// primary's Entrypoint to ucd-sh pause). Sidecars are left
+			// untouched: a sidecar with no command runs its image's own
+			// entrypoint (its service); one with a command overrides it.
+			c.Command = ucdKeepAliveArgv()
+			c.Args = nil
+		}
+	}
+}
+```
+
+Update the doc comment above `injectKeepAlive` (the paragraph describing the "only when Command AND Args are empty" guard and the args-clobber rationale) to describe the new always-force-on-primary behavior. Leave `defaultPodSpec`'s "Command intentionally left unset" comment as-is (it's still correct — the injected pause fills it), but drop its now-stale reference to injectKeepAlive "only injects when Command AND Args are both empty."
+
+- [ ] **Step 4: Run tests + build**
+
+Run: `go build ./... && go test ./internal/k8sagent/ -run 'InjectKeepAlive|BuildPod' -count=1`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/k8sagent/podbuilder.go internal/k8sagent/podbuilder_test.go
+git commit -m "fix(k8s): primary job container always keeps alive, matching host (parity #1)"
+```
+
+---
+
+### Task 5: host container-def hardening + k8s unnamed-container validation (fixes #2, #3, #5)
+
+Three host `parseContainerDef`/`claimContainerDefs` gaps plus the k8s side of the unnamed-container fix. `parseContainerDef` and `claimContainerDefs` gain an `error` return; `claimPodManager.Start` propagates it. NOTE: Task 1 already converted this file's `Command` field to `Entrypoint`/`Args` and changed `Start`'s per-container block — write against that post-Task-1 shape (the file you read will already have `Entrypoint`/`Args`).
+
+**Files:**
+- Modify: `internal/agent/claim_pod.go` (`parseContainerDef` ~44-87 → returns error; `claimContainerDefs` ~139-160 → returns error, unnamed hard-error; `Start` ~274 → propagate error)
+- Modify: `internal/k8sagent/podbuilder.go` (`BuildPod` ~130-135, add empty-name validation to the existing reserved-name guard loop)
+- Test: `internal/agent/claim_pod_test.go`, `internal/k8sagent/podbuilder_test.go`
+
+**Interfaces:**
+- Produces: `parseContainerDef(name string, c map[string]any) (containerDef, error)`; `claimContainerDefs(pt *dsl.PodTemplate, runnerImage string) ([]containerDef, error)`.
+
+- [ ] **Step 1: Write the failing host tests**
+
+Add to `claim_pod_test.go` (adjust existing `parseContainerDef`/`claimContainerDefs` test call sites to the new two-value returns — grep them first):
+
+```go
+func TestParseContainerDef_ResourcesRequestsWarnsIgnored(t *testing.T) {
+	// requests present → parsed OK (no error), limits still applied, requests ignored.
+	def, err := parseContainerDef("web", map[string]any{
+		"image": "nginx",
+		"resources": map[string]any{
+			"requests": map[string]any{"cpu": "500m", "memory": "256Mi"},
+			"limits":   map[string]any{"cpu": "1", "memory": "512Mi"},
+		},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, def.CPULimit) // limits honored
+	assert.NotEmpty(t, def.MemLimit)
+}
+
+func TestParseContainerDef_NonStringEnvValueErrors(t *testing.T) {
+	_, err := parseContainerDef("web", map[string]any{
+		"image": "nginx",
+		"env":   []any{map[string]any{"name": "PORT", "value": 8080}}, // number, not string
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "value must be a string")
+}
+
+func TestParseContainerDef_MissingEnvValueStillSkipsNoError(t *testing.T) {
+	// No `value` key at all (valueFrom-style) → still WARN+skip, NOT an error.
+	def, err := parseContainerDef("web", map[string]any{
+		"image": "nginx",
+		"env":   []any{map[string]any{"name": "SECRET"}},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, def.Env)
+}
+
+func TestClaimContainerDefs_UnnamedContainerErrors(t *testing.T) {
+	pt := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{
+		map[string]any{"image": "nginx"}, // no name
+	}}}
+	_, err := claimContainerDefs(pt, "runner:latest")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no name")
+}
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `go test ./internal/agent/ -run 'ParseContainerDef|ClaimContainerDefs' -count=1`
+Expected: compile failure (single-value returns) → after fixing call sites, the new assertions fail.
+
+- [ ] **Step 3: parseContainerDef returns error; add #2 WARN and #3 hard-error**
+
+Change the signature to `func parseContainerDef(name string, c map[string]any) (containerDef, error)`. In the env loop, split "no value key" from "wrong-typed value":
+
+```go
+	if envs, ok := c["env"].([]any); ok {
+		for _, raw := range envs {
+			e, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			en, _ := e["name"].(string)
+			if en == "" {
+				continue
+			}
+			rawVal, present := e["value"]
+			if !present {
+				// valueFrom / fieldRef etc. — not resolvable on the host.
+				slog.Warn("podTemplate container env without a literal value is ignored on the host agent",
+					"container", name, "env", en)
+				continue
+			}
+			ev, ok := rawVal.(string)
+			if !ok {
+				// A malformed job: k8s hard-errors on this (json.Unmarshal into
+				// EnvVar{Value string}); the host matches instead of silently dropping.
+				return containerDef{}, fmt.Errorf("podTemplate container %q env %q: value must be a string (got %T); quote the value", name, en, rawVal)
+			}
+			def.Env = append(def.Env, en+"="+ev)
+		}
+	}
+```
+
+After the `resources.limits` block, add the #2 requests WARN:
+
+```go
+	if res, ok := c["resources"].(map[string]any); ok {
+		if lim, ok := res["limits"].(map[string]any); ok {
+			cpu, _ := lim["cpu"].(string)
+			mem, _ := lim["memory"].(string)
+			def.CPULimit, def.MemLimit = limitStrings(cpu, mem)
+		}
+		if reqs, ok := res["requests"].(map[string]any); ok && len(reqs) > 0 {
+			slog.Warn("podTemplate container resources.requests is not supported on the host agent "+
+				"(docker/podman have no request concept) and is ignored; use resources.limits or route to a Kubernetes agent",
+				"container", name)
+		}
+	}
+	return def, nil
+```
+
+Ensure `fmt` is imported in claim_pod.go (it is — `Start` uses `fmt.Errorf`).
+
+- [ ] **Step 4: claimContainerDefs returns error; #5 unnamed hard-error**
+
+Change the signature to `func claimContainerDefs(pt *dsl.PodTemplate, runnerImage string) ([]containerDef, error)`. Replace the `name == ""` silent `continue` with a hard error, and thread `parseContainerDef`'s error:
+
+```go
+		for idx, raw := range containers {
+			c, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := c["name"].(string)
+			if name == "" {
+				return nil, fmt.Errorf("podTemplate container at index %d has no name", idx)
+			}
+			if seen[name] {
+				slog.Warn("podTemplate has more than one container with the same name; keeping the first and dropping the duplicate", "container", name)
+				continue
+			}
+			seen[name] = true
+			def, err := parseContainerDef(name, c)
+			if err != nil {
+				return nil, err
+			}
+			defs = append(defs, def)
+		}
+```
+
+At every `return defs` in `claimContainerDefs` (including the injected-primary tail), change to `return defs, nil`.
+
+- [ ] **Step 5: Start propagates the error**
+
+In `Start`, change the loop head:
+
+```go
+	defs, err := claimContainerDefs(pt, m.runnerImage)
+	if err != nil {
+		return fmt.Errorf("claim pod: %w", err)
+	}
+	for _, def := range defs {
+```
+
+- [ ] **Step 6: Write the failing k8s unnamed-container test**
+
+Add to `podbuilder_test.go` (mirror the existing reserved-name guard test — grep `is reserved for the artifact sidecar`):
+
+```go
+func TestBuildPod_UnnamedContainerErrors(t *testing.T) {
+	at := &dsl.AgentTemplate{Spec: map[string]any{"containers": []any{
+		map[string]any{"image": "nginx"}, // no name
+	}}}
+	_, err := BuildPod(buildPodInputWith(at)) // use this file's existing BuildPod test harness/inputs
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no name")
+}
+```
+
+Use the same `BuildPod` invocation shape the existing tests in this file use (grep `BuildPod(` in `podbuilder_test.go` and copy the harness — do not invent new inputs).
+
+- [ ] **Step 7: Add the k8s empty-name validation**
+
+In `BuildPod`, extend the existing guard loop (the one checking `artifactSidecarName`) to also reject empty names, before the Pod is returned:
+
+```go
+	// Guard against user-supplied containers using the reserved sidecar name
+	// or having no name (k8s would otherwise reject the latter only later, at
+	// the API server, as an opaque run-creation failure — fail early here to
+	// match the host claimContainerDefs check).
+	for i, c := range podSpec.Containers {
+		if c.Name == "" {
+			return nil, fmt.Errorf("podTemplate container at index %d has no name", i)
+		}
+		if c.Name == artifactSidecarName {
+			return nil, fmt.Errorf("container name %q is reserved for the artifact sidecar", artifactSidecarName)
+		}
+	}
+```
+
+(Replace the existing reserved-name-only loop with this combined loop; the injected `job`/sidecar/shim containers all have names, so they pass.)
+
+- [ ] **Step 8: Run the affected suites + build**
+
+Run: `go build ./... && go vet ./... && go test ./internal/agent/ ./internal/k8sagent/ -count=1`
+Expected: build/vet clean, all PASS (fix any remaining `parseContainerDef(`/`claimContainerDefs(` single-value call sites the build flags).
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add internal/agent/claim_pod.go internal/agent/claim_pod_test.go internal/k8sagent/podbuilder.go internal/k8sagent/podbuilder_test.go
+git commit -m "fix(agent,k8s): host resources.requests warn + non-string env & unnamed-container hard errors (parity #2,#3,#5)"
+```
+
+---
+
+### Task 6: k8s cache restore hit/miss accuracy (fix #4)
+
+The `unified-sidecar cache restore` already knows hit vs miss but always exits 0, and k8s `CacheRestore` reports every exit-0 as a hit. Emit a stdout marker from the sidecar and parse it in `CacheRestore`, keeping the best-effort exit-0 contract.
+
+**Files:**
+- Modify: `cmd/unified-sidecar/run.go` (`runCache` "restore" branch ~76-84: add stdout marker)
+- Modify: `internal/k8sagent/backend.go` (`CacheRestore` ~161-181 capture+parse stdout; add a stdout-capturing exec variant near `sidecarExecArgv` ~235-244)
+- Test: `cmd/unified-sidecar/run_test.go`, `internal/k8sagent/backend_test.go` (if a `CacheRestore`/marker-parse unit is feasible; otherwise a focused parse-helper test)
+
+**Interfaces:**
+- Produces: the stable marker strings `UCD_CACHE_RESULT=hit` / `UCD_CACHE_RESULT=miss` on the sidecar's stdout.
+- Produces (internal): a `parseCacheResult(stdout string) (hit bool)` helper in backend.go, defaulting to `true` when no marker is present.
+
+- [ ] **Step 1: Write the failing sidecar marker test**
+
+In `run_test.go` (mirror the existing `runCache`/`run` test that captures stderr — grep `runCache\|cache restore` there), assert the restore branch writes the marker to STDOUT (separate from the human line on stderr). If the existing harness only captures one stream, extend it to capture stdout too:
+
+```go
+func TestRunCache_RestoreEmitsHitMarkerToStdout(t *testing.T) {
+	// store seeded so Restore returns hit=true (follow the existing seeding helper)
+	var stdout, stderr bytes.Buffer
+	ec := runCacheWithStdout(context.Background(), seededStore(t, "k"), "restore",
+		[]string{"--key", "k", "--path", t.TempDir()}, &stdout, &stderr)
+	assert.Equal(t, 0, ec)
+	assert.Contains(t, stdout.String(), "UCD_CACHE_RESULT=hit")
+}
+
+func TestRunCache_RestoreEmitsMissMarkerToStdout(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	ec := runCacheWithStdout(context.Background(), emptyStore(t), "restore",
+		[]string{"--key", "absent", "--path", t.TempDir()}, &stdout, &stderr)
+	assert.Equal(t, 0, ec)
+	assert.Contains(t, stdout.String(), "UCD_CACHE_RESULT=miss")
+}
+```
+
+If `runCache` currently takes only `stderr`, add a `stdout io.Writer` parameter (thread it from `run`'s existing stdout) rather than inventing a parallel function — update the existing signature and all call sites; the test names above then use `runCache` directly.
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `go test ./cmd/unified-sidecar/ -run 'RestoreEmits' -count=1`
+Expected: FAIL (no marker on stdout yet).
+
+- [ ] **Step 3: Emit the marker from the sidecar restore branch**
+
+Thread a `stdout io.Writer` into `runCache` (add the param, pass `os.Stdout`/the real stdout from `run`). In the "restore" branch, on the hit and miss branches, write the marker to stdout (keep the existing human line on stderr):
+
+```go
+		hit, err := cache.Restore(ctx, store, *path, *key, restoreKeys)
+		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
+			fmt.Fprintf(stderr, "cache restore error (ignored): %v\n", err)
+			// error path: leave no marker → CacheRestore keeps its lenient default (hit=true)
+		} else if hit {
+			fmt.Fprintf(stderr, "cache hit: %s\n", *key)
+			fmt.Fprintln(stdout, "UCD_CACHE_RESULT=hit")
+		} else {
+			fmt.Fprintf(stderr, "cache miss: %s\n", *key)
+			fmt.Fprintln(stdout, "UCD_CACHE_RESULT=miss")
+		}
+		return 0 // best-effort: never fail the step
+```
+
+Update the file-top comment "Cache operations are best-effort (always exit 0 ...)" to add: restore additionally emits a `UCD_CACHE_RESULT=hit|miss` marker on stdout for the caller to distinguish, without affecting the exit code.
+
+- [ ] **Step 4: Run to verify the sidecar tests pass**
+
+Run: `go test ./cmd/unified-sidecar/ -run 'RestoreEmits' -count=1`
+Expected: PASS.
+
+- [ ] **Step 5: Capture + parse the marker in k8s CacheRestore**
+
+Add a stdout-capturing exec variant beside `sidecarExecArgv` (it currently discards stdout via `io.Discard`):
+
+```go
+// sidecarExecArgvCapturingStdout is sidecarExecArgv but returns the sidecar's
+// stdout (still shipping stderr to the log pusher). Used by CacheRestore to read
+// the UCD_CACHE_RESULT marker.
+func (b *k8sBackend) sidecarExecArgvCapturingStdout(ctx context.Context, targetPod, container string, argv []string) (int, string, error) {
+	if targetPod == "" {
+		targetPod = b.podName
+	}
+	stderrPusher := agentlib.NewLogPusher(b.a.client, b.a.cfg.AgentID, b.runID, 0, "stderr")
+	stderrPusher.SetMasker(b.masker)
+	var stdout bytes.Buffer
+	ec, err := b.a.exec.ExecStepArgv(ctx, targetPod, container, argv, &stdout, stderrPusher)
+	stderrPusher.Flush(ctx)
+	return ec, stdout.String(), err
+}
+
+// parseCacheResult reads the UCD_CACHE_RESULT marker from the sidecar's stdout.
+// Absent marker (older sidecar, or the error path that emits none) defaults to a
+// hit, preserving the historical lenient best-effort behavior.
+func parseCacheResult(stdout string) bool {
+	return !strings.Contains(stdout, "UCD_CACHE_RESULT=miss")
+}
+```
+
+Change `CacheRestore` to use it:
+
+```go
+	ec, stdout, err := b.sidecarExecArgvCapturingStdout(ctx, targetPod, sidecar, argv)
+	if err != nil {
+		return false, err
+	}
+	// exit code stays best-effort (0 on hit/miss/error); the true hit/miss comes
+	// from the sidecar's UCD_CACHE_RESULT stdout marker so the orchestrator logs
+	// an accurate hit/miss (parity with the host's ErrCacheMiss-based bool).
+	_ = ec
+	return parseCacheResult(stdout), nil
+```
+
+Add `"bytes"` and `"strings"` to backend.go imports if missing. (Leave `sidecarExecArgv` in place — `CacheSave` and other callers still use it.)
+
+- [ ] **Step 6: Test + build**
+
+Run: `go build ./... && go test ./cmd/unified-sidecar/ ./internal/k8sagent/ -count=1`
+Expected: PASS. If a direct `CacheRestore` unit isn't feasible without a live pod, at least add a `parseCacheResult` table test (hit marker → true; miss marker → false; empty → true).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add cmd/unified-sidecar/ internal/k8sagent/backend.go internal/k8sagent/backend_test.go
+git commit -m "fix(k8s,sidecar): honest cache hit/miss via UCD_CACHE_RESULT stdout marker (parity #4)"
+```
+
+---
+
+### Task 7: Docs + migration for the parity fixes
+
+**Files:**
+- Modify: `docs/jobs.md` and/or `docs/kubernetes-integration.md` (podTemplate container semantics — grep `podTemplate`, `resources`, `command` near the container docs)
+- Modify/append: the migration guide from Task 3 (same file) — add the parity-fix behavior changes
+- Modify: `CHANGELOG.md` if present
+
+- [ ] **Step 1: Document the aligned behaviors**
+
+Add to the podTemplate container docs: (#1) the primary `job` container always runs the keep-alive on BOTH backends — a `command`/`args` set on `job` is ignored (put your workload in steps, not the job container's command); (#2) `resources.requests` is ignored on the host agent (docker/podman have no request concept) and logs a WARN — use `resources.limits`, or run on a Kubernetes agent for requests; (#3) an env `value` must be a string — an unquoted number/bool (`value: 8080`) is now a hard error on both backends (quote it: `value: "8080"`); (#5) every podTemplate container must have a `name` — an unnamed container is now a hard error at job start on both backends.
+
+- [ ] **Step 2: Migration note**
+
+Append to the migration guide: these four are behavior changes — jobs that previously relied on a `command` on the `job` container running (k8s only), an unquoted numeric env value (host silently dropped it), or an unnamed container (host silently dropped it) will now be corrected/rejected. Give the one-line fix for each (move workload to steps; quote the value; add a name). #4 is log-accuracy only (no user action).
+
+- [ ] **Step 3: Confirm nothing regressed; commit**
+
+Run: `go test ./internal/dsl/ -count=1`
+Expected: PASS.
+
+```bash
+git add docs/ CHANGELOG.md
+git commit -m "docs: host/k8s container parity fixes (#1-#5) behavior + migration notes"
+```
+
+---
+
 ## Self-Review
 
-**Spec coverage:** CreateSpec split → T1; createArgs truth table + degrade → T1 (steps 4-5); keep-alive via Entrypoint → T1 (steps 10-11); parseContainerDef split → T1 (step 9); k8s unchanged → (no task, correct); integration + runtime verification → T2; docs/migration → T3. All spec sections covered.
+**Spec coverage:** CreateSpec split → T1; createArgs truth table + degrade → T1 (steps 4-5); keep-alive via Entrypoint → T1 (steps 10-11); parseContainerDef split → T1 (step 9); integration + runtime verification → T2; entrypoint docs/migration → T3. Parity fix #1 (k8s always-pause) → T4; #2 requests WARN + #3 non-string env hard-error + #5 unnamed hard-error (host) + #5 k8s validation → T5; #4 cache marker → T6; parity docs/migration → T7. All spec sections (including the "Additional host/k8s parity fixes" section) covered.
 
-**Placeholder scan:** Integration test bodies (T2 step 1) are described-not-shown because they must mirror the existing `TestClaimPod_Integration_*` harness in the same file verbatim — the implementer copies a concrete existing pattern rather than inventing one; the assertions and images are exact. All code steps in T1 show full code.
+**Placeholder scan:** Integration test bodies (T2 step 1) are described-not-shown because they must mirror the existing `TestClaimPod_Integration_*` harness in the same file verbatim — the implementer copies a concrete existing pattern rather than inventing one; the assertions and images are exact. All code steps in T1 show full code. T4–T6 show full code; the two spots that say "mirror the existing harness" (T5 step 6 k8s `BuildPod` test inputs, T6 step 1 sidecar stdout capture) point at a concrete existing test to copy, not an invented one.
 
-**Type consistency:** `Entrypoint []string` / `Args []string` used identically on `CreateSpec` (runtime.go) and `containerDef` (claim_pod.go); `noEmptyEntrypointClear map[string]bool` referenced consistently in ocicli.go, apple.go, and the T1 degrade test; keep-alive argv `["/.ucd/ucd-sh","pause"]` (`ucdShPause`) set via `Entrypoint` in all four callers.
+**Type consistency:** `Entrypoint []string` / `Args []string` used identically on `CreateSpec` (runtime.go) and `containerDef` (claim_pod.go); `noEmptyEntrypointClear map[string]bool` referenced consistently in ocicli.go, apple.go, and the T1 degrade test; keep-alive argv `["/.ucd/ucd-sh","pause"]` (`ucdShPause` host / `ucdKeepAliveArgv()` k8s) set via `Entrypoint`/`Command` in every caller including T4's always-pause primary. Parity: `parseContainerDef` → `(containerDef, error)` and `claimContainerDefs` → `([]containerDef, error)` used consistently across T5's call-site updates and `Start`; the marker string `UCD_CACHE_RESULT=hit|miss` is identical in the T6 sidecar emitter and the `parseCacheResult` consumer; the empty-name error message `"...container at index %d has no name"` matches between host `claimContainerDefs` and k8s `BuildPod`.
+
+**Cross-task ordering:** T5 edits the same `claim_pod.go` `Start`/container-def code that T1 already converted from `Command` to `Entrypoint`/`Args`; T5's steps are written against the post-T1 shape and only add the `error` return + #2/#3/#5 logic (they do not touch Entrypoint/Args). Running T1→T5 in order is required.

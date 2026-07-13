@@ -97,6 +97,24 @@ func TestBuildPod_InlineSpec(t *testing.T) {
 	assert.Equal(t, "python:3.12-slim", pod.Spec.Containers[0].Image)
 }
 
+// TestBuildPod_UnnamedContainerErrors covers host/k8s parity fix #5: an
+// unnamed podTemplate container hard-errors at pod-build time, matching the
+// host claimContainerDefs check, instead of being rejected only later by the
+// k8s API server as an opaque run-creation failure.
+func TestBuildPod_UnnamedContainerErrors(t *testing.T) {
+	jobTmpl := &dsl.PodTemplate{
+		Spec: map[string]any{
+			"containers": []any{
+				map[string]any{"image": "nginx"}, // no name
+			},
+		},
+	}
+
+	_, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no name")
+}
+
 func TestBuildPod_WorkspacePVC(t *testing.T) {
 	agentTmpls := map[string]AgentPodTemplate{
 		"golang": {
@@ -269,41 +287,23 @@ func TestInjectKeepAlive_OnlyJobContainerKeptAlive(t *testing.T) {
 		"a sidecar with no explicit command must run its image's default entrypoint (mysqld), not the keep-alive")
 }
 
-// TestInjectKeepAlive_JobKeepsExplicitCommand confirms a "job" container
-// that already sets its own command is left untouched (existing behavior,
-// exercised throughout this file's other tests via explicit "sleep 3600").
-func TestInjectKeepAlive_JobKeepsExplicitCommand(t *testing.T) {
-	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
-		"containers": []any{
-			map[string]any{"name": "job", "image": "golang:1.24-alpine", "command": []any{"go", "version"}},
-		},
+func TestInjectKeepAlive_JobForcesPauseOverExplicitCommand(t *testing.T) {
+	spec := &corev1.PodSpec{Containers: []corev1.Container{
+		{Name: "job", Image: "img", Command: []string{"my-server", "--port", "80"}},
 	}}
-	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
-	require.NoError(t, err)
-	require.Len(t, pod.Spec.Containers, 1)
-	assert.Equal(t, []string{"go", "version"}, pod.Spec.Containers[0].Command)
+	injectKeepAlive(spec)
+	// The primary job's own command is discarded — it must keep-alive.
+	assert.Equal(t, []string{ucdMountPath + "/ucd-sh", "pause"}, spec.Containers[0].Command)
+	assert.Nil(t, spec.Containers[0].Args)
 }
 
-// TestInjectKeepAlive_JobKeepsExplicitArgs is the args-clobber regression
-// test: a "job" container that sets Args only (no Command — e.g. relying on
-// the image's own ENTRYPOINT, with Args supplying its arguments) must NOT
-// have its Args silently ignored by the keep-alive injection. Before this
-// fix, injectSleepInfinity only checked len(Command) == 0, so such a
-// container's intended entrypoint invocation was clobbered with
-// "sleep infinity" and Args was left dangling, unused.
-func TestInjectKeepAlive_JobKeepsExplicitArgs(t *testing.T) {
-	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
-		"containers": []any{
-			map[string]any{"name": "job", "image": "golang:1.24-alpine", "args": []any{"--serve"}},
-		},
+func TestInjectKeepAlive_JobForcesPauseOverExplicitArgs(t *testing.T) {
+	spec := &corev1.PodSpec{Containers: []corev1.Container{
+		{Name: "job", Image: "img", Args: []string{"--flag"}},
 	}}
-	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
-	require.NoError(t, err)
-	require.Len(t, pod.Spec.Containers, 1)
-	assert.Empty(t, pod.Spec.Containers[0].Command,
-		"a job container with Args-only must not have Command injected")
-	assert.Equal(t, []string{"--serve"}, pod.Spec.Containers[0].Args,
-		"the author's Args must survive untouched (args-clobber fix)")
+	injectKeepAlive(spec)
+	assert.Equal(t, []string{ucdMountPath + "/ucd-sh", "pause"}, spec.Containers[0].Command)
+	assert.Nil(t, spec.Containers[0].Args)
 }
 
 // TestBuildPod_UcdShimInitContainer asserts the ucd-shim init container is

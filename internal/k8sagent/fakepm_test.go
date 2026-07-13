@@ -3,6 +3,7 @@ package k8sagent
 import (
 	"context"
 	"io"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -54,6 +55,11 @@ func (f *fakeExec) ExecStep(_ context.Context, podName, container, script string
 	_, _ = stdout.Write([]byte(f.stdout))
 	return f.exit, f.err
 }
-func (f *fakeExec) ExecStepArgv(context.Context, string, string, []string, io.Writer, io.Writer) (int, error) {
-	return 0, nil
+func (f *fakeExec) ExecStepArgv(_ context.Context, podName, container string, argv []string, stdout, _ io.Writer) (int, error) {
+	f.gotPod, f.gotContainer = podName, container
+	if len(argv) > 0 {
+		f.gotScript = strings.Join(argv, " ")
+	}
+	_, _ = stdout.Write([]byte(f.stdout))
+	return f.exit, f.err
 }

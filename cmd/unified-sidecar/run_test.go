@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -10,8 +11,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
+
+// seededStore returns a LocalObjectStore (rooted at a fresh t.TempDir) with a
+// cache entry already saved under key, so a "restore --key <key>" call hits.
+func seededStore(t *testing.T, key string) objectstore.ObjectStore {
+	t.Helper()
+	store := objectstore.NewLocalObjectStore(t.TempDir())
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "dep.txt"), []byte("cached"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Save(context.Background(), store, src, key, 7); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+// emptyStore returns a fresh, empty LocalObjectStore, so any "restore" call
+// against it misses.
+func emptyStore(t *testing.T) objectstore.ObjectStore {
+	t.Helper()
+	return objectstore.NewLocalObjectStore(t.TempDir())
+}
 
 // localProvider returns a store provider backed by a LocalObjectStore rooted at dir.
 func localProvider(dir string) func(context.Context) (objectstore.ObjectStore, error) {
@@ -26,6 +50,36 @@ func localProvider(dir string) func(context.Context) (objectstore.ObjectStore, e
 // fail loudly when it does.
 func erroringProvider(ctx context.Context) (objectstore.ObjectStore, error) {
 	return nil, errors.New("boom: no S3 config")
+}
+
+func TestRunCache_RestoreEmitsHitMarkerToStdout(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	ec := runCache(context.Background(), seededStore(t, "k"), "restore",
+		[]string{"--key", "k", "--path", t.TempDir()}, &stdout, &stderr)
+	if ec != 0 {
+		t.Fatalf("exit=%d", ec)
+	}
+	if !strings.Contains(stdout.String(), "UCD_CACHE_RESULT=hit") {
+		t.Fatalf("stdout = %q, want UCD_CACHE_RESULT=hit", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "UCD_CACHE_RESULT") {
+		t.Fatalf("marker leaked onto stderr: %q", stderr.String())
+	}
+}
+
+func TestRunCache_RestoreEmitsMissMarkerToStdout(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	ec := runCache(context.Background(), emptyStore(t), "restore",
+		[]string{"--key", "absent", "--path", t.TempDir()}, &stdout, &stderr)
+	if ec != 0 {
+		t.Fatalf("exit=%d", ec)
+	}
+	if !strings.Contains(stdout.String(), "UCD_CACHE_RESULT=miss") {
+		t.Fatalf("stdout = %q, want UCD_CACHE_RESULT=miss", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "UCD_CACHE_RESULT") {
+		t.Fatalf("marker leaked onto stderr: %q", stderr.String())
+	}
 }
 
 func TestRun_CacheSaveThenRestore(t *testing.T) {

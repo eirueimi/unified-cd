@@ -130,9 +130,128 @@ unaffected.
 
 ## Non-goals
 
-- No change to k8s command/args handling (already correct).
+- No change to k8s sidecar command/args handling (already correct — a k8s
+  sidecar's `command`/`args` override its image ENTRYPOINT/CMD natively). The one
+  k8s change in this work is the primary `job` keep-alive (see parity fix #1
+  below), not sidecar semantics.
 - No multi-element `--entrypoint` support (unnecessary; the clear+positional form
   covers every case).
 - No change to `shell:` (the step interpreter) — orthogonal: `shell:` decides how
   a `run:` script is exec'd INTO a running container; Entrypoint/Args decide what
   the container's own process is.
+
+---
+
+# Additional host/k8s parity fixes (audit findings #1–#5)
+
+A follow-up audit of the two backends' container-def handling surfaced five
+places where host and k8s diverge on the same podTemplate input. All five are
+folded into this parity work (same `internal/agent/claim_pod.go` /
+`internal/k8sagent` surface as the entrypoint split above). Each fix and its
+chosen direction:
+
+## Fix #1 — primary `job` keep-alive: both backends always force `ucd-sh pause`
+
+**Divergence:** the host claim pod always replaces the primary `job` container's
+argv with `ucd-sh pause` (`claim_pod.go` `Start`), but k8s `injectKeepAlive`
+(`podbuilder.go`) injects the keep-alive **only when** the `job` container has no
+`command` AND no `args` — so a podTemplate that sets `command` on `job` runs that
+command on k8s and `pause` on the host.
+
+**Decision (chosen): both backends always force the keep-alive on the primary
+`job` container**, ignoring any `command`/`args` the podTemplate set on it. The
+execution model requires the `job` container to stay alive as the exec target for
+`container:`-less steps; honoring a non-persistent user command (as k8s does
+today) lets the container exit and breaks every later step's exec-in. This is the
+safer direction and matches what the host already does.
+
+- k8s: `injectKeepAlive` drops the `len(Command)==0 && len(Args)==0` guard **for
+  the primary container only** — for `primaryContainerName` it unconditionally
+  sets `Command = ucdKeepAliveArgv()` and clears `Args`. Sidecars are still left
+  untouched (a sidecar with no command runs its own entrypoint; a sidecar with a
+  command overrides it — unchanged).
+- host: already forces pause on the primary via the Entrypoint override (the
+  entrypoint-split work above) — no further change.
+- The k8s tests that currently assert the primary keeps an explicit
+  command/args (`TestInjectKeepAlive_JobKeepsExplicitCommand`,
+  `TestInjectKeepAlive_JobKeepsExplicitArgs`) are inverted to assert the new
+  always-pause behavior; the sidecar-untouched tests stay.
+
+## Fix #2 — `resources.requests` on the host: WARN and ignore
+
+**Divergence:** k8s honors both `resources.requests` and `resources.limits`; the
+host `parseContainerDef` reads only `limits`, so `requests` vanishes with no
+diagnostic — yet `resources` is in `HostSupportedContainerFields`, so routing
+never sends the job to k8s and the per-field WARN loop never fires (the key
+`resources` itself is allowed).
+
+**Decision (chosen): host emits one WARN when `resources.requests` is present and
+ignores it; `limits` continue to apply as today.** docker/podman have no
+"request" concept (only limits), so there is nothing to map to; the WARN closes
+the silent-drop gap without a routing change. `parseContainerDef` checks for a
+non-empty `resources.requests` sub-map and logs
+`"podTemplate container resources.requests is not supported on the host agent
+(docker/podman have no request concept) and is ignored; use resources.limits or
+route to a Kubernetes agent"`.
+
+## Fix #3 — non-string env `value`: both backends hard-error
+
+**Divergence:** an env entry whose `value` is not a string (e.g. the unquoted
+YAML `value: 8080`, decoded as a number) is silently dropped on the host with a
+misleading "without a literal value is ignored" WARN (which implies `valueFrom`);
+on k8s the same map fails `json.Unmarshal` into `corev1.EnvVar{Value string}`, so
+`BuildPod` returns a hard error and the run fails loudly.
+
+**Decision (chosen): match k8s — the host hard-errors on a non-string env
+`value`.** `parseContainerDef` distinguishes "no `value` key at all" (still the
+existing `valueFrom`-style WARN + skip — legitimately unsupported on the host)
+from "`value` present but not a string" (a malformed job → hard error:
+`"podTemplate container %q env %q: value must be a string (got %T); quote the
+value"`). This requires `parseContainerDef` to return an `error` (see the plan's
+error-propagation task).
+
+## Fix #5 — unnamed podTemplate container: both backends hard-error early
+
+**Divergence:** a container map with no `name` is silently `continue`-skipped on
+the host (`claimContainerDefs`); on k8s it flows into the Pod object and is
+rejected only later by the API server at pod-create time (a run-creation
+failure), not at build time.
+
+**Decision (chosen): both backends hard-error early at pod-build time.** The host
+`claimContainerDefs` returns an error on an empty container name instead of
+skipping; k8s `BuildPod` adds an early validation loop (alongside the existing
+reserved-name guard) that rejects any container with an empty name before the Pod
+is sent to the API server. Both fail with a clear message
+(`"podTemplate container at index %d has no name"`) rather than one silently
+dropping and the other failing late and opaquely.
+
+## Fix #4 — k8s cache hit/miss log accuracy
+
+**Divergence:** `unified-sidecar cache restore` knows internally whether the
+restore hit or missed (it prints "cache hit"/"cache miss" to its own stderr) but
+always exits 0, and k8s `CacheRestore` maps "exit 0" → `hit=true`
+unconditionally. The shared orchestrator logs `"cache hit"` off that bool, so on
+k8s a genuine miss is logged as a hit. (Host `CacheRestore` reports a true
+hit/miss via `ErrCacheMiss`, so only k8s is wrong.) No functional impact —
+caching still works; the step never fails on a miss — but the log lies.
+
+**Decision (chosen): make the k8s log honest without touching the best-effort
+exit-0 contract.** `unified-sidecar cache restore` additionally writes a stable
+machine-readable marker line to **stdout** — `UCD_CACHE_RESULT=hit` or
+`UCD_CACHE_RESULT=miss` — on the respective branch (the human-readable line stays
+on stderr, exit code stays 0 always). k8s `CacheRestore` captures the sidecar's
+stdout (a small buffer instead of `io.Discard`) and parses the marker: `miss` →
+`(false, nil)`, `hit` → `(true, nil)`, marker absent (older sidecar / error path)
+→ `(true, nil)` preserving today's lenient default. The orchestrator log is then
+accurate on both backends with no change to the lenient never-fail policy.
+
+## Parity-fixes non-goals
+
+- No apply-time DSL validation for #3/#5 — the hard error lands at pod-build time
+  (host `Start`/`claimContainerDefs`, k8s `BuildPod`), which is where k8s already
+  fails and is symmetric across backends. Moving validation to apply time is a
+  larger, separate change.
+- No `resources.requests`→docker-limit mapping for #2 (semantics don't
+  correspond; a mapping would mislead).
+- No sidecar cache-protocol redesign for #4 — the stdout marker is additive and
+  backward-compatible (absent marker → today's behavior).

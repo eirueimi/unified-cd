@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/cache"
@@ -27,9 +28,12 @@ type storeProvider func(context.Context) (objectstore.ObjectStore, error)
 // run dispatches the sidecar subcommands. The store is obtained lazily via
 // newStore, only for cache/artifact subcommands; "idle" ignores it entirely.
 // Cache operations are best-effort (always exit 0 once the store is
-// available); artifact operations exit non-zero on failure. If newStore
-// fails (e.g. no S3 configuration in degraded mode), cache/artifact
-// subcommands fail loudly with a clear message and a non-zero exit code.
+// available); restore additionally emits a `UCD_CACHE_RESULT=hit|miss`
+// marker on stdout so the caller can distinguish a real hit from a miss,
+// without affecting the exit code. Artifact operations exit non-zero on
+// failure. If newStore fails (e.g. no S3 configuration in degraded mode),
+// cache/artifact subcommands fail loudly with a clear message and a
+// non-zero exit code.
 func run(ctx context.Context, newStore storeProvider, args []string, stderr io.Writer) int {
 	if len(args) == 1 && args[0] == "idle" {
 		<-ctx.Done()
@@ -47,7 +51,7 @@ func run(ctx context.Context, newStore storeProvider, args []string, stderr io.W
 			fmt.Fprintf(stderr, "cache requires S3 configuration (UNIFIED_S3_*): %v\n", err)
 			return 1
 		}
-		return runCache(ctx, store, sub, rest, stderr)
+		return runCache(ctx, store, sub, rest, os.Stdout, stderr)
 	case "artifact":
 		store, err := newStore(ctx)
 		if err != nil {
@@ -61,7 +65,7 @@ func run(ctx context.Context, newStore storeProvider, args []string, stderr io.W
 	}
 }
 
-func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, args []string, stderr io.Writer) int {
+func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, args []string, stdout, stderr io.Writer) int {
 	switch sub {
 	case "restore":
 		fs := flag.NewFlagSet("cache restore", flag.ContinueOnError)
@@ -76,10 +80,13 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		hit, err := cache.Restore(ctx, store, *path, *key, restoreKeys)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			fmt.Fprintf(stderr, "cache restore error (ignored): %v\n", err)
+			// error path: leave no marker → CacheRestore keeps its lenient default (hit=true)
 		} else if hit {
 			fmt.Fprintf(stderr, "cache hit: %s\n", *key)
+			fmt.Fprintln(stdout, "UCD_CACHE_RESULT=hit")
 		} else {
 			fmt.Fprintf(stderr, "cache miss: %s\n", *key)
+			fmt.Fprintln(stdout, "UCD_CACHE_RESULT=miss")
 		}
 		return 0 // best-effort: never fail the step
 	case "save":

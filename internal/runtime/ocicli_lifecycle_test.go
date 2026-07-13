@@ -158,12 +158,12 @@ func TestCreateArgs_NoNetworkByDefault(t *testing.T) {
 }
 
 // TestOCICLICreateArgv_CommandEmitsSleepInfinity is the regression test for
-// the sidecar-sleep-infinity bug: a caller that explicitly asks for the
-// keep-alive command (uses-scope containers, the claim pod's primary "job"
-// container) must still get "sleep infinity" appended after the image.
+// the sidecar-sleep-infinity bug: a caller that explicitly asks for a
+// keep-alive via CreateSpec.Args (CMD-override, no ENTRYPOINT clear) must
+// still get "sleep infinity" appended after the image.
 func TestOCICLICreateArgv_CommandEmitsSleepInfinity(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "golang:1.22", Command: []string{"sleep", "infinity"}})
+	got := r.createArgs(CreateSpec{Image: "golang:1.22", Args: []string{"sleep", "infinity"}})
 	want := []string{"run", "-d", "golang:1.22", "sleep", "infinity"}
 	assert.Equal(t, want, got)
 }
@@ -217,11 +217,53 @@ func TestOCICLICreateArgv_MountNotReadOnlyOmitsRO(t *testing.T) {
 }
 
 // TestOCICLICreateArgv_CommandHonorsCustomArgv confirms a sidecar's own
-// podTemplate command/args (carried through as CreateSpec.Command) is
-// emitted verbatim, not silently replaced by sleep infinity.
+// podTemplate args (carried through as CreateSpec.Args, CMD-override
+// semantics, no ENTRYPOINT clear) is emitted verbatim, not silently replaced
+// by sleep infinity.
 func TestOCICLICreateArgv_CommandHonorsCustomArgv(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "redis:7", Command: []string{"redis-server", "--port", "6380"}})
+	got := r.createArgs(CreateSpec{Image: "redis:7", Args: []string{"redis-server", "--port", "6380"}})
 	want := []string{"run", "-d", "redis:7", "redis-server", "--port", "6380"}
 	assert.Equal(t, want, got)
+}
+
+// TestOCICLICreateArgs_ArgsOnly_Positional asserts the Args-only row of the
+// Entrypoint/Args truth table: no --entrypoint anywhere, and the tail after
+// the image is exactly the args (CMD override, image ENTRYPOINT untouched).
+func TestOCICLICreateArgs_ArgsOnly_Positional(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{Image: "img", Args: []string{"serve", "--port", "80"}})
+	assert.NotContains(t, got, "--entrypoint")
+	assert.Equal(t, []string{"img", "serve", "--port", "80"}, got[len(got)-4:])
+}
+
+// TestOCICLICreateArgs_EntrypointOverride_ClearsAndPositions asserts the
+// Entrypoint-set row: --entrypoint "" precedes the image (docker requires the
+// flag before the image argument), then entrypoint+args ride as positional
+// argv after the image.
+func TestOCICLICreateArgs_EntrypointOverride_ClearsAndPositions(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get", "pods"}})
+	assert.Equal(t, []string{"--entrypoint", "", "img", "kubectl", "get", "pods"}, got[len(got)-6:])
+}
+
+// TestOCICLICreateArgs_NoEntrypointNoArgs_Bare asserts the nil/nil row: no
+// tail at all, image is the last token, image ENTRYPOINT+CMD run unmodified.
+func TestOCICLICreateArgs_NoEntrypointNoArgs_Bare(t *testing.T) {
+	r := &ociCLI{bin: "docker"}
+	got := r.createArgs(CreateSpec{Image: "img"})
+	assert.Equal(t, "img", got[len(got)-1])
+	assert.NotContains(t, got, "--entrypoint")
+}
+
+// TestOCICLICreateArgs_EntrypointOverride_DegradesOnNoClearRuntime asserts the
+// degrade path: a runtime in noEmptyEntrypointClear omits the --entrypoint ""
+// clear and falls back to positional args (the image ENTRYPOINT still runs).
+func TestOCICLICreateArgs_EntrypointOverride_DegradesOnNoClearRuntime(t *testing.T) {
+	r := &ociCLI{bin: "fakeruntime"}
+	noEmptyEntrypointClear["fakeruntime"] = true
+	defer delete(noEmptyEntrypointClear, "fakeruntime")
+	got := r.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get"}})
+	assert.NotContains(t, got, "--entrypoint")
+	assert.Equal(t, []string{"img", "kubectl", "get"}, got[len(got)-3:])
 }

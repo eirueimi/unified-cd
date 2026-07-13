@@ -1,6 +1,7 @@
 package k8sagent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -167,17 +168,22 @@ func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandl
 	for _, rk := range restoreKeys {
 		argv = append(argv, "--restore-key", rk)
 	}
-	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
+	ec, stdout, err := b.sidecarExecArgvCapturingStdout(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return false, err
 	}
-	// The sidecar binary reports a cache hit via exit code 0 either way (a
-	// miss is not distinguishable from a hit at this layer; orchestrate logs
-	// "restore attempted" rather than a true hit/miss bool), so any successful
-	// exec of the restore command is reported as a "hit" attempt (true) to
-	// match the historical best-effort semantics: the caller never fails the
-	// step on a cache miss regardless of this return value.
-	return ec == 0, nil
+	// exit code stays best-effort (0 on hit/miss/error); the true hit/miss comes
+	// from the sidecar's UCD_CACHE_RESULT stdout marker so the orchestrator logs
+	// an accurate hit/miss (parity with the host's ErrCacheMiss-based bool).
+	_ = ec
+	return parseCacheResult(stdout), nil
+}
+
+// parseCacheResult reads the UCD_CACHE_RESULT marker from the sidecar's stdout.
+// Absent marker (older sidecar, or the error path that emits none) defaults to a
+// hit, preserving the historical lenient best-effort behavior.
+func parseCacheResult(stdout string) bool {
+	return !strings.Contains(stdout, "UCD_CACHE_RESULT=miss")
 }
 
 // CacheSave execs the unified-sidecar binary's "cache save" into the target
@@ -241,6 +247,21 @@ func (b *k8sBackend) sidecarExecArgv(ctx context.Context, targetPod, container s
 	ec, err := b.a.exec.ExecStepArgv(ctx, targetPod, container, argv, io.Discard, stderrPusher)
 	stderrPusher.Flush(ctx)
 	return ec, err
+}
+
+// sidecarExecArgvCapturingStdout is sidecarExecArgv but returns the sidecar's
+// stdout (still shipping stderr to the log pusher). Used by CacheRestore to read
+// the UCD_CACHE_RESULT marker.
+func (b *k8sBackend) sidecarExecArgvCapturingStdout(ctx context.Context, targetPod, container string, argv []string) (int, string, error) {
+	if targetPod == "" {
+		targetPod = b.podName
+	}
+	stderrPusher := agentlib.NewLogPusher(b.a.client, b.a.cfg.AgentID, b.runID, 0, "stderr")
+	stderrPusher.SetMasker(b.masker)
+	var stdout bytes.Buffer
+	ec, err := b.a.exec.ExecStepArgv(ctx, targetPod, container, argv, &stdout, stderrPusher)
+	stderrPusher.Flush(ctx)
+	return ec, stdout.String(), err
 }
 
 // ResolveArtifactPath resolves p against the run/pooled pod's workspace mount
