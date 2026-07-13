@@ -56,12 +56,23 @@ func ExpandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 	return expandUsesStep(usesName, with, tplSpec, outerRunsIn, outerContainer)
 }
 
+// unsafeNameChar matches any character that isn't a Go-template identifier
+// char. Synthetic step names are embedded verbatim in {{ .Steps.<name>.Outputs.X }}
+// selectors, and a hyphen (or any non-identifier char) makes that an
+// unparseable template — the whole action then fails to render and .Params
+// values come out empty. safeName maps such chars to '_' so the generated
+// names (and the refs that point at them, built from the same helpers) stay
+// valid selectors regardless of the user's chosen step names.
+var unsafeNameChar = regexp.MustCompile(`[^A-Za-z0-9_]`)
+
+func safeName(s string) string { return unsafeNameChar.ReplaceAllString(s, "_") }
+
 func prefixedName(usesName, innerName string) string {
-	return usesName + usesPrefixSep + innerName
+	return safeName(usesName) + usesPrefixSep + safeName(innerName)
 }
 
 func inputsStepName(usesName string) string {
-	return usesName + usesPrefixSep + "inputs"
+	return safeName(usesName) + usesPrefixSep + "inputs"
 }
 
 // scopeIDFor returns the scope identity shared by all steps expanded from a

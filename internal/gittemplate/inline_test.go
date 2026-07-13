@@ -8,6 +8,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestExpandUsesStep_SanitizesHyphenatedNames guards the fix for the
+// hyphenated-name bug: a uses step (or an inner template step) whose name
+// contains a hyphen would otherwise produce refs like
+// `{{ .Steps.build-via-template__inputs.Outputs.image }}`, which is an INVALID
+// Go-template selector (hyphens aren't identifier chars) — the whole template
+// then fails to evaluate and .Params values render empty. The generated step
+// names (and the refs pointing at them) must be identifier-safe.
+func TestExpandUsesStep_SanitizesHyphenatedNames(t *testing.T) {
+	tplSpec := dsl.Spec{
+		Steps: []dsl.StepEntry{
+			{
+				Name: "build-and-push", // hyphenated inner step name
+				Env:  map[string]string{"IMAGE": "{{ .Params.image }}"},
+				Run:  "build {{ .Params.image }}",
+			},
+		},
+	}
+
+	expanded, err := expandUsesStep("build-via-template", // hyphenated uses step name
+		map[string]string{"image": "myapp"}, tplSpec, nil, "")
+	require.NoError(t, err)
+
+	inputs := expanded[0]
+	assert.Equal(t, "build_via_template__inputs", inputs.Name)
+	assert.Equal(t, "myapp", inputs.Outputs["image"])
+
+	build := expanded[1]
+	assert.Equal(t, "build_via_template__build_and_push", build.Name)
+	assert.Equal(t, "{{ .Steps.build_via_template__inputs.Outputs.image }}", build.Env["IMAGE"])
+	assert.Equal(t, "build {{ .Steps.build_via_template__inputs.Outputs.image }}", build.Run)
+	// The generated reference must carry no hyphen — that was the bug.
+	assert.NotContains(t, build.Env["IMAGE"], "-")
+}
+
 func TestExpandUsesStep_LinearChainAndOutputs(t *testing.T) {
 	tplSpec := dsl.Spec{
 		Params: dsl.Params{
