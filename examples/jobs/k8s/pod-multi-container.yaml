@@ -16,7 +16,12 @@ spec:
       containers:
         - name: trivy
           image: aquasec/trivy:latest
-          # command omitted → agent injects ["sleep", "infinity"] automatically
+          # trivy is a tool sidecar you exec into (see the scan step). Only the
+          # "job" container is auto-kept-alive; every other container runs its
+          # own entrypoint, and trivy's (["trivy"]) prints help and exits
+          # immediately — so give it an explicit long-running command to stay
+          # alive as an exec target.
+          command: ["sleep", "infinity"]
   steps:
     # omitting container: → runs in the "job" container
     - name: build
