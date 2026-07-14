@@ -241,3 +241,32 @@ func TestArchivedLogs_SingleflightCoalescesConcurrentFetches(t *testing.T) {
 		assert.Len(t, results[i], wantLines, "goroutine %d", i)
 	}
 }
+
+// alwaysFailObjStore fails every Get, counting how many times it was called.
+type alwaysFailObjStore struct {
+	objectstore.ObjectStore
+	gets int64
+}
+
+func (f *alwaysFailObjStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	atomic.AddInt64(&f.gets, 1)
+	return nil, fmt.Errorf("simulated object store failure")
+}
+
+// TestArchivedLogs_FetchErrorNotCached covers the panic-safe singleflight
+// error path: a failed (or panicking) fetch must never poison the cache with
+// a permanent nil/empty entry, so every subsequent call for the same runID
+// re-attempts the object-store Get instead of silently serving empty logs.
+func TestArchivedLogs_FetchErrorNotCached(t *testing.T) {
+	ctx := context.Background()
+	failing := &alwaysFailObjStore{}
+	a := newArchivedLogs(failing)
+
+	_, err := a.lines(ctx, "r1")
+	require.Error(t, err)
+	_, err = a.lines(ctx, "r1")
+	require.Error(t, err)
+
+	assert.EqualValues(t, 2, atomic.LoadInt64(&failing.gets), "a failed fetch must not be cached; second call must re-attempt")
+	assert.Equal(t, 0, a.cacheLen())
+}

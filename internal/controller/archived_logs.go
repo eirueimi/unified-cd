@@ -5,11 +5,13 @@ import (
 	"container/list"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
@@ -21,6 +23,14 @@ import (
 // caching is safe; an archive larger than the whole cap is decoded per
 // request and never cached. A var (not const) so tests can shrink it.
 var archivedLogsCacheBytes = int64(128 << 20) // 128 MiB
+
+// archivedLogsFetchTimeout bounds a single leader fetch+decode. The leader's
+// fetch is decoupled from any one caller's request context (see
+// context.WithoutCancel in lines()), so without its own deadline a stalled
+// object-store stream would block every present and future waiter for the
+// runID forever on <-f.done. Generous bound so a hung object store surfaces
+// as a 503 instead of wedging all readers of the run.
+const archivedLogsFetchTimeout = 3 * time.Minute
 
 type archivedLogEntry struct {
 	runID string
@@ -104,7 +114,13 @@ func (a *archivedLogs) lines(ctx context.Context, runID string) ([]api.LogLine, 
 	//    how the function returns.
 	var lines []api.LogLine
 	var size int64
-	var err error
+	// err is seeded with a sentinel before the fetch runs, rather than left
+	// as the zero value. If fetchAndDecode panics below, the assignment to
+	// err never happens and the deferred cleanup still runs (see NEW-4
+	// above) — without this seed it would publish lines=nil, err=nil, and
+	// the cache branch would insert a permanent, silently-empty entry for
+	// this run instead of surfacing an error to waiters.
+	err := errors.New("log archive fetch did not complete")
 	defer func() {
 		f.lines, f.err = lines, err
 		close(f.done)
@@ -134,7 +150,11 @@ func (a *archivedLogs) lines(ctx context.Context, runID string) ([]api.LogLine, 
 	// this, every coalesced waiter would get "context canceled" whenever the
 	// leader's client happened to disconnect first, even though the fetch
 	// itself is still perfectly servable for the other waiters.
-	fetchCtx := context.WithoutCancel(ctx)
+	//
+	// NEW-6: WithoutCancel alone leaves that fetch with no deadline at all,
+	// so a bounded timeout is layered back on top (see archivedLogsFetchTimeout).
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archivedLogsFetchTimeout)
+	defer cancel()
 	lines, size, err = a.fetchAndDecode(fetchCtx, runID)
 	return lines, err
 }
