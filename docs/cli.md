@@ -158,23 +158,51 @@ Trigger and manage job runs.
 ### run trigger
 
 ```
-unified-cli run trigger <job-name> [--param key=value ...]
+unified-cli run trigger <job-name> [--param key=value ...] [--wait] [--follow] [--timeout DURATION]
 
-  --param  string   Input parameter in key=value format (repeatable)
+  --param   string     Input parameter in key=value format (repeatable)
+  --wait               Block until the run finishes; exit non-zero if it did not succeed
+  --follow             Stream step logs while waiting (implies --wait)
+  --timeout DURATION   Max time to wait, e.g. 30m (default: no timeout)
 ```
 
-Triggers a run of the specified job and prints the run ID.
+Triggers a run of the specified job and prints the run ID. With `--wait` (or
+`--follow`), the command then blocks until the run reaches a terminal state and
+maps the outcome to its exit code, so it fits directly in a CI pipeline.
+
+**Exit codes (when waiting):** `0` succeeded · `1` failed · `2` cancelled ·
+`124` wait timed out.
 
 ```bash
-# Trigger with no parameters
-unified-cli run trigger hello
-
 # Trigger with parameters
 unified-cli run trigger build --param image=myapp --param tag=v1.0
 
 # Capture the run ID
 RUN_ID=$(unified-cli run trigger build --param image=myapp)
-echo "Run started: $RUN_ID"
+
+# CI one-liner: trigger, stream logs, and fail the step if the run fails
+unified-cli run trigger build --param image=myapp --follow --timeout 30m
+
+# Fire-and-wait without logs (just the exit code)
+unified-cli run trigger deploy --wait
+```
+
+### run wait
+
+```
+unified-cli run wait <run-id> [--follow] [--timeout DURATION]
+
+  --follow             Stream step logs while waiting
+  --timeout DURATION   Max time to wait, e.g. 30m (default: no timeout)
+```
+
+Waits for an existing run to finish. Exit codes match `run trigger --wait`
+(`0` succeeded · `1` failed · `2` cancelled · `124` timeout). Useful when the run
+was started elsewhere (e.g. by a webhook or schedule) and you want to block on it.
+
+```bash
+RUN_ID=$(unified-cli run trigger build)
+unified-cli run wait "$RUN_ID" --follow --timeout 20m
 ```
 
 ### run cancel
