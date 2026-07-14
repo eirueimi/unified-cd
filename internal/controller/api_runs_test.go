@@ -2,13 +2,17 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -426,4 +430,38 @@ func TestAPI_ListActiveRuns(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &runs))
 	require.Len(t, runs, 1)
 	assert.Equal(t, "myjob", runs[0].JobName)
+}
+
+// Regression test: DELETE /runs/{id} must remove the run's archived-log and
+// artifact objects, not just the DB row (which used to leak them).
+func TestAPI_DeleteRun_RemovesObjectStoreData(t *testing.T) {
+	s, st := newTestServer(t)
+	obj := objectstore.NewLocalObjectStore(t.TempDir())
+	s.SetObjectStore(obj)
+	ctx := context.Background()
+
+	_, err := st.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	require.NoError(t, st.MarkRunFinished(ctx, run.ID, api.RunSucceeded))
+
+	archiveKey := "runs/" + run.ID + "/logs.ndjson"
+	require.NoError(t, obj.Put(ctx, archiveKey, strings.NewReader("{}"), 2))
+	require.NoError(t, st.CreateLogArchive(ctx, run.ID, archiveKey, 2))
+	artifactKey := "artifacts/" + run.ID + "/out.tar.gz"
+	require.NoError(t, obj.Put(ctx, artifactKey, strings.NewReader("x"), 1))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/runs/"+run.ID, nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	_, err = obj.Get(ctx, archiveKey)
+	assert.ErrorIs(t, err, objectstore.ErrNotFound, "log archive object must be deleted")
+	_, err = obj.Get(ctx, artifactKey)
+	assert.ErrorIs(t, err, objectstore.ErrNotFound, "artifact object must be deleted")
+	_, err = st.GetRun(ctx, run.ID)
+	assert.ErrorIs(t, err, store.ErrRunNotFound)
 }

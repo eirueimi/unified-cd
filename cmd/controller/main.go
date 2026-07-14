@@ -39,6 +39,23 @@ func auditRetentionDaysDefault() int {
 	return n
 }
 
+// runRetentionDaysDefault resolves the --run-retention-days flag default from
+// UNIFIED_RUN_RETENTION_DAYS, falling back to 0 (keep forever) when unset or
+// invalid. Unlike audit retention this is opt-in: deleting run history is
+// irreversible (it also removes the spec snapshot `run replay` uses).
+func runRetentionDaysDefault() int {
+	v := os.Getenv("UNIFIED_RUN_RETENTION_DAYS")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		slog.Warn("invalid UNIFIED_RUN_RETENTION_DAYS, keeping runs forever", "value", v)
+		return 0
+	}
+	return n
+}
+
 // queuedRunGraceDefault resolves the queued-run reaper grace period from
 // UNIFIED_QUEUED_RUN_GRACE (a Go duration string such as "5m" or "20m"),
 // falling back to 5 minutes when unset, invalid, or non-positive. This is
@@ -91,6 +108,7 @@ func main() {
 	insecureCookies := flag.Bool("insecure-cookies", eff.InsecureCookies, "do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
 	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
+	runRetentionDays := flag.Int("run-retention-days", runRetentionDaysDefault(), "days to keep terminal runs incl. their logs, log archives, and artifacts; 0 = keep forever (env: UNIFIED_RUN_RETENTION_DAYS)")
 	var matrixMaxEnvWarning string
 	matrixMax := flag.Int("matrix-max-combinations", envIntOr("UNIFIED_MATRIX_MAX_COMBINATIONS", 64, &matrixMaxEnvWarning), "max combinations a matrix step may expand to (env: UNIFIED_MATRIX_MAX_COMBINATIONS)")
 	flag.Parse()
@@ -277,6 +295,12 @@ func main() {
 		slog.Info("audit log retention disabled (keep forever)")
 	}
 	go controller.RunAuditRetention(ctx, st, time.Hour, *auditRetentionDays)
+	if *runRetentionDays > 0 {
+		slog.Info("run retention enabled", "retentionDays", *runRetentionDays)
+	} else {
+		slog.Info("run retention disabled (keep forever)")
+	}
+	go controller.RunRunRetention(ctx, st, obj, time.Hour, *runRetentionDays)
 	go func() {
 		var gitCache *gittemplate.Cache
 		if obj != nil {

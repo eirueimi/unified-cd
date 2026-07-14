@@ -36,6 +36,8 @@ docker compose exec -T postgres pg_dump -U unified unified > unified-cd-backup.s
 
 Artifacts, cache entries, and log archives live in the configured bucket. Use your S3 provider's bucket versioning and/or cross-region replication for durability — unified-cd itself does not replicate object data. For Garage in production, run distributed mode with `replication_factor >= 2` (see [High Availability Guide](high-availability.md#s3--object-store)).
 
+**Run retention.** By default unified-cd keeps every run forever: `runs` rows, log rows, archived logs, and artifacts all accumulate. Note that log archival only *copies* logs to the object store — database log rows are never trimmed by it. Set `--run-retention-days` (env `UNIFIED_RUN_RETENTION_DAYS`) to enable an hourly, leader-elected sweep that deletes terminal runs older than N days, including their archived logs and artifacts. Audit logs have their own independent setting (`--audit-retention-days`).
+
 ### `UNIFIED_CONTROLLER_KEY` (critical)
 
 This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Management Guide](secrets.md#security-model)). Back it up wherever you manage secrets (vault, KMS, sealed file) — **independently** of the DB dump:

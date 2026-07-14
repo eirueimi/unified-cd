@@ -1314,6 +1314,33 @@ func (p *Postgres) ListRunsNeedingArchival(ctx context.Context, limit int) ([]ap
 	return out, rows.Err()
 }
 
+// ListExpiredRuns returns IDs of terminal runs whose updated_at is older than
+// cutoff, oldest first. A terminal run's updated_at no longer changes, so it
+// is effectively the finish time. Used by the run-retention sweeper.
+func (p *Postgres) ListExpiredRuns(ctx context.Context, cutoff time.Time, limit int) ([]string, error) {
+	const q = `
+		SELECT id FROM runs
+		WHERE status IN ('Succeeded', 'Failed', 'Cancelled')
+		  AND updated_at < $1
+		ORDER BY updated_at
+		LIMIT $2;
+	`
+	rows, err := p.pool.Query(ctx, q, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (p *Postgres) CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes int64) error {
 	_, err := p.pool.Exec(ctx,
 		`INSERT INTO run_log_archives(run_id, object_key, size_bytes)
