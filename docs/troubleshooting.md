@@ -535,7 +535,7 @@ The controller logs `dropping log line for sealed run` (or `dropping log lines f
 
 **Cause**
 
-An agent sent log lines for a run whose logs were already archived (~30 s after the run finished). The archive is the sealed source of truth, so the lines were discarded — storing them would make the run untrimmable and, after a trim, invisible anyway.
+An agent sent log lines for a run whose logs were already archived (~30 s after the run finished). Log sealing is active whenever an object store is configured, independent of the `--log-trim-days` setting. The archive is the sealed source of truth, so the lines were discarded — storing them would make the run untrimmable and, after a trim, invisible anyway.
 
 **Fix**
 

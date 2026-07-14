@@ -82,3 +82,20 @@ func TestArtifactUpload_NonexistentRun404(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 }
+
+func TestArtifactUpload_TerminalRunStillAccepted(t *testing.T) {
+	s, st := newTestServer(t)
+	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
+	ctx := context.Background()
+	_, err := st.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	require.NoError(t, st.MarkRunFinished(ctx, run.ID, api.RunSucceeded))
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/out", strings.NewReader("data"))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+}
