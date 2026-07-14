@@ -1365,6 +1365,63 @@ func (p *Postgres) GetLogArchive(ctx context.Context, runID string) (*LogArchive
 	return &a, nil
 }
 
+// ListTrimCandidates returns run IDs whose logs are archived but not yet
+// trimmed, with archived_at older than cutoff, oldest first. Archive records
+// only exist for terminal runs, so no status filter is needed.
+func (p *Postgres) ListTrimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]string, error) {
+	const q = `
+		SELECT run_id FROM run_log_archives
+		WHERE trimmed_at IS NULL AND archived_at < $1
+		ORDER BY archived_at
+		LIMIT $2;
+	`
+	rows, err := p.pool.Query(ctx, q, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// TrimRunLogs deletes a run's logs rows after marking its archive record
+// trimmed, in one transaction. The mark goes FIRST and guards trimmed_at IS
+// NULL: if there is no untrimmed archive record (never archived, already
+// trimmed, or the run was deleted by retention) nothing is deleted and the
+// call is a (0, nil) no-op.
+func (p *Postgres) TrimRunLogs(ctx context.Context, runID string) (int64, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	ct, err := tx.Exec(ctx,
+		`UPDATE run_log_archives SET trimmed_at = NOW() WHERE run_id = $1 AND trimmed_at IS NULL`, runID)
+	if err != nil {
+		return 0, err
+	}
+	if ct.RowsAffected() == 0 {
+		return 0, nil // no untrimmed archive record: never touch logs
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM logs WHERE run_id = $1`, runID)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), tx.Commit(ctx)
+}
+
+func (p *Postgres) DeleteLogArchive(ctx context.Context, runID string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM run_log_archives WHERE run_id = $1`, runID)
+	return err
+}
+
 func (p *Postgres) ListenForNotify(ctx context.Context, channel string, callback func(payload string)) error {
 	conn, err := p.pool.Acquire(ctx)
 	if err != nil {

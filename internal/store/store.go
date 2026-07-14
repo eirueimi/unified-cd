@@ -235,6 +235,18 @@ type Store interface {
 	CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes int64) error
 	GetLogArchive(ctx context.Context, runID string) (*LogArchive, error)
 
+	// Log trim (tiered log storage)
+	// ListTrimCandidates returns run IDs whose logs are archived but not yet
+	// trimmed, with archived_at older than cutoff, oldest first, up to limit.
+	ListTrimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]string, error)
+	// TrimRunLogs marks the run's archive record trimmed and deletes its logs
+	// rows in one transaction. Returns rows deleted. A run with no untrimmed
+	// archive record is a (0, nil) no-op — logs are never deleted unarchived.
+	TrimRunLogs(ctx context.Context, runID string) (int64, error)
+	// DeleteLogArchive removes the archive record (e.g. when its object is
+	// missing) so the archiver re-archives the run on its next tick.
+	DeleteLogArchive(ctx context.Context, runID string) error
+
 	// Run retention
 	// ListExpiredRuns returns IDs of terminal (Succeeded/Failed/Cancelled)
 	// runs whose updated_at is older than cutoff, oldest first, up to limit.
