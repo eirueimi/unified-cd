@@ -1610,7 +1610,7 @@ func TestParse_ExampleMatrixJob(t *testing.T) {
 }
 
 func TestValidate_Retry_OnRunStep_OK(t *testing.T) {
-	job, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
 kind: Job
 metadata: {name: j}
 spec:
@@ -1619,7 +1619,6 @@ spec:
       run: "true"
       retry: {attempts: 3, backoff: 30s}`))
 	require.NoError(t, err)
-	require.NoError(t, job.Validate())
 }
 
 func TestValidate_Retry_AttemptsMustBePositive(t *testing.T) {

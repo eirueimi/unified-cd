@@ -476,8 +476,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					}
 					if try < attempts {
 						// Separator on the NEXT attempt's stderr writer so it lands in the log.
-						nextStdout, nextStderr, nextFinish := b.StepLogWriters(stepCtx, step.Index)
-						_ = nextStdout
+						_, nextStderr, nextFinish := b.StepLogWriters(stepCtx, step.Index)
 						fmt.Fprintf(nextStderr, "── retry %d/%d after %s (previous: exit %d) ──\n", try+1, attempts, backoff, ec)
 						nextFinish(stepCtx)
 						if serr := retrySleep(stepCtx, backoff); serr != nil {
@@ -489,12 +488,10 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 
 				if runErr != nil || ec != 0 {
 					status = "Failed"
-					// A step interrupted specifically because the master cancelled the
-					// run (as opposed to a step/job timeout, which is a genuine
-					// failure) should be reported as Cancelled rather than Failed so it
-					// doesn't linger as "Running" in the UI/DB — Cancelled is a terminal
-					// status the step-status CHECK constraint already allows.
-					if runErr != nil && cancelledByMaster.Load() {
+					// A master/user cancellation (during exec OR during a retry backoff) is a
+					// cancel, not a fault — cancelledByMaster is the authority, not runErr
+					// (with retry, a cancel can land after a non-zero exit with runErr == nil).
+					if cancelledByMaster.Load() {
 						status = "Cancelled"
 					}
 				} else {

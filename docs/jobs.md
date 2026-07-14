@@ -493,6 +493,8 @@ Notes:
 - `timeoutMinutes` bounds **each attempt**, not the overall retry budget — with `attempts: 3` and `timeoutMinutes: 5`, the step can take up to 15 minutes across all tries.
 - `continueOnError` is evaluated after the retry budget is exhausted — the step only continues past a failure once every attempt has failed.
 - All attempts stream to the same step log, with a separator line (e.g. `── retry 2/3 after 30s … ──`) marking the start of each retry.
+- On a scoped step (`runsIn.image`), `retry:` re-runs in the **same, already-mutated** scope environment across attempts — it does not get a clean scope per try; the `post:` hook binds to the final attempt's scope.
+- `attempts` has no upper bound: pair it with `timeoutMinutes` (per-attempt) and `backoff` so a persistently-failing step doesn't spin in a tight re-exec loop, since retry has no overall time budget of its own.
 
 ### Post-step hooks (`post`)
 
