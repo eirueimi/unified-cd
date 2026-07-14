@@ -52,9 +52,13 @@ func (b *failureBackoff) Failure(id string, now time.Time) {
 		}
 	}
 	e.failures++
-	wait := b.base << (e.failures - 1)
-	if wait > b.max || wait <= 0 { // <=0 guards shift overflow
-		wait = b.max
+	// Cap the exponent before shifting: a shift past 62 can wrap to a
+	// spurious small positive value that the range check below would miss.
+	wait := b.max
+	if n := e.failures - 1; n < 63 {
+		if w := b.base << n; w > 0 && w < b.max {
+			wait = w
+		}
 	}
 	e.retryAt = now.Add(wait)
 }

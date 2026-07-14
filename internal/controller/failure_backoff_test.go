@@ -35,6 +35,16 @@ func TestFailureBackoff_ScheduleAndRecovery(t *testing.T) {
 	assert.Empty(t, b.Excluded(now.Add(time.Hour+2*time.Second)))
 }
 
+func TestFailureBackoff_HugeFailureCountStaysAtMax(t *testing.T) {
+	now := time.Unix(1000, 0)
+	b := newFailureBackoff(time.Minute, time.Hour, 100)
+	for i := 0; i < 100; i++ {
+		b.Failure("r1", now)
+	}
+	assert.Equal(t, []string{"r1"}, b.Excluded(now.Add(time.Hour-time.Second)), "still excluded just before max")
+	assert.Empty(t, b.Excluded(now.Add(time.Hour+time.Second)), "retryable just after max despite huge failure count")
+}
+
 func TestFailureBackoff_CapEvictsOldest(t *testing.T) {
 	now := time.Unix(1000, 0)
 	b := newFailureBackoff(time.Minute, time.Hour, 3)
