@@ -20,6 +20,7 @@ func TestAgentAPI_SidecarStatus(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
 
 	req := api.SidecarStatusRequest{RunID: run.ID, Name: "mysql", Index: 100, Phase: "running"}
 	body, _ := json.Marshal(req)
@@ -47,6 +48,7 @@ func TestAgentAPI_SidecarStatus_UpsertsOnExit(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
 
 	post := func(req api.SidecarStatusRequest) {
 		body, _ := json.Marshal(req)

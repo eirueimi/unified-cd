@@ -414,6 +414,15 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 		ec := req.ExitCode
 		exit = &ec
 	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, req.RunID) {
+		return
+	}
 	// Guard against writing stale step state under an already-terminal run. If the
 	// parent run was finalized (e.g. the reaper Failed it) before this late report
 	// arrived, upserting would leave a step in a status inconsistent with the run's
@@ -458,6 +467,15 @@ func (s *Server) handleAgentLogAppend(w http.ResponseWriter, r *http.Request) {
 	if req.Timestamp.IsZero() {
 		req.Timestamp = time.Now().UTC()
 	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, req.RunID) {
+		return
+	}
 	seq, err := s.store.AppendLog(r.Context(), req.RunID, req.StepIndex, req.Stream, req.Timestamp, req.Line)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -498,6 +516,15 @@ func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid status", http.StatusBadRequest)
 		return
 	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, id, false)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, id) {
+		return
+	}
 	updated, err := s.store.FinishRun(r.Context(), id, st)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -536,6 +563,15 @@ func (s *Server) handleAgentSetStepOutputs(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, runID, true)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, runID) {
+		return
+	}
 	for k, v := range req.Outputs {
 		if err := s.store.SetStepOutput(r.Context(), runID, stepIndex, variant, k, v); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -551,6 +587,15 @@ func (s *Server) handleAgentSetRunOutputs(w http.ResponseWriter, r *http.Request
 	var req api.SetOutputsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, runID, true)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, runID) {
 		return
 	}
 	for k, v := range req.Outputs {
@@ -569,9 +614,22 @@ func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	agentID := chi.URLParam(r, "agentId")
+	guarded := map[string]bool{}
 	dropped := 0
 	var droppedRun string
 	for _, req := range lines {
+		if !guarded[req.RunID] {
+			v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
+			if gerr != nil {
+				http.Error(w, gerr.Error(), http.StatusInternalServerError)
+				return
+			}
+			if respondRunWriteVerdict(w, v, req.RunID) {
+				return
+			}
+			guarded[req.RunID] = true
+		}
 		if req.Timestamp.IsZero() {
 			req.Timestamp = time.Now().UTC()
 		}
@@ -597,6 +655,15 @@ func (s *Server) handleAgentSidecarStatus(w http.ResponseWriter, r *http.Request
 	var req api.SidecarStatusRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, true)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, req.RunID) {
 		return
 	}
 	if err := s.store.UpsertSidecarStatus(r.Context(), req.RunID, req.Index, req.Name, req.Phase, req.ExitCode); err != nil {

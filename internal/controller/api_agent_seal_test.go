@@ -18,7 +18,9 @@ import (
 )
 
 // sealRun creates a finished run with one stored log line and an archive
-// record, i.e. a run whose logs are sealed.
+// record, i.e. a run whose logs are sealed. The run is claimed by agent "a1"
+// (the agent ID the tests below post as) so the ownership guard on the log
+// endpoints lets the late-line requests reach the seal check.
 func sealRun(t *testing.T, st store.Store) string {
 	t.Helper()
 	ctx := context.Background()
@@ -26,6 +28,11 @@ func sealRun(t *testing.T, st store.Store) string {
 	require.NoError(t, err)
 	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
+	_, err = st.TransitionPendingToQueued(ctx, 10)
+	require.NoError(t, err)
+	claimed, err := st.ClaimNextRun(ctx, "a1", nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
 	seq, err := st.AppendLog(ctx, run.ID, 0, "stdout", time.Now(), "real line")
 	require.NoError(t, err)
 	require.NoError(t, st.MarkRunFinished(ctx, run.ID, api.RunSucceeded))

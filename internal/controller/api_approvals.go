@@ -73,6 +73,15 @@ func (s *Server) handleAgentCreateApproval(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, runID, true)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, runID) {
+		return
+	}
 	var timeoutAt *time.Time
 	if req.TimeoutMinutes > 0 {
 		t := time.Now().Add(time.Duration(req.TimeoutMinutes * float64(time.Minute)))

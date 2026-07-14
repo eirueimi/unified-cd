@@ -98,6 +98,9 @@ func TestApprovals_AgentCreateAndGet(t *testing.T) {
 
 	// Register an agent so agentId exists.
 	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil, nil))
+	// Claim the run as ag1 so the ownership guard on the agent-facing
+	// create-approval endpoint lets this request through.
+	claimRunForTest(t, pg, "ag1", run.ID)
 
 	// Agent creates an approval.
 	createBody, _ := json.Marshal(api.CreateApprovalRequest{
