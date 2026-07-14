@@ -1302,16 +1302,17 @@ func (p *Postgres) AcquireSchedulerLock(ctx context.Context) (release func(), er
 	return p.AcquireAdvisoryLock(ctx, schedulerLockKey)
 }
 
-func (p *Postgres) ListRunsNeedingArchival(ctx context.Context, limit int) ([]api.Run, error) {
+func (p *Postgres) ListRunsNeedingArchival(ctx context.Context, limit int, excluded []string) ([]api.Run, error) {
 	const q = `
 		SELECT id, job_name, status, params, created_at, updated_at
 		FROM runs
 		WHERE status IN ('Succeeded', 'Failed', 'Cancelled')
 		  AND id NOT IN (SELECT run_id FROM run_log_archives)
+		  AND id != ALL($2::uuid[])
 		ORDER BY updated_at
 		LIMIT $1;
 	`
-	rows, err := p.pool.Query(ctx, q, limit)
+	rows, err := p.pool.Query(ctx, q, limit, excluded)
 	if err != nil {
 		return nil, err
 	}
@@ -1337,15 +1338,16 @@ func (p *Postgres) ListRunsNeedingArchival(ctx context.Context, limit int) ([]ap
 // ListExpiredRuns returns IDs of terminal runs whose updated_at is older than
 // cutoff, oldest first. A terminal run's updated_at no longer changes, so it
 // is effectively the finish time. Used by the run-retention sweeper.
-func (p *Postgres) ListExpiredRuns(ctx context.Context, cutoff time.Time, limit int) ([]string, error) {
+func (p *Postgres) ListExpiredRuns(ctx context.Context, cutoff time.Time, limit int, excluded []string) ([]string, error) {
 	const q = `
 		SELECT id FROM runs
 		WHERE status IN ('Succeeded', 'Failed', 'Cancelled')
 		  AND updated_at < $1
+		  AND id != ALL($3::uuid[])
 		ORDER BY updated_at
 		LIMIT $2;
 	`
-	rows, err := p.pool.Query(ctx, q, cutoff, limit)
+	rows, err := p.pool.Query(ctx, q, cutoff, limit, excluded)
 	if err != nil {
 		return nil, err
 	}

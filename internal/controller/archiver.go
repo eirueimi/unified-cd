@@ -22,17 +22,21 @@ func RunLogArchiver(ctx context.Context, st store.Store, obj objectstore.ObjectS
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// Leader-local: a failure-backoff instance lives for the lifetime of this
+	// goroutine so a run that keeps failing to archive doesn't keep filling
+	// every oldest-first batch (see failure_backoff.go).
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		runArchiveAsLeader(ctx, st, obj)
+		runArchiveAsLeader(ctx, st, obj, bo)
 	}
 }
 
-func runArchiveAsLeader(ctx context.Context, st store.Store, obj objectstore.ObjectStore) {
+func runArchiveAsLeader(ctx context.Context, st store.Store, obj objectstore.ObjectStore, bo *failureBackoff) {
 	release, err := st.AcquireAdvisoryLock(ctx, logArchiverLockKey)
 	if err != nil {
 		slog.Warn("log archiver lock", "error", err)
@@ -42,20 +46,23 @@ func runArchiveAsLeader(ctx context.Context, st store.Store, obj objectstore.Obj
 		return // Another replica is leader.
 	}
 	defer release()
-	if err := archivePendingLogs(ctx, st, obj); err != nil {
+	if err := archivePendingLogs(ctx, st, obj, bo); err != nil {
 		slog.Error("log archiver error", "error", err)
 	}
 }
 
-func archivePendingLogs(ctx context.Context, st store.Store, obj objectstore.ObjectStore) error {
-	runs, err := st.ListRunsNeedingArchival(ctx, 20)
+func archivePendingLogs(ctx context.Context, st store.Store, obj objectstore.ObjectStore, bo *failureBackoff) error {
+	runs, err := st.ListRunsNeedingArchival(ctx, 20, bo.Excluded(time.Now()))
 	if err != nil {
 		return err
 	}
 	for _, run := range runs {
 		if err := archiveRunLogs(ctx, st, obj, run.ID); err != nil {
 			slog.Error("failed to archive Run logs", "runId", run.ID, "error", err)
+			bo.Failure(run.ID, time.Now())
+			continue
 		}
+		bo.Success(run.ID)
 	}
 	return nil
 }

@@ -23,7 +23,7 @@ func TestPostgres_ListRunsNeedingArchival(t *testing.T) {
 	require.NoError(t, pg.MarkRunRunning(ctx, run1.ID))
 	require.NoError(t, pg.MarkRunFinished(ctx, run1.ID, api.RunSucceeded))
 
-	runs, err := pg.ListRunsNeedingArchival(ctx, 10)
+	runs, err := pg.ListRunsNeedingArchival(ctx, 10, []string{})
 	require.NoError(t, err)
 	require.Len(t, runs, 1)
 	assert.Equal(t, run1.ID, runs[0].ID)

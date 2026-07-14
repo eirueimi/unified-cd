@@ -25,6 +25,13 @@ type fakeRetentionStore struct {
 	listCalls    int
 	deleted      []string
 
+	// excludedCalls records the excluded argument passed on each
+	// ListExpiredRuns call, in order.
+	excludedCalls [][]string
+
+	// failDeleteIDs, if set, makes DeleteRun fail for the given ids.
+	failDeleteIDs map[string]bool
+
 	// deleteRunHook, if set, runs inside DeleteRun before the deletion is
 	// recorded. Used to simulate the archiver completing concurrently with
 	// our own deletion (the (b) race window described on deleteRunEverywhere).
@@ -38,7 +45,8 @@ func (f *fakeRetentionStore) AcquireAdvisoryLock(ctx context.Context, key int64)
 	return func() {}, nil
 }
 
-func (f *fakeRetentionStore) ListExpiredRuns(ctx context.Context, cutoff time.Time, limit int) ([]string, error) {
+func (f *fakeRetentionStore) ListExpiredRuns(ctx context.Context, cutoff time.Time, limit int, excluded []string) ([]string, error) {
+	f.excludedCalls = append(f.excludedCalls, excluded)
 	if f.listCalls >= len(f.expired) {
 		return nil, nil
 	}
@@ -54,6 +62,9 @@ func (f *fakeRetentionStore) GetLogArchive(ctx context.Context, runID string) (*
 func (f *fakeRetentionStore) DeleteRun(ctx context.Context, id string) error {
 	if f.deleteRunHook != nil {
 		f.deleteRunHook(id)
+	}
+	if f.failDeleteIDs[id] {
+		return errors.New("delete failed")
 	}
 	f.deleted = append(f.deleted, id)
 	return nil
@@ -171,7 +182,7 @@ func TestDeleteRunEverywhere_PostDeleteCatchesConcurrentArchiver(t *testing.T) {
 
 func TestRunRetention_FollowerDoesNothing(t *testing.T) {
 	st := &fakeRetentionStore{lockAcquired: false, expired: [][]string{{"r1"}}}
-	runRunRetentionOnce(context.Background(), st, nil, 30)
+	runRunRetentionOnce(context.Background(), st, nil, 30, newFailureBackoff(time.Minute, time.Hour, 10_000))
 	assert.Zero(t, st.listCalls)
 	assert.Empty(t, st.deleted)
 }
@@ -197,7 +208,7 @@ func TestRunRetention_DeletesExpiredAcrossBatches(t *testing.T) {
 		lockAcquired: true,
 		expired:      [][]string{full, {"run-last"}},
 	}
-	runRunRetentionOnce(context.Background(), st, nil, 30)
+	runRunRetentionOnce(context.Background(), st, nil, 30, newFailureBackoff(time.Minute, time.Hour, 10_000))
 	assert.Equal(t, 2, st.listCalls)
 	assert.Len(t, st.deleted, runRetentionBatchSize+1)
 }
@@ -221,7 +232,30 @@ func TestRunRetention_ZeroProgressBatchStopsTick(t *testing.T) {
 		// stop after the first zero-progress batch.
 		expired: [][]string{full, full, full},
 	}
-	runRunRetentionOnce(context.Background(), st, &failingObjStore{ObjectStore: inner}, 30)
+	runRunRetentionOnce(context.Background(), st, &failingObjStore{ObjectStore: inner}, 30, newFailureBackoff(time.Minute, time.Hour, 10_000))
 	assert.Equal(t, 1, st.listCalls, "must not refetch after a zero-progress batch")
 	assert.Empty(t, st.deleted)
+}
+
+// TestRunRetention_PoisonCandidateExcludedNextTick: a candidate whose delete
+// fails must be excluded from the next tick's ListExpiredRuns call, so a
+// permanently-failing run stops occupying every oldest-first batch.
+func TestRunRetention_PoisonCandidateExcludedNextTick(t *testing.T) {
+	st := &fakeRetentionStore{
+		lockAcquired:  true,
+		expired:       [][]string{{"poison", "ok1"}, {"ok2"}},
+		failDeleteIDs: map[string]bool{"poison": true},
+	}
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
+
+	runRunRetentionOnce(context.Background(), st, nil, 30, bo)
+	require.Len(t, st.excludedCalls, 1)
+	assert.Empty(t, st.excludedCalls[0], "first tick excludes nothing")
+	assert.Equal(t, []string{"ok1"}, st.deleted)
+
+	runRunRetentionOnce(context.Background(), st, nil, 30, bo)
+	require.Len(t, st.excludedCalls, 2)
+	assert.Contains(t, st.excludedCalls[1], "poison", "second tick excludes the poison candidate")
+	assert.NotContains(t, st.excludedCalls[1], "ok1")
+	assert.Equal(t, []string{"ok1", "ok2"}, st.deleted)
 }
