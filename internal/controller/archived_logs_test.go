@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,6 +56,20 @@ func seedParityRun(t *testing.T, pg store.Store, obj objectstore.ObjectStore) st
 	}
 	require.NoError(t, obj.Put(ctx, runLogArchiveKey(run.ID), &buf, int64(buf.Len())))
 	return run.ID
+}
+
+// archiveCoverage returns the (lineCount, maxSeq) a CreateLogArchive call
+// must claim to truthfully cover everything currently in runID's logs table,
+// so tests that go on to call TrimRunLogs don't trip the archive-incomplete
+// coverage check (store.ErrArchiveIncomplete) on data the test itself seeded.
+func archiveCoverage(t *testing.T, pg store.Store, runID string) (lineCount, maxSeq int64) {
+	t.Helper()
+	lines, err := pg.TailLogs(context.Background(), runID, 0, 1_000_000)
+	require.NoError(t, err)
+	if len(lines) > 0 {
+		maxSeq = lines[len(lines)-1].Seq
+	}
+	return int64(len(lines)), maxSeq
 }
 
 // TestArchivedLogs_ParityWithStore asserts every reader contract returns
@@ -164,4 +181,63 @@ func TestArchivedLogs_CacheEvictsByBytes(t *testing.T) {
 	_, err = a.lines(ctx, "big")
 	require.NoError(t, err)
 	assert.Equal(t, 1, a.cacheLen())
+}
+
+// countingObjStore wraps an ObjectStore and counts Get calls, optionally
+// delaying each one — used to force concurrent cache-miss callers to pile up
+// in archivedLogs.inflight before the first Get returns.
+type countingObjStore struct {
+	objectstore.ObjectStore
+	gets  int64
+	delay time.Duration
+}
+
+func (c *countingObjStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	atomic.AddInt64(&c.gets, 1)
+	if c.delay > 0 {
+		time.Sleep(c.delay)
+	}
+	return c.ObjectStore.Get(ctx, key)
+}
+
+// TestArchivedLogs_SingleflightCoalescesConcurrentFetches covers Finding 3:
+// N goroutines racing a cache miss for the same runID must share exactly one
+// object-store Get and decode, not one each — this matters most for an
+// archive larger than the cache cap, which is fetched fresh on every request.
+func TestArchivedLogs_SingleflightCoalescesConcurrentFetches(t *testing.T) {
+	ctx := context.Background()
+	inner := objectstore.NewLocalObjectStore(t.TempDir())
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	const wantLines = 5
+	for i := 0; i < wantLines; i++ {
+		require.NoError(t, enc.Encode(api.LogLine{Seq: int64(i + 1), Line: fmt.Sprintf("line %d", i)}))
+	}
+	require.NoError(t, inner.Put(ctx, runLogArchiveKey("r1"), &buf, int64(buf.Len())))
+
+	counting := &countingObjStore{ObjectStore: inner, delay: 100 * time.Millisecond}
+	a := newArchivedLogs(counting)
+
+	const n = 20
+	var wg sync.WaitGroup
+	results := make([][]api.LogLine, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			lines, err := a.lines(ctx, "r1")
+			results[i], errs[i] = lines, err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	assert.EqualValues(t, 1, atomic.LoadInt64(&counting.gets), "concurrent misses for the same runID must share one fetch")
+	for i := 0; i < n; i++ {
+		require.NoError(t, errs[i])
+		assert.Len(t, results[i], wantLines, "goroutine %d", i)
+	}
 }

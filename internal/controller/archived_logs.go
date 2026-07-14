@@ -28,19 +28,34 @@ type archivedLogEntry struct {
 	bytes int64
 }
 
+// archiveFetch is an in-flight fetch+decode of one run's archive, shared by
+// every concurrent caller asking for the same runID (see the singleflight
+// join in (*archivedLogs).lines). done is closed once lines/err are set.
+type archiveFetch struct {
+	done  chan struct{}
+	lines []api.LogLine
+	err   error
+}
+
 // archivedLogs serves the log read contracts for runs whose logs rows were
 // trimmed from the DB, by fetching and decoding runs/<runID>/logs.ndjson.
 type archivedLogs struct {
 	obj objectstore.ObjectStore
 
-	mu    sync.Mutex
-	cache map[string]*list.Element // runID -> element holding *archivedLogEntry
-	order *list.List               // front = most recently used
-	total int64
+	mu       sync.Mutex
+	cache    map[string]*list.Element // runID -> element holding *archivedLogEntry
+	order    *list.List               // front = most recently used
+	total    int64
+	inflight map[string]*archiveFetch // runID -> shared fetch+decode in progress
 }
 
 func newArchivedLogs(obj objectstore.ObjectStore) *archivedLogs {
-	return &archivedLogs{obj: obj, cache: map[string]*list.Element{}, order: list.New()}
+	return &archivedLogs{
+		obj:      obj,
+		cache:    map[string]*list.Element{},
+		order:    list.New(),
+		inflight: map[string]*archiveFetch{},
+	}
 }
 
 func (a *archivedLogs) cacheLen() int {
@@ -52,6 +67,13 @@ func (a *archivedLogs) cacheLen() int {
 // lines returns the run's full archived log, seq-ascending (the archiver
 // wrote it in TailLogs order). Callers must treat the slice as read-only —
 // it may be shared via the cache.
+//
+// Concurrent cache misses for the same runID are coalesced (singleflight):
+// the first caller becomes the fetcher and does the object-store Get plus
+// ndjson decode; every other concurrent caller for the same runID just
+// waits on that one fetch instead of redoing it. This matters most for an
+// archive larger than the whole cache cap, which is never cached and would
+// otherwise be re-fetched and re-decoded on every single request.
 func (a *archivedLogs) lines(ctx context.Context, runID string) ([]api.LogLine, error) {
 	a.mu.Lock()
 	if el, ok := a.cache[runID]; ok {
@@ -60,32 +82,22 @@ func (a *archivedLogs) lines(ctx context.Context, runID string) ([]api.LogLine, 
 		a.mu.Unlock()
 		return lines, nil
 	}
+	if f, ok := a.inflight[runID]; ok {
+		a.mu.Unlock()
+		<-f.done
+		return f.lines, f.err
+	}
+	f := &archiveFetch{done: make(chan struct{})}
+	a.inflight[runID] = f
 	a.mu.Unlock()
 
-	rc, err := a.obj.Get(ctx, runLogArchiveKey(runID))
-	if err != nil {
-		return nil, fmt.Errorf("fetch log archive: %w", err)
-	}
-	defer rc.Close()
-	raw, err := io.ReadAll(rc)
-	if err != nil {
-		return nil, fmt.Errorf("read log archive: %w", err)
-	}
-	var lines []api.LogLine
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	for {
-		var l api.LogLine
-		if err := dec.Decode(&l); err == io.EOF {
-			break
-		} else if err != nil {
-			return nil, fmt.Errorf("decode log archive: %w", err)
-		}
-		lines = append(lines, l)
-	}
+	lines, size, err := a.fetchAndDecode(ctx, runID)
+	f.lines, f.err = lines, err
+	close(f.done)
 
-	size := int64(len(raw))
-	if size <= archivedLogsCacheBytes {
-		a.mu.Lock()
+	a.mu.Lock()
+	delete(a.inflight, runID)
+	if err == nil && size <= archivedLogsCacheBytes {
 		if _, ok := a.cache[runID]; !ok {
 			el := a.order.PushFront(&archivedLogEntry{runID: runID, lines: lines, bytes: size})
 			a.cache[runID] = el
@@ -98,9 +110,36 @@ func (a *archivedLogs) lines(ctx context.Context, runID string) ([]api.LogLine, 
 				a.total -= e.bytes
 			}
 		}
-		a.mu.Unlock()
 	}
-	return lines, nil
+	a.mu.Unlock()
+
+	return lines, err
+}
+
+// fetchAndDecode fetches and ndjson-decodes one run's archive object. It
+// holds no lock — callers coordinate via the inflight map in lines().
+func (a *archivedLogs) fetchAndDecode(ctx context.Context, runID string) ([]api.LogLine, int64, error) {
+	rc, err := a.obj.Get(ctx, runLogArchiveKey(runID))
+	if err != nil {
+		return nil, 0, fmt.Errorf("fetch log archive: %w", err)
+	}
+	defer rc.Close()
+	raw, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read log archive: %w", err)
+	}
+	var lines []api.LogLine
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	for {
+		var l api.LogLine
+		if err := dec.Decode(&l); err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, 0, fmt.Errorf("decode log archive: %w", err)
+		}
+		lines = append(lines, l)
+	}
+	return lines, int64(len(raw)), nil
 }
 
 // logsTrimmed reports whether the run's logs rows were trimmed from the DB
