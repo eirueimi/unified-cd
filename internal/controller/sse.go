@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -60,10 +61,25 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	// are — rather than the head. If older lines were dropped we tell the client
 	// (via a "truncated" event) so it can surface that the view is not complete.
 	var lastSeq int64
-	existing, err := s.store.TailLogsRecent(r.Context(), id, sseBackfillLimit+1)
+	var existing []api.LogLine
+	trimmed, err := s.logsTrimmed(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if trimmed {
+		all, aerr := s.archLogs.lines(r.Context(), id)
+		if aerr != nil {
+			http.Error(w, "log archive unavailable: "+aerr.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		existing = tailRecent(all, sseBackfillLimit+1)
+	} else {
+		existing, err = s.store.TailLogsRecent(r.Context(), id, sseBackfillLimit+1)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	if len(existing) > sseBackfillLimit {
 		existing = existing[len(existing)-sseBackfillLimit:]
