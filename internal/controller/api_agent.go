@@ -458,9 +458,16 @@ func (s *Server) handleAgentLogAppend(w http.ResponseWriter, r *http.Request) {
 	if req.Timestamp.IsZero() {
 		req.Timestamp = time.Now().UTC()
 	}
-	if _, err := s.store.AppendLog(r.Context(), req.RunID, req.StepIndex, req.Stream, req.Timestamp, req.Line); err != nil {
+	seq, err := s.store.AppendLog(r.Context(), req.RunID, req.StepIndex, req.Stream, req.Timestamp, req.Line)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if seq == 0 {
+		// Sealed (logs already archived): dropped. 204 keeps unmodified
+		// agents from retry-storming — same philosophy as FinishRun's
+		// alreadyFinalized response.
+		slog.Warn("dropping log line for sealed run", "run", req.RunID)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -562,14 +569,24 @@ func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	dropped := 0
+	var droppedRun string
 	for _, req := range lines {
 		if req.Timestamp.IsZero() {
 			req.Timestamp = time.Now().UTC()
 		}
-		if _, err := s.store.AppendLog(r.Context(), req.RunID, req.StepIndex, req.Stream, req.Timestamp, req.Line); err != nil {
+		seq, err := s.store.AppendLog(r.Context(), req.RunID, req.StepIndex, req.Stream, req.Timestamp, req.Line)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if seq == 0 {
+			dropped++
+			droppedRun = req.RunID
+		}
+	}
+	if dropped > 0 {
+		slog.Warn("dropping log lines for sealed run", "run", droppedRun, "dropped", dropped)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
