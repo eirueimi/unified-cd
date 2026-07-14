@@ -118,7 +118,11 @@ func (s *Server) SetShuttingDown() {
 // SetObjectStore sets the object store used for log archiving. Archive endpoints return 501 when nil.
 func (s *Server) SetObjectStore(obj objectstore.ObjectStore) {
 	s.objStore = obj
-	s.archLogs = newArchivedLogs(obj)
+	if obj != nil {
+		s.archLogs = newArchivedLogs(obj)
+	} else {
+		s.archLogs = nil
+	}
 }
 
 // SetCacheStore sets the object store used for cache TTL cleanup.
