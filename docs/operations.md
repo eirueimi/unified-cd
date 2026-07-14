@@ -38,6 +38,8 @@ Artifacts, cache entries, and log archives live in the configured bucket. Use yo
 
 **Run retention.** By default unified-cd keeps every run forever: `runs` rows, log rows, archived logs, and artifacts all accumulate. Note that log archival only *copies* logs to the object store — database log rows are never trimmed by it. Set `--run-retention-days` (env `UNIFIED_RUN_RETENTION_DAYS`) to enable an hourly, leader-elected sweep that deletes terminal runs older than N days, including their archived logs and artifacts. Audit logs have their own independent setting (`--audit-retention-days`).
 
+**Tiered log storage.** Even before run retention fires, `--log-trim-days` (env `UNIFIED_LOG_TRIM_DAYS`) can reclaim the largest table: N days after a run's logs are archived to the object store, an hourly leader-elected sweep deletes the run's `logs` rows and marks the archive record. All log reads for such runs are then served from the archive — the WebUI viewer, CLI, and SSE work unchanged, with a small first-view latency (one object fetch; parsed archives are cached in memory up to 128 MiB). The sweeper verifies the archive object exists before trimming and never trims unarchived runs. Typical setup: `--log-trim-days` a few days, `--run-retention-days` much larger.
+
 ### `UNIFIED_CONTROLLER_KEY` (critical)
 
 This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Management Guide](secrets.md#security-model)). Back it up wherever you manage secrets (vault, KMS, sealed file) — **independently** of the DB dump:

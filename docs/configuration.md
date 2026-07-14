@@ -41,6 +41,7 @@ unified-cd-controller [FLAGS]
   --log-stderr-plain      bool     Render run-log stderr the same color as stdout instead of red (env: UNIFIED_LOG_STDERR_PLAIN)
   --audit-retention-days  int      Days to keep audit_logs rows; 0 = keep forever (default: 90, env: UNIFIED_AUDIT_RETENTION_DAYS)
   --run-retention-days    int      Days to keep terminal (Succeeded/Failed/Cancelled) runs; 0 = keep forever (default: 0, env: UNIFIED_RUN_RETENTION_DAYS)
+  --log-trim-days         int      Days after a run's logs are archived before its DB log rows are deleted; 0 = never trim (default: 0, env: UNIFIED_LOG_TRIM_DAYS)
   --insecure-cookies      bool     Do not set the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES)
 ```
 
@@ -69,6 +70,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | No (SSO only) | OIDC public client ID for CLI device flow. Falls back to `UNIFIED_OIDC_CLIENT_ID` if unset. |
 | `UNIFIED_AUDIT_RETENTION_DAYS` | No | Days to keep `audit_logs` rows before a leader-only background task deletes them. Default `90`. `0` = keep forever. See [docs/audit.md](audit.md). |
 | `UNIFIED_RUN_RETENTION_DAYS` | No | Days to keep terminal (Succeeded/Failed/Cancelled) runs. When a run expires, its database records **and** its object-store data (archived logs, artifacts) are deleted. `0` (default) keeps runs forever. Deletion is irreversible — an expired run can no longer be replayed, because `run replay` uses the run's stored spec snapshot. |
+| `UNIFIED_LOG_TRIM_DAYS` | No | Days after a run's logs are archived before its database log rows are deleted (tiered log storage). Reads (WebUI viewer, CLI, SSE) transparently switch to the archived `logs.ndjson` in the object store; the first view of a trimmed run pays one object fetch. `0` (default) never trims. Requires an object store; must be smaller than `--run-retention-days` when both are set (otherwise retention deletes runs before trimming would fire — the controller logs a warning). |
 
 > **Reverse proxy note**: the controller rejects cross-origin state-changing requests by comparing the
 > browser's `Origin` header host against the request's `Host` header. If you put a reverse proxy in

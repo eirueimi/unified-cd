@@ -85,6 +85,7 @@ When the leader goes down, the lock is released and another replica picks it up 
 | Approval-timeout reaper (`internal/controller/approval_reaper.go`) | advisory lock (`approvalReaperLockKey`) | Only the leader times out expired approval gates |
 | Audit-log retention (`internal/controller/audit_retention.go`) | advisory lock (`auditRetentionLockKey`) | Only the leader prunes audit logs past the retention window |
 | Run retention (`RunRunRetention`) | advisory lock (`runRetentionLockKey`) | Only the leader deletes expired runs |
+| Log trim (`RunLogTrim`) | advisory lock (`logTrimLockKey`) | Only the leader trims archived runs' log rows |
 | Queued-run reaper (`internal/controller/queuedrun_reaper.go`) | advisory lock (`queuedRunReaperLockKey`) | Only the leader fails Queued runs that no live agent can claim within `UNIFIED_QUEUED_RUN_GRACE` |
 | AppSource sync reaper (`internal/controller/appsource_sync_reaper.go`) | advisory lock (`appSourceSyncReaperLockKey`) | Only the leader reaps stuck AppSource sync attempts |
 | Git resolver (`RunGitResolver`) | none (idempotent) | Runs on all replicas. `git://` URI resolution is idempotent and harmless if duplicated |
@@ -357,7 +358,7 @@ and never crashes the agent.
 
 `internal/controller/stuckrun_reaper.go` runs `RunStuckRunReaper`, leader-elected the same way as
 the other background jobs (a dedicated PG advisory lock, `stuckRunReaperLockKey`, distinct from
-the scheduler/approval/cache/log-archiver/AppSource/run-retention keys). Every **30s**, the leader calls
+the scheduler/approval/cache/log-archiver/AppSource/run-retention/log-trim keys). Every **30s**, the leader calls
 `ListStuckRunIDs(staleAfter=90s, grace=60s)`, which finds `Running` runs where:
 
 - the claiming agent's `last_seen_at` is older than `staleAfter` (**90s**), **or**
