@@ -1354,8 +1354,8 @@ func (p *Postgres) CreateLogArchive(ctx context.Context, runID, objectKey string
 func (p *Postgres) GetLogArchive(ctx context.Context, runID string) (*LogArchive, error) {
 	var a LogArchive
 	err := p.pool.QueryRow(ctx,
-		`SELECT run_id, object_key, size_bytes, archived_at FROM run_log_archives WHERE run_id = $1`,
-		runID).Scan(&a.RunID, &a.ObjectKey, &a.SizeBytes, &a.ArchivedAt)
+		`SELECT run_id, object_key, size_bytes, archived_at, trimmed_at FROM run_log_archives WHERE run_id = $1`,
+		runID).Scan(&a.RunID, &a.ObjectKey, &a.SizeBytes, &a.ArchivedAt, &a.TrimmedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

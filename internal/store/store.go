@@ -13,6 +13,9 @@ type LogArchive struct {
 	ObjectKey  string
 	SizeBytes  int64
 	ArchivedAt time.Time
+	// TrimmedAt is set when the run's logs rows were deleted from the DB
+	// after archival; nil means the rows are still present.
+	TrimmedAt *time.Time
 }
 
 // LogSearchMatch locates one search hit: Row is the 0-based row number
