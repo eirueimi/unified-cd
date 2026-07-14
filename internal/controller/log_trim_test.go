@@ -100,6 +100,27 @@ func TestLogTrim_MissingObjectDeletesStaleRecordAndSkipsTrim(t *testing.T) {
 	assert.Equal(t, []string{"r1"}, st.deletedRecords, "r1's stale record must be deleted so the archiver re-archives")
 }
 
+// TestLogTrim_IncompleteArchiveWarnsAndSkips covers Finding 1's sweeper side:
+// a candidate whose TrimRunLogs call reports incomplete archive coverage
+// (store.ErrArchiveIncomplete) must be warned and skipped like any other
+// trim failure — NOT counted as progress, and critically NOT deleted from
+// run_log_archives (unlike the missing-object case), since the run's logs
+// genuinely exceed what any archive attempt so far has covered and deleting
+// the record would just make the archiver retry forever.
+func TestLogTrim_IncompleteArchiveWarnsAndSkips(t *testing.T) {
+	obj := objectstore.NewLocalObjectStore(t.TempDir())
+	seedArchiveObject(t, obj, "r1")
+	seedArchiveObject(t, obj, "r2")
+	st := &fakeTrimStore{
+		lockAcquired: true,
+		candidates:   [][]string{{"r1", "r2"}},
+		trimErr:      map[string]error{"r1": store.ErrArchiveIncomplete},
+	}
+	runLogTrimOnce(context.Background(), st, obj, 7)
+	assert.Equal(t, []string{"r2"}, st.trimmed, "r1 must not be trimmed")
+	assert.Empty(t, st.deletedRecords, "an incomplete archive's record must never be deleted")
+}
+
 func TestLogTrim_ZeroProgressBatchStopsTick(t *testing.T) {
 	// Every candidate fails to trim and the same full batch would repeat
 	// forever; the tick must stop after one zero-progress batch.

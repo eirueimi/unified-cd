@@ -63,6 +63,35 @@ New file `internal/controller/log_trim.go`, mirroring `run_retention.go`:
      rows deleted.
 - Failures are logged and skipped; retried next tick.
 
+#### Archive coverage verification
+
+Verifying the archive *object* exists is not enough: the archiver's
+`TailLogs(ctx, runID, 0, 1_000_000)` caps at one million lines, and nothing
+stops an agent flushing more log lines after archival (`ListRunsNeedingArchival`
+never re-archives once a `run_log_archives` record exists). Either case would
+let the sweeper irreversibly delete rows no archive object has a copy of.
+
+`run_log_archives` carries `line_count bigint NOT NULL DEFAULT 0` and
+`max_seq bigint NOT NULL DEFAULT 0`, set by `CreateLogArchive` to exactly
+what the archive object covers (`len(lines)` and the last line's `seq`).
+DEFAULT 0 is the safe direction — an existing record with unknown coverage
+never qualifies for trimming while any logs remain.
+
+`TrimRunLogs` checks coverage IN THE SAME TRANSACTION as the delete, after
+the `trimmed_at` guard succeeds: `SELECT COUNT(*), COALESCE(MAX(seq), 0)
+FROM logs WHERE run_id = $1`, compared against the record's `line_count` /
+`max_seq`. If the live table has more rows or a higher seq than the archive
+claims, the whole transaction rolls back (including the `trimmed_at` mark)
+and `store.ErrArchiveIncomplete` is returned. Doing this inside the
+transaction — rather than as a pre-check before it — closes the race against
+a late agent flush landing between the sweeper's earlier checks and the
+trim itself.
+
+The sweeper treats `errors.Is(err, store.ErrArchiveIncomplete)` as warn +
+skip: no progress, and — unlike the missing-object case — no record
+deletion, since deleting the record would just make the archiver re-archive
+(and still under-cover) the same oversized run forever.
+
 ### Archive-backed log reader
 
 New file `internal/controller/archived_logs.go`:

@@ -163,7 +163,7 @@ func TestLogsArchive_MissingObject_Returns404(t *testing.T) {
 	_, _ = st.UpsertJob(t.Context(), "arch404-job", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
 	run, err := st.CreateRun(t.Context(), "arch404-job", nil, []byte(`{}`), nil, nil, "test")
 	require.NoError(t, err)
-	require.NoError(t, st.CreateLogArchive(t.Context(), run.ID, "logs/"+run.ID+".ndjson", 42))
+	require.NoError(t, st.CreateLogArchive(t.Context(), run.ID, "logs/"+run.ID+".ndjson", 42, 0, 0))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/logs/archive", nil)
 	req.Header.Set("Authorization", "Bearer secret")

@@ -218,6 +218,14 @@ func (p *Postgres) ListChildRunIDs(ctx context.Context, parentRunID string) ([]s
 // while surfacing infrastructure failures as 5xx. Match it with errors.Is.
 var ErrRunNotFound = errors.New("run not found")
 
+// ErrArchiveIncomplete is returned by TrimRunLogs when the run's logs table
+// holds more rows (or a higher seq) than the archive record claims to cover
+// — either the run's log count exceeded the archiver's TailLogs cap, or
+// lines were appended after the archive was written. Trimming would destroy
+// data no archive has a copy of, so TrimRunLogs rolls back and leaves the
+// logs rows and trimmed_at untouched. Match it with errors.Is.
+var ErrArchiveIncomplete = errors.New("archive does not cover all of the run's logs")
+
 func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
 	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by, claimed_by FROM runs WHERE id = $1`
 	var r api.Run
@@ -1341,21 +1349,22 @@ func (p *Postgres) ListExpiredRuns(ctx context.Context, cutoff time.Time, limit 
 	return out, rows.Err()
 }
 
-func (p *Postgres) CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes int64) error {
+func (p *Postgres) CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes, lineCount, maxSeq int64) error {
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO run_log_archives(run_id, object_key, size_bytes)
-		 VALUES ($1, $2, $3)
+		`INSERT INTO run_log_archives(run_id, object_key, size_bytes, line_count, max_seq)
+		 VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (run_id) DO UPDATE
-		   SET object_key = EXCLUDED.object_key, size_bytes = EXCLUDED.size_bytes, archived_at = NOW()`,
-		runID, objectKey, sizeBytes)
+		   SET object_key = EXCLUDED.object_key, size_bytes = EXCLUDED.size_bytes,
+		       line_count = EXCLUDED.line_count, max_seq = EXCLUDED.max_seq, archived_at = NOW()`,
+		runID, objectKey, sizeBytes, lineCount, maxSeq)
 	return err
 }
 
 func (p *Postgres) GetLogArchive(ctx context.Context, runID string) (*LogArchive, error) {
 	var a LogArchive
 	err := p.pool.QueryRow(ctx,
-		`SELECT run_id, object_key, size_bytes, archived_at, trimmed_at FROM run_log_archives WHERE run_id = $1`,
-		runID).Scan(&a.RunID, &a.ObjectKey, &a.SizeBytes, &a.ArchivedAt, &a.TrimmedAt)
+		`SELECT run_id, object_key, size_bytes, line_count, max_seq, archived_at, trimmed_at FROM run_log_archives WHERE run_id = $1`,
+		runID).Scan(&a.RunID, &a.ObjectKey, &a.SizeBytes, &a.LineCount, &a.MaxSeq, &a.ArchivedAt, &a.TrimmedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -1396,6 +1405,16 @@ func (p *Postgres) ListTrimCandidates(ctx context.Context, cutoff time.Time, lim
 // NULL: if there is no untrimmed archive record (never archived, already
 // trimmed, or the run was deleted by retention) nothing is deleted and the
 // call is a (0, nil) no-op.
+//
+// Before deleting anything, it re-checks the live logs table against the
+// archive record's line_count/max_seq IN THIS SAME TRANSACTION (race-free
+// vs. a late agent log flush landing between the caller's earlier checks
+// and this call): if the run has more logs rows, or a higher seq, than the
+// archive claims to cover, the archive is incomplete — trimming would
+// destroy rows no archive has a copy of. In that case the whole transaction
+// (including the trimmed_at mark) is rolled back and ErrArchiveIncomplete is
+// returned so the sweeper skips the run rather than deleting its archive
+// record (a >1,000,000-line run would otherwise loop re-archive forever).
 func (p *Postgres) TrimRunLogs(ctx context.Context, runID string) (int64, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -1410,6 +1429,23 @@ func (p *Postgres) TrimRunLogs(ctx context.Context, runID string) (int64, error)
 	if ct.RowsAffected() == 0 {
 		return 0, nil // no untrimmed archive record: never touch logs
 	}
+
+	var wantCount, wantMaxSeq int64
+	if err := tx.QueryRow(ctx,
+		`SELECT line_count, max_seq FROM run_log_archives WHERE run_id = $1`, runID,
+	).Scan(&wantCount, &wantMaxSeq); err != nil {
+		return 0, err
+	}
+	var haveCount, haveMaxSeq int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(MAX(seq), 0) FROM logs WHERE run_id = $1`, runID,
+	).Scan(&haveCount, &haveMaxSeq); err != nil {
+		return 0, err
+	}
+	if haveCount > wantCount || haveMaxSeq > wantMaxSeq {
+		return 0, fmt.Errorf("%w: run %s", ErrArchiveIncomplete, runID)
+	}
+
 	tag, err := tx.Exec(ctx, `DELETE FROM logs WHERE run_id = $1`, runID)
 	if err != nil {
 		return 0, err

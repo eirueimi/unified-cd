@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -92,7 +93,19 @@ func runLogTrimOnce(ctx context.Context, st store.Store, obj objectstore.ObjectS
 			}
 			n, err := st.TrimRunLogs(ctx, id)
 			if err != nil {
-				slog.Warn("log trim: trim failed, will retry next tick", "run", id, "error", err)
+				if errors.Is(err, store.ErrArchiveIncomplete) {
+					// The archive doesn't (yet) cover all of this run's
+					// logs — either it exceeded the archiver's TailLogs cap
+					// or lines were appended after archival. Warn and skip:
+					// no progress, and crucially no record deletion (unlike
+					// the missing-object case above) — deleting the record
+					// for a run whose logs exceed the cap would make
+					// ListRunsNeedingArchival re-archive it forever without
+					// ever producing complete coverage.
+					slog.Warn("log trim: archive coverage incomplete, skipping until archiver catches up", "run", id)
+				} else {
+					slog.Warn("log trim: trim failed, will retry next tick", "run", id, "error", err)
+				}
 				continue
 			}
 			progressed++
