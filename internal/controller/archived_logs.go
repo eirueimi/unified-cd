@@ -91,28 +91,51 @@ func (a *archivedLogs) lines(ctx context.Context, runID string) ([]api.LogLine, 
 	a.inflight[runID] = f
 	a.mu.Unlock()
 
-	lines, size, err := a.fetchAndDecode(ctx, runID)
-	f.lines, f.err = lines, err
-	close(f.done)
+	// Cleanup is deferred (not inline after fetchAndDecode) for two reasons:
+	//  - NEW-4: if fetchAndDecode or the caching logic below panics, the
+	//    deferred close(f.done) still runs, so coalesced waiters observe the
+	//    panic-time zero values instead of blocking on f.done forever, and
+	//    the deferred delete(a.inflight, runID) still runs, so the runID
+	//    isn't left permanently stuck routing every future caller to a dead
+	//    fetch that will never complete.
+	//  - the leader's fetch uses fetchCtx (see below), decoupled from the
+	//    leader's own ctx, so waiters must not be released before fetchCtx's
+	//    fetch actually finishes; deferring keeps that ordering regardless of
+	//    how the function returns.
+	var lines []api.LogLine
+	var size int64
+	var err error
+	defer func() {
+		f.lines, f.err = lines, err
+		close(f.done)
 
-	a.mu.Lock()
-	delete(a.inflight, runID)
-	if err == nil && size <= archivedLogsCacheBytes {
-		if _, ok := a.cache[runID]; !ok {
-			el := a.order.PushFront(&archivedLogEntry{runID: runID, lines: lines, bytes: size})
-			a.cache[runID] = el
-			a.total += size
-			for a.total > archivedLogsCacheBytes {
-				oldest := a.order.Back()
-				e := oldest.Value.(*archivedLogEntry)
-				a.order.Remove(oldest)
-				delete(a.cache, e.runID)
-				a.total -= e.bytes
+		a.mu.Lock()
+		delete(a.inflight, runID)
+		if err == nil && size <= archivedLogsCacheBytes {
+			if _, ok := a.cache[runID]; !ok {
+				el := a.order.PushFront(&archivedLogEntry{runID: runID, lines: lines, bytes: size})
+				a.cache[runID] = el
+				a.total += size
+				for a.total > archivedLogsCacheBytes {
+					oldest := a.order.Back()
+					e := oldest.Value.(*archivedLogEntry)
+					a.order.Remove(oldest)
+					delete(a.cache, e.runID)
+					a.total -= e.bytes
+				}
 			}
 		}
-	}
-	a.mu.Unlock()
+		a.mu.Unlock()
+	}()
 
+	// NEW-3: the leader fetches on a context decoupled from cancellation of
+	// the leader's own request (context.WithoutCancel keeps ctx's values —
+	// e.g. tracing — while dropping its Done channel and deadline). Without
+	// this, every coalesced waiter would get "context canceled" whenever the
+	// leader's client happened to disconnect first, even though the fetch
+	// itself is still perfectly servable for the other waiters.
+	fetchCtx := context.WithoutCancel(ctx)
+	lines, size, err = a.fetchAndDecode(fetchCtx, runID)
 	return lines, err
 }
 
