@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -61,12 +60,23 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	// are — rather than the head. If older lines were dropped we tell the client
 	// (via a "truncated" event) so it can surface that the view is not complete.
 	var lastSeq int64
-	var existing []api.LogLine
+	// READ before CHECK: read the DB first (as pre-trim code always did),
+	// then check whether the run is trimmed. If a trim commits in between,
+	// this DB read still executed strictly before that commit — its result
+	// is simply superseded below by the archive read; checking trimmed
+	// first would risk a trim landing in the gap and backfilling an empty
+	// DB read from rows that were just deleted.
+	dbExisting, dbErr := s.store.TailLogsRecent(r.Context(), id, sseBackfillLimit+1)
+	if dbErr != nil {
+		http.Error(w, dbErr.Error(), http.StatusInternalServerError)
+		return
+	}
 	trimmed, err := s.logsTrimmed(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	existing := dbExisting
 	if trimmed {
 		all, aerr := s.archLogs.lines(r.Context(), id)
 		if aerr != nil {
@@ -74,12 +84,6 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		existing = tailRecent(all, sseBackfillLimit+1)
-	} else {
-		existing, err = s.store.TailLogsRecent(r.Context(), id, sseBackfillLimit+1)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
 	}
 	if len(existing) > sseBackfillLimit {
 		existing = existing[len(existing)-sseBackfillLimit:]

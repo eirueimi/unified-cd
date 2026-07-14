@@ -23,7 +23,8 @@ func TestSSE_TrimmedRunBackfillsFromArchive(t *testing.T) {
 	s.SetObjectStore(obj)
 	runID := seedParityRun(t, pg, obj) // 6 lines, from archived_logs_test.go
 	ctx := context.Background()
-	require.NoError(t, pg.CreateLogArchive(ctx, runID, runLogArchiveKey(runID), 1))
+	lc, ms := archiveCoverage(t, pg, runID)
+	require.NoError(t, pg.CreateLogArchive(ctx, runID, runLogArchiveKey(runID), 1, lc, ms))
 	require.NoError(t, pg.MarkRunFinished(ctx, runID, api.RunSucceeded))
 	_, err := pg.TrimRunLogs(ctx, runID)
 	require.NoError(t, err)
