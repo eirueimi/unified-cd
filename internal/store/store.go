@@ -232,6 +232,11 @@ type Store interface {
 	CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes int64) error
 	GetLogArchive(ctx context.Context, runID string) (*LogArchive, error)
 
+	// Run retention
+	// ListExpiredRuns returns IDs of terminal (Succeeded/Failed/Cancelled)
+	// runs whose updated_at is older than cutoff, oldest first, up to limit.
+	ListExpiredRuns(ctx context.Context, cutoff time.Time, limit int) ([]string, error)
+
 	// ListenForNotify subscribes to a Postgres channel and calls the callback for each notification.
 	// Blocks until ctx is cancelled.
 	ListenForNotify(ctx context.Context, channel string, callback func(payload string)) error
