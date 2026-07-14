@@ -229,3 +229,16 @@ make ui-build       # build Svelte frontend assets (served by controller at runt
 make manifests      # regenerate Kubernetes install manifests
 make vscode-package # build VS Code extension .vsix
 ```
+
+---
+
+## Contributing
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) — pull
+requests require a [DCO](https://developercertificate.org/) sign-off
+(`git commit -s`).
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE)
+for attribution.
