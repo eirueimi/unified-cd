@@ -209,6 +209,65 @@ func TestRetry_FailsThenSucceeds(t *testing.T) {
 	assert.Equal(t, 2, h.retrySeparatorCount(0), "expected a retry separator logged before attempts 2 and 3")
 }
 
+// TestRetry_PerAttemptTimeoutThenSucceeds proves the per-attempt timeout
+// bounds ONE attempt (not the whole retry budget): attempt 1 would run far
+// longer than the timeout (sleep 30) and is killed ~1.2s in by its own
+// timeoutMinutes-derived context, then attempt 2 (a trivial `true`) succeeds
+// and the run ends Succeeded. The whole step therefore completes in a couple
+// of seconds rather than the 30s attempt-1 sleep — if the timeout had been
+// applied to the WHOLE step (the pre-Task-3 behavior) the retry budget would
+// have been capped at ~1.2s and there would have been no room for attempt 2
+// to run at all. The large margin (1.2s timeout vs 30s sleep, asserted step
+// elapsed < 15s) keeps this from being a flaky timing test.
+func TestRetry_PerAttemptTimeoutThenSucceeds(t *testing.T) {
+	stubRetrySleep(t)
+
+	const agentID = "retry-agent"
+	const runID = "run-retry-attempt-timeout"
+
+	h := newRetryHarness()
+	srv := newRetryServer(t, agentID, h)
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+
+	workDir := t.TempDir()
+	counter := filepath.Join(workDir, "count.txt")
+	// Attempt 1 (n==1): sleep 30 — far longer than the ~1.2s per-attempt
+	// timeout, so it is reliably killed by attempt 1's context. Attempt 2
+	// (n>=2): `true` — exits 0 immediately, so the step succeeds on retry.
+	script := "n=$(cat '" + counter + "' 2>/dev/null || echo 0); n=$((n+1)); printf '%s' \"$n\" > '" + counter + "';\n" +
+		"if [ \"$n\" -eq 1 ]; then sleep 30; else true; fi\n"
+
+	claim := api.ClaimResponse{
+		Native:  true,
+		RunID:   runID,
+		JobName: "test-retry-attempt-timeout",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0,
+				Name:  "slow-then-fast",
+				Run:   script,
+				// 0.02 min ≈ 1.2s: bounds attempt 1's sleep 30 with a huge
+				// margin, but is per-ATTEMPT — it must not cap the retry budget.
+				TimeoutMinutes: 0.02,
+				Retry:          &dsl.RetrySpec{Attempts: 2, Backoff: ""},
+			}},
+		},
+	}
+
+	start := time.Now()
+	a.executeRun(context.Background(), claim, workDir)
+	elapsed := time.Since(start)
+
+	assert.Equal(t, "2", readCounter(t, counter), "expected exactly 2 attempts: slow attempt 1 killed, fast attempt 2 succeeds")
+	assert.Equal(t, "Succeeded", h.lastStatusFor(0), "final reported status should be Succeeded after the retry")
+	assert.Equal(t, "Succeeded", h.finishStatus)
+	assert.Equal(t, 1, h.retrySeparatorCount(0), "expected one retry separator before attempt 2")
+	// Well under the 30s attempt-1 sleep: proves attempt 1 was killed by its
+	// per-attempt timeout AND that timeout did NOT cap the whole retry budget
+	// (the run still reached and succeeded on attempt 2).
+	require.Less(t, elapsed, 15*time.Second, "the whole step must finish well under attempt 1's 30s sleep (per-attempt timeout, not whole-step)")
+}
+
 // TestRetry_AllFail: every attempt fails -> Failed, called exactly Attempts times.
 func TestRetry_AllFail(t *testing.T) {
 	stubRetrySleep(t)
