@@ -73,15 +73,24 @@ func TestRunTriggerCmd_WaitOutputEndToEnd(t *testing.T) {
 	cmd := newRunTriggerCmd(func() (Config, error) { return cfg, nil }, srv.Client())
 	// Note: --output implies --wait, so --wait is intentionally omitted here.
 	cmd.SetArgs([]string{"my-job", "--output", "url"})
-	var out bytes.Buffer
+	var out, errb bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetErr(&errb)
 	err := cmd.Execute()
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if !strings.Contains(out.String(), "https://x") {
-		t.Errorf("unexpected output: %q", out.String())
+	// stdout must carry ONLY the captured output value(s) so that
+	// URL=$(unified-cli run trigger ... --output url) captures exactly the value.
+	if got := out.String(); got != "https://x\n" {
+		t.Errorf("stdout should be only the output value, got %q", got)
+	}
+	// The run id must NOT pollute stdout; it goes to stderr instead.
+	if strings.Contains(out.String(), "r1") {
+		t.Errorf("run id must not appear on stdout, got %q", out.String())
+	}
+	if !strings.Contains(errb.String(), "r1") {
+		t.Errorf("run id should be printed to stderr, got %q", errb.String())
 	}
 }
 

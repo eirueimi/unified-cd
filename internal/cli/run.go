@@ -92,7 +92,13 @@ func newRunTriggerCmd(resolve func() (Config, error), httpClient *http.Client) *
 			if err := json.Unmarshal(b, &run); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", run.ID)
+			// print the run id; when --output is used, send it to stderr so stdout
+			// carries only the captured output value(s) (X=$(... --output key)).
+			idW := cmd.OutOrStdout()
+			if len(outputs) > 0 {
+				idW = cmd.ErrOrStderr()
+			}
+			fmt.Fprintf(idW, "%s\n", run.ID)
 			if len(outputs) > 0 {
 				wait = true
 			}
