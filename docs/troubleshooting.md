@@ -527,6 +527,25 @@ fixed:
 - See [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery)
   for the full heartbeat/reaper timing and design.
 
+## Controller logs `dropping log line for sealed run`
+
+**Symptom**
+
+The controller logs `dropping log line for sealed run` (or `dropping log lines for sealed run`).
+
+**Cause**
+
+An agent sent log lines for a run whose logs were already archived (~30 s after the run finished). Log sealing is active whenever an object store is configured, independent of the `--log-trim-days` setting. The archive is the sealed source of truth, so the lines were discarded — storing them would make the run untrimmable and, after a trim, invisible anyway.
+
+**Fix**
+
+Occasional occurrences are expected noise. Common causes include:
+
+- An agent retrying after a network partition (the run was finalized by the stuck-run reaper meanwhile)
+- Teardown/buffer flushes arriving later than the archiver delay
+
+If you see a sustained stream of these warnings for the same run, the agent may be stuck and worth restarting.
+
 ## Controller fails at startup with `schema drift: ... does not exist`
 
 **Symptom**

@@ -155,6 +155,9 @@ type Store interface {
 	// GetRunParent returns the call step (and parent run) that launched childRunID,
 	// or nil if the run was not created by a call step.
 	GetRunParent(ctx context.Context, childRunID string) (*api.CalledBy, error)
+	// AppendLog stores one log line. Returns (0, nil) when the line was
+	// DROPPED because the run's logs are already archived (sealed) — see
+	// the Postgres implementation for rationale.
 	AppendLog(ctx context.Context, runID string, stepIndex int, stream string, ts time.Time, line string) (int64, error)
 	TailLogs(ctx context.Context, runID string, afterSeq int64, limit int) ([]api.LogLine, error)
 	// TailLogsRecent returns up to the last `limit` log lines for the run, in

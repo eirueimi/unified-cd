@@ -46,14 +46,21 @@ func TestArtifact_ObjectStoreNil_Download_Returns503(t *testing.T) {
 }
 
 func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
-	s, _ := newTestServer(t)
+	s, st := newTestServer(t)
 	obj := objectstore.NewLocalObjectStore(t.TempDir())
 	s.SetObjectStore(obj)
+
+	// handleArtifactUpload now 404s for runs the store doesn't know about, so
+	// seed a real job+run rather than uploading to a bare literal like "run1".
+	_, err := st.UpsertJob(t.Context(), "artifact-roundtrip-job", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	run, err := st.CreateRun(t.Context(), "artifact-roundtrip-job", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
 
 	payload := []byte("hello artifact data")
 
 	// Upload
-	uploadReq := httptest.NewRequest(http.MethodPut, "/api/v1/runs/run1/artifacts/myartifact", bytes.NewReader(payload))
+	uploadReq := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/myartifact", bytes.NewReader(payload))
 	uploadReq.Header.Set("Authorization", "Bearer agent-secret")
 	uploadReq.Header.Set("Content-Type", "application/octet-stream")
 	uploadRec := httptest.NewRecorder()
@@ -61,7 +68,7 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, uploadRec.Code, uploadRec.Body.String())
 
 	// Download
-	downloadReq := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run1/artifacts/myartifact", nil)
+	downloadReq := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/artifacts/myartifact", nil)
 	downloadReq.Header.Set("Authorization", "Bearer agent-secret")
 	downloadRec := httptest.NewRecorder()
 	s.Router().ServeHTTP(downloadRec, downloadReq)

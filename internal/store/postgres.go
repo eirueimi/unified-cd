@@ -755,18 +755,30 @@ func (p *Postgres) GetSidecarStatuses(ctx context.Context, runID string) ([]api.
 	return out, rows.Err()
 }
 
+// AppendLog stores one log line and notifies SSE listeners. Once the run's
+// logs are archived (a run_log_archives record exists) the run is SEALED:
+// the line is silently dropped and AppendLog returns (0, nil) — lines
+// arriving after archival would never be captured by the archive, would
+// block log trimming, and would be invisible ghost rows after a trim. The
+// guard lives in the INSERT itself so the hot append path costs no extra
+// round trip. Real seqs start at 1, so 0 is unambiguous.
 func (p *Postgres) AppendLog(ctx context.Context, runID string, stepIndex int, stream string, ts time.Time, line string) (int64, error) {
 	const q = `
 		INSERT INTO logs(run_id, step_index, stream, ts, line)
-		VALUES ($1, $2, $3, $4, $5)
+		SELECT $1::uuid, $2::int, $3::text, $4::timestamptz, $5::text
+		WHERE NOT EXISTS (SELECT 1 FROM run_log_archives WHERE run_id = $1::uuid)
 		RETURNING seq;
 	`
 	var seq int64
 	err := p.pool.QueryRow(ctx, q, runID, stepIndex, stream, ts, line).Scan(&seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil // sealed: dropped
+	}
 	if err != nil {
 		return 0, err
 	}
-	// notify listeners of the new log entry
+	// notify listeners of the new log entry (skipped for dropped lines, so
+	// SSE clients stay consistent with what readers can see)
 	_, _ = p.pool.Exec(ctx, "SELECT pg_notify($1, $2)", "log_appended:"+runID, fmt.Sprintf("%d", seq))
 	return seq, nil
 }

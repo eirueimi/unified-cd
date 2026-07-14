@@ -10,6 +10,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -21,6 +22,23 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := chi.URLParam(r, "runID")
+	// Tests may wire object-store-only servers (nil store); production always
+	// has a store, so only check existence when one is configured.
+	if s.store != nil {
+		if _, err := s.store.GetRun(r.Context(), runID); err != nil {
+			if errors.Is(err, store.ErrRunNotFound) {
+				// A late upload for a deleted run would create an orphaned
+				// object nothing ever cleans up (deleteRunEverywhere already
+				// ran its prefix delete). Terminal-but-existing runs are still
+				// accepted: their objects stay referenced and are removed with
+				// the run.
+				http.Error(w, "run not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	name := chi.URLParam(r, "name")
 	key := fmt.Sprintf("artifacts/%s/%s.tar.gz", runID, name)
 
