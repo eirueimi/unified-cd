@@ -80,6 +80,18 @@ Error handling:
 - `ObjectStore.Delete` returns nil for missing keys, so partial retries are
   idempotent.
 
+**Archiver race.** The log archiver and this deletion path walk terminal runs
+independently, often on different replicas, so their steps can interleave
+around a single run: (a) we find no `run_log_archives` record, then the
+archiver `Put`s the object and its `CreateLogArchive` fails on the now-gone
+run's FK, orphaning the object; (b) the archiver's `Put`+`CreateLogArchive`
+completes *after* our lookup found nothing but *before* our `DeleteRun` runs,
+so the cascade removes the record we never saw. We close (a) in the archiver
+(delete the object it just wrote if `CreateLogArchive` fails) and (b) here by
+always deleting the deterministic `runLogArchiveKey(runID)` unconditionally —
+both before and, best-effort, once more after `DeleteRun` — instead of
+relying solely on the archive record.
+
 ### Manual DELETE API
 
 `handleDeleteRun` keeps its existing 404/409 (non-terminal) checks and calls

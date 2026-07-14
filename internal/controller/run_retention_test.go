@@ -24,6 +24,11 @@ type fakeRetentionStore struct {
 	expired      [][]string                   // successive ListExpiredRuns results
 	listCalls    int
 	deleted      []string
+
+	// deleteRunHook, if set, runs inside DeleteRun before the deletion is
+	// recorded. Used to simulate the archiver completing concurrently with
+	// our own deletion (the (b) race window described on deleteRunEverywhere).
+	deleteRunHook func(id string)
 }
 
 func (f *fakeRetentionStore) AcquireAdvisoryLock(ctx context.Context, key int64) (func(), error) {
@@ -47,6 +52,9 @@ func (f *fakeRetentionStore) GetLogArchive(ctx context.Context, runID string) (*
 }
 
 func (f *fakeRetentionStore) DeleteRun(ctx context.Context, id string) error {
+	if f.deleteRunHook != nil {
+		f.deleteRunHook(id)
+	}
 	f.deleted = append(f.deleted, id)
 	return nil
 }
@@ -118,6 +126,47 @@ func TestDeleteRunEverywhere_NilObjectStoreDeletesRow(t *testing.T) {
 
 	require.NoError(t, deleteRunEverywhere(ctx, st, nil, "r1"))
 	assert.Equal(t, []string{"r1"}, st.deleted)
+}
+
+// TestDeleteRunEverywhere_DeletesArchiveObjectWithNoRecord covers race (a)
+// from deleteRunEverywhere's doc comment: the archiver may have written
+// runs/<runID>/logs.ndjson without (yet, or ever) getting a run_log_archives
+// record committed. GetLogArchive returning nil must not leave that object
+// behind — the deterministic key is deleted unconditionally.
+func TestDeleteRunEverywhere_DeletesArchiveObjectWithNoRecord(t *testing.T) {
+	ctx := context.Background()
+	obj := objectstore.NewLocalObjectStore(t.TempDir())
+	require.NoError(t, obj.Put(ctx, "runs/r1/logs.ndjson", strings.NewReader("{}"), 2))
+	st := &fakeRetentionStore{} // no archive record for r1
+
+	require.NoError(t, deleteRunEverywhere(ctx, st, obj, "r1"))
+
+	assert.Equal(t, []string{"r1"}, st.deleted)
+	_, err := obj.Get(ctx, "runs/r1/logs.ndjson")
+	assert.ErrorIs(t, err, objectstore.ErrNotFound, "orphaned log archive object gone despite no DB record")
+}
+
+// TestDeleteRunEverywhere_PostDeleteCatchesConcurrentArchiver covers race
+// (b): the archiver's Put+CreateLogArchive can complete after our
+// GetLogArchive check but before st.DeleteRun runs (and the FK cascade wipes
+// the record we never saw). The deleteRunHook simulates that by writing the
+// object during DeleteRun, in the window between our pre-delete check and
+// the row actually being removed.
+func TestDeleteRunEverywhere_PostDeleteCatchesConcurrentArchiver(t *testing.T) {
+	ctx := context.Background()
+	obj := objectstore.NewLocalObjectStore(t.TempDir())
+	st := &fakeRetentionStore{} // no archive record: GetLogArchive returns nil up front
+	st.deleteRunHook = func(id string) {
+		// Simulate the archiver finishing concurrently: it Puts the object
+		// after our pre-delete pass found nothing to clean up.
+		require.NoError(t, obj.Put(ctx, "runs/"+id+"/logs.ndjson", strings.NewReader("{}"), 2))
+	}
+
+	require.NoError(t, deleteRunEverywhere(ctx, st, obj, "r1"))
+
+	assert.Equal(t, []string{"r1"}, st.deleted)
+	_, err := obj.Get(ctx, "runs/r1/logs.ndjson")
+	assert.ErrorIs(t, err, objectstore.ErrNotFound, "object written mid-deletion is still cleaned up")
 }
 
 func TestRunRetention_FollowerDoesNothing(t *testing.T) {

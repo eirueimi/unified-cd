@@ -60,6 +60,16 @@ func archivePendingLogs(ctx context.Context, st store.Store, obj objectstore.Obj
 	return nil
 }
 
+// runLogArchiveKey is the deterministic object-store key for a run's archived
+// logs. Both the archiver (writer) and the run-retention deletion helper
+// (deleteRunEverywhere in run_retention.go) compute it independently rather
+// than only trusting the run_log_archives record, so the deletion helper can
+// still find and remove the object even when no record exists (or existed
+// only transiently) — see the "archiver race" note there.
+func runLogArchiveKey(runID string) string {
+	return fmt.Sprintf("runs/%s/logs.ndjson", runID)
+}
+
 func archiveRunLogs(ctx context.Context, st store.Store, obj objectstore.ObjectStore, runID string) error {
 	lines, err := st.TailLogs(ctx, runID, 0, 1_000_000)
 	if err != nil {
@@ -74,12 +84,20 @@ func archiveRunLogs(ctx context.Context, st store.Store, obj objectstore.ObjectS
 		}
 	}
 
-	key := fmt.Sprintf("runs/%s/logs.ndjson", runID)
+	key := runLogArchiveKey(runID)
 	size := int64(buf.Len())
 	if err := obj.Put(ctx, key, &buf, size); err != nil {
 		return fmt.Errorf("failed to store object: %w", err)
 	}
 	if err := st.CreateLogArchive(ctx, runID, key, size); err != nil {
+		// The object now exists with nothing in the DB pointing at it (e.g.
+		// the run was deleted by the retention sweeper between our TailLogs
+		// read and this insert, so the FK on run_id fails). Clean up the
+		// orphan best-effort rather than leaving it forever.
+		if delErr := obj.Delete(ctx, key); delErr != nil {
+			slog.Warn("failed to clean up orphaned log archive object after CreateLogArchive failure",
+				"runId", runID, "key", key, "error", delErr)
+		}
 		return fmt.Errorf("failed to create archive record: %w", err)
 	}
 	slog.Info("archived Run logs", "runId", runID, "key", key, "bytes", size)

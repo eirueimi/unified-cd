@@ -66,6 +66,13 @@ func runRunRetentionOnce(ctx context.Context, st store.Store, obj objectstore.Ob
 		}
 		deleted := 0
 		for _, id := range ids {
+			if ctx.Err() != nil {
+				// Shutting down: stop mid-batch instead of erroring through
+				// every remaining run. Not counted as zero progress — we
+				// simply return rather than falling through to the
+				// zero-progress-stops-the-tick check below.
+				return
+			}
 			if err := deleteRunEverywhere(ctx, st, obj, id); err != nil {
 				slog.Warn("run retention: delete failed, will retry next tick", "run", id, "error", err)
 				continue
@@ -94,6 +101,27 @@ func runRunRetentionOnce(ctx context.Context, st store.Store, obj objectstore.Ob
 // and the manual DELETE /runs/{id} handler use this helper. A nil obj
 // (object store not configured) skips object deletion — nothing was ever
 // uploaded in such deployments.
+//
+// Archiver race: the log archiver (archiver.go) and this deletion path walk
+// terminal runs independently, often on different replicas (separate
+// advisory locks), so their steps can interleave around a single run:
+//
+//   - (a) We delete a run whose GetLogArchive was nil (no record yet), then
+//     the archiver Puts the object and its CreateLogArchive fails on the
+//     runs FK (row is already gone) — orphaning the object. archiver.go
+//     compensates by deleting the object it just Put when CreateLogArchive
+//     fails.
+//   - (b) The archiver's Put + CreateLogArchive completes *after* our
+//     GetLogArchive returned nil but *before* our st.DeleteRun runs; the
+//     cascade then removes the archive record we never saw, orphaning the
+//     object it just wrote.
+//
+// We close (b) here: rather than relying solely on the (possibly stale or
+// absent) archive record, we always delete the deterministic
+// runLogArchiveKey(runID) — both before DeleteRun (the common case) and once
+// more after DeleteRun succeeds, to catch an archiver that wrote the object
+// during our own deletion window. The record-based delete stays too, purely
+// defensive in case the key format ever diverges from runLogArchiveKey.
 func deleteRunEverywhere(ctx context.Context, st store.Store, obj objectstore.ObjectStore, runID string) error {
 	if obj != nil {
 		arch, err := st.GetLogArchive(ctx, runID)
@@ -105,6 +133,12 @@ func deleteRunEverywhere(ctx context.Context, st store.Store, obj objectstore.Ob
 				return fmt.Errorf("delete log archive object %s: %w", arch.ObjectKey, err)
 			}
 		}
+		// Always delete the deterministic key too, regardless of whether a
+		// record existed: closes race (a) above, and is a no-op (Delete is
+		// nil for missing keys) when the record-based delete already got it.
+		if err := obj.Delete(ctx, runLogArchiveKey(runID)); err != nil {
+			return fmt.Errorf("delete log archive object %s: %w", runLogArchiveKey(runID), err)
+		}
 		keys, err := obj.List(ctx, "artifacts/"+runID+"/")
 		if err != nil {
 			return fmt.Errorf("list artifact objects: %w", err)
@@ -115,5 +149,19 @@ func deleteRunEverywhere(ctx context.Context, st store.Store, obj objectstore.Ob
 			}
 		}
 	}
-	return st.DeleteRun(ctx, runID)
+	if err := st.DeleteRun(ctx, runID); err != nil {
+		return err
+	}
+	if obj != nil {
+		// Closes race (b): the archiver may have written the object after
+		// our GetLogArchive/Delete above but before DeleteRun just ran. The
+		// DB row is already gone at this point, so this is best-effort —
+		// warn rather than error, since returning an error here would make
+		// the sweeper retry a run that no longer exists.
+		if err := obj.Delete(ctx, runLogArchiveKey(runID)); err != nil {
+			slog.Warn("run retention: post-delete log archive cleanup failed",
+				"run", runID, "key", runLogArchiveKey(runID), "error", err)
+		}
+	}
+	return nil
 }
