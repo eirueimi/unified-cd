@@ -34,6 +34,10 @@ type claimedByEntry struct {
 
 // claimedByCache is a bounded LRU of immutable runID -> claimed_by pairs so
 // the per-log-line ownership check is a memory lookup, not a DB query.
+//
+// All methods are nil-receiver safe: tests in this package construct Server
+// via bare struct literals that skip NewServer, so claimedBy may be nil. A
+// nil cache simply disables caching (gets always miss, puts are no-ops).
 type claimedByCache struct {
 	mu    sync.Mutex
 	m     map[string]*list.Element
@@ -46,12 +50,18 @@ func newClaimedByCache(cap int) *claimedByCache {
 }
 
 func (c *claimedByCache) len() int {
+	if c == nil {
+		return 0
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.m)
 }
 
 func (c *claimedByCache) get(runID string) (string, bool) {
+	if c == nil {
+		return "", false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	el, ok := c.m[runID]
@@ -63,8 +73,8 @@ func (c *claimedByCache) get(runID string) (string, bool) {
 }
 
 func (c *claimedByCache) put(runID, owner string) {
-	if owner == "" {
-		return // only immutable, non-empty values are cacheable
+	if c == nil || owner == "" {
+		return // nil cache disables caching; only immutable, non-empty values are cacheable
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

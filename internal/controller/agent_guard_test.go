@@ -92,6 +92,27 @@ func TestAgentRunGuard_CachesClaimedBy(t *testing.T) {
 	assert.Greater(t, st.getCalls, after)
 }
 
+func TestAgentRunGuard_NilCacheIsSafe(t *testing.T) {
+	// Tests in this package build Server via bare struct literals that skip
+	// NewServer, leaving claimedBy nil. The guard must still work (uncached).
+	st := &fakeGuardStore{runs: map[string]*api.Run{
+		"live": {ID: "live", Status: api.RunRunning, ClaimedBy: "a1"},
+	}}
+	s := &Server{store: st}
+	ctx := context.Background()
+
+	v, err := s.agentRunGuard(ctx, "a1", "live", false)
+	require.NoError(t, err)
+	assert.Equal(t, runWriteOK, v)
+
+	v, err = s.agentRunGuard(ctx, "a2", "live", true)
+	require.NoError(t, err)
+	assert.Equal(t, runWriteNotOwned, v)
+
+	// Every call must hit the store since nothing is cached.
+	assert.Equal(t, 2, st.getCalls)
+}
+
 func TestClaimedByCache_EvictsPastCap(t *testing.T) {
 	c := newClaimedByCache(3)
 	for i := 0; i < 5; i++ {
