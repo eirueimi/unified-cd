@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -39,8 +41,10 @@ func newRunCmdWithClient(resolve func() (Config, error), httpClient *http.Client
 
 func newRunTriggerCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	var paramKV []string
+	var paramFile string
 	var wait, follow bool
 	var timeout time.Duration
+	var outputs []string
 	cmd := &cobra.Command{
 		Use:   "trigger <job-name>",
 		Short: "trigger a run of an applied job",
@@ -55,6 +59,11 @@ func newRunTriggerCmd(resolve func() (Config, error), httpClient *http.Client) *
 				return err
 			}
 			params := map[string]string{}
+			if paramFile != "" {
+				if err := loadParamFile(paramFile, params); err != nil {
+					return err
+				}
+			}
 			for _, kv := range paramKV {
 				idx := strings.Index(kv, "=")
 				if idx <= 0 {
@@ -84,17 +93,89 @@ func newRunTriggerCmd(resolve func() (Config, error), httpClient *http.Client) *
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", run.ID)
+			if len(outputs) > 0 {
+				wait = true
+			}
 			if wait || follow {
-				return waitForRun(cmd.Context(), cfg, httpClient, run.ID, timeout, follow, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				if err := waitForRun(cmd.Context(), cfg, httpClient, run.ID, timeout, follow, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+					return err
+				}
+				if len(outputs) > 0 {
+					return printRunOutputs(cmd, cfg, httpClient, run.ID, outputs)
+				}
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringArrayVar(&paramKV, "param", nil, "parameter k=v (repeatable)")
+	cmd.Flags().StringVar(&paramFile, "param-file", "", "file of key=value lines to use as params (--param overrides)")
 	cmd.Flags().BoolVar(&wait, "wait", false, "block until the run reaches a terminal state; exit non-zero if it failed (1), was cancelled (2), or timed out (124)")
 	cmd.Flags().BoolVar(&follow, "follow", false, "stream the run's step logs while waiting (implies --wait)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "max time to wait (e.g. 30m); 0 means no timeout")
+	cmd.Flags().StringArrayVar(&outputs, "output", nil, "after --wait succeeds, print this run output's value (repeatable); implies --wait")
 	return cmd
+}
+
+// loadParamFile reads key=value lines from path into params (blank lines and
+// #-prefixed comments are skipped; keys/values are trimmed). A line without
+// "=" is an error.
+func loadParamFile(path string, params map[string]string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.Index(line, "=")
+		if idx <= 0 {
+			return fmt.Errorf("param-file %s line %d: expected key=value, got %q", path, lineNo, line)
+		}
+		params[strings.TrimSpace(line[:idx])] = strings.TrimSpace(line[idx+1:])
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// printRunOutputs fetches a run's outputs and prints the value of each
+// requested key, one per line, to cmd's stdout. Returns an error if any
+// requested key is absent.
+func printRunOutputs(cmd *cobra.Command, cfg Config, httpClient *http.Client, runID string, keys []string) error {
+	req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet,
+		cfg.Server+"/api/v1/runs/"+runID+"/outputs", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("server: %s", string(b))
+	}
+	var out api.RunOutputs
+	if err := json.Unmarshal(b, &out); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		v, ok := out.Outputs[key]
+		if !ok {
+			return fmt.Errorf("run %s has no output %q", runID, key)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), v)
+	}
+	return nil
 }
 
 func newRunWaitCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {

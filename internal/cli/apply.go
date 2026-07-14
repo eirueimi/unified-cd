@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -22,6 +23,7 @@ func newApplyCmd(resolve func() (Config, error)) *cobra.Command {
 
 func newApplyCmdWithClient(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	var file string
+	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "apply (register / update) a job from a YAML file",
@@ -60,7 +62,7 @@ func newApplyCmdWithClient(resolve func() (Config, error), httpClient *http.Clie
 					return fmt.Errorf("document %d: marshal error: %w", docIndex+1, err)
 				}
 
-				if err := applyOneDocument(cmd, cfg, httpClient, docBytes, docIndex); err != nil {
+				if err := applyOneDocument(cmd, cfg, httpClient, docBytes, docIndex, dryRun); err != nil {
 					return err
 				}
 				docIndex++
@@ -72,15 +74,22 @@ func newApplyCmdWithClient(resolve func() (Config, error), httpClient *http.Clie
 		},
 	}
 	cmd.Flags().StringVarP(&file, "file", "f", "", "path to job YAML")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate the YAML locally without applying it to the server")
 	return cmd
 }
 
 // applyOneDocument parses a single YAML document and applies it to the server.
-func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b []byte, docIndex int) error {
+// When dryRun is true, the document is parsed and validated locally with the
+// matching internal/dsl parser and reported; no HTTP request is made.
+func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b []byte, docIndex int, dryRun bool) error {
 	var kindProbe struct {
 		Kind string `yaml:"kind"`
 	}
 	_ = yaml.Unmarshal(b, &kindProbe)
+
+	if dryRun {
+		return applyOneDocumentDryRun(cmd, kindProbe.Kind, b, docIndex)
+	}
 
 	var endpoint string
 	var bodyBytes []byte
@@ -169,5 +178,53 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "job applied: %s\n", job.Name)
 	}
+	return nil
+}
+
+// applyOneDocumentDryRun parses and validates a single YAML document locally
+// using the internal/dsl parser matching kind (no HTTP request). On success it
+// reports "document N: <kind> "<name>" valid"; on failure it returns a
+// wrapped parse/validation error.
+func applyOneDocumentDryRun(cmd *cobra.Command, kind string, b []byte, docIndex int) error {
+	kindLabel := kind
+	if kindLabel == "" {
+		kindLabel = "Job"
+	}
+
+	var name string
+	switch kind {
+	case "Schedule":
+		s, err := dsl.ParseSchedule(bytes.NewReader(b))
+		if err != nil {
+			return fmt.Errorf("document %d: %w", docIndex+1, err)
+		}
+		name = s.Metadata.Name
+	case "WebhookReceiver":
+		w, err := dsl.ParseWebhookReceiver(bytes.NewReader(b))
+		if err != nil {
+			return fmt.Errorf("document %d: %w", docIndex+1, err)
+		}
+		name = w.Metadata.Name
+	case "AppSource":
+		a, err := dsl.ParseAppSource(bytes.NewReader(b))
+		if err != nil {
+			return fmt.Errorf("document %d: %w", docIndex+1, err)
+		}
+		name = a.Metadata.Name
+	case "GitCredential":
+		g, err := dsl.ParseGitCredential(bytes.NewReader(b))
+		if err != nil {
+			return fmt.Errorf("document %d: %w", docIndex+1, err)
+		}
+		name = g.Metadata.Name
+	default:
+		j, err := dsl.Parse(bytes.NewReader(b))
+		if err != nil {
+			return fmt.Errorf("document %d: %w", docIndex+1, err)
+		}
+		name = j.Metadata.Name
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "document %d: %s %q valid\n", docIndex+1, kindLabel, name)
 	return nil
 }

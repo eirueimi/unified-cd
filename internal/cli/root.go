@@ -56,6 +56,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newArtifactCmd(resolve))
 	root.AddCommand(newAuditCmd(resolve))
 	root.AddCommand(newLoginCmd())
+	root.AddCommand(newVersionCmd())
 	return root
 }
 

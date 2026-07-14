@@ -198,6 +198,72 @@ spec:
 	}
 }
 
+func TestApplyDryRun_ValidJobMakesNoHTTPCall(t *testing.T) {
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) {
+			t.Fatal("--dry-run must not make an HTTP request")
+			return 0, nil
+		},
+	}
+
+	content := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: solo
+spec:
+  steps:
+    - name: run
+      run: echo solo
+`
+	tmp := filepath.Join(t.TempDir(), "solo.yaml")
+	os.WriteFile(tmp, []byte(content), 0o600)
+
+	cmd, out := newTestApplyCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"-f", tmp, "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out.String(), `"solo"`) || !strings.Contains(out.String(), "valid") {
+		t.Errorf("unexpected output: %s", out.String())
+	}
+	if len(tr.records) != 0 {
+		t.Errorf("expected no HTTP requests, got %d", len(tr.records))
+	}
+}
+
+func TestApplyDryRun_InvalidYAMLErrorsWithoutHTTPCall(t *testing.T) {
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) {
+			t.Fatal("--dry-run must not make an HTTP request")
+			return 0, nil
+		},
+	}
+
+	// metadata.name is required by dsl.Job.Validate; omitting it makes this
+	// document invalid.
+	content := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: ""
+spec:
+  steps:
+    - name: run
+      run: echo solo
+`
+	tmp := filepath.Join(t.TempDir(), "invalid.yaml")
+	os.WriteFile(tmp, []byte(content), 0o600)
+
+	cmd, _ := newTestApplyCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"-f", tmp, "--dry-run"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "metadata.name") {
+		t.Fatalf("expected metadata.name validation error, got: %v", err)
+	}
+	if len(tr.records) != 0 {
+		t.Errorf("expected no HTTP requests, got %d", len(tr.records))
+	}
+}
+
 func TestApplyMultiDocumentStopsOnError(t *testing.T) {
 	callCount := 0
 	tr := &captureTransport{

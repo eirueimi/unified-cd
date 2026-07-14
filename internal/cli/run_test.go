@@ -1,10 +1,16 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +44,157 @@ func TestRunTrigger_PrintsRunID(t *testing.T) {
 	}
 	if tr.records[0].path != "/api/v1/runs" {
 		t.Errorf("unexpected path: %s", tr.records[0].path)
+	}
+}
+
+// TestRunTriggerCmd_WaitOutputEndToEnd drives `run trigger --wait --output
+// url`: POST creates the run, GET polls it to Succeeded, then GET
+// .../outputs is fetched and the requested key's value is printed.
+func TestRunTriggerCmd_WaitOutputEndToEnd(t *testing.T) {
+	var terminal atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/runs":
+			fmt.Fprint(w, `{"id":"r1","status":"Pending"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/runs/r1/outputs":
+			fmt.Fprint(w, `{"runId":"r1","outputs":{"url":"https://x"}}`)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/runs/r1"):
+			if terminal.Swap(true) {
+				fmt.Fprint(w, `{"id":"r1","status":"Succeeded"}`)
+			} else {
+				fmt.Fprint(w, `{"id":"r1","status":"Running"}`)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	cfg := Config{Server: srv.URL, Token: "tok"}
+	cmd := newRunTriggerCmd(func() (Config, error) { return cfg, nil }, srv.Client())
+	// Note: --output implies --wait, so --wait is intentionally omitted here.
+	cmd.SetArgs([]string{"my-job", "--output", "url"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out.String(), "https://x") {
+		t.Errorf("unexpected output: %q", out.String())
+	}
+}
+
+// TestRunTriggerCmd_WaitOutput_MissingKeyErrors verifies that requesting an
+// --output key the run did not report returns an error.
+func TestRunTriggerCmd_WaitOutput_MissingKeyErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/runs":
+			fmt.Fprint(w, `{"id":"r1","status":"Succeeded"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/runs/r1/outputs":
+			fmt.Fprint(w, `{"runId":"r1","outputs":{}}`)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/runs/r1"):
+			fmt.Fprint(w, `{"id":"r1","status":"Succeeded"}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	cfg := Config{Server: srv.URL, Token: "tok"}
+	cmd := newRunTriggerCmd(func() (Config, error) { return cfg, nil }, srv.Client())
+	cmd.SetArgs([]string{"my-job", "--output", "missing"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), `no output "missing"`) {
+		t.Fatalf("expected missing-output error, got: %v", err)
+	}
+}
+
+// TestRunTriggerCmd_WaitOutput_DoesNotPrintOnFailure verifies that outputs
+// are not fetched/printed when the run does not succeed (waitForRun returns
+// an *ExitError).
+func TestRunTriggerCmd_WaitOutput_DoesNotPrintOnFailure(t *testing.T) {
+	outputsHit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/runs":
+			fmt.Fprint(w, `{"id":"r1","status":"Pending"}`)
+		case r.URL.Path == "/api/v1/runs/r1/outputs":
+			outputsHit = true
+			fmt.Fprint(w, `{"runId":"r1","outputs":{"url":"https://x"}}`)
+		default: // GET /api/v1/runs/r1
+			fmt.Fprint(w, `{"id":"r1","status":"Failed"}`)
+		}
+	}))
+	defer srv.Close()
+	cfg := Config{Server: srv.URL, Token: "tok"}
+	cmd := newRunTriggerCmd(func() (Config, error) { return cfg, nil }, srv.Client())
+	cmd.SetArgs([]string{"my-job", "--output", "url"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	var ee *ExitError
+	if err == nil {
+		t.Fatal("expected an error for a failed run")
+	} else if !errors.As(err, &ee) {
+		t.Fatalf("expected *ExitError, got: %v", err)
+	} else if ee.Code != 1 {
+		t.Errorf("expected exit code 1, got %d", ee.Code)
+	}
+	if outputsHit {
+		t.Error("outputs endpoint must not be hit when the run did not succeed")
+	}
+}
+
+// TestRunTriggerCmd_ParamFileMergesWithParamOverride verifies --param-file
+// loads key=value lines (skipping blanks/comments) and that --param
+// overrides on key conflict.
+func TestRunTriggerCmd_ParamFileMergesWithParamOverride(t *testing.T) {
+	content := "# comment\n\nenv=staging\nregion=us-east-1\n"
+	tmp := filepath.Join(t.TempDir(), "params.env")
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := &captureTransport{
+		responseFor: func(path string) (int, []byte) {
+			b, _ := json.Marshal(api.Run{ID: "run-1", JobName: "hello"})
+			return http.StatusOK, b
+		},
+	}
+	cmd, _ := newTestRunCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"trigger", "hello", "--param-file", tmp, "--param", "env=prod"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var req api.TriggerRunRequest
+	if err := json.Unmarshal(tr.records[0].body, &req); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if req.Params["env"] != "prod" {
+		t.Errorf("expected --param to override param-file, got env=%q", req.Params["env"])
+	}
+	if req.Params["region"] != "us-east-1" {
+		t.Errorf("expected param-file value to be present, got region=%q", req.Params["region"])
+	}
+}
+
+// TestRunTriggerCmd_ParamFile_BadLineErrors verifies a param-file line
+// without "=" is rejected.
+func TestRunTriggerCmd_ParamFile_BadLineErrors(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "params.env")
+	if err := os.WriteFile(tmp, []byte("not-a-kv-line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) { return http.StatusOK, []byte("{}") }}
+	cmd, _ := newTestRunCmd(t, tr, "http://fake")
+	cmd.SetArgs([]string{"trigger", "hello", "--param-file", tmp})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "expected key=value") {
+		t.Fatalf("expected param-file parse error, got: %v", err)
 	}
 }
 
