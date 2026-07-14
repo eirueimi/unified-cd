@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,7 +71,8 @@ func TestResolveGitPendingRuns_DeterministicErrorFailsRun(t *testing.T) {
 	require.NoError(t, err)
 
 	resolver := gittemplate.NewResolver(badYAMLFetcher{}, nil)
-	resolveGitPendingRuns(t.Context(), pg, resolver, nil)
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
+	resolveGitPendingRuns(t.Context(), pg, resolver, nil, bo, time.Hour)
 
 	got, err := pg.GetRun(t.Context(), run.ID)
 	require.NoError(t, err)
@@ -85,11 +87,76 @@ func TestResolveGitPendingRuns_TransientErrorKeepsPending(t *testing.T) {
 	require.NoError(t, err)
 
 	resolver := gittemplate.NewResolver(erroringFetcher{}, nil)
-	resolveGitPendingRuns(t.Context(), pg, resolver, nil)
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
+	resolveGitPendingRuns(t.Context(), pg, resolver, nil, bo, time.Hour)
 
 	got, err := pg.GetRun(t.Context(), run.ID)
 	require.NoError(t, err)
 	assert.Equal(t, api.RunPending, got.Status)
+}
+
+// TestResolveGitPendingRuns_TransientErrorRecordsBackoffFailure verifies a
+// transient resolve failure is recorded against the backoff tracker, so a
+// subsequent call with the same backoff instance excludes the run from the
+// candidate batch (it is not re-resolved every tick while poisoned).
+func TestResolveGitPendingRuns_TransientErrorRecordsBackoffFailure(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "")
+	require.NoError(t, err)
+
+	resolver := gittemplate.NewResolver(erroringFetcher{}, nil)
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
+	resolveGitPendingRuns(t.Context(), pg, resolver, nil, bo, time.Hour)
+
+	excluded := bo.Excluded(time.Now())
+	assert.Contains(t, excluded, run.ID, "a transient failure must be recorded against the backoff tracker")
+}
+
+// TestResolveGitPendingRuns_DeadlineExceededFailsRun verifies a run whose
+// git-template resolution has kept failing longer than the deadline is
+// Failed (instead of staying Pending forever) with a system log line
+// explaining why.
+func TestResolveGitPendingRuns_DeadlineExceededFailsRun(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "")
+	require.NoError(t, err)
+
+	resolver := gittemplate.NewResolver(erroringFetcher{}, nil)
+
+	// First call: within the deadline, the run stays Pending and the
+	// failure is recorded against the backoff tracker.
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
+	resolveGitPendingRuns(t.Context(), pg, resolver, nil, bo, time.Hour)
+
+	got, err := pg.GetRun(t.Context(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunPending, got.Status)
+
+	// Backdate created_at past the deadline and retry with a FRESH backoff
+	// (a real restart would also start fresh) so the run isn't excluded by
+	// the first call's recorded failure.
+	require.NoError(t, pg.BackdateRunCreatedAt(t.Context(), run.ID, 2*time.Hour))
+	bo2 := newFailureBackoff(time.Minute, time.Hour, 10_000)
+	resolveGitPendingRuns(t.Context(), pg, resolver, nil, bo2, time.Hour)
+
+	got, err = pg.GetRun(t.Context(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunFailed, got.Status)
+
+	logs, err := pg.TailLogs(t.Context(), run.ID, 0, 100)
+	require.NoError(t, err)
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l.Line, "git template resolution failed for more than") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected a system log line about the exceeded resolve deadline, got: %+v", logs)
 }
 
 type badYAMLFetcher struct{}

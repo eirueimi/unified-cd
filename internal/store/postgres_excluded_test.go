@@ -54,3 +54,20 @@ func TestExcludedParam(t *testing.T) {
 	assert.Contains(t, got, a)
 	assert.NotContains(t, got, b)
 }
+
+func TestListPendingRuns_ExcludedAndCreatedAt(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	a, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	b, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+
+	runs, err := pg.ListPendingRuns(ctx, 10, []string{a.ID})
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, b.ID, runs[0].ID)
+	assert.WithinDuration(t, time.Now(), runs[0].CreatedAt, time.Minute, "CreatedAt must be populated")
+}

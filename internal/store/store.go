@@ -112,8 +112,9 @@ type GitCredential struct {
 
 // PendingRun holds the minimum information about a Run needed for git:// URI resolution.
 type PendingRun struct {
-	ID   string
-	Spec []byte
+	ID        string
+	Spec      []byte
+	CreatedAt time.Time
 }
 
 type Store interface {
@@ -340,7 +341,7 @@ type Store interface {
 	ResetStuckSyncingAppSources(ctx context.Context, olderThan time.Duration) (int, error)
 
 	// Git resolver helpers
-	ListPendingRuns(ctx context.Context, limit int) ([]PendingRun, error)
+	ListPendingRuns(ctx context.Context, limit int, excluded []string) ([]PendingRun, error)
 	UpdateRunSpec(ctx context.Context, runID string, specJSON []byte) error
 
 	// Schedules

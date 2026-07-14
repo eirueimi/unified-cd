@@ -1931,10 +1931,15 @@ func (p *Postgres) DeleteAuditLogsOlderThan(ctx context.Context, before time.Tim
 	return int(tag.RowsAffected()), nil
 }
 
-func (p *Postgres) ListPendingRuns(ctx context.Context, limit int) ([]PendingRun, error) {
+// ListPendingRuns returns Pending runs (oldest first, up to limit) that are
+// not in excluded — the git resolver's backoff exclusion set for candidates
+// whose resolution has been transiently failing (see failureBackoff).
+func (p *Postgres) ListPendingRuns(ctx context.Context, limit int, excluded []string) ([]PendingRun, error) {
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, spec FROM runs WHERE status = 'Pending' ORDER BY created_at LIMIT $1`,
-		limit)
+		`SELECT id, spec, created_at FROM runs
+		 WHERE status = 'Pending' AND id != ALL($2::uuid[])
+		 ORDER BY created_at LIMIT $1`,
+		limit, excluded)
 	if err != nil {
 		return nil, err
 	}
@@ -1942,7 +1947,7 @@ func (p *Postgres) ListPendingRuns(ctx context.Context, limit int) ([]PendingRun
 	var list []PendingRun
 	for rows.Next() {
 		var r PendingRun
-		if err := rows.Scan(&r.ID, &r.Spec); err != nil {
+		if err := rows.Scan(&r.ID, &r.Spec, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, r)

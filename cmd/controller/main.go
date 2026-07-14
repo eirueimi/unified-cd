@@ -73,6 +73,25 @@ func logTrimDaysDefault() int {
 	return n
 }
 
+// gitResolveDeadlineDefault resolves UNIFIED_GIT_RESOLVE_DEADLINE (a Go
+// duration). Runs whose git-template resolution keeps failing longer than
+// this are Failed instead of staying Pending forever. Unset, invalid, or
+// non-positive values fall back to 1h — 0 does NOT disable the deadline
+// (disabling would reintroduce immortal-Pending runs).
+func gitResolveDeadlineDefault() time.Duration {
+	const def = time.Hour
+	v := os.Getenv("UNIFIED_GIT_RESOLVE_DEADLINE")
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		slog.Warn("invalid UNIFIED_GIT_RESOLVE_DEADLINE, using default", "value", v, "default", def)
+		return def
+	}
+	return d
+}
+
 // queuedRunGraceDefault resolves the queued-run reaper grace period from
 // UNIFIED_QUEUED_RUN_GRACE (a Go duration string such as "5m" or "20m"),
 // falling back to 5 minutes when unset, invalid, or non-positive. This is
@@ -336,7 +355,7 @@ func main() {
 		}
 		fetcher := gittemplate.NewFetcher()
 		resolver := gittemplate.NewResolver(fetcher, gitCache)
-		controller.RunGitResolver(ctx, st, resolver, km, 200*time.Millisecond)
+		controller.RunGitResolver(ctx, st, resolver, km, 200*time.Millisecond, gitResolveDeadlineDefault())
 	}()
 	go func() {
 		fetcher := gittemplate.NewFetcher()
