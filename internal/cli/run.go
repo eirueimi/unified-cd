@@ -27,6 +27,7 @@ func newRunCmdWithClient(resolve func() (Config, error), httpClient *http.Client
 		Short: "Run management commands",
 	}
 	cmd.AddCommand(newRunTriggerCmd(resolve, httpClient))
+	cmd.AddCommand(newRunReplayCmd(resolve, httpClient))
 	cmd.AddCommand(newRunWaitCmd(resolve, httpClient))
 	cmd.AddCommand(newRunShowCmd(resolve, httpClient))
 	cmd.AddCommand(newRunListCmd(resolve, httpClient))
@@ -182,6 +183,44 @@ func printRunOutputs(cmd *cobra.Command, cfg Config, httpClient *http.Client, ru
 		fmt.Fprintln(cmd.OutOrStdout(), v)
 	}
 	return nil
+}
+
+func newRunReplayCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
+	return &cobra.Command{
+		Use:   "replay <run-id>",
+		Short: "Re-run a run with its original (snapshot) spec and params",
+		Long: "Create a new run from an existing run's spec snapshot and params, " +
+			"reproducing it exactly even if the job YAML has since changed. " +
+			"(Contrast the web Rerun button, which uses the job's current spec.)",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := resolve()
+			if err != nil {
+				return err
+			}
+			req, err := http.NewRequestWithContext(cmd.Context(), http.MethodPost,
+				cfg.Server+"/api/v1/runs/"+args[0]+"/replay", nil)
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Authorization", "Bearer "+cfg.Token)
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("server: %s", strings.TrimSpace(string(b)))
+			}
+			var run api.Run
+			if err := json.Unmarshal(b, &run); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", run.ID)
+			return nil
+		},
+	}
 }
 
 func newRunWaitCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {

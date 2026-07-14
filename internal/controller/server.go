@@ -277,6 +277,7 @@ func (s *Server) routes() {
 		r.With(dev).Delete("/jobs/*", s.handleDeleteJob)
 
 		r.With(dev).Post("/runs", s.handleTriggerRun)
+		r.With(dev).Post("/runs/{id}/replay", s.handleReplayRun)
 		r.With(view).Get("/runs/active", s.handleListActiveRuns)
 		r.With(view).Get("/runs", s.handleListRunsByJob)
 		r.With(view).Get("/runs/{id}", s.handleGetRun)

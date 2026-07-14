@@ -74,6 +74,54 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
+// handleReplayRun creates a new run from an existing run's ORIGINAL spec
+// snapshot (runs.spec) and params, rather than the job's current spec. Use it
+// to reproduce a run exactly as it executed, even if the job YAML has since
+// been re-applied. (The web "Rerun" button re-triggers with the LATEST job
+// spec; replay is the point-in-time counterpart.)
+func (s *Server) handleReplayRun(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	orig, err := s.store.GetRun(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrRunNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	specJSON, err := s.store.GetRunSpec(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(specJSON) == 0 {
+		http.Error(w, "run has no stored spec to replay", http.StatusInternalServerError)
+		return
+	}
+	// Derive routing (agentSelector, required capability) from the SNAPSHOT
+	// spec, exactly as handleTriggerRun does from the job spec — so the replay
+	// routes the same way the original run did, independent of the job's
+	// current definition. Reuse the original run's already-resolved params.
+	var spec dsl.Spec
+	agentSelector := []string{}
+	if json.Unmarshal(specJSON, &spec) == nil {
+		agentSelector = spec.AgentSelector
+	}
+	agentSelector, err = dsl.ExpandAgentSelector(agentSelector, orig.Params)
+	if err != nil {
+		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	requiredCaps := dsl.RequiredCaps(spec)
+	run, err := s.store.CreateRun(r.Context(), orig.JobName, orig.Params, specJSON, agentSelector, requiredCaps, "replay:"+id)
+	if err != nil {
+		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
 // handleGetRun returns the Run with the given ID.
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
