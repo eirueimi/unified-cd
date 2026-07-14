@@ -72,6 +72,7 @@ type Server struct {
 	dexProxy     *httputil.ReverseProxy  // /dex/* returns 404 when nil.
 	uiProxy      *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).
 	metrics      *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
+	claimedBy    *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
 
 	// Cached provider for OIDC Bearer token verification (lazily initialized).
 	// Used to verify id_tokens obtained via the CLI device flow for API authentication.
@@ -85,7 +86,7 @@ func NewServer(cfg Config, st store.Store) *Server {
 	if cfg.AgentToken == "" {
 		cfg.AgentToken = cfg.Token
 	}
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{})}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap)}
 	if cfg.WebDir == "" && cfg.UIProxyTarget != "" {
 		if target, err := url.Parse(cfg.UIProxyTarget); err == nil {
 			s.uiProxy = &httputil.ReverseProxy{
