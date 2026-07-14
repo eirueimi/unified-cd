@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -117,4 +118,61 @@ func TestDeleteRunEverywhere_NilObjectStoreDeletesRow(t *testing.T) {
 
 	require.NoError(t, deleteRunEverywhere(ctx, st, nil, "r1"))
 	assert.Equal(t, []string{"r1"}, st.deleted)
+}
+
+func TestRunRetention_FollowerDoesNothing(t *testing.T) {
+	st := &fakeRetentionStore{lockAcquired: false, expired: [][]string{{"r1"}}}
+	runRunRetentionOnce(context.Background(), st, nil, 30)
+	assert.Zero(t, st.listCalls)
+	assert.Empty(t, st.deleted)
+}
+
+func TestRunRetention_ZeroDaysMeansKeepForever(t *testing.T) {
+	// RunRunRetention (the looping entrypoint) must return immediately
+	// without touching the store when retentionDays <= 0.
+	st := &fakeRetentionStore{lockAcquired: true, expired: [][]string{{"r1"}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	RunRunRetention(ctx, st, nil, 10*time.Millisecond, 0)
+	assert.Zero(t, st.listCalls)
+}
+
+func TestRunRetention_DeletesExpiredAcrossBatches(t *testing.T) {
+	// A full first batch (batch size 100) triggers an immediate second fetch
+	// within the same tick; a short second batch ends the sweep.
+	full := make([]string, runRetentionBatchSize)
+	for i := range full {
+		full[i] = fmt.Sprintf("run-%03d", i)
+	}
+	st := &fakeRetentionStore{
+		lockAcquired: true,
+		expired:      [][]string{full, {"run-last"}},
+	}
+	runRunRetentionOnce(context.Background(), st, nil, 30)
+	assert.Equal(t, 2, st.listCalls)
+	assert.Len(t, st.deleted, runRetentionBatchSize+1)
+}
+
+func TestRunRetention_ZeroProgressBatchStopsTick(t *testing.T) {
+	// Failed runs stay in the oldest-first result set, so a full batch where
+	// every delete fails must stop the tick instead of refetching the same
+	// IDs forever. Deletes fail via an object store whose Delete errors.
+	full := make([]string, runRetentionBatchSize)
+	archives := make(map[string]*store.LogArchive, runRetentionBatchSize)
+	for i := range full {
+		id := fmt.Sprintf("run-%03d", i)
+		full[i] = id
+		archives[id] = &store.LogArchive{RunID: id, ObjectKey: "runs/" + id + "/logs.ndjson"}
+	}
+	inner := objectstore.NewLocalObjectStore(t.TempDir())
+	st := &fakeRetentionStore{
+		lockAcquired: true,
+		archives:     archives,
+		// The same full batch would be returned forever; the sweep must
+		// stop after the first zero-progress batch.
+		expired: [][]string{full, full, full},
+	}
+	runRunRetentionOnce(context.Background(), st, &failingObjStore{ObjectStore: inner}, 30)
+	assert.Equal(t, 1, st.listCalls, "must not refetch after a zero-progress batch")
+	assert.Empty(t, st.deleted)
 }

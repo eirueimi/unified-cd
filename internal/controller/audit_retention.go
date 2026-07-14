@@ -11,7 +11,7 @@ import (
 // auditRetentionLockKey is the advisory lock key for the audit log retention
 // cleanup task. Distinct from scheduler(0x65786364), approval(0x61707276),
 // cache(0x63616368), logArchiver(0x6C6F6761), appSource(0x61707073),
-// stuckRun(0x7374756B).
+// stuckRun(0x7374756B), runRetention(0x7272746E).
 const auditRetentionLockKey = int64(0x61756474) // 'audt'
 
 // RunAuditRetention periodically deletes audit_logs rows older than
