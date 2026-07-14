@@ -95,13 +95,34 @@ func runLogTrimOnce(ctx context.Context, st store.Store, obj objectstore.ObjectS
 			if err != nil {
 				if errors.Is(err, store.ErrArchiveIncomplete) {
 					// The archive doesn't (yet) cover all of this run's
-					// logs — either it exceeded the archiver's TailLogs cap
-					// or lines were appended after archival. Warn and skip:
-					// no progress, and crucially no record deletion (unlike
-					// the missing-object case above) — deleting the record
-					// for a run whose logs exceed the cap would make
-					// ListRunsNeedingArchival re-archive it forever without
-					// ever producing complete coverage.
+					// logs. Two cases land here, distinguished by fetching
+					// the record: a legacy record from before this branch's
+					// archiver recorded coverage (line_count = max_seq = 0,
+					// migration 012's default) has genuinely unknown
+					// coverage rather than known-incomplete coverage — delete
+					// it so ListRunsNeedingArchival re-archives the run with
+					// real counts, and count it as progress so the sweep
+					// doesn't wedge on it forever (ListTrimCandidates keeps
+					// re-offering it otherwise, since it's oldest-first). A
+					// non-legacy record means the run's logs genuinely
+					// exceed the archiver's TailLogs cap, or lines were
+					// appended after archival: warn and skip with no
+					// progress and no deletion, same as before — deleting
+					// that record would make the archiver retry forever
+					// without ever producing complete coverage.
+					arch, gErr := st.GetLogArchive(ctx, id)
+					if gErr == nil && arch != nil && arch.LineCount == 0 && arch.MaxSeq == 0 {
+						slog.Warn("log trim: legacy archive record without coverage, deleting so the archiver re-archives", "run", id)
+						if dErr := st.DeleteLogArchive(ctx, id); dErr != nil {
+							slog.Warn("log trim: delete legacy archive record", "run", id, "error", dErr)
+							continue
+						}
+						progressed++
+						continue
+					}
+					if gErr != nil {
+						slog.Warn("log trim: fetch archive record for incomplete-coverage run", "run", id, "error", gErr)
+					}
 					slog.Warn("log trim: archive coverage incomplete, skipping until archiver catches up", "run", id)
 				} else {
 					slog.Warn("log trim: trim failed, will retry next tick", "run", id, "error", err)

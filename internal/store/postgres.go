@@ -1377,10 +1377,36 @@ func (p *Postgres) GetLogArchive(ctx context.Context, runID string) (*LogArchive
 // ListTrimCandidates returns run IDs whose logs are archived but not yet
 // trimmed, with archived_at older than cutoff, oldest first. Archive records
 // only exist for terminal runs, so no status filter is needed.
+//
+// The AND (...) clause excludes candidates that are permanently incomplete —
+// without it, a run whose live logs will never be fully covered (>1,000,000-
+// line archiver cap, or late appends after archival) would fail TrimRunLogs'
+// coverage check forever, never leave the candidate set, and — being oldest
+// — wedge the front of every batch, since runLogTrimOnce stops a batch as
+// soon as it makes zero progress. Two arms:
+//   - `line_count = 0 AND max_seq = 0`: legacy records written by migration
+//     012's default, before this branch's archiver started recording real
+//     coverage. Coverage is simply unknown, not known-incomplete, so these
+//     stay in the set — the sweeper's healing path (runLogTrimOnce) deletes
+//     them so the archiver re-creates them with real counts. Runs with no
+//     live log rows also match this arm and trim normally (0 <= 0 passes
+//     TrimRunLogs' coverage check), which is intentional.
+//   - `NOT EXISTS (... l.seq > run_log_archives.max_seq ...)`: excludes
+//     non-legacy records whose live logs already exceed the recorded
+//     coverage — these would fail TrimRunLogs' check today and are not
+//     legacy, so re-archiving won't fix them until the run stops growing.
+//     Cheap via the logs (run_id, seq) index.
 func (p *Postgres) ListTrimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]string, error) {
 	const q = `
 		SELECT run_id FROM run_log_archives
 		WHERE trimmed_at IS NULL AND archived_at < $1
+		  AND (
+		    (line_count = 0 AND max_seq = 0)
+		    OR NOT EXISTS (
+		      SELECT 1 FROM logs l
+		      WHERE l.run_id = run_log_archives.run_id AND l.seq > run_log_archives.max_seq
+		    )
+		  )
 		ORDER BY archived_at
 		LIMIT $2;
 	`
@@ -1446,7 +1472,18 @@ func (p *Postgres) TrimRunLogs(ctx context.Context, runID string) (int64, error)
 		return 0, fmt.Errorf("%w: run %s", ErrArchiveIncomplete, runID)
 	}
 
-	tag, err := tx.Exec(ctx, `DELETE FROM logs WHERE run_id = $1`, runID)
+	// Bound the delete by wantMaxSeq (not an unqualified DELETE FROM logs)
+	// to close a residual race: a row committed between the coverage SELECT
+	// above and this DELETE — same transaction, but Postgres re-evaluates a
+	// plain WHERE run_id = $1 against the table's current state at execution
+	// time — would otherwise be destroyed even though it was never covered by
+	// the coverage check. Restricting to seq <= wantMaxSeq guarantees only
+	// rows the archive actually covers are deleted. For a legacy zero-
+	// coverage record (wantMaxSeq = 0, no live rows) this deletes nothing,
+	// which is correct: TrimRunLogs still marks trimmed_at, the caller
+	// observes a (0, nil) delete, and ListTrimCandidates' NOT EXISTS arm sees
+	// no seq > 0 to exclude on if a real archive record replaces it later.
+	tag, err := tx.Exec(ctx, `DELETE FROM logs WHERE run_id = $1 AND seq <= $2`, runID, wantMaxSeq)
 	if err != nil {
 		return 0, err
 	}

@@ -175,6 +175,68 @@ func TestPostgres_ListTrimCandidates(t *testing.T) {
 	assert.Equal(t, []string{oldest}, ids)
 }
 
+// TestPostgres_ListTrimCandidates_CoverageFiltering covers NEW-1's store
+// side: a candidate whose recorded coverage (line_count/max_seq) is smaller
+// than its live logs rows would fail TrimRunLogs' coverage check forever and
+// must never be offered as a candidate — except for a legacy zero-coverage
+// record (line_count = max_seq = 0, migration 012's default), which is
+// coverage-unknown rather than known-incomplete and must still be offered so
+// the sweeper's healing path can delete-and-re-archive it.
+func TestPostgres_ListTrimCandidates_CoverageFiltering(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+
+	age := func(runID string) {
+		t.Helper()
+		_, err := pg.pool.Exec(ctx,
+			`UPDATE run_log_archives SET archived_at = NOW() - interval '20 days' WHERE run_id = $1`, runID)
+		require.NoError(t, err)
+	}
+
+	// under-covered: archive claims 1 line, but 3 live rows exist -> excluded.
+	underCovered, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	var firstSeq int64
+	for i := 0; i < 3; i++ {
+		seq, err := pg.AppendLog(ctx, underCovered.ID, 0, "stdout", time.Now(), "line")
+		require.NoError(t, err)
+		if i == 0 {
+			firstSeq = seq
+		}
+	}
+	require.NoError(t, pg.CreateLogArchive(ctx, underCovered.ID, "runs/"+underCovered.ID+"/logs.ndjson", 10, 1, firstSeq))
+	age(underCovered.ID)
+
+	// legacy zero-coverage with live rows -> included (healing candidate).
+	legacy, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, err := pg.AppendLog(ctx, legacy.ID, 0, "stdout", time.Now(), "line")
+		require.NoError(t, err)
+	}
+	require.NoError(t, pg.CreateLogArchive(ctx, legacy.ID, "runs/"+legacy.ID+"/logs.ndjson", 10, 0, 0))
+	age(legacy.ID)
+
+	// fully covered -> included.
+	covered, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	var lastSeq int64
+	for i := 0; i < 3; i++ {
+		lastSeq, err = pg.AppendLog(ctx, covered.ID, 0, "stdout", time.Now(), "line")
+		require.NoError(t, err)
+	}
+	require.NoError(t, pg.CreateLogArchive(ctx, covered.ID, "runs/"+covered.ID+"/logs.ndjson", 10, 3, lastSeq))
+	age(covered.ID)
+
+	cutoff := time.Now().AddDate(0, 0, -7)
+	ids, err := pg.ListTrimCandidates(ctx, cutoff, 10)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{legacy.ID, covered.ID}, ids, "under-covered record must be excluded; legacy and fully-covered records included")
+	assert.NotContains(t, ids, underCovered.ID)
+}
+
 func TestPostgres_DeleteLogArchive(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()

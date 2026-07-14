@@ -23,6 +23,7 @@ type fakeTrimStore struct {
 	trimmed        []string
 	deletedRecords []string
 	trimErr        map[string]error
+	archives       map[string]*store.LogArchive // runID -> record, for GetLogArchive
 }
 
 func (f *fakeTrimStore) AcquireAdvisoryLock(ctx context.Context, key int64) (func(), error) {
@@ -52,6 +53,10 @@ func (f *fakeTrimStore) TrimRunLogs(ctx context.Context, runID string) (int64, e
 func (f *fakeTrimStore) DeleteLogArchive(ctx context.Context, runID string) error {
 	f.deletedRecords = append(f.deletedRecords, runID)
 	return nil
+}
+
+func (f *fakeTrimStore) GetLogArchive(ctx context.Context, runID string) (*store.LogArchive, error) {
+	return f.archives[runID], nil // nil, nil for an unseeded runID: matches store.Store's "not found" contract
 }
 
 // seedArchiveObject writes a placeholder archive object for runID so the
@@ -100,13 +105,15 @@ func TestLogTrim_MissingObjectDeletesStaleRecordAndSkipsTrim(t *testing.T) {
 	assert.Equal(t, []string{"r1"}, st.deletedRecords, "r1's stale record must be deleted so the archiver re-archives")
 }
 
-// TestLogTrim_IncompleteArchiveWarnsAndSkips covers Finding 1's sweeper side:
-// a candidate whose TrimRunLogs call reports incomplete archive coverage
-// (store.ErrArchiveIncomplete) must be warned and skipped like any other
-// trim failure — NOT counted as progress, and critically NOT deleted from
-// run_log_archives (unlike the missing-object case), since the run's logs
-// genuinely exceed what any archive attempt so far has covered and deleting
-// the record would just make the archiver retry forever.
+// TestLogTrim_IncompleteArchiveWarnsAndSkips covers the non-legacy half of
+// NEW-1's sweeper healing path: a candidate whose TrimRunLogs call reports
+// incomplete archive coverage (store.ErrArchiveIncomplete), and whose
+// GetLogArchive record has real (non-zero) coverage — i.e. the run's logs
+// genuinely exceed what the archiver covered (>1,000,000-line cap, or a late
+// append) — must be warned and skipped like any other trim failure: NOT
+// counted as progress, and critically NOT deleted from run_log_archives
+// (unlike the missing-object case), since deleting the record would just
+// make the archiver retry forever without ever producing complete coverage.
 func TestLogTrim_IncompleteArchiveWarnsAndSkips(t *testing.T) {
 	obj := objectstore.NewLocalObjectStore(t.TempDir())
 	seedArchiveObject(t, obj, "r1")
@@ -115,10 +122,32 @@ func TestLogTrim_IncompleteArchiveWarnsAndSkips(t *testing.T) {
 		lockAcquired: true,
 		candidates:   [][]string{{"r1", "r2"}},
 		trimErr:      map[string]error{"r1": store.ErrArchiveIncomplete},
+		archives:     map[string]*store.LogArchive{"r1": {RunID: "r1", LineCount: 5, MaxSeq: 5}},
 	}
 	runLogTrimOnce(context.Background(), st, obj, 7)
 	assert.Equal(t, []string{"r2"}, st.trimmed, "r1 must not be trimmed")
-	assert.Empty(t, st.deletedRecords, "an incomplete archive's record must never be deleted")
+	assert.Empty(t, st.deletedRecords, "a non-legacy incomplete archive's record must never be deleted")
+}
+
+// TestLogTrim_LegacyIncompleteArchiveHealed covers the legacy half of NEW-1's
+// sweeper healing path: a candidate whose TrimRunLogs call reports
+// ErrArchiveIncomplete and whose GetLogArchive record has LineCount == 0 &&
+// MaxSeq == 0 (migration 012's default, coverage unknown rather than
+// known-incomplete) must be deleted so the archiver re-archives it with real
+// coverage, and counted as progress so the sweep doesn't wedge on it.
+func TestLogTrim_LegacyIncompleteArchiveHealed(t *testing.T) {
+	obj := objectstore.NewLocalObjectStore(t.TempDir())
+	seedArchiveObject(t, obj, "r1")
+	seedArchiveObject(t, obj, "r2")
+	st := &fakeTrimStore{
+		lockAcquired: true,
+		candidates:   [][]string{{"r1", "r2"}},
+		trimErr:      map[string]error{"r1": store.ErrArchiveIncomplete},
+		archives:     map[string]*store.LogArchive{"r1": {RunID: "r1", LineCount: 0, MaxSeq: 0}},
+	}
+	runLogTrimOnce(context.Background(), st, obj, 7)
+	assert.Equal(t, []string{"r2"}, st.trimmed, "r1 must not be trimmed by this call")
+	assert.Equal(t, []string{"r1"}, st.deletedRecords, "legacy zero-coverage record must be deleted so the archiver re-archives")
 }
 
 func TestLogTrim_ZeroProgressBatchStopsTick(t *testing.T) {
