@@ -448,7 +448,7 @@ func TestAPI_DeleteRun_RemovesObjectStoreData(t *testing.T) {
 
 	archiveKey := "runs/" + run.ID + "/logs.ndjson"
 	require.NoError(t, obj.Put(ctx, archiveKey, strings.NewReader("{}"), 2))
-	require.NoError(t, st.CreateLogArchive(ctx, run.ID, archiveKey, 2))
+	require.NoError(t, st.CreateLogArchive(ctx, run.ID, archiveKey, 2, 0, 0))
 	artifactKey := "artifacts/" + run.ID + "/out.tar.gz"
 	require.NoError(t, obj.Put(ctx, artifactKey, strings.NewReader("x"), 1))
 

@@ -13,6 +13,15 @@ type LogArchive struct {
 	ObjectKey  string
 	SizeBytes  int64
 	ArchivedAt time.Time
+	// LineCount and MaxSeq record how many logs rows (and up to what seq)
+	// the archive object covers, as observed at archive time. TrimRunLogs
+	// compares these against the live logs table to detect a
+	// coverage gap (see ErrArchiveIncomplete) before deleting anything.
+	LineCount int64
+	MaxSeq    int64
+	// TrimmedAt is set when the run's logs rows were deleted from the DB
+	// after archival; nil means the rows are still present.
+	TrimmedAt *time.Time
 }
 
 // LogSearchMatch locates one search hit: Row is the 0-based row number
@@ -229,8 +238,27 @@ type Store interface {
 
 	// Log Archives
 	ListRunsNeedingArchival(ctx context.Context, limit int) ([]api.Run, error)
-	CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes int64) error
+	// CreateLogArchive records an archive object for runID. lineCount and
+	// maxSeq are the number of logs rows (and highest seq) the archive
+	// object actually covers — TrimRunLogs uses them to detect incomplete
+	// coverage before ever deleting rows.
+	CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes, lineCount, maxSeq int64) error
 	GetLogArchive(ctx context.Context, runID string) (*LogArchive, error)
+
+	// Log trim (tiered log storage)
+	// ListTrimCandidates returns run IDs whose logs are archived but not yet
+	// trimmed, with archived_at older than cutoff, oldest first, up to limit.
+	ListTrimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]string, error)
+	// TrimRunLogs marks the run's archive record trimmed and deletes its logs
+	// rows in one transaction. Returns rows deleted. A run with no untrimmed
+	// archive record is a (0, nil) no-op — logs are never deleted unarchived.
+	// Returns ErrArchiveIncomplete (and leaves everything untouched) if the
+	// live logs table has more rows or a higher seq than the archive record
+	// claims to cover.
+	TrimRunLogs(ctx context.Context, runID string) (int64, error)
+	// DeleteLogArchive removes the archive record (e.g. when its object is
+	// missing) so the archiver re-archives the run on its next tick.
+	DeleteLogArchive(ctx context.Context, runID string) error
 
 	// Run retention
 	// ListExpiredRuns returns IDs of terminal (Succeeded/Failed/Cancelled)

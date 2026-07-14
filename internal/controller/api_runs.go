@@ -170,10 +170,32 @@ func (s *Server) handleTailLogs(w http.ResponseWriter, r *http.Request) {
 	afterStr := r.URL.Query().Get("after")
 	var after int64
 	_, _ = fmt.Sscanf(afterStr, "%d", &after)
-	lines, err := s.store.TailLogs(r.Context(), id, after, 1000)
+	// READ before CHECK: run the DB read first (as pre-trim code always
+	// did), then ask whether the run is trimmed. If a trim commits between
+	// the two, this DB read still executed strictly before that commit and
+	// its (possibly empty) result is superseded below by the archive read;
+	// checking trimmed first would risk a trim landing in the gap and
+	// serving an empty DB read from a run whose rows just got deleted.
+	dbLines, dbErr := s.store.TailLogs(r.Context(), id, after, 1000)
+	if dbErr != nil {
+		http.Error(w, dbErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	trimmed, err := s.logsTrimmed(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	var lines []api.LogLine
+	if trimmed {
+		all, err := s.archLogs.lines(r.Context(), id)
+		if err != nil {
+			http.Error(w, "log archive unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		lines = tailAfter(all, after, 1000)
+	} else {
+		lines = dbLines
 	}
 	if lines == nil {
 		lines = []api.LogLine{}
@@ -264,7 +286,24 @@ func (s *Server) handleGetRunSteps(w http.ResponseWriter, r *http.Request) {
 	// surface it as a Sidecars entry only when it actually produced output (log
 	// lines at dsl.ArtifactLogIndex). It has no phase report, so it carries no
 	// live status.
-	if cnt, _, _, cErr := s.store.CountLogs(r.Context(), id, []int{dsl.ArtifactLogIndex}); cErr == nil && cnt > 0 {
+	cnt, _, _, cErr := s.store.CountLogs(r.Context(), id, []int{dsl.ArtifactLogIndex})
+	if cErr == nil && cnt == 0 {
+		// Once a run's logs are trimmed, the DB genuinely has zero logs rows,
+		// so CountLogs reports 0 even for a run whose artifact sidecar did
+		// produce output. Without this fallback the pseudo-step would
+		// silently vanish from the steps panel the moment the run is
+		// trimmed. On archive fetch failure we log and omit the pseudo-step
+		// rather than failing the whole response — availability over
+		// completeness for a listing endpoint.
+		if trimmed, tErr := s.logsTrimmed(r.Context(), id); tErr == nil && trimmed {
+			if all, aErr := s.archLogs.lines(r.Context(), id); aErr == nil {
+				cnt, _, _ = countArchivedLogs(all, []int{dsl.ArtifactLogIndex})
+			} else {
+				slog.Warn("steps: archive fetch failed for artifact pseudo-step fallback", "run", id, "error", aErr)
+			}
+		}
+	}
+	if cErr == nil && cnt > 0 {
 		present := false
 		for i := range steps {
 			if steps[i].Index == dsl.ArtifactLogIndex {
@@ -417,10 +456,26 @@ func (s *Server) handleLogStats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	count, minSeq, maxSeq, err := s.store.CountLogs(r.Context(), chi.URLParam(r, "id"), steps)
+	id := chi.URLParam(r, "id")
+	// READ before CHECK — see handleTailLogs for why the order matters.
+	dbCount, dbMinSeq, dbMaxSeq, dbErr := s.store.CountLogs(r.Context(), id, steps)
+	if dbErr != nil {
+		http.Error(w, dbErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	trimmed, err := s.logsTrimmed(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	count, minSeq, maxSeq := dbCount, dbMinSeq, dbMaxSeq
+	if trimmed {
+		all, err := s.archLogs.lines(r.Context(), id)
+		if err != nil {
+			http.Error(w, "log archive unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		count, minSeq, maxSeq = countArchivedLogs(all, steps)
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"count": count, "minSeq": minSeq, "maxSeq": maxSeq})
 }
@@ -449,10 +504,28 @@ func (s *Server) handleLogRange(w http.ResponseWriter, r *http.Request) {
 	if limit > 10000 {
 		limit = 10000
 	}
-	lines, err := s.store.ListLogsRange(r.Context(), chi.URLParam(r, "id"), steps, offset, limit)
+	id := chi.URLParam(r, "id")
+	// READ before CHECK — see handleTailLogs for why the order matters.
+	dbLines, dbErr := s.store.ListLogsRange(r.Context(), id, steps, offset, limit)
+	if dbErr != nil {
+		http.Error(w, dbErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	trimmed, err := s.logsTrimmed(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	var lines []api.LogLine
+	if trimmed {
+		all, err := s.archLogs.lines(r.Context(), id)
+		if err != nil {
+			http.Error(w, "log archive unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		lines = archivedLogRange(all, steps, offset, limit)
+	} else {
+		lines = dbLines
 	}
 	if lines == nil {
 		lines = []api.LogLine{}
@@ -474,10 +547,26 @@ func (s *Server) handleLogSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "q is required", http.StatusBadRequest)
 		return
 	}
-	total, matches, err := s.store.SearchLogs(r.Context(), chi.URLParam(r, "id"), steps, q, 1000)
+	id := chi.URLParam(r, "id")
+	// READ before CHECK — see handleTailLogs for why the order matters.
+	dbTotal, dbMatches, dbErr := s.store.SearchLogs(r.Context(), id, steps, q, 1000)
+	if dbErr != nil {
+		http.Error(w, dbErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	trimmed, err := s.logsTrimmed(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	total, matches := dbTotal, dbMatches
+	if trimmed {
+		all, err := s.archLogs.lines(r.Context(), id)
+		if err != nil {
+			http.Error(w, "log archive unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		total, matches = searchArchivedLogs(all, steps, q, 1000)
 	}
 	if matches == nil {
 		matches = []store.LogSearchMatch{}

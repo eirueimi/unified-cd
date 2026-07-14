@@ -218,6 +218,14 @@ func (p *Postgres) ListChildRunIDs(ctx context.Context, parentRunID string) ([]s
 // while surfacing infrastructure failures as 5xx. Match it with errors.Is.
 var ErrRunNotFound = errors.New("run not found")
 
+// ErrArchiveIncomplete is returned by TrimRunLogs when the run's logs table
+// holds more rows (or a higher seq) than the archive record claims to cover
+// — either the run's log count exceeded the archiver's TailLogs cap, or
+// lines were appended after the archive was written. Trimming would destroy
+// data no archive has a copy of, so TrimRunLogs rolls back and leaves the
+// logs rows and trimmed_at untouched. Match it with errors.Is.
+var ErrArchiveIncomplete = errors.New("archive does not cover all of the run's logs")
+
 func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
 	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by, claimed_by FROM runs WHERE id = $1`
 	var r api.Run
@@ -1341,21 +1349,22 @@ func (p *Postgres) ListExpiredRuns(ctx context.Context, cutoff time.Time, limit 
 	return out, rows.Err()
 }
 
-func (p *Postgres) CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes int64) error {
+func (p *Postgres) CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes, lineCount, maxSeq int64) error {
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO run_log_archives(run_id, object_key, size_bytes)
-		 VALUES ($1, $2, $3)
+		`INSERT INTO run_log_archives(run_id, object_key, size_bytes, line_count, max_seq)
+		 VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (run_id) DO UPDATE
-		   SET object_key = EXCLUDED.object_key, size_bytes = EXCLUDED.size_bytes, archived_at = NOW()`,
-		runID, objectKey, sizeBytes)
+		   SET object_key = EXCLUDED.object_key, size_bytes = EXCLUDED.size_bytes,
+		       line_count = EXCLUDED.line_count, max_seq = EXCLUDED.max_seq, archived_at = NOW()`,
+		runID, objectKey, sizeBytes, lineCount, maxSeq)
 	return err
 }
 
 func (p *Postgres) GetLogArchive(ctx context.Context, runID string) (*LogArchive, error) {
 	var a LogArchive
 	err := p.pool.QueryRow(ctx,
-		`SELECT run_id, object_key, size_bytes, archived_at FROM run_log_archives WHERE run_id = $1`,
-		runID).Scan(&a.RunID, &a.ObjectKey, &a.SizeBytes, &a.ArchivedAt)
+		`SELECT run_id, object_key, size_bytes, line_count, max_seq, archived_at, trimmed_at FROM run_log_archives WHERE run_id = $1`,
+		runID).Scan(&a.RunID, &a.ObjectKey, &a.SizeBytes, &a.LineCount, &a.MaxSeq, &a.ArchivedAt, &a.TrimmedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -1363,6 +1372,127 @@ func (p *Postgres) GetLogArchive(ctx context.Context, runID string) (*LogArchive
 		return nil, err
 	}
 	return &a, nil
+}
+
+// ListTrimCandidates returns run IDs whose logs are archived but not yet
+// trimmed, with archived_at older than cutoff, oldest first. Archive records
+// only exist for terminal runs, so no status filter is needed.
+//
+// The AND (...) clause excludes candidates that are permanently incomplete —
+// without it, a run whose live logs will never be fully covered (>1,000,000-
+// line archiver cap, or late appends after archival) would fail TrimRunLogs'
+// coverage check forever, never leave the candidate set, and — being oldest
+// — wedge the front of every batch, since runLogTrimOnce stops a batch as
+// soon as it makes zero progress. Two arms:
+//   - `line_count = 0 AND max_seq = 0`: legacy records written by migration
+//     012's default, before this branch's archiver started recording real
+//     coverage. Coverage is simply unknown, not known-incomplete, so these
+//     stay in the set — the sweeper's healing path (runLogTrimOnce) deletes
+//     them so the archiver re-creates them with real counts. Runs with no
+//     live log rows also match this arm and trim normally (0 <= 0 passes
+//     TrimRunLogs' coverage check), which is intentional.
+//   - `NOT EXISTS (... l.seq > run_log_archives.max_seq ...)`: excludes
+//     non-legacy records whose live logs already exceed the recorded
+//     coverage — these would fail TrimRunLogs' check today and are not
+//     legacy, so re-archiving won't fix them until the run stops growing.
+//     Cheap via the logs (run_id, seq) index.
+func (p *Postgres) ListTrimCandidates(ctx context.Context, cutoff time.Time, limit int) ([]string, error) {
+	const q = `
+		SELECT run_id FROM run_log_archives
+		WHERE trimmed_at IS NULL AND archived_at < $1
+		  AND (
+		    (line_count = 0 AND max_seq = 0)
+		    OR NOT EXISTS (
+		      SELECT 1 FROM logs l
+		      WHERE l.run_id = run_log_archives.run_id AND l.seq > run_log_archives.max_seq
+		    )
+		  )
+		ORDER BY archived_at
+		LIMIT $2;
+	`
+	rows, err := p.pool.Query(ctx, q, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// TrimRunLogs deletes a run's logs rows after marking its archive record
+// trimmed, in one transaction. The mark goes FIRST and guards trimmed_at IS
+// NULL: if there is no untrimmed archive record (never archived, already
+// trimmed, or the run was deleted by retention) nothing is deleted and the
+// call is a (0, nil) no-op.
+//
+// Before deleting anything, it re-checks the live logs table against the
+// archive record's line_count/max_seq IN THIS SAME TRANSACTION (race-free
+// vs. a late agent log flush landing between the caller's earlier checks
+// and this call): if the run has more logs rows, or a higher seq, than the
+// archive claims to cover, the archive is incomplete — trimming would
+// destroy rows no archive has a copy of. In that case the whole transaction
+// (including the trimmed_at mark) is rolled back and ErrArchiveIncomplete is
+// returned so the sweeper skips the run rather than deleting its archive
+// record (a >1,000,000-line run would otherwise loop re-archive forever).
+func (p *Postgres) TrimRunLogs(ctx context.Context, runID string) (int64, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	ct, err := tx.Exec(ctx,
+		`UPDATE run_log_archives SET trimmed_at = NOW() WHERE run_id = $1 AND trimmed_at IS NULL`, runID)
+	if err != nil {
+		return 0, err
+	}
+	if ct.RowsAffected() == 0 {
+		return 0, nil // no untrimmed archive record: never touch logs
+	}
+
+	var wantCount, wantMaxSeq int64
+	if err := tx.QueryRow(ctx,
+		`SELECT line_count, max_seq FROM run_log_archives WHERE run_id = $1`, runID,
+	).Scan(&wantCount, &wantMaxSeq); err != nil {
+		return 0, err
+	}
+	var haveCount, haveMaxSeq int64
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(MAX(seq), 0) FROM logs WHERE run_id = $1`, runID,
+	).Scan(&haveCount, &haveMaxSeq); err != nil {
+		return 0, err
+	}
+	if haveCount > wantCount || haveMaxSeq > wantMaxSeq {
+		return 0, fmt.Errorf("%w: run %s", ErrArchiveIncomplete, runID)
+	}
+
+	// Bound the delete by wantMaxSeq (not an unqualified DELETE FROM logs)
+	// to close a residual race: a row committed between the coverage SELECT
+	// above and this DELETE — same transaction, but Postgres re-evaluates a
+	// plain WHERE run_id = $1 against the table's current state at execution
+	// time — would otherwise be destroyed even though it was never covered by
+	// the coverage check. Restricting to seq <= wantMaxSeq guarantees only
+	// rows the archive actually covers are deleted. For a legacy zero-
+	// coverage record (wantMaxSeq = 0, no live rows) this deletes nothing,
+	// which is correct: TrimRunLogs still marks trimmed_at, the caller
+	// observes a (0, nil) delete, and ListTrimCandidates' NOT EXISTS arm sees
+	// no seq > 0 to exclude on if a real archive record replaces it later.
+	tag, err := tx.Exec(ctx, `DELETE FROM logs WHERE run_id = $1 AND seq <= $2`, runID, wantMaxSeq)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), tx.Commit(ctx)
+}
+
+func (p *Postgres) DeleteLogArchive(ctx context.Context, runID string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM run_log_archives WHERE run_id = $1`, runID)
+	return err
 }
 
 func (p *Postgres) ListenForNotify(ctx context.Context, channel string, callback func(payload string)) error {

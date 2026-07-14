@@ -43,11 +43,13 @@ func TestPostgres_CreateAndGetLogArchive(t *testing.T) {
 
 	// register an archive
 	key := "runs/" + run.ID + "/logs.ndjson"
-	require.NoError(t, pg.CreateLogArchive(ctx, run.ID, key, 1234))
+	require.NoError(t, pg.CreateLogArchive(ctx, run.ID, key, 1234, 5, 42))
 
 	arch, err = pg.GetLogArchive(ctx, run.ID)
 	require.NoError(t, err)
 	require.NotNil(t, arch)
 	assert.Equal(t, key, arch.ObjectKey)
 	assert.Equal(t, int64(1234), arch.SizeBytes)
+	assert.Equal(t, int64(5), arch.LineCount)
+	assert.Equal(t, int64(42), arch.MaxSeq)
 }

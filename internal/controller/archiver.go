@@ -89,7 +89,14 @@ func archiveRunLogs(ctx context.Context, st store.Store, obj objectstore.ObjectS
 	if err := obj.Put(ctx, key, &buf, size); err != nil {
 		return fmt.Errorf("failed to store object: %w", err)
 	}
-	if err := st.CreateLogArchive(ctx, runID, key, size); err != nil {
+	// lineCount/maxSeq record exactly what this archive object covers, so
+	// TrimRunLogs can detect a run whose logs exceeded this TailLogs cap or
+	// grew after archival, and refuse to trim it (see ErrArchiveIncomplete).
+	var maxSeq int64
+	if len(lines) > 0 {
+		maxSeq = lines[len(lines)-1].Seq
+	}
+	if err := st.CreateLogArchive(ctx, runID, key, size, int64(len(lines)), maxSeq); err != nil {
 		// The object now exists with nothing in the DB pointing at it (e.g.
 		// the run was deleted by the retention sweeper between our TailLogs
 		// read and this insert, so the FK on run_id fails). Clean up the

@@ -23,8 +23,8 @@ type fakeArchiverStore struct {
 	lines             []api.LogLine
 	createArchiveErr  error
 	createArchiveCall struct {
-		runID, key string
-		size       int64
+		runID, key           string
+		size, lineCount, seq int64
 	}
 }
 
@@ -32,10 +32,12 @@ func (f *fakeArchiverStore) TailLogs(ctx context.Context, runID string, afterSeq
 	return f.lines, nil
 }
 
-func (f *fakeArchiverStore) CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes int64) error {
+func (f *fakeArchiverStore) CreateLogArchive(ctx context.Context, runID, objectKey string, sizeBytes, lineCount, maxSeq int64) error {
 	f.createArchiveCall.runID = runID
 	f.createArchiveCall.key = objectKey
 	f.createArchiveCall.size = sizeBytes
+	f.createArchiveCall.lineCount = lineCount
+	f.createArchiveCall.seq = maxSeq
 	return f.createArchiveErr
 }
 

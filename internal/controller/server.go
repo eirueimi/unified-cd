@@ -65,6 +65,7 @@ type Server struct {
 	shuttingDown atomic.Bool
 	claimDrainCh chan struct{}           // Closed on shutdown to immediately drain all claim long-polls.
 	objStore     objectstore.ObjectStore // Archive endpoints return 501 when nil.
+	archLogs     *archivedLogs           // Serves log reads for trimmed runs; nil when objStore is nil.
 	cacheStore   objectstore.ObjectStore // nil = skip TTL cleanup
 	km           secrets.KeyManager      // Secret API returns 501 when nil.
 	oidcCfg      *OIDCConfig             // OIDC endpoints return 404 when nil.
@@ -117,6 +118,11 @@ func (s *Server) SetShuttingDown() {
 // SetObjectStore sets the object store used for log archiving. Archive endpoints return 501 when nil.
 func (s *Server) SetObjectStore(obj objectstore.ObjectStore) {
 	s.objStore = obj
+	if obj != nil {
+		s.archLogs = newArchivedLogs(obj)
+	} else {
+		s.archLogs = nil
+	}
 }
 
 // SetCacheStore sets the object store used for cache TTL cleanup.
