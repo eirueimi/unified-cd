@@ -163,13 +163,15 @@ func auditLogMiddleware(st interface {
 				return
 			}
 
-			// Buffer the request body (bounded) so handlers can still read it
-			// normally, while the middleware can peek at it after the fact for
-			// body-derived resource names (e.g. secret.set -> "name" only).
+			// Peek at the body (bounded) for body-derived resource names, but
+			// hand the handler the peeked bytes FOLLOWED BY the unread
+			// remainder — the peek must never truncate what the handler sees
+			// (a >64 KiB job YAML or secret would otherwise be silently cut).
 			var reqBody []byte
 			if r.Body != nil {
-				reqBody, _ = io.ReadAll(io.LimitReader(r.Body, auditBodyPeekLimit+1))
-				r.Body = io.NopCloser(bytes.NewReader(reqBody))
+				origBody := r.Body
+				reqBody, _ = io.ReadAll(io.LimitReader(origBody, auditBodyPeekLimit+1))
+				r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(reqBody), origBody))
 			}
 
 			rec := &auditResponseRecorder{
