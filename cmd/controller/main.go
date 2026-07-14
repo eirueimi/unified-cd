@@ -56,6 +56,23 @@ func runRetentionDaysDefault() int {
 	return n
 }
 
+// logTrimDaysDefault resolves the --log-trim-days flag default from
+// UNIFIED_LOG_TRIM_DAYS, falling back to 0 (never trim) when unset or
+// invalid. Trimming deletes the DB copy of archived logs; reads then come
+// from the object store, so this is opt-in like run retention.
+func logTrimDaysDefault() int {
+	v := os.Getenv("UNIFIED_LOG_TRIM_DAYS")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		slog.Warn("invalid UNIFIED_LOG_TRIM_DAYS, never trimming", "value", v)
+		return 0
+	}
+	return n
+}
+
 // queuedRunGraceDefault resolves the queued-run reaper grace period from
 // UNIFIED_QUEUED_RUN_GRACE (a Go duration string such as "5m" or "20m"),
 // falling back to 5 minutes when unset, invalid, or non-positive. This is
@@ -109,6 +126,7 @@ func main() {
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_LOG_LEVEL)")
 	auditRetentionDays := flag.Int("audit-retention-days", auditRetentionDaysDefault(), "days to keep audit_logs rows; 0 = keep forever (env: UNIFIED_AUDIT_RETENTION_DAYS)")
 	runRetentionDays := flag.Int("run-retention-days", runRetentionDaysDefault(), "days to keep terminal runs incl. their logs, log archives, and artifacts; 0 = keep forever (env: UNIFIED_RUN_RETENTION_DAYS)")
+	logTrimDays := flag.Int("log-trim-days", logTrimDaysDefault(), "days after archival to delete a run's DB log rows (reads switch to the archive); 0 = never trim (env: UNIFIED_LOG_TRIM_DAYS)")
 	var matrixMaxEnvWarning string
 	matrixMax := flag.Int("matrix-max-combinations", envIntOr("UNIFIED_MATRIX_MAX_COMBINATIONS", 64, &matrixMaxEnvWarning), "max combinations a matrix step may expand to (env: UNIFIED_MATRIX_MAX_COMBINATIONS)")
 	flag.Parse()
@@ -301,6 +319,16 @@ func main() {
 		slog.Info("run retention disabled (keep forever)")
 	}
 	go controller.RunRunRetention(ctx, st, obj, time.Hour, *runRetentionDays)
+	if *logTrimDays > 0 {
+		slog.Info("log trim enabled", "trimDays", *logTrimDays)
+		if *runRetentionDays > 0 && *logTrimDays >= *runRetentionDays {
+			slog.Warn("log trim will never fire: --log-trim-days >= --run-retention-days deletes runs before their logs qualify for trimming",
+				"logTrimDays", *logTrimDays, "runRetentionDays", *runRetentionDays)
+		}
+	} else {
+		slog.Info("log trim disabled (DB log rows kept forever)")
+	}
+	go controller.RunLogTrim(ctx, st, obj, time.Hour, *logTrimDays)
 	go func() {
 		var gitCache *gittemplate.Cache
 		if obj != nil {
