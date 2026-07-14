@@ -170,10 +170,25 @@ func (s *Server) handleTailLogs(w http.ResponseWriter, r *http.Request) {
 	afterStr := r.URL.Query().Get("after")
 	var after int64
 	_, _ = fmt.Sscanf(afterStr, "%d", &after)
-	lines, err := s.store.TailLogs(r.Context(), id, after, 1000)
+	trimmed, err := s.logsTrimmed(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	var lines []api.LogLine
+	if trimmed {
+		all, err := s.archLogs.lines(r.Context(), id)
+		if err != nil {
+			http.Error(w, "log archive unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		lines = tailAfter(all, after, 1000)
+	} else {
+		lines, err = s.store.TailLogs(r.Context(), id, after, 1000)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	if lines == nil {
 		lines = []api.LogLine{}
@@ -417,10 +432,26 @@ func (s *Server) handleLogStats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	count, minSeq, maxSeq, err := s.store.CountLogs(r.Context(), chi.URLParam(r, "id"), steps)
+	id := chi.URLParam(r, "id")
+	trimmed, err := s.logsTrimmed(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	var count, minSeq, maxSeq int64
+	if trimmed {
+		all, err := s.archLogs.lines(r.Context(), id)
+		if err != nil {
+			http.Error(w, "log archive unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		count, minSeq, maxSeq = countArchivedLogs(all, steps)
+	} else {
+		count, minSeq, maxSeq, err = s.store.CountLogs(r.Context(), id, steps)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"count": count, "minSeq": minSeq, "maxSeq": maxSeq})
 }
@@ -449,10 +480,26 @@ func (s *Server) handleLogRange(w http.ResponseWriter, r *http.Request) {
 	if limit > 10000 {
 		limit = 10000
 	}
-	lines, err := s.store.ListLogsRange(r.Context(), chi.URLParam(r, "id"), steps, offset, limit)
+	id := chi.URLParam(r, "id")
+	trimmed, err := s.logsTrimmed(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	var lines []api.LogLine
+	if trimmed {
+		all, err := s.archLogs.lines(r.Context(), id)
+		if err != nil {
+			http.Error(w, "log archive unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		lines = archivedLogRange(all, steps, offset, limit)
+	} else {
+		lines, err = s.store.ListLogsRange(r.Context(), id, steps, offset, limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	if lines == nil {
 		lines = []api.LogLine{}
@@ -474,10 +521,27 @@ func (s *Server) handleLogSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "q is required", http.StatusBadRequest)
 		return
 	}
-	total, matches, err := s.store.SearchLogs(r.Context(), chi.URLParam(r, "id"), steps, q, 1000)
+	id := chi.URLParam(r, "id")
+	trimmed, err := s.logsTrimmed(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	var total int64
+	var matches []store.LogSearchMatch
+	if trimmed {
+		all, err := s.archLogs.lines(r.Context(), id)
+		if err != nil {
+			http.Error(w, "log archive unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		total, matches = searchArchivedLogs(all, steps, q, 1000)
+	} else {
+		total, matches, err = s.store.SearchLogs(r.Context(), id, steps, q, 1000)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	if matches == nil {
 		matches = []store.LogSearchMatch{}

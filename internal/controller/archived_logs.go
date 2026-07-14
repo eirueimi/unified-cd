@@ -103,6 +103,20 @@ func (a *archivedLogs) lines(ctx context.Context, runID string) ([]api.LogLine, 
 	return lines, nil
 }
 
+// logsTrimmed reports whether the run's logs rows were trimmed from the DB
+// (archive record with trimmed_at set) and the archive reader is available,
+// i.e. log reads must be served from the archive object.
+func (s *Server) logsTrimmed(ctx context.Context, runID string) (bool, error) {
+	if s.archLogs == nil {
+		return false, nil
+	}
+	arch, err := s.store.GetLogArchive(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	return arch != nil && arch.TrimmedAt != nil, nil
+}
+
 // filterSteps returns the step-filtered view; an empty steps set means the
 // whole log (same convention as logsStepFilter in the store).
 func filterSteps(lines []api.LogLine, steps []int) []api.LogLine {
