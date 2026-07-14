@@ -181,3 +181,38 @@ func TestRunTriggerCmd_WaitEndToEnd(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, out.String(), "r1") // run id printed before waiting
 }
+
+// TestRunTriggerCmd_FollowEndToEnd verifies --follow (without an explicit
+// --wait) still enters the wait path, streams logs, and returns the run outcome.
+func TestRunTriggerCmd_FollowEndToEnd(t *testing.T) {
+	var statusReads int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/runs":
+			fmt.Fprint(w, `{"id":"r1","status":"Pending"}`)
+		case strings.Contains(r.URL.Path, "/logs"):
+			if r.URL.Query().Get("after") == "0" {
+				fmt.Fprint(w, `[{"seq":1,"stream":"stdout","line":"hello from step"}]`)
+			} else {
+				fmt.Fprint(w, `[]`)
+			}
+		default: // GET /api/v1/runs/r1
+			if atomic.AddInt64(&statusReads, 1) >= 2 {
+				fmt.Fprint(w, `{"id":"r1","status":"Succeeded"}`)
+			} else {
+				fmt.Fprint(w, `{"id":"r1","status":"Running"}`)
+			}
+		}
+	}))
+	defer srv.Close()
+	cfg := Config{Server: srv.URL, Token: "tok"}
+	cmd := newRunTriggerCmd(func() (Config, error) { return cfg, nil }, srv.Client())
+	cmd.SetArgs([]string{"my-job", "--follow"})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	assert.NoError(t, err)
+	assert.Contains(t, out.String(), "r1")              // run id printed
+	assert.Contains(t, out.String(), "hello from step") // logs streamed via --follow
+}
