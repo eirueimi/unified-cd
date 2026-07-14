@@ -390,10 +390,16 @@ unified-cli reject run-abc123 2 --comment "needs a second review"
 Stream or retrieve logs for a run.
 
 ```
-unified-cli logs [-f] <run-id>
+unified-cli logs [-f] [-t] [--step] <run-id>
 
-  -f, --follow   Follow log output until the run completes (polls every 300ms)
+  -f, --follow       Follow log output until the run completes (polls every 300ms)
+  -t, --timestamps   Prefix each line with its local HH:MM:SS timestamp
+      --step         Prefix each line with its step name, e.g. [build]
 ```
+
+`--timestamps` and `--step` combine as `HH:MM:SS [step] line`. With `--step`, the
+run-level "System" stream is labelled `[System]` and each sidecar's own output is
+labelled with its container name.
 
 ```bash
 # Print all available logs and exit
@@ -401,6 +407,9 @@ unified-cli logs run-abc123
 
 # Follow live output until completion
 unified-cli logs -f run-abc123
+
+# Follow with timestamps and per-line step names (steps interleave)
+unified-cli logs -f -t --step run-abc123
 
 # Common pattern: trigger then follow
 RUN_ID=$(unified-cli run trigger build --param image=myapp)
