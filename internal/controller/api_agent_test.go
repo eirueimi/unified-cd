@@ -1067,3 +1067,11 @@ func TestBuildClaimResponse_Shell_UsesComposition_CallerFillsUndeclaredTemplate(
 	require.NotNil(t, build, "expected inlined step tpl__build")
 	assert.Equal(t, []string{"bash", "-lc"}, build.Shell, "undeclared template step must pick up the caller's spec.shell")
 }
+
+func TestBuildOneClaimStep_CarriesRetry(t *testing.T) {
+	entry := dsl.StepEntry{Name: "flaky", Run: "true", Retry: &dsl.RetrySpec{Attempts: 3, Backoff: "30s"}}
+	cs := buildOneClaimStep(0, 0, entry, nil)
+	require.NotNil(t, cs.Retry)
+	assert.Equal(t, 3, cs.Retry.Attempts)
+	assert.Equal(t, "30s", cs.Retry.Backoff)
+}
