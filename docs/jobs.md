@@ -16,6 +16,7 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
   - [Step Outputs](#step-outputs)
   - [Timeout](#timeout)
   - [Continue on Error](#continue-on-error)
+  - [Retry](#retry)
   - [Post-step hooks (`post`)](#post-step-hooks-post)
   - [Matrix and Foreach Steps](#matrix-and-foreach-steps)
 - [Calling Other Jobs (`call`)](#calling-other-jobs-call)
@@ -73,6 +74,7 @@ spec:
       container: <string>         # exec into a named podTemplate container instead of the primary
       continueOnError: false      # don't fail the run if this step fails
       timeoutMinutes: 10          # step-level timeout in minutes
+      retry: { attempts: 3, backoff: 30s }  # retry a run: step on failure (run: only)
     - parallel:                   # OR: a group of steps that run concurrently
         - name: <string>          # (see "Concurrent Steps (parallel)")
           run: <shell script>
@@ -465,6 +467,32 @@ steps:
     continueOnError: true   # run will continue even if this step fails
     run: golangci-lint run
 ```
+
+### Retry
+
+`retry:` re-runs a `run:` step on failure, up to `attempts` total tries.
+
+```yaml
+steps:
+  - name: flaky-integration-test
+    run: go test ./it/...
+    timeoutMinutes: 5     # bounds EACH attempt
+    retry:
+      attempts: 3
+      backoff: 30s
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `retry.attempts` | number | Yes | Total number of tries. `1` (the default when `retry:` is omitted) means no retry. |
+| `retry.backoff` | duration | No | How long to wait between tries (a Go duration, e.g. `30s`, `2m`). Default: `0` (retry immediately). |
+
+Notes:
+- `retry:` is only valid on a `run:` step; declaring it on any other step type is a validation error at apply time.
+- Any failure of an attempt is retried: a non-zero exit code, an exec/infra error, or that attempt timing out. A run being cancelled is never retried.
+- `timeoutMinutes` bounds **each attempt**, not the overall retry budget — with `attempts: 3` and `timeoutMinutes: 5`, the step can take up to 15 minutes across all tries.
+- `continueOnError` is evaluated after the retry budget is exhausted — the step only continues past a failure once every attempt has failed.
+- All attempts stream to the same step log, with a separator line (e.g. `── retry 2/3 after 30s … ──`) marking the start of each retry.
 
 ### Post-step hooks (`post`)
 
