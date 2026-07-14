@@ -27,7 +27,7 @@ func newLogsCmd(resolve func() (Config, error)) *cobra.Command {
 			}
 			runID := args[0]
 			var after int64
-			ctx := context.Background()
+			ctx := cmd.Context()
 
 			for {
 				lines, status, err := fetchLogs(ctx, cfg, runID, after)

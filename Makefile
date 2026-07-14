@@ -7,6 +7,10 @@ GOFLAGS ?= -trimpath
 # docs/superpowers/specs/2026-07-12-step-shell-shim-design.md, Component 2).
 # Uses `go env`, not `uname`, so this works from Windows git-bash too.
 HOSTARCH ?= $(shell $(GO) env GOARCH)
+# Stamped into unified-cli's `version` command / `--version` flag (see
+# internal/cli/version.go's buildVersion()). Falls back to "dev" outside a
+# git checkout or when no tag exists yet.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 ui-build:
 	cd web && npm install && npm run build
@@ -26,7 +30,7 @@ embed-shim:
 build: ui-build embed-shim
 	$(GO) build $(GOFLAGS) -o bin/unified-cd-controller ./cmd/controller
 	$(GO) build $(GOFLAGS) -o bin/unified-cd-agent ./cmd/agent
-	$(GO) build $(GOFLAGS) -o bin/unified-cli ./cmd/unified-cli
+	$(GO) build $(GOFLAGS) -ldflags "-X github.com/eirueimi/unified-cd/internal/cli.version=$(VERSION)" -o bin/unified-cli ./cmd/unified-cli
 
 # Guards against accidentally committing a real ucd-sh binary in place of
 # either empty placeholder after a local `make build`/`make embed-shim`

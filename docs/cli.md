@@ -61,19 +61,35 @@ UNIFIED_SERVER=http://localhost:9 unified-cli --server http://localhost:8080 job
 
 ---
 
+## version
+
+Print the unified-cli version (stamped at build time from the git tag; `dev`
+for un-stamped local builds).
+
+```bash
+unified-cli version
+```
+
+---
+
 ## apply
 
 Apply a YAML resource definition to the controller. Creates or updates the resource.
 
 ```
-unified-cli apply -f <file>
+unified-cli apply -f <file> [--dry-run]
 
   -f, --file  string   Path to YAML file (required)
+      --dry-run        Validate the YAML locally without applying it to the server
 ```
 
 **Supported resource kinds:** `Job`, `Schedule`, `WebhookReceiver`, `GitCredential`, `AppSource`
 
 Multi-document YAML (separated by `---`) is supported — all resources in the file are applied.
+
+With `--dry-run` each document is parsed and validated locally (no server call,
+no changes) and reported as valid, or the command exits non-zero on the first
+error — useful as a lint gate in pull-request CI.
 
 ```bash
 # Apply a single resource
@@ -81,6 +97,9 @@ unified-cli apply -f job.yaml
 
 # Apply multiple resources in one file
 unified-cli apply -f all-resources.yaml
+
+# Validate without applying (e.g. in PR CI)
+unified-cli apply -f job.yaml --dry-run
 
 # Apply from stdin
 cat job.yaml | unified-cli apply -f -
@@ -158,17 +177,27 @@ Trigger and manage job runs.
 ### run trigger
 
 ```
-unified-cli run trigger <job-name> [--param key=value ...] [--wait] [--follow] [--timeout DURATION]
+unified-cli run trigger <job-name> [--param key=value ...] [--param-file FILE] [--wait] [--follow] [--timeout DURATION] [--output KEY ...]
 
   --param   string     Input parameter in key=value format (repeatable)
+  --param-file FILE    File of key=value lines to use as params (--param overrides on conflict)
   --wait               Block until the run finishes; exit non-zero if it did not succeed
   --follow             Stream step logs while waiting (implies --wait)
   --timeout DURATION   Max time to wait, e.g. 30m (default: no timeout)
+  --output KEY         After a successful wait, print this run output's value (repeatable; implies --wait)
 ```
 
 Triggers a run of the specified job and prints the run ID. With `--wait` (or
 `--follow`), the command then blocks until the run reaches a terminal state and
 maps the outcome to its exit code, so it fits directly in a CI pipeline.
+
+`--param-file` loads parameters from a `key=value` file (blank lines and `#`
+comments are skipped); explicit `--param` flags override file values on conflict.
+
+`--output KEY` prints a run-level output's value to stdout after the run
+succeeds — handy for scripting (`URL=$(unified-cli run trigger deploy --output url)`).
+When `--output` is used the run ID is written to stderr instead of stdout, so
+stdout carries only the captured value(s).
 
 **Exit codes (when waiting):** `0` succeeded · `1` failed · `2` cancelled ·
 `124` wait timed out.
