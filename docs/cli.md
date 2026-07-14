@@ -234,6 +234,22 @@ RUN_ID=$(unified-cli run trigger build)
 unified-cli run wait "$RUN_ID" --follow --timeout 20m
 ```
 
+### run replay
+
+```
+unified-cli run replay <run-id>
+```
+
+Creates a new run from an existing run's **original spec snapshot** and params,
+reproducing it exactly even if the job YAML has since been re-applied, and prints
+the new run ID. This differs from the web UI's **Rerun** button, which re-triggers
+with the job's *current* spec. Pipe the new ID to `run wait` to block on it.
+
+```bash
+NEW=$(unified-cli run replay run-abc123)
+unified-cli run wait "$NEW" --follow
+```
+
 ### run cancel
 
 ```
