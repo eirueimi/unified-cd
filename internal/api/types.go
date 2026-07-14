@@ -116,6 +116,7 @@ type ClaimStep struct {
 	ScopeID          string                `json:"scopeID,omitempty"`
 	ScopeImage       string                `json:"scopeImage,omitempty"`
 	TimeoutMinutes   float64               `json:"timeoutMinutes,omitempty"`
+	Retry            *dsl.RetrySpec        `json:"retry,omitempty"`
 	UploadArtifact   *UploadArtifactStep   `json:"uploadArtifact,omitempty"`
 	DownloadArtifact *DownloadArtifactStep `json:"downloadArtifact,omitempty"`
 	Matrix           *ClaimMatrixDef       `json:"matrix,omitempty"`

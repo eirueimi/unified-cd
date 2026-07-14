@@ -273,7 +273,7 @@ func stepToStepEntry(st dsl.Step) dsl.StepEntry {
 		Post: st.Post, ContinueOnError: st.ContinueOnError, Container: st.Container,
 		ScopeID:        st.ScopeID,
 		ScopeImage:     st.ScopeImage,
-		TimeoutMinutes: st.TimeoutMinutes, Foreach: st.Foreach, Matrix: st.Matrix,
+		TimeoutMinutes: st.TimeoutMinutes, Retry: st.Retry, Foreach: st.Foreach, Matrix: st.Matrix,
 		Approval: st.Approval,
 		Shell:    st.Shell,
 	}
@@ -294,6 +294,7 @@ func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry, jobShell []st
 		ScopeID:         entry.ScopeID,
 		ScopeImage:      entry.ScopeImage,
 		TimeoutMinutes:  entry.TimeoutMinutes,
+		Retry:           entry.Retry,
 		Shell:           resolveShell(entry.Shell, jobShell),
 	}
 	if entry.Call != nil {

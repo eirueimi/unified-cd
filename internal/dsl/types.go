@@ -109,6 +109,7 @@ type StepEntry struct {
 	ScopeID        string      `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
 	ScopeImage     string      `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
 	TimeoutMinutes float64     `yaml:"timeoutMinutes,omitempty"`
+	Retry          *RetrySpec  `yaml:"retry,omitempty" json:"retry,omitempty"`
 	Foreach        *ForeachDef `yaml:"foreach,omitempty"`
 	Matrix         *MatrixDef  `yaml:"matrix,omitempty"`
 	// Shell overrides the effective interpreter argv for this step. See
@@ -142,6 +143,7 @@ type Step struct {
 	ScopeID        string      `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
 	ScopeImage     string      `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
 	TimeoutMinutes float64     `yaml:"timeoutMinutes,omitempty"`
+	Retry          *RetrySpec  `yaml:"retry,omitempty" json:"retry,omitempty"`
 	Foreach        *ForeachDef `yaml:"foreach,omitempty"`
 	Matrix         *MatrixDef  `yaml:"matrix,omitempty"`
 	// Shell overrides the effective interpreter argv for this step. Array
@@ -152,6 +154,15 @@ type Step struct {
 	// count as steps for this purpose.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
 	// Needs removed — use parallel: blocks instead
+}
+
+// RetrySpec configures automatic re-runs of a failing run: step.
+type RetrySpec struct {
+	// Attempts is the total number of tries (1 = no retry). Must be >= 1.
+	Attempts int `yaml:"attempts" json:"attempts"`
+	// Backoff is a fixed wait between tries as a Go duration (e.g. "30s").
+	// Empty means 0 (immediate retry).
+	Backoff string `yaml:"backoff,omitempty" json:"backoff,omitempty"`
 }
 
 // ForeachDef expands a step into one parallel run per item in the list.

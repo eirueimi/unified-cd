@@ -22,6 +22,22 @@ import (
 // can shorten it instead of waiting through a real 5s tick.
 var CancelPollInterval = 5 * time.Second
 
+// retrySleep waits d honoring ctx (a var so tests run instantly). Returns
+// ctx.Err() if the wait is cancelled.
+var retrySleep = func(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // RunClaim is the single shared step-orchestration loop driving both the host
 // and k8s agents. It owns: secrets fetch -> masker construction -> installing
 // the masker on b (SetMasker) -> the cancellation poller -> per-step context
@@ -247,8 +263,11 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				})
 				return nil
 			}
-			// Apply step-level timeout to the context if one is configured
-			if step.TimeoutMinutes > 0 {
+			// Apply step-level timeout to the context if one is configured.
+			// A retry step applies its timeout per ATTEMPT inside the run loop below,
+			// so the whole-step timeout is skipped here (it would otherwise cap the
+			// entire retry budget). Non-retry steps keep the single per-step timeout.
+			if step.TimeoutMinutes > 0 && step.Retry == nil {
 				var stepCancel context.CancelFunc
 				stepCtx, stepCancel = context.WithTimeout(stepCtx, time.Duration(step.TimeoutMinutes*float64(time.Minute)))
 				defer stepCancel()
@@ -381,60 +400,98 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					extraEnv = append(extraEnv, k+"="+expanded)
 				}
 
-				shippedStdout, shippedStderr, finishLogs := b.StepLogWriters(stepCtx, step.Index)
-				// stdout is teed: streamed to the server while the step runs
-				// (mirroring the k8s agent's io.MultiWriter approach) AND kept in
-				// stdoutBuf for {{ .Stdout }} output-template evaluation below.
-				var stdoutBuf bytes.Buffer
-				stdoutTee := io.MultiWriter(&stdoutBuf, shippedStdout)
+				// attempts/backoff: a plain step (no retry:) runs its body exactly
+				// once via this same loop (attempts defaults to 1, backoff 0).
+				attempts := 1
+				var backoff time.Duration
+				if step.Retry != nil {
+					attempts = step.Retry.Attempts
+					backoff, _ = time.ParseDuration(step.Retry.Backoff) // validated at apply time; "" -> 0
+				}
+
 				var ec int
 				var runErr error
-				switch {
-				case isScopedStep(step):
-					// Scoped steps never carry a container: exec target (mutually
-					// exclusive at the DSL level), so this case takes precedence over
-					// the container case below.
-					h, herr := b.EnsureScope(stepCtx, step, extraEnv)
-					if herr != nil {
-						runErr = herr
-						ec = -1
-						break
+				var capturedStdout string
+				for try := 1; try <= attempts; try++ {
+					// Per-attempt timeout (retry steps only; non-retry steps use
+					// stepCtx as-is — its own whole-step timeout, if any, was
+					// already applied above).
+					attemptCtx := stepCtx
+					var attemptCancel context.CancelFunc
+					if step.Retry != nil && step.TimeoutMinutes > 0 {
+						attemptCtx, attemptCancel = context.WithTimeout(stepCtx, time.Duration(step.TimeoutMinutes*float64(time.Minute)))
 					}
-					stepScope = h
-					ec, runErr = b.RunInScope(stepCtx, h, expandedRun, step.Shell, extraEnv, stdoutTee, shippedStderr)
-				case step.Container != "":
-					ec, runErr = b.RunNamedContainer(stepCtx, step, step.Container, expandedRun, extraEnv, stdoutTee, shippedStderr)
-				default:
-					ec, runErr = b.RunDefault(stepCtx, step, expandedRun, extraEnv, stdoutTee, shippedStderr)
-				}
-				capturedStdout := stdoutBuf.String()
-				exitCode = ec
 
-				// A non-nil runErr means the step's process never ran to
-				// completion — the exec itself failed (target container has no
-				// shell, the pod/container is not running, the exec stream
-				// broke, etc.) rather than the command exiting non-zero. The
-				// command produced no output in that case, so the step log
-				// would otherwise be empty and the run would show an opaque
-				// failure with nothing to debug. Surface the reason on the
-				// step's own stderr stream before flushing. A master
-				// cancellation is expected shutdown, not a diagnosable fault,
-				// so it is excluded.
-				if runErr != nil && !cancelledByMaster.Load() {
-					fmt.Fprintf(shippedStderr, "unified-cd: step %q failed to execute: %v\n", step.Name, runErr)
-					slog.Warn("step exec error",
-						"run", c.RunID, "step", step.Name, "container", step.Container, "error", runErr)
+					shippedStdout, shippedStderr, finishLogs := b.StepLogWriters(attemptCtx, step.Index)
+					// stdout is teed: streamed to the server while the step runs
+					// (mirroring the k8s agent's io.MultiWriter approach) AND kept in
+					// stdoutBuf for {{ .Stdout }} output-template evaluation below.
+					var stdoutBuf bytes.Buffer
+					stdoutTee := io.MultiWriter(&stdoutBuf, shippedStdout)
+					switch {
+					case isScopedStep(step):
+						// Scoped steps never carry a container: exec target (mutually
+						// exclusive at the DSL level), so this case takes precedence over
+						// the container case below.
+						h, herr := b.EnsureScope(attemptCtx, step, extraEnv)
+						if herr != nil {
+							runErr = herr
+							ec = -1
+						} else {
+							stepScope = h
+							ec, runErr = b.RunInScope(attemptCtx, h, expandedRun, step.Shell, extraEnv, stdoutTee, shippedStderr)
+						}
+					case step.Container != "":
+						ec, runErr = b.RunNamedContainer(attemptCtx, step, step.Container, expandedRun, extraEnv, stdoutTee, shippedStderr)
+					default:
+						ec, runErr = b.RunDefault(attemptCtx, step, expandedRun, extraEnv, stdoutTee, shippedStderr)
+					}
+					capturedStdout = stdoutBuf.String()
+
+					// A non-nil runErr means the step's process never ran to
+					// completion — the exec itself failed (target container has no
+					// shell, the pod/container is not running, the exec stream
+					// broke, etc.) rather than the command exiting non-zero. The
+					// command produced no output in that case, so the step log
+					// would otherwise be empty and the run would show an opaque
+					// failure with nothing to debug. Surface the reason on the
+					// step's own stderr stream before flushing. A master
+					// cancellation is expected shutdown, not a diagnosable fault,
+					// so it is excluded.
+					if runErr != nil && !cancelledByMaster.Load() {
+						fmt.Fprintf(shippedStderr, "unified-cd: step %q failed to execute: %v\n", step.Name, runErr)
+						slog.Warn("step exec error",
+							"run", c.RunID, "step", step.Name, "container", step.Container, "error", runErr)
+					}
+					finishLogs(attemptCtx)
+					if attemptCancel != nil {
+						attemptCancel()
+					}
+
+					if runErr == nil && ec == 0 {
+						break // success
+					}
+					if cancelledByMaster.Load() {
+						break // never retry a master/user cancellation
+					}
+					if try < attempts {
+						// Separator on the NEXT attempt's stderr writer so it lands in the log.
+						_, nextStderr, nextFinish := b.StepLogWriters(stepCtx, step.Index)
+						fmt.Fprintf(nextStderr, "── retry %d/%d after %s (previous: exit %d) ──\n", try+1, attempts, backoff, ec)
+						nextFinish(stepCtx)
+						if serr := retrySleep(stepCtx, backoff); serr != nil {
+							break // cancelled during backoff
+						}
+					}
 				}
-				finishLogs(stepCtx)
+				exitCode = ec
 
 				if runErr != nil || ec != 0 {
 					status = "Failed"
-					// A step interrupted specifically because the master cancelled the
-					// run (as opposed to a step/job timeout, which is a genuine
-					// failure) should be reported as Cancelled rather than Failed so it
-					// doesn't linger as "Running" in the UI/DB — Cancelled is a terminal
-					// status the step-status CHECK constraint already allows.
-					if runErr != nil && cancelledByMaster.Load() {
+					// A master/user cancellation (during exec OR during a retry backoff) is a
+					// cancel, not a fault — cancelledByMaster is the authority, not runErr
+					// (with retry, a cancel can land after a non-zero exit with runErr == nil).
+					if cancelledByMaster.Load() {
 						status = "Cancelled"
 					}
 				} else {

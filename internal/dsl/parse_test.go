@@ -1608,3 +1608,50 @@ func TestParse_ExampleMatrixJob(t *testing.T) {
 	report := job.Spec.Steps[1]
 	assert.Equal(t, "report", report.Name)
 }
+
+func TestValidate_Retry_OnRunStep_OK(t *testing.T) {
+	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  steps:
+    - name: flaky
+      run: "true"
+      retry: {attempts: 3, backoff: 30s}`))
+	require.NoError(t, err)
+}
+
+func TestValidate_Retry_AttemptsMustBePositive(t *testing.T) {
+	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  steps:
+    - {name: s, run: "true", retry: {attempts: 0}}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "retry.attempts")
+}
+
+func TestValidate_Retry_BadBackoff(t *testing.T) {
+	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  steps:
+    - {name: s, run: "true", retry: {attempts: 2, backoff: "nope"}}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "retry.backoff")
+}
+
+func TestValidate_Retry_OnNonRunStep_Errors(t *testing.T) {
+	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  steps:
+    - name: c
+      cache: {path: /tmp, key: k}
+      retry: {attempts: 2}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "retry:")
+}
