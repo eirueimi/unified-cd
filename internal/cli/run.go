@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ func newRunCmdWithClient(resolve func() (Config, error), httpClient *http.Client
 		Short: "Run management commands",
 	}
 	cmd.AddCommand(newRunTriggerCmd(resolve, httpClient))
+	cmd.AddCommand(newRunWaitCmd(resolve, httpClient))
 	cmd.AddCommand(newRunShowCmd(resolve, httpClient))
 	cmd.AddCommand(newRunListCmd(resolve, httpClient))
 	cmd.AddCommand(newRunListActiveCmd(resolve, httpClient))
@@ -37,10 +39,16 @@ func newRunCmdWithClient(resolve func() (Config, error), httpClient *http.Client
 
 func newRunTriggerCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	var paramKV []string
+	var wait, follow bool
+	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "trigger <job-name>",
 		Short: "trigger a run of an applied job",
 		Args:  cobra.ExactArgs(1),
+		// The wait/follow paths return an *ExitError with a distinct exit code
+		// (failed=1, cancelled=2, timeout=124); silence the usage dump so a
+		// non-zero run outcome doesn't print command help.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := resolve()
 			if err != nil {
@@ -76,10 +84,39 @@ func newRunTriggerCmd(resolve func() (Config, error), httpClient *http.Client) *
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", run.ID)
+			if wait || follow {
+				return waitForRun(cmd.Context(), cfg, httpClient, run.ID, timeout, follow, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringArrayVar(&paramKV, "param", nil, "parameter k=v (repeatable)")
+	cmd.Flags().BoolVar(&wait, "wait", false, "block until the run reaches a terminal state; exit non-zero if it failed (1), was cancelled (2), or timed out (124)")
+	cmd.Flags().BoolVar(&follow, "follow", false, "stream the run's step logs while waiting (implies --wait)")
+	cmd.Flags().DurationVar(&timeout, "timeout", 0, "max time to wait (e.g. 30m); 0 means no timeout")
+	return cmd
+}
+
+func newRunWaitCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
+	var follow bool
+	var timeout time.Duration
+	cmd := &cobra.Command{
+		Use:   "wait <run-id>",
+		Short: "Wait for a run to finish; exit non-zero if it did not succeed",
+		Args:  cobra.ExactArgs(1),
+		// See newRunTriggerCmd: silence usage so a non-zero run outcome
+		// (returned as an *ExitError) does not print command help.
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := resolve()
+			if err != nil {
+				return err
+			}
+			return waitForRun(cmd.Context(), cfg, httpClient, args[0], timeout, follow, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	cmd.Flags().BoolVar(&follow, "follow", false, "stream the run's step logs while waiting")
+	cmd.Flags().DurationVar(&timeout, "timeout", 0, "max time to wait (e.g. 30m); 0 means no timeout")
 	return cmd
 }
 
