@@ -6,6 +6,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -270,6 +271,9 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				if err := checkStepExecTarget(st.Container, st.RunsIn, st.Uses != nil, subPath, st.Name); err != nil {
 					return err
 				}
+				if err := validateRetry(st.Name, subPath, st.Retry, st.Run != ""); err != nil {
+					return err
+				}
 				if native && st.Container != "" {
 					return fmt.Errorf("%s (%s): container: requires an isolated job — remove spec.native", subPath, st.Name)
 				}
@@ -311,6 +315,9 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				}
 			}
 			if err := checkStepExecTarget(entry.Container, entry.RunsIn, entry.Uses != nil, entryPath, entry.Name); err != nil {
+				return err
+			}
+			if err := validateRetry(entry.Name, entryPath, entry.Retry, entry.Run != ""); err != nil {
 				return err
 			}
 			if native && entry.Container != "" {
@@ -362,6 +369,26 @@ func validateResources(rs *ResourceSpec) error {
 			if _, err := resource.ParseQuantity(v); err != nil {
 				return fmt.Errorf("invalid resources %s quantity %q: %w", field, v, err)
 			}
+		}
+	}
+	return nil
+}
+
+// validateRetry checks a step's retry: block. retry is only valid on a run:
+// step (Run != ""); attempts must be >= 1 and backoff must parse as a duration.
+func validateRetry(name, path string, retry *RetrySpec, isRunStep bool) error {
+	if retry == nil {
+		return nil
+	}
+	if !isRunStep {
+		return fmt.Errorf("%s (%s): retry: is only valid on a run: step", path, name)
+	}
+	if retry.Attempts < 1 {
+		return fmt.Errorf("%s (%s): retry.attempts must be >= 1 (1 = no retry)", path, name)
+	}
+	if retry.Backoff != "" {
+		if _, err := time.ParseDuration(retry.Backoff); err != nil {
+			return fmt.Errorf("%s (%s): retry.backoff %q is not a valid duration: %w", path, name, retry.Backoff, err)
 		}
 	}
 	return nil
