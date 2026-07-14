@@ -349,7 +349,7 @@ func (s *Server) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("run %s is still %s; only terminal runs can be deleted", id, run.Status), http.StatusConflict)
 		return
 	}
-	if err := s.store.DeleteRun(r.Context(), id); err != nil {
+	if err := deleteRunEverywhere(r.Context(), s.store, s.objStore, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
