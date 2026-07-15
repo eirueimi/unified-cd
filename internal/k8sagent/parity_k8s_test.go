@@ -443,6 +443,18 @@ func (b *parityK8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string
 	return p, nil
 }
 
+// WorkspacePath mirrors k8sBackend.WorkspacePath's shape; none of the 10
+// parity cases asserts on UNIFIED_WORKSPACE (parityRunScript injects its own
+// fixed env rather than propagating RunDefault's env parameter, mirroring
+// how it already hardcodes UNIFIED_AGENT_OS=linux instead of using it), so
+// exact value fidelity doesn't matter here (see ResolveArtifactPath above).
+func (b *parityK8sBackend) WorkspacePath(scope agentlib.ScopeHandle) string {
+	if !scope.IsZero() {
+		return scopeMountPath
+	}
+	return "/workspace"
+}
+
 // DefaultAgentOS mirrors k8sBackend: every k8s exec path runs inside a Linux pod.
 func (b *parityK8sBackend) DefaultAgentOS() string {
 	return "linux"

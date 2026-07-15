@@ -66,6 +66,11 @@ type ExecBackend interface {
 	// p that escapes the resolved root, is rejected as an error.
 	ResolveCachePath(scope ScopeHandle, p string) (string, error)
 
+	// WorkspacePath returns the cwd workspace root a step sees in this scope
+	// (host workDir natively; the container mount path in isolated/k8s; the
+	// scope container's cwd when scoped), exposed to steps as UNIFIED_WORKSPACE.
+	WorkspacePath(scope ScopeHandle) string
+
 	// DefaultAgentOS reports the OS a non-scoped, non-container: step
 	// actually executes on, for the UNIFIED_AGENT_OS env var (scoped/
 	// container: steps always report "linux" regardless of backend, since

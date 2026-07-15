@@ -241,6 +241,15 @@ func (f *fakeK8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) 
 	return f.ResolveArtifactPath(scope, p)
 }
 
+// WorkspacePath mirrors k8sBackend.WorkspacePath, using the same default
+// mount path ("/workspace") ResolveArtifactPath above uses.
+func (f *fakeK8sBackend) WorkspacePath(scope agentlib.ScopeHandle) string {
+	if !scope.IsZero() {
+		return scopeMountPath
+	}
+	return "/workspace"
+}
+
 // DefaultAgentOS mirrors k8sBackend: every k8s exec path runs inside a Linux pod.
 func (f *fakeK8sBackend) DefaultAgentOS() string {
 	return "linux"

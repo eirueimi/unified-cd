@@ -394,7 +394,25 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				// UNIFIED_AGENT_OS lets job authors determine the running OS from within a step.
 				// Scoped / runsIn.image steps run in a Linux container regardless of
 				// backend; every other step reports b.DefaultAgentOS() — see agentOSForStep.
-				extraEnv := []string{"UNIFIED_AGENT_OS=" + agentOSForStep(step, b.DefaultAgentOS())}
+				//
+				// UNIFIED_WORKSPACE lets job authors build workspace-relative paths
+				// portably. b.WorkspacePath only inspects whether its scope argument
+				// is zero (both backends return a fixed constant for any scoped
+				// step; see hostBackend.WorkspacePath / k8sBackend.WorkspacePath), so
+				// a placeholder non-zero handle stands in for isScopedStep(step) here
+				// rather than the real scope handle: EnsureScope (called below, only
+				// for the isScopedStep case) provisions the actual scope container
+				// using THIS extraEnv slice, so the slice must already be complete
+				// before that call — calling EnsureScope here to obtain a real handle
+				// would provision the container too early, with an incomplete env.
+				workspaceScope := ScopeHandle{}
+				if isScopedStep(step) {
+					workspaceScope = NewScopeHandle(step.ScopeID)
+				}
+				extraEnv := []string{
+					"UNIFIED_AGENT_OS=" + agentOSForStep(step, b.DefaultAgentOS()),
+					"UNIFIED_WORKSPACE=" + b.WorkspacePath(workspaceScope),
+				}
 				for k, v := range step.Env {
 					expanded, _ := dsl.ExpandTemplate(v, tplData)
 					extraEnv = append(extraEnv, k+"="+expanded)

@@ -71,6 +71,16 @@ func TestHostBackend_Native_ResolveCachePathJoinsWorkDir(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
+// TestHostBackend_Isolated_WorkspacePathIsMountPath verifies that a
+// non-scoped step on an isolated claim reports the pod's bind-mount path
+// (not the host workDir) for UNIFIED_WORKSPACE, and that a scoped step still
+// reports scopeWorkDir regardless of isolation.
+func TestHostBackend_Isolated_WorkspacePathIsMountPath(t *testing.T) {
+	b, _ := isolatedBackendForTest(t)
+	assert.Equal(t, "/workspace", b.WorkspacePath(ScopeHandle{}))
+	assert.Equal(t, scopeWorkDir, b.WorkspacePath(scopeHandleForTest()))
+}
+
 func TestHostBackend_Isolated_PostHookRunsInStepContainer(t *testing.T) {
 	b, f := isolatedBackendForTest(t)
 	require.NoError(t, b.RunPostHook(context.Background(), ScopeHandle{}, "mysql", "echo post", nil, nil, io.Discard, io.Discard))

@@ -22,14 +22,18 @@ func TestImageStepEnv(t *testing.T) {
 
 	assert.Equal(t, "bar", out["FOO"])
 	assert.Equal(t, "linux", out["UNIFIED_AGENT_OS"], "scope pod is a linux container")
+	assert.Equal(t, "/workspace", out["UNIFIED_WORKSPACE"], "scope pod's fixed working directory")
 	// must not mutate the input map (the claim's step.Env)
 	assert.Equal(t, map[string]string{"FOO": "bar"}, original)
 	_, hasKey := original["UNIFIED_AGENT_OS"]
 	assert.False(t, hasKey, "imageStepEnv must not inject UNIFIED_AGENT_OS into the caller's map")
+	_, hasWorkspaceKey := original["UNIFIED_WORKSPACE"]
+	assert.False(t, hasWorkspaceKey, "imageStepEnv must not inject UNIFIED_WORKSPACE into the caller's map")
 }
 
 func TestImageStepEnv_NilEnv(t *testing.T) {
 	out := imageStepEnv(api.ClaimStep{})
 	assert.Equal(t, "linux", out["UNIFIED_AGENT_OS"], "scope pod is a linux container")
-	assert.Len(t, out, 1)
+	assert.Equal(t, "/workspace", out["UNIFIED_WORKSPACE"], "scope pod's fixed working directory")
+	assert.Len(t, out, 2)
 }

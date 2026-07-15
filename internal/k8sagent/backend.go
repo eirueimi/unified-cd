@@ -308,6 +308,16 @@ func (b *k8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) (str
 	return b.ResolveArtifactPath(scope, p)
 }
 
+// WorkspacePath reports the cwd workspace root a step sees on this backend,
+// for UNIFIED_WORKSPACE: the scope pod's fixed working directory when scope
+// is non-zero, else the run/pooled pod's workspace mount path.
+func (b *k8sBackend) WorkspacePath(scope agentlib.ScopeHandle) string {
+	if !scope.IsZero() {
+		return scopeMountPath
+	}
+	return b.mountPath
+}
+
 // DefaultAgentOS always reports "linux": every k8s exec path — including the
 // "default pod" case — runs inside a Linux pod, unlike the host agent, which
 // executes a non-scoped, non-runsIn.image step directly on its own OS.

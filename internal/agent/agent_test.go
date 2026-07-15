@@ -449,7 +449,16 @@ func TestAgent_JobTimeout(t *testing.T) {
 }
 
 // TestAgent_ExposesAgentOSEnvVar verifies that the UNIFIED_AGENT_OS environment variable
-// (the value of runtime.GOOS) is automatically passed to step.run so job authors can detect the current OS.
+// (the value of runtime.GOOS) is automatically passed to step.run so job authors can detect
+// the current OS, and that UNIFIED_WORKSPACE names the step's own cwd (native: workDir).
+//
+// The UNIFIED_WORKSPACE check uses a marker file placed in workDir rather than a literal
+// `test "$UNIFIED_WORKSPACE" = "$PWD"` comparison: on Windows, RunStep's cmd.Dir is set to
+// workDir as a native (backslash) path, but the Git Bash/MSYS shell that runs step.Run
+// reports $PWD in its own POSIX-translated form (e.g. "/c/Users/..." or an MSYS mount-point
+// alias) — the same directory, a different string. Resolving `$UNIFIED_WORKSPACE/marker`
+// proves UNIFIED_WORKSPACE names the correct directory regardless of that platform-specific
+// path-string encoding.
 func TestAgent_ExposesAgentOSEnvVar(t *testing.T) {
 	const agentID = "os-env-agent"
 	const runID = "run-os-env"
@@ -464,20 +473,27 @@ func TestAgent_ExposesAgentOSEnvVar(t *testing.T) {
 		Client: NewClient(srv.URL, "tok"),
 	}
 
+	workDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "marker"), []byte("x"), 0o644))
+
 	resp := api.ClaimResponse{
 		Native:  true,
 		RunID:   runID,
 		JobName: "test-os-env",
 		Stages: []api.ClaimStage{
-			{Step: &api.ClaimStep{Index: 0, Name: "check-os", Run: `test "$UNIFIED_AGENT_OS" = "` + runtime.GOOS + `"`}},
+			{Step: &api.ClaimStep{Index: 0, Name: "check-os", Run: `test "$UNIFIED_AGENT_OS" = "` + runtime.GOOS + `" && test -f "$UNIFIED_WORKSPACE/marker"`}},
 		},
 	}
 
-	a.executeRun(context.Background(), resp, "")
+	// A real workDir (not "") so the step's actual cwd is deterministic and
+	// matches what the backend reports as UNIFIED_WORKSPACE (see
+	// hostBackend.WorkspacePath: native mode reports b.workDir, which RunStep
+	// also uses as cmd.Dir).
+	a.executeRun(context.Background(), resp, workDir)
 
 	select {
 	case status := <-finishCh:
-		assert.Equal(t, "Succeeded", status, "UNIFIED_AGENT_OS should match runtime.GOOS")
+		assert.Equal(t, "Succeeded", status, "UNIFIED_AGENT_OS should match runtime.GOOS and UNIFIED_WORKSPACE should match $PWD")
 	case <-time.After(5 * time.Second):
 		t.Fatal("FinishRun was not called")
 	}

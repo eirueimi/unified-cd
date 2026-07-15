@@ -171,3 +171,22 @@ func TestHostResolve_ContainmentAndG1(t *testing.T) {
 	_, err = b.ResolveCachePath(ScopeHandle{}, "../../etc/passwd")
 	require.Error(t, err)
 }
+
+// scopeHandleForTest builds a non-zero ScopeHandle via the same exported
+// constructor the orchestrator uses (NewScopeHandle) — WorkspacePath only
+// inspects IsZero(), never the payload, so the wrapped value is arbitrary.
+func scopeHandleForTest() ScopeHandle {
+	return NewScopeHandle("test-scope")
+}
+
+// TestHostWorkspacePath verifies UNIFIED_WORKSPACE's native/scoped values on
+// the host backend: native (pod == nil) reports workDir, and a scoped step
+// always reports scopeWorkDir regardless of native/isolated. The isolated
+// (pod != nil, mountPath) case is covered by
+// TestHostBackend_Isolated_WorkspacePathIsMountPath in backend_isolated_test.go.
+func TestHostWorkspacePath(t *testing.T) {
+	native := &hostBackend{workDir: "/tmp/ws"}
+	assert.Equal(t, "/tmp/ws", native.WorkspacePath(ScopeHandle{}))
+	// scoped is always the container cwd
+	assert.Equal(t, scopeWorkDir, native.WorkspacePath(scopeHandleForTest()))
+}
