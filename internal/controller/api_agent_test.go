@@ -432,6 +432,44 @@ func TestAgentAPI_LogBulk(t *testing.T) {
 	assert.Equal(t, "err1", stored[2].Line)
 }
 
+// TestAgentAPI_LogBulk_MixedOwnershipRejectsWholeBatch pins the guard-loop
+// hoist in handleAgentLogBulk: guards run in a pass over the distinct
+// RunIDs BEFORE any line is appended, so a batch straddling an owned run
+// and a run claimed by another agent is rejected in full — zero lines land
+// for either run — rather than the owned run's lines landing before the
+// not-owned run's line is discovered mid-loop.
+func TestAgentAPI_LogBulk_MixedOwnershipRejectsWholeBatch(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+
+	ownedRun, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", ownedRun.ID)
+
+	otherRun, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a2", otherRun.ID)
+
+	lines := []api.LogAppendRequest{
+		{RunID: ownedRun.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "line1"},
+		{RunID: otherRun.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "line2"},
+	}
+	body, _ := json.Marshal(lines)
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/agents/a1/runs/"+ownedRun.ID+"/steps/0/logs/bulk",
+		bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+	ownedStored, err := pg.TailLogs(context.Background(), ownedRun.ID, 0, 10)
+	require.NoError(t, err)
+	assert.Empty(t, ownedStored, "owned run's line must not land when the batch is rejected")
+
+	otherStored, err := pg.TailLogs(context.Background(), otherRun.ID, 0, 10)
+	require.NoError(t, err)
+	assert.Empty(t, otherStored, "not-owned run's line must not land")
+}
+
 func TestClaimDrainOnShutdown(t *testing.T) {
 	s, _ := newTestServer(t)
 

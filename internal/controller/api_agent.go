@@ -608,6 +608,12 @@ func (s *Server) handleAgentSetRunOutputs(w http.ResponseWriter, r *http.Request
 }
 
 // handleAgentLogBulk appends multiple log lines sent by an agent in a single request.
+//
+// Guarding runs first, in its own pass over the distinct RunIDs, so a mixed-
+// ownership batch (e.g. one owned run's lines followed by another agent's
+// run) is rejected before any line from the batch is appended — otherwise a
+// batch straddling an owned and a not-owned run would partially land before
+// the rejection is discovered mid-loop.
 func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 	var lines []api.LogAppendRequest
 	if err := json.NewDecoder(r.Body).Decode(&lines); err != nil {
@@ -616,20 +622,23 @@ func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 	}
 	agentID := chi.URLParam(r, "agentId")
 	guarded := map[string]bool{}
+	for _, req := range lines {
+		if guarded[req.RunID] {
+			continue
+		}
+		v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
+		if gerr != nil {
+			http.Error(w, gerr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if respondRunWriteVerdict(w, v, req.RunID) {
+			return
+		}
+		guarded[req.RunID] = true
+	}
 	dropped := 0
 	var droppedRun string
 	for _, req := range lines {
-		if !guarded[req.RunID] {
-			v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
-			if gerr != nil {
-				http.Error(w, gerr.Error(), http.StatusInternalServerError)
-				return
-			}
-			if respondRunWriteVerdict(w, v, req.RunID) {
-				return
-			}
-			guarded[req.RunID] = true
-		}
 		if req.Timestamp.IsZero() {
 			req.Timestamp = time.Now().UTC()
 		}
