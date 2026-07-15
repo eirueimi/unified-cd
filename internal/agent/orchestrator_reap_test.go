@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -108,5 +107,3 @@ func TestRunClaim_Cancelled_StillFinishes(t *testing.T) {
 		t.Fatal("a cancelled run must still send FinishRun(Cancelled)")
 	}
 }
-
-var _ = sync.Mutex{} // guard: keep sync import valid regardless of final edits
