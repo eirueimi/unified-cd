@@ -28,6 +28,7 @@ type Job struct {
 	APIVersion string     `json:"apiVersion"`
 	Spec       []byte     `json:"spec"`
 	Inputs     []InputDef `json:"inputs,omitempty"`
+	Description string     `json:"description,omitempty"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
 }
 

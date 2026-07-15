@@ -43,6 +43,8 @@ type Spec struct {
 	// scalar shorthand); the run: script is appended as the final argv
 	// element. See Step.Shell for the full resolution priority.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
+	// Description is a human-readable summary of the job, shown in the WebUI.
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 }
 
 type Params struct {

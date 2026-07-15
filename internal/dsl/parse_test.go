@@ -1655,3 +1655,19 @@ spec:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "retry:")
 }
+
+func TestParse_JobDescription(t *testing.T) {
+	input := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: j
+spec:
+  description: Builds and deploys
+  steps:
+    - name: s
+      run: echo test
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	assert.Equal(t, "Builds and deploys", job.Spec.Description)
+}

@@ -36,6 +36,7 @@
 |-------|------|----------|-------------|
 | `agentSelector` | []string | no |  |
 | `concurrency` | Concurrency | no |  |
+| `description` | string | no | Description is a human-readable summary of the job, shown in the WebUI. |
 | `finally` | []StepEntry | no | Finally runs after the main DAG completes, on success, failure, or
 cancellation. Same structure as Steps. A finally step's `if:` defaults to
 always-run; use if: failure()/success() to filter. A finally step that
@@ -111,6 +112,7 @@ The two forms are mutually exclusive; Validate enforces this.
 | `outputs` | map[string]string | no |  |
 | `parallel` | []Step | no | Parallel group (mutually exclusive with all concrete step fields above) |
 | `post` | PostStep | no |  |
+| `retry` | RetrySpec | no |  |
 | `run` | string | no |  |
 | `runsIn` | RunsIn | no |  |
 | `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image
@@ -196,6 +198,7 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 | `name` | string | yes |  |
 | `outputs` | map[string]string | no |  |
 | `post` | PostStep | no |  |
+| `retry` | RetrySpec | no |  |
 | `run` | string | no |  |
 | `runsIn` | RunsIn | no |  |
 | `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image
@@ -227,6 +230,16 @@ exists because inheritance alone breaks down for non-shell
 interpreters: a step running under shell: [python3, -c] with a
 shell-script cleanup hook needs post: {shell: [sh, -c], run: ...} to
 be expressible at all. |
+
+### RetrySpec
+
+RetrySpec configures automatic re-runs of a failing run: step.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `attempts` | integer | yes | Attempts is the total number of tries (1 = no retry). Must be >= 1. |
+| `backoff` | string | no | Backoff is a fixed wait between tries as a Go duration (e.g. "30s").
+Empty means 0 (immediate retry). |
 
 ### RunsIn
 

@@ -382,3 +382,45 @@ func TestAPI_GetJob_SlashInName(t *testing.T) {
 	require.Equal(t, http.StatusOK, yamlRec.Code, yamlRec.Body.String())
 	assert.Equal(t, "text/plain; charset=utf-8", yamlRec.Header().Get("Content-Type"))
 }
+
+func TestAPI_GetJob_ReturnsDescription(t *testing.T) {
+	s, pg := newTestServer(t)
+	specJSON := `{"description":"Deploys the app to production","steps":[]}`
+	_, _ = pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", []byte(specJSON))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/deploy", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got api.Job
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, "Deploys the app to production", got.Description)
+}
+
+func TestAPI_ListJobs_ReturnsDescription(t *testing.T) {
+	s, pg := newTestServer(t)
+	specJSON := `{"description":"Nightly build","steps":[]}`
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(specJSON))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got []api.Job
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got, 1)
+	assert.Equal(t, "Nightly build", got[0].Description)
+}
+
+func TestAPI_GetJob_NoDescriptionWhenEmpty(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "simple", "unified-cd/v1", []byte(`{"steps":[]}`))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/simple", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got api.Job
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Empty(t, got.Description)
+}

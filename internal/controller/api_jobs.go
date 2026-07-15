@@ -119,7 +119,7 @@ func (s *Server) listJobsDecorated(ctx context.Context) ([]api.Job, error) {
 		jobs = []api.Job{}
 	}
 	for i := range jobs {
-		jobs[i].Inputs = specInputs(jobs[i].Spec)
+		jobs[i].Inputs, jobs[i].Description = specMeta(jobs[i].Spec)
 		jobs[i].Path, jobs[i].Leaf = dsl.SplitQualifiedName(jobs[i].Name)
 	}
 	return jobs, nil
@@ -168,7 +168,7 @@ func (s *Server) serveJob(w http.ResponseWriter, r *http.Request, name string) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	job.Inputs = specInputs(job.Spec)
+	job.Inputs, job.Description = specMeta(job.Spec)
 	job.Path, job.Leaf = dsl.SplitQualifiedName(job.Name)
 	writeJSON(w, http.StatusOK, job)
 }
@@ -230,14 +230,19 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// specInputs extracts the inputs definition from the stored spec JSON.
-// Returns nil when parsing fails or when there are no inputs.
-func specInputs(specJSON []byte) []api.InputDef {
+// specMeta extracts the WebUI-facing metadata (inputs + description) from the
+// stored spec JSON in a single parse. Lenient: a spec that fails to parse or
+// omits a field yields the zero value for that field, never an error.
+func specMeta(specJSON []byte) (inputs []api.InputDef, description string) {
 	var spec dsl.Spec
-	if err := json.Unmarshal(specJSON, &spec); err != nil || len(spec.Params.Inputs) == 0 {
-		return nil
+	if err := json.Unmarshal(specJSON, &spec); err != nil {
+		return nil, ""
 	}
-	inputs := make([]api.InputDef, len(spec.Params.Inputs))
+	description = spec.Description
+	if len(spec.Params.Inputs) == 0 {
+		return nil, description
+	}
+	inputs = make([]api.InputDef, len(spec.Params.Inputs))
 	for i, in := range spec.Params.Inputs {
 		inputs[i] = api.InputDef{
 			Name:        in.Name,
@@ -247,7 +252,7 @@ func specInputs(specJSON []byte) []api.InputDef {
 			Description: in.Description,
 		}
 	}
-	return inputs
+	return inputs, description
 }
 
 // writeJSON is a helper that writes a JSON response.
