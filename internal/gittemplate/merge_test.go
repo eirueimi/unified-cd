@@ -243,6 +243,49 @@ spec:
 	require.Contains(t, defNames(dsl.PodTemplateVolumes(s.PodTemplate)), "deepvol")
 }
 
+func TestResolveSpec_ScopeMode_NestedUsesPodShape_Rejected(t *testing.T) {
+	// Outer uses is scope mode (runsIn.image). The outer template itself
+	// declares no podTemplate (steps-only) — so expandUsesStep's direct check
+	// against tplSpec.PodTemplate doesn't fire — but one of its steps is
+	// itself a non-scope uses: whose template DOES declare a podTemplate.
+	// That nested contribution must not bubble up into the caller: scope mode
+	// contributes nothing.
+	const inner = `
+apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata: {name: inner}
+spec:
+  podTemplate:
+    spec:
+      containers: [{name: deep, image: alpine:3}]
+  steps:
+    - {name: leaf, container: deep, run: echo hi}
+`
+	const outer = `
+apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata: {name: outer}
+spec:
+  steps:
+    - {name: mid, uses: {job: "git://github.com/org/repo/inner.yaml@v1"}}
+`
+	specJSON := mustMarshalSpec(dsl.Spec{
+		Steps: []dsl.StepEntry{{
+			Name:   "top",
+			Uses:   &dsl.UsesStep{Job: "git://github.com/org/repo/outer.yaml@v1"},
+			RunsIn: &dsl.RunsIn{Image: "alpine:3"},
+		}},
+	})
+	fetcher := &mapFetcher{byURI: map[string][]byte{
+		"git://github.com/org/repo/outer.yaml@v1": []byte(outer),
+		"git://github.com/org/repo/inner.yaml@v1": []byte(inner),
+	}}
+	_, err := resolveToSpec(t, fetcher, specJSON)
+	require.Error(t, err)
+	require.True(t, gittemplate.IsResolveError(err), "scope-mode nested-contribution violation must be a deterministic resolve error")
+	require.Contains(t, err.Error(), "scope")
+}
+
 func TestResolveSpec_MergedK8sOnlyContainer_FlipsRouting(t *testing.T) {
 	specJSON := mustMarshalSpec(dsl.Spec{
 		Steps: []dsl.StepEntry{{Name: "u", Uses: &dsl.UsesStep{Job: "git://github.com/org/repo/tmpl.yaml@v1"}}},

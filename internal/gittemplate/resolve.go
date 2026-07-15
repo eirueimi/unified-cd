@@ -189,6 +189,19 @@ func (r *Resolver) resolveSteps(
 		}
 		tplSpec.Steps = nestedSteps
 
+		// A scope-mode uses (runsIn.image) must contribute nothing to the
+		// caller's podTemplate — the template runs in its own scope pod. That
+		// invariant is enforced directly against tplSpec.PodTemplate inside
+		// expandUsesStep below, but a nested uses: further down inside this
+		// template (itself resolved in non-scope mode, so free to declare its
+		// own podTemplate) can still bubble a contribution up through
+		// nestedContrib. Reject that here before it reaches expandUsesStep,
+		// which would otherwise merge it into the caller's pod.
+		scopeMode := s.RunsIn != nil && s.RunsIn.Image != ""
+		if scopeMode && (len(nestedContrib.containers) > 0 || len(nestedContrib.volumes) > 0) {
+			return nil, podContribution{}, newResolveError("step %q: a template used with runsIn.image (scope mode) cannot contribute pod containers/volumes to the caller (nested uses template declares a podTemplate)", s.Name)
+		}
+
 		expanded, expandContrib, err := expandUsesStep(s.Name, s.Uses.WithAsStrings(), tplSpec, s.RunsIn, s.Container)
 		if err != nil {
 			return nil, podContribution{}, newResolveError("step %q: expand uses: %v", s.Name, err)
