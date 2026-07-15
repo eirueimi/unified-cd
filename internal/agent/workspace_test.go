@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
@@ -15,6 +16,19 @@ func TestSanitizeJobName(t *testing.T) {
 	assert.Equal(t, "integration-test", sanitizeJobName("integration-test"))
 	assert.Equal(t, "a-b-c", sanitizeJobName("a/b:c"))
 	assert.Equal(t, "job", sanitizeJobName(""))
+}
+
+func TestSanitizeJobName_Degenerate(t *testing.T) {
+	for _, in := range []string{"..", ".", "...", "con", "CON", "Prn", "nul", "aux", "com1", "COM9", "lpt1", "nul.txt"} {
+		got := sanitizeJobName(in)
+		assert.NotContains(t, []string{".", "..", "..."}, got, "input %q", in)
+		assert.NotEqual(t, "con", strings.ToLower(got), "input %q -> reserved", in)
+		require.NotEmpty(t, got)
+		// The result must be a safe single segment (no dot-only, not reserved).
+	}
+	// ordinary names pass through unchanged
+	assert.Equal(t, "my-job", sanitizeJobName("my-job"))
+	assert.Equal(t, "job_1.2", sanitizeJobName("job_1.2"))
 }
 
 func TestClaimWorkDir(t *testing.T) {

@@ -30,10 +30,37 @@ func sanitizeJobName(name string) string {
 			b.WriteRune('-')
 		}
 	}
-	if b.Len() == 0 {
+	out := b.String()
+	if out == "" {
 		return "job"
 	}
-	return b.String()
+	// Reject degenerate results that are unsafe as a path segment: dot-only
+	// names (".", "..", "...") escape or self-reference, and Windows reserved
+	// device names break on a Windows agent. Upstream DSL validation already
+	// blocks these, but this function is the defensive last line.
+	if strings.Trim(out, ".") == "" {
+		return "job"
+	}
+	if isWindowsReservedName(out) {
+		return "job_" + out
+	}
+	return out
+}
+
+// isWindowsReservedName reports whether name (case-insensitive, ignoring any
+// extension) is a Windows reserved device name.
+func isWindowsReservedName(name string) bool {
+	base := strings.ToUpper(name)
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	switch base {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	}
+	return false
 }
 
 // claimWorkDir is the per-claim workspace directory: slot level (fixed,
