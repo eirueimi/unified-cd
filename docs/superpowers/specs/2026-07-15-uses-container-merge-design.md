@@ -37,8 +37,8 @@ When both the caller and a `uses:` template define a container with the same non
 
 After resolution + merge, validate every step's `container:` against the **effective** podTemplate. A reference is valid iff it is empty (defaults to `job`), a reserved name (`job`/`unified-artifact`), or the name of a container present in the effective `podTemplate.Spec["containers"]`. An invalid reference → a clear run-creation error: which step, which container name, and — when the step came from a `uses:` expansion — that neither the caller nor the template defines it.
 
-- **Placement:** this validation runs at **run creation, on the fully-resolved spec** (after the uses merge), as a dedicated pass over the effective spec. This single placement covers both uses-merged references and direct references in `uses:`-less jobs uniformly, and avoids the parse-time problem that a caller's `container: foo` might legitimately be satisfied only after a `uses:` merge. (`ResolveSpec` early-returns when the spec has no git URIs, so the validation pass must be invoked unconditionally at run creation, not hidden inside the git-URI branch.)
-- Out of scope: apply-time (job-registration) validation of direct references — a nice future UX addition, but a `uses:` job cannot be fully validated at apply time without a git fetch, so all validation lives at run creation for now.
+- **Placement:** this validation runs in the controller's git-resolution sweeper (`internal/controller/scheduler.go` `resolveGitPendingRuns`), **immediately after a successful `ResolveSpec`**, on the fully-resolved + merged spec — before the resolved spec is persisted via `UpdateRunSpec`. A failure fails the run deterministically (the same terminal-failure path the resolver already uses for `IsResolveError`), so the author sees a clear reason instead of a later runtime exec failure. Because the resolved spec at that point contains both the caller's own steps and the expanded template steps, this one pass validates **both** the caller's own direct `container:` references and the template steps' references against the merged podTemplate.
+- **Coverage boundary (accurate):** the sweeper processes only runs whose spec contains git URIs (`HasGitURIs`), i.e. `uses:` jobs. A **pure non-`uses:` job** (no git URIs) skips the sweeper, so its direct-`container:`-typo case is *not* covered by this pass and retains today's runtime failure. Closing that is deliberately **out of scope** here: the natural home would be `Job.Validate()`, but that same function also validates *fetched templates* (`resolve.go:158`), and a template may legitimately reference a container it expects the caller to provide — so a blanket parse-time reference check there would wrongly reject valid templates. A dedicated apply-time check for top-level non-`uses:` jobs is a clean future addition but not part of this feature.
 
 ### 5. Host-vs-k8s routing
 
@@ -48,8 +48,8 @@ The merge happens at resolution, before the controller picks an agent, so the ro
 
 - `internal/gittemplate/inline.go` — `expandUsesStep` returns contributed containers; reserved-name rejection at collection time.
 - `internal/gittemplate/resolve.go` — `resolveSteps` accumulates contributed containers across recursion; `ResolveSpec` merges into `spec.PodTemplate` (gap-fill + collision policy) before marshalling.
-- `internal/dsl/` — `IsReservedContainerName`; a container-reference validation helper operating on a resolved `dsl.Spec` (returns a descriptive error). Reusable, pure, unit-testable.
-- Run-creation call site (controller) — invoke the validation pass on the resolved spec unconditionally, after `ResolveSpec`.
+- `internal/dsl/` — `IsReservedContainerName` + container accessors; a container-reference validation helper (`ValidateContainerReferences(spec dsl.Spec) error`) operating on a resolved `dsl.Spec` (returns a descriptive error). Reusable, pure, unit-testable.
+- `internal/controller/scheduler.go` — in `resolveGitPendingRuns`, after a successful `ResolveSpec` and before `UpdateRunSpec`, unmarshal the resolved spec and call `dsl.ValidateContainerReferences`; on error, fail the run deterministically (mirror the existing `IsResolveError` terminal-fail branch).
 
 ## Error handling
 
