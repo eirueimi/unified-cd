@@ -1245,6 +1245,13 @@
   .artifact-ext {
     margin-left: 0.15rem;
   }
+  /* Cap the step list so a run with many steps doesn't push the log view
+     off-screen; the list scrolls internally instead. 40vh keeps it in the
+     same ballpark as the log box (height: 60vh in app.css). */
+  .step-list {
+    max-height: 40vh;
+    overflow-y: auto;
+  }
   .stage-group-header {
     display: flex;
     align-items: center;
