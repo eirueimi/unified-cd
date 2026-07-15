@@ -134,14 +134,18 @@ func TestArchivedLogs_ParityWithStore(t *testing.T) {
 	}
 }
 
-// normalize maps nil/empty to empty and truncates timestamps to microseconds:
-// Postgres stores timestamptz at microsecond precision, while the ndjson
-// round-trip keeps Go's nanoseconds, so exact time.Time equality would fail
-// spuriously.
+// normalize maps nil/empty to empty, truncates timestamps to microseconds, and
+// forces UTC. Postgres stores timestamptz at microsecond precision while the
+// ndjson round-trip keeps Go's nanoseconds, and the two readers return the same
+// instant in different *time.Location values (the store path yields a non-nil
+// Location, the JSON round-trip yields UTC/nil). assert.Equal compares time.Time
+// via reflect.DeepEqual, which treats those Location pointers as unequal, so
+// without normalizing both precision and location, identical instants would fail
+// equality spuriously.
 func normalize(in []api.LogLine) []api.LogLine {
 	out := make([]api.LogLine, 0, len(in))
 	for _, l := range in {
-		l.Timestamp = l.Timestamp.Truncate(time.Microsecond)
+		l.Timestamp = l.Timestamp.Truncate(time.Microsecond).UTC()
 		out = append(out, l)
 	}
 	return out
