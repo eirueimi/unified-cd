@@ -148,18 +148,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	slog.Info("k8s: executing Run", "runId", c.RunID, "job", c.JobName)
 
 	if c.Native {
-		reason := "native: true jobs are host-only; the k8s agent cannot run them"
-		slog.Error(reason, "runId", c.RunID)
-		_ = a.client.AppendLogBulk(ctx, a.cfg.AgentID, c.RunID, -1, []api.LogAppendRequest{{
-			RunID:     c.RunID,
-			StepIndex: -1,
-			Stream:    "stderr",
-			Timestamp: time.Now().UTC(),
-			Line:      reason,
-		}})
-		agentlib.RetryUntilSuccess(ctx, func(cc context.Context) error {
-			return a.client.FinishRun(cc, a.cfg.AgentID, c.RunID, api.RunFailed)
-		})
+		a.failRun(ctx, c.RunID, "native: true jobs are host-only; the k8s agent cannot run them")
 		return
 	}
 
@@ -182,8 +171,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		pp, err := a.pool.ClaimPod(ctx, c.RunID, templateName, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
 			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName}, a.cfg.ShimImage)
 		if err != nil {
-			slog.Error("k8s: failed to acquire Pod", "runId", c.RunID, "error", err)
-			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: failed to acquire Pod: %v", err))
 			return
 		}
 		pooledPod = pp
@@ -197,14 +185,12 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		pod, err := BuildPod(c.RunID, a.cfg.Namespace, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
 			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName}, a.cfg.ShimImage)
 		if err != nil {
-			slog.Error("k8s: failed to build Pod spec", "runId", c.RunID, "error", err)
-			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: failed to build Pod spec: %v", err))
 			return
 		}
 		created, err := a.pm.CreatePod(ctx, pod)
 		if err != nil {
-			slog.Error("k8s: failed to create Pod", "runId", c.RunID, "error", err)
-			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: failed to create Pod: %v", err))
 			return
 		}
 		podName = created.Name
@@ -255,6 +241,25 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	backend := newK8sBackend(a, c.RunID, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
 
 	agentlib.RunClaim(ctx, a.client, a.cfg.AgentID, c, backend)
+}
+
+// failRun fails a claim that could not begin executing (pod build/create/acquire
+// or the run pod never becoming ready). reason is surfaced into the run's own
+// logs (stepIndex -1, rendered "System" in the UI) before FinishRun(Failed).
+// The log line is best-effort; FinishRun is retried until it lands so the run
+// never sits stuck as Running. Mirrors the host agent's Agent.failRun.
+func (a *K8sAgent) failRun(ctx context.Context, runID, reason string) {
+	slog.Error(reason, "runId", runID)
+	_ = a.client.AppendLogBulk(ctx, a.cfg.AgentID, runID, -1, []api.LogAppendRequest{{
+		RunID:     runID,
+		StepIndex: -1,
+		Stream:    "stderr",
+		Timestamp: time.Now().UTC(),
+		Line:      reason,
+	}})
+	agentlib.RetryUntilSuccess(ctx, func(cc context.Context) error {
+		return a.client.FinishRun(cc, a.cfg.AgentID, runID, api.RunFailed)
+	})
 }
 
 // logLineWriter is a Writer that sends each line of stdout to the master server via AppendLog.
