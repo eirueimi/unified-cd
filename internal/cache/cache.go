@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,13 @@ func Save(ctx context.Context, store objectstore.ObjectStore, path, key string, 
 		return fmt.Errorf("marshal meta: %w", err)
 	}
 	if err := store.Put(ctx, oKey+".meta", bytes.NewReader(metaData), int64(len(metaData))); err != nil {
+		// The archive object was already written; without its .meta it is
+		// invisible to both lookup and GC (which iterate .meta only), so it
+		// would leak forever. Compensate best-effort, like the log archiver
+		// does on CreateLogArchive failure.
+		if derr := store.Delete(ctx, oKey+".tar.zst"); derr != nil {
+			slog.Warn("cache save: cleanup of orphaned archive failed", "key", oKey, "error", derr)
+		}
 		return fmt.Errorf("put meta: %w", err)
 	}
 	return nil
