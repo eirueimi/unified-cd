@@ -385,6 +385,50 @@ func TestBuildPod_UcdShimInitContainerIsFirst(t *testing.T) {
 	assert.Equal(t, "warmup", pod.Spec.InitContainers[1].Name)
 }
 
+// TestBuildPod_InlineReuseAnnotatedAtCreation is the regression test for the
+// second review finding: annoPoolStatus was only set in the NAMED-template
+// branch (case jobTmpl.Name != ""), so a pod built from an inline/unnamed
+// reuse template (jobTmpl.Spec set, Reuse: true, no Name) had NO pool
+// annotations on its first run. A GC sweep between the run going terminal and
+// the deferred ReleasePod (which sets it idle) could delete such a pod out
+// from under the run. BuildPod must annotate annoPoolStatus=in-use for every
+// reuse pod regardless of which spec branch built it; annoPoolTemplate stays
+// "" for an unnamed template, which is expected (annoPoolStatus alone is the
+// pool/GC/Restore marker for "pool-managed").
+func TestBuildPod_InlineReuseAnnotatedAtCreation(t *testing.T) {
+	jobTmpl := &dsl.PodTemplate{
+		Reuse: true,
+		Spec: map[string]any{
+			"containers": []any{
+				map[string]any{"name": "job", "image": "python:3.12-slim"},
+			},
+		},
+	}
+
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	require.NoError(t, err)
+	assert.Equal(t, poolStatusInUse, pod.Annotations[annoPoolStatus])
+	assert.Equal(t, "", pod.Annotations[annoPoolTemplate])
+}
+
+// TestBuildPod_InlineNonReuseNotAnnotated ensures BuildPod does not annotate
+// a pod as pool-managed when the inline template did not opt into reuse —
+// only jobTmpl.Reuse should trigger the annotations, not merely taking the
+// inline-spec branch.
+func TestBuildPod_InlineNonReuseNotAnnotated(t *testing.T) {
+	jobTmpl := &dsl.PodTemplate{
+		Spec: map[string]any{
+			"containers": []any{
+				map[string]any{"name": "job", "image": "python:3.12-slim"},
+			},
+		},
+	}
+
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	require.NoError(t, err)
+	assert.NotContains(t, pod.Annotations, annoPoolStatus)
+}
+
 func TestMergeContainers(t *testing.T) {
 	base := []corev1.Container{{Name: "job", Image: "golang:1.24-alpine"}}
 	patch := []corev1.Container{

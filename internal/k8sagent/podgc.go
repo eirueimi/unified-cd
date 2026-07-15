@@ -12,11 +12,12 @@ import (
 )
 
 // podGCDecision reports whether a run Pod should be deleted by the orphan-pod
-// GC: never for a Pod that belongs to the reuse pool (pooledInUse — the pool's
-// own idle-timeout/Restore logic owns its lifecycle), and otherwise iff the
-// backing Run is gone (found=false) or has reached a terminal status.
-func podGCDecision(runStatus api.RunStatus, found bool, pooledInUse bool) bool {
-	if pooledInUse {
+// GC: never for a Pod that carries the pool-status annotation (poolManaged —
+// idle or in-use, the pool's own idle-timeout/Restore logic owns its
+// lifecycle), and otherwise iff the backing Run is gone (found=false) or has
+// reached a terminal status.
+func podGCDecision(runStatus api.RunStatus, found bool, poolManaged bool) bool {
+	if poolManaged {
 		return false
 	}
 	return !found || isTerminalRunStatus(runStatus)
@@ -34,12 +35,12 @@ func isTerminalRunStatus(status api.RunStatus) bool {
 
 // gcPod is a run Pod as seen by the GC's pod lister: its name, the runId it
 // was created for, and whether it is currently managed by the reuse pool
-// (carries the pool-template annotation, idle or in-use) and so must be left
+// (carries the pool-status annotation, idle or in-use) and so must be left
 // alone.
 type gcPod struct {
 	podName     string
 	runID       string
-	pooledInUse bool
+	poolManaged bool
 }
 
 // podLister lists candidate run Pods for the orphan-pod GC.
@@ -79,7 +80,7 @@ func runPodGCOnce(ctx context.Context, lister podLister, getRun runGetter, delet
 			continue
 		}
 		found := err == nil
-		if !podGCDecision(run.Status, found, p.pooledInUse) {
+		if !podGCDecision(run.Status, found, p.poolManaged) {
 			continue
 		}
 		if err := deletePod(ctx, p.podName); err != nil {
@@ -116,7 +117,11 @@ func (a *K8sAgent) runPodGC(ctx context.Context, interval time.Duration) {
 }
 
 // listRunPods lists this namespace's run Pods (app=unified-cd-agent) and
-// extracts each one's runId label and pool-in-use status for the GC sweep.
+// extracts each one's runId label and pool-managed status for the GC sweep.
+// Pool-managed is determined by the pool-status annotation (set on every
+// pooled Pod, idle or in-use), NOT the pool-template annotation, which is
+// empty for inline (unnamed) pod templates and would otherwise make idle
+// pooled Pods from an unnamed template look like ordinary orphans.
 func (a *K8sAgent) listRunPods(ctx context.Context) ([]gcPod, error) {
 	pods, err := a.pm.ListPods(ctx, "app=unified-cd-agent")
 	if err != nil {
@@ -129,8 +134,8 @@ func (a *K8sAgent) listRunPods(ctx context.Context) ([]gcPod, error) {
 		if runID == "" {
 			continue
 		}
-		pooled := pod.Annotations[annoPoolTemplate] != ""
-		out = append(out, gcPod{podName: pod.Name, runID: runID, pooledInUse: pooled})
+		poolManaged := pod.Annotations[annoPoolStatus] != ""
+		out = append(out, gcPod{podName: pod.Name, runID: runID, poolManaged: poolManaged})
 	}
 	return out, nil
 }

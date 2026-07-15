@@ -107,10 +107,6 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 				return nil, fmt.Errorf("apply pod spec patch: %w", err)
 			}
 		}
-		if jobTmpl.Reuse {
-			annotations[annoPoolTemplate] = jobTmpl.Name
-			annotations[annoPoolStatus] = poolStatusInUse
-		}
 
 	case jobTmpl.Spec != nil:
 		var err error
@@ -122,6 +118,21 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 
 	default:
 		podSpec = defaultPodSpec(fallbackImage)
+	}
+
+	// Annotate every reuse pod as in-use at creation time, regardless of
+	// which branch above built its spec — a NAMED template pod carries
+	// annoPoolTemplate=jobTmpl.Name, while an inline/unnamed template pod
+	// carries annoPoolTemplate="" (empty is a valid, expected value: it's
+	// how the pool/GC/Restore code tells "reuse pod with no name" apart from
+	// "not a pool pod at all", which they do via annoPoolStatus instead).
+	// Without this, an inline pooled pod has no pool annotations during its
+	// first run, so a GC sweep between the run going terminal and the
+	// deferred ReleasePod (which sets it idle) could delete it out from
+	// under the run.
+	if jobTmpl != nil && jobTmpl.Reuse {
+		annotations[annoPoolTemplate] = jobTmpl.Name
+		annotations[annoPoolStatus] = poolStatusInUse
 	}
 
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
