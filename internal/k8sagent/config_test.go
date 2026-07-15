@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeTempYAML(t *testing.T, content string) string {
@@ -125,8 +126,8 @@ agentId: agent-1
 	if got.Namespace != "default" {
 		t.Errorf("Namespace = %q, want %q", got.Namespace, "default")
 	}
-	if got.MaxConcurrent != 5 {
-		t.Errorf("MaxConcurrent = %d, want 5", got.MaxConcurrent)
+	if got.MaxConcurrent != 100 {
+		t.Errorf("MaxConcurrent = %d, want 100", got.MaxConcurrent)
 	}
 	if got.PodImage != "ghcr.io/eirueimi/unified-cd-runner:v0.0.3" {
 		t.Errorf("PodImage = %q, want %q", got.PodImage, "ghcr.io/eirueimi/unified-cd-runner:v0.0.3")
@@ -180,5 +181,84 @@ func TestValidate_ShimImagePreserved(t *testing.T) {
 	}
 	if cfg.ShimImage != "registry.internal/mirror/ucd-k8s-agent:v1" {
 		t.Errorf("ShimImage = %q, want it preserved", cfg.ShimImage)
+	}
+}
+
+func TestPodStartTimeoutDuration_DefaultAndParse(t *testing.T) {
+	c := DefaultConfig()
+	if got := c.PodStartTimeoutDuration(); got != 5*time.Minute {
+		t.Fatalf("unset podStartTimeout: want 5m, got %v", got)
+	}
+	c.PodStartTimeout = "90s"
+	if got := c.PodStartTimeoutDuration(); got != 90*time.Second {
+		t.Fatalf("parsed podStartTimeout: want 90s, got %v", got)
+	}
+	c.PodStartTimeout = "0s" // non-positive -> default
+	if got := c.PodStartTimeoutDuration(); got != 5*time.Minute {
+		t.Fatalf("non-positive podStartTimeout: want 5m, got %v", got)
+	}
+}
+
+func TestDrainTimeoutDuration_DefaultAndParse(t *testing.T) {
+	c := DefaultConfig()
+	if got := c.DrainTimeoutDuration(); got != 0 {
+		t.Fatalf("unset drainTimeout: want 0, got %v", got)
+	}
+	c.DrainTimeout = "30s"
+	if got := c.DrainTimeoutDuration(); got != 30*time.Second {
+		t.Fatalf("parsed drainTimeout: want 30s, got %v", got)
+	}
+}
+
+func TestValidate_MaxConcurrentDefaultAndUnlimited(t *testing.T) {
+	base := func() Config {
+		return Config{Server: "s", Token: "t", AgentID: "a"}
+	}
+	// 0 -> 100
+	c := base()
+	c.MaxConcurrent = 0
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxConcurrent != 100 {
+		t.Fatalf("zero maxConcurrent: want 100, got %d", c.MaxConcurrent)
+	}
+	// negative -> unchanged (unlimited sentinel)
+	c = base()
+	c.MaxConcurrent = -1
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxConcurrent != -1 {
+		t.Fatalf("negative maxConcurrent must be preserved as unlimited, got %d", c.MaxConcurrent)
+	}
+	// positive -> unchanged
+	c = base()
+	c.MaxConcurrent = 3
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxConcurrent != 3 {
+		t.Fatalf("positive maxConcurrent: want 3, got %d", c.MaxConcurrent)
+	}
+}
+
+func TestValidate_DurationEnvOverridesAndParseError(t *testing.T) {
+	t.Setenv("UNIFIED_K8S_POD_START_TIMEOUT", "42s")
+	t.Setenv("UNIFIED_K8S_DRAIN_TIMEOUT", "7s")
+	c := Config{Server: "s", Token: "t", AgentID: "a"}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.PodStartTimeoutDuration() != 42*time.Second {
+		t.Fatalf("env override podStartTimeout: got %v", c.PodStartTimeoutDuration())
+	}
+	if c.DrainTimeoutDuration() != 7*time.Second {
+		t.Fatalf("env override drainTimeout: got %v", c.DrainTimeoutDuration())
+	}
+
+	bad := Config{Server: "s", Token: "t", AgentID: "a", PodStartTimeout: "not-a-duration"}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an unparseable podStartTimeout")
 	}
 }
