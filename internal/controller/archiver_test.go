@@ -26,9 +26,27 @@ type fakeArchiverStore struct {
 		runID, key           string
 		size, lineCount, seq int64
 	}
+
+	// runs is returned by every ListRunsNeedingArchival call (excluded is
+	// recorded but not applied — the filtering itself is covered by the
+	// Postgres-backed TestExcludedParam test).
+	runs          []api.Run
+	excludedCalls [][]string
+
+	// tailErrIDs, if set, makes TailLogs fail for the given run ids,
+	// simulating archiveRunLogs failing for a poison candidate.
+	tailErrIDs map[string]bool
+}
+
+func (f *fakeArchiverStore) ListRunsNeedingArchival(ctx context.Context, limit int, excluded []string) ([]api.Run, error) {
+	f.excludedCalls = append(f.excludedCalls, excluded)
+	return f.runs, nil
 }
 
 func (f *fakeArchiverStore) TailLogs(ctx context.Context, runID string, afterSeq int64, limit int) ([]api.LogLine, error) {
+	if f.tailErrIDs[runID] {
+		return nil, errors.New("tail logs failed")
+	}
 	return f.lines, nil
 }
 
@@ -108,4 +126,28 @@ func TestArchiveRunLogs_CreateRecordFailureCleanupAlsoFails(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fk violation")
+}
+
+// TestArchivePendingLogs_PoisonCandidateExcludedNextTick: a run whose
+// archiveRunLogs call fails must be excluded from the next tick's
+// ListRunsNeedingArchival call, while a succeeding run is not (Success
+// forgets it immediately).
+func TestArchivePendingLogs_PoisonCandidateExcludedNextTick(t *testing.T) {
+	ctx := context.Background()
+	obj := objectstore.NewLocalObjectStore(t.TempDir())
+	st := &fakeArchiverStore{
+		lines:      []api.LogLine{{Seq: 1, Line: "hello"}},
+		runs:       []api.Run{{ID: "poison"}, {ID: "ok"}},
+		tailErrIDs: map[string]bool{"poison": true},
+	}
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
+
+	require.NoError(t, archivePendingLogs(ctx, st, obj, bo))
+	require.Len(t, st.excludedCalls, 1)
+	assert.Empty(t, st.excludedCalls[0], "first tick excludes nothing")
+
+	require.NoError(t, archivePendingLogs(ctx, st, obj, bo))
+	require.Len(t, st.excludedCalls, 2)
+	assert.Contains(t, st.excludedCalls[1], "poison", "second tick excludes the poison candidate")
+	assert.NotContains(t, st.excludedCalls[1], "ok", "a succeeding run is not excluded")
 }

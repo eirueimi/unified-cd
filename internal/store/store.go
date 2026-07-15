@@ -112,8 +112,9 @@ type GitCredential struct {
 
 // PendingRun holds the minimum information about a Run needed for git:// URI resolution.
 type PendingRun struct {
-	ID   string
-	Spec []byte
+	ID        string
+	Spec      []byte
+	CreatedAt time.Time
 }
 
 type Store interface {
@@ -240,7 +241,11 @@ type Store interface {
 	AcquireAdvisoryLock(ctx context.Context, key int64) (release func(), err error)
 
 	// Log Archives
-	ListRunsNeedingArchival(ctx context.Context, limit int) ([]api.Run, error)
+	// ListRunsNeedingArchival returns terminal runs not yet archived,
+	// oldest first, up to limit. excluded ids are skipped (an empty slice
+	// excludes nothing) — used to skip runs currently in a failure-backoff
+	// window so a poison candidate doesn't starve the rest of the batch.
+	ListRunsNeedingArchival(ctx context.Context, limit int, excluded []string) ([]api.Run, error)
 	// CreateLogArchive records an archive object for runID. lineCount and
 	// maxSeq are the number of logs rows (and highest seq) the archive
 	// object actually covers — TrimRunLogs uses them to detect incomplete
@@ -266,7 +271,10 @@ type Store interface {
 	// Run retention
 	// ListExpiredRuns returns IDs of terminal (Succeeded/Failed/Cancelled)
 	// runs whose updated_at is older than cutoff, oldest first, up to limit.
-	ListExpiredRuns(ctx context.Context, cutoff time.Time, limit int) ([]string, error)
+	// excluded ids are skipped (an empty slice excludes nothing) — used to
+	// skip runs currently in a failure-backoff window so a poison candidate
+	// doesn't starve the rest of the batch.
+	ListExpiredRuns(ctx context.Context, cutoff time.Time, limit int, excluded []string) ([]string, error)
 
 	// ListenForNotify subscribes to a Postgres channel and calls the callback for each notification.
 	// Blocks until ctx is cancelled.
@@ -333,7 +341,7 @@ type Store interface {
 	ResetStuckSyncingAppSources(ctx context.Context, olderThan time.Duration) (int, error)
 
 	// Git resolver helpers
-	ListPendingRuns(ctx context.Context, limit int) ([]PendingRun, error)
+	ListPendingRuns(ctx context.Context, limit int, excluded []string) ([]PendingRun, error)
 	UpdateRunSpec(ctx context.Context, runID string, specJSON []byte) error
 
 	// Schedules

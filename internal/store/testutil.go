@@ -182,3 +182,14 @@ func NewTestPostgres(t *testing.T) *Postgres {
 	})
 	return pg
 }
+
+// BackdateRunCreatedAt sets a run's created_at to age before now. Test-only
+// helper (Postgres.pool is unexported, so packages other than store — e.g.
+// the git-resolver deadline tests in internal/controller — need this to
+// simulate an old Pending run without a store.Store method for it).
+func (p *Postgres) BackdateRunCreatedAt(ctx context.Context, runID string, age time.Duration) error {
+	_, err := p.pool.Exec(ctx,
+		`UPDATE runs SET created_at = NOW() - ($1 * interval '1 second') WHERE id = $2`,
+		age.Seconds(), runID)
+	return err
+}

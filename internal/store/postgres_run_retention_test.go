@@ -44,12 +44,12 @@ func TestPostgres_ListExpiredRuns(t *testing.T) {
 
 	cutoff := time.Now().AddDate(0, 0, -30)
 
-	ids, err := pg.ListExpiredRuns(ctx, cutoff, 10)
+	ids, err := pg.ListExpiredRuns(ctx, cutoff, 10, []string{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{oldest, older, oldCancelled}, ids, "terminal+old only, oldest first")
 
 	// LIMIT is respected and keeps the oldest-first prefix.
-	ids, err = pg.ListExpiredRuns(ctx, cutoff, 2)
+	ids, err = pg.ListExpiredRuns(ctx, cutoff, 2, []string{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{oldest, older}, ids)
 }

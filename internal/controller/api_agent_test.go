@@ -18,6 +18,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// claimRunForTest transitions run to Queued and claims it with agentID via
+// the store — the same store-level sequence api_agent_reconcile_test.go uses
+// — leaving it Running with ClaimedBy == agentID. Agent write handlers now
+// enforce run ownership (agentRunGuard), so any pre-existing test that posts
+// as a fixed agent ID must claim the run with that same ID first, or every
+// write it sends is a stranger's write and gets 403'd.
+func claimRunForTest(t *testing.T, pg store.Store, agentID, runID string) {
+	t.Helper()
+	_, err := pg.TransitionPendingToQueued(t.Context(), 10)
+	require.NoError(t, err)
+	claimed, err := pg.ClaimNextRun(t.Context(), agentID, nil)
+	require.NoError(t, err)
+	require.Equal(t, runID, claimed.ID)
+}
+
 func TestAgentAPI_Register(t *testing.T) {
 	s, _ := newTestServer(t)
 	body, _ := json.Marshal(api.AgentRegisterRequest{AgentID: "a1", Hostname: "host1", OS: "linux"})
@@ -212,6 +227,7 @@ func TestAgentAPI_ReportStep(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
 	body, _ := json.Marshal(api.StepReportRequest{
 		RunID: run.ID, StepIndex: 0, Status: "Running", StartedAt: time.Now(),
 	})
@@ -226,6 +242,7 @@ func TestAgentAPI_AppendLog(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
 	body, _ := json.Marshal(api.LogAppendRequest{
 		RunID: run.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "hello",
 	})
@@ -276,6 +293,7 @@ func TestAgentAPI_SetStepOutputs(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
 
 	body, _ := json.Marshal(api.SetOutputsRequest{
 		Outputs: map[string]string{"artifact_url": "s3://bucket/a.tar.gz"},
@@ -297,6 +315,7 @@ func TestAgentAPI_SetRunOutputs(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
 
 	body, _ := json.Marshal(api.SetOutputsRequest{
 		Outputs: map[string]string{"result": "ok"},
@@ -389,6 +408,7 @@ func TestAgentAPI_LogBulk(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
 
 	lines := []api.LogAppendRequest{
 		{RunID: run.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "line1"},
@@ -410,6 +430,44 @@ func TestAgentAPI_LogBulk(t *testing.T) {
 	assert.Equal(t, "line1", stored[0].Line)
 	assert.Equal(t, "line2", stored[1].Line)
 	assert.Equal(t, "err1", stored[2].Line)
+}
+
+// TestAgentAPI_LogBulk_MixedOwnershipRejectsWholeBatch pins the guard-loop
+// hoist in handleAgentLogBulk: guards run in a pass over the distinct
+// RunIDs BEFORE any line is appended, so a batch straddling an owned run
+// and a run claimed by another agent is rejected in full — zero lines land
+// for either run — rather than the owned run's lines landing before the
+// not-owned run's line is discovered mid-loop.
+func TestAgentAPI_LogBulk_MixedOwnershipRejectsWholeBatch(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+
+	ownedRun, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", ownedRun.ID)
+
+	otherRun, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a2", otherRun.ID)
+
+	lines := []api.LogAppendRequest{
+		{RunID: ownedRun.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "line1"},
+		{RunID: otherRun.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "line2"},
+	}
+	body, _ := json.Marshal(lines)
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/agents/a1/runs/"+ownedRun.ID+"/steps/0/logs/bulk",
+		bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+	ownedStored, err := pg.TailLogs(context.Background(), ownedRun.ID, 0, 10)
+	require.NoError(t, err)
+	assert.Empty(t, ownedStored, "owned run's line must not land when the batch is rejected")
+
+	otherStored, err := pg.TailLogs(context.Background(), otherRun.ID, 0, 10)
+	require.NoError(t, err)
+	assert.Empty(t, otherStored, "not-owned run's line must not land")
 }
 
 func TestClaimDrainOnShutdown(t *testing.T) {
@@ -812,6 +870,7 @@ func TestAgentAPI_FinishRun_FreshTransition(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
 
 	body, _ := json.Marshal(map[string]string{"status": string(api.RunSucceeded)})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+run.ID+"/finish", bytes.NewReader(body))
@@ -832,6 +891,7 @@ func TestAgentAPI_FinishRun_FailedCancelsChildren(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", parent.ID)
 	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	// Link the parent's call step to the child run.
 	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
@@ -859,6 +919,7 @@ func TestAgentAPI_FinishRun_AlreadyTerminal(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
 	// Simulate the reaper finalizing the run as Failed before the agent's late report.
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunFailed))
 
@@ -886,6 +947,7 @@ func TestAgentAPI_ReportStep_AlreadyTerminal(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunFailed))
 
 	body, _ := json.Marshal(api.StepReportRequest{

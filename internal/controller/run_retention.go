@@ -32,17 +32,21 @@ func RunRunRetention(ctx context.Context, st store.Store, obj objectstore.Object
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// Leader-local: a failure-backoff instance lives for the lifetime of this
+	// goroutine so a run that keeps failing to delete doesn't keep filling
+	// every oldest-first batch (see failure_backoff.go).
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		runRunRetentionOnce(ctx, st, obj, retentionDays)
+		runRunRetentionOnce(ctx, st, obj, retentionDays, bo)
 	}
 }
 
-func runRunRetentionOnce(ctx context.Context, st store.Store, obj objectstore.ObjectStore, retentionDays int) {
+func runRunRetentionOnce(ctx context.Context, st store.Store, obj objectstore.ObjectStore, retentionDays int, bo *failureBackoff) {
 	release, err := st.AcquireAdvisoryLock(ctx, runRetentionLockKey)
 	if err != nil {
 		slog.Warn("run retention lock", "error", err)
@@ -56,7 +60,7 @@ func runRunRetentionOnce(ctx context.Context, st store.Store, obj objectstore.Ob
 	cutoff := time.Now().AddDate(0, 0, -retentionDays)
 	total := 0
 	for {
-		ids, err := st.ListExpiredRuns(ctx, cutoff, runRetentionBatchSize)
+		ids, err := st.ListExpiredRuns(ctx, cutoff, runRetentionBatchSize, bo.Excluded(time.Now()))
 		if err != nil {
 			slog.Error("run retention: list expired runs", "error", err)
 			return
@@ -75,8 +79,10 @@ func runRunRetentionOnce(ctx context.Context, st store.Store, obj objectstore.Ob
 			}
 			if err := deleteRunEverywhere(ctx, st, obj, id); err != nil {
 				slog.Warn("run retention: delete failed, will retry next tick", "run", id, "error", err)
+				bo.Failure(id, time.Now())
 				continue
 			}
+			bo.Success(id)
 			deleted++
 		}
 		total += deleted

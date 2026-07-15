@@ -179,6 +179,37 @@ func TestCache_Restore_MissNoFallback(t *testing.T) {
 	assert.ErrorIs(t, err, cache.ErrCacheMiss)
 }
 
+// putFailingStore fails the Nth Put (1-based) and delegates everything else.
+type putFailingStore struct {
+	objectstore.ObjectStore
+	puts    int
+	failPut int
+}
+
+func (f *putFailingStore) Put(ctx context.Context, key string, content io.Reader, size int64) error {
+	f.puts++
+	if f.puts == f.failPut {
+		return errors.New("meta put failed")
+	}
+	return f.ObjectStore.Put(ctx, key, content, size)
+}
+
+// TestSave_MetaFailureDeletesArchive: a failed .meta Put must not leave an
+// orphaned .tar.zst (GC and lookup only ever iterate .meta objects).
+func TestSave_MetaFailureDeletesArchive(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644))
+	inner := objectstore.NewLocalObjectStore(t.TempDir())
+	st := &putFailingStore{ObjectStore: inner, failPut: 2} // archive Put ok, meta Put fails
+
+	err := cache.Save(context.Background(), st, dir, "key1", 7)
+	require.Error(t, err)
+
+	keys, err := inner.List(context.Background(), "")
+	require.NoError(t, err)
+	assert.Empty(t, keys, "no orphaned object may survive a failed save")
+}
+
 func TestCache_DeleteExpired_RemovesOldKeepsNew(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)

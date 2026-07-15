@@ -197,6 +197,14 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 	}
 }
 
+// systemLogStepIndex is the sentinel value for logs.step_index that marks a
+// log line as controller/system-generated rather than belonging to a
+// specific job step. Mirrors the unexported store.systemLogStepIndex
+// (internal/store/postgres.go) — that constant isn't exported, so it's
+// redefined here for controller-package call sites that append system log
+// lines directly via st.AppendLog.
+const systemLogStepIndex = -1
+
 const cacheCleanupLockKey = int64(0x63616368) // 'cach'
 
 // RunCacheCleanup deletes expired cache entries every 24 hours.
@@ -241,7 +249,11 @@ func runCacheCleanupAsLeader(ctx context.Context, st store.Store, obj objectstor
 // referenced YAML and inlines its steps directly into the run's spec.
 // After UpdateRunSpec, the next RunScheduler tick will queue the run normally.
 // Returns immediately if resolver is nil.
-func RunGitResolver(ctx context.Context, st store.Store, resolver *gittemplate.Resolver, km secrets.KeyManager, tick time.Duration) {
+//
+// deadline bounds how long a run may sit Pending while its git-template
+// resolution keeps failing transiently: past it, the run is Failed instead
+// of retried forever (see resolveGitPendingRuns).
+func RunGitResolver(ctx context.Context, st store.Store, resolver *gittemplate.Resolver, km secrets.KeyManager, tick, deadline time.Duration) {
 	if resolver == nil {
 		return
 	}
@@ -250,18 +262,27 @@ func RunGitResolver(ctx context.Context, st store.Store, resolver *gittemplate.R
 	}
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
+	// Leader-local backoff tracker for candidates whose resolution keeps
+	// failing transiently (see failureBackoff). Created once for the
+	// lifetime of this goroutine so failures accumulate across ticks.
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			resolveGitPendingRuns(ctx, st, resolver, km)
+			resolveGitPendingRuns(ctx, st, resolver, km, bo, deadline)
 		}
 	}
 }
 
-func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittemplate.Resolver, km secrets.KeyManager) {
-	runs, err := st.ListPendingRuns(ctx, 50)
+// resolveGitPendingRuns resolves one batch of Pending runs' git:// URIs.
+// bo tracks consecutive transient resolve failures per run so a poisoned
+// candidate (e.g. a persistently unreachable host) doesn't fill every batch;
+// deadline bounds how long a run may keep failing transiently before it is
+// given up on and Failed instead of left Pending forever.
+func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittemplate.Resolver, km secrets.KeyManager, bo *failureBackoff, deadline time.Duration) {
+	runs, err := st.ListPendingRuns(ctx, 50, bo.Excluded(time.Now()))
 	if err != nil {
 		slog.Warn("git resolver: list pending runs", "error", err)
 		return
@@ -302,14 +323,35 @@ func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittem
 				if ferr := st.MarkRunFinished(ctx, r.ID, api.RunFailed); ferr != nil {
 					slog.Warn("git resolver: mark run failed failed", "runID", r.ID, "error", ferr)
 				}
+				bo.Success(r.ID) // run left the Pending set; forget it
 				continue
 			}
 			slog.Warn("git resolver: resolve spec failed", "runID", r.ID, "error", err)
+			bo.Failure(r.ID, time.Now())
+			if time.Since(r.CreatedAt) > deadline {
+				msg := fmt.Sprintf("git template resolution failed for more than %s: %v", deadline, err)
+				slog.Error("git resolver: resolve deadline exceeded, failing run", "runID", r.ID, "age", time.Since(r.CreatedAt))
+				if _, lerr := st.AppendLog(ctx, r.ID, systemLogStepIndex, "stderr", time.Now(), msg); lerr != nil {
+					slog.Warn("git resolver: append system log", "runID", r.ID, "error", lerr)
+				}
+				if ferr := st.MarkRunFinished(ctx, r.ID, api.RunFailed); ferr != nil {
+					slog.Warn("git resolver: mark run failed failed", "runID", r.ID, "error", ferr)
+				}
+				bo.Success(r.ID) // run left the Pending set; forget it
+			}
 			continue
 		}
+		// bo.Success is deferred until the UpdateRunSpec write actually lands.
+		// Marking success right after a successful resolve (before the write)
+		// would let a persistent UpdateRunSpec failure re-resolve the full
+		// git fetch every tick forever — the same hammer-loop class this
+		// backoff exists to fix, just moved one step later in the pipeline.
 		if err := st.UpdateRunSpec(ctx, r.ID, resolved); err != nil {
 			slog.Warn("git resolver: update spec failed", "runID", r.ID, "error", err)
+			bo.Failure(r.ID, time.Now())
+			continue
 		}
+		bo.Success(r.ID) // resolved and persisted; forget any prior transient failures
 	}
 }
 

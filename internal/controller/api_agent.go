@@ -414,6 +414,15 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 		ec := req.ExitCode
 		exit = &ec
 	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, req.RunID) {
+		return
+	}
 	// Guard against writing stale step state under an already-terminal run. If the
 	// parent run was finalized (e.g. the reaper Failed it) before this late report
 	// arrived, upserting would leave a step in a status inconsistent with the run's
@@ -458,6 +467,15 @@ func (s *Server) handleAgentLogAppend(w http.ResponseWriter, r *http.Request) {
 	if req.Timestamp.IsZero() {
 		req.Timestamp = time.Now().UTC()
 	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, req.RunID) {
+		return
+	}
 	seq, err := s.store.AppendLog(r.Context(), req.RunID, req.StepIndex, req.Stream, req.Timestamp, req.Line)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -498,6 +516,15 @@ func (s *Server) handleAgentFinishRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid status", http.StatusBadRequest)
 		return
 	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, id, false)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, id) {
+		return
+	}
 	updated, err := s.store.FinishRun(r.Context(), id, st)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -536,6 +563,15 @@ func (s *Server) handleAgentSetStepOutputs(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, runID, true)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, runID) {
+		return
+	}
 	for k, v := range req.Outputs {
 		if err := s.store.SetStepOutput(r.Context(), runID, stepIndex, variant, k, v); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -553,6 +589,15 @@ func (s *Server) handleAgentSetRunOutputs(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, runID, true)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, runID) {
+		return
+	}
 	for k, v := range req.Outputs {
 		if err := s.store.SetRunOutput(r.Context(), runID, k, v); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -563,11 +608,33 @@ func (s *Server) handleAgentSetRunOutputs(w http.ResponseWriter, r *http.Request
 }
 
 // handleAgentLogBulk appends multiple log lines sent by an agent in a single request.
+//
+// Guarding runs first, in its own pass over the distinct RunIDs, so a mixed-
+// ownership batch (e.g. one owned run's lines followed by another agent's
+// run) is rejected before any line from the batch is appended — otherwise a
+// batch straddling an owned and a not-owned run would partially land before
+// the rejection is discovered mid-loop.
 func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 	var lines []api.LogAppendRequest
 	if err := json.NewDecoder(r.Body).Decode(&lines); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	agentID := chi.URLParam(r, "agentId")
+	guarded := map[string]bool{}
+	for _, req := range lines {
+		if guarded[req.RunID] {
+			continue
+		}
+		v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
+		if gerr != nil {
+			http.Error(w, gerr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if respondRunWriteVerdict(w, v, req.RunID) {
+			return
+		}
+		guarded[req.RunID] = true
 	}
 	dropped := 0
 	var droppedRun string
@@ -593,10 +660,29 @@ func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 
 // handleAgentSidecarStatus records a user sidecar container's phase/exit-code
 // report sent by an agent (host or k8s pump), for UI display.
+//
+// Ownership-only guard (rejectTerminal=false), unlike the other F2 endpoints:
+// both agents stop their sidecar pumps via a deferred CloseScopes that runs
+// AFTER FinishRun, so the final reportStatus(..., "exited", exitCode) call is
+// *expected* to arrive once the run is already terminal. Rejecting it (as
+// rejectTerminal=true would) permanently strands the sidecar's displayed
+// status at its last pre-exit phase (e.g. "running") for every completed
+// run. UpsertSidecarStatus is a display-only upsert keyed by (run, index),
+// so a late/duplicate write here is harmless — it can only bring the shown
+// status closer to the truth, never corrupt run state.
 func (s *Server) handleAgentSidecarStatus(w http.ResponseWriter, r *http.Request) {
 	var req api.SidecarStatusRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	agentID := chi.URLParam(r, "agentId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, req.RunID) {
 		return
 	}
 	if err := s.store.UpsertSidecarStatus(r.Context(), req.RunID, req.Index, req.Name, req.Phase, req.ExitCode); err != nil {

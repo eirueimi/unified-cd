@@ -59,3 +59,20 @@ func TestQueuedRunGraceDefault(t *testing.T) {
 	t.Setenv("UNIFIED_QUEUED_RUN_GRACE", "-1m")
 	assert.Equal(t, 5*time.Minute, queuedRunGraceDefault())
 }
+
+func TestGitResolveDeadlineDefault(t *testing.T) {
+	t.Setenv("UNIFIED_GIT_RESOLVE_DEADLINE", "")
+	assert.Equal(t, time.Hour, gitResolveDeadlineDefault(), "unset falls back to default")
+
+	t.Setenv("UNIFIED_GIT_RESOLVE_DEADLINE", "2h")
+	assert.Equal(t, 2*time.Hour, gitResolveDeadlineDefault())
+
+	t.Setenv("UNIFIED_GIT_RESOLVE_DEADLINE", "bogus")
+	assert.Equal(t, time.Hour, gitResolveDeadlineDefault(), "invalid value falls back to default")
+
+	t.Setenv("UNIFIED_GIT_RESOLVE_DEADLINE", "-1m")
+	assert.Equal(t, time.Hour, gitResolveDeadlineDefault(), "negative value falls back to default")
+
+	t.Setenv("UNIFIED_GIT_RESOLVE_DEADLINE", "0")
+	assert.Equal(t, time.Hour, gitResolveDeadlineDefault(), "0 must NOT disable the deadline — it falls back to default")
+}
