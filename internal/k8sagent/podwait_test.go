@@ -11,6 +11,8 @@ import (
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // controllerForWait returns a fake controller whose GET /runs/{id} reports the
@@ -116,5 +118,65 @@ func TestExecuteRun_MasterTerminalDuringWaitAbandonsWithoutOverride(t *testing.T
 	}
 	if len(pm.deleted) == 0 {
 		t.Fatal("the created pod must still be deleted when abandoning a terminal run")
+	}
+}
+
+// TestExecuteRun_PooledWaitFailureDeletesPodNotReleased: a POOLED run (PodTemplate
+// with Reuse: true) whose pod never becomes ready must have that pod DELETED —
+// not returned to the idle pool — so a wedged pod is never handed to a later run.
+func TestExecuteRun_PooledWaitFailureDeletesPodNotReleased(t *testing.T) {
+	prevInitial, prevMax := agentlib.RetryInitialWait, agentlib.RetryMaxWait
+	agentlib.RetryInitialWait, agentlib.RetryMaxWait = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { agentlib.RetryInitialWait, agentlib.RetryMaxWait = prevInitial, prevMax })
+
+	var status atomic.Value
+	var finishCalled atomic.Int32
+	srv := controllerForWait(t, &status, &finishCalled)
+	client := agentlib.NewClient(srv.URL, "tok")
+
+	// The pool creates the pod via a real *PodManager over a fake clientset; the
+	// agent's pm (fakePM) drives WaitForPodRunning -> failure and records deletes.
+	const ns = "ns"
+	kube := fake.NewSimpleClientset()
+	realPM := NewPodManager(kube, ns, "img")
+	pool := NewPodPool(kube, ns, realPM)
+
+	pm := &fakePM{waitErr: errors.New("pod stuck pending")}
+	a := &K8sAgent{
+		cfg:    Config{AgentID: "k8s-1", Namespace: ns, PodImage: "img", ShimImage: "shim", PodStartTimeout: "50ms"},
+		client: client,
+		pm:     pm,
+		pool:   pool,
+	}
+	c := api.ClaimResponse{
+		RunID: "r1",
+		PodTemplate: &dsl.PodTemplate{
+			Reuse: true,
+			Spec: map[string]any{
+				"containers": []any{map[string]any{"name": "job", "image": "img"}},
+			},
+		},
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "s", Run: "echo ok"}},
+		},
+	}
+
+	a.executeRun(context.Background(), c)
+
+	if finishCalled.Load() == 0 {
+		t.Fatal("a pooled wait failure must fail the run (FinishRun) via failRun")
+	}
+	if len(pm.deleted) == 0 {
+		t.Fatal("a not-ready pooled pod must be DELETED (via pm.DeletePod), not released to the pool")
+	}
+	// It must NOT have been returned to the idle pool.
+	idle := 0
+	pool.mu.Lock()
+	for _, pods := range pool.pods {
+		idle += len(pods)
+	}
+	pool.mu.Unlock()
+	if idle != 0 {
+		t.Fatalf("not-ready pooled pod must not be returned to the idle pool; got %d idle", idle)
 	}
 }

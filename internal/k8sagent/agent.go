@@ -290,11 +290,16 @@ func (a *K8sAgent) awaitPodRunning(ctx context.Context, podName, runID string) (
 	waitCtx, cancel := context.WithTimeout(ctx, a.cfg.PodStartTimeoutDuration())
 	defer cancel()
 
+	// Read the poll interval on this (the caller's) goroutine before spawning the
+	// watcher, so a test mutating agentlib.CancelPollInterval concurrently never
+	// races the watcher's read (mirrors internal/agent/orchestrator.go:91-100).
+	pollInterval := agentlib.CancelPollInterval
+
 	var terminal atomic.Bool
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		ticker := time.NewTicker(agentlib.CancelPollInterval)
+		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
 		for {
 			select {
