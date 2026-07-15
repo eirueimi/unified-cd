@@ -15,6 +15,18 @@ import (
 	"github.com/eirueimi/unified-cd/internal/secrets"
 )
 
+// isTerminalRunStatus reports whether a run has finished at the controller.
+// (Local copy: the k8s agent has its own in package k8sagent; controller/sse.go
+// and cli/wait.go likewise keep their own — there is no shared exported form.)
+func isTerminalRunStatus(s api.RunStatus) bool {
+	switch s {
+	case api.RunSucceeded, api.RunFailed, api.RunCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 // CancelPollInterval is how often RunClaim's cancellation poller asks the
 // controller whether the run was cancelled mid-flight. It is an exported var
 // (not a const) so tests — in this package and in the k8s agent, which used
@@ -70,6 +82,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	}
 
 	var cancelledByMaster atomic.Bool
+	var reapedByMaster atomic.Bool // controller marked the run terminal (Failed/other) out-of-band
 	// anyStepFailed: a non-continueOnError step failed (used for if: status).
 	// Benign race: a step failing at the exact instant cancellation arrives may be
 	// reported as Failed vs Cancelled, but both are terminal non-success — no corruption.
@@ -119,9 +132,14 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					slog.Warn("cancel poller: get run failed", "runID", c.RunID, "error", err)
 					continue
 				}
-				if run.Status == api.RunCancelled {
-					slog.Info("received cancellation signal from master; interrupting run", "runID", c.RunID)
-					cancelledByMaster.Store(true)
+				if isTerminalRunStatus(run.Status) {
+					if run.Status == api.RunCancelled {
+						slog.Info("received cancellation signal from master; interrupting run", "runID", c.RunID)
+						cancelledByMaster.Store(true)
+					} else {
+						slog.Info("master reported run terminal; interrupting run", "runID", c.RunID, "status", run.Status)
+						reapedByMaster.Store(true)
+					}
 					cancelRun()
 					return
 				}
@@ -665,6 +683,17 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	// Use a non-cancelling context so that FinishRun and SetRunOutputs are reliably called
 	// even when ctx has been cancelled due to timeout or other reasons.
 	finishCtx := context.WithoutCancel(ctx)
+
+	// If the controller already marked this run terminal out-of-band (e.g. the
+	// stuck-run reaper tripped during a partition), it holds the authoritative
+	// status. Do not promote outputs or send our own FinishRun — that would race
+	// or overwrite the controller's decision. The pipeline was already stopped by
+	// the poller's cancelRun(). (Cancelled is handled by the normal path so the
+	// run is still reported Cancelled.)
+	if reapedByMaster.Load() {
+		slog.Info("run already terminal at master; skipping local outputs/finish", "runId", c.RunID)
+		return
+	}
 
 	// Promote declared job outputs (only from steps that actually executed)
 	runOutputs := map[string]string{}
