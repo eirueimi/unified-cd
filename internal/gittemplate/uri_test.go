@@ -65,6 +65,29 @@ func TestParseURI(t *testing.T) {
 	}
 }
 
+func TestParseURI_RefAllowlist(t *testing.T) {
+	ok := []string{
+		"git://h/o/r/p@main",
+		"git://h/o/r/p@v1.2.3",
+		"git://h/o/r/p@feature/x",
+		"git://h/o/r/p@a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+	}
+	for _, u := range ok {
+		_, err := gittemplate.ParseURI(u)
+		require.NoError(t, err, u)
+	}
+	bad := []string{
+		"git://h/o/r/p@-x",
+		"git://h/o/r/p@--upload-pack=y",
+		"git://h/o/r/p@ref with space",
+		"git://h/o/r/p@ref;rm -rf",
+	}
+	for _, u := range bad {
+		_, err := gittemplate.ParseURI(u)
+		require.Error(t, err, u)
+	}
+}
+
 func TestURI_IsFixed(t *testing.T) {
 	cases := []struct {
 		ref       string

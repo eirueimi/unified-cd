@@ -2,8 +2,11 @@ package gittemplate
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var refAllowed = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/+-]*$`)
 
 // URI represents a parsed git:// template URI.
 type URI struct {
@@ -33,6 +36,9 @@ func ParseURI(raw string) (URI, error) {
 
 	if ref == "" {
 		return URI{}, fmt.Errorf("git URI has empty ref in %q", raw)
+	}
+	if !refAllowed.MatchString(ref) {
+		return URI{}, fmt.Errorf("git URI ref %q contains invalid characters (must match %s)", ref, refAllowed.String())
 	}
 
 	// Split host/owner/repo/path (minimum 4 segments: host, owner, repo, file)
