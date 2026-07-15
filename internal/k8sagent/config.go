@@ -28,6 +28,8 @@ type Config struct {
 	Kubeconfig          string                      `yaml:"kubeconfig"`
 	MaxConcurrent       int                         `yaml:"maxConcurrent"`
 	PoolIdleTimeout     string                      `yaml:"poolIdleTimeout,omitempty"`
+	PodStartTimeout     string                      `yaml:"podStartTimeout,omitempty"`
+	DrainTimeout        string                      `yaml:"drainTimeout,omitempty"`
 	PodTemplates        map[string]AgentPodTemplate `yaml:"podTemplates,omitempty"`
 	SidecarS3SecretName string                      `yaml:"sidecarS3SecretName,omitempty"`
 }
@@ -49,7 +51,7 @@ func DefaultConfig() Config {
 		PodImage:      "ghcr.io/eirueimi/unified-cd-runner:v0.0.3",
 		SidecarImage:  "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
 		ShimImage:     defaultShimImage,
-		MaxConcurrent: 5,
+		MaxConcurrent: 100,
 	}
 }
 
@@ -94,12 +96,49 @@ func (c *Config) PoolIdleTimeoutDuration() time.Duration {
 	return d
 }
 
+// defaultPodStartTimeout bounds how long executeRun waits for a run Pod to
+// reach Running before failing the run (see agent.go). Matches the throwaway
+// scope-pod bound (imagePodStartTimeout).
+const defaultPodStartTimeout = 5 * time.Minute
+
+// PodStartTimeoutDuration parses PodStartTimeout, returning defaultPodStartTimeout
+// when unset, unparseable, or non-positive.
+func (c *Config) PodStartTimeoutDuration() time.Duration {
+	if c.PodStartTimeout == "" {
+		return defaultPodStartTimeout
+	}
+	d, err := time.ParseDuration(c.PodStartTimeout)
+	if err != nil || d <= 0 {
+		return defaultPodStartTimeout
+	}
+	return d
+}
+
+// DrainTimeoutDuration parses DrainTimeout, returning 0 (wait indefinitely)
+// when unset or unparseable.
+func (c *Config) DrainTimeoutDuration() time.Duration {
+	if c.DrainTimeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(c.DrainTimeout)
+	if err != nil {
+		return 0
+	}
+	return d
+}
+
 // Validate validates the configuration values and fills in default values.
 // If UNIFIED_K8S_AGENT_ID is set in the environment, it overrides agentId from the config file,
 // allowing each pod in a Deployment to use its own pod name as a unique agent ID.
 func (c *Config) Validate() error {
 	if v := os.Getenv("UNIFIED_K8S_AGENT_ID"); v != "" {
 		c.AgentID = v
+	}
+	if v := os.Getenv("UNIFIED_K8S_POD_START_TIMEOUT"); v != "" {
+		c.PodStartTimeout = v
+	}
+	if v := os.Getenv("UNIFIED_K8S_DRAIN_TIMEOUT"); v != "" {
+		c.DrainTimeout = v
 	}
 	if c.Server == "" {
 		return fmt.Errorf("server is required")
@@ -122,12 +161,24 @@ func (c *Config) Validate() error {
 	if c.ShimImage == "" {
 		c.ShimImage = defaultShimImage
 	}
-	if c.MaxConcurrent <= 0 {
-		c.MaxConcurrent = 5
+	// maxConcurrent: 0/unset -> default 100; negative -> unlimited (preserved
+	// as a sentinel; the run loop skips its semaphore); positive -> that bound.
+	if c.MaxConcurrent == 0 {
+		c.MaxConcurrent = 100
 	}
 	if c.PoolIdleTimeout != "" {
 		if _, err := time.ParseDuration(c.PoolIdleTimeout); err != nil {
 			return fmt.Errorf("poolIdleTimeout %q: %w", c.PoolIdleTimeout, err)
+		}
+	}
+	if c.PodStartTimeout != "" {
+		if _, err := time.ParseDuration(c.PodStartTimeout); err != nil {
+			return fmt.Errorf("podStartTimeout %q: %w", c.PodStartTimeout, err)
+		}
+	}
+	if c.DrainTimeout != "" {
+		if _, err := time.ParseDuration(c.DrainTimeout); err != nil {
+			return fmt.Errorf("drainTimeout %q: %w", c.DrainTimeout, err)
 		}
 	}
 	return nil

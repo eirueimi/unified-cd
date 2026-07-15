@@ -259,7 +259,9 @@ labels:
   - cluster:prod
 
 namespace: ci               # Kubernetes namespace for job Pods
-maxConcurrent: 10           # max simultaneous Pods
+maxConcurrent: 10           # max simultaneous Pods (0/unset -> 100; negative -> unlimited)
+podStartTimeout: 5m         # max wait for a run Pod to reach Running before failing the run (default shown)
+drainTimeout: 0             # max wait for in-flight runs to finish on shutdown; 0 = wait forever (default shown)
 
 # Fallback image when no podTemplate is referenced. Bash-less/sh-less images
 # (as here) work fine by default — steps exec via the injected ucd-sh shim,
@@ -343,11 +345,15 @@ podTemplates:
 | `sidecarImage` | string | No | `ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest` | Artifact-transfer sidecar image injected into every job/scope Pod |
 | `sidecarS3SecretName` | string | No | — | Secret carrying `UNIFIED_S3_*` for the sidecar. Without it, cache steps are no-ops (Succeeded) and artifact steps fail |
 | `kubeconfig` | string | No | in-cluster / `~/.kube/config` | Path to a kubeconfig; omit to use `InClusterConfig` (in cluster) or `~/.kube/config` (out of cluster) |
-| `maxConcurrent` | int | No | `5` | Max simultaneous job Pods |
+| `maxConcurrent` | int | No | `100` | Max simultaneous job Pods, enforced by a semaphore around the claim loop. `0`/unset → `100`. A **negative** value (e.g. `-1`) → unlimited: no agent-side cap, bounded only by cluster scheduling/quota. A positive value is that exact concurrency bound. |
+| `podStartTimeout` | string | No | `5m` | Go duration bounding how long the agent waits for a run Pod to reach `Running` before failing the run. Env override: `UNIFIED_K8S_POD_START_TIMEOUT`. Prevents an unschedulable or `ImagePullBackOff` Pod (which under `RestartPolicy: Never` never transitions to `Failed` on its own) from wedging a run forever. Unset, unparseable, or non-positive values fall back to the default. The wait is also aborted early, without overriding the controller's status, if the run is already terminal at the controller (cancel/reap raced the Pod becoming ready). |
+| `drainTimeout` | string | No | `0` (wait indefinitely) | Go duration bounding the graceful-shutdown drain window. Env override: `UNIFIED_K8S_DRAIN_TIMEOUT`. On SIGTERM/rollout the agent immediately stops claiming new runs but lets in-flight runs keep going — heartbeats keep beating during drain so a draining run isn't reaped as stuck — until either they finish or `drainTimeout` elapses, whichever comes first. `0`/unset waits forever for in-flight runs to finish (no forced cutoff). Parity with the standard agent's `--drain-timeout`. |
 | `poolIdleTimeout` | string | No | `0` (no reuse) | Go duration an idle pooled Pod is kept for reuse before teardown (e.g. `10m`) |
 | `podTemplates` | map | No | — | Named Pod templates referenced from Job YAML via `podTemplate.name` (see below) |
 
 `token` (and any other sensitive value) may be placed in a separate Secret file (env `UNIFIED_K8S_SECRET`), whose fields are merged on top of the config file.
+
+`agentId`, `podStartTimeout`, and `drainTimeout` each have an environment-variable override (`UNIFIED_K8S_AGENT_ID`, `UNIFIED_K8S_POD_START_TIMEOUT`, `UNIFIED_K8S_DRAIN_TIMEOUT` respectively), applied in `Validate()` on top of the config-file value — handy for templating per-Pod values (e.g. the Pod name as `agentId`) without a separate ConfigMap per replica.
 
 ### Pod template fields
 

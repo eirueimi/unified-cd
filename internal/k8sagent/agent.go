@@ -8,6 +8,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
@@ -54,6 +56,9 @@ type K8sAgent struct {
 	pm     podManager
 	exec   stepExecutor
 	pool   *PodPool
+	// dispatch executes one claimed run. Defaults to executeRun; overridable in
+	// tests to exercise the claim loop's drain/concurrency without a pod backend.
+	dispatch func(ctx context.Context, c api.ClaimResponse)
 }
 
 // k8sAgentCapabilities reports what the k8s agent can execute: it always
@@ -62,7 +67,9 @@ func k8sAgentCapabilities() []string { return []string{dsl.CapPod, dsl.CapContai
 
 // NewK8sAgent creates a new K8sAgent.
 func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec *Executor, pool *PodPool) *K8sAgent {
-	return &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool}
+	a := &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool}
+	a.dispatch = a.executeRun
+	return a
 }
 
 // Run executes the agent's main loop.
@@ -108,32 +115,95 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 		}
 	}
 
-	// The k8s agent has no drain/cordon: ctx is cancelled only on full shutdown,
-	// so binding the heartbeat to ctx keeps it alive for the agent's whole lifetime
-	// and stops it cleanly on shutdown. (Unlike the host agent, there is no separate
-	// claimCtx that is cancelled before in-flight runs finish, so no divergence here.)
-	agentlib.StartHeartbeat(ctx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval)
-	go a.runPodGC(ctx, time.Minute)
+	// ctx is the claim context: cancelled on shutdown to stop new claims. runCtx
+	// outlives it so in-flight runs can drain; DrainTimeout (0 = wait forever)
+	// bounds the drain window. Mirrors the host agent (internal/agent/agent.go).
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	if d := a.cfg.DrainTimeoutDuration(); d > 0 {
+		go func() {
+			<-ctx.Done()
+			timer := time.NewTimer(d)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+	}
 
+	// Heartbeat bound to runCtx (not ctx): a drain must not stop heartbeats, or
+	// the stuck-run reaper would fail a healthy draining run after staleAfter.
+	// Joined before Run returns so no beat outlives Run.
+	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval)
+	go a.runPodGC(runCtx, time.Minute)
+
+	// Concurrency gate: positive MaxConcurrent -> semaphore of that size;
+	// negative -> unlimited (nil sem, dispatch ungated). Validate mapped 0->100.
+	var sem chan struct{}
+	if a.cfg.MaxConcurrent > 0 {
+		sem = make(chan struct{}, a.cfg.MaxConcurrent)
+	}
+
+	var wg sync.WaitGroup
+claimLoop:
 	for {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			break
+		}
+		if sem != nil {
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				break claimLoop
+			}
 		}
 		resp, err := a.client.Claim(ctx, a.cfg.AgentID, "30s", labels)
 		if err != nil {
+			if sem != nil {
+				<-sem
+			}
 			slog.Error("claim error", "error", err)
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				break claimLoop
 			case <-time.After(2 * time.Second):
 			}
 			continue
 		}
 		if resp.RunID == "" {
+			if sem != nil {
+				<-sem
+			}
 			continue
 		}
-		go a.executeRun(ctx, resp)
+		wg.Add(1)
+		go func(c api.ClaimResponse) {
+			defer wg.Done()
+			if sem != nil {
+				defer func() { <-sem }()
+			}
+			a.dispatch(runCtx, c)
+		}(resp)
 	}
+
+	// Stop claiming; wait for in-flight runs to drain (bounded by DrainTimeout),
+	// then stop and join the heartbeat before returning.
+	wg.Wait()
+	runCancel()
+	<-hbDone
+
+	// ctx is cancelled; deregister on a fresh context so the master drops us
+	// immediately instead of waiting for heartbeat staleness.
+	deregCtx, deregCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer deregCancel()
+	if err := a.client.Deregister(deregCtx, a.cfg.AgentID); err != nil {
+		slog.Warn("k8s: deregister failed", "agentId", a.cfg.AgentID, "error", err)
+	} else {
+		slog.Info("k8s agent deregistered", "agentId", a.cfg.AgentID)
+	}
+	return ctx.Err()
 }
 
 // executeRun is the k8s agent's thin wrapper over the shared orchestration
@@ -148,18 +218,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	slog.Info("k8s: executing Run", "runId", c.RunID, "job", c.JobName)
 
 	if c.Native {
-		reason := "native: true jobs are host-only; the k8s agent cannot run them"
-		slog.Error(reason, "runId", c.RunID)
-		_ = a.client.AppendLogBulk(ctx, a.cfg.AgentID, c.RunID, -1, []api.LogAppendRequest{{
-			RunID:     c.RunID,
-			StepIndex: -1,
-			Stream:    "stderr",
-			Timestamp: time.Now().UTC(),
-			Line:      reason,
-		}})
-		agentlib.RetryUntilSuccess(ctx, func(cc context.Context) error {
-			return a.client.FinishRun(cc, a.cfg.AgentID, c.RunID, api.RunFailed)
-		})
+		a.failRun(ctx, c.RunID, "native: true jobs are host-only; the k8s agent cannot run them")
 		return
 	}
 
@@ -173,6 +232,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 
 	var pooledPod *PooledPod
 	var podName string
+	podReady := false
 
 	if usePool {
 		templateName := ""
@@ -182,13 +242,20 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		pp, err := a.pool.ClaimPod(ctx, c.RunID, templateName, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
 			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName}, a.cfg.ShimImage)
 		if err != nil {
-			slog.Error("k8s: failed to acquire Pod", "runId", c.RunID, "error", err)
-			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: failed to acquire Pod: %v", err))
 			return
 		}
 		pooledPod = pp
 		podName = pp.PodName
 		defer func() {
+			if !podReady {
+				// The pod never reached Running; do not return a possibly-wedged
+				// pod to the idle pool — delete it so the pool re-creates next time.
+				if err := a.pm.DeletePod(context.Background(), podName); err != nil {
+					slog.Warn("k8s: failed to delete not-ready pooled Pod", "pod", podName, "error", err)
+				}
+				return
+			}
 			if err := a.pool.ReleasePod(context.Background(), pooledPod, true); err != nil {
 				slog.Warn("k8s: failed to release Pod", "pod", podName, "error", err)
 			}
@@ -197,14 +264,12 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		pod, err := BuildPod(c.RunID, a.cfg.Namespace, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
 			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName}, a.cfg.ShimImage)
 		if err != nil {
-			slog.Error("k8s: failed to build Pod spec", "runId", c.RunID, "error", err)
-			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: failed to build Pod spec: %v", err))
 			return
 		}
 		created, err := a.pm.CreatePod(ctx, pod)
 		if err != nil {
-			slog.Error("k8s: failed to create Pod", "runId", c.RunID, "error", err)
-			_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: failed to create Pod: %v", err))
 			return
 		}
 		podName = created.Name
@@ -215,11 +280,16 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		}()
 	}
 
-	if err := a.pm.WaitForPodRunning(ctx, podName); err != nil {
-		slog.Error("k8s: failed waiting for Pod to start", "runId", c.RunID, "error", err)
-		_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+	masterTerminal, err := a.awaitPodRunning(ctx, podName, c.RunID)
+	if err != nil {
+		if masterTerminal {
+			slog.Info("k8s: run became terminal before pod ready; abandoning", "runId", c.RunID, "pod", podName)
+			return
+		}
+		a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: run pod did not become ready: %v", err))
 		return
 	}
+	podReady = true
 
 	// If cleanWorkspace is true, clear the workspace before the first step
 	if usePool && c.PodTemplate != nil && c.PodTemplate.CleanWorkspace {
@@ -255,6 +325,77 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	backend := newK8sBackend(a, c.RunID, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
 
 	agentlib.RunClaim(ctx, a.client, a.cfg.AgentID, c, backend)
+}
+
+// failRun fails a claim that could not begin executing (pod build/create/acquire
+// or the run pod never becoming ready). reason is surfaced into the run's own
+// logs (stepIndex -1, rendered "System" in the UI) before FinishRun(Failed).
+// The log line is best-effort; FinishRun is retried until it lands so the run
+// never sits stuck as Running. Mirrors the host agent's Agent.failRun.
+func (a *K8sAgent) failRun(ctx context.Context, runID, reason string) {
+	slog.Error(reason, "runId", runID)
+	_ = a.client.AppendLogBulk(ctx, a.cfg.AgentID, runID, -1, []api.LogAppendRequest{{
+		RunID:     runID,
+		StepIndex: -1,
+		Stream:    "stderr",
+		Timestamp: time.Now().UTC(),
+		Line:      reason,
+	}})
+	agentlib.RetryUntilSuccess(ctx, func(cc context.Context) error {
+		return a.client.FinishRun(cc, a.cfg.AgentID, runID, api.RunFailed)
+	})
+}
+
+// awaitPodRunning waits for podName to reach Running, bounded by
+// cfg.PodStartTimeoutDuration(), and abortable early if the controller marks the
+// run terminal (user cancel or reap) before the pod is ready. Under
+// RestartPolicy: Never a Pending/ImagePullBackOff pod never transitions to
+// Failed, so without this bound the wait would hang until full agent shutdown.
+//
+// It returns masterTerminal=true (with a non-nil err) when the wait was aborted
+// because the run is already terminal at the controller — the caller must clean
+// up the pod but must NOT override the controller's authoritative status.
+func (a *K8sAgent) awaitPodRunning(ctx context.Context, podName, runID string) (masterTerminal bool, err error) {
+	waitCtx, cancel := context.WithTimeout(ctx, a.cfg.PodStartTimeoutDuration())
+	defer cancel()
+
+	// Read the poll interval on this (the caller's) goroutine before spawning the
+	// watcher, so a test mutating agentlib.CancelPollInterval concurrently never
+	// races the watcher's read (mirrors internal/agent/orchestrator.go:91-100).
+	pollInterval := agentlib.CancelPollInterval
+
+	var terminal atomic.Bool
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		ticker := time.NewTicker(pollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-waitCtx.Done():
+				return
+			case <-ticker.C:
+				run, gerr := a.client.GetRun(waitCtx, runID)
+				if gerr != nil {
+					continue
+				}
+				if isTerminalRunStatus(run.Status) {
+					terminal.Store(true)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	werr := a.pm.WaitForPodRunning(waitCtx, podName)
+	cancel()
+	<-watchDone
+
+	if terminal.Load() {
+		return true, fmt.Errorf("run %s reached terminal status before pod %s became ready", runID, podName)
+	}
+	return false, werr
 }
 
 // logLineWriter is a Writer that sends each line of stdout to the master server via AppendLog.
