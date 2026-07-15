@@ -928,13 +928,15 @@ steps:
   - name: download-binary
     downloadArtifact:
       name: app-binary          # must match the upload name
-      destDir: /tmp/artifacts   # where to place the file (default: current directory)
+      destDir: artifacts        # workspace-relative dir (default: workspace root)
 
   - name: run-binary
-    run: /tmp/artifacts/app --version
+    run: artifacts/app --version
 ```
 
 Artifacts are stored in the S3-compatible object store. Artifact names must be unique within a run.
+
+The `path`/`destDir` of an artifact step must be workspace-relative — see [Artifact and cache path rules](#artifact-and-cache-path-rules) below.
 
 Artifacts work on both the standard and Kubernetes agents; on the k8s-agent, transfers are handled by an auto-injected workspace sidecar (`unified-artifact`).
 
@@ -1005,6 +1007,10 @@ The `path`, `key`, and `restoreKeys` strings support template expressions (e.g. 
 On hit, the cached directory is restored before the step runs. On miss, the directory is saved after the run completes.
 
 Cache is now supported on the k8s agent (previously a silent no-op) with the same `key`/`restoreKeys`/`ttlDays` semantics — see [Kubernetes Integration: Artifacts and Cache](kubernetes-integration.md#artifacts-and-cache) for how transfers work and the required S3 credentials. Restore is best-effort (a miss or error never fails the step); save is deferred until the run's main stages complete.
+
+### Artifact and cache path rules
+
+The `path` of an `uploadArtifact`/`downloadArtifact`/`cache` step must be **relative** to the run workspace. Relative paths behave identically across native, isolated, and Kubernetes execution. Absolute paths and paths that escape the workspace (via `..`) are rejected — the step fails with `artifact/cache path ... escapes the workspace`. Inside a step, `$UNIFIED_WORKSPACE` names the current workspace root (the step's working directory), so scripts can build workspace-relative paths portably.
 
 ---
 

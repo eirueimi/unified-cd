@@ -412,9 +412,11 @@ step referencing `out/report.txt` relative to the workspace root instead of
   '<file>'` step before the `uploadArtifact` step if unsure.
 - If a step intentionally `cd`s into a subdirectory, reference the artifact
   path relative to the workspace root, not the step's `cd` target.
-- Use an absolute path in `path:`/`destDir:` only when the file is
-  intentionally outside the workspace (e.g. a shared cache directory) —
-  absolute paths pass through unchanged.
+- Artifact/cache paths must be **workspace-relative**: an absolute `path:`/
+  `destDir:` (or one that escapes the workspace via `..`) is now rejected
+  outright — see [Step fails with `artifact/cache path ... escapes the
+  workspace`](#step-fails-with-artifactcache-path--escapes-the-workspace). Have
+  the producing step write the file inside the workspace instead.
 - See [Job Reference: Artifacts](jobs.md#artifacts) for the full path
   resolution rules.
 
@@ -446,6 +448,34 @@ unified-cli artifact download <run-id> test-report --dest ./out
 If the list is empty, the run never reached (or failed before) its
 `uploadArtifact` step — check `unified-cli logs <run-id>` for the upload step's
 outcome.
+
+## Step fails with `artifact/cache path ... escapes the workspace`
+
+**Symptom**
+
+A step fails with `artifact/cache path "<p>" escapes the workspace`.
+
+**Cause**
+
+An `uploadArtifact`/`downloadArtifact`/`cache` step used an absolute path or a `..` path that leaves the run workspace. This is rejected to keep steps from reading or writing files outside the workspace (on Kubernetes the artifact sidecar is more privileged than the job container).
+
+**Fix**
+
+Use a path relative to the workspace (e.g. `dist`, not `/workspace/dist` or `../dist`). `$UNIFIED_WORKSPACE` names the workspace root if you need an absolute base.
+
+## `uses: git://...` job fails to resolve with invalid characters
+
+**Symptom**
+
+A `uses: git://...` job fails to resolve with `git URI ref "..." contains invalid characters`.
+
+**Cause**
+
+The `@ref` portion contains characters outside `[A-Za-z0-9._/+-]` or starts with `-` (blocked to prevent git option injection).
+
+**Fix**
+
+Reference a normal branch, tag, or SHA. Relative ref syntax like `HEAD~1`, `HEAD^`, or `main@{upstream}` is intentionally rejected; use a plain branch name, tag, or full SHA instead.
 
 ## Conditional step ran when it shouldn't
 

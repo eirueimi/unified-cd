@@ -76,7 +76,7 @@ func (f *Fetcher) fetchWithURL(ctx context.Context, repoURL, filePath, ref strin
 	if err := run("init"); err != nil {
 		return nil, err
 	}
-	if err := run("fetch", "--depth=1", repoURL, ref); err != nil {
+	if err := run("fetch", "--depth=1", repoURL, "--", ref); err != nil {
 		return nil, fmt.Errorf("fetch %s@%s: %w", repoURL, ref, err)
 	}
 	cmd := exec.CommandContext(ctx, "git", "show", "FETCH_HEAD:"+filePath)
@@ -131,7 +131,7 @@ func (f *Fetcher) fetchSSH(ctx context.Context, uri URI, sshKey string) ([]byte,
 	if err := run("init"); err != nil {
 		return nil, err
 	}
-	if err := run("fetch", "--depth=1", repoURL, uri.Ref); err != nil {
+	if err := run("fetch", "--depth=1", repoURL, "--", uri.Ref); err != nil {
 		return nil, fmt.Errorf("fetch SSH %s@%s: %w", repoURL, uri.Ref, err)
 	}
 	cmd := exec.CommandContext(ctx, "git", "show", "FETCH_HEAD:"+uri.Path)
@@ -227,7 +227,7 @@ func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, ssh
 		defer cleanup()
 		env = gitEnv(extraEnv)
 	}
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", repoURL, ref)
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", repoURL, "--", ref)
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
@@ -282,7 +282,7 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string
 	if err := runGit("init"); err != nil {
 		return nil, err
 	}
-	if err := runGit("fetch", "--depth=1", repoURL, ref); err != nil {
+	if err := runGit("fetch", "--depth=1", repoURL, "--", ref); err != nil {
 		return nil, fmt.Errorf("fetch %s@%s: %w", repoURL, ref, err)
 	}
 

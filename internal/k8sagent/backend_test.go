@@ -76,3 +76,20 @@ func TestK8sBackend_CacheRestore_PropagatesExecError(t *testing.T) {
 	require.ErrorIs(t, err, wantErr)
 	assert.False(t, hit)
 }
+
+// TestK8sResolve_Containment proves F-PATH-1's fix on the k8s backend: a
+// non-scoped artifact/cache path resolves against the pod's mount path, and
+// an absolute or traversal-escaping path is rejected rather than reaching
+// outside the mount (e.g. the artifact sidecar's mounted secrets).
+func TestK8sResolve_Containment(t *testing.T) {
+	b := &k8sBackend{mountPath: "/workspace"}
+	got, err := b.ResolveArtifactPath(agentlib.ScopeHandle{}, "reports")
+	require.NoError(t, err)
+	assert.Equal(t, "/workspace/reports", got)
+
+	_, err = b.ResolveArtifactPath(agentlib.ScopeHandle{}, "../../proc/self/environ")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes the workspace")
+	_, err = b.ResolveCachePath(agentlib.ScopeHandle{}, "/etc/passwd")
+	require.Error(t, err)
+}

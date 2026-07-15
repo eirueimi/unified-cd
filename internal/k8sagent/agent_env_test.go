@@ -129,4 +129,5 @@ func TestExecuteRun_DefaultStep_EnvInjected(t *testing.T) {
 	call := ex.calls[0]
 	assert.Contains(t, call.env, "FOO=bar", "step env: must reach the pod exec")
 	assert.Contains(t, call.env, "UNIFIED_AGENT_OS=linux", "pod-exec steps always run on linux")
+	assert.Contains(t, call.env, "UNIFIED_WORKSPACE=/workspace", "pod-exec steps report the pod's workspace mount path")
 }

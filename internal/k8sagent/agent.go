@@ -304,15 +304,23 @@ func execContainer(s api.ClaimStep) string {
 }
 
 // imageStepEnv returns a fresh env map for a Linux scope pod: the step's env
-// plus UNIFIED_AGENT_OS. Always a new map, so callers never mutate the claim.
-// The scope pod runs a Linux container image regardless of the agent's host
-// OS, so UNIFIED_AGENT_OS is "linux" — not the agent process's runtime.GOOS.
+// plus UNIFIED_AGENT_OS and UNIFIED_WORKSPACE. Always a new map, so callers
+// never mutate the claim. The scope pod runs a Linux container image
+// regardless of the agent's host OS, so UNIFIED_AGENT_OS is "linux" — not
+// the agent process's runtime.GOOS. UNIFIED_WORKSPACE is scopeMountPath
+// ("/workspace"), the scope pod's fixed working directory (scopepod.go) —
+// these are the defaults a scope pod's creation env falls back to when the
+// caller passes no override (e.g. resolveScope's cache/artifact-step path,
+// which calls EnsureScope with a nil env); ensureScopePod (backend.go)
+// merges the orchestrator's already-expanded extraEnv over this baseline for
+// scoped run: steps, so the caller's value still wins there.
 func imageStepEnv(step api.ClaimStep) map[string]string {
-	env := make(map[string]string, len(step.Env)+1)
+	env := make(map[string]string, len(step.Env)+2)
 	for k, v := range step.Env {
 		env[k] = v
 	}
 	env["UNIFIED_AGENT_OS"] = "linux"
+	env["UNIFIED_WORKSPACE"] = scopeMountPath
 	return env
 }
 

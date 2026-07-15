@@ -48,13 +48,18 @@ func TestExecuteCacheStep_PathTemplateExpandedOnRestore(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), []byte("cached"), 0o644))
 	require.NoError(t, cache.Save(ctx, a.CacheStore, src, "k-1", 7))
 
-	dest := t.TempDir()
-	sctx := &safeStepCtx{data: dsl.TemplateData{Params: map[string]string{"dir": dest, "v": "1"}}}
+	// The Path template must expand to a path RELATIVE to the workspace: an
+	// absolute path is now rejected by ResolveCachePath's containment check
+	// (F-PATH-1), so the template param is a relative subdir and the backend
+	// carries the workspace root that "dir" resolves against.
+	workDir := t.TempDir()
+	dest := filepath.Join(workDir, "restored")
+	sctx := &safeStepCtx{data: dsl.TemplateData{Params: map[string]string{"dir": "restored", "v": "1"}}}
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.dir }}", Key: "k-{{ .Params.v }}"})
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "", nil), ScopeHandle{}))
+	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", workDir, nil), ScopeHandle{}))
 
 	got, err := os.ReadFile(filepath.Join(dest, "f.txt"))
 	require.NoError(t, err, "cache should restore into the template-expanded path")
@@ -65,14 +70,18 @@ func TestExecuteCacheStep_PathTemplateExpandedOnDeferredSave(t *testing.T) {
 	ctx := context.Background()
 	a := newCacheTestAgent(t)
 
-	dest := t.TempDir()
+	// See TestExecuteCacheStep_PathTemplateExpandedOnRestore: the Path
+	// template must expand to a workspace-relative path post-F-PATH-1.
+	workDir := t.TempDir()
+	dest := filepath.Join(workDir, "built")
+	require.NoError(t, os.MkdirAll(dest, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dest, "built.txt"), []byte("artifact"), 0o644))
-	sctx := &safeStepCtx{data: dsl.TemplateData{Params: map[string]string{"dir": dest}}}
+	sctx := &safeStepCtx{data: dsl.TemplateData{Params: map[string]string{"dir": "built"}}}
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.dir }}", Key: "save-key"})
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "", nil), ScopeHandle{}))
+	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", workDir, nil), ScopeHandle{}))
 	require.Len(t, postHooks, 1)
 	postHooks[0](ctx)
 

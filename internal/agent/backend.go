@@ -49,23 +49,27 @@ type ExecBackend interface {
 	// non-scoped workspace root (host workDir / k8s pod mount path) when scope
 	// is zero, or the scope container's fixed working directory
 	// ("/workspace", the same value both agents use) when scope is non-zero.
-	// An already-absolute p is returned unchanged. This is the one seam where
-	// the shared orchestration loop defers to backend-specific knowledge (the
-	// host uses OS-native path joining against an arbitrary host directory;
-	// k8s uses forward-slash joining against a configurable pod mount path),
-	// mirroring the pre-refactor host resolveWorkspacePath/resolveScopePath
-	// pair and the k8s agent's inline path.Join(mountPath, ...).
-	ResolveArtifactPath(scope ScopeHandle, p string) string
+	// An absolute p, or a p that escapes the resolved root via "..", is
+	// rejected as an error. This is the one seam where the shared
+	// orchestration loop defers to backend-specific knowledge (the host uses
+	// OS-native path joining against an arbitrary host directory; k8s uses
+	// forward-slash joining against a configurable pod mount path), mirroring
+	// the pre-refactor host resolveWorkspacePath/resolveScopePath pair and the
+	// k8s agent's inline path.Join(mountPath, ...) — both now routed through
+	// containment (ContainWithinOS / ContainWithinSlash).
+	ResolveArtifactPath(scope ScopeHandle, p string) (string, error)
 
-	// ResolveCachePath resolves a cache step's relative path for the
-	// non-scoped case ONLY differently from ResolveArtifactPath: the host
-	// agent deliberately leaves a non-scoped cache path unresolved (as
-	// authored), since cache.Restore/cache.Save treat it as relative to the
-	// objectstore's own root rather than the workspace directory, while the
-	// k8s agent resolves it against the pod's mount path exactly like an
-	// artifact path. The scoped case is identical to ResolveArtifactPath on
-	// both backends (the scope container's fixed working directory).
-	ResolveCachePath(scope ScopeHandle, p string) string
+	// ResolveCachePath resolves a cache step's relative path identically to
+	// ResolveArtifactPath on both backends: the scope container's fixed
+	// working directory when scoped, and the claim's workspace root
+	// (host workDir / k8s pod mount path) when non-scoped. An absolute p, or a
+	// p that escapes the resolved root, is rejected as an error.
+	ResolveCachePath(scope ScopeHandle, p string) (string, error)
+
+	// WorkspacePath returns the cwd workspace root a step sees in this scope
+	// (host workDir natively; the container mount path in isolated/k8s; the
+	// scope container's cwd when scoped), exposed to steps as UNIFIED_WORKSPACE.
+	WorkspacePath(scope ScopeHandle) string
 
 	// DefaultAgentOS reports the OS a non-scoped, non-container: step
 	// actually executes on, for the UNIFIED_AGENT_OS env var (scoped/

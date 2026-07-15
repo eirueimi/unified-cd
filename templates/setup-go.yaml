@@ -30,6 +30,7 @@ spec:
         type: string
         default: "."
         description: "Directory to look for go.sum in (default: current directory)"
+        # working_dir must be relative to the run workspace; absolute paths are rejected.
   steps:
     - name: configure-go-env
       env:

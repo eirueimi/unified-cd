@@ -433,14 +433,26 @@ func (b *parityK8sBackend) RunPostHook(ctx context.Context, scope agentlib.Scope
 // ResolveArtifactPath is a minimal passthrough: none of the 10 parity cases
 // exercises cache/artifact paths, so exact resolution semantics don't matter
 // here (unlike fakeK8sBackend/k8sBackend, which have argv-path assertions).
-func (b *parityK8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p string) string {
-	return p
+func (b *parityK8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p string) (string, error) {
+	return p, nil
 }
 
 // ResolveCachePath is a minimal passthrough (see ResolveArtifactPath's doc
 // comment: none of the 10 parity cases exercises cache/artifact paths).
-func (b *parityK8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) string {
-	return p
+func (b *parityK8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) (string, error) {
+	return p, nil
+}
+
+// WorkspacePath mirrors k8sBackend.WorkspacePath's shape; none of the 10
+// parity cases asserts on UNIFIED_WORKSPACE (parityRunScript injects its own
+// fixed env rather than propagating RunDefault's env parameter, mirroring
+// how it already hardcodes UNIFIED_AGENT_OS=linux instead of using it), so
+// exact value fidelity doesn't matter here (see ResolveArtifactPath above).
+func (b *parityK8sBackend) WorkspacePath(scope agentlib.ScopeHandle) string {
+	if !scope.IsZero() {
+		return scopeMountPath
+	}
+	return "/workspace"
 }
 
 // DefaultAgentOS mirrors k8sBackend: every k8s exec path runs inside a Linux pod.

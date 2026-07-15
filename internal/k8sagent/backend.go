@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"path"
 	"strconv"
 	"strings"
 
@@ -292,19 +291,31 @@ func (b *k8sBackend) sidecarExecArgvCapturingStdout(ctx context.Context, targetP
 // ResolveArtifactPath resolves p against the run/pooled pod's workspace mount
 // path (non-scoped) or the scope pod's fixed working directory (scoped),
 // mirroring the pre-refactor orchestrate's inline path.Join(mountPath, ...) /
-// path.Join(scopeMountPath, ...) computation.
-func (b *k8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p string) string {
+// path.Join(scopeMountPath, ...) computation — now routed through
+// agentlib.ContainWithinSlash so an absolute or escaping p is rejected
+// instead of reaching outside the mount (e.g. the sidecar's mounted secrets).
+func (b *k8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p string) (string, error) {
 	if !scope.IsZero() {
-		return path.Join(scopeMountPath, p)
+		return agentlib.ContainWithinSlash(scopeMountPath, p)
 	}
-	return path.Join(b.mountPath, p)
+	return agentlib.ContainWithinSlash(b.mountPath, p)
 }
 
 // ResolveCachePath is identical to ResolveArtifactPath on k8s: a non-scoped
 // cache path is resolved against the pod's mount path exactly like an
-// artifact path (unlike the host agent, which leaves it unresolved).
-func (b *k8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) string {
+// artifact path (unlike the pre-fix host agent, which left it unresolved).
+func (b *k8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) (string, error) {
 	return b.ResolveArtifactPath(scope, p)
+}
+
+// WorkspacePath reports the cwd workspace root a step sees on this backend,
+// for UNIFIED_WORKSPACE: the scope pod's fixed working directory when scope
+// is non-zero, else the run/pooled pod's workspace mount path.
+func (b *k8sBackend) WorkspacePath(scope agentlib.ScopeHandle) string {
+	if !scope.IsZero() {
+		return scopeMountPath
+	}
+	return b.mountPath
 }
 
 // DefaultAgentOS always reports "linux": every k8s exec path — including the

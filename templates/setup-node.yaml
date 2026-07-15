@@ -19,6 +19,7 @@ spec:
         type: string
         default: "."
         description: "Directory to run package-lock.json / npm ci in"
+        # working_dir must be relative to the run workspace; absolute paths are rejected.
       - name: lockfile
         type: string
         default: "package-lock.json"

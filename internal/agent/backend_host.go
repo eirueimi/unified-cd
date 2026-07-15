@@ -44,6 +44,13 @@ type hostBackend struct {
 	workDir string
 	pod     *claimPodManager
 
+	// mountPath is the in-container path the host workspace is bind-mounted
+	// at for an isolated claim's pod containers (pod.mountPath, itself
+	// computed via hostNamedMountPath at pod construction time). Empty for a
+	// native claim (pod == nil), where it is unused. Set once at
+	// construction so WorkspacePath can report it without touching pod.
+	mountPath string
+
 	scopesMu sync.Mutex
 	scopes   *scopeManager
 
@@ -55,7 +62,11 @@ type hostBackend struct {
 // pod is the claim pod for an isolated claim, or nil for a native (native:
 // true) claim.
 func newHostBackend(a *Agent, runID, workDir string, pod *claimPodManager) *hostBackend {
-	return &hostBackend{a: a, runID: runID, workDir: workDir, pod: pod}
+	b := &hostBackend{a: a, runID: runID, workDir: workDir, pod: pod}
+	if pod != nil {
+		b.mountPath = pod.mountPath
+	}
+	return b
 }
 
 // hostScopeHandle is the concrete payload behind ScopeHandle on the host
@@ -272,32 +283,36 @@ func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, r
 
 // ResolveArtifactPath resolves p against the host workDir (non-scoped) or the
 // scope container's fixed working directory (scoped), mirroring the
-// pre-refactor resolveWorkspacePath/resolveScopePath pair.
-func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) string {
+// pre-refactor resolveWorkspacePath/resolveScopePath pair. An absolute or
+// escaping p is rejected (see ContainWithinOS/ContainWithinSlash).
+func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, error) {
 	if !scope.IsZero() {
 		return resolveScopePath(p)
 	}
 	return resolveWorkspacePath(b.workDir, p)
 }
 
-// ResolveCachePath resolves p against the scope container's fixed working
-// directory when scoped (identical to ResolveArtifactPath). For a non-scoped p
-// the behavior branches on the claim kind:
-//   - isolated: resolve against the claim workspace like the k8s backend joins
-//     the pod mount path; the bind mount makes the host workDir and the
-//     in-container mountPath the same tree, so a relative cache path must be
-//     anchored to it (matching every other pod-semantics path).
-//   - native: leave p UNRESOLVED (as authored), matching the pre-refactor host
-//     agent's cache.Restore/cache.Save calls, which treat it as relative to the
-//     objectstore's own root rather than the claim's workDir.
-func (b *hostBackend) ResolveCachePath(scope ScopeHandle, p string) string {
+// ResolveCachePath is identical to ResolveArtifactPath: a non-scoped cache
+// path resolves against the claim workspace in every mode (native included).
+// The pre-fix native branch left it unresolved, which tarred the agent
+// process CWD instead of the workspace (G1).
+func (b *hostBackend) ResolveCachePath(scope ScopeHandle, p string) (string, error) {
+	return b.ResolveArtifactPath(scope, p)
+}
+
+// WorkspacePath reports the cwd workspace root a step sees on this backend,
+// for UNIFIED_WORKSPACE: the scope container's fixed working directory when
+// scope is non-zero (regardless of native/isolated), else the in-container
+// bind-mount path for an isolated claim (b.pod != nil) or the host working
+// directory for a native claim (also the step cwd — see RunDefault).
+func (b *hostBackend) WorkspacePath(scope ScopeHandle) string {
 	if !scope.IsZero() {
-		return resolveScopePath(p)
+		return scopeWorkDir
 	}
 	if b.pod != nil {
-		return resolveWorkspacePath(b.workDir, p)
+		return b.mountPath // isolated: the in-container bind-mount path
 	}
-	return p
+	return b.workDir // native: the host working directory (also the step cwd)
 }
 
 // DefaultAgentOS reports "linux" for an isolated claim (its default steps exec
