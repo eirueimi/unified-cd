@@ -412,9 +412,11 @@ step referencing `out/report.txt` relative to the workspace root instead of
   '<file>'` step before the `uploadArtifact` step if unsure.
 - If a step intentionally `cd`s into a subdirectory, reference the artifact
   path relative to the workspace root, not the step's `cd` target.
-- Use an absolute path in `path:`/`destDir:` only when the file is
-  intentionally outside the workspace (e.g. a shared cache directory) —
-  absolute paths pass through unchanged.
+- Artifact/cache paths must be **workspace-relative**: an absolute `path:`/
+  `destDir:` (or one that escapes the workspace via `..`) is now rejected
+  outright — see [Step fails with `artifact/cache path ... escapes the
+  workspace`](#step-fails-with-artifactcache-path--escapes-the-workspace). Have
+  the producing step write the file inside the workspace instead.
 - See [Job Reference: Artifacts](jobs.md#artifacts) for the full path
   resolution rules.
 

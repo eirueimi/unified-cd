@@ -928,13 +928,15 @@ steps:
   - name: download-binary
     downloadArtifact:
       name: app-binary          # must match the upload name
-      destDir: /tmp/artifacts   # where to place the file (default: current directory)
+      destDir: artifacts        # workspace-relative dir (default: workspace root)
 
   - name: run-binary
-    run: /tmp/artifacts/app --version
+    run: artifacts/app --version
 ```
 
 Artifacts are stored in the S3-compatible object store. Artifact names must be unique within a run.
+
+The `path`/`destDir` of an artifact step must be workspace-relative — see [Artifact and cache path rules](#artifact-and-cache-path-rules) below.
 
 Artifacts work on both the standard and Kubernetes agents; on the k8s-agent, transfers are handled by an auto-injected workspace sidecar (`unified-artifact`).
 
