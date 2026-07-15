@@ -1,5 +1,7 @@
 package dsl
 
+import "fmt"
+
 // Reserved container/volume names are injected/owned by the system, never
 // user- or template-supplied. PrimaryContainerName is the default exec target
 // for a step with no container:. ArtifactSidecarContainerName is the internal
@@ -55,4 +57,45 @@ func podTemplateDefs(pt *PodTemplate, key string) []map[string]any {
 func DefName(def map[string]any) string {
 	n, _ := def["name"].(string)
 	return n
+}
+
+// ValidateContainerReferences checks that every step's container: reference in
+// spec resolves to a real target: empty (defaults to the primary container), a
+// reserved name, or a container defined in spec.PodTemplate. Scope-tagged steps
+// (ScopeID set) run in their own scope pod, not the caller's pod, so their
+// container is not checked here. Returns a descriptive error on the first
+// invalid reference. Intended to run on a fully-resolved spec (after uses merge).
+func ValidateContainerReferences(spec Spec) error {
+	defined := map[string]bool{}
+	for _, c := range PodTemplateContainers(spec.PodTemplate) {
+		if n := DefName(c); n != "" {
+			defined[n] = true
+		}
+	}
+	check := func(stepName, container, scopeID string) error {
+		if container == "" || scopeID != "" {
+			return nil
+		}
+		if IsReservedContainerName(container) || defined[container] {
+			return nil
+		}
+		return fmt.Errorf("step %q references container %q, which is not defined in the job's podTemplate", stepName, container)
+	}
+	walk := func(entries []StepEntry) error {
+		for _, e := range entries {
+			if err := check(e.Name, e.Container, e.ScopeID); err != nil {
+				return err
+			}
+			for _, p := range e.Parallel {
+				if err := check(p.Name, p.Container, p.ScopeID); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(spec.Steps); err != nil {
+		return err
+	}
+	return walk(spec.Finally)
 }
