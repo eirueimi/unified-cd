@@ -272,32 +272,21 @@ func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, r
 
 // ResolveArtifactPath resolves p against the host workDir (non-scoped) or the
 // scope container's fixed working directory (scoped), mirroring the
-// pre-refactor resolveWorkspacePath/resolveScopePath pair.
-func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) string {
+// pre-refactor resolveWorkspacePath/resolveScopePath pair. An absolute or
+// escaping p is rejected (see ContainWithinOS/ContainWithinSlash).
+func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, error) {
 	if !scope.IsZero() {
 		return resolveScopePath(p)
 	}
 	return resolveWorkspacePath(b.workDir, p)
 }
 
-// ResolveCachePath resolves p against the scope container's fixed working
-// directory when scoped (identical to ResolveArtifactPath). For a non-scoped p
-// the behavior branches on the claim kind:
-//   - isolated: resolve against the claim workspace like the k8s backend joins
-//     the pod mount path; the bind mount makes the host workDir and the
-//     in-container mountPath the same tree, so a relative cache path must be
-//     anchored to it (matching every other pod-semantics path).
-//   - native: leave p UNRESOLVED (as authored), matching the pre-refactor host
-//     agent's cache.Restore/cache.Save calls, which treat it as relative to the
-//     objectstore's own root rather than the claim's workDir.
-func (b *hostBackend) ResolveCachePath(scope ScopeHandle, p string) string {
-	if !scope.IsZero() {
-		return resolveScopePath(p)
-	}
-	if b.pod != nil {
-		return resolveWorkspacePath(b.workDir, p)
-	}
-	return p
+// ResolveCachePath is identical to ResolveArtifactPath: a non-scoped cache
+// path resolves against the claim workspace in every mode (native included).
+// The pre-fix native branch left it unresolved, which tarred the agent
+// process CWD instead of the workspace (G1).
+func (b *hostBackend) ResolveCachePath(scope ScopeHandle, p string) (string, error) {
+	return b.ResolveArtifactPath(scope, p)
 }
 
 // DefaultAgentOS reports "linux" for an isolated claim (its default steps exec

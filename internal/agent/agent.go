@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -393,12 +392,9 @@ func resolveScope(ctx context.Context, step api.ClaimStep, backend ExecBackend) 
 
 // resolveWorkspacePath joins a relative path against the run's workspace working
 // directory (the same directory ExecStep/shell steps use as their cwd, e.g.
-// "<workspaceDir>/working<N>"). Absolute paths are returned unchanged.
-func resolveWorkspacePath(workDir, p string) string {
-	if p == "" || filepath.IsAbs(p) {
-		return p
-	}
-	return filepath.Join(workDir, p)
+// "<workspaceDir>/working<N>"). An absolute or escaping path is rejected.
+func resolveWorkspacePath(workDir, p string) (string, error) {
+	return ContainWithinOS(workDir, p)
 }
 
 // resolveScopePath joins a relative CONTAINER-side path against scopeWorkDir
@@ -407,17 +403,11 @@ func resolveWorkspacePath(workDir, p string) string {
 // the k8s agent's path.Join(mountPath, dest) (internal/k8sagent/agent.go).
 // A relative container path passed straight to `docker cp` is rejected
 // ("destination path must be absolute") — this is the fix for that class of
-// failure. Uses "path" (forward-slash), not "path/filepath": the scope
-// container is always Linux regardless of the host OS. Already-absolute
-// container paths are returned unchanged.
-func resolveScopePath(p string) string {
-	if p == "" {
-		return scopeWorkDir
-	}
-	if path.IsAbs(p) {
-		return p
-	}
-	return path.Join(scopeWorkDir, p)
+// failure. Uses forward-slash joining (ContainWithinSlash), not
+// "path/filepath": the scope container is always Linux regardless of the
+// host OS. An absolute or escaping container path is rejected.
+func resolveScopePath(p string) (string, error) {
+	return ContainWithinSlash(scopeWorkDir, p)
 }
 
 // expandHome expands a leading "~/" using os.UserHomeDir().

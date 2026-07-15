@@ -141,3 +141,33 @@ func TestHostBackend_CacheRestore_MissReturnsNil(t *testing.T) {
 	require.NoError(t, err, "cache miss should not return an error")
 	assert.False(t, hit, "cache miss should report hit=false")
 }
+
+// TestHostResolve_ContainmentAndG1 proves two things about the native
+// (pod == nil) host backend at once: (1) G1 — a non-scoped native CACHE path
+// now resolves against workDir exactly like an artifact path, instead of
+// being left unresolved (the pre-fix behavior, which tarred the agent
+// process's own CWD instead of the workspace); and (2) F-PATH-1 — a
+// traversal path ("../..") is rejected with a containment error for both
+// resolvers, not silently joined outside the workspace.
+func TestHostResolve_ContainmentAndG1(t *testing.T) {
+	// native backend: pod == nil
+	b := &hostBackend{workDir: "/tmp/ws"}
+
+	// G1: a non-scoped native CACHE path now resolves against workDir
+	// (previously returned unresolved).
+	got, err := b.ResolveCachePath(ScopeHandle{}, "node_modules")
+	require.NoError(t, err)
+	assert.Equal(t, filepathJoin("/tmp/ws", "node_modules"), got)
+
+	// artifact path resolves the same way
+	got, err = b.ResolveArtifactPath(ScopeHandle{}, "dist")
+	require.NoError(t, err)
+	assert.Equal(t, filepathJoin("/tmp/ws", "dist"), got)
+
+	// containment: traversal rejected for both
+	_, err = b.ResolveArtifactPath(ScopeHandle{}, "../../etc/passwd")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes the workspace")
+	_, err = b.ResolveCachePath(ScopeHandle{}, "../../etc/passwd")
+	require.Error(t, err)
+}

@@ -696,7 +696,15 @@ func executeUploadArtifact(ctx context.Context, client *Client, agentID string, 
 	})
 
 	ua := step.UploadArtifact
-	artifactPath := b.ResolveArtifactPath(scope, ua.Path)
+	artifactPath, err := b.ResolveArtifactPath(scope, ua.Path)
+	if err != nil {
+		slog.Error("upload-artifact path rejected", "step", step.Name, "error", err)
+		_ = client.ReportStep(ctx, agentID, api.StepReportRequest{
+			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
+			StartedAt: started, EndedAt: time.Now().UTC(),
+		})
+		return fmt.Errorf("upload-artifact %q: %w", ua.Name, err)
+	}
 	if err := b.UploadArtifact(ctx, scope, runID, ua.Name, artifactPath); err != nil {
 		slog.Error("upload-artifact failed", "step", step.Name, "error", err)
 		_ = client.ReportStep(ctx, agentID, api.StepReportRequest{
@@ -725,7 +733,15 @@ func executeDownloadArtifact(ctx context.Context, client *Client, agentID string
 	if destDir == "" {
 		destDir = "."
 	}
-	resolvedDestDir := b.ResolveArtifactPath(scope, destDir)
+	resolvedDestDir, err := b.ResolveArtifactPath(scope, destDir)
+	if err != nil {
+		slog.Error("download-artifact path rejected", "step", step.Name, "error", err)
+		_ = client.ReportStep(ctx, agentID, api.StepReportRequest{
+			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
+			StartedAt: started, EndedAt: time.Now().UTC(),
+		})
+		return fmt.Errorf("download-artifact %q: %w", da.Name, err)
+	}
 
 	if err := b.DownloadArtifact(ctx, scope, runID, da.Name, resolvedDestDir); err != nil {
 		slog.Error("download-artifact failed", "step", step.Name, "error", err)
@@ -747,10 +763,10 @@ func executeDownloadArtifact(ctx context.Context, client *Client, agentID string
 // lenient — a miss/error never fails the step), deferring the matching save
 // into postHooks so it captures the final workspace state at claim end.
 // cachePath resolution mirrors executeUploadArtifact (see
-// ExecBackend.ResolveArtifactPath) for the scoped case; the non-scoped path
-// is left exactly as authored (unresolved), matching the pre-refactor host
-// agent's cache.Restore/cache.Save calls, which treat a relative path as
-// relative to the process's own CWD rather than the claim's workDir.
+// ExecBackend.ResolveCachePath) for both the scoped and non-scoped case: a
+// path that is absolute or escapes the resolved root is a hard error (unlike
+// restore/save's own lenient miss/error handling below) — a path-escape is
+// a containment violation, not a cache miss.
 func executeCacheStep(
 	ctx context.Context,
 	client *Client,
@@ -800,13 +816,18 @@ func executeCacheStep(
 		})
 		return nil
 	}
-	// b.ResolveCachePath resolves cachePath for scope: on the host, a scoped
-	// path is resolved against the scope container's working directory (so
-	// it is always absolute before copyIn/copyOut) while a non-scoped path is
-	// left unresolved (as authored); on k8s, both cases resolve against the
-	// pod's mount path (mirrors the pre-refactor path.Join(mount,
-	// expandedPath)) — see ExecBackend.ResolveCachePath's doc comment.
-	scopedCachePath := b.ResolveCachePath(scope, cachePath)
+	// b.ResolveCachePath resolves cachePath for scope on both backends: a
+	// scoped path resolves against the scope container's working directory
+	// (so it is always absolute before copyIn/copyOut); a non-scoped path
+	// resolves against the claim workspace / pod mount path (mirrors the
+	// pre-refactor path.Join(mount, expandedPath)) — see
+	// ExecBackend.ResolveCachePath's doc comment. An escaping/absolute
+	// cachePath is a hard error here, not a lenient miss.
+	scopedCachePath, err := b.ResolveCachePath(scope, cachePath)
+	if err != nil {
+		slog.Error("cache path rejected", "step", step.Name, "error", err)
+		return fmt.Errorf("cache path %q: %w", cachePath, err)
+	}
 	var restoreKeys []string
 	for _, rk := range cs.RestoreKeys {
 		expanded, _ := dsl.ExpandTemplate(rk, tplData)

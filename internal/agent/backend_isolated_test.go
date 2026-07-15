@@ -50,13 +50,25 @@ func TestHostBackend_Native_DefaultAgentOSIsHost(t *testing.T) {
 
 func TestHostBackend_Isolated_ResolveCachePathJoinsWorkDir(t *testing.T) {
 	b, _ := isolatedBackendForTest(t)
-	got := b.ResolveCachePath(ScopeHandle{}, "node_modules")
-	assert.Equal(t, resolveWorkspacePath("/w", "node_modules"), got)
+	got, err := b.ResolveCachePath(ScopeHandle{}, "node_modules")
+	require.NoError(t, err)
+	want, err := resolveWorkspacePath("/w", "node_modules")
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
 }
 
-func TestHostBackend_Native_ResolveCachePathUnresolved(t *testing.T) {
+// TestHostBackend_Native_ResolveCachePathJoinsWorkDir verifies the G1 fix: a
+// non-scoped native (pod == nil) cache path now resolves against workDir
+// exactly like an artifact path, instead of being left unresolved (the
+// pre-fix behavior, which tarred the agent process's own CWD instead of the
+// workspace).
+func TestHostBackend_Native_ResolveCachePathJoinsWorkDir(t *testing.T) {
 	b := newHostBackend(&Agent{}, "run1", "/w", nil)
-	assert.Equal(t, "node_modules", b.ResolveCachePath(ScopeHandle{}, "node_modules"))
+	got, err := b.ResolveCachePath(ScopeHandle{}, "node_modules")
+	require.NoError(t, err)
+	want, err := resolveWorkspacePath("/w", "node_modules")
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
 }
 
 func TestHostBackend_Isolated_PostHookRunsInStepContainer(t *testing.T) {
