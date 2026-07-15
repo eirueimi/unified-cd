@@ -171,7 +171,9 @@ keys below.
 | `UNIFIED_CACHE_SECRET` | Cache storage secret access key (env equivalent of `--cache-secret`) |
 | `UNIFIED_CACHE_BUCKET` | Cache storage bucket name (env equivalent of `--cache-bucket`) |
 
-Additionally, every step receives `UNIFIED_AGENT_OS` (`linux`, `darwin`, or `windows`) automatically.
+Additionally, every step receives the following environment variables automatically:
+- `UNIFIED_AGENT_OS` — the agent host OS (`linux`, `darwin`, or `windows`)
+- `UNIFIED_WORKSPACE` — the absolute path of the run workspace as seen inside the step (the step's working directory); user `env:` may override it.
 
 ### Agent Config File
 

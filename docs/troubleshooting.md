@@ -447,6 +447,34 @@ If the list is empty, the run never reached (or failed before) its
 `uploadArtifact` step — check `unified-cli logs <run-id>` for the upload step's
 outcome.
 
+## Step fails with `artifact/cache path ... escapes the workspace`
+
+**Symptom**
+
+A step fails with `artifact/cache path "<p>" escapes the workspace`.
+
+**Cause**
+
+An `uploadArtifact`/`downloadArtifact`/`cache` step used an absolute path or a `..` path that leaves the run workspace. This is rejected to keep steps from reading or writing files outside the workspace (on Kubernetes the artifact sidecar is more privileged than the job container).
+
+**Fix**
+
+Use a path relative to the workspace (e.g. `dist`, not `/workspace/dist` or `../dist`). `$UNIFIED_WORKSPACE` names the workspace root if you need an absolute base.
+
+## `uses: git://...` job fails to resolve with invalid characters
+
+**Symptom**
+
+A `uses: git://...` job fails to resolve with `git URI ref "..." contains invalid characters`.
+
+**Cause**
+
+The `@ref` portion contains characters outside `[A-Za-z0-9._/+-]` or starts with `-` (blocked to prevent git option injection).
+
+**Fix**
+
+Reference a normal branch, tag, or SHA.
+
 ## Conditional step ran when it shouldn't
 
 **Symptom**
