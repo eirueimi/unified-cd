@@ -62,7 +62,7 @@ Three sub-fixes, all porting host-agent semantics.
 **Design — port the host model:**
 - Split contexts: keep the incoming `ctx` as **`claimCtx`** (stops the claim loop on shutdown) and derive a **`runCtx`** (`context.WithCancel(context.Background())`) under which in-flight runs continue after claiming stops (cordon).
 - Bind the **heartbeat to `runCtx`**, not `claimCtx`, so draining runs are not reaped as dead; join its done-channel on exit.
-- Add a **`DrainTimeout`** config field (yaml `drainTimeout`, flag `--drain-timeout`, env `UNIFIED_K8S_DRAIN_TIMEOUT`). Default **0 = wait indefinitely**, matching the host agent (`config/agent.go`, `cmd/agent/main.go:68`). When `> 0`, a goroutine cancels `runCtx` once `DrainTimeout` elapses after `claimCtx` is done — bounding how long we wait for in-flight runs (host model, `internal/agent/agent.go:217-228`).
+- Add a **`DrainTimeout`** config field (yaml `drainTimeout`, env `UNIFIED_K8S_DRAIN_TIMEOUT`; env/yaml only — the k8s agent configures via file+env, not per-field CLI flags like the host's `cmd/agent`). Default **0 = wait indefinitely**, matching the host agent's semantics (`config/agent.go`, `cmd/agent/main.go:68`). When `> 0`, a goroutine cancels `runCtx` once `DrainTimeout` elapses after `claimCtx` is done — bounding how long we wait for in-flight runs (host model, `internal/agent/agent.go:217-228`).
 - Track in-flight `executeRun` goroutines with a `sync.WaitGroup`; on shutdown, stop claiming, wait for the group (or drain timeout), join the heartbeat, then `Deregister`.
 
 ### (b) Retried failure reporting on pod-acquisition failure
@@ -75,7 +75,15 @@ Three sub-fixes, all porting host-agent semantics.
 ### (c) Enforce `maxConcurrent`
 **Problem:** `k8sagent.Config.MaxConcurrent` (`config.go:29`, defaulted to 5) is parsed but **never read** in `agent.go` — `go a.executeRun(ctx, resp)` (`agent.go:135`) is unbounded, so a burst of claims spawns unbounded goroutines and pods.
 
-**Design:** Gate run execution with a **counting semaphore** (`chan struct{}` of size `cfg.MaxConcurrent`). Acquire a slot **before claiming** (or before spawning `executeRun`) and release it when the run goroutine finishes. A semaphore — rather than the host's N-fixed-slot workspace model — fits k8s because pods are per-run (there are no reusable per-slot workspaces to pre-create). Effect: at most `MaxConcurrent` runs (and thus run pods from this agent) execute at once; excess claims wait. Interacts cleanly with the WaitGroup from (a): the semaphore bounds live goroutines, the WaitGroup drains them.
+**Design:** Gate run execution with a **counting semaphore** (`chan struct{}` sized to the effective limit). Acquire a slot **before claiming** and release it when the run goroutine finishes. A semaphore — rather than the host's N-fixed-slot workspace model — fits k8s because pods are per-run (there are no reusable per-slot workspaces to pre-create). Interacts cleanly with the WaitGroup from (a): the semaphore bounds live goroutines, the WaitGroup drains them.
+
+**`maxConcurrent` value convention (updated):**
+- **Default raised to `100`** (was 5) — k8s can schedule far more concurrent pods than a single host, so the old floor of 5 needlessly throttled a k8s agent.
+- **Unset / `0`** → default `100`.
+- **Negative (e.g. `-1`)** → **unlimited**: no semaphore is created and run dispatch is ungated (intentional unbounded concurrency, bounded only by the cluster's own scheduling). Documented so operators opt in explicitly rather than hitting it by accident.
+- **Positive** → that exact bound.
+
+Implementation: compute the effective limit from `cfg.MaxConcurrent`; when `> 0` build `sem := make(chan struct{}, limit)` and acquire/release around dispatch; when `< 0` (unlimited) leave `sem == nil` and skip gating. `Validate` maps `0 → 100` and leaves negatives untouched (unlimited sentinel).
 
 ---
 
@@ -89,11 +97,12 @@ Unit tests (package `internal/k8sagent`, plus `internal/agent` for the poller), 
 - **G-A2:** poller sees `RunFailed` from the controller → pipeline stops (`runCtx` cancelled), `reapedByMaster` set, terminal `FinishRun` override skipped; `RunCancelled` still labels steps `Cancelled` as before.
 - **G-A3(a) drain:** with an in-flight run, cancelling `claimCtx` stops new claims but lets the in-flight run finish under `runCtx`; `Run` returns only after the WaitGroup drains; heartbeat joined. A run exceeding `DrainTimeout` is cancelled.
 - **G-A3(b):** each of the four pod-acquisition failure sites retries `FinishRun` on transient error (mirror `TestOrchestrate_ReportRetriesUntilSuccess`).
-- **G-A3(c):** with `MaxConcurrent=2` and 3 simultaneous claimable runs, at most 2 `executeRun` run concurrently; the third starts only after a slot frees.
+- **G-A3(c) bounded:** with `MaxConcurrent=2` and 3 simultaneous claimable runs, at most 2 `executeRun` run concurrently; the third starts only after a slot frees.
+- **G-A3(c) unlimited & default:** `MaxConcurrent < 0` → no semaphore (dispatch ungated); `Validate` maps `0 → 100` and leaves negatives untouched; `DefaultConfig` is `100`.
 
 ## Docs
 
-Update the k8s agent config/ops docs to document `podStartTimeout` / `UNIFIED_K8S_POD_START_TIMEOUT`, `drainTimeout` / `UNIFIED_K8S_DRAIN_TIMEOUT` / `--drain-timeout`, and that `maxConcurrent` is now enforced. Note the new graceful-drain shutdown behavior (parity with the host agent's `--drain-timeout`).
+Update the k8s agent config/ops docs to document `podStartTimeout` / `UNIFIED_K8S_POD_START_TIMEOUT`, `drainTimeout` / `UNIFIED_K8S_DRAIN_TIMEOUT` (env/yaml), and the new `maxConcurrent` semantics (default 100, `0`→100, negative→unlimited, now actually enforced). Note the new graceful-drain shutdown behavior (parity with the host agent's drain).
 
 ## Out of scope
 - Host agent changes (already has these).
