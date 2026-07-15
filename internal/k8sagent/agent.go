@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -55,6 +56,9 @@ type K8sAgent struct {
 	pm     podManager
 	exec   stepExecutor
 	pool   *PodPool
+	// dispatch executes one claimed run. Defaults to executeRun; overridable in
+	// tests to exercise the claim loop's drain/concurrency without a pod backend.
+	dispatch func(ctx context.Context, c api.ClaimResponse)
 }
 
 // k8sAgentCapabilities reports what the k8s agent can execute: it always
@@ -63,7 +67,9 @@ func k8sAgentCapabilities() []string { return []string{dsl.CapPod, dsl.CapContai
 
 // NewK8sAgent creates a new K8sAgent.
 func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec *Executor, pool *PodPool) *K8sAgent {
-	return &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool}
+	a := &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool}
+	a.dispatch = a.executeRun
+	return a
 }
 
 // Run executes the agent's main loop.
@@ -109,32 +115,95 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 		}
 	}
 
-	// The k8s agent has no drain/cordon: ctx is cancelled only on full shutdown,
-	// so binding the heartbeat to ctx keeps it alive for the agent's whole lifetime
-	// and stops it cleanly on shutdown. (Unlike the host agent, there is no separate
-	// claimCtx that is cancelled before in-flight runs finish, so no divergence here.)
-	agentlib.StartHeartbeat(ctx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval)
-	go a.runPodGC(ctx, time.Minute)
+	// ctx is the claim context: cancelled on shutdown to stop new claims. runCtx
+	// outlives it so in-flight runs can drain; DrainTimeout (0 = wait forever)
+	// bounds the drain window. Mirrors the host agent (internal/agent/agent.go).
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	if d := a.cfg.DrainTimeoutDuration(); d > 0 {
+		go func() {
+			<-ctx.Done()
+			timer := time.NewTimer(d)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+	}
 
+	// Heartbeat bound to runCtx (not ctx): a drain must not stop heartbeats, or
+	// the stuck-run reaper would fail a healthy draining run after staleAfter.
+	// Joined before Run returns so no beat outlives Run.
+	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval)
+	go a.runPodGC(runCtx, time.Minute)
+
+	// Concurrency gate: positive MaxConcurrent -> semaphore of that size;
+	// negative -> unlimited (nil sem, dispatch ungated). Validate mapped 0->100.
+	var sem chan struct{}
+	if a.cfg.MaxConcurrent > 0 {
+		sem = make(chan struct{}, a.cfg.MaxConcurrent)
+	}
+
+	var wg sync.WaitGroup
+claimLoop:
 	for {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			break
+		}
+		if sem != nil {
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				break claimLoop
+			}
 		}
 		resp, err := a.client.Claim(ctx, a.cfg.AgentID, "30s", labels)
 		if err != nil {
+			if sem != nil {
+				<-sem
+			}
 			slog.Error("claim error", "error", err)
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				break claimLoop
 			case <-time.After(2 * time.Second):
 			}
 			continue
 		}
 		if resp.RunID == "" {
+			if sem != nil {
+				<-sem
+			}
 			continue
 		}
-		go a.executeRun(ctx, resp)
+		wg.Add(1)
+		go func(c api.ClaimResponse) {
+			defer wg.Done()
+			if sem != nil {
+				defer func() { <-sem }()
+			}
+			a.dispatch(runCtx, c)
+		}(resp)
 	}
+
+	// Stop claiming; wait for in-flight runs to drain (bounded by DrainTimeout),
+	// then stop and join the heartbeat before returning.
+	wg.Wait()
+	runCancel()
+	<-hbDone
+
+	// ctx is cancelled; deregister on a fresh context so the master drops us
+	// immediately instead of waiting for heartbeat staleness.
+	deregCtx, deregCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer deregCancel()
+	if err := a.client.Deregister(deregCtx, a.cfg.AgentID); err != nil {
+		slog.Warn("k8s: deregister failed", "agentId", a.cfg.AgentID, "error", err)
+	} else {
+		slog.Info("k8s agent deregistered", "agentId", a.cfg.AgentID)
+	}
+	return ctx.Err()
 }
 
 // executeRun is the k8s agent's thin wrapper over the shared orchestration
