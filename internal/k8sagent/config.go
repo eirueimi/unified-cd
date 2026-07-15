@@ -134,10 +134,10 @@ func (c *Config) Validate() error {
 	if v := os.Getenv("UNIFIED_K8S_AGENT_ID"); v != "" {
 		c.AgentID = v
 	}
-	if v := os.Getenv("UNIFIED_K8S_POD_START_TIMEOUT"); v != "" && c.PodStartTimeout == "" {
+	if v := os.Getenv("UNIFIED_K8S_POD_START_TIMEOUT"); v != "" {
 		c.PodStartTimeout = v
 	}
-	if v := os.Getenv("UNIFIED_K8S_DRAIN_TIMEOUT"); v != "" && c.DrainTimeout == "" {
+	if v := os.Getenv("UNIFIED_K8S_DRAIN_TIMEOUT"); v != "" {
 		c.DrainTimeout = v
 	}
 	if c.Server == "" {

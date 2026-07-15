@@ -256,9 +256,15 @@ func TestValidate_DurationEnvOverridesAndParseError(t *testing.T) {
 	if c.DrainTimeoutDuration() != 7*time.Second {
 		t.Fatalf("env override drainTimeout: got %v", c.DrainTimeoutDuration())
 	}
+}
 
+func TestValidate_DurationParseError(t *testing.T) {
 	bad := Config{Server: "s", Token: "t", AgentID: "a", PodStartTimeout: "not-a-duration"}
 	if err := bad.Validate(); err == nil {
 		t.Fatal("expected Validate to reject an unparseable podStartTimeout")
+	}
+	badDrain := Config{Server: "s", Token: "t", AgentID: "a", DrainTimeout: "not-a-duration"}
+	if err := badDrain.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an unparseable drainTimeout")
 	}
 }
