@@ -67,7 +67,12 @@ type PodPool struct {
 // fields in fixed declaration order; nested map[string]any values (template
 // specs, override patches) are marshaled by encoding/json with sorted keys.
 // The digest is therefore stable across calls and process restarts, which
-// Restore relies on to re-adopt pods by their annotated key.
+// Restore relies on to re-adopt pods by their annotated key. If json.Marshal
+// fails (rare, only if the spec contains an unmarshalable value), the fallback
+// hashes only scalar fields (templateName, fallbackImage, shimImage, and
+// sidecar.Image + sidecar.S3SecretName) for determinism; this path loses
+// override/spec distinction but is deterministic and only reached if the spec
+// is unmarshalable (BuildPod would reject it anyway).
 func poolKey(templateName string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string) string {
 	type canonicalShape struct {
 		TemplateName  string            `json:"templateName"`
@@ -92,10 +97,13 @@ func poolKey(templateName string, agentTmpls map[string]AgentPodTemplate, jobTmp
 	data, err := json.Marshal(shape)
 	if err != nil {
 		// A YAML-sourced map[string]any could in principle carry a value
-		// encoding/json rejects. Fall back to the Go-syntax representation,
-		// which fmt renders with sorted map keys — still deterministic for
-		// equal inputs, and still shape-distinguishing.
-		data = []byte(fmt.Sprintf("%#v", shape))
+		// encoding/json rejects. Fall back to hashing scalar fields only:
+		// templateName, fallbackImage, shimImage, and sidecar scalars.
+		// This is deterministic for equal inputs but loses spec/override
+		// distinction (acceptable since this path is only reached if the spec
+		// is unmarshalable, which BuildPod would reject anyway).
+		scalarKey := fmt.Sprintf("%s:%s:%s:%s:%s", templateName, fallbackImage, shimImage, sidecar.Image, sidecar.S3SecretName)
+		data = []byte(scalarKey)
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:16])
@@ -188,8 +196,11 @@ func (p *PodPool) ClaimPod(ctx context.Context, runID, templateName string, agen
 			annoPoolRunID:  runID,
 		}, pp.ResourceVersion)
 		if err != nil {
-			// conflict or fetch failure → fall back to creating a new pod
+			// conflict or fetch failure → fall back to creating a new pod.
+			// The pod was popped from the pool and its claim failed; delete it
+			// so it isn't orphaned — a fresh pod is created below.
 			slog.Warn("pool: pod claim conflict, creating new pod", "pod", pp.PodName, "error", err)
+			_ = p.pm.DeletePod(ctx, pp.PodName)
 			return p.createPoolPod(ctx, runID, key, agentTmpls, jobTmpl, fallbackImage, sidecar, shimImage)
 		}
 		pod, _ := p.client.CoreV1().Pods(p.namespace).Get(ctx, pp.PodName, metav1.GetOptions{})

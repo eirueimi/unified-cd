@@ -3,6 +3,7 @@ package k8sagent
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/stretchr/testify/assert"
@@ -277,4 +278,65 @@ func TestPodPool_Restore_MissingPoolKeyDeleted(t *testing.T) {
 		assert.NotEqual(t, "ucd-run-idle-old", p.Name, "idle keyless pool pod must be reclaimed on restart")
 		assert.NotEqual(t, "ucd-run-inuse-old", p.Name, "in-use keyless pool pod must be reclaimed on restart")
 	}
+}
+
+// TestPodPool_ClaimPod_DeleteOnUpdateConflict tests Fix 1: when a popped idle
+// pod fails to be marked in-use (due to a Get error, resource version conflict,
+// or other failure), the pod must be deleted before creating a fresh one.
+// Otherwise it leaks: invisible to evictExpired (walks the in-memory map only)
+// and protected from orphan GC (poolManaged), it would persist until agent restart.
+//
+// We simulate the failure by deleting the pod from Kubernetes before ClaimPod
+// tries to update it. When UpdatePodAnnotations does a Get, it will fail with
+// "not found", which triggers the error path.
+func TestPodPool_ClaimPod_DeleteOnUpdateConflict(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset()
+	pm := NewPodManager(fakeClient, "default", "golang:1.24-alpine")
+	pool := NewPodPool(fakeClient, "default", pm)
+
+	// Seed the pool with an idle pod
+	key := poolKey("", nil, inlineTemplate("golang:1.24-alpine"), "golang:1.24-alpine", SidecarSpec{}, testShimImage)
+	idlePod, _ := BuildPod("run-idle", "default", nil, inlineTemplate("golang:1.24-alpine"), "golang:1.24-alpine", SidecarSpec{}, testShimImage)
+	idlePod.Name = "ucd-run-idle"
+	idlePod.Annotations = map[string]string{
+		annoPoolKey:      key,
+		annoPoolStatus:   poolStatusIdle,
+		annoPoolTemplate: "",
+	}
+	created, err := fakeClient.CoreV1().Pods("default").Create(context.Background(), idlePod, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	// Add it to the pool's in-memory map
+	pool.mu.Lock()
+	pool.pods[key] = append(pool.pods[key], &PooledPod{
+		PodName:         created.Name,
+		PoolKey:         key,
+		ResourceVersion: created.ResourceVersion,
+		IdleSince:       time.Time{},
+	})
+	pool.mu.Unlock()
+
+	// Delete the pod from Kubernetes to simulate an update failure.
+	// When ClaimPod tries to update the annotations, UpdatePodAnnotations will
+	// do a Get, which will fail with "not found".
+	err = fakeClient.CoreV1().Pods("default").Delete(context.Background(), created.Name, metav1.DeleteOptions{})
+	require.NoError(t, err)
+
+	// Claim a pod with matching inputs. Since the popped pod no longer exists,
+	// the update will fail and trigger the fallback: delete (already gone) +
+	// create new.
+	claimed, err := pool.ClaimPod(context.Background(), "run-new", "", nil, inlineTemplate("golang:1.24-alpine"), "golang:1.24-alpine", SidecarSpec{}, testShimImage)
+	require.NoError(t, err)
+
+	// The claimed pod must be a NEW pod, not the deleted one
+	assert.NotEqual(t, created.Name, claimed.PodName, "should have created a new pod after the conflicted one was not found")
+
+	// The new pod should exist in Kubernetes
+	_, err = fakeClient.CoreV1().Pods("default").Get(context.Background(), claimed.PodName, metav1.GetOptions{})
+	require.NoError(t, err, "new claimed pod should exist in Kubernetes")
+
+	// The pool is cleaned up (the stale entry was popped, not re-added)
+	pool.mu.Lock()
+	assert.Empty(t, pool.pods[key], "stale pod entry was removed from pool when it was popped")
+	pool.mu.Unlock()
 }
