@@ -59,6 +59,11 @@ func HasGitURIs(specJSON []byte) bool {
 			return true
 		}
 	}
+	for _, s := range spec.Finally {
+		if s.Uses != nil && strings.HasPrefix(s.Uses.Job, "git://") {
+			return true
+		}
+	}
 	return false
 }
 
@@ -89,7 +94,24 @@ func (r *Resolver) ResolveSpec(
 	}
 	spec.Steps = resolvedSteps
 
+	if len(spec.Finally) > 0 {
+		resolvedFinally, fcontrib, ferr := r.resolveSteps(ctx, spec.Finally, credFn, 0, nil)
+		if ferr != nil {
+			return nil, ferr
+		}
+		spec.Finally = resolvedFinally
+		contrib.containers = append(contrib.containers, fcontrib.containers...)
+		contrib.volumes = append(contrib.volumes, fcontrib.volumes...)
+	}
+
 	if err := mergeContribution(&spec, contrib); err != nil {
+		return nil, err
+	}
+
+	// Step names must be unique across the whole resolved spec (parse enforces
+	// this for authored names via a shared nameSet; expansion must not
+	// reintroduce a duplicate across the Steps/Finally boundary).
+	if err := checkGlobalNameCollisions(spec.Steps, spec.Finally); err != nil {
 		return nil, err
 	}
 
@@ -261,6 +283,37 @@ func jsonEqual(a, b any) (bool, error) {
 		return false, err
 	}
 	return bytes.Equal(ba, bb), nil
+}
+
+// checkGlobalNameCollisions rejects a resolved spec whose expanded step names
+// collide across the main DAG and finally lists. Within each list resolveSteps'
+// own seen-map already guards; this closes the cross-list hole opened by
+// expanding uses in both lists independently.
+func checkGlobalNameCollisions(steps, finally []dsl.StepEntry) error {
+	seen := map[string]bool{}
+	record := func(name string) error {
+		if name == "" {
+			return nil
+		}
+		if seen[name] {
+			return newResolveError("step name %q appears in both the main steps and finally after uses expansion; rename one", name)
+		}
+		seen[name] = true
+		return nil
+	}
+	for _, list := range [][]dsl.StepEntry{steps, finally} {
+		for _, e := range list {
+			if err := record(e.Name); err != nil {
+				return err
+			}
+			for _, p := range e.Parallel {
+				if err := record(p.Name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (r *Resolver) fetch(ctx context.Context, uri URI, cred Credential) ([]byte, error) {
