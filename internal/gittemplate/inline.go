@@ -9,6 +9,15 @@ import (
 
 const usesPrefixSep = "__"
 
+// podContribution is what a non-scope uses: template contributes to the
+// caller's podTemplate: the container and volume definitions its steps need.
+// (What a template may declare at all is enforced structurally by the
+// kind: JobTemplate schema — dsl.ParseJobTemplate — not here.)
+type podContribution struct {
+	containers []map[string]any
+	volumes    []map[string]any
+}
+
 // paramRefGoRe matches Go-template ".Params.NAME" references.
 var paramRefGoRe = regexp.MustCompile(`\.Params\.([A-Za-z_][A-Za-z0-9_]*)`)
 
@@ -53,7 +62,8 @@ func checkScopeStepAllowed(name string, container string, hasApproval, hasCall b
 // template's steps directly — such as verifying shell: composition
 // end-to-end against api.ClaimStep.
 func ExpandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn, outerContainer string) ([]dsl.StepEntry, error) {
-	return expandUsesStep(usesName, with, tplSpec, outerRunsIn, outerContainer)
+	steps, _, err := expandUsesStep(usesName, with, tplSpec, outerRunsIn, outerContainer)
+	return steps, err
 }
 
 // unsafeNameChar matches any character that isn't a Go-template identifier
@@ -147,9 +157,9 @@ func rewriteMap(m map[string]string, usesName string, innerNames map[string]bool
 // keeps its own container: if set, otherwise inherits outerContainer. A template
 // step that still carries runsIn: is always rejected — step-level runsIn: was
 // removed in favor of container:.
-func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn, outerContainer string) ([]dsl.StepEntry, error) {
+func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn, outerContainer string) ([]dsl.StepEntry, podContribution, error) {
 	if len(tplSpec.Steps) == 0 {
-		return nil, fmt.Errorf("template job has no steps")
+		return nil, podContribution{}, fmt.Errorf("template job has no steps")
 	}
 
 	scopeMode := outerRunsIn != nil && outerRunsIn.Image != ""
@@ -157,6 +167,40 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 	if scopeMode {
 		scopeID = scopeIDFor(usesName)
 		scopeImage = outerRunsIn.Image
+	}
+
+	// A scope-mode uses (runsIn.image) runs the template in its own scope pod:
+	// a template podTemplate cannot be honored there — reject loudly instead of
+	// silently dropping it.
+	if scopeMode && tplSpec.PodTemplate != nil {
+		return nil, podContribution{}, fmt.Errorf("template declares a podTemplate, but this uses: step has runsIn.image (scope mode): the template runs in its own scope pod, so its podTemplate cannot be honored")
+	}
+
+	// Non-scope uses: contribute the template's podTemplate containers and the
+	// volumes they mount, so the caller's pod gains what the template's steps
+	// target. Reserved names are never injectable.
+	var contrib podContribution
+	if !scopeMode {
+		for _, c := range dsl.PodTemplateContainers(tplSpec.PodTemplate) {
+			name := dsl.DefName(c)
+			if name == "" {
+				continue
+			}
+			if dsl.IsReservedContainerName(name) {
+				return nil, podContribution{}, fmt.Errorf("template defines reserved container name %q, which cannot be injected into the caller", name)
+			}
+			contrib.containers = append(contrib.containers, c)
+		}
+		for _, v := range dsl.PodTemplateVolumes(tplSpec.PodTemplate) {
+			name := dsl.DefName(v)
+			if name == "" {
+				continue
+			}
+			if dsl.IsReservedVolumeName(name) {
+				return nil, podContribution{}, fmt.Errorf("template defines reserved volume name %q, which cannot be injected into the caller", name)
+			}
+			contrib.volumes = append(contrib.volumes, v)
+		}
 	}
 
 	innerNames := make(map[string]bool, len(tplSpec.Steps))
@@ -186,10 +230,10 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 		missing = append(missing, in.Name)
 	}
 	if len(missing) == 1 {
-		return nil, fmt.Errorf("uses %q: missing required input: %s", usesName, missing[0])
+		return nil, podContribution{}, fmt.Errorf("uses %q: missing required input: %s", usesName, missing[0])
 	}
 	if len(missing) > 1 {
-		return nil, fmt.Errorf("uses %q: missing required inputs: %v", usesName, missing)
+		return nil, podContribution{}, fmt.Errorf("uses %q: missing required inputs: %v", usesName, missing)
 	}
 
 	// Seed the inputs map from the template's declared input defaults, then
@@ -263,14 +307,14 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 					ns.Call = &c
 				}
 				if ps.Uses != nil {
-					return nil, fmt.Errorf("internal error: parallel step %q has unresolved nested uses; must be resolved before expandUsesStep", ps.Name)
+					return nil, podContribution{}, fmt.Errorf("internal error: parallel step %q has unresolved nested uses; must be resolved before expandUsesStep", ps.Name)
 				}
 				if ps.RunsIn != nil {
-					return nil, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", ps.Name)
+					return nil, podContribution{}, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", ps.Name)
 				}
 				if scopeMode {
 					if err := checkScopeStepAllowed(ps.Name, ps.Container, ps.Approval != nil, ps.Call != nil); err != nil {
-						return nil, err
+						return nil, podContribution{}, err
 					}
 					ns.ScopeID = scopeID
 					ns.ScopeImage = scopeImage
@@ -298,11 +342,11 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				Shell: inner.Shell,
 			}
 			if inner.RunsIn != nil {
-				return nil, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", inner.Name)
+				return nil, podContribution{}, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", inner.Name)
 			}
 			if scopeMode {
 				if err := checkScopeStepAllowed(inner.Name, inner.Container, inner.Approval != nil, inner.Call != nil); err != nil {
-					return nil, err
+					return nil, podContribution{}, err
 				}
 				ns.ScopeID = scopeID
 				ns.ScopeImage = scopeImage
@@ -346,7 +390,7 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				ns.Call = &c // with: values intentionally not rewritten in v1
 			}
 			if inner.Uses != nil {
-				return nil, fmt.Errorf("internal error: step %q has unresolved nested uses; must be resolved before expandUsesStep", inner.Name)
+				return nil, podContribution{}, fmt.Errorf("internal error: step %q has unresolved nested uses; must be resolved before expandUsesStep", inner.Name)
 			}
 			renamed[idx] = ns
 		}
@@ -399,5 +443,5 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 	result = append(result, inputsStep)
 	result = append(result, renamed...)
 	result = append(result, captureStep)
-	return result, nil
+	return result, contrib, nil
 }

@@ -15,7 +15,7 @@ func scopedTemplate() dsl.Spec {
 }
 
 func TestExpandUsesScopeTagsSteps(t *testing.T) {
-	out, err := expandUsesStep("build", map[string]string{}, scopedTemplate(), &dsl.RunsIn{Image: "golang:1.22"}, "")
+	out, _, err := expandUsesStep("build", map[string]string{}, scopedTemplate(), &dsl.RunsIn{Image: "golang:1.22"}, "")
 	if err != nil {
 		t.Fatalf("expand: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestExpandUsesNestedRunsInIsError(t *testing.T) {
 	tpl := dsl.Spec{Steps: []dsl.StepEntry{
 		{Name: "lint", Run: "golangci-lint run", RunsIn: &dsl.RunsIn{Image: "golangci/lint:latest"}},
 	}}
-	_, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"}, "")
+	_, _, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"}, "")
 	if err == nil || !strings.Contains(err.Error(), "lint") {
 		t.Fatalf("expected nested-runsIn error naming step, got %v", err)
 	}
@@ -47,7 +47,7 @@ func TestExpandUsesNestedRunsInIsError(t *testing.T) {
 
 func TestExpandUsesContainerModeUnchanged(t *testing.T) {
 	// uses-level flat container: is NOT scope mode: keep propagating Container.
-	out, err := expandUsesStep("build", map[string]string{}, scopedTemplate(), nil, "builder")
+	out, _, err := expandUsesStep("build", map[string]string{}, scopedTemplate(), nil, "builder")
 	if err != nil {
 		t.Fatalf("expand: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestExpandUsesScopeApprovalIsError(t *testing.T) {
 	tpl := dsl.Spec{Steps: []dsl.StepEntry{
 		{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok to proceed?"}},
 	}}
-	_, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"}, "")
+	_, _, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"}, "")
 	if err == nil || !strings.Contains(err.Error(), "gate") {
 		t.Fatalf("expected approval-in-scope error naming step, got %v", err)
 	}
@@ -72,7 +72,7 @@ func TestExpandUsesScopeCallIsError(t *testing.T) {
 	tpl := dsl.Spec{Steps: []dsl.StepEntry{
 		{Name: "delegate", Call: &dsl.CallStep{Job: "some-job"}},
 	}}
-	_, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"}, "")
+	_, _, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"}, "")
 	if err == nil || !strings.Contains(err.Error(), "delegate") {
 		t.Fatalf("expected call-in-scope error naming step, got %v", err)
 	}
@@ -85,7 +85,7 @@ func TestExpandUsesScopeParallelApprovalIsError(t *testing.T) {
 			{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok to proceed?"}},
 		}},
 	}}
-	_, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"}, "")
+	_, _, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"}, "")
 	if err == nil || !strings.Contains(err.Error(), "gate") {
 		t.Fatalf("expected approval-in-scope error naming step, got %v", err)
 	}
@@ -98,7 +98,7 @@ func TestExpandUsesScopeParallelCallIsError(t *testing.T) {
 			{Name: "delegate", Call: &dsl.CallStep{Job: "some-job"}},
 		}},
 	}}
-	_, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"}, "")
+	_, _, err := expandUsesStep("build", map[string]string{}, tpl, &dsl.RunsIn{Image: "golang:1.22"}, "")
 	if err == nil || !strings.Contains(err.Error(), "delegate") {
 		t.Fatalf("expected call-in-scope error naming step, got %v", err)
 	}
@@ -110,7 +110,7 @@ func TestExpandUsesContainerModeApprovalAndCallAllowed(t *testing.T) {
 		{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok to proceed?"}},
 		{Name: "delegate", Call: &dsl.CallStep{Job: "some-job"}},
 	}}
-	if _, err := expandUsesStep("build", map[string]string{}, tpl, nil, "builder"); err != nil {
+	if _, _, err := expandUsesStep("build", map[string]string{}, tpl, nil, "builder"); err != nil {
 		t.Fatalf("expand: %v", err)
 	}
 }
@@ -121,7 +121,7 @@ func TestExpandUsesNoRunsInApprovalAndCallAllowed(t *testing.T) {
 		{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok to proceed?"}},
 		{Name: "delegate", Call: &dsl.CallStep{Job: "some-job"}},
 	}}
-	if _, err := expandUsesStep("build", map[string]string{}, tpl, nil, ""); err != nil {
+	if _, _, err := expandUsesStep("build", map[string]string{}, tpl, nil, ""); err != nil {
 		t.Fatalf("expand: %v", err)
 	}
 }
