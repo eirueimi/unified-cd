@@ -341,6 +341,30 @@ func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittem
 			}
 			continue
 		}
+		// Validate that every container: reference in the fully-resolved spec
+		// (after uses merge) resolves to a real container. An undefined reference
+		// is a deterministic authoring error — fail the run now with a clear
+		// reason instead of letting it fail opaquely at exec time.
+		var rspec dsl.Spec
+		if uerr := json.Unmarshal(resolved, &rspec); uerr != nil {
+			slog.Error("git resolver: unmarshal resolved spec, failing run", "runID", r.ID, "error", uerr)
+			if ferr := st.MarkRunFinished(ctx, r.ID, api.RunFailed); ferr != nil {
+				slog.Warn("git resolver: mark run failed failed", "runID", r.ID, "error", ferr)
+			}
+			bo.Success(r.ID)
+			continue
+		}
+		if verr := dsl.ValidateContainerReferences(rspec); verr != nil {
+			slog.Error("git resolver: invalid container reference, failing run", "runID", r.ID, "error", verr)
+			if _, lerr := st.AppendLog(ctx, r.ID, systemLogStepIndex, "stderr", time.Now(), verr.Error()); lerr != nil {
+				slog.Warn("git resolver: append system log", "runID", r.ID, "error", lerr)
+			}
+			if ferr := st.MarkRunFinished(ctx, r.ID, api.RunFailed); ferr != nil {
+				slog.Warn("git resolver: mark run failed failed", "runID", r.ID, "error", ferr)
+			}
+			bo.Success(r.ID)
+			continue
+		}
 		// bo.Success is deferred until the UpdateRunSpec write actually lands.
 		// Marking success right after a successful resolve (before the write)
 		// would let a persistent UpdateRunSpec failure re-resolve the full

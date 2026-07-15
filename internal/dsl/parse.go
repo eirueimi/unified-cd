@@ -248,6 +248,9 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 						return fmt.Errorf("%s: approval: is not supported in finally steps", subPath)
 					}
 				}
+				if st.Uses != nil {
+					return fmt.Errorf("%s: uses: is not supported inside parallel: (a uses template expands to a sequence of steps); move it to a top-level step", subPath)
+				}
 				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Approval, st.Foreach, st.Matrix, subPath, nameSet, st.UploadArtifact, st.DownloadArtifact); err != nil {
 					return err
 				}

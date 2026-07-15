@@ -11,12 +11,12 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
-const artifactSidecarName = "unified-artifact"
+const artifactSidecarName = dsl.ArtifactSidecarContainerName
 
 // primaryContainerName is the exec target for container:-less steps —
 // mirrors internal/agent.primaryContainerName (the host claim pod's twin
 // constant) and internal/k8sagent/executor.go's "" -> "job" fallback.
-const primaryContainerName = "job"
+const primaryContainerName = dsl.PrimaryContainerName
 
 // ucdMountPath is the reserved path (documented, see
 // docs/superpowers/specs/2026-07-12-step-shell-shim-design.md Component 3)
@@ -29,11 +29,11 @@ const ucdMountPath = "/.ucd"
 // self-installed ucd-sh binary (the Tekton/Argo emissary init-container
 // pattern — a pod has no host filesystem to bind-mount from, unlike the host
 // agent's claim pod, which bind-mounts its tools dir read-only).
-const ucdToolsVolume = "ucd-tools"
+const ucdToolsVolume = dsl.UcdToolsVolumeName
 
 // ucdShimContainerName names the init container that installs ucd-sh onto
 // ucdToolsVolume before any other container starts.
-const ucdShimContainerName = "ucd-shim"
+const ucdShimContainerName = dsl.UcdShimContainerName
 
 // ucdShimBinary is the path the k8s-agent's own image ships /ucd-sh at (see
 // docker/k8s-agent.Dockerfile), used as the init container's own command —

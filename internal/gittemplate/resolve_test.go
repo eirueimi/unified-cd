@@ -88,7 +88,7 @@ func noCred(ctx context.Context, host string) (gittemplate.Credential, error) {
 
 func TestResolveSpec_ExpandsUsesStep(t *testing.T) {
 	const fetchedYAML = `apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: fetched
 spec:
@@ -134,7 +134,7 @@ func TestResolveSpec_NoOp_WhenNoGitURIs(t *testing.T) {
 
 func TestResolveSpec_WithCache_FixedRef(t *testing.T) {
 	const fetchedYAML = `apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: cached-job
 spec:
@@ -167,7 +167,7 @@ spec:
 
 func TestResolveSpec_WithAndOutputs(t *testing.T) {
 	const fetchedYAML = `apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: fetched
 spec:
@@ -203,7 +203,7 @@ spec:
 
 func TestResolveSpec_RecursiveUses(t *testing.T) {
 	const outerYAML = `apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: outer
 spec:
@@ -213,7 +213,7 @@ spec:
         job: git://github.com/org/repo/inner.yaml@v1
 `
 	const innerYAML = `apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: inner
 spec:
@@ -253,7 +253,7 @@ spec:
 
 func TestResolveSpec_CycleDetected(t *testing.T) {
 	const aYAML = `apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: a
 spec:
@@ -263,7 +263,7 @@ spec:
         job: git://github.com/org/repo/b.yaml@v1
 `
 	const bYAML = `apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: b
 spec:
@@ -302,7 +302,7 @@ func TestResolveSpec_MaxDepthExceeded(t *testing.T) {
 			next := fmt.Sprintf("git://github.com/org/repo/level%d.yaml@v1", i+1)
 			stepYAML = fmt.Sprintf("    - name: next\n      uses:\n        job: %s\n", next)
 		}
-		byURI[uri] = []byte(fmt.Sprintf("apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: level%d\nspec:\n  steps:\n%s", i, stepYAML))
+		byURI[uri] = []byte(fmt.Sprintf("apiVersion: unified-cd/v1\nkind: JobTemplate\nmetadata:\n  name: level%d\nspec:\n  steps:\n%s", i, stepYAML))
 	}
 	specJSON := mustMarshalSpec(dsl.Spec{
 		Steps: []dsl.StepEntry{
@@ -320,7 +320,7 @@ func TestResolveSpec_MaxDepthExceeded(t *testing.T) {
 
 func TestResolveSpec_NameCollisionDetected(t *testing.T) {
 	const fetchedYAML = `apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: fetched
 spec:

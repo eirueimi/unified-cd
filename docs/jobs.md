@@ -21,6 +21,9 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
   - [Matrix and Foreach Steps](#matrix-and-foreach-steps)
 - [Calling Other Jobs (`call`)](#calling-other-jobs-call)
 - [Git Template Inlining (`uses`)](#git-template-inlining-uses)
+  - [The `JobTemplate` schema](#the-jobtemplate-schema)
+  - [Pod-shape merge (containers and volumes)](#pod-shape-merge-containers-and-volumes)
+  - [Migrating a `kind: Job` template](#migrating-a-kind-job-template)
 - [Job Isolation: `native` and the claim pod](#job-isolation-native-and-the-claim-pod)
   - [Sidecar container logs](#sidecar-container-logs)
   - [`container:` — targeting a podTemplate container](#container--targeting-a-podtemplate-container)
@@ -688,9 +691,121 @@ steps:
 - `@a1b2c3d4e5f6...` — pinned commit SHA
 - `@main` — mutable branch (not cached; use with caution)
 
-The referenced YAML file must be a valid Job definition. Its steps are inlined at the point of `uses`.
+The referenced YAML file must be **`kind: JobTemplate`** — a dedicated,
+strictly-scoped resource (not a full `Job`; see [The `JobTemplate`
+schema](#the-jobtemplate-schema) below). Its steps are inlined at the point of
+`uses`, and a non-scope template's `podTemplate` containers/volumes are merged
+into the caller's pod (see [Pod-shape merge](#pod-shape-merge-containers-and-volumes)).
 
 For private repositories, create a [GitCredential](#gitcredential-resource) resource for the host.
+
+`uses:` steps are resolved everywhere steps can appear, including inside
+[`finally:`](#finally-block-finally) — a `uses:` step in a `finally:` block is
+inlined exactly like one in `steps:`.
+
+An inlined step's `container:` (whether declared on the template's own step,
+or inherited from the outer `uses` step) must resolve to a real target — the
+primary container, a reserved name, or a container present in the merged
+`podTemplate` — or run creation fails immediately with an error naming the
+step and the container, instead of the step failing opaquely at exec time.
+
+### The `JobTemplate` schema
+
+`uses:` targets must be `kind: JobTemplate`. This is a **strict, deliberately
+small** schema — only what `uses:` can honor, because a template's steps are
+inlined directly into the caller's run and pod. Fields that would shape a
+*different* pod, agent, or run (`agentSelector`, `concurrency`,
+`timeoutMinutes`, `native`, `finally`, `podTemplate.reuse` /
+`podTemplate.workspace` / `podTemplate.override`, and any other pod-level key
+besides `containers`/`volumes`) do not exist on this type at all — any field
+outside the schema below is a **run-creation error naming the offending
+field** (strict decode, same as a `Job` document).
+
+```yaml
+apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata:
+  name: build-with-tools           # required
+spec:
+  description: builds with tools   # optional
+  params:                          # optional: same Params shape as a Job
+    inputs:
+      - { name: target, type: string, default: all }
+  shell: ["/bin/sh", "-c"]         # optional: template-level shell default
+  podTemplate:                     # optional: pod-shape contribution only
+    spec:
+      containers:
+        - { name: tools, image: alpine:3 }
+      volumes:
+        - { name: toolcache, emptyDir: {} }
+  steps:                           # required, at least one
+    - name: build
+      container: tools
+      run: make {{ .Params.target }}
+```
+
+- `apiVersion` / `kind: JobTemplate` / `metadata.name` are required.
+- `spec.steps` must contain at least one step.
+- `spec.podTemplate.spec` accepts **only** `containers` and `volumes` — no
+  other pod-level keys.
+- A job that needs its own pod, agent routing, or run semantics (its own
+  `agentSelector`, a `finally:` block, `podTemplate.reuse`, etc.) doesn't fit
+  this model — invoke it with [`call:`](#calling-other-jobs-call) instead of
+  `uses:`.
+
+A fetched template whose `kind` is `Job` (the old target kind) fails run
+creation with:
+
+```
+uses: targets must be kind: JobTemplate (got kind: Job); convert the template, or invoke the job with call:
+```
+
+### Pod-shape merge (containers and volumes)
+
+In **non-scope** mode (no `runsIn.image` on the `uses:` step — see [Uses-level
+`runsIn.image` (scope)](#uses-level-runsinimage-scope) below), a template's
+`podTemplate.spec.containers` and `podTemplate.spec.volumes` are merged into
+the **caller's** `podTemplate` so the inlined steps have somewhere to run:
+
+- **Gap-fill only.** A container/volume name the caller doesn't already
+  define is added as-is.
+- **Same name, identical definition → deduplicated.** If the caller (or
+  another merged `uses:` template) already defines a container/volume with
+  the same name and an identical (JSON-equal) definition, the caller's
+  definition is kept and nothing changes.
+- **Same name, differing definition → run-creation error**, naming the
+  container/volume, so the conflict can be resolved by renaming one side or
+  aligning the two definitions.
+- **Reserved names can never be injected.** A template that defines a
+  container named `job` or `unified-artifact`, or a volume named `workspace`
+  or `ucd-tools`, fails run creation — those names are owned by the system
+  (the primary container, the artifact/cache sidecar, and the injected
+  workspace/tools volumes).
+
+In **scope** mode (`runsIn.image` on the `uses:` step), the template runs in
+its own throwaway container/pod, not the caller's — so a template `podTemplate`
+can't be honored there at all. A scope-mode `uses:` step whose template
+declares a `podTemplate` fails run creation with an error rather than silently
+dropping it.
+
+### Migrating a `kind: Job` template
+
+Existing `uses:` targets authored as `kind: Job` must be converted:
+
+1. Change `kind: Job` to `kind: JobTemplate`.
+2. Drop any field outside the [`JobTemplate` schema](#the-jobtemplate-schema)
+   above — most commonly `agentSelector`, `concurrency`, `timeoutMinutes`,
+   `native`, `finally`, and `podTemplate.reuse`/`workspace`/`override`. These
+   never had meaning for an inlined template (the caller's run/agent/pod
+   already governed them); the strict schema now rejects them explicitly
+   instead of silently ignoring them.
+3. If `podTemplate.spec` declared anything besides `containers`/`volumes`
+   (e.g. a raw pod-level key), remove it — only `containers` and `volumes`
+   are supported.
+4. If the job genuinely needs its own pod/agent/run semantics (a dedicated
+   `agentSelector`, its own `finally:`, pod reuse), it isn't a `uses:`
+   candidate — keep it as a `kind: Job` and invoke it with
+   [`call:`](#calling-other-jobs-call) instead.
 
 ---
 
@@ -898,6 +1013,12 @@ A `uses:` step with no `runsIn` keeps its existing (non-scope) inlining
 behavior — scope mode is triggered only by a **uses-level `runsIn.image`**.
 `runsIn.container` on a `uses:` entry is rejected (a parse error); target a
 named container from the template's own steps with `container:` instead.
+
+Scope mode and the [pod-shape merge](#pod-shape-merge-containers-and-volumes)
+are mutually exclusive: a scoped `uses:` template runs in its own dedicated
+environment, not the caller's pod, so a template `podTemplate` has nowhere to
+go there — a scope-mode `uses:` whose template declares a `podTemplate` fails
+run creation instead of silently dropping it.
 
 **Not allowed inside a scoped `uses`** (parse errors, because they are
 incompatible with holding one isolated environment across the whole template):
@@ -1341,6 +1462,9 @@ spec:
 - On cancellation, `finally` still runs, but `failure()` is `false`.
 - `cache:` and `post:` are not supported in `finally` steps (they register
   deferred hooks that run before `finally`; use them in `steps` instead).
+- [`uses:`](#git-template-inlining-uses) is supported in `finally` steps and
+  is resolved the same way as in `steps:` — a common pattern is a `uses:`
+  notification/cleanup template that only needs to run on completion.
 - Both the standard and Kubernetes agents detect mid-run cancellation: an
   in-flight step is interrupted, `finally` still runs (with `failure()` false),
   and the run finishes as `Cancelled`.

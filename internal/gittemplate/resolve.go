@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
@@ -61,6 +59,11 @@ func HasGitURIs(specJSON []byte) bool {
 			return true
 		}
 	}
+	for _, s := range spec.Finally {
+		if s.Uses != nil && strings.HasPrefix(s.Uses.Job, "git://") {
+			return true
+		}
+	}
 	return false
 }
 
@@ -85,11 +88,32 @@ func (r *Resolver) ResolveSpec(
 		return nil, wrapResolveError(fmt.Errorf("unmarshal spec: %w", err))
 	}
 
-	resolvedSteps, err := r.resolveSteps(ctx, spec.Steps, credFn, 0, nil)
+	resolvedSteps, contrib, err := r.resolveSteps(ctx, spec.Steps, credFn, 0, nil)
 	if err != nil {
 		return nil, err
 	}
 	spec.Steps = resolvedSteps
+
+	if len(spec.Finally) > 0 {
+		resolvedFinally, fcontrib, ferr := r.resolveSteps(ctx, spec.Finally, credFn, 0, nil)
+		if ferr != nil {
+			return nil, ferr
+		}
+		spec.Finally = resolvedFinally
+		contrib.containers = append(contrib.containers, fcontrib.containers...)
+		contrib.volumes = append(contrib.volumes, fcontrib.volumes...)
+	}
+
+	if err := mergeContribution(&spec, contrib); err != nil {
+		return nil, err
+	}
+
+	// Step names must be unique across the whole resolved spec (parse enforces
+	// this for authored names via a shared nameSet; expansion must not
+	// reintroduce a duplicate across the Steps/Finally boundary).
+	if err := checkGlobalNameCollisions(spec.Steps, spec.Finally); err != nil {
+		return nil, err
+	}
 
 	out, err := json.Marshal(spec)
 	if err != nil {
@@ -106,9 +130,9 @@ func (r *Resolver) resolveSteps(
 	credFn CredentialFunc,
 	depth int,
 	path []string,
-) ([]dsl.StepEntry, error) {
+) ([]dsl.StepEntry, podContribution, error) {
 	if depth > maxUsesDepth {
-		return nil, newResolveError("uses nesting exceeds max depth %d", maxUsesDepth)
+		return nil, podContribution{}, newResolveError("uses nesting exceeds max depth %d", maxUsesDepth)
 	}
 
 	seen := make(map[string]bool, len(steps))
@@ -124,6 +148,7 @@ func (r *Resolver) resolveSteps(
 	}
 
 	var out []dsl.StepEntry
+	var contrib podContribution
 	for _, s := range steps {
 		if s.Uses == nil {
 			out = append(out, s)
@@ -133,42 +158,53 @@ func (r *Resolver) resolveSteps(
 
 		for _, p := range path {
 			if p == rawURI {
-				return nil, newResolveError("circular uses reference: %q", rawURI)
+				return nil, podContribution{}, newResolveError("circular uses reference: %q", rawURI)
 			}
 		}
 
 		uri, err := ParseURI(rawURI)
 		if err != nil {
-			return nil, wrapResolveError(fmt.Errorf("step %q: parse git URI: %w", s.Name, err))
+			return nil, podContribution{}, wrapResolveError(fmt.Errorf("step %q: parse git URI: %w", s.Name, err))
 		}
 
 		cred, err := credFn(ctx, uri.Host)
 		if err != nil {
-			return nil, fmt.Errorf("step %q: get credential for %q: %w", s.Name, uri.Host, err)
+			return nil, podContribution{}, fmt.Errorf("step %q: get credential for %q: %w", s.Name, uri.Host, err)
 		}
 		rawYAML, err := r.fetch(ctx, uri, cred)
 		if err != nil {
-			return nil, fmt.Errorf("step %q: fetch %q: %w", s.Name, rawURI, err)
+			return nil, podContribution{}, fmt.Errorf("step %q: fetch %q: %w", s.Name, rawURI, err)
 		}
 
-		var job dsl.Job
-		if err := yaml.Unmarshal(rawYAML, &job); err != nil {
-			return nil, newResolveError("step %q: parse fetched YAML from %q: %v", s.Name, rawURI, err)
+		tpl, err := dsl.ParseJobTemplate(rawYAML)
+		if err != nil {
+			return nil, podContribution{}, newResolveError("step %q: fetched template %q: %v", s.Name, rawURI, err)
 		}
-		if err := job.Validate(); err != nil {
-			return nil, newResolveError("step %q: fetched job %q failed validation: %v", s.Name, rawURI, err)
-		}
+		tplSpec := tpl.ToSpec()
 
 		nestedPath := append(append([]string{}, path...), rawURI)
-		nestedSteps, err := r.resolveSteps(ctx, job.Spec.Steps, credFn, depth+1, nestedPath)
+		nestedSteps, nestedContrib, err := r.resolveSteps(ctx, tplSpec.Steps, credFn, depth+1, nestedPath)
 		if err != nil {
-			return nil, err
+			return nil, podContribution{}, err
 		}
-		job.Spec.Steps = nestedSteps
+		tplSpec.Steps = nestedSteps
 
-		expanded, err := expandUsesStep(s.Name, s.Uses.WithAsStrings(), job.Spec, s.RunsIn, s.Container)
+		// A scope-mode uses (runsIn.image) must contribute nothing to the
+		// caller's podTemplate — the template runs in its own scope pod. That
+		// invariant is enforced directly against tplSpec.PodTemplate inside
+		// expandUsesStep below, but a nested uses: further down inside this
+		// template (itself resolved in non-scope mode, so free to declare its
+		// own podTemplate) can still bubble a contribution up through
+		// nestedContrib. Reject that here before it reaches expandUsesStep,
+		// which would otherwise merge it into the caller's pod.
+		scopeMode := s.RunsIn != nil && s.RunsIn.Image != ""
+		if scopeMode && (len(nestedContrib.containers) > 0 || len(nestedContrib.volumes) > 0) {
+			return nil, podContribution{}, newResolveError("step %q: a template used with runsIn.image (scope mode) cannot contribute pod containers/volumes to the caller (nested uses template declares a podTemplate)", s.Name)
+		}
+
+		expanded, expandContrib, err := expandUsesStep(s.Name, s.Uses.WithAsStrings(), tplSpec, s.RunsIn, s.Container)
 		if err != nil {
-			return nil, newResolveError("step %q: expand uses: %v", s.Name, err)
+			return nil, podContribution{}, newResolveError("step %q: expand uses: %v", s.Name, err)
 		}
 
 		for _, es := range expanded {
@@ -176,14 +212,121 @@ func (r *Resolver) resolveSteps(
 				continue // expected: the output-capture step intentionally reuses the uses step's own name
 			}
 			if seen[es.Name] {
-				return nil, newResolveError("step %q: expanded step name %q collides with an existing step", s.Name, es.Name)
+				return nil, podContribution{}, newResolveError("step %q: expanded step name %q collides with an existing step", s.Name, es.Name)
 			}
 			seen[es.Name] = true
 		}
 
 		out = append(out, expanded...)
+		contrib.containers = append(contrib.containers, nestedContrib.containers...)
+		contrib.containers = append(contrib.containers, expandContrib.containers...)
+		contrib.volumes = append(contrib.volumes, nestedContrib.volumes...)
+		contrib.volumes = append(contrib.volumes, expandContrib.volumes...)
 	}
-	return out, nil
+	return out, contrib, nil
+}
+
+// mergeContribution fills spec.PodTemplate with the containers and volumes
+// contributed by uses: templates that the caller lacks. A name already present
+// (caller or a previously-merged contribution) is kept once if the definitions
+// are JSON-equal, or is a deterministic resolve error if they differ. Reserved
+// names were already rejected at contribution time.
+func mergeContribution(spec *dsl.Spec, contrib podContribution) error {
+	if len(contrib.containers) == 0 && len(contrib.volumes) == 0 {
+		return nil
+	}
+	if spec.PodTemplate == nil {
+		spec.PodTemplate = &dsl.PodTemplate{}
+	}
+	if spec.PodTemplate.Spec == nil {
+		spec.PodTemplate.Spec = map[string]any{}
+	}
+	if err := mergeDefs(spec.PodTemplate, "containers", contrib.containers); err != nil {
+		return err
+	}
+	return mergeDefs(spec.PodTemplate, "volumes", contrib.volumes)
+}
+
+// mergeDefs gap-fills named definition maps into pt.Spec[key].
+func mergeDefs(pt *dsl.PodTemplate, key string, defs []map[string]any) error {
+	if len(defs) == 0 {
+		return nil
+	}
+	rawList, _ := pt.Spec[key].([]any)
+	existing := map[string]map[string]any{}
+	for _, r := range rawList {
+		if d, ok := r.(map[string]any); ok {
+			if n := dsl.DefName(d); n != "" {
+				existing[n] = d
+			}
+		}
+	}
+	for _, d := range defs {
+		name := dsl.DefName(d)
+		if name == "" {
+			continue
+		}
+		if prev, ok := existing[name]; ok {
+			eq, err := jsonEqual(prev, d)
+			if err != nil {
+				return wrapResolveError(fmt.Errorf("compare %s %q: %w", strings.TrimSuffix(key, "s"), name, err))
+			}
+			if !eq {
+				return newResolveError("%s %q is defined differently by the caller (or another uses template) and a uses template; rename one or align their definitions", strings.TrimSuffix(key, "s"), name)
+			}
+			continue // identical -> dedup
+		}
+		existing[name] = d
+		rawList = append(rawList, d)
+	}
+	pt.Spec[key] = rawList
+	return nil
+}
+
+// jsonEqual compares two values by their canonical JSON encoding (map keys are
+// sorted by encoding/json), so it is order- and numeric-representation-stable
+// across YAML- and JSON-sourced maps.
+func jsonEqual(a, b any) (bool, error) {
+	ba, err := json.Marshal(a)
+	if err != nil {
+		return false, err
+	}
+	bb, err := json.Marshal(b)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(ba, bb), nil
+}
+
+// checkGlobalNameCollisions rejects a resolved spec whose expanded step names
+// collide across the main DAG and finally lists. Within each list resolveSteps'
+// own seen-map already guards; this closes the cross-list hole opened by
+// expanding uses in both lists independently.
+func checkGlobalNameCollisions(steps, finally []dsl.StepEntry) error {
+	seen := map[string]bool{}
+	record := func(name string) error {
+		if name == "" {
+			return nil
+		}
+		if seen[name] {
+			return newResolveError("step name %q appears in both the main steps and finally after uses expansion; rename one", name)
+		}
+		seen[name] = true
+		return nil
+	}
+	for _, list := range [][]dsl.StepEntry{steps, finally} {
+		for _, e := range list {
+			if err := record(e.Name); err != nil {
+				return err
+			}
+			for _, p := range e.Parallel {
+				if err := record(p.Name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (r *Resolver) fetch(ctx context.Context, uri URI, cred Credential) ([]byte, error) {
