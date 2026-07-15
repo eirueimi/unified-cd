@@ -11,7 +11,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
-const artifactSidecarName = "unified-artifact"
+const artifactSidecarName = dsl.ArtifactSidecarContainerName
 
 // primaryContainerName is the exec target for container:-less steps —
 // mirrors internal/agent.primaryContainerName (the host claim pod's twin
@@ -29,7 +29,7 @@ const ucdMountPath = "/.ucd"
 // self-installed ucd-sh binary (the Tekton/Argo emissary init-container
 // pattern — a pod has no host filesystem to bind-mount from, unlike the host
 // agent's claim pod, which bind-mounts its tools dir read-only).
-const ucdToolsVolume = "ucd-tools"
+const ucdToolsVolume = dsl.UcdToolsVolumeName
 
 // ucdShimContainerName names the init container that installs ucd-sh onto
 // ucdToolsVolume before any other container starts.
