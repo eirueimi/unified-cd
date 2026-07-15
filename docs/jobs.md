@@ -56,6 +56,7 @@ spec:
   params: { ... }                 # input/output parameter declarations
   agentSelector: [ ... ]          # required agent label filters
   concurrency: { ... }            # concurrency control
+  description: <string>           # optional: human-readable summary of the job
   timeoutMinutes: 60              # job-level timeout in minutes
   native: false                   # true = host-process job, no containers at all (see below)
   podTemplate: { ... }            # sidecar containers for an isolated job (both agents honor this)
@@ -1378,6 +1379,17 @@ spec:
 
 If the job has not completed within `timeoutMinutes`, the entire run is cancelled.
 Individual steps can also have their own `timeoutMinutes` (step-level timeout is independent).
+
+---
+
+## Job Description
+
+```yaml
+spec:
+  description: Build and deploy the application
+```
+
+`spec.description` *(optional, string)* — a human-readable summary of the job, shown in the WebUI job list and job detail pages. Plain text.
 
 ---
 
