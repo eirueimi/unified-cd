@@ -42,6 +42,8 @@ Artifacts, cache entries, and log archives live in the configured bucket. Use yo
 
 **Log sealing.** Log sealing is active whenever an object store is configured—even when `--log-trim-days` is 0/disabled—because the archiver runs regardless. Once a run's logs are archived (~30 seconds after it finishes), the archive becomes the sealed source of truth. Log lines arriving after archival are discarded with a controller warning (`dropping log line for sealed run`) to keep the archive consistent; storing them would make the run untrimmable and, after trim, invisible. See Troubleshooting for common causes (agent retries after network partition, late buffer flushes).
 
+**Sweep failure backoff.** The log archiver, run-retention sweeper, and git resolver retry a persistently failing candidate with exponential backoff (1 min doubling to 1 h) instead of letting it occupy the head of every oldest-first batch — a handful of broken runs can no longer starve archival, deletion, or resolution for everything newer. The backoff state is held by the current leader only and resets on failover (each problem candidate is retried once, then re-excluded).
+
 ### `UNIFIED_CONTROLLER_KEY` (critical)
 
 This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Management Guide](secrets.md#security-model)). Back it up wherever you manage secrets (vault, KMS, sealed file) — **independently** of the DB dump:

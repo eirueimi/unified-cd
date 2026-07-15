@@ -52,6 +52,7 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_DB_DSN` | **Yes** | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
 | `UNIFIED_TOKEN` | Yes (without SSO) | Static admin bearer token. Auto-synced to DB as a PAT named `env:UNIFIED_TOKEN`. Required when OIDC is not configured. |
 | `UNIFIED_CONTROLLER_KEY` | Recommended | 32-byte hex master key for secret encryption (`openssl rand -hex 32`). If unset, auto-generated and persisted to DB. **All replicas must share the same value in HA setups.** |
+| `UNIFIED_GIT_RESOLVE_DEADLINE` | No | How long a run's `git://` template resolution may keep failing (network/credentials) before the run is Failed instead of waiting as Pending. Go duration, default `1h`. Deterministic resolution errors (e.g. a nonexistent ref) still fail the run immediately. There is no CLI flag; unset/invalid/non-positive values use the default. |
 | `UNIFIED_LOG_LEVEL` | No | Log level: `debug`, `info` (default), `warn`, `error` |
 | `UNIFIED_S3_ENDPOINT` | No | S3-compatible object store endpoint (e.g. `garage.internal:3900`). Without S3, log archival and artifacts are disabled. |
 | `UNIFIED_S3_BUCKET` | No | S3 bucket name |

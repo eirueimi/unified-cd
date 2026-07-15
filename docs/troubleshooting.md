@@ -527,6 +527,34 @@ fixed:
 - See [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery)
   for the full heartbeat/reaper timing and design.
 
+## Agent requests fail with 403 `run <id> is claimed by another agent`
+
+**Symptom**
+
+agent requests fail with 403 `run <id> is claimed by another agent`.
+
+**Cause**
+
+the run is owned by a different agent ID (`runs.claimed_by`). Common cause: a stale agent process from before a restart still flushing reports, or two agents configured with conflicting IDs.
+
+**Fix**
+
+restart/retire the stale agent; ensure every agent has a unique ID. The rejected write was not applied.
+
+## Run fails with log line `git template resolution failed for more than 1h0m0s`
+
+**Symptom**
+
+a run fails with log line `git template resolution failed for more than 1h0m0s: ...`.
+
+**Cause**
+
+the job references a `git://` template whose host stayed unreachable (or credentials stayed invalid) past `UNIFIED_GIT_RESOLVE_DEADLINE`.
+
+**Fix**
+
+fix the repository URL/credentials and re-trigger the run.
+
 ## Controller logs `dropping log line for sealed run`
 
 **Symptom**
