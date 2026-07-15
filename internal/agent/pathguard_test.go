@@ -18,6 +18,10 @@ func TestContainWithinSlash(t *testing.T) {
 		"foo/../bar":    "/workspace/bar", // stays in bounds after cleaning
 		"./dist":        "/workspace/dist",
 	}
+	// A non-canonical root (trailing slash) must still work: root is cleaned.
+	got, err := ContainWithinSlash("/workspace/", "foo")
+	require.NoError(t, err)
+	assert.Equal(t, "/workspace/foo", got)
 	for in, want := range ok {
 		got, err := ContainWithinSlash(root, in)
 		require.NoError(t, err, "input %q", in)

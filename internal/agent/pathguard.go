@@ -20,8 +20,9 @@ func ContainWithinSlash(root, p string) (string, error) {
 	if path.IsAbs(p) {
 		return "", fmt.Errorf("artifact/cache path %q escapes the workspace", p)
 	}
-	joined := path.Clean(path.Join(root, p))
-	if joined != root && !strings.HasPrefix(joined, root+"/") {
+	cleanRoot := path.Clean(root)
+	joined := path.Clean(path.Join(cleanRoot, p))
+	if joined != cleanRoot && !strings.HasPrefix(joined, cleanRoot+"/") {
 		return "", fmt.Errorf("artifact/cache path %q escapes the workspace", p)
 	}
 	return joined, nil
