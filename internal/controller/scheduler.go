@@ -197,6 +197,14 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 	}
 }
 
+// systemLogStepIndex is the sentinel value for logs.step_index that marks a
+// log line as controller/system-generated rather than belonging to a
+// specific job step. Mirrors the unexported store.systemLogStepIndex
+// (internal/store/postgres.go) — that constant isn't exported, so it's
+// redefined here for controller-package call sites that append system log
+// lines directly via st.AppendLog.
+const systemLogStepIndex = -1
+
 const cacheCleanupLockKey = int64(0x63616368) // 'cach'
 
 // RunCacheCleanup deletes expired cache entries every 24 hours.
@@ -323,7 +331,7 @@ func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittem
 			if time.Since(r.CreatedAt) > deadline {
 				msg := fmt.Sprintf("git template resolution failed for more than %s: %v", deadline, err)
 				slog.Error("git resolver: resolve deadline exceeded, failing run", "runID", r.ID, "age", time.Since(r.CreatedAt))
-				if _, lerr := st.AppendLog(ctx, r.ID, -1, "stderr", time.Now(), msg); lerr != nil {
+				if _, lerr := st.AppendLog(ctx, r.ID, systemLogStepIndex, "stderr", time.Now(), msg); lerr != nil {
 					slog.Warn("git resolver: append system log", "runID", r.ID, "error", lerr)
 				}
 				if ferr := st.MarkRunFinished(ctx, r.ID, api.RunFailed); ferr != nil {
@@ -333,10 +341,17 @@ func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittem
 			}
 			continue
 		}
-		bo.Success(r.ID) // resolved; forget any prior transient failures
+		// bo.Success is deferred until the UpdateRunSpec write actually lands.
+		// Marking success right after a successful resolve (before the write)
+		// would let a persistent UpdateRunSpec failure re-resolve the full
+		// git fetch every tick forever — the same hammer-loop class this
+		// backoff exists to fix, just moved one step later in the pipeline.
 		if err := st.UpdateRunSpec(ctx, r.ID, resolved); err != nil {
 			slog.Warn("git resolver: update spec failed", "runID", r.ID, "error", err)
+			bo.Failure(r.ID, time.Now())
+			continue
 		}
+		bo.Success(r.ID) // resolved and persisted; forget any prior transient failures
 	}
 }
 
