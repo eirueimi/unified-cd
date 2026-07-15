@@ -1,8 +1,8 @@
-# `uses:` Pod-Shape Merge (Containers + Volumes), Unsupported-Field Guard, Finally Resolution, and Container-Reference Validation — Design
+# `uses:` JobTemplate Resource, Pod-Shape Merge (Containers + Volumes), Finally Resolution, and Container-Reference Validation — Design
 
-**Status:** Approved (design decisions locked 2026-07-15; scope expanded 2026-07-16 to volumes + finally-resolution bug + unsupported-field guard after a full `uses:` drop audit).
+**Status:** Approved (design decisions locked 2026-07-15; scope expanded 2026-07-16 to volumes + finally-resolution bug after a full `uses:` drop audit; 2026-07-16 the dynamic unsupported-field guard was replaced by a dedicated **`kind: JobTemplate`** resource — schema-level enforcement instead of enumeration).
 
-**Goal:** Make a non-scope `uses:` template that brings its own pod shape "just work" — merge the template's `podTemplate` **containers and the volumes they mount** into the caller — while turning every remaining silently-dropped template field into an explicit run-creation error, fixing the never-resolved `uses:`-in-`finally:` bug, and validating `container:` references at run creation.
+**Goal:** Give `uses:` an explicit contract: a `uses:` target must be a **`kind: JobTemplate`** — a dedicated resource whose schema contains *only* what `uses:` can honor (steps, params, shell, description, and a pod-shape subset of podTemplate). Merge the template's `podTemplate` **containers and the volumes they mount** into the caller, fix the never-resolved `uses:`-in-`finally:` bug, and validate `container:` references at run creation.
 
 ## Problem (verified in code)
 
@@ -11,11 +11,11 @@ A `uses:` template is a full `dsl.Job`, but the expansion (`internal/gittemplate
 1. **Containers dropped:** a template whose steps say `container: foo` and whose own `podTemplate` defines `foo` produces a caller spec referencing `foo` with no `foo` container. Fails only at execution: host agent `container %q is not defined in the job's podTemplate` (`internal/agent/claim_pod.go:372`); k8s agent an opaque API-server error (`internal/k8sagent/executor.go`). A plain typo in a direct (non-`uses:`) `container:` fails the same way.
 2. **Volumes dropped:** even with containers merged, a template container whose `volumeMounts` reference a volume defined in the template's `podTemplate.spec.volumes` breaks at pod build — the volume never reaches the caller.
 3. **`uses:` in `finally:` is never resolved:** `HasGitURIs` scans only `spec.Steps` (`resolve.go:59`) and `ResolveSpec` resolves only `spec.Steps` (`resolve.go:88`), yet parse **allows** `uses:` in `finally:` (`parse.go:169`). A `uses:` step in `finally:` reaches the agent raw and fails at execution.
-4. **Every other template field is silently ignored:** `podTemplate.workspace`/`reuse`/`cleanWorkspace`/`override`/`name`, spec-level `agentSelector`/`concurrency`/`timeoutMinutes`/`native`, and the template's own `finally:` steps. An author declares them; nothing happens; no error. (What DOES work: steps, params/`with:`, outputs, shell, and secrets — `secretsNeeded` is derived by scanning resolved steps, so template secret refs propagate automatically.)
+4. **Every other template field is silently ignored:** `podTemplate.workspace`/`reuse`/`cleanWorkspace`/`override`/`name`, spec-level `agentSelector`/`concurrency`/`timeoutMinutes`/`native`, and the template's own `finally:` steps. An author declares them; nothing happens; no error. (What DOES work: steps, params/`with:`, outputs, shell, and secrets — `secretsNeeded` is derived by scanning resolved steps, so template secret refs propagate automatically.) The root cause: `uses:` points at a full `kind: Job`, whose schema promises far more than `uses:` can honor. The fix is a dedicated resource whose schema *is* the contract.
 
 ## Scope
 
-- **Pod-shape merge: non-scope `uses:` only** (the outer uses step has no `runsIn.image`). In scope mode the template runs in a fresh isolated scope pod and `container:` is already rejected by the DSL (`inline.go` `checkScopeStepAllowed`), so there is no caller-pod container/volume to merge. The **unsupported-field guard (§6) applies in both modes** — those fields are equally ignored in scope mode today; existing step/scope execution semantics are otherwise unchanged.
+- **Pod-shape merge: non-scope `uses:` only** (the outer uses step has no `runsIn.image`). In scope mode the template runs in a fresh isolated scope pod and `container:` is already rejected by the DSL (`inline.go` `checkScopeStepAllowed`), so there is no caller-pod container/volume to merge; a scope-mode JobTemplate declaring a `podTemplate` is a resolution error (§6). The **`kind: JobTemplate` requirement (§6) applies in both modes**. Existing step/scope execution semantics are otherwise unchanged.
 - Applies to the real resolution path used for run creation. The exported `ExpandUsesStep` (used by the controller only for shell-composition verification / planned-step display) keeps returning steps only — it does not need the merged containers.
 
 ## Design
@@ -53,17 +53,34 @@ After resolution + merge, validate every step's `container:` against the **effec
 
 The merge happens at resolution, before the controller picks an agent, so the routing predicate `dsl.PodTemplateNeedsKubernetes` (`internal/dsl/podtemplate.go:27`) automatically re-evaluates on the merged podTemplate. A caller that merges a k8s-only container (e.g. one carrying `volumeMounts` or `securityContext`) therefore correctly becomes k8s-routed with no special handling. A test asserts this. (Note: merging pod-level `volumes` adds a non-`containers` key to `pt.Spec`, which also makes `PodTemplateNeedsKubernetes` true — correct, since the host claim-pod builder cannot express pod volumes.)
 
-### 6. Unsupported-field guard — a template may not declare what `uses:` cannot carry
+### 6. `kind: JobTemplate` — the schema IS the contract
 
-`uses:` inlines a template into the caller's pod/run, so template fields that would shape a *different* pod or run cannot be honored. Today they are silently ignored; with this change, a non-scope `uses:` template that declares any of them is a **resolution error** naming the field and the template:
+A `uses:` target must be a **`kind: JobTemplate`** resource. Its schema contains only what `uses:` can honor; everything else is a **strict-decode unknown-field error** (the codebase's standard `yaml.Decoder.KnownFields(true)` pattern, as in `dsl.Parse` at `parse.go:78`), so unsupported fields are structurally impossible rather than enumerated by a guard.
 
-- `podTemplate.workspace`, `podTemplate.reuse`, `podTemplate.cleanWorkspace`, `podTemplate.override`, `podTemplate.name`, and any `podTemplate.spec` key other than `containers`/`volumes`
-- spec-level `agentSelector`, `concurrency`, `timeoutMinutes`, `native`
-- a template-level `finally:` (the template's cleanup cannot be spliced into the caller's finally without ordering ambiguity — rejected for now rather than silently dropped)
+```yaml
+apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata: {name: unity-build}
+spec:
+  description: "..."   # optional documentation
+  params: {...}         # inputs/outputs, same as Job
+  shell: [...]          # optional default interpreter for the template's steps
+  podTemplate:          # pod-shape subset ONLY
+    spec:
+      containers: [...]
+      volumes: [...]
+  steps: [...]          # same StepEntry schema as Job (nested uses: allowed)
+```
 
-Rationale: "declare X, X silently does nothing" is the failure class this whole feature kills. If the template genuinely needs its own pod/agent/run semantics, `call:` (child run) is the right tool; the error message says so. The check lives in `expandUsesStep` next to the container/volume collection (it already has `tplSpec` in hand). The guard is **mode-independent** (scope mode contributes no containers/volumes but rejects the same fields — they are equally unsupported there). `params`, `steps`, `shell`, and `description` remain allowed (`description` is harmless documentation; it stays ignored).
+**New `dsl` types:** `JobTemplate{APIVersion, Kind, Metadata, Spec JobTemplateSpec}`; `JobTemplateSpec{Params, Steps, Shell, Description, PodTemplate *JobTemplatePodTemplate}`; `JobTemplatePodTemplate{Spec JobTemplatePodSpec}`; `JobTemplatePodSpec{Containers, Volumes []map[string]any}`. Because `agentSelector`, `concurrency`, `timeoutMinutes`, `native`, `finally`, `podTemplate.reuse`/`workspace`/`override`/`cleanWorkspace`/`name`, and non-`containers`/`volumes` pod-spec keys simply do not exist on these types, strict decoding rejects them with a precise field error — no guard enumeration to maintain, no drift as `Job` grows.
 
-**Known consequence — dual-use files:** a YAML that is both applied directly as a job AND referenced via `uses:` will now error when `uses:`-ed if it declares run-level fields (e.g. `agentSelector`) for its standalone use. This is intentional: previously those fields were silently ignored under `uses:`, which is worse. The error tells the author to split the file (template vs job) or use `call:`.
+**Parsing/validation:** `dsl.ParseJobTemplate(data []byte) (*JobTemplate, error)` — strict decode + `Validate()` (apiVersion, `Kind == "JobTemplate"`, metadata.name, ≥1 step, step-level validation reusing the same helpers `Job.Validate` uses with `native=false`, plus the existing forbidden-field pre-checks such as `needs:`). `JobTemplate.ToSpec() dsl.Spec` converts to the `dsl.Spec` shape `expandUsesStep` already consumes (podTemplate subset → `PodTemplate{Spec: map[string]any{"containers": ..., "volumes": ...}}`).
+
+**Resolver kind gate:** `resolveSteps` parses the fetched YAML with `ParseJobTemplate` instead of the current lenient `yaml.Unmarshal` into `dsl.Job` + `Job.Validate` (`resolve.go:154-160`). If the fetched document's `kind` is `Job`, the error explicitly says: `uses: targets must be kind: JobTemplate (got kind: Job); convert the template, or invoke the job with call:`. (A cheap two-field pre-sniff of `apiVersion`/`kind` produces this friendly message before the strict decode.)
+
+**Remaining semantic checks (schema can't express these):** reserved container/volume names (§2) and the scope-mode rule — a `uses:` step with `runsIn.image` (scope mode) whose JobTemplate declares a `podTemplate` is a resolution error (the template runs in its own scope pod built from `runsIn.image`; its pod shape cannot be honored). These stay in `expandUsesStep`.
+
+**Migration:** this is a breaking change for existing `uses:` targets, which are `kind: Job` files in git repos. Accepted deliberately: pod-shape `uses:` was half-broken until this branch, so real template assets are minimal, and the error message states the exact conversion. Dual-use ambiguity (one YAML both applied as a job and `uses:`-ed) disappears structurally — a template is a distinct artifact.
 
 ### 7. Resolve `uses:` in `finally:` (bug fix)
 
@@ -78,13 +95,14 @@ Rationale: "declare X, X silently does nothing" is the failure class this whole 
 - `internal/gittemplate/inline.go` — `expandUsesStep` returns contributed containers; reserved-name rejection at collection time.
 - `internal/gittemplate/resolve.go` — `resolveSteps` accumulates contributed containers across recursion; `ResolveSpec` merges into `spec.PodTemplate` (gap-fill + collision policy) before marshalling.
 - `internal/dsl/` — `IsReservedContainerName` / `IsReservedVolumeName` + container/volume accessors; a container-reference validation helper (`ValidateContainerReferences(spec dsl.Spec) error`) operating on a resolved `dsl.Spec` (returns a descriptive error). Reusable, pure, unit-testable.
-- `internal/gittemplate/inline.go` (additional) — the unsupported-field guard: reject a template declaring `podTemplate.workspace`/`reuse`/`cleanWorkspace`/`override`/`name`, non-`containers`/`volumes` `podTemplate.spec` keys, `agentSelector`, `concurrency`, `timeoutMinutes`, `native`, or `finally`.
-- `internal/gittemplate/resolve.go` (additional) — `HasGitURIs` scans `Finally`; `ResolveSpec` resolves `Finally` via `resolveSteps` with a shared cross-list step-name seen-set; volume contributions merged alongside containers.
+- `internal/dsl/jobtemplate.go` (new) — `JobTemplate`/`JobTemplateSpec`/`JobTemplatePodTemplate`/`JobTemplatePodSpec` types, `ParseJobTemplate` (strict decode + validate), `JobTemplate.ToSpec()`.
+- `internal/gittemplate/inline.go` (additional) — scope-mode podTemplate rejection (semantic check; the schema handles everything else).
+- `internal/gittemplate/resolve.go` (additional) — fetched YAML parsed via `dsl.ParseJobTemplate` with a kind-aware error for `kind: Job`; `HasGitURIs` scans `Finally`; `ResolveSpec` resolves `Finally` via `resolveSteps` with a cross-list step-name collision check; volume contributions merged alongside containers.
 - `internal/controller/scheduler.go` — in `resolveGitPendingRuns`, after a successful `ResolveSpec` and before `UpdateRunSpec`, unmarshal the resolved spec and call `dsl.ValidateContainerReferences`; on error, fail the run deterministically (mirror the existing `IsResolveError` terminal-fail branch).
 
 ## Error handling
 
-All new failure modes are **run-creation errors** (surfaced to the trigger), never silent and never deferred to exec time: reserved-name injection (container or volume), differing-definition collision, dangling container reference, and unsupported template fields. Each error names the offending item, the step (for references), and the `uses:` template (for merge/collision/guard), so the author can act without reading agent logs. The unsupported-field error suggests `call:` when the template needs its own pod/agent/run semantics.
+All new failure modes are **run-creation errors** (surfaced to the trigger), never silent and never deferred to exec time: wrong `kind` (with an explicit convert-or-use-`call:` message), strict-decode unknown fields (with the exact field), reserved-name injection (container or volume), differing-definition collision, scope-mode podTemplate, and dangling container reference. Each error names the offending item, the step (for references), and the `uses:` template (for merge/collision), so the author can act without reading agent logs.
 
 ## Testing
 
@@ -94,10 +112,12 @@ Unit tests (package `gittemplate`, plus `dsl` for the helpers):
 - **Caller wins:** caller defines `foo`, template also defines an identical `foo` → deduped, caller's kept, no error.
 - **Collision differs:** caller and template define `foo` (container or volume) differently → run-creation error naming both.
 - **Reserved-name injection:** template defines container `job`/`unified-artifact` or volume `workspace`/`ucd-tools` → error.
-- **Unsupported-field guard:** template declaring `agentSelector` (and one podTemplate case, e.g. `reuse: true`; and a template-level `finally:`) → clear error naming the field and suggesting `call:`.
+- **Kind gate:** a `uses:` target with `kind: Job` → error telling the author to convert to `kind: JobTemplate` or use `call:`.
+- **Strict schema:** a JobTemplate declaring `agentSelector` / `finally:` / `podTemplate.reuse` (unknown fields on the JobTemplate types) → strict-decode error naming the field.
+- **ParseJobTemplate/ToSpec unit tests (dsl):** valid template parses; kind/apiVersion/name/empty-steps rejected; `ToSpec` produces the expected `dsl.Spec` (podTemplate subset → `Spec["containers"/"volumes"]`).
 - **Dangling reference:** `container: bar` defined nowhere (no caller def, no template contribution) → clear error naming step + `bar`. Also the direct (`uses:`-less) typo variant.
 - **Finally resolution:** a caller with a `uses:` step in `finally:` → resolved/expanded (steps inlined, containers merged); `HasGitURIs` returns true for a finally-only uses spec; expanded finally names must not collide with main-DAG names.
-- **Scope mode:** a `uses:` step with `runsIn.image` → no container/volume merge; the unsupported-field guard still applies.
+- **Scope mode:** a `uses:` step with `runsIn.image` + a JobTemplate declaring a podTemplate → error; a plain steps-only JobTemplate in scope mode still works (no merge).
 - **Nested uses:** a template that itself uses another template contributes containers/volumes that bubble up to the outermost caller.
 - **Routing flip:** merging a container with a k8s-only field makes `PodTemplateNeedsKubernetes` return true for the merged podTemplate.
 - **No-op:** a spec with no `uses:` and valid direct references resolves + validates unchanged.
@@ -105,14 +125,15 @@ Unit tests (package `gittemplate`, plus `dsl` for the helpers):
 ## Docs
 
 Document in the `uses:` reference docs:
-- A non-scope `uses:` template's `podTemplate` **containers and volumes** are merged into the caller (gap-fill; caller's same-name definition wins if identical, differing is an error; container names `job`/`unified-artifact` and volume names `workspace`/`ucd-tools` can't be injected).
-- **What a template may declare:** `steps`, `params`, `shell`, `description`, and `podTemplate.spec.containers`/`volumes`. Anything else (`agentSelector`, `concurrency`, `timeoutMinutes`, `native`, `finally`, other podTemplate fields) is a run-creation error — use `call:` for a job that needs its own pod/agent/run semantics.
+- **`uses:` targets must be `kind: JobTemplate`** — full schema reference (steps, params, shell, description, podTemplate.spec.containers/volumes), a migration note for existing `kind: Job` templates, and when to use `call:` instead (a job needing its own pod/agent/run semantics).
+- A non-scope JobTemplate's `podTemplate` **containers and volumes** are merged into the caller (gap-fill; caller's same-name definition wins if identical, differing is an error; container names `job`/`unified-artifact` and volume names `workspace`/`ucd-tools` can't be injected).
 - An undefined `container:` is now a run-creation error rather than a runtime failure.
 - `uses:` now works in `finally:` (previously silently unresolved).
 
 ## Out of scope
 
-- Scope-mode (`runsIn.image`) merge behavior — still contributes nothing (guard applies though).
-- Splicing a template's `finally:` into the caller's finally (rejected by the guard for now; possible future design).
+- Scope-mode (`runsIn.image`) merge behavior — still contributes nothing (podTemplate rejected there).
+- A JobTemplate-level `finally:` (not in the schema; possible future design for template cleanup).
 - Apply-time validation of direct references in non-`uses:` jobs (future UX enhancement).
-- `override:` (`PodSpecPatch`) merging — rejected by the guard, not merged.
+- Registering JobTemplates as controller resources (apply/store/WebUI) — a JobTemplate lives in git and is fetched by `uses:`; no controller CRUD in this feature.
+- `override:` (`PodSpecPatch`) merging — not in the JobTemplate schema.
