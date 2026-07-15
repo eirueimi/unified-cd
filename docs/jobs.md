@@ -38,6 +38,7 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
 - [Finally Block (`finally`)](#finally-block-finally)
 - [Status Functions in `if:`](#status-functions-in-if)
 - [Job-level Timeout](#job-level-timeout)
+- [Job Description](#job-description)
 - [Template Syntax](#template-syntax)
 - [Secrets in Jobs](#secrets-in-jobs)
 
