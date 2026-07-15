@@ -202,11 +202,31 @@ func (p *PodPool) Restore(ctx context.Context, masterClient masterRunGetter) err
 
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		tmpl := pod.Annotations[annoPoolTemplate]
-		if tmpl == "" {
+		status := pod.Annotations[annoPoolStatus]
+		if status == "" {
+			// Not a pool-managed pod at all (annoPoolStatus is the marker the
+			// GC and this loop key on — annoPoolTemplate alone can't tell
+			// "pool pod with an unnamed/inline template" apart from "not a
+			// pool pod").
 			continue
 		}
-		status := pod.Annotations[annoPoolStatus]
+		tmpl := pod.Annotations[annoPoolTemplate]
+		if tmpl == "" {
+			// Pool-managed but from an unnamed (inline) reuse template: the
+			// pool keys its idle map by template name, so there is no key to
+			// re-adopt this pod under across a restart. Reclaiming it here
+			// (rather than skipping, which the old tmpl=="" check did)
+			// restores the pre-reuse guarantee that unnamed-template reuse
+			// only lives within one agent lifetime — without this, the GC's
+			// annoPoolStatus-based protection (which now also skips these
+			// pods) means nothing ever deletes them and every agent restart
+			// leaks a running pod. Applies uniformly whether the pod was
+			// idle (unrecoverable — can't be re-keyed) or in-use (its run is
+			// being reconciled some other way regardless).
+			slog.Info("pool: deleting unnamed-template pooled pod on restart", "pod", pod.Name, "status", status)
+			_ = p.pm.DeletePod(ctx, pod.Name)
+			continue
+		}
 		switch status {
 		case poolStatusIdle:
 			p.pods[tmpl] = append(p.pods[tmpl], &PooledPod{
