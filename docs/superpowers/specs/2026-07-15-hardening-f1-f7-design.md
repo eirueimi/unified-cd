@@ -87,7 +87,7 @@ Application matrix (all under the agent bearer token):
 | Endpoint | ownership (403) | terminal (no-op 200) |
 |---|---|---|
 | `handleAgentSetStepOutputs` / `SetRunOutputs` | ✓ | ✓ |
-| `handleAgentSidecarStatus` | ✓ | ✓ |
+| `handleAgentSidecarStatus` | ✓ | — (ownership-only; see note below) |
 | `handleAgentCreateApproval` | ✓ | ✓ |
 | `handleAgentLogAppend` / `LogBulk` | ✓ | — (the archival seal governs logs) |
 | `handleAgentFinishRun` / `StepReport` | ✓ (added) | existing CAS/guard unchanged |
@@ -99,6 +99,22 @@ Notes:
   grep-able for troubleshooting.
 - The log endpoints keep their current success shape (204 / drop warning);
   ownership rejection is the only added branch.
+- `handleAgentSidecarStatus` is deliberately ownership-only
+  (`rejectTerminal=false`), not part of the terminal no-op set above: both
+  agents stop their sidecar pumps via a deferred `CloseScopes` that runs
+  *after* `FinishRun`, so the final `reportStatus(..., "exited", exitCode)`
+  call always arrives once the run is already terminal. Rejecting it would
+  permanently strand every completed run's sidecar display at its last
+  pre-exit phase. `UpsertSidecarStatus` is a display-only upsert keyed by
+  `(run, index)`, so the late write is harmless.
+- Outputs reported after a run is terminal are intentionally **not**
+  recorded (the existing `runWriteTerminal` no-op above is left as-is) —
+  this includes run/step outputs set by `finally:` steps of a run that was
+  cancelled, since cancellation marks the run terminal before those
+  `finally:` steps execute. This is consistent with `handleAgentStepReport`,
+  which already no-op'd step status writes on terminal runs before this
+  branch, and it prevents a run's recorded outputs from mutating after the
+  run has been reported complete to callers.
 
 ### F4/F5/F6 (starvation) — shared failure backoff
 

@@ -541,6 +541,12 @@ the run is owned by a different agent ID (`runs.claimed_by`). Common cause: a st
 
 restart/retire the stale agent; ensure every agent has a unique ID. The rejected write was not applied.
 
+Separately, outputs (step or run) reported by the *owning* agent after the
+run has already been cancelled or completed are not recorded either — this
+includes outputs from `finally:` steps of a cancelled run, since those steps
+execute after cancellation has already marked the run terminal; the request
+gets a 200 `{"alreadyFinalized": true}` response rather than a 403.
+
 ## Run fails with log line `git template resolution failed for more than 1h0m0s`
 
 **Symptom**
