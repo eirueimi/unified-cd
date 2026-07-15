@@ -475,7 +475,7 @@ The `@ref` portion contains characters outside `[A-Za-z0-9._/+-]` or starts with
 
 **Fix**
 
-Reference a normal branch, tag, or SHA.
+Reference a normal branch, tag, or SHA. Relative ref syntax like `HEAD~1`, `HEAD^`, or `main@{upstream}` is intentionally rejected; use a plain branch name, tag, or full SHA instead.
 
 ## Conditional step ran when it shouldn't
 
