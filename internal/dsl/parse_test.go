@@ -807,6 +807,26 @@ spec:
 	assert.Equal(t, "c", job.Spec.Steps[1].Name)
 }
 
+func TestParse_ParallelBlock_UsesRejected(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  steps:
+    - parallel:
+      - name: a
+        uses:
+          job: "git://github.com/org/repo/build.yaml@v1"
+      - name: b
+        run: echo b
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uses: is not supported inside parallel:")
+}
+
 func TestParse_NeedsFieldRejected(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1
