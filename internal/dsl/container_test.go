@@ -3,7 +3,7 @@ package dsl
 import "testing"
 
 func TestIsReservedContainerName(t *testing.T) {
-	for _, n := range []string{"job", "unified-artifact"} {
+	for _, n := range []string{"job", "unified-artifact", "ucd-shim"} {
 		if !IsReservedContainerName(n) {
 			t.Errorf("%q should be reserved", n)
 		}

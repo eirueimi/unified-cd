@@ -5,21 +5,27 @@ import "fmt"
 // Reserved container/volume names are injected/owned by the system, never
 // user- or template-supplied. PrimaryContainerName is the default exec target
 // for a step with no container:. ArtifactSidecarContainerName is the internal
-// artifact/cache sidecar. WorkspaceVolumeName is the injected workspace volume;
-// UcdToolsVolumeName carries the ucd-sh shim (see internal/k8sagent/podbuilder.go,
-// whose constants alias these). A uses: template may not inject any of them, and
-// the reserved container names are always valid container: targets even when
-// absent from a podTemplate's container list.
+// artifact/cache sidecar. UcdShimContainerName is the k8s-agent init container
+// that installs the ucd-sh shim (see internal/k8sagent/podbuilder.go's
+// ucdShimContainerName, which aliases this). WorkspaceVolumeName is the
+// injected workspace volume; UcdToolsVolumeName carries the ucd-sh shim (see
+// internal/k8sagent/podbuilder.go, whose constants alias these). A uses:
+// template may not inject any of them, and the reserved container names are
+// always valid container: targets even when absent from a podTemplate's
+// container list (note: UcdShimContainerName is an init container that exits
+// before the job runs, so an exec into it would fail at runtime — it is
+// listed as reserved, not as a sane exec target).
 const (
 	PrimaryContainerName         = "job"
 	ArtifactSidecarContainerName = "unified-artifact"
+	UcdShimContainerName         = "ucd-shim"
 	WorkspaceVolumeName          = "workspace"
 	UcdToolsVolumeName           = "ucd-tools"
 )
 
 // IsReservedContainerName reports whether name is a system-reserved container name.
 func IsReservedContainerName(name string) bool {
-	return name == PrimaryContainerName || name == ArtifactSidecarContainerName
+	return name == PrimaryContainerName || name == ArtifactSidecarContainerName || name == UcdShimContainerName
 }
 
 // IsReservedVolumeName reports whether name is a system-reserved volume name.
