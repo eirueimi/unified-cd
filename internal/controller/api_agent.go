@@ -651,6 +651,16 @@ func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 
 // handleAgentSidecarStatus records a user sidecar container's phase/exit-code
 // report sent by an agent (host or k8s pump), for UI display.
+//
+// Ownership-only guard (rejectTerminal=false), unlike the other F2 endpoints:
+// both agents stop their sidecar pumps via a deferred CloseScopes that runs
+// AFTER FinishRun, so the final reportStatus(..., "exited", exitCode) call is
+// *expected* to arrive once the run is already terminal. Rejecting it (as
+// rejectTerminal=true would) permanently strands the sidecar's displayed
+// status at its last pre-exit phase (e.g. "running") for every completed
+// run. UpsertSidecarStatus is a display-only upsert keyed by (run, index),
+// so a late/duplicate write here is harmless — it can only bring the shown
+// status closer to the truth, never corrupt run state.
 func (s *Server) handleAgentSidecarStatus(w http.ResponseWriter, r *http.Request) {
 	var req api.SidecarStatusRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -658,7 +668,7 @@ func (s *Server) handleAgentSidecarStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 	agentID := chi.URLParam(r, "agentId")
-	v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, true)
+	v, gerr := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
 	if gerr != nil {
 		http.Error(w, gerr.Error(), http.StatusInternalServerError)
 		return

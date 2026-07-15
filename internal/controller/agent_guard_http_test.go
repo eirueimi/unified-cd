@@ -1,10 +1,15 @@
 package controller
 
 // Matrix: every agent write endpoint must 403 for a non-owning agent (no
-// mutation), and the four F2 endpoints (step outputs, run outputs, sidecar
-// status, approval-create) must additionally no-op with alreadyFinalized on
-// terminal runs owned by the caller. Correct-agent live-run behavior is
-// covered by pre-existing endpoint tests, which must stay green.
+// mutation), and three of the F2 endpoints (step outputs, run outputs,
+// approval-create) must additionally no-op with alreadyFinalized on
+// terminal runs owned by the caller. Sidecar status is ownership-only
+// (rejectTerminal=false): the agent's pump reports the final "exited"
+// status after FinishRun by design (deferred CloseScopes runs after the
+// finish call), so terminal-run writes there are expected, not rejected —
+// see TestAgentGuardHTTP_OwnerTerminalRun_SidecarStatusLands. Correct-agent
+// live-run behavior is covered by pre-existing endpoint tests, which must
+// stay green.
 
 import (
 	"bytes"
@@ -116,6 +121,14 @@ func agentGuardCases() []agentGuardCase {
 			},
 		},
 		{
+			// terminalOK pins the F2 decision that outputs reported after a
+			// run is terminal are never recorded — including run/step
+			// outputs from `finally:` steps of a cancelled run, since
+			// cancellation marks the run terminal before those `finally:`
+			// steps execute. Consistent with handleAgentStepReport, which
+			// already no-op'd step status writes on terminal runs before
+			// this branch (see docs/superpowers/specs/2026-07-15-hardening-
+			// f1-f7-design.md, F2 section).
 			name:       "set-step-outputs",
 			terminalOK: true,
 			path: func(agentID, runID string) string {
@@ -132,6 +145,8 @@ func agentGuardCases() []agentGuardCase {
 			},
 		},
 		{
+			// See the set-step-outputs case above: same finally-after-cancel
+			// rationale applies to run outputs.
 			name:       "set-run-outputs",
 			terminalOK: true,
 			path: func(agentID, runID string) string {
@@ -166,8 +181,13 @@ func agentGuardCases() []agentGuardCase {
 			},
 		},
 		{
-			name:       "sidecars",
-			terminalOK: true,
+			// Sidecars are deliberately NOT in the terminalOK (F2) set: both
+			// agents stop their sidecar pumps via a deferred CloseScopes that
+			// runs AFTER FinishRun, so the final "exited" status report is
+			// *expected* to land on an already-terminal run (see
+			// TestAgentGuardHTTP_OwnerTerminalRun_SidecarStatusLands below).
+			// Only ownership is enforced here.
+			name: "sidecars",
 			path: func(agentID, runID string) string {
 				return "/api/v1/agents/" + agentID + "/runs/" + runID + "/sidecars"
 			},
@@ -246,4 +266,35 @@ func TestAgentGuardHTTP_OwnerTerminalNoop(t *testing.T) {
 			c.verifyNoop(t, pg, runID)
 		})
 	}
+}
+
+// TestAgentGuardHTTP_OwnerTerminalRun_SidecarStatusLands pins the sidecar
+// status endpoint's ownership-only guard: the owning agent's final "exited"
+// report, which by design arrives after the run has already been marked
+// terminal (FinishRun happens before the deferred CloseScopes stops the
+// sidecar pump — see handleAgentSidecarStatus), must land rather than be
+// rejected as a no-op. Without this, sidecars would show "running" forever
+// for every completed run.
+func TestAgentGuardHTTP_OwnerTerminalRun_SidecarStatusLands(t *testing.T) {
+	s, pg := newTestServer(t)
+	runID := seedGuardRun(t, pg, true) // Succeeded, still claimed by guardOwnerAgent
+
+	exitCode := 0
+	body, _ := json.Marshal(api.SidecarStatusRequest{
+		RunID: runID, Name: "mysql", Index: 0, Phase: "exited", ExitCode: &exitCode,
+	})
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/agents/"+guardOwnerAgent+"/runs/"+runID+"/sidecars", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	statuses, err := pg.GetSidecarStatuses(context.Background(), runID)
+	require.NoError(t, err)
+	require.Len(t, statuses, 1)
+	assert.Equal(t, "exited", statuses[0].Phase)
+	require.NotNil(t, statuses[0].ExitCode)
+	assert.Equal(t, 0, *statuses[0].ExitCode)
 }
