@@ -57,9 +57,11 @@ seam) — only the execution backend differs per agent. The remaining intentiona
 - **`native: true`** — host-only. A `native: true` job claimed by the k8s-agent fails the
   run immediately with a clear error; route native jobs away from k8s-agents (and to host
   agents) via `agentSelector`.
-- **No drain window** — on shutdown the k8s agent stops immediately (in-flight runs are
-  recovered by the startup reconcile / stuck-run reaper); the standard agent drains in-flight
-  runs up to `--drain-timeout`.
+- **Drain window** — on shutdown (SIGTERM/rollout) the k8s agent stops claiming immediately
+  but lets in-flight runs keep going, same as the standard agent's `--drain-timeout`; see
+  [Resilience & concurrency](#resilience--concurrency) below. Any run still in flight when the
+  Pod is actually killed (drain window elapsed, or the process was force-killed) is recovered
+  by the startup reconcile / stuck-run reaper on the next agent start.
 
 Feature parity between the two agents is enforced by the shared conformance suite
 (`internal/paritycases`) — new DSL behavior must pass identical expectations on both agents.
@@ -137,7 +139,7 @@ labels:
   - kind:k8s          # used for agentSelector routing in Job definitions
 
 namespace: ci          # Kubernetes namespace where job Pods are created
-maxConcurrent: 5       # maximum number of concurrent Pods
+maxConcurrent: 100     # max concurrent Pods (0/unset -> 100; negative -> unlimited; see below)
 
 # Fallback image when no podTemplate is specified. Bash-less images (as here)
 # work fine by default — steps exec via the injected ucd-sh shim, not bash.
@@ -189,6 +191,24 @@ UNIFIED_K8S_CONFIG=k8s-agent-config.yaml ./bin/unified-cd-k8s-agent
 ```
 
 The install manifests (`manifests/install.yaml`, `manifests/core-install.yaml`, `manifests/agent-only.yaml`) default the `unified-cd-k8s-agent` Deployment to `replicas: 2`, running active-active; see [Agent Redundancy](high-availability.md#agent-redundancy) in the HA guide for why this is safe.
+
+---
+
+## Resilience & concurrency
+
+Three config fields (full reference: [Configuration: K8s Agent config
+fields](configuration.md#k8s-agent-config-fields)) bound how the k8s-agent behaves under
+scheduling pressure and during shutdown:
+
+| Field (yaml) | Env override | Default | Behavior |
+|---|---|---|---|
+| `podStartTimeout` | `UNIFIED_K8S_POD_START_TIMEOUT` | `5m` | Bounds how long the agent waits for a run Pod to reach `Running` before failing the run. Without this, an unschedulable or `ImagePullBackOff` Pod would wedge the run forever — under `RestartPolicy: Never` a stuck-Pending Pod never transitions to `Failed` on its own. The wait also aborts early (without overriding the controller's status) if the run is already terminal at the controller. |
+| `drainTimeout` | `UNIFIED_K8S_DRAIN_TIMEOUT` | `0` (wait indefinitely) | On SIGTERM/rollout, the agent stops claiming new runs immediately but lets in-flight runs keep going — heartbeats keep beating throughout drain so a draining run isn't reaped as stuck — until they finish or `drainTimeout` elapses, whichever is first. `0`/unset never forces a cutoff. Parity with the standard agent's `--drain-timeout`. |
+| `maxConcurrent` | — | `100` | Max simultaneous job Pods, enforced by a semaphore around the claim loop. `0`/unset → `100` (raised from the previous default of `5`). A **negative** value (e.g. `-1`) removes the agent-side cap entirely — concurrency is then bounded only by cluster scheduling/quota. A positive value is an exact concurrency bound. |
+
+Env vars, where present, override the config-file value (see [Configuration: Priority
+Order](configuration.md#priority-order) — CLI flags still win over both, but these fields have
+no CLI flag).
 
 ---
 
