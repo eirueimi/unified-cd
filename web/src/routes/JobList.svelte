@@ -125,6 +125,9 @@
                   </span>
                 {/if}
               {/if}
+              {#if row.job.description}
+                <div class="meta" style="font-size:0.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40rem">{row.job.description}</div>
+              {/if}
             </td>
             <td class="meta">{fmtTime(row.job.updatedAt)}</td>
             <td><a href="#/jobs/{encodeURIComponent(row.job.name)}" class="btn" on:click|stopPropagation>Runs →</a></td>

@@ -11,6 +11,7 @@
     loading = true,
     error = "";
   let sched = null;
+  let job = null;
 
   $: hasParams = runs.some(
     (r) => r.params && Object.keys(r.params).length > 0,
@@ -45,12 +46,21 @@
       sched = null;
     }
   }
+  async function loadJob() {
+    try {
+      job = await apiFetch("/api/v1/jobs/" + encodeURIComponent(jobName));
+    } catch (_) {
+      job = null; // description just won't show; runs list is primary
+    }
+  }
   onMount(() => {
     load();
     loadSched();
+    loadJob();
   });
   $: jobName, load();
   $: jobName, loadSched();
+  $: jobName, loadJob();
 </script>
 
 <div class="container">
@@ -59,6 +69,9 @@
     <a href="#/">← Jobs</a>
     <h1>{jobName}</h1>
   </div>
+  {#if job?.description}
+    <p class="meta" style="margin:-0.5rem 0 1rem">{job.description}</p>
+  {/if}
   <div style="border-bottom:1px solid var(--border);margin-bottom:1.5rem">
     <a href="#/jobs/{encodeURIComponent(jobName)}" class="tab-link tab-active">History</a>
     <a href="#/jobs/{encodeURIComponent(jobName)}/run" class="tab-link">▶ Run</a>
