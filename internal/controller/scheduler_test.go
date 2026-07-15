@@ -159,6 +159,55 @@ func TestResolveGitPendingRuns_DeadlineExceededFailsRun(t *testing.T) {
 	assert.True(t, found, "expected a system log line about the exceeded resolve deadline, got: %+v", logs)
 }
 
+// contentFetcher returns fixed YAML for any URI (a valid template, unlike
+// badYAMLFetcher which returns malformed YAML).
+type contentFetcher struct{ yaml []byte }
+
+func (c contentFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshKey string) ([]byte, error) {
+	return c.yaml, nil
+}
+
+// TestResolveGitPendingRuns_FailsOnDanglingContainer: a uses spec that resolves
+// to a step referencing a container defined nowhere (neither caller nor template)
+// is failed deterministically at resolution, not persisted as runnable.
+func TestResolveGitPendingRuns_FailsOnDanglingContainer(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "")
+	require.NoError(t, err)
+
+	// Template step targets `ghost`, which no podTemplate (caller or template) defines.
+	tmpl := []byte("apiVersion: unified-cd/v1\nkind: JobTemplate\nmetadata: {name: tmpl}\nspec:\n  steps:\n    - {name: s, container: ghost, run: echo hi}\n")
+	resolver := gittemplate.NewResolver(contentFetcher{yaml: tmpl}, nil)
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
+	resolveGitPendingRuns(t.Context(), pg, resolver, nil, bo, time.Hour)
+
+	got, err := pg.GetRun(t.Context(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunFailed, got.Status, "a dangling container reference must fail the run at resolution")
+}
+
+// TestResolveGitPendingRuns_MergedTemplateContainerResolvesOK: a template that
+// defines its own container AND targets it resolves + validates successfully
+// (the container is merged into the caller), so the run is NOT failed.
+func TestResolveGitPendingRuns_MergedTemplateContainerResolvesOK(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	specJSON := []byte(`{"steps":[{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "")
+	require.NoError(t, err)
+
+	tmpl := []byte("apiVersion: unified-cd/v1\nkind: JobTemplate\nmetadata: {name: tmpl}\nspec:\n  podTemplate:\n    spec:\n      containers: [{name: tools, image: alpine:3}]\n  steps:\n    - {name: s, container: tools, run: echo hi}\n")
+	resolver := gittemplate.NewResolver(contentFetcher{yaml: tmpl}, nil)
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
+	resolveGitPendingRuns(t.Context(), pg, resolver, nil, bo, time.Hour)
+
+	got, err := pg.GetRun(t.Context(), run.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, api.RunFailed, got.Status, "a merged-container uses job must resolve successfully")
+}
+
 type badYAMLFetcher struct{}
 
 func (badYAMLFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshKey string) ([]byte, error) {
