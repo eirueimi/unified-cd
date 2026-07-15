@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
@@ -162,6 +163,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 
 	var pooledPod *PooledPod
 	var podName string
+	podReady := false
 
 	if usePool {
 		templateName := ""
@@ -177,6 +179,14 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		pooledPod = pp
 		podName = pp.PodName
 		defer func() {
+			if !podReady {
+				// The pod never reached Running; do not return a possibly-wedged
+				// pod to the idle pool — delete it so the pool re-creates next time.
+				if err := a.pm.DeletePod(context.Background(), podName); err != nil {
+					slog.Warn("k8s: failed to delete not-ready pooled Pod", "pod", podName, "error", err)
+				}
+				return
+			}
 			if err := a.pool.ReleasePod(context.Background(), pooledPod, true); err != nil {
 				slog.Warn("k8s: failed to release Pod", "pod", podName, "error", err)
 			}
@@ -201,11 +211,16 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		}()
 	}
 
-	if err := a.pm.WaitForPodRunning(ctx, podName); err != nil {
-		slog.Error("k8s: failed waiting for Pod to start", "runId", c.RunID, "error", err)
-		_ = a.client.FinishRun(ctx, a.cfg.AgentID, c.RunID, api.RunFailed)
+	masterTerminal, err := a.awaitPodRunning(ctx, podName, c.RunID)
+	if err != nil {
+		if masterTerminal {
+			slog.Info("k8s: run became terminal before pod ready; abandoning", "runId", c.RunID, "pod", podName)
+			return
+		}
+		a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: run pod did not become ready: %v", err))
 		return
 	}
+	podReady = true
 
 	// If cleanWorkspace is true, clear the workspace before the first step
 	if usePool && c.PodTemplate != nil && c.PodTemplate.CleanWorkspace {
@@ -260,6 +275,53 @@ func (a *K8sAgent) failRun(ctx context.Context, runID, reason string) {
 	agentlib.RetryUntilSuccess(ctx, func(cc context.Context) error {
 		return a.client.FinishRun(cc, a.cfg.AgentID, runID, api.RunFailed)
 	})
+}
+
+// awaitPodRunning waits for podName to reach Running, bounded by
+// cfg.PodStartTimeoutDuration(), and abortable early if the controller marks the
+// run terminal (user cancel or reap) before the pod is ready. Under
+// RestartPolicy: Never a Pending/ImagePullBackOff pod never transitions to
+// Failed, so without this bound the wait would hang until full agent shutdown.
+//
+// It returns masterTerminal=true (with a non-nil err) when the wait was aborted
+// because the run is already terminal at the controller — the caller must clean
+// up the pod but must NOT override the controller's authoritative status.
+func (a *K8sAgent) awaitPodRunning(ctx context.Context, podName, runID string) (masterTerminal bool, err error) {
+	waitCtx, cancel := context.WithTimeout(ctx, a.cfg.PodStartTimeoutDuration())
+	defer cancel()
+
+	var terminal atomic.Bool
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		ticker := time.NewTicker(agentlib.CancelPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-waitCtx.Done():
+				return
+			case <-ticker.C:
+				run, gerr := a.client.GetRun(waitCtx, runID)
+				if gerr != nil {
+					continue
+				}
+				if isTerminalRunStatus(run.Status) {
+					terminal.Store(true)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	werr := a.pm.WaitForPodRunning(waitCtx, podName)
+	cancel()
+	<-watchDone
+
+	if terminal.Load() {
+		return true, fmt.Errorf("run %s reached terminal status before pod %s became ready", runID, podName)
+	}
+	return false, werr
 }
 
 // logLineWriter is a Writer that sends each line of stdout to the master server via AppendLog.

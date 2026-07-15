@@ -16,6 +16,7 @@ type fakePM struct {
 	created         *corev1.Pod
 	createdNm       string
 	waitErr         error
+	waitBlock       chan struct{} // if non-nil, WaitForPodRunning blocks until closed or ctx done
 	deleted         []string
 	waitHadDeadline bool
 	waitCtxSeen     bool
@@ -32,6 +33,13 @@ func (f *fakePM) WaitForPodRunning(ctx context.Context, _ string) error {
 	f.waitCtxSeen = true
 	_, hasDeadline := ctx.Deadline()
 	f.waitHadDeadline = hasDeadline
+	if f.waitBlock != nil {
+		select {
+		case <-f.waitBlock:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return f.waitErr
 }
 func (f *fakePM) DeletePod(_ context.Context, name string) error {
