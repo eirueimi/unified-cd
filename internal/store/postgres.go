@@ -193,6 +193,30 @@ func (p *Postgres) ListRunningRunIDsByAgent(ctx context.Context, agentID string)
 	return ids, rows.Err()
 }
 
+// ListReconcilableRunIDsByAgent returns IDs of Running runs claimed by
+// agentID whose claimed_at is older than grace. Used by the heartbeat
+// reconcile path to fail runs the agent no longer reports as active, while
+// excluding a run claimed within the grace window so a fresh claim racing
+// the agent's next heartbeat is never mistaken for an orphan.
+func (p *Postgres) ListReconcilableRunIDsByAgent(ctx context.Context, agentID string, grace time.Duration) ([]string, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT id FROM runs WHERE claimed_by = $1 AND status = 'Running' AND claimed_at < NOW() - make_interval(secs => $2)`,
+		agentID, grace.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("list reconcilable runs by agent: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // ListChildRunIDs returns the IDs of runs directly spawned by parentRunID via
 // call: steps, read from the step reports that recorded each child_run_id.
 func (p *Postgres) ListChildRunIDs(ctx context.Context, parentRunID string) ([]string, error) {
