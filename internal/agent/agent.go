@@ -75,6 +75,14 @@ type Agent struct {
 	// disables the check. Host-only: k8s agents use pod volumes instead.
 	MinFreeDisk uint64
 
+	// WorkspaceRetentionDays is the age (in days) after which an inactive
+	// per-job workspace directory (working<slot>/<job>) becomes eligible
+	// for removal by the opt-in workspace GC (see workspace_gc.go). Zero
+	// (the default) disables the GC — persistent workspaces are a feature
+	// (inter-run cache), so sweeping them across jobs must be an explicit
+	// opt-in. Host-only.
+	WorkspaceRetentionDays int
+
 	// freeBytesFn reports available bytes for the filesystem containing the
 	// given path. Defaults to freeBytes (the platform-specific syscall
 	// implementation); overridable so tests can inject a fake without
@@ -251,14 +259,40 @@ func (a *Agent) Run(ctx context.Context) error {
 	// the controller's lost-claim reconcile). Shared across every slot
 	// goroutine.
 	activeRuns := NewRunSet()
+
+	// activeWorkDirs tracks the absolute path of every working<slot>/<job>
+	// directory this process currently has a claim executing in — a second,
+	// workDir-keyed RunSet enrolled/retired alongside activeRuns (see
+	// runLoop). It exists purely to feed gcWorkspaces' active-set parameter;
+	// see workspace_gc.go's doc comment for why a workDir path (not a run ID
+	// or bare job name) is the safe key. Always constructed (cheap), even
+	// when the GC is disabled, so runLoop's signature doesn't need to branch
+	// on WorkspaceRetentionDays.
+	activeWorkDirs := NewRunSet()
+
 	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot)
+
+	if a.WorkspaceRetentionDays > 0 {
+		retention := time.Duration(a.WorkspaceRetentionDays) * 24 * time.Hour
+		// Startup sweep: activeWorkDirs is necessarily empty here (nothing has
+		// been claimed yet in this process), which is safe — any dir genuinely
+		// in use by ANOTHER live agent process sharing this wsBase would have
+		// to be younger than retention (days-scale) to survive anyway, since a
+		// truly stuck/abandoned dir is exactly what this GC exists to reclaim.
+		if removed, err := gcWorkspaces(wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now()); err != nil {
+			slog.Warn("workspace gc: startup sweep failed", "error", err)
+		} else if len(removed) > 0 {
+			slog.Info("workspace gc: startup sweep removed aged workspace dirs", "count", len(removed), "dirs", removed)
+		}
+		go a.workspaceGCLoop(runCtx, wsBase, retention, activeWorkDirs)
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(slot int) {
 			defer wg.Done()
-			a.runLoop(ctx, runCtx, slot, wsBase, activeRuns)
+			a.runLoop(ctx, runCtx, slot, wsBase, activeRuns, activeWorkDirs)
 		}(i)
 	}
 	wg.Wait()
@@ -284,7 +318,10 @@ func (a *Agent) Run(ctx context.Context) error {
 // runLoop runs the claim loop for a single slot. activeRuns is enrolled with
 // the claimed run ID before executeRun and retired (via defer) right after,
 // so the run is only ever reported active while it is actually executing.
-func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string, activeRuns *RunSet) {
+// activeWorkDirs mirrors that same enroll/retire lifecycle keyed by the
+// claim's absolute workDir path instead of its run ID, feeding the workspace
+// GC's active-set (see workspace_gc.go and Run's activeWorkDirs doc comment).
+func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string, activeRuns, activeWorkDirs *RunSet) {
 	for {
 		if claimCtx.Err() != nil {
 			return
@@ -337,13 +374,50 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			continue
 		}
 		activeRuns.Add(resp.RunID)
+		activeWorkDirs.Add(workDir)
 		func() {
 			// executeRun already recovers its own panics (see its doc comment),
 			// but deferring Remove here means a future change to that guarantee
 			// can't silently leave a finished run stuck in the active set.
 			defer activeRuns.Remove(resp.RunID)
+			defer activeWorkDirs.Remove(workDir)
 			a.executeRun(runCtx, resp, workDir)
 		}()
+	}
+}
+
+// workspaceGCInterval is the periodic sweep cadence for the opt-in workspace
+// GC (see workspaceGCLoop). It mirrors the k8s agent's runPodGC in shape (a
+// ticker-driven periodic sweep started alongside the startup one) but on a
+// much coarser cadence: runPodGC deals with short-lived per-run pods and
+// needs a tight minute-scale loop, whereas workspace retention is
+// expressed and reasoned about in whole days (WorkspaceRetentionDays), so
+// hourly is frequent enough to reclaim space promptly without adding
+// meaningful overhead.
+const workspaceGCInterval = time.Hour
+
+// workspaceGCLoop periodically sweeps aged, inactive per-job workspace
+// directories under wsBase (see gcWorkspaces) until ctx is done. Only
+// started by Run when WorkspaceRetentionDays > 0. activeWorkDirs is
+// snapshotted fresh on every tick so the sweep always sees the
+// currently-in-flight set of claims across all slots.
+func (a *Agent) workspaceGCLoop(ctx context.Context, wsBase string, retention time.Duration, activeWorkDirs *RunSet) {
+	ticker := time.NewTicker(workspaceGCInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		removed, err := gcWorkspaces(wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now())
+		if err != nil {
+			slog.Warn("workspace gc: sweep failed", "error", err)
+			continue
+		}
+		if len(removed) > 0 {
+			slog.Info("workspace gc: removed aged workspace dirs", "count", len(removed), "dirs", removed)
+		}
 	}
 }
 
