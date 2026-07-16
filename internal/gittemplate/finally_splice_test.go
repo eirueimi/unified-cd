@@ -173,6 +173,26 @@ func TestResolveSpec_NestedUsesInBody_InnerFinallyFullyPrefixed(t *testing.T) {
 	require.False(t, names["x__mop"], "nested-in-body template finally must not leak un-prefixed; got %v", names)
 }
 
+func TestResolveSpec_TwoSiblingUsesOfSameTemplate_DistinctFinallyNames(t *testing.T) {
+	// Two uses: steps ("a" and "b") both point at the SAME template URI. The
+	// template has body steps and a finally: cleanup step. Each expansion must
+	// be prefixed by its own usesName, so the spliced finally steps land as
+	// distinct a__cleanup / b__cleanup entries with no resolve error (no
+	// collision even though both derive from the identical template).
+	specJSON := mustMarshalSpec(dsl.Spec{
+		Steps: []dsl.StepEntry{
+			{Name: "a", Uses: &dsl.UsesStep{Job: "git://github.com/org/repo/t.yaml@v1"}},
+			{Name: "b", Uses: &dsl.UsesStep{Job: "git://github.com/org/repo/t.yaml@v1"}},
+		},
+	})
+	s, err := resolveToSpec(t, &stubFetcher{data: []byte(finallyTpl)}, specJSON)
+	require.NoError(t, err)
+	names := finallyNamesOf(s)
+	require.True(t, names["a__cleanup"], "a's spliced finally step must be present; got %v", names)
+	require.True(t, names["b__cleanup"], "b's spliced finally step must be present; got %v", names)
+	require.Len(t, s.Finally, 2, "both distinct, no collision; got %v", names)
+}
+
 func TestResolveSpec_UsesInFinally_WithTemplateFinally(t *testing.T) {
 	// A uses step sitting in the caller's finally whose template ALSO has finally:
 	// both the body expansion and the spliced finally land in spec.Finally.
