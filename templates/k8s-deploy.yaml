@@ -1,5 +1,5 @@
 # Kubernetes manifest apply job template
-# After registering with unified-cd apply -f templates/k8s-deploy.yaml, invoke it via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/k8s-deploy.yaml@<ref>).
 #
 # Agent requirements: kubectl
 #
@@ -9,7 +9,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/k8s-deploy.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: k8s-deploy
 spec:

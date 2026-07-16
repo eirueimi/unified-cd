@@ -2,6 +2,12 @@
 # Register with: unified-cd apply -f templates/buildkit-rootless-build-push.yaml
 # then invoke via call.job.
 #
+# NOTE: unlike the other files in templates/, this stays `kind: Job` (standalone,
+# apply + call:) and is NOT a `uses:` target. It replaces the primary "job"
+# container in its own podTemplate — `uses:` forbids injecting the reserved
+# "job" container into a caller's pod, so this design can only work as a
+# standalone job with its own pod.
+#
 # Why this template: docker-build-push.yaml needs a Docker daemon (a DinD sidecar
 # with privileged: true on Kubernetes). This one builds with rootless BuildKit
 # instead — a `buildkitd` sidecar that runs WITHOUT privileged, plus `buildctl`

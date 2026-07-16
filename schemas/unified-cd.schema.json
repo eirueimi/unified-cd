@@ -303,6 +303,95 @@
       ],
       "type": "object"
     },
+    "JobTemplate": {
+      "additionalProperties": false,
+      "description": "JobTemplate is the resource a uses: step points at. Unlike a full Job, its\nschema contains ONLY what uses: can honor — the template's steps are inlined\ninto the CALLER's run and pod, so fields that would shape a different pod,\nagent, or run (agentSelector, concurrency, timeoutMinutes, native, finally,\npodTemplate reuse/workspace/override, pod-level spec keys) do not exist here\nand are rejected by strict decoding. A job that needs its own pod/agent/run\nsemantics should be invoked with call: instead.",
+      "properties": {
+        "apiVersion": {
+          "const": "unified-cd/v1",
+          "type": "string"
+        },
+        "kind": {
+          "const": "JobTemplate",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/JobTemplateSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object"
+    },
+    "JobTemplatePodSpec": {
+      "additionalProperties": false,
+      "description": "JobTemplatePodSpec holds the mergeable pod-shape lists.",
+      "properties": {
+        "containers": {
+          "items": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "volumes": {
+          "items": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "JobTemplatePodTemplate": {
+      "additionalProperties": false,
+      "description": "JobTemplatePodTemplate is the pod-shape subset a template may contribute to\nthe caller's pod: containers and the volumes they mount. Nothing else.",
+      "properties": {
+        "spec": {
+          "$ref": "#/definitions/JobTemplatePodSpec"
+        }
+      },
+      "type": "object"
+    },
+    "JobTemplateSpec": {
+      "additionalProperties": false,
+      "description": "JobTemplateSpec is the uses:-supported subset of a job spec.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/Params"
+        },
+        "podTemplate": {
+          "$ref": "#/definitions/JobTemplatePodTemplate"
+        },
+        "shell": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/definitions/StepEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "type": "object"
+    },
     "MatrixDef": {
       "additionalProperties": {
         "$ref": "#/definitions/ForeachSource"
@@ -1005,6 +1094,9 @@
   "oneOf": [
     {
       "$ref": "#/definitions/Job"
+    },
+    {
+      "$ref": "#/definitions/JobTemplate"
     },
     {
       "$ref": "#/definitions/Schedule"

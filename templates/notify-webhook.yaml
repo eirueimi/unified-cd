@@ -1,5 +1,5 @@
 # Generic webhook notification job template (JSON POST)
-# After registering with unified-cd apply -f templates/notify-webhook.yaml, invoke it via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/notify-webhook.yaml@<ref>).
 #
 # Required secrets (if using url_secret):
 #   unified-cd secret set my-webhook-url https://example.com/hooks/xxxx
@@ -8,7 +8,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/notify-webhook.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: notify-webhook
 spec:

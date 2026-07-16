@@ -1,5 +1,5 @@
 # GitHub release creation & asset upload job template (curl only, no gh required)
-# Register with unified-cd apply -f templates/github-release.yaml, then invoke via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/github-release.yaml@<ref>).
 #
 # Required secrets:
 #   unified-cd secret set github-token ghp_xxxx
@@ -8,7 +8,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/github-release.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: github-release
 spec:

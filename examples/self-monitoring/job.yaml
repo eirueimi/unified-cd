@@ -2,8 +2,48 @@
 # alerts via the slack-notify template (templates/slack-notify.yaml) when
 # no agents are alive or the run queue backlog exceeds a threshold.
 #
-# Register the slack-notify template and its webhook secret first — see
-# examples/self-monitoring/README.md for setup steps.
+# slack-notify is a kind: JobTemplate (a uses: target, not registrable), so
+# this file also ships a thin `slack-notify` wrapper Job that inlines the
+# template via uses: — call: below invokes that wrapper by name. Set the
+# webhook secret first — see examples/self-monitoring/README.md.
+---
+# Thin wrapper: registers the slack-notify JobTemplate as a callable Job.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: slack-notify
+spec:
+  params:
+    inputs:
+      - name: status
+        type: string
+        required: true
+        description: "success / failure / cancelled"
+      - name: job_name
+        type: string
+        required: true
+      - name: run_id
+        type: string
+        required: true
+      - name: message
+        type: string
+        default: ""
+        description: "Additional message (optional)"
+      - name: channel
+        type: string
+        default: ""
+        description: "Destination channel (if omitted, uses the webhook's default channel)"
+  steps:
+    - name: notify
+      uses:
+        job: git://github.com/eirueimi/unified-cd/templates/slack-notify.yaml@main
+        with:
+          status: "{{ .Params.status }}"
+          job_name: "{{ .Params.job_name }}"
+          run_id: "{{ .Params.run_id }}"
+          message: "{{ .Params.message }}"
+          channel: "{{ .Params.channel }}"
+---
 apiVersion: unified-cd/v1
 kind: Job
 metadata:

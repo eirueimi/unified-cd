@@ -14,15 +14,16 @@ Prometheus rules or any external uptime check on `GET /healthz`.
 
 ## Setup
 
-1. Register the Slack template and its webhook secret (see
-   `templates/README.md`):
+1. Set the Slack webhook secret (see `templates/README.md`):
 
    ```bash
-   unified-cd apply -f templates/slack-notify.yaml
    unified-cd secret set slack-webhook-url "https://hooks.slack.com/services/..."
    ```
 
-2. Apply the job and schedule, pointing at your controller URL:
+2. Apply the jobs and schedule, pointing at your controller URL.
+   `job.yaml` registers BOTH the `slack-notify` wrapper (which inlines the
+   `templates/slack-notify.yaml` JobTemplate via `uses:`) and the
+   `self-monitor` job that `call:`s it:
 
    ```bash
    unified-cd apply -f examples/self-monitoring/job.yaml

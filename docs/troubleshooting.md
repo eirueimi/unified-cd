@@ -463,6 +463,34 @@ An `uploadArtifact`/`downloadArtifact`/`cache` step used an absolute path or a `
 
 Use a path relative to the workspace (e.g. `dist`, not `/workspace/dist` or `../dist`). `$UNIFIED_WORKSPACE` names the workspace root if you need an absolute base.
 
+## `uses:` run fails with `uses: targets must be kind: JobTemplate`
+
+**Symptom**
+
+A run using `uses: git://...` fails at creation with:
+
+```
+uses: targets must be kind: JobTemplate (got kind: Job); convert the template, or invoke the job with call:
+```
+
+or a strict-decode error naming a field, e.g. `field agentSelector not found in type dsl.JobTemplateSpec`.
+
+**Cause**
+
+`uses:` targets must be `kind: JobTemplate` — a strict schema holding only
+what inlining can honor. The fetched file is either a pre-migration
+`kind: Job` template, or declares a field outside the JobTemplate schema.
+Note that pinned refs (`@v1.2.3` / `@<sha>`) pointing at commits from before
+the template's migration keep fetching the old `kind: Job` content forever.
+
+**Fix**
+
+Convert the template (`kind: Job` → `kind: JobTemplate`, drop unsupported
+fields) and re-pin tags/SHAs to a post-migration commit — see the
+[migration guide](migration-2026-07-uses-jobtemplate.md). If the target
+genuinely needs its own pod/agent/run semantics, keep it a `kind: Job` and
+invoke it with `call:` instead.
+
 ## `uses: git://...` job fails to resolve with invalid characters
 
 **Symptom**

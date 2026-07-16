@@ -1,5 +1,5 @@
 # Slack notification job template
-# After registering with unified-cd apply -f templates/slack-notify.yaml, invoke it via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/slack-notify.yaml@<ref>).
 #
 # Required secrets:
 #   unified-cd secret set slack-webhook-url https://hooks.slack.com/services/...
@@ -7,7 +7,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/slack-notify.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: slack-notify
 spec:

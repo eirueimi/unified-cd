@@ -1,5 +1,5 @@
 # Remote deploy job template via rsync
-# Register with unified-cd apply -f templates/rsync-deploy.yaml, then invoke via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/rsync-deploy.yaml@<ref>).
 #
 # Agent requirements: rsync, ssh
 #
@@ -9,7 +9,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/rsync-deploy.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: rsync-deploy
 spec:

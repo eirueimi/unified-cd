@@ -12,7 +12,7 @@ import (
 )
 
 // rootKinds defines display order for the field reference.
-var rootKinds = []string{"Job", "Schedule", "WebhookReceiver", "AppSource", "GitCredential"}
+var rootKinds = []string{"Job", "JobTemplate", "Schedule", "WebhookReceiver", "AppSource", "GitCredential"}
 
 func main() {
 	if err := run(); err != nil {

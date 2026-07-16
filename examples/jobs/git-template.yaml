@@ -1,20 +1,27 @@
-# Demonstrates: reusing job steps from a remote Git repository using uses:.
+# Demonstrates: reusing steps from a remote Git repository using uses:.
 # The referenced YAML's steps are inlined into THIS run (sharing its workspace)
 # by the controller before the run is queued — contrast with call:, which runs
 # a registered job as an independent child run (see examples/jobs/call-template.yaml).
 #
-# The three steps below fetch the same real template (this repository's
-# templates/smoke-check.yaml) via the three supported ref forms, so this
-# example actually runs.
+# uses: targets must be `kind: JobTemplate` — a strict schema holding only what
+# inlining can honor (description/params/shell/podTemplate.spec.{containers,volumes}/steps).
+# Pointing uses: at a `kind: Job` fails at run creation with a conversion hint.
+# See templates/README.md and docs/jobs.md.
+#
+# The steps below fetch a real template (this repository's
+# templates/smoke-check.yaml), so this example actually runs.
 # Usage:
 #   unified-cd apply -f examples/jobs/git-template.yaml
 #   unified-cd apply -f examples/resources/gitcredential.yaml  # for private repos only
 #   unified-cd run trigger git-template-demo
 #
-# URI format: git://host/owner/repo/path/to/job.yaml@ref
+# URI format: git://host/owner/repo/path/to/template.yaml@ref
 #   - ref can be a semver tag (v1.2.3), full commit SHA (40 chars), or a branch name
 #   - semver tags and commit SHAs are cached in the object store; fetched only once
 #   - branch names are always fetched fresh on every run
+#   - a 40-char commit SHA behaves exactly like a tag (pinned + cached). Pin to
+#     any commit at or after the kind: JobTemplate migration, e.g. the commit a
+#     tag points at: `git rev-parse 'v0.2.0^{commit}'`.
 ---
 apiVersion: unified-cd/v1
 kind: Job
@@ -27,8 +34,10 @@ spec:
     # public repo template — no authentication needed
     - name: smokeFromTag
       uses:
-        # semver tag → cached in the object store after the first fetch
-        job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@v0.1.0
+        # semver tag → cached in the object store after the first fetch.
+        # v0.2.0 is the first tag where templates/ are kind: JobTemplate; older
+        # tags (v0.1.0) predate the migration and are rejected by the kind gate.
+        job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@v0.2.0
         with:
           url: "https://github.com"
           # NOTE: template input defaults ARE applied on the uses: (inline)
@@ -46,18 +55,6 @@ spec:
     - name: smokeFromBranch
       uses:
         job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@main
-        with:
-          url: "https://github.com"
-          expect_status: "200"
-          retries: "3"
-          interval_seconds: "2"
-          body_contains: "GitHub"
-
-    # commit SHA reference — fully pinned, cached like a semver tag
-    - name: smokeFromSHA
-      uses:
-        # 40-char commit SHA (the commit v0.1.0 points at) → cached the same way as semver tags
-        job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@66b4551f1b0e0e09c6b86e0e2ca7295bf52a4ad4
         with:
           url: "https://github.com"
           expect_status: "200"

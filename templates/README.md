@@ -1,23 +1,11 @@
 # Job Template Collection
 
-A collection of reusable `Job` templates for `unified-cd`. Register them with `unified-cd apply -f templates/<file>.yaml`
-and use them either by calling them via `call:`, or by inlining them via a `git://` URI with `uses:`.
+A collection of reusable **`kind: JobTemplate`** resources for `unified-cd`. A `uses:` step
+inlines a template's steps into YOUR run (sharing its pod, workspace, and secrets), fetching
+it via a `git://` URI:
 
 ```yaml
-# When calling a registered job
-steps:
-  - name: notify
-    call:
-      job: slack-notify
-      with:
-        status: success
-        job_name: my-job
-        # Call params can only reference .Params and .Steps of the calling
-        # job — there is NO template variable for the caller's own run ID,
-        # so pass a static identifier here.
-        run_id: "my-job"
-
-# When inlining as a git template
+# Inline a template into this run
 steps:
   - name: notify
     uses:
@@ -25,15 +13,27 @@ steps:
       with:
         status: success
         job_name: my-job
+        # with: values are Go templates expanded against the calling job's
+        # .Params and .Steps. There is NO variable for the caller's own run
+        # ID, so pass a static identifier here.
         run_id: "my-job"
 ```
 
-> **Note:** `with:` values are Go templates expanded against the calling
-> job's `.Params` and `.Steps` (for `call:`; `uses:` additionally sees the
-> usual step context). For `call:` steps, a reference to a non-existent
-> field (such as the `{{ .RunID }}` these examples used to show) fails the
-> step with a `call param ... template` error before any child run is
-> created.
+`uses:` targets **must be `kind: JobTemplate`** — a strict schema containing only what
+inlining can honor: `description`, `params`, `shell`, `podTemplate.spec.containers`/`volumes`,
+and `steps`. Anything else (`agentSelector`, `concurrency`, `finally`, `native`, other
+podTemplate fields) is rejected at run creation. A template's `podTemplate` containers and
+volumes are merged into the caller's pod automatically (the caller's own same-name definition
+wins; the reserved names `job`, `unified-artifact`, `ucd-shim`, `workspace`, `ucd-tools`
+cannot be injected). See [docs/jobs.md](../docs/jobs.md) for the full contract.
+
+**Want a child run instead of inlining?** `call:` runs a REGISTERED `kind: Job` by name (its
+own pod/agent/run). A `JobTemplate` cannot be registered with `apply` — if you need a template
+as a callable job, write a thin `kind: Job` wrapper in your own repo that `uses:` the template
+and declares the run-level fields (`agentSelector`, etc.) yourself, then `apply` + `call:` that
+wrapper. The one exception in this collection is `buildkit-rootless-build-push.yaml`, which
+stays `kind: Job` (it replaces the primary `job` container in its own pod — something `uses:`
+deliberately forbids) and is meant to be applied and invoked via `call:` directly.
 
 ## Template list
 
@@ -65,8 +65,11 @@ steps:
 
 Each template follows the house style below (`git-checkout.yaml` / `slack-notify.yaml` are the prototypes):
 
-- `apiVersion: unified-cd/v1`, `kind: Job`. Declare `name` / `type` / `required` / `default` / `description`
-  under `spec.params.inputs`. Write `description` in English.
+- `apiVersion: unified-cd/v1`, `kind: JobTemplate` (the standalone-job exception is
+  `buildkit-rootless-build-push.yaml`, which is `kind: Job` — see above). Declare `name` /
+  `type` / `required` / `default` / `description` under `spec.params.inputs`. Write
+  `description` in English. `internal/dsl`'s `TestTemplatesParse` gate-checks every file in
+  this directory against its intended schema.
 - In the header comment at the top of the file, state the template's purpose, the required secrets (with an example
   `unified-cd secret set ...` invocation), and a usage example for referencing it as a `git://` template.
 - Document tool prerequisites (docker, kubectl, helm, aws CLI, fastlane, Unity Editor, etc.) in the header comment.

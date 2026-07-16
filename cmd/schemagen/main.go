@@ -27,6 +27,7 @@ type rootEntry struct {
 // roots defines the top-level YAML resource kinds in display order.
 var roots = []rootEntry{
 	{"Job", "Job"},
+	{"JobTemplate", "JobTemplate"},
 	{"Schedule", "Schedule"},
 	{"WebhookReceiver", "WebhookReceiver"},
 	{"AppSource", "AppSource"},

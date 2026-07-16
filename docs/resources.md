@@ -7,6 +7,7 @@ All resources use `apiVersion: unified-cd/v1` and are applied with `unified-cli 
 ## Table of Contents
 
 - [Job](#job)
+- [JobTemplate](#jobtemplate)
 - [Schedule](#schedule)
 - [WebhookReceiver](#webhookreceiver)
 - [GitCredential](#gitcredential)
@@ -83,7 +84,7 @@ spec:
         with:
           <key>: <value>
       uses:
-        job: git://<host>/<owner>/<repo>/<path>@<ref>
+        job: git://<host>/<owner>/<repo>/<path>@<ref>   # target must be kind: JobTemplate (see below)
         with:
           <key>: <value>
       cache:
@@ -205,6 +206,53 @@ and are inert outside scope mode — a plain `uses` (with no `runsIn`) still
 allows `approval:`/`call:` unchanged. `parallel:` sub-steps inside a scoped
 `uses` execute concurrently, but all still target the same shared scope
 environment.
+
+---
+
+## JobTemplate
+
+The resource a `uses:` step points at. **Not applied to the controller** — a
+JobTemplate lives in a git repository and is fetched at run creation via the
+`uses:` step's `git://` URI. Its schema deliberately contains only what
+inlining into the caller's run can honor; any other field is rejected at run
+creation (strict decode). Pointing `uses:` at a `kind: Job` fails with a
+conversion hint. See [Job Reference — uses:](jobs.md) for the full contract
+and [templates/README.md](../templates/README.md) for a ready-made collection.
+
+```yaml
+apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata:
+  name: <string>                  # required
+  labels: {}                      # optional
+  annotations: {}                 # optional
+spec:
+  description: <string>           # optional, documentation only
+  params:                         # same schema as Job (inputs/outputs)
+    inputs:
+      - name: <string>
+        type: string | bool | int | array
+        required: <bool>
+        default: <any>
+        description: <string>
+    outputs:
+      - name: <string>
+        type: string | bool | int | artifact
+        value: <template expression>
+  shell: [<string>, ...]          # optional default interpreter for the template's steps
+  podTemplate:                    # optional pod-shape subset — merged into the CALLER's pod
+    spec:
+      containers: [...]           # gap-fill merged; reserved names job/unified-artifact/ucd-shim rejected
+      volumes: [...]              # gap-fill merged; reserved names workspace/ucd-tools rejected
+  steps: [...]                    # same StepEntry schema as Job (nested uses: allowed)
+```
+
+Fields that do NOT exist on a JobTemplate (and error if present):
+`agentSelector`, `concurrency`, `timeoutMinutes`, `native`, `finally`, and any
+`podTemplate` field other than `spec.containers`/`spec.volumes` — a template
+inlines into the caller's run, so it cannot shape a different pod, agent, or
+run. Use `call:` (a registered `kind: Job`, its own child run) when you need
+those semantics.
 
 ---
 

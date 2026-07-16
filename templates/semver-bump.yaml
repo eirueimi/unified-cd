@@ -1,5 +1,5 @@
 # Semantic version calculation job template based on Conventional Commits
-# After registering with unified-cd apply -f templates/semver-bump.yaml, invoke it via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/semver-bump.yaml@<ref>).
 #
 # Scans the commit messages from the last tag to the current HEAD, and
 # increments the version as major if there is a BREAKING CHANGE (or `!:`
@@ -13,7 +13,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/semver-bump.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: semver-bump
 spec:

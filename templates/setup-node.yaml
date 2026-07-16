@@ -1,5 +1,5 @@
 # Node.js dependency cache setup job template
-# After registering with unified-cd apply -f templates/setup-node.yaml, invoke it via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/setup-node.yaml@<ref>).
 #
 # Agent requirements: node, npm
 #
@@ -9,7 +9,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/setup-node.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: setup-node
 spec:
