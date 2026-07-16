@@ -1447,6 +1447,22 @@ standard agent and the k8s-agent:
   (`job`/`unified-artifact`/`ucd-shim`/`workspace`/`ucd-tools`): those
   comparisons are normalized (trimmed, lowercased), but shape validation now
   rejects a variant like `" Job "` outright before it can reach that check.
+- **A step-targeted container must not set `workingDir`.** Steps always run
+  at the workspace mount: artifact/cache path resolution and
+  `UNIFIED_WORKSPACE` both resolve there, and the artifact sidecar can only
+  reach files under the workspace volume. A `workingDir` set on a container
+  that steps execute in — the primary `job` container, or any container
+  named by a step's (or parallel sub-step's, or `finally:` step's)
+  `container:` field — would silently desync the shell's cwd from where
+  artifacts/cache/`UNIFIED_WORKSPACE` actually resolve, so it is a **hard
+  error at apply time** (checked on both a `Job`'s inline `podTemplate` and
+  its `podTemplate.override.containers`), naming the offending container:
+  `podTemplate container "NAME" declares workingDir, but steps execute in
+  it: steps always run at the workspace mount (artifact/cache paths and
+  UNIFIED_WORKSPACE resolve there); move the cd into the step script, or put
+  workingDir on a sidecar`. Containers no step targets (true sidecars) may
+  set `workingDir` freely — put the `cd` inside the step's `run:`/`shell:`
+  script instead of relying on the container's `workingDir`.
 
 **Routing is automatic and capability-based**, not selector-based: the
 controller infers whether a `podTemplate` needs real Kubernetes (a named
