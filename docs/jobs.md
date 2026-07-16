@@ -917,6 +917,26 @@ step](#if-on-a-uses-step) above).
   resolved spec (another step, another template's splice, or a hand-written
   caller step), resolution fails naming the colliding name — same
   global-name-collision check that already applies to inlined body steps.
+- **Status functions in the outer `if:` evaluate against the finally-phase
+  status, not the status at expansion time.** Per [`if:` on a `uses:`
+  step](#if-on-a-uses-step), the `uses:` step's outer `if:` is combined
+  (`(outer) && (inner)`) onto every inlined step *including* its spliced
+  finally steps. A param/steps-based outer condition (e.g.
+  `params.env == "production"`) behaves exactly as expected: the spliced
+  cleanup is gated the same way the body was. But an outer [status
+  function](#status-functions-in-if) is re-evaluated at the moment each
+  spliced step runs — and by the time the finally phase runs, the run's
+  status is frozen at whatever it ended up being, not what it was when the
+  template's body executed. Concretely: `if: success()` on a `uses:` step
+  whose body already ran successfully can still have its spliced
+  `build__cleanup` **skipped**, if some unrelated later step in the job
+  failed before the finally phase started — `success()` is now false
+  job-wide. An outer `if: failure()` (the common rollback pattern) doesn't
+  have this problem — it's evaluated the same way on both sides. If a
+  template carries its own `finally:` and the caller wants its cleanup to
+  reliably follow the template body's own success/failure regardless of what
+  else happens later in the job, gate on a param or step output instead of a
+  status function.
 
 ### Migrating a `kind: Job` template
 
