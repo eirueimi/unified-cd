@@ -59,6 +59,7 @@ This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Manage
 |---|---|
 | A run is stuck (e.g. no agent can claim it, or it's hung) | `unified-cli run cancel <run-id>` — moves the run to `Cancelled`. Verified live: triggering a `sleep 30` job and running `run cancel <id>` immediately transitioned it to status `Cancelled` in `run list`. |
 | An agent dies mid-run | No action needed. The stuck-run reaper detects the stale heartbeat and fails the run automatically — see [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery) for the full heartbeat/staleness/grace timings. In short: heartbeat every 15s, a run is eligible for reaping once its agent's heartbeat is >90s stale, with a 60s grace window after claim, and the run is marked `Failed` (never re-queued, since re-running partially-executed steps can duplicate side effects). |
+| An agent claimed a run but the claim response was lost (agent process never learned it owns the run) | No action needed — this now self-heals without waiting for the reaper's stale-heartbeat check. Every agent heartbeat carries the set of run IDs it currently considers active; if the controller has a `Running` run assigned to that agent that is absent from the reported set and has sat claimed for more than ~60s (a grace window protecting a claim whose heartbeat simply hasn't landed yet), it fails that run as orphaned on the *next* heartbeat — typically within a few heartbeat intervals, well before the reaper's 90s-stale-heartbeat path would ever trigger. A legacy agent (built before this feature) sends a bodyless heartbeat and is unaffected — no reconcile runs for it, so it falls back to the existing stale-heartbeat reaper. See [Troubleshooting: a run failed by heartbeat reconcile](troubleshooting.md#run-marked-failed-by-heartbeat-reconcile-after-a-lost-claim). |
 | Leftover `ucd-run-*` pods on Kubernetes | No action needed in the common case — the k8s-agent's pod GC sweeps every ~1 minute and deletes pods whose run has reached a terminal state. A manual `kubectl delete pod ucd-run-...` is safe if you want it gone immediately; it will not resurrect or affect the run's recorded status. |
 | PostgreSQL restored from a backup | Start the controller against it; migrations run automatically (see [Upgrades](#upgrades)). Re-apply any resources created after the backup was taken, and confirm `UNIFIED_CONTROLLER_KEY` matches what was in use when secrets were encrypted. |
 
@@ -67,7 +68,8 @@ This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Manage
 ## Workspace and Claim-Container Hygiene
 
 Two pieces of standard-agent state accumulate on the agent host over time and, unlike the
-k8s-agent's pod GC (see the Recovery Runbook above), are **not** cleaned up automatically:
+k8s-agent's pod GC (see the Recovery Runbook above), are **not** cleaned up automatically by
+default:
 
 - **Per-job workspace directories.** Every job gets its own subdirectory under each concurrency
   slot (`wsBase/working<N>/<job-name>`, where `wsBase` is `--workspace-dir` /
@@ -81,6 +83,45 @@ k8s-agent's pod GC (see the Recovery Runbook above), are **not** cleaned up auto
   container GC for these — periodically prune claim-pod-shaped containers on agent hosts (see
   [Agent Labels and Routing: Crash-orphaned claim
   containers](agents.md#crash-orphaned-claim-containers)).
+
+Two agent config knobs give operators direct levers over the first item — a
+preflight to stop the bleeding, and an opt-in sweep to reclaim space — without
+requiring an external cron job. Both are host-agent only (the k8s-agent's
+workspaces are pod volumes, reclaimed with the pod). See [Configuration
+Reference: Agent Config File](configuration.md#agent-config-file) for the
+full flag/env/yaml forms.
+
+- **`minFreeDisk` (`--min-free-disk` / `UNIFIED_AGENT_MIN_FREE_DISK`) — preflight lever.**
+  When set, each concurrency slot checks free space on the workspace
+  filesystem before claiming a run; below the threshold it skips claiming and
+  backs off briefly instead. This is **not an error and not destructive** —
+  it never deletes anything and never fails a run — it simply stops that
+  agent from making the disk problem worse until space frees up (an operator
+  clears old workspaces, an unrelated process on the host frees space, or the
+  opt-in GC below runs). Watch the agent log for `free disk space below
+  minimum, skipping claim` to know when the lever is engaged. `0` (default)
+  disables the check, matching prior behavior.
+- **`workspaceRetentionDays` (`--workspace-retention-days` /
+  `UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS`) — opt-in GC.** When set to a
+  positive number of days, the agent runs a sweep at startup and then hourly
+  that removes any `working<slot>/<job>` directory whose modification time is
+  older than the retention window. It is deliberately conservative about what
+  it will ever touch:
+  - **Deletes:** only inactive `wsBase/working<slot>/<job>` directories aged
+    past retention.
+  - **Protects, always:** `wsBase` itself; `working<slot>` directories
+    themselves; any dot-prefixed entry (in particular `.ucd-tools`, the
+    `ucd-sh` shim directory); and any `working<slot>/<job>` directory that
+    belongs to a run this agent process currently has in flight (checked
+    against its live active-claim set on every sweep tick, so a long-running
+    job's workspace is never pulled out from under it).
+  - **Default is off (`0`).** Persistent per-job workspaces are a feature —
+    they act as an inter-run build/dependency cache — so sweeping them away
+    is opt-in, not automatic. Enable it once you've confirmed the disk-usage
+    growth from stale workspaces outweighs the cache benefit for your job mix
+    (e.g. many distinct/short-lived job names sharing a host), and pick a
+    retention window comfortably longer than your slowest job's normal
+    re-run cadence.
 
 ---
 

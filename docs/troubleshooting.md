@@ -677,6 +677,46 @@ failed and the CLI/API give no other indication.
   for the full CEL variable/function reference — this is especially important
   to verify for any `if:` gating a production deploy.
 
+## A step's log shows `step panicked: ...`
+
+**Symptom**
+
+A step fails with a log line like:
+
+```
+step panicked: runtime error: invalid memory address or nil pointer dereference
+```
+
+(stream `stderr`), and the run is `Failed` (or, for a `continueOnError: true`
+step, the step itself is `Failed` but the run continues).
+
+**Cause**
+
+Something inside the step's own execution path — the step body, template
+expansion, or the underlying backend exec — panicked instead of returning a
+normal error. The agent recovers the panic at the step boundary, writes the
+panic value and stack into that step's own log (this line), and reports the
+step `Failed`, honoring `continueOnError` exactly like a normal error would.
+Only this run is affected: sibling concurrent runs on the same agent and the
+agent process itself are unaffected — a panic here used to crash the whole
+agent process (taking down every run it was executing), which is why this is
+now caught at the step boundary rather than left to propagate.
+
+**Fix**
+
+Treat it like any other step failure: the panic message and stack trace in
+the step's log point at the failing code path (a job's `run:` script, a
+custom tool, or the like). Fix the underlying bug in whatever the step
+invoked; there is no agent-side workaround needed once the run itself is
+correctly reported `Failed` rather than stuck `Running`.
+
+A rarer variant panics outside the step body itself — e.g. while preparing
+the workspace, before any step started — and surfaces instead as the run
+being failed with an `agent panic: ...` message (no per-step log line, since
+no step ever ran). The cause and fix are the same: something panicked, the
+agent turned it into a normal Failed outcome instead of crashing, and the
+panic text points at the failing code.
+
 ## Run marked `Failed` with "agent lost"
 
 **Symptom**
@@ -710,6 +750,49 @@ fixed:
   no manual pod cleanup is required.
 - See [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery)
   for the full heartbeat/reaper timing and design.
+
+## Run marked `Failed` by heartbeat reconcile after a lost claim
+
+**Symptom**
+
+A run flips from `Running` to `Failed` unusually fast — well under the
+stuck-run reaper's ~90s-stale-heartbeat-plus-grace window above — with no
+step ever having reported progress, and `unified-cli agent list` shows the
+run's claiming agent as perfectly healthy the whole time (`last_seen_at`
+kept advancing normally; the agent never went stale). The controller log
+does **not** show `stuck-run reaper: failed orphaned run (agent lost)` for
+this run — that line is specific to the slower stale-heartbeat path.
+
+**Cause**
+
+Every agent heartbeat now reports the run IDs it currently considers active
+(`activeRunIds`). This particular run's claim never made it into that set —
+typically because the HTTP response to a successful `Claim` call never
+reached the agent process (a network blip right after claiming, or the
+agent restarted in the instant between claiming and starting the run) — so
+the agent itself never learned it owned the run and correctly never reports
+it as active. The controller cross-checks this on every heartbeat: a
+`Running` run assigned to that agent, absent from its self-reported active
+set, and claimed more than ~60s ago (a grace window so a claim whose
+heartbeat simply hasn't landed yet isn't reaped prematurely) is failed as
+orphaned right there — instead of waiting for that agent to look dead via
+the much slower stale-heartbeat path. The run is failed, never re-queued,
+for the same reason the stuck-run reaper doesn't re-queue: re-running
+partially-executed steps can duplicate side effects.
+
+**Fix**
+
+This is expected self-healing, not a bug to work around — the run genuinely
+needs to be re-triggered, same as any other orphaned run:
+
+- Re-trigger the job; the agent itself is healthy and will claim it normally.
+- If this recurs frequently for one agent, suspect network reliability
+  between that agent and the controller — a lost claim response is the
+  underlying trigger, not agent instability.
+- A legacy agent (built before this feature) sends a bodyless heartbeat and
+  never participates in this reconcile path; it relies solely on the
+  stuck-run reaper above for a lost-claim recovery, which takes longer but
+  still eventually fails the run.
 
 ## Agent requests fail with 403 `run <id> is claimed by another agent`
 
@@ -763,6 +846,57 @@ Occasional occurrences are expected noise. Common causes include:
 - Teardown/buffer flushes arriving later than the archiver delay
 
 If you see a sustained stream of these warnings for the same run, the agent may be stuck and worth restarting.
+
+## A run's log shows `[N log line(s) dropped: controller unreachable]`
+
+**Symptom**
+
+A run's log (on the `stderr` stream, wherever the agent's log pusher for that
+step/run was flushing) contains a synthetic line like:
+
+```
+[42 log line(s) dropped: controller unreachable]
+```
+
+This is distinct from [`dropping log line for sealed
+run`](#controller-logs-dropping-log-line-for-sealed-run) above — that one is
+logged by the *controller* and means lines arrived too late (after
+archival); this one is written into the *run's own log stream* by the
+*agent* and means lines never arrived at all.
+
+**Cause**
+
+The agent buffers log lines locally and ships them to the controller in
+batches; if the controller is unreachable for a sustained stretch (network
+partition, controller restart/outage), the agent keeps the batches it
+couldn't send in a bounded in-memory queue (capped at 1MiB). Once that cap
+is exceeded, the **oldest** queued batches are evicted to make room for
+newer ones — at least the single most recent batch is always kept, even if
+it alone exceeds the cap. Rather than let that gap in the run's log pass
+silently, the agent counts every discarded line and, on the next flush that
+successfully reaches the controller, emits this one synthetic line
+reporting exactly how many lines were lost. The counter then resets — if a
+second partition causes more drops later in the same run, a second marker
+with the new count appears when connectivity next recovers.
+
+**Fix**
+
+The marker itself needs no action — it is a visibility feature, not an
+error to fix. It tells you a real gap exists in that step's log around the
+time the marker appears (the step almost certainly still ran; only the log
+of it is incomplete):
+
+- If the gap coincides with a known controller restart/outage or network
+  maintenance window, this is expected — no data beyond the log lines
+  themselves was lost (the step's actual execution, its status reports, and
+  its artifacts/outputs are unaffected; only the buffered stdout/stderr
+  text for that window is gone).
+- If you see this marker frequently with no obvious controller-side cause,
+  check connectivity and latency between the affected agent and the
+  controller — a marginal or high-latency link between them, not the
+  controller's own health, is the more likely culprit.
+- There is no way to recover the specific dropped lines after the fact; the
+  count in the marker is the only remaining record that they existed.
 
 ## Controller fails at startup with `schema drift: ... does not exist`
 

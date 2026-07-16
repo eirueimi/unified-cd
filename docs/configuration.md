@@ -146,6 +146,8 @@ unified-cd-agent [FLAGS]
   --drain-timeout         duration  Max wait after SIGTERM before forced shutdown (0 = wait forever)
   --pause-image           string    Image for the claim pod's pause (netns-holder) container (default: busybox:1.36)
   --runner-image          string    Default primary container image for isolated jobs without a podTemplate job container (default: ghcr.io/eirueimi/unified-cd-runner:v0.0.3)
+  --min-free-disk         uint64    Minimum free space in bytes on the workspace filesystem required to keep claiming runs; 0 disables the check (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)
+  --workspace-retention-days int    Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)
   --log-level             string    Log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)
 ```
 
@@ -170,6 +172,8 @@ keys below.
 | `UNIFIED_CACHE_KEY` | Cache storage access key ID (env equivalent of `--cache-key`) |
 | `UNIFIED_CACHE_SECRET` | Cache storage secret access key (env equivalent of `--cache-secret`) |
 | `UNIFIED_CACHE_BUCKET` | Cache storage bucket name (env equivalent of `--cache-bucket`) |
+| `UNIFIED_AGENT_MIN_FREE_DISK` | Minimum free bytes on the workspace filesystem required to keep claiming runs (env equivalent of `--min-free-disk`). `0`/unset disables the check. **Host agent only** — the k8s-agent's job workspaces are pod volumes, not host disk, so there is no preflight to run there. |
+| `UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS` | Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC (env equivalent of `--workspace-retention-days`). `0` (default) disables the GC entirely. **Host agent only.** |
 
 Additionally, every step receives the following environment variables automatically:
 - `UNIFIED_AGENT_OS` — the agent host OS (`linux`, `darwin`, or `windows`)
@@ -201,6 +205,8 @@ workspaceDir: /data/unified-cd/workspace
 drainTimeout: 60s
 pauseImage: busybox:1.36                              # claim pod pause container (default shown)
 runnerImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3 # default primary container (default shown)
+minFreeDisk: 5368709120        # 5Gi; below this free space on workspaceDir's filesystem, stop claiming (0 = disabled, default)
+workspaceRetentionDays: 0      # >0 opts in to the periodic per-job workspace GC (0 = disabled, default)
 logLevel: info
 ```
 
@@ -209,6 +215,38 @@ Start with config file:
 ```bash
 ./bin/unified-cd-agent -f unified-agent.yaml
 ```
+
+`minFreeDisk` and `workspaceRetentionDays` are **host agent only** — the
+k8s-agent's job workspaces are ephemeral pod volumes, not host disk, so
+neither a disk preflight nor a directory GC applies there.
+
+- **`minFreeDisk`** (bytes) is a pre-claim disk check on the workspace
+  filesystem (`workspaceDir`). Below the threshold, the agent stops claiming
+  new runs on that slot and retries after a short backoff — it never deletes
+  anything and never fails the run it would have claimed. `0` (default)
+  disables the check. This is an operational lever, not an error condition:
+  pair it with disk-usage monitoring/alerting (see [Operations Guide:
+  Monitoring Points](operations.md#monitoring-points)) so an operator notices
+  *why* an agent stopped claiming.
+- **`workspaceRetentionDays`** (days) opt-in-enables a periodic sweep (hourly,
+  plus once at startup) that removes per-job workspace directories
+  (`workspaceDir/working<slot>/<job>`) whose mtime is older than the
+  retention window. `0` (default) disables the GC entirely — persistent
+  per-job workspaces are a feature (they act as an inter-run cache), so
+  reclaiming them must be an explicit opt-in. The sweep never removes
+  `workspaceDir` itself, never removes a `working<slot>` directory itself,
+  never touches a dot-prefixed sibling (e.g. the `.ucd-tools` shim directory),
+  and never removes a directory belonging to a currently-active run (cross-
+  checked against that agent process's live in-flight claims). See
+  [Operations Guide: Workspace and Claim-Container
+  Hygiene](operations.md#workspace-and-claim-container-hygiene) for when to
+  enable it.
+
+Both knobs follow the same [priority order](#priority-order) as every other
+agent setting — flag > config file > environment variable — since the
+resolved config-file/env value is used as the flag's own default (see
+`internal/config/agent.go`'s `AgentEffective`); an explicit `--min-free-disk`
+or `--workspace-retention-days` flag always wins.
 
 ### Job isolation notes
 
