@@ -52,7 +52,6 @@ func TestParseJobTemplate_KindJobRejectedWithGuidance(t *testing.T) {
 func TestParseJobTemplate_UnknownFieldsRejected(t *testing.T) {
 	cases := map[string]string{
 		"agentSelector":        "spec:\n  agentSelector: [gpu]\n  steps:\n    - {name: s, run: echo}",
-		"finally":              "spec:\n  steps:\n    - {name: s, run: echo}\n  finally:\n    - {name: f, run: echo}",
 		"podTemplate.reuse":    "spec:\n  podTemplate:\n    reuse: true\n    spec:\n      containers: [{name: t, image: x}]\n  steps:\n    - {name: s, run: echo}",
 		"podSpec nodeSelector": "spec:\n  podTemplate:\n    spec:\n      nodeSelector: {disk: ssd}\n      containers: [{name: t, image: x}]\n  steps:\n    - {name: s, run: echo}",
 	}
@@ -74,6 +73,43 @@ func TestParseJobTemplate_BasicValidation(t *testing.T) {
 	noName := "apiVersion: unified-cd/v1\nkind: JobTemplate\nmetadata: {}\nspec:\n  steps:\n    - {name: s, run: echo}\n"
 	if _, err := ParseJobTemplate([]byte(noName)); err == nil {
 		t.Fatal("a template with no metadata.name must be rejected")
+	}
+}
+
+func TestJobTemplate_Finally(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata: {name: t}
+spec:
+  steps:
+    - {name: s, run: echo}
+  finally:
+    - {name: cleanup, run: echo bye}
+`
+	tpl, err := ParseJobTemplate([]byte(y))
+	if err != nil {
+		t.Fatalf("finally must now be accepted on a JobTemplate: %v", err)
+	}
+	if len(tpl.Spec.Finally) != 1 || tpl.Spec.Finally[0].Name != "cleanup" {
+		t.Fatalf("finally not parsed: %+v", tpl.Spec.Finally)
+	}
+	spec := tpl.ToSpec()
+	if len(spec.Finally) != 1 || spec.Finally[0].Name != "cleanup" {
+		t.Fatalf("ToSpec must carry finally: %+v", spec.Finally)
+	}
+
+	// Duplicate name across steps+finally rejected (shared nameSet).
+	dup := `apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata: {name: t}
+spec:
+  steps:
+    - {name: s, run: echo}
+  finally:
+    - {name: s, run: echo}
+`
+	if _, err := ParseJobTemplate([]byte(dup)); err == nil {
+		t.Fatal("duplicate step name across steps/finally must be rejected")
 	}
 }
 
