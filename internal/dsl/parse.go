@@ -135,6 +135,33 @@ func checkNeedsInEntries(entries []any, prefix string) error {
 	return nil
 }
 
+// specHasUses reports whether any step (or parallel sub-step) in Steps or
+// Finally is a uses: step, or whether podTemplate has a Name field (referencing
+// an external template). A uses-bearing or template-referencing spec cannot be
+// container-validated at apply time — a template's pod-shape merge may satisfy
+// references later — so validation defers to the post-resolution sweeper.
+func specHasUses(spec Spec) bool {
+	// Check if podTemplate references an external template
+	if spec.PodTemplate != nil && spec.PodTemplate.Name != "" {
+		return true
+	}
+
+	scan := func(entries []StepEntry) bool {
+		for _, e := range entries {
+			if e.Uses != nil {
+				return true
+			}
+			for _, p := range e.Parallel {
+				if p.Uses != nil {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return scan(spec.Steps) || scan(spec.Finally)
+}
+
 func (j *Job) Validate() error {
 	if j.APIVersion != SupportedAPIVersion {
 		return fmt.Errorf("unsupported apiVersion %q (want %q)", j.APIVersion, SupportedAPIVersion)
@@ -163,6 +190,16 @@ func (j *Job) Validate() error {
 
 	if err := validatePodTemplateNames(j.Spec.PodTemplate); err != nil {
 		return err
+	}
+
+	// Plain (uses-free) non-native jobs get container-reference validation at apply time;
+	// uses-bearing or template-referencing jobs defer to the post-resolution check in the
+	// controller (the template merge may supply the referenced container).
+	// Native jobs have no containers, so skip this check.
+	if !specHasUses(j.Spec) && !j.Spec.Native {
+		if err := ValidateContainerReferences(j.Spec); err != nil {
+			return err
+		}
 	}
 
 	// Collect step names for duplicate detection across steps and finally.

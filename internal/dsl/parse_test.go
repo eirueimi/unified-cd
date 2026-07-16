@@ -1691,3 +1691,47 @@ spec:
 	require.NoError(t, err)
 	assert.Equal(t, "Builds and deploys", job.Spec.Description)
 }
+
+func TestJobValidate_ContainerRefs_PlainVsUses(t *testing.T) {
+	// Plain job with dangling container -> apply-time error.
+	plainBad := `apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: x}
+spec:
+  steps:
+    - {name: s, container: ghost, run: echo}
+`
+	if _, err := Parse(strings.NewReader(plainBad)); err == nil || !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("plain job with dangling container must fail apply validation, got %v", err)
+	}
+
+	// Same dangling ref but the spec carries a uses: step -> deferred (passes Validate).
+	usesBearing := `apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: x}
+spec:
+  steps:
+    - {name: s, container: ghost, run: echo}
+    - name: tpl
+      uses: {job: "git://github.com/org/repo/t.yaml@v1"}
+`
+	if _, err := Parse(strings.NewReader(usesBearing)); err != nil {
+		t.Errorf("uses-bearing spec must defer container validation to resolution, got %v", err)
+	}
+
+	// Valid plain references still pass.
+	plainOK := `apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: x}
+spec:
+  podTemplate:
+    spec:
+      containers: [{name: tools, image: img}]
+  steps:
+    - {name: a, container: tools, run: echo}
+    - {name: b, container: job, run: echo}
+`
+	if _, err := Parse(strings.NewReader(plainOK)); err != nil {
+		t.Errorf("valid plain refs must pass: %v", err)
+	}
+}
