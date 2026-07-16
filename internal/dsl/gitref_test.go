@@ -33,7 +33,9 @@ func TestValidateGitRepoURL(t *testing.T) {
 		"ext::sh -c whoami",
 		"file:///etc",
 		"/local/path",
-		"github.com/org/repo", // no scheme
+		"github.com/org/repo",       // no scheme
+		"git@-x:org/repo.git",       // dash-leading host (CVE-2017-1000117 shape)
+		"git@-oProxyCommand=x:repo", // ssh option smuggled as host
 	} {
 		if err := ValidateGitRepoURL(bad); err == nil {
 			t.Errorf("%q should be rejected", bad)

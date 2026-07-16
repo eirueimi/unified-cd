@@ -42,8 +42,11 @@ func ValidateGitRepoURL(url string) error {
 	case strings.HasPrefix(url, "https://"), strings.HasPrefix(url, "http://"), strings.HasPrefix(url, "ssh://"):
 		return nil
 	}
-	// scp-like: git@host:path (no scheme). Require the git@host: shape.
-	if m := regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:`).MatchString(url); m {
+	// scp-like: git@host:path (no scheme). Require the git@host: shape, and
+	// force the host component to start alphanumeric so a dash-leading host
+	// (git@-x:...) can't smuggle an ssh option like -oProxyCommand=...
+	// (CVE-2017-1000117 shape).
+	if m := regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9][A-Za-z0-9._-]*:`).MatchString(url); m {
 		return nil
 	}
 	return fmt.Errorf("repo URL %q must use https://, http://, ssh://, or scp-like user@host: form", url)
