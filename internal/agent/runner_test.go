@@ -508,3 +508,76 @@ func TestLogPusher_DropMarker(t *testing.T) {
 	require.Len(t, markerLines, 1, "expected exactly one dropped-lines marker line")
 	assert.Contains(t, markerLines[0], "2 log line(s) dropped", "marker should report the correct dropped count")
 }
+
+// TestLogPusher_DropMarker_ResetsOnlyOnDelivery proves the marker's dropped
+// count is preserved across a failed marker-send: droppedLines is reset ONLY
+// when the marker is confirmed delivered, and a failed marker is never queued
+// into p.pending (where a later cap overflow could evict it and silently
+// undercount). It also proves further drops between attempts accumulate.
+func TestLogPusher_DropMarker_ResetsOnlyOnDelivery(t *testing.T) {
+	var mu sync.Mutex
+	var received []api.LogAppendRequest
+	failing := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		fail := failing
+		mu.Unlock()
+		if fail {
+			http.Error(w, "fail", http.StatusInternalServerError)
+			return
+		}
+		var reqs []api.LogAppendRequest
+		_ = json.NewDecoder(r.Body).Decode(&reqs)
+		mu.Lock()
+		received = append(received, reqs...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "tok")
+	p := NewLogPusher(client, "a1", "run1", 0, "stdout")
+
+	ctx := t.Context()
+
+	// Seed a known dropped count with no pending batches; the client is still
+	// failing, so the marker send fails.
+	p.mu.Lock()
+	p.droppedLines = 5
+	p.flushLocked(ctx)
+	afterFailDropped := p.droppedLines
+	afterFailPending := len(p.pending)
+	p.mu.Unlock()
+
+	assert.Equal(t, 5, afterFailDropped, "a failed marker send must NOT reset droppedLines")
+	assert.Equal(t, 0, afterFailPending, "a failed marker must NOT be queued into pending (would be evictable and undercount)")
+
+	// Between attempts, more lines are dropped; the count keeps accumulating.
+	p.mu.Lock()
+	p.droppedLines += 3 // now 8
+	p.mu.Unlock()
+
+	// Controller recovers; next flush delivers the marker with the true,
+	// accumulated count and resets.
+	mu.Lock()
+	failing = false
+	mu.Unlock()
+
+	p.mu.Lock()
+	p.flushLocked(ctx)
+	afterSuccessDropped := p.droppedLines
+	p.mu.Unlock()
+
+	assert.Equal(t, 0, afterSuccessDropped, "droppedLines should reset to 0 only after confirmed delivery")
+
+	mu.Lock()
+	defer mu.Unlock()
+	var markerLines []string
+	for _, r := range received {
+		if strings.Contains(r.Line, "dropped") {
+			markerLines = append(markerLines, r.Line)
+		}
+	}
+	require.Len(t, markerLines, 1, "expected exactly one dropped-lines marker line delivered")
+	assert.Contains(t, markerLines[0], "8 log line(s) dropped", "marker should report the accumulated count (5 + 3)")
+}

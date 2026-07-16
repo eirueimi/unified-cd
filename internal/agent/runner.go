@@ -368,7 +368,6 @@ func (p *LogPusher) flushLocked(ctx context.Context) {
 	// passing silently.
 	if len(p.pending) == 0 && p.droppedLines > 0 {
 		dropped := p.droppedLines
-		p.droppedLines = 0
 
 		line := fmt.Sprintf("[%d log line(s) dropped: controller unreachable]", dropped)
 		if p.masker != nil {
@@ -381,8 +380,14 @@ func (p *LogPusher) flushLocked(ctx context.Context) {
 			Timestamp: time.Now().UTC(),
 			Line:      line,
 		}}
-		if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, markerReqs); err != nil {
-			p.appendPendingLocked(pendingBatch{reqs: markerReqs})
+		// Reset ONLY on confirmed delivery. On failure, leave droppedLines
+		// unchanged and do NOT queue the marker in p.pending: a queued marker
+		// would become the oldest entry and a later cap overflow would evict
+		// it, counting it as a single dropped line and permanently losing the
+		// true N. Instead the marker is re-attempted on the next successful
+		// flush, still carrying the accurate (and possibly larger) count.
+		if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, markerReqs); err == nil {
+			p.droppedLines = 0
 		}
 	}
 }
