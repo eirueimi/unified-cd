@@ -5,9 +5,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -231,4 +234,44 @@ func TestClient_FetchSecrets_Empty(t *testing.T) {
 	result, err := c.FetchSecrets(t.Context(), "a1", nil)
 	require.NoError(t, err)
 	assert.Empty(t, result)
+}
+
+func TestClient_UploadArtifact_StreamsChunked(t *testing.T) {
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "a.txt"), []byte("payload"), 0o600))
+
+	var gotLen int64
+	var extracted string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotLen = r.ContentLength // -1 for chunked (no Content-Length)
+		dest := t.TempDir()
+		if err := artifact.ExtractTarZstd(r.Body, dest); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		b, _ := os.ReadFile(filepath.Join(dest, "a.txt"))
+		extracted = string(b)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "t")
+	require.NoError(t, c.UploadArtifact(t.Context(), "run1", "art1", src))
+	assert.Equal(t, int64(-1), gotLen, "body must be chunked (no Content-Length)")
+	assert.Equal(t, "payload", extracted)
+}
+
+func TestClient_UploadArtifact_HTTPErrorSurfaces(t *testing.T) {
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "a.txt"), []byte("x"), 0o600))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		http.Error(w, "boom", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "t")
+	err := c.UploadArtifact(t.Context(), "run1", "art1", src)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "502")
 }
