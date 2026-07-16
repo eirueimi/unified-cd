@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +28,11 @@ type AgentConfig struct {
 	DrainTimeout   time.Duration `yaml:"drainTimeout"`
 	PauseImage     string        `yaml:"pauseImage"`
 	RunnerImage    string        `yaml:"runnerImage"`
+
+	// MinFreeDisk is the minimum free space (bytes) required on the
+	// workspace filesystem for the host agent to keep claiming runs. Zero
+	// disables the check. Host-only: k8s agents use pod volumes.
+	MinFreeDisk uint64 `yaml:"minFreeDisk"`
 }
 
 // LoadAgent reads a YAML config file and returns an AgentConfig.
@@ -75,6 +81,11 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 			if e = strings.TrimSpace(e); e != "" {
 				eff.ExposeEnv = append(eff.ExposeEnv, e)
 			}
+		}
+	}
+	if minFreeDiskEnv := os.Getenv("UNIFIED_AGENT_MIN_FREE_DISK"); minFreeDiskEnv != "" {
+		if v, err := strconv.ParseUint(minFreeDiskEnv, 10, 64); err == nil {
+			eff.MinFreeDisk = v
 		}
 	}
 
@@ -130,6 +141,9 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.RunnerImage != "" {
 		eff.RunnerImage = file.RunnerImage
+	}
+	if file.MinFreeDisk != 0 {
+		eff.MinFreeDisk = file.MinFreeDisk
 	}
 	return eff, nil
 }

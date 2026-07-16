@@ -70,6 +70,17 @@ type Agent struct {
 	CleanWorkspace bool
 	DrainTimeout   time.Duration
 
+	// MinFreeDisk is the minimum free space (in bytes) required on the
+	// workspace filesystem for this agent to keep claiming runs. Zero
+	// disables the check. Host-only: k8s agents use pod volumes instead.
+	MinFreeDisk uint64
+
+	// freeBytesFn reports available bytes for the filesystem containing the
+	// given path. Defaults to freeBytes (the platform-specific syscall
+	// implementation); overridable so tests can inject a fake without
+	// touching the real filesystem.
+	freeBytesFn func(string) (uint64, error)
+
 	// RuntimePref selects the container runtime for runsIn.image steps
 	// (docker|podman|nerdctl|wslc|container); empty = auto-detect.
 	RuntimePref string
@@ -121,12 +132,12 @@ func agentCapabilities(runtimeAvailable bool) []string {
 
 // New creates a new agent with the given ID and client.
 func New(id string, client *Client) *Agent {
-	return &Agent{ID: id, Client: client}
+	return &Agent{ID: id, Client: client, freeBytesFn: freeBytes}
 }
 
 // NewWithLabels creates a new agent with the given labels.
 func NewWithLabels(id string, labels []string, client *Client) *Agent {
-	return &Agent{ID: id, Labels: labels, Client: client}
+	return &Agent{ID: id, Labels: labels, Client: client, freeBytesFn: freeBytes}
 }
 
 // collectEnv collects and returns PATH/PWD/HOME/HOSTNAME and any variables listed in exposeEnv.
@@ -277,6 +288,26 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 	for {
 		if claimCtx.Err() != nil {
 			return
+		}
+		if a.MinFreeDisk > 0 {
+			freeBytesFn := a.freeBytesFn
+			if freeBytesFn == nil {
+				freeBytesFn = freeBytes
+			}
+			free, err := freeBytesFn(wsBase)
+			if err != nil {
+				// Can't determine free space; log and proceed rather than
+				// wedging the agent on a stat failure.
+				slog.Warn("free disk space check failed, proceeding with claim", "error", err, "slot", slot)
+			} else if belowMinFreeDisk(free, a.MinFreeDisk) {
+				slog.Warn("free disk space below minimum, skipping claim", "freeBytes", free, "minFreeDisk", a.MinFreeDisk, "slot", slot)
+				select {
+				case <-claimCtx.Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
+				continue
+			}
 		}
 		resp, err := a.Client.Claim(claimCtx, a.ID, "30s", a.Labels)
 		if err != nil {
