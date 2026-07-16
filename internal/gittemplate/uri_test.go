@@ -109,3 +109,17 @@ func TestURI_IsFixed(t *testing.T) {
 		})
 	}
 }
+
+func TestParseURI_RejectsDashLeadingHost(t *testing.T) {
+	for _, raw := range []string{
+		"git://-oProxyCommand=x/org/repo/f.yaml@main",
+		"git://-x/org/repo/f.yaml@main",
+	} {
+		if _, err := gittemplate.ParseURI(raw); err == nil {
+			t.Errorf("%q: dash-leading host must be rejected", raw)
+		}
+	}
+	if _, err := gittemplate.ParseURI("git://github.com/org/repo/jobs/build.yaml@v1"); err != nil {
+		t.Errorf("valid host must pass: %v", err)
+	}
+}

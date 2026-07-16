@@ -2,10 +2,16 @@ package gittemplate
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
+
+// hostAllowed constrains a git:// URI host to a DNS-hostname shape starting
+// with an alphanumeric, so it can never reach an ssh argv as a dash-leading
+// option (see the CVE-2017-1000117 note in ParseURI).
+var hostAllowed = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // URI represents a parsed git:// template URI.
 type URI struct {
@@ -49,6 +55,14 @@ func ParseURI(raw string) (URI, error) {
 
 	if host == "" || owner == "" || repo == "" || filePath == "" {
 		return URI{}, fmt.Errorf("git URI has empty component in %q", raw)
+	}
+
+	// Host must start alphanumeric. fetchSSH builds "git@<host>:..." for a
+	// registered SSH credential; a dash-leading host (git@-oProxyCommand=x:...)
+	// is the CVE-2017-1000117 option-smuggling shape. Defense in depth (modern
+	// git rejects it too, and the host is never a standalone argv token).
+	if !hostAllowed.MatchString(host) {
+		return URI{}, fmt.Errorf("git URI host %q is invalid (must start alphanumeric)", host)
 	}
 
 	// Path traversal protection
