@@ -135,13 +135,16 @@ func checkNeedsInEntries(entries []any, prefix string) error {
 	return nil
 }
 
-// specHasUses reports whether any step (or parallel sub-step) in Steps or
-// Finally is a uses: step, or whether podTemplate has a Name field (referencing
-// an external template). A uses-bearing or template-referencing spec cannot be
-// container-validated at apply time — a template's pod-shape merge may satisfy
-// references later — so validation defers to the post-resolution sweeper.
-func specHasUses(spec Spec) bool {
-	// Check if podTemplate references an external template
+// specDefersContainerValidation reports whether spec's container: references
+// cannot be validated at apply time and must defer to a later stage. True when:
+//   - any step (or parallel sub-step) in Steps or Finally is a uses: step — the
+//     template's pod-shape merge may satisfy references at resolution time, so
+//     validation defers to the controller's post-resolution sweeper; or
+//   - podTemplate names an agent-side template (podTemplate.name) — its
+//     containers live in agent config, invisible to both apply and resolution,
+//     and are validated only at pod build time on the agent.
+func specDefersContainerValidation(spec Spec) bool {
+	// A named podTemplate's containers are defined in agent config.
 	if spec.PodTemplate != nil && spec.PodTemplate.Name != "" {
 		return true
 	}
@@ -192,11 +195,12 @@ func (j *Job) Validate() error {
 		return err
 	}
 
-	// Plain (uses-free) non-native jobs get container-reference validation at apply time;
-	// uses-bearing or template-referencing jobs defer to the post-resolution check in the
-	// controller (the template merge may supply the referenced container).
+	// Plain (uses-free, inline-podTemplate) non-native jobs get
+	// container-reference validation at apply time; uses-bearing specs defer to
+	// the controller's post-resolution check and named-podTemplate specs defer
+	// to pod build on the agent (see specDefersContainerValidation).
 	// Native jobs have no containers, so skip this check.
-	if !specHasUses(j.Spec) && !j.Spec.Native {
+	if !specDefersContainerValidation(j.Spec) && !j.Spec.Native {
 		if err := ValidateContainerReferences(j.Spec); err != nil {
 			return err
 		}

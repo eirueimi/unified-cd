@@ -354,16 +354,22 @@ func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittem
 			bo.Success(r.ID)
 			continue
 		}
-		if verr := dsl.ValidateContainerReferences(rspec); verr != nil {
-			slog.Error("git resolver: invalid container reference, failing run", "runID", r.ID, "error", verr)
-			if _, lerr := st.AppendLog(ctx, r.ID, systemLogStepIndex, "stderr", time.Now(), verr.Error()); lerr != nil {
-				slog.Warn("git resolver: append system log", "runID", r.ID, "error", lerr)
+		// A named podTemplate (podTemplate.name) references a template whose
+		// containers live in agent config — the controller cannot see them, so
+		// container references cannot be validated here. They are validated at
+		// pod build time on the agent instead.
+		if rspec.PodTemplate == nil || rspec.PodTemplate.Name == "" {
+			if verr := dsl.ValidateContainerReferences(rspec); verr != nil {
+				slog.Error("git resolver: invalid container reference, failing run", "runID", r.ID, "error", verr)
+				if _, lerr := st.AppendLog(ctx, r.ID, systemLogStepIndex, "stderr", time.Now(), verr.Error()); lerr != nil {
+					slog.Warn("git resolver: append system log", "runID", r.ID, "error", lerr)
+				}
+				if ferr := st.MarkRunFinished(ctx, r.ID, api.RunFailed); ferr != nil {
+					slog.Warn("git resolver: mark run failed failed", "runID", r.ID, "error", ferr)
+				}
+				bo.Success(r.ID)
+				continue
 			}
-			if ferr := st.MarkRunFinished(ctx, r.ID, api.RunFailed); ferr != nil {
-				slog.Warn("git resolver: mark run failed failed", "runID", r.ID, "error", ferr)
-			}
-			bo.Success(r.ID)
-			continue
 		}
 		// bo.Success is deferred until the UpdateRunSpec write actually lands.
 		// Marking success right after a successful resolve (before the write)

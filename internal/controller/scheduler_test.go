@@ -208,6 +208,30 @@ func TestResolveGitPendingRuns_MergedTemplateContainerResolvesOK(t *testing.T) {
 	assert.NotEqual(t, api.RunFailed, got.Status, "a merged-container uses job must resolve successfully")
 }
 
+// TestResolveGitPendingRuns_NamedPodTemplateDefersContainerValidation: a caller
+// spec with a NAMED podTemplate (podTemplate.name → containers live in agent
+// config, invisible to the controller) plus a step targeting one of those
+// agent-config containers must NOT be failed at resolution — container
+// references are only checkable at pod build time on the agent.
+func TestResolveGitPendingRuns_NamedPodTemplateDefersContainerValidation(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	specJSON := []byte(`{"podTemplate":{"name":"golang"},"steps":[{"name":"build","container":"builder","run":"go build"},{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "")
+	require.NoError(t, err)
+
+	// Steps-only template: it supplies no containers; "builder" comes from the
+	// named podTemplate's agent-side config.
+	tmpl := []byte("apiVersion: unified-cd/v1\nkind: JobTemplate\nmetadata: {name: tmpl}\nspec:\n  steps:\n    - {name: s, run: echo hi}\n")
+	resolver := gittemplate.NewResolver(contentFetcher{yaml: tmpl}, nil)
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
+	resolveGitPendingRuns(t.Context(), pg, resolver, nil, bo, time.Hour)
+
+	got, err := pg.GetRun(t.Context(), run.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, api.RunFailed, got.Status, "a named-podTemplate job must defer container validation to pod build, not fail at resolution")
+}
+
 type badYAMLFetcher struct{}
 
 func (badYAMLFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshKey string) ([]byte, error) {

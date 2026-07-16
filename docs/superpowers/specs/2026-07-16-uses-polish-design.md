@@ -34,6 +34,8 @@
 
 **Design:** in `dsl.Job.Validate` (used by controller apply, CLI `apply --dry-run`, and the AppSource reconciler's parse path), call `ValidateContainerReferences(j.Spec)` **only when no step in `Spec.Steps`/`Spec.Finally` (including `parallel:` sub-steps) has `Uses != nil`**. A uses-bearing spec defers to the existing post-resolve sweeper check (a caller's `container:` may be satisfied by a template's pod-shape merge). Behavior change: previously-registrable jobs with dangling refs now fail apply with the existing clear message — they were broken at runtime anyway.
 
+Named agent-side podTemplates (`podTemplate.name`) ALSO defer — at apply time AND at resolution time (the controller sweeper skips `ValidateContainerReferences` for them too). Their containers live in agent config, invisible to the controller, so container references are validated only at pod build time on the agent. The gate helper is `specDefersContainerValidation` (`internal/dsl/parse.go`).
+
 ## 4. podTemplate container/volume name-shape validation + reserved-name normalization
 
 **Problem:** container/volume names in `podTemplate.spec` are completely unvalidated until pod build (k8s API error), and `IsReservedContainerName`/`IsReservedVolumeName` are exact-match — `" job "`/`"JOB"` evade the reserved-name injection guard (then fail later as invalid k8s names, but opaquely).
