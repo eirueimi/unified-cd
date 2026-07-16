@@ -100,8 +100,24 @@ func (c *Client) Deregister(ctx context.Context, agentID string) error {
 }
 
 // Heartbeat refreshes the agent's last_seen_at on the controller.
-func (c *Client) Heartbeat(ctx context.Context, agentID string) error {
-	_, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/heartbeat", nil, nil)
+// activeRunIDs is the current snapshot of runs this agent process has in
+// flight, as reported by the caller's active-run provider (see
+// StartHeartbeat / RunSet.Snapshot):
+//   - nil sends no body at all (bodyless) — this is the legacy/pre-tracking
+//     wire shape and is only reachable if a caller explicitly passes nil;
+//     live code always passes a snapshot, so this path is kept for safety
+//     rather than exercised in production.
+//   - any non-nil slice, including an empty one, is marshalled as
+//     api.HeartbeatRequest{ActiveRunIDs: activeRunIDs} and always sent as a
+//     body — even for zero active runs — so the controller can distinguish
+//     "live agent, zero active runs" (a reconcile candidate) from "legacy
+//     agent, no body" (skip, unknown).
+func (c *Client) Heartbeat(ctx context.Context, agentID string, activeRunIDs []string) error {
+	var body any
+	if activeRunIDs != nil {
+		body = api.HeartbeatRequest{ActiveRunIDs: activeRunIDs}
+	}
+	_, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/heartbeat", body, nil)
 	return err
 }
 

@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eirueimi/unified-cd/internal/api"
 )
 
 // TestStartHeartbeat_DoneChannelJoinsGoroutine verifies StartHeartbeat returns
@@ -26,7 +29,7 @@ func TestStartHeartbeat_DoneChannelJoinsGoroutine(t *testing.T) {
 
 	c := NewClient(srv.URL, "t")
 	ctx, cancel := context.WithCancel(context.Background())
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond)
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return nil })
 
 	time.Sleep(80 * time.Millisecond) // a few beats
 	cancel()
@@ -62,7 +65,7 @@ func TestStartHeartbeat_TicksUntilCtxDone(t *testing.T) {
 
 	c := NewClient(srv.URL, "t")
 	ctx, cancel := context.WithCancel(context.Background())
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond)
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return nil })
 	time.Sleep(120 * time.Millisecond)
 	if got := atomic.LoadInt32(&hits); got < 3 {
 		t.Fatalf("expected several heartbeats, got %d", got)
@@ -78,5 +81,40 @@ func TestStartHeartbeat_TicksUntilCtxDone(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if grown := atomic.LoadInt32(&hits); grown != afterCancel {
 		t.Fatalf("heartbeats continued after cancel: %d -> %d", afterCancel, grown)
+	}
+}
+
+// TestStartHeartbeat_SendsActiveRunIDsFromProvider verifies each beat calls
+// the provider and forwards its result to client.Heartbeat, so an in-flight
+// run shows up in the heartbeat body (the foundation for the controller's
+// lost-claim reconcile).
+func TestStartHeartbeat_SendsActiveRunIDsFromProvider(t *testing.T) {
+	var lastBody atomic.Value // api.HeartbeatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got api.HeartbeatRequest
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		lastBody.Store(got)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "t")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return []string{"run-1", "run-2"} })
+	defer func() { cancel(); <-done }()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if v, ok := lastBody.Load().(api.HeartbeatRequest); ok && len(v.ActiveRunIDs) == 2 {
+			if v.ActiveRunIDs[0] == "run-1" && v.ActiveRunIDs[1] == "run-2" {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("heartbeat never carried the provider's active run IDs")
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }

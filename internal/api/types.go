@@ -67,6 +67,16 @@ type CalledBy struct {
 	StepName      string `json:"stepName"`
 }
 
+// HeartbeatRequest is the (optional) body of an agent heartbeat. A live agent
+// (one built after active-run tracking was added) always sends this body,
+// even when ActiveRunIDs is empty — an empty slice still marshals a body
+// (the omitempty tag only drops the field itself, not the JSON object),
+// letting the controller tell "live agent, zero active runs" (a reconcile
+// candidate) apart from "legacy agent, no body at all" (skip: unknown).
+type HeartbeatRequest struct {
+	ActiveRunIDs []string `json:"activeRunIds,omitempty"`
+}
+
 type AgentRegisterRequest struct {
 	AgentID      string            `json:"agentId"`
 	Hostname     string            `json:"hostname"`

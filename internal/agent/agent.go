@@ -235,14 +235,19 @@ func (a *Agent) Run(ctx context.Context) error {
 	// perfectly healthy draining run. runCtx outlives claimCtx during drain and is
 	// cancelled on full shutdown (defer runCancel / DrainTimeout), so heartbeats
 	// continue through the whole drain window and stop cleanly on shutdown — no leak.
-	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval)
+	// activeRuns tracks the run IDs this process currently has in flight, so
+	// the heartbeat below can report them to the controller (foundation for
+	// the controller's lost-claim reconcile). Shared across every slot
+	// goroutine.
+	activeRuns := NewRunSet()
+	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot)
 
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(slot int) {
 			defer wg.Done()
-			a.runLoop(ctx, runCtx, slot, wsBase)
+			a.runLoop(ctx, runCtx, slot, wsBase, activeRuns)
 		}(i)
 	}
 	wg.Wait()
@@ -265,8 +270,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	return nil
 }
 
-// runLoop runs the claim loop for a single slot.
-func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string) {
+// runLoop runs the claim loop for a single slot. activeRuns is enrolled with
+// the claimed run ID before executeRun and retired (via defer) right after,
+// so the run is only ever reported active while it is actually executing.
+func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string, activeRuns *RunSet) {
 	for {
 		if claimCtx.Err() != nil {
 			return
@@ -298,7 +305,14 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			a.failRun(runCtx, resp.RunID, fmt.Sprintf("prepare workspace failed: %v", err))
 			continue
 		}
-		a.executeRun(runCtx, resp, workDir)
+		activeRuns.Add(resp.RunID)
+		func() {
+			// executeRun already recovers its own panics (see its doc comment),
+			// but deferring Remove here means a future change to that guarantee
+			// can't silently leave a finished run stuck in the active set.
+			defer activeRuns.Remove(resp.RunID)
+			a.executeRun(runCtx, resp, workDir)
+		}()
 	}
 }
 

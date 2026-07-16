@@ -21,7 +21,13 @@ const heartbeatTimeout = 10 * time.Second
 // is done. The returned channel is closed once the goroutine has fully stopped,
 // letting a caller cancel ctx and then join it to guarantee no further heartbeat
 // fires (e.g. Agent.Run joins before returning so a beat can't outlive shutdown).
-func StartHeartbeat(ctx context.Context, client *Client, agentID string, interval time.Duration) <-chan struct{} {
+//
+// activeRunIDs is called once per beat to get the current set of runs this
+// agent process has in flight (see RunSet.Snapshot); its result is forwarded
+// to client.Heartbeat unchanged so the controller can see which runs are
+// still alive here. A nil provider (defensive; every production caller
+// supplies one) is treated as "no data" and sends a bodyless legacy beat.
+func StartHeartbeat(ctx context.Context, client *Client, agentID string, interval time.Duration, activeRunIDs func() []string) <-chan struct{} {
 	if interval <= 0 {
 		interval = DefaultHeartbeatInterval
 	}
@@ -36,7 +42,11 @@ func StartHeartbeat(ctx context.Context, client *Client, agentID string, interva
 				return
 			case <-ticker.C:
 				hbCtx, cancel := context.WithTimeout(ctx, heartbeatTimeout)
-				err := client.Heartbeat(hbCtx, agentID)
+				var ids []string
+				if activeRunIDs != nil {
+					ids = activeRunIDs()
+				}
+				err := client.Heartbeat(hbCtx, agentID, ids)
 				cancel()
 				if err != nil && ctx.Err() == nil {
 					slog.Warn("agent heartbeat failed", "agentId", agentID, "error", err)

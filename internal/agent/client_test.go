@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,6 +23,61 @@ func TestClient_Register(t *testing.T) {
 	c := NewClient(srv.URL, "t")
 	require.NoError(t, c.Register(t.Context(), api.AgentRegisterRequest{AgentID: "a", Hostname: "h", OS: "linux"}))
 	assert.Equal(t, "a", got.AgentID)
+}
+
+func TestClient_Heartbeat_NonEmptyActiveRuns(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		require.NoError(t, err)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "t")
+	require.NoError(t, c.Heartbeat(t.Context(), "a1", []string{"r1"}))
+
+	var got api.HeartbeatRequest
+	require.NoError(t, json.Unmarshal(gotBody, &got))
+	assert.Equal(t, []string{"r1"}, got.ActiveRunIDs)
+}
+
+func TestClient_Heartbeat_EmptyActiveRuns_SendsBody(t *testing.T) {
+	var contentLength int64
+	var bodyLen int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentLength = r.ContentLength
+		b, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		bodyLen = len(b)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "t")
+	require.NoError(t, c.Heartbeat(t.Context(), "a1", []string{}))
+
+	// A live agent always sends a JSON body, even for zero active runs, so the
+	// controller can tell it apart from a legacy agent that sends none.
+	assert.NotEqual(t, int64(0), contentLength)
+	assert.NotZero(t, bodyLen)
+}
+
+func TestClient_Heartbeat_NilActiveRuns_SendsNoBody(t *testing.T) {
+	var contentLength int64
+	var bodyLen int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentLength = r.ContentLength
+		b, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		bodyLen = len(b)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "t")
+	require.NoError(t, c.Heartbeat(t.Context(), "a1", nil))
+
+	assert.Equal(t, int64(0), contentLength)
+	assert.Zero(t, bodyLen)
 }
 
 func TestClient_Claim_Empty(t *testing.T) {

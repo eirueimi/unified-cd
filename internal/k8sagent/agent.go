@@ -134,10 +134,16 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 		}()
 	}
 
+	// activeRuns tracks the run IDs this process currently has in flight, so
+	// the heartbeat below can report them to the controller (foundation for
+	// the controller's lost-claim reconcile). Shared across every dispatch
+	// goroutine below.
+	activeRuns := agentlib.NewRunSet()
+
 	// Heartbeat bound to runCtx (not ctx): a drain must not stop heartbeats, or
 	// the stuck-run reaper would fail a healthy draining run after staleAfter.
 	// Joined before Run returns so no beat outlives Run.
-	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval)
+	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval, activeRuns.Snapshot)
 	go a.runPodGC(runCtx, time.Minute)
 
 	// Concurrency gate: positive MaxConcurrent -> semaphore of that size;
@@ -200,6 +206,11 @@ claimLoop:
 					a.failRun(runCtx, c.RunID, fmt.Sprintf("agent panic: %v", r))
 				}
 			}()
+			// Enrolled/retired around dispatch so the heartbeat reports this run
+			// as active for its whole execution, including the panic-recover
+			// path above (defers run LIFO regardless of outcome).
+			activeRuns.Add(c.RunID)
+			defer activeRuns.Remove(c.RunID)
 			a.dispatch(runCtx, c)
 		}(resp)
 	}
