@@ -4,14 +4,14 @@
 #   unified-cd apply -f examples/jobs/webhook-receiver.yaml
 #   # then configure the GitHub webhook to POST to: http://<controller>/webhook/github-push
 ---
-# receives GitHub push webhooks and triggers the build job for pushes to main
+# receives GitHub push webhooks and triggers the image-build job for pushes to main
 apiVersion: unified-cd/v1
 kind: WebhookReceiver
 metadata:
   name: github-push
 spec:
   trigger:
-    job: build
+    job: image-build
   auth:
     type: github          # verifies X-Hub-Signature-256
     secretRef: github-webhook-secret
@@ -28,7 +28,7 @@ spec:
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
-  name: build
+  name: image-build
 spec:
   # docker builds need the host's docker daemon — run natively (see docs/migration-2026-07-job-isolation.md)
   native: true

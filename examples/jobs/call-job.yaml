@@ -1,7 +1,7 @@
 # Demonstrates: calling one job from another using call:, passing params and reading outputs.
 # Also demonstrates foreach: for multi-target deployment.
-# The callee "build" job is simplified to echoes so the pipeline runs anywhere; for a
-# real docker build/push callee see examples/jobs/params.yaml.
+# The callee "build-service" job is simplified to echoes so the pipeline runs anywhere; for a
+# real docker build/push callee see examples/jobs/params.yaml (its "build" job).
 #
 # Single-agent note: deploy-pipeline occupies an agent slot while it waits for the
 # build runs it calls, so a lone agent must allow at least two concurrent runs
@@ -11,7 +11,7 @@
 #   unified-cd apply -f examples/jobs/call-job.yaml
 #   unified-cd run trigger deploy-pipeline --param version=v1.2.3
 ---
-# caller: deploy-pipeline calls the build job twice in parallel, then deploys
+# caller: deploy-pipeline calls the build-service job twice in parallel, then deploys
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
@@ -28,13 +28,13 @@ spec:
     - parallel:
       - name: buildFrontend
         call:
-          job: build
+          job: build-service
           with:
             image: myapp-frontend
             tag: "{{ .Params.version }}"
       - name: buildBackend
         call:
-          job: build
+          job: build-service
           with:
             image: myapp-backend
             tag: "{{ .Params.version }}"
@@ -47,11 +47,11 @@ spec:
         echo "Deploying version {{ .Params.version }}..."
 
 ---
-# callee: reusable build job (echoes so it runs anywhere; params.yaml shows the real docker build)
+# callee: reusable build-service job (echoes so it runs anywhere; params.yaml shows the real docker build)
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
-  name: build
+  name: build-service
 spec:
   params:
     inputs:
@@ -96,7 +96,7 @@ spec:
         key: env
         in: $envs     # expanded at runtime from the array param
       call:
-        job: build    # reuse build job as a stand-in
+        job: build-service    # reuse the build-service job as a stand-in
         with:
           image: myapp
           tag: "{{ .Foreach.env }}"
