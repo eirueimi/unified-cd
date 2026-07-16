@@ -115,6 +115,13 @@ full flag/env/yaml forms.
     belongs to a run this agent process currently has in flight (checked
     against its live active-claim set on every sweep tick, so a long-running
     job's workspace is never pulled out from under it).
+  - **Do not enable with multiple agent processes sharing one workspace
+    base.** The active-run protection above is per-agent-process only — a
+    sweep only ever sees its own process's in-flight claims, so if two or
+    more agent processes point at the same `wsBase` (workspace directory),
+    one process's GC can remove a `working<slot>/<job>` directory a *different*
+    process currently has a run in, causing data loss mid-run. Only enable
+    this GC when each agent process has an exclusive workspace base.
   - **Default is off (`0`).** Persistent per-job workspaces are a feature —
     they act as an inter-run build/dependency cache — so sweeping them away
     is opt-in, not automatic. Enable it once you've confirmed the disk-usage

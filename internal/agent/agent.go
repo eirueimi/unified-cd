@@ -329,14 +329,36 @@ func (a *Agent) Run(ctx context.Context) error {
 	return nil
 }
 
-// runLoop runs the claim loop for a single slot. activeRuns is enrolled with
-// the claimed run ID once prepareWorkspace succeeds and retired (via defer)
-// right after executeRun, so the run is only ever reported active while it is
-// actually executing. activeWorkDirs is keyed by the claim's wsBase-derived
-// workDir path instead of its run ID and, unlike activeRuns, is enrolled
-// BEFORE prepareWorkspace (and retired only after executeRun) so the
-// workspace GC can never remove a dir this claim is still populating — see
-// the ordering comment at the Add call and workspace_gc.go's doc comment.
+// runLoop runs the claim loop for a single slot. Both activeRuns (keyed by
+// run ID, feeding the heartbeat) and activeWorkDirs (keyed by the claim's
+// wsBase-derived workDir path, feeding the workspace GC) are enrolled BEFORE
+// prepareWorkspace runs, and both are retired (via defer, LIFO) only after
+// executeRun returns. This matters for two independent reasons:
+//
+//   - activeWorkDirs: prepareWorkspace (and executeRun) populate this
+//     directory, and a job resuming after being idle past retention is
+//     exactly the dir the periodic sweep would find aged. Enrolling only
+//     after prepareWorkspace succeeded would leave a window where a
+//     concurrent workspaceGCLoop snapshot could os.RemoveAll a live run's
+//     workspace mid-populate (data loss).
+//   - activeRuns: the claim already marked the run Running (claimed_at =
+//     now) in the DB before runLoop ever sees it. prepareWorkspace can run
+//     long (e.g. CleanWorkspace: true doing os.RemoveAll on a multi-GB
+//     workspace) — if activeRuns.Add happened only after prepareWorkspace
+//     succeeded, the run would sit Running in the DB but absent from this
+//     agent's reported active set for that whole window, and the next
+//     heartbeat's ListReconcilableRunIDsByAgent (claimed >60s ago, not
+//     reported) would incorrectly reconcile-fail a perfectly healthy
+//     run that is still preparing.
+//
+// The claim/prepare path (claimWorkDir, prepareWorkspace) runs with no
+// recover of its own — unlike executeRun, which recovers its own panics
+// (see its doc comment) — so the closure below wraps it in an outer recover
+// that fails only this run via failRun, mirroring k8sagent/agent.go's
+// dispatch guard. Because defers run LIFO, that recover is deferred FIRST
+// (so it runs LAST): both active-set entries are retired by the defers
+// below it before the recover's failRun runs, so a panicking claim is never
+// left in either active set.
 func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string, activeRuns, activeWorkDirs *RunSet) {
 	for {
 		if claimCtx.Err() != nil {
@@ -386,15 +408,32 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 		// here — with the retire deferred immediately — means the dir is
 		// covered for the entire lifetime of this claim.
 		activeWorkDirs.Add(workDir)
+		activeRuns.Add(resp.RunID)
 		func() {
+			// Recover any panic in the claim/prepare path (executeRun recovers its
+			// own). Registered first so it runs LAST — after the Remove defers below
+			// retire this claim's active-set entries — then fails only this run
+			// instead of crashing the whole agent process (audit item 4 outer guard;
+			// mirrors k8sagent/agent.go's dispatch guard).
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("panic in claim/prepare path; failing run",
+						"runId", resp.RunID, "slot", slot, "panic", r, "stack", string(debug.Stack()))
+					// An inner recover so a panic INSIDE failRun (e.g. a nil client)
+					// can't re-crash this goroutine and defeat the guard.
+					defer func() { _ = recover() }()
+					a.failRun(runCtx, resp.RunID, fmt.Sprintf("agent panic before run execution: %v", r))
+				}
+			}()
 			defer activeWorkDirs.Remove(workDir)
+			defer activeRuns.Remove(resp.RunID)
 
 			mode := "isolated"
 			if resp.Native {
 				mode = "native"
 			}
 			clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
-			if err := prepareWorkspace(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
+			if err := prepareWorkspaceFn(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
 				// The claim is ours but its workspace could not be prepared, so the
 				// run can never start. Fail it on the controller (retried until it
 				// lands) rather than leaving it Running until the stuck-run reaper
@@ -402,11 +441,6 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				a.failRun(runCtx, resp.RunID, fmt.Sprintf("prepare workspace failed: %v", err))
 				return
 			}
-			activeRuns.Add(resp.RunID)
-			// executeRun already recovers its own panics (see its doc comment),
-			// but deferring Remove here means a future change to that guarantee
-			// can't silently leave a finished run stuck in the active set.
-			defer activeRuns.Remove(resp.RunID)
 			a.executeRun(runCtx, resp, workDir)
 		}()
 	}
@@ -525,6 +559,13 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 // without needing a genuine crash somewhere in the real orchestration path.
 // Production code always leaves this as RunClaim.
 var runClaimFn = RunClaim
+
+// prepareWorkspaceFn indirects the call to prepareWorkspace so tests can
+// substitute a stub that panics, exercising runLoop's claim/prepare-path
+// panic-recovery guard (see runLoop's doc comment) without needing a genuine
+// crash somewhere in the real workspace-prep code. Mirrors runClaimFn above.
+// Production code always leaves this as prepareWorkspace.
+var prepareWorkspaceFn = prepareWorkspace
 
 // failRun fails a claim that could not even begin executing (workspace
 // preparation failed, the isolated job's container runtime is missing, or its

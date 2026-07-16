@@ -147,7 +147,7 @@ unified-cd-agent [FLAGS]
   --pause-image           string    Image for the claim pod's pause (netns-holder) container (default: busybox:1.36)
   --runner-image          string    Default primary container image for isolated jobs without a podTemplate job container (default: ghcr.io/eirueimi/unified-cd-runner:v0.0.3)
   --min-free-disk         uint64    Minimum free space in bytes on the workspace filesystem required to keep claiming runs; 0 disables the check (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)
-  --workspace-retention-days int    Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)
+  --workspace-retention-days int    Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; persistent workspaces are a feature) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)
   --log-level             string    Log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)
 ```
 
