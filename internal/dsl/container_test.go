@@ -8,7 +8,13 @@ func TestIsReservedContainerName(t *testing.T) {
 			t.Errorf("%q should be reserved", n)
 		}
 	}
-	for _, n := range []string{"", "foo", "Job", "workspace"} {
+	// Normalized variants are now reserved too (case/whitespace insensitive)
+	for _, n := range []string{"JOB", " job ", "Job", "UNIFIED-ARTIFACT", "Ucd-Shim"} {
+		if !IsReservedContainerName(n) {
+			t.Errorf("%q should be reserved (normalized)", n)
+		}
+	}
+	for _, n := range []string{"foo", "workspace", "jobs"} {
 		if IsReservedContainerName(n) {
 			t.Errorf("%q should not be a reserved container name", n)
 		}
@@ -21,7 +27,13 @@ func TestIsReservedVolumeName(t *testing.T) {
 			t.Errorf("%q should be reserved", n)
 		}
 	}
-	for _, n := range []string{"", "cache", "job"} {
+	// Normalized variants are now reserved too (case/whitespace insensitive)
+	for _, n := range []string{"WORKSPACE", " ucd-tools ", "Workspace"} {
+		if !IsReservedVolumeName(n) {
+			t.Errorf("%q should be reserved (normalized)", n)
+		}
+	}
+	for _, n := range []string{"cache", "job", "workspaces"} {
 		if IsReservedVolumeName(n) {
 			t.Errorf("%q should not be a reserved volume name", n)
 		}
@@ -99,5 +111,35 @@ func TestValidateContainerReferences(t *testing.T) {
 	// Reserved is valid even with no podTemplate at all.
 	if err := ValidateContainerReferences(Spec{Steps: []StepEntry{{Name: "a", Container: "unified-artifact", Run: "e"}}}); err != nil {
 		t.Fatalf("reserved container with no podTemplate should pass, got %v", err)
+	}
+}
+
+func TestValidateDNS1123Label(t *testing.T) {
+	for _, ok := range []string{"job", "tools", "a", "a-1", "x0"} {
+		if err := ValidateDNS1123Label(ok); err != nil {
+			t.Errorf("%q should be valid: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "JOB", " job", "job ", "My_Container", "-a", "a-", "a.b",
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"} { // 64 chars
+		if err := ValidateDNS1123Label(bad); err == nil {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
+}
+
+func TestIsReserved_NormalizesVariants(t *testing.T) {
+	for _, v := range []string{"JOB", " job ", "Job", "UNIFIED-ARTIFACT", "Ucd-Shim"} {
+		if !IsReservedContainerName(v) {
+			t.Errorf("container %q should be treated as reserved (normalized)", v)
+		}
+	}
+	for _, v := range []string{"WORKSPACE", " ucd-tools "} {
+		if !IsReservedVolumeName(v) {
+			t.Errorf("volume %q should be treated as reserved (normalized)", v)
+		}
+	}
+	if IsReservedContainerName("jobs") || IsReservedVolumeName("workspaces") {
+		t.Error("non-reserved names must not match")
 	}
 }

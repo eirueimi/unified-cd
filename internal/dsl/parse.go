@@ -161,6 +161,10 @@ func (j *Job) Validate() error {
 		}
 	}
 
+	if err := validatePodTemplateNames(j.Spec.PodTemplate); err != nil {
+		return err
+	}
+
 	// Collect step names for duplicate detection across steps and finally.
 	nameSet := map[string]bool{}
 	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet, true, j.Spec.Native); err != nil {
