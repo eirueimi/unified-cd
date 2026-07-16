@@ -37,23 +37,25 @@ func objectKey(key string) string {
 	return "caches/" + base64.RawURLEncoding.EncodeToString(h[:])
 }
 
-// Save compresses path as tar+zstd and stores it in store under key.
-// A metadata object is stored alongside with TTL of ttlDays days.
+// Save compresses path as tar+zstd and stores it in store under key, streaming
+// the archive so it is never fully buffered in memory. A metadata object is
+// stored alongside with TTL of ttlDays days; its Size is the number of bytes
+// streamed to the store, captured during the upload.
 func Save(ctx context.Context, store objectstore.ObjectStore, path, key string, ttlDays int) error {
-	var buf bytes.Buffer
-	if err := artifact.WriteTarZstd(&buf, path); err != nil {
-		return err
-	}
-	archiveData := buf.Bytes()
 	oKey := objectKey(key)
-	if err := store.Put(ctx, oKey+".tar.zst", bytes.NewReader(archiveData), int64(len(archiveData))); err != nil {
+
+	body := artifact.StreamTarZstd(path)
+	counter := &countingReader{r: body}
+	if err := store.Put(ctx, oKey+".tar.zst", counter, -1); err != nil {
+		body.Close()
 		return fmt.Errorf("put archive: %w", err)
 	}
+	body.Close()
 
 	meta := Meta{
 		OriginalKey: key,
 		ExpiresAt:   time.Now().Add(time.Duration(ttlDays) * 24 * time.Hour),
-		Size:        int64(len(archiveData)),
+		Size:        counter.n,
 	}
 	metaData, err := json.Marshal(meta)
 	if err != nil {
@@ -70,6 +72,20 @@ func Save(ctx context.Context, store objectstore.ObjectStore, path, key string, 
 		return fmt.Errorf("put meta: %w", err)
 	}
 	return nil
+}
+
+// countingReader counts the bytes read through it — i.e. the bytes the object
+// store consumed from the archive stream — so Save can record Meta.Size
+// without buffering the whole archive to measure it.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // Restore downloads and extracts the cache for key into path.

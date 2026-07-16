@@ -1,19 +1,23 @@
 package cache_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
@@ -208,6 +212,49 @@ func TestSave_MetaFailureDeletesArchive(t *testing.T) {
 	keys, err := inner.List(context.Background(), "")
 	require.NoError(t, err)
 	assert.Empty(t, keys, "no orphaned object may survive a failed save")
+}
+
+// archiveSizeSpyStore records the size passed to Put for the .tar.zst archive
+// key (ignoring the small .meta Put) and delegates to an embedded real store.
+type archiveSizeSpyStore struct {
+	objectstore.ObjectStore
+	archiveSize int64
+}
+
+func (s *archiveSizeSpyStore) Put(ctx context.Context, key string, content io.Reader, size int64) error {
+	if strings.HasSuffix(key, ".tar.zst") {
+		s.archiveSize = size
+	}
+	return s.ObjectStore.Put(ctx, key, content, size)
+}
+
+func TestSave_StreamsArchiveAndCountsMetaSize(t *testing.T) {
+	ctx := context.Background()
+	spy := &archiveSizeSpyStore{ObjectStore: objectstore.NewLocalObjectStore(t.TempDir())}
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), bytes.Repeat([]byte("z"), 4096), 0o600))
+
+	require.NoError(t, cache.Save(ctx, spy, src, "mykey", 7))
+
+	// The archive Put must be streamed (unknown size), NOT the buffered length.
+	assert.Equal(t, int64(-1), spy.archiveSize, "archive must be streamed with size -1")
+
+	// Independently compute the archive length; Meta.Size must equal it.
+	var buf bytes.Buffer
+	require.NoError(t, artifact.WriteTarZstd(&buf, src))
+	wantSize := int64(buf.Len())
+
+	oKey := "caches/" + base64.RawURLEncoding.EncodeToString(func() []byte {
+		h := sha256.Sum256([]byte("mykey"))
+		return h[:]
+	}())
+	rc, err := spy.Get(ctx, oKey+".meta")
+	require.NoError(t, err)
+	defer rc.Close()
+	var m cache.Meta
+	require.NoError(t, json.NewDecoder(rc).Decode(&m))
+	assert.Equal(t, wantSize, m.Size)
+	assert.Equal(t, "mykey", m.OriginalKey)
 }
 
 func TestCache_DeleteExpired_RemovesOldKeepsNew(t *testing.T) {
