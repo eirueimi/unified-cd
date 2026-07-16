@@ -21,11 +21,14 @@ steps:
 
 `uses:` targets **must be `kind: JobTemplate`** — a strict schema containing only what
 inlining can honor: `description`, `params`, `shell`, `podTemplate.spec.containers`/`volumes`,
-and `steps`. Anything else (`agentSelector`, `concurrency`, `finally`, `native`, other
-podTemplate fields) is rejected at run creation. A template's `podTemplate` containers and
-volumes are merged into the caller's pod automatically (the caller's own same-name definition
-wins; the reserved names `job`, `unified-artifact`, `ucd-shim`, `workspace`, `ucd-tools`
-cannot be injected). See [docs/jobs.md](../docs/jobs.md) for the full contract.
+`steps`, and `finally` (spliced into the *caller's* finally phase, not run standalone —
+see [docs/jobs.md](../docs/jobs.md#template-finally-splice-into-the-caller)). Anything else
+(`agentSelector`, `concurrency`, `native`, other podTemplate fields) is rejected at run
+creation. A template's `podTemplate` containers and volumes are merged into the caller's pod
+automatically (the caller's own same-name definition wins; the reserved names `job`,
+`unified-artifact`, `ucd-shim`, `workspace`, `ucd-tools` cannot be injected, and every
+container/volume name must be a valid DNS-1123 label). See [docs/jobs.md](../docs/jobs.md)
+for the full contract.
 
 **Want a child run instead of inlining?** `call:` runs a REGISTERED `kind: Job` by name (its
 own pod/agent/run). A `JobTemplate` cannot be registered with `apply` — if you need a template

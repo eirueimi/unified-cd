@@ -22,7 +22,9 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
 - [Calling Other Jobs (`call`)](#calling-other-jobs-call)
 - [Git Template Inlining (`uses`)](#git-template-inlining-uses)
   - [The `JobTemplate` schema](#the-jobtemplate-schema)
+  - [`if:` on a `uses:` step](#if-on-a-uses-step)
   - [Pod-shape merge (containers and volumes)](#pod-shape-merge-containers-and-volumes)
+  - [Template `finally:` (splice into the caller)](#template-finally-splice-into-the-caller)
   - [Migrating a `kind: Job` template](#migrating-a-kind-job-template)
 - [Job Isolation: `native` and the claim pod](#job-isolation-native-and-the-claim-pod)
   - [Sidecar container logs](#sidecar-container-logs)
@@ -709,17 +711,36 @@ primary container, a reserved name, or a container present in the merged
 `podTemplate` — or run creation fails immediately with an error naming the
 step and the container, instead of the step failing opaquely at exec time.
 
+> **A `uses:`-free job's `container:` references are now validated at
+> `apply` time, not just at run creation/exec.** Applying a plain job (no
+> `uses:` step anywhere in `steps:`/`finally:`, and no named agent-side
+> `podTemplate.name`) whose `container:` names something the job's own
+> inline `podTemplate` doesn't define now fails immediately with the same
+> `step "x" references container "y", which is not defined in the job's
+> podTemplate` error — previously this only surfaced at run creation (for a
+> uses-bearing spec) or opaquely at step-exec time. A spec that carries any
+> `uses:` step, or a named agent-side `podTemplate.name` (its containers live
+> in agent config, invisible at apply time), still defers this check to
+> resolution/pod-build, since the template's pod-shape merge or the agent's
+> template may supply the reference later. See [Job fails apply with a dangling `container:`
+> reference](troubleshooting.md#job-fails-apply-with-a-dangling-container-reference)
+> in Troubleshooting.
+
 ### The `JobTemplate` schema
 
 `uses:` targets must be `kind: JobTemplate`. This is a **strict, deliberately
 small** schema — only what `uses:` can honor, because a template's steps are
 inlined directly into the caller's run and pod. Fields that would shape a
 *different* pod, agent, or run (`agentSelector`, `concurrency`,
-`timeoutMinutes`, `native`, `finally`, `podTemplate.reuse` /
-`podTemplate.workspace` / `podTemplate.override`, and any other pod-level key
-besides `containers`/`volumes`) do not exist on this type at all — any field
-outside the schema below is a **run-creation error naming the offending
-field** (strict decode, same as a `Job` document).
+`timeoutMinutes`, `native`, `podTemplate.reuse` / `podTemplate.workspace` /
+`podTemplate.override`, and any other pod-level key besides
+`containers`/`volumes`) do not exist on this type at all — any field outside
+the schema below is a **run-creation error naming the offending field**
+(strict decode, same as a `Job` document). `spec.finally` **is** on the
+schema — see [Template `finally:`](#template-finally-splice-into-the-caller)
+below; it does not shape a different pod/agent/run the way the others would,
+because it splices into the caller's own finally phase rather than running
+anywhere of its own.
 
 ```yaml
 apiVersion: unified-cd/v1
@@ -742,16 +763,20 @@ spec:
     - name: build
       container: tools
       run: make {{ .Params.target }}
+  finally:                         # optional: spliced into the CALLER's finally
+    - name: cleanup
+      run: rm -rf /workspace/tmp
 ```
 
 - `apiVersion` / `kind: JobTemplate` / `metadata.name` are required.
 - `spec.steps` must contain at least one step.
 - `spec.podTemplate.spec` accepts **only** `containers` and `volumes` — no
-  other pod-level keys.
+  other pod-level keys; every container/volume `name` must also be a valid
+  [DNS-1123 label](#kubernetes-pod-template-podtemplate) (checked at apply
+  time, same as a `Job`'s `podTemplate`).
 - A job that needs its own pod, agent routing, or run semantics (its own
-  `agentSelector`, a `finally:` block, `podTemplate.reuse`, etc.) doesn't fit
-  this model — invoke it with [`call:`](#calling-other-jobs-call) instead of
-  `uses:`.
+  `agentSelector`, `podTemplate.reuse`, etc.) doesn't fit this model — invoke
+  it with [`call:`](#calling-other-jobs-call) instead of `uses:`.
 
 A fetched template whose `kind` is `Job` (the old target kind) fails run
 creation with:
@@ -759,6 +784,43 @@ creation with:
 ```
 uses: targets must be kind: JobTemplate (got kind: Job); convert the template, or invoke the job with call:
 ```
+
+### `if:` on a `uses:` step
+
+An `if:` on the `uses:` step itself gates the **whole expansion** — every
+step the template inlines, not just the `uses:` step's own conceptual slot:
+
+```yaml
+steps:
+  - name: notify
+    if: failure()
+    uses:
+      job: git://github.com/my-org/ci-templates/jobs/slack-notify.yaml@v1
+      with:
+        channel: "#builds"
+```
+
+Here, `failure()` gates every step the `slack-notify.yaml` template expands
+to — the synthetic inputs step, every inlined body step, every `parallel:`
+sub-step, and the output-capture step — so the whole notification only runs
+when an earlier step in the job has failed.
+
+- **Combining with the template's own `if:`.** If an inlined step also
+  declares its own `if:` (inside the template), the two are AND-combined:
+  `(outer) && (inner)`. Both operands keep their own semantics — the outer
+  expression is evaluated in the caller's context (unrewritten), the inner
+  expression is evaluated after the template's usual `{{ .Params }}` /
+  `.Steps.<name>.Outputs` reference rewriting. A step whose template `if:` is
+  empty just inherits the outer `if:` verbatim; a `uses:` step with no `if:`
+  leaves each inlined step's own `if:` untouched (unchanged from before).
+- **Status-function semantics are identical to a plain step's `if:`.** See
+  [Status Functions in `if:`](#status-functions-in-if): an outer `failure()`
+  makes the *combined* expression mention a status function, so the implicit
+  `success()` requirement is overridden for the whole expansion, exactly as
+  it would be for a single plain step with `if: failure()`.
+- Before this, a `uses:` step's `if:` was accepted by the schema but silently
+  dropped — the template always expanded unconditionally regardless of the
+  `uses:` step's own `if:`. It is now honored.
 
 ### Pod-shape merge (containers and volumes)
 
@@ -788,6 +850,74 @@ can't be honored there at all. A scope-mode `uses:` step whose template
 declares a `podTemplate` fails run creation with an error rather than silently
 dropping it.
 
+### Template `finally:` (splice into the caller)
+
+A `JobTemplate` may declare its own `spec.finally` — cleanup steps that don't
+belong in the template's `steps:` DAG. A template's `finally:` steps do
+**not** run in their own phase; they are **spliced into the CALLER's own
+`finally:` phase**:
+
+```yaml
+# templates/with-cleanup.yaml (kind: JobTemplate)
+spec:
+  steps:
+    - { name: work, run: ./work.sh }
+  finally:
+    - { name: cleanup, run: rm -rf /tmp/scratch }
+```
+
+```yaml
+# caller
+spec:
+  steps:
+    - name: build
+      uses: { job: git://github.com/org/repo/templates/with-cleanup.yaml@v1 }
+  finally:
+    - name: my-own-cleanup
+      run: echo done
+```
+
+resolves to a caller `spec.finally` containing, in order: `my-own-cleanup`
+(the caller's own finally step, unchanged), then `build__cleanup` (the
+template's finally step, renamed with the usual `usesName__` prefix and
+ref-rewritten exactly like a body step — including `if:` combined with the
+`uses:` step's own outer `if:`, the same way as [`if:` on a `uses:`
+step](#if-on-a-uses-step) above).
+
+- **Ordering: caller finally first, template finally appended after.** The
+  caller's hand-written `finally:` steps always run (in their declared order)
+  before any spliced-in template finally steps.
+- **Prefixed like any inlined step**, so two sibling `uses:` steps pointing at
+  the same template (e.g. `a:` and `b:` both using the same
+  `with-cleanup.yaml`) never collide — they splice in as `a__cleanup` and
+  `b__cleanup`.
+- **Nested `uses:` bubble with full double-prefixing.** If the template's own
+  body or its own `finally:` contains a nested `uses:` step whose target
+  template *also* declares `finally:`, the nested finally steps bubble all
+  the way up to the caller's `spec.finally`, carrying every prefix level
+  applied along the way (e.g. `outer__inner__cleanup`) — no un-prefixed name
+  ever leaks into the caller's finally list, and refs inside the bubbled
+  steps stay valid at every level.
+- **A `uses:` step already inside the caller's own `finally:`** works too: if
+  a `uses:` step sitting in the caller's `finally:` block resolves to a
+  template that itself declares `finally:`, both the template's body
+  expansion and its spliced finally steps land in the caller's
+  `spec.finally`.
+- **Rejected in scope mode.** A `uses:` step with `runsIn.image` runs the
+  template in its own throwaway environment whose lifetime ends with the
+  template body — there is no environment left for a `finally:` step to run
+  in by the time the caller's finally phase starts. A scope-mode `uses:` step
+  whose template declares `finally:` fails run creation instead of silently
+  dropping the field:
+  ```
+  template declares finally:, but this uses: step has runsIn.image (scope mode): the scope pod's lifetime ends with the template body, so its finally cannot be honored
+  ```
+- **Name collisions still fail loudly.** If a spliced-in name (e.g.
+  `build__cleanup`) collides with an existing step name anywhere else in the
+  resolved spec (another step, another template's splice, or a hand-written
+  caller step), resolution fails naming the colliding name — same
+  global-name-collision check that already applies to inlined body steps.
+
 ### Migrating a `kind: Job` template
 
 Existing `uses:` targets authored as `kind: Job` must be converted:
@@ -795,10 +925,16 @@ Existing `uses:` targets authored as `kind: Job` must be converted:
 1. Change `kind: Job` to `kind: JobTemplate`.
 2. Drop any field outside the [`JobTemplate` schema](#the-jobtemplate-schema)
    above — most commonly `agentSelector`, `concurrency`, `timeoutMinutes`,
-   `native`, `finally`, and `podTemplate.reuse`/`workspace`/`override`. These
-   never had meaning for an inlined template (the caller's run/agent/pod
-   already governed them); the strict schema now rejects them explicitly
-   instead of silently ignoring them.
+   and `native`, plus `podTemplate.reuse`/`workspace`/`override`. These never
+   had meaning for an inlined template (the caller's run/agent/pod already
+   governed them); the strict schema rejects them explicitly instead of
+   silently ignoring them. `spec.finally` is the one exception: it **is**
+   part of the schema now — see [Template
+   `finally:`](#template-finally-splice-into-the-caller) above — but note its
+   semantics changed from "the old `kind: Job`'s own finally phase" (which
+   never ran under `uses:` anyway) to "spliced into the caller's finally
+   phase", so re-check that a carried-over `finally:` still makes sense
+   running in the caller's context.
 3. If `podTemplate.spec` declared anything besides `containers`/`volumes`
    (e.g. a raw pod-level key), remove it — only `containers` and `volumes`
    are supported.
@@ -1275,6 +1411,22 @@ standard agent and the k8s-agent:
   `name` is a **hard error at job start on both backends**
   (`podTemplate container at index N has no name`) — add a `name` to every
   entry in `spec.containers`.
+- **Container and volume names must be valid DNS-1123 labels.** Every
+  `podTemplate.spec.containers[].name` and `podTemplate.spec.volumes[].name`
+  must match `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` and be 63 characters or fewer
+  — lowercase alphanumerics and `-`, starting and ending alphanumeric (the
+  shape Kubernetes itself requires for a container/volume name). This is
+  checked at **apply time** for both a `Job`'s inline `podTemplate` and a
+  `JobTemplate`'s `podTemplate` — an invalid name (uppercase, underscores,
+  leading/trailing `-`, embedded whitespace, `.`, too long, or empty) fails
+  `apply`/run-creation immediately, naming the offending value, instead of
+  surfacing later as an opaque pod-build API error. Example:
+  `podTemplate container name "My_Tools" is not a valid DNS-1123 label
+  (lowercase alphanumerics and '-', must start/end alphanumeric)`. This also
+  closes a case/whitespace evasion of the reserved-name checks below
+  (`job`/`unified-artifact`/`ucd-shim`/`workspace`/`ucd-tools`): those
+  comparisons are normalized (trimmed, lowercased), but shape validation now
+  rejects a variant like `" Job "` outright before it can reach that check.
 
 **Routing is automatic and capability-based**, not selector-based: the
 controller infers whether a `podTemplate` needs real Kubernetes (a named

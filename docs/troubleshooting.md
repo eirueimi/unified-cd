@@ -491,6 +491,86 @@ fields) and re-pin tags/SHAs to a post-migration commit — see the
 genuinely needs its own pod/agent/run semantics, keep it a `kind: Job` and
 invoke it with `call:` instead.
 
+## Job fails apply with a dangling `container:` reference
+
+**Symptom**
+
+Applying (or triggering) a job that has no `uses:` step anywhere in
+`steps:`/`finally:` now fails immediately with:
+
+```
+step "x" references container "y", which is not defined in the job's podTemplate
+```
+
+where this previously either passed apply and failed later at run creation,
+or (for a job with `runsIn`-style scoping unrelated to `uses:`) failed
+opaquely when the agent tried to exec into a nonexistent container.
+
+**Cause**
+
+A step's `container:` field (or a `uses:`-inlined step's inherited
+`container:`) must name either the reserved primary container (`job`), one
+of the other reserved names, or a container actually declared in
+`spec.podTemplate.spec.containers`. For a **plain job** — no `uses:` step in
+`steps:` or `finally:`, and no named agent-side `podTemplate.name` (whose
+containers live in agent config and aren't visible here) — this is now
+checked at **apply time** via `internal/dsl.Job.Validate` /
+`ValidateContainerReferences` (`internal/dsl/container.go`), instead of only
+at run creation or step-exec time. A job that carries any `uses:` step still
+defers this check to the controller's post-resolution sweeper, because the
+template's pod-shape merge may supply the missing container at resolution
+time; a named agent-side `podTemplate.name` defers to pod build on the
+agent.
+
+**Fix**
+
+- Add the missing container to `spec.podTemplate.spec.containers`, or
+- Fix the typo in the step's `container:` field, or
+- Remove `container:` from the step to use the primary container instead.
+
+See [Job Reference — `container:`](jobs.md#container--targeting-a-podtemplate-container)
+and [`ValidateContainerReferences`](../internal/dsl/container.go).
+
+## `podTemplate` container/volume name rejected as an invalid DNS-1123 label
+
+**Symptom**
+
+Applying a `Job` or a `JobTemplate` (or resolving a `uses:` template whose
+`podTemplate` merges into the caller) fails with an error like:
+
+```
+podTemplate container name "My_Tools" is not a valid DNS-1123 label (lowercase alphanumerics and '-', must start/end alphanumeric)
+podTemplate volume name "Cache Vol" is not a valid DNS-1123 label (lowercase alphanumerics and '-', must start/end alphanumeric)
+```
+
+or `podTemplate container name is required` / `... exceeds 63 characters` for
+an empty or overlong name.
+
+**Cause**
+
+Every `podTemplate.spec.containers[].name` and `podTemplate.spec.volumes[].name`
+must be a valid Kubernetes DNS-1123 label — lowercase alphanumerics and `-`
+only, starting and ending with an alphanumeric character, 63 characters or
+fewer (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`). This is now checked at **apply
+time** by `internal/dsl.ValidateDNS1123Label` (`internal/dsl/container.go`),
+for both `Job.Validate` and `JobTemplate.Validate` — previously an invalid
+name (uppercase, underscores, spaces, a leading/trailing `-`, a `.`, or an
+empty/too-long name) went unvalidated until the pod was actually built,
+surfacing as an opaque Kubernetes/container-runtime API error much later.
+This also closes a case/whitespace evasion of the reserved-name checks
+(`job`/`unified-artifact`/`ucd-shim` for containers,
+`workspace`/`ucd-tools` for volumes): those checks normalize
+(trim+lowercase) before comparing, but a variant like `" Job "` is now
+rejected by shape validation before it would even reach that comparison.
+
+**Fix**
+
+Rename the container/volume to a valid DNS-1123 label, e.g. `my-tools`
+instead of `My_Tools`, `cache-vol` instead of `Cache Vol`. See [Job
+Reference — Kubernetes Pod Template
+(`podTemplate`)](jobs.md#kubernetes-pod-template-podtemplate) for the full
+rule and the reserved-name list.
+
 ## `uses: git://...` job fails to resolve with invalid characters
 
 **Symptom**
