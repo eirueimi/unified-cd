@@ -62,15 +62,61 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// heartbeatReconcileGrace is how long a Running run must have sat claimed
+// before an absent-from-the-reported-set heartbeat is allowed to fail it.
+// Protects a run the agent only just claimed from being reaped before the
+// agent's next heartbeat has had a chance to report it as active.
+const heartbeatReconcileGrace = 60 * time.Second
+
 // handleAgentHeartbeat handles POST /api/v1/agents/{agentId}/heartbeat.
 // Refreshes the agent's last_seen_at so a busy (non-polling) agent is not
 // considered dead by the stuck-run reaper / stale-agent cleanup.
+//
+// A live agent (built after active-run tracking was added) additionally
+// sends a JSON body reporting the run IDs it currently considers active,
+// even when that set is empty. When a body is present, any Running run this
+// controller has claimed to the agent, that is absent from the reported
+// set, and that has sat claimed past heartbeatReconcileGrace, is failed as
+// orphaned (e.g. the agent process restarted and forgot about it, or the
+// run's goroutine died silently) — mirroring the stuck-run reaper's
+// failOrphanedRun semantics but reacting on the agent's own heartbeat
+// instead of waiting for last_seen_at staleness.
+//
+// A legacy agent (built before active-run tracking) sends no body at all,
+// so reconcile is gated on BODY PRESENCE (r.ContentLength != 0), not on the
+// decoded slice being non-nil: a live agent with zero active runs still
+// sends `{"activeRunIds":[]}` (ContentLength > 0) and must reconcile (fail
+// all of its stale runs), which a nil-slice check would wrongly skip. A
+// decode error or missing body is treated the same as "unknown" and simply
+// skips reconcile for this heartbeat — it never fails the heartbeat itself.
 func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	agentID := chi.URLParam(r, "agentId")
 	if err := s.store.TouchAgent(r.Context(), agentID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	if r.ContentLength != 0 {
+		var req api.HeartbeatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			reported := map[string]struct{}{}
+			for _, id := range req.ActiveRunIDs {
+				reported[id] = struct{}{}
+			}
+			ids, err := s.store.ListReconcilableRunIDsByAgent(r.Context(), agentID, heartbeatReconcileGrace)
+			if err == nil {
+				for _, id := range ids {
+					if _, ok := reported[id]; ok {
+						continue
+					}
+					if ferr := failOrphanedRun(r.Context(), s.store, id); ferr != nil {
+						slog.Warn("heartbeat reconcile: fail orphaned run", "runID", id, "error", ferr)
+					}
+				}
+			}
+		}
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

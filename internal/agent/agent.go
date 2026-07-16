@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +70,25 @@ type Agent struct {
 	CleanWorkspace bool
 	DrainTimeout   time.Duration
 
+	// MinFreeDisk is the minimum free space (in bytes) required on the
+	// workspace filesystem for this agent to keep claiming runs. Zero
+	// disables the check. Host-only: k8s agents use pod volumes instead.
+	MinFreeDisk uint64
+
+	// WorkspaceRetentionDays is the age (in days) after which an inactive
+	// per-job workspace directory (working<slot>/<job>) becomes eligible
+	// for removal by the opt-in workspace GC (see workspace_gc.go). Zero
+	// (the default) disables the GC — persistent workspaces are a feature
+	// (inter-run cache), so sweeping them across jobs must be an explicit
+	// opt-in. Host-only.
+	WorkspaceRetentionDays int
+
+	// freeBytesFn reports available bytes for the filesystem containing the
+	// given path. Defaults to freeBytes (the platform-specific syscall
+	// implementation); overridable so tests can inject a fake without
+	// touching the real filesystem.
+	freeBytesFn func(string) (uint64, error)
+
 	// RuntimePref selects the container runtime for runsIn.image steps
 	// (docker|podman|nerdctl|wslc|container); empty = auto-detect.
 	RuntimePref string
@@ -120,12 +140,12 @@ func agentCapabilities(runtimeAvailable bool) []string {
 
 // New creates a new agent with the given ID and client.
 func New(id string, client *Client) *Agent {
-	return &Agent{ID: id, Client: client}
+	return &Agent{ID: id, Client: client, freeBytesFn: freeBytes}
 }
 
 // NewWithLabels creates a new agent with the given labels.
 func NewWithLabels(id string, labels []string, client *Client) *Agent {
-	return &Agent{ID: id, Labels: labels, Client: client}
+	return &Agent{ID: id, Labels: labels, Client: client, freeBytesFn: freeBytes}
 }
 
 // collectEnv collects and returns PATH/PWD/HOME/HOSTNAME and any variables listed in exposeEnv.
@@ -234,24 +254,69 @@ func (a *Agent) Run(ctx context.Context) error {
 	// perfectly healthy draining run. runCtx outlives claimCtx during drain and is
 	// cancelled on full shutdown (defer runCancel / DrainTimeout), so heartbeats
 	// continue through the whole drain window and stop cleanly on shutdown — no leak.
-	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval)
+	// activeRuns tracks the run IDs this process currently has in flight, so
+	// the heartbeat below can report them to the controller (foundation for
+	// the controller's lost-claim reconcile). Shared across every slot
+	// goroutine.
+	activeRuns := NewRunSet()
+
+	// activeWorkDirs tracks every working<slot>/<job> directory this process
+	// currently has a claim executing in, keyed by the same wsBase-derived
+	// path runLoop computes via claimWorkDir — a second, workDir-keyed RunSet
+	// enrolled/retired alongside activeRuns (see runLoop). It exists purely to
+	// feed gcWorkspaces' active-set parameter; see workspace_gc.go's doc
+	// comment for why a workDir path (not a run ID or bare job name) is the
+	// safe key. Always constructed (cheap), even when the GC is disabled, so
+	// runLoop's signature doesn't need to branch on WorkspaceRetentionDays.
+	activeWorkDirs := NewRunSet()
+
+	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot)
+
+	// gcDone is closed once workspaceGCLoop has fully stopped, so Run can join
+	// it (like hbDone) and guarantee no sweep outlives Run. nil when the GC is
+	// disabled — a receive on a nil channel blocks forever, so it is only
+	// joined below when non-nil.
+	var gcDone <-chan struct{}
+	if a.WorkspaceRetentionDays > 0 {
+		retention := time.Duration(a.WorkspaceRetentionDays) * 24 * time.Hour
+		// Startup sweep: activeWorkDirs is necessarily empty here (nothing has
+		// been claimed yet in this process), which is safe — any dir genuinely
+		// in use by ANOTHER live agent process sharing this wsBase would have
+		// to be younger than retention (days-scale) to survive anyway, since a
+		// truly stuck/abandoned dir is exactly what this GC exists to reclaim.
+		if removed, err := gcWorkspaces(wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now()); err != nil {
+			slog.Warn("workspace gc: startup sweep failed", "error", err)
+		} else if len(removed) > 0 {
+			slog.Info("workspace gc: startup sweep removed aged workspace dirs", "count", len(removed), "dirs", removed)
+		}
+		done := make(chan struct{})
+		gcDone = done
+		go func() {
+			defer close(done)
+			a.workspaceGCLoop(runCtx, wsBase, retention, activeWorkDirs)
+		}()
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(slot int) {
 			defer wg.Done()
-			a.runLoop(ctx, runCtx, slot, wsBase)
+			a.runLoop(ctx, runCtx, slot, wsBase, activeRuns, activeWorkDirs)
 		}(i)
 	}
 	wg.Wait()
 
-	// All slots are done: stop the heartbeat and JOIN it before returning, so a
-	// beat can't outlive Run. runCancel is deferred too, but that only signals
-	// the goroutine asynchronously — without this join a late tick could fire
-	// after Run returned (a leak the drain regression test observes).
+	// All slots are done: stop the heartbeat and GC loop and JOIN them before
+	// returning, so neither a beat nor a sweep can outlive Run. runCancel is
+	// deferred too, but that only signals the goroutines asynchronously —
+	// without these joins a late tick could fire after Run returned (a leak
+	// the drain regression test observes).
 	runCancel()
 	<-hbDone
+	if gcDone != nil {
+		<-gcDone
+	}
 
 	// ctx is already cancelled, so use a new context for deregistration.
 	deregCtx, deregCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -264,11 +329,60 @@ func (a *Agent) Run(ctx context.Context) error {
 	return nil
 }
 
-// runLoop runs the claim loop for a single slot.
-func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string) {
+// runLoop runs the claim loop for a single slot. Both activeRuns (keyed by
+// run ID, feeding the heartbeat) and activeWorkDirs (keyed by the claim's
+// wsBase-derived workDir path, feeding the workspace GC) are enrolled BEFORE
+// prepareWorkspace runs, and both are retired (via defer, LIFO) only after
+// executeRun returns. This matters for two independent reasons:
+//
+//   - activeWorkDirs: prepareWorkspace (and executeRun) populate this
+//     directory, and a job resuming after being idle past retention is
+//     exactly the dir the periodic sweep would find aged. Enrolling only
+//     after prepareWorkspace succeeded would leave a window where a
+//     concurrent workspaceGCLoop snapshot could os.RemoveAll a live run's
+//     workspace mid-populate (data loss).
+//   - activeRuns: the claim already marked the run Running (claimed_at =
+//     now) in the DB before runLoop ever sees it. prepareWorkspace can run
+//     long (e.g. CleanWorkspace: true doing os.RemoveAll on a multi-GB
+//     workspace) — if activeRuns.Add happened only after prepareWorkspace
+//     succeeded, the run would sit Running in the DB but absent from this
+//     agent's reported active set for that whole window, and the next
+//     heartbeat's ListReconcilableRunIDsByAgent (claimed >60s ago, not
+//     reported) would incorrectly reconcile-fail a perfectly healthy
+//     run that is still preparing.
+//
+// The claim/prepare path (claimWorkDir, prepareWorkspace) runs with no
+// recover of its own — unlike executeRun, which recovers its own panics
+// (see its doc comment) — so the closure below wraps it in an outer recover
+// that fails only this run via failRun, mirroring k8sagent/agent.go's
+// dispatch guard. Because defers run LIFO, that recover is deferred FIRST
+// (so it runs LAST): both active-set entries are retired by the defers
+// below it before the recover's failRun runs, so a panicking claim is never
+// left in either active set.
+func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string, activeRuns, activeWorkDirs *RunSet) {
 	for {
 		if claimCtx.Err() != nil {
 			return
+		}
+		if a.MinFreeDisk > 0 {
+			freeBytesFn := a.freeBytesFn
+			if freeBytesFn == nil {
+				freeBytesFn = freeBytes
+			}
+			free, err := freeBytesFn(wsBase)
+			if err != nil {
+				// Can't determine free space; log and proceed rather than
+				// wedging the agent on a stat failure.
+				slog.Warn("free disk space check failed, proceeding with claim", "error", err, "slot", slot)
+			} else if belowMinFreeDisk(free, a.MinFreeDisk) {
+				slog.Warn("free disk space below minimum, skipping claim", "freeBytes", free, "minFreeDisk", a.MinFreeDisk, "slot", slot)
+				select {
+				case <-claimCtx.Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
+				continue
+			}
 		}
 		resp, err := a.Client.Claim(claimCtx, a.ID, "30s", a.Labels)
 		if err != nil {
@@ -284,20 +398,87 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			continue
 		}
 		workDir := claimWorkDir(wsBase, slot, resp.JobName)
-		mode := "isolated"
-		if resp.Native {
-			mode = "native"
+		// Protect workDir from the workspace GC BEFORE prepareWorkspace, not
+		// after: prepareWorkspace (and executeRun) populate this directory,
+		// and a job resuming after being idle past retention is exactly the
+		// dir the periodic sweep would find aged. If activeWorkDirs.Add ran
+		// only after prepareWorkspace, a concurrent workspaceGCLoop snapshot
+		// taken in the window between claimWorkDir and the Add could
+		// os.RemoveAll a live run's workspace mid-populate (data loss). Adding
+		// here — with the retire deferred immediately — means the dir is
+		// covered for the entire lifetime of this claim.
+		activeWorkDirs.Add(workDir)
+		activeRuns.Add(resp.RunID)
+		func() {
+			// Recover any panic in the claim/prepare path (executeRun recovers its
+			// own). Registered first so it runs LAST — after the Remove defers below
+			// retire this claim's active-set entries — then fails only this run
+			// instead of crashing the whole agent process (audit item 4 outer guard;
+			// mirrors k8sagent/agent.go's dispatch guard).
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("panic in claim/prepare path; failing run",
+						"runId", resp.RunID, "slot", slot, "panic", r, "stack", string(debug.Stack()))
+					// An inner recover so a panic INSIDE failRun (e.g. a nil client)
+					// can't re-crash this goroutine and defeat the guard.
+					defer func() { _ = recover() }()
+					a.failRun(runCtx, resp.RunID, fmt.Sprintf("agent panic before run execution: %v", r))
+				}
+			}()
+			defer activeWorkDirs.Remove(workDir)
+			defer activeRuns.Remove(resp.RunID)
+
+			mode := "isolated"
+			if resp.Native {
+				mode = "native"
+			}
+			clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
+			if err := prepareWorkspaceFn(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
+				// The claim is ours but its workspace could not be prepared, so the
+				// run can never start. Fail it on the controller (retried until it
+				// lands) rather than leaving it Running until the stuck-run reaper
+				// trips — the same failure path executeRun uses.
+				a.failRun(runCtx, resp.RunID, fmt.Sprintf("prepare workspace failed: %v", err))
+				return
+			}
+			a.executeRun(runCtx, resp, workDir)
+		}()
+	}
+}
+
+// workspaceGCInterval is the periodic sweep cadence for the opt-in workspace
+// GC (see workspaceGCLoop). It mirrors the k8s agent's runPodGC in shape (a
+// ticker-driven periodic sweep started alongside the startup one) but on a
+// much coarser cadence: runPodGC deals with short-lived per-run pods and
+// needs a tight minute-scale loop, whereas workspace retention is
+// expressed and reasoned about in whole days (WorkspaceRetentionDays), so
+// hourly is frequent enough to reclaim space promptly without adding
+// meaningful overhead. A var (not a const) only so tests can shorten it; no
+// production path mutates it.
+var workspaceGCInterval = time.Hour
+
+// workspaceGCLoop periodically sweeps aged, inactive per-job workspace
+// directories under wsBase (see gcWorkspaces) until ctx is done. Only
+// started by Run when WorkspaceRetentionDays > 0. activeWorkDirs is
+// snapshotted fresh on every tick so the sweep always sees the
+// currently-in-flight set of claims across all slots.
+func (a *Agent) workspaceGCLoop(ctx context.Context, wsBase string, retention time.Duration, activeWorkDirs *RunSet) {
+	ticker := time.NewTicker(workspaceGCInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
-		clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
-		if err := prepareWorkspace(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
-			// The claim is ours but its workspace could not be prepared, so the
-			// run can never start. Fail it on the controller (retried until it
-			// lands) rather than leaving it Running until the stuck-run reaper
-			// trips — the same failure path executeRun uses.
-			a.failRun(runCtx, resp.RunID, fmt.Sprintf("prepare workspace failed: %v", err))
+		removed, err := gcWorkspaces(wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now())
+		if err != nil {
+			slog.Warn("workspace gc: sweep failed", "error", err)
 			continue
 		}
-		a.executeRun(runCtx, resp, workDir)
+		if len(removed) > 0 {
+			slog.Info("workspace gc: removed aged workspace dirs", "count", len(removed), "dirs", removed)
+		}
 	}
 }
 
@@ -315,7 +496,26 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 //
 // Everything else — secrets fetch, cancellation, step dispatch, finally,
 // output promotion, FinishRun — is delegated to RunClaim via hostBackend.
+//
+// The whole body is wrapped in a recover: runOne (pipeline.go) already turns
+// a panic INSIDE a step into a normal step failure, but a panic ABOVE the
+// step level (claim-pod construction, backend wiring, or anywhere else in
+// this function's call graph) would otherwise crash the process and leave
+// every other in-flight run stuck. This defense-in-depth guard converts such
+// a panic into the same failRun path executeRun already uses for its other
+// unrecoverable-claim errors, so the run is marked Failed instead of hanging
+// as Running until the stuck-run reaper trips.
 func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("agent panic in executeRun", "runId", c.RunID, "panic", r, "stack", string(debug.Stack()))
+			// An inner recover so a panic INSIDE failRun (e.g. a nil client)
+			// can't re-crash this goroutine and defeat the guard.
+			defer func() { _ = recover() }()
+			a.failRun(ctx, c.RunID, fmt.Sprintf("agent panic: %v", r))
+		}
+	}()
+
 	failClaim := func(msg string, err error) {
 		a.failRun(ctx, c.RunID, fmt.Sprintf("%s: %v", msg, err))
 	}
@@ -351,8 +551,21 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		}
 	}
 	backend := newHostBackend(a, c.RunID, workDir, pod)
-	RunClaim(ctx, a.Client, a.ID, c, backend)
+	runClaimFn(ctx, a.Client, a.ID, c, backend)
 }
+
+// runClaimFn indirects the call to RunClaim so tests can substitute a stub
+// that panics, exercising executeRun's outer panic-recovery guard above
+// without needing a genuine crash somewhere in the real orchestration path.
+// Production code always leaves this as RunClaim.
+var runClaimFn = RunClaim
+
+// prepareWorkspaceFn indirects the call to prepareWorkspace so tests can
+// substitute a stub that panics, exercising runLoop's claim/prepare-path
+// panic-recovery guard (see runLoop's doc comment) without needing a genuine
+// crash somewhere in the real workspace-prep code. Mirrors runClaimFn above.
+// Production code always leaves this as prepareWorkspace.
+var prepareWorkspaceFn = prepareWorkspace
 
 // failRun fails a claim that could not even begin executing (workspace
 // preparation failed, the isolated job's container runtime is missing, or its

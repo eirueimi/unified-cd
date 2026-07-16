@@ -70,6 +70,8 @@ func main() {
 	containerRuntime := flag.String("container-runtime", "", "container runtime for runsIn.image steps; empty = auto-detect (docker|podman|nerdctl|wslc). Apple's 'container' is explicit-only (not auto-detected) and cannot run isolated/claim-pod jobs")
 	pauseImage := flag.String("pause-image", orDefault(eff.PauseImage, "busybox:1.36"), "image for the claim pod's pause (netns-holder) container")
 	runnerImage := flag.String("runner-image", orDefault(eff.RunnerImage, "ghcr.io/eirueimi/unified-cd-runner:v0.0.3"), "default primary container image for isolated jobs without a podTemplate job container")
+	minFreeDisk := flag.Uint64("min-free-disk", eff.MinFreeDisk, "minimum free space in bytes on the workspace filesystem required to keep claiming runs; 0 disables the check (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)")
+	workspaceRetentionDays := flag.Int("workspace-retention-days", eff.WorkspaceRetentionDays, "age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; persistent workspaces are a feature) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
 
@@ -148,6 +150,8 @@ func main() {
 	a.PauseImage = *pauseImage
 	a.RunnerImage = *runnerImage
 	a.ToolsDir = toolsDir
+	a.MinFreeDisk = *minFreeDisk
+	a.WorkspaceRetentionDays = *workspaceRetentionDays
 
 	if *cacheEndpoint != "" && *cacheKey != "" && *cacheSecret != "" && *cacheBucket != "" {
 		cs, err := objectstore.NewS3ObjectStore(ctx, objectstore.S3Config{

@@ -226,3 +226,38 @@ workspaceDir: /file/ws
 	require.NoError(t, err)
 	assert.Equal(t, "/file/ws", eff.WorkspaceDir, "file workspaceDir should override the env value")
 }
+
+func TestAgentEffective_WorkspaceRetentionDaysDefaultZero(t *testing.T) {
+	t.Setenv("UNIFIED_SERVER", "http://env-server")
+	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
+
+	eff, err := config.AgentEffective("")
+	require.NoError(t, err)
+	assert.Zero(t, eff.WorkspaceRetentionDays, "workspace GC must default to disabled")
+}
+
+func TestAgentEffective_WorkspaceRetentionDaysFromEnv(t *testing.T) {
+	t.Setenv("UNIFIED_SERVER", "http://env-server")
+	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
+	t.Setenv("UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS", "14")
+
+	eff, err := config.AgentEffective("")
+	require.NoError(t, err)
+	assert.Equal(t, 14, eff.WorkspaceRetentionDays)
+}
+
+func TestAgentEffective_WorkspaceRetentionDaysFileOverridesEnv(t *testing.T) {
+	t.Setenv("UNIFIED_SERVER", "http://env-server")
+	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
+	t.Setenv("UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS", "14")
+
+	path := writeFile(t, `
+server: http://file-server
+token: file-token
+id: file-id
+workspaceRetentionDays: 30
+`)
+	eff, err := config.AgentEffective(path)
+	require.NoError(t, err)
+	assert.Equal(t, 30, eff.WorkspaceRetentionDays, "file workspaceRetentionDays should override the env value")
+}

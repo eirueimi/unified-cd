@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -660,5 +661,172 @@ func TestAgent_UploadArtifact_RelativePath(t *testing.T) {
 	}
 	for _, idx := range reportedStageIndexes {
 		assert.Equal(t, 0, idx, "artifact ReportStep calls should carry the stage index")
+	}
+}
+
+// TestAgent_RunLoop_PreparePanicIsRecoveredAndFailsRun verifies runLoop's
+// outer panic-recovery guard (review finding 1): a panic in the claim/prepare
+// path — BEFORE executeRun, which has its own separate recover — must not
+// crash the agent process/slot goroutine, and must fail only the claimed run
+// via the existing failRun path. prepareWorkspaceFn is substituted with a
+// stub that panics so the test doesn't depend on finding a genuine crash bug
+// in the real workspace-prep code (mirrors how
+// TestAgent_ExecuteRun_PanicIsRecoveredAndFailsRun substitutes runClaimFn).
+//
+// This also exercises finding 2 (activeRuns enrolled before prepare): if
+// activeRuns.Add ran only after prepareWorkspaceFn succeeded, the panic would
+// fire before the run was ever enrolled, and the deferred
+// activeRuns.Remove(resp.RunID) in runLoop's closure would be a no-op either
+// way — so the real assertion that matters is that the recover fires, failRun
+// is called, and the process survives to claim (and finish) a second run.
+func TestAgent_RunLoop_PreparePanicIsRecoveredAndFailsRun(t *testing.T) {
+	orig := prepareWorkspaceFn
+	defer func() { prepareWorkspaceFn = orig }()
+	var prepareCalls atomic.Int32
+	prepareWorkspaceFn = func(ctx context.Context, workDir, mode string, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
+		if prepareCalls.Add(1) == 1 {
+			// Only the FIRST claim's prepare panics. The second claim must
+			// reach a real (successful) prepareWorkspace call, which is only
+			// possible if the slot's claim loop survived the first panic.
+			panic("boom in prepareWorkspace")
+		}
+		return orig(ctx, workDir, mode, clean, rtFn, toolsDir)
+	}
+
+	wsDir := t.TempDir()
+
+	finishCh := make(chan struct {
+		runID  string
+		status string
+	}, 4)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/register", registerHandler)
+	claimCount := 0
+	var mu sync.Mutex
+	mux.HandleFunc("POST /api/v1/agents/a5/claim", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n := claimCount
+		claimCount++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch n {
+		case 0:
+			json.NewEncoder(w).Encode(claimResp("run-panic-prepare", "echo unused")) //nolint:errcheck
+		case 1:
+			// A second claim proves the slot's goroutine (and the whole agent
+			// process) survived the first claim's panic and kept claiming.
+			json.NewEncoder(w).Encode(claimResp("run-after-panic", "echo hi")) //nolint:errcheck
+		default:
+			<-r.Context().Done()
+			json.NewEncoder(w).Encode(api.ClaimResponse{}) //nolint:errcheck
+		}
+	})
+	mux.HandleFunc("POST /api/v1/agents/a5/steps", stepHandler)
+	mux.HandleFunc("POST /api/v1/agents/a5/runs/run-panic-prepare/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Status string }
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		select {
+		case finishCh <- struct {
+			runID  string
+			status string
+		}{"run-panic-prepare", body.Status}:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/a5/runs/run-after-panic/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Status string }
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		select {
+		case finishCh <- struct {
+			runID  string
+			status string
+		}{"run-after-panic", body.Status}:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	claimCtx, cancelClaim := context.WithCancel(context.Background())
+	defer cancelClaim()
+
+	a := &Agent{
+		ID:            "a5",
+		Client:        NewClient(srv.URL, "tok"),
+		MaxConcurrent: 1,
+		WorkspaceDir:  wsDir,
+	}
+
+	done := make(chan error, 1)
+	// The panic must not escape runLoop's slot goroutine (which would crash
+	// this whole test binary via an unrecovered goroutine panic) — reaching
+	// this assertion at all is part of the proof the guard works.
+	go func() { done <- a.Run(claimCtx) }()
+
+	seen := map[string]string{}
+	deadline := time.After(10 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case f := <-finishCh:
+			seen[f.runID] = f.status
+		case <-deadline:
+			t.Fatalf("did not observe both runs finish; got %v", seen)
+		}
+	}
+	cancelClaim()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return after cancel")
+	}
+
+	assert.Equal(t, "Failed", seen["run-panic-prepare"],
+		"a panic in prepareWorkspace must fail only that run via failRun, not crash the agent")
+	assert.Equal(t, "Succeeded", seen["run-after-panic"],
+		"the slot's claim loop must survive the panic and keep claiming/executing subsequent runs")
+}
+
+// TestAgent_ExecuteRun_PanicIsRecoveredAndFailsRun verifies executeRun's
+// outer panic-recovery guard (audit item 4, defense-in-depth): a panic ABOVE
+// the step level — anywhere in the RunClaim call graph, not just inside a
+// step body (which runOne in pipeline.go already recovers) — must be caught
+// so it fails only this run via the existing failRun path, rather than
+// crashing the whole agent process and taking every other in-flight run
+// down with it. runClaimFn is substituted with a stub that panics so the
+// test doesn't depend on finding a genuine crash bug elsewhere in the real
+// orchestration path.
+func TestAgent_ExecuteRun_PanicIsRecoveredAndFailsRun(t *testing.T) {
+	const agentID = "panic-agent"
+	const runID = "run-panic"
+
+	finishCh := make(chan string, 1)
+	mux := newTimeoutTestMux(t, agentID, runID, finishCh)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+
+	orig := runClaimFn
+	defer func() { runClaimFn = orig }()
+	runClaimFn = func(ctx context.Context, client *Client, agentID string, c api.ClaimResponse, b ExecBackend) {
+		panic("boom in executeRun")
+	}
+
+	resp := api.ClaimResponse{Native: true, RunID: runID, JobName: "test-panic"}
+
+	assert.NotPanics(t, func() {
+		a.executeRun(context.Background(), resp, "")
+	}, "a panic above the step level must not crash executeRun's caller")
+
+	select {
+	case status := <-finishCh:
+		assert.Equal(t, "Failed", status, "a panic in executeRun's call graph should fail the run")
+	case <-time.After(5 * time.Second):
+		t.Fatal("FinishRun was not called after the panic")
 	}
 }

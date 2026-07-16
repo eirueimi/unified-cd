@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -168,12 +171,37 @@ func runSequential(ctx context.Context, steps []api.ClaimStep, run func(context.
 	return nil
 }
 
-// runOne calls run for a single step, suppressing the error when ContinueOnError is set.
-func runOne(ctx context.Context, step api.ClaimStep, run func(context.Context, api.ClaimStep) error) error {
-	err := run(ctx, step)
-	if err != nil && step.ContinueOnError {
+// runOne calls run for a single step, suppressing the error when
+// ContinueOnError is set. It also recovers a panic raised by run — from the
+// step body, template expansion, or backend exec — converting it into an
+// error naming the panic value (with a stack trace logged at Error level) so
+// a single panicking step fails only its own run instead of crashing the
+// whole agent process (and, via runParallel/runSequential calling runOne per
+// step, so a panic in one parallel-group member doesn't abort its siblings).
+// The recovered panic is subject to ContinueOnError exactly like a normal
+// returned error.
+func runOne(ctx context.Context, step api.ClaimStep, run func(context.Context, api.ClaimStep) error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			// Structured "stack" field: runOne's returned error is often
+			// discarded upstream (the orchestrator's step-runner closure always
+			// returns nil in production and handles its own failures via the
+			// in-closure recover in orchestrator.go), so the stack must reach a
+			// log here rather than only living inside the error string.
+			slog.Error("step panicked", "step", step.Name, "index", step.Index, "panic", r, "stack", string(stack))
+			perr := fmt.Errorf("step %q panicked: %v\n%s", step.Name, r, stack)
+			if step.ContinueOnError {
+				err = nil
+			} else {
+				err = perr
+			}
+		}
+	}()
+	e := run(ctx, step)
+	if e != nil && step.ContinueOnError {
 		return nil
 	}
-	return err
+	return e
 }
 

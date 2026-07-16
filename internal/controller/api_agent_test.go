@@ -730,6 +730,134 @@ func TestAgentHeartbeat_RejectsNonAgentToken(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
+// TestAgentHeartbeat_ReconcilesLostClaims verifies that a heartbeat body
+// reporting an agent's active run set causes the controller to fail any
+// Running run it claimed to that agent which is both absent from the
+// reported set and has sat claimed past the reconcile grace window — while
+// leaving reported runs and runs claimed within grace alone.
+func TestAgentHeartbeat_ReconcilesLostClaims(t *testing.T) {
+	s, pg := newTestServer(t)
+	pgc, ok := pg.(*store.Postgres)
+	require.True(t, ok, "test relies on concrete *store.Postgres for claimed_at backdating")
+	ctx := context.Background()
+
+	_, err := pgc.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+
+	r1, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	r2, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	r3, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	_, err = pgc.TransitionPendingToQueued(ctx, 10)
+	require.NoError(t, err)
+
+	// Claim all three onto the same agent (FIFO claim order matches creation order).
+	for _, want := range []string{r1.ID, r2.ID, r3.ID} {
+		claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-reconcile", nil)
+		require.NoError(t, err)
+		require.Equal(t, want, claimed.ID)
+	}
+
+	// r1 and r3 were claimed "5 minutes ago" (past the 60s grace); r2 keeps
+	// its natural just-claimed timestamp (well within grace).
+	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r1.ID, 5*time.Minute))
+	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r3.ID, 5*time.Minute))
+
+	body, err := json.Marshal(api.HeartbeatRequest{ActiveRunIDs: []string{r1.ID}})
+	require.NoError(t, err)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-reconcile/heartbeat", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+
+	got, err := pgc.GetRun(ctx, r1.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunRunning, got.Status, "r1 was reported active: must stay Running")
+
+	got, err = pgc.GetRun(ctx, r2.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunRunning, got.Status, "r2 is within the grace window: must stay Running")
+
+	got, err = pgc.GetRun(ctx, r3.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunFailed, got.Status, "r3 is stale and unreported: must be Failed")
+}
+
+// TestAgentHeartbeat_ReconcileEmptyActiveSetStillFails pins the correctness
+// fix flagged in Task 3's review: a LIVE agent reporting zero active runs
+// still sends a body (`{"activeRunIds":[]}`), and that body must still
+// trigger reconcile — gating on r.ContentLength != 0 (body presence), not
+// on the decoded slice being non-nil, is what makes this work.
+func TestAgentHeartbeat_ReconcileEmptyActiveSetStillFails(t *testing.T) {
+	s, pg := newTestServer(t)
+	pgc, ok := pg.(*store.Postgres)
+	require.True(t, ok, "test relies on concrete *store.Postgres for claimed_at backdating")
+	ctx := context.Background()
+
+	_, err := pgc.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+
+	r4, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	_, err = pgc.TransitionPendingToQueued(ctx, 10)
+	require.NoError(t, err)
+	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-empty", nil)
+	require.NoError(t, err)
+	require.Equal(t, r4.ID, claimed.ID)
+	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r4.ID, 5*time.Minute))
+
+	body, err := json.Marshal(api.HeartbeatRequest{ActiveRunIDs: []string{}})
+	require.NoError(t, err)
+	require.Equal(t, `{"activeRunIds":[]}`, string(body), "no omitempty: an empty set must still marshal a body")
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-empty/heartbeat", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+
+	got, err := pgc.GetRun(ctx, r4.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunFailed, got.Status, "empty-but-present active set must still reconcile stale runs")
+}
+
+// TestAgentHeartbeat_BodylessSkipsReconcile pins backward compatibility: a
+// legacy agent sends no heartbeat body at all (ContentLength == 0), and that
+// must never trigger reconcile — the controller cannot distinguish "no
+// active runs" from "doesn't know how to report them" without a body.
+func TestAgentHeartbeat_BodylessSkipsReconcile(t *testing.T) {
+	s, pg := newTestServer(t)
+	pgc, ok := pg.(*store.Postgres)
+	require.True(t, ok, "test relies on concrete *store.Postgres for claimed_at backdating")
+	ctx := context.Background()
+
+	_, err := pgc.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+
+	r5, err := pgc.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	_, err = pgc.TransitionPendingToQueued(ctx, 10)
+	require.NoError(t, err)
+	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-legacy", nil)
+	require.NoError(t, err)
+	require.Equal(t, r5.ID, claimed.ID)
+	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r5.ID, 5*time.Minute))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-legacy/heartbeat", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	s.Router().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+
+	got, err := pgc.GetRun(ctx, r5.ID)
+	require.NoError(t, err)
+	assert.Equal(t, api.RunRunning, got.Status, "bodyless heartbeat must skip reconcile entirely")
+}
+
 func TestBuildClaimStep_MatrixAndForeachNormalization(t *testing.T) {
 	// matrix is converted directly into a dimension list
 	entry := dsl.StepEntry{

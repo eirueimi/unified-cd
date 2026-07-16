@@ -178,6 +178,14 @@ func RunStepCapture(ctx context.Context, script string, stderr io.Writer, extraE
 // tests can shrink it.
 var logPusherAutoFlushEvery = 2 * time.Second
 
+// logPusherWriteFlushTimeout bounds how long a synchronous flush triggered
+// from Write (on crossing the flushBytes threshold) may block holding p.mu.
+// Without a bound, a controller partition could stall the writer (and thus
+// the running step) for as long as the underlying HTTP client takes to give
+// up. The 2s auto-flush ticker remains the steady drain path; this timeout
+// only caps the worst case on the write path. A var so tests can shrink it.
+var logPusherWriteFlushTimeout = 5 * time.Second
+
 // pendingBatch holds a batch of log requests that failed to send.
 type pendingBatch struct {
 	reqs []api.LogAppendRequest
@@ -197,6 +205,11 @@ type LogPusher struct {
 	client          *Client
 	flushBytes      int
 	masker          *secrets.Masker
+	// droppedLines counts log lines discarded by appendPendingLocked's
+	// drop-oldest eviction (e.g. during a sustained controller partition).
+	// Surfaced as a synthetic marker line on the next successful flush, then
+	// reset to 0. Guarded by mu.
+	droppedLines int
 }
 
 // NewLogPusher creates a new LogPusher with the given parameters.
@@ -276,7 +289,9 @@ func (p *LogPusher) Write(b []byte) (int, error) {
 	defer p.mu.Unlock()
 	n, _ := p.buf.Write(b)
 	if p.buf.Len() >= p.flushBytes {
-		p.flushLocked(context.Background())
+		fctx, cancel := context.WithTimeout(context.Background(), logPusherWriteFlushTimeout)
+		p.flushLocked(fctx)
+		cancel()
 	}
 	return n, nil
 }
@@ -319,34 +334,61 @@ func (p *LogPusher) flushLocked(ctx context.Context) {
 	p.pending = stillPending
 
 	// 2. Flush the current buffer
-	if p.buf.Len() == 0 {
-		return
-	}
-	chunk := p.buf.String()
-	p.buf.Reset()
+	if p.buf.Len() > 0 {
+		chunk := p.buf.String()
+		p.buf.Reset()
 
-	lines := splitLines(chunk)
-	if len(lines) == 0 {
-		return
-	}
-
-	reqs := make([]api.LogAppendRequest, 0, len(lines))
-	now := time.Now().UTC()
-	for _, line := range lines {
-		maskedLine := line
-		if p.masker != nil {
-			maskedLine = p.masker.Mask(line)
+		lines := splitLines(chunk)
+		if len(lines) > 0 {
+			reqs := make([]api.LogAppendRequest, 0, len(lines))
+			now := time.Now().UTC()
+			for _, line := range lines {
+				maskedLine := line
+				if p.masker != nil {
+					maskedLine = p.masker.Mask(line)
+				}
+				reqs = append(reqs, api.LogAppendRequest{
+					RunID:     p.runID,
+					StepIndex: p.stepIndex,
+					Stream:    p.stream,
+					Timestamp: now,
+					Line:      maskedLine,
+				})
+			}
+			if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, reqs); err != nil {
+				p.appendPendingLocked(pendingBatch{reqs: reqs})
+			}
 		}
-		reqs = append(reqs, api.LogAppendRequest{
+	}
+
+	// 3. If nothing is left queued (all retries and the current buffer, if
+	// any, were sent successfully) and lines were previously discarded by
+	// appendPendingLocked's drop-oldest eviction, surface a single synthetic
+	// marker line so operators see that logs were lost instead of the gap
+	// passing silently.
+	if len(p.pending) == 0 && p.droppedLines > 0 {
+		dropped := p.droppedLines
+
+		line := fmt.Sprintf("[%d log line(s) dropped: controller unreachable]", dropped)
+		if p.masker != nil {
+			line = p.masker.Mask(line)
+		}
+		markerReqs := []api.LogAppendRequest{{
 			RunID:     p.runID,
 			StepIndex: p.stepIndex,
-			Stream:    p.stream,
-			Timestamp: now,
-			Line:      maskedLine,
-		})
-	}
-	if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, reqs); err != nil {
-		p.appendPendingLocked(pendingBatch{reqs: reqs})
+			Stream:    "stderr",
+			Timestamp: time.Now().UTC(),
+			Line:      line,
+		}}
+		// Reset ONLY on confirmed delivery. On failure, leave droppedLines
+		// unchanged and do NOT queue the marker in p.pending: a queued marker
+		// would become the oldest entry and a later cap overflow would evict
+		// it, counting it as a single dropped line and permanently losing the
+		// true N. Instead the marker is re-attempted on the next successful
+		// flush, still carrying the accurate (and possibly larger) count.
+		if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, markerReqs); err == nil {
+			p.droppedLines = 0
+		}
 	}
 }
 
@@ -355,6 +397,7 @@ func (p *LogPusher) flushLocked(ctx context.Context) {
 func (p *LogPusher) appendPendingLocked(b pendingBatch) {
 	p.pending = append(p.pending, b)
 	for len(p.pending) > 1 && p.pendingSizeBytes() > p.maxPendingBytes {
+		p.droppedLines += len(p.pending[0].reqs)
 		p.pending = p.pending[1:]
 	}
 }

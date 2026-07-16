@@ -135,6 +135,12 @@ type Store interface {
 	// ListRunningRunIDsByAgent returns IDs of Running runs claimed by agentID,
 	// so an agent can fail runs its previous process incarnation left behind.
 	ListRunningRunIDsByAgent(ctx context.Context, agentID string) ([]string, error)
+	// ListReconcilableRunIDsByAgent returns IDs of Running runs claimed by
+	// agentID whose claimed_at is older than grace, so a heartbeat reconcile
+	// can fail runs the agent no longer reports as active without racing a
+	// run it only just claimed (whose first heartbeat reporting it hasn't
+	// landed yet).
+	ListReconcilableRunIDsByAgent(ctx context.Context, agentID string, grace time.Duration) ([]string, error)
 	GetRun(ctx context.Context, id string) (*api.Run, error)
 	GetRunSpec(ctx context.Context, id string) ([]byte, error)
 	ListRunsByJob(ctx context.Context, jobName string, limit int) ([]api.Run, error)

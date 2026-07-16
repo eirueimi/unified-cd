@@ -193,3 +193,14 @@ func (p *Postgres) BackdateRunCreatedAt(ctx context.Context, runID string, age t
 		age.Seconds(), runID)
 	return err
 }
+
+// BackdateRunClaimedAt sets a run's claimed_at to age before now. Test-only
+// helper (Postgres.pool is unexported, so packages other than store — e.g.
+// the heartbeat-reconcile tests in internal/controller — need this to
+// simulate a run claimed well outside the reconcile grace window).
+func (p *Postgres) BackdateRunClaimedAt(ctx context.Context, runID string, age time.Duration) error {
+	_, err := p.pool.Exec(ctx,
+		`UPDATE runs SET claimed_at = NOW() - ($1 * interval '1 second') WHERE id = $2`,
+		age.Seconds(), runID)
+	return err
+}

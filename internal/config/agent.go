@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +28,18 @@ type AgentConfig struct {
 	DrainTimeout   time.Duration `yaml:"drainTimeout"`
 	PauseImage     string        `yaml:"pauseImage"`
 	RunnerImage    string        `yaml:"runnerImage"`
+
+	// MinFreeDisk is the minimum free space (bytes) required on the
+	// workspace filesystem for the host agent to keep claiming runs. Zero
+	// disables the check. Host-only: k8s agents use pod volumes.
+	MinFreeDisk uint64 `yaml:"minFreeDisk"`
+
+	// WorkspaceRetentionDays is the age (in days) after which an inactive
+	// per-job workspace directory (working<slot>/<job>) becomes eligible
+	// for removal by the opt-in workspace GC. Zero (the default) disables
+	// the GC entirely — persistent workspaces are a feature (inter-run
+	// cache), so sweeping them must be an explicit opt-in. Host-only.
+	WorkspaceRetentionDays int `yaml:"workspaceRetentionDays"`
 }
 
 // LoadAgent reads a YAML config file and returns an AgentConfig.
@@ -75,6 +88,16 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 			if e = strings.TrimSpace(e); e != "" {
 				eff.ExposeEnv = append(eff.ExposeEnv, e)
 			}
+		}
+	}
+	if minFreeDiskEnv := os.Getenv("UNIFIED_AGENT_MIN_FREE_DISK"); minFreeDiskEnv != "" {
+		if v, err := strconv.ParseUint(minFreeDiskEnv, 10, 64); err == nil {
+			eff.MinFreeDisk = v
+		}
+	}
+	if retentionEnv := os.Getenv("UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS"); retentionEnv != "" {
+		if v, err := strconv.Atoi(retentionEnv); err == nil {
+			eff.WorkspaceRetentionDays = v
 		}
 	}
 
@@ -130,6 +153,12 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.RunnerImage != "" {
 		eff.RunnerImage = file.RunnerImage
+	}
+	if file.MinFreeDisk != 0 {
+		eff.MinFreeDisk = file.MinFreeDisk
+	}
+	if file.WorkspaceRetentionDays != 0 {
+		eff.WorkspaceRetentionDays = file.WorkspaceRetentionDays
 	}
 	return eff, nil
 }
