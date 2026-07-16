@@ -107,8 +107,11 @@ type jobDoc struct {
 
 // jobDocsInFile splits path's contents on the "\n---\n" document separator
 // (same convention as dsl/examples_parse_test.go) and parses every document
-// whose `kind:` is Job. Non-Job documents (WebhookReceiver, AppSource,
-// Schedule, GitCredential, or files with no `kind:` at all, e.g.
+// whose `kind:` is Job or JobTemplate (a JobTemplate — the uses: target kind
+// used across templates/ — is converted to the Job shape via ToSpec so the
+// same extraction walk applies; the schema has no finally, which ToSpec
+// leaves empty). Other documents (WebhookReceiver, AppSource, Schedule,
+// GitCredential, or files with no `kind:` at all, e.g.
 // examples/config/*.yaml) are silently skipped: they carry no steps: and so
 // contribute no run: scripts.
 //
@@ -144,14 +147,24 @@ func jobDocsInFile(t *testing.T, path string) []jobDoc {
 		if err := yaml.Unmarshal([]byte(doc), &probe); err != nil {
 			t.Fatalf("%s: doc %d: probe kind: %v", path, i, err)
 		}
-		if probe.Kind != "Job" {
+		switch probe.Kind {
+		case "Job":
+			job, err := dsl.Parse(strings.NewReader(doc))
+			if err != nil {
+				t.Fatalf("%s: doc %d: dsl.Parse: %v", path, i, err)
+			}
+			jobs = append(jobs, jobDoc{job: job, text: doc, idx: i})
+		case "JobTemplate":
+			tpl, err := dsl.ParseJobTemplate([]byte(doc))
+			if err != nil {
+				t.Fatalf("%s: doc %d: dsl.ParseJobTemplate: %v", path, i, err)
+			}
+			// Reuse the Job-shaped extraction walk: ToSpec carries the
+			// template's steps/shell (a JobTemplate has no finally).
+			jobs = append(jobs, jobDoc{job: &dsl.Job{Metadata: tpl.Metadata, Spec: tpl.ToSpec()}, text: doc, idx: i})
+		default:
 			continue
 		}
-		job, err := dsl.Parse(strings.NewReader(doc))
-		if err != nil {
-			t.Fatalf("%s: doc %d: dsl.Parse: %v", path, i, err)
-		}
-		jobs = append(jobs, jobDoc{job: job, text: doc, idx: i})
 	}
 	return jobs
 }
@@ -287,9 +300,13 @@ func runCorpusScript(t *testing.T, script string, dir string) (exitCode int, err
 // skipped for a non-default shell: are counted by wantSkipped instead, not
 // here.
 //
-// ** Adding a new example or template with a Job doc? Update these
-// constants to match (and re-derive them independently — don't just copy
-// whatever the test prints) as part of that change. **
+// ** Adding a new example or template with a Job or JobTemplate doc? Update
+// these constants to match (and re-derive them independently — don't just
+// copy whatever the test prints) as part of that change. **
+//
+// wantFilesWithJobDocs counts files containing >=1 Job OR JobTemplate doc
+// (templates/ migrated to kind: JobTemplate in the uses: JobTemplate change;
+// both kinds feed the same script-extraction walk).
 const (
 	wantFilesWithJobDocs = 50
 	wantTotalScripts     = 87
@@ -432,7 +449,7 @@ func TestCorpus(t *testing.T) {
 	}
 
 	if filesWithJobDocs != wantFilesWithJobDocs {
-		t.Fatalf("files containing >=1 Job doc = %d, want %d (hardcoded trip-wire — see the "+
+		t.Fatalf("files containing >=1 Job or JobTemplate doc = %d, want %d (hardcoded trip-wire — see the "+
 			"wantFilesWithJobDocs doc comment; update it if this change is an intentional corpus edit)",
 			filesWithJobDocs, wantFilesWithJobDocs)
 	}
