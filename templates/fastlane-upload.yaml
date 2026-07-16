@@ -1,5 +1,5 @@
 # fastlane lane execution job template (supports App Store Connect API key)
-# Register with unified-cd apply -f templates/fastlane-upload.yaml, then invoke via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/fastlane-upload.yaml@<ref>).
 #
 # [Note — this cannot be run in this repository's CI]
 # This only works on a macOS agent with fastlane / bundler / Xcode installed
@@ -23,7 +23,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/fastlane-upload.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: fastlane-upload
 spec:

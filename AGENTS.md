@@ -33,16 +33,16 @@ This keeps the main working tree clean and allows parallel development without b
 
 ## Docs, Examples, and Templates Hygiene
 
-**After implementing any change to behavior, the DSL schema, CLI flags, or configuration, verify the user-facing material before considering the work done.** Docs that contradict the code are worse than no docs. Check each of these:
+**After implementing any change to behavior, the DSL schema, CLI flags, or configuration, update `examples/` and `templates/` with the same rigor as `docs/` — a feature change is NOT done until all three are consistent with the code.** Docs that contradict the code are worse than no docs, and examples/templates ARE docs (they are the first thing users copy). The `kind: JobTemplate` migration (PR #54) shipped with `docs/` updated but every file in `templates/` still `kind: Job` and therefore broken — do not repeat that class of miss. Check each of these:
 
 1. **`docs/*.md`** — grep for every field/flag/behavior you added, renamed, or removed. Beyond the obvious reference pages (`jobs.md`, `resources.md`, `agents.md`, `configuration.md`, `kubernetes-integration.md`), always check the narrative docs: **`getting-started.md`** (do the quickstart steps still work end-to-end for a new user?), **`troubleshooting.md`** (add symptom entries for any new failure mode, with the exact grep-able error string), and **`operations.md`** (any new operator responsibility, e.g. disk/container hygiene).
-2. **`docs/field-reference.md` is generated** — never hand-edit; run `go generate ./...` and commit the diff.
-3. **`examples/**`** — every `kind: Job` YAML must parse under the current `dsl.Parse` AND still make semantic sense under current defaults (a parsing example that fails at runtime is still broken). Non-Job kinds and `examples/config/*.yaml`: check for removed/renamed fields and stale comments.
-4. **`templates/`** — uses-template files are resolved through their own path; check them against any step-level schema change.
+2. **Generated artifacts** — `docs/field-reference.md` and `schemas/unified-cd.schema.json` are BOTH generated; never hand-edit either. A new root resource kind must be added to `cmd/schemagen/main.go`'s `roots` AND `cmd/docgen/main.go`'s `rootKinds`, and its type definitions must live in `internal/dsl/types.go` or a `*_types.go` file (schemagen scans only those). Then run `go generate ./...` and commit the diff.
+3. **`examples/**`** — every YAML must parse under the current parser for its `kind:` AND still make semantic sense under current defaults (a parsing example that fails at runtime is still broken). `internal/dsl`'s `TestExamplesParse` gate-checks parsing; semantics (e.g. an example instructing `apply` of something no longer registrable, or `call:`ing a job that no longer exists) you must check by reading. Also `examples/config/*.yaml` and every example README: check for removed/renamed fields, stale setup instructions, and stale comments.
+4. **`templates/`** — files here are `kind: JobTemplate` (`uses:` targets; the documented standalone exception list lives in `internal/dsl/templates_parse_test.go`). `TestTemplatesParse` gate-checks every file against its intended schema — extend that test's expectations, never bypass it. Check template header comments (usage instructions) and `templates/README.md` against any schema/behavior change, and remember external references are PINNED (`@tag`/`@sha` point at old commits): a breaking template change needs a new tag and updated example refs.
 5. **Breaking changes** — add or update a `docs/migration-*.md` guide with a before→after table and the exact validation-error strings users will see.
-6. **`README.md`** and `schemas/unified-cd.schema.json` — keep the feature summary and JSON schema in lockstep with the DSL.
+6. **`README.md`** — keep the feature summary in lockstep with the DSL.
 
-A cheap final sweep: `grep -rn "<removed-field>" docs/ examples/ templates/ README.md` for every removed or renamed identifier — zero hits (outside historical specs/plans) before you finish.
+A cheap final sweep: `grep -rn "<removed-field>" docs/ examples/ templates/ README.md` for every removed or renamed identifier — zero hits (outside historical specs/plans) before you finish. For a renamed/removed KIND or contract change, also `grep -rn "kind: <old>" examples/ templates/` and re-run `go test ./internal/dsl/ -run 'Templates|Examples'`.
 
 ## Project Overview
 

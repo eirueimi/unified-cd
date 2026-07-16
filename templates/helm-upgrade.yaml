@@ -1,5 +1,5 @@
 # Helm upgrade --install job template
-# After registering with unified-cd apply -f templates/helm-upgrade.yaml, invoke it via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/helm-upgrade.yaml@<ref>).
 #
 # Agent requirements: helm, kubectl
 #
@@ -9,7 +9,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/helm-upgrade.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: helm-upgrade
 spec:

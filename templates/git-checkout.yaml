@@ -1,5 +1,5 @@
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: git-checkout
 spec:

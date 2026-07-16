@@ -1,8 +1,12 @@
-# Demonstrates: using a bundled templates/ job as a library via call:.
-# Templates are plain Jobs — register one, then call it by name with params.
+# Demonstrates: using a templates/ JobTemplate as a library via call:.
+#
+# call: runs a REGISTERED `kind: Job` by name — a JobTemplate cannot be
+# registered directly. The pattern is a thin wrapper Job (below) that
+# `uses:` the template and declares the run-level fields (agentSelector,
+# etc.) itself; register the wrapper, then call: it by name.
 #
 # call: vs uses: — which fits a template?
-#   call:  runs the template as an INDEPENDENT child run with its own
+#   call:  runs the wrapper as an INDEPENDENT child run with its own
 #          workspace. Right for param-only templates (smoke-check,
 #          notify-webhook, ...). Note the child needs a free agent slot, so a
 #          lone agent must allow >=2 concurrent runs (--max-concurrent 2).
@@ -11,9 +15,51 @@
 #          git-checkout, ...) — via call: they would see an empty workspace.
 #          See examples/jobs/git-template.yaml for the uses: form.
 # Usage:
-#   unified-cd apply -f templates/smoke-check.yaml     # register the template
-#   unified-cd apply -f examples/jobs/call-template.yaml
+#   unified-cd apply -f examples/jobs/call-template.yaml   # registers BOTH jobs below
 #   unified-cd run trigger deploy-and-verify
+---
+# Thin wrapper: registers the smoke-check JobTemplate as a callable Job.
+# It re-declares the inputs it forwards and inlines the template via uses:.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: smoke-check
+spec:
+  agentSelector:
+    - kind:docker
+  params:
+    inputs:
+      - name: url
+        type: string
+        required: true
+        description: "URL to poll"
+      - name: expect_status
+        type: string
+        default: "200"
+        description: "Expected HTTP status code"
+      - name: retries
+        type: string
+        default: "10"
+        description: "Poll attempts before failing"
+      - name: interval_seconds
+        type: string
+        default: "5"
+        description: "Seconds between attempts"
+      - name: body_contains
+        type: string
+        default: ""
+        description: "Substring the response body must contain (empty = skip)"
+  steps:
+    - name: smoke
+      uses:
+        job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@main
+        with:
+          url: "{{ .Params.url }}"
+          expect_status: "{{ .Params.expect_status }}"
+          retries: "{{ .Params.retries }}"
+          interval_seconds: "{{ .Params.interval_seconds }}"
+          body_contains: "{{ .Params.body_contains }}"
+---
 apiVersion: unified-cd/v1
 kind: Job
 metadata:

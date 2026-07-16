@@ -1,5 +1,5 @@
 # Object storage sync job template via AWS CLI (aws s3 sync)
-# After registering with unified-cd apply -f templates/s3-sync.yaml, invoke it via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/s3-sync.yaml@<ref>).
 #
 # Agent requirements: aws (AWS CLI v2)
 #
@@ -13,7 +13,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/s3-sync.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: s3-sync
 spec:

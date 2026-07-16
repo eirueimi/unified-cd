@@ -1,12 +1,12 @@
 # Post-deploy smoke test (URL polling) job template
-# After registering with unified-cd apply -f templates/smoke-check.yaml, invoke it via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/smoke-check.yaml@<ref>).
 #
 # Agent requirements: curl
 #
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/smoke-check.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: smoke-check
 spec:

@@ -1,5 +1,5 @@
 # Go module/build cache setup job template
-# After registering with unified-cd apply -f templates/setup-go.yaml, invoke it via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/setup-go.yaml@<ref>).
 #
 # Agent requirements: go (the go command must be on PATH)
 #
@@ -20,7 +20,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/setup-go.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: setup-go
 spec:

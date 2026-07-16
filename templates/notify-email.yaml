@@ -1,5 +1,5 @@
 # SMTP email notification job template (using curl's smtp(s):// support)
-# After registering with unified-cd apply -f templates/notify-email.yaml, invoke it via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/notify-email.yaml@<ref>).
 #
 # Required secrets:
 #   unified-cd secret set smtp-url smtps://smtp.example.com:465
@@ -9,7 +9,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/notify-email.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: notify-email
 spec:

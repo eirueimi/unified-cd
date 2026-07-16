@@ -1,5 +1,5 @@
 # Unity batch-mode build job template
-# Register with unified-cd apply -f templates/unity-build.yaml, then invoke via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/unity-build.yaml@<ref>).
 #
 # [Note — this cannot be run in this repository's CI]
 # This template only works on a physical/VM agent that has Unity Editor
@@ -26,7 +26,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/unity-build.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: unity-build
 spec:

@@ -1,5 +1,5 @@
 # Docker image build & push job template
-# Register with unified-cd apply -f templates/docker-build-push.yaml, then invoke via call.job
+# Reference from a job step via uses: (git://<host>/<owner>/<repo>/templates/docker-build-push.yaml@<ref>).
 #
 # Agent requirements: docker (buildx is also required for multi-platform builds)
 #
@@ -11,7 +11,7 @@
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/docker-build-push.yaml@v1
 apiVersion: unified-cd/v1
-kind: Job
+kind: JobTemplate
 metadata:
   name: docker-build-push
 spec:
