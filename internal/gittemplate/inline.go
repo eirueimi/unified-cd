@@ -61,8 +61,8 @@ func checkScopeStepAllowed(name string, container string, hasApproval, hasCall b
 // this package (e.g. internal/controller) that need to inline a uses:
 // template's steps directly — such as verifying shell: composition
 // end-to-end against api.ClaimStep.
-func ExpandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn, outerContainer string) ([]dsl.StepEntry, error) {
-	steps, _, err := expandUsesStep(usesName, with, tplSpec, outerRunsIn, outerContainer)
+func ExpandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn, outerContainer, outerIf string) ([]dsl.StepEntry, error) {
+	steps, _, err := expandUsesStep(usesName, with, tplSpec, outerRunsIn, outerContainer, outerIf)
 	return steps, err
 }
 
@@ -76,6 +76,26 @@ func ExpandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 var unsafeNameChar = regexp.MustCompile(`[^A-Za-z0-9_]`)
 
 func safeName(s string) string { return unsafeNameChar.ReplaceAllString(s, "_") }
+
+// combineIf merges the outer uses step's if: with an inlined step's own
+// (already ref-rewritten) if:. Both are CEL; parenthesized && keeps each
+// operand's semantics. Empty operands drop out. Note condition.go's
+// implicit-success rule keys on the presence of a status function
+// (failure()/success()/always()) anywhere in the text — an outer failure()
+// therefore correctly overrides the main-DAG implicit skip for the whole
+// combined expression.
+func combineIf(outer, inner string) string {
+	switch {
+	case outer == "" && inner == "":
+		return ""
+	case outer == "":
+		return inner
+	case inner == "":
+		return outer
+	default:
+		return "(" + outer + ") && (" + inner + ")"
+	}
+}
 
 func prefixedName(usesName, innerName string) string {
 	return safeName(usesName) + usesPrefixSep + safeName(innerName)
@@ -157,7 +177,7 @@ func rewriteMap(m map[string]string, usesName string, innerNames map[string]bool
 // keeps its own container: if set, otherwise inherits outerContainer. A template
 // step that still carries runsIn: is always rejected — step-level runsIn: was
 // removed in favor of container:.
-func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn, outerContainer string) ([]dsl.StepEntry, podContribution, error) {
+func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, outerRunsIn *dsl.RunsIn, outerContainer, outerIf string) ([]dsl.StepEntry, podContribution, error) {
 	if len(tplSpec.Steps) == 0 {
 		return nil, podContribution{}, fmt.Errorf("template job has no steps")
 	}
@@ -256,6 +276,7 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 	inputsStep := dsl.StepEntry{
 		Name:    inputsStepName(usesName),
 		Run:     "true",
+		If:      outerIf,
 		Outputs: inputsOutputs,
 	}
 
@@ -268,7 +289,7 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 				ns := ps
 				ns.Name = prefixedName(usesName, ps.Name)
 				ns.Run = rewriteRefs(ps.Run, usesName, innerNames)
-				ns.If = rewriteRefs(ps.If, usesName, innerNames)
+				ns.If = combineIf(outerIf, rewriteRefs(ps.If, usesName, innerNames))
 				ns.Env = rewriteMap(ps.Env, usesName, innerNames)
 				ns.Outputs = rewriteMap(ps.Outputs, usesName, innerNames)
 				if ps.Cache != nil {
@@ -330,7 +351,7 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 			ns := dsl.StepEntry{
 				Name:            prefixedName(usesName, inner.Name),
 				Run:             rewriteRefs(inner.Run, usesName, innerNames),
-				If:              rewriteRefs(inner.If, usesName, innerNames),
+				If:              combineIf(outerIf, rewriteRefs(inner.If, usesName, innerNames)),
 				Env:             rewriteMap(inner.Env, usesName, innerNames),
 				Outputs:         rewriteMap(inner.Outputs, usesName, innerNames),
 				ContinueOnError: inner.ContinueOnError,
@@ -436,6 +457,7 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 	captureStep := dsl.StepEntry{
 		Name:    usesName,
 		Run:     "true",
+		If:      outerIf,
 		Outputs: outputsMap,
 	}
 

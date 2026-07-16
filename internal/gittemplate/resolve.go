@@ -202,7 +202,7 @@ func (r *Resolver) resolveSteps(
 			return nil, podContribution{}, newResolveError("step %q: a template used with runsIn.image (scope mode) cannot contribute pod containers/volumes to the caller (nested uses template declares a podTemplate)", s.Name)
 		}
 
-		expanded, expandContrib, err := expandUsesStep(s.Name, s.Uses.WithAsStrings(), tplSpec, s.RunsIn, s.Container)
+		expanded, expandContrib, err := expandUsesStep(s.Name, s.Uses.WithAsStrings(), tplSpec, s.RunsIn, s.Container, s.If)
 		if err != nil {
 			return nil, podContribution{}, newResolveError("step %q: expand uses: %v", s.Name, err)
 		}

@@ -1077,7 +1077,7 @@ func TestBuildClaimResponse_Shell_UsesComposition_TemplateShellWinsOverCaller(t 
 		Shell: []string{"python3", "-c"},
 		Steps: []dsl.StepEntry{{Name: "build", Run: "print('hi')"}},
 	}
-	expanded, err := gittemplate.ExpandUsesStep("tpl", nil, tplSpec, nil, "")
+	expanded, err := gittemplate.ExpandUsesStep("tpl", nil, tplSpec, nil, "", "")
 	require.NoError(t, err)
 
 	spec := dsl.Spec{
@@ -1108,7 +1108,7 @@ func TestBuildClaimResponse_Shell_UsesComposition_CallerFillsUndeclaredTemplate(
 	tplSpec := dsl.Spec{
 		Steps: []dsl.StepEntry{{Name: "build", Run: "make"}},
 	}
-	expanded, err := gittemplate.ExpandUsesStep("tpl", nil, tplSpec, nil, "")
+	expanded, err := gittemplate.ExpandUsesStep("tpl", nil, tplSpec, nil, "", "")
 	require.NoError(t, err)
 
 	spec := dsl.Spec{
