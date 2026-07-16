@@ -184,7 +184,12 @@ func runOne(ctx context.Context, step api.ClaimStep, run func(context.Context, a
 	defer func() {
 		if r := recover(); r != nil {
 			stack := debug.Stack()
-			slog.Error("step panicked", "step", step.Name, "index", step.Index, "panic", r)
+			// Structured "stack" field: runOne's returned error is often
+			// discarded upstream (the orchestrator's step-runner closure always
+			// returns nil in production and handles its own failures via the
+			// in-closure recover in orchestrator.go), so the stack must reach a
+			// log here rather than only living inside the error string.
+			slog.Error("step panicked", "step", step.Name, "index", step.Index, "panic", r, "stack", string(stack))
 			perr := fmt.Errorf("step %q panicked: %v\n%s", step.Name, r, stack)
 			if step.ContinueOnError {
 				err = nil

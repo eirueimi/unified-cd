@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -258,6 +259,40 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed", EndedAt: time.Now().UTC(),
 				})
 			}
+
+			// Panic guard (PRIMARY path). A panic in this step's body — backend
+			// exec (b.RunDefault / RunNamedContainer / RunInScope), template
+			// expansion, output evaluation, etc. — is handled here exactly like a
+			// normal step failure: ship the panic to the STEP's own log, send a
+			// terminal Failed ReportStep, record the failure (so overallStatus
+			// becomes Failed and subsequent steps auto-skip on the failed status),
+			// and return nil so RunPipeline continues normally rather than bailing
+			// on a returned error. Without this, runOne's own recover (pipeline.go)
+			// still turns the panic into a returned error that marks the run
+			// Failed — but only AFTER this closure has already sent the "Running"
+			// ReportStep (line ~363) and panicked before its terminal report, so
+			// the STEP is left stuck "Running" forever with an empty log and no
+			// author-visible cause. runOne's recover remains a BACKSTOP for panics
+			// OUTSIDE this closure (e.g. in runParallel/runSequential machinery),
+			// but this is the seam that keeps the step's terminal report + log
+			// intact. recordFailure inside markFailed still honours ContinueOnError
+			// (a panic on a continueOnError step is reported Failed but does not
+			// fail the run), matching a normal error on such a step.
+			defer func() {
+				if r := recover(); r != nil {
+					stack := debug.Stack()
+					slog.Error("step panicked", "runId", c.RunID, "step", step.Name, "index", step.Index, "panic", r, "stack", string(stack))
+					reportCtx := context.WithoutCancel(stepCtx)
+					_ = client.AppendLogBulk(reportCtx, agentID, c.RunID, step.Index, []api.LogAppendRequest{{
+						RunID:     c.RunID,
+						StepIndex: step.Index,
+						Stream:    "stderr",
+						Timestamp: time.Now().UTC(),
+						Line:      fmt.Sprintf("step panicked: %v", r),
+					}})
+					markFailed(reportCtx)
+				}
+			}()
 
 			// if: evaluate condition against the supplied run status. For the main DAG
 			// every step is evaluated — including steps with an empty if: — so that a

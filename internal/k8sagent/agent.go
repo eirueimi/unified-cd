@@ -194,6 +194,9 @@ claimLoop:
 			defer func() {
 				if r := recover(); r != nil {
 					slog.Error("k8s: agent panic in dispatch", "runId", c.RunID, "panic", r, "stack", string(debug.Stack()))
+					// An inner recover so a panic INSIDE failRun (e.g. a nil
+					// client) can't re-crash the dispatch goroutine.
+					defer func() { _ = recover() }()
 					a.failRun(runCtx, c.RunID, fmt.Sprintf("agent panic: %v", r))
 				}
 			}()

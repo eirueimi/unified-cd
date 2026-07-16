@@ -329,6 +329,9 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("agent panic in executeRun", "runId", c.RunID, "panic", r, "stack", string(debug.Stack()))
+			// An inner recover so a panic INSIDE failRun (e.g. a nil client)
+			// can't re-crash this goroutine and defeat the guard.
+			defer func() { _ = recover() }()
 			a.failRun(ctx, c.RunID, fmt.Sprintf("agent panic: %v", r))
 		}
 	}()
