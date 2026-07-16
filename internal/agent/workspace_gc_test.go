@@ -90,6 +90,86 @@ func TestGCWorkspaces_RetentionBoundary(t *testing.T) {
 	require.DirExists(t, boundary)
 }
 
+// TestGCWorkspaces_ProtectsDirRegisteredViaRunSet is the data-loss
+// regression for the claim→Add ordering fix: it exercises the exact path
+// runLoop uses to protect a workspace — enroll the workDir in the shared
+// *RunSet, then feed activeWorkDirSet(rs.Snapshot()) to gcWorkspaces. An
+// aged dir that has been registered this way must survive even though it is
+// old enough to otherwise qualify, proving that once runLoop calls
+// activeWorkDirs.Add(workDir) (which it now does BEFORE prepareWorkspace)
+// the periodic sweep can never remove the dir out from under the live claim.
+func TestGCWorkspaces_ProtectsDirRegisteredViaRunSet(t *testing.T) {
+	base := t.TempDir()
+	agedDir := filepath.Join(base, "working0", "resumingjob")
+	require.NoError(t, os.MkdirAll(agedDir, 0o755))
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(agedDir, old, old))
+
+	// Mirror runLoop: register the workDir in the shared RunSet before any
+	// sweep observes it.
+	rs := NewRunSet()
+	rs.Add(agedDir)
+
+	removed, err := gcWorkspaces(base, 7*24*time.Hour, activeWorkDirSet(rs.Snapshot()), time.Now())
+	require.NoError(t, err)
+	require.Empty(t, removed, "a dir registered in activeWorkDirs must never be swept")
+	require.DirExists(t, agedDir, "aged-but-registered workspace dir must survive the sweep")
+
+	// After the claim retires it (rs.Remove), the same sweep now reclaims it —
+	// confirms the protection is exactly scoped to the active window.
+	rs.Remove(agedDir)
+	removed, err = gcWorkspaces(base, 7*24*time.Hour, activeWorkDirSet(rs.Snapshot()), time.Now())
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{agedDir}, removed, "once retired, the aged dir is reclaimed")
+	require.NoDirExists(t, agedDir)
+}
+
+// TestGCWorkspaces_ConcurrentSweepDoesNotRemoveActiveDir runs the real
+// workspaceGCLoop concurrently against an aged dir that a simulated claim
+// has registered in activeWorkDirs, with the GC interval shortened so the
+// loop actually fires during the test. The dir must survive every sweep for
+// as long as it stays registered — the concurrent-safety complement to the
+// deterministic ordering test above.
+func TestGCWorkspaces_ConcurrentSweepDoesNotRemoveActiveDir(t *testing.T) {
+	base := t.TempDir()
+	agedDir := filepath.Join(base, "working0", "activejob")
+	require.NoError(t, os.MkdirAll(agedDir, 0o755))
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(agedDir, old, old))
+
+	activeWorkDirs := NewRunSet()
+	activeWorkDirs.Add(agedDir) // claim registers it before any sweep
+
+	// Shorten the sweep cadence just for this test so the periodic loop fires
+	// repeatedly within the observation window.
+	orig := workspaceGCInterval
+	workspaceGCInterval = 5 * time.Millisecond
+	defer func() { workspaceGCInterval = orig }()
+
+	a := &Agent{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.workspaceGCLoop(ctx, base, 7*24*time.Hour, activeWorkDirs)
+	}()
+
+	// Let several sweeps run while the dir is registered.
+	time.Sleep(100 * time.Millisecond)
+	require.DirExists(t, agedDir, "concurrent sweeps must not remove an actively-registered dir")
+
+	// Retire the claim; the loop should now reclaim the aged dir.
+	activeWorkDirs.Remove(agedDir)
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(agedDir)
+		return os.IsNotExist(err)
+	}, 2*time.Second, 5*time.Millisecond, "aged dir should be reclaimed once retired")
+
+	cancel()
+	<-done
+}
+
 // newGCTestServer returns an httptest.Server that satisfies everything
 // Agent.Run needs for a brief run (register, an empty claim, and a
 // catch-all 204 for reconcile/heartbeat/deregister/etc.), so these tests can

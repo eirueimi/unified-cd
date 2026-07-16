@@ -29,18 +29,21 @@ import (
 //     (now.Sub(mtime) > retention — a dir aged exactly at the boundary is
 //     kept).
 //
-// Active-set key: the ABSOLUTE PATH of the working<slot>/<job> directory,
-// not a run ID and not a bare sanitized job name. The shared RunSet (see
-// runset.go, Task 3) tracks run IDs, which the agent has no way to map back
-// to a job/workspace directory without extra bookkeeping. A bare job name
-// is also unsafe on its own: claimWorkDir is slot-scoped, so
-// working0/foo and working1/foo are two DIFFERENT directories that can
-// legitimately be in use by two different concurrent runs of the same job
-// — keying by job name alone would conflate them. The caller (agent.go)
-// already computes the exact absolute workDir for every in-flight claim, so
-// it threads that path straight into a second, workDir-keyed RunSet
-// (populated/cleared alongside the existing run-ID activeRuns set) and
-// passes its snapshot here as active.
+// Active-set key: the working<slot>/<job> directory PATH (the same
+// wsBase-derived path claimWorkDir builds — absolute when WorkspaceDir is
+// absolute, relative when it is), not a run ID and not a bare sanitized job
+// name. The shared RunSet (see runset.go, Task 3) tracks run IDs, which the
+// agent has no way to map back to a job/workspace directory without extra
+// bookkeeping. A bare job name is also unsafe on its own: claimWorkDir is
+// slot-scoped, so working0/foo and working1/foo are two DIFFERENT
+// directories that can legitimately be in use by two different concurrent
+// runs of the same job — keying by job name alone would conflate them. The
+// caller (agent.go) already computes the exact workDir for every in-flight
+// claim, so it threads that path straight into a second, workDir-keyed
+// RunSet (populated/cleared alongside the existing run-ID activeRuns set)
+// and passes its snapshot here as active. Because both this function and the
+// caller build the key from the same wsBase root via filepath.Join, they
+// match exactly regardless of absolute/relative form.
 func gcWorkspaces(wsBase string, retention time.Duration, active map[string]struct{}, now time.Time) ([]string, error) {
 	var removed []string
 
@@ -50,14 +53,19 @@ func gcWorkspaces(wsBase string, retention time.Duration, active map[string]stru
 	}
 
 	for _, slotDir := range slotDirs {
-		slotInfo, err := os.Stat(slotDir)
+		// Lstat, not Stat: a symlink at working<slot> must NOT be followed —
+		// following it would let the walk (and a later RemoveAll of a child)
+		// escape wsBase. A symlinked slot dir fails the IsDir() check below
+		// (Lstat reports the link itself, not its target) and is skipped.
+		slotInfo, err := os.Lstat(slotDir)
 		if err != nil {
-			slog.Warn("workspace gc: stat slot dir failed", "dir", slotDir, "error", err)
+			slog.Warn("workspace gc: lstat slot dir failed", "dir", slotDir, "error", err)
 			continue
 		}
 		if !slotInfo.IsDir() || strings.HasPrefix(filepath.Base(slotDir), ".") {
 			// Defensive: the "working*" glob can't match a dot-prefixed name,
-			// but never remove/descend into one regardless.
+			// but never remove/descend into one regardless. A symlink is not a
+			// dir per Lstat, so it is excluded here too.
 			continue
 		}
 

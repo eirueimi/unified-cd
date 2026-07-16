@@ -260,18 +260,23 @@ func (a *Agent) Run(ctx context.Context) error {
 	// goroutine.
 	activeRuns := NewRunSet()
 
-	// activeWorkDirs tracks the absolute path of every working<slot>/<job>
-	// directory this process currently has a claim executing in — a second,
-	// workDir-keyed RunSet enrolled/retired alongside activeRuns (see
-	// runLoop). It exists purely to feed gcWorkspaces' active-set parameter;
-	// see workspace_gc.go's doc comment for why a workDir path (not a run ID
-	// or bare job name) is the safe key. Always constructed (cheap), even
-	// when the GC is disabled, so runLoop's signature doesn't need to branch
-	// on WorkspaceRetentionDays.
+	// activeWorkDirs tracks every working<slot>/<job> directory this process
+	// currently has a claim executing in, keyed by the same wsBase-derived
+	// path runLoop computes via claimWorkDir — a second, workDir-keyed RunSet
+	// enrolled/retired alongside activeRuns (see runLoop). It exists purely to
+	// feed gcWorkspaces' active-set parameter; see workspace_gc.go's doc
+	// comment for why a workDir path (not a run ID or bare job name) is the
+	// safe key. Always constructed (cheap), even when the GC is disabled, so
+	// runLoop's signature doesn't need to branch on WorkspaceRetentionDays.
 	activeWorkDirs := NewRunSet()
 
 	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot)
 
+	// gcDone is closed once workspaceGCLoop has fully stopped, so Run can join
+	// it (like hbDone) and guarantee no sweep outlives Run. nil when the GC is
+	// disabled — a receive on a nil channel blocks forever, so it is only
+	// joined below when non-nil.
+	var gcDone <-chan struct{}
 	if a.WorkspaceRetentionDays > 0 {
 		retention := time.Duration(a.WorkspaceRetentionDays) * 24 * time.Hour
 		// Startup sweep: activeWorkDirs is necessarily empty here (nothing has
@@ -284,7 +289,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		} else if len(removed) > 0 {
 			slog.Info("workspace gc: startup sweep removed aged workspace dirs", "count", len(removed), "dirs", removed)
 		}
-		go a.workspaceGCLoop(runCtx, wsBase, retention, activeWorkDirs)
+		done := make(chan struct{})
+		gcDone = done
+		go func() {
+			defer close(done)
+			a.workspaceGCLoop(runCtx, wsBase, retention, activeWorkDirs)
+		}()
 	}
 
 	var wg sync.WaitGroup
@@ -297,12 +307,16 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	wg.Wait()
 
-	// All slots are done: stop the heartbeat and JOIN it before returning, so a
-	// beat can't outlive Run. runCancel is deferred too, but that only signals
-	// the goroutine asynchronously — without this join a late tick could fire
-	// after Run returned (a leak the drain regression test observes).
+	// All slots are done: stop the heartbeat and GC loop and JOIN them before
+	// returning, so neither a beat nor a sweep can outlive Run. runCancel is
+	// deferred too, but that only signals the goroutines asynchronously —
+	// without these joins a late tick could fire after Run returned (a leak
+	// the drain regression test observes).
 	runCancel()
 	<-hbDone
+	if gcDone != nil {
+		<-gcDone
+	}
 
 	// ctx is already cancelled, so use a new context for deregistration.
 	deregCtx, deregCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -316,11 +330,13 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 // runLoop runs the claim loop for a single slot. activeRuns is enrolled with
-// the claimed run ID before executeRun and retired (via defer) right after,
-// so the run is only ever reported active while it is actually executing.
-// activeWorkDirs mirrors that same enroll/retire lifecycle keyed by the
-// claim's absolute workDir path instead of its run ID, feeding the workspace
-// GC's active-set (see workspace_gc.go and Run's activeWorkDirs doc comment).
+// the claimed run ID once prepareWorkspace succeeds and retired (via defer)
+// right after executeRun, so the run is only ever reported active while it is
+// actually executing. activeWorkDirs is keyed by the claim's wsBase-derived
+// workDir path instead of its run ID and, unlike activeRuns, is enrolled
+// BEFORE prepareWorkspace (and retired only after executeRun) so the
+// workspace GC can never remove a dir this claim is still populating — see
+// the ordering comment at the Add call and workspace_gc.go's doc comment.
 func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string, activeRuns, activeWorkDirs *RunSet) {
 	for {
 		if claimCtx.Err() != nil {
@@ -360,27 +376,37 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			continue
 		}
 		workDir := claimWorkDir(wsBase, slot, resp.JobName)
-		mode := "isolated"
-		if resp.Native {
-			mode = "native"
-		}
-		clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
-		if err := prepareWorkspace(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
-			// The claim is ours but its workspace could not be prepared, so the
-			// run can never start. Fail it on the controller (retried until it
-			// lands) rather than leaving it Running until the stuck-run reaper
-			// trips — the same failure path executeRun uses.
-			a.failRun(runCtx, resp.RunID, fmt.Sprintf("prepare workspace failed: %v", err))
-			continue
-		}
-		activeRuns.Add(resp.RunID)
+		// Protect workDir from the workspace GC BEFORE prepareWorkspace, not
+		// after: prepareWorkspace (and executeRun) populate this directory,
+		// and a job resuming after being idle past retention is exactly the
+		// dir the periodic sweep would find aged. If activeWorkDirs.Add ran
+		// only after prepareWorkspace, a concurrent workspaceGCLoop snapshot
+		// taken in the window between claimWorkDir and the Add could
+		// os.RemoveAll a live run's workspace mid-populate (data loss). Adding
+		// here — with the retire deferred immediately — means the dir is
+		// covered for the entire lifetime of this claim.
 		activeWorkDirs.Add(workDir)
 		func() {
+			defer activeWorkDirs.Remove(workDir)
+
+			mode := "isolated"
+			if resp.Native {
+				mode = "native"
+			}
+			clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
+			if err := prepareWorkspace(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
+				// The claim is ours but its workspace could not be prepared, so the
+				// run can never start. Fail it on the controller (retried until it
+				// lands) rather than leaving it Running until the stuck-run reaper
+				// trips — the same failure path executeRun uses.
+				a.failRun(runCtx, resp.RunID, fmt.Sprintf("prepare workspace failed: %v", err))
+				return
+			}
+			activeRuns.Add(resp.RunID)
 			// executeRun already recovers its own panics (see its doc comment),
 			// but deferring Remove here means a future change to that guarantee
 			// can't silently leave a finished run stuck in the active set.
 			defer activeRuns.Remove(resp.RunID)
-			defer activeWorkDirs.Remove(workDir)
 			a.executeRun(runCtx, resp, workDir)
 		}()
 	}
@@ -393,8 +419,9 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 // needs a tight minute-scale loop, whereas workspace retention is
 // expressed and reasoned about in whole days (WorkspaceRetentionDays), so
 // hourly is frequent enough to reclaim space promptly without adding
-// meaningful overhead.
-const workspaceGCInterval = time.Hour
+// meaningful overhead. A var (not a const) only so tests can shorten it; no
+// production path mutates it.
+var workspaceGCInterval = time.Hour
 
 // workspaceGCLoop periodically sweeps aged, inactive per-job workspace
 // directories under wsBase (see gcWorkspaces) until ctx is done. Only
