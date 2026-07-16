@@ -21,7 +21,7 @@
 #   - branch names are always fetched fresh on every run
 #   - a 40-char commit SHA behaves exactly like a tag (pinned + cached). Pin to
 #     any commit at or after the kind: JobTemplate migration, e.g. the commit a
-#     tag points at: `git rev-parse 'v0.2.0^{commit}'`.
+#     tag points at: `git rev-parse 'v0.3.0^{commit}'`.
 ---
 apiVersion: unified-cd/v1
 kind: Job
@@ -35,9 +35,9 @@ spec:
     - name: smokeFromTag
       uses:
         # semver tag → cached in the object store after the first fetch.
-        # v0.2.0 is the first tag where templates/ are kind: JobTemplate; older
-        # tags (v0.1.0) predate the migration and are rejected by the kind gate.
-        job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@v0.2.0
+        # v0.3.0 is the first tag where templates/ are kind: JobTemplate; older
+        # tags (v0.2.x and earlier) predate the migration and are rejected by the kind gate.
+        job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@v0.3.0
         with:
           url: "https://github.com"
           # NOTE: template input defaults ARE applied on the uses: (inline)
