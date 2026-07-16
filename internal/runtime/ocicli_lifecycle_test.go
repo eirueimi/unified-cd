@@ -81,7 +81,8 @@ func TestOCICLICopyInArgv(t *testing.T) {
 // argv-building logic that Create dispatches through exec.
 func TestOCICLICreateArgv_WorkDir(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "golang:1.22", WorkDir: "/workspace"})
+	got, err := r.createArgs(CreateSpec{Image: "golang:1.22", WorkDir: "/workspace"})
+	assert.NoError(t, err)
 	foundFlag := false
 	for i, a := range got {
 		if a == "-w" {
@@ -101,7 +102,8 @@ func TestOCICLICreateArgv_WorkDir(t *testing.T) {
 // -w "".
 func TestOCICLICreateArgv_NoWorkDirWhenEmpty(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "golang:1.22"})
+	got, err := r.createArgs(CreateSpec{Image: "golang:1.22"})
+	assert.NoError(t, err)
 	for _, a := range got {
 		if a == "-w" {
 			t.Fatalf("expected no -w flag when WorkDir is empty, argv = %v", got)
@@ -109,33 +111,42 @@ func TestOCICLICreateArgv_NoWorkDirWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestOCICLICreateArgv_Mounts is the regression test for G6: bind mounts must
+// use the `--mount type=bind,source=...,target=...` form, not `-v
+// host:container` (ambiguous on Windows, where the host path itself contains
+// a drive-letter colon).
 func TestOCICLICreateArgv_Mounts(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{
+	got, err := r.createArgs(CreateSpec{
 		Image:   "alpine",
 		WorkDir: "/workspace",
 		Mounts:  []Mount{{HostPath: "/host/ws", ContainerPath: "/workspace"}},
 	})
+	assert.NoError(t, err)
 	found := false
 	for i, a := range got {
-		if a == "-v" {
+		if a == "--mount" {
 			found = true
-			if i+1 >= len(got) || got[i+1] != "/host/ws:/workspace" {
-				t.Fatalf("expected -v /host/ws:/workspace, argv = %v", got)
+			if i+1 >= len(got) || got[i+1] != "type=bind,source=/host/ws,target=/workspace" {
+				t.Fatalf("expected --mount type=bind,source=/host/ws,target=/workspace, argv = %v", got)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("expected -v in argv, got %v", got)
+		t.Fatalf("expected --mount in argv, got %v", got)
+	}
+	if strings.Contains(strings.Join(got, " "), " -v ") {
+		t.Fatalf("old -v form still present: %v", got)
 	}
 }
 
 func TestOCICLICreateArgv_NoMountsWhenEmpty(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "alpine"})
+	got, err := r.createArgs(CreateSpec{Image: "alpine"})
+	assert.NoError(t, err)
 	for _, a := range got {
-		if a == "-v" {
-			t.Fatalf("expected no -v flag when Mounts is empty, argv = %v", got)
+		if a == "-v" || a == "--mount" {
+			t.Fatalf("expected no mount flag when Mounts is empty, argv = %v", got)
 		}
 	}
 }
@@ -146,7 +157,8 @@ func TestOCICLICreateArgv_NoMountsWhenEmpty(t *testing.T) {
 // reachable on localhost, mirroring a k8s pod's shared network namespace.
 func TestCreateArgs_NetworkContainer(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	args := r.createArgs(CreateSpec{Image: "busybox", NetworkContainer: "abc123"})
+	args, err := r.createArgs(CreateSpec{Image: "busybox", NetworkContainer: "abc123"})
+	assert.NoError(t, err)
 	assert.Contains(t, strings.Join(args, " "), "--network container:abc123")
 }
 
@@ -154,7 +166,8 @@ func TestCreateArgs_NetworkContainer(t *testing.T) {
 // --network entirely (preserves prior behavior / driver default).
 func TestCreateArgs_NoNetworkByDefault(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	args := r.createArgs(CreateSpec{Image: "busybox"})
+	args, err := r.createArgs(CreateSpec{Image: "busybox"})
+	assert.NoError(t, err)
 	assert.NotContains(t, strings.Join(args, " "), "--network")
 }
 
@@ -164,7 +177,8 @@ func TestCreateArgs_NoNetworkByDefault(t *testing.T) {
 // still get "sleep infinity" appended after the image.
 func TestOCICLICreateArgv_CommandEmitsSleepInfinity(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "golang:1.22", Args: []string{"sleep", "infinity"}})
+	got, err := r.createArgs(CreateSpec{Image: "golang:1.22", Args: []string{"sleep", "infinity"}})
+	assert.NoError(t, err)
 	want := []string{"run", "-d", "golang:1.22", "sleep", "infinity"}
 	assert.Equal(t, want, got)
 }
@@ -175,7 +189,8 @@ func TestOCICLICreateArgv_CommandEmitsSleepInfinity(t *testing.T) {
 // run unmodified, or the sidecar's service (e.g. mysqld) never starts.
 func TestOCICLICreateArgv_NilCommandRunsImageEntrypoint(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "mysql:8"})
+	got, err := r.createArgs(CreateSpec{Image: "mysql:8"})
+	assert.NoError(t, err)
 	want := []string{"run", "-d", "mysql:8"}
 	assert.Equal(t, want, got)
 	assert.NotContains(t, strings.Join(got, " "), "sleep",
@@ -183,38 +198,40 @@ func TestOCICLICreateArgv_NilCommandRunsImageEntrypoint(t *testing.T) {
 }
 
 // TestOCICLICreateArgv_ReadOnlyMount is the regression test for the /.ucd
-// shim injection: a Mount with ReadOnly:true must emit the `:ro` suffix on
-// `-v host:container`, so the shim binary can never be modified/deleted from
-// inside a container that shares it.
+// shim injection: a Mount with ReadOnly:true must emit the `,readonly`
+// suffix on the `--mount type=bind,...` value, so the shim binary can never
+// be modified/deleted from inside a container that shares it.
 func TestOCICLICreateArgv_ReadOnlyMount(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{
+	got, err := r.createArgs(CreateSpec{
 		Image:  "alpine",
 		Mounts: []Mount{{HostPath: "/host/tools", ContainerPath: "/.ucd", ReadOnly: true}},
 	})
-	assert.Contains(t, got, "-v")
+	assert.NoError(t, err)
+	assert.Contains(t, got, "--mount")
 	found := false
 	for i, a := range got {
-		if a == "-v" && i+1 < len(got) {
-			if got[i+1] == "/host/tools:/.ucd:ro" {
+		if a == "--mount" && i+1 < len(got) {
+			if got[i+1] == "type=bind,source=/host/tools,target=/.ucd,readonly" {
 				found = true
 			}
 		}
 	}
-	assert.True(t, found, "expected -v /host/tools:/.ucd:ro in argv, got %v", got)
+	assert.True(t, found, "expected --mount type=bind,source=/host/tools,target=/.ucd,readonly in argv, got %v", got)
 }
 
 // TestOCICLICreateArgv_MountNotReadOnlyOmitsRO confirms a plain (non-readonly)
-// mount keeps its prior two-segment form — no accidental `:ro` on the
+// mount omits the `,readonly` suffix — no accidental read-only on the
 // existing workspace bind mount.
 func TestOCICLICreateArgv_MountNotReadOnlyOmitsRO(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{
+	got, err := r.createArgs(CreateSpec{
 		Image:  "alpine",
 		Mounts: []Mount{{HostPath: "/host/ws", ContainerPath: "/workspace"}},
 	})
-	assert.Contains(t, got, "/host/ws:/workspace")
-	assert.NotContains(t, got, "/host/ws:/workspace:ro")
+	assert.NoError(t, err)
+	assert.Contains(t, got, "type=bind,source=/host/ws,target=/workspace")
+	assert.NotContains(t, got, "type=bind,source=/host/ws,target=/workspace,readonly")
 }
 
 // TestOCICLICreateArgv_CommandHonorsCustomArgv confirms a sidecar's own
@@ -223,7 +240,8 @@ func TestOCICLICreateArgv_MountNotReadOnlyOmitsRO(t *testing.T) {
 // by sleep infinity.
 func TestOCICLICreateArgv_CommandHonorsCustomArgv(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "redis:7", Args: []string{"redis-server", "--port", "6380"}})
+	got, err := r.createArgs(CreateSpec{Image: "redis:7", Args: []string{"redis-server", "--port", "6380"}})
+	assert.NoError(t, err)
 	want := []string{"run", "-d", "redis:7", "redis-server", "--port", "6380"}
 	assert.Equal(t, want, got)
 }
@@ -233,7 +251,8 @@ func TestOCICLICreateArgv_CommandHonorsCustomArgv(t *testing.T) {
 // the image is exactly the args (CMD override, image ENTRYPOINT untouched).
 func TestOCICLICreateArgs_ArgsOnly_Positional(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "img", Args: []string{"serve", "--port", "80"}})
+	got, err := r.createArgs(CreateSpec{Image: "img", Args: []string{"serve", "--port", "80"}})
+	assert.NoError(t, err)
 	assert.NotContains(t, got, "--entrypoint")
 	assert.Equal(t, []string{"img", "serve", "--port", "80"}, got[len(got)-4:])
 }
@@ -244,7 +263,8 @@ func TestOCICLICreateArgs_ArgsOnly_Positional(t *testing.T) {
 // argv after the image.
 func TestOCICLICreateArgs_EntrypointOverride_ClearsAndPositions(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get", "pods"}})
+	got, err := r.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get", "pods"}})
+	assert.NoError(t, err)
 	assert.Equal(t, []string{"--entrypoint", "", "img", "kubectl", "get", "pods"}, got[len(got)-6:])
 }
 
@@ -252,7 +272,8 @@ func TestOCICLICreateArgs_EntrypointOverride_ClearsAndPositions(t *testing.T) {
 // tail at all, image is the last token, image ENTRYPOINT+CMD run unmodified.
 func TestOCICLICreateArgs_NoEntrypointNoArgs_Bare(t *testing.T) {
 	r := &ociCLI{bin: "docker"}
-	got := r.createArgs(CreateSpec{Image: "img"})
+	got, err := r.createArgs(CreateSpec{Image: "img"})
+	assert.NoError(t, err)
 	assert.Equal(t, "img", got[len(got)-1])
 	assert.NotContains(t, got, "--entrypoint")
 }
@@ -264,7 +285,8 @@ func TestOCICLICreateArgs_EntrypointOverride_DegradesOnNoClearRuntime(t *testing
 	r := &ociCLI{bin: "fakeruntime"}
 	noEmptyEntrypointClear["fakeruntime"] = true
 	defer delete(noEmptyEntrypointClear, "fakeruntime")
-	got := r.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get"}})
+	got, err := r.createArgs(CreateSpec{Image: "img", Entrypoint: []string{"kubectl"}, Args: []string{"get"}})
+	assert.NoError(t, err)
 	assert.NotContains(t, got, "--entrypoint")
 	assert.Equal(t, []string{"img", "kubectl", "get"}, got[len(got)-3:])
 }
