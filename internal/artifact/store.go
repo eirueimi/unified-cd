@@ -2,7 +2,6 @@ package artifact
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -75,6 +74,22 @@ func WriteTarZstd(w io.Writer, path string) error {
 	return nil
 }
 
+// StreamTarZstd returns an io.ReadCloser that yields the tar+zstd archive of
+// path, produced by a background goroutine writing into an io.Pipe, so the
+// whole archive is never held in memory. A production error from WriteTarZstd
+// surfaces to the consumer as a read error (via pw.CloseWithError). Callers
+// MUST Close the returned reader — even on an early abort such as an HTTP 4xx
+// or a failed Put — so the producer goroutine cannot leak: Close delivers
+// io.ErrClosedPipe to the producer's next Write, unwinding it.
+func StreamTarZstd(path string) io.ReadCloser {
+	pr, pw := io.Pipe()
+	go func() {
+		// CloseWithError(nil) behaves like Close(): the reader sees a clean io.EOF.
+		pw.CloseWithError(WriteTarZstd(pw, path))
+	}()
+	return pr
+}
+
 // isSafeArtifactPathSegment reports whether s is safe to use as a single path
 // segment in an object-store key: non-empty, containing no path separators
 // and no "..", so it can never introduce or traverse into another directory
@@ -107,17 +122,16 @@ func artifactKey(runID, name string) (string, error) {
 	return fmt.Sprintf("artifacts/%s/%s.tar.gz", runID, name), nil
 }
 
-// Upload tars+zstds dir and stores it at artifacts/{runID}/{name}.tar.gz.
+// Upload tars+zstds dir and stores it at artifacts/{runID}/{name}.tar.gz,
+// streaming the archive so it is never fully buffered in memory.
 func Upload(ctx context.Context, store objectstore.ObjectStore, runID, name, dir string) error {
 	key, err := artifactKey(runID, name)
 	if err != nil {
 		return fmt.Errorf("upload artifact: %w", err)
 	}
-	var buf bytes.Buffer
-	if err := WriteTarZstd(&buf, dir); err != nil {
-		return err
-	}
-	return store.Put(ctx, key, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	body := StreamTarZstd(dir)
+	defer body.Close()
+	return store.Put(ctx, key, body, -1)
 }
 
 // Download fetches artifacts/{runID}/{name}.tar.gz and extracts it into dest.
