@@ -126,6 +126,15 @@ func shouldSync(src store.AppSource, spec dsl.AppSourceSpec, now time.Time) bool
 // syncAppSource syncs a single AppSource from Git.
 // Skips when the SHA is unchanged from last time. Prunes resources removed from Git when syncPolicy.prune is enabled.
 func syncAppSource(ctx context.Context, st store.Store, fetcher AppSourceFetcher, km secrets.KeyManager, src store.AppSource, spec dsl.AppSourceSpec) error {
+	// Re-validate the git-exec-relevant fields of the spec loaded from the store
+	// before it is used to resolve credentials or build any git argv. Apply-time
+	// validation (AppSource.Validate) is not sufficient on its own: this spec may
+	// be a legacy row written before that validation existed, or one inserted
+	// directly against the store, bypassing ParseAppSource/Validate entirely.
+	if err := spec.ValidateGitFields(); err != nil {
+		return fmt.Errorf("invalid AppSource spec: %w", err)
+	}
+
 	cred, err := resolveCredential(ctx, st, km, spec.RepoURL)
 	if err != nil {
 		return fmt.Errorf("failed to resolve credential: %w", err)

@@ -41,14 +41,8 @@ func (a *AppSource) Validate() error {
 	if a.Spec.Path == "" {
 		return fmt.Errorf("spec.path is required")
 	}
-	if err := ValidateGitRepoURL(a.Spec.RepoURL); err != nil {
-		return fmt.Errorf("spec.repoURL: %w", err)
-	}
-	if err := ValidateGitRef(a.Spec.TargetRevision); err != nil {
-		return fmt.Errorf("spec.targetRevision: %w", err)
-	}
-	if strings.HasPrefix(a.Spec.Path, "-") {
-		return fmt.Errorf("spec.path %q must not start with '-'", a.Spec.Path)
+	if err := a.Spec.ValidateGitFields(); err != nil {
+		return err
 	}
 	if strings.Contains(a.Spec.Path, "..") {
 		return fmt.Errorf("spec.path must not contain ..")
