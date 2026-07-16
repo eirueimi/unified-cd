@@ -1735,3 +1735,47 @@ spec:
 		t.Errorf("valid plain refs must pass: %v", err)
 	}
 }
+
+// TestJobValidate_ContainerRefs_Override covers the regression where
+// spec.podTemplate.override.containers defines a real container (merged at
+// pod build time, see internal/k8sagent/podbuilder.go mergeContainers) but
+// ValidateContainerReferences/validatePodTemplateNames were blind to it,
+// wrongly failing apply for the documented override.containers pattern
+// (docs/jobs.md).
+func TestJobValidate_ContainerRefs_Override(t *testing.T) {
+	// A uses-free job whose step targets a container defined ONLY in
+	// override.containers (not spec.containers) must pass apply validation.
+	overrideOK := `apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: x}
+spec:
+  podTemplate:
+    override:
+      containers: [{name: sidecar, image: img}]
+    spec:
+      containers: [{name: job, image: img}]
+  steps:
+    - {name: s, container: sidecar, run: echo}
+`
+	if _, err := Parse(strings.NewReader(overrideOK)); err != nil {
+		t.Errorf("step targeting an override-defined container must pass apply validation: %v", err)
+	}
+
+	// An override container with an invalid DNS-1123 name must be rejected
+	// at apply time, same as a spec.containers name.
+	overrideBadName := `apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: x}
+spec:
+  podTemplate:
+    override:
+      containers: [{name: "Bad Name", image: img}]
+    spec:
+      containers: [{name: job, image: img}]
+  steps:
+    - {name: s, run: echo}
+`
+	if _, err := Parse(strings.NewReader(overrideBadName)); err == nil || !strings.Contains(err.Error(), "Bad Name") {
+		t.Errorf("invalid override container name must fail apply validation, got %v", err)
+	}
+}

@@ -66,7 +66,9 @@ func IsReservedVolumeName(name string) bool {
 }
 
 // validatePodTemplateNames checks every container and volume name declared in
-// pt for DNS-1123-label shape. Nil-safe.
+// pt — including pt.Override's real, pod-build-merged containers/volumes
+// (see internal/k8sagent/podbuilder.go mergeContainers/mergeVolumes) — for
+// DNS-1123-label shape. Nil-safe.
 func validatePodTemplateNames(pt *PodTemplate) error {
 	for _, c := range PodTemplateContainers(pt) {
 		if err := ValidateDNS1123Label(DefName(c)); err != nil {
@@ -76,6 +78,18 @@ func validatePodTemplateNames(pt *PodTemplate) error {
 	for _, v := range PodTemplateVolumes(pt) {
 		if err := ValidateDNS1123Label(DefName(v)); err != nil {
 			return fmt.Errorf("podTemplate volume %w", err)
+		}
+	}
+	if pt != nil && pt.Override != nil {
+		for _, c := range pt.Override.Containers {
+			if err := ValidateDNS1123Label(DefName(c)); err != nil {
+				return fmt.Errorf("podTemplate override container %w", err)
+			}
+		}
+		for _, v := range pt.Override.Volumes {
+			if err := ValidateDNS1123Label(DefName(v)); err != nil {
+				return fmt.Errorf("podTemplate override volume %w", err)
+			}
 		}
 	}
 	return nil
@@ -115,15 +129,26 @@ func DefName(def map[string]any) string {
 
 // ValidateContainerReferences checks that every step's container: reference in
 // spec resolves to a real target: empty (defaults to the primary container), a
-// reserved name, or a container defined in spec.PodTemplate. Scope-tagged steps
-// (ScopeID set) run in their own scope pod, not the caller's pod, so their
-// container is not checked here. Returns a descriptive error on the first
-// invalid reference. Intended to run on a fully-resolved spec (after uses merge).
+// reserved name, or a container defined in spec.PodTemplate — including
+// spec.PodTemplate.Override.Containers, which defines REAL containers merged
+// into the pod at build time (see internal/k8sagent/podbuilder.go
+// mergeContainers), not just spec.PodTemplate's base container list.
+// Scope-tagged steps (ScopeID set) run in their own scope pod, not the
+// caller's pod, so their container is not checked here. Returns a descriptive
+// error on the first invalid reference. Intended to run on a fully-resolved
+// spec (after uses merge).
 func ValidateContainerReferences(spec Spec) error {
 	defined := map[string]bool{}
 	for _, c := range PodTemplateContainers(spec.PodTemplate) {
 		if n := DefName(c); n != "" {
 			defined[n] = true
+		}
+	}
+	if spec.PodTemplate != nil && spec.PodTemplate.Override != nil {
+		for _, c := range spec.PodTemplate.Override.Containers {
+			if n := DefName(c); n != "" {
+				defined[n] = true
+			}
 		}
 	}
 	check := func(stepName, container, scopeID string) error {

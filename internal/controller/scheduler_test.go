@@ -232,6 +232,30 @@ func TestResolveGitPendingRuns_NamedPodTemplateDefersContainerValidation(t *test
 	assert.NotEqual(t, api.RunFailed, got.Status, "a named-podTemplate job must defer container validation to pod build, not fail at resolution")
 }
 
+// TestResolveGitPendingRuns_OverrideContainerNotFailed: a caller spec with an
+// INLINE podTemplate whose override.containers defines a real container
+// (merged at pod build time, see internal/k8sagent/podbuilder.go
+// mergeContainers) plus a uses: step, and a step targeting that
+// override-defined container, must NOT be failed by the post-resolution
+// container-reference sweep — ValidateContainerReferences must see
+// override.containers, not just spec.containers.
+func TestResolveGitPendingRuns_OverrideContainerNotFailed(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	specJSON := []byte(`{"podTemplate":{"override":{"containers":[{"name":"sidecar","image":"img"}]},"spec":{"containers":[{"name":"job","image":"img"}]}},"steps":[{"name":"build","container":"sidecar","run":"go build"},{"name":"tpl","uses":{"job":"git://github.com/org/repo/job.yaml@v1"}}]}`)
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "")
+	require.NoError(t, err)
+
+	tmpl := []byte("apiVersion: unified-cd/v1\nkind: JobTemplate\nmetadata: {name: tmpl}\nspec:\n  steps:\n    - {name: s, run: echo hi}\n")
+	resolver := gittemplate.NewResolver(contentFetcher{yaml: tmpl}, nil)
+	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
+	resolveGitPendingRuns(t.Context(), pg, resolver, nil, bo, time.Hour)
+
+	got, err := pg.GetRun(t.Context(), run.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, api.RunFailed, got.Status, "a step targeting an override-defined container must resolve successfully")
+}
+
 type badYAMLFetcher struct{}
 
 func (badYAMLFetcher) Fetch(ctx context.Context, uri gittemplate.URI, token, sshKey string) ([]byte, error) {
