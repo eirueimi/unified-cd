@@ -244,25 +244,22 @@ func (c *Client) FetchSecrets(ctx context.Context, agentID string, names []strin
 	return out.Secrets, nil
 }
 
-// UploadArtifact archives path as tar+zstd and uploads it to the master server.
-// Sends to PUT /api/v1/runs/{runID}/artifacts/{name}.
+// UploadArtifact archives path as tar+zstd and uploads it to the master
+// server, streaming the archive as a chunked request body so it is never
+// fully buffered in memory. No Content-Length is set — net/http uses chunked
+// transfer-encoding, and the controller reads r.Body straight into the object
+// store (r.ContentLength == -1 → a multipart streaming Put).
 func (c *Client) UploadArtifact(ctx context.Context, runID, name, path string) error {
-	// Reuse the shared archiver so directories AND single files both round-trip
-	// (a single file is stored under its base name), and to avoid duplicating the
-	// tar+zstd logic that lives in internal/artifact.
-	var buf bytes.Buffer
-	if err := artifact.WriteTarZstd(&buf, path); err != nil {
-		return err
-	}
+	body := artifact.StreamTarZstd(path)
+	defer body.Close()
 
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(buf.Bytes()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, body)
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/octet-stream")
-	req.ContentLength = int64(buf.Len())
 
 	resp, err := c.http.Do(req)
 	if err != nil {
