@@ -44,12 +44,12 @@ func TestClient_Heartbeat_NonEmptyActiveRuns(t *testing.T) {
 
 func TestClient_Heartbeat_EmptyActiveRuns_SendsBody(t *testing.T) {
 	var contentLength int64
-	var bodyLen int
+	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		contentLength = r.ContentLength
 		b, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
-		bodyLen = len(b)
+		gotBody = b
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
@@ -57,9 +57,17 @@ func TestClient_Heartbeat_EmptyActiveRuns_SendsBody(t *testing.T) {
 	require.NoError(t, c.Heartbeat(t.Context(), "a1", []string{}))
 
 	// A live agent always sends a JSON body, even for zero active runs, so the
-	// controller can tell it apart from a legacy agent that sends none.
+	// controller can tell it apart from a legacy agent that sends none. With no
+	// omitempty on ActiveRunIDs, the empty set serializes the field explicitly
+	// (`{"activeRunIds":[]}`) and decodes back to a NON-NIL empty slice — the
+	// signal the controller relies on, not just a non-zero ContentLength.
 	assert.NotEqual(t, int64(0), contentLength)
-	assert.NotZero(t, bodyLen)
+
+	var got api.HeartbeatRequest
+	require.NoError(t, json.Unmarshal(gotBody, &got))
+	assert.NotNil(t, got.ActiveRunIDs)
+	assert.Len(t, got.ActiveRunIDs, 0)
+	assert.Contains(t, string(gotBody), `"activeRunIds":[]`)
 }
 
 func TestClient_Heartbeat_NilActiveRuns_SendsNoBody(t *testing.T) {
