@@ -159,7 +159,12 @@ func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 		assert.Equal(t, "/custom-ws", pod.Spec.Containers[0].VolumeMounts[0].MountPath)
 	})
 
-	t.Run("preserves user-set WorkingDir", func(t *testing.T) {
+	// G5: a named agent template's containers live in agent config, invisible
+	// to dsl's apply-time validateStepTargetedWorkingDir check — pod build is
+	// the only point that ever sees them, so it is the last chance to catch a
+	// job container whose WorkingDir would silently desync step cwd from
+	// artifact/cache resolution (which always uses the workspace mount).
+	t.Run("job container workingDir diverging from workspace mount errors", func(t *testing.T) {
 		agentTmpls := map[string]AgentPodTemplate{
 			"golang": {
 				Spec: map[string]any{
@@ -174,10 +179,57 @@ func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 				},
 			},
 		}
+		_, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "workingDir")
+		assert.Contains(t, err.Error(), "job")
+	})
+
+	t.Run("job container workingDir matching the workspace mount is allowed", func(t *testing.T) {
+		agentTmpls := map[string]AgentPodTemplate{
+			"golang": {
+				Spec: map[string]any{
+					"containers": []any{
+						map[string]any{
+							"name":       "job",
+							"image":      "golang:1.24-alpine",
+							"command":    []any{"sleep", "3600"},
+							"workingDir": "/workspace",
+						},
+					},
+				},
+			},
+		}
 		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 1)
-		assert.Equal(t, "/app", pod.Spec.Containers[0].WorkingDir, "user-set WorkingDir must not be overwritten")
+		assert.Equal(t, "/workspace", pod.Spec.Containers[0].WorkingDir)
+	})
+
+	t.Run("preserves user-set WorkingDir on a sidecar (non-job) container", func(t *testing.T) {
+		agentTmpls := map[string]AgentPodTemplate{
+			"golang": {
+				Spec: map[string]any{
+					"containers": []any{
+						map[string]any{"name": "job", "image": "golang:1.24-alpine", "command": []any{"sleep", "3600"}},
+						map[string]any{
+							"name":       "tools",
+							"image":      "busybox",
+							"command":    []any{"sleep", "3600"},
+							"workingDir": "/app",
+						},
+					},
+				},
+			},
+		}
+		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
+		require.NoError(t, err)
+		require.Len(t, pod.Spec.Containers, 2)
+		for _, c := range pod.Spec.Containers {
+			if c.Name == "tools" {
+				assert.Equal(t, "/app", c.WorkingDir, "user-set WorkingDir on a sidecar must not be overwritten")
+			}
+		}
 	})
 }
 
@@ -188,7 +240,7 @@ func TestInjectWorkspace_AllContainers(t *testing.T) {
 			{Name: "node", Image: "node:20-alpine"},
 		},
 	}
-	injectWorkspace(spec, nil)
+	require.NoError(t, injectWorkspace(spec, nil))
 	for _, c := range spec.Containers {
 		require.Len(t, c.VolumeMounts, 1, "container %s should have workspace mount", c.Name)
 		assert.Equal(t, "/workspace", c.VolumeMounts[0].MountPath)

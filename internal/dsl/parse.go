@@ -195,6 +195,10 @@ func (j *Job) Validate() error {
 		return err
 	}
 
+	if err := validateStepTargetedWorkingDir(j.Spec); err != nil {
+		return err
+	}
+
 	// Plain (uses-free, inline-podTemplate) non-native jobs get
 	// container-reference validation at apply time; uses-bearing specs defer to
 	// the controller's post-resolution check and named-podTemplate specs defer

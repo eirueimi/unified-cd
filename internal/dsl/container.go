@@ -127,6 +127,54 @@ func DefName(def map[string]any) string {
 	return n
 }
 
+// validateStepTargetedWorkingDir rejects a workingDir on any container a step
+// executes in (the primary "job" container or any container named by a step's
+// container: field, in steps, parallel sub-steps, or finally). Steps always
+// run at the workspace mount: the k8s executor inherits the container's
+// workingDir, while artifact/cache resolution and UNIFIED_WORKSPACE use the
+// workspace mount path — a divergent workingDir silently desynchronizes them,
+// and the artifact sidecar can only reach files under the workspace volume.
+// Sidecars (containers no step targets) may set workingDir freely.
+func validateStepTargetedWorkingDir(spec Spec) error {
+	targeted := map[string]bool{PrimaryContainerName: true}
+	collect := func(entries []StepEntry) {
+		for _, e := range entries {
+			if e.Container != "" {
+				targeted[e.Container] = true
+			}
+			for _, p := range e.Parallel {
+				if p.Container != "" {
+					targeted[p.Container] = true
+				}
+			}
+		}
+	}
+	collect(spec.Steps)
+	collect(spec.Finally)
+
+	check := func(defs []map[string]any, where string) error {
+		for _, c := range defs {
+			name := DefName(c)
+			if !targeted[name] {
+				continue
+			}
+			if _, has := c["workingDir"]; has {
+				return fmt.Errorf("%s container %q declares workingDir, but steps execute in it: steps always run at the workspace mount (artifact/cache paths and UNIFIED_WORKSPACE resolve there); move the cd into the step script, or put workingDir on a sidecar", where, name)
+			}
+		}
+		return nil
+	}
+	if err := check(PodTemplateContainers(spec.PodTemplate), "podTemplate"); err != nil {
+		return err
+	}
+	if spec.PodTemplate != nil && spec.PodTemplate.Override != nil {
+		if err := check(spec.PodTemplate.Override.Containers, "podTemplate.override"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ValidateContainerReferences checks that every step's container: reference in
 // spec resolves to a real target: empty (defaults to the primary container), a
 // reserved name, or a container defined in spec.PodTemplate — including

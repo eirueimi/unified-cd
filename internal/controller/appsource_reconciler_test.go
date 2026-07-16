@@ -19,9 +19,11 @@ type mockAppSourceFetcher struct {
 	fetchDirCalls int
 	resolveErr    error
 	fetchErr      error
+	resolveCalls  int
 }
 
 func (m *mockAppSourceFetcher) ResolveCommitSHA(_ context.Context, _, _, _, _ string) (string, error) {
+	m.resolveCalls++
 	if m.resolveErr != nil {
 		return "", m.resolveErr
 	}
@@ -283,6 +285,40 @@ func TestReconcile_RecordsFailedStatusOnError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Failed", src.SyncStatus)
 	assert.Contains(t, src.LastError, "auth denied")
+}
+
+// TestReconciler_RejectsLegacyDashRepoURL closes reviewer Probe 3: the
+// reconciler must re-validate git-exec-relevant spec fields on its OWN
+// read-path, not merely rely on apply-time validation (AppSource.Validate).
+// A legacy/back-door row with a repoURL starting with '-' (e.g. inserted
+// directly via UpsertAppSource, bypassing ParseAppSource/Validate, exactly as
+// TestReconciler_RedactsCredentialsInLastError above simulates) must be
+// rejected before ResolveCommitSHA/FetchDir are ever called with it, since git
+// would otherwise interpret the "URL" as a command-line option (git option
+// injection / RCE).
+func TestReconciler_RejectsLegacyDashRepoURL(t *testing.T) {
+	pg := store.NewTestPostgres(t)
+	ctx := context.Background()
+
+	// Bypass apply-time validation entirely, simulating a legacy/back-door row.
+	spec := `{"repoURL":"--upload-pack=touch /tmp/pwned","targetRevision":"main","path":"jobs/"}`
+	_, err := pg.UpsertAppSource(ctx, "evil-src", []byte(spec))
+	require.NoError(t, err)
+
+	fetcher := &mockAppSourceFetcher{
+		sha:   "abc123",
+		files: map[string][]byte{"jobs/build.yaml": []byte(jobYAML)},
+	}
+	reconcileAppSources(ctx, pg, fetcher, nil)
+
+	// No git exec must have been attempted with the malicious repoURL.
+	assert.Equal(t, 0, fetcher.resolveCalls, "ResolveCommitSHA must not be called with an unvalidated dash repoURL")
+	assert.Equal(t, 0, fetcher.fetchDirCalls, "FetchDir must not be called with an unvalidated dash repoURL")
+
+	src, err := pg.GetAppSource(ctx, "evil-src")
+	require.NoError(t, err)
+	assert.Equal(t, "Failed", src.SyncStatus)
+	assert.Contains(t, src.LastError, "must not start with '-'")
 }
 
 func TestReconciler_DuplicateResourceFirstWins(t *testing.T) {

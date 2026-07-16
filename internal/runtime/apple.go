@@ -76,6 +76,13 @@ func (a *appleContainer) createArgs(spec CreateSpec) []string {
 		args = append(args, "-w", spec.WorkDir)
 	}
 	for _, m := range spec.Mounts {
+		// Deliberately kept on the `-v host:ctr[:ro]` form (unlike
+		// ociCLI.createArgs, which switched to `--mount` for G6): this
+		// driver only runs on macOS, where host paths have no drive-letter
+		// colon, so `-v`'s colon-joined grammar is unambiguous. Apple's
+		// `container` CLI's `--mount` support is also unverified, so
+		// switching here would trade a real problem (Windows colon
+		// ambiguity, which doesn't apply on macOS) for a speculative one.
 		v := m.HostPath + ":" + m.ContainerPath
 		if m.ReadOnly {
 			v += ":ro"

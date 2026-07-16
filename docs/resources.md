@@ -599,8 +599,8 @@ metadata:
   annotations:                    # optional
     <key>: <value>
 spec:
-  repoURL: <string>               # required — Git repository URL (HTTPS or SSH)
-  targetRevision: <string>        # required — branch, tag, or commit SHA
+  repoURL: <string>               # required — Git repository URL (https://, http://, ssh://, or scp-like git@host:path)
+  targetRevision: <string>        # required — branch, tag, or commit SHA (must start alphanumeric)
   path: <string>                  # required — directory path inside the repo
   syncPolicy:
     interval: <duration>          # polling interval (default: 5m, minimum: 1m)
@@ -619,6 +619,37 @@ spec:
 | `spec.syncPolicy.interval` | string | No | How often to check for changes (e.g. `5m`, `1h`). Default: `5m`, minimum: `1m` |
 | `spec.syncPolicy.prune` | bool | No | If `true`, resources that are removed from the repo are deleted from the controller. Default: `false` |
 | `spec.syncPolicy.allowManualOverride` | bool | No | If `true`, disables managed-resource protection for this AppSource's resources (direct apply/delete is allowed). Default: `false` |
+
+### Git field constraints
+
+`spec.repoURL`, `spec.targetRevision`, and `spec.path` flow into a `git`
+subprocess argv, so they are restricted to prevent git option injection and
+unsupported/dangerous transports. Validation runs twice: once at apply time
+(`unified-cli apply` / REST API writes), and again by the AppSource
+reconciler every time it reads a spec back out of the store before using it
+to build a `git` command — so rows written before this validation existed,
+or inserted directly against the store, are still caught before they ever
+reach a git-exec site.
+
+- **`spec.repoURL`** must use `https://`, `http://`, `ssh://`, or the
+  scp-like `git@host:` form. A schemeless URL, a `-`-leading URL, or a
+  `file://`/`ext::` transport is rejected:
+  - `repo URL %q must not start with '-'`
+  - `repo URL %q must use https://, http://, ssh://, or scp-like user@host: form`
+
+  For the scp-like form, the host component must also start alphanumeric —
+  a dash-leading host (e.g. `git@-x:...`) is rejected so it can't smuggle an
+  ssh option such as `-oProxyCommand=...`.
+
+- **`spec.targetRevision`** must match the ref charset `[A-Za-z0-9._/+-]`
+  and start with an alphanumeric character. This allows branch names, tag
+  names, and full commit SHAs, but rejects relative-ref syntax (`HEAD~1`,
+  `@{upstream}`) and anything `-`-leading (which could be parsed as a git
+  option):
+  - `git ref %q contains invalid characters (must start alphanumeric; allowed: A-Z a-z 0-9 . _ / + -)`
+
+- **`spec.path`** must not start with `-`:
+  - `spec.path %q must not start with '-'`
 
 ### Managed-resource protection
 

@@ -41,6 +41,9 @@ func (a *AppSource) Validate() error {
 	if a.Spec.Path == "" {
 		return fmt.Errorf("spec.path is required")
 	}
+	if err := a.Spec.ValidateGitFields(); err != nil {
+		return err
+	}
 	if strings.Contains(a.Spec.Path, "..") {
 		return fmt.Errorf("spec.path must not contain ..")
 	}

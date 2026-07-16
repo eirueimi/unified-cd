@@ -463,6 +463,17 @@ An `uploadArtifact`/`downloadArtifact`/`cache` step used an absolute path or a `
 
 Use a path relative to the workspace (e.g. `dist`, not `/workspace/dist` or `../dist`). `$UNIFIED_WORKSPACE` names the workspace root if you need an absolute base.
 
+**Behavior change (2026-07 path hardening)**
+
+Before the 2026-07 path hardening, an absolute artifact/cache path was not
+rejected — it was silently re-rooted under the workspace (on Kubernetes) or
+resolved against the host filesystem (on the standard agent), so a step
+could appear to work while quietly reading or writing the wrong location.
+Absolute paths now hard-fail with the error above instead. This is
+intentional: if a step that used to "work" with an absolute path now fails
+here, it was previously relying on the silent-reroot/host-resolve behavior —
+switch it to a workspace-relative path per the Fix above.
+
 ## `uses:` run fails with `uses: targets must be kind: JobTemplate`
 
 **Symptom**
@@ -490,6 +501,41 @@ fields) and re-pin tags/SHAs to a post-migration commit — see the
 [migration guide](migration-2026-07-uses-jobtemplate.md). If the target
 genuinely needs its own pod/agent/run semantics, keep it a `kind: Job` and
 invoke it with `call:` instead.
+
+## Scoped `uses` step can't find workspace files
+
+**Symptom**
+
+A `uses:` step with `runsIn.image` set (a [scope](jobs.md#uses-level-runsinimage-scope))
+runs a template step that expects a file produced earlier in the outer job —
+`cat`, a build tool, a script — and the file is simply not there (`no such
+file or directory` or equivalent), with no error from the framework itself
+pointing at the cause.
+
+**Cause**
+
+A `uses:` step with a uses-level `runsIn.image` runs the **entire inlined
+template** in one isolated environment (one container on the standard agent,
+one dedicated pod on Kubernetes) that starts from a **fresh, empty
+filesystem** and never shares the outer job's workspace. Files written by
+steps before the `uses:` step — via `run:`, `uploadArtifact`, or anything
+else — are silently absent inside the scope; there is no error at scope
+start, because from the scope's point of view there was never anything to
+find. This is easy to miss because a **non-scoped** `uses:` step (no
+`runsIn`) inlines into the caller's own workspace and does not have this
+problem.
+
+**Fix**
+
+Treat the scope like a separate machine and cross the boundary explicitly:
+
+- Pass inputs in via `with:` (environment variables) or `downloadArtifact`
+  (pulls a previously uploaded artifact into the scope's filesystem).
+- Get outputs back out via `uploadArtifact` (pushes to the run's artifact
+  store, retrievable outside the scope) or `outputs:`/stdout.
+
+See [Uses-level `runsIn.image` (scope)](jobs.md#uses-level-runsinimage-scope)
+for the full model.
 
 ## Job fails apply with a dangling `container:` reference
 

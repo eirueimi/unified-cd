@@ -1,6 +1,10 @@
 package dsl
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 type AppSource struct {
 	APIVersion string        `yaml:"apiVersion"`
@@ -30,4 +34,31 @@ func (s AppSourceSpec) IntervalDuration() time.Duration {
 	}
 	d, _ := time.ParseDuration(s.SyncPolicy.Interval)
 	return d
+}
+
+// ValidateGitFields validates the fields of an AppSourceSpec that flow into a
+// git subprocess argv: the repo URL, the target revision (ref), and the path.
+// It rejects anything that could be interpreted as a git command-line option
+// or an unsupported/dangerous transport (git option injection).
+//
+// This is the SINGLE implementation of that check, shared by two call sites:
+//   - AppSource.Validate, at apply time (a user submitting/applying an
+//     AppSource document).
+//   - The AppSource reconciler's read-path (syncAppSource), which re-validates
+//     specs loaded back out of the store before they are ever used to build a
+//     git argv. Apply-time validation alone is not sufficient: legacy rows
+//     written before this validation existed, or rows inserted directly against
+//     the store (bypassing ParseAppSource/Validate), would otherwise reach the
+//     git-exec sites unchecked.
+func (s AppSourceSpec) ValidateGitFields() error {
+	if err := ValidateGitRepoURL(s.RepoURL); err != nil {
+		return fmt.Errorf("spec.repoURL: %w", err)
+	}
+	if err := ValidateGitRef(s.TargetRevision); err != nil {
+		return fmt.Errorf("spec.targetRevision: %w", err)
+	}
+	if strings.HasPrefix(s.Path, "-") {
+		return fmt.Errorf("spec.path %q must not start with '-'", s.Path)
+	}
+	return nil
 }

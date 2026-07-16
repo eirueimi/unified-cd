@@ -90,7 +90,15 @@ func (r *ociCLI) Run(ctx context.Context, spec RunSpec, stdout, stderr io.Writer
 // and CreateSpec.Args doc comments. Extracted from Create so tests can
 // assert on the argv (notably -w for spec.WorkDir) without depending on
 // exec.Cmd.Output()'s stdout plumbing.
-func (r *ociCLI) createArgs(spec CreateSpec) []string {
+//
+// Bind mounts are emitted in the `--mount type=bind,source=...,target=...`
+// form rather than `-v host:ctr[:ro]` (G6): on Windows, a host path is
+// itself of the form `C:\ws`, so the colon-joined `-v` grammar can't tell a
+// drive-letter colon apart from the host:container separator. The
+// `--mount` key=value grammar sidesteps that, but it's comma/equals
+// delimited, so a path containing either character returns an error instead
+// of producing a mount Docker/podman would parse wrong.
+func (r *ociCLI) createArgs(spec CreateSpec) ([]string, error) {
 	args := []string{"run", "-d"}
 	if spec.CPULimit != "" {
 		args = append(args, "--cpus", spec.CPULimit)
@@ -102,11 +110,14 @@ func (r *ociCLI) createArgs(spec CreateSpec) []string {
 		args = append(args, "-w", spec.WorkDir)
 	}
 	for _, m := range spec.Mounts {
-		v := m.HostPath + ":" + m.ContainerPath
-		if m.ReadOnly {
-			v += ":ro"
+		if strings.ContainsAny(m.HostPath, ",=") || strings.ContainsAny(m.ContainerPath, ",=") {
+			return nil, fmt.Errorf("mount path %q -> %q contains ',' or '=', which cannot be expressed in --mount syntax", m.HostPath, m.ContainerPath)
 		}
-		args = append(args, "-v", v)
+		v := "type=bind,source=" + m.HostPath + ",target=" + m.ContainerPath
+		if m.ReadOnly {
+			v += ",readonly"
+		}
+		args = append(args, "--mount", v)
 	}
 	if spec.NetworkContainer != "" {
 		args = append(args, "--network", "container:"+spec.NetworkContainer)
@@ -129,11 +140,14 @@ func (r *ociCLI) createArgs(spec CreateSpec) []string {
 	args = append(args, spec.Image)
 	args = append(args, spec.Entrypoint...)
 	args = append(args, spec.Args...)
-	return args
+	return args, nil
 }
 
 func (r *ociCLI) Create(ctx context.Context, spec CreateSpec) (ContainerHandle, error) {
-	args := r.createArgs(spec)
+	args, err := r.createArgs(spec)
+	if err != nil {
+		return ContainerHandle{}, err
+	}
 	out, err := execCommand(ctx, r.bin, args...).Output()
 	if err != nil {
 		return ContainerHandle{}, fmt.Errorf("%s run -d: %w", r.bin, err)
