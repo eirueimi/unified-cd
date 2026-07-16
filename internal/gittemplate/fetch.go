@@ -207,6 +207,9 @@ func gitEnv(extraEnv []string) []string {
 
 // ResolveCommitSHA uses git ls-remote to return the commit SHA for the given ref in the repository.
 func (f *Fetcher) ResolveCommitSHA(ctx context.Context, repoURL, ref, token, sshKey string) (string, error) {
+	if strings.HasPrefix(repoURL, "-") {
+		return "", fmt.Errorf("repo URL %q must not start with '-' (git option injection)", repoURL)
+	}
 	var env []string
 	if sshKey != "" {
 		keyDir, cleanup, err := writeTempSSHKey(sshKey)
@@ -260,6 +263,9 @@ func (f *Fetcher) FetchDir(ctx context.Context, repoURL, ref, path, token, sshKe
 }
 
 func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string, extraEnv []string) (map[string][]byte, error) {
+	if strings.HasPrefix(repoURL, "-") {
+		return nil, fmt.Errorf("repo URL %q must not start with '-' (git option injection)", repoURL)
+	}
 	dir, err := os.MkdirTemp("", "gitfetchdir-")
 	if err != nil {
 		return nil, fmt.Errorf("mkdtemp: %w", err)
@@ -289,7 +295,7 @@ func (f *Fetcher) fetchDirWithURL(ctx context.Context, repoURL, ref, path string
 	treePath := strings.TrimSuffix(path, "/")
 	lsArgs := []string{"ls-tree", "-r", "--name-only", "FETCH_HEAD"}
 	if treePath != "" {
-		lsArgs = append(lsArgs, treePath)
+		lsArgs = append(lsArgs, "--", treePath)
 	}
 	lsCmd := exec.CommandContext(ctx, "git", lsArgs...)
 	lsCmd.Dir = dir
