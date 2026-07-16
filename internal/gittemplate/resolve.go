@@ -191,12 +191,47 @@ func (r *Resolver) resolveSteps(
 		}
 		tplSpec := tpl.ToSpec()
 
+		scopeMode := s.RunsIn != nil && s.RunsIn.Image != ""
+
 		nestedPath := append(append([]string{}, path...), rawURI)
 		nestedSteps, nestedContrib, err := r.resolveSteps(ctx, tplSpec.Steps, credFn, depth+1, nestedPath)
 		if err != nil {
 			return nil, podContribution{}, err
 		}
 		tplSpec.Steps = nestedSteps
+
+		// The template's own finally: list can itself contain uses: steps —
+		// recursively resolve it exactly like the body above (same depth and
+		// cycle semantics). Skipped in scope mode: expandUsesStep rejects a
+		// scope-mode uses of a template that declares finally: outright, so
+		// there is no point fetching templates for a list that can never be
+		// honored — the rejection below still fires on the raw non-empty list.
+		var nestedFinContrib podContribution
+		if !scopeMode && len(tplSpec.Finally) > 0 {
+			nestedFinally, nfc, ferr := r.resolveSteps(ctx, tplSpec.Finally, credFn, depth+1, nestedPath)
+			if ferr != nil {
+				return nil, podContribution{}, ferr
+			}
+			tplSpec.Finally = nestedFinally
+			nestedFinContrib = nfc
+		}
+
+		// Fold the finally steps bubbled up by nested uses (from the
+		// template's body and from its own finally list) into
+		// tplSpec.Finally itself, so expandUsesStep below applies THIS uses
+		// step's prefix and ref-rewriting to them exactly as it does to the
+		// template's own finally steps. Bubbling them past expandUsesStep
+		// unprefixed would leak names that collide when the same template is
+		// used twice, and whose refs point at pre-prefix step names that no
+		// longer exist after expansion. The template's own finally steps come
+		// first, mirroring ResolveSpec's caller-finally-first ordering. In
+		// scope mode a non-empty fold result triggers expandUsesStep's
+		// scope-mode finally rejection, which is exactly right: a nested
+		// template's finally can't be honored there either.
+		tplSpec.Finally = append(tplSpec.Finally, nestedContrib.finally...)
+		tplSpec.Finally = append(tplSpec.Finally, nestedFinContrib.finally...)
+		nestedContrib.finally = nil
+		nestedFinContrib.finally = nil
 
 		// A scope-mode uses (runsIn.image) must contribute nothing to the
 		// caller's podTemplate — the template runs in its own scope pod. That
@@ -206,7 +241,6 @@ func (r *Resolver) resolveSteps(
 		// own podTemplate) can still bubble a contribution up through
 		// nestedContrib. Reject that here before it reaches expandUsesStep,
 		// which would otherwise merge it into the caller's pod.
-		scopeMode := s.RunsIn != nil && s.RunsIn.Image != ""
 		if scopeMode && (len(nestedContrib.containers) > 0 || len(nestedContrib.volumes) > 0) {
 			return nil, podContribution{}, newResolveError("step %q: a template used with runsIn.image (scope mode) cannot contribute pod containers/volumes to the caller (nested uses template declares a podTemplate)", s.Name)
 		}
@@ -228,10 +262,14 @@ func (r *Resolver) resolveSteps(
 
 		out = append(out, expanded...)
 		contrib.containers = append(contrib.containers, nestedContrib.containers...)
+		contrib.containers = append(contrib.containers, nestedFinContrib.containers...)
 		contrib.containers = append(contrib.containers, expandContrib.containers...)
 		contrib.volumes = append(contrib.volumes, nestedContrib.volumes...)
+		contrib.volumes = append(contrib.volumes, nestedFinContrib.volumes...)
 		contrib.volumes = append(contrib.volumes, expandContrib.volumes...)
-		contrib.finally = append(contrib.finally, nestedContrib.finally...)
+		// Nested templates' finally steps were folded into tplSpec.Finally
+		// above (and are therefore inside expandContrib.finally, prefixed);
+		// only this level's expansion bubbles.
 		contrib.finally = append(contrib.finally, expandContrib.finally...)
 	}
 	return out, contrib, nil

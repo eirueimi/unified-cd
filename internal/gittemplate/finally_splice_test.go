@@ -65,6 +65,114 @@ func TestResolveSpec_TemplateFinally_NameCollisionErrors(t *testing.T) {
 	require.Contains(t, err.Error(), "u__cleanup")
 }
 
+const innerPlainTpl = `
+apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata: {name: inner}
+spec:
+  steps:
+    - {name: deep, run: echo d}
+`
+
+const innerWithFinallyTpl = `
+apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata: {name: inner}
+spec:
+  steps:
+    - {name: deep, run: echo d}
+  finally:
+    - {name: mop, run: echo m}
+`
+
+const outerFinallyUsesTpl = `
+apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata: {name: outer}
+spec:
+  steps:
+    - {name: work, run: echo w}
+  finally:
+    - {name: cleanup, uses: {job: git://github.com/org/repo/inner.yaml@v1}}
+`
+
+const outerBodyUsesInnerFinallyTpl = `
+apiVersion: unified-cd/v1
+kind: JobTemplate
+metadata: {name: outer}
+spec:
+  steps:
+    - {name: x, uses: {job: git://github.com/org/repo/inner.yaml@v1}}
+`
+
+func finallyNamesOf(s dsl.Spec) map[string]bool {
+	names := map[string]bool{}
+	for _, e := range s.Finally {
+		names[e.Name] = true
+	}
+	return names
+}
+
+func TestResolveSpec_NestedUsesInsideTemplateFinally_Resolved(t *testing.T) {
+	// The outer template's OWN finally: contains a uses: step. It must be
+	// recursively resolved (not hit expandUsesStep's unresolved-uses guard),
+	// and the inner expansion must carry the full prefix chain.
+	specJSON := mustMarshalSpec(dsl.Spec{
+		Steps: []dsl.StepEntry{{Name: "u", Uses: &dsl.UsesStep{Job: "git://github.com/org/repo/outer.yaml@v1"}}},
+	})
+	fetcher := &mapFetcher{byURI: map[string][]byte{
+		"git://github.com/org/repo/outer.yaml@v1": []byte(outerFinallyUsesTpl),
+		"git://github.com/org/repo/inner.yaml@v1": []byte(innerPlainTpl),
+	}}
+	s, err := resolveToSpec(t, fetcher, specJSON)
+	require.NoError(t, err)
+	for _, e := range s.Finally {
+		require.Nil(t, e.Uses, "no unresolved uses may survive in finally")
+	}
+	names := finallyNamesOf(s)
+	require.True(t, names["u__cleanup__inputs"], "inner inputs step, doubly prefixed; got %v", names)
+	require.True(t, names["u__cleanup__deep"], "inner body step, doubly prefixed; got %v", names)
+	require.True(t, names["u__cleanup"], "inner capture step, outer-prefixed; got %v", names)
+}
+
+func TestResolveSpec_NestedUsesInsideTemplateFinally_InnerFinallyBubbles(t *testing.T) {
+	// The uses inside the outer template's finally itself carries a template
+	// finally — it must bubble into the caller's finally with the full prefix
+	// chain applied (not leak un-prefixed).
+	specJSON := mustMarshalSpec(dsl.Spec{
+		Steps: []dsl.StepEntry{{Name: "u", Uses: &dsl.UsesStep{Job: "git://github.com/org/repo/outer.yaml@v1"}}},
+	})
+	fetcher := &mapFetcher{byURI: map[string][]byte{
+		"git://github.com/org/repo/outer.yaml@v1": []byte(outerFinallyUsesTpl),
+		"git://github.com/org/repo/inner.yaml@v1": []byte(innerWithFinallyTpl),
+	}}
+	s, err := resolveToSpec(t, fetcher, specJSON)
+	require.NoError(t, err)
+	names := finallyNamesOf(s)
+	require.True(t, names["u__cleanup__deep"], "inner body expansion present; got %v", names)
+	require.True(t, names["u__cleanup__mop"], "inner template finally fully prefixed; got %v", names)
+	require.False(t, names["cleanup__mop"], "inner template finally must not leak un-prefixed; got %v", names)
+}
+
+func TestResolveSpec_NestedUsesInBody_InnerFinallyFullyPrefixed(t *testing.T) {
+	// A uses in the outer template's BODY whose inner template has finally:
+	// the inner finally must reach the caller's finally with the full prefix
+	// chain (u__x__mop), so its refs stay valid and two uses of the same
+	// outer template cannot collide.
+	specJSON := mustMarshalSpec(dsl.Spec{
+		Steps: []dsl.StepEntry{{Name: "u", Uses: &dsl.UsesStep{Job: "git://github.com/org/repo/outer.yaml@v1"}}},
+	})
+	fetcher := &mapFetcher{byURI: map[string][]byte{
+		"git://github.com/org/repo/outer.yaml@v1": []byte(outerBodyUsesInnerFinallyTpl),
+		"git://github.com/org/repo/inner.yaml@v1": []byte(innerWithFinallyTpl),
+	}}
+	s, err := resolveToSpec(t, fetcher, specJSON)
+	require.NoError(t, err)
+	names := finallyNamesOf(s)
+	require.True(t, names["u__x__mop"], "nested-in-body template finally fully prefixed; got %v", names)
+	require.False(t, names["x__mop"], "nested-in-body template finally must not leak un-prefixed; got %v", names)
+}
+
 func TestResolveSpec_UsesInFinally_WithTemplateFinally(t *testing.T) {
 	// A uses step sitting in the caller's finally whose template ALSO has finally:
 	// both the body expansion and the spliced finally land in spec.Finally.
