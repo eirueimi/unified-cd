@@ -135,6 +135,36 @@ func checkNeedsInEntries(entries []any, prefix string) error {
 	return nil
 }
 
+// specDefersContainerValidation reports whether spec's container: references
+// cannot be validated at apply time and must defer to a later stage. True when:
+//   - any step (or parallel sub-step) in Steps or Finally is a uses: step — the
+//     template's pod-shape merge may satisfy references at resolution time, so
+//     validation defers to the controller's post-resolution sweeper; or
+//   - podTemplate names an agent-side template (podTemplate.name) — its
+//     containers live in agent config, invisible to both apply and resolution,
+//     and are validated only at pod build time on the agent.
+func specDefersContainerValidation(spec Spec) bool {
+	// A named podTemplate's containers are defined in agent config.
+	if spec.PodTemplate != nil && spec.PodTemplate.Name != "" {
+		return true
+	}
+
+	scan := func(entries []StepEntry) bool {
+		for _, e := range entries {
+			if e.Uses != nil {
+				return true
+			}
+			for _, p := range e.Parallel {
+				if p.Uses != nil {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return scan(spec.Steps) || scan(spec.Finally)
+}
+
 func (j *Job) Validate() error {
 	if j.APIVersion != SupportedAPIVersion {
 		return fmt.Errorf("unsupported apiVersion %q (want %q)", j.APIVersion, SupportedAPIVersion)
@@ -158,6 +188,21 @@ func (j *Job) Validate() error {
 	if j.Spec.Native {
 		if j.Spec.PodTemplate != nil {
 			return fmt.Errorf("spec.native: true is incompatible with spec.podTemplate — a native job runs host processes only")
+		}
+	}
+
+	if err := validatePodTemplateNames(j.Spec.PodTemplate); err != nil {
+		return err
+	}
+
+	// Plain (uses-free, inline-podTemplate) non-native jobs get
+	// container-reference validation at apply time; uses-bearing specs defer to
+	// the controller's post-resolution check and named-podTemplate specs defer
+	// to pod build on the agent (see specDefersContainerValidation).
+	// Native jobs have no containers, so skip this check.
+	if !specDefersContainerValidation(j.Spec) && !j.Spec.Native {
+		if err := ValidateContainerReferences(j.Spec); err != nil {
+			return err
 		}
 	}
 

@@ -27,7 +27,7 @@ func TestExpandUsesStep_SanitizesHyphenatedNames(t *testing.T) {
 	}
 
 	expanded, _, err := expandUsesStep("build-via-template", // hyphenated uses step name
-		map[string]string{"image": "myapp"}, tplSpec, nil, "")
+		map[string]string{"image": "myapp"}, tplSpec, nil, "", "")
 	require.NoError(t, err)
 
 	inputs := expanded[0]
@@ -63,7 +63,7 @@ func TestExpandUsesStep_LinearChainAndOutputs(t *testing.T) {
 	}
 
 	expanded, _, err := expandUsesStep("buildWithTemplate",
-		map[string]string{"image": "myapp", "tag": "latest"}, tplSpec, nil, "")
+		map[string]string{"image": "myapp", "tag": "latest"}, tplSpec, nil, "", "")
 	require.NoError(t, err)
 	require.Len(t, expanded, 4)
 
@@ -98,7 +98,7 @@ func TestExpandUsesStep_ParallelRootsBothFeedCapture(t *testing.T) {
 		},
 	}
 
-	expanded, _, err := expandUsesStep("ci", nil, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("ci", nil, tplSpec, nil, "", "")
 	require.NoError(t, err)
 	require.Len(t, expanded, 4) // inputs, lint, test, capture
 
@@ -114,7 +114,7 @@ func TestExpandUsesStep_NoDeclaredOutputs_StillProducesCaptureStep(t *testing.T)
 	tplSpec := dsl.Spec{
 		Steps: []dsl.StepEntry{{Name: "only", Run: "echo hi"}},
 	}
-	expanded, _, err := expandUsesStep("simple", nil, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("simple", nil, tplSpec, nil, "", "")
 	require.NoError(t, err)
 	require.Len(t, expanded, 3)
 	capture := expanded[2]
@@ -133,7 +133,7 @@ func TestExpandUsesStep_RewritesIfConditionAndEnv(t *testing.T) {
 			},
 		},
 	}
-	expanded, _, err := expandUsesStep("rollout", map[string]string{"env": "production"}, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("rollout", map[string]string{"env": "production"}, tplSpec, nil, "", "")
 	require.NoError(t, err)
 	inner := expanded[1]
 	assert.Equal(t, `steps.rollout__inputs.outputs.env == "production"`, inner.If)
@@ -153,7 +153,7 @@ func TestExpandUsesStep_PreservesAndRewritesPostHook(t *testing.T) {
 			},
 		},
 	}
-	expanded, _, err := expandUsesStep("fetchRepo", map[string]string{"repoURL": "https://example.com/x.git"}, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("fetchRepo", map[string]string{"repoURL": "https://example.com/x.git"}, tplSpec, nil, "", "")
 	require.NoError(t, err)
 	inner := expanded[1]
 	require.NotNil(t, inner.Post)
@@ -173,7 +173,7 @@ func TestExpandUsesStep_OmittedInputWithDefault_InputsStepCarriesDefault(t *test
 		},
 	}
 
-	expanded, _, err := expandUsesStep("smoke", map[string]string{}, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("smoke", map[string]string{}, tplSpec, nil, "", "")
 	require.NoError(t, err)
 
 	inputs := expanded[0]
@@ -193,7 +193,7 @@ func TestExpandUsesStep_WithValueOverridesDefault(t *testing.T) {
 		},
 	}
 
-	expanded, _, err := expandUsesStep("smoke", map[string]string{"expect_status": "204"}, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("smoke", map[string]string{"expect_status": "204"}, tplSpec, nil, "", "")
 	require.NoError(t, err)
 
 	inputs := expanded[0]
@@ -212,7 +212,7 @@ func TestExpandUsesStep_RequiredInputMissingNoDefault_Errors(t *testing.T) {
 		},
 	}
 
-	_, _, err := expandUsesStep("smoke", map[string]string{}, tplSpec, nil, "")
+	_, _, err := expandUsesStep("smoke", map[string]string{}, tplSpec, nil, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "url")
 }
@@ -229,7 +229,7 @@ func TestExpandUsesStep_NilDefaultOptionalInputOmitted_KeyAbsent(t *testing.T) {
 		},
 	}
 
-	expanded, _, err := expandUsesStep("smoke", map[string]string{}, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("smoke", map[string]string{}, tplSpec, nil, "", "")
 	require.NoError(t, err)
 
 	inputs := expanded[0]
@@ -250,7 +250,7 @@ func TestExpandUsesStep_RewritesCacheStep(t *testing.T) {
 			},
 		},
 	}
-	expanded, _, err := expandUsesStep("gobuild", map[string]string{"goVersion": "1.24"}, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("gobuild", map[string]string{"goVersion": "1.24"}, tplSpec, nil, "", "")
 	require.NoError(t, err)
 	restore := expanded[1]
 	require.NotNil(t, restore.Cache)
@@ -271,7 +271,7 @@ func TestExpandUsesStep_EmptyWithValueForRequiredInput_Errors(t *testing.T) {
 
 	// Mirroring resolveParams: an explicit empty string does not satisfy a
 	// required input.
-	_, _, err := expandUsesStep("smoke", map[string]string{"url": ""}, tplSpec, nil, "")
+	_, _, err := expandUsesStep("smoke", map[string]string{"url": ""}, tplSpec, nil, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "url")
 }
@@ -290,7 +290,7 @@ func TestExpandUsesStep_EmptyWithValueFallsBackToDefault(t *testing.T) {
 
 	// Mirroring resolveParams: an explicit empty string is unset, so the
 	// declared default wins.
-	expanded, _, err := expandUsesStep("build", map[string]string{"tags": ""}, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("build", map[string]string{"tags": ""}, tplSpec, nil, "", "")
 	require.NoError(t, err)
 
 	inputs := expanded[0]
@@ -311,7 +311,7 @@ func TestExpandUsesStep_EmptyWithValueNoDefault_PassesThrough(t *testing.T) {
 
 	// Mirroring resolveParams: with no default to fall back to, an explicit
 	// empty string is kept as-is.
-	expanded, _, err := expandUsesStep("smoke", map[string]string{"note": ""}, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("smoke", map[string]string{"note": ""}, tplSpec, nil, "", "")
 	require.NoError(t, err)
 
 	inputs := expanded[0]
@@ -330,7 +330,7 @@ func TestExpandUsesStep_StepOwnShellSurvives(t *testing.T) {
 			{Name: "build", Run: "print('hi')", Shell: []string{"python3", "-c"}},
 		},
 	}
-	expanded, _, err := expandUsesStep("tpl", nil, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("tpl", nil, tplSpec, nil, "", "")
 	require.NoError(t, err)
 	build := expanded[1]
 	assert.Equal(t, "tpl__build", build.Name)
@@ -347,7 +347,7 @@ func TestExpandUsesStep_TemplateLevelShellStampedOntoUndeclaredStep(t *testing.T
 			{Name: "build", Run: "make"},
 		},
 	}
-	expanded, _, err := expandUsesStep("tpl", nil, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("tpl", nil, tplSpec, nil, "", "")
 	require.NoError(t, err)
 	build := expanded[1]
 	assert.Equal(t, "tpl__build", build.Name)
@@ -364,7 +364,7 @@ func TestExpandUsesStep_NoTemplateShell_InlinedStepLeftNil(t *testing.T) {
 			{Name: "build", Run: "make"},
 		},
 	}
-	expanded, _, err := expandUsesStep("tpl", nil, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("tpl", nil, tplSpec, nil, "", "")
 	require.NoError(t, err)
 	build := expanded[1]
 	assert.Nil(t, build.Shell, "no template shell declared: inlined step must be left nil for caller-level resolution")
@@ -383,7 +383,7 @@ func TestExpandUsesStep_ParallelSteps_ShellSurvivesAndStamps(t *testing.T) {
 			}},
 		},
 	}
-	expanded, _, err := expandUsesStep("tpl", nil, tplSpec, nil, "")
+	expanded, _, err := expandUsesStep("tpl", nil, tplSpec, nil, "", "")
 	require.NoError(t, err)
 	// expanded[0] = inputs, expanded[1] = the parallel StepEntry, expanded[2] = capture
 	require.Len(t, expanded, 3)

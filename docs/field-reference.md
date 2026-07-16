@@ -359,7 +359,7 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 JobTemplate is the resource a uses: step points at. Unlike a full Job, its
 schema contains ONLY what uses: can honor — the template's steps are inlined
 into the CALLER's run and pod, so fields that would shape a different pod,
-agent, or run (agentSelector, concurrency, timeoutMinutes, native, finally,
+agent, or run (agentSelector, concurrency, timeoutMinutes, native,
 podTemplate reuse/workspace/override, pod-level spec keys) do not exist here
 and are rejected by strict decoding. A job that needs its own pod/agent/run
 semantics should be invoked with call: instead.
@@ -386,52 +386,14 @@ JobTemplateSpec is the uses:-supported subset of a job spec.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `description` | string | no |  |
+| `finally` | []StepEntry | no | Finally steps run in the CALLER's finally phase (appended after the
+caller's own finally steps, prefixed like all inlined steps). Rejected
+in scope mode (runsIn.image), where the scope pod's lifetime ends with
+the template body. |
 | `params` | Params | no |  |
 | `podTemplate` | JobTemplatePodTemplate | no |  |
 | `shell` | []string | no |  |
 | `steps` | []StepEntry | yes |  |
-
-### Params
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `inputs` | []Input | no |  |
-| `outputs` | []Output | no |  |
-
-### Input
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `default` | any | no |  |
-| `description` | string | no |  |
-| `name` | string | yes |  |
-| `required` | boolean | no |  |
-| `type` | `string` \| `bool` \| `int` \| `array` | yes |  |
-
-### Output
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | yes |  |
-| `type` | `string` \| `bool` \| `int` \| `artifact` | yes | "string", "bool", "int", "artifact" |
-
-### JobTemplatePodTemplate
-
-JobTemplatePodTemplate is the pod-shape subset a template may contribute to
-the caller's pod: containers and the volumes they mount. Nothing else.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `spec` | JobTemplatePodSpec | no |  |
-
-### JobTemplatePodSpec
-
-JobTemplatePodSpec holds the mergeable pod-shape lists.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `containers` | []map[string]any | no |  |
-| `volumes` | []map[string]any | no |  |
 
 ### StepEntry
 
@@ -645,6 +607,48 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 |-------|------|----------|-------------|
 | `job` | string | yes |  |
 | `with` | map[string]any | no |  |
+
+### Params
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `inputs` | []Input | no |  |
+| `outputs` | []Output | no |  |
+
+### Input
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `default` | any | no |  |
+| `description` | string | no |  |
+| `name` | string | yes |  |
+| `required` | boolean | no |  |
+| `type` | `string` \| `bool` \| `int` \| `array` | yes |  |
+
+### Output
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes |  |
+| `type` | `string` \| `bool` \| `int` \| `artifact` | yes | "string", "bool", "int", "artifact" |
+
+### JobTemplatePodTemplate
+
+JobTemplatePodTemplate is the pod-shape subset a template may contribute to
+the caller's pod: containers and the volumes they mount. Nothing else.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `spec` | JobTemplatePodSpec | no |  |
+
+### JobTemplatePodSpec
+
+JobTemplatePodSpec holds the mergeable pod-shape lists.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `containers` | []map[string]any | no |  |
+| `volumes` | []map[string]any | no |  |
 
 ## Schedule
 

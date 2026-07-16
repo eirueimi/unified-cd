@@ -1691,3 +1691,91 @@ spec:
 	require.NoError(t, err)
 	assert.Equal(t, "Builds and deploys", job.Spec.Description)
 }
+
+func TestJobValidate_ContainerRefs_PlainVsUses(t *testing.T) {
+	// Plain job with dangling container -> apply-time error.
+	plainBad := `apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: x}
+spec:
+  steps:
+    - {name: s, container: ghost, run: echo}
+`
+	if _, err := Parse(strings.NewReader(plainBad)); err == nil || !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("plain job with dangling container must fail apply validation, got %v", err)
+	}
+
+	// Same dangling ref but the spec carries a uses: step -> deferred (passes Validate).
+	usesBearing := `apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: x}
+spec:
+  steps:
+    - {name: s, container: ghost, run: echo}
+    - name: tpl
+      uses: {job: "git://github.com/org/repo/t.yaml@v1"}
+`
+	if _, err := Parse(strings.NewReader(usesBearing)); err != nil {
+		t.Errorf("uses-bearing spec must defer container validation to resolution, got %v", err)
+	}
+
+	// Valid plain references still pass.
+	plainOK := `apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: x}
+spec:
+  podTemplate:
+    spec:
+      containers: [{name: tools, image: img}]
+  steps:
+    - {name: a, container: tools, run: echo}
+    - {name: b, container: job, run: echo}
+`
+	if _, err := Parse(strings.NewReader(plainOK)); err != nil {
+		t.Errorf("valid plain refs must pass: %v", err)
+	}
+}
+
+// TestJobValidate_ContainerRefs_Override covers the regression where
+// spec.podTemplate.override.containers defines a real container (merged at
+// pod build time, see internal/k8sagent/podbuilder.go mergeContainers) but
+// ValidateContainerReferences/validatePodTemplateNames were blind to it,
+// wrongly failing apply for the documented override.containers pattern
+// (docs/jobs.md).
+func TestJobValidate_ContainerRefs_Override(t *testing.T) {
+	// A uses-free job whose step targets a container defined ONLY in
+	// override.containers (not spec.containers) must pass apply validation.
+	overrideOK := `apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: x}
+spec:
+  podTemplate:
+    override:
+      containers: [{name: sidecar, image: img}]
+    spec:
+      containers: [{name: job, image: img}]
+  steps:
+    - {name: s, container: sidecar, run: echo}
+`
+	if _, err := Parse(strings.NewReader(overrideOK)); err != nil {
+		t.Errorf("step targeting an override-defined container must pass apply validation: %v", err)
+	}
+
+	// An override container with an invalid DNS-1123 name must be rejected
+	// at apply time, same as a spec.containers name.
+	overrideBadName := `apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: x}
+spec:
+  podTemplate:
+    override:
+      containers: [{name: "Bad Name", image: img}]
+    spec:
+      containers: [{name: job, image: img}]
+  steps:
+    - {name: s, run: echo}
+`
+	if _, err := Parse(strings.NewReader(overrideBadName)); err == nil || !strings.Contains(err.Error(), "Bad Name") {
+		t.Errorf("invalid override container name must fail apply validation, got %v", err)
+	}
+}

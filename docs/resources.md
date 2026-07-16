@@ -242,17 +242,35 @@ spec:
   shell: [<string>, ...]          # optional default interpreter for the template's steps
   podTemplate:                    # optional pod-shape subset — merged into the CALLER's pod
     spec:
-      containers: [...]           # gap-fill merged; reserved names job/unified-artifact/ucd-shim rejected
+      containers: [...]           # gap-fill merged; reserved names job/unified-artifact/ucd-shim rejected;
+                                   # every container/volume name must be a valid DNS-1123 label (apply-time error)
       volumes: [...]              # gap-fill merged; reserved names workspace/ucd-tools rejected
   steps: [...]                    # same StepEntry schema as Job (nested uses: allowed)
+  finally: [...]                  # optional — spliced into the CALLER's finally phase, not run standalone
 ```
 
 Fields that do NOT exist on a JobTemplate (and error if present):
-`agentSelector`, `concurrency`, `timeoutMinutes`, `native`, `finally`, and any
+`agentSelector`, `concurrency`, `timeoutMinutes`, `native`, and any
 `podTemplate` field other than `spec.containers`/`spec.volumes` — a template
 inlines into the caller's run, so it cannot shape a different pod, agent, or
 run. Use `call:` (a registered `kind: Job`, its own child run) when you need
 those semantics.
+
+### `finally`
+
+`spec.finally` uses the same `StepEntry` schema as `steps` (including nested
+`uses:` and `parallel:`), but its steps do **not** run in a phase of their
+own — a `uses:` step that targets this template splices the (renamed,
+ref-rewritten) finally steps into the **caller's** `spec.finally`, appended
+after the caller's own hand-written finally steps, prefixed with the
+`uses:` step's name like any other inlined step (`usesName__stepName`).
+Nested `uses:` inside a template's body or its own `finally:` bubble their
+finally steps up with the full prefix chain applied at each level. A
+scope-mode `uses:` step (`runsIn.image`) rejects a target template that
+declares `finally:` — the scope pod's lifetime ends with the template body,
+so there is nothing left to run the finally steps in. See [Job Reference —
+Template `finally:`](jobs.md#template-finally-splice-into-the-caller) for
+the full contract, ordering guarantee, and examples.
 
 ---
 

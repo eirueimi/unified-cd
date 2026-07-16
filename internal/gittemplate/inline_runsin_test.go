@@ -16,7 +16,7 @@ func TestExpandUses_PropagatesContainer(t *testing.T) {
 		},
 	}
 
-	expanded, _, err := expandUsesStep("tmpl", nil, tplSpec, nil, "builder")
+	expanded, _, err := expandUsesStep("tmpl", nil, tplSpec, nil, "builder", "")
 	require.NoError(t, err)
 
 	var compile, special dsl.StepEntry
@@ -53,7 +53,7 @@ func TestInline_TemplateStepRunsInRejected(t *testing.T) {
 			{Name: "lint", Run: "golangci-lint run", RunsIn: &dsl.RunsIn{Image: "golangci/lint:latest"}},
 		},
 	}
-	_, _, err := expandUsesStep("build", nil, templateWithInnerRunsIn, nil, "")
+	_, _, err := expandUsesStep("build", nil, templateWithInnerRunsIn, nil, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "runsIn")
 	assert.Contains(t, err.Error(), "container:")
@@ -69,7 +69,7 @@ func TestInline_UsesContainerPropagatesToInnerSteps(t *testing.T) {
 			{Name: "two", Run: "echo two", Container: "custom"},
 		},
 	}
-	expanded, _, err := expandUsesStep("job", nil, tplSpec, nil, "tools")
+	expanded, _, err := expandUsesStep("job", nil, tplSpec, nil, "tools", "")
 	require.NoError(t, err)
 
 	var one, two dsl.StepEntry

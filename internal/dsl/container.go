@@ -1,6 +1,10 @@
 package dsl
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
 
 // Reserved container/volume names are injected/owned by the system, never
 // user- or template-supplied. PrimaryContainerName is the default exec target
@@ -23,14 +27,72 @@ const (
 	UcdToolsVolumeName           = "ucd-tools"
 )
 
-// IsReservedContainerName reports whether name is a system-reserved container name.
-func IsReservedContainerName(name string) bool {
-	return name == PrimaryContainerName || name == ArtifactSidecarContainerName || name == UcdShimContainerName
+// dns1123LabelRe matches a valid Kubernetes container/volume name (DNS-1123
+// label): lowercase alphanumerics and '-', starting and ending alphanumeric.
+var dns1123LabelRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// ValidateDNS1123Label rejects a name that is not a valid DNS-1123 label
+// (the shape Kubernetes requires for container and volume names). Catching
+// this at parse time turns an opaque pod-build API error into a clear
+// authoring error — and closes case/whitespace evasion of the reserved-name
+// checks.
+func ValidateDNS1123Label(name string) error {
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if len(name) > 63 {
+		return fmt.Errorf("name %q exceeds 63 characters", name)
+	}
+	if !dns1123LabelRe.MatchString(name) {
+		return fmt.Errorf("name %q is not a valid DNS-1123 label (lowercase alphanumerics and '-', must start/end alphanumeric)", name)
+	}
+	return nil
 }
 
-// IsReservedVolumeName reports whether name is a system-reserved volume name.
+// IsReservedContainerName reports whether name is a system-reserved container
+// name. Comparison is normalized (trimmed, lowercased) so case/whitespace
+// variants cannot evade the reservation; shape validation rejects such
+// variants outright, this is defense in depth.
+func IsReservedContainerName(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == PrimaryContainerName || n == ArtifactSidecarContainerName || n == UcdShimContainerName
+}
+
+// IsReservedVolumeName reports whether name is a system-reserved volume name
+// (normalized like IsReservedContainerName).
 func IsReservedVolumeName(name string) bool {
-	return name == WorkspaceVolumeName || name == UcdToolsVolumeName
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == WorkspaceVolumeName || n == UcdToolsVolumeName
+}
+
+// validatePodTemplateNames checks every container and volume name declared in
+// pt — including pt.Override's real, pod-build-merged containers/volumes
+// (see internal/k8sagent/podbuilder.go mergeContainers/mergeVolumes) — for
+// DNS-1123-label shape. Nil-safe.
+func validatePodTemplateNames(pt *PodTemplate) error {
+	for _, c := range PodTemplateContainers(pt) {
+		if err := ValidateDNS1123Label(DefName(c)); err != nil {
+			return fmt.Errorf("podTemplate container %w", err)
+		}
+	}
+	for _, v := range PodTemplateVolumes(pt) {
+		if err := ValidateDNS1123Label(DefName(v)); err != nil {
+			return fmt.Errorf("podTemplate volume %w", err)
+		}
+	}
+	if pt != nil && pt.Override != nil {
+		for _, c := range pt.Override.Containers {
+			if err := ValidateDNS1123Label(DefName(c)); err != nil {
+				return fmt.Errorf("podTemplate override container %w", err)
+			}
+		}
+		for _, v := range pt.Override.Volumes {
+			if err := ValidateDNS1123Label(DefName(v)); err != nil {
+				return fmt.Errorf("podTemplate override volume %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // PodTemplateContainers returns pt's container definition maps (from
@@ -67,15 +129,26 @@ func DefName(def map[string]any) string {
 
 // ValidateContainerReferences checks that every step's container: reference in
 // spec resolves to a real target: empty (defaults to the primary container), a
-// reserved name, or a container defined in spec.PodTemplate. Scope-tagged steps
-// (ScopeID set) run in their own scope pod, not the caller's pod, so their
-// container is not checked here. Returns a descriptive error on the first
-// invalid reference. Intended to run on a fully-resolved spec (after uses merge).
+// reserved name, or a container defined in spec.PodTemplate — including
+// spec.PodTemplate.Override.Containers, which defines REAL containers merged
+// into the pod at build time (see internal/k8sagent/podbuilder.go
+// mergeContainers), not just spec.PodTemplate's base container list.
+// Scope-tagged steps (ScopeID set) run in their own scope pod, not the
+// caller's pod, so their container is not checked here. Returns a descriptive
+// error on the first invalid reference. Intended to run on a fully-resolved
+// spec (after uses merge).
 func ValidateContainerReferences(spec Spec) error {
 	defined := map[string]bool{}
 	for _, c := range PodTemplateContainers(spec.PodTemplate) {
 		if n := DefName(c); n != "" {
 			defined[n] = true
+		}
+	}
+	if spec.PodTemplate != nil && spec.PodTemplate.Override != nil {
+		for _, c := range spec.PodTemplate.Override.Containers {
+			if n := DefName(c); n != "" {
+				defined[n] = true
+			}
 		}
 	}
 	check := func(stepName, container, scopeID string) error {

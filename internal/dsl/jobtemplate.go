@@ -70,6 +70,21 @@ func (t *JobTemplate) Validate() error {
 	if err := validateStepEntries(t.Spec.Steps, "spec.steps", nameSet, true, false); err != nil {
 		return err
 	}
+	if err := validateStepEntries(t.Spec.Finally, "spec.finally", nameSet, false, false); err != nil {
+		return err
+	}
+	if pt := t.Spec.PodTemplate; pt != nil {
+		for _, c := range pt.Spec.Containers {
+			if err := ValidateDNS1123Label(DefName(c)); err != nil {
+				return fmt.Errorf("podTemplate container %w", err)
+			}
+		}
+		for _, v := range pt.Spec.Volumes {
+			if err := ValidateDNS1123Label(DefName(v)); err != nil {
+				return fmt.Errorf("podTemplate volume %w", err)
+			}
+		}
+	}
 	for i, p := range t.Spec.Params.Inputs {
 		if p.Name == "" {
 			return fmt.Errorf("spec.params.inputs[%d].name is required", i)
@@ -98,6 +113,7 @@ func (t *JobTemplate) ToSpec() Spec {
 		Params:      t.Spec.Params,
 		Shell:       t.Spec.Shell,
 		Steps:       t.Spec.Steps,
+		Finally:     t.Spec.Finally,
 		Description: t.Spec.Description,
 	}
 	if pt := t.Spec.PodTemplate; pt != nil {

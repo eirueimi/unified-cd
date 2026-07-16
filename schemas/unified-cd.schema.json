@@ -305,7 +305,7 @@
     },
     "JobTemplate": {
       "additionalProperties": false,
-      "description": "JobTemplate is the resource a uses: step points at. Unlike a full Job, its\nschema contains ONLY what uses: can honor — the template's steps are inlined\ninto the CALLER's run and pod, so fields that would shape a different pod,\nagent, or run (agentSelector, concurrency, timeoutMinutes, native, finally,\npodTemplate reuse/workspace/override, pod-level spec keys) do not exist here\nand are rejected by strict decoding. A job that needs its own pod/agent/run\nsemantics should be invoked with call: instead.",
+      "description": "JobTemplate is the resource a uses: step points at. Unlike a full Job, its\nschema contains ONLY what uses: can honor — the template's steps are inlined\ninto the CALLER's run and pod, so fields that would shape a different pod,\nagent, or run (agentSelector, concurrency, timeoutMinutes, native,\npodTemplate reuse/workspace/override, pod-level spec keys) do not exist here\nand are rejected by strict decoding. A job that needs its own pod/agent/run\nsemantics should be invoked with call: instead.",
       "properties": {
         "apiVersion": {
           "const": "unified-cd/v1",
@@ -367,6 +367,13 @@
       "properties": {
         "description": {
           "type": "string"
+        },
+        "finally": {
+          "description": "Finally steps run in the CALLER's finally phase (appended after the\ncaller's own finally steps, prefixed like all inlined steps). Rejected\nin scope mode (runsIn.image), where the scope pod's lifetime ends with\nthe template body.",
+          "items": {
+            "$ref": "#/definitions/StepEntry"
+          },
+          "type": "array"
         },
         "params": {
           "$ref": "#/definitions/Params"

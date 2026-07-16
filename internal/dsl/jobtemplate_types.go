@@ -3,7 +3,7 @@ package dsl
 // JobTemplate is the resource a uses: step points at. Unlike a full Job, its
 // schema contains ONLY what uses: can honor — the template's steps are inlined
 // into the CALLER's run and pod, so fields that would shape a different pod,
-// agent, or run (agentSelector, concurrency, timeoutMinutes, native, finally,
+// agent, or run (agentSelector, concurrency, timeoutMinutes, native,
 // podTemplate reuse/workspace/override, pod-level spec keys) do not exist here
 // and are rejected by strict decoding. A job that needs its own pod/agent/run
 // semantics should be invoked with call: instead.
@@ -21,6 +21,11 @@ type JobTemplateSpec struct {
 	Shell       []string                `yaml:"shell,omitempty"`
 	PodTemplate *JobTemplatePodTemplate `yaml:"podTemplate,omitempty"`
 	Steps       []StepEntry             `yaml:"steps"`
+	// Finally steps run in the CALLER's finally phase (appended after the
+	// caller's own finally steps, prefixed like all inlined steps). Rejected
+	// in scope mode (runsIn.image), where the scope pod's lifetime ends with
+	// the template body.
+	Finally []StepEntry `yaml:"finally,omitempty"`
 }
 
 // JobTemplatePodTemplate is the pod-shape subset a template may contribute to
