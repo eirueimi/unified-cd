@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -315,7 +316,23 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 //
 // Everything else — secrets fetch, cancellation, step dispatch, finally,
 // output promotion, FinishRun — is delegated to RunClaim via hostBackend.
+//
+// The whole body is wrapped in a recover: runOne (pipeline.go) already turns
+// a panic INSIDE a step into a normal step failure, but a panic ABOVE the
+// step level (claim-pod construction, backend wiring, or anywhere else in
+// this function's call graph) would otherwise crash the process and leave
+// every other in-flight run stuck. This defense-in-depth guard converts such
+// a panic into the same failRun path executeRun already uses for its other
+// unrecoverable-claim errors, so the run is marked Failed instead of hanging
+// as Running until the stuck-run reaper trips.
 func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("agent panic in executeRun", "runId", c.RunID, "panic", r, "stack", string(debug.Stack()))
+			a.failRun(ctx, c.RunID, fmt.Sprintf("agent panic: %v", r))
+		}
+	}()
+
 	failClaim := func(msg string, err error) {
 		a.failRun(ctx, c.RunID, fmt.Sprintf("%s: %v", msg, err))
 	}
@@ -351,8 +368,14 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		}
 	}
 	backend := newHostBackend(a, c.RunID, workDir, pod)
-	RunClaim(ctx, a.Client, a.ID, c, backend)
+	runClaimFn(ctx, a.Client, a.ID, c, backend)
 }
+
+// runClaimFn indirects the call to RunClaim so tests can substitute a stub
+// that panics, exercising executeRun's outer panic-recovery guard above
+// without needing a genuine crash somewhere in the real orchestration path.
+// Production code always leaves this as RunClaim.
+var runClaimFn = RunClaim
 
 // failRun fails a claim that could not even begin executing (workspace
 // preparation failed, the isolated job's container runtime is missing, or its

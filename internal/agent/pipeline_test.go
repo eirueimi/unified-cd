@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -357,4 +358,47 @@ func TestSafeStepCtx_ConcurrentSetStepMatrixOutputsAndSnapshot(t *testing.T) {
 	agg, ok := snap.Steps["build"].Outputs["version"].(map[string]string)
 	require.True(t, ok)
 	require.Len(t, agg, goroutines, "expected one aggregated combo per writer goroutine")
+}
+
+// TestRunOne_RecoversPanic verifies that a panic inside run(ctx, step) is
+// recovered and converted into an error naming the panic value, rather than
+// crashing the process (audit item 4).
+func TestRunOne_RecoversPanic(t *testing.T) {
+	panicRun := func(ctx context.Context, s api.ClaimStep) error { panic("boom in step") }
+	err := runOne(context.Background(), api.ClaimStep{Index: 0, Name: "s"}, panicRun)
+	if err == nil || !strings.Contains(err.Error(), "panic") || !strings.Contains(err.Error(), "boom in step") {
+		t.Fatalf("panic must become an error naming the panic value, got %v", err)
+	}
+}
+
+// TestRunOne_PanicRespectsContinueOnError verifies a recovered panic on a
+// continueOnError step is swallowed exactly like a normal returned error.
+func TestRunOne_PanicRespectsContinueOnError(t *testing.T) {
+	panicRun := func(ctx context.Context, s api.ClaimStep) error { panic("boom") }
+	err := runOne(context.Background(), api.ClaimStep{Index: 0, Name: "s", ContinueOnError: true}, panicRun)
+	if err != nil {
+		t.Fatalf("a recovered panic on a continueOnError step must be swallowed like a normal error, got %v", err)
+	}
+}
+
+// TestRunParallel_OnePanicFailsRunNotProcess verifies that a panicking
+// parallel-group member fails the group (and thus the run) without aborting
+// its sibling members or the process.
+func TestRunParallel_OnePanicFailsRunNotProcess(t *testing.T) {
+	var okRan atomic.Bool
+	run := func(ctx context.Context, s api.ClaimStep) error {
+		if s.Name == "boom" {
+			panic("kaboom")
+		}
+		okRan.Store(true)
+		return nil
+	}
+	steps := []api.ClaimStep{{Index: 0, Name: "boom"}, {Index: 1, Name: "ok"}}
+	err := runParallel(context.Background(), steps, run)
+	if err == nil {
+		t.Fatal("a panicking parallel step must fail the group")
+	}
+	if !okRan.Load() {
+		t.Fatal("the sibling parallel step must still have run")
+	}
 }

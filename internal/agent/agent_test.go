@@ -662,3 +662,43 @@ func TestAgent_UploadArtifact_RelativePath(t *testing.T) {
 		assert.Equal(t, 0, idx, "artifact ReportStep calls should carry the stage index")
 	}
 }
+
+// TestAgent_ExecuteRun_PanicIsRecoveredAndFailsRun verifies executeRun's
+// outer panic-recovery guard (audit item 4, defense-in-depth): a panic ABOVE
+// the step level — anywhere in the RunClaim call graph, not just inside a
+// step body (which runOne in pipeline.go already recovers) — must be caught
+// so it fails only this run via the existing failRun path, rather than
+// crashing the whole agent process and taking every other in-flight run
+// down with it. runClaimFn is substituted with a stub that panics so the
+// test doesn't depend on finding a genuine crash bug elsewhere in the real
+// orchestration path.
+func TestAgent_ExecuteRun_PanicIsRecoveredAndFailsRun(t *testing.T) {
+	const agentID = "panic-agent"
+	const runID = "run-panic"
+
+	finishCh := make(chan string, 1)
+	mux := newTimeoutTestMux(t, agentID, runID, finishCh)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+
+	orig := runClaimFn
+	defer func() { runClaimFn = orig }()
+	runClaimFn = func(ctx context.Context, client *Client, agentID string, c api.ClaimResponse, b ExecBackend) {
+		panic("boom in executeRun")
+	}
+
+	resp := api.ClaimResponse{Native: true, RunID: runID, JobName: "test-panic"}
+
+	assert.NotPanics(t, func() {
+		a.executeRun(context.Background(), resp, "")
+	}, "a panic above the step level must not crash executeRun's caller")
+
+	select {
+	case status := <-finishCh:
+		assert.Equal(t, "Failed", status, "a panic in executeRun's call graph should fail the run")
+	case <-time.After(5 * time.Second):
+		t.Fatal("FinishRun was not called after the panic")
+	}
+}

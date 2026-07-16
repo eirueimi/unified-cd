@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -184,6 +185,18 @@ claimLoop:
 			if sem != nil {
 				defer func() { <-sem }()
 			}
+			// Defense-in-depth: a.dispatch (executeRun) has its own internal
+			// error handling, but a panic anywhere in that call graph would
+			// otherwise crash the whole agent process and take every other
+			// in-flight run down with it. Recover here and fail just this run,
+			// mirroring the host agent's executeRun guard
+			// (internal/agent/agent.go).
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("k8s: agent panic in dispatch", "runId", c.RunID, "panic", r, "stack", string(debug.Stack()))
+					a.failRun(runCtx, c.RunID, fmt.Sprintf("agent panic: %v", r))
+				}
+			}()
 			a.dispatch(runCtx, c)
 		}(resp)
 	}
