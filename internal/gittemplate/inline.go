@@ -9,13 +9,17 @@ import (
 
 const usesPrefixSep = "__"
 
-// podContribution is what a non-scope uses: template contributes to the
-// caller's podTemplate: the container and volume definitions its steps need.
-// (What a template may declare at all is enforced structurally by the
-// kind: JobTemplate schema — dsl.ParseJobTemplate — not here.)
+// podContribution is what a uses: template contributes outside the caller-DAG
+// position where the uses: step itself sits: the container and volume
+// definitions its (non-scope) steps need, plus any finally: steps the
+// template declares (which splice into the caller's own finally phase rather
+// than the step's own position — see expandUsesStep). (What a template may
+// declare at all is enforced structurally by the kind: JobTemplate schema —
+// dsl.ParseJobTemplate — not here.)
 type podContribution struct {
 	containers []map[string]any
 	volumes    []map[string]any
+	finally    []dsl.StepEntry
 }
 
 // paramRefGoRe matches Go-template ".Params.NAME" references.
@@ -149,6 +153,177 @@ func rewriteMap(m map[string]string, usesName string, innerNames map[string]bool
 	return out
 }
 
+// renameInnerEntry transforms one template step entry (a concrete step or a
+// parallel block) into its inlined, uses-prefixed form: it renames the
+// step(s), rewrites .Params./.Steps. references via rewriteRefs, combines
+// outerIf with the step's own (already-rewritten) if:, carries cache/
+// upload-artifact/download-artifact/post sub-structs across with their string
+// fields rewritten the same way, and — in scope mode — applies the scope-step
+// restrictions and stamps ScopeID/ScopeImage instead of a container. It is the
+// single place this transformation is implemented; expandUsesStep calls it
+// once per body step and once per finally step so the two lists get provably
+// identical treatment.
+func renameInnerEntry(usesName string, innerNames map[string]bool, outerIf string, scopeMode bool, scopeID, scopeImage, outerContainer string, inner dsl.StepEntry) (dsl.StepEntry, error) {
+	if inner.Parallel != nil {
+		// Parallel block: prefix each inner step name and rewrite refs
+		rp := make([]dsl.Step, len(inner.Parallel))
+		for i, ps := range inner.Parallel {
+			ns := ps
+			ns.Name = prefixedName(usesName, ps.Name)
+			ns.Run = rewriteRefs(ps.Run, usesName, innerNames)
+			ns.If = combineIf(outerIf, rewriteRefs(ps.If, usesName, innerNames))
+			ns.Env = rewriteMap(ps.Env, usesName, innerNames)
+			ns.Outputs = rewriteMap(ps.Outputs, usesName, innerNames)
+			if ps.Cache != nil {
+				c := *ps.Cache
+				c.Path = rewriteRefs(c.Path, usesName, innerNames)
+				c.Key = rewriteRefs(c.Key, usesName, innerNames)
+				if len(c.RestoreKeys) > 0 {
+					rk := make([]string, len(c.RestoreKeys))
+					for j, k := range c.RestoreKeys {
+						rk[j] = rewriteRefs(k, usesName, innerNames)
+					}
+					c.RestoreKeys = rk
+				}
+				ns.Cache = &c
+			}
+			if ps.UploadArtifact != nil {
+				ua := *ps.UploadArtifact
+				ua.Name = rewriteRefs(ua.Name, usesName, innerNames)
+				ua.Path = rewriteRefs(ua.Path, usesName, innerNames)
+				ns.UploadArtifact = &ua
+			}
+			if ps.DownloadArtifact != nil {
+				da := *ps.DownloadArtifact
+				da.Name = rewriteRefs(da.Name, usesName, innerNames)
+				da.DestDir = rewriteRefs(da.DestDir, usesName, innerNames)
+				ns.DownloadArtifact = &da
+			}
+			if ps.Post != nil {
+				p := *ps.Post
+				p.Run = rewriteRefs(p.Run, usesName, innerNames)
+				p.Env = rewriteMap(p.Env, usesName, innerNames)
+				ns.Post = &p
+			}
+			if ps.Call != nil {
+				c := *ps.Call
+				ns.Call = &c
+			}
+			if ps.Uses != nil {
+				return dsl.StepEntry{}, fmt.Errorf("internal error: parallel step %q has unresolved nested uses; must be resolved before expandUsesStep", ps.Name)
+			}
+			if ps.RunsIn != nil {
+				return dsl.StepEntry{}, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", ps.Name)
+			}
+			if scopeMode {
+				if err := checkScopeStepAllowed(ps.Name, ps.Container, ps.Approval != nil, ps.Call != nil); err != nil {
+					return dsl.StepEntry{}, err
+				}
+				ns.ScopeID = scopeID
+				ns.ScopeImage = scopeImage
+				ns.RunsIn = nil
+			} else if ns.Container == "" {
+				ns.Container = outerContainer
+			}
+			rp[i] = ns
+		}
+		return dsl.StepEntry{Parallel: rp}, nil
+	}
+
+	// Concrete step
+	ns := dsl.StepEntry{
+		Name:            prefixedName(usesName, inner.Name),
+		Run:             rewriteRefs(inner.Run, usesName, innerNames),
+		If:              combineIf(outerIf, rewriteRefs(inner.If, usesName, innerNames)),
+		Env:             rewriteMap(inner.Env, usesName, innerNames),
+		Outputs:         rewriteMap(inner.Outputs, usesName, innerNames),
+		ContinueOnError: inner.ContinueOnError,
+		Container:       inner.Container,
+		TimeoutMinutes:  inner.TimeoutMinutes,
+		// The step's own shell: survives inlining as-is; a template-level
+		// tplSpec.Shell is stamped onto steps lacking one by stampShell,
+		// after all steps are renamed.
+		Shell: inner.Shell,
+	}
+	if inner.RunsIn != nil {
+		return dsl.StepEntry{}, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", inner.Name)
+	}
+	if scopeMode {
+		if err := checkScopeStepAllowed(inner.Name, inner.Container, inner.Approval != nil, inner.Call != nil); err != nil {
+			return dsl.StepEntry{}, err
+		}
+		ns.ScopeID = scopeID
+		ns.ScopeImage = scopeImage
+		ns.RunsIn = nil
+	} else if ns.Container == "" {
+		ns.Container = outerContainer
+	}
+	if inner.Cache != nil {
+		c := *inner.Cache
+		c.Path = rewriteRefs(c.Path, usesName, innerNames)
+		c.Key = rewriteRefs(c.Key, usesName, innerNames)
+		if len(c.RestoreKeys) > 0 {
+			rk := make([]string, len(c.RestoreKeys))
+			for i, k := range c.RestoreKeys {
+				rk[i] = rewriteRefs(k, usesName, innerNames)
+			}
+			c.RestoreKeys = rk
+		}
+		ns.Cache = &c
+	}
+	if inner.UploadArtifact != nil {
+		ua := *inner.UploadArtifact
+		ua.Name = rewriteRefs(ua.Name, usesName, innerNames)
+		ua.Path = rewriteRefs(ua.Path, usesName, innerNames)
+		ns.UploadArtifact = &ua
+	}
+	if inner.DownloadArtifact != nil {
+		da := *inner.DownloadArtifact
+		da.Name = rewriteRefs(da.Name, usesName, innerNames)
+		da.DestDir = rewriteRefs(da.DestDir, usesName, innerNames)
+		ns.DownloadArtifact = &da
+	}
+	if inner.Post != nil {
+		p := *inner.Post
+		p.Run = rewriteRefs(p.Run, usesName, innerNames)
+		p.Env = rewriteMap(p.Env, usesName, innerNames)
+		ns.Post = &p
+	}
+	if inner.Call != nil {
+		c := *inner.Call
+		ns.Call = &c // with: values intentionally not rewritten in v1
+	}
+	if inner.Uses != nil {
+		return dsl.StepEntry{}, fmt.Errorf("internal error: step %q has unresolved nested uses; must be resolved before expandUsesStep", inner.Name)
+	}
+	return ns, nil
+}
+
+// stampShell applies a template-level spec.shell to every entry (and
+// parallel sub-step) in entries that declares no shell: of its own. A step's
+// own shell: (already carried onto the entry by renameInnerEntry) always
+// wins — the template author declared it because the script needs it, and
+// the caller cannot override either value (caller-level spec.shell
+// resolution happens later, at claim build time, and only fills steps still
+// nil after this stamping — see internal/controller/api_agent.go's
+// resolveShell). A nil/empty shell is a no-op.
+func stampShell(entries []dsl.StepEntry, shell []string) {
+	if len(shell) == 0 {
+		return
+	}
+	for i := range entries {
+		if entries[i].Parallel != nil {
+			for j := range entries[i].Parallel {
+				if len(entries[i].Parallel[j].Shell) == 0 {
+					entries[i].Parallel[j].Shell = shell
+				}
+			}
+		} else if len(entries[i].Shell) == 0 {
+			entries[i].Shell = shell
+		}
+	}
+}
+
 // expandUsesStep replaces a single `uses` step with a flat, sequenced step
 // list that can be spliced directly into the parent spec's Steps in its place:
 //
@@ -196,6 +371,14 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 		return nil, podContribution{}, fmt.Errorf("template declares a podTemplate, but this uses: step has runsIn.image (scope mode): the template runs in its own scope pod, so its podTemplate cannot be honored")
 	}
 
+	// Likewise, a scope-mode uses runs the template body in its own scope
+	// pod that is torn down once the body finishes — the template's finally:
+	// steps have nowhere left to run by the time the caller's own finally
+	// phase happens, so reject rather than silently dropping them.
+	if scopeMode && len(tplSpec.Finally) > 0 {
+		return nil, podContribution{}, fmt.Errorf("template declares finally:, but this uses: step has runsIn.image (scope mode): the scope pod's lifetime ends with the template body, so its finally cannot be honored")
+	}
+
 	// Non-scope uses: contribute the template's podTemplate containers and the
 	// volumes they mount, so the caller's pod gains what the template's steps
 	// target. Reserved names are never injectable.
@@ -223,17 +406,27 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 		}
 	}
 
-	innerNames := make(map[string]bool, len(tplSpec.Steps))
-	for _, s := range tplSpec.Steps {
-		if s.Name != "" {
-			innerNames[s.Name] = true
-		}
-		for _, p := range s.Parallel {
-			if p.Name != "" {
-				innerNames[p.Name] = true
+	// innerNames covers both the template's body and finally step (and
+	// parallel sub-step) names: both are renamed with the same usesName__
+	// prefix, so a ref from either list to a step in either list must be
+	// rewritten identically. The shared nameSet enforced by
+	// dsl.ParseJobTemplate guarantees no name appears in both lists, so
+	// merging them here can't create an ambiguous mapping.
+	innerNames := make(map[string]bool, len(tplSpec.Steps)+len(tplSpec.Finally))
+	collectNames := func(entries []dsl.StepEntry) {
+		for _, s := range entries {
+			if s.Name != "" {
+				innerNames[s.Name] = true
+			}
+			for _, p := range s.Parallel {
+				if p.Name != "" {
+					innerNames[p.Name] = true
+				}
 			}
 		}
 	}
+	collectNames(tplSpec.Steps)
+	collectNames(tplSpec.Finally)
 
 	// Required inputs mirror call:'s resolveParams semantics (internal/controller/params.go):
 	// a required input with no default and no explicit non-empty with: value is
@@ -282,162 +475,34 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 
 	renamed := make([]dsl.StepEntry, len(tplSpec.Steps))
 	for idx, inner := range tplSpec.Steps {
-		if inner.Parallel != nil {
-			// Parallel block: prefix each inner step name and rewrite refs
-			rp := make([]dsl.Step, len(inner.Parallel))
-			for i, ps := range inner.Parallel {
-				ns := ps
-				ns.Name = prefixedName(usesName, ps.Name)
-				ns.Run = rewriteRefs(ps.Run, usesName, innerNames)
-				ns.If = combineIf(outerIf, rewriteRefs(ps.If, usesName, innerNames))
-				ns.Env = rewriteMap(ps.Env, usesName, innerNames)
-				ns.Outputs = rewriteMap(ps.Outputs, usesName, innerNames)
-				if ps.Cache != nil {
-					c := *ps.Cache
-					c.Path = rewriteRefs(c.Path, usesName, innerNames)
-					c.Key = rewriteRefs(c.Key, usesName, innerNames)
-					if len(c.RestoreKeys) > 0 {
-						rk := make([]string, len(c.RestoreKeys))
-						for j, k := range c.RestoreKeys {
-							rk[j] = rewriteRefs(k, usesName, innerNames)
-						}
-						c.RestoreKeys = rk
-					}
-					ns.Cache = &c
-				}
-				if ps.UploadArtifact != nil {
-					ua := *ps.UploadArtifact
-					ua.Name = rewriteRefs(ua.Name, usesName, innerNames)
-					ua.Path = rewriteRefs(ua.Path, usesName, innerNames)
-					ns.UploadArtifact = &ua
-				}
-				if ps.DownloadArtifact != nil {
-					da := *ps.DownloadArtifact
-					da.Name = rewriteRefs(da.Name, usesName, innerNames)
-					da.DestDir = rewriteRefs(da.DestDir, usesName, innerNames)
-					ns.DownloadArtifact = &da
-				}
-				if ps.Post != nil {
-					p := *ps.Post
-					p.Run = rewriteRefs(p.Run, usesName, innerNames)
-					p.Env = rewriteMap(p.Env, usesName, innerNames)
-					ns.Post = &p
-				}
-				if ps.Call != nil {
-					c := *ps.Call
-					ns.Call = &c
-				}
-				if ps.Uses != nil {
-					return nil, podContribution{}, fmt.Errorf("internal error: parallel step %q has unresolved nested uses; must be resolved before expandUsesStep", ps.Name)
-				}
-				if ps.RunsIn != nil {
-					return nil, podContribution{}, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", ps.Name)
-				}
-				if scopeMode {
-					if err := checkScopeStepAllowed(ps.Name, ps.Container, ps.Approval != nil, ps.Call != nil); err != nil {
-						return nil, podContribution{}, err
-					}
-					ns.ScopeID = scopeID
-					ns.ScopeImage = scopeImage
-					ns.RunsIn = nil
-				} else if ns.Container == "" {
-					ns.Container = outerContainer
-				}
-				rp[i] = ns
-			}
-			renamed[idx] = dsl.StepEntry{Parallel: rp}
-		} else {
-			// Concrete step
-			ns := dsl.StepEntry{
-				Name:            prefixedName(usesName, inner.Name),
-				Run:             rewriteRefs(inner.Run, usesName, innerNames),
-				If:              combineIf(outerIf, rewriteRefs(inner.If, usesName, innerNames)),
-				Env:             rewriteMap(inner.Env, usesName, innerNames),
-				Outputs:         rewriteMap(inner.Outputs, usesName, innerNames),
-				ContinueOnError: inner.ContinueOnError,
-				Container:       inner.Container,
-				TimeoutMinutes:  inner.TimeoutMinutes,
-				// The step's own shell: survives inlining as-is; a
-				// template-level tplSpec.Shell is stamped onto steps
-				// lacking one below, after all steps are renamed.
-				Shell: inner.Shell,
-			}
-			if inner.RunsIn != nil {
-				return nil, podContribution{}, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", inner.Name)
-			}
-			if scopeMode {
-				if err := checkScopeStepAllowed(inner.Name, inner.Container, inner.Approval != nil, inner.Call != nil); err != nil {
-					return nil, podContribution{}, err
-				}
-				ns.ScopeID = scopeID
-				ns.ScopeImage = scopeImage
-				ns.RunsIn = nil
-			} else if ns.Container == "" {
-				ns.Container = outerContainer
-			}
-			if inner.Cache != nil {
-				c := *inner.Cache
-				c.Path = rewriteRefs(c.Path, usesName, innerNames)
-				c.Key = rewriteRefs(c.Key, usesName, innerNames)
-				if len(c.RestoreKeys) > 0 {
-					rk := make([]string, len(c.RestoreKeys))
-					for i, k := range c.RestoreKeys {
-						rk[i] = rewriteRefs(k, usesName, innerNames)
-					}
-					c.RestoreKeys = rk
-				}
-				ns.Cache = &c
-			}
-			if inner.UploadArtifact != nil {
-				ua := *inner.UploadArtifact
-				ua.Name = rewriteRefs(ua.Name, usesName, innerNames)
-				ua.Path = rewriteRefs(ua.Path, usesName, innerNames)
-				ns.UploadArtifact = &ua
-			}
-			if inner.DownloadArtifact != nil {
-				da := *inner.DownloadArtifact
-				da.Name = rewriteRefs(da.Name, usesName, innerNames)
-				da.DestDir = rewriteRefs(da.DestDir, usesName, innerNames)
-				ns.DownloadArtifact = &da
-			}
-			if inner.Post != nil {
-				p := *inner.Post
-				p.Run = rewriteRefs(p.Run, usesName, innerNames)
-				p.Env = rewriteMap(p.Env, usesName, innerNames)
-				ns.Post = &p
-			}
-			if inner.Call != nil {
-				c := *inner.Call
-				ns.Call = &c // with: values intentionally not rewritten in v1
-			}
-			if inner.Uses != nil {
-				return nil, podContribution{}, fmt.Errorf("internal error: step %q has unresolved nested uses; must be resolved before expandUsesStep", inner.Name)
-			}
-			renamed[idx] = ns
+		ns, err := renameInnerEntry(usesName, innerNames, outerIf, scopeMode, scopeID, scopeImage, outerContainer, inner)
+		if err != nil {
+			return nil, podContribution{}, err
 		}
+		renamed[idx] = ns
 	}
+	stampShell(renamed, tplSpec.Shell)
 
-	// A template-level spec.shell is stamped onto every inlined step (and
-	// parallel sub-step) that declares no shell: of its own. A step's own
-	// shell: (already carried onto ns/rp above by copy or explicit field)
-	// always wins — the template author declared it because the script
-	// needs it, and the caller cannot override either value (caller-level
-	// spec.shell resolution happens later, at claim build time, and only
-	// fills steps still nil after this stamping — see
-	// internal/controller/api_agent.go's resolveShell).
-	if len(tplSpec.Shell) > 0 {
-		for i := range renamed {
-			if renamed[i].Parallel != nil {
-				for j := range renamed[i].Parallel {
-					if len(renamed[i].Parallel[j].Shell) == 0 {
-						renamed[i].Parallel[j].Shell = tplSpec.Shell
-					}
-				}
-			} else if len(renamed[i].Shell) == 0 {
-				renamed[i].Shell = tplSpec.Shell
-			}
+	// The template's own finally: steps get the identical rename/rewrite
+	// treatment as its body steps (renameInnerEntry is the single place that
+	// logic lives), but are collected separately into contrib.finally rather
+	// than spliced into the returned step list: they belong in the caller's
+	// finally phase, not at the uses: step's position (see ResolveSpec).
+	// scopeMode is always false here — the scope-mode+finally combination
+	// was already rejected above — so renameInnerEntry's scope branch never
+	// fires for these steps. No synthetic __inputs/capture step is
+	// generated for the finally list: rewritten refs to usesName__inputs
+	// remain valid since that step runs in the main DAG, before finally.
+	finallyRenamed := make([]dsl.StepEntry, len(tplSpec.Finally))
+	for idx, inner := range tplSpec.Finally {
+		ns, err := renameInnerEntry(usesName, innerNames, outerIf, scopeMode, scopeID, scopeImage, outerContainer, inner)
+		if err != nil {
+			return nil, podContribution{}, err
 		}
+		finallyRenamed[idx] = ns
 	}
+	stampShell(finallyRenamed, tplSpec.Shell)
+	contrib.finally = append(contrib.finally, finallyRenamed...)
 
 	outputsMap := map[string]string{}
 	for _, decl := range tplSpec.Params.Outputs {

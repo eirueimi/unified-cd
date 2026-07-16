@@ -102,11 +102,20 @@ func (r *Resolver) ResolveSpec(
 		spec.Finally = resolvedFinally
 		contrib.containers = append(contrib.containers, fcontrib.containers...)
 		contrib.volumes = append(contrib.volumes, fcontrib.volumes...)
+		contrib.finally = append(contrib.finally, fcontrib.finally...)
 	}
 
 	if err := mergeContribution(&spec, contrib); err != nil {
 		return nil, err
 	}
+
+	// Splice every uses: template's own finally: steps into the caller's
+	// finally phase, after the caller's own (already-resolved) finally
+	// entries — contrib.finally was built in encounter order across both the
+	// main-steps and finally-steps resolutions above, so a uses: step's
+	// template-finally lands after whatever the caller wrote by hand, in the
+	// order the uses: steps appear in the spec.
+	spec.Finally = append(spec.Finally, contrib.finally...)
 
 	// Step names must be unique across the whole resolved spec (parse enforces
 	// this for authored names via a shared nameSet; expansion must not
@@ -222,6 +231,8 @@ func (r *Resolver) resolveSteps(
 		contrib.containers = append(contrib.containers, expandContrib.containers...)
 		contrib.volumes = append(contrib.volumes, nestedContrib.volumes...)
 		contrib.volumes = append(contrib.volumes, expandContrib.volumes...)
+		contrib.finally = append(contrib.finally, nestedContrib.finally...)
+		contrib.finally = append(contrib.finally, expandContrib.finally...)
 	}
 	return out, contrib, nil
 }
