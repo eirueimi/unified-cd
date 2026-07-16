@@ -154,7 +154,9 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 		podSpec.Containers = append(podSpec.Containers, buildArtifactSidecarContainer(sidecar))
 	}
 
-	injectWorkspace(podSpec, wsCfg)
+	if err := injectWorkspace(podSpec, wsCfg); err != nil {
+		return nil, err
+	}
 	injectUcdShim(podSpec, shimImage)
 
 	return &corev1.Pod{
@@ -362,8 +364,18 @@ func volumesFromMaps(ms []map[string]any) ([]corev1.Volume, error) {
 	return vs, json.Unmarshal(data, &vs)
 }
 
-// injectWorkspace injects a workspace volume mount into all containers.
-func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) {
+// injectWorkspace injects a workspace volume mount into all containers. For
+// the primary "job" container specifically, a non-empty WorkingDir that
+// diverges from the workspace mount is rejected: an inline podTemplate would
+// have already been caught by dsl's validateStepTargetedWorkingDir at
+// apply/parse time, but a NAMED agent template's containers live in agent
+// config, invisible at apply time — this is the only point that ever sees
+// them, so it is the last chance to catch the same G5 cwd/resolution desync
+// (steps always run at the workspace mount: the k8s executor inherits the
+// container's WorkingDir, while artifact/cache resolution and
+// UNIFIED_WORKSPACE use the mount path). Other containers (sidecars) keep the
+// existing preserve-if-set / default-if-empty behavior.
+func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) error {
 	mountPath := "/workspace"
 	if wsCfg != nil && wsCfg.MountPath != "" {
 		mountPath = wsCfg.MountPath
@@ -395,6 +407,13 @@ func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) {
 		if !hasMnt {
 			podSpec.Containers[i].VolumeMounts = append(podSpec.Containers[i].VolumeMounts, wsMount)
 		}
+		if podSpec.Containers[i].Name == primaryContainerName {
+			if podSpec.Containers[i].WorkingDir != "" && podSpec.Containers[i].WorkingDir != mountPath {
+				return fmt.Errorf("podTemplate container %q declares workingDir, but steps execute in it: steps always run at the workspace mount (artifact/cache paths and UNIFIED_WORKSPACE resolve there); move the cd into the step script, or put workingDir on a sidecar", primaryContainerName)
+			}
+			podSpec.Containers[i].WorkingDir = mountPath
+			continue
+		}
 		// Ensure run steps exec into the workspace mount by default, matching the
 		// standard agent's cwd behavior. Don't clobber a WorkingDir a user's
 		// template already set explicitly.
@@ -402,6 +421,7 @@ func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) {
 			podSpec.Containers[i].WorkingDir = mountPath
 		}
 	}
+	return nil
 }
 
 func buildWorkspaceVolume(wsCfg *dsl.WorkspaceConfig) corev1.Volume {

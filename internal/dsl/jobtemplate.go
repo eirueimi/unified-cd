@@ -85,6 +85,9 @@ func (t *JobTemplate) Validate() error {
 			}
 		}
 	}
+	if err := validateStepTargetedWorkingDir(t.ToSpec()); err != nil {
+		return err
+	}
 	for i, p := range t.Spec.Params.Inputs {
 		if p.Name == "" {
 			return fmt.Errorf("spec.params.inputs[%d].name is required", i)
