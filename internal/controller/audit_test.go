@@ -119,7 +119,7 @@ func TestAudit_SecretDeleteRecordsName(t *testing.T) {
 
 	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
 	require.NoError(t, err)
-	require.Len(t, logs, 2) // set + delete
+	require.Len(t, logs, 2)                          // set + delete
 	assert.Equal(t, "secret.delete", logs[0].Action) // newest first
 	assert.Equal(t, "DB_PASS", logs[0].Resource)
 }
@@ -149,7 +149,7 @@ func TestAudit_GitCredentialUpsertAndDelete(t *testing.T) {
 
 	logs, err := pg.ListAuditLogs(t.Context(), 10, 0)
 	require.NoError(t, err)
-	require.Len(t, logs, 2) // upsert + delete
+	require.Len(t, logs, 2)                                 // upsert + delete
 	assert.Equal(t, "gitcredential.delete", logs[0].Action) // newest first
 	assert.Equal(t, "github-creds", logs[0].Resource)
 	assert.Equal(t, "gitcredential.upsert", logs[1].Action)
@@ -217,4 +217,22 @@ func TestAudit_TokenCreateAndDelete(t *testing.T) {
 	assert.Equal(t, resp.ID, logs[0].Resource)
 	assert.Equal(t, "token.create", logs[1].Action)
 	assert.Equal(t, "ci-bot", logs[1].Resource)
+}
+
+func TestAudit_AgentLifecycleClassification(t *testing.T) {
+	for _, tc := range []struct {
+		method, pattern, want string
+	}{
+		{http.MethodPost, "/api/v1/agent-enrollments", "agent.enrollment.create"},
+		{http.MethodDelete, "/api/v1/agent-enrollments/{id}", "agent.enrollment.revoke"},
+		{http.MethodPost, "/api/v1/agent-identities/{agentId}/enable", "agent.identity.enable"},
+		{http.MethodPost, "/api/v1/agent-identities/{agentId}/disable", "agent.identity.disable"},
+		{http.MethodPost, "/api/v1/agent-identities/{agentId}/credentials/revoke", "agent.credentials.revoke"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			got, ok := classifyAudit(tc.method, tc.pattern)
+			require.True(t, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

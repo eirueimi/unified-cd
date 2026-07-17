@@ -19,25 +19,30 @@ import (
 // human-facing routes need an entry; anything absent from this table is
 // recorded with a generic action derived from the path (see classifyAudit).
 var auditActionTable = map[string]string{
-	"POST /api/v1/jobs":                               "job.apply",
-	"DELETE /api/v1/jobs/*":                           "job.delete",
-	"POST /api/v1/runs":                               "run.trigger",
-	"POST /api/v1/runs/{id}/cancel":                   "run.cancel",
-	"DELETE /api/v1/runs/{id}":                        "run.delete",
-	"POST /api/v1/runs/{runID}/approvals/{stepIndex}": "run.approval.decide",
-	"POST /api/v1/secrets":                            "secret.set",
-	"DELETE /api/v1/secrets/{name}":                   "secret.delete",
-	"POST /api/v1/gitcredentials":                     "gitcredential.upsert",
-	"DELETE /api/v1/gitcredentials/{name}":            "gitcredential.delete",
-	"POST /api/v1/tokens":                             "token.create",
-	"DELETE /api/v1/tokens/{id}":                      "token.delete",
-	"POST /api/v1/webhooks":                           "webhook.apply",
-	"DELETE /api/v1/webhooks/{name}":                  "webhook.delete",
-	"POST /api/v1/schedules":                          "schedule.apply",
-	"DELETE /api/v1/schedules/{name}":                 "schedule.delete",
-	"POST /api/v1/appsources":                         "appsource.apply",
-	"DELETE /api/v1/appsources/{name}":                "appsource.delete",
-	"POST /api/v1/appsources/{name}/sync":             "appsource.sync",
+	"POST /api/v1/jobs":                                          "job.apply",
+	"DELETE /api/v1/jobs/*":                                      "job.delete",
+	"POST /api/v1/runs":                                          "run.trigger",
+	"POST /api/v1/runs/{id}/cancel":                              "run.cancel",
+	"DELETE /api/v1/runs/{id}":                                   "run.delete",
+	"POST /api/v1/runs/{runID}/approvals/{stepIndex}":            "run.approval.decide",
+	"POST /api/v1/secrets":                                       "secret.set",
+	"DELETE /api/v1/secrets/{name}":                              "secret.delete",
+	"POST /api/v1/gitcredentials":                                "gitcredential.upsert",
+	"DELETE /api/v1/gitcredentials/{name}":                       "gitcredential.delete",
+	"POST /api/v1/tokens":                                        "token.create",
+	"DELETE /api/v1/tokens/{id}":                                 "token.delete",
+	"POST /api/v1/webhooks":                                      "webhook.apply",
+	"DELETE /api/v1/webhooks/{name}":                             "webhook.delete",
+	"POST /api/v1/schedules":                                     "schedule.apply",
+	"DELETE /api/v1/schedules/{name}":                            "schedule.delete",
+	"POST /api/v1/appsources":                                    "appsource.apply",
+	"DELETE /api/v1/appsources/{name}":                           "appsource.delete",
+	"POST /api/v1/appsources/{name}/sync":                        "appsource.sync",
+	"POST /api/v1/agent-enrollments":                             "agent.enrollment.create",
+	"DELETE /api/v1/agent-enrollments/{id}":                      "agent.enrollment.revoke",
+	"POST /api/v1/agent-identities/{agentId}/enable":             "agent.identity.enable",
+	"POST /api/v1/agent-identities/{agentId}/disable":            "agent.identity.disable",
+	"POST /api/v1/agent-identities/{agentId}/credentials/revoke": "agent.credentials.revoke",
 }
 
 // auditResourceParams lists, per action, the chi URL param name (if any) that
@@ -49,17 +54,21 @@ var auditActionTable = map[string]string{
 // used by routes registered as "/jobs/*" rather than "/jobs/{name}", where job
 // names may themselves contain "/" (e.g. "team-a/build").
 var auditResourceParams = map[string]string{
-	"job.delete":           "*",
-	"run.cancel":           "id",
-	"run.delete":           "id",
-	"run.approval.decide":  "runID",
-	"secret.delete":        "name",
-	"gitcredential.delete": "name",
-	"token.delete":         "id",
-	"webhook.delete":       "name",
-	"schedule.delete":      "name",
-	"appsource.delete":     "name",
-	"appsource.sync":       "name",
+	"job.delete":               "*",
+	"run.cancel":               "id",
+	"run.delete":               "id",
+	"run.approval.decide":      "runID",
+	"secret.delete":            "name",
+	"gitcredential.delete":     "name",
+	"token.delete":             "id",
+	"webhook.delete":           "name",
+	"schedule.delete":          "name",
+	"appsource.delete":         "name",
+	"appsource.sync":           "name",
+	"agent.enrollment.revoke":  "id",
+	"agent.identity.enable":    "agentId",
+	"agent.identity.disable":   "agentId",
+	"agent.credentials.revoke": "agentId",
 }
 
 // auditResourceFromParam resolves a resource name from a chi URL param. The
@@ -80,14 +89,15 @@ func auditResourceFromParam(r *http.Request, param string) string {
 // also reads the request body: its handler responds 204 No Content with no
 // body, so a "response" source would always resolve to an empty resource.
 var auditBodyNameSource = map[string]string{
-	"job.apply":            "response",
-	"run.trigger":          "response",
-	"secret.set":           "request",
-	"gitcredential.upsert": "request",
-	"token.create":         "response",
-	"webhook.apply":        "response",
-	"schedule.apply":       "response",
-	"appsource.apply":      "response",
+	"job.apply":               "response",
+	"run.trigger":             "response",
+	"secret.set":              "request",
+	"gitcredential.upsert":    "request",
+	"token.create":            "response",
+	"webhook.apply":           "response",
+	"schedule.apply":          "response",
+	"appsource.apply":         "response",
+	"agent.enrollment.create": "response",
 }
 
 const auditBodyPeekLimit = 1 << 16 // 64 KiB is plenty for the small JSON envelopes these handlers use.

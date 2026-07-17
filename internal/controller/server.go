@@ -312,6 +312,14 @@ func (s *Server) routes() {
 		r.With(dev).Post("/tokens", s.handleCreateToken)
 		r.With(dev).Get("/tokens", s.handleListTokens)
 		r.With(dev).Delete("/tokens/{id}", s.handleDeleteToken)
+
+		r.With(admin).Post("/agent-enrollments", s.handleCreateAgentEnrollment)
+		r.With(view).Get("/agent-enrollments", s.handleListAgentEnrollments)
+		r.With(admin).Delete("/agent-enrollments/{id}", s.handleRevokeAgentEnrollment)
+		r.With(view).Get("/agent-identities/{agentId}", s.handleGetAgentIdentity)
+		r.With(admin).Post("/agent-identities/{agentId}/enable", s.handleEnableAgentIdentity)
+		r.With(admin).Post("/agent-identities/{agentId}/disable", s.handleDisableAgentIdentity)
+		r.With(admin).Post("/agent-identities/{agentId}/credentials/revoke", s.handleRevokeAgentCredentials)
 	})
 
 	// WebhookReceiver management (auth required)
