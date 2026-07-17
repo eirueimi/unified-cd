@@ -320,7 +320,7 @@ Kubernetes workload enrollment requires an `https://` controller URL. The contro
 
 ```yaml
 # k8s-agent-config.yaml
-server: http://unified-cd-controller:8080
+server: https://controller.example.invalid # replace with your TLS terminator URL
 enrollmentPolicy: unified-cd-k8s-agents
 serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
 labels:
