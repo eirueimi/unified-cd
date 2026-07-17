@@ -214,31 +214,63 @@ func (s *Server) metricsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+type agentRouteAuthMode uint8
+
+const (
+	agentRouteAuth agentRouteAuthMode = iota
+	agentRouteOrServerAuth
+)
+
 type agentIdentityRoute struct {
-	method string
-	path   string
+	method       string
+	path         string
+	auth         agentRouteAuthMode
+	bindPath     bool
+	requiredRole string
+	handler      func(*Server, http.ResponseWriter, *http.Request)
 }
 
-// agentRouteIdentityMatrix is exercised by TestAgentRouteIdentityMatrixRejectsImpersonation.
-// Keep this list in lockstep with the agent route registration in routes.
+// agentRouteIdentityMatrix is both the registration source and the
+// impersonation-test matrix.
 var agentRouteIdentityMatrix = []agentIdentityRoute{
-	{method: http.MethodGet, path: "/api/v1/agents/{agentId}"},
-	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/heartbeat"},
-	{method: http.MethodDelete, path: "/api/v1/agents/{agentId}"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/claim"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/steps"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/logs"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/reconcile"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/finish"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/outputs"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/outputs"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/sidecars"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/secrets/fetch"},
-	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/approvals"},
-	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs/{runId}/approvals/{stepIndex}"},
-	{method: http.MethodPut, path: "/api/v1/runs/{runId}/artifacts/{name}"},
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}", auth: agentRouteOrServerAuth, bindPath: true, requiredRole: "viewer", handler: (*Server).handleGetAgent},
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs", auth: agentRouteOrServerAuth, bindPath: true, requiredRole: "viewer", handler: (*Server).handleListRunsByAgent},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/heartbeat", bindPath: true, handler: (*Server).handleAgentHeartbeat},
+	{method: http.MethodDelete, path: "/api/v1/agents/{agentId}", bindPath: true, handler: (*Server).handleAgentDeregister},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/claim", bindPath: true, handler: (*Server).handleAgentClaim},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/steps", bindPath: true, handler: (*Server).handleAgentStepReport},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/logs", bindPath: true, handler: (*Server).handleAgentLogAppend},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/reconcile", bindPath: true, handler: (*Server).handleAgentReconcileRuns},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/finish", bindPath: true, handler: (*Server).handleAgentFinishRun},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", bindPath: true, handler: (*Server).handleAgentSetStepOutputs},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/outputs", bindPath: true, handler: (*Server).handleAgentSetRunOutputs},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", bindPath: true, handler: (*Server).handleAgentLogBulk},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/sidecars", bindPath: true, handler: (*Server).handleAgentSidecarStatus},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/secrets/fetch", bindPath: true, handler: (*Server).handleAgentSecretsFetch},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/approvals", bindPath: true, handler: (*Server).handleAgentCreateApproval},
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs/{runId}/approvals/{stepIndex}", bindPath: true, handler: (*Server).handleAgentGetApproval},
+	{method: http.MethodPut, path: "/api/v1/runs/{runId}/artifacts/{name}", handler: (*Server).handleArtifactUpload},
+}
+
+func (s *Server) registerAgentIdentityRoutes() {
+	for _, route := range agentRouteIdentityMatrix {
+		route := route
+		r := s.r
+		if route.auth == agentRouteOrServerAuth {
+			r = r.With(s.agentOrServerAuth)
+		} else {
+			r = r.With(s.agentAuth)
+		}
+		if route.bindPath {
+			r = r.With(s.requireAgentPathIdentity)
+		}
+		if route.requiredRole != "" {
+			r = r.With(requireMinRole(route.requiredRole))
+		}
+		r.Method(route.method, route.path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			route.handler(s, w, req)
+		}))
+	}
 }
 
 func (s *Server) routes() {
@@ -436,33 +468,16 @@ func (s *Server) routes() {
 		// agent credentials are authenticated by the handlers themselves.
 		r.Post("/enroll", s.handleAgentEnroll)
 		r.Post("/token/refresh", s.handleAgentRefresh)
-		// Agent-ID reads accept either a viewer human principal or an agent
-		// principal bound to that same ID; all other methods use agent auth.
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/", s.handleListAgents)
-		r.With(s.agentOrServerAuth, s.requireAgentPathIdentity, requireMinRole("viewer")).Get("/{agentId}", s.handleGetAgent)
-		r.With(s.agentOrServerAuth, s.requireAgentPathIdentity, requireMinRole("viewer")).Get("/{agentId}/runs", s.handleListRunsByAgent)
 		r.With(s.agentAuth).Post("/register", s.handleAgentRegister)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/heartbeat", s.handleAgentHeartbeat)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Delete("/{agentId}", s.handleAgentDeregister)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/claim", s.handleAgentClaim)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/steps", s.handleAgentStepReport)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/logs", s.handleAgentLogAppend)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/reconcile", s.handleAgentReconcileRuns)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/finish", s.handleAgentFinishRun)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", s.handleAgentSetStepOutputs)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/outputs", s.handleAgentSetRunOutputs)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", s.handleAgentLogBulk)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/sidecars", s.handleAgentSidecarStatus)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/secrets/fetch", s.handleAgentSecretsFetch)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/approvals", s.handleAgentCreateApproval)
-		r.With(s.agentAuth, s.requireAgentPathIdentity).Get("/{agentId}/runs/{runId}/approvals/{stepIndex}", s.handleAgentGetApproval)
 	})
 
 	s.r.Route("/api/v1/runs/{runID}/artifacts", func(r chi.Router) {
-		r.With(s.agentAuth).Put("/{name}", s.handleArtifactUpload)
 		r.With(s.agentOrServerAuth).Get("/{name}", s.handleArtifactDownload)
 		r.With(s.agentOrServerAuth).Get("/", s.handleArtifactList)
 	})
+
+	s.registerAgentIdentityRoutes()
 
 	// When WebDir is set, serve the Web UI as static files (no auth required).
 	// When WebDir is not set but UIProxyTarget is set, reverse-proxy any request that

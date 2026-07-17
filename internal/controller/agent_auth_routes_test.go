@@ -10,6 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAgentRouteIdentityMatrixEntriesCarryTheirRegistrations(t *testing.T) {
+	for _, route := range agentRouteIdentityMatrix {
+		require.NotNil(t, route.handler, route.method+" "+route.path)
+	}
+}
+
 func TestAgentRouteIdentityMatrixRejectsImpersonation(t *testing.T) {
 	s, st := newTestServer(t)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
