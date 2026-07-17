@@ -197,6 +197,29 @@ func TestPostgres_RotateRefreshOutsideOverlapRevokesFamily(t *testing.T) {
 	assert.Zero(t, live)
 }
 
+func TestPostgres_RotateRefreshRejectsOverlapRetryAfterReplacementConsumed(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	issue := enrollTestAgent(t, pg, "agent-refresh-chained-replay")
+	now := time.Now().UTC()
+
+	access2, refresh2 := testCredential("access", "", 0), testCredential("refresh", issue.Refresh.FamilyID, 2)
+	_, err := pg.RotateAgentRefresh(ctx, issue.Refresh.ID, issue.Refresh.TokenHash, now, access2, refresh2, 5*time.Minute)
+	require.NoError(t, err)
+
+	access3, refresh3 := testCredential("access", "", 0), testCredential("refresh", issue.Refresh.FamilyID, 3)
+	_, err = pg.RotateAgentRefresh(ctx, refresh2.ID, refresh2.TokenHash, now.Add(30*time.Second), access3, refresh3, 5*time.Minute)
+	require.NoError(t, err)
+
+	retryAccess, retryRefresh := testCredential("access", "", 0), testCredential("refresh", issue.Refresh.FamilyID, 2)
+	_, err = pg.RotateAgentRefresh(ctx, issue.Refresh.ID, issue.Refresh.TokenHash, now.Add(time.Minute), retryAccess, retryRefresh, 5*time.Minute)
+	require.ErrorIs(t, err, ErrAgentRefreshReplay)
+
+	var live int
+	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM agent_credentials WHERE family_id = $1 AND revoked_at IS NULL`, issue.Refresh.FamilyID).Scan(&live))
+	assert.Zero(t, live)
+}
+
 func TestPostgres_RotateRefreshReturnsCompleteIdentity(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()

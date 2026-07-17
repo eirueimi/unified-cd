@@ -209,17 +209,18 @@ func (p *Postgres) RotateAgentRefresh(ctx context.Context, currentID, presentedH
 	var familyID *string
 	var generation int
 	var supersededAt, overlapExpiresAt *time.Time
+	var replacedBy *string
 	err = tx.QueryRow(ctx, `SELECT c.id::text, i.id::text, i.agent_id, c.kind, c.token_hash, i.status,
 		i.enrollment_method, COALESCE(i.external_subject, ''), i.authorized_labels, i.authorized_capabilities,
 		i.created_at, i.disabled_at, i.last_authenticated_at, c.expires_at, c.created_at, c.revoked_at,
-		c.family_id::text, c.generation, c.superseded_at, c.overlap_expires_at
+		c.family_id::text, c.generation, c.superseded_at, c.overlap_expires_at, c.replaced_by::text
 		FROM agent_credentials c JOIN agent_identities i ON i.id = c.identity_id
 		WHERE c.id = $1 FOR UPDATE OF c, i`, currentID).Scan(
 		&current.CredentialID, &current.IdentityID, &current.AgentID, &current.Kind, &current.TokenHash, &current.Status,
 		&enrollmentMethod, &externalSubject,
 		&current.AuthorizedLabels, &current.AuthorizedCapabilities, &identityCreatedAt, &disabledAt, &lastAuthenticatedAt,
 		&current.ExpiresAt, &current.CreatedAt, &current.RevokedAt,
-		&familyID, &generation, &supersededAt, &overlapExpiresAt)
+		&familyID, &generation, &supersededAt, &overlapExpiresAt, &replacedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrAgentCredentialNotFound
 	}
@@ -244,16 +245,42 @@ func (p *Postgres) RotateAgentRefresh(ctx context.Context, currentID, presentedH
 	}
 	if supersededAt != nil {
 		if overlapExpiresAt == nil || !now.Before(*overlapExpiresAt) {
-			if _, err := tx.Exec(ctx, `UPDATE agent_credentials SET revoked_at = COALESCE(revoked_at, $2) WHERE family_id = $1`, *familyID, now); err != nil {
-				return nil, fmt.Errorf("rotate agent refresh: revoke family: %w", err)
-			}
-			if err := tx.Commit(ctx); err != nil {
-				return nil, fmt.Errorf("rotate agent refresh: commit replay: %w", err)
+			if err := revokeAgentRefreshFamily(ctx, tx, *familyID, now); err != nil {
+				return nil, err
 			}
 			return nil, ErrAgentRefreshReplay
 		}
-		if _, err := tx.Exec(ctx, `UPDATE agent_credentials SET revoked_at = COALESCE(revoked_at, $2) WHERE id = (
-			SELECT replaced_by FROM agent_credentials WHERE id = $1)`, currentID, now); err != nil {
+
+		replacementIsSafe := replacedBy != nil
+		if replacementIsSafe {
+			var replacementIdentityID, replacementKind string
+			var replacementFamilyID, replacementReplacedBy *string
+			var replacementGeneration int
+			var replacementExpiresAt time.Time
+			var replacementRevokedAt, replacementSupersededAt *time.Time
+			err := tx.QueryRow(ctx, `SELECT identity_id::text, kind, family_id::text, generation, expires_at,
+				revoked_at, superseded_at, replaced_by::text
+				FROM agent_credentials WHERE id = $1 FOR UPDATE`, *replacedBy).Scan(
+				&replacementIdentityID, &replacementKind, &replacementFamilyID, &replacementGeneration, &replacementExpiresAt,
+				&replacementRevokedAt, &replacementSupersededAt, &replacementReplacedBy)
+			if errors.Is(err, pgx.ErrNoRows) {
+				replacementIsSafe = false
+			} else if err != nil {
+				return nil, fmt.Errorf("rotate agent refresh: lock replacement: %w", err)
+			} else {
+				replacementIsSafe = replacementIdentityID == current.IdentityID && replacementKind == "refresh" &&
+					replacementFamilyID != nil && *replacementFamilyID == *familyID && replacementGeneration == generation+1 &&
+					replacementRevokedAt == nil && replacementSupersededAt == nil && replacementReplacedBy == nil &&
+					replacementExpiresAt.After(now)
+			}
+		}
+		if !replacementIsSafe {
+			if err := revokeAgentRefreshFamily(ctx, tx, *familyID, now); err != nil {
+				return nil, err
+			}
+			return nil, ErrAgentRefreshReplay
+		}
+		if _, err := tx.Exec(ctx, `UPDATE agent_credentials SET revoked_at = COALESCE(revoked_at, $2) WHERE id = $1`, *replacedBy, now); err != nil {
 			return nil, fmt.Errorf("rotate agent refresh: revoke lost replacement: %w", err)
 		}
 	}
@@ -279,6 +306,16 @@ func (p *Postgres) RotateAgentRefresh(ctx context.Context, currentID, presentedH
 		return nil, fmt.Errorf("rotate agent refresh: commit: %w", err)
 	}
 	return &identity, nil
+}
+
+func revokeAgentRefreshFamily(ctx context.Context, tx pgx.Tx, familyID string, now time.Time) error {
+	if _, err := tx.Exec(ctx, `UPDATE agent_credentials SET revoked_at = COALESCE(revoked_at, $2) WHERE family_id = $1`, familyID, now); err != nil {
+		return fmt.Errorf("rotate agent refresh: revoke family: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("rotate agent refresh: commit replay: %w", err)
+	}
+	return nil
 }
 
 func (p *Postgres) SetAgentIdentityEnabled(ctx context.Context, agentID string, enabled bool) error {
