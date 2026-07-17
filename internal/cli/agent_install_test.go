@@ -78,6 +78,16 @@ func TestNewAgentInstallCmd_FlagsExist(t *testing.T) {
 	assert.NotNil(t, cmd.Flags().Lookup("label"))
 }
 
+func TestAgentInstallRequiresCredentialFileForEnrollment(t *testing.T) {
+	dir := t.TempDir()
+	cmd := newAgentInstallCmd()
+	cmd.SetArgs([]string{"--server", "https://master.example.com", "--id", "agent-1", "--enrollment-token-file", filepath.Join(dir, "enrollment"), "--dir", dir})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "credential file is required")
+	assert.NoFileExists(t, filepath.Join(dir, "agent.yaml"))
+}
+
 func newTestAgentCmd(t *testing.T, tr *captureTransport, serverURL string) (*cobra.Command, *strings.Builder) {
 	t.Helper()
 	cfg := Config{Server: serverURL, Token: "tok"}

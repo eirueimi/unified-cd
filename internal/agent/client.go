@@ -99,7 +99,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 func safeResponseBody(body []byte) string {
 	text := strings.TrimSpace(string(body))
 	lower := strings.ToLower(text)
-	if strings.Contains(lower, "accesstoken") || strings.Contains(lower, "refreshtoken") || strings.Contains(lower, "\"token\"") || strings.Contains(lower, "bearer ") {
+	if sensitiveResponseField.MatchString(text) || strings.Contains(lower, "bearer ") {
 		return "credential response omitted"
 	}
 	return text

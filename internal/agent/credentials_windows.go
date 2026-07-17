@@ -4,11 +4,26 @@ package agent
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+func readProtectedCredentialFile(path string) ([]byte, os.FileInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	data, err := io.ReadAll(file)
+	return data, info, err
+}
 
 const (
 	fileAddFile         windows.ACCESS_MASK = 0x0002

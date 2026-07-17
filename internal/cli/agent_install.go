@@ -184,8 +184,8 @@ func newAgentInstallCmd() *cobra.Command {
 		Use:   "install",
 		Short: "Install the agent as a system service (systemd/launchd)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if credentialFile == "" && enrollmentTokenFile == "" {
-				return fmt.Errorf("credential file or enrollment token file is required")
+			if credentialFile == "" {
+				return fmt.Errorf("credential file is required for agent installation")
 			}
 			binPath, err := os.Executable()
 			if err != nil {

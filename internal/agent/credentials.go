@@ -3,12 +3,16 @@ package agent
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +20,33 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 )
 
-const tokenRefreshLeadTime = 15 * time.Minute
+const (
+	tokenRefreshLeadTime    = 15 * time.Minute
+	maxCredentialJitter     = 5 * time.Minute
+	credentialRetryAttempts = 3
+)
+
+var (
+	sensitiveResponseField    = regexp.MustCompile(`(?i)"[^"\\]*(?:token|credential)[^"\\]*"\s*:`)
+	syncCredentialDirectoryFn = syncCredentialDirectory
+)
+
+type credentialPersistenceInstalledError struct{ err error }
+
+func (e *credentialPersistenceInstalledError) Error() string { return e.err.Error() }
+func (e *credentialPersistenceInstalledError) Unwrap() error { return e.err }
+
+type credentialRequestError struct {
+	status    int
+	retryable bool
+}
+
+func (e *credentialRequestError) Error() string {
+	if e.status != 0 {
+		return fmt.Sprintf("credential request returned http %d", e.status)
+	}
+	return "credential request failed"
+}
 
 type persistedCredential struct {
 	Version          int       `json:"version"`
@@ -49,6 +79,7 @@ type CredentialManager struct {
 	http                *http.Client
 	now                 func() time.Time
 	jitter              func() time.Duration
+	refreshJitter       time.Duration
 
 	mu            sync.Mutex
 	loaded        bool
@@ -69,11 +100,11 @@ func NewCredentialManager(cfg CredentialManagerConfig) *CredentialManager {
 	}
 	jitter := cfg.Jitter
 	if jitter == nil {
-		jitter = func() time.Duration { return 0 }
+		jitter = defaultCredentialJitter
 	}
 	return &CredentialManager{
 		server: cfg.Server, agentID: cfg.AgentID, enrollmentTokenFile: cfg.EnrollmentTokenFile,
-		credentialFile: cfg.CredentialFile, http: httpClient, now: now, jitter: jitter,
+		credentialFile: cfg.CredentialFile, http: httpClient, now: now, jitter: jitter, refreshJitter: jitter(),
 		persist: writeCredentialFile,
 	}
 }
@@ -85,7 +116,7 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.accessToken != "" && m.now().Add(tokenRefreshLeadTime+m.jitter()).Before(m.accessExpires) {
+	if m.accessToken != "" && m.now().Add(tokenRefreshLeadTime+m.refreshJitter).Before(m.accessExpires) {
 		return m.accessToken, nil
 	}
 	if err := m.loadRefreshCredential(); err != nil {
@@ -95,13 +126,13 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	var response api.AgentTokenResponse
 	var err error
 	if m.refresh.RefreshToken != "" {
-		response, err = m.exchange(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
+		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
 	} else {
 		enrollment, readErr := readSecretFile(m.enrollmentTokenFile)
 		if readErr != nil {
 			return "", readErr
 		}
-		response, err = m.exchange(ctx, "/api/v1/agents/enroll", enrollment)
+		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/enroll", enrollment)
 	}
 	if err != nil {
 		return "", err
@@ -114,7 +145,10 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	// Do not expose the new access token until its paired refresh credential is
 	// durable. Otherwise a process crash could strand the agent after rotation.
 	if err := m.persist(m.credentialFile, next); err != nil {
-		return "", fmt.Errorf("persist agent credentials: %w", err)
+		var installed *credentialPersistenceInstalledError
+		if !errors.As(err, &installed) {
+			return "", fmt.Errorf("persist agent credentials: %w", err)
+		}
 	}
 	m.refresh = next
 	m.loaded = true
@@ -127,8 +161,8 @@ func (m *CredentialManager) loadRefreshCredential() error {
 	if m.loaded {
 		return nil
 	}
-	m.loaded = true
 	if m.credentialFile == "" {
+		m.loaded = true
 		return nil
 	}
 	credential, err := readCredentialFile(m.credentialFile)
@@ -140,12 +174,39 @@ func (m *CredentialManager) loadRefreshCredential() error {
 			return fmt.Errorf("agent refresh credential has expired")
 		}
 		m.refresh = credential
+		m.loaded = true
 		return nil
 	}
 	if os.IsNotExist(err) && m.enrollmentTokenFile != "" {
+		m.loaded = true
 		return nil
 	}
 	return err
+}
+
+func defaultCredentialJitter() time.Duration {
+	value, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(maxCredentialJitter)))
+	if err != nil {
+		return time.Minute
+	}
+	return time.Duration(value.Int64()) + time.Nanosecond
+}
+
+func (m *CredentialManager) exchangeWithRetry(ctx context.Context, path, credential string) (api.AgentTokenResponse, error) {
+	for attempt := 0; attempt < credentialRetryAttempts; attempt++ {
+		response, err := m.exchange(ctx, path, credential)
+		if err == nil {
+			return response, nil
+		}
+		var requestErr *credentialRequestError
+		if !errors.As(err, &requestErr) || !requestErr.retryable || attempt == credentialRetryAttempts-1 {
+			return api.AgentTokenResponse{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return api.AgentTokenResponse{}, err
+		}
+	}
+	return api.AgentTokenResponse{}, fmt.Errorf("credential request failed")
 }
 
 func (m *CredentialManager) exchange(ctx context.Context, path, credential string) (api.AgentTokenResponse, error) {
@@ -157,11 +218,11 @@ func (m *CredentialManager) exchange(ctx context.Context, path, credential strin
 	req.Header.Set("Authorization", "Bearer "+credential)
 	resp, err := m.http.Do(req)
 	if err != nil {
-		return result, fmt.Errorf("credential request failed")
+		return result, &credentialRequestError{retryable: true}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return result, fmt.Errorf("credential request returned http %d", resp.StatusCode)
+		return result, &credentialRequestError{status: resp.StatusCode, retryable: resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError}
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return result, fmt.Errorf("credential response is invalid")
@@ -185,7 +246,10 @@ func readSecretFile(path string) (string, error) {
 
 func readCredentialFile(path string) (persistedCredential, error) {
 	var credential persistedCredential
-	info, err := os.Lstat(path)
+	if err := validateCredentialDirectory(filepath.Dir(path)); err != nil {
+		return credential, err
+	}
+	b, info, err := readProtectedCredentialFile(path)
 	if err != nil {
 		return credential, err
 	}
@@ -193,10 +257,6 @@ func readCredentialFile(path string) (persistedCredential, error) {
 		return credential, fmt.Errorf("credential file is not a regular file")
 	}
 	if err := validateCredentialFile(path, info); err != nil {
-		return credential, err
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
 		return credential, err
 	}
 	if err := json.Unmarshal(b, &credential); err != nil {
@@ -247,8 +307,8 @@ func writeCredentialFile(path string, credential persistedCredential) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
-	if err := syncCredentialDirectory(dir); err != nil {
-		return err
+	if err := syncCredentialDirectoryFn(dir); err != nil {
+		return &credentialPersistenceInstalledError{err: err}
 	}
 	return nil
 }
