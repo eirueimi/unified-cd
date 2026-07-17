@@ -59,20 +59,22 @@ type OIDCConfig struct {
 
 // Server represents the master HTTP server.
 type Server struct {
-	cfg          Config
-	store        store.Store
-	r            chi.Router
-	shuttingDown atomic.Bool
-	claimDrainCh chan struct{}           // Closed on shutdown to immediately drain all claim long-polls.
-	objStore     objectstore.ObjectStore // Archive endpoints return 501 when nil.
-	archLogs     *archivedLogs           // Serves log reads for trimmed runs; nil when objStore is nil.
-	cacheStore   objectstore.ObjectStore // nil = skip TTL cleanup
-	km           secrets.KeyManager      // Secret API returns 501 when nil.
-	oidcCfg      *OIDCConfig             // OIDC endpoints return 404 when nil.
-	dexProxy     *httputil.ReverseProxy  // /dex/* returns 404 when nil.
-	uiProxy      *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).
-	metrics      *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
-	claimedBy    *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
+	cfg               Config
+	store             store.Store
+	r                 chi.Router
+	shuttingDown      atomic.Bool
+	claimDrainCh      chan struct{}           // Closed on shutdown to immediately drain all claim long-polls.
+	objStore          objectstore.ObjectStore // Archive endpoints return 501 when nil.
+	archLogs          *archivedLogs           // Serves log reads for trimmed runs; nil when objStore is nil.
+	cacheStore        objectstore.ObjectStore // nil = skip TTL cleanup
+	km                secrets.KeyManager      // Secret API returns 501 when nil.
+	oidcCfg           *OIDCConfig             // OIDC endpoints return 404 when nil.
+	dexProxy          *httputil.ReverseProxy  // /dex/* returns 404 when nil.
+	uiProxy           *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).
+	metrics           *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
+	claimedBy         *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
+	enrollmentLimiter *enrollmentLimiter
+	credentialTouches *credentialTouchLimiter
 
 	// Cached provider for OIDC Bearer token verification (lazily initialized).
 	// Used to verify id_tokens obtained via the CLI device flow for API authentication.
@@ -83,7 +85,7 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap)}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), credentialTouches: newCredentialTouchLimiter(nil)}
 	if cfg.WebDir == "" && cfg.UIProxyTarget != "" {
 		if target, err := url.Parse(cfg.UIProxyTarget); err == nil {
 			s.uiProxy = &httputil.ReverseProxy{
@@ -396,25 +398,29 @@ func (s *Server) routes() {
 	s.r.Get("/api/v1/auth/me", s.handleMe)
 
 	s.r.Route("/api/v1/agents", func(r chi.Router) {
+		// Bootstrap and refresh are intentionally outside ServerAuth: their opaque
+		// agent credentials are authenticated by the handlers themselves.
+		r.Post("/enroll", s.handleAgentEnroll)
+		r.Post("/token/refresh", s.handleAgentRefresh)
 		// GET uses ServerAuth + requireMinRole("viewer"); all other methods use BearerAuth (agent token).
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/", s.handleListAgents)
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}", s.handleGetAgent)
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}/runs", s.handleListRunsByAgent)
 		r.With(s.agentAuth).Post("/register", s.handleAgentRegister)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/heartbeat", s.handleAgentHeartbeat)
-		r.With(s.agentAuth, requireAgentPathIdentity).Delete("/{agentId}", s.handleAgentDeregister)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/claim", s.handleAgentClaim)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/steps", s.handleAgentStepReport)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/logs", s.handleAgentLogAppend)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/reconcile", s.handleAgentReconcileRuns)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/finish", s.handleAgentFinishRun)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", s.handleAgentSetStepOutputs)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/outputs", s.handleAgentSetRunOutputs)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", s.handleAgentLogBulk)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/sidecars", s.handleAgentSidecarStatus)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/secrets/fetch", s.handleAgentSecretsFetch)
-		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/approvals", s.handleAgentCreateApproval)
-		r.With(s.agentAuth, requireAgentPathIdentity).Get("/{agentId}/runs/{runId}/approvals/{stepIndex}", s.handleAgentGetApproval)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/heartbeat", s.handleAgentHeartbeat)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Delete("/{agentId}", s.handleAgentDeregister)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/claim", s.handleAgentClaim)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/steps", s.handleAgentStepReport)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/logs", s.handleAgentLogAppend)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/reconcile", s.handleAgentReconcileRuns)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/finish", s.handleAgentFinishRun)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", s.handleAgentSetStepOutputs)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/outputs", s.handleAgentSetRunOutputs)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", s.handleAgentLogBulk)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/sidecars", s.handleAgentSidecarStatus)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/secrets/fetch", s.handleAgentSecretsFetch)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/approvals", s.handleAgentCreateApproval)
+		r.With(s.agentAuth, s.requireAgentPathIdentity).Get("/{agentId}/runs/{runId}/approvals/{stepIndex}", s.handleAgentGetApproval)
 	})
 
 	s.r.Route("/api/v1/runs/{runID}/artifacts", func(r chi.Router) {

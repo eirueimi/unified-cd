@@ -35,6 +35,7 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	capabilities := req.Capabilities
 	if principal.AuthMethod != "legacy" {
 		if req.AgentID != principal.AgentID {
+			s.recordAgentAuth("access", "failure", "policy")
 			http.Error(w, "agent identity mismatch", http.StatusForbidden)
 			return
 		}

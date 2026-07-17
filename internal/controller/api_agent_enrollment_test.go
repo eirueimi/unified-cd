@@ -126,3 +126,73 @@ func TestAgentIdentityAdminLifecycleAndViewerRead(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, doReq(t, s, http.MethodPost, base+"/enable", "secret", nil))
 	require.Equal(t, http.StatusNoContent, doReq(t, s, http.MethodPost, base+"/credentials/revoke", "secret", nil))
 }
+
+func enrollAgent(t *testing.T, s *Server, token string) api.AgentTokenResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/enroll", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var response api.AgentTokenResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	return response
+}
+
+func refreshAgent(t *testing.T, s *Server, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/token/refresh", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestAgentEnrollIssuesVMAccessAndRefreshTokens(t *testing.T) {
+	s, _ := newTestServer(t)
+	created := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{
+		AgentID: "vm-agent-exchange", Labels: []string{"pool:vm"}, Capabilities: []string{"native"},
+	})
+	require.Equal(t, http.StatusCreated, created.Code, created.Body.String())
+	var enrollment api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(created.Body.Bytes(), &enrollment))
+
+	response := enrollAgent(t, s, enrollment.Token)
+	require.Equal(t, "vm-agent-exchange", response.AgentID)
+	require.Contains(t, response.AccessToken, "uca_")
+	require.Contains(t, response.RefreshToken, "ucr_")
+	require.WithinDuration(t, time.Now().Add(time.Hour), response.AccessExpiresAt, 5*time.Second)
+	require.NotNil(t, response.RefreshExpiresAt)
+	require.WithinDuration(t, time.Now().Add(30*24*time.Hour), *response.RefreshExpiresAt, 5*time.Second)
+	require.Equal(t, []string{"pool:vm"}, response.Labels)
+	require.Equal(t, []string{"native"}, response.Capabilities)
+
+	second := refreshAgent(t, s, response.AccessToken)
+	require.Equal(t, http.StatusUnauthorized, second.Code, second.Body.String())
+
+	rotated := refreshAgent(t, s, response.RefreshToken)
+	require.Equal(t, http.StatusOK, rotated.Code, rotated.Body.String())
+	var next api.AgentTokenResponse
+	require.NoError(t, json.Unmarshal(rotated.Body.Bytes(), &next))
+	require.Contains(t, next.AccessToken, "uca_")
+	require.Contains(t, next.RefreshToken, "ucr_")
+	require.NotEqual(t, response.RefreshToken, next.RefreshToken)
+}
+
+func TestAgentEnrollRejectsRepeatedAndInvalidEnrollment(t *testing.T) {
+	s, _ := newTestServer(t)
+	created := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: "vm-agent-once"})
+	require.Equal(t, http.StatusCreated, created.Code, created.Body.String())
+	var enrollment api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(created.Body.Bytes(), &enrollment))
+	_ = enrollAgent(t, s, enrollment.Token)
+
+	for _, token := range []string{enrollment.Token, "uce_not-a-token", "uca_not-an-enrollment"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/enroll", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
+		require.Equal(t, "unauthorized\n", rec.Body.String())
+	}
+}

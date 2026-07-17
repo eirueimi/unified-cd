@@ -2,6 +2,25 @@ package api
 
 import "time"
 
+// AgentEnrollRequest supplies optional bounded policy context for an agent
+// credential exchange. It deliberately contains no agent identity.
+type AgentEnrollRequest struct {
+	Provider string `json:"provider"`
+	Policy   string `json:"policy,omitempty"`
+}
+
+// AgentTokenResponse is returned only by successful credential issuance.
+// Plaintext credentials are never persisted, logged, or included in metadata.
+type AgentTokenResponse struct {
+	AgentID          string     `json:"agentId"`
+	AccessToken      string     `json:"accessToken"`
+	AccessExpiresAt  time.Time  `json:"accessExpiresAt"`
+	RefreshToken     string     `json:"refreshToken,omitempty"`
+	RefreshExpiresAt *time.Time `json:"refreshExpiresAt,omitempty"`
+	Labels           []string   `json:"labels"`
+	Capabilities     []string   `json:"capabilities"`
+}
+
 // CreateAgentEnrollmentRequest requests a one-time enrollment token for one
 // fixed agent identity.
 type CreateAgentEnrollmentRequest struct {

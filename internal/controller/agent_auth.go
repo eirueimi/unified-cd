@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := r.Header.Get("Authorization")
 		if !strings.HasPrefix(header, bearerPrefix) {
+			s.recordAgentAuth("access", "failure", "invalid")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -49,8 +51,10 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 			parsed, err := agentauth.Parse(token, agentauth.AccessToken)
 			if err != nil || s.store == nil {
 				if err != nil {
+					s.recordAgentAuth("access", "failure", "invalid")
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 				} else {
+					s.recordAgentAuth("access", "failure", "unavailable")
 					http.Error(w, "authentication unavailable", http.StatusServiceUnavailable)
 				}
 				return
@@ -59,13 +63,16 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 			credential, err := s.store.GetAgentCredentialForAuth(r.Context(), parsed.ID)
 			if err != nil {
 				if errors.Is(err, store.ErrAgentCredentialNotFound) || errors.Is(err, store.ErrAgentIdentityDisabled) {
+					s.recordAgentAuth("access", "failure", "invalid")
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 				} else {
+					s.recordAgentAuth("access", "failure", "unavailable")
 					http.Error(w, "authentication unavailable", http.StatusServiceUnavailable)
 				}
 				return
 			}
 			if credential == nil || credential.Kind != "access" || credential.Status != "active" || credential.RevokedAt != nil || !credential.ExpiresAt.After(time.Now()) || !agentauth.Matches(token, credential.TokenHash) {
+				s.recordAgentAuth("access", "failure", "invalid")
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -78,14 +85,24 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 				AuthorizedLabels:       append([]string(nil), credential.AuthorizedLabels...),
 				AuthorizedCapabilities: append([]string(nil), credential.AuthorizedCapabilities...),
 			}
+			s.recordAgentAuth("access", "success", "ok")
+			if s.credentialTouches == nil || s.credentialTouches.shouldTouch(credential.CredentialID) {
+				if err := s.store.TouchAgentCredential(r.Context(), credential.CredentialID); err != nil {
+					slog.Warn("agent credential touch failed", "credentialID", credential.CredentialID, "error", err)
+				}
+			}
 			next.ServeHTTP(w, withAgentPrincipal(r, principal))
 			return
 		}
 
 		legacy := []byte(s.cfg.LegacyAgentToken)
 		if len(legacy) == 0 || subtle.ConstantTimeCompare([]byte(token), legacy) != 1 {
+			s.recordAgentAuth("access", "failure", "invalid")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if s.metrics != nil {
+			s.metrics.AgentLegacyAuth()
 		}
 		next.ServeHTTP(w, withAgentPrincipal(r, AgentPrincipal{AuthMethod: "legacy"}))
 	})
@@ -94,7 +111,7 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 // requireAgentPathIdentity prevents an authenticated agent from selecting a
 // different agent identity through a route parameter. The legacy shared-token
 // migration mode deliberately preserves its existing, unbound behavior.
-func requireAgentPathIdentity(next http.Handler) http.Handler {
+func (s *Server) requireAgentPathIdentity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := agentPrincipalFromContext(r.Context())
 		if !ok {
@@ -102,6 +119,7 @@ func requireAgentPathIdentity(next http.Handler) http.Handler {
 			return
 		}
 		if principal.AuthMethod != "legacy" && principal.AgentID != chi.URLParam(r, "agentId") {
+			s.recordAgentAuth("access", "failure", "policy")
 			http.Error(w, "agent identity mismatch", http.StatusForbidden)
 			return
 		}

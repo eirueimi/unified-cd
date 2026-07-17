@@ -291,6 +291,8 @@ func (p *Postgres) RotateAgentRefresh(ctx context.Context, currentID, presentedH
 		}
 	}
 
+	access.FamilyID = *familyID
+	access.Generation = generation + 1
 	refresh.FamilyID = *familyID
 	refresh.Generation = generation + 1
 	if err := insertAgentCredential(ctx, tx, identity.ID, access); err != nil {
