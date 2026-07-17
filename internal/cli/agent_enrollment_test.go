@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -63,7 +64,11 @@ func TestAgentEnrollmentCreateOutputFileIsExclusiveAndPrivate(t *testing.T) {
 	assert.NotContains(t, out.String(), token)
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+	// Windows' Stat mode bits do not represent the file ACL; the command still
+	// requests 0600 when creating the file, while exclusivity is asserted below.
 
 	cmd, _ = newTestAgentLifecycleCmd(t, tr)
 	cmd.SetArgs([]string{"enrollment", "create", "--agent-id", "vm-agent-02", "--output-file", path})
