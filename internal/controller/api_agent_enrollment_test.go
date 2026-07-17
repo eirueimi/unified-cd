@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -195,4 +196,93 @@ func TestAgentEnrollRejectsRepeatedAndInvalidEnrollment(t *testing.T) {
 		require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
 		require.Equal(t, "unauthorized\n", rec.Body.String())
 	}
+}
+
+func TestAgentEnrollRateLimitCannotBeBypassedWithDistinctPolicies(t *testing.T) {
+	s := NewServer(Config{}, nil)
+	for i := 0; i < enrollmentLimiterCapacity+10; i++ {
+		body, err := json.Marshal(api.AgentEnrollRequest{Provider: "one-time-token", Policy: fmt.Sprintf("untrusted-%d", i)})
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/enroll", bytes.NewReader(body))
+		req.RemoteAddr = "192.0.2.44:1234"
+		req.Header.Set("Authorization", "Bearer uce_invalid")
+		rec := httptest.NewRecorder()
+		s.handleAgentEnroll(rec, req)
+
+		if i < 5 {
+			require.Equal(t, http.StatusUnauthorized, rec.Code, "request %d: %s", i, rec.Body.String())
+			continue
+		}
+		require.Equal(t, http.StatusTooManyRequests, rec.Code, "request %d: %s", i, rec.Body.String())
+		require.Equal(t, "6", rec.Header().Get("Retry-After"))
+		require.Equal(t, "enrollment rate limit exceeded\n", rec.Body.String())
+	}
+	require.Equal(t, 1, s.enrollmentLimiter.len())
+}
+
+func TestAgentRefreshIsRateLimitedBeforeCredentialParsing(t *testing.T) {
+	s := NewServer(Config{}, nil)
+	for i := 0; i < 6; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/token/refresh", nil)
+		req.RemoteAddr = "192.0.2.45:1234"
+		req.Header.Set("Authorization", "Bearer ucr_invalid")
+		rec := httptest.NewRecorder()
+		s.handleAgentRefresh(rec, req)
+
+		if i < 5 {
+			require.Equal(t, http.StatusUnauthorized, rec.Code, "request %d: %s", i, rec.Body.String())
+			continue
+		}
+		require.Equal(t, http.StatusTooManyRequests, rec.Code, rec.Body.String())
+		require.Equal(t, "6", rec.Header().Get("Retry-After"))
+		require.Equal(t, "enrollment rate limit exceeded\n", rec.Body.String())
+	}
+}
+
+func TestAgentRefreshUnavailableResponseIsGeneric(t *testing.T) {
+	s := NewServer(Config{}, nil)
+	refresh, err := agentauth.Generate(agentauth.RefreshToken)
+	require.NoError(t, err)
+
+	rec := refreshAgent(t, s, refresh.Plaintext)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Equal(t, "enrollment unavailable\n", rec.Body.String())
+}
+
+func TestAgentEnrollExpiredCredentialResponseIsGeneric(t *testing.T) {
+	s, st := newTestServer(t)
+	enrollment, err := agentauth.Generate(agentauth.EnrollmentToken)
+	require.NoError(t, err)
+	_, err = st.CreateAgentEnrollmentToken(t.Context(), store.AgentEnrollmentToken{
+		ID: enrollment.ID, AgentID: "vm-agent-expired", CreatedBy: "admin", ExpiresAt: time.Now().Add(-time.Minute),
+	}, enrollment.Hash)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/enroll", nil)
+	req.Header.Set("Authorization", "Bearer "+enrollment.Plaintext)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, "unauthorized\n", rec.Body.String())
+}
+
+func TestAgentEnrollDisabledIdentityResponseIsExplicit(t *testing.T) {
+	s, st := newTestServer(t)
+	first := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: "vm-agent-disabled"})
+	require.Equal(t, http.StatusCreated, first.Code, first.Body.String())
+	var firstEnrollment api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(first.Body.Bytes(), &firstEnrollment))
+	_ = enrollAgent(t, s, firstEnrollment.Token)
+	require.NoError(t, st.SetAgentIdentityEnabled(t.Context(), "vm-agent-disabled", false))
+
+	second := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: "vm-agent-disabled"})
+	require.Equal(t, http.StatusCreated, second.Code, second.Body.String())
+	var secondEnrollment api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(second.Body.Bytes(), &secondEnrollment))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/enroll", nil)
+	req.Header.Set("Authorization", "Bearer "+secondEnrollment.Token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, "agent identity disabled\n", rec.Body.String())
 }

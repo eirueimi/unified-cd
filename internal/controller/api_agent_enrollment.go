@@ -169,15 +169,13 @@ func identityMeta(identity store.AgentIdentity) api.AgentIdentityMeta {
 // handleAgentEnroll exchanges a valid one-time enrollment credential for the
 // VM's initial short-lived access and refresh credentials.
 func (s *Server) handleAgentEnroll(w http.ResponseWriter, r *http.Request) {
+	if !s.allowAgentCredentialRequest(w, r, "one-time-token", "agent.enrollment.exchange") {
+		return
+	}
 	var req api.AgentEnrollRequest
 	if r.ContentLength > 0 && json.NewDecoder(r.Body).Decode(&req) != nil {
 		s.recordAgentAuth("one-time-token", "failure", "invalid")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if s.enrollmentLimiter == nil || !s.enrollmentLimiter.allow(r, "one-time-token", req.Policy) {
-		s.recordAgentAuth("one-time-token", "failure", "rate_limited")
-		http.Error(w, "enrollment rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
 	token, ok := bearerToken(r)
@@ -221,6 +219,9 @@ func (s *Server) handleAgentEnroll(w http.ResponseWriter, r *http.Request) {
 // handleAgentRefresh rotates a VM refresh credential. Access credentials are
 // deliberately rejected here and no access-token renewal route exists.
 func (s *Server) handleAgentRefresh(w http.ResponseWriter, r *http.Request) {
+	if !s.allowAgentCredentialRequest(w, r, "refresh", "agent.refresh") {
+		return
+	}
 	token, ok := bearerToken(r)
 	if !ok {
 		s.recordAgentAuth("refresh", "failure", "invalid")
@@ -255,6 +256,19 @@ func (s *Server) handleAgentRefresh(w http.ResponseWriter, r *http.Request) {
 	s.recordAgentAuth("refresh", "success", "ok")
 	s.auditAgentCredential(r, "agent.refresh", identity.AgentID, http.StatusOK)
 	writeJSON(w, http.StatusOK, agentTokenResponse(identity, access.Plaintext, refresh.Plaintext, now))
+}
+
+func (s *Server) allowAgentCredentialRequest(w http.ResponseWriter, r *http.Request, provider, action string) bool {
+	// VM providers are server-selected. No caller-controlled body value may
+	// create a distinct limiter bucket before provider policy validation.
+	if s.enrollmentLimiter != nil && s.enrollmentLimiter.allow(r, provider, "") {
+		return true
+	}
+	w.Header().Set("Retry-After", "6")
+	s.recordAgentAuth(provider, "failure", "rate_limited")
+	s.auditAgentCredential(r, action, "", http.StatusTooManyRequests)
+	http.Error(w, "enrollment rate limit exceeded", http.StatusTooManyRequests)
+	return false
 }
 
 func bearerToken(r *http.Request) (string, bool) {
