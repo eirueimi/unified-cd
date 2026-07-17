@@ -5,4 +5,3 @@ resources:
   - serviceaccount.yaml
   - rbac.yaml
   - config-configmap.yaml
-  - config-secret.yaml

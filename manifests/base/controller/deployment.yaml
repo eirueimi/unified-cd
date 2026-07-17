@@ -15,6 +15,7 @@ spec:
       labels:
         app: unified-cd-controller
     spec:
+      serviceAccountName: unified-cd-controller
       terminationGracePeriodSeconds: 30
       containers:
         - name: controller

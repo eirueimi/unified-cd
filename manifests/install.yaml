@@ -11,8 +11,27 @@ metadata:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  name: unified-cd-controller
+  namespace: unified-cd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
   name: unified-cd-k8s-agent
   namespace: unified-cd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-controller-kubernetes-enrollment
+  namespace: ci
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -43,6 +62,32 @@ rules:
   - delete
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: unified-cd-controller-kubernetes-enrollment
+rules:
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: unified-cd-controller-kubernetes-enrollment
+  namespace: ci
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: unified-cd-controller-kubernetes-enrollment
+subjects:
+- kind: ServiceAccount
+  name: unified-cd-controller
+  namespace: unified-cd
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: unified-cd-k8s-agent
@@ -54,6 +99,19 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: unified-cd-k8s-agent
+  namespace: unified-cd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: unified-cd-controller-kubernetes-enrollment
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: unified-cd-controller-kubernetes-enrollment
+subjects:
+- kind: ServiceAccount
+  name: unified-cd-controller
   namespace: unified-cd
 ---
 apiVersion: v1
@@ -73,9 +131,10 @@ apiVersion: v1
 data:
   k8s-agent-config.yaml: |
     server: http://unified-cd-controller.unified-cd.svc.cluster.local
-    agentId: k8s-agent-1
+    enrollmentPolicy: unified-cd-k8s-agents
+    serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
     labels:
-      - kind:k8s
+      - kind:kubernetes
     namespace: ci
     maxConcurrent: 5
     podImage: golang:1.24-alpine
@@ -98,15 +157,6 @@ stringData:
   UNIFIED_S3_SECRET: garageadmin12345
   UNIFIED_TOKEN: dev-token-change-me
 type: Opaque
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: unified-cd-k8s-agent-secret
-  namespace: unified-cd
-stringData:
-  k8s-agent-secret.yaml: |
-    token: "dev-token-change-me"
 ---
 apiVersion: v1
 kind: Service
@@ -322,6 +372,7 @@ spec:
             path: /readyz
             port: 8080
           periodSeconds: 10
+      serviceAccountName: unified-cd-controller
       terminationGracePeriodSeconds: 30
 ---
 apiVersion: apps/v1
@@ -345,12 +396,6 @@ spec:
       - env:
         - name: UNIFIED_K8S_CONFIG
           value: /etc/unified-cd/config.yaml
-        - name: UNIFIED_K8S_SECRET
-          value: /etc/unified-cd/secret.yaml
-        - name: UNIFIED_K8S_AGENT_ID
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
         image: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
         name: k8s-agent
         volumeMounts:
@@ -358,15 +403,18 @@ spec:
           name: config
           readOnly: true
           subPath: k8s-agent-config.yaml
-        - mountPath: /etc/unified-cd/secret.yaml
-          name: secret
+        - mountPath: /var/run/secrets/unified-cd-agent
+          name: enrollment-identity
           readOnly: true
-          subPath: k8s-agent-secret.yaml
       serviceAccountName: unified-cd-k8s-agent
       volumes:
       - configMap:
           name: unified-cd-k8s-agent-config
         name: config
-      - name: secret
-        secret:
-          secretName: unified-cd-k8s-agent-secret
+      - name: enrollment-identity
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: unified-cd-agent-enrollment
+              expirationSeconds: 3600
+              path: token

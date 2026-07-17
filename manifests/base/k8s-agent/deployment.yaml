@@ -22,25 +22,22 @@ spec:
           env:
             - name: UNIFIED_K8S_CONFIG
               value: /etc/unified-cd/config.yaml
-            - name: UNIFIED_K8S_SECRET
-              value: /etc/unified-cd/secret.yaml
-            - name: UNIFIED_K8S_AGENT_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
           volumeMounts:
             - name: config
               mountPath: /etc/unified-cd/config.yaml
               subPath: k8s-agent-config.yaml
               readOnly: true
-            - name: secret
-              mountPath: /etc/unified-cd/secret.yaml
-              subPath: k8s-agent-secret.yaml
+            - name: enrollment-identity
+              mountPath: /var/run/secrets/unified-cd-agent
               readOnly: true
       volumes:
         - name: config
           configMap:
             name: unified-cd-k8s-agent-config
-        - name: secret
-          secret:
-            secretName: unified-cd-k8s-agent-secret
+        - name: enrollment-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: unified-cd-agent-enrollment
+                  expirationSeconds: 3600

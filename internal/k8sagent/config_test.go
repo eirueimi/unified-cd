@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func writeTempYAML(t *testing.T, content string) string {
@@ -267,4 +270,12 @@ func TestValidate_DurationParseError(t *testing.T) {
 	if err := badDrain.Validate(); err == nil {
 		t.Fatal("expected Validate to reject an unparseable drainTimeout")
 	}
+}
+
+func TestKubernetesCredentialConfigAllowsAutomaticEnrollmentWithoutLegacyTokenOrAgentID(t *testing.T) {
+	c := Config{Server: "http://controller", EnrollmentPolicy: "cluster-agents"}
+	require.NoError(t, c.Validate())
+	assert.Empty(t, c.Token)
+	assert.Empty(t, c.AgentID)
+	assert.Equal(t, defaultServiceAccountTokenFile, c.ServiceAccountTokenFile)
 }

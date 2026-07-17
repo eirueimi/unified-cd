@@ -4,3 +4,5 @@ resources:
   - deployment.yaml
   - service.yaml
   - secret.yaml
+  - serviceaccount.yaml
+  - rbac.yaml
