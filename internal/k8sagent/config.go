@@ -2,6 +2,8 @@ package k8sagent
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"time"
 
@@ -15,6 +17,7 @@ type Config struct {
 	Token                   string   `yaml:"token"`
 	AgentID                 string   `yaml:"agentId"`
 	EnrollmentPolicy        string   `yaml:"enrollmentPolicy"`
+	AllowInsecureHTTP       bool     `yaml:"allowInsecureHTTP,omitempty"`
 	ServiceAccountTokenFile string   `yaml:"serviceAccountTokenFile"`
 	Labels                  []string `yaml:"labels"`
 	Namespace               string   `yaml:"namespace"`
@@ -148,6 +151,11 @@ func (c *Config) Validate() error {
 	if c.Server == "" {
 		return fmt.Errorf("server is required")
 	}
+	if c.EnrollmentPolicy != "" {
+		if err := validateKubernetesEnrollmentServer(c.Server, c.AllowInsecureHTTP); err != nil {
+			return err
+		}
+	}
 	if c.ServiceAccountTokenFile == "" {
 		c.ServiceAccountTokenFile = defaultServiceAccountTokenFile
 	}
@@ -190,4 +198,26 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validateKubernetesEnrollmentServer(server string, allowInsecureHTTP bool) error {
+	u, err := url.Parse(server)
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return fmt.Errorf("server must be an absolute URL")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && (allowInsecureHTTP || isLoopbackHost(u.Hostname())) {
+		return nil
+	}
+	return fmt.Errorf("server must use https for Kubernetes enrollment (http is allowed only for loopback local development)")
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

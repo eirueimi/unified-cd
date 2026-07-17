@@ -34,6 +34,13 @@ type Client struct {
 	http   *http.Client
 }
 
+// invalidatingTokenSource can discard a rejected access credential. It is
+// intentionally optional so static legacy credentials retain their existing
+// one-request behavior.
+type invalidatingTokenSource interface {
+	Invalidate()
+}
+
 // NewClient creates a new client with the given base URL and token.
 func NewClient(baseURL, token string) *Client {
 	return NewClientWithTokenSource(baseURL, staticTokenSource(token), nil)
@@ -71,27 +78,27 @@ func (c *Client) authorize(ctx context.Context, req *http.Request) error {
 
 // do is a general-purpose method that executes an HTTP request and decodes the response.
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) (int, error) {
-	var rdr io.Reader
+	var payload []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return 0, err
 		}
-		rdr = bytes.NewReader(b)
+		payload = b
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rdr)
+	resp, err := c.doAuthorized(ctx, method, path, payload, body != nil)
 	if err != nil {
 		return 0, err
 	}
-	if err := c.authorize(ctx, req); err != nil {
-		return 0, err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return 0, err
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		if source, ok := c.source.(invalidatingTokenSource); ok {
+			source.Invalidate()
+			resp, err = c.doAuthorized(ctx, method, path, payload, body != nil)
+			if err != nil {
+				return 0, err
+			}
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -101,6 +108,24 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		return resp.StatusCode, json.NewDecoder(resp.Body).Decode(out)
 	}
 	return resp.StatusCode, nil
+}
+
+func (c *Client) doAuthorized(ctx context.Context, method, path string, payload []byte, hasBody bool) (*http.Response, error) {
+	var body io.Reader
+	if hasBody {
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.authorize(ctx, req); err != nil {
+		return nil, err
+	}
+	if hasBody {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return c.http.Do(req)
 }
 
 func safeResponseBody([]byte) string { return "response omitted" }

@@ -13,7 +13,7 @@ A complete set of manifests for installing the unified-cd `controller` and `k8s-
 ## Applying
 
 ```bash
-# Quick trial (works out of the box)
+# Quick trial (development-only; the bundled manifest explicitly opts into in-cluster HTTP)
 kubectl apply -f manifests/install.yaml
 
 # Production (with external DB and S3)
@@ -36,6 +36,8 @@ In the `unified-cd-controller` Secret (namespace: `unified-cd`), update the foll
 - `UNIFIED_S3_ENDPOINT` / `UNIFIED_S3_BUCKET` / `UNIFIED_S3_KEY` / `UNIFIED_S3_SECRET` — S3-compatible object store connection info (controller starts without these, but log archival is disabled)
 
 The default k8s-agent Deployment does not receive `UNIFIED_TOKEN` or any shared agent token. It exchanges its projected, audience-bound ServiceAccount token for a short-lived credential.
+
+Production k8s-agent configuration uses HTTPS. The bundled `install.yaml` is the deliberate development exception: it sets `allowInsecureHTTP: true` because it does not provision TLS. Do not carry that setting into production manifests.
 
 ## Kubernetes workload enrollment
 

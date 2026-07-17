@@ -6,6 +6,8 @@ metadata:
 data:
   k8s-agent-config.yaml: |
     server: http://unified-cd-controller.unified-cd.svc.cluster.local
+    # The bundled install manifest is explicitly development-only and has no TLS termination.
+    allowInsecureHTTP: true
     enrollmentPolicy: unified-cd-k8s-agents
     serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
     labels:

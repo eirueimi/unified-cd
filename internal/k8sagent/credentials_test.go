@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -69,6 +70,105 @@ func TestKubernetesCredentialSourceCachesValidAccessToken(t *testing.T) {
 	assert.Equal(t, "access-1", first)
 	assert.Equal(t, "access-1", second)
 	assert.Equal(t, 1, calls)
+}
+
+func TestKubernetesCredentialSourceRefreshesBeforeAccessExpiry(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	tokenFile := filepath.Join(t.TempDir(), "projected-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("k8s-jwt"), 0o600))
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(api.AgentTokenResponse{AgentID: "k8s:prod:ci:uid-1", AccessToken: "access-" + string(rune('0'+calls)), AccessExpiresAt: now.Add(10 * time.Minute)})
+	}))
+	defer srv.Close()
+
+	source := kubernetesTokenSource(t, srv.URL, tokenFile, func() time.Time { return now })
+	first, err := source.Token(t.Context())
+	require.NoError(t, err)
+	second, err := source.Token(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "access-1", first)
+	assert.Equal(t, "access-2", second)
+	assert.Equal(t, 2, calls)
+}
+
+func TestKubernetesCredentialSourceUsesInjectedJitterForRefreshWindow(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	tokenFile := filepath.Join(t.TempDir(), "projected-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("k8s-jwt"), 0o600))
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(api.AgentTokenResponse{AgentID: "k8s:prod:ci:uid-1", AccessToken: "access-" + string(rune('0'+calls)), AccessExpiresAt: now.Add(17 * time.Minute)})
+	}))
+	defer srv.Close()
+
+	source := NewKubernetesCredentialSource(KubernetesCredentialSourceConfig{
+		Server: srv.URL, Policy: "cluster-agents", ServiceAccountTokenFile: tokenFile,
+		HTTPClient: srv.Client(), Now: func() time.Time { return now }, Jitter: func() time.Duration { return 2 * time.Minute },
+	})
+	_, err := source.Token(t.Context())
+	require.NoError(t, err)
+	_, err = source.Token(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls)
+}
+
+func TestKubernetesCredentialSourceRetriesUnauthorizedEnrollmentWithRotatedProjectedToken(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	tokenFile := filepath.Join(t.TempDir(), "projected-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("stale-jwt"), 0o600))
+	var authorizations []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		if len(authorizations) == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(api.AgentTokenResponse{AgentID: "k8s:prod:ci:uid-1", AccessToken: "access-1", AccessExpiresAt: now.Add(time.Hour)})
+	}))
+	defer srv.Close()
+
+	source := kubernetesTokenSource(t, srv.URL, tokenFile, func() time.Time { return now })
+	source.sleep = func(context.Context, time.Duration) error {
+		return os.WriteFile(tokenFile, []byte("rotated-jwt"), 0o600)
+	}
+	_, err := source.Token(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Bearer stale-jwt", "Bearer rotated-jwt"}, authorizations)
+}
+
+func TestKubernetesCredentialSourceReenrollsAndRetriesAfterUnauthorizedAgentRequest(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	tokenFile := filepath.Join(t.TempDir(), "projected-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("k8s-jwt"), 0o600))
+	enrollments := 0
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/enroll":
+			enrollments++
+			_ = json.NewEncoder(w).Encode(api.AgentTokenResponse{AgentID: "k8s:prod:ci:uid-1", AccessToken: "access-" + string(rune('0'+enrollments)), AccessExpiresAt: now.Add(time.Hour)})
+		case "/api/v1/agents/register":
+			requests++
+			if r.Header.Get("Authorization") == "Bearer access-1" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			require.Equal(t, "Bearer access-2", r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	source := kubernetesTokenSource(t, srv.URL, tokenFile, func() time.Time { return now })
+	client := agentlib.NewClientWithTokenSource(srv.URL, source, srv.Client())
+	require.NoError(t, client.Register(t.Context(), api.AgentRegisterRequest{AgentID: "k8s:prod:ci:uid-1"}))
+	assert.Equal(t, 2, enrollments)
+	assert.Equal(t, 2, requests)
 }
 
 func TestKubernetesCredentialSourceRereadsReplacedProjectedToken(t *testing.T) {
@@ -178,6 +278,7 @@ func TestKubernetesCredentialManifestsUseProjectedEnrollmentIdentity(t *testing.
 	assert.Contains(t, string(config), "serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token")
 	assert.NotContains(t, string(config), "agentId:")
 	assert.NotContains(t, string(config), "token:")
+	assert.NotContains(t, string(config), "server: http://")
 
 	deployment, err := os.ReadFile(filepath.Join(root, "manifests", "base", "k8s-agent", "deployment.yaml"))
 	require.NoError(t, err)
@@ -219,4 +320,18 @@ func TestKubernetesCredentialEnrollmentPodReadMatchesPolicyNamespace(t *testing.
 	agentRBAC, err := os.ReadFile(filepath.Join(root, "manifests", "base", "k8s-agent", "rbac.yaml"))
 	require.NoError(t, err)
 	assert.Contains(t, strings.ReplaceAll(string(agentRBAC), "\r\n", "\n"), "name: unified-cd-k8s-agent\n  namespace: ci")
+}
+
+func TestKubernetesCredentialRenderedProductionManifestsUseHTTPS(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	for _, name := range []string{"core-install.yaml", "agent-only.yaml"} {
+		manifest, err := os.ReadFile(filepath.Join(root, "manifests", name))
+		require.NoError(t, err)
+		assert.NotContains(t, string(manifest), "server: http://", name)
+	}
+	install, err := os.ReadFile(filepath.Join(root, "manifests", "install.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(install), "allowInsecureHTTP: true")
 }

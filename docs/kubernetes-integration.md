@@ -131,7 +131,7 @@ Create `k8s-agent-config.yaml`:
 
 ```yaml
 # Controller URL and workload enrollment policy
-server: http://unified-cd-master:8080
+server: https://unified-cd-master.example.com
 enrollmentPolicy: unified-cd-k8s-agents
 serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
 labels:
