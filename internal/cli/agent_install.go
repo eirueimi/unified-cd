@@ -11,18 +11,20 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
 
 // AgentConfig holds the runtime configuration for an agent.
 type AgentConfig struct {
-	Server  string   `yaml:"server"`
-	Token   string   `yaml:"token"`
-	AgentID string   `yaml:"agentId"`
-	BinPath string   `yaml:"binPath,omitempty"`
-	Labels  []string `yaml:"labels,omitempty"`
+	Server              string   `yaml:"server"`
+	Token               string   `yaml:"token,omitempty"`
+	CredentialFile      string   `yaml:"credentialFile,omitempty"`
+	EnrollmentTokenFile string   `yaml:"enrollmentTokenFile,omitempty"`
+	AgentID             string   `yaml:"agentId"`
+	BinPath             string   `yaml:"binPath,omitempty"`
+	Labels              []string `yaml:"labels,omitempty"`
 }
 
 func newAgentCmd(resolve func() (Config, error)) *cobra.Command {
@@ -174,7 +176,7 @@ func newAgentRunsCmd(resolve func() (Config, error), httpClient *http.Client) *c
 }
 
 func newAgentInstallCmd() *cobra.Command {
-	var server, token, agentID string
+	var server, credentialFile, enrollmentTokenFile, agentID string
 	var labels []string
 	var installDir string
 
@@ -182,17 +184,21 @@ func newAgentInstallCmd() *cobra.Command {
 		Use:   "install",
 		Short: "Install the agent as a system service (systemd/launchd)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if credentialFile == "" && enrollmentTokenFile == "" {
+				return fmt.Errorf("credential file or enrollment token file is required")
+			}
 			binPath, err := os.Executable()
 			if err != nil {
 				binPath = "unified-cd"
 			}
 
 			cfg := AgentConfig{
-				Server:  server,
-				Token:   token,
-				AgentID: agentID,
-				BinPath: binPath,
-				Labels:  labels,
+				Server:              server,
+				CredentialFile:      credentialFile,
+				EnrollmentTokenFile: enrollmentTokenFile,
+				AgentID:             agentID,
+				BinPath:             binPath,
+				Labels:              labels,
 			}
 
 			if installDir == "" {
@@ -216,19 +222,19 @@ func newAgentInstallCmd() *cobra.Command {
 				return installDarwin(cmd, cfg, installDir)
 			default:
 				fmt.Fprintf(cmd.OutOrStdout(), "\nWindows: run the agent manually or use Task Scheduler:\n")
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s agent --server=%s --token=%s --id=%s\n",
-					binPath, server, token, agentID)
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s agent --server=%s --id=%s%s\n",
+					binPath, server, agentID, agentCredentialArgs(cfg, " "))
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&server, "server", "", "master server URL (required)")
-	cmd.Flags().StringVar(&token, "token", "", "agent token (required)")
+	cmd.Flags().StringVar(&credentialFile, "credential-file", "", "path for persistent VM refresh credentials")
+	cmd.Flags().StringVar(&enrollmentTokenFile, "enrollment-token-file", "", "path for one-time enrollment token")
 	cmd.Flags().StringVar(&agentID, "id", "", "agent ID (required)")
 	cmd.Flags().StringArrayVar(&labels, "label", nil, "agent label (repeatable, e.g. --label kind:linux)")
 	cmd.Flags().StringVar(&installDir, "dir", "", "install directory (default: ~/.unified-cd)")
 	_ = cmd.MarkFlagRequired("server")
-	_ = cmd.MarkFlagRequired("token")
 	_ = cmd.MarkFlagRequired("id")
 	return cmd
 }
@@ -251,19 +257,20 @@ func generateSystemdUnit(cfg AgentConfig) string {
 	if len(cfg.Labels) > 0 {
 		labelsFlag = " --labels=" + strings.Join(cfg.Labels, ",")
 	}
+	credentialArgs := agentCredentialArgs(cfg, " ")
 	return fmt.Sprintf(`[Unit]
 Description=unified-cd Agent (%s)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=%s agent --server=%s --token=%s --id=%s%s
+ExecStart=%s agent --server=%s --id=%s%s%s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, cfg.AgentID, cfg.BinPath, cfg.Server, cfg.Token, cfg.AgentID, labelsFlag)
+`, cfg.AgentID, cfg.BinPath, cfg.Server, cfg.AgentID, credentialArgs, labelsFlag)
 }
 
 // generateLaunchdPlist generates the contents of a launchd property list.
@@ -271,6 +278,13 @@ func generateLaunchdPlist(cfg AgentConfig) string {
 	labelsArg := ""
 	if len(cfg.Labels) > 0 {
 		labelsArg = fmt.Sprintf("\t\t<string>--labels=%s</string>\n", strings.Join(cfg.Labels, ","))
+	}
+	credentialArgs := ""
+	if cfg.CredentialFile != "" {
+		credentialArgs += fmt.Sprintf("\t\t<string>--credential-file=%s</string>\n", cfg.CredentialFile)
+	}
+	if cfg.EnrollmentTokenFile != "" {
+		credentialArgs += fmt.Sprintf("\t\t<string>--enrollment-token-file=%s</string>\n", cfg.EnrollmentTokenFile)
 	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -284,16 +298,26 @@ func generateLaunchdPlist(cfg AgentConfig) string {
     <string>%s</string>
     <string>agent</string>
     <string>--server=%s</string>
-    <string>--token=%s</string>
     <string>--id=%s</string>
-%s  </array>
+%s%s  </array>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
 </dict>
 </plist>
-`, cfg.BinPath, cfg.Server, cfg.Token, cfg.AgentID, labelsArg)
+`, cfg.BinPath, cfg.Server, cfg.AgentID, credentialArgs, labelsArg)
+}
+
+func agentCredentialArgs(cfg AgentConfig, separator string) string {
+	args := ""
+	if cfg.CredentialFile != "" {
+		args += separator + "--credential-file=" + cfg.CredentialFile
+	}
+	if cfg.EnrollmentTokenFile != "" {
+		args += separator + "--enrollment-token-file=" + cfg.EnrollmentTokenFile
+	}
+	return args
 }
 
 // installLinux writes the systemd unit file to the install directory.

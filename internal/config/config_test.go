@@ -77,6 +77,17 @@ func TestAgentEffective_EnvOnly(t *testing.T) {
 	assert.Equal(t, []string{"kind:linux", "env:prod"}, eff.Labels)
 }
 
+func TestAgentEffective_CredentialFiles(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_CREDENTIAL_FILE", "/env/credentials.json")
+	t.Setenv("UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE", "/env/enrollment")
+	path := writeFile(t, "credentialFile: /file/credentials.json\nenrollmentTokenFile: /file/enrollment\n")
+
+	eff, err := config.AgentEffective(path)
+	require.NoError(t, err)
+	assert.Equal(t, "/file/credentials.json", eff.CredentialFile)
+	assert.Equal(t, "/file/enrollment", eff.EnrollmentTokenFile)
+}
+
 func TestAgentEffective_FileOverridesEnv(t *testing.T) {
 	t.Setenv("UNIFIED_SERVER", "http://env-server")
 	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")

@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -14,6 +16,29 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type tokenSourceFunc func(context.Context) (string, error)
+
+func (f tokenSourceFunc) Token(ctx context.Context) (string, error) { return f(ctx) }
+
+func TestClientReadsTokenForEveryRequest(t *testing.T) {
+	var tokens []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokens = append(tokens, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	n := 0
+	c := NewClientWithTokenSource(srv.URL, tokenSourceFunc(func(context.Context) (string, error) {
+		n++
+		return "access-" + strconv.Itoa(n), nil
+	}), srv.Client())
+
+	require.NoError(t, c.Register(t.Context(), api.AgentRegisterRequest{AgentID: "a"}))
+	require.NoError(t, c.Heartbeat(t.Context(), "a", []string{}))
+	assert.Equal(t, []string{"Bearer access-1", "Bearer access-2"}, tokens)
+}
 
 func TestClient_Register(t *testing.T) {
 	var got api.AgentRegisterRequest

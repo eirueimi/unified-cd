@@ -28,18 +28,37 @@ func (e *HTTPError) Error() string {
 
 // Client represents an HTTP client for the master server.
 type Client struct {
-	base  string
-	token string
-	http  *http.Client
+	base   string
+	source TokenSource
+	http   *http.Client
 }
 
 // NewClient creates a new client with the given base URL and token.
 func NewClient(baseURL, token string) *Client {
-	return &Client{
-		base:  baseURL,
-		token: token,
-		http:  &http.Client{Timeout: 60 * time.Second},
+	return NewClientWithTokenSource(baseURL, staticTokenSource(token), nil)
+}
+
+// NewClientWithTokenSource creates a client which obtains an access token for
+// every request. A nil httpClient uses the standard agent timeout.
+func NewClientWithTokenSource(baseURL string, source TokenSource, httpClient *http.Client) *Client {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 60 * time.Second}
 	}
+	return &Client{base: baseURL, source: source, http: httpClient}
+}
+
+func (c *Client) authorize(ctx context.Context, req *http.Request) error {
+	if c.source == nil {
+		return fmt.Errorf("agent token source is required")
+	}
+	token, err := c.source.Token(ctx)
+	if err != nil || token == "" {
+		// A TokenSource may deal with credentials internally. Do not surface its
+		// error here because it could contain a credential from a remote response.
+		return fmt.Errorf("obtain agent token")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return nil
 }
 
 // do is a general-purpose method that executes an HTTP request and decodes the response.
@@ -56,7 +75,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if err := c.authorize(ctx, req); err != nil {
+		return 0, err
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -67,12 +88,21 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, &HTTPError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(b))}
+		return resp.StatusCode, &HTTPError{StatusCode: resp.StatusCode, Body: safeResponseBody(b)}
 	}
 	if out != nil && resp.StatusCode != http.StatusNoContent {
 		return resp.StatusCode, json.NewDecoder(resp.Body).Decode(out)
 	}
 	return resp.StatusCode, nil
+}
+
+func safeResponseBody(body []byte) string {
+	text := strings.TrimSpace(string(body))
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "accesstoken") || strings.Contains(lower, "refreshtoken") || strings.Contains(lower, "\"token\"") || strings.Contains(lower, "bearer ") {
+		return "credential response omitted"
+	}
+	return text
 }
 
 // Register registers the agent with the master server.
@@ -258,7 +288,9 @@ func (c *Client) UploadArtifact(ctx context.Context, runID, name, path string) e
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if err := c.authorize(ctx, req); err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 
 	resp, err := c.http.Do(req)
@@ -268,7 +300,7 @@ func (c *Client) UploadArtifact(ctx context.Context, runID, name, path string) e
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("upload artifact http %d: %s", resp.StatusCode, string(b))
+		return fmt.Errorf("upload artifact http %d: %s", resp.StatusCode, safeResponseBody(b))
 	}
 	return nil
 }
@@ -281,7 +313,9 @@ func (c *Client) DownloadArtifact(ctx context.Context, runID, name, destDir stri
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if err := c.authorize(ctx, req); err != nil {
+		return err
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -290,7 +324,7 @@ func (c *Client) DownloadArtifact(ctx context.Context, runID, name, destDir stri
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("download artifact http %d: %s", resp.StatusCode, string(b))
+		return fmt.Errorf("download artifact http %d: %s", resp.StatusCode, safeResponseBody(b))
 	}
 
 	if destDir == "" {

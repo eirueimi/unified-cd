@@ -9,47 +9,54 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/eirueimi/unified-cd/internal/api"
 )
 
 func TestGenerateSystemdUnit(t *testing.T) {
 	unit := generateSystemdUnit(AgentConfig{
-		Server:  "https://master.example.com",
-		Token:   "secret",
-		AgentID: "agent-1",
-		BinPath: "/usr/local/bin/unified-cd",
-		Labels:  []string{"kind:linux", "pool:default"},
+		Server:         "https://master.example.com",
+		CredentialFile: "/var/lib/unified-cd/credentials.json",
+		AgentID:        "agent-1",
+		BinPath:        "/usr/local/bin/unified-cd",
+		Labels:         []string{"kind:linux", "pool:default"},
 	})
 	assert.Contains(t, unit, "ExecStart=/usr/local/bin/unified-cd")
 	assert.Contains(t, unit, "--server=https://master.example.com")
 	assert.Contains(t, unit, "--id=agent-1")
 	assert.Contains(t, unit, "kind:linux,pool:default")
+	assert.Contains(t, unit, "--credential-file=/var/lib/unified-cd/credentials.json")
+	assert.NotContains(t, unit, "secret")
+	assert.NotContains(t, unit, "--token=")
 }
 
 func TestGenerateLaunchdPlist(t *testing.T) {
 	plist := generateLaunchdPlist(AgentConfig{
-		Server:  "https://master.example.com",
-		Token:   "secret",
-		AgentID: "agent-1",
-		BinPath: "/usr/local/bin/unified-cd",
-		Labels:  []string{"kind:mac"},
+		Server:              "https://master.example.com",
+		EnrollmentTokenFile: "/var/lib/unified-cd/enrollment",
+		AgentID:             "agent-1",
+		BinPath:             "/usr/local/bin/unified-cd",
+		Labels:              []string{"kind:mac"},
 	})
 	assert.Contains(t, plist, "dev.unified-cd.agent")
 	assert.Contains(t, plist, "--server=https://master.example.com")
 	assert.Contains(t, plist, "--id=agent-1")
 	assert.Contains(t, plist, "kind:mac")
+	assert.Contains(t, plist, "--enrollment-token-file=/var/lib/unified-cd/enrollment")
+	assert.NotContains(t, plist, "secret")
+	assert.NotContains(t, plist, "--token=")
 }
 
 func TestWriteAgentConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfg := AgentConfig{
-		Server:  "https://master.example.com",
-		Token:   "token123",
-		AgentID: "agent-1",
-		Labels:  []string{"kind:linux"},
+		Server:              "https://master.example.com",
+		CredentialFile:      "/secure/credentials.json",
+		EnrollmentTokenFile: "/secure/enrollment",
+		AgentID:             "agent-1",
+		Labels:              []string{"kind:linux"},
 	}
 	path := filepath.Join(dir, "agent.yaml")
 	require.NoError(t, writeAgentConfig(path, cfg))
@@ -57,14 +64,16 @@ func TestWriteAgentConfig(t *testing.T) {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "https://master.example.com")
-	assert.Contains(t, string(data), "token123")
+	assert.Contains(t, string(data), "/secure/credentials.json")
+	assert.NotContains(t, string(data), "token:")
 	assert.Contains(t, string(data), "agent-1")
 }
 
 func TestNewAgentInstallCmd_FlagsExist(t *testing.T) {
 	cmd := newAgentInstallCmd()
 	assert.NotNil(t, cmd.Flags().Lookup("server"))
-	assert.NotNil(t, cmd.Flags().Lookup("token"))
+	assert.NotNil(t, cmd.Flags().Lookup("credential-file"))
+	assert.NotNil(t, cmd.Flags().Lookup("enrollment-token-file"))
 	assert.NotNil(t, cmd.Flags().Lookup("id"))
 	assert.NotNil(t, cmd.Flags().Lookup("label"))
 }
