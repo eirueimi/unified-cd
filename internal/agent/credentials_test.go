@@ -191,6 +191,38 @@ func TestCredentialManagerRestoresValidBackupWhenPrimaryIsInvalid(t *testing.T) 
 	assert.NoFileExists(t, credentialBackupPath(path))
 }
 
+func TestCredentialManagerRestoresValidBackupWhenPrimaryHasWrongAgentID(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	require.NoError(t, writeCredentialFile(path, persistedCredential{Version: 1, AgentID: "wrong-agent", RefreshToken: "bad", RefreshExpiresAt: now.Add(time.Hour)}))
+	require.NoError(t, writeCredentialFile(credentialBackupPath(path), persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "good", RefreshExpiresAt: now.Add(time.Hour)}))
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse("access", "refresh", now))
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: path, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
+	_, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.NoFileExists(t, credentialBackupPath(path))
+}
+
+func TestCredentialManagerRestoresValidBackupWhenPrimaryIsExpired(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	require.NoError(t, writeCredentialFile(path, persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "bad", RefreshExpiresAt: now.Add(-time.Minute)}))
+	require.NoError(t, writeCredentialFile(credentialBackupPath(path), persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "good", RefreshExpiresAt: now.Add(time.Hour)}))
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse("access", "refresh", now))
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: path, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
+	_, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.NoFileExists(t, credentialBackupPath(path))
+}
+
 func TestCredentialManagerDoesNotEnrollWhenInterruptedBackupIsInvalid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials.json")

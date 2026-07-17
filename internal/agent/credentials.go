@@ -160,10 +160,14 @@ func (m *CredentialManager) loadRefreshCredential() error {
 	}
 	credential, err := readCredentialFile(m.credentialFile)
 	if err == nil {
-		if err := m.removeStaleCredentialBackup(); err != nil {
-			return err
+		if semanticErr := m.validateCredential(credential); semanticErr == nil {
+			if err := m.removeStaleCredentialBackup(); err != nil {
+				return err
+			}
+			return m.useCredential(credential)
+		} else {
+			err = semanticErr
 		}
-		return m.useCredential(credential)
 	}
 	backup, backupErr := readCredentialFile(credentialBackupPath(m.credentialFile))
 	if backupErr == nil {
@@ -191,13 +195,20 @@ func (m *CredentialManager) loadRefreshCredential() error {
 }
 
 func (m *CredentialManager) useCredential(credential persistedCredential) error {
+	if err := m.validateCredential(credential); err != nil {
+		return err
+	}
+	m.refresh, m.loaded = credential, true
+	return nil
+}
+
+func (m *CredentialManager) validateCredential(credential persistedCredential) error {
 	if credential.AgentID != m.agentID {
 		return fmt.Errorf("credential file agent ID does not match configured agent ID")
 	}
 	if !credential.RefreshExpiresAt.After(m.now()) {
 		return fmt.Errorf("agent refresh credential has expired")
 	}
-	m.refresh, m.loaded = credential, true
 	return nil
 }
 
