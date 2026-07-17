@@ -75,6 +75,34 @@ func TestKubernetesEnrollmentVerifier_RejectsAuthenticatedNonServiceAccountAndUI
 	}
 }
 
+func TestKubernetesEnrollmentVerifier_RejectsMissingOrAmbiguousServiceAccountUID(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		reviewedUID authv1.ExtraValue
+	}{
+		{"missing service account UID", nil},
+		{"multiple service account UIDs", authv1.ExtraValue{"sa-uid", "other-uid"}},
+		{"empty service account UID", authv1.ExtraValue{""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := fake.NewSimpleClientset(boundPod())
+			client.Fake.PrependReactor("create", "tokenreviews", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, &authv1.TokenReview{Status: authv1.TokenReviewStatus{
+					Authenticated: true,
+					Audiences:     []string{KubernetesEnrollmentAudience},
+					User: authv1.UserInfo{
+						Username: "system:serviceaccount:unified-cd:unified-cd-k8s-agent",
+						Extra:    map[string]authv1.ExtraValue{"authentication.kubernetes.io/serviceaccount.uid": tc.reviewedUID},
+					},
+				}}, nil
+			})
+
+			_, err := NewKubernetesEnrollmentVerifier("prod", client).Verify(t.Context(), projectedToken("unified-cd", "unified-cd-k8s-agent", "sa-uid", "agent-0", "pod-uid"), kubernetesEnrollmentPolicy())
+			require.ErrorIs(t, err, ErrKubernetesEnrollmentRejected)
+		})
+	}
+}
+
 func TestKubernetesEnrollmentVerifier_MapsTokenReviewDeadlineToUnavailable(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	client.Fake.PrependReactor("create", "tokenreviews", func(k8stesting.Action) (bool, runtime.Object, error) { return true, nil, context.DeadlineExceeded })

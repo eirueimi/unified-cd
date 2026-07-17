@@ -86,6 +86,35 @@ func TestPostgres_EnrollmentPolicySchemaMatchesCRUD(t *testing.T) {
 	assert.Positive(t, ttlConstraint)
 }
 
+func TestPostgres_EnrollmentPolicyMigrationCapsLegacy24HourTTL(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	down, err := migrationsFS.ReadFile("migrations/014_agent_enrollment_policies.down.sql")
+	require.NoError(t, err)
+	up, err := migrationsFS.ReadFile("migrations/014_agent_enrollment_policies.up.sql")
+	require.NoError(t, err)
+	_, err = pg.pool.Exec(ctx, string(down))
+	require.NoError(t, err)
+
+	_, err = pg.pool.Exec(ctx, `INSERT INTO public.agent_enrollment_policies
+		(name, provider, provider_config, subject_constraints, agent_id_template, access_token_ttl, enabled)
+		VALUES ('legacy-24h', 'kubernetes', '{"cluster":"legacy"}',
+			'{"namespaces":["unified-cd"],"serviceAccounts":["unified-cd-k8s-agent"]}',
+			'k8s:{cluster}:{namespace}:{podUID}', interval '24 hours', true)`)
+	require.NoError(t, err)
+	_, err = pg.pool.Exec(ctx, string(up))
+	require.NoError(t, err)
+
+	policy, err := pg.GetAgentEnrollmentPolicy(ctx, "legacy-24h")
+	require.NoError(t, err)
+	require.Equal(t, 4*time.Hour, policy.AccessTokenTTL)
+
+	policy.Enabled = false
+	updated, err := pg.UpsertAgentEnrollmentPolicy(ctx, *policy)
+	require.NoError(t, err)
+	assert.False(t, updated.Enabled)
+}
+
 func TestPostgres_EnrollmentPolicyRejectsInvalidTTLAndTemplate(t *testing.T) {
 	pg := NewTestPostgres(t)
 	validConfig := json.RawMessage(`{"cluster":"prod"}`)

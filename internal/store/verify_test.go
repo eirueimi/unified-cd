@@ -19,6 +19,8 @@ func TestEnrollmentPolicyMigrationReconcilesMigration013Table(t *testing.T) {
 		"migration 013 already owns agent_enrollment_policies")
 	assert.Contains(t, string(up), "ALTER TABLE public.agent_enrollment_policies")
 	assert.Contains(t, string(up), "access_token_ttl_seconds")
+	assert.Contains(t, string(up), "LEAST(EXTRACT(EPOCH FROM access_token_ttl)::bigint, 14400)",
+		"legacy interval TTLs above the current four-hour maximum must be capped before the new constraint")
 	assert.NotContains(t, strings.ToUpper(string(down)), "DROP TABLE",
 		"migration 014 must leave the migration-013-owned table intact on rollback")
 }

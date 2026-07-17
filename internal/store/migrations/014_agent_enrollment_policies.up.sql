@@ -8,7 +8,10 @@ BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.columns
                WHERE table_schema = 'public' AND table_name = 'agent_enrollment_policies' AND column_name = 'access_token_ttl') THEN
         UPDATE public.agent_enrollment_policies
-           SET access_token_ttl_seconds = EXTRACT(EPOCH FROM access_token_ttl)::bigint
+           -- Migration 013 allowed up to 24 hours; policy access tokens now
+           -- have a four-hour maximum, so preserve the policy while capping
+           -- historical values deterministically before adding the constraint.
+           SET access_token_ttl_seconds = LEAST(EXTRACT(EPOCH FROM access_token_ttl)::bigint, 14400)
          WHERE access_token_ttl_seconds IS NULL;
         FOR constraint_name IN
             SELECT conname FROM pg_constraint

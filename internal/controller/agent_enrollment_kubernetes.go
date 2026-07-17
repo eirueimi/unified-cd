@@ -81,7 +81,8 @@ func (v *kubernetesEnrollmentVerifier) Verify(ctx context.Context, token string,
 	if review.Status.User.Username != "system:serviceaccount:"+claims.Namespace+":"+claims.ServiceAccount.Name {
 		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: token review subject", ErrKubernetesEnrollmentRejected)
 	}
-	if reviewedUID := review.Status.User.Extra["authentication.kubernetes.io/serviceaccount.uid"]; len(reviewedUID) > 0 && (claims.ServiceAccount.UID == "" || !contains([]string(reviewedUID), claims.ServiceAccount.UID)) {
+	reviewedUID, hasReviewedUID := review.Status.User.Extra["authentication.kubernetes.io/serviceaccount.uid"]
+	if claims.ServiceAccount.UID == "" || !hasReviewedUID || len(reviewedUID) != 1 || reviewedUID[0] == "" || reviewedUID[0] != claims.ServiceAccount.UID {
 		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: token review service account UID", ErrKubernetesEnrollmentRejected)
 	}
 	if !contains(constraints.Namespaces, claims.Namespace) || !contains(constraints.ServiceAccounts, claims.ServiceAccount.Name) {
@@ -124,7 +125,7 @@ func parseBoundPodClaims(token string) (boundPodClaims, error) {
 	if err := json.Unmarshal(b, &result); err != nil {
 		return result, err
 	}
-	if result.Namespace == "" || result.ServiceAccount.Name == "" || result.Pod.Name == "" || result.Pod.UID == "" {
+	if result.Namespace == "" || result.ServiceAccount.Name == "" || result.ServiceAccount.UID == "" || result.Pod.Name == "" || result.Pod.UID == "" {
 		return result, errors.New("incomplete binding")
 	}
 	return result, nil
