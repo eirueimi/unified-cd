@@ -83,17 +83,20 @@ INFO  server listening  addr=:8080
 Open a second terminal:
 
 ```bash
+agent_state_dir="$HOME/.local/state/unified-cd-agent"
+install -d -m 0700 "$agent_state_dir"
+
 UNIFIED_SERVER="http://localhost:8080" \
 UNIFIED_TOKEN="dev-secret" \
 ./bin/unified-cli agent enrollment create \
   --agent-id agent-1 \
   --label kind:linux \
-  --output-file /var/lib/unified-cd-agent/enrollment.token
+  --output-file "$agent_state_dir/enrollment.token"
 
 UNIFIED_SERVER="http://localhost:8080" \
 UNIFIED_AGENT_ID="agent-1" \
-UNIFIED_AGENT_CREDENTIAL_FILE="/var/lib/unified-cd-agent/credentials.json" \
-UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/enrollment.token" \
+UNIFIED_AGENT_CREDENTIAL_FILE="$agent_state_dir/credentials.json" \
+UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="$agent_state_dir/enrollment.token" \
 ./bin/unified-cd-agent
 ```
 
@@ -101,6 +104,9 @@ The enrollment command uses the controller's **administrator CLI credential**
 only to create a one-time VM enrollment file. It does not configure that token
 on the agent. For a non-local deployment, use an HTTPS controller URL and a
 securely supplied admin PAT instead of the development value shown here.
+`install -d -m 0700` creates the private parent directory required by the
+enrollment writer; it is safe to rerun and keeps the credential out of process
+arguments.
 
 The agent registers itself with the controller and starts polling for jobs.
 
@@ -231,18 +237,21 @@ Use `agentSelector` to route jobs to agents with particular labels.
 Start a second agent with different labels:
 
 ```bash
+agent_state_dir="$HOME/.local/state/unified-cd-agent-docker"
+install -d -m 0700 "$agent_state_dir"
+
 UNIFIED_SERVER="http://localhost:8080" \
 UNIFIED_TOKEN="dev-secret" \
 ./bin/unified-cli agent enrollment create \
   --agent-id docker-agent \
   --label kind:docker --label env:ci \
-  --output-file /var/lib/unified-cd-agent/docker-agent.enrollment
+  --output-file "$agent_state_dir/enrollment.token"
 
 UNIFIED_SERVER="http://localhost:8080" \
 UNIFIED_AGENT_ID="docker-agent" \
 UNIFIED_AGENT_LABELS="kind:docker,env:ci" \
-UNIFIED_AGENT_CREDENTIAL_FILE="/var/lib/unified-cd-agent/docker-agent.credentials.json" \
-UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/docker-agent.enrollment" \
+UNIFIED_AGENT_CREDENTIAL_FILE="$agent_state_dir/credentials.json" \
+UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="$agent_state_dir/enrollment.token" \
 ./bin/unified-cd-agent
 ```
 

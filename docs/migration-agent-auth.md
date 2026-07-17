@@ -46,9 +46,14 @@ the short compatibility window.
 
 Use an administrator CLI credential to create an enrollment file. The CLI
 creates the output file once with owner-only permissions and does not repeat
-the credential in list/get output.
+the credential in list/get output. It does not create missing parent
+directories, so create a private state directory first. Run this as the
+account that will run the agent; if a dedicated service account runs it,
+substitute that account's user and group.
 
 ```bash
+sudo install -d -m 0700 -o "$(id -un)" -g "$(id -gn)" /var/lib/unified-cd-agent
+
 unified-cli agent enrollment create \
   --agent-id build-linux-01 \
   --label kind:linux \
