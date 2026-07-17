@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -73,6 +74,66 @@ func TestAgentEnrollmentCreateOutputFileIsExclusiveAndPrivate(t *testing.T) {
 	cmd, _ = newTestAgentLifecycleCmd(t, tr)
 	cmd.SetArgs([]string{"enrollment", "create", "--agent-id", "vm-agent-02", "--output-file", path})
 	require.Error(t, cmd.Execute())
+}
+
+type enrollmentWriteErrorFile struct {
+	*os.File
+}
+
+func (f *enrollmentWriteErrorFile) Write(p []byte) (int, error) {
+	if len(p) > 1 {
+		_, _ = f.File.Write(p[:len(p)/2])
+	}
+	return 0, errors.New("injected write failure")
+}
+
+type enrollmentCloseErrorFile struct {
+	*os.File
+}
+
+func (f *enrollmentCloseErrorFile) Close() error {
+	_ = f.File.Close()
+	return errors.New("injected close failure")
+}
+
+func TestWriteNewEnrollmentTokenFileRemovesPartialFileAfterWriteFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollment-token")
+	err := writeNewEnrollmentTokenFileWith(path, "uce_secret", func(name string, flag int, perm os.FileMode) (enrollmentTokenFile, error) {
+		f, openErr := os.OpenFile(name, flag, perm)
+		if openErr != nil {
+			return nil, openErr
+		}
+		return &enrollmentWriteErrorFile{File: f}, nil
+	})
+	require.ErrorContains(t, err, "write enrollment token output file")
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestWriteNewEnrollmentTokenFileRemovesFileAfterCloseFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollment-token")
+	err := writeNewEnrollmentTokenFileWith(path, "uce_secret", func(name string, flag int, perm os.FileMode) (enrollmentTokenFile, error) {
+		f, openErr := os.OpenFile(name, flag, perm)
+		if openErr != nil {
+			return nil, openErr
+		}
+		return &enrollmentCloseErrorFile{File: f}, nil
+	})
+	require.ErrorContains(t, err, "close enrollment token output file")
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestAgentEnrollmentCreateDoesNotEchoServerResponseSecrets(t *testing.T) {
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) {
+		return http.StatusBadRequest, []byte("rejected uce_secret")
+	}}
+	cmd, _ := newTestAgentLifecycleCmd(t, tr)
+	cmd.SetArgs([]string{"enrollment", "create", "--agent-id", "vm-agent-01"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "400")
+	assert.NotContains(t, err.Error(), "uce_secret")
 }
 
 func TestAgentEnrollmentListAndRevokeDoNotExposeSecrets(t *testing.T) {

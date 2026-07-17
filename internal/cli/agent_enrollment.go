@@ -46,23 +46,15 @@ func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *htt
 				return err
 			}
 			if resp.StatusCode != http.StatusCreated {
-				return fmt.Errorf("server: %s", string(responseBody))
+				return agentLifecycleStatusError(resp)
 			}
 			var result api.CreateAgentEnrollmentResponse
 			if err := json.Unmarshal(responseBody, &result); err != nil {
 				return err
 			}
 			if outputFile != "" {
-				f, err := os.OpenFile(outputFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-				if err != nil {
-					return fmt.Errorf("create enrollment token output file: %w", err)
-				}
-				if _, err := fmt.Fprintln(f, result.Token); err != nil {
-					_ = f.Close()
-					return fmt.Errorf("write enrollment token output file: %w", err)
-				}
-				if err := f.Close(); err != nil {
-					return fmt.Errorf("close enrollment token output file: %w", err)
+				if err := writeNewEnrollmentTokenFile(outputFile, result.Token); err != nil {
+					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Enrollment token written to %s (shown only once).\n", outputFile)
 				return nil
@@ -95,7 +87,7 @@ func newAgentEnrollmentListCmd(resolve func() (Config, error), httpClient *http.
 				return err
 			}
 			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("server: %s", string(body))
+				return agentLifecycleStatusError(resp)
 			}
 			var items []api.AgentEnrollmentMeta
 			if err := json.Unmarshal(body, &items); err != nil {
@@ -123,12 +115,12 @@ func newAgentEnrollmentRevokeCmd(resolve func() (Config, error), httpClient *htt
 			if err != nil {
 				return err
 			}
-			resp, body, err := agentLifecycleRequest(context.Background(), httpClient, cfg, http.MethodDelete, "/api/v1/agent-enrollments/"+url.PathEscape(args[0]), nil)
+			resp, _, err := agentLifecycleRequest(context.Background(), httpClient, cfg, http.MethodDelete, "/api/v1/agent-enrollments/"+url.PathEscape(args[0]), nil)
 			if err != nil {
 				return err
 			}
 			if resp.StatusCode != http.StatusNoContent {
-				return fmt.Errorf("server: %s", string(body))
+				return agentLifecycleStatusError(resp)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "enrollment token %q revoked\n", args[0])
 			return nil
@@ -160,7 +152,7 @@ func newAgentIdentityGetCmd(resolve func() (Config, error), httpClient *http.Cli
 				return err
 			}
 			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("server: %s", string(body))
+				return agentLifecycleStatusError(resp)
 			}
 			var identity api.AgentIdentityMeta
 			if err := json.Unmarshal(body, &identity); err != nil {
@@ -190,12 +182,12 @@ func newAgentIdentityActionCmd(resolve func() (Config, error), httpClient *http.
 			} else {
 				path += "/" + action
 			}
-			resp, body, err := agentLifecycleRequest(context.Background(), httpClient, cfg, http.MethodPost, path, nil)
+			resp, _, err := agentLifecycleRequest(context.Background(), httpClient, cfg, http.MethodPost, path, nil)
 			if err != nil {
 				return err
 			}
 			if resp.StatusCode != http.StatusNoContent {
-				return fmt.Errorf("server: %s", string(body))
+				return agentLifecycleStatusError(resp)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "agent identity %q %s\n", args[0], action)
 			return nil
@@ -222,4 +214,38 @@ func agentLifecycleRequest(ctx context.Context, client *http.Client, cfg Config,
 		return nil, nil, err
 	}
 	return resp, responseBody, nil
+}
+
+type enrollmentTokenFile interface {
+	io.Writer
+	Close() error
+}
+
+type enrollmentTokenFileOpener func(name string, flag int, perm os.FileMode) (enrollmentTokenFile, error)
+
+func writeNewEnrollmentTokenFile(path, token string) error {
+	return writeNewEnrollmentTokenFileWith(path, token, func(name string, flag int, perm os.FileMode) (enrollmentTokenFile, error) {
+		return os.OpenFile(name, flag, perm)
+	})
+}
+
+func writeNewEnrollmentTokenFileWith(path, token string, open enrollmentTokenFileOpener) error {
+	f, err := open(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create enrollment token output file: %w", err)
+	}
+	if _, err := fmt.Fprintln(f, token); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("write enrollment token output file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("close enrollment token output file: %w", err)
+	}
+	return nil
+}
+
+func agentLifecycleStatusError(resp *http.Response) error {
+	return fmt.Errorf("server returned status %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 }

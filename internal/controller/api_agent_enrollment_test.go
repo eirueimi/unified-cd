@@ -70,6 +70,20 @@ func TestAgentEnrollmentAdminRejectsInvalidDurationAndCapability(t *testing.T) {
 	}
 }
 
+func TestAgentEnrollmentAdminEnforcesMaximumLifetime(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	accepted := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{
+		AgentID: "vm-agent-max", ExpiresIn: "24h",
+	})
+	require.Equal(t, http.StatusCreated, accepted.Code, accepted.Body.String())
+
+	rejected := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{
+		AgentID: "vm-agent-over-max", ExpiresIn: "24h1ns",
+	})
+	require.Equal(t, http.StatusBadRequest, rejected.Code, rejected.Body.String())
+}
+
 func TestAgentEnrollmentAdminAuthorizationAndRevoke(t *testing.T) {
 	s, pg := newTestServer(t)
 	makeRolePAT(t, pg, "viewer-token", "viewer")

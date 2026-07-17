@@ -14,7 +14,10 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-const defaultAgentEnrollmentTTL = 10 * time.Minute
+const (
+	defaultAgentEnrollmentTTL = 10 * time.Minute
+	maxAgentEnrollmentTTL     = 24 * time.Hour
+)
 
 // handleCreateAgentEnrollment creates an opaque, one-time enrollment token.
 // The plaintext token is returned only in this creation response.
@@ -33,8 +36,8 @@ func (s *Server) handleCreateAgentEnrollment(w http.ResponseWriter, r *http.Requ
 	ttl := defaultAgentEnrollmentTTL
 	if req.ExpiresIn != "" {
 		parsed, err := time.ParseDuration(req.ExpiresIn)
-		if err != nil || parsed <= 0 {
-			http.Error(w, "expiresIn must be a positive duration", http.StatusBadRequest)
+		if err != nil || parsed <= 0 || parsed > maxAgentEnrollmentTTL {
+			http.Error(w, "expiresIn must be a positive duration no greater than 24h", http.StatusBadRequest)
 			return
 		}
 		ttl = parsed
