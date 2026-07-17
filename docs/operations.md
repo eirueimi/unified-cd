@@ -10,7 +10,7 @@ unified-cd's controller is stateless; all durable state lives in two external st
 
 | Store | Contents |
 |---|---|
-| **PostgreSQL** (`UNIFIED_DB_DSN`) | Jobs, runs/steps, queue state, schedules, webhooks, PATs/sessions, agents, encrypted secrets, `controller_settings` |
+| **PostgreSQL** (`UNIFIED_DB_DSN`) | Jobs, runs/steps, queue state, schedules, webhooks, PATs/sessions, agents, per-agent identities and credential hashes, encrypted secrets, `controller_settings` |
 | **S3-compatible object store** (`UNIFIED_S3_*`, Garage in dev) | Log archives, artifacts, cache entries, git-template cache |
 
 Losing the PostgreSQL database loses run history and every registered resource (jobs, schedules, webhooks, secrets, GitCredentials, AppSources). Agents are **not** lost from an operator's point of view: both the standard agent and the k8s-agent upsert their row on every claim, so once the DB is restored (or a fresh one is stood up) and an agent's process is still running, it reappears in `agent list` on its own. Everything else must be re-applied:
@@ -19,6 +19,12 @@ Losing the PostgreSQL database loses run history and every registered resource (
 - Re-`secret set` every secret — secret values are never recoverable from a backup of anything other than the DB itself, and are not retrievable via the API even when present (see [Secrets Management Guide](secrets.md#security-model)).
 
 ---
+
+Per-agent credentials are stored as hashes in PostgreSQL. After restoring a
+fresh database, issue new one-time enrollments and re-enroll the agents rather
+than attempting to reuse lost credential state. During a database outage,
+agent authentication fails closed with `authentication unavailable` or
+`enrollment unavailable`.
 
 ## Backup
 

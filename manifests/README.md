@@ -6,9 +6,9 @@ A complete set of manifests for installing the unified-cd `controller` and `k8s-
 
 | File | Contents | Prerequisites |
 |------|----------|---------------|
-| `core-install.yaml` | controller + k8s-agent only | External PostgreSQL and S3-compatible store required. Edit all `CHANGEME` placeholders before applying. |
+| `core-install.yaml` | controller + k8s-agent only | External PostgreSQL and S3-compatible store required. Replace every `REPLACE_WITH_...` controller Secret value before applying. |
 | `install.yaml` | core-install.yaml + in-cluster PostgreSQL and Garage bundled | For evaluation / quick trial. Uses development-default credentials. **Do not use in production.** |
-| `agent-only.yaml` | k8s-agent only | Controller running externally with the matching Kubernetes enrollment policy. Edit the `server` `CHANGEME` value before applying. |
+| `agent-only.yaml` | k8s-agent only | Controller running externally with the matching Kubernetes enrollment policy. Replace its example-invalid `server` URL before applying. |
 
 ## Applying
 
@@ -17,12 +17,12 @@ A complete set of manifests for installing the unified-cd `controller` and `k8s-
 kubectl apply -f manifests/install.yaml
 
 # Production (with external DB and S3)
-# 1. Edit the CHANGEME values in manifests/core-install.yaml
+# 1. Replace the REPLACE_WITH_... values in manifests/core-install.yaml
 # 2. kubectl apply -f manifests/core-install.yaml
 
 # Agent only (controller running externally, e.g. Docker Compose on the host)
 # 1. Configure the external controller's in-cluster verifier and enrollment policy.
-# 2. Edit the server CHANGEME value in manifests/agent-only.yaml.
+# 2. Replace the example-invalid server URL in manifests/agent-only.yaml.
 # 3. kubectl apply -f manifests/agent-only.yaml
 ```
 

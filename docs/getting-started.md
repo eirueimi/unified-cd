@@ -83,9 +83,15 @@ INFO  server listening  addr=:8080
 Open a second terminal:
 
 ```bash
+./bin/unified-cli agent enrollment create \
+  --agent-id agent-1 \
+  --label kind:linux \
+  --output-file /var/lib/unified-cd-agent/enrollment.token
+
 UNIFIED_SERVER="http://localhost:8080" \
-UNIFIED_AGENT_TOKEN="dev-secret" \
 UNIFIED_AGENT_ID="agent-1" \
+UNIFIED_AGENT_CREDENTIAL_FILE="/var/lib/unified-cd-agent/credentials.json" \
+UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/enrollment.token" \
 ./bin/unified-cd-agent
 ```
 
@@ -96,7 +102,9 @@ The agent registers itself with the controller and starts polling for jobs.
 | Environment variable | Description |
 |---|---|
 | `UNIFIED_SERVER` | Controller URL |
-| `UNIFIED_AGENT_TOKEN` | Bearer token (must match controller's `UNIFIED_TOKEN` or a PAT) |
+| `UNIFIED_AGENT_CREDENTIAL_FILE` | Private file where the agent keeps its rotating VM refresh credential |
+| `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | Private one-time enrollment credential file, required only before first enrollment |
+| `UNIFIED_AGENT_TOKEN` | Legacy shared-token migration only; never set it from `UNIFIED_TOKEN` for a new agent |
 | `UNIFIED_AGENT_ID` | Unique agent identifier |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:linux,env:prod` |
 
@@ -216,10 +224,16 @@ Use `agentSelector` to route jobs to agents with particular labels.
 Start a second agent with different labels:
 
 ```bash
+./bin/unified-cli agent enrollment create \
+  --agent-id docker-agent \
+  --label kind:docker --label env:ci \
+  --output-file /var/lib/unified-cd-agent/docker-agent.enrollment
+
 UNIFIED_SERVER="http://localhost:8080" \
-UNIFIED_AGENT_TOKEN="dev-secret" \
 UNIFIED_AGENT_ID="docker-agent" \
 UNIFIED_AGENT_LABELS="kind:docker,env:ci" \
+UNIFIED_AGENT_CREDENTIAL_FILE="/var/lib/unified-cd-agent/docker-agent.credentials.json" \
+UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/docker-agent.enrollment" \
 ./bin/unified-cd-agent
 ```
 
@@ -393,7 +407,8 @@ The UI lets you:
 | Complete Job YAML reference (all fields, concurrency, DAG, artifacts, cache) | [Job Reference](jobs.md) |
 | CLI commands and flags | [CLI Reference](cli.md) |
 | Environment variables and startup flags | [Configuration Reference](configuration.md) |
-| Authentication (static token, PAT, OIDC SSO) | [Authentication Guide](authentication.md) |
+| Authentication (human PATs/SSO and per-agent credentials) | [Authentication Guide](authentication.md) |
+| Shared-agent-token migration | [Migration: agent authentication](migration-agent-auth.md) |
 | Agent labels and routing | [Agent Labels and Routing](agents.md) |
 | Secrets management and encryption model | [Secrets Management Guide](secrets.md) |
 | Kubernetes pod-based agents | [Kubernetes Integration Guide](kubernetes-integration.md) |

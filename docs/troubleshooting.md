@@ -1006,6 +1006,44 @@ from inside any WSL2 distro:
 test -f /sys/fs/cgroup/cgroup.controllers && echo "cgroup v2 active"
 ```
 
+## Agent enrollment and credentials
+
+### VM agent cannot enroll or refresh
+
+**Symptom:** the agent receives `unauthorized`, `agent identity disabled`, or
+`enrollment unavailable` while starting or refreshing.
+
+**Fix:** `unauthorized` means a one-time enrollment credential was malformed,
+expired, used, revoked, or a refresh credential is no longer valid. Create a
+new enrollment file; plaintext tokens cannot be retrieved from list/get
+responses. For a lost or replayed refresh credential, run `unified-cd agent
+identity revoke-credentials <agent-id>`, create a new enrollment, and restart
+the agent with private `credentialFile` and `enrollmentTokenFile` paths.
+`agent identity disabled` requires an administrator to investigate and enable
+the identity or replace it. `enrollment unavailable` is retryable only after
+PostgreSQL/controller availability is restored; auth fails closed.
+
+### Kubernetes agent returns 403 or 503 during enrollment
+
+**Symptom:** `enrollment policy rejected` (403) or `kubernetes identity
+unavailable` (503).
+
+**Fix:** A 403 indicates an unrecognized/disabled policy, wrong audience,
+ServiceAccount or namespace mismatch, requested label/capability escalation,
+or a Pod UID that does not match the live bound Pod. Check the policy and
+projected token volume; do not substitute a static Secret. A 503 is retryable:
+check the configured cluster verifier, TokenReview permission, bounded Pod
+`get` permission, and API-server health. The required audience is
+`unified-cd-agent-enrollment`.
+
+### Agent request returns `agent identity mismatch`
+
+**Symptom:** an agent request is rejected with 403 `agent identity mismatch`.
+
+**Fix:** A per-agent access credential was used with another agent's route or
+body ID. Start the correct agent identity and do not share credential files.
+The controller also preserves the immutable claimed-run ownership check.
+
 ## Schema drift (migration renumbering)
 
 **Symptom:** the controller exits at startup with an error like:

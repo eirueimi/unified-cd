@@ -4,6 +4,25 @@ This document covers `agentSelector` and agent-side label configuration,
 which controls which agent executes a given Job, plus the agent's workspace
 lifecycle and its registration/liveness semantics with the controller.
 
+## Agent identity and enrollment
+
+New agents authenticate as a controller-issued per-agent principal, not with a
+fleet-wide token. Create a VM's one-time enrollment credential as an
+administrator, put it in a private file, and configure the agent with
+`credentialFile` and `enrollmentTokenFile`. Its access credential is
+short-lived; the rotating refresh credential remains in the protected file.
+
+Kubernetes agents instead prove their projected ServiceAccount token against a
+controller enrollment policy. The controller derives their ID from the verified
+cluster, namespace, and Pod UID and assigns their permitted labels and
+capabilities. A requested label is therefore only a request, never a way to
+gain scheduling authority.
+
+`UNIFIED_AGENT_TOKEN` and YAML `token` are legacy compatibility inputs only.
+They require an explicitly configured controller
+`UNIFIED_AGENT_LEGACY_TOKEN`/`agentAuth.legacySharedToken`; neither setting
+uses `UNIFIED_TOKEN`. See [Migration: agent authentication](migration-agent-auth.md).
+
 ## Table of Contents
 
 - [Agent Labels](#agent-labels)
@@ -24,7 +43,9 @@ Agents announce labels (tags) at startup. The controller uses them for `agentSel
 
 ```bash
 UNIFIED_AGENT_LABELS=kind:linux,pool:build ./bin/unified-cd-agent \
-  --server http://localhost:8080 --token <UNIFIED_AGENT_TOKEN>
+  --server https://controller.example.invalid \
+  --credential-file /var/lib/unified-cd-agent/credentials.json \
+  --enrollment-token-file /var/lib/unified-cd-agent/enrollment.token
 
 # Or via the --labels flag
 ./bin/unified-cd-agent --labels kind:linux,pool:build ...

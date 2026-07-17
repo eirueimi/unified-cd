@@ -148,7 +148,9 @@ unified-cd-agent [FLAGS]
 
   -f                      string    Config file path (default: unified-agent.yaml if exists)
   --server                string    Controller URL (env: UNIFIED_AGENT_SERVER)
-  --token                 string    Agent bearer token (env: UNIFIED_AGENT_TOKEN)
+  --token                 string    Legacy shared agent token only (env: UNIFIED_AGENT_TOKEN)
+  --credential-file       string    Protected VM refresh-credential file (env: UNIFIED_AGENT_CREDENTIAL_FILE)
+  --enrollment-token-file string    One-time VM enrollment-token file (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)
   --id                    string    Agent identifier (default: hostname; env: UNIFIED_AGENT_ID)
   --labels                string    Comma-separated labels, e.g. "kind:linux,env:prod" (env: UNIFIED_AGENT_LABELS)
   --expose-env            string    Comma-separated env vars to expose to job steps (env: UNIFIED_AGENT_EXPOSE_ENV)
@@ -178,7 +180,9 @@ keys below.
 | Variable | Description |
 |---|---|
 | `UNIFIED_AGENT_SERVER` | Controller URL |
-| `UNIFIED_AGENT_TOKEN` | Agent bearer token (must match controller's `UNIFIED_TOKEN` or be a valid PAT) |
+| `UNIFIED_AGENT_TOKEN` | Legacy shared agent token only. New VM agents use a credential and one-time enrollment-token file; it must not be derived from `UNIFIED_TOKEN`. |
+| `UNIFIED_AGENT_CREDENTIAL_FILE` | Protected persistent VM refresh-credential file. Required for secure VM mode. |
+| `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | One-time VM enrollment credential file. Required only until initial enrollment succeeds. |
 | `UNIFIED_AGENT_ID` | Agent identifier (defaults to hostname if not set) |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:docker,env:prod` |
 | `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps |
@@ -200,8 +204,9 @@ Additionally, every step receives the following environment variables automatica
 ```yaml
 # unified-agent.yaml
 server: http://unified-cd-controller:8080
-token: my-agent-token
 id: worker-01
+credentialFile: /var/lib/unified-cd-agent/credentials.json
+enrollmentTokenFile: /var/lib/unified-cd-agent/enrollment.token
 labels:
   - kind:linux
   - env:prod
@@ -225,6 +230,14 @@ minFreeDisk: 5368709120        # 5Gi; below this free space on workspaceDir's fi
 workspaceRetentionDays: 0      # >0 opts in to the periodic per-job workspace GC (0 = disabled, default)
 logLevel: info
 ```
+
+New VM agents need no `token` field. On first start, the agent consumes the
+one-time enrollment-token file and writes the refresh credential to
+`credentialFile`; later starts rotate that credential automatically. Keep both
+files owner-readable only and do not put either value in a command line. The
+controller, not this file, is authoritative for labels and capabilities. A
+`token` field or `UNIFIED_AGENT_TOKEN` is supported only for the temporary
+legacy shared-token migration described in [Migration: agent authentication](migration-agent-auth.md).
 
 Start with config file:
 
@@ -469,9 +482,16 @@ UNIFIED_S3_SECRET="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" \
 ### Agent
 
 ```bash
-UNIFIED_AGENT_SERVER="http://unified-cd-controller:8080" \
-UNIFIED_AGENT_TOKEN="same-token-as-UNIFIED_TOKEN" \
+UNIFIED_AGENT_SERVER="https://controller.example.invalid" \
 UNIFIED_AGENT_ID="worker-$(hostname)" \
 UNIFIED_AGENT_LABELS="kind:linux,env:prod" \
+UNIFIED_AGENT_CREDENTIAL_FILE="/var/lib/unified-cd-agent/credentials.json" \
+UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/enrollment.token" \
 ./bin/unified-cd-agent --max-concurrent 4
 ```
+
+Create the private enrollment-token file with `unified-cd agent enrollment
+create` before starting the VM agent. Production requires HTTPS; the
+repository-root Compose files are development-only. The legacy
+`UNIFIED_AGENT_TOKEN` input is not a substitute for this flow and must only be
+used with an explicit temporary `UNIFIED_AGENT_LEGACY_TOKEN` controller setting.

@@ -18,6 +18,9 @@ An open-source CI/CD tool (Jenkins alternative) written in Go.
 
 ---
 
+Per-agent enrollment gives every VM and Kubernetes agent independently
+revocable credentials. See [Migration: per-agent authentication](docs/migration-agent-auth.md).
+
 ## Installation
 
 ### Docker (recommended for production)
@@ -40,6 +43,11 @@ docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d
 ```
 
 Pin a release by setting `UNIFIED_CD_VERSION` (e.g. `v0.0.3`) in `.env`.
+
+The repository-root Compose files are development-only and do not define a
+production security boundary. Production controllers require HTTPS. Per-agent
+credential enrollment is implemented; mTLS agent certificates are future work,
+not a current deployment feature.
 
 ### Kubernetes
 
@@ -172,6 +180,7 @@ CLI / Browser / Webhook
 - **[Troubleshooting](docs/troubleshooting.md)** — symptom-indexed fixes for common failures
 - **[Migration: job-level isolation](docs/migration-2026-07-job-isolation.md)** — upgrading to isolated-by-default jobs, `native: true`, and the removal of step-level `runsIn:`
 - **[Migration: agent capability routing](docs/migration-2026-07-agent-capability-routing.md)** — agent `capabilities`, the `pod` capability replacing the old `kubernetes`-label pin, and rolling upgrades
+- **[Migration: per-agent authentication](docs/migration-agent-auth.md)** — VM/Kubernetes enrollment, independent credential revocation, and shared-token retirement
 - **[Migration: `shell:` field, `ucd-sh` shim](docs/migration-2026-07-step-shell-shim.md)** — `bash -lc`/`sh -c` defaults replaced by the injected `ucd-sh` shim, the new `shell:` override field, and the `ucd-sh pause` keep-alive
 
 ### Infrastructure

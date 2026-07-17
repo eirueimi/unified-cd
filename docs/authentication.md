@@ -29,8 +29,10 @@ which tries the following **3 methods** in order. The first successful method gr
 | 2 | OIDC id_token | `Authorization: Bearer <JWT>` | CLI after `unified-cli login` (SSO setup) |
 | 3 | Session Cookie | `ucd_session` Cookie | Browser SSO login via Web UI |
 
-> The agent API (`/api/v1/agents/*`) uses a separate auth path: `UNIFIED_AGENT_TOKEN` (static token)
-> via `BearerAuth` only. It is not subject to SSO.
+> The agent API (`/api/v1/agents/*`) uses a separate per-agent credential path.
+> Human PATs, OIDC tokens, and `UNIFIED_TOKEN` cannot authorize a new agent.
+> `UNIFIED_AGENT_TOKEN` is retained only for an explicitly configured, temporary
+> legacy shared-token migration and is not subject to SSO.
 
 `ServerAuth` has no special branch for static tokens. **`UNIFIED_TOKEN` is automatically synced to the DB
 as a PAT named `env:UNIFIED_TOKEN` at startup and is treated as one of the method-1 PATs.**
@@ -115,6 +117,34 @@ PATs are stored as SHA-256 hashes in the DB and managed via `token list` / `toke
 
 > **Production note**: The default value `dev-token-change-me` in `docker-compose.yaml` is
 > committed in plaintext. Change it for any non-local deployment.
+
+## Agent authentication and enrollment
+
+Agents are not human API clients. Every new VM or Kubernetes agent has a
+separate controller identity; a credential for one identity cannot make calls
+as another identity or write a run claimed by another agent.
+
+- VM enrollment credentials (`uce_`) are one-time, displayed only when
+  created, and exchanged at `POST /api/v1/agents/enroll`. The agent receives a
+  one-hour access credential (`uca_`) and a rotating 30-day refresh credential
+  (`ucr_`) stored in its protected credential file. Access credentials cannot
+  renew themselves.
+- Kubernetes agents exchange a projected ServiceAccount token with audience
+  `unified-cd-agent-enrollment`. TokenReview and a live bound Pod check select
+  a controller policy; the agent gets an in-memory access credential only, no
+  refresh credential or shared Secret.
+- The controller stores only SHA-256 hashes, never plaintext credentials.
+  Labels and capabilities are granted by the enrollment/policy, not trusted
+  from an agent request.
+
+Admin lifecycle endpoints are under `/api/v1/agent-enrollments`,
+`/api/v1/agent-identities`, and `/api/v1/agent-enrollment-policies`. See
+[Migration: agent authentication](migration-agent-auth.md) for commands,
+rollout, recovery, exact failures, and removal of legacy mode.
+
+Production deployments must use HTTPS. The repository-root Compose setup is
+development-only. mTLS certificate authentication is future work and is not
+provided by this release.
 
 ---
 
