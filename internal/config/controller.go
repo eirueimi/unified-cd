@@ -263,8 +263,10 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		}
 	}
 	if file.AgentAuth != nil {
-		// Cluster credentials are YAML-only.  The legacy token intentionally
-		// remains env-only so config files do not accidentally contain a secret.
+		// YAML has higher precedence than environment variables, including an
+		// explicit empty legacySharedToken that disables compatibility mode.
+		eff.AgentAuth.LegacySharedToken = file.AgentAuth.LegacySharedToken
+		// Cluster credentials remain YAML-only.
 		eff.AgentAuth.KubernetesClusters = append([]ControllerKubernetesClusterConfig(nil), file.AgentAuth.KubernetesClusters...)
 		eff.AgentAuth.KubernetesEnrollmentPolicies = append([]ControllerKubernetesEnrollmentPolicyConfig(nil), file.AgentAuth.KubernetesEnrollmentPolicies...)
 	}

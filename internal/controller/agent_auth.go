@@ -115,7 +115,9 @@ func (s *Server) requireAgentPathIdentity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := agentPrincipalFromContext(r.Context())
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			// agentOrServerAuth has already verified a human principal. Only
+			// agent principals need a route-identity binding here.
+			next.ServeHTTP(w, r)
 			return
 		}
 		if principal.AuthMethod != "legacy" && principal.AgentID != chi.URLParam(r, "agentId") {

@@ -214,6 +214,33 @@ func (s *Server) metricsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+type agentIdentityRoute struct {
+	method string
+	path   string
+}
+
+// agentRouteIdentityMatrix is exercised by TestAgentRouteIdentityMatrixRejectsImpersonation.
+// Keep this list in lockstep with the agent route registration in routes.
+var agentRouteIdentityMatrix = []agentIdentityRoute{
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}"},
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/heartbeat"},
+	{method: http.MethodDelete, path: "/api/v1/agents/{agentId}"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/claim"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/steps"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/logs"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/reconcile"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/finish"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/outputs"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/outputs"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/sidecars"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/secrets/fetch"},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/approvals"},
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs/{runId}/approvals/{stepIndex}"},
+	{method: http.MethodPut, path: "/api/v1/runs/{runId}/artifacts/{name}"},
+}
+
 func (s *Server) routes() {
 	s.r.Use(middleware.Recoverer)
 	s.r.Use(middleware.RealIP)
@@ -409,10 +436,11 @@ func (s *Server) routes() {
 		// agent credentials are authenticated by the handlers themselves.
 		r.Post("/enroll", s.handleAgentEnroll)
 		r.Post("/token/refresh", s.handleAgentRefresh)
-		// GET uses ServerAuth + requireMinRole("viewer"); all other methods use BearerAuth (agent token).
+		// Agent-ID reads accept either a viewer human principal or an agent
+		// principal bound to that same ID; all other methods use agent auth.
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/", s.handleListAgents)
-		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}", s.handleGetAgent)
-		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}/runs", s.handleListRunsByAgent)
+		r.With(s.agentOrServerAuth, s.requireAgentPathIdentity, requireMinRole("viewer")).Get("/{agentId}", s.handleGetAgent)
+		r.With(s.agentOrServerAuth, s.requireAgentPathIdentity, requireMinRole("viewer")).Get("/{agentId}/runs", s.handleListRunsByAgent)
 		r.With(s.agentAuth).Post("/register", s.handleAgentRegister)
 		r.With(s.agentAuth, s.requireAgentPathIdentity).Post("/{agentId}/heartbeat", s.handleAgentHeartbeat)
 		r.With(s.agentAuth, s.requireAgentPathIdentity).Delete("/{agentId}", s.handleAgentDeregister)

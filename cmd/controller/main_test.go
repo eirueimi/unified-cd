@@ -120,3 +120,8 @@ func TestGitResolveDeadlineDefault(t *testing.T) {
 	t.Setenv("UNIFIED_GIT_RESOLVE_DEADLINE", "0")
 	assert.Equal(t, time.Hour, gitResolveDeadlineDefault(), "0 must NOT disable the deadline — it falls back to default")
 }
+
+func TestLegacyAgentAuthWarning(t *testing.T) {
+	assert.Empty(t, legacyAgentAuthWarning(""))
+	assert.Contains(t, legacyAgentAuthWarning("migration-only-token"), "UNIFIED_AGENT_LEGACY_TOKEN")
+}

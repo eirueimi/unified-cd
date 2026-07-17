@@ -11,6 +11,7 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/agentauth"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/require"
 )
@@ -134,6 +135,24 @@ func TestAgentAuth_LegacyTokenIsExplicitAndNeverFallsBackFromUCA(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(noLegacyRec, noLegacyReq)
 	require.Equal(t, http.StatusUnauthorized, noLegacyRec.Code, noLegacyRec.Body.String())
+}
+
+func TestLegacyAgentRequestIncrementsMigrationCounter(t *testing.T) {
+	s, _ := newTestServer(t)
+	m := metrics.New()
+	s.SetMetrics(m)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader([]byte(`{"agentId":"legacy-agent","os":"linux"}`)))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	metricsRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(metricsRec, metricsReq)
+	require.Equal(t, http.StatusOK, metricsRec.Code, metricsRec.Body.String())
+	require.Contains(t, metricsRec.Body.String(), "unifiedcd_agent_legacy_auth_total 1")
 }
 
 func TestAgentAuth_RejectsCredentialOnAnotherAgentPath(t *testing.T) {
