@@ -1016,7 +1016,7 @@ test -f /sys/fs/cgroup/cgroup.controllers && echo "cgroup v2 active"
 **Fix:** `unauthorized` means a one-time enrollment credential was malformed,
 expired, used, revoked, or a refresh credential is no longer valid. Create a
 new enrollment file; plaintext tokens cannot be retrieved from list/get
-responses. For a lost or replayed refresh credential, run `unified-cd agent
+responses. For a lost or replayed refresh credential, run `unified-cli agent
 identity revoke-credentials <agent-id>`, create a new enrollment, and restart
 the agent with private `credentialFile` and `enrollmentTokenFile` paths.
 `agent identity disabled` requires an administrator to investigate and enable
