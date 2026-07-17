@@ -202,23 +202,32 @@ func (p *Postgres) RotateAgentRefresh(ctx context.Context, currentID, presentedH
 	}
 	defer tx.Rollback(ctx)
 
+	var resolvedIdentityID string
+	err = tx.QueryRow(ctx, `SELECT identity_id::text FROM agent_credentials WHERE id = $1`, currentID).Scan(&resolvedIdentityID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrAgentCredentialNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("rotate agent refresh: resolve identity: %w", err)
+	}
+
+	identity, err := getAgentIdentityByID(ctx, tx, resolvedIdentityID, true)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrAgentCredentialNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("rotate agent refresh: lock identity: %w", err)
+	}
+
 	var current AgentCredentialAuth
-	var enrollmentMethod, externalSubject string
-	var identityCreatedAt time.Time
-	var disabledAt, lastAuthenticatedAt *time.Time
 	var familyID *string
 	var generation int
 	var supersededAt, overlapExpiresAt *time.Time
 	var replacedBy *string
-	err = tx.QueryRow(ctx, `SELECT c.id::text, i.id::text, i.agent_id, c.kind, c.token_hash, i.status,
-		i.enrollment_method, COALESCE(i.external_subject, ''), i.authorized_labels, i.authorized_capabilities,
-		i.created_at, i.disabled_at, i.last_authenticated_at, c.expires_at, c.created_at, c.revoked_at,
-		c.family_id::text, c.generation, c.superseded_at, c.overlap_expires_at, c.replaced_by::text
-		FROM agent_credentials c JOIN agent_identities i ON i.id = c.identity_id
-		WHERE c.id = $1 FOR UPDATE OF c, i`, currentID).Scan(
-		&current.CredentialID, &current.IdentityID, &current.AgentID, &current.Kind, &current.TokenHash, &current.Status,
-		&enrollmentMethod, &externalSubject,
-		&current.AuthorizedLabels, &current.AuthorizedCapabilities, &identityCreatedAt, &disabledAt, &lastAuthenticatedAt,
+	err = tx.QueryRow(ctx, `SELECT id::text, identity_id::text, kind, token_hash, expires_at, created_at, revoked_at,
+		family_id::text, generation, superseded_at, overlap_expires_at, replaced_by::text
+		FROM agent_credentials WHERE id = $1 FOR UPDATE`, currentID).Scan(
+		&current.CredentialID, &current.IdentityID, &current.Kind, &current.TokenHash,
 		&current.ExpiresAt, &current.CreatedAt, &current.RevokedAt,
 		&familyID, &generation, &supersededAt, &overlapExpiresAt, &replacedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -227,7 +236,10 @@ func (p *Postgres) RotateAgentRefresh(ctx context.Context, currentID, presentedH
 	if err != nil {
 		return nil, fmt.Errorf("rotate agent refresh: lock credential: %w", err)
 	}
-	if current.Status == "disabled" {
+	if current.IdentityID != resolvedIdentityID || current.IdentityID != identity.ID {
+		return nil, ErrAgentCredentialNotFound
+	}
+	if identity.Status == "disabled" {
 		return nil, ErrAgentIdentityDisabled
 	}
 	if current.Kind != "refresh" || current.RevokedAt != nil || !current.ExpiresAt.After(now) || subtle.ConstantTimeCompare([]byte(current.TokenHash), []byte(presentedHash)) != 1 {
@@ -237,12 +249,6 @@ func (p *Postgres) RotateAgentRefresh(ctx context.Context, currentID, presentedH
 		return nil, ErrAgentCredentialNotFound
 	}
 
-	identity := AgentIdentity{
-		ID: current.IdentityID, AgentID: current.AgentID, Status: current.Status,
-		EnrollmentMethod: enrollmentMethod, ExternalSubject: externalSubject, CreatedAt: identityCreatedAt,
-		DisabledAt: disabledAt, LastAuthenticatedAt: lastAuthenticatedAt,
-		AuthorizedLabels: current.AuthorizedLabels, AuthorizedCapabilities: current.AuthorizedCapabilities,
-	}
 	if supersededAt != nil {
 		if overlapExpiresAt == nil || !now.Before(*overlapExpiresAt) {
 			if err := revokeAgentRefreshFamily(ctx, tx, *familyID, now); err != nil {
@@ -268,7 +274,7 @@ func (p *Postgres) RotateAgentRefresh(ctx context.Context, currentID, presentedH
 			} else if err != nil {
 				return nil, fmt.Errorf("rotate agent refresh: lock replacement: %w", err)
 			} else {
-				replacementIsSafe = replacementIdentityID == current.IdentityID && replacementKind == "refresh" &&
+				replacementIsSafe = replacementIdentityID == identity.ID && replacementKind == "refresh" &&
 					replacementFamilyID != nil && *replacementFamilyID == *familyID && replacementGeneration == generation+1 &&
 					replacementRevokedAt == nil && replacementSupersededAt == nil && replacementReplacedBy == nil &&
 					replacementExpiresAt.After(now)
@@ -287,10 +293,10 @@ func (p *Postgres) RotateAgentRefresh(ctx context.Context, currentID, presentedH
 
 	refresh.FamilyID = *familyID
 	refresh.Generation = generation + 1
-	if err := insertAgentCredential(ctx, tx, current.IdentityID, access); err != nil {
+	if err := insertAgentCredential(ctx, tx, identity.ID, access); err != nil {
 		return nil, fmt.Errorf("rotate agent refresh: insert access credential: %w", err)
 	}
-	if err := insertAgentCredential(ctx, tx, current.IdentityID, refresh); err != nil {
+	if err := insertAgentCredential(ctx, tx, identity.ID, refresh); err != nil {
 		return nil, fmt.Errorf("rotate agent refresh: insert refresh credential: %w", err)
 	}
 	if supersededAt == nil {
@@ -305,7 +311,7 @@ func (p *Postgres) RotateAgentRefresh(ctx context.Context, currentID, presentedH
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("rotate agent refresh: commit: %w", err)
 	}
-	return &identity, nil
+	return identity, nil
 }
 
 func revokeAgentRefreshFamily(ctx context.Context, tx pgx.Tx, familyID string, now time.Time) error {
@@ -379,6 +385,15 @@ func getAgentIdentityByAgentID(ctx context.Context, q rowQuerier, agentID string
 		query += " FOR UPDATE"
 	}
 	return scanAgentIdentity(q.QueryRow(ctx, query, agentID))
+}
+
+func getAgentIdentityByID(ctx context.Context, q rowQuerier, identityID string, lock bool) (*AgentIdentity, error) {
+	query := `SELECT id::text, agent_id, status, enrollment_method, COALESCE(external_subject, ''), authorized_labels, authorized_capabilities,
+		created_at, disabled_at, last_authenticated_at FROM agent_identities WHERE id = $1`
+	if lock {
+		query += " FOR UPDATE"
+	}
+	return scanAgentIdentity(q.QueryRow(ctx, query, identityID))
 }
 
 func getAgentIdentityByExternalSubject(ctx context.Context, q rowQuerier, method, subject string, lock bool) (*AgentIdentity, error) {

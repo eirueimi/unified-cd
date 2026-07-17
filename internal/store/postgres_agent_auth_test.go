@@ -220,6 +220,73 @@ func TestPostgres_RotateRefreshRejectsOverlapRetryAfterReplacementConsumed(t *te
 	assert.Zero(t, live)
 }
 
+func TestPostgres_RotateRefreshSerializesConcurrentRetryAndReplacementUse(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	rotationCtx, cancelRotations := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelRotations()
+	issue := enrollTestAgent(t, pg, "agent-refresh-concurrent-locks")
+	now := time.Now().UTC()
+
+	access2, refresh2 := testCredential("access", "", 0), testCredential("refresh", issue.Refresh.FamilyID, 2)
+	_, err := pg.RotateAgentRefresh(ctx, issue.Refresh.ID, issue.Refresh.TokenHash, now, access2, refresh2, 5*time.Minute)
+	require.NoError(t, err)
+
+	blocker, err := pg.pool.Begin(ctx)
+	require.NoError(t, err)
+	defer blocker.Rollback(ctx)
+	var identityID string
+	require.NoError(t, blocker.QueryRow(ctx, `SELECT id::text FROM agent_identities WHERE agent_id = $1 FOR UPDATE`, issue.AgentID).Scan(&identityID))
+
+	type rotationResult struct {
+		name string
+		err  error
+	}
+	results := make(chan rotationResult, 2)
+	retryAccess, retryRefresh := testCredential("access", "", 0), testCredential("refresh", issue.Refresh.FamilyID, 2)
+	go func() {
+		_, err := pg.RotateAgentRefresh(rotationCtx, issue.Refresh.ID, issue.Refresh.TokenHash, now.Add(time.Minute), retryAccess, retryRefresh, 5*time.Minute)
+		results <- rotationResult{name: "g1 retry", err: err}
+	}()
+	waitForBlockedDatabaseSessions(t, pg, 1)
+
+	access3, refresh3 := testCredential("access", "", 0), testCredential("refresh", issue.Refresh.FamilyID, 3)
+	go func() {
+		_, err := pg.RotateAgentRefresh(rotationCtx, refresh2.ID, refresh2.TokenHash, now.Add(time.Minute), access3, refresh3, 5*time.Minute)
+		results <- rotationResult{name: "g2 use", err: err}
+	}()
+	waitForBlockedDatabaseSessions(t, pg, 2)
+	require.NoError(t, blocker.Commit(ctx))
+
+	successes := 0
+	for range 2 {
+		select {
+		case result := <-results:
+			if result.err == nil {
+				successes++
+				continue
+			}
+			require.True(t, errors.Is(result.err, ErrAgentCredentialNotFound) || errors.Is(result.err, ErrAgentRefreshReplay),
+				"%s returned unexpected error: %v", result.name, result.err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent refresh rotations did not complete")
+		}
+	}
+	assert.Equal(t, 1, successes)
+
+	var liveLeaves int
+	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM agent_credentials
+		WHERE family_id = $1 AND revoked_at IS NULL AND superseded_at IS NULL`, issue.Refresh.FamilyID).Scan(&liveLeaves))
+	assert.LessOrEqual(t, liveLeaves, 1)
+
+	var duplicateLiveGenerations int
+	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM (
+		SELECT generation FROM agent_credentials WHERE family_id = $1 AND revoked_at IS NULL
+		GROUP BY generation HAVING count(*) > 1
+	) duplicate_generations`, issue.Refresh.FamilyID).Scan(&duplicateLiveGenerations))
+	assert.Zero(t, duplicateLiveGenerations)
+}
+
 func TestPostgres_RotateRefreshReturnsCompleteIdentity(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
@@ -278,4 +345,27 @@ func ptrCredential(credential NewAgentCredential) *NewAgentCredential { return &
 func agentCredentialHash(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+func waitForBlockedDatabaseSessions(t *testing.T, pg *Postgres, want int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var blocked int
+		err := pg.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND pid <> pg_backend_pid()
+			AND state = 'active' AND wait_event_type = 'Lock'`).Scan(&blocked)
+		require.NoError(t, err)
+		if blocked >= want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %d blocked database sessions; observed %d", want, blocked)
+		case <-ticker.C:
+		}
+	}
 }
