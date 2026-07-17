@@ -4,8 +4,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/controller"
 	"github.com/stretchr/testify/assert"
+	"k8s.io/client-go/rest"
 )
+
+func TestConfigureKubernetesEnrollmentClientAppliesBoundedTimeout(t *testing.T) {
+	kubeConfig := &rest.Config{Timeout: time.Minute}
+	configureKubernetesEnrollmentClient(kubeConfig)
+	assert.Equal(t, controller.KubernetesEnrollmentRequestTimeout, kubeConfig.Timeout)
+}
 
 // TestEnvIntOr covers the malformed-value warning path added for review
 // finding M10: envIntOr runs at flag-registration time, before the slog

@@ -60,6 +60,32 @@ func TestPostgres_EnrollmentPolicyCRUD(t *testing.T) {
 	assert.Nil(t, missing)
 }
 
+func TestPostgres_EnrollmentPolicySchemaMatchesCRUD(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	rows, err := pg.pool.Query(ctx, `SELECT column_name, data_type
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'agent_enrollment_policies'
+		ORDER BY column_name`)
+	require.NoError(t, err)
+	defer rows.Close()
+	columns := map[string]string{}
+	for rows.Next() {
+		var name, typ string
+		require.NoError(t, rows.Scan(&name, &typ))
+		columns[name] = typ
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, "bigint", columns["access_token_ttl_seconds"])
+	assert.NotContains(t, columns, "access_token_ttl")
+	assert.Equal(t, "jsonb", columns["provider_config"])
+	assert.Equal(t, "jsonb", columns["subject_constraints"])
+
+	var ttlConstraint int
+	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid = 'public.agent_enrollment_policies'::regclass AND pg_get_constraintdef(oid) LIKE '%access_token_ttl_seconds%'`).Scan(&ttlConstraint))
+	assert.Positive(t, ttlConstraint)
+}
+
 func TestPostgres_EnrollmentPolicyRejectsInvalidTTLAndTemplate(t *testing.T) {
 	pg := NewTestPostgres(t)
 	validConfig := json.RawMessage(`{"cluster":"prod"}`)

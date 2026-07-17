@@ -9,6 +9,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestEnrollmentPolicyMigrationReconcilesMigration013Table(t *testing.T) {
+	up, err := migrationsFS.ReadFile("migrations/014_agent_enrollment_policies.up.sql")
+	require.NoError(t, err)
+	down, err := migrationsFS.ReadFile("migrations/014_agent_enrollment_policies.down.sql")
+	require.NoError(t, err)
+
+	assert.NotContains(t, strings.ToUpper(string(up)), "CREATE TABLE",
+		"migration 013 already owns agent_enrollment_policies")
+	assert.Contains(t, string(up), "ALTER TABLE public.agent_enrollment_policies")
+	assert.Contains(t, string(up), "access_token_ttl_seconds")
+	assert.NotContains(t, strings.ToUpper(string(down)), "DROP TABLE",
+		"migration 014 must leave the migration-013-owned table intact on rollback")
+}
+
 // Every embedded up-migration must have exactly one sentinel, so drift
 // detection cannot silently fall behind new migrations.
 func TestSchemaSentinelsCoverAllMigrations(t *testing.T) {

@@ -21,6 +21,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -112,6 +113,12 @@ func queuedRunGraceDefault() time.Duration {
 		return def
 	}
 	return d
+}
+
+func configureKubernetesEnrollmentClient(kubeConfig *rest.Config) {
+	// The verifier also sets a per-request context deadline. Set the transport
+	// timeout as a production backstop for Kubernetes client operations.
+	kubeConfig.Timeout = controller.KubernetesEnrollmentRequestTimeout
 }
 
 func main() {
@@ -259,6 +266,7 @@ func main() {
 			slog.Error("kubernetes enrollment cluster configuration", "cluster", cluster.Name, "error", err)
 			os.Exit(1)
 		}
+		configureKubernetesEnrollmentClient(kubeConfig)
 		client, err := kubernetes.NewForConfig(kubeConfig)
 		if err != nil {
 			slog.Error("kubernetes enrollment client", "cluster", cluster.Name, "error", err)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/store"
 	authv1 "k8s.io/api/authentication/v1"
@@ -16,6 +17,7 @@ import (
 )
 
 const KubernetesEnrollmentAudience = "unified-cd-agent-enrollment"
+const KubernetesEnrollmentRequestTimeout = 5 * time.Second
 
 var (
 	ErrKubernetesEnrollmentRejected    = errors.New("kubernetes enrollment rejected")
@@ -27,12 +29,13 @@ type KubernetesEnrollmentVerifier interface {
 }
 type KubernetesEnrollmentIdentity struct{ Cluster, Namespace, ServiceAccount, PodName, PodUID string }
 type kubernetesEnrollmentVerifier struct {
-	cluster string
-	client  kubernetes.Interface
+	cluster        string
+	client         kubernetes.Interface
+	requestTimeout time.Duration
 }
 
 func NewKubernetesEnrollmentVerifier(cluster string, client kubernetes.Interface) KubernetesEnrollmentVerifier {
-	return &kubernetesEnrollmentVerifier{cluster: cluster, client: client}
+	return &kubernetesEnrollmentVerifier{cluster: cluster, client: client, requestTimeout: KubernetesEnrollmentRequestTimeout}
 }
 
 type projectedServiceAccountClaims struct {
@@ -42,6 +45,7 @@ type boundPodClaims struct {
 	Namespace      string `json:"namespace"`
 	ServiceAccount struct {
 		Name string `json:"name"`
+		UID  string `json:"uid"`
 	} `json:"serviceaccount"`
 	Pod struct {
 		Name string `json:"name"`
@@ -61,9 +65,11 @@ func (v *kubernetesEnrollmentVerifier) Verify(ctx context.Context, token string,
 	if json.Unmarshal(policy.SubjectConstraints, &constraints) != nil || len(constraints.Namespaces) == 0 || len(constraints.ServiceAccounts) == 0 {
 		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: policy constraints", ErrKubernetesEnrollmentRejected)
 	}
-	review, err := v.client.AuthenticationV1().TokenReviews().Create(ctx, &authv1.TokenReview{Spec: authv1.TokenReviewSpec{Token: token, Audiences: []string{KubernetesEnrollmentAudience}}}, metav1.CreateOptions{})
+	reviewCtx, cancel := context.WithTimeout(ctx, v.requestTimeout)
+	defer cancel()
+	review, err := v.client.AuthenticationV1().TokenReviews().Create(reviewCtx, &authv1.TokenReview{Spec: authv1.TokenReviewSpec{Token: token, Audiences: []string{KubernetesEnrollmentAudience}}}, metav1.CreateOptions{})
 	if err != nil {
-		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: token review", ErrKubernetesEnrollmentUnavailable)
+		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: token review: %w", ErrKubernetesEnrollmentUnavailable, err)
 	}
 	if !review.Status.Authenticated || !contains(review.Status.Audiences, KubernetesEnrollmentAudience) {
 		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: token review", ErrKubernetesEnrollmentRejected)
@@ -72,15 +78,23 @@ func (v *kubernetesEnrollmentVerifier) Verify(ctx context.Context, token string,
 	if err != nil {
 		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: projected token claims", ErrKubernetesEnrollmentRejected)
 	}
+	if review.Status.User.Username != "system:serviceaccount:"+claims.Namespace+":"+claims.ServiceAccount.Name {
+		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: token review subject", ErrKubernetesEnrollmentRejected)
+	}
+	if reviewedUID := review.Status.User.Extra["authentication.kubernetes.io/serviceaccount.uid"]; len(reviewedUID) > 0 && (claims.ServiceAccount.UID == "" || !contains([]string(reviewedUID), claims.ServiceAccount.UID)) {
+		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: token review service account UID", ErrKubernetesEnrollmentRejected)
+	}
 	if !contains(constraints.Namespaces, claims.Namespace) || !contains(constraints.ServiceAccounts, claims.ServiceAccount.Name) {
 		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: policy subject", ErrKubernetesEnrollmentRejected)
 	}
-	pod, err := v.client.CoreV1().Pods(claims.Namespace).Get(ctx, claims.Pod.Name, metav1.GetOptions{})
+	podCtx, cancel := context.WithTimeout(ctx, v.requestTimeout)
+	defer cancel()
+	pod, err := v.client.CoreV1().Pods(claims.Namespace).Get(podCtx, claims.Pod.Name, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: pod", ErrKubernetesEnrollmentRejected)
 		}
-		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: pod", ErrKubernetesEnrollmentUnavailable)
+		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: pod: %w", ErrKubernetesEnrollmentUnavailable, err)
 	}
 	if string(pod.UID) != claims.Pod.UID || pod.Namespace != claims.Namespace || pod.Name != claims.Pod.Name || pod.Spec.ServiceAccountName != claims.ServiceAccount.Name {
 		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: pod binding", ErrKubernetesEnrollmentRejected)
