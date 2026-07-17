@@ -287,6 +287,65 @@ func TestPostgres_RotateRefreshSerializesConcurrentRetryAndReplacementUse(t *tes
 	assert.Zero(t, duplicateLiveGenerations)
 }
 
+func TestPostgres_RevokeAgentIdentityCredentialsSerializesWithRefreshRotation(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	operationCtx, cancelOperations := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelOperations()
+	issue := enrollTestAgent(t, pg, "agent-refresh-concurrent-revoke")
+	now := time.Now().UTC()
+
+	access2, refresh2 := testCredential("access", "", 0), testCredential("refresh", issue.Refresh.FamilyID, 2)
+	_, err := pg.RotateAgentRefresh(ctx, issue.Refresh.ID, issue.Refresh.TokenHash, now, access2, refresh2, 5*time.Minute)
+	require.NoError(t, err)
+
+	blocker, err := pg.pool.Begin(ctx)
+	require.NoError(t, err)
+	defer blocker.Rollback(ctx)
+	var blockedCredentialID string
+	require.NoError(t, blocker.QueryRow(ctx, `SELECT id::text FROM agent_credentials WHERE id = $1 FOR UPDATE`, refresh2.ID).Scan(&blockedCredentialID))
+
+	type operationResult struct {
+		name string
+		err  error
+	}
+	results := make(chan operationResult, 2)
+	go func() {
+		err := pg.RevokeAgentIdentityCredentials(operationCtx, issue.AgentID)
+		results <- operationResult{name: "identity revoke", err: err}
+	}()
+	waitForBlockedDatabaseSessions(t, pg, 1)
+
+	retryAccess, retryRefresh := testCredential("access", "", 0), testCredential("refresh", issue.Refresh.FamilyID, 2)
+	go func() {
+		_, err := pg.RotateAgentRefresh(operationCtx, issue.Refresh.ID, issue.Refresh.TokenHash, now.Add(time.Minute), retryAccess, retryRefresh, 5*time.Minute)
+		results <- operationResult{name: "g1 retry", err: err}
+	}()
+	waitForBlockedDatabaseSessions(t, pg, 2)
+	require.NoError(t, blocker.Commit(ctx))
+
+	for range 2 {
+		select {
+		case result := <-results:
+			switch result.name {
+			case "identity revoke":
+				require.NoError(t, result.err)
+			case "g1 retry":
+				require.ErrorIs(t, result.err, ErrAgentCredentialNotFound)
+			default:
+				t.Fatalf("unexpected operation result %q", result.name)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent credential revocation and refresh rotation did not complete")
+		}
+	}
+
+	var live int
+	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM agent_credentials
+		WHERE identity_id = $1 AND revoked_at IS NULL`, identityIDForAgent(t, pg, issue.AgentID)).Scan(&live))
+	assert.Zero(t, live)
+}
+
 func TestPostgres_RotateRefreshReturnsCompleteIdentity(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
@@ -368,4 +427,11 @@ func waitForBlockedDatabaseSessions(t *testing.T, pg *Postgres, want int) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func identityIDForAgent(t *testing.T, pg *Postgres, agentID string) string {
+	t.Helper()
+	var identityID string
+	require.NoError(t, pg.pool.QueryRow(context.Background(), `SELECT id::text FROM agent_identities WHERE agent_id = $1`, agentID).Scan(&identityID))
+	return identityID
 }

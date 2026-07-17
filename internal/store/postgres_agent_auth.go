@@ -355,10 +355,25 @@ func (p *Postgres) SetAgentIdentityEnabled(ctx context.Context, agentID string, 
 }
 
 func (p *Postgres) RevokeAgentIdentityCredentials(ctx context.Context, agentID string) error {
-	_, err := p.pool.Exec(ctx, `UPDATE agent_credentials SET revoked_at = COALESCE(revoked_at, NOW())
-		WHERE identity_id = (SELECT id FROM agent_identities WHERE agent_id = $1)`, agentID)
+	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("revoke agent identity credentials: %w", err)
+		return fmt.Errorf("revoke agent identity credentials: begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	identity, err := getAgentIdentityByAgentID(ctx, tx, agentID, true)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("revoke agent identity credentials: lock identity: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE agent_credentials SET revoked_at = COALESCE(revoked_at, NOW())
+		WHERE identity_id = $1`, identity.ID); err != nil {
+		return fmt.Errorf("revoke agent identity credentials: revoke credentials: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("revoke agent identity credentials: commit: %w", err)
 	}
 	return nil
 }
