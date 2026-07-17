@@ -24,7 +24,7 @@ func TestMetricsEndToEndWiring(t *testing.T) {
 
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
-	s := NewServer(Config{AgentToken: "agent-secret"}, st)
+	s := NewServer(Config{LegacyAgentToken: "agent-secret"}, st)
 	s.SetMetrics(m)
 
 	_, err = pg.UpsertJob(context.Background(), "wiring-job", "unified-cd/v1", []byte(`{}`))

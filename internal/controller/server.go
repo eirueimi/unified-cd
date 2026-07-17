@@ -21,11 +21,11 @@ import (
 
 // Config holds the configuration for the master server.
 type Config struct {
-	Token         string
-	AgentToken    string
-	ListenAddr    string
-	WebDir        string // Directory for static web files. When empty, /ui/* returns 404.
-	UIProxyTarget string // URL of the Vite dev server to proxy /ui/* to when WebDir is not set (e.g. http://vite:5173). When empty, /ui/* returns 404.
+	Token            string
+	LegacyAgentToken string
+	ListenAddr       string
+	WebDir           string // Directory for static web files. When empty, /ui/* returns 404.
+	UIProxyTarget    string // URL of the Vite dev server to proxy /ui/* to when WebDir is not set (e.g. http://vite:5173). When empty, /ui/* returns 404.
 
 	// MatrixMaxCombinations caps matrix step expansion; 0 means the default (64).
 	MatrixMaxCombinations int
@@ -83,9 +83,6 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	if cfg.AgentToken == "" {
-		cfg.AgentToken = cfg.Token
-	}
 	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap)}
 	if cfg.WebDir == "" && cfg.UIProxyTarget != "" {
 		if target, err := url.Parse(cfg.UIProxyTarget); err == nil {
@@ -395,27 +392,27 @@ func (s *Server) routes() {
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/", s.handleListAgents)
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}", s.handleGetAgent)
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}/runs", s.handleListRunsByAgent)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/register", s.handleAgentRegister)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/heartbeat", s.handleAgentHeartbeat)
-		r.With(BearerAuth(s.cfg.AgentToken)).Delete("/{agentId}", s.handleAgentDeregister)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/claim", s.handleAgentClaim)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/steps", s.handleAgentStepReport)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/logs", s.handleAgentLogAppend)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/reconcile", s.handleAgentReconcileRuns)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/finish", s.handleAgentFinishRun)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", s.handleAgentSetStepOutputs)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/outputs", s.handleAgentSetRunOutputs)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", s.handleAgentLogBulk)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/sidecars", s.handleAgentSidecarStatus)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/secrets/fetch", s.handleAgentSecretsFetch)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/approvals", s.handleAgentCreateApproval)
-		r.With(BearerAuth(s.cfg.AgentToken)).Get("/{agentId}/runs/{runId}/approvals/{stepIndex}", s.handleAgentGetApproval)
+		r.With(s.agentAuth).Post("/register", s.handleAgentRegister)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/heartbeat", s.handleAgentHeartbeat)
+		r.With(s.agentAuth, requireAgentPathIdentity).Delete("/{agentId}", s.handleAgentDeregister)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/claim", s.handleAgentClaim)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/steps", s.handleAgentStepReport)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/logs", s.handleAgentLogAppend)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/reconcile", s.handleAgentReconcileRuns)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/finish", s.handleAgentFinishRun)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", s.handleAgentSetStepOutputs)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/outputs", s.handleAgentSetRunOutputs)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", s.handleAgentLogBulk)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/sidecars", s.handleAgentSidecarStatus)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/secrets/fetch", s.handleAgentSecretsFetch)
+		r.With(s.agentAuth, requireAgentPathIdentity).Post("/{agentId}/runs/{runId}/approvals", s.handleAgentCreateApproval)
+		r.With(s.agentAuth, requireAgentPathIdentity).Get("/{agentId}/runs/{runId}/approvals/{stepIndex}", s.handleAgentGetApproval)
 	})
 
 	s.r.Route("/api/v1/runs/{runID}/artifacts", func(r chi.Router) {
-		r.With(BearerAuth(s.cfg.AgentToken)).Put("/{name}", s.handleArtifactUpload)
-		r.With(AgentOrServerAuth(s.cfg.AgentToken, s.store, s)).Get("/{name}", s.handleArtifactDownload)
-		r.With(AgentOrServerAuth(s.cfg.AgentToken, s.store, s)).Get("/", s.handleArtifactList)
+		r.With(s.agentAuth).Put("/{name}", s.handleArtifactUpload)
+		r.With(s.agentOrServerAuth).Get("/{name}", s.handleArtifactDownload)
+		r.With(s.agentOrServerAuth).Get("/", s.handleArtifactList)
 	})
 
 	// When WebDir is set, serve the Web UI as static files (no auth required).

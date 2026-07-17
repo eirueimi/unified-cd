@@ -29,7 +29,7 @@ func newTestServerWithKM(t *testing.T) (*Server, store.Store) {
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	km := testKeyManager(t)
-	s := NewServer(Config{AgentToken: "agent-secret"}, pg)
+	s := NewServer(Config{LegacyAgentToken: "agent-secret"}, pg)
 	s.SetKeyManager(km)
 	return s, pg
 }
@@ -116,7 +116,7 @@ func TestAgentAPI_FetchSecrets(t *testing.T) {
 
 func TestAPI_FetchSecrets_NotConfigured(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	s := NewServer(Config{Token: "secret", AgentToken: "agent-secret"}, pg)
+	s := NewServer(Config{Token: "secret", LegacyAgentToken: "agent-secret"}, pg)
 	// KeyManager is not configured.
 
 	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{Names: []string{"X"}})
