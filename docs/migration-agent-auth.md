@@ -49,13 +49,13 @@ creates the output file once with owner-only permissions and does not repeat
 the credential in list/get output.
 
 ```bash
-unified-cd agent enrollment create \
+unified-cli agent enrollment create \
   --agent-id build-linux-01 \
   --label kind:linux \
   --capability container \
   --output-file /var/lib/unified-cd-agent/enrollment.token
 
-unified-cd agent install \
+unified-cli agent install \
   --server https://controller.example.invalid \
   --id build-linux-01 \
   --credential-file /var/lib/unified-cd-agent/credentials.json \
@@ -113,11 +113,11 @@ do not create a k8s-agent credential Secret.
 Check the migration state before removing the compatibility setting:
 
 ```bash
-unified-cd agent enrollment list
-unified-cd agent identity get build-linux-01
-unified-cd agent identity disable build-linux-01
-unified-cd agent identity enable build-linux-01
-unified-cd agent identity revoke-credentials build-linux-01
+unified-cli agent enrollment list
+unified-cli agent identity get build-linux-01
+unified-cli agent identity disable build-linux-01
+unified-cli agent identity enable build-linux-01
+unified-cli agent identity revoke-credentials build-linux-01
 ```
 
 `GET /api/v1/agent-enrollments` returns metadata only. Identity administration
@@ -173,7 +173,7 @@ The public credential endpoints are:
 | `POST`, `PUT`, `GET`, `DELETE /api/v1/agent-enrollment-policies...` | Administrator manages policies; viewers may read/list. |
 
 Use the CLI policy commands instead of placing Kubernetes credentials in a
-policy: `unified-cd agent enrollment-policy create|update|get|list|delete`.
+policy: `unified-cli agent enrollment-policy create|update|get|list|delete`.
 The create/update commands take a configured `--cluster`, repeatable
 `--namespace` and `--service-account`, labels/capabilities, an access TTL, and
 `--enabled`; they do not accept kubeconfig contents.

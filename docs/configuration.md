@@ -147,7 +147,7 @@ Config-file keys map 1:1 to the flags above (e.g. `dataDir` ↔ `--data-dir`), w
 unified-cd-agent [FLAGS]
 
   -f                      string    Config file path (default: unified-agent.yaml if exists)
-  --server                string    Controller URL (env: UNIFIED_AGENT_SERVER)
+  --server                string    Controller URL (env: UNIFIED_SERVER)
   --token                 string    Legacy shared agent token only (env: UNIFIED_AGENT_TOKEN)
   --credential-file       string    Protected VM refresh-credential file (env: UNIFIED_AGENT_CREDENTIAL_FILE)
   --enrollment-token-file string    One-time VM enrollment-token file (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)
@@ -179,7 +179,7 @@ keys below.
 
 | Variable | Description |
 |---|---|
-| `UNIFIED_AGENT_SERVER` | Controller URL |
+| `UNIFIED_SERVER` | Controller URL |
 | `UNIFIED_AGENT_TOKEN` | Legacy shared agent token only. New VM agents use a credential and one-time enrollment-token file; it must not be derived from `UNIFIED_TOKEN`. |
 | `UNIFIED_AGENT_CREDENTIAL_FILE` | Protected persistent VM refresh-credential file. Required for secure VM mode. |
 | `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | One-time VM enrollment credential file. Required only until initial enrollment succeeds. |
@@ -458,8 +458,8 @@ CLI flags  >  config file  >  environment variables
 ```
 
 Examples:
-- `--server http://override.example.com` overrides `UNIFIED_AGENT_SERVER`
-- `UNIFIED_AGENT_SERVER=http://env.example.com` overrides the `server:` value in the config file
+- `--server http://override.example.com` overrides `UNIFIED_SERVER`
+- `UNIFIED_SERVER=http://env.example.com` overrides the `server:` value in the config file
 - The config file value is the lowest-priority fallback
 
 ---
@@ -482,7 +482,7 @@ UNIFIED_S3_SECRET="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" \
 ### Agent
 
 ```bash
-UNIFIED_AGENT_SERVER="https://controller.example.invalid" \
+UNIFIED_SERVER="https://controller.example.invalid" \
 UNIFIED_AGENT_ID="worker-$(hostname)" \
 UNIFIED_AGENT_LABELS="kind:linux,env:prod" \
 UNIFIED_AGENT_CREDENTIAL_FILE="/var/lib/unified-cd-agent/credentials.json" \
@@ -490,7 +490,7 @@ UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/enrollment.token"
 ./bin/unified-cd-agent --max-concurrent 4
 ```
 
-Create the private enrollment-token file with `unified-cd agent enrollment
+Create the private enrollment-token file with `unified-cli agent enrollment
 create` before starting the VM agent. Production requires HTTPS; the
 repository-root Compose files are development-only. The legacy
 `UNIFIED_AGENT_TOKEN` input is not a substitute for this flow and must only be

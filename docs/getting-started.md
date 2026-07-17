@@ -83,6 +83,8 @@ INFO  server listening  addr=:8080
 Open a second terminal:
 
 ```bash
+UNIFIED_SERVER="http://localhost:8080" \
+UNIFIED_TOKEN="dev-secret" \
 ./bin/unified-cli agent enrollment create \
   --agent-id agent-1 \
   --label kind:linux \
@@ -94,6 +96,11 @@ UNIFIED_AGENT_CREDENTIAL_FILE="/var/lib/unified-cd-agent/credentials.json" \
 UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/enrollment.token" \
 ./bin/unified-cd-agent
 ```
+
+The enrollment command uses the controller's **administrator CLI credential**
+only to create a one-time VM enrollment file. It does not configure that token
+on the agent. For a non-local deployment, use an HTTPS controller URL and a
+securely supplied admin PAT instead of the development value shown here.
 
 The agent registers itself with the controller and starts polling for jobs.
 
@@ -224,6 +231,8 @@ Use `agentSelector` to route jobs to agents with particular labels.
 Start a second agent with different labels:
 
 ```bash
+UNIFIED_SERVER="http://localhost:8080" \
+UNIFIED_TOKEN="dev-secret" \
 ./bin/unified-cli agent enrollment create \
   --agent-id docker-agent \
   --label kind:docker --label env:ci \
