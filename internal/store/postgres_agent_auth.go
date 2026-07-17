@@ -75,9 +75,12 @@ func (p *Postgres) ConsumeAgentEnrollment(ctx context.Context, enrollmentID, pre
 	if err != nil {
 		return nil, fmt.Errorf("consume agent enrollment: lock token: %w", err)
 	}
-	if subtle.ConstantTimeCompare([]byte(expectedHash), []byte(presentedHash)) != 1 || usedAt != nil || revokedAt != nil || !expiresAt.After(time.Now()) || issue.AgentID != agentID {
+	if subtle.ConstantTimeCompare([]byte(expectedHash), []byte(presentedHash)) != 1 || usedAt != nil || revokedAt != nil || !expiresAt.After(time.Now()) {
 		return nil, ErrAgentEnrollmentInvalid
 	}
+	// The one-time credential, not an untrusted exchange request body, binds
+	// the issued credentials to the fixed agent identity.
+	issue.AgentID = agentID
 
 	identity, err := getAgentIdentityByAgentID(ctx, tx, agentID, true)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {

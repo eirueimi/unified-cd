@@ -195,6 +195,9 @@ func TestPostgres_RotateRefreshOutsideOverlapRevokesFamily(t *testing.T) {
 	var live int
 	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM agent_credentials WHERE family_id = $1 AND revoked_at IS NULL`, issue.Refresh.FamilyID).Scan(&live))
 	assert.Zero(t, live)
+	var liveAccess int
+	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM agent_credentials WHERE family_id = $1 AND kind = 'access' AND revoked_at IS NULL`, issue.Refresh.FamilyID).Scan(&liveAccess))
+	assert.Zero(t, liveAccess)
 }
 
 func TestPostgres_RotateRefreshRejectsOverlapRetryAfterReplacementConsumed(t *testing.T) {
@@ -276,12 +279,12 @@ func TestPostgres_RotateRefreshSerializesConcurrentRetryAndReplacementUse(t *tes
 
 	var liveLeaves int
 	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM agent_credentials
-		WHERE family_id = $1 AND revoked_at IS NULL AND superseded_at IS NULL`, issue.Refresh.FamilyID).Scan(&liveLeaves))
+		WHERE family_id = $1 AND kind = 'refresh' AND revoked_at IS NULL AND superseded_at IS NULL`, issue.Refresh.FamilyID).Scan(&liveLeaves))
 	assert.LessOrEqual(t, liveLeaves, 1)
 
 	var duplicateLiveGenerations int
 	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT count(*) FROM (
-		SELECT generation FROM agent_credentials WHERE family_id = $1 AND revoked_at IS NULL
+		SELECT generation FROM agent_credentials WHERE family_id = $1 AND kind = 'refresh' AND revoked_at IS NULL
 		GROUP BY generation HAVING count(*) > 1
 	) duplicate_generations`, issue.Refresh.FamilyID).Scan(&duplicateLiveGenerations))
 	assert.Zero(t, duplicateLiveGenerations)
