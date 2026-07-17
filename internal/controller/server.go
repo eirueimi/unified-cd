@@ -249,7 +249,7 @@ var agentRouteIdentityMatrix = []agentIdentityRoute{
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/secrets/fetch", bindPath: true, handler: (*Server).handleAgentSecretsFetch},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/approvals", bindPath: true, handler: (*Server).handleAgentCreateApproval},
 	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs/{runId}/approvals/{stepIndex}", bindPath: true, handler: (*Server).handleAgentGetApproval},
-	{method: http.MethodPut, path: "/api/v1/runs/{runId}/artifacts/{name}", handler: (*Server).handleArtifactUpload},
+	{method: http.MethodPut, path: "/api/v1/runs/{runID}/artifacts/{name}", handler: (*Server).handleArtifactUpload},
 }
 
 func (s *Server) registerAgentIdentityRoutes() {

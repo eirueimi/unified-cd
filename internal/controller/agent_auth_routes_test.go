@@ -33,7 +33,7 @@ func TestAgentRouteIdentityMatrixRejectsImpersonation(t *testing.T) {
 
 	for _, route := range agentRouteIdentityMatrix {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
-			path := strings.NewReplacer("{agentId}", "agent-b", "{runId}", run.ID, "{name}", "proof", "{stepIndex}", "0").Replace(route.path)
+			path := strings.NewReplacer("{agentId}", "agent-b", "{runId}", run.ID, "{runID}", run.ID, "{name}", "proof", "{stepIndex}", "0").Replace(route.path)
 			req := httptest.NewRequest(route.method, path, nil)
 			req.Header.Set("Authorization", "Bearer "+tokenA)
 			rec := httptest.NewRecorder()
