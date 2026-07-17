@@ -91,6 +91,19 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if req.RunID == "" {
+		http.Error(w, "runId is required", http.StatusBadRequest)
+		return
+	}
+	agentID := chi.URLParam(r, "agentId")
+	verdict, err := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, verdict, req.RunID) {
+		return
+	}
 	result := map[string]string{}
 	for _, name := range req.Names {
 		stored, err := s.store.GetSecret(r.Context(), name, "global", "")

@@ -243,20 +243,21 @@ func TestClient_FetchSecrets(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req api.AgentFetchSecretsRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		assert.Equal(t, "run-1", req.RunID)
 		_ = json.NewEncoder(w).Encode(api.AgentFetchSecretsResponse{
 			Secrets: map[string]string{"AWS_KEY": "AKID1234"},
 		})
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	result, err := c.FetchSecrets(t.Context(), "a1", []string{"AWS_KEY"})
+	result, err := c.FetchSecrets(t.Context(), "a1", "run-1", []string{"AWS_KEY"})
 	require.NoError(t, err)
 	assert.Equal(t, "AKID1234", result["AWS_KEY"])
 }
 
 func TestClient_FetchSecrets_Empty(t *testing.T) {
 	c := NewClient("http://localhost", "t")
-	result, err := c.FetchSecrets(t.Context(), "a1", nil)
+	result, err := c.FetchSecrets(t.Context(), "a1", "run-1", nil)
 	require.NoError(t, err)
 	assert.Empty(t, result)
 }

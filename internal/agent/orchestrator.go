@@ -158,7 +158,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	// Fetch the secrets needed for this Run and build the masker
 	var masker *secrets.Masker
 	if len(c.SecretsNeeded) > 0 {
-		secretValues, err := client.FetchSecrets(ctx, agentID, c.SecretsNeeded)
+		secretValues, err := client.FetchSecrets(ctx, agentID, c.RunID, c.SecretsNeeded)
 		if err != nil {
 			slog.Warn("failed to fetch secrets, continuing without secrets", "runId", c.RunID, "error", err)
 			secretValues = map[string]string{}

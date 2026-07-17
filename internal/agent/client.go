@@ -258,13 +258,13 @@ func (c *Client) GetApproval(ctx context.Context, agentID, runID string, stepInd
 }
 
 // FetchSecrets retrieves secret values in plaintext from the master server.
-func (c *Client) FetchSecrets(ctx context.Context, agentID string, names []string) (map[string]string, error) {
+func (c *Client) FetchSecrets(ctx context.Context, agentID, runID string, names []string) (map[string]string, error) {
 	if len(names) == 0 {
 		return map[string]string{}, nil
 	}
 	path := fmt.Sprintf("/api/v1/agents/%s/secrets/fetch", agentID)
 	var out api.AgentFetchSecretsResponse
-	_, err := c.do(ctx, http.MethodPost, path, api.AgentFetchSecretsRequest{Names: names}, &out)
+	_, err := c.do(ctx, http.MethodPost, path, api.AgentFetchSecretsRequest{RunID: runID, Names: names}, &out)
 	if err != nil {
 		return nil, err
 	}
