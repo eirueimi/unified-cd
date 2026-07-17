@@ -86,6 +86,11 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "key manager not configured", http.StatusNotImplemented)
 		return
 	}
+	principal, ok := agentPrincipalFromContext(r.Context())
+	if !ok || principal.AuthMethod == "legacy" {
+		http.Error(w, "legacy agent credentials cannot fetch secrets", http.StatusForbidden)
+		return
+	}
 	var req api.AgentFetchSecretsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

@@ -6,7 +6,7 @@ A complete set of manifests for installing the unified-cd `controller` and `k8s-
 
 | File | Contents | Prerequisites |
 |------|----------|---------------|
-| `core-install.yaml` | controller + k8s-agent only | External PostgreSQL and S3-compatible store required. Replace every `REPLACE_WITH_...` controller Secret value before applying. |
+| `core-install.yaml` | controller + k8s-agent only | External PostgreSQL and S3-compatible store plus a TLS terminator required. Replace controller Secret values and the invalid k8s-agent HTTPS URL before applying. |
 | `install.yaml` | core-install.yaml + in-cluster PostgreSQL and Garage bundled | For evaluation / quick trial. Uses development-default credentials. **Do not use in production.** |
 | `agent-only.yaml` | k8s-agent only | Controller running externally with the matching Kubernetes enrollment policy. Replace its example-invalid `server` URL before applying. |
 
@@ -17,7 +17,8 @@ A complete set of manifests for installing the unified-cd `controller` and `k8s-
 kubectl apply -f manifests/install.yaml
 
 # Production (with external DB and S3)
-# 1. Replace the REPLACE_WITH_... values in manifests/core-install.yaml
+# 1. Replace the REPLACE_WITH_... values and `https://controller.example.invalid`
+#    in manifests/core-install.yaml with the HTTPS endpoint of your TLS terminator.
 # 2. kubectl apply -f manifests/core-install.yaml
 
 # Agent only (controller running externally, e.g. Docker Compose on the host)
@@ -37,7 +38,7 @@ In the `unified-cd-controller` Secret (namespace: `unified-cd`), update the foll
 
 The default k8s-agent Deployment does not receive `UNIFIED_TOKEN` or any shared agent token. It exchanges its projected, audience-bound ServiceAccount token for a short-lived credential.
 
-Production k8s-agent configuration uses HTTPS. The bundled `install.yaml` is the deliberate development exception: it sets `allowInsecureHTTP: true` because it does not provision TLS. Do not carry that setting into production manifests.
+The controller container itself serves HTTP on port 8080; it does not terminate TLS. Production k8s-agent configuration therefore uses an intentionally invalid HTTPS placeholder and must be changed to an externally supplied TLS endpoint (for example, an Ingress, load balancer, or service mesh gateway). The bundled `install.yaml` is the deliberate development exception: it explicitly sets `allowInsecureHTTP: true` for its in-cluster HTTP Service. Do not carry that setting into production manifests.
 
 ## Kubernetes workload enrollment
 

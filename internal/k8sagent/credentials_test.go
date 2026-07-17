@@ -150,14 +150,14 @@ func TestKubernetesCredentialSourceReenrollsAndRetriesAfterUnauthorizedAgentRequ
 		case "/api/v1/agents/enroll":
 			enrollments++
 			_ = json.NewEncoder(w).Encode(api.AgentTokenResponse{AgentID: "k8s:prod:ci:uid-1", AccessToken: "access-" + string(rune('0'+enrollments)), AccessExpiresAt: now.Add(time.Hour)})
-		case "/api/v1/agents/register":
+		case "/api/v1/runs/run-1":
 			requests++
 			if r.Header.Get("Authorization") == "Bearer access-1" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
 			require.Equal(t, "Bearer access-2", r.Header.Get("Authorization"))
-			w.WriteHeader(http.StatusNoContent)
+			_ = json.NewEncoder(w).Encode(api.Run{ID: "run-1"})
 		default:
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
@@ -166,7 +166,8 @@ func TestKubernetesCredentialSourceReenrollsAndRetriesAfterUnauthorizedAgentRequ
 
 	source := kubernetesTokenSource(t, srv.URL, tokenFile, func() time.Time { return now })
 	client := agentlib.NewClientWithTokenSource(srv.URL, source, srv.Client())
-	require.NoError(t, client.Register(t.Context(), api.AgentRegisterRequest{AgentID: "k8s:prod:ci:uid-1"}))
+	_, err := client.GetRun(t.Context(), "run-1")
+	require.NoError(t, err)
 	assert.Equal(t, 2, enrollments)
 	assert.Equal(t, 2, requests)
 }
@@ -330,6 +331,7 @@ func TestKubernetesCredentialRenderedProductionManifestsUseHTTPS(t *testing.T) {
 		manifest, err := os.ReadFile(filepath.Join(root, "manifests", name))
 		require.NoError(t, err)
 		assert.NotContains(t, string(manifest), "server: http://", name)
+		assert.Contains(t, string(manifest), "https://controller.example.invalid", name)
 	}
 	install, err := os.ReadFile(filepath.Join(root, "manifests", "install.yaml"))
 	require.NoError(t, err)

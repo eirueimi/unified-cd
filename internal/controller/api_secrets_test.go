@@ -109,7 +109,8 @@ func TestAgentAPI_FetchSecrets(t *testing.T) {
 
 	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: run.ID, Names: []string{"MY_SECRET"}})
 	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/secrets/fetch", bytes.NewReader(fetchBody))
-	req2.Header.Set("Authorization", "Bearer agent-secret")
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+	req2.Header.Set("Authorization", "Bearer "+token)
 	req2.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req2)
@@ -118,6 +119,30 @@ func TestAgentAPI_FetchSecrets(t *testing.T) {
 	var resp api.AgentFetchSecretsResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, "plaintext-value", resp.Secrets["MY_SECRET"])
+}
+
+func TestAgentAPI_FetchSecrets_RejectsLegacyTokenPathImpersonation(t *testing.T) {
+	s, pg := newTestServerWithKM(t)
+
+	body, _ := json.Marshal(api.SetSecretRequest{Name: "MY_SECRET", Value: "plaintext-value"})
+	set := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(body))
+	set.Header.Set("Authorization", "Bearer secret")
+	set.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), set)
+
+	_, err := pg.UpsertJob(t.Context(), "legacy-secret-fetch", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "legacy-secret-fetch", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "victim-agent", run.ID)
+
+	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: run.ID, Names: []string{"MY_SECRET"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/victim-agent/secrets/fetch", bytes.NewReader(fetchBody))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 }
 
 func TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent(t *testing.T) {

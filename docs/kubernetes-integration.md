@@ -130,7 +130,7 @@ still-functional-if-imprecise behavior.
 Create `k8s-agent-config.yaml`:
 
 ```yaml
-# Controller URL and workload enrollment policy
+# HTTPS endpoint of an externally provided TLS terminator and workload enrollment policy
 server: https://unified-cd-master.example.com
 enrollmentPolicy: unified-cd-k8s-agents
 serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token

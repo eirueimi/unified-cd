@@ -21,6 +21,36 @@ type tokenSourceFunc func(context.Context) (string, error)
 
 func (f tokenSourceFunc) Token(ctx context.Context) (string, error) { return f(ctx) }
 
+type invalidatingTestTokenSource struct {
+	token         string
+	tokenCalls    int
+	invalidations int
+}
+
+func (s *invalidatingTestTokenSource) Token(context.Context) (string, error) {
+	s.tokenCalls++
+	return s.token, nil
+}
+
+func (s *invalidatingTestTokenSource) Invalidate() { s.invalidations++ }
+
+func TestClientDoesNotReplayUnauthorizedPost(t *testing.T) {
+	source := &invalidatingTestTokenSource{token: "access-1"}
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := NewClientWithTokenSource(srv.URL, source, srv.Client())
+	err := c.Register(t.Context(), api.AgentRegisterRequest{AgentID: "agent-1"})
+	require.Error(t, err)
+	assert.Equal(t, 1, requests)
+	assert.Equal(t, 1, source.tokenCalls)
+	assert.Zero(t, source.invalidations)
+}
+
 func TestClientReadsTokenForEveryRequest(t *testing.T) {
 	var tokens []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

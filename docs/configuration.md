@@ -314,7 +314,7 @@ unified-cd-k8s-agent [FLAGS]
 
 All agent settings live in the config file (`--config` / `UNIFIED_K8S_CONFIG`). The secure Kubernetes mode uses the projected ServiceAccount token mounted by the Pod; it does not need a Secret file. `--secret` / `UNIFIED_K8S_SECRET` remains only for an explicit legacy static-token migration.
 
-Kubernetes workload enrollment requires an `https://` controller URL. Plain HTTP is accepted only for loopback local development, or when the configuration explicitly sets `allowInsecureHTTP: true`; the latter is reserved for intentional development-only deployments such as the bundled `install.yaml`.
+Kubernetes workload enrollment requires an `https://` controller URL. The controller process itself does not terminate TLS, so production deployments must provide this URL through an Ingress, load balancer, or service-mesh TLS gateway. Plain HTTP is accepted only for loopback local development, or when the configuration explicitly sets `allowInsecureHTTP: true`; the latter is reserved for intentional development-only deployments such as the bundled `install.yaml`.
 
 ### K8s Agent Config File
 

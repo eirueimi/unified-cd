@@ -90,7 +90,10 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if err != nil {
 		return 0, err
 	}
-	if resp.StatusCode == http.StatusUnauthorized {
+	// A 401 is safe to replay only for reads: authentication happens before the
+	// controller handler, but keeping retries to GET avoids duplicating a future
+	// non-idempotent write if that assumption changes.
+	if method == http.MethodGet && resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
 		if source, ok := c.source.(invalidatingTokenSource); ok {
 			source.Invalidate()
