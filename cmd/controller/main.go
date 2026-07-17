@@ -250,7 +250,7 @@ func main() {
 		slog.Warn("no object store configured — log archival disabled")
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, AgentToken: *token, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
+	srv := controller.NewServer(controller.Config{Token: *token, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
 	srv.SetMetrics(m)
 	srv.SetKeyManager(km)
 	if obj != nil {

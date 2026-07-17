@@ -24,7 +24,7 @@ func startArtifactController(t *testing.T) (string, string) {
 	t.Helper()
 	const agentToken = "e2e-token"
 
-	srv := controller.NewServer(controller.Config{AgentToken: agentToken}, nil)
+	srv := controller.NewServer(controller.Config{LegacyAgentToken: agentToken}, nil)
 	srv.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 
 	httpSrv := httptest.NewServer(srv.Router())
