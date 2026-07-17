@@ -39,6 +39,20 @@ func TestRetryUntilSuccess_StopsOn4xx(t *testing.T) {
 	assert.Equal(t, 1, calls) // 4xx should not be retried
 }
 
+func TestRetryUntilSuccess_StopsOnRejectedCredentialRequest(t *testing.T) {
+	oldInitial, oldMax := RetryInitialWait, RetryMaxWait
+	RetryInitialWait, RetryMaxWait = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { RetryInitialWait, RetryMaxWait = oldInitial, oldMax })
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	calls := 0
+	retryUntilSuccess(ctx, func(_ context.Context) error {
+		calls++
+		return &credentialRequestError{status: 401}
+	})
+	assert.Equal(t, 1, calls)
+}
+
 func TestRetryUntilSuccess_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0

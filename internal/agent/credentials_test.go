@@ -142,6 +142,57 @@ func TestCredentialManagerDoesNotEnrollAfterInvalidCredentialFile(t *testing.T) 
 	assert.Zero(t, calls)
 }
 
+func TestCredentialManagerRestoresInterruptedCredentialReplacement(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	backup := credentialBackupPath(path)
+	require.NoError(t, writeCredentialFile(backup, persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "previous-refresh", RefreshExpiresAt: now.Add(time.Hour)}))
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse("new-access", "new-refresh", now))
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: path, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
+	_, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.FileExists(t, path)
+	assert.NoFileExists(t, backup)
+}
+
+func TestCredentialManagerDoesNotEnrollWhenInterruptedBackupIsInvalid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	require.NoError(t, os.WriteFile(credentialBackupPath(path), []byte("invalid"), 0o600))
+	enrollmentPath := filepath.Join(dir, "enrollment")
+	require.NoError(t, os.WriteFile(enrollmentPath, []byte("enrollment-secret"), 0o600))
+	calls := 0
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) { calls++ })
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: path, EnrollmentTokenFile: enrollmentPath, HTTPClient: srv.Client()})
+	_, err := m.Token(t.Context())
+	require.Error(t, err)
+	assert.Zero(t, calls)
+}
+
+func TestCredentialManagerDoesNotEnrollWhenBackupRestoreFails(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	require.NoError(t, writeCredentialFile(credentialBackupPath(path), persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "previous-refresh", RefreshExpiresAt: now.Add(time.Hour)}))
+	enrollmentPath := filepath.Join(dir, "enrollment")
+	require.NoError(t, os.WriteFile(enrollmentPath, []byte("enrollment-secret"), 0o600))
+	original := syncCredentialDirectoryFn
+	syncCredentialDirectoryFn = func(string) error { return fmt.Errorf("sync failed") }
+	t.Cleanup(func() { syncCredentialDirectoryFn = original })
+	calls := 0
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) { calls++ })
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: path, EnrollmentTokenFile: enrollmentPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
+	_, err := m.Token(t.Context())
+	require.Error(t, err)
+	assert.Zero(t, calls)
+}
+
 func TestCredentialManagerDoesNotEnrollAfterExpiredCredentialFile(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
