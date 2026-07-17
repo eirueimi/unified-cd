@@ -28,6 +28,7 @@ func readProtectedCredentialFile(path string) ([]byte, os.FileInfo, error) {
 const (
 	fileAddFile         windows.ACCESS_MASK = 0x0002
 	fileAddSubdirectory windows.ACCESS_MASK = 0x0004
+	fileDeleteChild     windows.ACCESS_MASK = 0x0040
 )
 
 func validateCredentialFile(_ string, _ os.FileInfo) error { return nil }
@@ -64,7 +65,7 @@ func validateCredentialDirectory(path string) error {
 }
 
 func hasDirectoryWrite(mask windows.ACCESS_MASK) bool {
-	return mask&(windows.GENERIC_ALL|windows.GENERIC_WRITE|fileAddFile|fileAddSubdirectory|windows.DELETE|windows.WRITE_DAC|windows.WRITE_OWNER) != 0
+	return mask&(windows.GENERIC_ALL|windows.GENERIC_WRITE|fileAddFile|fileAddSubdirectory|fileDeleteChild|windows.DELETE|windows.WRITE_DAC|windows.WRITE_OWNER) != 0
 }
 
 func protectCredentialFile(_ string, _ *os.File) error { return nil }

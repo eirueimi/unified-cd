@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,18 +27,13 @@ const (
 )
 
 var (
-	sensitiveResponseField    = regexp.MustCompile(`(?i)"[^"\\]*(?:token|credential)[^"\\]*"\s*:`)
 	syncCredentialDirectoryFn = syncCredentialDirectory
 )
 
-type credentialPersistenceInstalledError struct{ err error }
-
-func (e *credentialPersistenceInstalledError) Error() string { return e.err.Error() }
-func (e *credentialPersistenceInstalledError) Unwrap() error { return e.err }
-
 type credentialRequestError struct {
-	status    int
-	retryable bool
+	status     int
+	retryable  bool
+	retryAfter time.Duration
 }
 
 func (e *credentialRequestError) Error() string {
@@ -80,6 +75,7 @@ type CredentialManager struct {
 	now                 func() time.Time
 	jitter              func() time.Duration
 	refreshJitter       time.Duration
+	sleep               func(context.Context, time.Duration) error
 
 	mu            sync.Mutex
 	loaded        bool
@@ -105,7 +101,7 @@ func NewCredentialManager(cfg CredentialManagerConfig) *CredentialManager {
 	return &CredentialManager{
 		server: cfg.Server, agentID: cfg.AgentID, enrollmentTokenFile: cfg.EnrollmentTokenFile,
 		credentialFile: cfg.CredentialFile, http: httpClient, now: now, jitter: jitter, refreshJitter: jitter(),
-		persist: writeCredentialFile,
+		persist: writeCredentialFile, sleep: sleepContext,
 	}
 }
 
@@ -145,10 +141,7 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	// Do not expose the new access token until its paired refresh credential is
 	// durable. Otherwise a process crash could strand the agent after rotation.
 	if err := m.persist(m.credentialFile, next); err != nil {
-		var installed *credentialPersistenceInstalledError
-		if !errors.As(err, &installed) {
-			return "", fmt.Errorf("persist agent credentials: %w", err)
-		}
+		return "", fmt.Errorf("persist agent credentials: %w", err)
 	}
 	m.refresh = next
 	m.loaded = true
@@ -202,7 +195,11 @@ func (m *CredentialManager) exchangeWithRetry(ctx context.Context, path, credent
 		if !errors.As(err, &requestErr) || !requestErr.retryable || attempt == credentialRetryAttempts-1 {
 			return api.AgentTokenResponse{}, err
 		}
-		if err := ctx.Err(); err != nil {
+		delay := requestErr.retryAfter
+		if delay <= 0 {
+			delay = time.Duration(attempt+1) * 100 * time.Millisecond
+		}
+		if err := m.sleep(ctx, delay); err != nil {
 			return api.AgentTokenResponse{}, err
 		}
 	}
@@ -222,12 +219,36 @@ func (m *CredentialManager) exchange(ctx context.Context, path, credential strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return result, &credentialRequestError{status: resp.StatusCode, retryable: resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError}
+		return result, &credentialRequestError{status: resp.StatusCode, retryable: resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError, retryAfter: retryAfter(resp)}
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return result, fmt.Errorf("credential response is invalid")
 	}
 	return result, nil
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func retryAfter(resp *http.Response) time.Duration {
+	value := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(when); delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
 
 func readSecretFile(path string) (string, error) {
@@ -289,6 +310,12 @@ func writeCredentialFile(path string, credential persistedCredential) error {
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
+	backupPath := credentialBackupPath(path)
+	if _, err := os.Lstat(backupPath); err == nil {
+		return fmt.Errorf("credential backup recovery is required")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	if err := protectCredentialFile(tmpPath, tmp); err != nil {
 		tmp.Close()
 		return err
@@ -304,11 +331,38 @@ func writeCredentialFile(path string, credential persistedCredential) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	hadPrevious := false
+	if _, err := os.Lstat(path); err == nil {
+		if err := os.Rename(path, backupPath); err != nil {
+			return err
+		}
+		hadPrevious = true
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	if err := os.Rename(tmpPath, path); err != nil {
+		if hadPrevious {
+			_ = os.Rename(backupPath, path)
+		}
 		return err
 	}
 	if err := syncCredentialDirectoryFn(dir); err != nil {
-		return &credentialPersistenceInstalledError{err: err}
+		if hadPrevious {
+			if restoreErr := os.Rename(backupPath, path); restoreErr == nil {
+				_ = syncCredentialDirectoryFn(dir)
+			}
+		}
+		return err
+	}
+	if hadPrevious {
+		if err := os.Remove(backupPath); err != nil {
+			return err
+		}
+		if err := syncCredentialDirectoryFn(dir); err != nil {
+			return err
+		}
 	}
 	return nil
 }
+
+func credentialBackupPath(path string) string { return path + ".previous" }

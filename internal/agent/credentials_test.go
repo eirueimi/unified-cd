@@ -180,11 +180,12 @@ func TestCredentialManagerDoesNotEnrollAfterInsecureCredentialFile(t *testing.T)
 	assert.Zero(t, calls)
 }
 
-func TestCredentialManagerUsesReplacementAfterDirectorySyncFailure(t *testing.T) {
+func TestCredentialManagerRestoresOldCredentialAfterDirectorySyncFailure(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	enrollmentPath := filepath.Join(dir, "enrollment")
 	credentialPath := filepath.Join(dir, "credentials.json")
+	require.NoError(t, writeCredentialFile(credentialPath, persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "old-refresh", RefreshExpiresAt: now.Add(time.Hour)}))
 	require.NoError(t, os.WriteFile(enrollmentPath, []byte("enrollment-secret"), 0o600))
 	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(tokenResponse("access-token", "replacement-refresh", now))
@@ -192,15 +193,22 @@ func TestCredentialManagerUsesReplacementAfterDirectorySyncFailure(t *testing.T)
 	defer srv.Close()
 
 	original := syncCredentialDirectoryFn
-	syncCredentialDirectoryFn = func(string) error { return fmt.Errorf("directory sync failed") }
+	calls := 0
+	syncCredentialDirectoryFn = func(string) error {
+		calls++
+		if calls == 1 {
+			return fmt.Errorf("directory sync failed")
+		}
+		return nil
+	}
 	t.Cleanup(func() { syncCredentialDirectoryFn = original })
 	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", EnrollmentTokenFile: enrollmentPath, CredentialFile: credentialPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
 	token, err := m.Token(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, "access-token", token)
+	require.Error(t, err)
+	assert.Empty(t, token)
 	credential, err := readCredentialFile(credentialPath)
 	require.NoError(t, err)
-	assert.Equal(t, "replacement-refresh", credential.RefreshToken)
+	assert.Equal(t, "old-refresh", credential.RefreshToken)
 }
 
 func TestCredentialManagerRedactsTokenResponseErrors(t *testing.T) {
@@ -253,6 +261,42 @@ func TestCredentialManagerRetriesOnlyRetryableHTTPResponses(t *testing.T) {
 			_, err := m.Token(t.Context())
 			require.Error(t, err)
 			assert.Equal(t, tc.calls, calls)
+		})
+	}
+}
+
+func TestCredentialManagerHonorsRetryAfterWithBoundedBackoff(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	credentialPath := filepath.Join(dir, "credentials.json")
+	require.NoError(t, writeCredentialFile(credentialPath, persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "refresh-secret", RefreshExpiresAt: now.Add(time.Hour)}))
+	calls := 0
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: credentialPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
+	var delays []time.Duration
+	m.sleep = func(_ context.Context, delay time.Duration) error { delays = append(delays, delay); return nil }
+	_, err := m.Token(t.Context())
+	require.Error(t, err)
+	assert.Equal(t, credentialRetryAttempts, calls)
+	assert.Equal(t, []time.Duration{2 * time.Second, 2 * time.Second}, delays)
+}
+
+func TestClientNeverIncludesCredentialResponseBodyInErrors(t *testing.T) {
+	for _, body := range []string{`{"access_token":"secret"}`, `{\"refresh_token\":\"secret\"}`, "Bearer secret", `<credential>secret</credential>`} {
+		t.Run(body[:1], func(t *testing.T) {
+			srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(body))
+			})
+			defer srv.Close()
+			err := NewClient(srv.URL, "static-token").Register(t.Context(), api.AgentRegisterRequest{AgentID: "a"})
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "secret")
 		})
 	}
 }

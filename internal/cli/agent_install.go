@@ -187,6 +187,13 @@ func newAgentInstallCmd() *cobra.Command {
 			if credentialFile == "" {
 				return fmt.Errorf("credential file is required for agent installation")
 			}
+			if enrollmentTokenFile == "" {
+				if _, err := os.Stat(credentialFile); os.IsNotExist(err) {
+					return fmt.Errorf("enrollment token file is required when credential file does not exist")
+				} else if err != nil {
+					return fmt.Errorf("credential file: %w", err)
+				}
+			}
 			binPath, err := os.Executable()
 			if err != nil {
 				binPath = "unified-cd"

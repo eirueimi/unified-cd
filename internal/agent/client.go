@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -52,7 +53,14 @@ func (c *Client) authorize(ctx context.Context, req *http.Request) error {
 		return fmt.Errorf("agent token source is required")
 	}
 	token, err := c.source.Token(ctx)
-	if err != nil || token == "" {
+	if err != nil {
+		var requestErr *credentialRequestError
+		if errors.As(err, &requestErr) {
+			return requestErr
+		}
+		return fmt.Errorf("obtain agent token")
+	}
+	if token == "" {
 		// A TokenSource may deal with credentials internally. Do not surface its
 		// error here because it could contain a credential from a remote response.
 		return fmt.Errorf("obtain agent token")
@@ -87,8 +95,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, &HTTPError{StatusCode: resp.StatusCode, Body: safeResponseBody(b)}
+		return resp.StatusCode, &HTTPError{StatusCode: resp.StatusCode, Body: "response omitted"}
 	}
 	if out != nil && resp.StatusCode != http.StatusNoContent {
 		return resp.StatusCode, json.NewDecoder(resp.Body).Decode(out)
@@ -96,14 +103,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	return resp.StatusCode, nil
 }
 
-func safeResponseBody(body []byte) string {
-	text := strings.TrimSpace(string(body))
-	lower := strings.ToLower(text)
-	if sensitiveResponseField.MatchString(text) || strings.Contains(lower, "bearer ") {
-		return "credential response omitted"
-	}
-	return text
-}
+func safeResponseBody([]byte) string { return "response omitted" }
 
 // Register registers the agent with the master server.
 func (c *Client) Register(ctx context.Context, req api.AgentRegisterRequest) error {
@@ -299,8 +299,7 @@ func (c *Client) UploadArtifact(ctx context.Context, runID, name, path string) e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("upload artifact http %d: %s", resp.StatusCode, safeResponseBody(b))
+		return fmt.Errorf("upload artifact http %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -323,8 +322,7 @@ func (c *Client) DownloadArtifact(ctx context.Context, runID, name, destDir stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("download artifact http %d: %s", resp.StatusCode, safeResponseBody(b))
+		return fmt.Errorf("download artifact http %d", resp.StatusCode)
 	}
 
 	if destDir == "" {
