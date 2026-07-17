@@ -9,7 +9,7 @@ metadata:
   name: go-build
 spec:
   agentSelector:
-    - kind:k8s
+    - kind:kubernetes
   # references the "golang" named template from the k8s-agent configuration file
   podTemplate:
     name: golang

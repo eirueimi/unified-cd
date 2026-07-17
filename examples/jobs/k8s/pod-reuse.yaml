@@ -8,7 +8,7 @@ metadata:
   name: incremental-build
 spec:
   agentSelector:
-    - kind:k8s
+    - kind:kubernetes
   podTemplate:
     name: golang
     # reuse: true → after the run completes the Pod is returned to the pool instead of deleted

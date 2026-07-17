@@ -28,7 +28,7 @@ Check which agents are connected and what labels they advertise:
 ```bash
 unified-cli agent list
 # docker-agent-1   c1e136ded609   linux         hostname:c1e136ded609,kind:docker,pool:default   2026-07-04 04:54
-# k8s-agent-1      DESKTOP-EMUF6H6 windows/k8s   kubernetes,kind:k8s,pool:default,hostname:...    2026-07-04 04:54
+# k8s-agent-1      DESKTOP-EMUF6H6 windows/k8s   kubernetes,kind:kubernetes,pool:default,hostname:...    2026-07-04 04:54
 ```
 
 - Compare the job's `agentSelector` against the label sets above — every

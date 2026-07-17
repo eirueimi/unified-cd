@@ -23,19 +23,6 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: unified-cd-controller-kubernetes-enrollment
-  namespace: ci
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
   name: unified-cd-k8s-agent
   namespace: ci
 rules:
@@ -62,6 +49,19 @@ rules:
   - delete
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-controller-kubernetes-enrollment
+  namespace: unified-cd
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: unified-cd-controller-kubernetes-enrollment
@@ -76,8 +76,22 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: unified-cd-controller-kubernetes-enrollment
+  name: unified-cd-k8s-agent
   namespace: ci
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: unified-cd-k8s-agent
+subjects:
+- kind: ServiceAccount
+  name: unified-cd-k8s-agent
+  namespace: unified-cd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: unified-cd-controller-kubernetes-enrollment
+  namespace: unified-cd
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -85,20 +99,6 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: unified-cd-controller
-  namespace: unified-cd
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: unified-cd-k8s-agent
-  namespace: ci
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: unified-cd-k8s-agent
-subjects:
-- kind: ServiceAccount
-  name: unified-cd-k8s-agent
   namespace: unified-cd
 ---
 apiVersion: rbac.authorization.k8s.io/v1

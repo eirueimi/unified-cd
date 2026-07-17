@@ -310,7 +310,6 @@ enrollmentPolicy: unified-cd-k8s-agents
 serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
 labels:
   - kind:kubernetes
-  - cluster:prod
 
 namespace: ci               # Kubernetes namespace for job Pods
 maxConcurrent: 10           # max simultaneous Pods (0/unset -> 100; negative -> unlimited)

@@ -12,7 +12,7 @@ metadata:
   name: build-and-scan-inline
 spec:
   agentSelector:
-    - kind:k8s
+    - kind:kubernetes
   # no name + no override → the Pod is exactly the containers listed here
   podTemplate:
     spec:

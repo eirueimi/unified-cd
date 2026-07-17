@@ -201,3 +201,22 @@ func TestKubernetesCredentialManifestsUseProjectedEnrollmentIdentity(t *testing.
 	assert.Contains(t, string(rbac), "verbs: [\"get\"]")
 	assert.NotContains(t, strings.ToLower(string(rbac)), "cluster-admin")
 }
+
+func TestKubernetesCredentialEnrollmentPodReadMatchesPolicyNamespace(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+
+	policy, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "config-configmap.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(policy), "namespaces: [unified-cd]")
+
+	controllerRBAC, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "rbac.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(controllerRBAC), "kind: Role\nmetadata:\n  name: unified-cd-controller-kubernetes-enrollment\n  namespace: unified-cd")
+	assert.Contains(t, string(controllerRBAC), "kind: RoleBinding\nmetadata:\n  name: unified-cd-controller-kubernetes-enrollment\n  namespace: unified-cd")
+
+	agentRBAC, err := os.ReadFile(filepath.Join(root, "manifests", "base", "k8s-agent", "rbac.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, strings.ReplaceAll(string(agentRBAC), "\r\n", "\n"), "name: unified-cd-k8s-agent\n  namespace: ci")
+}

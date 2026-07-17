@@ -866,7 +866,7 @@ Lists all registered agents and their status.
 ```
 agent-1    ci-worker-01   linux   kind:linux,env:ci   2026-06-20 10:55
 agent-2    ci-worker-02   linux   kind:linux,env:ci   2026-06-20 10:54
-k8s-1      k8s-node-1     linux   kind:k8s            2026-06-20 10:55
+k8s-1      k8s-node-1     linux   kind:kubernetes     2026-06-20 10:55
 ```
 
 ### agent get

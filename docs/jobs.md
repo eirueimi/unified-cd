@@ -1479,13 +1479,13 @@ See the [Kubernetes Integration Guide](kubernetes-integration.md) for full detai
 
 The example below uses a named agent-side template and an `override` patch,
 both of which always force Kubernetes regardless of `agentSelector` — so its
-`agentSelector: [kind:k8s]` is redundant here, but harmless, and documents
+`agentSelector: [kind:kubernetes]` is redundant here, but harmless, and documents
 the intent:
 
 ```yaml
 spec:
   agentSelector:
-    - kind:k8s
+    - kind:kubernetes
   podTemplate:
     name: golang              # reference a named template from k8s-agent config
 
