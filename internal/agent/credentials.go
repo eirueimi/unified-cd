@@ -160,45 +160,61 @@ func (m *CredentialManager) loadRefreshCredential() error {
 	}
 	credential, err := readCredentialFile(m.credentialFile)
 	if err == nil {
-		if credential.AgentID != m.agentID {
-			return fmt.Errorf("credential file agent ID does not match configured agent ID")
+		if err := m.removeStaleCredentialBackup(); err != nil {
+			return err
 		}
-		if !credential.RefreshExpiresAt.After(m.now()) {
-			return fmt.Errorf("agent refresh credential has expired")
-		}
-		m.refresh = credential
-		m.loaded = true
-		return nil
+		return m.useCredential(credential)
 	}
-	if os.IsNotExist(err) {
-		backupPath := credentialBackupPath(m.credentialFile)
-		backup, backupErr := readCredentialFile(backupPath)
-		if backupErr == nil {
-			if err := os.Rename(backupPath, m.credentialFile); err != nil {
-				return fmt.Errorf("restore credential backup: %w", err)
+	backup, backupErr := readCredentialFile(credentialBackupPath(m.credentialFile))
+	if backupErr == nil {
+		if !os.IsNotExist(err) {
+			if removeErr := os.Remove(m.credentialFile); removeErr != nil {
+				return fmt.Errorf("remove invalid credential file: %w", removeErr)
 			}
-			if err := syncCredentialDirectoryFn(filepath.Dir(m.credentialFile)); err != nil {
-				return fmt.Errorf("restore credential backup: %w", err)
-			}
-			if backup.AgentID != m.agentID {
-				return fmt.Errorf("credential file agent ID does not match configured agent ID")
-			}
-			if !backup.RefreshExpiresAt.After(m.now()) {
-				return fmt.Errorf("agent refresh credential has expired")
-			}
-			m.refresh = backup
-			m.loaded = true
-			return nil
 		}
-		if !os.IsNotExist(backupErr) {
-			return fmt.Errorf("read credential backup: %w", backupErr)
+		if restoreErr := os.Rename(credentialBackupPath(m.credentialFile), m.credentialFile); restoreErr != nil {
+			return fmt.Errorf("restore credential backup: %w", restoreErr)
 		}
+		if syncErr := syncCredentialDirectoryFn(filepath.Dir(m.credentialFile)); syncErr != nil {
+			return fmt.Errorf("restore credential backup: %w", syncErr)
+		}
+		return m.useCredential(backup)
+	}
+	if !os.IsNotExist(backupErr) {
+		return fmt.Errorf("read credential backup: %w", backupErr)
 	}
 	if os.IsNotExist(err) && m.enrollmentTokenFile != "" {
 		m.loaded = true
 		return nil
 	}
 	return err
+}
+
+func (m *CredentialManager) useCredential(credential persistedCredential) error {
+	if credential.AgentID != m.agentID {
+		return fmt.Errorf("credential file agent ID does not match configured agent ID")
+	}
+	if !credential.RefreshExpiresAt.After(m.now()) {
+		return fmt.Errorf("agent refresh credential has expired")
+	}
+	m.refresh, m.loaded = credential, true
+	return nil
+}
+
+func (m *CredentialManager) removeStaleCredentialBackup() error {
+	backupPath := credentialBackupPath(m.credentialFile)
+	if _, err := os.Lstat(backupPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect credential backup: %w", err)
+	}
+	if err := os.Remove(backupPath); err != nil {
+		return fmt.Errorf("remove stale credential backup: %w", err)
+	}
+	if err := syncCredentialDirectoryFn(filepath.Dir(m.credentialFile)); err != nil {
+		return fmt.Errorf("remove stale credential backup: %w", err)
+	}
+	return nil
 }
 
 func defaultCredentialJitter() time.Duration {

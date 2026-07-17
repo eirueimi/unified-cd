@@ -159,6 +159,38 @@ func TestCredentialManagerRestoresInterruptedCredentialReplacement(t *testing.T)
 	assert.NoFileExists(t, backup)
 }
 
+func TestCredentialManagerRemovesStaleBackupWhenPrimaryIsValid(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	require.NoError(t, writeCredentialFile(path, persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "primary-refresh", RefreshExpiresAt: now.Add(time.Hour)}))
+	require.NoError(t, os.WriteFile(credentialBackupPath(path), []byte("stale"), 0o600))
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse("new-access", "new-refresh", now))
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: path, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
+	_, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.NoFileExists(t, credentialBackupPath(path))
+}
+
+func TestCredentialManagerRestoresValidBackupWhenPrimaryIsInvalid(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	require.NoError(t, os.WriteFile(path, []byte("invalid"), 0o600))
+	require.NoError(t, writeCredentialFile(credentialBackupPath(path), persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "backup-refresh", RefreshExpiresAt: now.Add(time.Hour)}))
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse("new-access", "new-refresh", now))
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: path, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
+	_, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.NoFileExists(t, credentialBackupPath(path))
+}
+
 func TestCredentialManagerDoesNotEnrollWhenInterruptedBackupIsInvalid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials.json")
