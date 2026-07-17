@@ -117,6 +117,22 @@ oidc:
     unified-admins: admin
   userMap:                               # email/subject -> unified-cd role
     alice@example.com: admin
+
+# Kubernetes workload enrollment for the default controller and k8s-agent manifests.
+# An omitted kubeconfig uses the controller Pod's ServiceAccount identity.
+agentAuth:
+  kubernetesClusters:
+    - name: in-cluster
+  kubernetesEnrollmentPolicies:
+    - name: unified-cd-k8s-agents
+      cluster: in-cluster
+      namespaces: [unified-cd]
+      serviceAccounts: [unified-cd-k8s-agent]
+      allowedLabels: [kind:kubernetes]
+      requiredLabels: [kind:kubernetes]
+      capabilities: [pod, container]
+      accessTokenTTL: 1h
+      enabled: true
 ```
 
 Config-file keys map 1:1 to the flags above (e.g. `dataDir` ↔ `--data-dir`), with OIDC settings under the nested `oidc:` block. See `internal/config/controller.go` for the authoritative field list.
@@ -279,21 +295,21 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
 unified-cd-k8s-agent [FLAGS]
 
   --config       string   Config file path (env: UNIFIED_K8S_CONFIG)
-  --secret       string   Secret override file path, merged over the config (env: UNIFIED_K8S_SECRET)
+  --secret       string   Legacy static-token override file path (env: UNIFIED_K8S_SECRET)
   --log-level    string   Log level: debug, info, warn, error (env: UNIFIED_K8S_LOG_LEVEL)
 ```
 
-All agent settings live in the config file (`--config` / `UNIFIED_K8S_CONFIG`); sensitive values may be split into a Secret file (`--secret` / `UNIFIED_K8S_SECRET`) merged on top.
+All agent settings live in the config file (`--config` / `UNIFIED_K8S_CONFIG`). The secure Kubernetes mode uses the projected ServiceAccount token mounted by the Pod; it does not need a Secret file. `--secret` / `UNIFIED_K8S_SECRET` remains only for an explicit legacy static-token migration.
 
 ### K8s Agent Config File
 
 ```yaml
 # k8s-agent-config.yaml
 server: http://unified-cd-controller:8080
-token: my-agent-token
-agentId: k8s-agent-1
+enrollmentPolicy: unified-cd-k8s-agents
+serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
 labels:
-  - kind:k8s
+  - kind:kubernetes
   - cluster:prod
 
 namespace: ci               # Kubernetes namespace for job Pods
@@ -373,9 +389,11 @@ podTemplates:
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `server` | string | Yes | — | Controller base URL the agent claims runs from |
-| `token` | string | Yes | — | Agent bearer token (put in the Secret file, not the ConfigMap) |
-| `agentId` | string | Yes | — | Unique agent ID. Overridden by env `UNIFIED_K8S_AGENT_ID` (e.g. the pod name) |
+| `server` | string | Yes | - | Controller base URL the agent claims runs from |
+| `enrollmentPolicy` | string | Yes (secure mode) | - | Controller policy used to exchange the projected ServiceAccount token. The controller assigns the canonical agent ID and authorized labels. |
+| `serviceAccountTokenFile` | string | No | `/var/run/secrets/unified-cd-agent/token` | Projected ServiceAccount token file. It is reread whenever the agent re-enrolls after access-token expiry. |
+| `token` | string | Legacy only | - | Explicit static-token compatibility mode. Requires `agentId`; do not use for new Kubernetes agents. |
+| `agentId` | string | Legacy only | - | Static-token agent identity. In workload enrollment mode the controller derives it from verified Kubernetes identity. |
 | `labels` | []string | No | — | Agent labels matched against a Job's `agentSelector` |
 | `namespace` | string | No | `default` | Namespace the agent creates job/scope Pods in |
 | `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Fallback job-container image when no `podTemplate` is referenced. Bash-less/sh-less images work (`alpine`, busybox-based) — steps exec via the injected `ucd-sh` shim by default, not a shell the image must provide. Truly empty images (`scratch`, distroless-static) cannot run steps on the k8s agent: env application prepends the `env` binary, which they lack (exit 127). See [Job Reference: Shell (`shell:`)](jobs.md#shell-shell). |
@@ -389,9 +407,9 @@ podTemplates:
 | `poolIdleTimeout` | string | No | `0` (no reuse) | Go duration an idle pooled Pod is kept for reuse before teardown (e.g. `10m`) |
 | `podTemplates` | map | No | — | Named Pod templates referenced from Job YAML via `podTemplate.name` (see below) |
 
-`token` (and any other sensitive value) may be placed in a separate Secret file (env `UNIFIED_K8S_SECRET`), whose fields are merged on top of the config file.
+The default agent Deployment projects a ServiceAccount token with audience `unified-cd-agent-enrollment` and mounts it read-only at `/var/run/secrets/unified-cd-agent`. Do not add a token Secret to that Deployment. A legacy `token` may be placed in `UNIFIED_K8S_SECRET` only during an explicit static-token migration.
 
-`agentId`, `podStartTimeout`, and `drainTimeout` each have an environment-variable override (`UNIFIED_K8S_AGENT_ID`, `UNIFIED_K8S_POD_START_TIMEOUT`, `UNIFIED_K8S_DRAIN_TIMEOUT` respectively), applied in `Validate()` on top of the config-file value — handy for templating per-Pod values (e.g. the Pod name as `agentId`) without a separate ConfigMap per replica.
+`UNIFIED_K8S_AGENT_ID` applies only to the legacy static-token identity. `UNIFIED_K8S_POD_START_TIMEOUT` and `UNIFIED_K8S_DRAIN_TIMEOUT` override their config fields in both modes.
 
 ### Pod template fields
 

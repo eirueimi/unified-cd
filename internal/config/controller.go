@@ -1,21 +1,70 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
 type ControllerAgentAuthConfig struct {
-	LegacySharedToken  string                              `yaml:"legacySharedToken"`
-	KubernetesClusters []ControllerKubernetesClusterConfig `yaml:"kubernetesClusters"`
+	LegacySharedToken            string                                       `yaml:"legacySharedToken"`
+	KubernetesClusters           []ControllerKubernetesClusterConfig          `yaml:"kubernetesClusters"`
+	KubernetesEnrollmentPolicies []ControllerKubernetesEnrollmentPolicyConfig `yaml:"kubernetesEnrollmentPolicies"`
 }
 type ControllerKubernetesClusterConfig struct {
 	Name       string `yaml:"name"`
 	Kubeconfig string `yaml:"kubeconfig"`
+}
+
+// ControllerKubernetesEnrollmentPolicyConfig declares one bounded workload
+// identity policy that the controller upserts before it starts serving.
+type ControllerKubernetesEnrollmentPolicyConfig struct {
+	Name            string   `yaml:"name"`
+	Cluster         string   `yaml:"cluster"`
+	Namespaces      []string `yaml:"namespaces"`
+	ServiceAccounts []string `yaml:"serviceAccounts"`
+	AllowedLabels   []string `yaml:"allowedLabels"`
+	RequiredLabels  []string `yaml:"requiredLabels"`
+	Capabilities    []string `yaml:"capabilities"`
+	AccessTokenTTL  string   `yaml:"accessTokenTTL"`
+	Enabled         bool     `yaml:"enabled"`
+}
+
+// StorePolicy converts a declarative controller config entry into the
+// controller's persisted enrollment-policy representation.
+func (c ControllerKubernetesEnrollmentPolicyConfig) StorePolicy() (store.AgentEnrollmentPolicy, error) {
+	if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Cluster) == "" || len(c.Namespaces) == 0 || len(c.ServiceAccounts) == 0 {
+		return store.AgentEnrollmentPolicy{}, fmt.Errorf("kubernetes enrollment policy requires name, cluster, namespaces, and serviceAccounts")
+	}
+	ttl, err := time.ParseDuration(c.AccessTokenTTL)
+	if err != nil {
+		return store.AgentEnrollmentPolicy{}, fmt.Errorf("kubernetes enrollment policy accessTokenTTL: %w", err)
+	}
+	providerConfig, err := json.Marshal(struct {
+		Cluster string `json:"cluster"`
+	}{Cluster: c.Cluster})
+	if err != nil {
+		return store.AgentEnrollmentPolicy{}, err
+	}
+	constraints, err := json.Marshal(struct {
+		Namespaces      []string `json:"namespaces"`
+		ServiceAccounts []string `json:"serviceAccounts"`
+	}{Namespaces: c.Namespaces, ServiceAccounts: c.ServiceAccounts})
+	if err != nil {
+		return store.AgentEnrollmentPolicy{}, err
+	}
+	return store.AgentEnrollmentPolicy{
+		Name: c.Name, Provider: "kubernetes", ProviderConfig: providerConfig, SubjectConstraints: constraints,
+		AgentIDTemplate: "k8s:{cluster}:{namespace}:{podUID}", AllowedLabels: append([]string(nil), c.AllowedLabels...),
+		RequiredLabels: append([]string(nil), c.RequiredLabels...), AuthorizedCapabilities: append([]string(nil), c.Capabilities...),
+		AccessTokenTTL: ttl, Enabled: c.Enabled,
+	}, nil
 }
 
 // ControllerOIDCConfig holds OIDC provider settings.
@@ -217,6 +266,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		// Cluster credentials are YAML-only.  The legacy token intentionally
 		// remains env-only so config files do not accidentally contain a secret.
 		eff.AgentAuth.KubernetesClusters = append([]ControllerKubernetesClusterConfig(nil), file.AgentAuth.KubernetesClusters...)
+		eff.AgentAuth.KubernetesEnrollmentPolicies = append([]ControllerKubernetesEnrollmentPolicyConfig(nil), file.AgentAuth.KubernetesEnrollmentPolicies...)
 	}
 	if err := validateControllerAgentAuth(eff.AgentAuth); err != nil {
 		return nil, err
@@ -242,6 +292,19 @@ func validateControllerAgentAuth(cfg *ControllerAgentAuthConfig) error {
 	}
 	if emptyKubeconfigs > 1 {
 		return fmt.Errorf("at most one kubernetes cluster may omit kubeconfig")
+	}
+	policies := map[string]bool{}
+	for _, policy := range cfg.KubernetesEnrollmentPolicies {
+		if policies[policy.Name] {
+			return fmt.Errorf("agentAuth kubernetes enrollment policy names must be unique")
+		}
+		policies[policy.Name] = true
+		if _, ok := seen[policy.Cluster]; !ok {
+			return fmt.Errorf("agentAuth kubernetes enrollment policy references an unknown cluster")
+		}
+		if _, err := policy.StorePolicy(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

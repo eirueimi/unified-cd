@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/controller"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
 )
 
@@ -13,6 +17,38 @@ func TestConfigureKubernetesEnrollmentClientAppliesBoundedTimeout(t *testing.T) 
 	kubeConfig := &rest.Config{Timeout: time.Minute}
 	configureKubernetesEnrollmentClient(kubeConfig)
 	assert.Equal(t, controller.KubernetesEnrollmentRequestTimeout, kubeConfig.Timeout)
+}
+
+func TestBuildKubernetesEnrollmentConfigUsesInClusterIdentityWhenUnspecified(t *testing.T) {
+	original := inClusterKubernetesConfig
+	inClusterKubernetesConfig = func() (*rest.Config, error) { return &rest.Config{Host: "https://kubernetes.default.svc"}, nil }
+	t.Cleanup(func() { inClusterKubernetesConfig = original })
+
+	got, err := buildKubernetesEnrollmentConfig("")
+	require.NoError(t, err)
+	assert.Equal(t, "https://kubernetes.default.svc", got.Host)
+}
+
+type policyBootstrapStore struct{ policies []store.AgentEnrollmentPolicy }
+
+func (s *policyBootstrapStore) UpsertAgentEnrollmentPolicy(_ context.Context, policy store.AgentEnrollmentPolicy) (*store.AgentEnrollmentPolicy, error) {
+	s.policies = append(s.policies, policy)
+	return &policy, nil
+}
+
+func TestBootstrapKubernetesEnrollmentPoliciesUpsertsEnabledPolicyBeforeServing(t *testing.T) {
+	st := &policyBootstrapStore{}
+	auth := &config.ControllerAgentAuthConfig{KubernetesEnrollmentPolicies: []config.ControllerKubernetesEnrollmentPolicyConfig{{
+		Name: "unified-cd-k8s-agents", Cluster: "in-cluster", Namespaces: []string{"unified-cd"}, ServiceAccounts: []string{"unified-cd-k8s-agent"},
+		AllowedLabels: []string{"kind:kubernetes"}, RequiredLabels: []string{"kind:kubernetes"}, Capabilities: []string{"pod", "container"}, AccessTokenTTL: "1h", Enabled: true,
+	}}}
+
+	require.NoError(t, bootstrapKubernetesEnrollmentPolicies(t.Context(), st, auth))
+	require.Len(t, st.policies, 1)
+	assert.Equal(t, "unified-cd-k8s-agents", st.policies[0].Name)
+	assert.True(t, st.policies[0].Enabled)
+	assert.Equal(t, []string{"kind:kubernetes"}, st.policies[0].RequiredLabels)
+	assert.Equal(t, []string{"pod", "container"}, st.policies[0].AuthorizedCapabilities)
 }
 
 // TestEnvIntOr covers the malformed-value warning path added for review

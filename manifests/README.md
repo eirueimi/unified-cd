@@ -8,7 +8,7 @@ A complete set of manifests for installing the unified-cd `controller` and `k8s-
 |------|----------|---------------|
 | `core-install.yaml` | controller + k8s-agent only | External PostgreSQL and S3-compatible store required. Edit all `CHANGEME` placeholders before applying. |
 | `install.yaml` | core-install.yaml + in-cluster PostgreSQL and Garage bundled | For evaluation / quick trial. Uses development-default credentials. **Do not use in production.** |
-| `agent-only.yaml` | k8s-agent only | Controller running externally (e.g. Docker Compose). Edit `server` and `token` `CHANGEME` values before applying. |
+| `agent-only.yaml` | k8s-agent only | Controller running externally with the matching Kubernetes enrollment policy. Edit the `server` `CHANGEME` value before applying. |
 
 ## Applying
 
@@ -21,8 +21,9 @@ kubectl apply -f manifests/install.yaml
 # 2. kubectl apply -f manifests/core-install.yaml
 
 # Agent only (controller running externally, e.g. Docker Compose on the host)
-# 1. Edit server and token CHANGEME values in manifests/agent-only.yaml
-# 2. kubectl apply -f manifests/agent-only.yaml
+# 1. Configure the external controller's in-cluster verifier and enrollment policy.
+# 2. Edit the server CHANGEME value in manifests/agent-only.yaml.
+# 3. kubectl apply -f manifests/agent-only.yaml
 ```
 
 ## Values to edit in core-install.yaml before applying
@@ -30,11 +31,17 @@ kubectl apply -f manifests/install.yaml
 In the `unified-cd-controller` Secret (namespace: `unified-cd`), update the following keys:
 
 - `UNIFIED_DB_DSN` — PostgreSQL connection string
-- `UNIFIED_TOKEN` — Admin static token (must match the `token` field in the `unified-cd-k8s-agent-config` Secret)
+- `UNIFIED_TOKEN` — Admin static token for human and CLI authentication
 - `UNIFIED_CONTROLLER_KEY` — 32-byte hex generated with `openssl rand -hex 32`. If left empty, the controller auto-generates and persists a key to the DB (see [HA Guide](../docs/high-availability.md))
 - `UNIFIED_S3_ENDPOINT` / `UNIFIED_S3_BUCKET` / `UNIFIED_S3_KEY` / `UNIFIED_S3_SECRET` — S3-compatible object store connection info (controller starts without these, but log archival is disabled)
 
-Also update the `token` field in the `unified-cd-k8s-agent-config` Secret (namespace: `unified-cd`) to the same value as `UNIFIED_TOKEN`.
+The default k8s-agent Deployment does not receive `UNIFIED_TOKEN` or any shared agent token. It exchanges its projected, audience-bound ServiceAccount token for a short-lived credential.
+
+## Kubernetes workload enrollment
+
+`core-install.yaml` and `install.yaml` mount a controller configuration that declares the `in-cluster` verifier and an enabled `unified-cd-k8s-agents` policy. The policy binds enrollment to ServiceAccount `unified-cd-k8s-agent` in namespace `unified-cd`, permits only the `kind:kubernetes` label and `pod`/`container` capabilities, and gives each Pod an identity derived from its verified UID.
+
+For `agent-only.yaml`, configure the external controller equivalently before deploying the agent. The controller needs an in-cluster `agentAuth.kubernetesClusters` entry named `in-cluster`, the same policy name, and the controller ServiceAccount RBAC included in these manifests. Do not substitute a static token or create a k8s-agent credential Secret.
 
 ## About install.yaml
 
@@ -48,7 +55,7 @@ so no separate init Job (like the old `minio-init`) is needed.
 ## SSO / OIDC
 
 SSO is optional. When not configured, the controller uses the static `UNIFIED_TOKEN` for all authentication.
-When OIDC is enabled, browser login goes through the identity provider and `UNIFIED_TOKEN` is only used for agents and CLI device flow fallback.
+When OIDC is enabled, browser login goes through the identity provider and `UNIFIED_TOKEN` remains an administrator/CLI fallback; k8s agents use workload enrollment instead.
 
 ### Environment variables
 

@@ -3,11 +3,14 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 // ── FindFlag ────────────────────────────────────────────────────────────────
@@ -49,6 +52,62 @@ func TestOIDCConfigured(t *testing.T) {
 	for _, c := range cases {
 		assert.Equal(t, c.want, config.OIDCConfigured(c.oidc), "case=%s", c.name)
 	}
+}
+
+func TestControllerEffectiveResolvesKubernetesEnrollmentBootstrapPolicy(t *testing.T) {
+	path := writeFile(t, `agentAuth:
+  kubernetesClusters:
+    - name: in-cluster
+  kubernetesEnrollmentPolicies:
+    - name: unified-cd-k8s-agents
+      cluster: in-cluster
+      namespaces: [unified-cd]
+      serviceAccounts: [unified-cd-k8s-agent]
+      allowedLabels: [kind:kubernetes]
+      requiredLabels: [kind:kubernetes]
+      capabilities: [pod, container]
+      accessTokenTTL: 1h
+      enabled: true
+`)
+	eff, err := config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.Len(t, eff.AgentAuth.KubernetesClusters, 1)
+	require.Len(t, eff.AgentAuth.KubernetesEnrollmentPolicies, 1)
+
+	policy, err := eff.AgentAuth.KubernetesEnrollmentPolicies[0].StorePolicy()
+	require.NoError(t, err)
+	assert.Equal(t, "unified-cd-k8s-agents", policy.Name)
+	assert.Equal(t, "kubernetes", policy.Provider)
+	assert.Equal(t, time.Hour, policy.AccessTokenTTL)
+	assert.True(t, policy.Enabled)
+	assert.JSONEq(t, `{"cluster":"in-cluster"}`, string(policy.ProviderConfig))
+	assert.JSONEq(t, `{"namespaces":["unified-cd"],"serviceAccounts":["unified-cd-k8s-agent"]}`, string(policy.SubjectConstraints))
+	assert.Equal(t, []string{"kind:kubernetes"}, policy.AllowedLabels)
+	assert.Equal(t, []string{"kind:kubernetes"}, policy.RequiredLabels)
+	assert.Equal(t, []string{"pod", "container"}, policy.AuthorizedCapabilities)
+}
+
+func TestDefaultControllerManifestConfiguresKubernetesEnrollment(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	root := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", ".."))
+	data, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "config-configmap.yaml"))
+	require.NoError(t, err)
+	var manifest struct {
+		Data map[string]string `yaml:"data"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &manifest))
+	configPath := writeFile(t, manifest.Data["controller-config.yaml"])
+	eff, err := config.ControllerEffective(configPath)
+	require.NoError(t, err)
+	require.Len(t, eff.AgentAuth.KubernetesClusters, 1)
+	assert.Equal(t, "in-cluster", eff.AgentAuth.KubernetesClusters[0].Name)
+	require.Len(t, eff.AgentAuth.KubernetesEnrollmentPolicies, 1)
+	policy, err := eff.AgentAuth.KubernetesEnrollmentPolicies[0].StorePolicy()
+	require.NoError(t, err)
+	assert.True(t, policy.Enabled)
+	assert.Equal(t, "unified-cd-k8s-agents", policy.Name)
+	assert.Equal(t, []string{"kind:kubernetes"}, policy.RequiredLabels)
 }
 
 // ── AgentEffective ──────────────────────────────────────────────────────────

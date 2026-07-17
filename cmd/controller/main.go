@@ -121,6 +121,28 @@ func configureKubernetesEnrollmentClient(kubeConfig *rest.Config) {
 	kubeConfig.Timeout = controller.KubernetesEnrollmentRequestTimeout
 }
 
+type enrollmentPolicyBootstrapStore interface {
+	UpsertAgentEnrollmentPolicy(context.Context, store.AgentEnrollmentPolicy) (*store.AgentEnrollmentPolicy, error)
+}
+
+// bootstrapKubernetesEnrollmentPolicies persists declarative workload identity
+// policies before the controller starts accepting agent enrollment requests.
+func bootstrapKubernetesEnrollmentPolicies(ctx context.Context, st enrollmentPolicyBootstrapStore, auth *config.ControllerAgentAuthConfig) error {
+	if auth == nil {
+		return nil
+	}
+	for _, configured := range auth.KubernetesEnrollmentPolicies {
+		policy, err := configured.StorePolicy()
+		if err != nil {
+			return err
+		}
+		if _, err := st.UpsertAgentEnrollmentPolicy(ctx, policy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func main() {
 	// Pre-scan os.Args for -f so we can load the config file before defining
 	// other flags. This gives priority: env vars → config file → CLI flags.
@@ -197,6 +219,10 @@ func main() {
 		slog.Error("migrate", "error", err)
 		os.Exit(1)
 	}
+	if err := bootstrapKubernetesEnrollmentPolicies(ctx, pg, eff.AgentAuth); err != nil {
+		slog.Error("bootstrap kubernetes enrollment policies", "error", err)
+		os.Exit(1)
+	}
 
 	// Metrics: DB-backed gauges + store decorator counting run/step
 	// transitions. staleAfter=90s matches the stuck-run reaper's window.
@@ -261,7 +287,7 @@ func main() {
 
 	verifiers := make(map[string]controller.KubernetesEnrollmentVerifier, len(eff.AgentAuth.KubernetesClusters))
 	for _, cluster := range eff.AgentAuth.KubernetesClusters {
-		kubeConfig, err := clientcmd.BuildConfigFromFlags("", cluster.Kubeconfig)
+		kubeConfig, err := buildKubernetesEnrollmentConfig(cluster.Kubeconfig)
 		if err != nil {
 			slog.Error("kubernetes enrollment cluster configuration", "cluster", cluster.Name, "error", err)
 			os.Exit(1)
@@ -407,6 +433,15 @@ func main() {
 		slog.Error("listen", "error", err)
 		os.Exit(1)
 	}
+}
+
+var inClusterKubernetesConfig = rest.InClusterConfig
+
+func buildKubernetesEnrollmentConfig(kubeconfig string) (*rest.Config, error) {
+	if kubeconfig == "" {
+		return inClusterKubernetesConfig()
+	}
+	return clientcmd.BuildConfigFromFlags("", kubeconfig)
 }
 
 // envIntOr parses an integer environment variable, falling back to def when

@@ -130,13 +130,12 @@ still-functional-if-imprecise behavior.
 Create `k8s-agent-config.yaml`:
 
 ```yaml
-# Master server URL and agent token
+# Controller URL and workload enrollment policy
 server: http://unified-cd-master:8080
-token: your-agent-token
-
-agentId: k8s-agent-1
+enrollmentPolicy: unified-cd-k8s-agents
+serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
 labels:
-  - kind:k8s          # used for agentSelector routing in Job definitions
+  - kind:kubernetes   # requested label; controller policy is authoritative
 
 namespace: ci          # Kubernetes namespace where job Pods are created
 maxConcurrent: 100     # max concurrent Pods (0/unset -> 100; negative -> unlimited; see below)
@@ -175,6 +174,10 @@ podTemplates:
 ```
 
 ### 2. Starting the agent
+
+Before starting a Pod agent, configure the controller with a Kubernetes cluster verifier and an enabled policy that binds the exact agent ServiceAccount and namespace. The default manifests declare `in-cluster` and `unified-cd-k8s-agents`; its policy accepts only ServiceAccount `unified-cd-k8s-agent` in namespace `unified-cd`, `kind:kubernetes`, and `pod`/`container` capabilities. The controller must run with the TokenReview and bounded Pod-read RBAC in `manifests/base/controller/rbac.yaml`.
+
+The agent Pod mounts a projected ServiceAccount token with audience `unified-cd-agent-enrollment`. It exchanges that token for a short-lived access token in memory; it never stores a refresh token or receives a shared controller token.
 
 The k8s-agent has no `make build` target; build it from source or use its Docker image:
 
@@ -225,7 +228,7 @@ metadata:
   name: go-build
 spec:
   agentSelector:
-    - kind:k8s
+    - kind:kubernetes
   podTemplate:
     name: golang        # uses podTemplates.golang from k8s-agent-config.yaml
   steps:
@@ -246,7 +249,7 @@ metadata:
   name: python-lint
 spec:
   agentSelector:
-    - kind:k8s
+    - kind:kubernetes
   podTemplate:
     workspace:
       mountPath: /workspace

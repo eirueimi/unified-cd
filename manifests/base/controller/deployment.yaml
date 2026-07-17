@@ -20,6 +20,7 @@ spec:
       containers:
         - name: controller
           image: ghcr.io/eirueimi/unified-cd-controller:latest
+          args: ["-f", "/etc/unified-cd/controller-config.yaml"]
           ports:
             - containerPort: 8080
           envFrom:
@@ -35,3 +36,12 @@ spec:
               path: /readyz
               port: 8080
             periodSeconds: 10
+          volumeMounts:
+            - name: controller-config
+              mountPath: /etc/unified-cd/controller-config.yaml
+              subPath: controller-config.yaml
+              readOnly: true
+      volumes:
+        - name: controller-config
+          configMap:
+            name: unified-cd-controller-config

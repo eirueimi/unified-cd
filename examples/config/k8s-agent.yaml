@@ -1,10 +1,8 @@
 server: http://unified-cd-master:8080
-token: your-agent-token
-# agentId is overridden by UNIFIED_K8S_AGENT_ID env var when running in Kubernetes,
-# so each pod in a replicated Deployment gets a unique ID from its pod name.
-agentId: k8s-agent-1
+enrollmentPolicy: unified-cd-k8s-agents
+serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
 labels:
-  - kind:k8s
+  - kind:kubernetes
 namespace: ci
 maxConcurrent: 5
 # poolIdleTimeout: how long idle pooled pods are kept before deletion (e.g. "30m", "1h").

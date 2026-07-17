@@ -129,6 +129,27 @@ metadata:
 ---
 apiVersion: v1
 data:
+  controller-config.yaml: |
+    agentAuth:
+      kubernetesClusters:
+        - name: in-cluster
+      kubernetesEnrollmentPolicies:
+        - name: unified-cd-k8s-agents
+          cluster: in-cluster
+          namespaces: [unified-cd]
+          serviceAccounts: [unified-cd-k8s-agent]
+          allowedLabels: [kind:kubernetes]
+          requiredLabels: [kind:kubernetes]
+          capabilities: [pod, container]
+          accessTokenTTL: 1h
+          enabled: true
+kind: ConfigMap
+metadata:
+  name: unified-cd-controller-config
+  namespace: unified-cd
+---
+apiVersion: v1
+data:
   k8s-agent-config.yaml: |
     server: http://unified-cd-controller.unified-cd.svc.cluster.local
     enrollmentPolicy: unified-cd-k8s-agents
@@ -355,7 +376,10 @@ spec:
         app: unified-cd-controller
     spec:
       containers:
-      - envFrom:
+      - args:
+        - -f
+        - /etc/unified-cd/controller-config.yaml
+        envFrom:
         - secretRef:
             name: unified-cd-controller
         image: ghcr.io/eirueimi/unified-cd-controller:latest
@@ -372,8 +396,17 @@ spec:
             path: /readyz
             port: 8080
           periodSeconds: 10
+        volumeMounts:
+        - mountPath: /etc/unified-cd/controller-config.yaml
+          name: controller-config
+          readOnly: true
+          subPath: controller-config.yaml
       serviceAccountName: unified-cd-controller
       terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          name: unified-cd-controller-config
+        name: controller-config
 ---
 apiVersion: apps/v1
 kind: Deployment

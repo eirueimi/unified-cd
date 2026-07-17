@@ -22,6 +22,22 @@ s3Secret: garageadmin12345
 # Local object store alternative to S3 (mutually exclusive with s3*)
 # dataDir: /var/lib/unified-cd
 
+# Kubernetes workload enrollment for k8s-agent Pods. With no kubeconfig, the
+# controller uses its in-cluster ServiceAccount identity.
+agentAuth:
+  kubernetesClusters:
+    - name: in-cluster
+  kubernetesEnrollmentPolicies:
+    - name: unified-cd-k8s-agents
+      cluster: in-cluster
+      namespaces: [unified-cd]
+      serviceAccounts: [unified-cd-k8s-agent]
+      allowedLabels: [kind:kubernetes]
+      requiredLabels: [kind:kubernetes]
+      capabilities: [pod, container]
+      accessTokenTTL: 1h
+      enabled: true
+
 # OIDC SSO (optional)
 # oidc:
 #   issuer: https://accounts.google.com
