@@ -20,6 +20,8 @@ import (
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // auditRetentionDaysDefault resolves the --audit-retention-days flag default
@@ -250,7 +252,21 @@ func main() {
 		slog.Warn("no object store configured — log archival disabled")
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
+	verifiers := make(map[string]controller.KubernetesEnrollmentVerifier, len(eff.AgentAuth.KubernetesClusters))
+	for _, cluster := range eff.AgentAuth.KubernetesClusters {
+		kubeConfig, err := clientcmd.BuildConfigFromFlags("", cluster.Kubeconfig)
+		if err != nil {
+			slog.Error("kubernetes enrollment cluster configuration", "cluster", cluster.Name, "error", err)
+			os.Exit(1)
+		}
+		client, err := kubernetes.NewForConfig(kubeConfig)
+		if err != nil {
+			slog.Error("kubernetes enrollment client", "cluster", cluster.Name, "error", err)
+			os.Exit(1)
+		}
+		verifiers[cluster.Name] = controller.NewKubernetesEnrollmentVerifier(cluster.Name, client)
+	}
+	srv := controller.NewServer(controller.Config{Token: *token, LegacyAgentToken: eff.AgentAuth.LegacySharedToken, KubernetesEnrollmentVerifiers: verifiers, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
 	srv.SetMetrics(m)
 	srv.SetKeyManager(km)
 	if obj != nil {

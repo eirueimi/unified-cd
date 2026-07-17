@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -13,6 +14,65 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPostgres_EnrollmentPolicyCRUD(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	policy := AgentEnrollmentPolicy{
+		Name: "prod-kubernetes", Provider: "kubernetes",
+		ProviderConfig:     json.RawMessage(`{"cluster":"prod"}`),
+		SubjectConstraints: json.RawMessage(`{"namespaces":["unified-cd"],"serviceAccounts":["unified-cd-k8s-agent"]}`),
+		AgentIDTemplate:    "k8s:{cluster}:{namespace}:{podUID}",
+		AllowedLabels:      []string{"kind:kubernetes", "pool:prod"}, RequiredLabels: []string{"kind:kubernetes"},
+		AuthorizedCapabilities: []string{"pod"}, AccessTokenTTL: 15 * time.Minute, Enabled: true,
+	}
+	created, err := pg.UpsertAgentEnrollmentPolicy(ctx, policy)
+	require.NoError(t, err)
+	require.NotEmpty(t, created.ID)
+	assert.JSONEq(t, string(policy.ProviderConfig), string(created.ProviderConfig))
+	assert.JSONEq(t, string(policy.SubjectConstraints), string(created.SubjectConstraints))
+	assert.Equal(t, policy.AllowedLabels, created.AllowedLabels)
+	assert.Equal(t, policy.RequiredLabels, created.RequiredLabels)
+	assert.Equal(t, policy.AuthorizedCapabilities, created.AuthorizedCapabilities)
+
+	got, err := pg.GetAgentEnrollmentPolicy(ctx, policy.Name)
+	require.NoError(t, err)
+	assert.Equal(t, created.ID, got.ID)
+	assert.True(t, got.Enabled)
+
+	createdAt := created.UpdatedAt
+	policy.Enabled = false
+	policy.AccessTokenTTL = 20 * time.Minute
+	updated, err := pg.UpsertAgentEnrollmentPolicy(ctx, policy)
+	require.NoError(t, err)
+	assert.False(t, updated.Enabled)
+	assert.True(t, updated.UpdatedAt.After(createdAt) || updated.UpdatedAt.Equal(createdAt))
+
+	_, err = pg.UpsertAgentEnrollmentPolicy(ctx, AgentEnrollmentPolicy{Name: "aaa", Provider: "kubernetes", ProviderConfig: policy.ProviderConfig, SubjectConstraints: policy.SubjectConstraints, AgentIDTemplate: policy.AgentIDTemplate, AccessTokenTTL: 5 * time.Minute, Enabled: true})
+	require.NoError(t, err)
+	policies, err := pg.ListAgentEnrollmentPolicies(ctx)
+	require.NoError(t, err)
+	require.Len(t, policies, 2)
+	assert.Equal(t, []string{"aaa", "prod-kubernetes"}, []string{policies[0].Name, policies[1].Name})
+	require.NoError(t, pg.DeleteAgentEnrollmentPolicy(ctx, policy.Name))
+	missing, err := pg.GetAgentEnrollmentPolicy(ctx, policy.Name)
+	require.NoError(t, err)
+	assert.Nil(t, missing)
+}
+
+func TestPostgres_EnrollmentPolicyRejectsInvalidTTLAndTemplate(t *testing.T) {
+	pg := NewTestPostgres(t)
+	validConfig := json.RawMessage(`{"cluster":"prod"}`)
+	validConstraints := json.RawMessage(`{"namespaces":["unified-cd"],"serviceAccounts":["unified-cd-k8s-agent"]}`)
+	for _, policy := range []AgentEnrollmentPolicy{
+		{Name: "short", Provider: "kubernetes", ProviderConfig: validConfig, SubjectConstraints: validConstraints, AgentIDTemplate: "k8s:{cluster}:{namespace}:{podUID}", AccessTokenTTL: 4 * time.Minute},
+		{Name: "long", Provider: "kubernetes", ProviderConfig: validConfig, SubjectConstraints: validConstraints, AgentIDTemplate: "k8s:{cluster}:{namespace}:{podUID}", AccessTokenTTL: 4*time.Hour + time.Nanosecond},
+		{Name: "template", Provider: "kubernetes", ProviderConfig: validConfig, SubjectConstraints: validConstraints, AgentIDTemplate: "k8s:{cluster}:{subject}", AccessTokenTTL: 5 * time.Minute},
+	} {
+		_, err := pg.UpsertAgentEnrollmentPolicy(t.Context(), policy)
+		require.Error(t, err, policy.Name)
+	}
+}
 
 func TestPostgres_ConsumeAgentEnrollmentIsSingleUse(t *testing.T) {
 	pg := NewTestPostgres(t)

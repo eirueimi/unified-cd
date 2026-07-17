@@ -166,16 +166,107 @@ func identityMeta(identity store.AgentIdentity) api.AgentIdentityMeta {
 	}
 }
 
+func enrollmentPolicyFromRequest(name string, req api.AgentEnrollmentPolicyRequest) (store.AgentEnrollmentPolicy, error) {
+	if name == "" {
+		name = strings.TrimSpace(req.Name)
+	}
+	ttl, err := time.ParseDuration(req.AccessTokenTTL)
+	if err != nil {
+		return store.AgentEnrollmentPolicy{}, errors.New("invalid accessTokenTTL")
+	}
+	providerConfig, _ := json.Marshal(map[string]string{"cluster": req.Cluster})
+	constraints, _ := json.Marshal(map[string][]string{"namespaces": req.Namespaces, "serviceAccounts": req.ServiceAccounts})
+	return store.AgentEnrollmentPolicy{Name: name, Provider: req.Provider, ProviderConfig: providerConfig, SubjectConstraints: constraints, AgentIDTemplate: req.AgentIDTemplate, AllowedLabels: req.AllowedLabels, RequiredLabels: req.RequiredLabels, AuthorizedCapabilities: req.Capabilities, AccessTokenTTL: ttl, Enabled: req.Enabled}, nil
+}
+
+func (s *Server) upsertAgentEnrollmentPolicy(w http.ResponseWriter, r *http.Request, name string, status int) {
+	var req api.AgentEnrollmentPolicyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	policy, err := enrollmentPolicyFromRequest(name, req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for _, capability := range policy.AuthorizedCapabilities {
+		if !dsl.ValidCapability(capability) {
+			http.Error(w, "unknown capability: "+capability, http.StatusBadRequest)
+			return
+		}
+	}
+	created, err := s.store.UpsertAgentEnrollmentPolicy(r.Context(), policy)
+	if err != nil {
+		http.Error(w, "invalid enrollment policy: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, status, enrollmentPolicyResponse(*created))
+}
+func (s *Server) handleCreateAgentEnrollmentPolicy(w http.ResponseWriter, r *http.Request) {
+	s.upsertAgentEnrollmentPolicy(w, r, "", http.StatusCreated)
+}
+func (s *Server) handleUpdateAgentEnrollmentPolicy(w http.ResponseWriter, r *http.Request) {
+	s.upsertAgentEnrollmentPolicy(w, r, chi.URLParam(r, "name"), http.StatusOK)
+}
+func (s *Server) handleGetAgentEnrollmentPolicy(w http.ResponseWriter, r *http.Request) {
+	policy, err := s.store.GetAgentEnrollmentPolicy(r.Context(), chi.URLParam(r, "name"))
+	if err != nil {
+		http.Error(w, "get enrollment policy", http.StatusInternalServerError)
+		return
+	}
+	if policy == nil {
+		http.Error(w, "enrollment policy not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, enrollmentPolicyResponse(*policy))
+}
+func (s *Server) handleListAgentEnrollmentPolicies(w http.ResponseWriter, r *http.Request) {
+	policies, err := s.store.ListAgentEnrollmentPolicies(r.Context())
+	if err != nil {
+		http.Error(w, "list enrollment policies", http.StatusInternalServerError)
+		return
+	}
+	result := make([]api.AgentEnrollmentPolicyRequest, 0, len(policies))
+	for _, policy := range policies {
+		result = append(result, enrollmentPolicyResponse(policy))
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+func (s *Server) handleDeleteAgentEnrollmentPolicy(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteAgentEnrollmentPolicy(r.Context(), chi.URLParam(r, "name")); err != nil {
+		http.Error(w, "delete enrollment policy", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func enrollmentPolicyResponse(policy store.AgentEnrollmentPolicy) api.AgentEnrollmentPolicyRequest {
+	var config struct {
+		Cluster string `json:"cluster"`
+	}
+	var constraints struct {
+		Namespaces      []string `json:"namespaces"`
+		ServiceAccounts []string `json:"serviceAccounts"`
+	}
+	_ = json.Unmarshal(policy.ProviderConfig, &config)
+	_ = json.Unmarshal(policy.SubjectConstraints, &constraints)
+	return api.AgentEnrollmentPolicyRequest{Name: policy.Name, Provider: policy.Provider, Cluster: config.Cluster, Namespaces: constraints.Namespaces, ServiceAccounts: constraints.ServiceAccounts, AgentIDTemplate: policy.AgentIDTemplate, AllowedLabels: policy.AllowedLabels, RequiredLabels: policy.RequiredLabels, Capabilities: policy.AuthorizedCapabilities, AccessTokenTTL: policy.AccessTokenTTL.String(), Enabled: policy.Enabled}
+}
+
 // handleAgentEnroll exchanges a valid one-time enrollment credential for the
 // VM's initial short-lived access and refresh credentials.
 func (s *Server) handleAgentEnroll(w http.ResponseWriter, r *http.Request) {
-	if !s.allowAgentCredentialRequest(w, r, "one-time-token", "agent.enrollment.exchange") {
-		return
-	}
 	var req api.AgentEnrollRequest
 	if r.ContentLength > 0 && json.NewDecoder(r.Body).Decode(&req) != nil {
 		s.recordAgentAuth("one-time-token", "failure", "invalid")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if req.Provider == "kubernetes" {
+		s.handleKubernetesAgentEnroll(w, r, req)
+		return
+	}
+	if !s.allowAgentCredentialRequest(w, r, "one-time-token", "agent.enrollment.exchange") {
 		return
 	}
 	token, ok := bearerToken(r)
@@ -214,6 +305,99 @@ func (s *Server) handleAgentEnroll(w http.ResponseWriter, r *http.Request) {
 	s.recordAgentAuth("one-time-token", "success", "ok")
 	s.auditAgentCredential(r, "agent.enrollment.exchange", identity.AgentID, http.StatusOK)
 	writeJSON(w, http.StatusOK, agentTokenResponse(identity, access.Plaintext, refresh.Plaintext, now))
+}
+
+func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Request, req api.AgentEnrollRequest) {
+	if !s.allowAgentCredentialRequest(w, r, "kubernetes", "agent.enrollment.exchange") {
+		return
+	}
+	token, ok := bearerToken(r)
+	if !ok {
+		s.recordAgentAuth("kubernetes", "failure", "invalid")
+		http.Error(w, "enrollment policy rejected", http.StatusForbidden)
+		return
+	}
+	if s.store == nil {
+		s.recordAgentAuth("kubernetes", "failure", "unavailable")
+		http.Error(w, "kubernetes identity unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	policy, err := s.store.GetAgentEnrollmentPolicy(r.Context(), req.Policy)
+	if err != nil {
+		s.recordAgentAuth("kubernetes", "failure", "unavailable")
+		http.Error(w, "kubernetes identity unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if policy == nil || !policy.Enabled || policy.Provider != "kubernetes" {
+		s.recordAgentAuth("kubernetes", "failure", "policy")
+		http.Error(w, "enrollment policy rejected", http.StatusForbidden)
+		return
+	}
+	var providerConfig struct {
+		Cluster string `json:"cluster"`
+	}
+	if json.Unmarshal(policy.ProviderConfig, &providerConfig) != nil {
+		s.recordAgentAuth("kubernetes", "failure", "policy")
+		http.Error(w, "enrollment policy rejected", http.StatusForbidden)
+		return
+	}
+	verifier := s.kubernetesEnrollmentVerifiers[providerConfig.Cluster]
+	if verifier == nil {
+		s.recordAgentAuth("kubernetes", "failure", "unavailable")
+		http.Error(w, "kubernetes identity unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	identity, err := verifier.Verify(r.Context(), token, *policy)
+	if err != nil {
+		if errors.Is(err, ErrKubernetesEnrollmentUnavailable) {
+			s.recordAgentAuth("kubernetes", "failure", "unavailable")
+			http.Error(w, "kubernetes identity unavailable", http.StatusServiceUnavailable)
+		} else {
+			s.recordAgentAuth("kubernetes", "failure", "policy")
+			http.Error(w, "enrollment policy rejected", http.StatusForbidden)
+		}
+		return
+	}
+	labels, capabilities, ok := authorizedKubernetesRequest(req, *policy)
+	if !ok {
+		s.recordAgentAuth("kubernetes", "failure", "policy")
+		http.Error(w, "enrollment policy rejected", http.StatusForbidden)
+		return
+	}
+	access, err := agentauth.Generate(agentauth.AccessToken)
+	if err != nil {
+		s.recordAgentAuth("kubernetes", "failure", "unavailable")
+		http.Error(w, "kubernetes identity unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	now := time.Now()
+	agentID := "k8s:" + identity.Cluster + ":" + identity.Namespace + ":" + identity.PodUID
+	agentIdentity, err := s.store.IssueExternalAgentAccess(r.Context(), store.AgentCredentialIssue{AgentID: agentID, EnrollmentMethod: "kubernetes", ExternalSubject: agentID, AuthorizedLabels: labels, AuthorizedCapabilities: capabilities, Access: newAgentCredential(access, "access", "", 0, now.Add(policy.AccessTokenTTL))})
+	if err != nil {
+		s.respondAgentCredentialError(r, w, "kubernetes", "agent.enrollment.exchange", policy.Name, err)
+		return
+	}
+	s.recordAgentAuth("kubernetes", "success", "ok")
+	s.auditAgentCredential(r, "agent.enrollment.exchange", policy.Name, http.StatusOK)
+	writeJSON(w, http.StatusOK, api.AgentTokenResponse{AgentID: agentIdentity.AgentID, AccessToken: access.Plaintext, AccessExpiresAt: now.Add(policy.AccessTokenTTL), Labels: agentIdentity.AuthorizedLabels, Capabilities: agentIdentity.AuthorizedCapabilities})
+}
+
+func authorizedKubernetesRequest(req api.AgentEnrollRequest, policy store.AgentEnrollmentPolicy) ([]string, []string, bool) {
+	labels := append([]string(nil), policy.RequiredLabels...)
+	for _, label := range req.Labels {
+		if !contains(policy.AllowedLabels, label) {
+			return nil, nil, false
+		}
+		if !contains(labels, label) {
+			labels = append(labels, label)
+		}
+	}
+	for _, capability := range req.Capabilities {
+		if !contains(policy.AuthorizedCapabilities, capability) {
+			return nil, nil, false
+		}
+	}
+	return labels, append([]string(nil), req.Capabilities...), true
 }
 
 // handleAgentRefresh rotates a VM refresh credential. Access credentials are

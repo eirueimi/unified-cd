@@ -3,12 +3,106 @@ package store
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
+
+const (
+	minAgentEnrollmentPolicyTTL = 5 * time.Minute
+	maxAgentEnrollmentPolicyTTL = 4 * time.Hour
+	kubernetesAgentIDTemplate   = "k8s:{cluster}:{namespace}:{podUID}"
+)
+
+type kubernetesPolicyConfig struct {
+	Cluster string `json:"cluster"`
+}
+type kubernetesSubjectConstraints struct {
+	Namespaces      []string `json:"namespaces"`
+	ServiceAccounts []string `json:"serviceAccounts"`
+}
+
+func validateAgentEnrollmentPolicy(policy AgentEnrollmentPolicy) error {
+	if policy.Name == "" || policy.Provider != "kubernetes" {
+		return errors.New("policy name and kubernetes provider are required")
+	}
+	if policy.AgentIDTemplate != kubernetesAgentIDTemplate {
+		return fmt.Errorf("unsupported agent ID template")
+	}
+	if policy.AccessTokenTTL < minAgentEnrollmentPolicyTTL || policy.AccessTokenTTL > maxAgentEnrollmentPolicyTTL {
+		return fmt.Errorf("access token TTL must be between 5m and 4h")
+	}
+	var cfg kubernetesPolicyConfig
+	var constraints kubernetesSubjectConstraints
+	if json.Unmarshal(policy.ProviderConfig, &cfg) != nil || cfg.Cluster == "" || json.Unmarshal(policy.SubjectConstraints, &constraints) != nil || len(constraints.Namespaces) == 0 || len(constraints.ServiceAccounts) == 0 {
+		return errors.New("invalid kubernetes enrollment policy constraints")
+	}
+	return nil
+}
+
+func (p *Postgres) UpsertAgentEnrollmentPolicy(ctx context.Context, policy AgentEnrollmentPolicy) (*AgentEnrollmentPolicy, error) {
+	if err := validateAgentEnrollmentPolicy(policy); err != nil {
+		return nil, err
+	}
+	const q = `INSERT INTO agent_enrollment_policies (name, provider, provider_config, subject_constraints, agent_id_template, allowed_labels, required_labels, authorized_capabilities, access_token_ttl_seconds, enabled)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (name) DO UPDATE SET provider=EXCLUDED.provider, provider_config=EXCLUDED.provider_config, subject_constraints=EXCLUDED.subject_constraints, agent_id_template=EXCLUDED.agent_id_template, allowed_labels=EXCLUDED.allowed_labels, required_labels=EXCLUDED.required_labels, authorized_capabilities=EXCLUDED.authorized_capabilities, access_token_ttl_seconds=EXCLUDED.access_token_ttl_seconds, enabled=EXCLUDED.enabled, updated_at=NOW()
+		RETURNING id::text,name,provider,provider_config,subject_constraints,agent_id_template,allowed_labels,required_labels,authorized_capabilities,access_token_ttl_seconds,enabled,created_at,updated_at`
+	var result AgentEnrollmentPolicy
+	var ttlSeconds int64
+	err := p.pool.QueryRow(ctx, q, policy.Name, policy.Provider, policy.ProviderConfig, policy.SubjectConstraints, policy.AgentIDTemplate, nonNilStrings(policy.AllowedLabels), nonNilStrings(policy.RequiredLabels), nonNilStrings(policy.AuthorizedCapabilities), int64(policy.AccessTokenTTL/time.Second), policy.Enabled).Scan(&result.ID, &result.Name, &result.Provider, &result.ProviderConfig, &result.SubjectConstraints, &result.AgentIDTemplate, &result.AllowedLabels, &result.RequiredLabels, &result.AuthorizedCapabilities, &ttlSeconds, &result.Enabled, &result.CreatedAt, &result.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("upsert enrollment policy: %w", err)
+	}
+	result.AccessTokenTTL = time.Duration(ttlSeconds) * time.Second
+	return &result, nil
+}
+
+func (p *Postgres) GetAgentEnrollmentPolicy(ctx context.Context, name string) (*AgentEnrollmentPolicy, error) {
+	const q = `SELECT id::text,name,provider,provider_config,subject_constraints,agent_id_template,allowed_labels,required_labels,authorized_capabilities,access_token_ttl_seconds,enabled,created_at,updated_at FROM agent_enrollment_policies WHERE name=$1`
+	var result AgentEnrollmentPolicy
+	var ttlSeconds int64
+	err := p.pool.QueryRow(ctx, q, name).Scan(&result.ID, &result.Name, &result.Provider, &result.ProviderConfig, &result.SubjectConstraints, &result.AgentIDTemplate, &result.AllowedLabels, &result.RequiredLabels, &result.AuthorizedCapabilities, &ttlSeconds, &result.Enabled, &result.CreatedAt, &result.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get enrollment policy: %w", err)
+	}
+	result.AccessTokenTTL = time.Duration(ttlSeconds) * time.Second
+	return &result, nil
+}
+
+func (p *Postgres) ListAgentEnrollmentPolicies(ctx context.Context) ([]AgentEnrollmentPolicy, error) {
+	const q = `SELECT id::text,name,provider,provider_config,subject_constraints,agent_id_template,allowed_labels,required_labels,authorized_capabilities,access_token_ttl_seconds,enabled,created_at,updated_at FROM agent_enrollment_policies ORDER BY name`
+	rows, err := p.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list enrollment policies: %w", err)
+	}
+	defer rows.Close()
+	var result []AgentEnrollmentPolicy
+	for rows.Next() {
+		var item AgentEnrollmentPolicy
+		var ttlSeconds int64
+		if err := rows.Scan(&item.ID, &item.Name, &item.Provider, &item.ProviderConfig, &item.SubjectConstraints, &item.AgentIDTemplate, &item.AllowedLabels, &item.RequiredLabels, &item.AuthorizedCapabilities, &ttlSeconds, &item.Enabled, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan enrollment policy: %w", err)
+		}
+		item.AccessTokenTTL = time.Duration(ttlSeconds) * time.Second
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (p *Postgres) DeleteAgentEnrollmentPolicy(ctx context.Context, name string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM agent_enrollment_policies WHERE name=$1`, name)
+	if err != nil {
+		return fmt.Errorf("delete enrollment policy: %w", err)
+	}
+	return nil
+}
 
 func (p *Postgres) CreateAgentEnrollmentToken(ctx context.Context, token AgentEnrollmentToken, tokenHash string) (*AgentEnrollmentToken, error) {
 	const q = `

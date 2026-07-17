@@ -4,9 +4,19 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+type ControllerAgentAuthConfig struct {
+	LegacySharedToken  string                              `yaml:"legacySharedToken"`
+	KubernetesClusters []ControllerKubernetesClusterConfig `yaml:"kubernetesClusters"`
+}
+type ControllerKubernetesClusterConfig struct {
+	Name       string `yaml:"name"`
+	Kubeconfig string `yaml:"kubeconfig"`
+}
 
 // ControllerOIDCConfig holds OIDC provider settings.
 type ControllerOIDCConfig struct {
@@ -46,8 +56,9 @@ type ControllerConfig struct {
 	UIProxyTarget string `yaml:"uiProxyTarget"`
 	// StderrPlain, when true, tells the web UI to render step stderr in the run
 	// log with the same color as stdout instead of red. Default (false) = red.
-	StderrPlain bool                  `yaml:"stderrPlain"`
-	OIDC        *ControllerOIDCConfig `yaml:"oidc"`
+	StderrPlain bool                       `yaml:"stderrPlain"`
+	OIDC        *ControllerOIDCConfig      `yaml:"oidc"`
+	AgentAuth   *ControllerAgentAuthConfig `yaml:"agentAuth"`
 	// InsecureCookies disables the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES).
 	InsecureCookies bool `yaml:"insecureCookies"`
 }
@@ -102,6 +113,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		UIProxyTarget:   os.Getenv("UNIFIED_UI_PROXY_TARGET"),
 		StderrPlain:     envBool("UNIFIED_LOG_STDERR_PLAIN"),
 		InsecureCookies: envBool("UNIFIED_INSECURE_COOKIES"),
+		AgentAuth:       &ControllerAgentAuthConfig{LegacySharedToken: os.Getenv("UNIFIED_AGENT_LEGACY_TOKEN")},
 	}
 	// OIDC from env vars
 	oidcIssuer := os.Getenv("UNIFIED_OIDC_ISSUER")
@@ -201,5 +213,35 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 			eff.OIDC.DefaultRole = file.OIDC.DefaultRole
 		}
 	}
+	if file.AgentAuth != nil {
+		// Cluster credentials are YAML-only.  The legacy token intentionally
+		// remains env-only so config files do not accidentally contain a secret.
+		eff.AgentAuth.KubernetesClusters = append([]ControllerKubernetesClusterConfig(nil), file.AgentAuth.KubernetesClusters...)
+	}
+	if err := validateControllerAgentAuth(eff.AgentAuth); err != nil {
+		return nil, err
+	}
 	return eff, nil
+}
+
+func validateControllerAgentAuth(cfg *ControllerAgentAuthConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	emptyKubeconfigs := 0
+	for _, cluster := range cfg.KubernetesClusters {
+		name := strings.TrimSpace(cluster.Name)
+		if name == "" || seen[name] {
+			return fmt.Errorf("agentAuth kubernetes cluster names must be non-empty and unique")
+		}
+		seen[name] = true
+		if strings.TrimSpace(cluster.Kubeconfig) == "" {
+			emptyKubeconfigs++
+		}
+	}
+	if emptyKubeconfigs > 1 {
+		return fmt.Errorf("at most one kubernetes cluster may omit kubeconfig")
+	}
+	return nil
 }

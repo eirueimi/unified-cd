@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/eirueimi/unified-cd/internal/config"
 )
 
 // ── FindFlag ────────────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ func TestAgentEffective_EnvPreservedWhenFileEmpty(t *testing.T) {
 	eff, err := config.AgentEffective(path)
 	require.NoError(t, err)
 	assert.Equal(t, "http://env-server", eff.Server) // env preserved
-	assert.Equal(t, "only-id", eff.ID)              // file wins
+	assert.Equal(t, "only-id", eff.ID)               // file wins
 }
 
 func TestAgentEffective_UnknownFieldRejected(t *testing.T) {
@@ -148,6 +148,33 @@ func TestControllerEffective_EnvOnly(t *testing.T) {
 	assert.Equal(t, "postgres://env", eff.DSN)
 	assert.Equal(t, "env-token", eff.Token)
 	assert.Nil(t, eff.OIDC)
+	require.NotNil(t, eff.AgentAuth)
+}
+
+func TestControllerAgentAuth_UsesEnvOnlyForLegacyToken(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_LEGACY_TOKEN", "legacy")
+	path := writeFile(t, `agentAuth:
+  kubernetesClusters:
+    - name: prod
+      kubeconfig: /secrets/prod-kubeconfig
+`)
+	eff, err := config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.NotNil(t, eff.AgentAuth)
+	assert.Equal(t, "legacy", eff.AgentAuth.LegacySharedToken)
+	require.Len(t, eff.AgentAuth.KubernetesClusters, 1)
+	assert.Equal(t, "prod", eff.AgentAuth.KubernetesClusters[0].Name)
+}
+
+func TestControllerAgentAuth_RejectsInvalidKubernetesClusters(t *testing.T) {
+	for _, yaml := range []string{
+		"agentAuth:\n  kubernetesClusters:\n    - name: ''\n      kubeconfig: /one\n",
+		"agentAuth:\n  kubernetesClusters:\n    - name: prod\n      kubeconfig: /one\n    - name: prod\n      kubeconfig: /two\n",
+		"agentAuth:\n  kubernetesClusters:\n    - name: one\n    - name: two\n",
+	} {
+		_, err := config.ControllerEffective(writeFile(t, yaml))
+		require.Error(t, err)
+	}
 }
 
 func TestControllerEffective_FileOverridesEnv(t *testing.T) {

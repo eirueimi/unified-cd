@@ -5,8 +5,24 @@ import "time"
 // AgentEnrollRequest supplies optional bounded policy context for an agent
 // credential exchange. It deliberately contains no agent identity.
 type AgentEnrollRequest struct {
-	Provider string `json:"provider"`
-	Policy   string `json:"policy,omitempty"`
+	Provider     string   `json:"provider"`
+	Policy       string   `json:"policy,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+type AgentEnrollmentPolicyRequest struct {
+	Name            string   `json:"name,omitempty"`
+	Provider        string   `json:"provider"`
+	Cluster         string   `json:"cluster"`
+	Namespaces      []string `json:"namespaces"`
+	ServiceAccounts []string `json:"serviceAccounts"`
+	AgentIDTemplate string   `json:"agentIdTemplate"`
+	AllowedLabels   []string `json:"allowedLabels"`
+	RequiredLabels  []string `json:"requiredLabels"`
+	Capabilities    []string `json:"capabilities"`
+	AccessTokenTTL  string   `json:"accessTokenTTL"`
+	Enabled         bool     `json:"enabled"`
 }
 
 // AgentTokenResponse is returned only by successful credential issuance.

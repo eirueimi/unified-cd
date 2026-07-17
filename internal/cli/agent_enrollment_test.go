@@ -164,6 +164,22 @@ func TestAgentEnrollmentListAndRevokeDoNotExposeSecrets(t *testing.T) {
 	assert.Equal(t, "Bearer admin-token", tr.records[1].authorization)
 }
 
+func TestAgentEnrollmentPolicyCommandsUsePolicyAPI(t *testing.T) {
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) {
+		if path == "/api/v1/agent-enrollment-policies/prod" {
+			return http.StatusOK, []byte(`{"provider":"kubernetes","cluster":"prod"}`)
+		}
+		return http.StatusCreated, nil
+	}}
+	cmd, _ := newTestAgentLifecycleCmd(t, tr)
+	cmd.SetArgs([]string{"enrollment-policy", "create", "prod", "--cluster", "prod", "--namespace", "unified-cd", "--service-account", "unified-cd-k8s-agent", "--agent-id-template", "k8s:{cluster}:{namespace}:{podUID}", "--access-token-ttl", "15m", "--enabled"})
+	require.NoError(t, cmd.Execute())
+	require.Len(t, tr.records, 1)
+	assert.Equal(t, http.MethodPost, tr.records[0].method)
+	assert.Equal(t, "/api/v1/agent-enrollment-policies", tr.records[0].path)
+	assert.NotContains(t, string(tr.records[0].body), "kubeconfig")
+}
+
 func TestAgentIdentityCommandsUseAdminAPI(t *testing.T) {
 	tr := &captureTransport{responseFor: func(path string) (int, []byte) {
 		if path == "/api/v1/agent-identities/vm-agent-01" {

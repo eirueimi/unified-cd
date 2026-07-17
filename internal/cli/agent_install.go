@@ -41,6 +41,7 @@ func newAgentCmdWithClient(resolve func() (Config, error), httpClient *http.Clie
 	cmd.AddCommand(newAgentGetCmd(resolve, httpClient))
 	cmd.AddCommand(newAgentRunsCmd(resolve, httpClient))
 	cmd.AddCommand(newAgentEnrollmentCmd(resolve, httpClient))
+	cmd.AddCommand(newAgentEnrollmentPolicyCmd(resolve, httpClient))
 	cmd.AddCommand(newAgentIdentityCmd(resolve, httpClient))
 	return cmd
 }

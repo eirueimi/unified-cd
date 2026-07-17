@@ -23,6 +23,109 @@ func newAgentEnrollmentCmd(resolve func() (Config, error), httpClient *http.Clie
 	return cmd
 }
 
+func newAgentEnrollmentPolicyCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
+	cmd := &cobra.Command{Use: "enrollment-policy", Short: "Manage Kubernetes agent enrollment policies"}
+	cmd.AddCommand(newAgentEnrollmentPolicyWriteCmd(resolve, httpClient, "create"))
+	cmd.AddCommand(newAgentEnrollmentPolicyWriteCmd(resolve, httpClient, "update"))
+	cmd.AddCommand(newAgentEnrollmentPolicyGetCmd(resolve, httpClient))
+	cmd.AddCommand(newAgentEnrollmentPolicyListCmd(resolve, httpClient))
+	cmd.AddCommand(newAgentEnrollmentPolicyDeleteCmd(resolve, httpClient))
+	return cmd
+}
+func newAgentEnrollmentPolicyWriteCmd(resolve func() (Config, error), client *http.Client, action string) *cobra.Command {
+	var cluster, template, ttl string
+	var namespaces, serviceAccounts, allowed, required, capabilities []string
+	var enabled bool
+	cmd := &cobra.Command{Use: action + " <name>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := resolve()
+		if err != nil {
+			return err
+		}
+		body, err := json.Marshal(api.AgentEnrollmentPolicyRequest{Name: args[0], Provider: "kubernetes", Cluster: cluster, Namespaces: namespaces, ServiceAccounts: serviceAccounts, AgentIDTemplate: template, AllowedLabels: allowed, RequiredLabels: required, Capabilities: capabilities, AccessTokenTTL: ttl, Enabled: enabled})
+		if err != nil {
+			return err
+		}
+		method, path := http.MethodPost, "/api/v1/agent-enrollment-policies"
+		if action == "update" {
+			method = http.MethodPut
+			path += "/" + url.PathEscape(args[0])
+		}
+		resp, _, err := agentLifecycleRequest(context.Background(), client, cfg, method, path, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+			return agentLifecycleStatusError(resp)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "enrollment policy %q %sd\n", args[0], action)
+		return nil
+	}}
+	cmd.Flags().StringVar(&cluster, "cluster", "", "configured Kubernetes cluster name")
+	cmd.Flags().StringArrayVar(&namespaces, "namespace", nil, "allowed namespace (repeatable)")
+	cmd.Flags().StringArrayVar(&serviceAccounts, "service-account", nil, "allowed service account (repeatable)")
+	cmd.Flags().StringVar(&template, "agent-id-template", "k8s:{cluster}:{namespace}:{podUID}", "canonical agent ID template")
+	cmd.Flags().StringArrayVar(&allowed, "allowed-label", nil, "allowed agent label (repeatable)")
+	cmd.Flags().StringArrayVar(&required, "required-label", nil, "required agent label (repeatable)")
+	cmd.Flags().StringArrayVar(&capabilities, "capability", nil, "authorized capability (repeatable)")
+	cmd.Flags().StringVar(&ttl, "access-token-ttl", "1h", "access token lifetime (5m to 4h)")
+	cmd.Flags().BoolVar(&enabled, "enabled", true, "enable policy")
+	_ = cmd.MarkFlagRequired("cluster")
+	_ = cmd.MarkFlagRequired("namespace")
+	_ = cmd.MarkFlagRequired("service-account")
+	return cmd
+}
+func newAgentEnrollmentPolicyGetCmd(resolve func() (Config, error), client *http.Client) *cobra.Command {
+	return &cobra.Command{Use: "get <name>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := resolve()
+		if err != nil {
+			return err
+		}
+		resp, body, err := agentLifecycleRequest(context.Background(), client, cfg, http.MethodGet, "/api/v1/agent-enrollment-policies/"+url.PathEscape(args[0]), nil)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return agentLifecycleStatusError(resp)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), string(body))
+		return nil
+	}}
+}
+func newAgentEnrollmentPolicyListCmd(resolve func() (Config, error), client *http.Client) *cobra.Command {
+	return &cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := resolve()
+		if err != nil {
+			return err
+		}
+		resp, body, err := agentLifecycleRequest(context.Background(), client, cfg, http.MethodGet, "/api/v1/agent-enrollment-policies", nil)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return agentLifecycleStatusError(resp)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), string(body))
+		return nil
+	}}
+}
+func newAgentEnrollmentPolicyDeleteCmd(resolve func() (Config, error), client *http.Client) *cobra.Command {
+	return &cobra.Command{Use: "delete <name>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := resolve()
+		if err != nil {
+			return err
+		}
+		resp, _, err := agentLifecycleRequest(context.Background(), client, cfg, http.MethodDelete, "/api/v1/agent-enrollment-policies/"+url.PathEscape(args[0]), nil)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusNoContent {
+			return agentLifecycleStatusError(resp)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "enrollment policy %q deleted\n", args[0])
+		return nil
+	}}
+}
+
 func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	var agentID, expiresIn, outputFile string
 	var labels, capabilities []string

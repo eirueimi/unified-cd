@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -47,6 +48,25 @@ type AgentEnrollmentToken struct {
 	AuthorizedLabels, AuthorizedCapabilities []string
 	ExpiresAt, CreatedAt                     time.Time
 	UsedAt, RevokedAt                        *time.Time
+}
+
+// AgentEnrollmentPolicy constrains a non-interactive workload identity provider.
+// ProviderConfig and SubjectConstraints are provider-owned JSON shapes; credential
+// material must never be stored in either field.
+type AgentEnrollmentPolicy struct {
+	ID                     string
+	Name                   string
+	Provider               string
+	ProviderConfig         json.RawMessage
+	SubjectConstraints     json.RawMessage
+	AgentIDTemplate        string
+	AllowedLabels          []string
+	RequiredLabels         []string
+	AuthorizedCapabilities []string
+	AccessTokenTTL         time.Duration
+	Enabled                bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 // LogArchive holds log metadata for a Run that has been archived to object storage.
@@ -254,6 +274,10 @@ type Store interface {
 	CreateAgentEnrollmentToken(context.Context, AgentEnrollmentToken, string) (*AgentEnrollmentToken, error)
 	ListAgentEnrollmentTokens(context.Context) ([]AgentEnrollmentToken, error)
 	RevokeAgentEnrollmentToken(context.Context, string) error
+	UpsertAgentEnrollmentPolicy(context.Context, AgentEnrollmentPolicy) (*AgentEnrollmentPolicy, error)
+	GetAgentEnrollmentPolicy(context.Context, string) (*AgentEnrollmentPolicy, error)
+	ListAgentEnrollmentPolicies(context.Context) ([]AgentEnrollmentPolicy, error)
+	DeleteAgentEnrollmentPolicy(context.Context, string) error
 	ConsumeAgentEnrollment(ctx context.Context, enrollmentID, presentedHash string, issue AgentCredentialIssue) (*AgentIdentity, error)
 	IssueExternalAgentAccess(ctx context.Context, issue AgentCredentialIssue) (*AgentIdentity, error)
 	GetAgentCredentialForAuth(context.Context, string) (*AgentCredentialAuth, error)

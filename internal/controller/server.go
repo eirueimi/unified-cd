@@ -38,7 +38,8 @@ type Config struct {
 	// Default (false) sets Secure — Chrome/Firefox treat http://localhost as
 	// trustworthy so local dev keeps working; opt out only for plain-HTTP
 	// deployments (LAN access, Safari-based local dev).
-	InsecureCookies bool
+	InsecureCookies               bool
+	KubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
 }
 
 // OIDCConfig holds the OIDC provider configuration.
@@ -59,22 +60,23 @@ type OIDCConfig struct {
 
 // Server represents the master HTTP server.
 type Server struct {
-	cfg               Config
-	store             store.Store
-	r                 chi.Router
-	shuttingDown      atomic.Bool
-	claimDrainCh      chan struct{}           // Closed on shutdown to immediately drain all claim long-polls.
-	objStore          objectstore.ObjectStore // Archive endpoints return 501 when nil.
-	archLogs          *archivedLogs           // Serves log reads for trimmed runs; nil when objStore is nil.
-	cacheStore        objectstore.ObjectStore // nil = skip TTL cleanup
-	km                secrets.KeyManager      // Secret API returns 501 when nil.
-	oidcCfg           *OIDCConfig             // OIDC endpoints return 404 when nil.
-	dexProxy          *httputil.ReverseProxy  // /dex/* returns 404 when nil.
-	uiProxy           *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).
-	metrics           *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
-	claimedBy         *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
-	enrollmentLimiter *enrollmentLimiter
-	credentialTouches *credentialTouchLimiter
+	cfg                           Config
+	store                         store.Store
+	r                             chi.Router
+	shuttingDown                  atomic.Bool
+	claimDrainCh                  chan struct{}           // Closed on shutdown to immediately drain all claim long-polls.
+	objStore                      objectstore.ObjectStore // Archive endpoints return 501 when nil.
+	archLogs                      *archivedLogs           // Serves log reads for trimmed runs; nil when objStore is nil.
+	cacheStore                    objectstore.ObjectStore // nil = skip TTL cleanup
+	km                            secrets.KeyManager      // Secret API returns 501 when nil.
+	oidcCfg                       *OIDCConfig             // OIDC endpoints return 404 when nil.
+	dexProxy                      *httputil.ReverseProxy  // /dex/* returns 404 when nil.
+	uiProxy                       *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).
+	metrics                       *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
+	claimedBy                     *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
+	enrollmentLimiter             *enrollmentLimiter
+	credentialTouches             *credentialTouchLimiter
+	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
 
 	// Cached provider for OIDC Bearer token verification (lazily initialized).
 	// Used to verify id_tokens obtained via the CLI device flow for API authentication.
@@ -85,7 +87,7 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), credentialTouches: newCredentialTouchLimiter(nil)}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers}
 	if cfg.WebDir == "" && cfg.UIProxyTarget != "" {
 		if target, err := url.Parse(cfg.UIProxyTarget); err == nil {
 			s.uiProxy = &httputil.ReverseProxy{
@@ -318,6 +320,11 @@ func (s *Server) routes() {
 		r.With(admin).Post("/agent-enrollments", s.handleCreateAgentEnrollment)
 		r.With(view).Get("/agent-enrollments", s.handleListAgentEnrollments)
 		r.With(admin).Delete("/agent-enrollments/{id}", s.handleRevokeAgentEnrollment)
+		r.With(admin).Post("/agent-enrollment-policies", s.handleCreateAgentEnrollmentPolicy)
+		r.With(view).Get("/agent-enrollment-policies", s.handleListAgentEnrollmentPolicies)
+		r.With(view).Get("/agent-enrollment-policies/{name}", s.handleGetAgentEnrollmentPolicy)
+		r.With(admin).Put("/agent-enrollment-policies/{name}", s.handleUpdateAgentEnrollmentPolicy)
+		r.With(admin).Delete("/agent-enrollment-policies/{name}", s.handleDeleteAgentEnrollmentPolicy)
 		r.With(view).Get("/agent-identities/{agentId}", s.handleGetAgentIdentity)
 		r.With(admin).Post("/agent-identities/{agentId}/enable", s.handleEnableAgentIdentity)
 		r.With(admin).Post("/agent-identities/{agentId}/disable", s.handleDisableAgentIdentity)

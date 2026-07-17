@@ -98,6 +98,17 @@ func TestAgentEnrollmentAdminAuthorizationAndRevoke(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, doReq(t, s, http.MethodDelete, "/api/v1/agent-enrollments/"+response.ID, "secret", nil))
 }
 
+func TestAgentEnrollmentPolicyAdminCRUD(t *testing.T) {
+	s, pg := newTestServer(t)
+	makeRolePAT(t, pg, "viewer-token", "viewer")
+	body := []byte(`{"name":"prod-k8s","provider":"kubernetes","cluster":"prod","namespaces":["unified-cd"],"serviceAccounts":["unified-cd-k8s-agent"],"agentIdTemplate":"k8s:{cluster}:{namespace}:{podUID}","allowedLabels":["kind:kubernetes"],"requiredLabels":["kind:kubernetes"],"capabilities":["pod"],"accessTokenTTL":"15m","enabled":true}`)
+	require.Equal(t, http.StatusForbidden, doReq(t, s, http.MethodPost, "/api/v1/agent-enrollment-policies", "viewer-token", body))
+	require.Equal(t, http.StatusCreated, doReq(t, s, http.MethodPost, "/api/v1/agent-enrollment-policies", "secret", body))
+	require.Equal(t, http.StatusOK, doReq(t, s, http.MethodGet, "/api/v1/agent-enrollment-policies/prod-k8s", "viewer-token", nil))
+	require.Equal(t, http.StatusOK, doReq(t, s, http.MethodGet, "/api/v1/agent-enrollment-policies", "viewer-token", nil))
+	require.Equal(t, http.StatusNoContent, doReq(t, s, http.MethodDelete, "/api/v1/agent-enrollment-policies/prod-k8s", "secret", nil))
+}
+
 func TestAgentIdentityAdminLifecycleAndViewerRead(t *testing.T) {
 	s, pg := newTestServer(t)
 	makeRolePAT(t, pg, "viewer-token", "viewer")

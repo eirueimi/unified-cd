@@ -40,6 +40,9 @@ var auditActionTable = map[string]string{
 	"POST /api/v1/appsources/{name}/sync":                        "appsource.sync",
 	"POST /api/v1/agent-enrollments":                             "agent.enrollment.create",
 	"DELETE /api/v1/agent-enrollments/{id}":                      "agent.enrollment.revoke",
+	"POST /api/v1/agent-enrollment-policies":                     "agent.policy.create",
+	"PUT /api/v1/agent-enrollment-policies/{name}":               "agent.policy.update",
+	"DELETE /api/v1/agent-enrollment-policies/{name}":            "agent.policy.delete",
 	"POST /api/v1/agent-identities/{agentId}/enable":             "agent.identity.enable",
 	"POST /api/v1/agent-identities/{agentId}/disable":            "agent.identity.disable",
 	"POST /api/v1/agent-identities/{agentId}/credentials/revoke": "agent.credentials.revoke",
@@ -66,6 +69,8 @@ var auditResourceParams = map[string]string{
 	"appsource.delete":         "name",
 	"appsource.sync":           "name",
 	"agent.enrollment.revoke":  "id",
+	"agent.policy.update":      "name",
+	"agent.policy.delete":      "name",
 	"agent.identity.enable":    "agentId",
 	"agent.identity.disable":   "agentId",
 	"agent.credentials.revoke": "agentId",
@@ -98,6 +103,7 @@ var auditBodyNameSource = map[string]string{
 	"schedule.apply":          "response",
 	"appsource.apply":         "response",
 	"agent.enrollment.create": "response",
+	"agent.policy.create":     "request",
 }
 
 const auditBodyPeekLimit = 1 << 16 // 64 KiB is plenty for the small JSON envelopes these handlers use.
