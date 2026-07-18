@@ -80,9 +80,8 @@ services:
       #   unified-cli keygen --out ./kek
       # then in .env set:
       #   UNIFIED_CONTROLLER_KEY_FILE=/run/secrets/kek
-      # and add this volume mount under this service:
-      #   volumes:
-      #     - ./kek:/run/secrets/kek:ro
+      # and add "- ./kek:/run/secrets/kek:ro" to the existing volumes: list
+      # for this service above (do not add a second volumes: key).
       # (UNIFIED_CONTROLLER_KEY_FILE takes precedence over UNIFIED_DEV_MODE
       # when both are set, so you don't need to unset the latter.)
       UNIFIED_DEV_MODE: "${UNIFIED_DEV_MODE:-1}"

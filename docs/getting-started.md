@@ -65,7 +65,7 @@ UNIFIED_DEV_MODE="1" \
 `UNIFIED_DEV_MODE=1` generates an ephemeral, in-memory secret-encryption key —
 fine for this walkthrough, but any secret you register becomes unreadable
 after the next restart. A real deployment should instead run `unified-cli
-keygen --out` to write a persistent key file and point
+keygen --out /etc/unified-cd/kek` to write a persistent key file and point
 `UNIFIED_CONTROLLER_KEY_FILE` at it.
 
 The controller runs database migrations on startup. When ready you'll see:
