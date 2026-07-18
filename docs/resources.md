@@ -456,7 +456,6 @@ walkthrough](getting-started.md#configuring-the-webhook-on-github).
 | Variable | Type | Description |
 |---|---|---|
 | `.Payload` | map | The parsed JSON webhook body |
-| `.Headers` | map | Request headers |
 
 ### Payload-mapped params must be validated
 

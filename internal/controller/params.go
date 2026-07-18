@@ -122,7 +122,16 @@ func validateWebhookPayloadMappedParams(receiverName string, mapping map[string]
 	sort.Strings(params)
 
 	for _, param := range params {
-		if !strings.Contains(mapping[param], ".Payload") {
+		tmpl := mapping[param]
+		// Check for attacker-influenced template variables: .Payload and .Headers.
+		// .Payload is currently the only implemented variable, but .Headers is listed
+		// in the docs and may be added in the future. Request headers are attacker-controlled
+		// just like the body (an HMAC check only covers the signature header, not arbitrary
+		// custom headers), so this guard must fail-safe: any reference to either field
+		// requires pattern: or unvalidated: true to be explicit about accepting
+		// potentially malicious values. This detects the landmine in advance.
+		containsUntrustedRef := strings.Contains(tmpl, ".Payload") || strings.Contains(tmpl, ".Headers")
+		if !containsUntrustedRef {
 			continue
 		}
 		in, declared := byName[param]

@@ -191,6 +191,19 @@ func TestValidateWebhookPayloadMappedParams_AllowsExplicitUnvalidated(t *testing
 	require.NoError(t, validateWebhookPayloadMappedParams("wh", mapping, inputs, "build"))
 }
 
+func TestValidateWebhookPayloadMappedParams_RejectsHeadersWithoutPatternOrUnvalidated(t *testing.T) {
+	// .Headers is not yet implemented, but the guard must fail-safe in advance:
+	// if it is ever added, mappings using it require pattern: or unvalidated: true
+	// to be explicit about accepting attacker-controlled data.
+	mapping := map[string]string{"custom_header": `{{ .Headers.X-Custom-Ref }}`}
+	inputs := []dsl.Input{{Name: "custom_header", Type: "string"}}
+	err := validateWebhookPayloadMappedParams("wh", mapping, inputs, "build")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"wh"`)
+	assert.Contains(t, err.Error(), `"custom_header"`)
+	assert.Contains(t, err.Error(), `"build"`)
+}
+
 func TestValidateWebhookPayloadMappedParams_IgnoresLiteralMapping(t *testing.T) {
 	// A mapping that never reads .Payload is author-controlled (set directly
 	// in the receiver's YAML), not attacker-controlled, so it is not subject
