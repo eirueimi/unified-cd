@@ -126,7 +126,7 @@ a mounted file (`internal/k8sagent/config.go:15`).
 4. `UNIFIED_DEV_MODE=1` → generate an ephemeral key, and log a warning stating
    explicitly that secrets will not be decryptable after a restart.
 5. Otherwise → fatal error instructing the operator to run
-   `unified-cd keygen --out <path>` and set `UNIFIED_CONTROLLER_KEY_FILE`.
+   `unified-cli keygen --out <path>` and set `UNIFIED_CONTROLLER_KEY_FILE`.
 
 Whitespace is trimmed because editors and `echo` append newlines. There is no
 fixed development key anywhere in the repository: the repo already demonstrates
@@ -139,11 +139,11 @@ creating another one.
 New subcommand:
 
 ```
-unified-cd keygen --out /etc/unified-cd/kek
+unified-cli keygen --out /etc/unified-cd/kek
 ```
 
 It writes the key file itself with mode `0600` rather than printing to stdout for
-shell redirection. `unified-cd keygen > file` would create the file under the
+shell redirection. `unified-cli keygen > file` would create the file under the
 caller's umask — commonly `0644` — leaving the key world-readable. Writing the
 file directly removes that footgun. Printing to stdout remains available when
 `--out` is omitted, for operators piping into their own secret tooling.
