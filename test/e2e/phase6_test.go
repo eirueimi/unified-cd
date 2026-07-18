@@ -106,6 +106,7 @@ spec:
     job: webhook-triggered
   auth:
     type: none
+    allowUnauthenticated: true
   paramsMapping:
     branch: '{{ index .Payload "ref" }}'
 `})
@@ -261,6 +262,7 @@ spec:
     job: filter-job
   auth:
     type: none
+    allowUnauthenticated: true
   filters:
     - '{{ eq (index .Payload "ref") "refs/heads/main" }}'
 `})

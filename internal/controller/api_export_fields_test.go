@@ -57,6 +57,7 @@ spec:
     job: hello
   auth:
     type: none
+    allowUnauthenticated: true
 `))
 	require.NoError(t, err)
 	spec, err := json.Marshal(wr.Spec)

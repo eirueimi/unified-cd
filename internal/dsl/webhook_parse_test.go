@@ -120,6 +120,39 @@ func TestWebhookTemplate_FilterFalse(t *testing.T) {
 	assert.Equal(t, "false", result)
 }
 
+func TestParseWebhookReceiver_OmittedAuthIsRejected(t *testing.T) {
+	_, err := ParseWebhookReceiver(strings.NewReader(`apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata: {name: wh}
+spec:
+  trigger: {job: build}
+`))
+	require.Error(t, err, "an omitted auth block must not silently mean unauthenticated")
+	assert.Contains(t, err.Error(), "auth")
+}
+
+func TestParseWebhookReceiver_NoneRequiresExplicitOptIn(t *testing.T) {
+	_, err := ParseWebhookReceiver(strings.NewReader(`apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata: {name: wh}
+spec:
+  trigger: {job: build}
+  auth: {type: none}
+`))
+	require.Error(t, err, "type: none must require allowUnauthenticated: true")
+
+	wr, err := ParseWebhookReceiver(strings.NewReader(`apiVersion: unified-cd/v1
+kind: WebhookReceiver
+metadata: {name: wh}
+spec:
+  trigger: {job: build}
+  auth: {type: none, allowUnauthenticated: true}
+`))
+	require.NoError(t, err)
+	assert.Equal(t, "none", wr.Spec.Auth.Type)
+	assert.True(t, wr.Spec.Auth.AllowUnauthenticated)
+}
+
 func TestParseWebhookReceiver_RejectsInvalidNameFormat(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1

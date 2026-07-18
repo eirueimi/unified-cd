@@ -363,10 +363,11 @@ spec:
   trigger:                        # exactly one of job / appSource
     job: <string>                 # trigger a Job (creates a Run)
     appSource: <string>           # OR force a GitOps re-sync of an AppSource
-  auth:
+  auth:                           # required — an omitted auth block is a parse error
     type: none | hmac-sha256 | github | token
     secretRef: <string>           # name of StoredSecret (required unless type is none)
     header: <string>              # token type only — header to compare (default X-Gitlab-Token)
+    allowUnauthenticated: <bool>  # required (must be true) alongside type: none
   filters:                        # optional — all must match for the job to trigger
     - <template expression>
   paramsMapping:                  # optional — map webhook payload fields to job inputs
@@ -381,8 +382,10 @@ spec:
 | `metadata.annotations` | map[string]string | No | Arbitrary key/value metadata |
 | `spec.trigger.job` | string | Cond. | Name of the Job to trigger. Exactly one of `job` / `appSource` is required |
 | `spec.trigger.appSource` | string | Cond. | Name of an AppSource to force-sync (resets its `lastCommit` so the next reconciler tick re-syncs). Exactly one of `job` / `appSource` is required |
+| `spec.auth` | object | Yes | Authentication config. Omitting this block entirely is a parse error — see [Authentication types](#authentication-types) |
 | `spec.auth.type` | string | Yes | Authentication method (see below) |
 | `spec.auth.secretRef` | string | No | Name of a StoredSecret; required unless `type` is `none`. Holds the HMAC key or shared token, depending on `type` |
+| `spec.auth.allowUnauthenticated` | bool | Cond. | Required (must be `true`) when `type` is `none`; parsing fails otherwise. Makes an unauthenticated public trigger a deliberate, greppable choice rather than an accident |
 | `spec.filters` | []string | No | Template expressions that must all evaluate to `true` for the trigger to fire (applies to both `job` and `appSource` triggers) |
 | `spec.paramsMapping` | map[string]string | No | Maps payload fields to job input parameter names. Ignored for `appSource` triggers |
 
@@ -390,10 +393,39 @@ spec:
 
 | Type | Description |
 |---|---|
-| `none` | No signature verification. Use only for trusted internal sources. |
+| `none` | No signature verification. Requires `allowUnauthenticated: true` alongside it — an unauthenticated webhook lets anyone trigger the job, so it must be a deliberate, greppable opt-in. Use only for trusted internal sources. |
 | `hmac-sha256` | Verifies `X-Signature: sha256=<hex hmac>` (or GitHub-compatible `X-Hub-Signature-256`) over the raw request body using the secret from `secretRef` |
 | `github` | Verifies GitHub's `X-Hub-Signature-256` header using the secret from `secretRef` |
 | `token` | Verifies a plaintext shared-secret token sent in a header (default `X-Gitlab-Token`, configurable via `auth.header`) by constant-time comparison against `secretRef`. Use for GitLab and other services that send a raw token header instead of an HMAC signature. |
+
+### Migration: `spec.auth` is now required
+
+**Breaking change.** Previously, an omitted `auth:` block silently defaulted to
+`type: none` — meaning it was possible to publish an unauthenticated remote
+trigger for a job just by forgetting the `auth:` block. `spec.auth` is now a
+required field: a `WebhookReceiver` document with no `auth:` block fails to
+parse with an error naming the fix.
+
+If you have a receiver that intentionally relied on the old implicit
+`none` behavior:
+
+- **Preferred:** adopt a real auth type (`hmac-sha256`, `github`, or `token`)
+  with a `secretRef`.
+- **If the receiver genuinely must stay unauthenticated** (e.g. a trusted
+  internal-only trigger), add `allowUnauthenticated: true` alongside
+  `type: none`:
+
+  ```yaml
+  auth:
+    type: none
+    allowUnauthenticated: true
+  ```
+
+  so the choice is explicit and greppable rather than an accident.
+
+This only affects parsing (`unified-cli apply` / GitOps sync of a
+`WebhookReceiver` manifest). It does not change verification behavior for
+`hmac-sha256`, `github`, or `token` receivers.
 
 ### Delivery responses
 
@@ -464,7 +496,8 @@ spec:
     version: "{{ .Payload.version }}"
 
 ---
-# No auth (internal use only)
+# No auth (internal use only) — allowUnauthenticated is mandatory here;
+# without it, this receiver fails to parse.
 apiVersion: unified-cd/v1
 kind: WebhookReceiver
 metadata:
@@ -474,6 +507,7 @@ spec:
     job: cleanup
   auth:
     type: none
+    allowUnauthenticated: true
 
 ---
 # GitLab push webhook: verify the X-Gitlab-Token secret token

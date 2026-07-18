@@ -29,6 +29,7 @@ spec:
     job: build
   auth:
     type: none
+    allowUnauthenticated: true
 `
 
 func TestAPI_ApplyWebhook(t *testing.T) {

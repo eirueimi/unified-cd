@@ -154,6 +154,7 @@ spec:
     job: hello
   auth:
     type: none
+    allowUnauthenticated: true
 `})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks", bytes.NewReader(b))
 	req.Header.Set("Authorization", "Bearer secret")

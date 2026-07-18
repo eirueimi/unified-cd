@@ -18,7 +18,7 @@ func TestApplyResource_EachKind(t *testing.T) {
 	}{
 		{"Job", "j1", "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: j1\nspec:\n  agentSelector: [kind:docker]\n  steps:\n    - name: s\n      run: echo hi"},
 		{"Schedule", "sc1", "apiVersion: unified-cd/v1\nkind: Schedule\nmetadata:\n  name: sc1\nspec:\n  cron: \"* * * * *\"\n  job: j1"},
-		{"WebhookReceiver", "wh1", "apiVersion: unified-cd/v1\nkind: WebhookReceiver\nmetadata:\n  name: wh1\nspec:\n  trigger:\n    job: j1\n  auth:\n    type: none"},
+		{"WebhookReceiver", "wh1", "apiVersion: unified-cd/v1\nkind: WebhookReceiver\nmetadata:\n  name: wh1\nspec:\n  trigger:\n    job: j1\n  auth:\n    type: none\n    allowUnauthenticated: true"},
 		{"GitCredential", "gc1", "apiVersion: unified-cd/v1\nkind: GitCredential\nmetadata:\n  name: gc1\nspec:\n  host: github.com\n  type: token\n  secretRef: s"},
 		{"AppSource", "as1", "apiVersion: unified-cd/v1\nkind: AppSource\nmetadata:\n  name: as1\nspec:\n  repoURL: https://x/y\n  targetRevision: main\n  path: jobs"},
 	}

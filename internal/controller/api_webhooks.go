@@ -108,8 +108,11 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify authentication when configured.
-	if spec.Auth.Type != "none" && spec.Auth.Type != "" {
+	// Verify authentication when configured. Only an explicit "none" skips
+	// verification; an empty type (only possible from a legacy stored row —
+	// parse-time now rejects an omitted auth block) fails closed and runs
+	// verification, which will fail for a type the switch below doesn't know.
+	if spec.Auth.Type != "none" {
 		var verr error
 		switch spec.Auth.Type {
 		case "token":

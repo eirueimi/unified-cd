@@ -24,7 +24,8 @@ type WebhookTrigger struct {
 }
 
 type WebhookAuth struct {
-	Type      string `yaml:"type" schema:"enum:none,hmac-sha256,github,token"` // none | hmac-sha256 | github | token
-	SecretRef string `yaml:"secretRef,omitempty"`
-	Header    string `yaml:"header,omitempty"` // token type only: header to compare (default X-Gitlab-Token)
+	Type                 string `yaml:"type" schema:"enum:none,hmac-sha256,github,token"` // none | hmac-sha256 | github | token
+	SecretRef            string `yaml:"secretRef,omitempty"`
+	Header               string `yaml:"header,omitempty"`               // token type only: header to compare (default X-Gitlab-Token)
+	AllowUnauthenticated bool   `yaml:"allowUnauthenticated,omitempty"` // required alongside type: none — makes an unauthenticated webhook a deliberate, greppable opt-in
 }
