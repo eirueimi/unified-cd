@@ -13,17 +13,39 @@ import (
 )
 
 // fakeAuth records logins and returns a scripted result.
+//
+// If notify is set, the notifyAt'th call parks: it hands off to the test
+// through notify and then blocks until ctx is done. This lets a test that
+// only needs to observe the Nth login stop the manager the instant it has
+// what it needs, instead of racing require.Eventually's poll interval
+// against a renewal loop whose injected sleep returns immediately — a race
+// the loop wins by spinning (and, on the renewal-failure path, logging)
+// thousands of times before the test notices.
 type fakeAuth struct {
-	mu     sync.Mutex
-	logins int
-	result authResult
-	err    error
+	mu       sync.Mutex
+	logins   int
+	result   authResult
+	err      error
+	notify   chan struct{}
+	notifyAt int
 }
 
-func (f *fakeAuth) login(context.Context) (authResult, error) {
+func (f *fakeAuth) login(ctx context.Context) (authResult, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.logins++
+	n := f.logins
+	f.mu.Unlock()
+	if f.notify != nil && n == f.notifyAt {
+		select {
+		case f.notify <- struct{}{}:
+		case <-ctx.Done():
+			return authResult{}, ctx.Err()
+		}
+		// Stay parked until the test stops the manager, so the loop cannot
+		// take another lap (and log again) while the test is busy stopping it.
+		<-ctx.Done()
+		return authResult{}, ctx.Err()
+	}
 	return f.result, f.err
 }
 
@@ -122,7 +144,8 @@ func TestTokenManager_SleepsHalfTheLease(t *testing.T) {
 // A batch token, or any token Vault will not renew, must never be sent to the
 // renew endpoint — renewing it fails and would mask the real need to re-login.
 func TestTokenManager_NeverRenewsNonRenewableToken(t *testing.T) {
-	auth := &fakeAuth{result: authResult{Token: "b.tok", TTL: time.Hour, Renewable: false}}
+	notify := make(chan struct{})
+	auth := &fakeAuth{result: authResult{Token: "b.tok", TTL: time.Hour, Renewable: false}, notify: notify, notifyAt: 2}
 	var renewCalls atomic.Int64
 	sleeper := newRecordingSleep()
 	m, err := newTokenManager(tokenManagerConfig{
@@ -137,14 +160,28 @@ func TestTokenManager_NeverRenewsNonRenewableToken(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(m.stop)
 
-	require.Eventually(t, func() bool { return auth.loginCount() >= 2 },
-		2*time.Second, 10*time.Millisecond)
+	select {
+	case <-notify:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the second login")
+	}
+	m.stop()
+
+	assert.GreaterOrEqual(t, auth.loginCount(), 2)
 	assert.Zero(t, renewCalls.Load(), "a non-renewable token must be re-obtained by logging in again")
 }
 
 // A failed renewal falls back to a fresh login rather than giving up.
+//
+// The renewal loop's injected sleep returns immediately (see recordingSleep),
+// so nothing throttles retries. Left to require.Eventually's poll interval,
+// the loop would keep relogging — and logging a slog.Warn per attempt — for
+// as long as it takes the poller to notice, flooding test output. Instead,
+// fakeAuth's notify hands off the instant the second login happens and the
+// fake parks, so the loop cannot take another lap before the test stops it.
 func TestTokenManager_ReLoginsWhenRenewalFails(t *testing.T) {
-	auth := &fakeAuth{result: authResult{Token: "s.tok", TTL: time.Hour, Renewable: true}}
+	notify := make(chan struct{})
+	auth := &fakeAuth{result: authResult{Token: "s.tok", TTL: time.Hour, Renewable: true}, notify: notify, notifyAt: 2}
 	sleeper := newRecordingSleep()
 	m, err := newTokenManager(tokenManagerConfig{
 		Auth:  auth,
@@ -155,8 +192,14 @@ func TestTokenManager_ReLoginsWhenRenewalFails(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(m.stop)
 
-	require.Eventually(t, func() bool { return auth.loginCount() >= 2 },
-		2*time.Second, 10*time.Millisecond)
+	select {
+	case <-notify:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the second login")
+	}
+	m.stop()
+
+	assert.GreaterOrEqual(t, auth.loginCount(), 2, "a failed renewal must fall back to a fresh login")
 }
 
 func TestTokenManager_LoginFailureIsReturnedFromConstructor(t *testing.T) {
