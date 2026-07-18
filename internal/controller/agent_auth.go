@@ -122,21 +122,18 @@ func (s *Server) requireAgentPathIdentity(next http.Handler) http.Handler {
 		if principal.AuthMethod == "legacy" {
 			// A legacy (shared-token) principal has no verified AgentID —
 			// the shared token proves nothing about which physical agent is
-			// calling. Rather than leaving AgentID empty (which would make
-			// every downstream run-ownership comparison fail, or force a
-			// separate special case), ADOPT the path's {agentId} as this
-			// principal's identity for the rest of the request.
+			// calling. Bind the path's {agentId} to the principal so it
+			// carries a coherent identity for the request lifetime.
 			//
 			// This is identity ASSIGNMENT, not verification: a legacy caller
 			// is only as trustworthy as the shared token itself, and nothing
 			// here stops it from asserting any agentId it likes (that is
 			// inherent to a shared-secret migration mode and cannot be fixed
-			// without per-agent credentials). The point of binding it is
-			// narrower — it gives the downstream per-run ownership guard
-			// (agentRunGuard) a concrete agent identity to check the target
-			// run's claimed_by against, so the caller's blast radius is
-			// limited to runs claimed under the agentId it presented, same
-			// as every other agent principal.
+			// without per-agent credentials). Today's agentRunGuard call sites
+			// retrieve agentID directly from chi.URLParam, so this assignment
+			// is currently inert; it exists so the principal holds a coherent
+			// identity and so future handlers reading principal.AgentID work
+			// correctly.
 			principal.AgentID = chi.URLParam(r, "agentId")
 			r = withAgentPrincipal(r, principal)
 		} else if principal.AgentID != chi.URLParam(r, "agentId") {

@@ -40,9 +40,12 @@ Artifact uploads (`PUT /api/v1/runs/{runID}/artifacts/{name}`) are stricter
 still: that route has no per-agent path segment for a legacy caller to
 present an identity on, so a legacy shared token can never match a run's
 `claimed_by` there and every legacy artifact upload is rejected with `403`,
-regardless of which run it targets. Migrate the uploading agent to a
-per-agent credential (see "Enroll a VM agent" / "Enroll Kubernetes agents"
-below) to restore artifact uploads.
+regardless of which run it targets. A `403` response is treated as a step
+error, so any job with an `upload_artifact:` step **will fail that step and
+the run** (absent `continueOnError`). Such artifact-producing fleets must
+migrate the uploading agent to a per-agent credential (see "Enroll a VM
+agent" / "Enroll Kubernetes agents" below) before running jobs with
+`upload_artifact:` steps.
 
 ## Rollout
 
