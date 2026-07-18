@@ -44,13 +44,16 @@ check-embed-clean:
 	test "$$(git cat-file -s HEAD:internal/shim/embedded/ucd-sh-arm64)" = "0"
 
 test:
+	./scripts/prepare-shim-placeholders.sh
 	$(GO) test ./... -race -count=1
 
 test-short:
+	./scripts/prepare-shim-placeholders.sh
 	$(GO) test ./... -short -race -count=1
 
 # Level-2 HA failover driver (build-tagged `ha`; requires Docker). Slow: builds images.
 ha-test:
+	./scripts/prepare-shim-placeholders.sh
 	cd test/ha && $(GO) test -tags ha -v -timeout 20m ./...
 
 fmt:
