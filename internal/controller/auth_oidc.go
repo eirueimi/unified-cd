@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"golang.org/x/oauth2"
 )
@@ -242,11 +243,6 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "key manager not configured", http.StatusInternalServerError)
 		return
 	}
-	encryptedRT, err := s.km.EncryptKey(r.Context(), []byte(oauthToken.RefreshToken))
-	if err != nil {
-		http.Error(w, "refresh token encryption error", http.StatusInternalServerError)
-		return
-	}
 
 	sessionToken, err := generatePAT()
 	if err != nil {
@@ -256,13 +252,37 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	tokenHash := HashToken(sessionToken)
 	expiresAt := time.Now().Add(sessionDuration)
 
-	if _, err := s.store.CreateSession(r.Context(), tokenHash, sub, email, role, hex.EncodeToString(encryptedRT), expiresAt); err != nil {
+	if _, err := s.createSessionWithRefreshToken(r.Context(), tokenHash, sub, email, role, oauthToken.RefreshToken, expiresAt); err != nil {
 		http.Error(w, "session store error", http.StatusInternalServerError)
 		return
 	}
 
 	http.SetCookie(w, s.sessionCookie(sessionToken, expiresAt, 0))
 	http.Redirect(w, r, savedState.RedirectTo, http.StatusFound)
+}
+
+// createSessionWithRefreshToken stores a session with its OIDC refresh token
+// envelope-encrypted and bound to the session's own ID.
+//
+// The binding needs the ID, which Postgres assigns on insert, so the row is
+// created with a placeholder and immediately re-encrypted under the real ID.
+// This costs one extra UPDATE per login and keeps every stored blob bound.
+func (s *Server) createSessionWithRefreshToken(ctx context.Context, tokenHash, sub, email, role, refreshToken string, expiresAt time.Time) (*store.Session, error) {
+	// Empty slices, not nil: pgx encodes a nil []byte as SQL NULL, and both
+	// refresh-token columns are NOT NULL. `''::bytea` is a valid non-null value.
+	sess, err := s.store.CreateSession(ctx, tokenHash, sub, email, role, []byte{}, []byte{}, expiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("create session: %w", err)
+	}
+	dek, ct, err := secrets.Encrypt(ctx, s.km, []byte(refreshToken), secrets.SessionRefreshBinding(sess.ID))
+	if err != nil {
+		return nil, fmt.Errorf("encrypt refresh token: %w", err)
+	}
+	if err := s.store.UpdateSessionExpiry(ctx, sess.ID, dek, ct, expiresAt); err != nil {
+		return nil, fmt.Errorf("store refresh token: %w", err)
+	}
+	sess.RefreshTokenDEK, sess.RefreshTokenCT = dek, ct
+	return sess, nil
 }
 
 // handleLogout deletes the session and clears the Cookie.
@@ -314,11 +334,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 // refreshSession extends the session expiry using the refresh token.
 func (s *Server) refreshSession(ctx context.Context, sess *store.Session, host string) error {
-	encryptedRT, err := hex.DecodeString(sess.RefreshToken)
-	if err != nil {
-		return fmt.Errorf("decode refresh token: %w", err)
-	}
-	rtBytes, err := s.km.DecryptKey(ctx, encryptedRT)
+	rtBytes, err := secrets.Decrypt(ctx, s.km, sess.RefreshTokenDEK, sess.RefreshTokenCT,
+		secrets.SessionRefreshBinding(sess.ID))
 	if err != nil {
 		return fmt.Errorf("decrypt refresh token: %w", err)
 	}
@@ -334,9 +351,10 @@ func (s *Server) refreshSession(ctx context.Context, sess *store.Session, host s
 		return fmt.Errorf("token refresh: %w", err)
 	}
 
-	newEncrypted, err := s.km.EncryptKey(ctx, []byte(newToken.RefreshToken))
+	dek, ct, err := secrets.Encrypt(ctx, s.km, []byte(newToken.RefreshToken),
+		secrets.SessionRefreshBinding(sess.ID))
 	if err != nil {
 		return fmt.Errorf("re-encrypt refresh token: %w", err)
 	}
-	return s.store.UpdateSessionExpiry(ctx, sess.ID, hex.EncodeToString(newEncrypted), time.Now().Add(sessionDuration))
+	return s.store.UpdateSessionExpiry(ctx, sess.ID, dek, ct, time.Now().Add(sessionDuration))
 }

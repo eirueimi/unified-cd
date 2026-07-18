@@ -40,6 +40,7 @@ var schemaSentinels = []sentinel{
 	{12, "012_run_log_archives_trimmed_at", "run_log_archives", "line_count", ""},
 	{13, "013_agent_identity_auth", "agent_credentials", "token_hash", ""},
 	{14, "014_agent_enrollment_policies", "agent_enrollment_policies", "", ""},
+	{15, "015_secrets_v2", "sessions", "refresh_token_dek", ""},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

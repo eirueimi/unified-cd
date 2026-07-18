@@ -107,7 +107,7 @@ func TestHandleMe_ValidSession(t *testing.T) {
 	sessionToken := "exc_testtoken1234567890abcdef12345678"
 	tokenHash := HashToken(sessionToken)
 	expiresAt := time.Now().Add(1 * time.Hour)
-	_, err := pg.CreateSession(context.Background(), tokenHash, "sub123", "test@example.com", "admin", "encrypted-rt", expiresAt)
+	_, err := pg.CreateSession(context.Background(), tokenHash, "sub123", "test@example.com", "admin", []byte("dek"), []byte("ct"), expiresAt)
 	require.NoError(t, err)
 
 	req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/auth/me", nil)
@@ -126,7 +126,7 @@ func TestHandleLogout_ClearsSession(t *testing.T) {
 
 	sessionToken := "exc_logouttoken1234567890abcdef1234"
 	tokenHash := HashToken(sessionToken)
-	_, err := pg.CreateSession(context.Background(), tokenHash, "sub456", "logout@example.com", "admin", "enc-rt", time.Now().Add(time.Hour))
+	_, err := pg.CreateSession(context.Background(), tokenHash, "sub456", "logout@example.com", "admin", []byte("dek"), []byte("ct"), time.Now().Add(time.Hour))
 	require.NoError(t, err)
 
 	req, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/api/v1/auth/logout", nil)
