@@ -88,12 +88,53 @@ func TestKeySource_DevModeProducesEphemeralKeyAndWarns(t *testing.T) {
 	assert.Contains(t, got.Warnings[0], "after a restart")
 }
 
-// A configured KMS URI must not silently fall back to some other key source.
-func TestKeySource_KMSURINotImplementedYet(t *testing.T) {
-	_, err := KeySource{KMSURI: "hashivault://unified-cd-kek"}.Resolve(context.Background())
+// The URI names the key, and optionally the mount it lives on.
+func TestParseKMSURI(t *testing.T) {
+	mount, key, err := parseHashiVaultURI("hashivault://unified-cd-kek")
+	require.NoError(t, err)
+	assert.Equal(t, "transit", mount, "the default mount is transit")
+	assert.Equal(t, "unified-cd-kek", key)
+
+	mount, key, err = parseHashiVaultURI("hashivault://kms-transit/unified-cd-kek")
+	require.NoError(t, err)
+	assert.Equal(t, "kms-transit", mount)
+	assert.Equal(t, "unified-cd-kek", key)
+}
+
+// More than two segments is a configuration error rather than a guess.
+func TestParseKMSURI_RejectsTooManySegments(t *testing.T) {
+	_, _, err := parseHashiVaultURI("hashivault://a/b/c")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "hashivault")
-	assert.Contains(t, err.Error(), "not implemented")
+}
+
+func TestParseKMSURI_RejectsEmptyKey(t *testing.T) {
+	_, _, err := parseHashiVaultURI("hashivault://")
+	require.Error(t, err)
+}
+
+// A KMS URI with no address cannot work, and must say which variable is missing.
+func TestKeySource_KMSRequiresAddress(t *testing.T) {
+	_, err := KeySource{KMSURI: "hashivault://kek"}.Resolve(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "UNIFIED_VAULT_ADDR")
+}
+
+func TestParseAuthParams(t *testing.T) {
+	got, err := parseAuthParams("role=unified-cd,mount=kubernetes")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"role": "unified-cd", "mount": "kubernetes"}, got)
+
+	empty, err := parseAuthParams("")
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
+// A malformed parameter must not be silently dropped: a typo in a
+// security-relevant setting must not fail open.
+func TestParseAuthParams_RejectsMalformed(t *testing.T) {
+	_, err := parseAuthParams("role")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key=value")
 }
 
 func TestKeySource_UnknownKMSSchemeListsSupported(t *testing.T) {

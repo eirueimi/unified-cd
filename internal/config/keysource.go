@@ -9,11 +9,10 @@ import (
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/secrets"
+	"github.com/eirueimi/unified-cd/internal/secrets/vault"
 )
 
 // supportedKMSSchemes lists the URI schemes the configuration surface accepts.
-// None is implemented yet; the surface exists so the follow-up change that adds
-// a provider does not have to redefine configuration.
 var supportedKMSSchemes = []string{"hashivault"}
 
 // KeySource describes where the controller's key-encryption key comes from.
@@ -23,6 +22,14 @@ type KeySource struct {
 	KeyFile string
 	KMSURI  string
 	DevMode bool
+
+	// VaultAddr, VaultAuth, VaultAuthParam, VaultToken, and VaultTokenFile
+	// configure a hashivault:// KMSURI. They are ignored otherwise.
+	VaultAddr      string
+	VaultAuth      string
+	VaultAuthParam string
+	VaultToken     string
+	VaultTokenFile string
 }
 
 // Validate rejects ambiguous configuration. Which key is in effect must never
@@ -73,7 +80,7 @@ func (k KeySource) Resolve(ctx context.Context) (Resolved, error) {
 	}
 	switch {
 	case k.KMSURI != "":
-		return Resolved{}, kmsError(k.KMSURI)
+		return k.resolveKMS(ctx)
 	case k.KeyFile != "":
 		km, warnings, err := localFromFile(k.KeyFile)
 		if err != nil {
@@ -99,17 +106,77 @@ func (k KeySource) Resolve(ctx context.Context) (Resolved, error) {
 	}
 }
 
+// resolveKMS builds a KeyManager from a KMSURI. hashivault:// is the only
+// supported scheme; everything else is a configuration error.
+func (k KeySource) resolveKMS(ctx context.Context) (Resolved, error) {
+	scheme, _, _ := strings.Cut(k.KMSURI, "://")
+	if scheme != "hashivault" {
+		return Resolved{}, kmsError(k.KMSURI)
+	}
+	if k.VaultAddr == "" {
+		return Resolved{}, fmt.Errorf("UNIFIED_KMS_URI is set but UNIFIED_VAULT_ADDR is not")
+	}
+	mount, key, err := parseHashiVaultURI(k.KMSURI)
+	if err != nil {
+		return Resolved{}, err
+	}
+	params, err := parseAuthParams(k.VaultAuthParam)
+	if err != nil {
+		return Resolved{}, err
+	}
+	km, err := vault.New(ctx, vault.Config{
+		Address: k.VaultAddr, Mount: mount, Key: key,
+		Auth: k.VaultAuth, AuthParams: params,
+		Token: k.VaultToken, TokenFile: k.VaultTokenFile,
+	})
+	if err != nil {
+		return Resolved{}, err
+	}
+	return Resolved{
+		KeyManager:  km,
+		Description: fmt.Sprintf("vault transit %s/%s at %s", mount, key, k.VaultAddr),
+		closeFn:     km.Close,
+	}, nil
+}
+
+// parseHashiVaultURI splits hashivault://[<mount>/]<key>.
+func parseHashiVaultURI(uri string) (mount, key string, err error) {
+	_, rest, found := strings.Cut(uri, "://")
+	if !found {
+		return "", "", fmt.Errorf("UNIFIED_KMS_URI %q is malformed; expected hashivault://[<mount>/]<key>", uri)
+	}
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	switch {
+	case len(parts) == 1 && parts[0] != "":
+		return "transit", parts[0], nil
+	case len(parts) == 2 && parts[0] != "" && parts[1] != "":
+		return parts[0], parts[1], nil
+	default:
+		return "", "", fmt.Errorf("UNIFIED_KMS_URI %q is malformed; expected hashivault://[<mount>/]<key>", uri)
+	}
+}
+
+// parseAuthParams reads comma-separated key=value pairs.
+func parseAuthParams(s string) (map[string]string, error) {
+	out := map[string]string{}
+	if strings.TrimSpace(s) == "" {
+		return out, nil
+	}
+	for _, pair := range strings.Split(s, ",") {
+		k, v, found := strings.Cut(strings.TrimSpace(pair), "=")
+		if !found || k == "" {
+			return nil, fmt.Errorf("UNIFIED_VAULT_AUTH_PARAM entry %q is malformed; expected key=value", pair)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
 func kmsError(uri string) error {
 	scheme, _, found := strings.Cut(uri, "://")
 	if !found || scheme == "" {
 		return fmt.Errorf("UNIFIED_KMS_URI %q is malformed; expected <scheme>://<key>, where scheme is one of: %s",
 			uri, strings.Join(supportedKMSSchemes, ", "))
-	}
-	for _, s := range supportedKMSSchemes {
-		if s == scheme {
-			return fmt.Errorf("UNIFIED_KMS_URI scheme %q is not implemented in this build; "+
-				"use UNIFIED_CONTROLLER_KEY_FILE for now", scheme)
-		}
 	}
 	return fmt.Errorf("UNIFIED_KMS_URI scheme %q is not supported; supported schemes: %s",
 		scheme, strings.Join(supportedKMSSchemes, ", "))

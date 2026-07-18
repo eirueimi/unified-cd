@@ -52,7 +52,12 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_DB_DSN` | **Yes** | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
 | `UNIFIED_TOKEN` | Yes (without SSO) | Static admin bearer token. Auto-synced to DB as a PAT named `env:UNIFIED_TOKEN`. Required when OIDC is not configured. |
 | `UNIFIED_CONTROLLER_KEY_FILE` | Required | Path to a file containing a 32-byte hex master key (`unified-cli keygen --out /etc/unified-cd/kek`). Mutually exclusive with `UNIFIED_KMS_URI`. **All replicas must be given the same file in HA setups.** |
-| `UNIFIED_KMS_URI` | Optional | External KMS, e.g. `hashivault://unified-cd-kek`. No provider is implemented yet. |
+| `UNIFIED_KMS_URI` | Optional | External KMS: `hashivault://[<mount>/]<key>` (default mount `transit`). The controller wraps DEKs with Vault/OpenBao Transit and never holds the key itself. |
+| `UNIFIED_VAULT_ADDR` | With KMS | Vault/OpenBao address. |
+| `UNIFIED_VAULT_AUTH` | Optional | `token` (default) or `kubernetes`. |
+| `UNIFIED_VAULT_AUTH_PARAM` | With `kubernetes` | Comma-separated `key=value`; `kubernetes` requires `role`. |
+| `UNIFIED_VAULT_TOKEN_FILE` | With `token` | Path to a file holding the token. Preferred over `VAULT_TOKEN`: a file does not leak into `docker inspect` or child processes, and can be replaced without a restart. |
+| `VAULT_TOKEN` | With `token` | Fallback when no token file is set. |
 | `UNIFIED_DEV_MODE` | Optional | `1` generates an ephemeral key. Secrets are unreadable after a restart. Never use in production. |
 | `UNIFIED_GIT_RESOLVE_DEADLINE` | No | How long a run's `git://` template resolution may keep failing (network/credentials) before the run is Failed instead of waiting as Pending. Go duration, default `1h`. Deterministic resolution errors (e.g. a nonexistent ref) still fail the run immediately. There is no CLI flag; unset/invalid/non-positive values use the default. The run is failed at its *next resolution attempt* after the deadline elapses, which the per-run failure backoff may delay by up to an additional 1 hour. |
 | `UNIFIED_LOG_LEVEL` | No | Log level: `debug`, `info` (default), `warn`, `error` |
