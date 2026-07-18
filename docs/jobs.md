@@ -1292,6 +1292,14 @@ On hit, the cached directory is restored before the step runs. On miss, the dire
 
 Cache is now supported on the k8s agent (previously a silent no-op) with the same `key`/`restoreKeys`/`ttlDays` semantics — see [Kubernetes Integration: Artifacts and Cache](kubernetes-integration.md#artifacts-and-cache) for how transfers work and the required S3 credentials. Restore is best-effort (a miss or error never fails the step); save is deferred until the run's main stages complete.
 
+### Cache entries are namespaced per job
+
+Cache entries are namespaced per **qualified job name** (e.g. `team-a/build`) — one job can never restore, and never even sees, another job's cache entries. `restoreKeys` prefix matching is likewise scoped to entries saved by the same job. Before this change the cache was one flat namespace shared by every job in the store: a job could plant an entry under a key another job's `restoreKeys` prefix would match, and that job would restore and execute the planted archive in its own secret context. That is no longer possible: an entry's owning job is baked into its storage location, and the owner is checked again on restore as defense in depth.
+
+This is a storage layout change — every cache entry saved before this change is orphaned (no job can address it under the new layout) and is simply abandoned; the next run of each job regenerates its cache from scratch on the first miss. No migration or manual cleanup is needed.
+
+`ttlDays` is capped at 365 (jobs asking for a longer TTL fail validation at parse time) so a single entry cannot pin itself, and the storage it occupies, indefinitely.
+
 ### Artifact and cache path rules
 
 The `path` of an `uploadArtifact`/`downloadArtifact`/`cache` step must be **relative** to the run workspace. Relative paths behave identically across native, isolated, and Kubernetes execution. Absolute paths and paths that escape the workspace (via `..`) are rejected — the step fails with `artifact/cache path ... escapes the workspace`. Inside a step, `$UNIFIED_WORKSPACE` names the current workspace root (the step's working directory), so scripts can build workspace-relative paths portably.

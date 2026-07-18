@@ -39,8 +39,12 @@ var runStepWithShellFn = RunStepWithShell
 // host processes, container: steps error, DefaultAgentOS is runtime.GOOS, and
 // non-scoped cache paths are left as authored.
 type hostBackend struct {
-	a       *Agent
-	runID   string
+	a     *Agent
+	runID string
+	// jobName is the claim's qualified job name (e.g. "team-a/build"), used to
+	// namespace cache entries (cache.Save/cache.Restore's jobName parameter)
+	// so one job can never plant or restore another job's cache entry.
+	jobName string
 	workDir string
 	pod     *claimPodManager
 
@@ -59,10 +63,11 @@ type hostBackend struct {
 }
 
 // newHostBackend constructs the ExecBackend for one claim's executeRun call.
-// pod is the claim pod for an isolated claim, or nil for a native (native:
-// true) claim.
-func newHostBackend(a *Agent, runID, workDir string, pod *claimPodManager) *hostBackend {
-	b := &hostBackend{a: a, runID: runID, workDir: workDir, pod: pod}
+// jobName is the claim's qualified job name, threaded into cache.Save/
+// cache.Restore for per-job namespacing. pod is the claim pod for an isolated
+// claim, or nil for a native (native: true) claim.
+func newHostBackend(a *Agent, runID, jobName, workDir string, pod *claimPodManager) *hostBackend {
+	b := &hostBackend{a: a, runID: runID, jobName: jobName, workDir: workDir, pod: pod}
 	if pod != nil {
 		b.mountPath = pod.mountPath
 	}
@@ -198,7 +203,7 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		hit, err := cache.Restore(ctx, b.a.CacheStore, path, key, restoreKeys)
+		hit, err := cache.Restore(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			return false, err
 		}
@@ -209,7 +214,7 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 		return false, err
 	}
 	defer os.RemoveAll(hostDir)
-	hit, err := cache.Restore(ctx, b.a.CacheStore, hostDir, key, restoreKeys)
+	hit, err := cache.Restore(ctx, b.a.CacheStore, b.jobName, hostDir, key, restoreKeys)
 	if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 		return false, err
 	}
@@ -235,14 +240,14 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return cache.Save(ctx, b.a.CacheStore, path, key, ttlDays)
+		return cache.Save(ctx, b.a.CacheStore, b.jobName, path, key, ttlDays)
 	}
 	hostPath, cleanup, err := sm.copyOutToTemp(ctx, h, path)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	return cache.Save(ctx, b.a.CacheStore, hostPath, key, ttlDays)
+	return cache.Save(ctx, b.a.CacheStore, b.jobName, hostPath, key, ttlDays)
 }
 
 // UploadArtifact uploads the file/dir at path (host or scope-container path)

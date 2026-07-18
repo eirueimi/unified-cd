@@ -72,12 +72,17 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		fs.SetOutput(stderr)
 		key := fs.String("key", "", "cache key")
 		path := fs.String("path", "", "destination path")
+		job := fs.String("job", "", "qualified job name owning this cache entry")
 		var restoreKeys stringSlice
 		fs.Var(&restoreKeys, "restore-key", "fallback restore key prefix (repeatable)")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		hit, err := cache.Restore(ctx, store, *path, *key, restoreKeys)
+		if *job == "" {
+			fmt.Fprintln(stderr, "cache restore: --job is required")
+			return 2
+		}
+		hit, err := cache.Restore(ctx, store, *job, *path, *key, restoreKeys)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			fmt.Fprintf(stderr, "cache restore error (ignored): %v\n", err)
 			// error path: leave no marker → CacheRestore keeps its lenient default (hit=true)
@@ -94,11 +99,16 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		fs.SetOutput(stderr)
 		key := fs.String("key", "", "cache key")
 		path := fs.String("path", "", "source path")
+		job := fs.String("job", "", "qualified job name owning this cache entry")
 		ttlDays := fs.Int("ttl-days", 30, "TTL in days")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		if err := cache.Save(ctx, store, *path, *key, *ttlDays); err != nil {
+		if *job == "" {
+			fmt.Fprintln(stderr, "cache save: --job is required")
+			return 2
+		}
+		if err := cache.Save(ctx, store, *job, *path, *key, *ttlDays); err != nil {
 			fmt.Fprintf(stderr, "cache save error (ignored): %v\n", err)
 		} else {
 			fmt.Fprintf(stderr, "cache saved: %s\n", *key)

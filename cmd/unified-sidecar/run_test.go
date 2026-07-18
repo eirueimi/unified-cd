@@ -24,7 +24,7 @@ func seededStore(t *testing.T, key string) objectstore.ObjectStore {
 	if err := os.WriteFile(filepath.Join(src, "dep.txt"), []byte("cached"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.Save(context.Background(), store, src, key, 7); err != nil {
+	if err := cache.Save(context.Background(), store, "test-job", src, key, 7); err != nil {
 		t.Fatal(err)
 	}
 	return store
@@ -55,7 +55,7 @@ func erroringProvider(ctx context.Context) (objectstore.ObjectStore, error) {
 func TestRunCache_RestoreEmitsHitMarkerToStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ec := runCache(context.Background(), seededStore(t, "k"), "restore",
-		[]string{"--key", "k", "--path", t.TempDir()}, &stdout, &stderr)
+		[]string{"--key", "k", "--path", t.TempDir(), "--job", "test-job"}, &stdout, &stderr)
 	if ec != 0 {
 		t.Fatalf("exit=%d", ec)
 	}
@@ -70,7 +70,7 @@ func TestRunCache_RestoreEmitsHitMarkerToStdout(t *testing.T) {
 func TestRunCache_RestoreEmitsMissMarkerToStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	ec := runCache(context.Background(), emptyStore(t), "restore",
-		[]string{"--key", "absent", "--path", t.TempDir()}, &stdout, &stderr)
+		[]string{"--key", "absent", "--path", t.TempDir(), "--job", "test-job"}, &stdout, &stderr)
 	if ec != 0 {
 		t.Fatalf("exit=%d", ec)
 	}
@@ -89,11 +89,11 @@ func TestRun_CacheSaveThenRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if code := run(ctx, prov, []string{"cache", "save", "--key", "k1", "--ttl-days", "7", "--path", src}, io.Discard); code != 0 {
+	if code := run(ctx, prov, []string{"cache", "save", "--key", "k1", "--ttl-days", "7", "--path", src, "--job", "test-job"}, io.Discard); code != 0 {
 		t.Fatalf("cache save exit=%d", code)
 	}
 	dest := t.TempDir()
-	if code := run(ctx, prov, []string{"cache", "restore", "--key", "k1", "--path", dest}, io.Discard); code != 0 {
+	if code := run(ctx, prov, []string{"cache", "restore", "--key", "k1", "--path", dest, "--job", "test-job"}, io.Discard); code != 0 {
 		t.Fatalf("cache restore exit=%d", code)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "dep.txt"))
@@ -105,8 +105,38 @@ func TestRun_CacheSaveThenRestore(t *testing.T) {
 func TestRun_CacheRestoreMiss_Exit0(t *testing.T) {
 	prov := localProvider(t.TempDir())
 	dest := t.TempDir()
-	if code := run(context.Background(), prov, []string{"cache", "restore", "--key", "nope", "--path", dest}, io.Discard); code != 0 {
+	if code := run(context.Background(), prov, []string{"cache", "restore", "--key", "nope", "--path", dest, "--job", "test-job"}, io.Discard); code != 0 {
 		t.Fatalf("cache restore miss should exit 0, got %d", code)
+	}
+}
+
+// TestRunCache_RestoreMissingJob_RejectsWithClearError proves the sidecar
+// requires --job for cache operations: without it, an entry saved under one
+// job could otherwise be restored by any caller with no namespacing (the
+// runtime path the unit tests for internal/cache/ don't themselves cover,
+// since --job is a CLI-layer requirement, not a cache-package one).
+func TestRunCache_RestoreMissingJob_RejectsWithClearError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	ec := runCache(context.Background(), emptyStore(t), "restore",
+		[]string{"--key", "k", "--path", t.TempDir()}, &stdout, &stderr)
+	if ec == 0 {
+		t.Fatalf("cache restore without --job should not exit 0")
+	}
+	if !strings.Contains(stderr.String(), "--job") {
+		t.Fatalf("expected a clear --job-required error, got: %q", stderr.String())
+	}
+}
+
+func TestRunCache_SaveMissingJob_RejectsWithClearError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	src := t.TempDir()
+	ec := runCache(context.Background(), emptyStore(t), "save",
+		[]string{"--key", "k", "--path", src}, &stdout, &stderr)
+	if ec == 0 {
+		t.Fatalf("cache save without --job should not exit 0")
+	}
+	if !strings.Contains(stderr.String(), "--job") {
+		t.Fatalf("expected a clear --job-required error, got: %q", stderr.String())
 	}
 }
 

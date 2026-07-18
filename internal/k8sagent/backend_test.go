@@ -52,7 +52,7 @@ func TestK8sBackend_CacheRestore_HonorsStdoutMarker(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ex := &fakeExec{exit: 0, stdout: tc.stdout}
 			a := &K8sAgent{exec: ex}
-			b := newK8sBackend(a, "run-1", "pod-default", "/workspace", nil, metav1.Time{})
+			b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
 
 			hit, err := b.CacheRestore(context.Background(), agentlib.ScopeHandle{}, "k1", nil, "/workspace/cachedir")
 			require.NoError(t, err)
@@ -70,7 +70,7 @@ func TestK8sBackend_CacheRestore_PropagatesExecError(t *testing.T) {
 	wantErr := assert.AnError
 	ex := &fakeExec{exit: 1, err: wantErr}
 	a := &K8sAgent{exec: ex}
-	b := newK8sBackend(a, "run-1", "pod-default", "/workspace", nil, metav1.Time{})
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
 
 	hit, err := b.CacheRestore(context.Background(), agentlib.ScopeHandle{}, "k1", nil, "/workspace/cachedir")
 	require.ErrorIs(t, err, wantErr)

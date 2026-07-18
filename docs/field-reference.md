@@ -143,7 +143,7 @@ TimeoutMinutes defaults to 60 (applied at compile time) when zero.
 | `key` | string | yes | cache key; supports template expansion |
 | `path` | string | yes | directory to cache; supports template expansion |
 | `restoreKeys` | []string | no | fallback key prefixes; support template expansion |
-| `ttlDays` | integer | no | default 30 |
+| `ttlDays` | integer | no | default 30, max 365 |
 
 ### CallStep
 
@@ -454,7 +454,7 @@ TimeoutMinutes defaults to 60 (applied at compile time) when zero.
 | `key` | string | yes | cache key; supports template expansion |
 | `path` | string | yes | directory to cache; supports template expansion |
 | `restoreKeys` | []string | no | fallback key prefixes; support template expansion |
-| `ttlDays` | integer | no | default 30 |
+| `ttlDays` | integer | no | default 30, max 365 |
 
 ### CallStep
 

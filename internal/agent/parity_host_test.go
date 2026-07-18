@@ -420,7 +420,7 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 		if err := pod.Start(ctx, claim.PodTemplate); err != nil {
 			t.Fatalf("isolated claim: claim pod start failed: %v", err)
 		}
-		backend := newHostBackend(a, claim.RunID, workDir, pod)
+		backend := newHostBackend(a, claim.RunID, claim.JobName, workDir, pod)
 		RunClaim(ctx, a.Client, a.ID, claim, backend)
 	}
 	elapsed := time.Since(start)

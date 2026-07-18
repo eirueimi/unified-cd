@@ -550,7 +550,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			return
 		}
 	}
-	backend := newHostBackend(a, c.RunID, workDir, pod)
+	backend := newHostBackend(a, c.RunID, c.JobName, workDir, pod)
 	runClaimFn(ctx, a.Client, a.ID, c, backend)
 }
 

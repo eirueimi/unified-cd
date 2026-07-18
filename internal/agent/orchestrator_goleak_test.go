@@ -52,7 +52,7 @@ func TestRunClaim_JoinsCancelPoller_NoGoroutineLeak(t *testing.T) {
 	// A native claim with no steps: RunClaim starts the poller, runs an empty
 	// pipeline, finishes the run, and — on return — must cancel + join the poller.
 	claim := api.ClaimResponse{Native: true, RunID: runID, JobName: "goleak-noop"}
-	backend := newHostBackend(a, runID, t.TempDir(), nil)
+	backend := newHostBackend(a, runID, claim.JobName, t.TempDir(), nil)
 	RunClaim(ctx, a.Client, a.ID, claim, backend)
 
 	// Explicit teardown BEFORE the leak check: close the server and release the

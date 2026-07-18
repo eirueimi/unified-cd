@@ -24,9 +24,13 @@ import (
 // mode, so this map needs no mutex for reads/writes performed from the
 // orchestrate loop itself), and the secret masker used by StepLogWriters.
 type k8sBackend struct {
-	a         *K8sAgent
-	runID     string
-	podName   string
+	a       *K8sAgent
+	runID   string
+	podName string
+	// jobName is the claim's qualified job name (e.g. "team-a/build"), passed
+	// as the sidecar's --job flag on every cache restore/save exec so cache
+	// entries stay namespaced per job (mirrors hostBackend.jobName).
+	jobName   string
 	mountPath string
 
 	scopePods map[string]string
@@ -47,10 +51,12 @@ type k8sBackend struct {
 // newK8sBackend constructs the ExecBackend for one claim's executeRun call,
 // after the run/pooled pod has been acquired and is Running. sidecarNames are
 // the user podTemplate sidecar container names (declared order); claimSince is
-// the claim's start time, used as the sidecar log stream's SinceTime.
-func newK8sBackend(a *K8sAgent, runID, podName, mountPath string, sidecarNames []string, claimSince metav1.Time) *k8sBackend {
+// the claim's start time, used as the sidecar log stream's SinceTime. jobName
+// is the claim's qualified job name, passed to the sidecar's cache
+// restore/save subcommands via --job for per-job cache namespacing.
+func newK8sBackend(a *K8sAgent, runID, jobName, podName, mountPath string, sidecarNames []string, claimSince metav1.Time) *k8sBackend {
 	return &k8sBackend{
-		a: a, runID: runID, podName: podName, mountPath: mountPath,
+		a: a, runID: runID, jobName: jobName, podName: podName, mountPath: mountPath,
 		scopePods:    map[string]string{},
 		sidecarNames: sidecarNames, claimSince: claimSince,
 	}
@@ -187,7 +193,7 @@ func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandl
 	if err != nil {
 		return false, err
 	}
-	argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", path}
+	argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", path, "--job", b.jobName}
 	for _, rk := range restoreKeys {
 		argv = append(argv, "--restore-key", rk)
 	}
@@ -216,7 +222,7 @@ func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, 
 	if err != nil {
 		return err
 	}
-	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path}
+	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--job", b.jobName}
 	_, err = b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	return err
 }

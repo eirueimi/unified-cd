@@ -29,20 +29,40 @@ type Meta struct {
 	OriginalKey string    `json:"originalKey"`
 	ExpiresAt   time.Time `json:"expiresAt"`
 	Size        int64     `json:"size"`
+
+	// OwnerJob is the qualified job name (e.g. "team-a/build") that saved this
+	// entry. It is redundant with the jobHash component of the object key
+	// itself (objectKey/jobPrefix), but is checked again on restore as
+	// defense in depth against a mis-keyed object landing in another job's
+	// namespace by some path other than Save.
+	OwnerJob string `json:"ownerJob"`
 }
 
-// objectKey converts a cache key to the MinIO object name prefix (without extension).
-func objectKey(key string) string {
+// objectKey converts a job name + cache key to the object name prefix (without
+// extension). The job component namespaces every entry: without it the cache is
+// one flat global namespace, and a job could plant an entry that another job's
+// restoreKeys prefix-match would select and execute. Job identity (not run ID)
+// is the right granularity — reuse across runs of the same job is the point of
+// a cache.
+func objectKey(jobName, key string) string {
+	j := sha256.Sum256([]byte(jobName))
 	h := sha256.Sum256([]byte(key))
-	return "caches/" + base64.RawURLEncoding.EncodeToString(h[:])
+	return "caches/" + base64.RawURLEncoding.EncodeToString(j[:]) + "/" + base64.RawURLEncoding.EncodeToString(h[:])
+}
+
+// jobPrefix returns the List prefix containing only this job's cache entries.
+func jobPrefix(jobName string) string {
+	j := sha256.Sum256([]byte(jobName))
+	return "caches/" + base64.RawURLEncoding.EncodeToString(j[:]) + "/"
 }
 
 // Save compresses path as tar+zstd and stores it in store under key, streaming
 // the archive so it is never fully buffered in memory. A metadata object is
 // stored alongside with TTL of ttlDays days; its Size is the number of bytes
-// streamed to the store, captured during the upload.
-func Save(ctx context.Context, store objectstore.ObjectStore, path, key string, ttlDays int) error {
-	oKey := objectKey(key)
+// streamed to the store, captured during the upload. jobName is the qualified
+// job name that owns this entry (see objectKey) and is recorded in Meta.OwnerJob.
+func Save(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, ttlDays int) error {
+	oKey := objectKey(jobName, key)
 
 	body := artifact.StreamTarZstd(path)
 	counter := &countingReader{r: body}
@@ -56,6 +76,7 @@ func Save(ctx context.Context, store objectstore.ObjectStore, path, key string, 
 		OriginalKey: key,
 		ExpiresAt:   time.Now().Add(time.Duration(ttlDays) * 24 * time.Hour),
 		Size:        counter.n,
+		OwnerJob:    jobName,
 	}
 	metaData, err := json.Marshal(meta)
 	if err != nil {
@@ -90,9 +111,14 @@ func (c *countingReader) Read(p []byte) (int, error) {
 
 // Restore downloads and extracts the cache for key into path.
 // If no exact match, tries restoreKeys prefix fallback.
-// Returns (false, ErrCacheMiss) if nothing matches.
-func Restore(ctx context.Context, store objectstore.ObjectStore, path, key string, restoreKeys []string) (bool, error) {
-	oKey := objectKey(key)
+// Returns (false, ErrCacheMiss) if nothing matches. jobName is the qualified
+// job name that must own the entry being restored (see objectKey/jobPrefix):
+// it is namespaced into the exact-key lookup and, for the restoreKeys
+// fallback, both bounds the candidates enumerated (findBestMatch only lists
+// this job's own prefix) and is checked again against each candidate's
+// Meta.OwnerJob as defense in depth.
+func Restore(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string) (bool, error) {
+	oKey := objectKey(jobName, key)
 	rc, err := store.Get(ctx, oKey+".tar.zst")
 	if err == nil {
 		defer rc.Close()
@@ -109,7 +135,7 @@ func Restore(ctx context.Context, store objectstore.ObjectStore, path, key strin
 	}
 
 	if len(restoreKeys) > 0 {
-		fallbackKey, err := findBestMatch(ctx, store, restoreKeys)
+		fallbackKey, err := findBestMatch(ctx, store, jobName, restoreKeys)
 		if err != nil || fallbackKey == "" {
 			return false, ErrCacheMiss
 		}
@@ -167,10 +193,14 @@ func DeleteExpired(ctx context.Context, store objectstore.ObjectStore, past time
 	return deleted, nil
 }
 
-// findBestMatch scans all .meta objects and returns the object key (without extension)
-// for the entry with the longest remaining TTL among those matching any prefix.
-func findBestMatch(ctx context.Context, store objectstore.ObjectStore, prefixes []string) (string, error) {
-	keys, err := store.List(ctx, "caches/")
+// findBestMatch scans this job's .meta objects (and only this job's — the
+// List call is scoped to jobPrefix(jobName), so another job's entries are
+// never even enumerated, let alone selected) and returns the object key
+// (without extension) for the entry with the longest remaining TTL among
+// those matching any prefix. Any candidate whose Meta.OwnerJob does not match
+// jobName is skipped as defense in depth against a mis-keyed object.
+func findBestMatch(ctx context.Context, store objectstore.ObjectStore, jobName string, prefixes []string) (string, error) {
+	keys, err := store.List(ctx, jobPrefix(jobName))
 	if err != nil {
 		return "", err
 	}
@@ -192,6 +222,9 @@ func findBestMatch(ctx context.Context, store objectstore.ObjectStore, prefixes 
 		}
 		rc.Close()
 		if m.ExpiresAt.Before(now) {
+			continue
+		}
+		if m.OwnerJob != jobName {
 			continue
 		}
 		for _, prefix := range prefixes {
