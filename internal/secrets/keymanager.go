@@ -42,18 +42,20 @@ func GenerateKey() []byte {
 	return key
 }
 
-// EncryptKey encrypts a plaintext key.
+// EncryptKey encrypts a plaintext key. Key wrapping carries no AAD: the
+// binding is applied to the value ciphertext, and the wrapped DEK is
+// meaningless on its own.
 func (m *LocalKeyManager) EncryptKey(_ context.Context, plaintext []byte) ([]byte, error) {
-	return aesGCMEncrypt(m.kek, plaintext)
+	return aesGCMEncrypt(m.kek, plaintext, nil)
 }
 
 // DecryptKey decrypts an encrypted key.
 func (m *LocalKeyManager) DecryptKey(_ context.Context, ciphertext []byte) ([]byte, error) {
-	return aesGCMDecrypt(m.kek, ciphertext)
+	return aesGCMDecrypt(m.kek, ciphertext, nil)
 }
 
-// aesGCMEncrypt encrypts plaintext using AES-256-GCM.
-func aesGCMEncrypt(key, plaintext []byte) ([]byte, error) {
+// aesGCMEncrypt encrypts plaintext using AES-256-GCM, authenticating aad.
+func aesGCMEncrypt(key, plaintext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -66,11 +68,11 @@ func aesGCMEncrypt(key, plaintext []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
-// aesGCMDecrypt decrypts ciphertext using AES-256-GCM.
-func aesGCMDecrypt(key, data []byte) ([]byte, error) {
+// aesGCMDecrypt decrypts ciphertext using AES-256-GCM, authenticating aad.
+func aesGCMDecrypt(key, data, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -83,5 +85,5 @@ func aesGCMDecrypt(key, data []byte) ([]byte, error) {
 	if len(data) < ns {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
-	return gcm.Open(nil, data[:ns], data[ns:], nil)
+	return gcm.Open(nil, data[:ns], data[ns:], aad)
 }

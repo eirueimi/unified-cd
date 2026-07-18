@@ -239,7 +239,8 @@ func (s *Server) verifyWebhookSignature(r *http.Request, body []byte, auth dsl.W
 	if err != nil {
 		return fmt.Errorf("secret %q not found — create it with `unified-cli secret set %s <value>` using the same value configured on the sender", auth.SecretRef, auth.SecretRef)
 	}
-	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext)
+	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext,
+		secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
 	if err != nil {
 		return fmt.Errorf("decrypt secret %q: %w", auth.SecretRef, err)
 	}
@@ -291,7 +292,8 @@ func (s *Server) verifyWebhookToken(r *http.Request, auth dsl.WebhookAuth) error
 	if err != nil {
 		return fmt.Errorf("secret %q not found — create it with `unified-cli secret set %s <value>` using the same value configured on the sender", auth.SecretRef, auth.SecretRef)
 	}
-	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext)
+	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext,
+		secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
 	if err != nil {
 		return fmt.Errorf("decrypt secret %q: %w", auth.SecretRef, err)
 	}

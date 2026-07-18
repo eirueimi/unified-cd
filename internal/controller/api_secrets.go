@@ -31,7 +31,8 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 	if req.Scope == "" {
 		req.Scope = "global"
 	}
-	encDEK, ct, err := secrets.Encrypt(r.Context(), s.km, []byte(req.Value))
+	encDEK, ct, err := secrets.Encrypt(r.Context(), s.km, []byte(req.Value),
+		secrets.SecretBinding(req.Name, req.Scope, req.ScopeRef))
 	if err != nil {
 		http.Error(w, "encrypt: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -116,7 +117,8 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 			// Skip if not found.
 			continue
 		}
-		plaintext, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext)
+		plaintext, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext,
+			secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
 		if err != nil {
 			http.Error(w, "decrypt "+name+": "+err.Error(), http.StatusInternalServerError)
 			return

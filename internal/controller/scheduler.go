@@ -303,7 +303,8 @@ func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittem
 			if err != nil {
 				return gittemplate.Credential{}, fmt.Errorf("get secret %q for host %q: %w", gc.SecretRef, host, err)
 			}
-			plaintext, err := secrets.Decrypt(ctx, km, stored.EncryptedDEK, stored.Ciphertext)
+			plaintext, err := secrets.Decrypt(ctx, km, stored.EncryptedDEK, stored.Ciphertext,
+				secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
 			if err != nil {
 				return gittemplate.Credential{}, fmt.Errorf("decrypt secret for host %q: %w", host, err)
 			}
