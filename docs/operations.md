@@ -166,11 +166,13 @@ Upgrade order: **controller first, then agents.**
 ### Rotating the default runner/pause image digests
 
 The fleet-wide default images — the primary container for isolated jobs that
-don't supply their own `podTemplate` job container, and the claim pod's pause
-(netns-holder) container — are referenced by **digest**, not by mutable tag:
+don't supply their own `podTemplate` job container, the claim pod's pause
+(netns-holder) container, and the k8s-agent's auto-injected artifact
+sidecar — are referenced by **digest**, not by mutable tag:
 
 - Host agent: `defaultRunnerImage` / `defaultPauseImage` constants in `cmd/agent/main.go`
 - k8s-agent: `defaultPodImage` constant in `internal/k8sagent/config.go` (also consumed by the fallback in `internal/k8sagent/podbuilder.go`'s `defaultPodSpec`)
+- k8s-agent artifact sidecar: `defaultSidecarImage` constant in `internal/k8sagent/config.go` (fleet-wide default for `Config.SidecarImage`, auto-injected into every k8s-agent pod by `internal/k8sagent/podbuilder.go`'s `buildArtifactSidecarContainer` — not job-author-controlled, and this sidecar holds long-lived, bucket-scoped static S3 credentials, so treat its pin with at least the same care as the runner/pod image)
 
 This is deliberate: a bare tag like `v0.0.3` or `1.36` looks immutable but
 isn't — whoever controls that registry repository can force-push the tag and
@@ -192,6 +194,7 @@ step of every runner-image release**, not an optional follow-up:
    ```bash
    docker buildx imagetools inspect ghcr.io/eirueimi/unified-cd-runner:vX.Y.Z
    docker buildx imagetools inspect busybox:1.36
+   docker buildx imagetools inspect ghcr.io/eirueimi/unified-cd-artifact-sidecar:vX.Y.Z
    ```
 
    Use the **top-level `Digest:`** from the multi-arch index output, not one
@@ -200,19 +203,20 @@ step of every runner-image release**, not an optional follow-up:
 
 2. Update, in the same commit:
    - `cmd/agent/main.go`: `defaultRunnerImage` and/or `defaultPauseImage`
-   - `internal/k8sagent/config.go`: `defaultPodImage`
+   - `internal/k8sagent/config.go`: `defaultPodImage` and/or `defaultSidecarImage`
    - Bump the tag portion of the string (e.g. `v0.0.3` → `vX.Y.Z`) alongside the digest so the two never drift apart.
 
 3. Record both old and new digests in the commit message so the pin change
    is auditable in `git log`/`git blame`.
 
 4. Run `go test ./cmd/... ./internal/agent/ ./internal/k8sagent/ -count=1` —
-   `TestDefaultImagesAreDigestPinned` (`cmd/agent/main_test.go`) and
-   `TestDefaultPodImageIsDigestPinned` (`internal/k8sagent/config_test.go`)
-   only assert the string still contains `@sha256:`, so they will **not**
-   catch a stale-but-still-pinned digest; a full pull/smoke-test of the new
-   image on at least one host and one k8s agent is the real verification
-   that the rotation took effect.
+   `TestDefaultImagesAreDigestPinned` (`cmd/agent/main_test.go`),
+   `TestDefaultPodImageIsDigestPinned`, and `TestDefaultSidecarImageIsDigestPinned`
+   (both in `internal/k8sagent/config_test.go`) only assert the string is a
+   well-formed `@sha256:<64 hex chars>` pin, so they will **not** catch a
+   stale-but-still-pinned digest; a full pull/smoke-test of the new image on
+   at least one host and one k8s agent is the real verification that the
+   rotation took effect.
 
 ---
 
