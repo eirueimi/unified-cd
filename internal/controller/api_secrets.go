@@ -109,6 +109,25 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 	if respondRunWriteVerdict(w, verdict, req.RunID) {
 		return
 	}
+	// Constrain the fetch to secrets this run's own spec actually references.
+	// Without this, any agent holding a valid credential for *some* run it
+	// owns could request the name of any secret in the store, regardless of
+	// whether that run declares it. Names outside the allowed set are
+	// rejected outright (before any decrypt attempt) with a generic message
+	// that neither echoes the requested value nor confirms/denies the
+	// secret's existence, so the response can't be used as an oracle to
+	// enumerate the secret store.
+	allowed, err := s.secretNamesForRun(r.Context(), req.RunID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, name := range req.Names {
+		if _, ok := allowed[name]; !ok {
+			http.Error(w, "secret not needed by this run", http.StatusForbidden)
+			return
+		}
+	}
 	result := map[string]string{}
 	for _, name := range req.Names {
 		stored, err := s.store.GetSecret(r.Context(), name, "global", "")
