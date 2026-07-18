@@ -7,7 +7,10 @@ mkdir -p "$embedded"
 
 for arch in amd64 arm64; do
   path="$embedded/ucd-sh-$arch"
-  if [[ ! -e "$path" ]]; then
-    : > "$path"
+  if (set -o noclobber; : > "$path") 2>/dev/null; then
+    continue
   fi
+
+  # Another concurrent invocation may have created the file first.
+  [[ -e "$path" ]]
 done
