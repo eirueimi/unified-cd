@@ -114,8 +114,10 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 	for _, name := range req.Names {
 		stored, err := s.store.GetSecret(r.Context(), name, "global", "")
 		if err != nil {
-			// Skip if not found.
-			continue
+			// Omitting the secret would hand the agent an empty value and let
+			// the step run as if it had been configured. Fail loudly instead.
+			http.Error(w, "secret "+name+" not found", http.StatusNotFound)
+			return
 		}
 		plaintext, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext,
 			secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
