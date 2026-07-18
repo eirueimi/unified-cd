@@ -75,12 +75,18 @@ services:
       GOMODCACHE: /gomodcache
       UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
       UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
-      # No key is baked into this file on purpose. Dev mode generates an
-      # ephemeral key at startup; secrets do not survive a restart.
-      # For a persistent local setup:
+      # Defaults to dev mode: an ephemeral, in-memory key, so secrets do not
+      # survive a restart. For a persistent local setup:
       #   unified-cli keygen --out ./kek
-      # then mount it and set UNIFIED_CONTROLLER_KEY_FILE=/run/secrets/kek
-      UNIFIED_DEV_MODE: "1"
+      # then in .env set:
+      #   UNIFIED_CONTROLLER_KEY_FILE=/run/secrets/kek
+      # and add this volume mount under this service:
+      #   volumes:
+      #     - ./kek:/run/secrets/kek:ro
+      # (UNIFIED_CONTROLLER_KEY_FILE takes precedence over UNIFIED_DEV_MODE
+      # when both are set, so you don't need to unset the latter.)
+      UNIFIED_DEV_MODE: "${UNIFIED_DEV_MODE:-1}"
+      UNIFIED_CONTROLLER_KEY_FILE: "${UNIFIED_CONTROLLER_KEY_FILE:-}"
       UNIFIED_S3_ENDPOINT: garage:3900
       UNIFIED_S3_BUCKET: unified-cd-logs
       UNIFIED_S3_KEY: garageadmin

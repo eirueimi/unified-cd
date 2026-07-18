@@ -39,8 +39,13 @@ A ready-to-run stack using these published images (controller + PostgreSQL + Gar
 
 ```bash
 cp .env.example .env    # set UNIFIED_TOKEN
-# Generate the secret-encryption key (or set UNIFIED_DEV_MODE=1 for a throwaway one):
-unified-cli keygen --out ./kek   # then set UNIFIED_CONTROLLER_KEY_FILE=./kek
+# Generate a persistent secret-encryption key (or skip this and keep the
+# default UNIFIED_DEV_MODE=1 for a throwaway key — secrets won't survive a restart):
+unified-cli keygen --out ./kek
+# In .env set UNIFIED_CONTROLLER_KEY_FILE=/run/secrets/kek, then add this volume
+# mount under the controller service in deployments/docker/docker-compose.yaml:
+#   volumes:
+#     - ./kek:/run/secrets/kek:ro
 docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d
 ```
 
