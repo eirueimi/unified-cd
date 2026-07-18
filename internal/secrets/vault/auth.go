@@ -5,9 +5,13 @@ package vault
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
@@ -50,33 +54,36 @@ func newStaticTokenAuth(literal, file string) (vaultAuth, error) {
 // error rather than a silent fallback: a typo in a security-relevant setting
 // must not fail open.
 //
-// The chosen method is wrapped in selfLookupAuth: every method here hands
-// back a token without knowing its real TTL or renewability up front (a
-// static token in particular is just an opaque string), and a self-lookup is
-// what fills those in. It also has the useful side effect of making login a
+// Only the token case is wrapped in selfLookupAuth. A static token is just an
+// opaque string with no TTL of its own, so a self-lookup is what fills TTL
+// and Renewable in, and it has the useful side effect of making login a
 // genuine round trip to Vault, so an unreachable address or a bad token is
 // caught at construction instead of surfacing opaquely on first use.
+// Kubernetes auth (and any future method) already returns its own TTL from
+// its login response, so wrapping it would add a redundant round trip and the
+// auth/token/lookup-self capability requirement to a token that never needed
+// either.
 func newAuth(cfg Config, client *vaultapi.Client) (vaultAuth, error) {
-	var inner vaultAuth
-	var err error
 	switch cfg.Auth {
 	case "", "token":
-		inner, err = newStaticTokenAuth(cfg.Token, cfg.TokenFile)
+		inner, err := newStaticTokenAuth(cfg.Token, cfg.TokenFile)
+		if err != nil {
+			return nil, err
+		}
+		return &selfLookupAuth{inner: inner, client: client}, nil
 	default:
 		return nil, fmt.Errorf("UNIFIED_VAULT_AUTH %q is not supported; supported methods: token", cfg.Auth)
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &selfLookupAuth{inner: inner, client: client}, nil
 }
 
 // selfLookupAuth wraps another vaultAuth and enriches its authResult with the
 // token's real TTL and renewability via a self-lookup call. See newAuth for
-// why this wrapping happens unconditionally.
+// which methods this wraps and why.
 type selfLookupAuth struct {
 	inner  vaultAuth
 	client *vaultapi.Client
+
+	warnOnce sync.Once
 }
 
 func (a *selfLookupAuth) login(ctx context.Context) (authResult, error) {
@@ -93,6 +100,28 @@ func (a *selfLookupAuth) login(ctx context.Context) (authResult, error) {
 
 	secret, err := c.Auth().Token().LookupSelfWithContext(ctx)
 	if err != nil {
+		if isPermissionDenied(err) {
+			// The token reached Vault but lacks `read` on
+			// auth/token/lookup-self. That capability is optional: without
+			// it we simply cannot learn the token's real TTL/renewability,
+			// so we fall back to the pre-decorator result (TTL: 0,
+			// Renewable: false). That is harmless for a static token — the
+			// lifecycle re-logins on its normal cadence instead of
+			// renewing, which for a file-backed token just re-reads the
+			// file. Losing renewal is a degradation, not a reason to take
+			// the controller down over a policy that was never required
+			// before this decorator existed.
+			a.warnOnce.Do(func() {
+				slog.Warn("vault: token lookup-self denied, renewal disabled for this token; "+
+					"grant `read` on auth/token/lookup-self to enable TTL-aware renewal",
+					"error", err)
+			})
+			return res, nil
+		}
+		// Anything else -- including an unreachable Vault -- stays a hard
+		// failure. TestKeyManager_UnreachableAddressFailsFast depends on an
+		// unreachable address failing login, and a transient outage and a
+		// misconfiguration are indistinguishable at this point anyway.
 		return authResult{}, fmt.Errorf("vault token lookup-self: %w", err)
 	}
 	ttl, err := secret.TokenTTL()
@@ -104,6 +133,16 @@ func (a *selfLookupAuth) login(ctx context.Context) (authResult, error) {
 		return authResult{}, fmt.Errorf("vault token lookup-self: parse renewable: %w", err)
 	}
 	return authResult{Token: res.Token, TTL: ttl, Renewable: renewable}, nil
+}
+
+// isPermissionDenied reports whether err is Vault rejecting a request with
+// 403, as opposed to the request never reaching Vault at all (an unreachable
+// address, a network error). Matching on the typed StatusCode rather than
+// error-string content is deliberate: Vault's error text is not a stable
+// contract.
+func isPermissionDenied(err error) bool {
+	var respErr *vaultapi.ResponseError
+	return errors.As(err, &respErr) && respErr.StatusCode == http.StatusForbidden
 }
 
 func (a *staticTokenAuth) login(_ context.Context) (authResult, error) {

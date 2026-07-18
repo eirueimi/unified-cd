@@ -256,7 +256,13 @@ artifact CI never exercises — the same failure mode as the stale runbook secre
 v2 had to repair. What is documented instead is what unified-cd genuinely owns:
 
 - The **Vault policy** the controller needs: `update` on
-  `transit/encrypt/<key>` and `transit/decrypt/<key>`.
+  `transit/encrypt/<key>` and `transit/decrypt/<key>`. Token auth additionally
+  *wants* `read` on `auth/token/lookup-self`, so the renewal loop can learn the
+  token's real TTL and renewability instead of the values a bare token carries
+  (`TTL: 0, Renewable: false`). This capability is **optional**: a token
+  minted without it still works — the controller logs a warning at startup and
+  falls back to re-authenticating on its normal cadence instead of renewing,
+  rather than failing to start.
 - The **Transit key setup**: enabling the engine and creating the key.
 - The **HA implications for unified-cd**: every replica points at the same Vault;
   because standbys forward, the address is the Vault service rather than a
