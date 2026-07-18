@@ -172,8 +172,8 @@ metadata:
   name: unified-cd-controller
   namespace: unified-cd
 stringData:
-  UNIFIED_CONTROLLER_KEY: ""
   UNIFIED_DB_DSN: postgres://unified:unified@postgres.unified-cd.svc.cluster.local:5432/unified?sslmode=disable
+  UNIFIED_DEV_MODE: "1"
   UNIFIED_S3_BUCKET: unified-cd-logs
   UNIFIED_S3_ENDPOINT: garage.unified-cd.svc.cluster.local:3900
   UNIFIED_S3_KEY: garageadmin
@@ -381,6 +381,7 @@ spec:
       - args:
         - -f
         - /etc/unified-cd/controller-config.yaml
+        env: []
         envFrom:
         - secretRef:
             name: unified-cd-controller

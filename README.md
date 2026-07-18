@@ -38,7 +38,9 @@ Images are published to [GitHub Container Registry](https://github.com/eirueimi/
 A ready-to-run stack using these published images (controller + PostgreSQL + Garage + a Docker agent) lives at [`deployments/docker/docker-compose.yaml`](deployments/docker/docker-compose.yaml). Unlike the repo-root `docker-compose.yaml` (source build with hot reload, for development), this one pulls the release images:
 
 ```bash
-cp .env.example .env    # set UNIFIED_TOKEN, UNIFIED_CONTROLLER_KEY
+cp .env.example .env    # set UNIFIED_TOKEN
+# Generate the secret-encryption key (or set UNIFIED_DEV_MODE=1 for a throwaway one):
+unified-cli keygen --out ./kek   # then set UNIFIED_CONTROLLER_KEY_FILE=./kek
 docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d
 ```
 

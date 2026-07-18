@@ -159,13 +159,13 @@ metadata:
   name: unified-cd-controller
   namespace: unified-cd
 stringData:
-  UNIFIED_CONTROLLER_KEY: REPLACE_WITH_32_BYTE_HEX_KEY
   UNIFIED_DB_DSN: REPLACE_WITH_POSTGRES_DSN
   UNIFIED_S3_BUCKET: REPLACE_WITH_S3_BUCKET
   UNIFIED_S3_ENDPOINT: REPLACE_WITH_S3_ENDPOINT
   UNIFIED_S3_KEY: REPLACE_WITH_S3_ACCESS_KEY
   UNIFIED_S3_SECRET: REPLACE_WITH_S3_SECRET
   UNIFIED_TOKEN: REPLACE_WITH_ADMIN_TOKEN
+  kek: REPLACE_WITH_64_HEX_CHARS_FROM_unified-cli_keygen
 type: Opaque
 ---
 apiVersion: v1
@@ -201,6 +201,9 @@ spec:
       - args:
         - -f
         - /etc/unified-cd/controller-config.yaml
+        env:
+        - name: UNIFIED_CONTROLLER_KEY_FILE
+          value: /etc/unified-cd/kek
         envFrom:
         - secretRef:
             name: unified-cd-controller
@@ -223,12 +226,23 @@ spec:
           name: controller-config
           readOnly: true
           subPath: controller-config.yaml
+        - mountPath: /etc/unified-cd/kek
+          name: controller-kek
+          readOnly: true
+          subPath: kek
       serviceAccountName: unified-cd-controller
       terminationGracePeriodSeconds: 30
       volumes:
       - configMap:
           name: unified-cd-controller-config
         name: controller-config
+      - name: controller-kek
+        secret:
+          defaultMode: 256
+          items:
+          - key: kek
+            path: kek
+          secretName: unified-cd-controller
 ---
 apiVersion: apps/v1
 kind: Deployment

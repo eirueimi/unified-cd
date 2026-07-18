@@ -51,7 +51,9 @@ unified-cd-controller [FLAGS]
 |---|---|---|
 | `UNIFIED_DB_DSN` | **Yes** | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
 | `UNIFIED_TOKEN` | Yes (without SSO) | Static admin bearer token. Auto-synced to DB as a PAT named `env:UNIFIED_TOKEN`. Required when OIDC is not configured. |
-| `UNIFIED_CONTROLLER_KEY` | Recommended | 32-byte hex master key for secret encryption (`openssl rand -hex 32`). If unset, auto-generated and persisted to DB. **All replicas must share the same value in HA setups.** |
+| `UNIFIED_CONTROLLER_KEY_FILE` | Required | Path to a file containing a 32-byte hex master key (`unified-cli keygen --out /etc/unified-cd/kek`). Mutually exclusive with `UNIFIED_KMS_URI`. **All replicas must be given the same file in HA setups.** |
+| `UNIFIED_KMS_URI` | Optional | External KMS, e.g. `hashivault://unified-cd-kek`. No provider is implemented yet. |
+| `UNIFIED_DEV_MODE` | Optional | `1` generates an ephemeral key. Secrets are unreadable after a restart. Never use in production. |
 | `UNIFIED_GIT_RESOLVE_DEADLINE` | No | How long a run's `git://` template resolution may keep failing (network/credentials) before the run is Failed instead of waiting as Pending. Go duration, default `1h`. Deterministic resolution errors (e.g. a nonexistent ref) still fail the run immediately. There is no CLI flag; unset/invalid/non-positive values use the default. The run is failed at its *next resolution attempt* after the deadline elapses, which the per-run failure backoff may delay by up to an additional 1 hour. |
 | `UNIFIED_LOG_LEVEL` | No | Log level: `debug`, `info` (default), `warn`, `error` |
 | `UNIFIED_S3_ENDPOINT` | No | S3-compatible object store endpoint (e.g. `garage.internal:3900`). Without S3, log archival and artifacts are disabled. |
@@ -88,7 +90,6 @@ All flags can be specified in a YAML config file (`-f config.yaml`):
 dsn: postgres://unified:unified@localhost:5432/unified?sslmode=disable
 addr: :8080
 token: dev-secret
-controllerKey: a1b2c3d4...      # 32-byte hex (openssl rand -hex 32)
 
 s3Endpoint: garage.internal:3900
 s3Bucket: unified-cd
@@ -471,9 +472,11 @@ Examples:
 ### Controller
 
 ```bash
+unified-cli keygen --out /etc/unified-cd/kek
+
 UNIFIED_DB_DSN="postgres://user:pass@postgres-ha:5432/unified?sslmode=require" \
 UNIFIED_TOKEN="$(openssl rand -hex 32)" \
-UNIFIED_CONTROLLER_KEY="$(openssl rand -hex 32)" \
+UNIFIED_CONTROLLER_KEY_FILE="/etc/unified-cd/kek" \
 UNIFIED_S3_ENDPOINT="s3.amazonaws.com" \
 UNIFIED_S3_BUCKET="my-unified-cd" \
 UNIFIED_S3_KEY="AKIAIOSFODNN7EXAMPLE" \

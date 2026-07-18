@@ -73,7 +73,7 @@ INFO  server listening  addr=:8080
 |---|---|---|
 | `UNIFIED_DB_DSN` | PostgreSQL connection string | Yes |
 | `UNIFIED_TOKEN` | Static bearer token for the admin CLI | Yes (when SSO is not configured) |
-| `UNIFIED_CONTROLLER_KEY` | 32-byte hex key for secret encryption | Recommended |
+| `UNIFIED_CONTROLLER_KEY_FILE` | Path to a file holding 64 hex chars for secret encryption (`unified-cli keygen --out`) | Required unless `UNIFIED_DEV_MODE=1` |
 | `UNIFIED_S3_ENDPOINT` | S3/Garage endpoint for log archival and artifacts | Optional |
 
 ---

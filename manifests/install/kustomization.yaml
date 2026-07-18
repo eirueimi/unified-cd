@@ -7,3 +7,4 @@ resources:
 patches:
   - path: secret-patch.yaml
   - path: agent-config-patch.yaml
+  - path: dev-mode-patch.yaml
