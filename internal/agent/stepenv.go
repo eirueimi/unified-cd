@@ -24,7 +24,6 @@ var stepEnvDenied = map[string]bool{
 	"UNIFIED_CACHE_KEY":                   true,
 	"UNIFIED_CACHE_SECRET":                true,
 	"UNIFIED_TOKEN":                       true,
-	"UNIFIED_CONTROLLER_KEY":              true,
 	"UNIFIED_AGENT_CREDENTIAL_FILE":       true,
 	"UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE": true,
 }

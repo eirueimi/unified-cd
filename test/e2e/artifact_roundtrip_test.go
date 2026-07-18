@@ -51,11 +51,17 @@ func startArtifactController(t *testing.T) (baseURL, listenAgentToken string, pg
 	return httpSrv.URL, legacyAgentToken, pg
 }
 
-// issueAgentAccessToken mints a real per-agent credential the same way
+// issueArtifactAgentAccessToken mints a real per-agent credential the same way
 // internal/controller/agent_auth_test.go's issueAgentAccessForTest does,
 // so the e2e upload exercises the real ownership path (agentRunGuard)
 // instead of the removed nil-store bypass.
-func issueAgentAccessToken(t *testing.T, pg *store.Postgres, agentID string) string {
+//
+// Named distinctly (not issueAgentAccessToken) because test/e2e/phase5_test.go
+// on main independently grew its own helper of that name and shape for the
+// secrets-v2 work; keeping this one package-locally unique avoids a
+// redeclaration collision once this branch is merged with main, without
+// depending on which branch's copy happens to land first.
+func issueArtifactAgentAccessToken(t *testing.T, pg *store.Postgres, agentID string) string {
 	t.Helper()
 	issued, err := agentauth.Generate(agentauth.AccessToken)
 	require.NoError(t, err)
@@ -135,7 +141,7 @@ func TestArtifactRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID)
 
-	ownerToken := issueAgentAccessToken(t, pg, "artifact-owner")
+	ownerToken := issueArtifactAgentAccessToken(t, pg, "artifact-owner")
 
 	// 1. Upload a tar+zstd artifact via the agent PUT path, authenticated as
 	// the agent that claimed the run.

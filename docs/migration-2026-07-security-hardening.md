@@ -67,7 +67,7 @@ exposeEnv:
 
 **Agent credentials can never be exposed this way, by design.** A small
 denylist (`UNIFIED_AGENT_TOKEN`, `UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`,
-`UNIFIED_TOKEN`, `UNIFIED_CONTROLLER_KEY`) is dropped unconditionally even if
+`UNIFIED_TOKEN`) is dropped unconditionally even if
 an operator explicitly names one in `ExposeEnv` — there is no override, flag,
 or config setting that will make a step see these values. If a job needs a
 credential, pass it as a job-level secret (`{{ secrets.NAME }}`) instead of

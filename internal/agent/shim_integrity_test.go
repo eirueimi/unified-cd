@@ -14,6 +14,13 @@ import (
 
 func TestEnsureShimIntact_RepairsTamperedShim(t *testing.T) {
 	ws := t.TempDir()
+	// Fake real (non-empty) shim bytes so this test exercises the actual
+	// repair path regardless of whether internal/shim/embedded holds the
+	// real two-stage-build binary or CI's committed zero-byte placeholder
+	// (see withFakeShimBytes's doc comment in install_shim_test.go) — the
+	// same convention that package's InstallShim tests already use, rather
+	// than skipping and losing this coverage in every CI run.
+	withFakeShimBytes(t, []byte("#!/bin/sh\necho real-shim-content\n"))
 	toolsDir, err := InstallShim(ws)
 	require.NoError(t, err)
 	shimPath := filepath.Join(toolsDir, "ucd-sh")
@@ -34,6 +41,9 @@ func TestEnsureShimIntact_RepairsTamperedShim(t *testing.T) {
 
 func TestEnsureShimIntact_NoopWhenIntact(t *testing.T) {
 	ws := t.TempDir()
+	// See TestEnsureShimIntact_RepairsTamperedShim's comment: fake non-empty
+	// bytes so this runs the same regardless of CI's placeholder embed.
+	withFakeShimBytes(t, []byte("#!/bin/sh\necho real-shim-content\n"))
 	toolsDir, err := InstallShim(ws)
 	require.NoError(t, err)
 
@@ -61,6 +71,9 @@ func TestEnsureShimIntact_NoopWhenIntact(t *testing.T) {
 // repeated repair cycles here.
 func TestEnsureShimIntact_RepeatedTamperingIsRepairedEachTime(t *testing.T) {
 	ws := t.TempDir()
+	// See TestEnsureShimIntact_RepairsTamperedShim's comment: fake non-empty
+	// bytes so this runs the same regardless of CI's placeholder embed.
+	withFakeShimBytes(t, []byte("#!/bin/sh\necho real-shim-content\n"))
 	toolsDir, err := InstallShim(ws)
 	require.NoError(t, err)
 	shimPath := filepath.Join(toolsDir, "ucd-sh")
@@ -86,6 +99,9 @@ func TestEnsureShimIntact_RepeatedTamperingIsRepairedEachTime(t *testing.T) {
 // same as tampered content: recreate it from the embedded payload.
 func TestEnsureShimIntact_MissingFileIsRepaired(t *testing.T) {
 	ws := t.TempDir()
+	// See TestEnsureShimIntact_RepairsTamperedShim's comment: fake non-empty
+	// bytes so this runs the same regardless of CI's placeholder embed.
+	withFakeShimBytes(t, []byte("#!/bin/sh\necho real-shim-content\n"))
 	toolsDir, err := InstallShim(ws)
 	require.NoError(t, err)
 	shimPath := filepath.Join(toolsDir, "ucd-sh")
@@ -113,6 +129,16 @@ func TestEnsureShimIntact_MissingFileIsRepaired(t *testing.T) {
 // destroys its own shim on the very next claim.
 func TestEnsureShimIntact_EmptyPayloadIsHardError(t *testing.T) {
 	ws := t.TempDir()
+	// This test must exercise the empty-payload guard regardless of whether
+	// internal/shim/embedded holds the real two-stage-build binary or CI's
+	// committed zero-byte placeholder — it is the one test in this file that
+	// specifically covers the empty-payload path, so it must never be
+	// skipped. Install a real (fake but non-empty) shim first via
+	// withFakeShimBytes, exactly like the other tests in this file, so the
+	// "pristine" baseline below never depends on the ambient embed state;
+	// only THEN does it flip to a nil payload to drive EnsureShimIntact's
+	// hard-error path.
+	withFakeShimBytes(t, []byte("#!/bin/sh\necho real-shim-content\n"))
 	toolsDir, err := InstallShim(ws)
 	require.NoError(t, err)
 	shimPath := filepath.Join(toolsDir, "ucd-sh")
@@ -137,6 +163,9 @@ func TestEnsureShimIntact_EmptyPayloadIsHardError(t *testing.T) {
 // row — toolsDir must contain exactly the shim itself, nothing else.
 func TestEnsureShimIntact_RepairDoesNotLeaveTempFileBehind(t *testing.T) {
 	ws := t.TempDir()
+	// See TestEnsureShimIntact_RepairsTamperedShim's comment: fake non-empty
+	// bytes so this runs the same regardless of CI's placeholder embed.
+	withFakeShimBytes(t, []byte("#!/bin/sh\necho real-shim-content\n"))
 	toolsDir, err := InstallShim(ws)
 	require.NoError(t, err)
 	shimPath := filepath.Join(toolsDir, "ucd-sh")
