@@ -28,7 +28,7 @@ func (f *fakeGuardStore) GetRun(ctx context.Context, id string) (*api.Run, error
 }
 
 func guardServer(st store.Store) *Server {
-	return NewServer(Config{AgentToken: "agent-secret"}, st)
+	return NewServer(Config{LegacyAgentToken: "agent-secret"}, st)
 }
 
 func TestAgentRunGuard_Verdicts(t *testing.T) {

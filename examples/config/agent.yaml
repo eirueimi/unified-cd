@@ -5,8 +5,12 @@
 # All fields are optional; omit to fall back to env vars or defaults.
 
 server: http://unified-cd-master:8080
-token: your-agent-token
 id: my-agent-1
+# The one-time file contains a uce_ enrollment credential. The agent consumes
+# it on first start and writes its rotating refresh credential here. Keep both
+# paths private; do not pass credential values as arguments or environment.
+credentialFile: /var/lib/unified-cd-agent/credentials.json
+enrollmentTokenFile: /var/lib/unified-cd-agent/enrollment.token
 labels:
   - kind:linux
   - env:prod

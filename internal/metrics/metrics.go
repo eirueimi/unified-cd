@@ -23,6 +23,8 @@ type Metrics struct {
 	webhookEvents   *prometheus.CounterVec
 	httpRequests    *prometheus.CounterVec
 	httpDuration    *prometheus.HistogramVec
+	agentAuthEvents *prometheus.CounterVec
+	agentLegacyAuth prometheus.Counter
 	collectorErrors prometheus.Counter
 }
 
@@ -61,6 +63,14 @@ func New() *Metrics {
 			Help:    "HTTP request duration in seconds, by method and chi route pattern.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"method", "route"}),
+		agentAuthEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "unifiedcd_agent_auth_events_total",
+			Help: "Agent authentication and credential issuance events with bounded labels.",
+		}, []string{"provider", "result", "reason"}),
+		agentLegacyAuth: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "unifiedcd_agent_legacy_auth_total",
+			Help: "Successful legacy shared-token agent authentications.",
+		}),
 		collectorErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "unifiedcd_scrape_collector_errors_total",
 			Help: "Errors while collecting DB-backed gauges at scrape time.",
@@ -68,8 +78,47 @@ func New() *Metrics {
 	}
 	m.reg.MustRegister(m.runsCreated, m.runsFinished, m.stepsCompleted,
 		m.stepDuration, m.webhookEvents, m.httpRequests, m.httpDuration,
-		m.collectorErrors)
+		m.agentAuthEvents, m.agentLegacyAuth, m.collectorErrors)
 	return m
+}
+
+// AgentAuthEvent records a credential event using only bounded labels.
+func (m *Metrics) AgentAuthEvent(provider, result, reason string) {
+	m.agentAuthEvents.WithLabelValues(agentAuthProvider(provider), agentAuthResult(result), agentAuthReason(reason)).Inc()
+}
+
+// AgentLegacyAuth records a successful legacy shared-token authentication.
+func (m *Metrics) AgentLegacyAuth() { m.agentLegacyAuth.Inc() }
+
+func agentAuthProvider(provider string) string {
+	switch provider {
+	case "uce", "one-time-token":
+		return "one-time-token"
+	case "kubernetes":
+		return "kubernetes"
+	case "uca", "access":
+		return "access"
+	case "ucr", "refresh":
+		return "refresh"
+	default:
+		return "other"
+	}
+}
+
+func agentAuthResult(result string) string {
+	if result == "success" {
+		return result
+	}
+	return "failure"
+}
+
+func agentAuthReason(reason string) string {
+	switch reason {
+	case "ok", "invalid", "expired", "disabled", "policy", "replay", "rate_limited", "unavailable":
+		return reason
+	default:
+		return "other"
+	}
 }
 
 // Handler serves the registry in the Prometheus text exposition format.

@@ -5,10 +5,13 @@ metadata:
   namespace: unified-cd
 data:
   k8s-agent-config.yaml: |
-    server: http://unified-cd-controller.unified-cd.svc.cluster.local
-    agentId: k8s-agent-1
+    # Production requires an externally supplied TLS endpoint. The controller
+    # Service itself listens on HTTP only and is not a TLS terminator.
+    server: https://controller.example.invalid
+    enrollmentPolicy: unified-cd-k8s-agents
+    serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
     labels:
-      - kind:k8s
+      - kind:kubernetes
     namespace: ci
     maxConcurrent: 5
     podImage: golang:1.24-alpine

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
@@ -58,7 +59,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	masterClient := agentlib.NewClient(cfg.Server, cfg.Token)
+	masterClient, err := bootstrapAgentClient(context.Background(), &cfg, nil)
+	if err != nil {
+		slog.Error("bootstrap agent credentials", "error", err)
+		os.Exit(1)
+	}
 	pm := k8sagent.NewPodManager(k8sClient, cfg.Namespace, cfg.PodImage)
 	exec := k8sagent.NewExecutor(k8sClient, restCfg, cfg.Namespace)
 	pool := k8sagent.NewPodPool(k8sClient, cfg.Namespace, pm)
@@ -98,4 +103,24 @@ func buildRestConfig(kubeconfig string) (*rest.Config, error) {
 		kubeconfig = clientcmd.RecommendedHomeFile
 	}
 	return clientcmd.BuildConfigFromFlags("", kubeconfig)
+}
+
+// bootstrapAgentClient keeps the legacy static-token path intact while
+// resolving a Kubernetes workload identity before the agent registers. The
+// controller, not the Pod name, is authoritative for the enrolled identity
+// and labels.
+func bootstrapAgentClient(ctx context.Context, cfg *k8sagent.Config, httpClient *http.Client) (*agentlib.Client, error) {
+	if cfg.Token != "" {
+		return agentlib.NewClient(cfg.Server, cfg.Token), nil
+	}
+	source := k8sagent.NewKubernetesCredentialSource(k8sagent.KubernetesCredentialSourceConfig{
+		Server: cfg.Server, Policy: cfg.EnrollmentPolicy, ServiceAccountTokenFile: cfg.ServiceAccountTokenFile,
+		Labels: cfg.Labels, Capabilities: []string{"pod", "container"}, HTTPClient: httpClient,
+	})
+	if _, err := source.Token(ctx); err != nil {
+		return nil, err
+	}
+	cfg.AgentID = source.AgentID()
+	cfg.Labels = source.Labels()
+	return agentlib.NewClientWithTokenSource(cfg.Server, source, httpClient), nil
 }

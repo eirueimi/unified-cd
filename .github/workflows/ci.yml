@@ -19,13 +19,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: shim placeholders must be empty in git
+      - name: shim placeholders must be absent from git
         if: runner.os == 'Linux'
         run: |
-          test "$(git cat-file -s HEAD:internal/shim/embedded/ucd-sh-amd64)" = "0"
-          test "$(git cat-file -s HEAD:internal/shim/embedded/ucd-sh-arm64)" = "0"
+          test -z "$(git ls-files -- internal/shim/embedded/ucd-sh-amd64 internal/shim/embedded/ucd-sh-arm64)"
       - name: Run unit tests
-        run: go test ./... -short -race -count=1
+        shell: bash
+        run: |
+          ./scripts/prepare-shim-placeholders.sh
+          go test ./... -short -race -count=1
 
   integration:
     name: Integration tests (Linux + PostgreSQL)
@@ -37,7 +39,10 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Run integration tests
-        run: go test ./... -race -count=1
+        shell: bash
+        run: |
+          ./scripts/prepare-shim-placeholders.sh
+          go test ./... -race -count=1
 
   k8s:
     name: Kubernetes integration tests
@@ -79,10 +84,13 @@ jobs:
           rm -rf "$workdir"
           kind load docker-image ucd-shim-test:ci --name ci
       - name: Run k8s integration tests
+        shell: bash
         env:
           # kind-loaded images are not on any registry; the init container's
           # default pull policy (no policy is set in podbuilder.go, and this
           # tag is not ":latest") resolves to IfNotPresent, which is
           # satisfied by a kind-loaded image without a pull attempt.
           UCD_K8S_TEST_SHIM_IMAGE: ucd-shim-test:ci
-        run: go test -tags k8s ./internal/k8sagent/... -timeout 10m -v
+        run: |
+          ./scripts/prepare-shim-placeholders.sh
+          go test -tags k8s ./internal/k8sagent/... -timeout 10m -v

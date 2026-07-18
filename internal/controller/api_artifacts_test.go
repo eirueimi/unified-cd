@@ -22,7 +22,7 @@ import (
 func newArtifactTestServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	agentToken := "agent-secret"
-	s := NewServer(Config{AgentToken: agentToken}, nil)
+	s := NewServer(Config{LegacyAgentToken: agentToken}, nil)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 	return s, agentToken
 }
@@ -145,6 +145,28 @@ func TestArtifactUpload_RejectsNonAgentToken(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("bad-token upload = %d, want 401", rr.Code)
 	}
+}
+
+func TestArtifactUpload_RejectsNonOwnerPrincipal(t *testing.T) {
+	s, st := newTestServer(t)
+	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
+	intruderToken := issueAgentAccessForTest(t, st, "intruder", nil, nil)
+	_, err := st.UpsertJob(t.Context(), "artifact-owner", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+	run, err := st.CreateRun(t.Context(), "artifact-owner", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+	_, err = st.TransitionPendingToQueued(t.Context(), 1)
+	require.NoError(t, err)
+	claimed, err := st.ClaimNextRun(t.Context(), "owner", nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/build", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer "+intruderToken)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 }
 
 func TestArtifactDownload_MissingArtifact_Returns404(t *testing.T) {

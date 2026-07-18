@@ -23,7 +23,7 @@ func TestPhase4_AgentLabelFilter(t *testing.T) {
 		t.Skip("phase 4 is linux/mac only")
 	}
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -80,7 +80,7 @@ func TestPhase4_AnyAgentRun(t *testing.T) {
 		t.Skip("phase 4 is linux/mac only")
 	}
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -133,7 +133,7 @@ func TestPhase4_LabeledAgentClaimsLabeledRun(t *testing.T) {
 		t.Skip("phase 4 is linux/mac only")
 	}
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()

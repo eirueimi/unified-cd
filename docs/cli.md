@@ -831,10 +831,11 @@ Manage agents and install them as system services.
 ### agent install
 
 ```
-unified-cli agent install --server <url> --token <token> --id <id> [OPTIONS]
+unified-cli agent install --server <url> --id <id> --credential-file <path> [OPTIONS]
 
   --server  string   Controller URL (required)
-  --token   string   Agent bearer token (required)
+  --credential-file string   Protected VM refresh-credential file (required)
+  --enrollment-token-file string  One-time enrollment-token file (required until first enrollment)
   --id      string   Agent identifier (required)
   --label   string   Agent label (repeatable, e.g. --label kind:linux)
   --dir     string   Installation directory (default: ~/.unified-cd)
@@ -847,13 +848,42 @@ Installs the agent as a system service:
 
 ```bash
 unified-cli agent install \
-  --server http://unified-cd.example.com \
-  --token my-agent-token \
+  --server https://controller.example.invalid \
   --id worker-01 \
+  --credential-file /var/lib/unified-cd-agent/credentials.json \
+  --enrollment-token-file /var/lib/unified-cd-agent/enrollment.token \
   --label kind:linux \
   --label env:prod \
   --dir /opt/unified-cd
 ```
+
+Create the one-time enrollment file first with `unified-cli agent enrollment
+create --agent-id worker-01 --output-file /var/lib/unified-cd-agent/enrollment.token`.
+The file is shown only once and the service rotates its VM refresh credential
+without placing plaintext credentials in its command line. `--token` is not an
+`agent install` option; `UNIFIED_AGENT_TOKEN` is reserved for explicitly
+enabled legacy shared-token migration.
+
+### agent enrollment, identity, and enrollment-policy
+
+Administrators create or revoke VM enrollment credentials; viewers may list
+metadata without plaintext values:
+
+```bash
+unified-cli agent enrollment create --agent-id worker-01 \
+  --label kind:linux --capability container \
+  --output-file /var/lib/unified-cd-agent/enrollment.token
+unified-cli agent enrollment list
+unified-cli agent enrollment revoke <enrollment-id>
+```
+
+Manage an identity with `agent identity get|enable|disable|revoke-credentials
+<agent-id>`. Use `agent enrollment-policy create|update|get|list|delete` for
+Kubernetes workload enrollment. Create/update accepts `--cluster`, repeatable
+`--namespace` and `--service-account`, repeatable labels/capabilities,
+`--access-token-ttl` (5 minutes to 4 hours), and `--enabled`; it never accepts
+kubeconfig contents. See [Migration: agent authentication](migration-agent-auth.md)
+for the complete rollout and API paths.
 
 ### agent list
 
@@ -866,7 +896,7 @@ Lists all registered agents and their status.
 ```
 agent-1    ci-worker-01   linux   kind:linux,env:ci   2026-06-20 10:55
 agent-2    ci-worker-02   linux   kind:linux,env:ci   2026-06-20 10:54
-k8s-1      k8s-node-1     linux   kind:k8s            2026-06-20 10:55
+k8s-1      k8s-node-1     linux   kind:kubernetes     2026-06-20 10:55
 ```
 
 ### agent get
@@ -928,8 +958,9 @@ Override the path with `--config /path/to/config.yaml`.
 
 ```yaml
 server: http://localhost:8080
-token: agent-secret
 agentId: worker-01
+credentialFile: /var/lib/unified-cd-agent/credentials.json
+enrollmentTokenFile: /var/lib/unified-cd-agent/enrollment.token
 binPath: /usr/local/bin/unified-cli
 labels:
   - kind:linux

@@ -20,6 +20,9 @@ import (
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // auditRetentionDaysDefault resolves the --audit-retention-days flag default
@@ -112,6 +115,34 @@ func queuedRunGraceDefault() time.Duration {
 	return d
 }
 
+func configureKubernetesEnrollmentClient(kubeConfig *rest.Config) {
+	// The verifier also sets a per-request context deadline. Set the transport
+	// timeout as a production backstop for Kubernetes client operations.
+	kubeConfig.Timeout = controller.KubernetesEnrollmentRequestTimeout
+}
+
+type enrollmentPolicyBootstrapStore interface {
+	UpsertAgentEnrollmentPolicy(context.Context, store.AgentEnrollmentPolicy) (*store.AgentEnrollmentPolicy, error)
+}
+
+// bootstrapKubernetesEnrollmentPolicies persists declarative workload identity
+// policies before the controller starts accepting agent enrollment requests.
+func bootstrapKubernetesEnrollmentPolicies(ctx context.Context, st enrollmentPolicyBootstrapStore, auth *config.ControllerAgentAuthConfig) error {
+	if auth == nil {
+		return nil
+	}
+	for _, configured := range auth.KubernetesEnrollmentPolicies {
+		policy, err := configured.StorePolicy()
+		if err != nil {
+			return err
+		}
+		if _, err := st.UpsertAgentEnrollmentPolicy(ctx, policy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func main() {
 	// Pre-scan os.Args for -f so we can load the config file before defining
 	// other flags. This gives priority: env vars → config file → CLI flags.
@@ -164,6 +195,9 @@ func main() {
 	if matrixMaxEnvWarning != "" {
 		slog.Warn(matrixMaxEnvWarning)
 	}
+	if warning := legacyAgentAuthWarning(eff.AgentAuth.LegacySharedToken); warning != "" {
+		slog.Warn(warning)
+	}
 
 	if *dsn == "" {
 		slog.Error("dsn is required (--dsn, UNIFIED_DB_DSN, or config file)")
@@ -186,6 +220,10 @@ func main() {
 	defer pg.Close()
 	if err := pg.Migrate(*dsn); err != nil {
 		slog.Error("migrate", "error", err)
+		os.Exit(1)
+	}
+	if err := bootstrapKubernetesEnrollmentPolicies(ctx, pg, eff.AgentAuth); err != nil {
+		slog.Error("bootstrap kubernetes enrollment policies", "error", err)
 		os.Exit(1)
 	}
 
@@ -250,7 +288,22 @@ func main() {
 		slog.Warn("no object store configured — log archival disabled")
 	}
 
-	srv := controller.NewServer(controller.Config{Token: *token, AgentToken: *token, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
+	verifiers := make(map[string]controller.KubernetesEnrollmentVerifier, len(eff.AgentAuth.KubernetesClusters))
+	for _, cluster := range eff.AgentAuth.KubernetesClusters {
+		kubeConfig, err := buildKubernetesEnrollmentConfig(cluster.Kubeconfig)
+		if err != nil {
+			slog.Error("kubernetes enrollment cluster configuration", "cluster", cluster.Name, "error", err)
+			os.Exit(1)
+		}
+		configureKubernetesEnrollmentClient(kubeConfig)
+		client, err := kubernetes.NewForConfig(kubeConfig)
+		if err != nil {
+			slog.Error("kubernetes enrollment client", "cluster", cluster.Name, "error", err)
+			os.Exit(1)
+		}
+		verifiers[cluster.Name] = controller.NewKubernetesEnrollmentVerifier(cluster.Name, client)
+	}
+	srv := controller.NewServer(controller.Config{Token: *token, LegacyAgentToken: eff.AgentAuth.LegacySharedToken, KubernetesEnrollmentVerifiers: verifiers, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
 	srv.SetMetrics(m)
 	srv.SetKeyManager(km)
 	if obj != nil {
@@ -383,6 +436,22 @@ func main() {
 		slog.Error("listen", "error", err)
 		os.Exit(1)
 	}
+}
+
+func legacyAgentAuthWarning(token string) string {
+	if token == "" {
+		return ""
+	}
+	return "legacy shared agent authentication is enabled; remove agentAuth.legacySharedToken or UNIFIED_AGENT_LEGACY_TOKEN after migration"
+}
+
+var inClusterKubernetesConfig = rest.InClusterConfig
+
+func buildKubernetesEnrollmentConfig(kubeconfig string) (*rest.Config, error) {
+	if kubeconfig == "" {
+		return inClusterKubernetesConfig()
+	}
+	return clientcmd.BuildConfigFromFlags("", kubeconfig)
 }
 
 // envIntOr parses an integer environment variable, falling back to def when

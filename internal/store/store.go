@@ -2,10 +2,72 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 )
+
+var (
+	ErrAgentCredentialNotFound = errors.New("agent credential not found")
+	ErrAgentIdentityDisabled   = errors.New("agent identity disabled")
+	ErrAgentEnrollmentInvalid  = errors.New("agent enrollment invalid")
+	ErrAgentRefreshReplay      = errors.New("agent refresh replay")
+)
+
+type AgentIdentity struct {
+	ID, AgentID, Status, EnrollmentMethod, ExternalSubject string
+	AuthorizedLabels, AuthorizedCapabilities               []string
+	CreatedAt                                              time.Time
+	DisabledAt, LastAuthenticatedAt                        *time.Time
+}
+
+type AgentCredentialAuth struct {
+	CredentialID, IdentityID, AgentID, Kind, TokenHash, Status string
+	AuthorizedLabels, AuthorizedCapabilities                   []string
+	ExpiresAt, CreatedAt                                       time.Time
+	RevokedAt                                                  *time.Time
+}
+
+type NewAgentCredential struct {
+	ID, Kind, FamilyID, TokenHash string
+	Generation                    int
+	ExpiresAt                     time.Time
+}
+
+type AgentCredentialIssue struct {
+	AgentID, EnrollmentMethod, ExternalSubject string
+	AuthorizedLabels, AuthorizedCapabilities   []string
+	Access                                     NewAgentCredential
+	Refresh                                    *NewAgentCredential
+}
+
+type AgentEnrollmentToken struct {
+	ID, AgentID, CreatedBy                   string
+	AuthorizedLabels, AuthorizedCapabilities []string
+	ExpiresAt, CreatedAt                     time.Time
+	UsedAt, RevokedAt                        *time.Time
+}
+
+// AgentEnrollmentPolicy constrains a non-interactive workload identity provider.
+// ProviderConfig and SubjectConstraints are provider-owned JSON shapes; credential
+// material must never be stored in either field.
+type AgentEnrollmentPolicy struct {
+	ID                     string
+	Name                   string
+	Provider               string
+	ProviderConfig         json.RawMessage
+	SubjectConstraints     json.RawMessage
+	AgentIDTemplate        string
+	AllowedLabels          []string
+	RequiredLabels         []string
+	AuthorizedCapabilities []string
+	AccessTokenTTL         time.Duration
+	Enabled                bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
 
 // LogArchive holds log metadata for a Run that has been archived to object storage.
 type LogArchive struct {
@@ -207,6 +269,23 @@ type Store interface {
 	ListRunsByAgent(ctx context.Context, agentID string, limit int) ([]api.Run, error)
 	// DeleteStaleAgents deletes agents whose last_seen_at is older than olderThan and returns the count deleted.
 	DeleteStaleAgents(ctx context.Context, olderThan time.Duration) (int64, error)
+
+	// Agent identity and credential repository.
+	CreateAgentEnrollmentToken(context.Context, AgentEnrollmentToken, string) (*AgentEnrollmentToken, error)
+	ListAgentEnrollmentTokens(context.Context) ([]AgentEnrollmentToken, error)
+	RevokeAgentEnrollmentToken(context.Context, string) error
+	UpsertAgentEnrollmentPolicy(context.Context, AgentEnrollmentPolicy) (*AgentEnrollmentPolicy, error)
+	GetAgentEnrollmentPolicy(context.Context, string) (*AgentEnrollmentPolicy, error)
+	ListAgentEnrollmentPolicies(context.Context) ([]AgentEnrollmentPolicy, error)
+	DeleteAgentEnrollmentPolicy(context.Context, string) error
+	ConsumeAgentEnrollment(ctx context.Context, enrollmentID, presentedHash string, issue AgentCredentialIssue) (*AgentIdentity, error)
+	IssueExternalAgentAccess(ctx context.Context, issue AgentCredentialIssue) (*AgentIdentity, error)
+	GetAgentCredentialForAuth(context.Context, string) (*AgentCredentialAuth, error)
+	TouchAgentCredential(context.Context, string) error
+	RotateAgentRefresh(ctx context.Context, currentID, presentedHash string, now time.Time, access, refresh NewAgentCredential, overlap time.Duration) (*AgentIdentity, error)
+	SetAgentIdentityEnabled(context.Context, string, bool) error
+	RevokeAgentIdentityCredentials(context.Context, string) error
+	GetAgentIdentity(context.Context, string) (*AgentIdentity, error)
 	// ListStuckRunIDs returns IDs of Running runs whose claiming agent is gone or has
 	// not sent a heartbeat within staleAfter, excluding runs claimed within the grace
 	// window (to avoid reaping a just-claimed run before its first heartbeat).

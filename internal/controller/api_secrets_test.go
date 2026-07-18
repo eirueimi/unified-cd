@@ -29,7 +29,7 @@ func newTestServerWithKM(t *testing.T) (*Server, store.Store) {
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	km := testKeyManager(t)
-	s := NewServer(Config{AgentToken: "agent-secret"}, pg)
+	s := NewServer(Config{LegacyAgentToken: "agent-secret"}, pg)
 	s.SetKeyManager(km)
 	return s, pg
 }
@@ -93,7 +93,7 @@ func TestAPI_DeleteSecret(t *testing.T) {
 }
 
 func TestAgentAPI_FetchSecrets(t *testing.T) {
-	s, _ := newTestServerWithKM(t)
+	s, pg := newTestServerWithKM(t)
 
 	body, _ := json.Marshal(api.SetSecretRequest{Name: "MY_SECRET", Value: "plaintext-value"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(body))
@@ -101,9 +101,16 @@ func TestAgentAPI_FetchSecrets(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	s.Router().ServeHTTP(httptest.NewRecorder(), req)
 
-	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{Names: []string{"MY_SECRET"}})
+	_, err := pg.UpsertJob(t.Context(), "secret-fetch", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "secret-fetch", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "a1", run.ID)
+
+	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: run.ID, Names: []string{"MY_SECRET"}})
 	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/secrets/fetch", bytes.NewReader(fetchBody))
-	req2.Header.Set("Authorization", "Bearer agent-secret")
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+	req2.Header.Set("Authorization", "Bearer "+token)
 	req2.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req2)
@@ -114,12 +121,76 @@ func TestAgentAPI_FetchSecrets(t *testing.T) {
 	assert.Equal(t, "plaintext-value", resp.Secrets["MY_SECRET"])
 }
 
+func TestAgentAPI_FetchSecrets_RejectsLegacyTokenPathImpersonation(t *testing.T) {
+	s, pg := newTestServerWithKM(t)
+
+	body, _ := json.Marshal(api.SetSecretRequest{Name: "MY_SECRET", Value: "plaintext-value"})
+	set := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(body))
+	set.Header.Set("Authorization", "Bearer secret")
+	set.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), set)
+
+	_, err := pg.UpsertJob(t.Context(), "legacy-secret-fetch", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "legacy-secret-fetch", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "victim-agent", run.ID)
+
+	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: run.ID, Names: []string{"MY_SECRET"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/victim-agent/secrets/fetch", bytes.NewReader(fetchBody))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+}
+
+func TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent(t *testing.T) {
+	s, pg := newTestServerWithKM(t)
+
+	body, _ := json.Marshal(api.SetSecretRequest{Name: "MY_SECRET", Value: "plaintext-value"})
+	set := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(body))
+	set.Header.Set("Authorization", "Bearer secret")
+	set.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), set)
+
+	_, err := pg.UpsertJob(t.Context(), "secret-fetch-guard", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+	owned, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "agent-a", owned.ID)
+	other, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "agent-b", other.ID)
+	unclaimed, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+
+	token := issueAgentAccessForTest(t, pg, "agent-a", nil, nil)
+	for _, runID := range []string{other.ID, unclaimed.ID} {
+		fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: runID, Names: []string{"MY_SECRET"}})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-a/secrets/fetch", bytes.NewReader(fetchBody))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	}
+
+	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: owned.ID, Names: []string{"MY_SECRET"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-a/secrets/fetch", bytes.NewReader(fetchBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
 func TestAPI_FetchSecrets_NotConfigured(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	s := NewServer(Config{Token: "secret", AgentToken: "agent-secret"}, pg)
+	s := NewServer(Config{Token: "secret", LegacyAgentToken: "agent-secret"}, pg)
 	// KeyManager is not configured.
 
-	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{Names: []string{"X"}})
+	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: "run", Names: []string{"X"}})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/secrets/fetch", bytes.NewReader(fetchBody))
 	req.Header.Set("Authorization", "Bearer agent-secret")
 	rec := httptest.NewRecorder()

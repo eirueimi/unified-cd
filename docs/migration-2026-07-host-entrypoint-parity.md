@@ -207,7 +207,7 @@ steps:
 expecting it to have an effect, it never did (it was already ignored) —
 you'll now see a WARN making that explicit. Use `resources.limits`
 instead, or route the job to a Kubernetes agent (`agentSelector:
-[kind:k8s]`) if you need real CPU/memory requests.
+[kind:kubernetes]`) if you need real CPU/memory requests.
 
 **#3 — Quote non-string env values.** An `env` entry like `value: 8080` (an
 unquoted number, decoded as YAML `int`) now fails the job at start on

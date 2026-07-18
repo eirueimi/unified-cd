@@ -17,10 +17,10 @@ import (
 type runWriteVerdict int
 
 const (
-	runWriteOK runWriteVerdict = iota
-	runWriteNotFound               // run does not exist -> 404
-	runWriteNotOwned               // claimed by another (or no) agent -> 403
-	runWriteTerminal               // run already finished -> 200 alreadyFinalized no-op
+	runWriteOK       runWriteVerdict = iota
+	runWriteNotFound                 // run does not exist -> 404
+	runWriteNotOwned                 // claimed by another (or no) agent -> 403
+	runWriteTerminal                 // run already finished -> 200 alreadyFinalized no-op
 )
 
 // claimedByCacheCap bounds the runID -> claimed_by cache. claimed_by is
@@ -101,6 +101,9 @@ func (s *Server) agentRunGuard(ctx context.Context, agentID, runID string, rejec
 			if owner == agentID {
 				return runWriteOK, nil
 			}
+			if principal, ok := agentPrincipalFromContext(ctx); ok && principal.AuthMethod != "legacy" {
+				s.recordAgentAuth("access", "failure", "policy")
+			}
 			return runWriteNotOwned, nil
 		}
 	}
@@ -113,6 +116,9 @@ func (s *Server) agentRunGuard(ctx context.Context, agentID, runID string, rejec
 	}
 	s.claimedBy.put(runID, run.ClaimedBy)
 	if run.ClaimedBy == "" || run.ClaimedBy != agentID {
+		if principal, ok := agentPrincipalFromContext(ctx); ok && principal.AuthMethod != "legacy" {
+			s.recordAgentAuth("access", "failure", "policy")
+		}
 		return runWriteNotOwned, nil
 	}
 	if rejectTerminal && isTerminalStatus(string(run.Status)) {

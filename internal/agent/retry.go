@@ -35,6 +35,11 @@ func retryUntilSuccess(ctx context.Context, fn func(ctx context.Context) error) 
 			slog.Error("permanent error, giving up retry", "status", httpErr.StatusCode, "error", httpErr.Body)
 			return
 		}
+		var credentialErr *credentialRequestError
+		if errors.As(err, &credentialErr) && !credentialErr.retryable {
+			slog.Error("permanent credential error, giving up retry", "status", credentialErr.status)
+			return
+		}
 		slog.Warn("retrying after failure", "error", err, "nextWait", wait)
 		select {
 		case <-ctx.Done():

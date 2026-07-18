@@ -8,7 +8,7 @@ metadata:
   name: python-lint
 spec:
   agentSelector:
-    - kind:k8s
+    - kind:kubernetes
   # no name + spec present → inline PodSpec, independent of any named agent template
   podTemplate:
     workspace:

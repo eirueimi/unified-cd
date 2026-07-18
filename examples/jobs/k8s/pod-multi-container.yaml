@@ -8,7 +8,7 @@ metadata:
   name: build-and-scan
 spec:
   agentSelector:
-    - kind:k8s
+    - kind:kubernetes
   podTemplate:
     name: golang
     # override adds extra containers while keeping the "job" container from the template

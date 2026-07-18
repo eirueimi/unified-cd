@@ -13,21 +13,23 @@ import (
 // AgentConfig holds all configuration for the agent binary.
 // Populated from a YAML file via LoadAgent; zero-value fields mean "not set".
 type AgentConfig struct {
-	Server         string        `yaml:"server"`
-	Token          string        `yaml:"token"`
-	ID             string        `yaml:"id"`
-	Labels         []string      `yaml:"labels"`
-	ExposeEnv      []string      `yaml:"exposeEnv"`
-	CacheEndpoint  string        `yaml:"cacheEndpoint"`
-	CacheKey       string        `yaml:"cacheKey"`
-	CacheSecret    string        `yaml:"cacheSecret"`
-	CacheBucket    string        `yaml:"cacheBucket"`
-	MaxConcurrent  int           `yaml:"maxConcurrent"`
-	CleanWorkspace bool          `yaml:"cleanWorkspace"`
-	WorkspaceDir   string        `yaml:"workspaceDir"`
-	DrainTimeout   time.Duration `yaml:"drainTimeout"`
-	PauseImage     string        `yaml:"pauseImage"`
-	RunnerImage    string        `yaml:"runnerImage"`
+	Server              string        `yaml:"server"`
+	Token               string        `yaml:"token"`
+	CredentialFile      string        `yaml:"credentialFile"`
+	EnrollmentTokenFile string        `yaml:"enrollmentTokenFile"`
+	ID                  string        `yaml:"id"`
+	Labels              []string      `yaml:"labels"`
+	ExposeEnv           []string      `yaml:"exposeEnv"`
+	CacheEndpoint       string        `yaml:"cacheEndpoint"`
+	CacheKey            string        `yaml:"cacheKey"`
+	CacheSecret         string        `yaml:"cacheSecret"`
+	CacheBucket         string        `yaml:"cacheBucket"`
+	MaxConcurrent       int           `yaml:"maxConcurrent"`
+	CleanWorkspace      bool          `yaml:"cleanWorkspace"`
+	WorkspaceDir        string        `yaml:"workspaceDir"`
+	DrainTimeout        time.Duration `yaml:"drainTimeout"`
+	PauseImage          string        `yaml:"pauseImage"`
+	RunnerImage         string        `yaml:"runnerImage"`
 
 	// MinFreeDisk is the minimum free space (bytes) required on the
 	// workspace filesystem for the host agent to keep claiming runs. Zero
@@ -67,14 +69,16 @@ func LoadAgent(path string) (*AgentConfig, error) {
 // Priority (lowest to highest): env vars → config file → CLI flags.
 func AgentEffective(filePath string) (*AgentConfig, error) {
 	eff := &AgentConfig{
-		Server:        os.Getenv("UNIFIED_SERVER"),
-		Token:         os.Getenv("UNIFIED_AGENT_TOKEN"),
-		ID:            os.Getenv("UNIFIED_AGENT_ID"),
-		CacheEndpoint: os.Getenv("UNIFIED_CACHE_ENDPOINT"),
-		CacheKey:      os.Getenv("UNIFIED_CACHE_KEY"),
-		CacheSecret:   os.Getenv("UNIFIED_CACHE_SECRET"),
-		CacheBucket:   os.Getenv("UNIFIED_CACHE_BUCKET"),
-		WorkspaceDir:  os.Getenv("UNIFIED_AGENT_WORKSPACE_DIR"),
+		Server:              os.Getenv("UNIFIED_SERVER"),
+		Token:               os.Getenv("UNIFIED_AGENT_TOKEN"),
+		CredentialFile:      os.Getenv("UNIFIED_AGENT_CREDENTIAL_FILE"),
+		EnrollmentTokenFile: os.Getenv("UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE"),
+		ID:                  os.Getenv("UNIFIED_AGENT_ID"),
+		CacheEndpoint:       os.Getenv("UNIFIED_CACHE_ENDPOINT"),
+		CacheKey:            os.Getenv("UNIFIED_CACHE_KEY"),
+		CacheSecret:         os.Getenv("UNIFIED_CACHE_SECRET"),
+		CacheBucket:         os.Getenv("UNIFIED_CACHE_BUCKET"),
+		WorkspaceDir:        os.Getenv("UNIFIED_AGENT_WORKSPACE_DIR"),
 	}
 	if labelsEnv := os.Getenv("UNIFIED_AGENT_LABELS"); labelsEnv != "" {
 		for _, l := range strings.Split(labelsEnv, ",") {
@@ -114,6 +118,12 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.Token != "" {
 		eff.Token = file.Token
+	}
+	if file.CredentialFile != "" {
+		eff.CredentialFile = file.CredentialFile
+	}
+	if file.EnrollmentTokenFile != "" {
+		eff.EnrollmentTokenFile = file.EnrollmentTokenFile
 	}
 	if file.ID != "" {
 		eff.ID = file.ID

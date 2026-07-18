@@ -4,6 +4,25 @@ This document covers `agentSelector` and agent-side label configuration,
 which controls which agent executes a given Job, plus the agent's workspace
 lifecycle and its registration/liveness semantics with the controller.
 
+## Agent identity and enrollment
+
+New agents authenticate as a controller-issued per-agent principal, not with a
+fleet-wide token. Create a VM's one-time enrollment credential as an
+administrator, put it in a private file, and configure the agent with
+`credentialFile` and `enrollmentTokenFile`. Its access credential is
+short-lived; the rotating refresh credential remains in the protected file.
+
+Kubernetes agents instead prove their projected ServiceAccount token against a
+controller enrollment policy. The controller derives their ID from the verified
+cluster, namespace, and Pod UID and assigns their permitted labels and
+capabilities. A requested label is therefore only a request, never a way to
+gain scheduling authority.
+
+`UNIFIED_AGENT_TOKEN` and YAML `token` are legacy compatibility inputs only.
+They require an explicitly configured controller
+`UNIFIED_AGENT_LEGACY_TOKEN`/`agentAuth.legacySharedToken`; neither setting
+uses `UNIFIED_TOKEN`. See [Migration: agent authentication](migration-agent-auth.md).
+
 ## Table of Contents
 
 - [Agent Labels](#agent-labels)
@@ -24,7 +43,9 @@ Agents announce labels (tags) at startup. The controller uses them for `agentSel
 
 ```bash
 UNIFIED_AGENT_LABELS=kind:linux,pool:build ./bin/unified-cd-agent \
-  --server http://localhost:8080 --token <UNIFIED_AGENT_TOKEN>
+  --server https://controller.example.invalid \
+  --credential-file /var/lib/unified-cd-agent/credentials.json \
+  --enrollment-token-file /var/lib/unified-cd-agent/enrollment.token
 
 # Or via the --labels flag
 ./bin/unified-cd-agent --labels kind:linux,pool:build ...
@@ -316,6 +337,18 @@ into a confusing per-step failure. **Native steps are unaffected**: a
 `native: true` job's steps still run as plain host processes under host
 `bash -lc` (or an explicit `shell:`), never touching `/.ucd` or the shim —
 see [Job Reference: `native: true`](jobs.md#native-true--host-process-jobs).
+
+#### Compose development builds
+
+The root `docker-compose.yaml` agent service keeps the repository bind-mounted
+at `/app` so Air can watch Go source changes. For every rebuild, Air copies
+that source into a disposable container-local `/tmp/unified-cd-agent-src`
+tree, excluding `.git`, `tmp`, and both `ucd-sh` embed paths. It prepares and
+builds the real shim only in that temporary tree, then writes the resulting
+agent executable to `/app/tmp/unified-agent`. Consequently, Compose rebuilds
+never write generated shim bytes to
+`/app/internal/shim/embedded/ucd-sh-amd64` or
+`/app/internal/shim/embedded/ucd-sh-arm64` in the host bind mount.
 
 ### Troubleshooting isolated claims
 

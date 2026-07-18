@@ -24,7 +24,7 @@ import (
 // TestPhase6_PATAuthentication verifies that a PAT can authenticate API calls.
 func TestPhase6_PATAuthentication(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "admin-secret", AgentToken: "agent-secret"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "admin-secret", LegacyAgentToken: "agent-secret"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "admin-secret"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -64,7 +64,7 @@ func TestPhase6_WebhookTrigger(t *testing.T) {
 		t.Skip("phase 6 is linux/mac only")
 	}
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -141,7 +141,7 @@ spec:
 func TestPhase6_WebhookHMACVerification(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	km := testKM(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	srv.SetKeyManager(km)
 	httpSrv := httptest.NewServer(srv.Router())
@@ -223,7 +223,7 @@ func TestPhase6_WebhookFilter(t *testing.T) {
 		t.Skip()
 	}
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()

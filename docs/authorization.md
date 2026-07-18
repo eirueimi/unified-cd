@@ -20,7 +20,8 @@ unified-cd has three roles — **admin**, **developer**, **viewer** — resolved
 | GitCredentials — all (incl. list) | ❌ | ❌ | ✅ |
 | PAT — create (≤ own role) | ❌ | ✅ | ✅ |
 | Agents — info GET | ✅ | ✅ | ✅ |
-| Agents — register/heartbeat/claim | agent token (not a human role) | | |
+| Agent enrollments / identities / enrollment policies | viewer reads; admin creates, changes, revokes, or disables | viewer/admin | viewer/admin |
+| Agents — register/heartbeat/claim | per-agent principal (not a human role) | | |
 
 Secret *values* are never returned by the API (names only). Artifact download requires an authenticated caller (agent token or any human role).
 
@@ -30,7 +31,22 @@ Each caller gets a role:
 
 - **PAT**: stored per-token (`role` column). Created via the API, clamped to ≤ the creator's role. The bootstrap `UNIFIED_TOKEN` PAT is always **admin** (break-glass).
 - **OIDC (SSO login / id_token)**: resolved from token claims via configuration (below).
-- **Agent token**: unaffected (separate static token; not a human role).
+- **Agent principal**: separate from human roles. New agents authenticate with
+  a short-lived per-agent access credential; controller-issued identity labels
+  and capabilities are authoritative. The legacy shared token, when explicitly
+  configured, is temporary compatibility only.
+
+## Agent authorization boundaries
+
+A non-legacy credential is bound to one immutable `agentId`. The controller
+rejects a differing route/body ID with `agent identity mismatch` (403), and
+preserves the run's immutable `claimed_by` check for writes. An agent cannot
+grant itself scheduling labels or capabilities. Administrators manage
+one-time VM enrollments, Kubernetes enrollment policies, and identity enable,
+disable, and credential revocation through the agent lifecycle API/CLI.
+
+See [Migration: agent authentication](migration-agent-auth.md) for the
+rollout and the legacy-mode retirement check.
 
 ### OIDC role resolution config
 

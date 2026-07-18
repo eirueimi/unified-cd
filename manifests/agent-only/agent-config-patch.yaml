@@ -5,19 +5,11 @@ metadata:
   namespace: unified-cd
 data:
   k8s-agent-config.yaml: |
-    server: "CHANGEME"
-    agentId: k8s-agent-1
+    server: "https://controller.example.invalid"
+    enrollmentPolicy: unified-cd-k8s-agents
+    serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
     labels:
-      - kind:k8s
+      - kind:kubernetes
     namespace: ci
     maxConcurrent: 5
     podImage: golang:1.24-alpine
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: unified-cd-k8s-agent-secret
-  namespace: unified-cd
-stringData:
-  k8s-agent-secret.yaml: |
-    token: "CHANGEME"

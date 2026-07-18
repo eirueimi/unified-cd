@@ -26,24 +26,39 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentId is required", http.StatusBadRequest)
 		return
 	}
+	principal, ok := agentPrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	labels := req.Labels
+	capabilities := req.Capabilities
+	if principal.AuthMethod != "legacy" {
+		if req.AgentID != principal.AgentID {
+			s.recordAgentAuth("access", "failure", "policy")
+			http.Error(w, "agent identity mismatch", http.StatusForbidden)
+			return
+		}
+		labels = append([]string(nil), principal.AuthorizedLabels...)
+		capabilities = append([]string(nil), principal.AuthorizedCapabilities...)
+	}
 	// Validate every advertised capability against the known vocabulary before
 	// persisting. An unrecognized capability string would silently never match
 	// any run's required_caps (or worse, mean something unintended), so reject
 	// the whole registration rather than accept a partially-bogus set.
-	for _, c := range req.Capabilities {
+	for _, c := range capabilities {
 		if !dsl.ValidCapability(c) {
 			http.Error(w, "unknown capability: "+c, http.StatusBadRequest)
 			return
 		}
 	}
 	// Use an empty slice when labels is nil to avoid a NULL constraint violation.
-	labels := req.Labels
 	if labels == nil {
 		labels = []string{}
 	}
-	// Automatically attach a hostname label. If the client explicitly provided a hostname:* label,
-	// respect it and do not add a duplicate (so agents can be pinned via agentSelector).
-	if req.Hostname != "" {
+	// Legacy registrations may attach a self-reported hostname label. Principal
+	// registrations use only controller-authorized labels.
+	if principal.AuthMethod == "legacy" && req.Hostname != "" {
 		hasHostnameLabel := false
 		for _, l := range labels {
 			if strings.HasPrefix(l, "hostname:") {
@@ -55,7 +70,7 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 			labels = append(labels, "hostname:"+req.Hostname)
 		}
 	}
-	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, req.Capabilities, req.Env); err != nil {
+	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, capabilities, req.Env); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -130,16 +145,25 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	if err != nil || timeout <= 0 || timeout > maxClaimTimeout {
 		timeout = maxClaimTimeout
 	}
-	// Parse agent labels from the comma-separated query parameter.
-	labelsStr := r.URL.Query().Get("labels")
+	principal, ok := agentPrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	var agentLabels []string
-	if labelsStr != "" {
-		for _, l := range strings.Split(labelsStr, ",") {
-			l = strings.TrimSpace(l)
-			if l != "" {
-				agentLabels = append(agentLabels, l)
+	if principal.AuthMethod == "legacy" {
+		// Parse agent labels from the comma-separated query parameter.
+		labelsStr := r.URL.Query().Get("labels")
+		if labelsStr != "" {
+			for _, l := range strings.Split(labelsStr, ",") {
+				l = strings.TrimSpace(l)
+				if l != "" {
+					agentLabels = append(agentLabels, l)
+				}
 			}
 		}
+	} else {
+		agentLabels = append([]string(nil), principal.AuthorizedLabels...)
 	}
 
 	// Upsert the agent's registration record on every claim so an agent that is

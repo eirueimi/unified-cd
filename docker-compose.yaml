@@ -154,6 +154,8 @@ services:
       context: .
       dockerfile: docker/dev.Dockerfile
     volumes:
+      # Air watches this bind mount, then compiles from a disposable /tmp copy so
+      # generating ucd-sh never mutates internal/shim/embedded on the host.
       - .:/app
       - gocache:/gocache
       - gomodcache:/gomodcache

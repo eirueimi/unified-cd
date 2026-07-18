@@ -56,3 +56,14 @@ func TestTwoInstancesDoNotCollide(t *testing.T) {
 	_ = New()
 	_ = New()
 }
+
+func TestAgentAuthEventsUseBoundedLabels(t *testing.T) {
+	m := New()
+	m.AgentAuthEvent("uce", "success", "anything")
+	m.AgentAuthEvent("unknown-provider", "failure", "unrecognized")
+	m.AgentLegacyAuth()
+
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.agentAuthEvents.WithLabelValues("one-time-token", "success", "other")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.agentAuthEvents.WithLabelValues("other", "failure", "other")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.agentLegacyAuth))
+}

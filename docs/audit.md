@@ -43,6 +43,9 @@ recorded, for the following actions:
 | `appsource.apply` | `POST /api/v1/appsources` |
 | `appsource.delete` | `DELETE /api/v1/appsources/{name}` |
 | `appsource.sync` | `POST /api/v1/appsources/{name}/sync` |
+| `agent.enrollment.create` / `agent.enrollment.revoke` | `POST` / `DELETE /api/v1/agent-enrollments...` |
+| `agent.policy.create` / `agent.policy.update` / `agent.policy.delete` | enrollment-policy write routes |
+| `agent.identity.enable` / `agent.identity.disable` / `agent.credentials.revoke` | agent identity lifecycle routes |
 
 Each recorded entry contains:
 
@@ -66,8 +69,11 @@ The following are deliberately **not** recorded:
 
 - **Agent-facing endpoints** (`/api/v1/agents/register`, `/heartbeat`, `/claim`, `/steps`,
   `/logs`, `/finish`, `/outputs`, `/secrets/fetch`, agent-created approvals, etc.) — these use
-  `BearerAuth` with the shared agent token, not a human `Principal`, and would otherwise flood
-  the audit log with routine agent bookkeeping.
+  a per-agent principal (or temporary legacy compatibility token), not a human
+  `Principal`, and would otherwise flood the audit log with routine bookkeeping.
+- **Credential plaintext and hashes** — enrollment creation is audited by its
+  metadata/action only. Access, refresh, and enrollment credentials are never
+  audit fields, response-captured values, or metric labels.
 - **Webhook payload ingress** (`POST /webhook/{name}`) — this is an unauthenticated-by-identity
   ingress path (verified by HMAC signature, not a human principal); the run it triggers is
   already visible via `triggeredBy` on the run itself.

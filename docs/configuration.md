@@ -117,6 +117,22 @@ oidc:
     unified-admins: admin
   userMap:                               # email/subject -> unified-cd role
     alice@example.com: admin
+
+# Kubernetes workload enrollment for the default controller and k8s-agent manifests.
+# An omitted kubeconfig uses the controller Pod's ServiceAccount identity.
+agentAuth:
+  kubernetesClusters:
+    - name: in-cluster
+  kubernetesEnrollmentPolicies:
+    - name: unified-cd-k8s-agents
+      cluster: in-cluster
+      namespaces: [unified-cd]
+      serviceAccounts: [unified-cd-k8s-agent]
+      allowedLabels: [kind:kubernetes]
+      requiredLabels: [kind:kubernetes]
+      capabilities: [pod, container]
+      accessTokenTTL: 1h
+      enabled: true
 ```
 
 Config-file keys map 1:1 to the flags above (e.g. `dataDir` ↔ `--data-dir`), with OIDC settings under the nested `oidc:` block. See `internal/config/controller.go` for the authoritative field list.
@@ -131,8 +147,10 @@ Config-file keys map 1:1 to the flags above (e.g. `dataDir` ↔ `--data-dir`), w
 unified-cd-agent [FLAGS]
 
   -f                      string    Config file path (default: unified-agent.yaml if exists)
-  --server                string    Controller URL (env: UNIFIED_AGENT_SERVER)
-  --token                 string    Agent bearer token (env: UNIFIED_AGENT_TOKEN)
+  --server                string    Controller URL (env: UNIFIED_SERVER)
+  --token                 string    Legacy shared agent token only (env: UNIFIED_AGENT_TOKEN)
+  --credential-file       string    Protected VM refresh-credential file (env: UNIFIED_AGENT_CREDENTIAL_FILE)
+  --enrollment-token-file string    One-time VM enrollment-token file (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)
   --id                    string    Agent identifier (default: hostname; env: UNIFIED_AGENT_ID)
   --labels                string    Comma-separated labels, e.g. "kind:linux,env:prod" (env: UNIFIED_AGENT_LABELS)
   --expose-env            string    Comma-separated env vars to expose to job steps (env: UNIFIED_AGENT_EXPOSE_ENV)
@@ -161,8 +179,10 @@ keys below.
 
 | Variable | Description |
 |---|---|
-| `UNIFIED_AGENT_SERVER` | Controller URL |
-| `UNIFIED_AGENT_TOKEN` | Agent bearer token (must match controller's `UNIFIED_TOKEN` or be a valid PAT) |
+| `UNIFIED_SERVER` | Controller URL |
+| `UNIFIED_AGENT_TOKEN` | Legacy shared agent token only. New VM agents use a credential and one-time enrollment-token file; it must not be derived from `UNIFIED_TOKEN`. |
+| `UNIFIED_AGENT_CREDENTIAL_FILE` | Protected persistent VM refresh-credential file. Required for secure VM mode. |
+| `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | One-time VM enrollment credential file. Required only until initial enrollment succeeds. |
 | `UNIFIED_AGENT_ID` | Agent identifier (defaults to hostname if not set) |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:docker,env:prod` |
 | `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps |
@@ -183,9 +203,10 @@ Additionally, every step receives the following environment variables automatica
 
 ```yaml
 # unified-agent.yaml
-server: http://unified-cd-controller:8080
-token: my-agent-token
+server: https://unified-cd-controller.example.com
 id: worker-01
+credentialFile: /var/lib/unified-cd-agent/credentials.json
+enrollmentTokenFile: /var/lib/unified-cd-agent/enrollment.token
 labels:
   - kind:linux
   - env:prod
@@ -209,6 +230,14 @@ minFreeDisk: 5368709120        # 5Gi; below this free space on workspaceDir's fi
 workspaceRetentionDays: 0      # >0 opts in to the periodic per-job workspace GC (0 = disabled, default)
 logLevel: info
 ```
+
+New VM agents need no `token` field. On first start, the agent consumes the
+one-time enrollment-token file and writes the refresh credential to
+`credentialFile`; later starts rotate that credential automatically. Keep both
+files owner-readable only and do not put either value in a command line. The
+controller, not this file, is authoritative for labels and capabilities. A
+`token` field or `UNIFIED_AGENT_TOKEN` is supported only for the temporary
+legacy shared-token migration described in [Migration: agent authentication](migration-agent-auth.md).
 
 Start with config file:
 
@@ -279,22 +308,23 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
 unified-cd-k8s-agent [FLAGS]
 
   --config       string   Config file path (env: UNIFIED_K8S_CONFIG)
-  --secret       string   Secret override file path, merged over the config (env: UNIFIED_K8S_SECRET)
+  --secret       string   Legacy static-token override file path (env: UNIFIED_K8S_SECRET)
   --log-level    string   Log level: debug, info, warn, error (env: UNIFIED_K8S_LOG_LEVEL)
 ```
 
-All agent settings live in the config file (`--config` / `UNIFIED_K8S_CONFIG`); sensitive values may be split into a Secret file (`--secret` / `UNIFIED_K8S_SECRET`) merged on top.
+All agent settings live in the config file (`--config` / `UNIFIED_K8S_CONFIG`). The secure Kubernetes mode uses the projected ServiceAccount token mounted by the Pod; it does not need a Secret file. `--secret` / `UNIFIED_K8S_SECRET` remains only for an explicit legacy static-token migration.
+
+Kubernetes workload enrollment requires an `https://` controller URL. The controller process itself does not terminate TLS, so production deployments must provide this URL through an Ingress, load balancer, or service-mesh TLS gateway. Plain HTTP is accepted only for loopback local development, or when the configuration explicitly sets `allowInsecureHTTP: true`; the latter is reserved for intentional development-only deployments such as the bundled `install.yaml`.
 
 ### K8s Agent Config File
 
 ```yaml
 # k8s-agent-config.yaml
-server: http://unified-cd-controller:8080
-token: my-agent-token
-agentId: k8s-agent-1
+server: https://controller.example.invalid # replace with your TLS terminator URL
+enrollmentPolicy: unified-cd-k8s-agents
+serviceAccountTokenFile: /var/run/secrets/unified-cd-agent/token
 labels:
-  - kind:k8s
-  - cluster:prod
+  - kind:kubernetes
 
 namespace: ci               # Kubernetes namespace for job Pods
 maxConcurrent: 10           # max simultaneous Pods (0/unset -> 100; negative -> unlimited)
@@ -373,9 +403,11 @@ podTemplates:
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `server` | string | Yes | — | Controller base URL the agent claims runs from |
-| `token` | string | Yes | — | Agent bearer token (put in the Secret file, not the ConfigMap) |
-| `agentId` | string | Yes | — | Unique agent ID. Overridden by env `UNIFIED_K8S_AGENT_ID` (e.g. the pod name) |
+| `server` | string | Yes | - | Controller base URL the agent claims runs from |
+| `enrollmentPolicy` | string | Yes (secure mode) | - | Controller policy used to exchange the projected ServiceAccount token. The controller assigns the canonical agent ID and authorized labels. |
+| `serviceAccountTokenFile` | string | No | `/var/run/secrets/unified-cd-agent/token` | Projected ServiceAccount token file. It is reread whenever the agent re-enrolls after access-token expiry. |
+| `token` | string | Legacy only | - | Explicit static-token compatibility mode. Requires `agentId`; do not use for new Kubernetes agents. |
+| `agentId` | string | Legacy only | - | Static-token agent identity. In workload enrollment mode the controller derives it from verified Kubernetes identity. |
 | `labels` | []string | No | — | Agent labels matched against a Job's `agentSelector` |
 | `namespace` | string | No | `default` | Namespace the agent creates job/scope Pods in |
 | `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Fallback job-container image when no `podTemplate` is referenced. Bash-less/sh-less images work (`alpine`, busybox-based) — steps exec via the injected `ucd-sh` shim by default, not a shell the image must provide. Truly empty images (`scratch`, distroless-static) cannot run steps on the k8s agent: env application prepends the `env` binary, which they lack (exit 127). See [Job Reference: Shell (`shell:`)](jobs.md#shell-shell). |
@@ -389,9 +421,9 @@ podTemplates:
 | `poolIdleTimeout` | string | No | `0` (no reuse) | Go duration an idle pooled Pod is kept for reuse before teardown (e.g. `10m`) |
 | `podTemplates` | map | No | — | Named Pod templates referenced from Job YAML via `podTemplate.name` (see below) |
 
-`token` (and any other sensitive value) may be placed in a separate Secret file (env `UNIFIED_K8S_SECRET`), whose fields are merged on top of the config file.
+The default agent Deployment projects a ServiceAccount token with audience `unified-cd-agent-enrollment` and mounts it read-only at `/var/run/secrets/unified-cd-agent`. Do not add a token Secret to that Deployment. A legacy `token` may be placed in `UNIFIED_K8S_SECRET` only during an explicit static-token migration.
 
-`agentId`, `podStartTimeout`, and `drainTimeout` each have an environment-variable override (`UNIFIED_K8S_AGENT_ID`, `UNIFIED_K8S_POD_START_TIMEOUT`, `UNIFIED_K8S_DRAIN_TIMEOUT` respectively), applied in `Validate()` on top of the config-file value — handy for templating per-Pod values (e.g. the Pod name as `agentId`) without a separate ConfigMap per replica.
+`UNIFIED_K8S_AGENT_ID` applies only to the legacy static-token identity. `UNIFIED_K8S_POD_START_TIMEOUT` and `UNIFIED_K8S_DRAIN_TIMEOUT` override their config fields in both modes.
 
 ### Pod template fields
 
@@ -428,8 +460,8 @@ CLI flags  >  config file  >  environment variables
 ```
 
 Examples:
-- `--server http://override.example.com` overrides `UNIFIED_AGENT_SERVER`
-- `UNIFIED_AGENT_SERVER=http://env.example.com` overrides the `server:` value in the config file
+- `--server http://override.example.com` overrides `UNIFIED_SERVER`
+- `UNIFIED_SERVER=http://env.example.com` overrides the `server:` value in the config file
 - The config file value is the lowest-priority fallback
 
 ---
@@ -452,9 +484,16 @@ UNIFIED_S3_SECRET="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" \
 ### Agent
 
 ```bash
-UNIFIED_AGENT_SERVER="http://unified-cd-controller:8080" \
-UNIFIED_AGENT_TOKEN="same-token-as-UNIFIED_TOKEN" \
+UNIFIED_SERVER="https://controller.example.invalid" \
 UNIFIED_AGENT_ID="worker-$(hostname)" \
 UNIFIED_AGENT_LABELS="kind:linux,env:prod" \
+UNIFIED_AGENT_CREDENTIAL_FILE="/var/lib/unified-cd-agent/credentials.json" \
+UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/enrollment.token" \
 ./bin/unified-cd-agent --max-concurrent 4
 ```
+
+Create the private enrollment-token file with `unified-cli agent enrollment
+create` before starting the VM agent. Production requires HTTPS; the
+repository-root Compose files are development-only. The legacy
+`UNIFIED_AGENT_TOKEN` input is not a substitute for this flow and must only be
+used with an explicit temporary `UNIFIED_AGENT_LEGACY_TOKEN` controller setting.

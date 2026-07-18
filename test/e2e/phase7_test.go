@@ -32,7 +32,7 @@ func writeSPAFixture(t *testing.T) string {
 
 func TestPhase7_UIServed(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t", WebDir: writeSPAFixture(t)}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t", WebDir: writeSPAFixture(t)}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -45,7 +45,7 @@ func TestPhase7_UIServed(t *testing.T) {
 
 func TestPhase7_RootRedirectsToUI(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t", WebDir: writeSPAFixture(t)}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t", WebDir: writeSPAFixture(t)}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -64,7 +64,7 @@ func TestPhase7_RootRedirectsToUI(t *testing.T) {
 // (it appears only in the bundled JS); a string check for "vue" would therefore always have been wrong.
 func TestPhase7_UIServesSPAShell(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t", WebDir: writeSPAFixture(t)}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t", WebDir: writeSPAFixture(t)}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -80,7 +80,7 @@ func TestPhase7_UIServesSPAShell(t *testing.T) {
 
 func TestPhase7_AgentsAPI(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -98,7 +98,7 @@ func TestPhase7_AgentsAPI(t *testing.T) {
 
 func TestPhase7_RunsByJobAPI(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -118,7 +118,7 @@ func TestPhase7_RunsByJobAPI(t *testing.T) {
 
 func TestPhase7_CancelRun(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -146,7 +146,7 @@ func TestPhase7_CancelRun(t *testing.T) {
 // This test exists as a regression guard to prevent accidental future implementation.
 func TestPhase7_SSE_RejectsTokenQuery(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", AgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()

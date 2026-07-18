@@ -2,6 +2,8 @@ package k8sagent
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"time"
 
@@ -11,13 +13,16 @@ import (
 
 // Config holds the configuration for the Kubernetes agent.
 type Config struct {
-	Server       string   `yaml:"server"`
-	Token        string   `yaml:"token"`
-	AgentID      string   `yaml:"agentId"`
-	Labels       []string `yaml:"labels"`
-	Namespace    string   `yaml:"namespace"`
-	PodImage     string   `yaml:"podImage"`
-	SidecarImage string   `yaml:"sidecarImage"`
+	Server                  string   `yaml:"server"`
+	Token                   string   `yaml:"token"`
+	AgentID                 string   `yaml:"agentId"`
+	EnrollmentPolicy        string   `yaml:"enrollmentPolicy"`
+	AllowInsecureHTTP       bool     `yaml:"allowInsecureHTTP,omitempty"`
+	ServiceAccountTokenFile string   `yaml:"serviceAccountTokenFile"`
+	Labels                  []string `yaml:"labels"`
+	Namespace               string   `yaml:"namespace"`
+	PodImage                string   `yaml:"podImage"`
+	SidecarImage            string   `yaml:"sidecarImage"`
 	// ShimImage is the image the init container that installs the ucd-sh
 	// shim onto the /.ucd emptyDir runs (see podbuilder.go's injectUcdShim
 	// and docs/superpowers/specs/2026-07-12-step-shell-shim-design.md
@@ -44,14 +49,17 @@ type AgentPodTemplate struct {
 // own image, which ships /ucd-sh at its root (see docker/k8s-agent.Dockerfile).
 const defaultShimImage = "ghcr.io/eirueimi/unified-cd-k8s-agent:latest"
 
+const defaultServiceAccountTokenFile = "/var/run/secrets/unified-cd-agent/token"
+
 // DefaultConfig returns a Config with default values.
 func DefaultConfig() Config {
 	return Config{
-		Namespace:     "default",
-		PodImage:      "ghcr.io/eirueimi/unified-cd-runner:v0.0.3",
-		SidecarImage:  "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
-		ShimImage:     defaultShimImage,
-		MaxConcurrent: 100,
+		Namespace:               "default",
+		PodImage:                "ghcr.io/eirueimi/unified-cd-runner:v0.0.3",
+		SidecarImage:            "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
+		ShimImage:               defaultShimImage,
+		ServiceAccountTokenFile: defaultServiceAccountTokenFile,
+		MaxConcurrent:           100,
 	}
 }
 
@@ -143,10 +151,18 @@ func (c *Config) Validate() error {
 	if c.Server == "" {
 		return fmt.Errorf("server is required")
 	}
-	if c.Token == "" {
-		return fmt.Errorf("token is required")
+	if c.EnrollmentPolicy != "" {
+		if err := validateKubernetesEnrollmentServer(c.Server, c.AllowInsecureHTTP); err != nil {
+			return err
+		}
 	}
-	if c.AgentID == "" {
+	if c.ServiceAccountTokenFile == "" {
+		c.ServiceAccountTokenFile = defaultServiceAccountTokenFile
+	}
+	if c.Token == "" && c.EnrollmentPolicy == "" {
+		return fmt.Errorf("token or enrollmentPolicy is required")
+	}
+	if c.Token != "" && c.AgentID == "" {
 		return fmt.Errorf("agentId is required")
 	}
 	if c.Namespace == "" {
@@ -182,4 +198,26 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validateKubernetesEnrollmentServer(server string, allowInsecureHTTP bool) error {
+	u, err := url.Parse(server)
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return fmt.Errorf("server must be an absolute URL")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && (allowInsecureHTTP || isLoopbackHost(u.Hostname())) {
+		return nil
+	}
+	return fmt.Errorf("server must use https for Kubernetes enrollment (http is allowed only for loopback local development)")
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -21,11 +21,11 @@ import (
 
 // Config holds the configuration for the master server.
 type Config struct {
-	Token         string
-	AgentToken    string
-	ListenAddr    string
-	WebDir        string // Directory for static web files. When empty, /ui/* returns 404.
-	UIProxyTarget string // URL of the Vite dev server to proxy /ui/* to when WebDir is not set (e.g. http://vite:5173). When empty, /ui/* returns 404.
+	Token            string
+	LegacyAgentToken string
+	ListenAddr       string
+	WebDir           string // Directory for static web files. When empty, /ui/* returns 404.
+	UIProxyTarget    string // URL of the Vite dev server to proxy /ui/* to when WebDir is not set (e.g. http://vite:5173). When empty, /ui/* returns 404.
 
 	// MatrixMaxCombinations caps matrix step expansion; 0 means the default (64).
 	MatrixMaxCombinations int
@@ -38,7 +38,8 @@ type Config struct {
 	// Default (false) sets Secure — Chrome/Firefox treat http://localhost as
 	// trustworthy so local dev keeps working; opt out only for plain-HTTP
 	// deployments (LAN access, Safari-based local dev).
-	InsecureCookies bool
+	InsecureCookies               bool
+	KubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
 }
 
 // OIDCConfig holds the OIDC provider configuration.
@@ -59,20 +60,23 @@ type OIDCConfig struct {
 
 // Server represents the master HTTP server.
 type Server struct {
-	cfg          Config
-	store        store.Store
-	r            chi.Router
-	shuttingDown atomic.Bool
-	claimDrainCh chan struct{}           // Closed on shutdown to immediately drain all claim long-polls.
-	objStore     objectstore.ObjectStore // Archive endpoints return 501 when nil.
-	archLogs     *archivedLogs           // Serves log reads for trimmed runs; nil when objStore is nil.
-	cacheStore   objectstore.ObjectStore // nil = skip TTL cleanup
-	km           secrets.KeyManager      // Secret API returns 501 when nil.
-	oidcCfg      *OIDCConfig             // OIDC endpoints return 404 when nil.
-	dexProxy     *httputil.ReverseProxy  // /dex/* returns 404 when nil.
-	uiProxy      *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).
-	metrics      *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
-	claimedBy    *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
+	cfg                           Config
+	store                         store.Store
+	r                             chi.Router
+	shuttingDown                  atomic.Bool
+	claimDrainCh                  chan struct{}           // Closed on shutdown to immediately drain all claim long-polls.
+	objStore                      objectstore.ObjectStore // Archive endpoints return 501 when nil.
+	archLogs                      *archivedLogs           // Serves log reads for trimmed runs; nil when objStore is nil.
+	cacheStore                    objectstore.ObjectStore // nil = skip TTL cleanup
+	km                            secrets.KeyManager      // Secret API returns 501 when nil.
+	oidcCfg                       *OIDCConfig             // OIDC endpoints return 404 when nil.
+	dexProxy                      *httputil.ReverseProxy  // /dex/* returns 404 when nil.
+	uiProxy                       *httputil.ReverseProxy  // /ui/* returns 404 when nil (when WebDir is not set).
+	metrics                       *metrics.Metrics        // nil = middleware no-ops and /metrics returns 404.
+	claimedBy                     *claimedByCache         // Immutable claimed_by ownership cache (always initialized).
+	enrollmentLimiter             *enrollmentLimiter
+	credentialTouches             *credentialTouchLimiter
+	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
 
 	// Cached provider for OIDC Bearer token verification (lazily initialized).
 	// Used to verify id_tokens obtained via the CLI device flow for API authentication.
@@ -83,10 +87,7 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	if cfg.AgentToken == "" {
-		cfg.AgentToken = cfg.Token
-	}
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap)}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers}
 	if cfg.WebDir == "" && cfg.UIProxyTarget != "" {
 		if target, err := url.Parse(cfg.UIProxyTarget); err == nil {
 			s.uiProxy = &httputil.ReverseProxy{
@@ -213,6 +214,65 @@ func (s *Server) metricsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+type agentRouteAuthMode uint8
+
+const (
+	agentRouteAuth agentRouteAuthMode = iota
+	agentRouteOrServerAuth
+)
+
+type agentIdentityRoute struct {
+	method       string
+	path         string
+	auth         agentRouteAuthMode
+	bindPath     bool
+	requiredRole string
+	handler      func(*Server, http.ResponseWriter, *http.Request)
+}
+
+// agentRouteIdentityMatrix is both the registration source and the
+// impersonation-test matrix.
+var agentRouteIdentityMatrix = []agentIdentityRoute{
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}", auth: agentRouteOrServerAuth, bindPath: true, requiredRole: "viewer", handler: (*Server).handleGetAgent},
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs", auth: agentRouteOrServerAuth, bindPath: true, requiredRole: "viewer", handler: (*Server).handleListRunsByAgent},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/heartbeat", bindPath: true, handler: (*Server).handleAgentHeartbeat},
+	{method: http.MethodDelete, path: "/api/v1/agents/{agentId}", bindPath: true, handler: (*Server).handleAgentDeregister},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/claim", bindPath: true, handler: (*Server).handleAgentClaim},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/steps", bindPath: true, handler: (*Server).handleAgentStepReport},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/logs", bindPath: true, handler: (*Server).handleAgentLogAppend},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/reconcile", bindPath: true, handler: (*Server).handleAgentReconcileRuns},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/finish", bindPath: true, handler: (*Server).handleAgentFinishRun},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", bindPath: true, handler: (*Server).handleAgentSetStepOutputs},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/outputs", bindPath: true, handler: (*Server).handleAgentSetRunOutputs},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", bindPath: true, handler: (*Server).handleAgentLogBulk},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/sidecars", bindPath: true, handler: (*Server).handleAgentSidecarStatus},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/secrets/fetch", bindPath: true, handler: (*Server).handleAgentSecretsFetch},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/approvals", bindPath: true, handler: (*Server).handleAgentCreateApproval},
+	{method: http.MethodGet, path: "/api/v1/agents/{agentId}/runs/{runId}/approvals/{stepIndex}", bindPath: true, handler: (*Server).handleAgentGetApproval},
+	{method: http.MethodPut, path: "/api/v1/runs/{runID}/artifacts/{name}", handler: (*Server).handleArtifactUpload},
+}
+
+func (s *Server) registerAgentIdentityRoutes() {
+	for _, route := range agentRouteIdentityMatrix {
+		route := route
+		r := s.r
+		if route.auth == agentRouteOrServerAuth {
+			r = r.With(s.agentOrServerAuth)
+		} else {
+			r = r.With(s.agentAuth)
+		}
+		if route.bindPath {
+			r = r.With(s.requireAgentPathIdentity)
+		}
+		if route.requiredRole != "" {
+			r = r.With(requireMinRole(route.requiredRole))
+		}
+		r.Method(route.method, route.path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			route.handler(s, w, req)
+		}))
+	}
+}
+
 func (s *Server) routes() {
 	s.r.Use(middleware.Recoverer)
 	s.r.Use(middleware.RealIP)
@@ -315,6 +375,19 @@ func (s *Server) routes() {
 		r.With(dev).Post("/tokens", s.handleCreateToken)
 		r.With(dev).Get("/tokens", s.handleListTokens)
 		r.With(dev).Delete("/tokens/{id}", s.handleDeleteToken)
+
+		r.With(admin).Post("/agent-enrollments", s.handleCreateAgentEnrollment)
+		r.With(view).Get("/agent-enrollments", s.handleListAgentEnrollments)
+		r.With(admin).Delete("/agent-enrollments/{id}", s.handleRevokeAgentEnrollment)
+		r.With(admin).Post("/agent-enrollment-policies", s.handleCreateAgentEnrollmentPolicy)
+		r.With(view).Get("/agent-enrollment-policies", s.handleListAgentEnrollmentPolicies)
+		r.With(view).Get("/agent-enrollment-policies/{name}", s.handleGetAgentEnrollmentPolicy)
+		r.With(admin).Put("/agent-enrollment-policies/{name}", s.handleUpdateAgentEnrollmentPolicy)
+		r.With(admin).Delete("/agent-enrollment-policies/{name}", s.handleDeleteAgentEnrollmentPolicy)
+		r.With(view).Get("/agent-identities/{agentId}", s.handleGetAgentIdentity)
+		r.With(admin).Post("/agent-identities/{agentId}/enable", s.handleEnableAgentIdentity)
+		r.With(admin).Post("/agent-identities/{agentId}/disable", s.handleDisableAgentIdentity)
+		r.With(admin).Post("/agent-identities/{agentId}/credentials/revoke", s.handleRevokeAgentCredentials)
 	})
 
 	// WebhookReceiver management (auth required)
@@ -391,32 +464,20 @@ func (s *Server) routes() {
 	s.r.Get("/api/v1/auth/me", s.handleMe)
 
 	s.r.Route("/api/v1/agents", func(r chi.Router) {
-		// GET uses ServerAuth + requireMinRole("viewer"); all other methods use BearerAuth (agent token).
+		// Bootstrap and refresh are intentionally outside ServerAuth: their opaque
+		// agent credentials are authenticated by the handlers themselves.
+		r.Post("/enroll", s.handleAgentEnroll)
+		r.Post("/token/refresh", s.handleAgentRefresh)
 		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/", s.handleListAgents)
-		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}", s.handleGetAgent)
-		r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/{agentId}/runs", s.handleListRunsByAgent)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/register", s.handleAgentRegister)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/heartbeat", s.handleAgentHeartbeat)
-		r.With(BearerAuth(s.cfg.AgentToken)).Delete("/{agentId}", s.handleAgentDeregister)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/claim", s.handleAgentClaim)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/steps", s.handleAgentStepReport)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/logs", s.handleAgentLogAppend)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/reconcile", s.handleAgentReconcileRuns)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/finish", s.handleAgentFinishRun)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", s.handleAgentSetStepOutputs)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/outputs", s.handleAgentSetRunOutputs)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", s.handleAgentLogBulk)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/sidecars", s.handleAgentSidecarStatus)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/secrets/fetch", s.handleAgentSecretsFetch)
-		r.With(BearerAuth(s.cfg.AgentToken)).Post("/{agentId}/runs/{runId}/approvals", s.handleAgentCreateApproval)
-		r.With(BearerAuth(s.cfg.AgentToken)).Get("/{agentId}/runs/{runId}/approvals/{stepIndex}", s.handleAgentGetApproval)
+		r.With(s.agentAuth).Post("/register", s.handleAgentRegister)
 	})
 
 	s.r.Route("/api/v1/runs/{runID}/artifacts", func(r chi.Router) {
-		r.With(BearerAuth(s.cfg.AgentToken)).Put("/{name}", s.handleArtifactUpload)
-		r.With(AgentOrServerAuth(s.cfg.AgentToken, s.store, s)).Get("/{name}", s.handleArtifactDownload)
-		r.With(AgentOrServerAuth(s.cfg.AgentToken, s.store, s)).Get("/", s.handleArtifactList)
+		r.With(s.agentOrServerAuth).Get("/{name}", s.handleArtifactDownload)
+		r.With(s.agentOrServerAuth).Get("/", s.handleArtifactList)
 	})
+
+	s.registerAgentIdentityRoutes()
 
 	// When WebDir is set, serve the Web UI as static files (no auth required).
 	// When WebDir is not set but UIProxyTarget is set, reverse-proxy any request that

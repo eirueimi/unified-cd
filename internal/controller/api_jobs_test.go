@@ -18,13 +18,13 @@ import (
 
 // newTestServer creates a Server that mirrors the production main.go flow (syncing UNIFIED_TOKEN
 // as a PAT to the DB before starting). "secret" is used for tests under ServerAuth,
-// and "agent-secret" is used for tests under BearerAuth(AgentToken).
+// and "agent-secret" is used for explicit legacy-agent authentication tests.
 func newTestServer(t *testing.T) (*Server, store.Store) {
 	t.Helper()
 	pg := store.NewTestPostgres(t)
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
-	s := NewServer(Config{AgentToken: "agent-secret"}, pg)
+	s := NewServer(Config{LegacyAgentToken: "agent-secret"}, pg)
 	return s, pg
 }
 

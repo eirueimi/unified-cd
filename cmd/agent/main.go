@@ -51,6 +51,8 @@ func main() {
 	f := flag.String("f", configFile, "config file path (YAML) (default: unified-agent.yaml if exists)")
 	server := flag.String("server", eff.Server, "master base URL")
 	token := flag.String("token", eff.Token, "agent bearer token")
+	credentialFile := flag.String("credential-file", eff.CredentialFile, "path to persistent VM refresh credentials (env: UNIFIED_AGENT_CREDENTIAL_FILE)")
+	enrollmentTokenFile := flag.String("enrollment-token-file", eff.EnrollmentTokenFile, "path to one-time enrollment token (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)")
 	id := flag.String("id", defaultID, "agent ID (default: hostname)")
 	labelsStr := flag.String("labels", eff.LabelsString(), "comma-separated agent labels (env: UNIFIED_AGENT_LABELS)")
 	exposeEnvStr := flag.String("expose-env", strings.Join(eff.ExposeEnv, ","), "comma-separated environment variable names to expose (env: UNIFIED_AGENT_EXPOSE_ENV)")
@@ -83,8 +85,8 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
 
-	if *server == "" || *token == "" {
-		slog.Error("--server and --token are required")
+	if *server == "" {
+		slog.Error("--server is required")
 		os.Exit(1)
 	}
 	if err := agent.RequireShell(); err != nil {
@@ -124,7 +126,29 @@ func main() {
 		}
 	}
 
-	cli := agent.NewClient(*server, *token)
+	var cli *agent.Client
+	if *token != "" {
+		slog.Warn("using deprecated legacy shared agent token")
+		cli = agent.NewClient(*server, *token)
+	} else {
+		credentialExists := false
+		if *credentialFile != "" {
+			if _, err := os.Stat(*credentialFile); err == nil {
+				credentialExists = true
+			} else if !os.IsNotExist(err) {
+				slog.Error("credential file", "error", err)
+				os.Exit(1)
+			}
+		}
+		if !credentialExists && (*credentialFile == "" || *enrollmentTokenFile == "") {
+			slog.Error("agent credentials are required")
+			os.Exit(1)
+		}
+		source := agent.NewCredentialManager(agent.CredentialManagerConfig{
+			Server: *server, AgentID: *id, CredentialFile: *credentialFile, EnrollmentTokenFile: *enrollmentTokenFile,
+		})
+		cli = agent.NewClientWithTokenSource(*server, source, nil)
+	}
 
 	// First SIGINT/SIGTERM begins a graceful shutdown (drain in-flight runs up to
 	// DrainTimeout); a second signal forces an immediate shutdown. On the force

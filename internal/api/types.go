@@ -271,6 +271,7 @@ type SecretMeta struct {
 
 // AgentFetchSecretsRequest is the request used by the agent to fetch secrets.
 type AgentFetchSecretsRequest struct {
+	RunID string   `json:"runId"`
 	Names []string `json:"names"`
 }
 

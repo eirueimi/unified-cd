@@ -22,6 +22,21 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := chi.URLParam(r, "runID")
+	principal, ok := agentPrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if principal.AuthMethod != "legacy" {
+		verdict, err := s.agentRunGuard(r.Context(), principal.AgentID, runID, false)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if respondRunWriteVerdict(w, verdict, runID) {
+			return
+		}
+	}
 	// Tests may wire object-store-only servers (nil store); production always
 	// has a store, so only check existence when one is configured.
 	if s.store != nil {

@@ -86,9 +86,27 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "key manager not configured", http.StatusNotImplemented)
 		return
 	}
+	principal, ok := agentPrincipalFromContext(r.Context())
+	if !ok || principal.AuthMethod == "legacy" {
+		http.Error(w, "legacy agent credentials cannot fetch secrets", http.StatusForbidden)
+		return
+	}
 	var req api.AgentFetchSecretsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.RunID == "" {
+		http.Error(w, "runId is required", http.StatusBadRequest)
+		return
+	}
+	agentID := chi.URLParam(r, "agentId")
+	verdict, err := s.agentRunGuard(r.Context(), agentID, req.RunID, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, verdict, req.RunID) {
 		return
 	}
 	result := map[string]string{}
