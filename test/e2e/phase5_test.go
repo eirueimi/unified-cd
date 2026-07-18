@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/agent"
+	"github.com/eirueimi/unified-cd/internal/agentauth"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/controller"
 	"github.com/eirueimi/unified-cd/internal/secrets"
@@ -39,6 +39,32 @@ func newControllerWithKM(t *testing.T) (*controller.Server, *store.Postgres, *ht
 	return srv, pg, httpSrv
 }
 
+// issueAgentAccessToken mints a real opaque (non-legacy) agent access
+// credential bound to agentID, the same store-level mechanism
+// internal/controller/agent_auth_test.go's issueAgentAccessForTest uses.
+// handleAgentSecretsFetch (internal/controller/api_secrets.go) forbids the
+// shared legacy agent token from fetching secrets at all (403, before any
+// per-secret lookup), so an e2e agent that exercises secret injection must
+// authenticate this way instead of with the legacy shared token.
+func issueAgentAccessToken(t *testing.T, pg *store.Postgres, agentID string) string {
+	t.Helper()
+	issued, err := agentauth.Generate(agentauth.AccessToken)
+	require.NoError(t, err)
+	_, err = pg.IssueExternalAgentAccess(context.Background(), store.AgentCredentialIssue{
+		AgentID:          agentID,
+		EnrollmentMethod: "test",
+		ExternalSubject:  "test:" + agentID,
+		Access: store.NewAgentCredential{
+			ID:        issued.ID,
+			Kind:      "access",
+			TokenHash: issued.Hash,
+			ExpiresAt: time.Now().Add(time.Hour),
+		},
+	})
+	require.NoError(t, err)
+	return issued.Plaintext
+}
+
 // TestPhase5_SecretInjection verifies that a secret is injected as an env var and the step can use it.
 func TestPhase5_SecretInjection(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -50,7 +76,8 @@ func TestPhase5_SecretInjection(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, "t"))
+	agentToken := issueAgentAccessToken(t, pg, "agent-e2e")
+	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	// Register the secret
@@ -101,18 +128,21 @@ spec:
 		return err == nil && r.Status == api.RunSucceeded
 	}, 15*time.Second, 100*time.Millisecond)
 
-	// Verify that the step executed with the secret value via env var and printed it to the logs.
-	// Because the masker is active, the value is recorded as masked ("***") rather than plain text.
+	// Verify that the step actually received the secret value via env var:
+	// the masker replaces the plaintext with "***", so the printed line must
+	// be exactly "value=***", not merely contain "value=" — a bare "value="
+	// (the empty-env-var case) would also satisfy a looser Contains check
+	// and let this test pass without the secret ever being injected.
 	logs, err := pg.TailLogs(ctx, run.ID, 0, 100)
 	require.NoError(t, err)
 	var found bool
 	for _, l := range logs {
-		if strings.Contains(l.Line, "value=") {
+		if l.Line == "value=***" {
 			found = true
 			break
 		}
 	}
-	assert.True(t, found, "step should have printed 'value=...' via env var; logs: %v", logs)
+	assert.True(t, found, "step should have printed the masked secret as 'value=***'; logs: %v", logs)
 
 	// Verify that the plain-text secret value does not appear in the logs
 	for _, l := range logs {
@@ -132,7 +162,8 @@ func TestPhase5_StdoutMasking(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.New("agent-mask", agent.NewClient(httpSrv.URL, "t"))
+	agentToken := issueAgentAccessToken(t, pg, "agent-mask")
+	ag := agent.New("agent-mask", agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	// Register the secret
@@ -189,6 +220,18 @@ spec:
 		assert.NotContains(t, l.Line, "super-secret-xyz",
 			"plain secret must not appear in logs: %q", l.Line)
 	}
+	// The secret must actually have been injected and masked, not merely
+	// absent: assert the masked marker appears where the secret should be,
+	// so a run that never fetched the secret (and so never printed anything
+	// masked at all) can't pass this test vacuously.
+	var maskedFound bool
+	for _, l := range logs {
+		if l.Line == "secret=***" {
+			maskedFound = true
+		}
+	}
+	assert.True(t, maskedFound, "secret line should have been masked to 'secret=***'; logs: %v", logs)
+
 	// Non-secret content should remain in the logs as-is
 	var safeFound bool
 	for _, l := range logs {

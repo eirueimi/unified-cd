@@ -199,31 +199,30 @@ Because NOTIFY propagates even when the writing replica differs from the SSE-ser
 
 Settings that must match / be shared across all replicas for correct HA operation.
 
-### ⚠️ `UNIFIED_CONTROLLER_KEY` (most critical)
+### ⚠️ The encryption key (most critical)
 
-The master key used for secret encryption. **Must be identical on all replicas.**
+Every replica must be given the **same** key. The controller no longer stores a
+key in the database, so replicas cannot converge on one by sharing a database —
+a replica started with a different key cannot read secrets written by another.
 
-- If unset, each replica reads `controller_settings` in the shared DB. If no key exists yet,
-  it generates one and saves it (safe even if multiple replicas start simultaneously — the DB
-  serializes the write). Startup logs will show one of:
-  - `controllerKey not set — generated a new key and persisted it to the database` (first generation)
-  - `controllerKey not set — loaded previously persisted key from the database` (subsequent restarts)
-- As long as all replicas share the same DB, omitting `UNIFIED_CONTROLLER_KEY` will not cause
-  decryption failures. However, for production it is recommended to distribute the key explicitly
-  via a Secret Manager or KMS for easier key rotation and backup management.
-- If replicas point to **different DBs**, or if explicit `UNIFIED_CONTROLLER_KEY` values differ between
-  replicas, a secret encrypted by one replica cannot be decrypted by another.
+Two supported options:
 
-```bash
-# Generate once (32 bytes hex) and share across all replicas
-openssl rand -hex 32
-```
+- `UNIFIED_CONTROLLER_KEY_FILE` — mount the identical key file into every
+  replica (a Kubernetes Secret, or a shared mount). Generate it once with
+  `unified-cli keygen --out`, then treat it as you would any other critical
+  secret: back it up, and restrict it to mode 0400.
+- `UNIFIED_KMS_URI` — **recommended for HA.** Every replica points at the same
+  external KMS, so there is no key file to distribute or keep in sync, and
+  rotation becomes a KMS operation rather than a redeploy.
+
+Losing the key makes every stored secret unrecoverable. There is no escrow copy
+in the database any more.
 
 ### Other environment variables to keep consistent
 
 | Variable | HA requirement |
 |----------|----------------|
-| `UNIFIED_CONTROLLER_KEY` | **Same on all replicas** (see above) |
+| `UNIFIED_CONTROLLER_KEY_FILE` / `UNIFIED_KMS_URI` | **Same key on all replicas** (see above) |
 | `UNIFIED_DB_DSN` | Must point to the HA PostgreSQL endpoint (primary or pooler) |
 | `UNIFIED_TOKEN` | Same on all replicas (admin static token). Same applies to agent `UNIFIED_AGENT_TOKEN` |
 | `UNIFIED_S3_*` | All replicas must point to the same S3/Garage |
@@ -459,19 +458,32 @@ spec:
           env:
             - name: UNIFIED_DB_DSN
               valueFrom: { secretKeyRef: { name: unified-cd, key: db-dsn } }
-            - name: UNIFIED_CONTROLLER_KEY       # same on all replicas, injected from Secret
-              valueFrom: { secretKeyRef: { name: unified-cd, key: controller-key } }
+            - name: UNIFIED_CONTROLLER_KEY_FILE
+              value: /etc/unified-cd/kek
             - name: UNIFIED_TOKEN
               valueFrom: { secretKeyRef: { name: unified-cd, key: admin-token } }
             - name: UNIFIED_S3_ENDPOINT
               value: s3.amazonaws.com
             # UNIFIED_S3_BUCKET / KEY / SECRET etc. similarly
+          volumeMounts:
+            - name: controller-kek
+              mountPath: /etc/unified-cd/kek
+              subPath: kek
+              readOnly: true
           livenessProbe:
             httpGet: { path: /healthz, port: 8080 }
             periodSeconds: 10
           readinessProbe:
             httpGet: { path: /readyz, port: 8080 }
             periodSeconds: 10
+      volumes:
+        - name: controller-kek     # same key file on all replicas, mounted from Secret
+          secret:
+            secretName: unified-cd
+            items:
+              - key: controller-key
+                path: kek
+            defaultMode: 0400
       terminationGracePeriodSeconds: 30   # drain grace period (>= 12s)
 ---
 apiVersion: v1
@@ -505,7 +517,7 @@ spec:
 ## HA Checklist
 
 - [ ] Controller is running on 2+ instances behind an L7 load balancer
-- [ ] **`UNIFIED_CONTROLLER_KEY` is identical on all replicas** (auto-synced from shared DB if unset, but explicit is recommended)
+- [ ] **The same key file (`UNIFIED_CONTROLLER_KEY_FILE`) or KMS URI (`UNIFIED_KMS_URI`) is given to every replica**
 - [ ] `UNIFIED_TOKEN` / `UNIFIED_S3_*` / `UNIFIED_OIDC_*` are consistent across all replicas
 - [ ] PostgreSQL is in an HA configuration (managed service or Patroni etc.)
 - [ ] If using a pooler, it is in **session pooling mode** (required for advisory locks and NOTIFY)

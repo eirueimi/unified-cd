@@ -26,23 +26,26 @@ Secrets are a key-value store saved in the controller's PostgreSQL database **en
 
 ## Prerequisites
 
-### Setting `UNIFIED_CONTROLLER_KEY` (required)
+### Setting `UNIFIED_CONTROLLER_KEY_FILE` (required)
 
-This is the master encryption key for secrets. **If unset, the controller generates a key once and persists it in the database (`controller_settings`), so secrets survive restarts; set the variable explicitly in production so the key can be backed up.**
+This is the master encryption key for secrets. The controller refuses to start unless it is
+given a key: a file (`UNIFIED_CONTROLLER_KEY_FILE`), an external KMS (`UNIFIED_KMS_URI`, no
+provider implemented yet), or an explicit throwaway key for local development
+(`UNIFIED_DEV_MODE=1`, unreadable after a restart).
 
 ```bash
 # Generate once and store
-openssl rand -hex 32
-# => e.g. a1b2c3d4...  (64 hex characters)
+unified-cli keygen --out /etc/unified-cd/kek
 ```
 
-Set it in your `.env` file or as an environment variable:
+Point the controller at the file:
 
 ```bash
-UNIFIED_CONTROLLER_KEY=a1b2c3d4...
+UNIFIED_CONTROLLER_KEY_FILE=/etc/unified-cd/kek
 ```
 
-In HA setups, use the same value across all replicas (see [HA Guide](high-availability.md)).
+In HA setups, every replica must be given the same key file (or the same `UNIFIED_KMS_URI`) —
+see [HA Guide](high-availability.md).
 
 ---
 
@@ -225,11 +228,12 @@ Plaintext
 Ciphertext (stored in DB)
   │
   ├─ DEK (Data Encryption Key): randomly generated, encrypted with AES-GCM
-  │   └─ encryption key = UNIFIED_CONTROLLER_KEY (KEK: Key Encryption Key)
+  │   └─ encryption key = the KEK (Key Encryption Key) from UNIFIED_CONTROLLER_KEY_FILE / UNIFIED_KMS_URI
   └─ Ciphertext (body encrypted with the DEK)
 ```
 
-- As long as `UNIFIED_CONTROLLER_KEY` is not leaked, a DB leak does not expose plaintext.
+- As long as the KEK is not leaked, a DB leak does not expose plaintext. The KEK itself is never
+  stored in the database.
 - Each secret has its own DEK, so compromise of one DEK has limited blast radius.
 
 ### Access control
@@ -249,10 +253,8 @@ Secret **values cannot be retrieved via the API** by design. If you lose a value
 
 | Symptom | Cause and fix |
 |---------|---------------|
-| `key manager not configured` | Controller started without `UNIFIED_CONTROLLER_KEY`. Set it and restart. |
-| `{{ secrets.NAME }}` appears unexpanded | The secret name doesn't match a registered secret, or contains a character other than alphanumerics/underscores/hyphens. Check the exact name with `unified-cli secret list`. |
-| Secret is referenced with `{{ secrets.NAME }}` but value is empty | Secret is not registered, or the name casing does not match. Check with `unified-cli secret list`. |
-| Info log: `controllerKey not set — generated a new key and persisted it to the database` | `UNIFIED_CONTROLLER_KEY` is not set. A key was auto-generated and stored in the `controller_settings` table (reused on subsequent restarts). To manage it explicitly, retrieve the value from the DB and set it as `UNIFIED_CONTROLLER_KEY`. |
-| `decrypt` errors in HA setup | Replicas are pointing to different DBs (`controller_settings`), or `UNIFIED_CONTROLLER_KEY` differs between replicas. Use the same DB and the same key value on all replicas. |
+| Controller exits at startup naming `unified-cli keygen --out` | No key source is configured. Set `UNIFIED_CONTROLLER_KEY_FILE` (or `UNIFIED_KMS_URI`, or `UNIFIED_DEV_MODE=1` for local development) and restart. |
+| `{{ secrets.NAME }}` appears unexpanded, or the run fails with a "secret not found" / decrypt error | The secret name doesn't match a registered secret (or the name casing doesn't match), or contains a character other than alphanumerics/underscores/hyphens. An unregistered or unresolvable secret now fails the run rather than expanding to an empty value. Check the exact name with `unified-cli secret list`. |
+| `decrypt` errors in HA setup | Replicas were given different key files, or different `UNIFIED_KMS_URI` values. Give every replica the identical key file (or the same KMS URI). |
 | `secret set` from CI returns `unauthorized` | The token in use does not have admin privileges (agent tokens cannot manage secrets). |
 | `secret not needed by this run` (403, from an agent's secrets-fetch call) | The agent requested a secret name that the run's own job spec does not reference (no matching `{{ secrets.NAME }}` in that job's `env:`/`run:`). Add the reference to the job spec — see [How it works](#how-it-works). This is enforced even for an agent that legitimately owns the run; it is not an ownership error. |

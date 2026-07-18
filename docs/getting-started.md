@@ -58,8 +58,15 @@ run `docker compose up -d postgres` instead.
 ```bash
 UNIFIED_DB_DSN="postgres://unified:unified@localhost:5432/unified?sslmode=disable" \
 UNIFIED_TOKEN="dev-secret" \
+UNIFIED_DEV_MODE="1" \
 ./bin/unified-cd-controller --addr :8080
 ```
+
+`UNIFIED_DEV_MODE=1` generates an ephemeral, in-memory secret-encryption key —
+fine for this walkthrough, but any secret you register becomes unreadable
+after the next restart. A real deployment should instead run `unified-cli
+keygen --out /etc/unified-cd/kek` to write a persistent key file and point
+`UNIFIED_CONTROLLER_KEY_FILE` at it.
 
 The controller runs database migrations on startup. When ready you'll see:
 
@@ -73,7 +80,7 @@ INFO  server listening  addr=:8080
 |---|---|---|
 | `UNIFIED_DB_DSN` | PostgreSQL connection string | Yes |
 | `UNIFIED_TOKEN` | Static bearer token for the admin CLI | Yes (when SSO is not configured) |
-| `UNIFIED_CONTROLLER_KEY` | 32-byte hex key for secret encryption | Recommended |
+| `UNIFIED_CONTROLLER_KEY_FILE` | Path to a file holding 64 hex chars for secret encryption (`unified-cli keygen --out`) | Required unless `UNIFIED_DEV_MODE=1` |
 | `UNIFIED_S3_ENDPOINT` | S3/Garage endpoint for log archival and artifacts | Optional |
 
 ---

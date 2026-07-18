@@ -1789,13 +1789,13 @@ func (p *Postgres) DeleteExpiredOIDCStates(ctx context.Context) error {
 }
 
 // CreateSession saves a browser session to the database.
-func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, role, encryptedRefreshToken string, expiresAt time.Time) (*Session, error) {
-	const q = `INSERT INTO sessions(token_hash, sub, email, role, refresh_token, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, token_hash, sub, email, role, refresh_token, expires_at, last_used_at, created_at`
+func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, role string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error) {
+	const q = `INSERT INTO sessions(token_hash, sub, email, role, refresh_token_dek, refresh_token_ct, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, token_hash, sub, email, role, refresh_token_dek, refresh_token_ct, expires_at, last_used_at, created_at`
 	var s Session
-	err := p.pool.QueryRow(ctx, q, tokenHash, sub, email, role, encryptedRefreshToken, expiresAt).
-		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.RefreshToken, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
+	err := p.pool.QueryRow(ctx, q, tokenHash, sub, email, role, refreshDEK, refreshCT, expiresAt).
+		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.RefreshTokenDEK, &s.RefreshTokenCT, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -1804,11 +1804,11 @@ func (p *Postgres) CreateSession(ctx context.Context, tokenHash, sub, email, rol
 
 // GetSessionByHash retrieves a session by token_hash.
 func (p *Postgres) GetSessionByHash(ctx context.Context, tokenHash string) (*Session, error) {
-	const q = `SELECT id, token_hash, sub, email, role, refresh_token, expires_at, last_used_at, created_at
+	const q = `SELECT id, token_hash, sub, email, role, refresh_token_dek, refresh_token_ct, expires_at, last_used_at, created_at
 		FROM sessions WHERE token_hash = $1`
 	var s Session
 	err := p.pool.QueryRow(ctx, q, tokenHash).
-		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.RefreshToken, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
+		Scan(&s.ID, &s.TokenHash, &s.Sub, &s.Email, &s.Role, &s.RefreshTokenDEK, &s.RefreshTokenCT, &s.ExpiresAt, &s.LastUsedAt, &s.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -1819,10 +1819,10 @@ func (p *Postgres) GetSessionByHash(ctx context.Context, tokenHash string) (*Ses
 }
 
 // UpdateSessionExpiry updates the expiry time and refresh token of a session.
-func (p *Postgres) UpdateSessionExpiry(ctx context.Context, id, encryptedRefreshToken string, expiresAt time.Time) error {
+func (p *Postgres) UpdateSessionExpiry(ctx context.Context, id string, refreshDEK, refreshCT []byte, expiresAt time.Time) error {
 	_, err := p.pool.Exec(ctx,
-		`UPDATE sessions SET expires_at = $1, refresh_token = $2 WHERE id = $3`,
-		expiresAt, encryptedRefreshToken, id)
+		`UPDATE sessions SET expires_at = $1, refresh_token_dek = $2, refresh_token_ct = $3 WHERE id = $4`,
+		expiresAt, refreshDEK, refreshCT, id)
 	return err
 }
 
@@ -1888,29 +1888,6 @@ func (p *Postgres) ListGitCredentials(ctx context.Context) ([]GitCredential, err
 func (p *Postgres) DeleteGitCredential(ctx context.Context, name string) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM git_credentials WHERE name = $1`, name)
 	return err
-}
-
-// EnsureControllerKey tries to store candidateHex in the single row of controller_settings.
-// If a row already exists it does nothing and returns the existing value
-// (safe against simultaneous first-startup from multiple replicas).
-func (p *Postgres) EnsureControllerKey(ctx context.Context, candidateHex string) (string, error) {
-	var keyHex string
-	err := p.pool.QueryRow(ctx, `
-		WITH ins AS (
-			INSERT INTO controller_settings (id, controller_key_hex)
-			VALUES (1, $1)
-			ON CONFLICT (id) DO NOTHING
-			RETURNING controller_key_hex
-		)
-		SELECT controller_key_hex FROM ins
-		UNION ALL
-		SELECT controller_key_hex FROM controller_settings WHERE id = 1
-		LIMIT 1`,
-		candidateHex).Scan(&keyHex)
-	if err != nil {
-		return "", err
-	}
-	return keyHex, nil
 }
 
 // InsertAuditLog records a single state-changing API operation.

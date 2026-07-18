@@ -193,7 +193,14 @@ func TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent(t *testing.T) {
 // Silently returning 200 with the name missing produces a step that runs with
 // an empty value — e.g. `curl -H "Authorization: Bearer $TOKEN"` with no token.
 //
-// The run's spec must declare the secret it fetches, same as
+// Uses a real opaque agent credential + a claimed run, not the shared legacy
+// token: handleAgentSecretsFetch forbids legacy credentials from fetching
+// secrets at all (403, before the per-name lookup this test targets), so a
+// "Bearer agent-secret" request never reaches the code under test here — see
+// TestAgentAPI_FetchSecrets_RejectsLegacyTokenPathImpersonation above and the
+// task-7 report for how this was discovered.
+//
+// The run's spec must also declare the secret it fetches, same as
 // TestAgentAPI_FetchSecrets and TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent
 // above: handleAgentSecretsFetch restricts a fetch to the names the run's own
 // spec references (secretNamesForRun in api_agent.go), so a bare `{"steps":[]}`
