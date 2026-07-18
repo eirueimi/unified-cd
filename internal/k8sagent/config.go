@@ -49,13 +49,23 @@ type AgentPodTemplate struct {
 // own image, which ships /ucd-sh at its root (see docker/k8s-agent.Dockerfile).
 const defaultShimImage = "ghcr.io/eirueimi/unified-cd-k8s-agent:latest"
 
+// defaultPodImage is the default value of Config.PodImage: the fleet-wide
+// primary container image for isolated jobs that don't supply their own
+// podTemplate job container. It is digest-pinned — the tag is retained for
+// readability, but the digest is what is pulled. A mutable tag would let a
+// registry compromise execute code in that container on every such job
+// across the fleet. Rotate this together with the runner image release —
+// see docs/operations.md#rotating-the-default-runnerpause-image-digests for
+// the rotation procedure.
+const defaultPodImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3@sha256:d7fa1600cf2ec38b78a8893025db7a09cc70b8ac61ae474ceac48444905a729d"
+
 const defaultServiceAccountTokenFile = "/var/run/secrets/unified-cd-agent/token"
 
 // DefaultConfig returns a Config with default values.
 func DefaultConfig() Config {
 	return Config{
 		Namespace:               "default",
-		PodImage:                "ghcr.io/eirueimi/unified-cd-runner:v0.0.3",
+		PodImage:                defaultPodImage,
 		SidecarImage:            "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
 		ShimImage:               defaultShimImage,
 		ServiceAccountTokenFile: defaultServiceAccountTokenFile,
@@ -169,7 +179,7 @@ func (c *Config) Validate() error {
 		c.Namespace = "default"
 	}
 	if c.PodImage == "" {
-		c.PodImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3"
+		c.PodImage = defaultPodImage
 	}
 	if c.SidecarImage == "" {
 		c.SidecarImage = "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest"

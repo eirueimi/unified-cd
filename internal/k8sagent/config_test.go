@@ -132,12 +132,21 @@ agentId: agent-1
 	if got.MaxConcurrent != 100 {
 		t.Errorf("MaxConcurrent = %d, want 100", got.MaxConcurrent)
 	}
-	if got.PodImage != "ghcr.io/eirueimi/unified-cd-runner:v0.0.3" {
-		t.Errorf("PodImage = %q, want %q", got.PodImage, "ghcr.io/eirueimi/unified-cd-runner:v0.0.3")
+	if got.PodImage != defaultPodImage {
+		t.Errorf("PodImage = %q, want %q", got.PodImage, defaultPodImage)
 	}
 	if got.ShimImage != defaultShimImage {
 		t.Errorf("ShimImage = %q, want %q", got.ShimImage, defaultShimImage)
 	}
+}
+
+// TestDefaultPodImageIsDigestPinned guards against the k8s-agent's
+// fleet-wide default pod image regressing to a mutable tag. A mutable tag
+// lets whoever controls the registry repository force-push it and execute
+// code in the primary container of every isolated job lacking its own
+// podTemplate job container.
+func TestDefaultPodImageIsDigestPinned(t *testing.T) {
+	assert.Contains(t, defaultPodImage, "@sha256:", "default pod image must be digest-pinned")
 }
 
 // TestDefaultConfig_ShimImage confirms DefaultConfig() itself (not just
