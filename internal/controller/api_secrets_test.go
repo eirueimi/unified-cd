@@ -189,6 +189,70 @@ func TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
 
+// A secret the controller cannot supply must be an error, not an omission.
+// Silently returning 200 with the name missing produces a step that runs with
+// an empty value — e.g. `curl -H "Authorization: Bearer $TOKEN"` with no token.
+//
+// The run's spec must declare the secret it fetches, same as
+// TestAgentAPI_FetchSecrets and TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent
+// above: handleAgentSecretsFetch restricts a fetch to the names the run's own
+// spec references (secretNamesForRun in api_agent.go), so a bare `{"steps":[]}`
+// spec would be rejected outright (403, "secret not needed by this run")
+// before ever reaching the missing-vs-present distinction this test targets.
+func TestAPI_FetchSecrets_MissingSecretIsAnError(t *testing.T) {
+	s, pg := newTestServerWithKM(t)
+
+	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.NO_SUCH_SECRET }}"}]}`)
+	_, err := pg.UpsertJob(t.Context(), "fetch-missing-secret", "unified-cd/v1", specJSON)
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "fetch-missing-secret", nil, specJSON, nil, nil, "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "agent-1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "agent-1", nil, nil)
+
+	body, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: run.ID, Names: []string{"NO_SUCH_SECRET"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-1/secrets/fetch", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "NO_SUCH_SECRET")
+}
+
+func TestAPI_FetchSecrets_ReturnsExistingSecret(t *testing.T) {
+	s, pg := newTestServerWithKM(t)
+
+	set, _ := json.Marshal(api.SetSecretRequest{Name: "PRESENT", Value: "v"})
+	setReq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(set))
+	setReq.Header.Set("Authorization", "Bearer secret")
+	setReq.Header.Set("Content-Type", "application/json")
+	setRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(setRec, setReq)
+	require.Equal(t, http.StatusNoContent, setRec.Code, setRec.Body.String())
+
+	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.PRESENT }}"}]}`)
+	_, err := pg.UpsertJob(t.Context(), "fetch-existing-secret", "unified-cd/v1", specJSON)
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "fetch-existing-secret", nil, specJSON, nil, nil, "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "agent-1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "agent-1", nil, nil)
+
+	body, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: run.ID, Names: []string{"PRESENT"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-1/secrets/fetch", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var resp api.AgentFetchSecretsResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "v", resp.Secrets["PRESENT"])
+}
+
 func TestAPI_FetchSecrets_NotConfigured(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	s := NewServer(Config{Token: "secret", LegacyAgentToken: "agent-secret"}, pg)
