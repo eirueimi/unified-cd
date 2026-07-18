@@ -169,6 +169,15 @@ metadata:
 apiVersion: v1
 kind: Secret
 metadata:
+  annotations:
+    unified-cd.io/ephemeral-key-warning: 'This quick-trial bundle runs with UNIFIED_DEV_MODE=1,
+      so the secret encryption key is generated in memory and is LOST on every pod
+      restart. Postgres here has a PersistentVolumeClaim, so the database survives
+      that restart: secrets you registered remain in it, encrypted with a key that
+      no longer exists, and are not recoverable. Use this bundle to evaluate unified-cd.
+      For anything you intend to keep, use core-install.yaml, which mounts a real
+      key from the unified-cd-controller-kek Secret (generate one with `unified-cli
+      keygen`). Back that Secret up — a database dump alone cannot restore your secrets.'
   name: unified-cd-controller
   namespace: unified-cd
 stringData:
