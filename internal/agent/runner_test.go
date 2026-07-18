@@ -118,6 +118,89 @@ func TestRunStepWithShell_MultiArgPrefixPreserved(t *testing.T) {
 	assert.NotContains(t, stdout.String(), "unreachable")
 }
 
+// TestRunStep_CredentialsNotInheritedByChild is the exec-level regression
+// guard for StepEnv: it proves a REAL subprocess spawned by RunStep cannot
+// read the agent's credentials from its environment, not just that StepEnv's
+// builder omits them (see stepenv_test.go for that unit-level coverage).
+// The positive control (an ExposeEnv-allowlisted variable reaching the
+// child) matters because without it a shell that silently failed to run
+// would also satisfy the negative assertion below.
+func TestRunStep_CredentialsNotInheritedByChild(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret-value")
+	t.Setenv("MY_BUILD_FLAG", "visible-value")
+
+	var stdout, stderr bytes.Buffer
+	exit, err := RunStep(t.Context(),
+		`echo "token=$UNIFIED_AGENT_TOKEN cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
+		&stdout, &stderr, nil, []string{"MY_BUILD_FLAG"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+
+	assert.NotContains(t, stdout.String(), "super-secret-value",
+		"child process must not see the agent's credentials")
+	assert.Contains(t, stdout.String(), "flag=visible-value",
+		"positive control: an ExposeEnv-allowlisted variable must still reach the child")
+}
+
+// TestRunStep_DeniedCredentialStaysHiddenEvenIfExposed is the foot-gun guard
+// at the real-subprocess level: an operator naming a denylisted credential in
+// ExposeEnv must not make it visible to the child, mirroring
+// TestStepEnv_DenylistBeatsExposeEnv but proving it through an actual exec
+// rather than only through the StepEnv() builder.
+func TestRunStep_DeniedCredentialStaysHiddenEvenIfExposed(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+
+	var stdout, stderr bytes.Buffer
+	exit, err := RunStep(t.Context(), `echo "token=$UNIFIED_AGENT_TOKEN"`,
+		&stdout, &stderr, nil, []string{"UNIFIED_AGENT_TOKEN"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+
+	assert.NotContains(t, stdout.String(), "super-secret-value",
+		"denylisted credential must stay hidden from the child even when named in ExposeEnv")
+}
+
+// TestRunStepWithShell_CredentialsNotInheritedByChild mirrors
+// TestRunStep_CredentialsNotInheritedByChild for the explicit-shell exec path.
+func TestRunStepWithShell_CredentialsNotInheritedByChild(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret-value")
+	t.Setenv("MY_BUILD_FLAG", "visible-value")
+
+	var stdout, stderr bytes.Buffer
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"},
+		`echo "token=$UNIFIED_AGENT_TOKEN cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
+		&stdout, &stderr, nil, []string{"MY_BUILD_FLAG"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+
+	assert.NotContains(t, stdout.String(), "super-secret-value",
+		"child process must not see the agent's credentials")
+	assert.Contains(t, stdout.String(), "flag=visible-value",
+		"positive control: an ExposeEnv-allowlisted variable must still reach the child")
+}
+
+// TestRunStepCapture_CredentialsNotInheritedByChild mirrors
+// TestRunStep_CredentialsNotInheritedByChild for the captured-stdout exec path.
+func TestRunStepCapture_CredentialsNotInheritedByChild(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret-value")
+	t.Setenv("MY_BUILD_FLAG", "visible-value")
+
+	var stderr bytes.Buffer
+	stdout, exit, err := RunStepCapture(t.Context(),
+		`echo "token=$UNIFIED_AGENT_TOKEN cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
+		&stderr, nil, []string{"MY_BUILD_FLAG"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+
+	assert.NotContains(t, stdout, "super-secret-value",
+		"child process must not see the agent's credentials")
+	assert.Contains(t, stdout, "flag=visible-value",
+		"positive control: an ExposeEnv-allowlisted variable must still reach the child")
+}
+
 func TestFindShell_NonWindows(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("non-Windows test")
