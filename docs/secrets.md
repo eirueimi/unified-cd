@@ -171,6 +171,16 @@ Before dispatching a job to an agent, the controller scans all `env:` and `run:`
 for `secrets.NAME` patterns, collects only the secrets needed, and fetches them.
 You don't need to declare them separately — just write `{{ secrets.X }}` and they are fetched automatically.
 
+This "only what's needed" set is not just computed for the claim response — it is
+**enforced** on the agent's secrets-fetch call. The controller recomputes the same set
+from the run's stored spec and rejects any requested secret name outside it with
+`403 secret not needed by this run`, before attempting to decrypt anything (the message
+is deliberately generic — it doesn't confirm or deny whether the requested secret exists,
+so the endpoint can't be used to enumerate the store). An agent holding a valid
+credential for a run cannot use it to read secrets that run's own spec doesn't
+reference — see [Troubleshooting](#troubleshooting) and [Migration: security
+hardening](migration-2026-07-security-hardening.md#3-secret-fetch-is-limited-to-the-runs-declared-secrets).
+
 ```
 Write {{ secrets.X }} in env/run of the Job YAML
          │
@@ -228,7 +238,7 @@ Ciphertext (stored in DB)
 |-------|--------|
 | Admin (static token / PAT / OIDC) | Create, delete ✓ (**cannot retrieve values**) |
 | Developer or Admin | List names ✓ (values never shown) |
-| Agent (agent token) | Fetch only the secrets needed for a run ✓ |
+| Agent (agent token) | Fetch only the secrets the run's own spec declares ✓ (enforced server-side — a request for any other name is rejected with `403`, whether or not the agent owns the run) |
 | External API / browser | Retrieve values ✗ (no endpoint exists) |
 
 Secret **values cannot be retrieved via the API** by design. If you lose a value, re-register it.
@@ -245,3 +255,4 @@ Secret **values cannot be retrieved via the API** by design. If you lose a value
 | Info log: `controllerKey not set — generated a new key and persisted it to the database` | `UNIFIED_CONTROLLER_KEY` is not set. A key was auto-generated and stored in the `controller_settings` table (reused on subsequent restarts). To manage it explicitly, retrieve the value from the DB and set it as `UNIFIED_CONTROLLER_KEY`. |
 | `decrypt` errors in HA setup | Replicas are pointing to different DBs (`controller_settings`), or `UNIFIED_CONTROLLER_KEY` differs between replicas. Use the same DB and the same key value on all replicas. |
 | `secret set` from CI returns `unauthorized` | The token in use does not have admin privileges (agent tokens cannot manage secrets). |
+| `secret not needed by this run` (403, from an agent's secrets-fetch call) | The agent requested a secret name that the run's own job spec does not reference (no matching `{{ secrets.NAME }}` in that job's `env:`/`run:`). Add the reference to the job spec — see [How it works](#how-it-works). This is enforced even for an agent that legitimately owns the run; it is not an ownership error. |

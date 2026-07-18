@@ -45,8 +45,27 @@ grant itself scheduling labels or capabilities. Administrators manage
 one-time VM enrollments, Kubernetes enrollment policies, and identity enable,
 disable, and credential revocation through the agent lifecycle API/CLI.
 
-See [Migration: agent authentication](migration-agent-auth.md) for the
-rollout and the legacy-mode retirement check.
+**Legacy shared-token agents are guarded by the same per-run ownership
+check, not exempted from it.** Every write to a run — step reports, log
+lines, step/run outputs, sidecar status, finishing the run, and artifact
+uploads — is checked against that run's `claimed_by`, whether the caller
+presents a per-agent credential or the legacy shared token. A write to a run
+the caller did not claim under the agent ID it presents gets `403 run <id>
+is claimed by another agent`. The artifact-upload route has no per-agent
+path segment for a legacy caller to bind an identity to, so a legacy shared
+token can never satisfy that check there: **every legacy artifact upload is
+unconditionally rejected with 403** (which fails the step and the run,
+absent `continueOnError`), regardless of which run it targets. A fleet with
+legacy agents that upload artifacts must migrate those agents to per-agent
+enrollment credentials before running jobs with `uploadArtifact:` steps.
+Secret fetch is fenced the same way for every principal: an agent can only
+request secret names the run's own spec declares, or it gets `403 secret not
+needed by this run` (see [Secrets: Access
+control](secrets.md#access-control)).
+
+See [Migration: agent authentication](migration-agent-auth.md) and
+[Migration: security hardening](migration-2026-07-security-hardening.md) for
+the rollout and the legacy-mode retirement check.
 
 ### OIDC role resolution config
 

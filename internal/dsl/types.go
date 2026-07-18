@@ -429,7 +429,7 @@ type CacheStep struct {
 	Path        string   `yaml:"path"`                  // directory to cache; supports template expansion
 	Key         string   `yaml:"key"`                   // cache key; supports template expansion
 	RestoreKeys []string `yaml:"restoreKeys,omitempty"` // fallback key prefixes; support template expansion
-	TTLDays     int      `yaml:"ttlDays,omitempty"`     // default 30
+	TTLDays     int      `yaml:"ttlDays,omitempty"`     // default 30, max 365
 }
 
 type PodTemplate struct {

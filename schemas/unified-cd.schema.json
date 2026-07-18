@@ -99,7 +99,7 @@
           "type": "array"
         },
         "ttlDays": {
-          "description": "default 30",
+          "description": "default 30, max 365",
           "type": "integer"
         }
       },
