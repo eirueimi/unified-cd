@@ -109,8 +109,7 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 }
 
 // requireAgentPathIdentity prevents an authenticated agent from selecting a
-// different agent identity through a route parameter. The legacy shared-token
-// migration mode deliberately preserves its existing, unbound behavior.
+// different agent identity through a route parameter.
 func (s *Server) requireAgentPathIdentity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := agentPrincipalFromContext(r.Context())
@@ -120,7 +119,27 @@ func (s *Server) requireAgentPathIdentity(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if principal.AuthMethod != "legacy" && principal.AgentID != chi.URLParam(r, "agentId") {
+		if principal.AuthMethod == "legacy" {
+			// A legacy (shared-token) principal has no verified AgentID —
+			// the shared token proves nothing about which physical agent is
+			// calling. Rather than leaving AgentID empty (which would make
+			// every downstream run-ownership comparison fail, or force a
+			// separate special case), ADOPT the path's {agentId} as this
+			// principal's identity for the rest of the request.
+			//
+			// This is identity ASSIGNMENT, not verification: a legacy caller
+			// is only as trustworthy as the shared token itself, and nothing
+			// here stops it from asserting any agentId it likes (that is
+			// inherent to a shared-secret migration mode and cannot be fixed
+			// without per-agent credentials). The point of binding it is
+			// narrower — it gives the downstream per-run ownership guard
+			// (agentRunGuard) a concrete agent identity to check the target
+			// run's claimed_by against, so the caller's blast radius is
+			// limited to runs claimed under the agentId it presented, same
+			// as every other agent principal.
+			principal.AgentID = chi.URLParam(r, "agentId")
+			r = withAgentPrincipal(r, principal)
+		} else if principal.AgentID != chi.URLParam(r, "agentId") {
 			s.recordAgentAuth("access", "failure", "policy")
 			http.Error(w, "agent identity mismatch", http.StatusForbidden)
 			return

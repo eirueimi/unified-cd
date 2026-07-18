@@ -98,10 +98,23 @@ func TestArtifactUpload_TerminalRunStillAccepted(t *testing.T) {
 	require.NoError(t, err)
 	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
+
+	// The artifact upload route has no {agentId} path segment, so a legacy
+	// shared-token caller can never present a matching claimed_by identity
+	// (see handleArtifactUpload's per-run ownership guard) — claim the run
+	// with a real per-agent credential so this test still exercises what it
+	// is named for: that a *legitimate* owner's late upload to an
+	// already-terminal run is still accepted (rejectTerminal=false).
+	ownerToken := issueAgentAccessForTest(t, st, "seal-owner", nil, nil)
+	_, err = st.TransitionPendingToQueued(ctx, 1)
+	require.NoError(t, err)
+	claimed, err := st.ClaimNextRun(ctx, "seal-owner", nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
 	require.NoError(t, st.MarkRunFinished(ctx, run.ID, api.RunSucceeded))
 
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/out", strings.NewReader("data"))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())

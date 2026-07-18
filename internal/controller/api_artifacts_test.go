@@ -72,11 +72,23 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 	run, err := st.CreateRun(t.Context(), "artifact-roundtrip-job", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 
+	// The upload route has no {agentId} path segment, so a legacy shared-token
+	// caller can never present a matching claimed_by identity and is always
+	// rejected now (see handleArtifactUpload) — this round trip must upload
+	// as the agent that actually claimed the run, via a real per-agent
+	// credential, exactly like a migrated agent would.
+	ownerToken := issueAgentAccessForTest(t, st, "artifact-owner", nil, nil)
+	_, err = st.TransitionPendingToQueued(t.Context(), 1)
+	require.NoError(t, err)
+	claimed, err := st.ClaimNextRun(t.Context(), "artifact-owner", nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
+
 	payload := []byte("hello artifact data")
 
 	// Upload
 	uploadReq := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/myartifact", bytes.NewReader(payload))
-	uploadReq.Header.Set("Authorization", "Bearer agent-secret")
+	uploadReq.Header.Set("Authorization", "Bearer "+ownerToken)
 	uploadReq.Header.Set("Content-Type", "application/octet-stream")
 	uploadRec := httptest.NewRecorder()
 	s.Router().ServeHTTP(uploadRec, uploadReq)
@@ -160,6 +172,33 @@ func TestArtifactUpload_RejectsNonAgentToken(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("bad-token upload = %d, want 401", rr.Code)
 	}
+}
+
+// TestArtifactUpload_RejectsLegacyPrincipal proves the legacy shared-token
+// bypass this fix closes: the upload route has no {agentId} path segment, so
+// a legacy caller can never present a matching claimed_by identity and must
+// now be rejected for every run, claimed or not — the same fail-closed
+// outcome as the secrets-fetch path, reached via the shared ownership guard
+// instead of an explicit legacy check.
+func TestArtifactUpload_RejectsLegacyPrincipal(t *testing.T) {
+	s, st := newTestServer(t)
+	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
+	_, err := st.UpsertJob(t.Context(), "artifact-legacy-reject", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+	run, err := st.CreateRun(t.Context(), "artifact-legacy-reject", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+	_, err = st.TransitionPendingToQueued(t.Context(), 1)
+	require.NoError(t, err)
+	claimed, err := st.ClaimNextRun(t.Context(), "legacy-claimer", nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/build", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 }
 
 func TestArtifactUpload_RejectsNonOwnerPrincipal(t *testing.T) {

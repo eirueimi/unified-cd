@@ -25,6 +25,25 @@ and `uce_` (enrollment). Plaintext values are shown only at issuance and are
 stored only as SHA-256 hashes. Do not log them, add them to URLs, place them in
 process arguments, or commit them.
 
+### Run ownership applies to legacy tokens too
+
+Legacy shared-token agents remain able to connect for the duration of the
+compatibility window, but they are subject to the same per-run ownership
+checks as enrolled agents. Every write to a run — step reports, log lines,
+step/run outputs, sidecar status, and finishing the run — is checked against
+that run's `claimed_by`, exactly like a bearer credential's write is. An
+agent (legacy or enrolled) that writes to a run it did not claim under the
+agent ID it presents now receives `403 run <id> is claimed by another agent`
+instead of the write silently succeeding.
+
+Artifact uploads (`PUT /api/v1/runs/{runID}/artifacts/{name}`) are stricter
+still: that route has no per-agent path segment for a legacy caller to
+present an identity on, so a legacy shared token can never match a run's
+`claimed_by` there and every legacy artifact upload is rejected with `403`,
+regardless of which run it targets. Migrate the uploading agent to a
+per-agent credential (see "Enroll a VM agent" / "Enroll Kubernetes agents"
+below) to restore artifact uploads.
+
 ## Rollout
 
 Perform these steps in order. Keep the old runtime secret available only for
@@ -152,6 +171,7 @@ affected agents work, resume the rollout and remove legacy mode again.
 | Symptom / response | Meaning and recovery |
 |---|---|
 | `agent identity mismatch` (403) | A non-legacy credential attempted to use another agent's route, body ID, or claimed run. Use the matching identity; do not reuse a credential. |
+| `run <id> is claimed by another agent` (403), including from a legacy shared token | The caller (legacy or enrolled) wrote to a run claimed under a different agent ID, or — for artifact uploads specifically — used a legacy token at all (that route cannot bind a legacy identity to any run). This is expected once compatibility mode is under the per-run ownership guard; migrate the affected agent to a per-agent credential rather than widening the shared token's reach. |
 | `agent identity disabled` (403 during enrollment/refresh) or `unauthorized` (401 on normal agent routes) | Enable the identity only after investigation, or create a replacement enrollment. Disabling one identity does not disable other agents. |
 | `unauthorized` while first starting a VM | The enrollment credential is malformed, expired, used, or revoked. Create a new one-time enrollment; it cannot be recovered from metadata. |
 | `enrollment policy rejected` (403) | The Kubernetes policy, audience, ServiceAccount, namespace, requested labels/capabilities, or bound Pod UID did not match. Correct the policy or deployment; do not weaken it with a static token. |

@@ -28,7 +28,19 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if principal.AuthMethod != "legacy" {
+	// Apply the same per-run ownership check to every principal, including
+	// legacy shared-token callers: this route has no {agentId} path segment,
+	// so a legacy principal's AgentID is always empty (there is nothing to
+	// bind it to, unlike the agentId-scoped agent routes) — which means
+	// agentRunGuard can never find a matching claimed_by for it. That is the
+	// correct outcome, not a bug: a legacy caller presents no identity at all
+	// here, so it cannot be trusted to write to any run's artifacts, exactly
+	// like the (deliberately fail-closed) secrets-fetch path.
+	//
+	// Tests may wire object-store-only servers (nil store); production always
+	// has a store, so only run the guard when one is configured, mirroring
+	// the same nil-store allowance used for the run-existence check below.
+	if s.store != nil {
 		verdict, err := s.agentRunGuard(r.Context(), principal.AgentID, runID, false)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -37,10 +49,6 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 		if respondRunWriteVerdict(w, verdict, runID) {
 			return
 		}
-	}
-	// Tests may wire object-store-only servers (nil store); production always
-	// has a store, so only check existence when one is configured.
-	if s.store != nil {
 		if _, err := s.store.GetRun(r.Context(), runID); err != nil {
 			if errors.Is(err, store.ErrRunNotFound) {
 				// A late upload for a deleted run would create an orphaned
