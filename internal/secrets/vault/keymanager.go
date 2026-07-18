@@ -32,6 +32,14 @@ type Config struct {
 	Sleep func(ctx context.Context, d time.Duration) error
 }
 
+// dekCacheCapacity and dekCacheTTL bound the unwrapped-DEK cache: capacity
+// caps memory, and the TTL is what makes a Transit key rotation or revocation
+// take effect within a bounded window rather than never.
+const (
+	dekCacheCapacity = 1024
+	dekCacheTTL      = 5 * time.Minute
+)
+
 // KeyManager wraps and unwraps DEKs using Vault's Transit engine, so the
 // key-encryption key never leaves the KMS.
 type KeyManager struct {
@@ -39,6 +47,7 @@ type KeyManager struct {
 	tokens *tokenManager
 	mount  string
 	key    string
+	cache  *dekCache
 }
 
 // New constructs a Transit key manager, authenticating immediately so a
@@ -81,7 +90,8 @@ func New(ctx context.Context, cfg Config) (*KeyManager, error) {
 	if mount == "" {
 		mount = "transit"
 	}
-	return &KeyManager{client: client, tokens: tokens, mount: mount, key: cfg.Key}, nil
+	cache := newDEKCache(dekCacheCapacity, dekCacheTTL, cfg.Now)
+	return &KeyManager{client: client, tokens: tokens, mount: mount, key: cfg.Key, cache: cache}, nil
 }
 
 // Close stops the background token renewal loop.
@@ -113,6 +123,12 @@ func (m *KeyManager) DecryptKey(ctx context.Context, ciphertext []byte) ([]byte,
 		string(ciphertext[:len(vaultCiphertextPrefix)]) != vaultCiphertextPrefix {
 		return nil, fmt.Errorf("%w: this controller is configured for the hashivault key provider", secrets.ErrProviderMismatch)
 	}
+
+	cacheKey := string(ciphertext)
+	if dek, ok := m.cache.get(cacheKey); ok {
+		return dek, nil
+	}
+
 	out, err := m.write(ctx, "decrypt", map[string]any{"ciphertext": string(ciphertext)})
 	if err != nil {
 		return nil, err
@@ -125,6 +141,7 @@ func (m *KeyManager) DecryptKey(ctx context.Context, ciphertext []byte) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("vault transit: decode plaintext: %w", err)
 	}
+	m.cache.put(cacheKey, dek)
 	return dek, nil
 }
 

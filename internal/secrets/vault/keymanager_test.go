@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/secrets"
@@ -115,4 +116,40 @@ func TestKeyManager_HandlesArbitraryBytes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, dek, got)
 	_ = base64.StdEncoding
+}
+
+// A second decrypt of the same wrapped DEK must not call Transit again, and
+// must still return usable bytes after the first caller zeroed its copy.
+func TestKeyManager_CachesUnwrappedDEKs(t *testing.T) {
+	var decrypts atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"data": map[string]any{"ttl": 3600, "renewable": true}})
+	})
+	mux.HandleFunc("/v1/transit/decrypt/", func(w http.ResponseWriter, r *http.Request) {
+		decrypts.Add(1)
+		var req struct {
+			Ciphertext string `json:"ciphertext"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		writeJSON(w, map[string]any{"data": map[string]any{
+			"plaintext": strings.TrimPrefix(req.Ciphertext, "vault:v1:"),
+		}})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	m := newTestKeyManager(t, srv.URL)
+	wrapped := []byte("vault:v1:" + base64.StdEncoding.EncodeToString([]byte("dek")))
+
+	first, err := m.DecryptKey(context.Background(), wrapped)
+	require.NoError(t, err)
+	for i := range first {
+		first[i] = 0 // the caller's zeroing defer
+	}
+
+	second, err := m.DecryptKey(context.Background(), wrapped)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("dek"), second)
+	assert.EqualValues(t, 1, decrypts.Load(), "the second decrypt must be served from cache")
 }
