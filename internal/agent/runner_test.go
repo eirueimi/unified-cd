@@ -21,7 +21,7 @@ import (
 
 func TestRunStep_CapturesStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStep(t.Context(), "echo hello", &stdout, &stderr, nil, "")
+	exit, err := RunStep(t.Context(), "echo hello", &stdout, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, stdout.String(), "hello")
@@ -29,7 +29,7 @@ func TestRunStep_CapturesStdout(t *testing.T) {
 
 func TestRunStep_NonZeroExit(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStep(t.Context(), "exit 3", &stdout, &stderr, nil, "")
+	exit, err := RunStep(t.Context(), "exit 3", &stdout, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 3, exit)
 }
@@ -38,13 +38,13 @@ func TestRunStep_RespectsContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var stdout, stderr bytes.Buffer
-	_, _ = RunStep(ctx, "sleep 10", &stdout, &stderr, nil, "")
+	_, _ = RunStep(ctx, "sleep 10", &stdout, &stderr, nil, nil, "")
 }
 
 func TestRunStep_WorkDir(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStep(t.Context(), `echo hello > ./marker.txt`, &stdout, &stderr, nil, dir)
+	exit, err := RunStep(t.Context(), `echo hello > ./marker.txt`, &stdout, &stderr, nil, nil, dir)
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	content, readErr := os.ReadFile(filepath.Join(dir, "marker.txt"))
@@ -54,7 +54,7 @@ func TestRunStep_WorkDir(t *testing.T) {
 
 func TestRunStepCapture_ReturnsStdout(t *testing.T) {
 	var stderr bytes.Buffer
-	stdout, exit, err := RunStepCapture(t.Context(), `printf "hello\nworld\n"`, &stderr, nil, "")
+	stdout, exit, err := RunStepCapture(t.Context(), `printf "hello\nworld\n"`, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, stdout, "hello")
@@ -64,7 +64,7 @@ func TestRunStepCapture_ReturnsStdout(t *testing.T) {
 func TestRunStepCapture_WorkDir(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("world"), 0o644))
-	stdout, exit, err := RunStepCapture(t.Context(), `cat hello.txt`, nil, nil, dir)
+	stdout, exit, err := RunStepCapture(t.Context(), `cat hello.txt`, nil, nil, nil, dir)
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, stdout, "world")
@@ -79,7 +79,7 @@ func TestRunStepCapture_WorkDir(t *testing.T) {
 // verbatim, not that it differs from the native default.
 func TestRunStepWithShell_UsesGivenArgv(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, "echo from-explicit-shell", &stdout, &stderr, nil, "")
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, "echo from-explicit-shell", &stdout, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, stdout.String(), "from-explicit-shell")
@@ -89,7 +89,7 @@ func TestRunStepWithShell_UsesGivenArgv(t *testing.T) {
 // explicit-shell path.
 func TestRunStepWithShell_NonZeroExit(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, "exit 7", &stdout, &stderr, nil, "")
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, "exit 7", &stdout, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 7, exit)
 }
@@ -99,7 +99,7 @@ func TestRunStepWithShell_NonZeroExit(t *testing.T) {
 func TestRunStepWithShell_WorkDir(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, `echo hello > ./marker.txt`, &stdout, &stderr, nil, dir)
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, `echo hello > ./marker.txt`, &stdout, &stderr, nil, nil, dir)
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	content, readErr := os.ReadFile(filepath.Join(dir, "marker.txt"))
@@ -112,7 +112,7 @@ func TestRunStepWithShell_WorkDir(t *testing.T) {
 // through, not just a two-element [interpreter, flag] pair.
 func TestRunStepWithShell_MultiArgPrefixPreserved(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-euo", "pipefail", "-c"}, "false; echo unreachable", &stdout, &stderr, nil, "")
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-euo", "pipefail", "-c"}, "false; echo unreachable", &stdout, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.NotEqual(t, 0, exit, "set -e must abort the script on the first failing command")
 	assert.NotContains(t, stdout.String(), "unreachable")
@@ -198,7 +198,7 @@ func TestRunStep_CancelKillsGrandchild(t *testing.T) {
 	go func() {
 		defer close(done)
 		var stdout, stderr bytes.Buffer
-		_, _ = RunStep(ctx, script, &stdout, &stderr, nil, dir)
+		_, _ = RunStep(ctx, script, &stdout, &stderr, nil, nil, dir)
 	}()
 
 	// Let the grandchild get going and write at least one heartbeat.

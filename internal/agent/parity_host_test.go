@@ -63,8 +63,11 @@ func (f *shellFakeRT) Exec(ctx context.Context, h crt.ContainerHandle, s crt.Exe
 	f.mu.Unlock()
 	// Run the script through the same local shell the native host path uses so
 	// echo output flows into the captured logs. RunStep tolerates nil writers
-	// (post hooks pass nil), matching the native path exactly.
-	return RunStep(ctx, s.Script, stdout, stderr, s.Env, f.workDir)
+	// (post hooks pass nil), matching the native path exactly. exposeEnv is
+	// nil here: a real container exec (docker/k8s) never inherits host
+	// process env either — the container only gets what s.Env explicitly
+	// carries, so there is no host allowlist to apply on this path.
+	return RunStep(ctx, s.Script, stdout, stderr, s.Env, nil, f.workDir)
 }
 
 func (f *shellFakeRT) CopyIn(context.Context, crt.ContainerHandle, string, string) error  { return nil }
@@ -380,15 +383,17 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 	// script's stdout/stderr into the owning step's shipped log (see
 	// paritycases.postHooksLIFO's doc comment), but this case still observes
 	// LIFO order out-of-band: each post script appends a line to a real file
-	// via $POSTHOOK_MARKER_FILE (inherited from the test process env, since
-	// RunStep's cmd.Env = append(os.Environ(), extraEnv...)) — one file's
-	// append order is a simpler ordering signal than diffing two log streams.
-	// Dedicated coverage of post output reaching the shipped logs lives in
-	// post_hook_logs_test.go.
+	// via $POSTHOOK_MARKER_FILE. RunStep no longer inherits the test process
+	// env (StepEnv builds an explicit allowlist — see stepenv.go), so this is
+	// wired through a.ExposeEnv below rather than relying on inheritance —
+	// one file's append order is a simpler ordering signal than diffing two
+	// log streams. Dedicated coverage of post output reaching the shipped
+	// logs lives in post_hook_logs_test.go.
 	var markerFile string
 	if tc.Name == "post-hooks-lifo" {
 		markerFile = filepath.Join(t.TempDir(), "posthook-order.txt")
 		t.Setenv("POSTHOOK_MARKER_FILE", markerFile)
+		a.ExposeEnv = []string{"POSTHOOK_MARKER_FILE"}
 	}
 
 	workDir := t.TempDir()

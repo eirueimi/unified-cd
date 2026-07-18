@@ -122,9 +122,9 @@ func (b *hostBackend) RunDefault(ctx context.Context, step api.ClaimStep, script
 		return b.pod.Exec(ctx, "", script, step.Shell, env, stdout, stderr)
 	}
 	if len(step.Shell) > 0 {
-		return runStepWithShellFn(ctx, step.Shell, script, stdout, stderr, env, b.workDir)
+		return runStepWithShellFn(ctx, step.Shell, script, stdout, stderr, env, b.a.ExposeEnv, b.workDir)
 	}
-	return runStepFn(ctx, script, stdout, stderr, env, b.workDir)
+	return runStepFn(ctx, script, stdout, stderr, env, b.a.ExposeEnv, b.workDir)
 }
 
 // hostNamedMountPath is the in-container path the host workspace is bind-mounted
@@ -345,10 +345,10 @@ func (b *hostBackend) RunPostHook(ctx context.Context, scope ScopeHandle, contai
 		return err
 	}
 	if len(shell) > 0 {
-		_, err := runStepWithShellFn(ctx, shell, script, stdout, stderr, env, b.workDir)
+		_, err := runStepWithShellFn(ctx, shell, script, stdout, stderr, env, b.a.ExposeEnv, b.workDir)
 		return err
 	}
-	_, err := runStepFn(ctx, script, stdout, stderr, env, b.workDir)
+	_, err := runStepFn(ctx, script, stdout, stderr, env, b.a.ExposeEnv, b.workDir)
 	return err
 }
 

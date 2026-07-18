@@ -19,11 +19,11 @@ func withFakeRunStepFns(t *testing.T) (plainCalls *int, shellCalls *[][]string) 
 	origPlain, origShell := runStepFn, runStepWithShellFn
 	pc := 0
 	var sc [][]string
-	runStepFn = func(ctx context.Context, script string, stdout, stderr io.Writer, extraEnv []string, workDir string) (int, error) {
+	runStepFn = func(ctx context.Context, script string, stdout, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (int, error) {
 		pc++
 		return 0, nil
 	}
-	runStepWithShellFn = func(ctx context.Context, shell []string, script string, stdout, stderr io.Writer, extraEnv []string, workDir string) (int, error) {
+	runStepWithShellFn = func(ctx context.Context, shell []string, script string, stdout, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (int, error) {
 		sc = append(sc, append([]string{}, shell...))
 		return 0, nil
 	}
