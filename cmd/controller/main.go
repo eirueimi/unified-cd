@@ -244,11 +244,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	resolved, err := eff.KeySource.Resolve()
+	resolved, err := eff.KeySource.Resolve(ctx)
 	if err != nil {
 		slog.Error("encryption key", "error", err)
 		os.Exit(1)
 	}
+	defer func() {
+		if err := resolved.Close(); err != nil {
+			slog.Warn("encryption key: close failed", "error", err)
+		}
+	}()
 	for _, w := range resolved.Warnings {
 		slog.Warn(w)
 	}

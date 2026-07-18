@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -47,10 +48,26 @@ type Resolved struct {
 	Description string
 	// Warnings are operator-facing messages main.go should emit via slog.Warn.
 	Warnings []string
+
+	// closeFn releases whatever the key source acquired. A local or ephemeral
+	// key acquires nothing, so it stays nil and Close is a no-op.
+	closeFn func() error
+}
+
+// Close releases resources held by the key manager — for a KMS-backed source,
+// the background token-renewal loop. It is safe to call on a source that
+// acquired nothing, and safe to call more than once.
+func (r *Resolved) Close() error {
+	if r.closeFn == nil {
+		return nil
+	}
+	fn := r.closeFn
+	r.closeFn = nil
+	return fn()
 }
 
 // Resolve turns the configured source into a KeyManager plus any warnings.
-func (k KeySource) Resolve() (Resolved, error) {
+func (k KeySource) Resolve(ctx context.Context) (Resolved, error) {
 	if err := k.Validate(); err != nil {
 		return Resolved{}, err
 	}
