@@ -11,12 +11,22 @@ import (
 // credentials: leaking them lets any job author act as the agent (and, via the
 // cache credentials, write directly to the shared object store, bypassing every
 // controller-side check).
+//
+// UNIFIED_AGENT_CREDENTIAL_FILE and UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE (see
+// internal/config/agent.go) are listed for completeness with "any per-agent
+// credential #63 introduced" rather than as a real control: they name
+// filesystem paths, not secret values, and a native step already runs as the
+// same OS user as the agent, so it can read the file at that path directly
+// regardless of whether the env var naming it is exposed. Denying them here
+// costs nothing and keeps this list matching the spec's stated scope.
 var stepEnvDenied = map[string]bool{
-	"UNIFIED_AGENT_TOKEN":    true,
-	"UNIFIED_CACHE_KEY":      true,
-	"UNIFIED_CACHE_SECRET":   true,
-	"UNIFIED_TOKEN":          true,
-	"UNIFIED_CONTROLLER_KEY": true,
+	"UNIFIED_AGENT_TOKEN":                 true,
+	"UNIFIED_CACHE_KEY":                   true,
+	"UNIFIED_CACHE_SECRET":                true,
+	"UNIFIED_TOKEN":                       true,
+	"UNIFIED_CONTROLLER_KEY":              true,
+	"UNIFIED_AGENT_CREDENTIAL_FILE":       true,
+	"UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE": true,
 }
 
 // stepEnvBaseline returns the environment variable names a shell needs to

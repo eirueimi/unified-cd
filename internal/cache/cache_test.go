@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // testObjectKey mirrors cache.objectKey (unexported), which this external
@@ -61,6 +61,46 @@ func makeDir(t *testing.T, files map[string]string) string {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
 	}
 	return dir
+}
+
+// TestCache_Save_RejectsEmptyJobName and TestCache_Restore_RejectsEmptyJobName
+// are the regression tests for the "empty jobName silently recreates the
+// global cache namespace" finding: sha256("") is just as valid a namespace
+// hash as any other, so without this guard an empty jobName would not error
+// at all — it would silently save/restore under that global namespace,
+// exactly the pre-fix behavior objectKey's job component exists to close.
+// The sidecar CLI already rejects an empty --job flag (cmd/unified-sidecar),
+// but that only protects one caller; the invariant must live in the library
+// itself so no other caller (host agent, k8s agent, or a future one) can
+// bypass it.
+func TestCache_Save_RejectsEmptyJobName(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	src := makeDir(t, map[string]string{"a.txt": "hello"})
+
+	err := cache.Save(ctx, store, "", src, "mykey", 7)
+	require.Error(t, err, "an empty jobName must be rejected, not silently namespaced under sha256(\"\")")
+
+	// Confirm nothing was actually written under the global-namespace key a
+	// pre-fix caller would have produced.
+	_, getErr := store.Get(ctx, testObjectKey("", "mykey")+".tar.zst")
+	assert.True(t, errors.Is(getErr, objectstore.ErrNotFound),
+		"Save must not have written anything when jobName is empty")
+}
+
+func TestCache_Restore_RejectsEmptyJobName(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	dest := t.TempDir()
+
+	// Even if some other pre-fix caller had written under the empty-jobName
+	// namespace, Restore must refuse to read it rather than silently serving
+	// from what would be a shared global namespace.
+	require.NoError(t, cache.Save(ctx, store, "some-real-job", makeDir(t, map[string]string{"a.txt": "x"}), "mykey", 7))
+
+	hit, err := cache.Restore(ctx, store, "", dest, "mykey", nil)
+	require.Error(t, err, "an empty jobName must be rejected outright")
+	assert.False(t, hit)
 }
 
 func TestCache_SaveAndRestore_RoundTrip(t *testing.T) {

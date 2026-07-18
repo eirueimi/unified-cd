@@ -37,31 +37,36 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 	// here, so it cannot be trusted to write to any run's artifacts, exactly
 	// like the (deliberately fail-closed) secrets-fetch path.
 	//
-	// Tests may wire object-store-only servers (nil store); production always
-	// has a store, so only run the guard when one is configured, mirroring
-	// the same nil-store allowance used for the run-existence check below.
-	if s.store != nil {
-		verdict, err := s.agentRunGuard(r.Context(), principal.AgentID, runID, false)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	// A nil store means this guard cannot run at all — not "no ownership to
+	// check", but "no way to check it". Silently skipping it (the previous
+	// behavior) would apply no authz whatsoever to anyone on a
+	// store-misconfigured server, which is the opposite of fail-closed. Refuse
+	// the request instead: production always has a store, so this only ever
+	// fires against a genuine misconfiguration.
+	if s.store == nil {
+		http.Error(w, "store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	verdict, err := s.agentRunGuard(r.Context(), principal.AgentID, runID, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, verdict, runID) {
+		return
+	}
+	if _, err := s.store.GetRun(r.Context(), runID); err != nil {
+		if errors.Is(err, store.ErrRunNotFound) {
+			// A late upload for a deleted run would create an orphaned
+			// object nothing ever cleans up (deleteRunEverywhere already
+			// ran its prefix delete). Terminal-but-existing runs are still
+			// accepted: their objects stay referenced and are removed with
+			// the run.
+			http.Error(w, "run not found", http.StatusNotFound)
 			return
 		}
-		if respondRunWriteVerdict(w, verdict, runID) {
-			return
-		}
-		if _, err := s.store.GetRun(r.Context(), runID); err != nil {
-			if errors.Is(err, store.ErrRunNotFound) {
-				// A late upload for a deleted run would create an orphaned
-				// object nothing ever cleans up (deleteRunEverywhere already
-				// ran its prefix delete). Terminal-but-existing runs are still
-				// accepted: their objects stay referenced and are removed with
-				// the run.
-				http.Error(w, "run not found", http.StatusNotFound)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	name := chi.URLParam(r, "name")
 	key, err := artifact.ArtifactKey(runID, name)

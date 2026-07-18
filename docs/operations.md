@@ -204,7 +204,7 @@ step of every runner-image release**, not an optional follow-up:
 2. Update, in the same commit:
    - `cmd/agent/main.go`: `defaultRunnerImage` and/or `defaultPauseImage`
    - `internal/k8sagent/config.go`: `defaultPodImage` and/or `defaultSidecarImage`
-   - Bump the tag portion of the string (e.g. `v0.0.3` → `vX.Y.Z`) alongside the digest so the two never drift apart.
+   - Bump the tag portion of the string (e.g. `v0.0.3` → `vX.Y.Z`) alongside the digest so the two never drift apart. **Exception: `defaultSidecarImage`** is intentionally pinned as `...:latest@sha256:<digest>` — there is no `vX.Y.Z` release tag to bump for this image, so only its digest changes on rotation; the tag portion (`latest`) stays as-is.
 
 3. Record both old and new digests in the commit message so the pin change
    is auditable in `git log`/`git blame`.

@@ -79,6 +79,11 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 // to reproduce a run exactly as it executed, even if the job YAML has since
 // been re-applied. (The web "Rerun" button re-triggers with the LATEST job
 // spec; replay is the point-in-time counterpart.)
+//
+// The stored params are re-validated through resolveParams against the
+// snapshot spec's declared inputs before replay, the same choke point every
+// other param source (trigger, webhook mapping, CLI --param, schedule) is
+// forced through — see the comment at the resolveParams call below.
 func (s *Server) handleReplayRun(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	orig, err := s.store.GetRun(r.Context(), id)
@@ -102,19 +107,37 @@ func (s *Server) handleReplayRun(w http.ResponseWriter, r *http.Request) {
 	// Derive routing (agentSelector, required capability) from the SNAPSHOT
 	// spec, exactly as handleTriggerRun does from the job spec — so the replay
 	// routes the same way the original run did, independent of the job's
-	// current definition. Reuse the original run's already-resolved params.
+	// current definition.
 	var spec dsl.Spec
 	agentSelector := []string{}
 	if json.Unmarshal(specJSON, &spec) == nil {
 		agentSelector = spec.AgentSelector
 	}
-	agentSelector, err = dsl.ExpandAgentSelector(agentSelector, orig.Params)
+	// Re-validate the original run's stored params against the SNAPSHOT
+	// spec's declared inputs before replaying, rather than reusing
+	// orig.Params verbatim: resolveParams is the choke point every other
+	// param source (trigger, webhook mapping, CLI --param, schedule) is
+	// forced through, and a run created before a pattern: was added to the
+	// job (or before this hardening shipped at all) can carry a value that
+	// was never validated against anything. Without this, replay is a
+	// standing bypass of that choke point — a stored, unvalidated param
+	// stays replayable forever, on demand, even after the job is fixed to
+	// require a pattern. Validate against the snapshot spec's inputs (not
+	// the job's CURRENT inputs) so replay still reproduces the run exactly
+	// as defined at the time it ran; only the enforcement is new, not the
+	// values.
+	params, err := resolveParams(spec.Params.Inputs, orig.Params)
+	if err != nil {
+		http.Error(w, "replay: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	agentSelector, err = dsl.ExpandAgentSelector(agentSelector, params)
 	if err != nil {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	requiredCaps := dsl.RequiredCaps(spec)
-	run, err := s.store.CreateRun(r.Context(), orig.JobName, orig.Params, specJSON, agentSelector, requiredCaps, "replay:"+id)
+	run, err := s.store.CreateRun(r.Context(), orig.JobName, params, specJSON, agentSelector, requiredCaps, "replay:"+id)
 	if err != nil {
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
 		return

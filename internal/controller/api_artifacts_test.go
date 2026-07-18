@@ -107,22 +107,40 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 }
 
 func TestArtifactList_ReturnsNames(t *testing.T) {
-	s, agentToken := newArtifactTestServer(t)
-	// upload two artifacts via the agent PUT path
+	// handleArtifactUpload now fails closed (503) when s.store is nil (see
+	// handleArtifactUpload's ownership guard), so uploading requires a real
+	// store-backed server with a claimed run to authenticate the ownership
+	// check against — newArtifactTestServer's nil store can no longer upload,
+	// only list/download, which don't consult s.store at all.
+	s, st := newTestServer(t)
+	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
+	_, err := st.UpsertJob(t.Context(), "artifact-list-job", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+	run, err := st.CreateRun(t.Context(), "artifact-list-job", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+	ownerToken := issueAgentAccessForTest(t, st, "artifact-list-owner", nil, nil)
+	_, err = st.TransitionPendingToQueued(t.Context(), 1)
+	require.NoError(t, err)
+	claimed, err := st.ClaimNextRun(t.Context(), "artifact-list-owner", nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
+
+	// upload two artifacts via the agent PUT path, as the owning agent
 	for _, name := range []string{"build", "logs"} {
-		req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/run1/artifacts/"+name, strings.NewReader("x"))
-		req.Header.Set("Authorization", "Bearer "+agentToken)
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/"+name, strings.NewReader("x"))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
 		rr := httptest.NewRecorder()
-		s.r.ServeHTTP(rr, req)
+		s.Router().ServeHTTP(rr, req)
 		if rr.Code != http.StatusNoContent {
-			t.Fatalf("put %s: %d", name, rr.Code)
+			t.Fatalf("put %s: %d (%s)", name, rr.Code, rr.Body.String())
 		}
 	}
-	// list with the agent token (combined auth accepts it)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run1/artifacts", nil)
-	req.Header.Set("Authorization", "Bearer "+agentToken)
+	// list with the legacy agent token (combined auth accepts it; listing
+	// carries no ownership check)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/artifacts", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
 	rr := httptest.NewRecorder()
-	s.r.ServeHTTP(rr, req)
+	s.Router().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("list: %d (%s)", rr.Code, rr.Body.String())
 	}
@@ -137,6 +155,19 @@ func TestArtifactList_ReturnsNames(t *testing.T) {
 	if !names["build"] || !names["logs"] {
 		t.Fatalf("missing names: %v", got)
 	}
+}
+
+// TestArtifactUpload_NilStore_FailsClosed is the regression test for the
+// "s.store != nil gates the ownership guard itself" finding: a server with an
+// object store but no run store must refuse artifact uploads outright (503),
+// not silently skip the ownership check and accept the upload from anyone.
+func TestArtifactUpload_NilStore_FailsClosed(t *testing.T) {
+	s, agentToken := newArtifactTestServer(t)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/run1/artifacts/build", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer "+agentToken)
+	rr := httptest.NewRecorder()
+	s.Router().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code, rr.Body.String())
 }
 
 func TestArtifactList_EmptyIsArrayNotNull(t *testing.T) {

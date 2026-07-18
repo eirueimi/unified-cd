@@ -438,7 +438,7 @@ Cache transfers additionally carry a `--job <qualifiedJobName>` argument (e.g. `
 Object key layout:
 
 - Artifacts: `artifacts/{runID}/{name}.tar.gz`
-- Cache: `caches/<sha256(qualifiedJobName)>/<sha256(key)>.tar.zst` (+ matching `.meta` for TTL/owner metadata). The job component namespaces every entry — see [Job Reference: Cache](jobs.md#cache) for the security rationale and what this means for pre-existing cache entries.
+- Cache: `caches/<base64url(sha256(qualifiedJobName))>/<base64url(sha256(key))>.tar.zst` (+ matching `.meta` for TTL/owner metadata) — unpadded, URL-safe base64 of each raw SHA-256 digest, not the hex digest itself. The job component namespaces every entry — see [Job Reference: Cache](jobs.md#cache) for the security rationale and what this means for pre-existing cache entries.
 
 Job-container steps (`run:` commands) are unaffected — the sidecar runs in its own container and is invisible to the main step execution.
 

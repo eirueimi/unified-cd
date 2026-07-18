@@ -25,11 +25,14 @@ func TestStepEnv_ExcludesAgentCredentials(t *testing.T) {
 	t.Setenv("UNIFIED_CACHE_SECRET", "cs")
 	t.Setenv("UNIFIED_TOKEN", "ut")
 	t.Setenv("UNIFIED_CONTROLLER_KEY", "uck")
+	t.Setenv("UNIFIED_AGENT_CREDENTIAL_FILE", "/var/lib/ucd/credentials.json")
+	t.Setenv("UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE", "/var/lib/ucd/enrollment")
 
 	got := envMap(t, StepEnv(nil, nil))
 	for _, banned := range []string{
 		"UNIFIED_AGENT_TOKEN", "UNIFIED_CACHE_KEY", "UNIFIED_CACHE_SECRET",
 		"UNIFIED_TOKEN", "UNIFIED_CONTROLLER_KEY",
+		"UNIFIED_AGENT_CREDENTIAL_FILE", "UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE",
 	} {
 		assert.NotContains(t, got, banned, "%s must never reach a step", banned)
 	}

@@ -204,6 +204,39 @@ func TestValidateWebhookPayloadMappedParams_RejectsHeadersWithoutPatternOrUnvali
 	assert.Contains(t, err.Error(), `"build"`)
 }
 
+func TestValidateWebhookPayloadMappedParams_RejectsDotFormWithoutPatternOrUnvalidated(t *testing.T) {
+	// {{ . }} renders WebhookTemplateData's entire (attacker-controlled)
+	// Payload field without containing the substring ".Payload" anywhere in
+	// the template text — the fail-open bypass the reviewer found empirically
+	// (tpl="{{ . }}" rendered the full payload map). The positive "{{"
+	// check must catch this even though no enumerated substring matches.
+	mapping := map[string]string{"raw": `{{ . }}`}
+	inputs := []dsl.Input{{Name: "raw", Type: "string"}}
+	err := validateWebhookPayloadMappedParams("wh", mapping, inputs, "build")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"wh"`)
+	assert.Contains(t, err.Error(), `"raw"`)
+	assert.Contains(t, err.Error(), `"build"`)
+}
+
+func TestValidateWebhookPayloadMappedParams_RejectsDollarFormWithoutPatternOrUnvalidated(t *testing.T) {
+	// {{ $ }} is the same whole-payload bypass as {{ . }}, via the root
+	// template variable instead of dot.
+	mapping := map[string]string{"raw": `{{ $ }}`}
+	inputs := []dsl.Input{{Name: "raw", Type: "string"}}
+	err := validateWebhookPayloadMappedParams("wh", mapping, inputs, "build")
+	require.Error(t, err)
+}
+
+func TestValidateWebhookPayloadMappedParams_DotFormWithPatternPasses(t *testing.T) {
+	// A pattern: still lets a {{ . }}-style mapping through — the guard cares
+	// only about whether the resolved value is validated, not the specific
+	// template syntax used to produce it.
+	mapping := map[string]string{"raw": `{{ . }}`}
+	inputs := []dsl.Input{{Name: "raw", Type: "string", Pattern: `^[A-Za-z0-9._/-]+$`}}
+	require.NoError(t, validateWebhookPayloadMappedParams("wh", mapping, inputs, "build"))
+}
+
 func TestValidateWebhookPayloadMappedParams_IgnoresLiteralMapping(t *testing.T) {
 	// A mapping that never reads .Payload is author-controlled (set directly
 	// in the receiver's YAML), not attacker-controlled, so it is not subject

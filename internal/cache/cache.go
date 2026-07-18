@@ -63,7 +63,18 @@ func jobPrefix(jobName string) string {
 // stored alongside with TTL of ttlDays days; its Size is the number of bytes
 // streamed to the store, captured during the upload. jobName is the qualified
 // job name that owns this entry (see objectKey) and is recorded in Meta.OwnerJob.
+//
+// jobName must be non-empty: sha256("") is just as valid a namespace as any
+// other hash, so an empty jobName would silently recreate the pre-fix global
+// cache namespace (any job could plant or read another job's entries) instead
+// of failing loudly. The sidecar CLI already rejects an empty --job flag
+// before it ever reaches here (see cmd/unified-sidecar/run.go); this is the
+// same invariant enforced where it actually lives, so no other caller of this
+// library can bypass it by skipping the CLI.
 func Save(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, ttlDays int) error {
+	if jobName == "" {
+		return fmt.Errorf("cache save: jobName must not be empty")
+	}
 	oKey := objectKey(jobName, key)
 
 	body := artifact.StreamTarZstd(path)
@@ -119,7 +130,14 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // fallback, both bounds the candidates enumerated (findBestMatch only lists
 // this job's own prefix) and is checked again against each candidate's
 // Meta.OwnerJob as defense in depth.
+//
+// jobName must be non-empty for the same reason as in Save: sha256("") is a
+// valid namespace like any other, so an empty jobName would silently read
+// from the pre-fix global namespace instead of failing loudly.
 func Restore(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string) (bool, error) {
+	if jobName == "" {
+		return false, fmt.Errorf("cache restore: jobName must not be empty")
+	}
 	oKey := objectKey(jobName, key)
 	rc, err := store.Get(ctx, oKey+".tar.zst")
 	if err == nil {

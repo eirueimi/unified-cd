@@ -87,9 +87,9 @@ func resolveParams(inputs []dsl.Input, supplied map[string]string) (map[string]s
 }
 
 // validateWebhookPayloadMappedParams enforces that every webhook paramsMapping
-// entry whose template actually reads from the request payload (contains
-// ".Payload") is declared by the TARGET JOB's params.inputs with either a
-// pattern: or an explicit unvalidated: true opt-out.
+// entry that evaluates as a Go template — i.e. contains a "{{" action — is
+// declared by the TARGET JOB's params.inputs with either a pattern: or an
+// explicit unvalidated: true opt-out.
 //
 // Why here, and why not at receiver-parse time: a valid HMAC/token signature
 // on a webhook only proves who sent the request, not that its content is
@@ -107,8 +107,23 @@ func resolveParams(inputs []dsl.Input, supplied map[string]string) (map[string]s
 // the same "validate the resolved, cross-resource picture right before it is
 // acted on" pattern dsl.ValidateContainerReferences follows for a run's
 // container references. A literal mapping (e.g. `tag: "myapp"`) that never
-// reads the payload is author-controlled, not attacker-controlled, and is not
-// subject to this check.
+// evaluates a template is author-controlled, not attacker-controlled, and is
+// not subject to this check.
+//
+// Why "contains {{" rather than enumerating reference forms (".Payload",
+// ".Headers", ...): WebhookTemplateData's only field is Payload, so `{{ . }}`
+// and `{{ $ }}` render the ENTIRE attacker-controlled payload while
+// containing neither substring — an empirically confirmed fail-open bypass
+// (`tpl="{{ . }}"` rendered the full payload map, including injected shell
+// metacharacters). Enumerating substrings is inherently a denylist against an
+// open-ended template language: any field access, range, or future template
+// variable that doesn't happen to spell ".Payload" or ".Headers" slips
+// through. The only sound question is "does this template evaluate at all,
+// reading from data the guard cannot see the shape of" — so any "{{" is
+// treated as untrusted output unless the job explicitly opts in. This is
+// strictly stronger than the substring list it replaces: every string the old
+// check caught still contains "{{" (a Go template action needs the
+// delimiter), plus it now also catches the whole-payload dot forms.
 func validateWebhookPayloadMappedParams(receiverName string, mapping map[string]string, inputs []dsl.Input, jobName string) error {
 	byName := make(map[string]dsl.Input, len(inputs))
 	for _, in := range inputs {
@@ -123,15 +138,13 @@ func validateWebhookPayloadMappedParams(receiverName string, mapping map[string]
 
 	for _, param := range params {
 		tmpl := mapping[param]
-		// Check for attacker-influenced template variables: .Payload and .Headers.
-		// .Payload is currently the only implemented variable, but .Headers is listed
-		// in the docs and may be added in the future. Request headers are attacker-controlled
-		// just like the body (an HMAC check only covers the signature header, not arbitrary
-		// custom headers), so this guard must fail-safe: any reference to either field
-		// requires pattern: or unvalidated: true to be explicit about accepting
-		// potentially malicious values. This detects the landmine in advance.
-		containsUntrustedRef := strings.Contains(tmpl, ".Payload") || strings.Contains(tmpl, ".Headers")
-		if !containsUntrustedRef {
+		// Any template action is untrusted output until proven otherwise: the
+		// mapping is evaluated against WebhookTemplateData, which exposes the
+		// full (attacker-controlled) request payload, so a template that
+		// evaluates at all — regardless of which field(s) it happens to
+		// reference — requires pattern: or unvalidated: true. A literal value
+		// with no "{{" can never read the payload and is author-controlled.
+		if !strings.Contains(tmpl, "{{") {
 			continue
 		}
 		in, declared := byName[param]
