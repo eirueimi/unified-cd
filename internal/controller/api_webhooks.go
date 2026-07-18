@@ -219,6 +219,18 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(job.Spec, &jobSpec); err == nil {
 		agentSelector = jobSpec.AgentSelector
 	}
+	// A valid signature proves the request's origin, not that its content is
+	// benign: an outside contributor who can open a PR or push a branch
+	// controls payload fields like .Payload.pull_request.head.ref. Reject any
+	// payload-derived paramsMapping entry the target job hasn't opted into
+	// validating, before those values ever reach resolveParams or a step's
+	// shell text. See validateWebhookPayloadMappedParams for why this lives
+	// here rather than at receiver-parse time.
+	if err := validateWebhookPayloadMappedParams(name, spec.ParamsMapping, jobSpec.Params.Inputs, spec.Trigger.Job); err != nil {
+		s.countWebhookEvent(name, "error")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	params, err = resolveParams(jobSpec.Params.Inputs, params)
 	if err != nil {
 		s.countWebhookEvent(name, "error")

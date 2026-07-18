@@ -258,6 +258,10 @@
         "name": {
           "type": "string"
         },
+        "pattern": {
+          "description": "Pattern is a regular expression every supplied value must match (defaults\nare checked too, so a bad default cannot slip through). Param values are\ninterpolated into step shell text, so a param fed from an untrusted\nsource — a webhook payload especially — is a command-injection vector\nunless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$",
+          "type": "string"
+        },
         "required": {
           "type": "boolean"
         },
@@ -269,6 +273,10 @@
             "array"
           ],
           "type": "string"
+        },
+        "unvalidated": {
+          "description": "Unvalidated explicitly opts this input out of the pattern requirement for\npayload-mapped params. Use only when the value is genuinely free-form and\nnever reaches a shell.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -970,6 +978,10 @@
     "WebhookAuth": {
       "additionalProperties": false,
       "properties": {
+        "allowUnauthenticated": {
+          "description": "required alongside type: none — makes an unauthenticated webhook a deliberate, greppable opt-in",
+          "type": "boolean"
+        },
         "header": {
           "description": "token type only: header to compare (default X-Gitlab-Token)",
           "type": "string"

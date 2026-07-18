@@ -458,6 +458,38 @@ walkthrough](getting-started.md#configuring-the-webhook-on-github).
 | `.Payload` | map | The parsed JSON webhook body |
 | `.Headers` | map | Request headers |
 
+### Payload-mapped params must be validated
+
+A valid webhook signature (HMAC, GitHub, or token) proves who sent the
+request — it says nothing about whether the request's *content* is benign.
+For a GitHub push or pull_request event, fields like `.Payload.ref` or
+`.Payload.pull_request.head.ref` are controlled by whoever pushed the branch
+or opened the PR, which can be any outside contributor. This is the same
+class of vulnerability as GitHub Actions script injection: because param
+values are interpolated directly into step shell text (`sh -lc`), an
+unconstrained payload-mapped param is a command-injection vector.
+
+For this reason, any `paramsMapping` entry whose template reads `.Payload`
+must target a job input that declares either `pattern:` (a regular
+expression the resolved value must match) or `unvalidated: true` (an
+explicit, greppable opt-out for values that are genuinely free-form and never
+reach a shell). This is enforced live, at webhook-ingress time, against the
+target job's *current* spec — not at receiver-apply time — because the job
+may not exist yet when the receiver is applied, or may be edited
+independently afterward. A receiver whose mapping fails this check is
+rejected with `400` and no Run is created; the error names the receiver, the
+param, and the job:
+
+```
+webhook receiver "wh": param "ref" is mapped from the request payload but job "build" declares no pattern for it (add pattern: to the input, or unvalidated: true to accept it explicitly)
+```
+
+A literal `paramsMapping` value that never references `.Payload` (e.g.
+`image: myapp`) is author-controlled, not attacker-controlled, and is not
+subject to this requirement. See [Input fields](jobs.md#input-fields) for
+`pattern`/`unvalidated`; a reasonable starting pattern for most identifiers
+(branch names, tags, commit SHAs) is `^[A-Za-z0-9._/-]+$`.
+
 ### Examples
 
 ```yaml
@@ -476,8 +508,10 @@ spec:
   filters:
     - '{{ eq .Payload.ref "refs/heads/main" }}'
   paramsMapping:
-    image: myapp
-    tag: "{{ .Payload.after }}"    # commit SHA
+    image: myapp                   # literal — no pattern needed
+    tag: "{{ .Payload.after }}"    # commit SHA — reads .Payload, so the
+                                    # `build` job's `tag` input must declare
+                                    # pattern: (or unvalidated: true)
 
 ---
 # Generic HMAC webhook
@@ -492,6 +526,9 @@ spec:
     type: hmac-sha256
     secretRef: WEBHOOK_SECRET
   paramsMapping:
+    # Both read .Payload, so `deploy`'s `env` and `version` inputs must each
+    # declare pattern: (or unvalidated: true) or this webhook is rejected at
+    # ingress time.
     env: "{{ .Payload.environment }}"
     version: "{{ .Payload.version }}"
 

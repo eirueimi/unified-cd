@@ -58,6 +58,16 @@ type Input struct {
 	Required    bool   `yaml:"required,omitempty"`
 	Default     any    `yaml:"default,omitempty"`
 	Description string `yaml:"description,omitempty"`
+	// Pattern is a regular expression every supplied value must match (defaults
+	// are checked too, so a bad default cannot slip through). Param values are
+	// interpolated into step shell text, so a param fed from an untrusted
+	// source — a webhook payload especially — is a command-injection vector
+	// unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$
+	Pattern string `yaml:"pattern,omitempty"`
+	// Unvalidated explicitly opts this input out of the pattern requirement for
+	// payload-mapped params. Use only when the value is genuinely free-form and
+	// never reaches a shell.
+	Unvalidated bool `yaml:"unvalidated,omitempty"`
 }
 
 type Output struct {

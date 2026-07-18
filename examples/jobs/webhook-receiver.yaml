@@ -40,6 +40,13 @@ spec:
       - name: tag
         type: string
         required: true
+        # This value is mapped from the webhook payload (.Payload.after, the
+        # push commit SHA) above — a param fed from a webhook payload is
+        # interpolated straight into step shell text, so it must be
+        # constrained. A valid webhook signature only proves who sent the
+        # request, not that its content is benign: any outside contributor who
+        # can push a commit controls this value.
+        pattern: '^[A-Za-z0-9._/-]+$'
   agentSelector:
     - kind:docker
   steps:

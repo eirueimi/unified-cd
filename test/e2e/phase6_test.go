@@ -84,6 +84,11 @@ metadata:
   name: webhook-triggered
 spec:
   native: true
+  params:
+    inputs:
+      - name: branch
+        type: string
+        pattern: '^[A-Za-z0-9._/-]+$'
   steps:
     - name: run
       run: echo hello-from-webhook
