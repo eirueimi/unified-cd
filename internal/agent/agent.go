@@ -447,10 +447,22 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			// traversal and tamper with the shell every later containerized
 			// job on this agent will run (see EnsureShimIntact's doc
 			// comment). Checking here — once per claim, right before the
-			// run that just claimed the slot executes — bounds any such
-			// tampering to a single run. A check/repair failure is logged
-			// and must never fail the run; this is best-effort hardening,
-			// not the primary control.
+			// run that just claimed this slot executes — catches tampering
+			// left behind by an earlier run and repairs it before the next
+			// claim starts, so it cannot persist indefinitely across the
+			// agent's lifetime.
+			//
+			// This does NOT bound tampering to "a single run" when
+			// MaxConcurrent > 1: every slot shares this same a.ToolsDir, and
+			// the /.ucd mount each claim pod gets is a LIVE bind mount of
+			// it, not a copy taken at pod start. A native step here can
+			// tamper with the on-disk shim while another slot's isolated
+			// job is already running, and that job sees the tampered bytes
+			// on its very next ucd-sh invocation — before this per-claim
+			// check ever fires again (see EnsureShimIntact's doc comment
+			// for the full picture). A check/repair failure is logged and
+			// must never fail the run; this is best-effort hardening, not
+			// the primary control.
 			if a.ToolsDir != "" {
 				if repaired, err := EnsureShimIntact(a.ToolsDir); err != nil {
 					slog.Error("shim integrity check failed", "error", err, "toolsDir", a.ToolsDir, "runId", resp.RunID)
@@ -740,15 +752,33 @@ func shimPayload() []byte {
 // shared-mount invariant that requires toolsDir to live under wsBase). A
 // NATIVE step runs as the agent user with its cwd inside wsBase, so it can
 // reach toolsDir by relative traversal (e.g. `cp evil ../../.ucd-tools/ucd-sh`)
-// and permanently backdoor the shell of every containerized job that later
-// runs on this agent — jobs that specifically chose container isolation to
-// avoid the host. Re-verifying before EACH claim (see the call in runLoop)
-// bounds any such tampering to a single run instead of letting it persist
-// across every later containerized job on this agent.
+// and backdoor the shell of every containerized job that later runs on this
+// agent — jobs that specifically chose container isolation to avoid the
+// host. Re-verifying before EACH claim (see the call in runLoop) detects
+// tampering left by an earlier run and repairs it before the next claim
+// starts, so it cannot persist indefinitely across the agent's lifetime.
+//
+// What this does NOT give: with MaxConcurrent > 1, Run starts one runLoop
+// goroutine per slot and every slot shares the same a.ToolsDir (see Run's
+// slot fan-out). The /.ucd mount each claim pod gets from that directory
+// (see ucdToolsMount) is a LIVE read-only bind mount of the host path, not a
+// copy taken at pod start, and ucd-sh is re-invoked for the pod's whole
+// lifetime (its pause keep-alive, plus every step exec). So a native step in
+// one slot that tampers with the on-disk shim mid-run is immediately visible
+// to an isolated job already running in another slot, on that job's very
+// next ucd-sh invocation — this can happen before this per-claim check next
+// fires, because the check only runs at the START of a new claim, never
+// against claims already in flight. Closing that window needs a check
+// independent of claim cadence (e.g. periodic re-verification, or verifying
+// before each container-step exec rather than each claim); see the design
+// doc's residual/follow-up note.
 //
 // This is best-effort hardening, not the primary control: a failure to read
 // or rewrite the shim is reported to the caller but must never fail the run
-// (see runLoop, which logs and continues on error).
+// (see runLoop, which logs and continues on error). This function also does
+// no locking of its own and, with MaxConcurrent > 1, is now called
+// concurrently from every slot against the same file; that is currently
+// benign only because every caller writes the identical embedded payload.
 func EnsureShimIntact(toolsDir string) (repaired bool, err error) {
 	shimPath := filepath.Join(toolsDir, "ucd-sh")
 	want := shimPayload()
