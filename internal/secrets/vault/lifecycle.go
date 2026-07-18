@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+const (
+	// retryInitialWait is the delay before the first retry after a failed
+	// refresh, and the value the backoff resets to after any success.
+	retryInitialWait = time.Minute
+	// retryMaxWait bounds the failure-retry backoff so an extended outage
+	// settles at a fixed cadence instead of retrying ever less often.
+	retryMaxWait = 15 * time.Minute
+)
+
 // tokenManagerConfig supplies the token lifecycle's collaborators. Now and
 // Sleep are injected so the renewal loop can be tested without wall-clock
 // waiting, following the pattern in internal/k8sagent/credentials.go.
@@ -85,23 +94,44 @@ func (m *tokenManager) run(ctx context.Context, current authResult) {
 		// leaves a full half-lease of headroom to retry in if a renewal fails.
 		wait := current.TTL / 2
 		if wait <= 0 {
-			wait = time.Minute
+			wait = retryInitialWait
 		}
 		if err := m.cfg.Sleep(ctx, wait); err != nil {
 			return // context cancelled
 		}
 
 		next, err := m.refresh(ctx, current)
-		if err != nil {
+
+		// Failure cadence is a bounded exponential backoff, independent of
+		// the lease: the token is not being renewed while this runs, so
+		// there is no lease to halve. Deriving the retry wait from the lease
+		// (as a prior version did) decays geometrically toward zero and
+		// turns an outage into a retry storm; growing and capping here is
+		// what makes "runtime is patient" actually true. retryWait is local
+		// to this loop iteration, so it starts fresh at retryInitialWait
+		// every time a new failure streak begins.
+		retryWait := retryInitialWait
+		for err != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			// Leave the existing token in place: it may still work, and the
-			// next iteration retries. This is the "runtime is patient" half of
+			// next attempt retries. This is the "runtime is patient" half of
 			// the design's asymmetry.
-			slog.Warn("vault: token refresh failed, will retry", "error", err)
-			current = authResult{TTL: wait}
-			continue
+			slog.Warn("vault: token refresh failed, will retry", "retryIn", retryWait, "error", err)
+			if serr := m.cfg.Sleep(ctx, retryWait); serr != nil {
+				return // context cancelled
+			}
+			next, err = m.refresh(ctx, current)
+			if err == nil {
+				break
+			}
+			if retryWait < retryMaxWait {
+				retryWait *= 2
+				if retryWait > retryMaxWait {
+					retryWait = retryMaxWait
+				}
+			}
 		}
 		current = next
 
