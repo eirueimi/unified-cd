@@ -9,10 +9,18 @@
 # .svelte file changes trigger hot module replacement in the browser (HMR).
 # docker compose build is only required on first run.
 #
+# The "agent" service does NOT authenticate with a shared runtime token. A
+# one-shot "agent-enroll" service uses the UNIFIED_TOKEN admin/CLI credential
+# below to issue the agent a one-time enrollment token on first startup; the
+# agent exchanges that for its own persistent, per-agent, revocable
+# credential file (kept in the agent-credentials volume), and re-enrollment
+# is skipped on later restarts because that file already exists. See
+# docs/migration-agent-auth.md for the full model.
+#
 # After startup:
 #   CLI: export UNIFIED_SERVER=http://localhost:8080
 #        export UNIFIED_TOKEN=dev-token-change-me
-#        ./bin/unified-cd apply -f examples/hello.yaml
+#        ./bin/unified-cli apply -f examples/jobs/hello.yaml
 #   Web UI: http://localhost:8080/ui/
 
 services:
@@ -158,6 +166,61 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # ---- agent enrollment (one-shot bootstrap) ----
+  # Issues the docker agent a one-time enrollment token so it can bootstrap
+  # its own per-agent identity instead of the legacy shared UNIFIED_AGENT_TOKEN
+  # (see docs/migration-agent-auth.md). Uses the admin/CLI UNIFIED_TOKEN only
+  # to call the enrollment API -- that admin token is never handed to the
+  # agent itself.
+  #
+  # Idempotent across `docker compose up` re-runs:
+  #   - if the agent's persisted credential file already exists (a prior
+  #     enrollment succeeded), this exits immediately without creating a new
+  #     enrollment token or contacting the controller.
+  #   - otherwise it removes any stale/unconsumed enrollment-token file
+  #     first, because `agent enrollment create --output-file` creates that
+  #     file exclusively and errors if one is already there.
+  # The 10m enrollment-token lifetime only needs to cover the time between
+  # this service completing and the "agent" service (below) finishing its
+  # air build and first startup -- comfortably longer than a `go build` of
+  # this module, even uncached.
+  agent-enroll:
+    build:
+      context: .
+      dockerfile: docker/dev.Dockerfile
+    volumes:
+      - .:/app
+      - gocache:/gocache
+      - gomodcache:/gomodcache
+      - agent-credentials:/var/lib/unified-cd-agent
+    depends_on:
+      controller:
+        condition: service_healthy
+    environment:
+      GOCACHE: /gocache
+      GOMODCACHE: /gomodcache
+      UNIFIED_SERVER: http://controller:8080
+      UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        CRED=/var/lib/unified-cd-agent/credentials.json
+        ENROLL=/var/lib/unified-cd-agent/enrollment.token
+        if [ -f "$$CRED" ]; then
+          echo "agent-enroll: credential file already present, skipping enrollment"
+          exit 0
+        fi
+        rm -f "$$ENROLL"
+        go run -buildvcs=false ./cmd/unified-cli agent enrollment create \
+          --agent-id docker-agent-1 \
+          --label kind:docker --label pool:default \
+          --expires-in 10m \
+          --output-file "$$ENROLL"
+        echo "agent-enroll: wrote enrollment token to $$ENROLL"
+    restart: "no"
+
   # ---- agent (Linux/Docker) ----
   agent:
     build:
@@ -170,17 +233,21 @@ services:
       - gocache:/gocache
       - gomodcache:/gomodcache
       - ucd-workspaces:/ucd-workspaces
+      - agent-credentials:/var/lib/unified-cd-agent
     command: air -c .air.agent.toml
     depends_on:
       controller:
         condition: service_healthy
       dind:
         condition: service_healthy
+      agent-enroll:
+        condition: service_completed_successfully
     environment:
       GOCACHE: /gocache
       GOMODCACHE: /gomodcache
       UNIFIED_SERVER: http://controller:8080
-      UNIFIED_AGENT_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+      UNIFIED_AGENT_CREDENTIAL_FILE: /var/lib/unified-cd-agent/credentials.json
+      UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE: /var/lib/unified-cd-agent/enrollment.token
       UNIFIED_AGENT_ID: docker-agent-1
       UNIFIED_AGENT_LABELS: kind:docker,pool:default
       DOCKER_HOST: tcp://dind:2375
@@ -200,3 +267,4 @@ volumes:
   gomodcache:
   ucd-workspaces:
   dind-storage:
+  agent-credentials:
