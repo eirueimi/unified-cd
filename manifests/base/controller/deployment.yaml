@@ -54,7 +54,7 @@ spec:
             name: unified-cd-controller-config
         - name: controller-kek
           secret:
-            secretName: unified-cd-controller
+            secretName: unified-cd-controller-kek
             items:
               - key: kek
                 path: kek

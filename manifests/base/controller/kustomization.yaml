@@ -4,6 +4,7 @@ resources:
   - deployment.yaml
   - service.yaml
   - secret.yaml
+  - kek-secret.yaml
   - serviceaccount.yaml
   - rbac.yaml
   - config-configmap.yaml

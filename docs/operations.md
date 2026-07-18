@@ -52,12 +52,18 @@ Artifacts, cache entries, and log archives live in the configured bucket. Use yo
 
 **Sweep failure backoff.** The log archiver, run-retention sweeper, and git resolver retry a persistently failing candidate with exponential backoff (1 min doubling to 1 h) instead of letting it occupy the head of every oldest-first batch — a handful of broken runs can no longer starve archival, deletion, or resolution for everything newer. The backoff state is held by the current leader only and resets on failover (each problem candidate is retried once, then re-excluded).
 
-### `UNIFIED_CONTROLLER_KEY` (critical)
+### The controller's master key (critical)
 
-This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Management Guide](secrets.md#security-model)). Back it up wherever you manage secrets (vault, KMS, sealed file) — **independently** of the DB dump:
+This is the master key (KEK) used to encrypt secrets (AES-256-GCM, see [Secrets Management Guide](secrets.md#security-model)). The controller refuses to start unless it is given one, via exactly one of:
+
+- `UNIFIED_CONTROLLER_KEY_FILE` — path to a file containing 64 hex characters (`unified-cli keygen --out /etc/unified-cd/kek`). The supported way to run in production; a file (not an env var) is used deliberately, since env vars leak into `docker inspect`, process listings, crash dumps, and child processes.
+- `UNIFIED_KMS_URI` — an external KMS. No provider is implemented yet.
+- `UNIFIED_DEV_MODE=1` — generates an ephemeral in-memory key for local development only. Secrets become unreadable the moment the process restarts.
+
+Back the key file up wherever you manage secrets (vault, KMS, sealed file, offline copy) — **independently** of the DB dump, and **never** in the same place/backup as the PostgreSQL dump it protects:
 
 - If the key is lost, every secret encrypted with it becomes permanently undecryptable, even if the PostgreSQL dump is fully intact. There is no recovery path other than re-`secret set`-ing every value.
-- If `UNIFIED_CONTROLLER_KEY` is left unset, the controller generates an ephemeral key on first startup and persists it to the `controller_settings` table in the same database — in that case the key is only as durable as your PostgreSQL backup, and is lost if you ever restore into a different/empty database while the old one is gone. Setting the env var explicitly (and backing it up) avoids that coupling.
+- Unlike earlier versions, the controller does **not** escrow a copy of the key into the database. Losing the key file (with no independent backup) is unrecoverable even if the database is perfectly intact — there is no fallback copy to fall back to.
 
 ---
 
@@ -69,7 +75,7 @@ This is the master key used to encrypt secrets (AES-256-GCM, see [Secrets Manage
 | An agent dies mid-run | No action needed. The stuck-run reaper detects the stale heartbeat and fails the run automatically — see [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery) for the full heartbeat/staleness/grace timings. In short: heartbeat every 15s, a run is eligible for reaping once its agent's heartbeat is >90s stale, with a 60s grace window after claim, and the run is marked `Failed` (never re-queued, since re-running partially-executed steps can duplicate side effects). |
 | An agent claimed a run but the claim response was lost (agent process never learned it owns the run) | No action needed — this now self-heals without waiting for the reaper's stale-heartbeat check. Every agent heartbeat carries the set of run IDs it currently considers active; if the controller has a `Running` run assigned to that agent that is absent from the reported set and has sat claimed for more than ~60s (a grace window protecting a claim whose heartbeat simply hasn't landed yet), it fails that run as orphaned on the *next* heartbeat — typically within a few heartbeat intervals, well before the reaper's 90s-stale-heartbeat path would ever trigger. A legacy agent (built before this feature) sends a bodyless heartbeat and is unaffected — no reconcile runs for it, so it falls back to the existing stale-heartbeat reaper. See [Troubleshooting: a run failed by heartbeat reconcile](troubleshooting.md#run-marked-failed-by-heartbeat-reconcile-after-a-lost-claim). |
 | Leftover `ucd-run-*` pods on Kubernetes | No action needed in the common case — the k8s-agent's pod GC sweeps every ~1 minute and deletes pods whose run has reached a terminal state. A manual `kubectl delete pod ucd-run-...` is safe if you want it gone immediately; it will not resurrect or affect the run's recorded status. |
-| PostgreSQL restored from a backup | Start the controller against it; migrations run automatically (see [Upgrades](#upgrades)). Re-apply any resources created after the backup was taken, and confirm `UNIFIED_CONTROLLER_KEY` matches what was in use when secrets were encrypted. |
+| PostgreSQL restored from a backup | Start the controller against it; migrations run automatically (see [Upgrades](#upgrades)). Re-apply any resources created after the backup was taken, and confirm the key file at `UNIFIED_CONTROLLER_KEY_FILE` (or the `UNIFIED_KMS_URI` key) matches what was in use when secrets were encrypted — there is no database copy of the key to fall back on. |
 
 ---
 

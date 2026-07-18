@@ -14,7 +14,7 @@ import (
 // deployment guide silently instructs operators to set a variable that no
 // longer does anything, so the absence is enforced rather than trusted.
 func TestNoStaleControllerKeyReferences(t *testing.T) {
-	removed := []string{"UNIFIED_CONTROLLER_KEY=", "UNIFIED_CONTROLLER_KEY:", "controllerKey", "controller_key_hex"}
+	removed := []string{"UNIFIED_CONTROLLER_KEY", "controllerKey", "controller_key_hex"}
 
 	repoRoot, err := filepath.Abs("../..")
 	require.NoError(t, err)
@@ -68,8 +68,16 @@ func TestNoStaleControllerKeyReferences(t *testing.T) {
 		if readErr != nil {
 			return nil
 		}
+		content := string(data)
 		for _, needle := range removed {
-			if strings.Contains(string(data), needle) {
+			if needle == "UNIFIED_CONTROLLER_KEY" {
+				if containsBareControllerKey(content) {
+					rel, _ := filepath.Rel(repoRoot, path)
+					offenders = append(offenders, rel+" contains "+needle)
+				}
+				continue
+			}
+			if strings.Contains(content, needle) {
 				rel, _ := filepath.Rel(repoRoot, path)
 				offenders = append(offenders, rel+" contains "+needle)
 			}
@@ -79,4 +87,26 @@ func TestNoStaleControllerKeyReferences(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, offenders, "these files still reference removed key configuration:\n%s",
 		strings.Join(offenders, "\n"))
+}
+
+// containsBareControllerKey reports whether content mentions the removed
+// UNIFIED_CONTROLLER_KEY identifier — in code (`UNIFIED_CONTROLLER_KEY=`,
+// `UNIFIED_CONTROLLER_KEY:`) or in prose (backtick-quoted, plain text) —
+// while excluding the still-valid UNIFIED_CONTROLLER_KEY_FILE.
+func containsBareControllerKey(content string) bool {
+	const needle = "UNIFIED_CONTROLLER_KEY"
+	const suffix = "_FILE"
+	start := 0
+	for {
+		idx := strings.Index(content[start:], needle)
+		if idx == -1 {
+			return false
+		}
+		abs := start + idx
+		rest := content[abs+len(needle):]
+		if !strings.HasPrefix(rest, suffix) {
+			return true
+		}
+		start = abs + len(needle)
+	}
 }

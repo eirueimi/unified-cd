@@ -242,6 +242,7 @@ func (s *Server) verifyWebhookSignature(r *http.Request, body []byte, auth dsl.W
 	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext,
 		secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
 	if err != nil {
+		logSecretDecryptFailure("webhook-hmac", auth.SecretRef, err)
 		return fmt.Errorf("decrypt secret %q: %w", auth.SecretRef, err)
 	}
 	if len(secretBytes) == 0 {
@@ -295,6 +296,7 @@ func (s *Server) verifyWebhookToken(r *http.Request, auth dsl.WebhookAuth) error
 	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext,
 		secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
 	if err != nil {
+		logSecretDecryptFailure("webhook-token", auth.SecretRef, err)
 		return fmt.Errorf("decrypt secret %q: %w", auth.SecretRef, err)
 	}
 	header := auth.Header

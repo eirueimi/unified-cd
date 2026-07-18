@@ -244,7 +244,6 @@ Secret **values cannot be retrieved via the API** by design. If you lose a value
 | Symptom | Cause and fix |
 |---------|---------------|
 | Controller exits at startup naming `unified-cli keygen --out` | No key source is configured. Set `UNIFIED_CONTROLLER_KEY_FILE` (or `UNIFIED_KMS_URI`, or `UNIFIED_DEV_MODE=1` for local development) and restart. |
-| `{{ secrets.NAME }}` appears unexpanded | The secret name doesn't match a registered secret, or contains a character other than alphanumerics/underscores/hyphens. Check the exact name with `unified-cli secret list`. |
-| Secret is referenced with `{{ secrets.NAME }}` but value is empty | Secret is not registered, or the name casing does not match. Check with `unified-cli secret list`. |
+| `{{ secrets.NAME }}` appears unexpanded, or the run fails with a "secret not found" / decrypt error | The secret name doesn't match a registered secret (or the name casing doesn't match), or contains a character other than alphanumerics/underscores/hyphens. An unregistered or unresolvable secret now fails the run rather than expanding to an empty value. Check the exact name with `unified-cli secret list`. |
 | `decrypt` errors in HA setup | Replicas were given different key files, or different `UNIFIED_KMS_URI` values. Give every replica the identical key file (or the same KMS URI). |
 | `secret set` from CI returns `unauthorized` | The token in use does not have admin privileges (agent tokens cannot manage secrets). |

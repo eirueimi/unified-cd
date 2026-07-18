@@ -337,6 +337,7 @@ func (s *Server) refreshSession(ctx context.Context, sess *store.Session, host s
 	rtBytes, err := secrets.Decrypt(ctx, s.km, sess.RefreshTokenDEK, sess.RefreshTokenCT,
 		secrets.SessionRefreshBinding(sess.ID))
 	if err != nil {
+		logSecretDecryptFailure("oidc-refresh", sess.ID, err)
 		return fmt.Errorf("decrypt refresh token: %w", err)
 	}
 
