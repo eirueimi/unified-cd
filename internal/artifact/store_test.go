@@ -102,25 +102,25 @@ func TestUpload_NameWithDoubleTraversalCannotEscapeArtifactsPrefix(t *testing.T)
 }
 
 func TestArtifactKey_RejectsTraversalInName(t *testing.T) {
-	if _, err := artifactKey("victim-run", "../victim-run/x"); err == nil {
-		t.Fatalf("expected artifactKey to reject name containing \"..\"")
+	if _, err := ArtifactKey("victim-run", "../victim-run/x"); err == nil {
+		t.Fatalf("expected ArtifactKey to reject name containing \"..\"")
 	}
-	if _, err := artifactKey("run1", "a/../../b"); err == nil {
-		t.Fatalf("expected artifactKey to reject name containing \"..\"")
+	if _, err := ArtifactKey("run1", "a/../../b"); err == nil {
+		t.Fatalf("expected ArtifactKey to reject name containing \"..\"")
 	}
-	if _, err := artifactKey("run1", "a/b"); err == nil {
-		t.Fatalf("expected artifactKey to reject name containing \"/\"")
+	if _, err := ArtifactKey("run1", "a/b"); err == nil {
+		t.Fatalf("expected ArtifactKey to reject name containing \"/\"")
 	}
 }
 
 func TestArtifactKey_RejectsTraversalInRunID(t *testing.T) {
-	if _, err := artifactKey("../other", "name"); err == nil {
-		t.Fatalf("expected artifactKey to reject runID containing \"..\"")
+	if _, err := ArtifactKey("../other", "name"); err == nil {
+		t.Fatalf("expected ArtifactKey to reject runID containing \"..\"")
 	}
 }
 
 func TestArtifactKey_ValidNamesUnchanged(t *testing.T) {
-	key, err := artifactKey("runXYZ", "myart")
+	key, err := ArtifactKey("runXYZ", "myart")
 	if err != nil {
 		t.Fatalf("unexpected error for valid name: %v", err)
 	}

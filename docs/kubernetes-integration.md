@@ -433,10 +433,12 @@ The k8s-agent supports `uploadArtifact`, `downloadArtifact`, and `cache` steps v
 
 When a job pod is created, the agent automatically adds a sidecar container named `unified-artifact` to the pod, running the `unified-sidecar` binary (a static, distroless image — no shell, `tar`, or `curl` inside it). The container is kept alive with `unified-sidecar idle`; individual transfers are dispatched into it via `exec` with an explicit argv (e.g. `unified-sidecar artifact upload --run <id> --name <name> --path <dir>`), never through a shell string. The sidecar shares the pod's workspace volume and reads/writes objects in the S3-compatible bucket configured for the agent.
 
-Object key layout is unchanged from the controller-relay model:
+Cache transfers additionally carry a `--job <qualifiedJobName>` argument (e.g. `unified-sidecar cache restore --key <key> --path <dir> --job team-a/build`), required and non-empty, so cache entries stay namespaced per job — see "Cache entries are namespaced per job" below.
+
+Object key layout:
 
 - Artifacts: `artifacts/{runID}/{name}.tar.gz`
-- Cache: `caches/<sha>.tar.zst` (+ `caches/<sha>.meta` for TTL/metadata)
+- Cache: `caches/<base64url(sha256(qualifiedJobName))>/<base64url(sha256(key))>.tar.zst` (+ matching `.meta` for TTL/owner metadata) — unpadded, URL-safe base64 of each raw SHA-256 digest, not the hex digest itself. The job component namespaces every entry — see [Job Reference: Cache](jobs.md#cache) for the security rationale and what this means for pre-existing cache entries.
 
 Job-container steps (`run:` commands) are unaffected — the sidecar runs in its own container and is invisible to the main step execution.
 

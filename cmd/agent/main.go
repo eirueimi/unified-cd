@@ -13,6 +13,18 @@ import (
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
 
+// Default images are digest-pinned: the tag is retained for readability, but
+// the digest is what is pulled. A mutable tag would let a registry
+// compromise execute code in the primary container of every isolated job on
+// the fleet (see claimNeedsRunnerImage in internal/agent/claim_pod.go).
+// Rotate these together with the runner image release — see
+// docs/operations.md#rotating-the-default-runnerpause-image-digests for the
+// rotation procedure.
+const (
+	defaultRunnerImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3@sha256:d7fa1600cf2ec38b78a8893025db7a09cc70b8ac61ae474ceac48444905a729d"
+	defaultPauseImage  = "busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+)
+
 // orDefault returns s if it is non-empty, otherwise def. Used to give
 // image flags a built-in default when neither env, config file, nor an
 // explicit flag supplied one.
@@ -70,8 +82,8 @@ func main() {
 	drainTimeout := flag.Duration("drain-timeout", eff.DrainTimeout, "maximum drain wait time after SIGTERM (0=wait indefinitely). Applies to running steps; post-hooks such as cache saves always wait for completion to preserve data")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_AGENT_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)")
 	containerRuntime := flag.String("container-runtime", "", "container runtime for runsIn.image steps; empty = auto-detect (docker|podman|nerdctl|wslc). Apple's 'container' is explicit-only (not auto-detected) and cannot run isolated/claim-pod jobs")
-	pauseImage := flag.String("pause-image", orDefault(eff.PauseImage, "busybox:1.36"), "image for the claim pod's pause (netns-holder) container")
-	runnerImage := flag.String("runner-image", orDefault(eff.RunnerImage, "ghcr.io/eirueimi/unified-cd-runner:v0.0.3"), "default primary container image for isolated jobs without a podTemplate job container")
+	pauseImage := flag.String("pause-image", orDefault(eff.PauseImage, defaultPauseImage), "image for the claim pod's pause (netns-holder) container")
+	runnerImage := flag.String("runner-image", orDefault(eff.RunnerImage, defaultRunnerImage), "default primary container image for isolated jobs without a podTemplate job container")
 	minFreeDisk := flag.Uint64("min-free-disk", eff.MinFreeDisk, "minimum free space in bytes on the workspace filesystem required to keep claiming runs; 0 disables the check (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)")
 	workspaceRetentionDays := flag.Int("workspace-retention-days", eff.WorkspaceRetentionDays, "age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; persistent workspaces are a feature) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)")
 	flag.Parse()

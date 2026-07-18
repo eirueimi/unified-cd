@@ -43,7 +43,7 @@ func TestExecuteCacheStep_ReportsStageIndex(t *testing.T) {
 	// A non-empty workDir is required: ResolveCachePath now joins "p" against
 	// it under containment (F-PATH-1), and an empty workDir would make the
 	// relative path "p" fail to resolve within its own (root-relative) clean.
-	require.NoError(t, executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", t.TempDir(), nil), ScopeHandle{}))
+	require.NoError(t, executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", t.TempDir(), nil), ScopeHandle{}))
 
 	mu.Lock()
 	defer mu.Unlock()

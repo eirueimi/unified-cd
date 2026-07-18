@@ -69,6 +69,7 @@ spec:
     job: hello
   auth:
     type: none
+    allowUnauthenticated: true
 `)
 	return &captureTransport{
 		responseFor: func(path string) (int, []byte) {

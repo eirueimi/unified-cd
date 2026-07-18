@@ -101,7 +101,11 @@ func (s *Server) agentRunGuard(ctx context.Context, agentID, runID string, rejec
 			if owner == agentID {
 				return runWriteOK, nil
 			}
-			if principal, ok := agentPrincipalFromContext(ctx); ok && principal.AuthMethod != "legacy" {
+			// Record the policy-denial metric for every principal, including
+			// legacy shared-token callers: compatibility mode keeps them
+			// connected, but a denied write is still a denied write and must
+			// show up in the same signal bearer credentials do.
+			if _, ok := agentPrincipalFromContext(ctx); ok {
 				s.recordAgentAuth("access", "failure", "policy")
 			}
 			return runWriteNotOwned, nil
@@ -116,7 +120,9 @@ func (s *Server) agentRunGuard(ctx context.Context, agentID, runID string, rejec
 	}
 	s.claimedBy.put(runID, run.ClaimedBy)
 	if run.ClaimedBy == "" || run.ClaimedBy != agentID {
-		if principal, ok := agentPrincipalFromContext(ctx); ok && principal.AuthMethod != "legacy" {
+		// Same as above: the metric must reflect every denied write, not just
+		// the ones from bearer-authenticated principals.
+		if _, ok := agentPrincipalFromContext(ctx); ok {
 			s.recordAgentAuth("access", "failure", "policy")
 		}
 		return runWriteNotOwned, nil

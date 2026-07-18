@@ -133,6 +133,9 @@ spec:
       - name: run_tests
         type: bool
         default: true
+      - name: ref
+        type: string
+        pattern: '^[A-Za-z0-9._/-]+$'
     outputs:
       - name: image_ref
         type: string        # "string" | "bool" | "int" | "artifact"
@@ -147,8 +150,10 @@ spec:
 | `name` | string | Yes | Parameter name. Referenced as `{{ .Params.name }}` in steps. |
 | `type` | string | Yes | `string`, `bool`, `int`, or `array` (backs `$param`-style references used by `matrix`/`foreach`/`orLocks`) |
 | `required` | bool | No | If true, the run fails immediately when the value is not supplied. |
-| `default` | any | No | Value used when the caller does not supply this parameter. |
+| `default` | any | No | Value used when the caller does not supply this parameter. Checked against `pattern` just like a caller-supplied value, so a bad default cannot slip through. |
 | `description` | string | No | Human-readable description shown in the Web UI trigger form. |
+| `pattern` | string | No | A regular expression the resolved value must match (checked in `resolveParams`, the choke point every param source flows through: webhook mapping, CLI `--param`, `call:`/`uses:` `with:`, schedule params). **Why this exists:** param values are interpolated directly into step shell text (`sh -lc`), so a param sourced from outside the job author's control is a command-injection vector — the same class of bug as GitHub Actions script injection. This matters most for webhook `paramsMapping`: a valid HMAC/token signature only proves who sent the request, not that its content is benign, and an outside contributor who can open a PR or push a branch controls fields like `.Payload.pull_request.head.ref`. A malformed pattern is itself a rejected apply/trigger, never a silent allow-all. Suggested starting point: `^[A-Za-z0-9._/-]+$`. A rejected value is never echoed back in the error, since it may itself carry the injection payload into operator-read logs. |
+| `unvalidated` | bool | No | Explicit opt-out of the `pattern` requirement for a webhook payload-mapped param (see [WebhookReceiver](resources.md#webhookreceiver)). Use only when the value is genuinely free-form and never reaches a shell. |
 
 ### Output fields
 
@@ -1286,6 +1291,14 @@ The `path`, `key`, and `restoreKeys` strings support template expressions (e.g. 
 On hit, the cached directory is restored before the step runs. On miss, the directory is saved after the run completes.
 
 Cache is now supported on the k8s agent (previously a silent no-op) with the same `key`/`restoreKeys`/`ttlDays` semantics — see [Kubernetes Integration: Artifacts and Cache](kubernetes-integration.md#artifacts-and-cache) for how transfers work and the required S3 credentials. Restore is best-effort (a miss or error never fails the step); save is deferred until the run's main stages complete.
+
+### Cache entries are namespaced per job
+
+Cache entries are namespaced per **qualified job name** (e.g. `team-a/build`) — one job can never restore, and never even sees, another job's cache entries. `restoreKeys` prefix matching is likewise scoped to entries saved by the same job. Before this change the cache was one flat namespace shared by every job in the store: a job could plant an entry under a key another job's `restoreKeys` prefix would match, and that job would restore and execute the planted archive in its own secret context. That is no longer possible: an entry's owning job is baked into its storage location, and the owner is checked again on restore as defense in depth.
+
+This is a storage layout change — every cache entry saved before this change is orphaned (no job can address it under the new layout) and is simply abandoned; the next run of each job regenerates its cache from scratch on the first miss. No migration or manual cleanup is needed.
+
+`ttlDays` is capped at 365 (jobs asking for a longer TTL fail validation at parse time) so a single entry cannot pin itself, and the storage it occupies, indefinitely.
 
 ### Artifact and cache path rules
 

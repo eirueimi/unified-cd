@@ -109,8 +109,7 @@ func (s *Server) agentAuth(next http.Handler) http.Handler {
 }
 
 // requireAgentPathIdentity prevents an authenticated agent from selecting a
-// different agent identity through a route parameter. The legacy shared-token
-// migration mode deliberately preserves its existing, unbound behavior.
+// different agent identity through a route parameter.
 func (s *Server) requireAgentPathIdentity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := agentPrincipalFromContext(r.Context())
@@ -120,7 +119,24 @@ func (s *Server) requireAgentPathIdentity(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if principal.AuthMethod != "legacy" && principal.AgentID != chi.URLParam(r, "agentId") {
+		if principal.AuthMethod == "legacy" {
+			// A legacy (shared-token) principal has no verified AgentID —
+			// the shared token proves nothing about which physical agent is
+			// calling. Bind the path's {agentId} to the principal so it
+			// carries a coherent identity for the request lifetime.
+			//
+			// This is identity ASSIGNMENT, not verification: a legacy caller
+			// is only as trustworthy as the shared token itself, and nothing
+			// here stops it from asserting any agentId it likes (that is
+			// inherent to a shared-secret migration mode and cannot be fixed
+			// without per-agent credentials). Today's agentRunGuard call sites
+			// retrieve agentID directly from chi.URLParam, so this assignment
+			// is currently inert; it exists so the principal holds a coherent
+			// identity and so future handlers reading principal.AgentID work
+			// correctly.
+			principal.AgentID = chi.URLParam(r, "agentId")
+			r = withAgentPrincipal(r, principal)
+		} else if principal.AgentID != chi.URLParam(r, "agentId") {
 			s.recordAgentAuth("access", "failure", "policy")
 			http.Error(w, "agent identity mismatch", http.StatusForbidden)
 			return

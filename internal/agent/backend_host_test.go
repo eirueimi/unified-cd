@@ -23,7 +23,7 @@ func TestHostBackend_RunNamedContainer_ExecsIntoPodContainer(t *testing.T) {
 	}}}
 	pod := newClaimPodManager(rt, "/host/ws", "/workspace", "pause:img", "runner:img", "")
 	require.NoError(t, pod.Start(context.Background(), pt))
-	b := newHostBackend(&Agent{ID: "a1"}, "r1", "/host/ws", pod)
+	b := newHostBackend(&Agent{ID: "a1"}, "r1", "test-job", "/host/ws", pod)
 
 	step := api.ClaimStep{Index: 0, Name: "s", Container: "tools"}
 	ec, err := b.RunNamedContainer(context.Background(), step, "tools", "echo hi", nil, nil, nil)
@@ -55,7 +55,7 @@ func TestHostBackend_RunNamedContainer_UnknownContainer(t *testing.T) {
 	pt := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{}}}
 	pod := newClaimPodManager(rt, "/host/ws", "/workspace", "pause:img", "runner:img", "")
 	require.NoError(t, pod.Start(context.Background(), pt))
-	b := newHostBackend(&Agent{ID: "a1"}, "r1", "/host/ws", pod)
+	b := newHostBackend(&Agent{ID: "a1"}, "r1", "test-job", "/host/ws", pod)
 
 	step := api.ClaimStep{Name: "s", Container: "missing"}
 	if _, err := b.RunNamedContainer(context.Background(), step, "missing", "echo hi", nil, nil, nil); err == nil {
@@ -67,7 +67,7 @@ func TestHostBackend_RunNamedContainer_UnknownContainer(t *testing.T) {
 // (nil pod) rejects a container: step rather than silently running it on the
 // host.
 func TestHostBackend_Native_RunNamedContainer_Errors(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1"}, "r1", "/host/ws", nil)
+	b := newHostBackend(&Agent{ID: "a1"}, "r1", "test-job", "/host/ws", nil)
 	step := api.ClaimStep{Name: "s", Container: "tools"}
 	if _, err := b.RunNamedContainer(context.Background(), step, "tools", "echo hi", nil, nil, nil); err == nil {
 		t.Fatal("expected error: container: step on a native claim")
@@ -79,7 +79,7 @@ func TestHostBackend_Native_RunNamedContainer_Errors(t *testing.T) {
 // sequential), matching the ConcurrencyMode contract executeRun relies on
 // when driving RunPipeline.
 func TestHostBackend_ConcurrencyMode(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1"}, "r1", t.TempDir(), nil)
+	b := newHostBackend(&Agent{ID: "a1"}, "r1", "test-job", t.TempDir(), nil)
 	assert.Equal(t, Concurrent, b.ConcurrencyMode())
 }
 
@@ -90,7 +90,7 @@ func TestHostBackend_ConcurrencyMode(t *testing.T) {
 // executeRun; end-to-end shipping behavior stays covered by the existing
 // stdout-stream/parity suites.
 func TestHostBackend_StepLogWriters_FinishIsSafe(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", t.TempDir(), nil)
+	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", "test-job", t.TempDir(), nil)
 	b.SetMasker(secrets.NoOpMasker)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -118,7 +118,7 @@ func TestHostBackend_StepLogWriters_FinishIsSafe(t *testing.T) {
 // StepLogWriters returns *LogPusher for both streams (per the ExecBackend
 // StepLogWriters doc comment: "host returns LogPusher for both streams").
 func TestHostBackend_StepLogWriters_ReturnsLogPushers(t *testing.T) {
-	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", t.TempDir(), nil)
+	b := newHostBackend(&Agent{ID: "a1", Client: NewClient("http://127.0.0.1:0", "tok")}, "r1", "test-job", t.TempDir(), nil)
 	b.SetMasker(secrets.NoOpMasker)
 
 	stdout, stderr, _ := b.StepLogWriters(context.Background(), 0)
@@ -134,7 +134,7 @@ func TestHostBackend_StepLogWriters_ReturnsLogPushers(t *testing.T) {
 func TestHostBackend_CacheRestore_MissReturnsNil(t *testing.T) {
 	ctx := context.Background()
 	a := newCacheTestAgent(t)
-	b := newHostBackend(a, "r1", t.TempDir(), nil)
+	b := newHostBackend(a, "r1", "test-job", t.TempDir(), nil)
 	destPath := t.TempDir()
 
 	hit, err := b.CacheRestore(ctx, ScopeHandle{}, "nonexistent-key", nil, destPath)

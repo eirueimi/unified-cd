@@ -84,6 +84,11 @@ metadata:
   name: webhook-triggered
 spec:
   native: true
+  params:
+    inputs:
+      - name: branch
+        type: string
+        pattern: '^[A-Za-z0-9._/-]+$'
   steps:
     - name: run
       run: echo hello-from-webhook
@@ -106,6 +111,7 @@ spec:
     job: webhook-triggered
   auth:
     type: none
+    allowUnauthenticated: true
   paramsMapping:
     branch: '{{ index .Payload "ref" }}'
 `})
@@ -261,6 +267,7 @@ spec:
     job: filter-job
   auth:
     type: none
+    allowUnauthenticated: true
   filters:
     - '{{ eq (index .Payload "ref") "refs/heads/main" }}'
 `})

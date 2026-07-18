@@ -10,10 +10,25 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestArtifactUpload_RejectsUnsafeName(t *testing.T) {
+	// A name that is not a plain single path segment must be rejected before
+	// it reaches the object store, by the same guard every other artifact
+	// path uses (isSafeArtifactPathSegment via artifactKey).
+	for _, name := range []string{"..", ".", ""} {
+		_, err := artifact.ArtifactKey("run1", name)
+		require.Error(t, err, "name %q must be rejected", name)
+	}
+	key, err := artifact.ArtifactKey("run1", "build-output")
+	require.NoError(t, err)
+	assert.Equal(t, "artifacts/run1/build-output.tar.gz", key,
+		"valid names must produce the exact same key as before, so existing artifacts still resolve")
+}
 
 // newArtifactTestServer returns a Server whose router is wired and whose objStore
 // is a usable local object store, plus the agent token. Unlike newTestServer (which
@@ -57,11 +72,23 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 	run, err := st.CreateRun(t.Context(), "artifact-roundtrip-job", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 
+	// The upload route has no {agentId} path segment, so a legacy shared-token
+	// caller can never present a matching claimed_by identity and is always
+	// rejected now (see handleArtifactUpload) — this round trip must upload
+	// as the agent that actually claimed the run, via a real per-agent
+	// credential, exactly like a migrated agent would.
+	ownerToken := issueAgentAccessForTest(t, st, "artifact-owner", nil, nil)
+	_, err = st.TransitionPendingToQueued(t.Context(), 1)
+	require.NoError(t, err)
+	claimed, err := st.ClaimNextRun(t.Context(), "artifact-owner", nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
+
 	payload := []byte("hello artifact data")
 
 	// Upload
 	uploadReq := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/myartifact", bytes.NewReader(payload))
-	uploadReq.Header.Set("Authorization", "Bearer agent-secret")
+	uploadReq.Header.Set("Authorization", "Bearer "+ownerToken)
 	uploadReq.Header.Set("Content-Type", "application/octet-stream")
 	uploadRec := httptest.NewRecorder()
 	s.Router().ServeHTTP(uploadRec, uploadReq)
@@ -80,22 +107,40 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 }
 
 func TestArtifactList_ReturnsNames(t *testing.T) {
-	s, agentToken := newArtifactTestServer(t)
-	// upload two artifacts via the agent PUT path
+	// handleArtifactUpload now fails closed (503) when s.store is nil (see
+	// handleArtifactUpload's ownership guard), so uploading requires a real
+	// store-backed server with a claimed run to authenticate the ownership
+	// check against — newArtifactTestServer's nil store can no longer upload,
+	// only list/download, which don't consult s.store at all.
+	s, st := newTestServer(t)
+	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
+	_, err := st.UpsertJob(t.Context(), "artifact-list-job", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+	run, err := st.CreateRun(t.Context(), "artifact-list-job", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+	ownerToken := issueAgentAccessForTest(t, st, "artifact-list-owner", nil, nil)
+	_, err = st.TransitionPendingToQueued(t.Context(), 1)
+	require.NoError(t, err)
+	claimed, err := st.ClaimNextRun(t.Context(), "artifact-list-owner", nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
+
+	// upload two artifacts via the agent PUT path, as the owning agent
 	for _, name := range []string{"build", "logs"} {
-		req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/run1/artifacts/"+name, strings.NewReader("x"))
-		req.Header.Set("Authorization", "Bearer "+agentToken)
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/"+name, strings.NewReader("x"))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
 		rr := httptest.NewRecorder()
-		s.r.ServeHTTP(rr, req)
+		s.Router().ServeHTTP(rr, req)
 		if rr.Code != http.StatusNoContent {
-			t.Fatalf("put %s: %d", name, rr.Code)
+			t.Fatalf("put %s: %d (%s)", name, rr.Code, rr.Body.String())
 		}
 	}
-	// list with the agent token (combined auth accepts it)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run1/artifacts", nil)
-	req.Header.Set("Authorization", "Bearer "+agentToken)
+	// list with the legacy agent token (combined auth accepts it; listing
+	// carries no ownership check)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/artifacts", nil)
+	req.Header.Set("Authorization", "Bearer agent-secret")
 	rr := httptest.NewRecorder()
-	s.r.ServeHTTP(rr, req)
+	s.Router().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("list: %d (%s)", rr.Code, rr.Body.String())
 	}
@@ -110,6 +155,19 @@ func TestArtifactList_ReturnsNames(t *testing.T) {
 	if !names["build"] || !names["logs"] {
 		t.Fatalf("missing names: %v", got)
 	}
+}
+
+// TestArtifactUpload_NilStore_FailsClosed is the regression test for the
+// "s.store != nil gates the ownership guard itself" finding: a server with an
+// object store but no run store must refuse artifact uploads outright (503),
+// not silently skip the ownership check and accept the upload from anyone.
+func TestArtifactUpload_NilStore_FailsClosed(t *testing.T) {
+	s, agentToken := newArtifactTestServer(t)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/run1/artifacts/build", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer "+agentToken)
+	rr := httptest.NewRecorder()
+	s.Router().ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code, rr.Body.String())
 }
 
 func TestArtifactList_EmptyIsArrayNotNull(t *testing.T) {
@@ -145,6 +203,33 @@ func TestArtifactUpload_RejectsNonAgentToken(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("bad-token upload = %d, want 401", rr.Code)
 	}
+}
+
+// TestArtifactUpload_RejectsLegacyPrincipal proves the legacy shared-token
+// bypass this fix closes: the upload route has no {agentId} path segment, so
+// a legacy caller can never present a matching claimed_by identity and must
+// now be rejected for every run, claimed or not — the same fail-closed
+// outcome as the secrets-fetch path, reached via the shared ownership guard
+// instead of an explicit legacy check.
+func TestArtifactUpload_RejectsLegacyPrincipal(t *testing.T) {
+	s, st := newTestServer(t)
+	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
+	_, err := st.UpsertJob(t.Context(), "artifact-legacy-reject", "unified-cd/v1", []byte(`{"steps":[]}`))
+	require.NoError(t, err)
+	run, err := st.CreateRun(t.Context(), "artifact-legacy-reject", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	require.NoError(t, err)
+	_, err = st.TransitionPendingToQueued(t.Context(), 1)
+	require.NoError(t, err)
+	claimed, err := st.ClaimNextRun(t.Context(), "legacy-claimer", nil)
+	require.NoError(t, err)
+	require.Equal(t, run.ID, claimed.ID)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/build", strings.NewReader("x"))
+	req.Header.Set("Authorization", "Bearer agent-secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
 }
 
 func TestArtifactUpload_RejectsNonOwnerPrincipal(t *testing.T) {

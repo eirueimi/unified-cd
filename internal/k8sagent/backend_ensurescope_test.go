@@ -24,7 +24,7 @@ import (
 func TestK8sBackend_EnsureScope_HonorsExpandedEnv(t *testing.T) {
 	pm := &fakePM{}
 	a := &K8sAgent{cfg: Config{Namespace: "default"}, pm: pm}
-	b := newK8sBackend(a, "run-1", "pod-default", "/workspace", nil, metav1.Time{})
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
 
 	step := api.ClaimStep{
 		ScopeID:    "scope:build",
@@ -57,7 +57,7 @@ func TestK8sBackend_EnsureScope_HonorsExpandedEnv(t *testing.T) {
 func TestK8sBackend_EnsureScope_KeepsK8sDefaultsWhenNoOverride(t *testing.T) {
 	pm := &fakePM{}
 	a := &K8sAgent{cfg: Config{Namespace: "default"}, pm: pm}
-	b := newK8sBackend(a, "run-1", "pod-default", "/workspace", nil, metav1.Time{})
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
 
 	step := api.ClaimStep{
 		ScopeID:    "scope:build",

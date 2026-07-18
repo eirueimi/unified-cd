@@ -38,9 +38,13 @@ func (wr *WebhookReceiver) Validate() error {
 		return fmt.Errorf("spec.trigger must set exactly one of job or appSource")
 	}
 	switch wr.Spec.Auth.Type {
-	case "none", "hmac-sha256", "github", "token":
+	case "hmac-sha256", "github", "token":
+	case "none":
+		if !wr.Spec.Auth.AllowUnauthenticated {
+			return fmt.Errorf("webhook receiver %q: auth.type \"none\" requires allowUnauthenticated: true — an unauthenticated webhook lets anyone trigger this job", wr.Metadata.Name)
+		}
 	case "":
-		wr.Spec.Auth.Type = "none"
+		return fmt.Errorf("webhook receiver %q: spec.auth is required (use type: hmac-sha256, github, or token; or type: none with allowUnauthenticated: true)", wr.Metadata.Name)
 	default:
 		return fmt.Errorf("unsupported auth.type %q", wr.Spec.Auth.Type)
 	}

@@ -28,7 +28,7 @@ func TestWebhookIngress_PersistsRequiredCaps(t *testing.T) {
 			[]byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`))
 		spec, _ := json.Marshal(map[string]any{
 			"trigger": map[string]any{"job": "nativejob"},
-			"auth":    map[string]any{"type": "none"},
+			"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
 		})
 		_, _ = pg.UpsertWebhookReceiver(t.Context(), "native-hook", spec)
 
@@ -68,7 +68,7 @@ func TestWebhookIngress_PersistsRequiredCaps(t *testing.T) {
 		_, _ = pg.UpsertJob(t.Context(), "podjob-k8sonly-hook", "unified-cd/v1", []byte(podSpec))
 		spec, _ := json.Marshal(map[string]any{
 			"trigger": map[string]any{"job": "podjob-k8sonly-hook"},
-			"auth":    map[string]any{"type": "none"},
+			"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
 		})
 		_, _ = pg.UpsertWebhookReceiver(t.Context(), "pod-hook", spec)
 
