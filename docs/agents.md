@@ -338,6 +338,18 @@ into a confusing per-step failure. **Native steps are unaffected**: a
 `bash -lc` (or an explicit `shell:`), never touching `/.ucd` or the shim —
 see [Job Reference: `native: true`](jobs.md#native-true--host-process-jobs).
 
+#### Compose development builds
+
+The root `docker-compose.yaml` agent service keeps the repository bind-mounted
+at `/app` so Air can watch Go source changes. For every rebuild, Air copies
+that source into a disposable container-local `/tmp/unified-cd-agent-src`
+tree, excluding `.git`, `tmp`, and both `ucd-sh` embed paths. It prepares and
+builds the real shim only in that temporary tree, then writes the resulting
+agent executable to `/app/tmp/unified-agent`. Consequently, Compose rebuilds
+never write generated shim bytes to
+`/app/internal/shim/embedded/ucd-sh-amd64` or
+`/app/internal/shim/embedded/ucd-sh-arm64` in the host bind mount.
+
 ### Troubleshooting isolated claims
 
 If a claim fails before any step runs — no container runtime found, the
