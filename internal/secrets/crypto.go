@@ -17,10 +17,11 @@ var (
 	// ErrUnsupportedVersion means the blob was written by a different format
 	// version than this build understands.
 	ErrUnsupportedVersion = errors.New("unsupported ciphertext version")
-	// ErrBindingMismatch means the ciphertext authenticated correctly as
-	// ciphertext but not against the supplied Binding. This is
-	// security-relevant: it indicates substitution, tampering, or corruption.
-	ErrBindingMismatch = errors.New("ciphertext does not match its binding")
+	// ErrBindingMismatch means AES-GCM authentication failed after the DEK
+	// unwrapped cleanly. GCM binds ciphertext and AAD into one MAC, so it
+	// cannot say which of them was wrong: the cause is a mismatched Binding,
+	// a corrupted ciphertext, or a wrong key. All three are security-relevant.
+	ErrBindingMismatch = errors.New("ciphertext authentication failed")
 )
 
 // Encrypt performs envelope encryption. It generates a DEK, encrypts the
@@ -71,9 +72,11 @@ func Decrypt(ctx context.Context, km KeyManager, encryptedDEK, ciphertext []byte
 	}()
 	plaintext, err := aesGCMDecrypt(dek, ct, b.canonical())
 	if err != nil {
-		// AES-GCM cannot distinguish a wrong key from wrong AAD; at this point
-		// the DEK unwrapped cleanly, so the AAD is the remaining explanation.
-		return nil, fmt.Errorf("decrypt %s: %w", b, ErrBindingMismatch)
+		// Do not name a single cause here. The DEK unwrapped cleanly, but GCM
+		// still cannot distinguish a mismatched Binding from a corrupted
+		// ciphertext, and an operator debugging a storage fault should not be
+		// sent looking for a name/scope mismatch that does not exist.
+		return nil, fmt.Errorf("decrypt %s: %w (mismatched binding, corrupted ciphertext, or wrong key)", b, ErrBindingMismatch)
 	}
 	return plaintext, nil
 }
