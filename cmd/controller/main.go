@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -18,7 +17,6 @@ import (
 	"github.com/eirueimi/unified-cd/internal/gittemplate"
 	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
-	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -246,26 +244,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// controllerKey: config file > env var > persisted DB value > generated on first start and saved to DB
-	controllerKeyHex := eff.ControllerKey
-	if controllerKeyHex == "" {
-		candidate := hex.EncodeToString(secrets.GenerateKey())
-		controllerKeyHex, err = pg.EnsureControllerKey(ctx, candidate)
-		if err != nil {
-			slog.Error("ensure controller key", "error", err)
-			os.Exit(1)
-		}
-		if controllerKeyHex == candidate {
-			slog.Info("controllerKey not set — generated a new key and persisted it to the database")
-		} else {
-			slog.Info("controllerKey not set — loaded previously persisted key from the database")
-		}
-	}
-	km, err := secrets.NewLocalKeyManager(controllerKeyHex)
+	resolved, err := eff.KeySource.Resolve()
 	if err != nil {
-		slog.Error("key manager init", "error", err)
+		slog.Error("encryption key", "error", err)
 		os.Exit(1)
 	}
+	for _, w := range resolved.Warnings {
+		slog.Warn(w)
+	}
+	slog.Info("encryption key loaded", "source", resolved.Description)
+	km := resolved.KeyManager
 
 	var obj objectstore.ObjectStore
 	if *s3Endpoint != "" && *s3Bucket != "" {

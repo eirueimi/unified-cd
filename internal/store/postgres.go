@@ -1890,29 +1890,6 @@ func (p *Postgres) DeleteGitCredential(ctx context.Context, name string) error {
 	return err
 }
 
-// EnsureControllerKey tries to store candidateHex in the single row of controller_settings.
-// If a row already exists it does nothing and returns the existing value
-// (safe against simultaneous first-startup from multiple replicas).
-func (p *Postgres) EnsureControllerKey(ctx context.Context, candidateHex string) (string, error) {
-	var keyHex string
-	err := p.pool.QueryRow(ctx, `
-		WITH ins AS (
-			INSERT INTO controller_settings (id, controller_key_hex)
-			VALUES (1, $1)
-			ON CONFLICT (id) DO NOTHING
-			RETURNING controller_key_hex
-		)
-		SELECT controller_key_hex FROM ins
-		UNION ALL
-		SELECT controller_key_hex FROM controller_settings WHERE id = 1
-		LIMIT 1`,
-		candidateHex).Scan(&keyHex)
-	if err != nil {
-		return "", err
-	}
-	return keyHex, nil
-}
-
 // InsertAuditLog records a single state-changing API operation.
 func (p *Postgres) InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error {
 	const q = `

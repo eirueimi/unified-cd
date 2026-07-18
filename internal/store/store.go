@@ -451,11 +451,6 @@ type Store interface {
 	// passed as TimedOut (system-decided). Returns the number of rows updated.
 	MarkExpiredApprovalsTimedOut(ctx context.Context) (int, error)
 
-	// ControllerSettings
-	// EnsureControllerKey returns the persisted controllerKey (hex string for the KEK).
-	// If none exists yet, it stores candidateHex and returns it (safe against simultaneous first-startup from multiple replicas).
-	EnsureControllerKey(ctx context.Context, candidateHex string) (string, error)
-
 	// Audit
 	// InsertAuditLog records a single state-changing API operation.
 	InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error

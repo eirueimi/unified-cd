@@ -92,17 +92,17 @@ type ControllerOIDCConfig struct {
 // ControllerConfig holds all configuration for the controller binary.
 // Populated from a YAML file via LoadController; zero-value fields mean "not set".
 type ControllerConfig struct {
-	DSN           string `yaml:"dsn"`
-	Addr          string `yaml:"addr"`
-	Token         string `yaml:"token"`
-	S3Endpoint    string `yaml:"s3Endpoint"`
-	S3Bucket      string `yaml:"s3Bucket"`
-	S3Key         string `yaml:"s3Key"`
-	S3Secret      string `yaml:"s3Secret"`
-	DataDir       string `yaml:"dataDir"`
-	ControllerKey string `yaml:"controllerKey"`
-	WebDir        string `yaml:"webDir"`
-	UIProxyTarget string `yaml:"uiProxyTarget"`
+	DSN           string    `yaml:"dsn"`
+	Addr          string    `yaml:"addr"`
+	Token         string    `yaml:"token"`
+	S3Endpoint    string    `yaml:"s3Endpoint"`
+	S3Bucket      string    `yaml:"s3Bucket"`
+	S3Key         string    `yaml:"s3Key"`
+	S3Secret      string    `yaml:"s3Secret"`
+	DataDir       string    `yaml:"dataDir"`
+	KeySource     KeySource `yaml:"-"`
+	WebDir        string    `yaml:"webDir"`
+	UIProxyTarget string    `yaml:"uiProxyTarget"`
 	// StderrPlain, when true, tells the web UI to render step stderr in the run
 	// log with the same color as stdout instead of red. Default (false) = red.
 	StderrPlain bool                       `yaml:"stderrPlain"`
@@ -150,14 +150,18 @@ func LoadController(path string) (*ControllerConfig, error) {
 // Priority (lowest to highest): env vars → config file → CLI flags.
 func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	eff := &ControllerConfig{
-		DSN:             os.Getenv("UNIFIED_DB_DSN"),
-		Token:           os.Getenv("UNIFIED_TOKEN"),
-		S3Endpoint:      os.Getenv("UNIFIED_S3_ENDPOINT"),
-		S3Bucket:        os.Getenv("UNIFIED_S3_BUCKET"),
-		S3Key:           os.Getenv("UNIFIED_S3_KEY"),
-		S3Secret:        os.Getenv("UNIFIED_S3_SECRET"),
-		DataDir:         os.Getenv("UNIFIED_DATA_DIR"),
-		ControllerKey:   os.Getenv("UNIFIED_CONTROLLER_KEY"),
+		DSN:        os.Getenv("UNIFIED_DB_DSN"),
+		Token:      os.Getenv("UNIFIED_TOKEN"),
+		S3Endpoint: os.Getenv("UNIFIED_S3_ENDPOINT"),
+		S3Bucket:   os.Getenv("UNIFIED_S3_BUCKET"),
+		S3Key:      os.Getenv("UNIFIED_S3_KEY"),
+		S3Secret:   os.Getenv("UNIFIED_S3_SECRET"),
+		DataDir:    os.Getenv("UNIFIED_DATA_DIR"),
+		KeySource: KeySource{
+			KeyFile: os.Getenv("UNIFIED_CONTROLLER_KEY_FILE"),
+			KMSURI:  os.Getenv("UNIFIED_KMS_URI"),
+			DevMode: envBool("UNIFIED_DEV_MODE"),
+		},
 		WebDir:          os.Getenv("UNIFIED_WEB_DIR"),
 		UIProxyTarget:   os.Getenv("UNIFIED_UI_PROXY_TARGET"),
 		StderrPlain:     envBool("UNIFIED_LOG_STDERR_PLAIN"),
@@ -180,6 +184,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		}
 	}
 
+	if err := eff.KeySource.Validate(); err != nil {
+		return nil, err
+	}
 	if filePath == "" {
 		return eff, nil
 	}
@@ -211,9 +218,6 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.DataDir != "" {
 		eff.DataDir = file.DataDir
-	}
-	if file.ControllerKey != "" {
-		eff.ControllerKey = file.ControllerKey
 	}
 	if file.WebDir != "" {
 		eff.WebDir = file.WebDir
