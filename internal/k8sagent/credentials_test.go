@@ -315,8 +315,9 @@ func TestKubernetesCredentialEnrollmentPodReadMatchesPolicyNamespace(t *testing.
 
 	controllerRBAC, err := os.ReadFile(filepath.Join(root, "manifests", "base", "controller", "rbac.yaml"))
 	require.NoError(t, err)
-	assert.Contains(t, string(controllerRBAC), "kind: Role\nmetadata:\n  name: unified-cd-controller-kubernetes-enrollment\n  namespace: unified-cd")
-	assert.Contains(t, string(controllerRBAC), "kind: RoleBinding\nmetadata:\n  name: unified-cd-controller-kubernetes-enrollment\n  namespace: unified-cd")
+	normalizedControllerRBAC := strings.ReplaceAll(string(controllerRBAC), "\r\n", "\n")
+	assert.Contains(t, normalizedControllerRBAC, "kind: Role\nmetadata:\n  name: unified-cd-controller-kubernetes-enrollment\n  namespace: unified-cd")
+	assert.Contains(t, normalizedControllerRBAC, "kind: RoleBinding\nmetadata:\n  name: unified-cd-controller-kubernetes-enrollment\n  namespace: unified-cd")
 
 	agentRBAC, err := os.ReadFile(filepath.Join(root, "manifests", "base", "k8s-agent", "rbac.yaml"))
 	require.NoError(t, err)
