@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
@@ -55,7 +56,11 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	name := chi.URLParam(r, "name")
-	key := fmt.Sprintf("artifacts/%s/%s.tar.gz", runID, name)
+	key, err := artifact.ArtifactKey(runID, name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	size := r.ContentLength
 	if size < 0 {

@@ -10,10 +10,25 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestArtifactUpload_RejectsUnsafeName(t *testing.T) {
+	// A name that is not a plain single path segment must be rejected before
+	// it reaches the object store, by the same guard every other artifact
+	// path uses (isSafeArtifactPathSegment via artifactKey).
+	for _, name := range []string{"..", ".", ""} {
+		_, err := artifact.ArtifactKey("run1", name)
+		require.Error(t, err, "name %q must be rejected", name)
+	}
+	key, err := artifact.ArtifactKey("run1", "build-output")
+	require.NoError(t, err)
+	assert.Equal(t, "artifacts/run1/build-output.tar.gz", key,
+		"valid names must produce the exact same key as before, so existing artifacts still resolve")
+}
 
 // newArtifactTestServer returns a Server whose router is wired and whose objStore
 // is a usable local object store, plus the agent token. Unlike newTestServer (which

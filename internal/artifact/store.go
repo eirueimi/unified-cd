@@ -104,7 +104,7 @@ func isSafeArtifactPathSegment(s string) bool {
 	return true
 }
 
-// artifactKey builds the object-store key for an artifact. It is defensive
+// ArtifactKey builds the object-store key for an artifact. It is defensive
 // regardless of upstream validation (internal/dsl already rejects unsafe
 // uploadArtifact/downloadArtifact names at parse time, but this is the last
 // line of defense against path traversal — see #26): runID and name are
@@ -112,7 +112,7 @@ func isSafeArtifactPathSegment(s string) bool {
 // name/runID that satisfies that constraint produces the exact same key as
 // before this fix, so already-stored artifacts with plain names are
 // unaffected.
-func artifactKey(runID, name string) (string, error) {
+func ArtifactKey(runID, name string) (string, error) {
 	if !isSafeArtifactPathSegment(runID) {
 		return "", fmt.Errorf("invalid runID %q", runID)
 	}
@@ -125,7 +125,7 @@ func artifactKey(runID, name string) (string, error) {
 // Upload tars+zstds dir and stores it at artifacts/{runID}/{name}.tar.gz,
 // streaming the archive so it is never fully buffered in memory.
 func Upload(ctx context.Context, store objectstore.ObjectStore, runID, name, dir string) error {
-	key, err := artifactKey(runID, name)
+	key, err := ArtifactKey(runID, name)
 	if err != nil {
 		return fmt.Errorf("upload artifact: %w", err)
 	}
@@ -136,7 +136,7 @@ func Upload(ctx context.Context, store objectstore.ObjectStore, runID, name, dir
 
 // Download fetches artifacts/{runID}/{name}.tar.gz and extracts it into dest.
 func Download(ctx context.Context, store objectstore.ObjectStore, runID, name, dest string) error {
-	key, err := artifactKey(runID, name)
+	key, err := ArtifactKey(runID, name)
 	if err != nil {
 		return fmt.Errorf("download artifact: %w", err)
 	}
