@@ -19,7 +19,10 @@ services:
     environment:
       UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
       UNIFIED_TOKEN: ha-admin-token
-      UNIFIED_CONTROLLER_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+      # All replicas must share the same key file; see docs/high-availability.md.
+      UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek
+    volumes:
+      - ./kek:/run/secrets/kek:ro
     depends_on:
       postgres:
         condition: service_healthy

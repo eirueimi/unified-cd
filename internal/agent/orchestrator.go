@@ -160,8 +160,31 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	if len(c.SecretsNeeded) > 0 {
 		secretValues, err := client.FetchSecrets(ctx, agentID, c.RunID, c.SecretsNeeded)
 		if err != nil {
-			slog.Warn("failed to fetch secrets, continuing without secrets", "runId", c.RunID, "error", err)
-			secretValues = map[string]string{}
+			// Continuing with an empty map would run every step as though its
+			// secrets were configured but empty — e.g. `curl -H "Authorization:
+			// Bearer $TOKEN"` with no token — which either fails confusingly or
+			// does the wrong thing silently. RunClaim has no *Agent/*K8sAgent to
+			// call their failRun on (see agent.go's Agent.failRun and
+			// k8sagent/agent.go's K8sAgent.failRun, both used for fatal
+			// step-setup failures that happen before RunClaim starts), so this
+			// inlines the same pattern: log the reason into the run's own logs
+			// (stepIndex -1, "System" in the UI), then FinishRun(Failed), and
+			// return without running the DAG. The cancel poller started above is
+			// still torn down correctly by the deferred cancelRun/pollerWG.Wait().
+			reason := fmt.Sprintf("fetch secrets for run %s: %v", c.RunID, err)
+			slog.Error(reason, "runId", c.RunID)
+			failCtx := context.WithoutCancel(ctx)
+			_ = client.AppendLogBulk(failCtx, agentID, c.RunID, -1, []api.LogAppendRequest{{
+				RunID:     c.RunID,
+				StepIndex: -1,
+				Stream:    "stderr",
+				Timestamp: time.Now().UTC(),
+				Line:      reason,
+			}})
+			retryUntilSuccess(failCtx, func(callCtx context.Context) error {
+				return client.FinishRun(callCtx, agentID, c.RunID, api.RunFailed)
+			})
+			return
 		}
 		sctx.mu.Lock()
 		sctx.data.Secrets = secretValues

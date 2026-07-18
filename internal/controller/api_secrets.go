@@ -2,13 +2,16 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 // handleSetSecret creates or updates a secret.
@@ -31,7 +34,8 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 	if req.Scope == "" {
 		req.Scope = "global"
 	}
-	encDEK, ct, err := secrets.Encrypt(r.Context(), s.km, []byte(req.Value))
+	encDEK, ct, err := secrets.Encrypt(r.Context(), s.km, []byte(req.Value),
+		secrets.SecretBinding(req.Name, req.Scope, req.ScopeRef))
 	if err != nil {
 		http.Error(w, "encrypt: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -113,15 +117,46 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 	for _, name := range req.Names {
 		stored, err := s.store.GetSecret(r.Context(), name, "global", "")
 		if err != nil {
-			// Skip if not found.
-			continue
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Omitting the secret would hand the agent an empty value and let
+				// the step run as if it had been configured. Fail loudly instead.
+				http.Error(w, "secret "+name+" not found", http.StatusNotFound)
+				return
+			}
+			// A transient store fault (e.g. DB connectivity) is not "not
+			// found" — reporting it as 404 would mislead an operator into
+			// thinking the secret needs to be re-registered.
+			http.Error(w, "secret "+name+": "+err.Error(), http.StatusInternalServerError)
+			return
 		}
-		plaintext, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext)
+		plaintext, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext,
+			secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
 		if err != nil {
+			logSecretDecryptFailure("agent-fetch", name, err)
 			http.Error(w, "decrypt "+name+": "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		result[name] = string(plaintext)
 	}
 	writeJSON(w, http.StatusOK, api.AgentFetchSecretsResponse{Secrets: result})
+}
+
+// logSecretDecryptFailure logs a secrets.Decrypt failure at the controller's
+// decrypt call sites. A binding-mismatch (AES-GCM AAD authentication)
+// failure is logged distinctly and at a raised level, since it signals
+// ciphertext substitution, tampering, or corruption rather than an ordinary
+// decrypt error — see docs/superpowers/specs/2026-07-18-secrets-v2-design.md
+// §7 (Error handling). site identifies the call path (e.g.
+// "agent-fetch", "webhook-hmac", "webhook-token", "oidc-refresh"); id
+// identifies the affected secret/session, never its value.
+//
+// Only identifiers are logged — never the secret value, the plaintext, or
+// the AAD contents.
+func logSecretDecryptFailure(site, id string, err error) {
+	if errors.Is(err, secrets.ErrBindingMismatch) {
+		slog.Error("secret decrypt: binding mismatch (possible ciphertext tampering or substitution)",
+			"site", site, "id", id)
+		return
+	}
+	slog.Warn("secret decrypt failed", "site", site, "id", id, "error", err)
 }

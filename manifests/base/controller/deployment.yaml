@@ -23,6 +23,9 @@ spec:
           args: ["-f", "/etc/unified-cd/controller-config.yaml"]
           ports:
             - containerPort: 8080
+          env:
+            - name: UNIFIED_CONTROLLER_KEY_FILE
+              value: /etc/unified-cd/kek
           envFrom:
             - secretRef:
                 name: unified-cd-controller
@@ -41,7 +44,18 @@ spec:
               mountPath: /etc/unified-cd/controller-config.yaml
               subPath: controller-config.yaml
               readOnly: true
+            - name: controller-kek
+              mountPath: /etc/unified-cd/kek
+              subPath: kek
+              readOnly: true
       volumes:
         - name: controller-config
           configMap:
             name: unified-cd-controller-config
+        - name: controller-kek
+          secret:
+            secretName: unified-cd-controller-kek
+            items:
+              - key: kek
+                path: kek
+            defaultMode: 0400

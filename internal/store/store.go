@@ -396,9 +396,9 @@ type Store interface {
 	DeleteExpiredOIDCStates(ctx context.Context) error
 
 	// Sessions
-	CreateSession(ctx context.Context, tokenHash, sub, email, role, encryptedRefreshToken string, expiresAt time.Time) (*Session, error)
+	CreateSession(ctx context.Context, tokenHash, sub, email, role string, refreshDEK, refreshCT []byte, expiresAt time.Time) (*Session, error)
 	GetSessionByHash(ctx context.Context, tokenHash string) (*Session, error)
-	UpdateSessionExpiry(ctx context.Context, id, encryptedRefreshToken string, expiresAt time.Time) error
+	UpdateSessionExpiry(ctx context.Context, id string, refreshDEK, refreshCT []byte, expiresAt time.Time) error
 	DeleteSession(ctx context.Context, id string) error
 	TouchSession(ctx context.Context, id string) error
 
@@ -451,11 +451,6 @@ type Store interface {
 	// passed as TimedOut (system-decided). Returns the number of rows updated.
 	MarkExpiredApprovalsTimedOut(ctx context.Context) (int, error)
 
-	// ControllerSettings
-	// EnsureControllerKey returns the persisted controllerKey (hex string for the KEK).
-	// If none exists yet, it stores candidateHex and returns it (safe against simultaneous first-startup from multiple replicas).
-	EnsureControllerKey(ctx context.Context, candidateHex string) (string, error)
-
 	// Audit
 	// InsertAuditLog records a single state-changing API operation.
 	InsertAuditLog(ctx context.Context, actor, method, path, action, resource string, status int) error
@@ -483,15 +478,16 @@ type OIDCState struct {
 
 // Session holds a browser session.
 type Session struct {
-	ID           string
-	TokenHash    string
-	Sub          string
-	Email        string
-	Role         string
-	RefreshToken string // encrypted by KeyManager
-	ExpiresAt    time.Time
-	LastUsedAt   *time.Time
-	CreatedAt    time.Time
+	ID              string
+	TokenHash       string
+	Sub             string
+	Email           string
+	Role            string
+	RefreshTokenDEK []byte // envelope-encrypted OIDC refresh token
+	RefreshTokenCT  []byte
+	ExpiresAt       time.Time
+	LastUsedAt      *time.Time
+	CreatedAt       time.Time
 }
 
 // ClaimedRun holds a Run that has been claimed by an agent.

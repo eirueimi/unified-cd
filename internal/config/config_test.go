@@ -311,13 +311,6 @@ oidc:
 	assert.Equal(t, "file-client", eff.OIDC.ClientID)
 }
 
-func TestControllerEffective_ControllerKeyFromFile(t *testing.T) {
-	path := writeFile(t, "dsn: postgres://x\ntoken: tok\ncontrollerKey: deadbeef\n")
-	eff, err := config.ControllerEffective(path)
-	require.NoError(t, err)
-	assert.Equal(t, "deadbeef", eff.ControllerKey)
-}
-
 func TestAgentEffective_WorkspaceDirFromEnv(t *testing.T) {
 	t.Setenv("UNIFIED_SERVER", "http://env-server")
 	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")

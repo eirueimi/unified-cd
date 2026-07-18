@@ -6,4 +6,6 @@ resources:
   - ../base/garage
 patches:
   - path: secret-patch.yaml
+  - path: kek-secret-patch.yaml
   - path: agent-config-patch.yaml
+  - path: dev-mode-patch.yaml

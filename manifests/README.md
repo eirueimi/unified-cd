@@ -33,7 +33,7 @@ In the `unified-cd-controller` Secret (namespace: `unified-cd`), update the foll
 
 - `UNIFIED_DB_DSN` — PostgreSQL connection string
 - `UNIFIED_TOKEN` — Admin static token for human and CLI authentication
-- `UNIFIED_CONTROLLER_KEY` — 32-byte hex generated with `openssl rand -hex 32`. If left empty, the controller auto-generates and persists a key to the DB (see [HA Guide](../docs/high-availability.md))
+- `UNIFIED_CONTROLLER_KEY_FILE` — path to a mounted Secret holding 64 hex chars, generated with `unified-cli keygen`. The controller refuses to start without it (or `UNIFIED_KMS_URI`, or `UNIFIED_DEV_MODE=1`).
 - `UNIFIED_S3_ENDPOINT` / `UNIFIED_S3_BUCKET` / `UNIFIED_S3_KEY` / `UNIFIED_S3_SECRET` — S3-compatible object store connection info (controller starts without these, but log archival is disabled)
 
 The default k8s-agent Deployment does not receive `UNIFIED_TOKEN` or any shared agent token. It exchanges its projected, audience-bound ServiceAccount token for a short-lived credential.

@@ -1,0 +1,24 @@
+# This quick-trial bundle uses UNIFIED_DEV_MODE (set in secret-patch.yaml)
+# instead of a file-backed key, since no fixed key is baked into the repo.
+# Remove the key-file env var and the volume/volumeMount that core-install.yaml
+# uses to mount the "kek" Secret entry, which this overlay's secret-patch.yaml
+# deliberately omits.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unified-cd-controller
+  namespace: unified-cd
+spec:
+  template:
+    spec:
+      containers:
+        - name: controller
+          env:
+            - name: UNIFIED_CONTROLLER_KEY_FILE
+              $patch: delete
+          volumeMounts:
+            - mountPath: /etc/unified-cd/kek
+              $patch: delete
+      volumes:
+        - name: controller-kek
+          $patch: delete

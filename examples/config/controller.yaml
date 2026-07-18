@@ -8,10 +8,9 @@ dsn: postgres://unified:password@postgres:5432/unified_cd?sslmode=disable
 addr: :8080
 token: your-static-token
 
-# Encryption key for secrets (hex-encoded 32-byte AES key).
-# Generate with: openssl rand -hex 32
-# If omitted, an ephemeral key is generated on each startup (dev only).
-controllerKey: ""
+# The encryption key is supplied outside this file:
+#   UNIFIED_CONTROLLER_KEY_FILE=/etc/unified-cd/kek   (generate with `unified-cli keygen --out`)
+# or UNIFIED_KMS_URI=hashivault://unified-cd-kek
 
 # S3-compatible object store for log archival and cache (optional)
 s3Endpoint: garage:3900
