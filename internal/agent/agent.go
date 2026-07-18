@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -441,6 +442,23 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				a.failRun(runCtx, resp.RunID, fmt.Sprintf("prepare workspace failed: %v", err))
 				return
 			}
+			// Re-verify the ucd-sh shim before each claim: a native step's
+			// cwd is inside wsBase, so it can reach toolsDir by relative
+			// traversal and tamper with the shell every later containerized
+			// job on this agent will run (see EnsureShimIntact's doc
+			// comment). Checking here — once per claim, right before the
+			// run that just claimed the slot executes — bounds any such
+			// tampering to a single run. A check/repair failure is logged
+			// and must never fail the run; this is best-effort hardening,
+			// not the primary control.
+			if a.ToolsDir != "" {
+				if repaired, err := EnsureShimIntact(a.ToolsDir); err != nil {
+					slog.Error("shim integrity check failed", "error", err, "toolsDir", a.ToolsDir, "runId", resp.RunID)
+				} else if repaired {
+					slog.Error("ucd-sh shim was modified on disk and has been restored; a previous step on this agent may have tampered with it",
+						"toolsDir", a.ToolsDir, "runId", resp.RunID)
+				}
+			}
 			a.executeRun(runCtx, resp, workDir)
 		}()
 	}
@@ -699,4 +717,67 @@ func InstallShim(workspaceDir string) (toolsDir string, err error) {
 		return "", fmt.Errorf("write shim to %s: %w", shimPath, err)
 	}
 	return toolsDir, nil
+}
+
+// shimPayload returns the exact embedded ucd-sh bytes InstallShim writes,
+// via the same shimBytes indirection (so tests can fake it) — the single
+// source of truth both InstallShim and EnsureShimIntact read from, so the
+// two can never drift apart. shimBytes itself already resolves to the
+// architecture this agent binary was compiled for (see
+// internal/shim/embedded: embed_amd64.go / embed_arm64.go pick the payload
+// via build tags at compile time), so no arch selection happens here.
+func shimPayload() []byte {
+	return shimBytes()
+}
+
+// EnsureShimIntact re-verifies the on-disk ucd-sh shim at
+// <toolsDir>/ucd-sh against the embedded payload InstallShim writes, and
+// rewrites it if the two differ or the file is missing, reporting whether a
+// repair was needed.
+//
+// Why this exists: ucd-sh is the default shell and keep-alive entrypoint for
+// every containerized job step (see InstallShim's doc comment on the
+// shared-mount invariant that requires toolsDir to live under wsBase). A
+// NATIVE step runs as the agent user with its cwd inside wsBase, so it can
+// reach toolsDir by relative traversal (e.g. `cp evil ../../.ucd-tools/ucd-sh`)
+// and permanently backdoor the shell of every containerized job that later
+// runs on this agent — jobs that specifically chose container isolation to
+// avoid the host. Re-verifying before EACH claim (see the call in runLoop)
+// bounds any such tampering to a single run instead of letting it persist
+// across every later containerized job on this agent.
+//
+// This is best-effort hardening, not the primary control: a failure to read
+// or rewrite the shim is reported to the caller but must never fail the run
+// (see runLoop, which logs and continues on error).
+func EnsureShimIntact(toolsDir string) (repaired bool, err error) {
+	shimPath := filepath.Join(toolsDir, "ucd-sh")
+	want := shimPayload()
+	got, readErr := os.ReadFile(shimPath)
+	intact := readErr == nil && bytes.Equal(got, want)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return false, fmt.Errorf("read shim %s: %w", shimPath, readErr)
+	}
+	if !intact {
+		// A prior EnsureShimIntact call may have already tightened this file
+		// to 0o555 below. File-mode enforcement is per-owner, not per-caller,
+		// so that same missing write bit would block THIS repair's own
+		// WriteFile (its O_TRUNC open needs owner write) for exactly the
+		// reason it's meant to block a native step's overwrite — the agent
+		// and a native step run as the same OS user. Restore the write bit
+		// first; best-effort, since a missing file simply fails this chmod
+		// and WriteFile's O_CREATE handles that case on its own.
+		_ = os.Chmod(shimPath, 0o644)
+		if err := os.WriteFile(shimPath, want, 0o755); err != nil {
+			return false, fmt.Errorf("repair shim %s: %w", shimPath, err)
+		}
+	}
+	// Tighten to read-only where the platform allows, on every check (not
+	// just on repair): the agent's own repair path above restores the write
+	// bit before it needs it, so 0o555 the rest of the time raises the bar
+	// for a native step's overwrite without blocking the next legitimate
+	// repair. Not the primary control — the agent user may own the file
+	// regardless, so this is defense-in-depth — and a failure here is
+	// best-effort and never fatal.
+	_ = os.Chmod(shimPath, 0o555)
+	return !intact, nil
 }
