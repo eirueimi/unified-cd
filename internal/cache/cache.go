@@ -32,9 +32,11 @@ type Meta struct {
 
 	// OwnerJob is the qualified job name (e.g. "team-a/build") that saved this
 	// entry. It is redundant with the jobHash component of the object key
-	// itself (objectKey/jobPrefix), but is checked again on restore as
-	// defense in depth against a mis-keyed object landing in another job's
-	// namespace by some path other than Save.
+	// itself (objectKey/jobPrefix). On the exact-key restore path, isolation is
+	// structural: the job hash is part of the object key. On the restoreKeys
+	// fallback path, OwnerJob is checked against each candidate's Meta as
+	// defense in depth (see findBestMatch) against a mis-keyed object landing in
+	// another job's namespace by some path other than Save.
 	OwnerJob string `json:"ownerJob"`
 }
 

@@ -2,6 +2,7 @@ package k8sagent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
@@ -59,6 +60,7 @@ func TestK8sBackend_CacheRestore_HonorsStdoutMarker(t *testing.T) {
 			assert.Equal(t, tc.wantHit, hit)
 			assert.Equal(t, "pod-default", ex.gotPod, "non-scoped restore must target the default pod")
 			assert.Equal(t, artifactSidecarName, ex.gotContainer)
+			assertJobFlagInArgv(t, ex.gotScript, "test-job")
 		})
 	}
 }
@@ -92,4 +94,39 @@ func TestK8sResolve_Containment(t *testing.T) {
 	assert.Contains(t, err.Error(), "escapes the workspace")
 	_, err = b.ResolveCachePath(agentlib.ScopeHandle{}, "/etc/passwd")
 	require.Error(t, err)
+}
+
+// TestK8sBackend_CacheSave_IncludesJobFlag verifies that CacheSave includes the
+// --job flag with the qualified job name in its sidecar argv, ensuring cache
+// namespacing is enforced at the sidecar layer (task 7 requirement). The test
+// asserts both the presence of the flag and its value, so dropping --job or
+// reordering argv would cause test failure.
+func TestK8sBackend_CacheSave_IncludesJobFlag(t *testing.T) {
+	ex := &fakeExec{exit: 0}
+	a := &K8sAgent{exec: ex}
+	b := newK8sBackend(a, "run-1", "team-a/build", "pod-default", "/workspace", nil, metav1.Time{})
+
+	err := b.CacheSave(context.Background(), agentlib.ScopeHandle{}, "cache-key-1", "/workspace/cache", 7)
+	require.NoError(t, err)
+	assert.Equal(t, "pod-default", ex.gotPod, "non-scoped save must target the default pod")
+	assert.Equal(t, artifactSidecarName, ex.gotContainer)
+	assertJobFlagInArgv(t, ex.gotScript, "team-a/build")
+}
+
+// assertJobFlagInArgv verifies that the given space-separated argv string
+// contains the --job flag immediately followed by the expected jobName value.
+// This ensures the flag is not dropped, reordered, or assigned a different value.
+func assertJobFlagInArgv(t *testing.T, argv, expectedJobName string) {
+	t.Helper()
+	parts := strings.Split(argv, " ")
+	found := false
+	for i, part := range parts {
+		if part == "--job" {
+			if i+1 < len(parts) && parts[i+1] == expectedJobName {
+				found = true
+				break
+			}
+		}
+	}
+	assert.True(t, found, "argv must contain '--job' followed by '%s', got: %s", expectedJobName, argv)
 }
