@@ -177,5 +177,10 @@ func logSecretDecryptFailure(site, id string, err error) {
 			"site", site, "id", id)
 		return
 	}
+	if errors.Is(err, secrets.ErrProviderMismatch) {
+		slog.Error("secret decrypt: wrapped key came from a different key provider (check UNIFIED_KMS_URI / UNIFIED_CONTROLLER_KEY_FILE)",
+			"site", site, "id", id)
+		return
+	}
 	slog.Warn("secret decrypt failed", "site", site, "id", id, "error", err)
 }

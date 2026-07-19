@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -271,6 +274,39 @@ func TestAPI_FetchSecrets_NotConfigured(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
+// A provider mismatch means someone is presenting locally-wrapped data to a
+// KMS-configured controller: security-relevant, and distinct from a KMS being
+// briefly unreachable.
+func TestLogSecretDecryptFailure_SeparatesProviderMismatch(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	logSecretDecryptFailure("agent-fetch", "MY_SECRET",
+		fmt.Errorf("%w: this controller is configured for the hashivault key provider", secrets.ErrProviderMismatch))
+
+	out := buf.String()
+	assert.Contains(t, out, "level=ERROR", "a provider mismatch is a security event")
+	assert.Contains(t, out, "MY_SECRET")
+	assert.NotContains(t, out, "binding mismatch", "it must not be reported as a binding mismatch")
+}
+
+// An unreachable KMS is an availability event: Warn, with the error attached so
+// an operator can see what failed.
+func TestLogSecretDecryptFailure_KMSUnreachableIsWarn(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	logSecretDecryptFailure("agent-fetch", "MY_SECRET", errors.New("dial tcp: connection refused"))
+
+	out := buf.String()
+	assert.Contains(t, out, "level=WARN")
+	assert.Contains(t, out, "connection refused")
 }
 
 // newSecretsFetchFixture builds a server with a key manager configured,

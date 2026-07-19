@@ -38,6 +38,32 @@ In the `unified-cd-controller` Secret (namespace: `unified-cd`), update the foll
 
 The default k8s-agent Deployment does not receive `UNIFIED_TOKEN` or any shared agent token. It exchanges its projected, audience-bound ServiceAccount token for a short-lived credential.
 
+## Vault / OpenBao Kubernetes auth (optional, in place of `UNIFIED_CONTROLLER_KEY_FILE`)
+
+To wrap the controller's key-encryption key with Vault/OpenBao Transit instead of a local
+key file, set `UNIFIED_KMS_URI` and point the controller at Vault's Kubernetes auth method.
+Because the controller Pod already runs under a ServiceAccount (`unified-cd-controller`),
+no additional token Secret needs to be mounted — the projected ServiceAccount token doubles
+as the credential Vault's Kubernetes auth method verifies:
+
+```yaml
+stringData:
+  # ... existing keys, in place of UNIFIED_CONTROLLER_KEY_FILE ...
+  UNIFIED_KMS_URI: "hashivault://unified-cd-kek"
+  UNIFIED_VAULT_ADDR: "https://vault.example.com:8200"
+  UNIFIED_VAULT_AUTH: "kubernetes"
+  UNIFIED_VAULT_AUTH_PARAM: "role=unified-cd"
+```
+
+The Vault-side role must be bound to the controller's ServiceAccount and namespace. See
+[Secrets Management Guide: Using Vault or OpenBao (Transit)](../docs/secrets.md#using-vault-or-openbao-transit)
+for the Transit key setup and the policy the controller needs, and
+[High Availability Guide: Vault / OpenBao](../docs/high-availability.md#vault--openbao-when-unified_kms_uri-is-used)
+for HA implications. Static-token auth (`UNIFIED_VAULT_AUTH=token` with
+`UNIFIED_VAULT_TOKEN_FILE`) also works on Kubernetes but gives up the
+credential-free advantage of the `kubernetes` method — prefer it only when
+Vault policy requires a specific token per deployment.
+
 The controller container itself serves HTTP on port 8080; it does not terminate TLS. Production k8s-agent configuration therefore uses an intentionally invalid HTTPS placeholder and must be changed to an externally supplied TLS endpoint (for example, an Ingress, load balancer, or service mesh gateway). The bundled `install.yaml` is the deliberate development exception: it explicitly sets `allowInsecureHTTP: true` for its in-cluster HTTP Service. Do not carry that setting into production manifests.
 
 ## Kubernetes workload enrollment

@@ -57,7 +57,9 @@ Artifacts, cache entries, and log archives live in the configured bucket. Use yo
 This is the master key (KEK) used to encrypt secrets (AES-256-GCM, see [Secrets Management Guide](secrets.md#security-model)). The controller refuses to start unless it is given one, via exactly one of:
 
 - `UNIFIED_CONTROLLER_KEY_FILE` — path to a file containing 64 hex characters (`unified-cli keygen --out /etc/unified-cd/kek`). The supported way to run in production; a file (not an env var) is used deliberately, since env vars leak into `docker inspect`, process listings, crash dumps, and child processes.
-- `UNIFIED_KMS_URI` — an external KMS. No provider is implemented yet.
+- `UNIFIED_KMS_URI` — an external KMS. `hashivault://[<mount>/]<key>` wraps the key with
+  HashiCorp Vault or OpenBao Transit; see [Secrets Management Guide: Using Vault or OpenBao
+  (Transit)](secrets.md#using-vault-or-openbao-transit).
 - `UNIFIED_DEV_MODE=1` — generates an ephemeral in-memory key for local development only. Secrets become unreadable the moment the process restarts.
 
 Back the key file up wherever you manage secrets (vault, KMS, sealed file, offline copy) — **independently** of the DB dump, and **never** in the same place/backup as the PostgreSQL dump it protects:

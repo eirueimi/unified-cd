@@ -309,6 +309,29 @@ Redundant controllers are not enough if PostgreSQL or S3 is a single point of fa
 - The controller starts without S3, but log archival is disabled (`no object store configured — log archival disabled`).
   S3 is required for HA operation.
 
+### Vault / OpenBao (when `UNIFIED_KMS_URI` is used)
+
+- **Operator-provided.** Like Postgres and object storage, unified-cd does not
+  ship a production Vault. Use an existing instance, or deploy with the official
+  Helm chart.
+- **Every replica points at the same Vault**, and at the Vault *service* rather
+  than a specific node: Vault HA is active/standby and standbys forward requests
+  to the active node.
+- **Vault HA gives failover, not throughput.** All Transit calls are served by
+  the active node; HA shortens unplanned outages rather than scaling capacity.
+- **The controller fails closed.** It will not start if Vault is unreachable, so
+  a Vault outage during a rollout crash-loops pods until Vault returns. This is
+  deliberate: a controller that started without a key manager would fail every
+  secret operation anyway.
+- **The DEK cache is not a substitute for HA.** It absorbs brief blips and
+  reduces load on the active node, but a job needing an uncached secret while
+  Vault is down still fails.
+- **Auto-unseal is a prerequisite for unattended HA** — without it, every node
+  restart needs a manual unseal.
+
+See [Secrets Management Guide: Using Vault or OpenBao (Transit)](secrets.md#using-vault-or-openbao-transit)
+for the policy and setup unified-cd itself requires.
+
 ---
 
 ## Agent Redundancy

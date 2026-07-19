@@ -10,6 +10,7 @@ This document covers how to create, use, and manage secrets in unified-cd.
 - [Referencing Secrets in Job YAML](#referencing-secrets-in-job-yaml)
 - [Automatic Log Masking](#automatic-log-masking)
 - [Security Model](#security-model)
+- [Using Vault or OpenBao (Transit)](#using-vault-or-openbao-transit)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -29,9 +30,9 @@ Secrets are a key-value store saved in the controller's PostgreSQL database **en
 ### Setting `UNIFIED_CONTROLLER_KEY_FILE` (required)
 
 This is the master encryption key for secrets. The controller refuses to start unless it is
-given a key: a file (`UNIFIED_CONTROLLER_KEY_FILE`), an external KMS (`UNIFIED_KMS_URI`, no
-provider implemented yet), or an explicit throwaway key for local development
-(`UNIFIED_DEV_MODE=1`, unreadable after a restart).
+given a key: a file (`UNIFIED_CONTROLLER_KEY_FILE`), an external KMS (`UNIFIED_KMS_URI` — see
+[Using Vault or OpenBao (Transit)](#using-vault-or-openbao-transit) below), or an explicit
+throwaway key for local development (`UNIFIED_DEV_MODE=1`, unreadable after a restart).
 
 ```bash
 # Generate once and store
@@ -246,6 +247,126 @@ Ciphertext (stored in DB)
 | External API / browser | Retrieve values ✗ (no endpoint exists) |
 
 Secret **values cannot be retrieved via the API** by design. If you lose a value, re-register it.
+
+---
+
+## Using Vault or OpenBao (Transit)
+
+The controller wraps each data-encryption key with Transit, so the key-encryption
+key never leaves the KMS.
+
+> The commands below use the `vault` CLI. OpenBao's CLI is `bao`, with
+> identical subcommands — swap only the binary name (e.g. `bao secrets enable
+> transit`).
+
+Enable the engine and create the key:
+
+```sh
+vault secrets enable transit
+vault write -f transit/keys/unified-cd-kek
+```
+
+The controller needs three capabilities, plus two optional ones:
+
+```hcl
+# Required, not optional, despite only being used at startup: it is what
+# lets the controller tell "your key does not exist" from "your policy is
+# wrong" before the first secret write, instead of at it. A read can never
+# create anything, so granting it does not weaken least-privilege the way
+# `create` would. See "Why the key needs its own `read` capability" below.
+path "transit/keys/unified-cd-kek" {
+  capabilities = ["read"]
+}
+
+path "transit/encrypt/unified-cd-kek" {
+  capabilities = ["update"]
+}
+
+path "transit/decrypt/unified-cd-kek" {
+  capabilities = ["update"]
+}
+
+# Needed to keep a token alive by renewal rather than only by re-login (see
+# "Tokens need renewing, not rotating" below) — keymanager.go calls this via
+# RenewSelfWithContext for every auth method, not just token auth. Vault's
+# built-in `default` policy already grants this, so it only needs to be
+# listed explicitly for a token minted with `-no-default-policy`, which is
+# exactly what granting a token *only* the capabilities in this block (as the
+# Kubernetes section below recommends) amounts to.
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+
+# Optional (token auth only): lets the renewal loop learn the token's real
+# TTL and renewability instead of the zero values a bare token carries. See
+# "Tokens need renewing, not rotating" below for what is lost without it.
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+```
+
+### Why the key needs its own `read` capability
+
+At startup the controller checks that `unified-cd-kek` actually exists by
+reading `transit/keys/unified-cd-kek` before it ever calls `encrypt`. This
+matters because encrypt alone cannot tell "the key is missing" from "the
+policy is too narrow": Vault ACL-checks an encrypt against a key that does
+not exist as a `create` operation (the existence check runs before Transit's
+own "key not found" response), so a token holding only `update` — the
+capability above — is denied with `403` before Transit ever gets a chance to
+say the key is missing. Without the `read` check, a typo'd key name and an
+under-scoped policy are indistinguishable at startup, and if the token also
+happened to hold `create` (broader than this policy grants), that first
+encrypt would silently create the mistyped key instead of failing — the
+exact misconfiguration this startup check exists to catch. A read has no
+such side effect: it cannot create anything, whether or not the key exists.
+
+If the `read` grant above is missing, the controller fails to start with an
+error naming `transit/keys/unified-cd-kek` and telling you to grant `read`
+on it — it will not fall back to the ambiguous encrypt-only check, because
+that would silently reintroduce the exact failure mode above.
+
+Then configure the controller:
+
+```sh
+UNIFIED_KMS_URI=hashivault://unified-cd-kek
+UNIFIED_VAULT_ADDR=https://vault.example.com:8200
+UNIFIED_VAULT_TOKEN_FILE=/run/secrets/vault-token
+```
+
+### Tokens need renewing, not rotating
+
+A **periodic** token's TTL resets to its configured period on every renewal, so
+the controller keeps it alive indefinitely on its own and it never needs to be
+replaced. A token that is not periodic dies at its max TTL (32 days by default)
+however often it is renewed, and must genuinely be replaced — put it in a file
+(`UNIFIED_VAULT_TOKEN_FILE`) and the controller picks up the replacement on its
+next login without a restart, because the file is read fresh every time.
+
+This is also why `read` on `auth/token/lookup-self` is worth granting even
+though it is optional: without it the controller cannot see the token's actual
+TTL or whether Vault considers it renewable, so it logs a warning at startup
+and falls back to re-authenticating on its normal cadence instead of renewing
+proactively. The controller still works — it just leans on re-login instead of
+renewal, and an operator loses early visibility into an unexpectedly short-lived
+token.
+
+### Kubernetes
+
+On Kubernetes, use the Kubernetes auth method instead: the pod's ServiceAccount
+token is already projected by the kubelet, so there is no credential to
+distribute or rotate. The Kubernetes login response carries the token's TTL
+directly, so this path does not need — and does not perform — the
+`auth/token/lookup-self` call that token auth optionally makes; grant only the
+three Transit capabilities above.
+
+```sh
+UNIFIED_VAULT_AUTH=kubernetes
+UNIFIED_VAULT_AUTH_PARAM=role=unified-cd
+```
+
+See also [High Availability Guide: Vault / OpenBao](high-availability.md#vault--openbao-when-unified_kms_uri-is-used)
+for what changes when Vault runs in HA.
 
 ---
 
