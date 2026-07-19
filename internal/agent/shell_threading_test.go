@@ -19,11 +19,11 @@ func withFakeRunStepFns(t *testing.T) (plainCalls *int, shellCalls *[][]string) 
 	origPlain, origShell := runStepFn, runStepWithShellFn
 	pc := 0
 	var sc [][]string
-	runStepFn = func(ctx context.Context, script string, stdout, stderr io.Writer, extraEnv []string, workDir string) (int, error) {
+	runStepFn = func(ctx context.Context, script string, stdout, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (int, error) {
 		pc++
 		return 0, nil
 	}
-	runStepWithShellFn = func(ctx context.Context, shell []string, script string, stdout, stderr io.Writer, extraEnv []string, workDir string) (int, error) {
+	runStepWithShellFn = func(ctx context.Context, shell []string, script string, stdout, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (int, error) {
 		sc = append(sc, append([]string{}, shell...))
 		return 0, nil
 	}
@@ -36,7 +36,7 @@ func withFakeRunStepFns(t *testing.T) (plainCalls *int, shellCalls *[][]string) 
 // host-bash path (RunStep), unchanged.
 func TestHostBackend_Native_RunDefault_NilShellUsesRunStep(t *testing.T) {
 	plainCalls, shellCalls := withFakeRunStepFns(t)
-	b := newHostBackend(&Agent{}, "run1", "/w", nil)
+	b := newHostBackend(&Agent{}, "run1", "test-job", "/w", nil)
 
 	_, err := b.RunDefault(context.Background(), api.ClaimStep{Name: "s"}, "echo hi", nil, io.Discard, io.Discard)
 	require.NoError(t, err)
@@ -50,7 +50,7 @@ func TestHostBackend_Native_RunDefault_NilShellUsesRunStep(t *testing.T) {
 // the unconditional bash path.
 func TestHostBackend_Native_RunDefault_ExplicitShellUsesRunStepWithShell(t *testing.T) {
 	plainCalls, shellCalls := withFakeRunStepFns(t)
-	b := newHostBackend(&Agent{}, "run1", "/w", nil)
+	b := newHostBackend(&Agent{}, "run1", "test-job", "/w", nil)
 
 	step := api.ClaimStep{Name: "s", Shell: []string{"python3", "-c"}}
 	_, err := b.RunDefault(context.Background(), step, "print('hi')", nil, io.Discard, io.Discard)
@@ -69,7 +69,7 @@ func TestHostBackend_Native_RunDefault_ExplicitShellUsesRunStepWithShell(t *test
 // whatever shell it is handed.
 func TestHostBackend_Native_RunPostHook_InheritsAndOverridesShell(t *testing.T) {
 	plainCalls, shellCalls := withFakeRunStepFns(t)
-	b := newHostBackend(&Agent{}, "run1", "/w", nil)
+	b := newHostBackend(&Agent{}, "run1", "test-job", "/w", nil)
 
 	// nil shell (post declared none AND the step had none) -> RunStep.
 	require.NoError(t, b.RunPostHook(context.Background(), ScopeHandle{}, "", "cleanup", nil, nil, io.Discard, io.Discard))
@@ -125,7 +125,7 @@ func TestHostBackend_Isolated_RunInScope_ThreadsShell(t *testing.T) {
 	h, err := sm.ensure(context.Background(), step, nil)
 	require.NoError(t, err)
 
-	b := newHostBackend(&Agent{}, "run1", "/w", nil)
+	b := newHostBackend(&Agent{}, "run1", "test-job", "/w", nil)
 	b.scopes = sm
 	handle := wrapHostScope(sm, h)
 

@@ -15,19 +15,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // testObjectKey mirrors cache.objectKey (unexported), which this external
 // test package cannot call directly. It must stay in lockstep with that
 // function so tests can target the exact store key Restore will Get.
-func testObjectKey(key string) string {
+func testObjectKey(jobName, key string) string {
+	j := sha256.Sum256([]byte(jobName))
 	h := sha256.Sum256([]byte(key))
-	return "caches/" + base64.RawURLEncoding.EncodeToString(h[:])
+	return "caches/" + base64.RawURLEncoding.EncodeToString(j[:]) + "/" + base64.RawURLEncoding.EncodeToString(h[:])
 }
 
 func newStore(t *testing.T) objectstore.ObjectStore {
@@ -62,15 +63,55 @@ func makeDir(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// TestCache_Save_RejectsEmptyJobName and TestCache_Restore_RejectsEmptyJobName
+// are the regression tests for the "empty jobName silently recreates the
+// global cache namespace" finding: sha256("") is just as valid a namespace
+// hash as any other, so without this guard an empty jobName would not error
+// at all — it would silently save/restore under that global namespace,
+// exactly the pre-fix behavior objectKey's job component exists to close.
+// The sidecar CLI already rejects an empty --job flag (cmd/unified-sidecar),
+// but that only protects one caller; the invariant must live in the library
+// itself so no other caller (host agent, k8s agent, or a future one) can
+// bypass it.
+func TestCache_Save_RejectsEmptyJobName(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	src := makeDir(t, map[string]string{"a.txt": "hello"})
+
+	err := cache.Save(ctx, store, "", src, "mykey", 7)
+	require.Error(t, err, "an empty jobName must be rejected, not silently namespaced under sha256(\"\")")
+
+	// Confirm nothing was actually written under the global-namespace key a
+	// pre-fix caller would have produced.
+	_, getErr := store.Get(ctx, testObjectKey("", "mykey")+".tar.zst")
+	assert.True(t, errors.Is(getErr, objectstore.ErrNotFound),
+		"Save must not have written anything when jobName is empty")
+}
+
+func TestCache_Restore_RejectsEmptyJobName(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	dest := t.TempDir()
+
+	// Even if some other pre-fix caller had written under the empty-jobName
+	// namespace, Restore must refuse to read it rather than silently serving
+	// from what would be a shared global namespace.
+	require.NoError(t, cache.Save(ctx, store, "some-real-job", makeDir(t, map[string]string{"a.txt": "x"}), "mykey", 7))
+
+	hit, err := cache.Restore(ctx, store, "", dest, "mykey", nil)
+	require.Error(t, err, "an empty jobName must be rejected outright")
+	assert.False(t, hit)
+}
+
 func TestCache_SaveAndRestore_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
 	src := makeDir(t, map[string]string{"a.txt": "hello", "b.txt": "world"})
 	dest := t.TempDir()
 
-	require.NoError(t, cache.Save(ctx, store, src, "mykey", 7))
+	require.NoError(t, cache.Save(ctx, store, "test-job", src, "mykey", 7))
 
-	hit, err := cache.Restore(ctx, store, dest, "mykey", nil)
+	hit, err := cache.Restore(ctx, store, "test-job", dest, "mykey", nil)
 	require.NoError(t, err)
 	assert.True(t, hit)
 
@@ -85,11 +126,11 @@ func TestCache_RestoreKeys_FallbackOnMiss(t *testing.T) {
 	src := makeDir(t, map[string]string{"pkg.json": "v1"})
 
 	// Save with key "npm-abc123"
-	require.NoError(t, cache.Save(ctx, store, src, "npm-abc123", 7))
+	require.NoError(t, cache.Save(ctx, store, "test-job", src, "npm-abc123", 7))
 
 	// Restore with exact miss but prefix match
 	dest := t.TempDir()
-	hit, err := cache.Restore(ctx, store, dest, "npm-xyz999", []string{"npm-"})
+	hit, err := cache.Restore(ctx, store, "test-job", dest, "npm-xyz999", []string{"npm-"})
 	require.NoError(t, err)
 	assert.True(t, hit)
 
@@ -109,13 +150,13 @@ func TestCache_Restore_ExactKeyErrNotFound_FallsBackToRestoreKeys(t *testing.T) 
 	base := newStore(t)
 	src := makeDir(t, map[string]string{"pkg.json": "v1"})
 
-	require.NoError(t, cache.Save(ctx, base, src, "npm-abc123", 7))
+	require.NoError(t, cache.Save(ctx, base, "test-job", src, "npm-abc123", 7))
 
-	exactKey := testObjectKey("npm-xyz999") + ".tar.zst"
+	exactKey := testObjectKey("test-job", "npm-xyz999") + ".tar.zst"
 	store := &errKeyStore{ObjectStore: base, errKey: exactKey, err: fmt.Errorf("get object %q: %w", exactKey, objectstore.ErrNotFound)}
 
 	dest := t.TempDir()
-	hit, err := cache.Restore(ctx, store, dest, "npm-xyz999", []string{"npm-"})
+	hit, err := cache.Restore(ctx, store, "test-job", dest, "npm-xyz999", []string{"npm-"})
 	require.NoError(t, err)
 	assert.True(t, hit)
 
@@ -134,16 +175,16 @@ func TestCache_Restore_ExactKeyNonNotFoundError_Propagates(t *testing.T) {
 	src := makeDir(t, map[string]string{"pkg.json": "v1"})
 
 	// A valid fallback candidate exists...
-	require.NoError(t, cache.Save(ctx, base, src, "npm-abc123", 7))
+	require.NoError(t, cache.Save(ctx, base, "test-job", src, "npm-abc123", 7))
 
-	exactKey := testObjectKey("npm-xyz999") + ".tar.zst"
+	exactKey := testObjectKey("test-job", "npm-xyz999") + ".tar.zst"
 	transientErr := errors.New("transient network error")
 	store := &errKeyStore{ObjectStore: base, errKey: exactKey, err: transientErr}
 
 	dest := t.TempDir()
 	// ...but the exact-key Get fails with a non-NotFound error, so the
 	// fallback must never be attempted: Restore propagates the error.
-	hit, err := cache.Restore(ctx, store, dest, "npm-xyz999", []string{"npm-"})
+	hit, err := cache.Restore(ctx, store, "test-job", dest, "npm-xyz999", []string{"npm-"})
 	assert.False(t, hit)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, transientErr)
@@ -159,14 +200,14 @@ func TestCache_Restore_FallbackKeyNonNotFoundError_Propagates(t *testing.T) {
 	base := newStore(t)
 	src := makeDir(t, map[string]string{"pkg.json": "v1"})
 
-	require.NoError(t, cache.Save(ctx, base, src, "npm-abc123", 7))
+	require.NoError(t, cache.Save(ctx, base, "test-job", src, "npm-abc123", 7))
 
-	fallbackKey := testObjectKey("npm-abc123") + ".tar.zst"
+	fallbackKey := testObjectKey("test-job", "npm-abc123") + ".tar.zst"
 	transientErr := errors.New("transient network error")
 	store := &errKeyStore{ObjectStore: base, errKey: fallbackKey, err: transientErr}
 
 	dest := t.TempDir()
-	hit, err := cache.Restore(ctx, store, dest, "npm-xyz999", []string{"npm-"})
+	hit, err := cache.Restore(ctx, store, "test-job", dest, "npm-xyz999", []string{"npm-"})
 	assert.False(t, hit)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, transientErr)
@@ -178,7 +219,7 @@ func TestCache_Restore_MissNoFallback(t *testing.T) {
 	store := newStore(t)
 	dest := t.TempDir()
 
-	hit, err := cache.Restore(ctx, store, dest, "missing-key", nil)
+	hit, err := cache.Restore(ctx, store, "test-job", dest, "missing-key", nil)
 	assert.False(t, hit)
 	assert.ErrorIs(t, err, cache.ErrCacheMiss)
 }
@@ -206,7 +247,7 @@ func TestSave_MetaFailureDeletesArchive(t *testing.T) {
 	inner := objectstore.NewLocalObjectStore(t.TempDir())
 	st := &putFailingStore{ObjectStore: inner, failPut: 2} // archive Put ok, meta Put fails
 
-	err := cache.Save(context.Background(), st, dir, "key1", 7)
+	err := cache.Save(context.Background(), st, "test-job", dir, "key1", 7)
 	require.Error(t, err)
 
 	keys, err := inner.List(context.Background(), "")
@@ -234,7 +275,7 @@ func TestSave_StreamsArchiveAndCountsMetaSize(t *testing.T) {
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), bytes.Repeat([]byte("z"), 4096), 0o600))
 
-	require.NoError(t, cache.Save(ctx, spy, src, "mykey", 7))
+	require.NoError(t, cache.Save(ctx, spy, "test-job", src, "mykey", 7))
 
 	// The archive Put must be streamed (unknown size), NOT the buffered length.
 	assert.Equal(t, int64(-1), spy.archiveSize, "archive must be streamed with size -1")
@@ -244,10 +285,7 @@ func TestSave_StreamsArchiveAndCountsMetaSize(t *testing.T) {
 	require.NoError(t, artifact.WriteTarZstd(&buf, src))
 	wantSize := int64(buf.Len())
 
-	oKey := "caches/" + base64.RawURLEncoding.EncodeToString(func() []byte {
-		h := sha256.Sum256([]byte("mykey"))
-		return h[:]
-	}())
+	oKey := testObjectKey("test-job", "mykey")
 	rc, err := spy.Get(ctx, oKey+".meta")
 	require.NoError(t, err)
 	defer rc.Close()
@@ -262,8 +300,8 @@ func TestCache_DeleteExpired_RemovesOldKeepsNew(t *testing.T) {
 	store := newStore(t)
 	src := makeDir(t, map[string]string{"f.txt": "data"})
 
-	require.NoError(t, cache.Save(ctx, store, src, "old-key", 1))
-	require.NoError(t, cache.Save(ctx, store, src, "new-key", 30))
+	require.NoError(t, cache.Save(ctx, store, "test-job", src, "old-key", 1))
+	require.NoError(t, cache.Save(ctx, store, "test-job", src, "new-key", 30))
 
 	// Delete entries expiring before "now + 2 days" (removes old-key, keeps new-key)
 	n, err := cache.DeleteExpired(ctx, store, time.Now().Add(2*24*time.Hour))
@@ -272,11 +310,76 @@ func TestCache_DeleteExpired_RemovesOldKeepsNew(t *testing.T) {
 
 	// old-key should be gone
 	dest := t.TempDir()
-	hit, _ := cache.Restore(ctx, store, dest, "old-key", nil)
+	hit, _ := cache.Restore(ctx, store, "test-job", dest, "old-key", nil)
 	assert.False(t, hit)
 
 	// new-key should still be there
-	hit, err = cache.Restore(ctx, store, dest, "new-key", nil)
+	hit, err = cache.Restore(ctx, store, "test-job", dest, "new-key", nil)
 	require.NoError(t, err)
 	assert.True(t, hit)
+}
+
+// TestRestore_CannotHijackAnotherJobsEntry is the regression test for the
+// cross-job cache-poisoning defect (C-1): job A saves an entry under a key
+// crafted to match job B's restoreKeys prefix, with a long TTL (both
+// attacker-controlled). Before namespacing, findBestMatch scanned every job's
+// .meta objects and job B's Restore would happily extract job A's archive
+// into its own workspace. Now job B's List is scoped to its own jobPrefix, so
+// job A's entry is never even enumerated.
+func TestRestore_CannotHijackAnotherJobsEntry(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewLocalObjectStore(t.TempDir())
+
+	// Job A plants an entry with a long TTL under a key job B's restoreKeys prefix-match.
+	srcA := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(srcA, "pwned.txt"), []byte("evil"), 0o600))
+	require.NoError(t, cache.Save(ctx, store, "attacker/job", srcA, "deps-pwned", 3650))
+
+	// Job B restores with a prefix that would have matched job A's key. With
+	// no entries of its own, this is a genuine miss: Restore reports it via
+	// the same ErrCacheMiss sentinel every other true-miss path in this
+	// package uses (see TestCache_Restore_MissNoFallback) — the point of this
+	// test is that job A's entry is never surfaced as a hit, not that the
+	// error value differs from an ordinary miss.
+	dest := t.TempDir()
+	hit, err := cache.Restore(ctx, store, "victim/job", dest, "deps-victim", []string{"deps-"})
+	assert.ErrorIs(t, err, cache.ErrCacheMiss)
+	assert.False(t, hit, "a job must never restore another job's cache entry")
+	_, statErr := os.Stat(filepath.Join(dest, "pwned.txt"))
+	assert.Error(t, statErr, "attacker payload must not land in the victim workspace")
+}
+
+// TestSaveRestore_SameJobRoundTrips proves the namespacing change did not
+// break the ordinary same-job round trip: Save then exact-key Restore, both
+// under the same qualified job name.
+func TestSaveRestore_SameJobRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewLocalObjectStore(t.TempDir())
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), []byte("data"), 0o600))
+	require.NoError(t, cache.Save(ctx, store, "team-a/build", src, "deps-v1", 7))
+
+	dest := t.TempDir()
+	hit, err := cache.Restore(ctx, store, "team-a/build", dest, "deps-v1", nil)
+	require.NoError(t, err)
+	assert.True(t, hit)
+	got, err := os.ReadFile(filepath.Join(dest, "f.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "data", string(got))
+}
+
+// TestRestoreKeys_FallbackWorksWithinSameJob proves the restoreKeys prefix
+// fallback still works when the candidate and the restorer are the same job
+// — namespacing must not collapse the fallback into an always-miss.
+func TestRestoreKeys_FallbackWorksWithinSameJob(t *testing.T) {
+	ctx := context.Background()
+	store := objectstore.NewLocalObjectStore(t.TempDir())
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), []byte("data"), 0o600))
+	require.NoError(t, cache.Save(ctx, store, "team-a/build", src, "deps-abc123", 7))
+
+	dest := t.TempDir()
+	hit, err := cache.Restore(ctx, store, "team-a/build", dest, "deps-nomatch", []string{"deps-"})
+	require.NoError(t, err)
+	assert.True(t, hit, "prefix fallback must still work within the same job")
 }

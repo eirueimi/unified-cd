@@ -21,7 +21,7 @@ import (
 
 func TestRunStep_CapturesStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStep(t.Context(), "echo hello", &stdout, &stderr, nil, "")
+	exit, err := RunStep(t.Context(), "echo hello", &stdout, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, stdout.String(), "hello")
@@ -29,7 +29,7 @@ func TestRunStep_CapturesStdout(t *testing.T) {
 
 func TestRunStep_NonZeroExit(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStep(t.Context(), "exit 3", &stdout, &stderr, nil, "")
+	exit, err := RunStep(t.Context(), "exit 3", &stdout, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 3, exit)
 }
@@ -38,13 +38,13 @@ func TestRunStep_RespectsContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var stdout, stderr bytes.Buffer
-	_, _ = RunStep(ctx, "sleep 10", &stdout, &stderr, nil, "")
+	_, _ = RunStep(ctx, "sleep 10", &stdout, &stderr, nil, nil, "")
 }
 
 func TestRunStep_WorkDir(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStep(t.Context(), `echo hello > ./marker.txt`, &stdout, &stderr, nil, dir)
+	exit, err := RunStep(t.Context(), `echo hello > ./marker.txt`, &stdout, &stderr, nil, nil, dir)
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	content, readErr := os.ReadFile(filepath.Join(dir, "marker.txt"))
@@ -54,7 +54,7 @@ func TestRunStep_WorkDir(t *testing.T) {
 
 func TestRunStepCapture_ReturnsStdout(t *testing.T) {
 	var stderr bytes.Buffer
-	stdout, exit, err := RunStepCapture(t.Context(), `printf "hello\nworld\n"`, &stderr, nil, "")
+	stdout, exit, err := RunStepCapture(t.Context(), `printf "hello\nworld\n"`, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, stdout, "hello")
@@ -64,7 +64,7 @@ func TestRunStepCapture_ReturnsStdout(t *testing.T) {
 func TestRunStepCapture_WorkDir(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("world"), 0o644))
-	stdout, exit, err := RunStepCapture(t.Context(), `cat hello.txt`, nil, nil, dir)
+	stdout, exit, err := RunStepCapture(t.Context(), `cat hello.txt`, nil, nil, nil, dir)
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, stdout, "world")
@@ -79,7 +79,7 @@ func TestRunStepCapture_WorkDir(t *testing.T) {
 // verbatim, not that it differs from the native default.
 func TestRunStepWithShell_UsesGivenArgv(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, "echo from-explicit-shell", &stdout, &stderr, nil, "")
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, "echo from-explicit-shell", &stdout, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, stdout.String(), "from-explicit-shell")
@@ -89,7 +89,7 @@ func TestRunStepWithShell_UsesGivenArgv(t *testing.T) {
 // explicit-shell path.
 func TestRunStepWithShell_NonZeroExit(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, "exit 7", &stdout, &stderr, nil, "")
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, "exit 7", &stdout, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 7, exit)
 }
@@ -99,7 +99,7 @@ func TestRunStepWithShell_NonZeroExit(t *testing.T) {
 func TestRunStepWithShell_WorkDir(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, `echo hello > ./marker.txt`, &stdout, &stderr, nil, dir)
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"}, `echo hello > ./marker.txt`, &stdout, &stderr, nil, nil, dir)
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 	content, readErr := os.ReadFile(filepath.Join(dir, "marker.txt"))
@@ -112,10 +112,93 @@ func TestRunStepWithShell_WorkDir(t *testing.T) {
 // through, not just a two-element [interpreter, flag] pair.
 func TestRunStepWithShell_MultiArgPrefixPreserved(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-euo", "pipefail", "-c"}, "false; echo unreachable", &stdout, &stderr, nil, "")
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-euo", "pipefail", "-c"}, "false; echo unreachable", &stdout, &stderr, nil, nil, "")
 	require.NoError(t, err)
 	assert.NotEqual(t, 0, exit, "set -e must abort the script on the first failing command")
 	assert.NotContains(t, stdout.String(), "unreachable")
+}
+
+// TestRunStep_CredentialsNotInheritedByChild is the exec-level regression
+// guard for StepEnv: it proves a REAL subprocess spawned by RunStep cannot
+// read the agent's credentials from its environment, not just that StepEnv's
+// builder omits them (see stepenv_test.go for that unit-level coverage).
+// The positive control (an ExposeEnv-allowlisted variable reaching the
+// child) matters because without it a shell that silently failed to run
+// would also satisfy the negative assertion below.
+func TestRunStep_CredentialsNotInheritedByChild(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret-value")
+	t.Setenv("MY_BUILD_FLAG", "visible-value")
+
+	var stdout, stderr bytes.Buffer
+	exit, err := RunStep(t.Context(),
+		`echo "token=$UNIFIED_AGENT_TOKEN cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
+		&stdout, &stderr, nil, []string{"MY_BUILD_FLAG"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+
+	assert.NotContains(t, stdout.String(), "super-secret-value",
+		"child process must not see the agent's credentials")
+	assert.Contains(t, stdout.String(), "flag=visible-value",
+		"positive control: an ExposeEnv-allowlisted variable must still reach the child")
+}
+
+// TestRunStep_DeniedCredentialStaysHiddenEvenIfExposed is the foot-gun guard
+// at the real-subprocess level: an operator naming a denylisted credential in
+// ExposeEnv must not make it visible to the child, mirroring
+// TestStepEnv_DenylistBeatsExposeEnv but proving it through an actual exec
+// rather than only through the StepEnv() builder.
+func TestRunStep_DeniedCredentialStaysHiddenEvenIfExposed(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+
+	var stdout, stderr bytes.Buffer
+	exit, err := RunStep(t.Context(), `echo "token=$UNIFIED_AGENT_TOKEN"`,
+		&stdout, &stderr, nil, []string{"UNIFIED_AGENT_TOKEN"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+
+	assert.NotContains(t, stdout.String(), "super-secret-value",
+		"denylisted credential must stay hidden from the child even when named in ExposeEnv")
+}
+
+// TestRunStepWithShell_CredentialsNotInheritedByChild mirrors
+// TestRunStep_CredentialsNotInheritedByChild for the explicit-shell exec path.
+func TestRunStepWithShell_CredentialsNotInheritedByChild(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret-value")
+	t.Setenv("MY_BUILD_FLAG", "visible-value")
+
+	var stdout, stderr bytes.Buffer
+	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"},
+		`echo "token=$UNIFIED_AGENT_TOKEN cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
+		&stdout, &stderr, nil, []string{"MY_BUILD_FLAG"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+
+	assert.NotContains(t, stdout.String(), "super-secret-value",
+		"child process must not see the agent's credentials")
+	assert.Contains(t, stdout.String(), "flag=visible-value",
+		"positive control: an ExposeEnv-allowlisted variable must still reach the child")
+}
+
+// TestRunStepCapture_CredentialsNotInheritedByChild mirrors
+// TestRunStep_CredentialsNotInheritedByChild for the captured-stdout exec path.
+func TestRunStepCapture_CredentialsNotInheritedByChild(t *testing.T) {
+	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret-value")
+	t.Setenv("MY_BUILD_FLAG", "visible-value")
+
+	var stderr bytes.Buffer
+	stdout, exit, err := RunStepCapture(t.Context(),
+		`echo "token=$UNIFIED_AGENT_TOKEN cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
+		&stderr, nil, []string{"MY_BUILD_FLAG"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+
+	assert.NotContains(t, stdout, "super-secret-value",
+		"child process must not see the agent's credentials")
+	assert.Contains(t, stdout, "flag=visible-value",
+		"positive control: an ExposeEnv-allowlisted variable must still reach the child")
 }
 
 func TestFindShell_NonWindows(t *testing.T) {
@@ -198,7 +281,7 @@ func TestRunStep_CancelKillsGrandchild(t *testing.T) {
 	go func() {
 		defer close(done)
 		var stdout, stderr bytes.Buffer
-		_, _ = RunStep(ctx, script, &stdout, &stderr, nil, dir)
+		_, _ = RunStep(ctx, script, &stdout, &stderr, nil, nil, dir)
 	}()
 
 	// Let the grandchild get going and write at least one heartbeat.

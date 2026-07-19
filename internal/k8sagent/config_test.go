@@ -3,12 +3,21 @@ package k8sagent
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// digestPinPattern requires a well-formed, complete 64-hex-character sha256
+// digest anchored at the end of the string. A plain `strings.Contains(img,
+// "@sha256:")` check would still pass for a truncated or malformed digest
+// (e.g. "@sha256:" with nothing after it) — which is exactly the kind of pin
+// that looks correct at a glance but silently resolves to the wrong (or no)
+// image at pull time.
+var digestPinPattern = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
 
 func writeTempYAML(t *testing.T, content string) string {
 	t.Helper()
@@ -132,12 +141,42 @@ agentId: agent-1
 	if got.MaxConcurrent != 100 {
 		t.Errorf("MaxConcurrent = %d, want 100", got.MaxConcurrent)
 	}
-	if got.PodImage != "ghcr.io/eirueimi/unified-cd-runner:v0.0.3" {
-		t.Errorf("PodImage = %q, want %q", got.PodImage, "ghcr.io/eirueimi/unified-cd-runner:v0.0.3")
+	if got.PodImage != defaultPodImage {
+		t.Errorf("PodImage = %q, want %q", got.PodImage, defaultPodImage)
 	}
 	if got.ShimImage != defaultShimImage {
 		t.Errorf("ShimImage = %q, want %q", got.ShimImage, defaultShimImage)
 	}
+}
+
+// TestDefaultPodImageIsDigestPinned guards against the k8s-agent's
+// fleet-wide default pod image regressing to a mutable tag. A mutable tag
+// lets whoever controls the registry repository force-push it and execute
+// code in the primary container of every isolated job lacking its own
+// podTemplate job container.
+func TestDefaultPodImageIsDigestPinned(t *testing.T) {
+	assert.Regexp(t, digestPinPattern, defaultPodImage,
+		"default pod image must be pinned to a well-formed, complete sha256 digest — "+
+			"a mutable tag (or a truncated/malformed digest) lets whoever controls the "+
+			"registry repository force-push it and execute code in the primary container "+
+			"of every isolated job lacking its own podTemplate job container")
+}
+
+// TestDefaultSidecarImageIsDigestPinned guards against the k8s-agent's
+// fleet-wide default artifact-sidecar image regressing to a mutable tag.
+// Unlike PodImage, this is auto-injected into every k8s-agent pod regardless
+// of job-author-supplied podTemplate — it is never job-author-controlled —
+// and it holds long-lived, bucket-scoped static S3 credentials (see
+// SidecarS3SecretName / podbuilder.go's buildArtifactSidecarContainer and
+// cmd/unified-sidecar/main.go). A mutable tag here is therefore not just a
+// code-exec path but a credential-exfiltration path: a registry compromise
+// of this image gets read/write over the whole artifact bucket.
+func TestDefaultSidecarImageIsDigestPinned(t *testing.T) {
+	assert.Regexp(t, digestPinPattern, defaultSidecarImage,
+		"default sidecar image must be pinned to a well-formed, complete sha256 digest — "+
+			"a mutable tag (or a truncated/malformed digest) lets whoever controls the "+
+			"registry repository force-push it and both execute code in, and exfiltrate the "+
+			"long-lived S3 credentials of, every k8s-agent pod's auto-injected sidecar fleet-wide")
 }
 
 // TestDefaultConfig_ShimImage confirms DefaultConfig() itself (not just

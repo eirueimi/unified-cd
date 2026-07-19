@@ -94,14 +94,17 @@ func RequireShell() error {
 // shell spawned (e.g. `sleep` from `bash -c 'sleep 120'`) don't survive as orphans — see
 // runTreeKilled for why exec.CommandContext alone is not enough.
 // Extra environment variables can be supplied via extraEnv in "KEY=VALUE" format.
-// If workDir is non-empty, the command runs with that directory as the working directory.
-func RunStep(ctx context.Context, script string, stdout, stderr io.Writer, extraEnv []string, workDir string) (int, error) {
+// exposeEnv is the agent's ExposeEnv allowlist (AgentConfig.ExposeEnv): host
+// environment variables named there (and not in the credential denylist) are
+// made visible to the step. If workDir is non-empty, the command runs with
+// that directory as the working directory.
+func RunStep(ctx context.Context, script string, stdout, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (int, error) {
 	cmd := exec.Command(findShell(), "-lc", script)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	// Always set Env: a nil cmd.Env makes os/exec inherit the agent's whole
+	// environment, which is exactly the leak StepEnv exists to prevent.
+	cmd.Env = StepEnv(exposeEnv, extraEnv)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -123,15 +126,16 @@ func RunStep(ctx context.Context, script string, stdout, stderr io.Writer, extra
 // always going through bash -lc. shell must be non-empty; callers gate on
 // len(step.Shell) > 0 and fall back to RunStep (today's unconditional bash
 // path) otherwise. Cancellation/process-tree-kill semantics mirror RunStep
-// (see runTreeKilled).
-func RunStepWithShell(ctx context.Context, shell []string, script string, stdout, stderr io.Writer, extraEnv []string, workDir string) (int, error) {
+// (see runTreeKilled). exposeEnv is the agent's ExposeEnv allowlist; see
+// RunStep's doc comment.
+func RunStepWithShell(ctx context.Context, shell []string, script string, stdout, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (int, error) {
 	argv := append(append([]string{}, shell[1:]...), script)
 	cmd := exec.Command(shell[0], argv...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	// Always set Env: a nil cmd.Env makes os/exec inherit the agent's whole
+	// environment, which is exactly the leak StepEnv exists to prevent.
+	cmd.Env = StepEnv(exposeEnv, extraEnv)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -149,15 +153,16 @@ func RunStepWithShell(ctx context.Context, shell []string, script string, stdout
 // stderr is written to the provided writer (for log shipping).
 // On cancellation the whole process tree is killed (not just the shell) — see runTreeKilled.
 // Extra environment variables can be supplied via extraEnv in "KEY=VALUE" format.
+// exposeEnv is the agent's ExposeEnv allowlist; see RunStep's doc comment.
 // If workDir is non-empty, the command runs with that directory as the working directory.
-func RunStepCapture(ctx context.Context, script string, stderr io.Writer, extraEnv []string, workDir string) (stdout string, exitCode int, err error) {
+func RunStepCapture(ctx context.Context, script string, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (stdout string, exitCode int, err error) {
 	var stdoutBuf bytes.Buffer
 	cmd := exec.Command(findShell(), "-lc", script)
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = stderr
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	// Always set Env: a nil cmd.Env makes os/exec inherit the agent's whole
+	// environment, which is exactly the leak StepEnv exists to prevent.
+	cmd.Env = StepEnv(exposeEnv, extraEnv)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
@@ -27,35 +28,52 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if principal.AuthMethod != "legacy" {
-		verdict, err := s.agentRunGuard(r.Context(), principal.AgentID, runID, false)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if respondRunWriteVerdict(w, verdict, runID) {
-			return
-		}
+	// Apply the same per-run ownership check to every principal, including
+	// legacy shared-token callers: this route has no {agentId} path segment,
+	// so a legacy principal's AgentID is always empty (there is nothing to
+	// bind it to, unlike the agentId-scoped agent routes) — which means
+	// agentRunGuard can never find a matching claimed_by for it. That is the
+	// correct outcome, not a bug: a legacy caller presents no identity at all
+	// here, so it cannot be trusted to write to any run's artifacts, exactly
+	// like the (deliberately fail-closed) secrets-fetch path.
+	//
+	// A nil store means this guard cannot run at all — not "no ownership to
+	// check", but "no way to check it". Silently skipping it (the previous
+	// behavior) would apply no authz whatsoever to anyone on a
+	// store-misconfigured server, which is the opposite of fail-closed. Refuse
+	// the request instead: production always has a store, so this only ever
+	// fires against a genuine misconfiguration.
+	if s.store == nil {
+		http.Error(w, "store not configured", http.StatusServiceUnavailable)
+		return
 	}
-	// Tests may wire object-store-only servers (nil store); production always
-	// has a store, so only check existence when one is configured.
-	if s.store != nil {
-		if _, err := s.store.GetRun(r.Context(), runID); err != nil {
-			if errors.Is(err, store.ErrRunNotFound) {
-				// A late upload for a deleted run would create an orphaned
-				// object nothing ever cleans up (deleteRunEverywhere already
-				// ran its prefix delete). Terminal-but-existing runs are still
-				// accepted: their objects stay referenced and are removed with
-				// the run.
-				http.Error(w, "run not found", http.StatusNotFound)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+	verdict, err := s.agentRunGuard(r.Context(), principal.AgentID, runID, false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, verdict, runID) {
+		return
+	}
+	if _, err := s.store.GetRun(r.Context(), runID); err != nil {
+		if errors.Is(err, store.ErrRunNotFound) {
+			// A late upload for a deleted run would create an orphaned
+			// object nothing ever cleans up (deleteRunEverywhere already
+			// ran its prefix delete). Terminal-but-existing runs are still
+			// accepted: their objects stay referenced and are removed with
+			// the run.
+			http.Error(w, "run not found", http.StatusNotFound)
 			return
 		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	name := chi.URLParam(r, "name")
-	key := fmt.Sprintf("artifacts/%s/%s.tar.gz", runID, name)
+	key, err := artifact.ArtifactKey(runID, name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	size := r.ContentLength
 	if size < 0 {

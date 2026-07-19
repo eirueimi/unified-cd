@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -269,6 +270,34 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 		resp.SecretsNeeded = append(resp.SecretsNeeded, name)
 	}
 	return resp, nil
+}
+
+// secretNamesForRun recomputes the set of secret names a run's spec
+// references. SecretsNeeded is NOT persisted — the claim handler computes it
+// as a side effect of buildStages and returns it only in the claim response
+// (see buildClaimResponse above) — so the agent secrets-fetch path
+// recomputes it from the run's stored spec rather than trusting the names
+// the caller asks for. Mirrors buildClaimResponse's load (GetRunSpec, the
+// raw job spec bytes) and unmarshal (dsl.Spec) exactly, so the fetch path
+// and the claim path can never disagree about what a run "needs".
+//
+// It deliberately reuses buildStages, which is what populates secretsNeeded
+// on the claim path: any future step shape that can carry a secret reference
+// is then covered here automatically.
+func (s *Server) secretNamesForRun(ctx context.Context, runID string) (map[string]struct{}, error) {
+	specBytes, err := s.store.GetRunSpec(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load run spec %s: %w", runID, err)
+	}
+	var spec dsl.Spec
+	if err := json.Unmarshal(specBytes, &spec); err != nil {
+		return nil, fmt.Errorf("parse run spec %s: %w", runID, err)
+	}
+	needed := map[string]struct{}{}
+	stepIdx := 0 // flat step counter across steps and finally, mirroring buildClaimResponse
+	_ = buildStages(spec.Steps, &stepIdx, needed, spec.Shell)
+	_ = buildStages(spec.Finally, &stepIdx, needed, spec.Shell)
+	return needed, nil
 }
 
 // rejectPreMigrationRunsIn guards against a job that was applied before the

@@ -16,7 +16,7 @@ func isolatedBackendForTest(t *testing.T) (*hostBackend, *podFakeRT) {
 	f := &podFakeRT{}
 	m := newClaimPodManager(f, "/w", "/workspace", "p", "r", "")
 	require.NoError(t, m.Start(context.Background(), mysqlTemplate()))
-	b := newHostBackend(&Agent{}, "run1", "/w", m)
+	b := newHostBackend(&Agent{}, "run1", "test-job", "/w", m)
 	return b, f
 }
 
@@ -44,7 +44,7 @@ func TestHostBackend_Isolated_DefaultAgentOSIsLinux(t *testing.T) {
 }
 
 func TestHostBackend_Native_DefaultAgentOSIsHost(t *testing.T) {
-	b := newHostBackend(&Agent{}, "run1", "/w", nil)
+	b := newHostBackend(&Agent{}, "run1", "test-job", "/w", nil)
 	assert.Equal(t, runtime.GOOS, b.DefaultAgentOS())
 }
 
@@ -63,7 +63,7 @@ func TestHostBackend_Isolated_ResolveCachePathJoinsWorkDir(t *testing.T) {
 // pre-fix behavior, which tarred the agent process's own CWD instead of the
 // workspace).
 func TestHostBackend_Native_ResolveCachePathJoinsWorkDir(t *testing.T) {
-	b := newHostBackend(&Agent{}, "run1", "/w", nil)
+	b := newHostBackend(&Agent{}, "run1", "test-job", "/w", nil)
 	got, err := b.ResolveCachePath(ScopeHandle{}, "node_modules")
 	require.NoError(t, err)
 	want, err := resolveWorkspacePath("/w", "node_modules")

@@ -29,7 +29,7 @@ import (
 func TestK8sBackend_RunPostHook_ExecsIntoGivenContainer(t *testing.T) {
 	ex := &fakeExec{exit: 0}
 	a := &K8sAgent{exec: ex}
-	b := newK8sBackend(a, "run-1", "pod-default", "/workspace", nil, metav1.Time{})
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
 
 	err := b.RunPostHook(context.Background(), agentlib.ScopeHandle{}, "build", "cleanup.sh", nil, nil, io.Discard, io.Discard)
 	require.NoError(t, err)
@@ -46,7 +46,7 @@ func TestK8sBackend_RunPostHook_ExecsIntoGivenContainer(t *testing.T) {
 func TestK8sBackend_RunPostHook_DefaultContainerWhenEmpty(t *testing.T) {
 	ex := &fakeExec{exit: 0}
 	a := &K8sAgent{exec: ex}
-	b := newK8sBackend(a, "run-1", "pod-default", "/workspace", nil, metav1.Time{})
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
 
 	err := b.RunPostHook(context.Background(), agentlib.ScopeHandle{}, "", "cleanup.sh", nil, nil, io.Discard, io.Discard)
 	require.NoError(t, err)
@@ -109,7 +109,7 @@ func TestK8sBackend_RunPostHook_StreamsOutputToGivenWriters(t *testing.T) {
 	client := agentlib.NewClient(srv.URL, "tok")
 	ex := &fakeExec{exit: 0, stdout: "POST_HOOK_MARKER\n" + secretValue + "\n"}
 	a := &K8sAgent{cfg: Config{AgentID: agentID}, client: client, exec: ex}
-	b := newK8sBackend(a, runID, "pod-default", "/workspace", nil, metav1.Time{})
+	b := newK8sBackend(a, runID, "test-job", "pod-default", "/workspace", nil, metav1.Time{})
 	b.SetMasker(secrets.NewMasker([]string{secretValue}))
 
 	// stepIndex 2: an arbitrary non-zero owning-step index, proving

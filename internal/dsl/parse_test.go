@@ -512,6 +512,53 @@ spec:
 	assert.Equal(t, 14, step.Cache.TTLDays)
 }
 
+// TestParse_CacheStep_TTLDaysExceedsMax is the regression test for C-1's
+// ttlDays cap: ttlDays is attacker-controlled input to the cache's
+// findBestMatch tie-break (longest remaining TTL wins), so an unbounded
+// value let one entry outlive any reasonable retention policy indefinitely.
+func TestParse_CacheStep_TTLDaysExceedsMax(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: test
+spec:
+  agentSelector: [kind:docker]
+  steps:
+    - name: bad
+      cache:
+        path: node_modules
+        key: npm-abc
+        ttlDays: 3650
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ttlDays")
+	assert.Contains(t, err.Error(), "365")
+}
+
+// TestParse_CacheStep_TTLDaysAtMax proves the boundary itself (exactly
+// maxCacheTTLDays) is accepted, not just values below it.
+func TestParse_CacheStep_TTLDaysAtMax(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: test
+spec:
+  agentSelector: [kind:docker]
+  steps:
+    - name: ok
+      cache:
+        path: node_modules
+        key: npm-abc
+        ttlDays: 365
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	assert.Equal(t, 365, job.Spec.Steps[0].Cache.TTLDays)
+}
+
 func TestParse_CacheStep_MissingPath(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1

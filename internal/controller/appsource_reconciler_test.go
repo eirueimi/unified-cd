@@ -190,7 +190,7 @@ func TestReconciler_AppliesAllKinds(t *testing.T) {
 	files := map[string][]byte{
 		"a-job.yaml":      []byte("apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: j1\nspec:\n  agentSelector: [kind:docker]\n  steps:\n    - name: s\n      run: echo hi"),
 		"b-schedule.yaml": []byte("apiVersion: unified-cd/v1\nkind: Schedule\nmetadata:\n  name: sc1\nspec:\n  cron: \"* * * * *\"\n  job: j1"),
-		"c-webhook.yaml":  []byte("apiVersion: unified-cd/v1\nkind: WebhookReceiver\nmetadata:\n  name: wh1\nspec:\n  trigger:\n    job: j1\n  auth:\n    type: none"),
+		"c-webhook.yaml":  []byte("apiVersion: unified-cd/v1\nkind: WebhookReceiver\nmetadata:\n  name: wh1\nspec:\n  trigger:\n    job: j1\n  auth:\n    type: none\n    allowUnauthenticated: true"),
 	}
 	fetcher := &mockAppSourceFetcher{sha: "sha1", files: files}
 

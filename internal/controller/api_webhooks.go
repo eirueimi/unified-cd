@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -108,8 +109,29 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify authentication when configured.
-	if spec.Auth.Type != "none" && spec.Auth.Type != "" {
+	// Verify authentication when configured. Only an explicit "none" skips
+	// verification; an empty type (only possible from a legacy stored row —
+	// parse-time now rejects an omitted auth block) fails closed and runs
+	// verification, which will fail for a type the switch below doesn't know.
+	//
+	// "none" itself is not a free pass: parse-time (dsl.Validate) requires
+	// allowUnauthenticated: true alongside it, but the store read path here
+	// never re-parses, so a row written before that rule existed — or written
+	// directly through the store, bypassing Validate() — would otherwise carry
+	// type: none with the flag unset (its Go zero value is false) and sail
+	// through unauthenticated forever. Enforce the same rule live so the
+	// ingress handler cannot be reached by a legacy or hand-crafted row without
+	// the explicit opt-in.
+	if spec.Auth.Type == "none" && !spec.Auth.AllowUnauthenticated {
+		s.countWebhookEvent(name, "rejected")
+		slog.Warn("webhook ingress: rejecting unauthenticated receiver — auth.type \"none\" requires allowUnauthenticated: true",
+			"receiver", name)
+		http.Error(w, fmt.Sprintf(
+			"webhook receiver %q has auth.type \"none\" without allowUnauthenticated: true — declare allowUnauthenticated: true to accept unauthenticated requests, or adopt a real auth type (hmac-sha256, github, token)",
+			name), http.StatusUnauthorized)
+		return
+	}
+	if spec.Auth.Type != "none" {
 		var verr error
 		switch spec.Auth.Type {
 		case "token":
@@ -196,6 +218,18 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	agentSelector := []string{}
 	if err := json.Unmarshal(job.Spec, &jobSpec); err == nil {
 		agentSelector = jobSpec.AgentSelector
+	}
+	// A valid signature proves the request's origin, not that its content is
+	// benign: an outside contributor who can open a PR or push a branch
+	// controls payload fields like .Payload.pull_request.head.ref. Reject any
+	// payload-derived paramsMapping entry the target job hasn't opted into
+	// validating, before those values ever reach resolveParams or a step's
+	// shell text. See validateWebhookPayloadMappedParams for why this lives
+	// here rather than at receiver-parse time.
+	if err := validateWebhookPayloadMappedParams(name, spec.ParamsMapping, jobSpec.Params.Inputs, spec.Trigger.Job); err != nil {
+		s.countWebhookEvent(name, "error")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	params, err = resolveParams(jobSpec.Params.Inputs, params)
 	if err != nil {

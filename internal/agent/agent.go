@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -441,6 +442,35 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				a.failRun(runCtx, resp.RunID, fmt.Sprintf("prepare workspace failed: %v", err))
 				return
 			}
+			// Re-verify the ucd-sh shim before each claim: a native step's
+			// cwd is inside wsBase, so it can reach toolsDir by relative
+			// traversal and tamper with the shell every later containerized
+			// job on this agent will run (see EnsureShimIntact's doc
+			// comment). Checking here — once per claim, right before the
+			// run that just claimed this slot executes — catches tampering
+			// left behind by an earlier run and repairs it before the next
+			// claim starts, so it cannot persist indefinitely across the
+			// agent's lifetime.
+			//
+			// This does NOT bound tampering to "a single run" when
+			// MaxConcurrent > 1: every slot shares this same a.ToolsDir, and
+			// the /.ucd mount each claim pod gets is a LIVE bind mount of
+			// it, not a copy taken at pod start. A native step here can
+			// tamper with the on-disk shim while another slot's isolated
+			// job is already running, and that job sees the tampered bytes
+			// on its very next ucd-sh invocation — before this per-claim
+			// check ever fires again (see EnsureShimIntact's doc comment
+			// for the full picture). A check/repair failure is logged and
+			// must never fail the run; this is best-effort hardening, not
+			// the primary control.
+			if a.ToolsDir != "" {
+				if repaired, err := EnsureShimIntact(a.ToolsDir); err != nil {
+					slog.Error("shim integrity check failed", "error", err, "toolsDir", a.ToolsDir, "runId", resp.RunID)
+				} else if repaired {
+					slog.Error("ucd-sh shim was modified on disk and has been restored; a previous step on this agent may have tampered with it",
+						"toolsDir", a.ToolsDir, "runId", resp.RunID)
+				}
+			}
 			a.executeRun(runCtx, resp, workDir)
 		}()
 	}
@@ -550,7 +580,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			return
 		}
 	}
-	backend := newHostBackend(a, c.RunID, workDir, pod)
+	backend := newHostBackend(a, c.RunID, c.JobName, workDir, pod)
 	runClaimFn(ctx, a.Client, a.ID, c, backend)
 }
 
@@ -699,4 +729,179 @@ func InstallShim(workspaceDir string) (toolsDir string, err error) {
 		return "", fmt.Errorf("write shim to %s: %w", shimPath, err)
 	}
 	return toolsDir, nil
+}
+
+// shimPayload returns the exact embedded ucd-sh bytes InstallShim writes,
+// via the same shimBytes indirection (so tests can fake it) — the single
+// source of truth both InstallShim and EnsureShimIntact read from, so the
+// two can never drift apart. shimBytes itself already resolves to the
+// architecture this agent binary was compiled for (see
+// internal/shim/embedded: embed_amd64.go / embed_arm64.go pick the payload
+// via build tags at compile time), so no arch selection happens here.
+func shimPayload() []byte {
+	return shimBytes()
+}
+
+// EnsureShimIntact re-verifies the on-disk ucd-sh shim at
+// <toolsDir>/ucd-sh against the embedded payload InstallShim writes, and
+// repairs it if the two differ or the file is missing, reporting whether a
+// repair was needed.
+//
+// Why this exists: ucd-sh is the default shell and keep-alive entrypoint for
+// every containerized job step (see InstallShim's doc comment on the
+// shared-mount invariant that requires toolsDir to live under wsBase). A
+// NATIVE step runs as the agent user with its cwd inside wsBase, so it can
+// reach toolsDir by relative traversal (e.g. `cp evil ../../.ucd-tools/ucd-sh`)
+// and backdoor the shell of every containerized job that later runs on this
+// agent — jobs that specifically chose container isolation to avoid the
+// host. The control is repair-on-next-claim: re-verifying before EACH claim
+// (see the call in runLoop) detects tampering left by an earlier run and
+// repairs it via an atomic same-directory rename (see below) before the next
+// claim starts, so tampering cannot persist indefinitely across the agent's
+// lifetime.
+//
+// Repair writes the replacement payload to a temp file in toolsDir (the same
+// directory as the shim, so the following rename is same-filesystem and
+// therefore atomic) and renames it over the shim path, rather than
+// os.WriteFile(shimPath, ...) truncating the existing file in place. Two
+// reasons:
+//
+//  1. ETXTBSY: on Linux, opening a binary for writing while ANY process is
+//     currently executing it fails with ETXTBSY. With MaxConcurrent > 1,
+//     another slot's claim pod holds this exact shim open via the live
+//     /.ucd bind mount (its pause keep-alive, or a step exec) for the pod's
+//     whole lifetime — so exactly when repair is most needed (concurrent
+//     slots, one just tampered), an in-place O_TRUNC write would fail with
+//     "text file busy". Rename instead swaps the directory entry: it does
+//     not require the target inode to be unreferenced, so it succeeds
+//     regardless of who currently has the old file open for exec.
+//  2. Torn writes: two slots repairing concurrently against the same
+//     O_TRUNC target could interleave, briefly exposing a partial binary
+//     (ENOEXEC or exit 127) through the live mount. A rename is a single
+//     atomic directory-entry swap, so a concurrent reader always sees either
+//     the fully-old or fully-new file, never a partial one.
+//
+// What this does NOT give: already-running containers keep executing the
+// OLD inode until they restart. Rename does not — cannot — reach into a
+// process that already has the old file mapped/open; POSIX only guarantees
+// the directory entry updates atomically, not that existing file handles are
+// invalidated. That is inherent to repairing a live bind mount, not a defect
+// here: a native step in one slot that tampers with the on-disk shim mid-run
+// is still immediately visible to an isolated job already running in
+// another slot, on that job's very next ucd-sh invocation, and this check
+// only runs at the START of a new claim, never against claims already in
+// flight. Closing that window needs a check independent of claim cadence
+// (e.g. periodic re-verification, or verifying before each container-step
+// exec rather than each claim); see the design doc's residual/follow-up
+// note.
+//
+// This is best-effort hardening, not the primary control: a failure to read
+// or repair the shim is reported to the caller but must never fail the run
+// (see runLoop, which logs and continues on error). This function also does
+// no locking of its own and, with MaxConcurrent > 1, is now called
+// concurrently from every slot against the same file; that is currently
+// benign only because every caller writes the identical embedded payload,
+// and the rename-based repair below is safe against concurrent repairers by
+// construction (each writes its own temp file; the last rename to land
+// wins, and it lands the same bytes every other caller would have written).
+func EnsureShimIntact(toolsDir string) (repaired bool, err error) {
+	shimPath := filepath.Join(toolsDir, "ucd-sh")
+	want := shimPayload()
+	if len(want) == 0 {
+		// A working, intact shim on disk must never be classified "not
+		// intact" and truncated to zero bytes because the embedded payload
+		// this process was built with is itself empty — that would turn a
+		// functioning agent into one that repairs every shim into garbage on
+		// its very next claim. InstallShim already refuses to start in this
+		// case; this is defense in depth for any path that reaches
+		// EnsureShimIntact without having gone through InstallShim first.
+		return false, fmt.Errorf("ucd-sh shim payload is empty (0 bytes): refusing to repair %s — this agent binary was built without `make embed-shim`", shimPath)
+	}
+	got, readErr := os.ReadFile(shimPath)
+	intact := readErr == nil && bytes.Equal(got, want)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return false, fmt.Errorf("read shim %s: %w", shimPath, readErr)
+	}
+	if !intact {
+		if err := repairShim(toolsDir, shimPath, want); err != nil {
+			return false, err
+		}
+	}
+	// Tighten to read-only where the platform allows, on every check (not
+	// just on repair): repairShim below already writes the temp file at
+	// 0o555 before the rename, so this is a no-op immediately after a
+	// repair and only matters if something else loosened the mode since.
+	// Not the primary control — the agent user may own the file regardless,
+	// so this is defense-in-depth — and a failure here is best-effort and
+	// never fatal.
+	_ = os.Chmod(shimPath, 0o555)
+	return !intact, nil
+}
+
+// repairShim writes want to a fresh temp file created in toolsDir (same
+// directory as shimPath, so the rename below is guaranteed same-filesystem)
+// and atomically renames it over shimPath. See EnsureShimIntact's doc
+// comment for why this replaces a straightforward os.WriteFile(shimPath,
+// ...): it sidesteps ETXTBSY against an already-executing shim and closes
+// the torn-write window between concurrent repairers. The temp file is
+// cleaned up on every error path so a failed repair never leaves debris in
+// toolsDir.
+func repairShim(toolsDir, shimPath string, want []byte) error {
+	tmp, err := os.CreateTemp(toolsDir, "ucd-sh.tmp*")
+	if err != nil {
+		return fmt.Errorf("create temp shim in %s: %w", toolsDir, err)
+	}
+	tmpPath := tmp.Name()
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(want); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp shim %s: %w", tmpPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp shim %s: %w", tmpPath, err)
+	}
+	// Set the final mode on the temp file BEFORE the rename, so the file
+	// that lands at shimPath is already 0o555 the instant it appears there
+	// — no window where the just-repaired shim is briefly more permissive
+	// than intended.
+	if err := os.Chmod(tmpPath, 0o555); err != nil {
+		return fmt.Errorf("chmod temp shim %s: %w", tmpPath, err)
+	}
+	if err := renameOverExisting(tmpPath, shimPath); err != nil {
+		return fmt.Errorf("repair shim %s: %w", shimPath, err)
+	}
+	succeeded = true
+	return nil
+}
+
+// renameOverExisting renames src to dst, working around a Windows-specific
+// gap: POSIX rename(2) always atomically replaces an existing dst
+// regardless of open readers/executors (the exact property repairShim
+// relies on to avoid ETXTBSY), but os.Rename on Windows can fail with the
+// destination already present — e.g. if some other handle has it open
+// non-shared. Try the direct rename first (this is the common, and on
+// POSIX the only, path); only on Windows, if that fails, fall back to
+// removing the destination and retrying. That fallback is best-effort and
+// no longer atomic against a concurrent reader — but it only runs on a
+// platform where the atomic path already isn't guaranteed by the OS, so it
+// makes the best of what Windows offers rather than regressing anything.
+func renameOverExisting(src, dst string) error {
+	if err := os.Rename(src, dst); err != nil {
+		if runtime.GOOS != "windows" {
+			return err
+		}
+		if rmErr := os.Remove(dst); rmErr != nil && !os.IsNotExist(rmErr) {
+			return err
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return err
+		}
+	}
+	return nil
 }

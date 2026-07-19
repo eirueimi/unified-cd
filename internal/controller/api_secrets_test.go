@@ -13,10 +13,12 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func testKeyManager(t *testing.T) secrets.KeyManager {
@@ -104,9 +106,10 @@ func TestAgentAPI_FetchSecrets(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	s.Router().ServeHTTP(httptest.NewRecorder(), req)
 
-	_, err := pg.UpsertJob(t.Context(), "secret-fetch", "unified-cd/v1", []byte(`{"steps":[]}`))
+	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.MY_SECRET }}"}]}`)
+	_, err := pg.UpsertJob(t.Context(), "secret-fetch", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "secret-fetch", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	run, err := pg.CreateRun(t.Context(), "secret-fetch", nil, specJSON, nil, nil, "")
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "a1", run.ID)
 
@@ -157,15 +160,16 @@ func TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent(t *testing.T) {
 	set.Header.Set("Content-Type", "application/json")
 	s.Router().ServeHTTP(httptest.NewRecorder(), set)
 
-	_, err := pg.UpsertJob(t.Context(), "secret-fetch-guard", "unified-cd/v1", []byte(`{"steps":[]}`))
+	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.MY_SECRET }}"}]}`)
+	_, err := pg.UpsertJob(t.Context(), "secret-fetch-guard", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
-	owned, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	owned, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "")
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-a", owned.ID)
-	other, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	other, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "")
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-b", other.ID)
-	unclaimed, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	unclaimed, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "")
 	require.NoError(t, err)
 
 	token := issueAgentAccessForTest(t, pg, "agent-a", nil, nil)
@@ -198,12 +202,20 @@ func TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent(t *testing.T) {
 // "Bearer agent-secret" request never reaches the code under test here — see
 // TestAgentAPI_FetchSecrets_RejectsLegacyTokenPathImpersonation above and the
 // task-7 report for how this was discovered.
+//
+// The run's spec must also declare the secret it fetches, same as
+// TestAgentAPI_FetchSecrets and TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent
+// above: handleAgentSecretsFetch restricts a fetch to the names the run's own
+// spec references (secretNamesForRun in api_agent.go), so a bare `{"steps":[]}`
+// spec would be rejected outright (403, "secret not needed by this run")
+// before ever reaching the missing-vs-present distinction this test targets.
 func TestAPI_FetchSecrets_MissingSecretIsAnError(t *testing.T) {
 	s, pg := newTestServerWithKM(t)
 
-	_, err := pg.UpsertJob(t.Context(), "fetch-missing-secret", "unified-cd/v1", []byte(`{"steps":[]}`))
+	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.NO_SUCH_SECRET }}"}]}`)
+	_, err := pg.UpsertJob(t.Context(), "fetch-missing-secret", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "fetch-missing-secret", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	run, err := pg.CreateRun(t.Context(), "fetch-missing-secret", nil, specJSON, nil, nil, "")
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "agent-1", nil, nil)
@@ -230,9 +242,10 @@ func TestAPI_FetchSecrets_ReturnsExistingSecret(t *testing.T) {
 	s.Router().ServeHTTP(setRec, setReq)
 	require.Equal(t, http.StatusNoContent, setRec.Code, setRec.Body.String())
 
-	_, err := pg.UpsertJob(t.Context(), "fetch-existing-secret", "unified-cd/v1", []byte(`{"steps":[]}`))
+	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.PRESENT }}"}]}`)
+	_, err := pg.UpsertJob(t.Context(), "fetch-existing-secret", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "fetch-existing-secret", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	run, err := pg.CreateRun(t.Context(), "fetch-existing-secret", nil, specJSON, nil, nil, "")
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "agent-1", nil, nil)
@@ -294,4 +307,79 @@ func TestLogSecretDecryptFailure_KMSUnreachableIsWarn(t *testing.T) {
 	out := buf.String()
 	assert.Contains(t, out, "level=WARN")
 	assert.Contains(t, out, "connection refused")
+}
+
+// newSecretsFetchFixture builds a server with a key manager configured,
+// applies a job whose spec is the given YAML (a spec: body, e.g.
+// "steps:\n  - name: s\n    run: ...\n"), creates and claims a run of that
+// job to a fresh agent, and returns the server, the claiming agent's ID, and
+// the run's ID. The run's stored spec is what secretNamesForRun recomputes
+// the allowed secret-name set from.
+func newSecretsFetchFixture(t *testing.T, specYAML string) (srv *Server, agentID string, runID string) {
+	t.Helper()
+	s, pg := newTestServerWithKM(t)
+
+	var spec dsl.Spec
+	require.NoError(t, yaml.Unmarshal([]byte(specYAML), &spec))
+	specJSON, err := json.Marshal(spec)
+	require.NoError(t, err)
+
+	const jobName = "secrets-fetch-fixture"
+	_, err = pg.UpsertJob(t.Context(), jobName, "unified-cd/v1", specJSON)
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), jobName, nil, specJSON, nil, nil, "")
+	require.NoError(t, err)
+
+	agentID = "fixture-agent"
+	claimRunForTest(t, pg, agentID, run.ID)
+	return s, agentID, run.ID
+}
+
+// mustSetSecret stores a secret via the (bootstrap-PAT-authenticated) secrets
+// API, mirroring TestAPI_SetSecret's request shape.
+func mustSetSecret(t *testing.T, srv *Server, name, value string) {
+	t.Helper()
+	body, _ := json.Marshal(api.SetSecretRequest{Name: name, Value: value})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+}
+
+// postFetchSecrets issues a fresh non-legacy agent credential for agentID and
+// POSTs a secrets-fetch request for runID/names, returning the recorded
+// response.
+func postFetchSecrets(t *testing.T, srv *Server, agentID, runID string, names []string) *httptest.ResponseRecorder {
+	t.Helper()
+	token := issueAgentAccessForTest(t, srv.store, agentID, nil, nil)
+	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: runID, Names: names})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/"+agentID+"/secrets/fetch", bytes.NewReader(fetchBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestAgentSecretsFetch_RejectsNameNotNeededByRun(t *testing.T) {
+	// Setup: a run whose spec references only {{ .Secrets.NEEDED }}, plus an
+	// unrelated secret the run does not reference.
+	srv, agentID, runID := newSecretsFetchFixture(t, `steps:
+  - name: s
+    run: echo {{ .Secrets.NEEDED }}
+`)
+	mustSetSecret(t, srv, "NEEDED", "ok")
+	mustSetSecret(t, srv, "OTHER", "must-not-leak")
+
+	// Asking for a secret the run does not declare must be refused outright.
+	rr := postFetchSecrets(t, srv, agentID, runID, []string{"OTHER"})
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+	assert.NotContains(t, rr.Body.String(), "must-not-leak")
+
+	// The run's own secret still resolves.
+	rr = postFetchSecrets(t, srv, agentID, runID, []string{"NEEDED"})
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Contains(t, rr.Body.String(), "ok")
 }

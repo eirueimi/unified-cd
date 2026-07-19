@@ -29,6 +29,7 @@ spec:
     job: build
   auth:
     type: none
+    allowUnauthenticated: true
 `
 
 func TestAPI_ApplyWebhook(t *testing.T) {
@@ -62,13 +63,53 @@ func TestAPI_ListWebhooks(t *testing.T) {
 	assert.Len(t, list, 1)
 }
 
-func TestWebhookIngress_NoAuth(t *testing.T) {
+// TestWebhookIngress_NoAuth_RejectsLegacyRowWithoutFlag verifies that a stored
+// receiver row with auth.type "none" and no allowUnauthenticated flag (the
+// shape of every pre-existing row, and the shape any legacy or hand-crafted
+// row bypassing dsl.Validate() would have — its Go zero value is false) is
+// rejected at ingress with 401, and — critically — no Run is created. This is
+// the live enforcement of the same rule dsl.Validate() applies at parse time;
+// the store read path here never re-parses, so the flag must also be checked
+// on the ingress path itself.
+func TestWebhookIngress_NoAuth_RejectsLegacyRowWithoutFlag(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
 		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	// Written directly via the store, bypassing Validate(), exactly like a
+	// legacy pre-migration row: type "none", no allowUnauthenticated.
 	spec, _ := json.Marshal(map[string]any{
 		"trigger":       map[string]any{"job": "build"},
 		"auth":          map[string]any{"type": "none"},
+		"paramsMapping": map[string]any{"branch": `{{ index .Payload "ref" }}`},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	payload, _ := json.Marshal(map[string]any{"ref": "refs/heads/main"})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "allowUnauthenticated")
+
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs, "an unauthenticated legacy row must not be allowed to create a run")
+}
+
+// TestWebhookIngress_NoAuth_AllowedWithFlag verifies that a stored receiver
+// row with auth.type "none" AND allowUnauthenticated: true — the deliberate
+// opt-in — is accepted at ingress and creates the Run, same as before this
+// fix.
+func TestWebhookIngress_NoAuth_AllowedWithFlag(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
+		"params": {"inputs": [{"name": "branch", "type": "string", "pattern": "^[A-Za-z0-9._/-]+$"}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger":       map[string]any{"job": "build"},
+		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
 		"paramsMapping": map[string]any{"branch": `{{ index .Payload "ref" }}`},
 	})
 	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
@@ -91,11 +132,14 @@ func TestWebhookIngress_NoAuth(t *testing.T) {
 // `{{ .Params.pool }}` is also expanded with the params determined by paramsMapping during webhook ingress.
 func TestWebhookIngress_ExpandsAgentSelectorParams(t *testing.T) {
 	s, pg := newTestServer(t)
-	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
-		[]byte(`{"agentSelector":["pool:{{ .Params.pool }}"],"steps":[{"name":"s","run":"echo x"}]}`))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
+		"agentSelector": ["pool:{{ .Params.pool }}"],
+		"params": {"inputs": [{"name": "pool", "type": "string", "pattern": "^[A-Za-z0-9._/-]+$"}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
 	spec, _ := json.Marshal(map[string]any{
 		"trigger":       map[string]any{"job": "build"},
-		"auth":          map[string]any{"type": "none"},
+		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
 		"paramsMapping": map[string]any{"pool": `{{ index .Payload "pool" }}`},
 	})
 	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
@@ -124,7 +168,7 @@ func TestWebhookIngress_MissingRequiredParam(t *testing.T) {
 	}`))
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "build"},
-		"auth":    map[string]any{"type": "none"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
 	})
 	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
 
@@ -151,7 +195,7 @@ func TestWebhookIngress_InjectsDefaultParam(t *testing.T) {
 	}`))
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "build"},
-		"auth":    map[string]any{"type": "none"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
 	})
 	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
 
@@ -168,13 +212,124 @@ func TestWebhookIngress_InjectsDefaultParam(t *testing.T) {
 	assert.Equal(t, "latest", runs[0].Params["tag"])
 }
 
+// TestWebhookIngress_PayloadMappedParamWithoutPatternRejected verifies that a
+// webhook delivery is rejected with 400 (and no Run created) when
+// paramsMapping feeds a job input from the request payload but the target
+// job's input declares neither pattern: nor unvalidated: true. A valid
+// signature only proves the request's origin, not that its content is
+// benign — an outside contributor controls payload fields the same way they
+// control a GitHub Actions context expression, so this must fail closed.
+func TestWebhookIngress_PayloadMappedParamWithoutPatternRejected(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
+		"params": {"inputs": [{"name": "ref", "type": "string"}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger":       map[string]any{"job": "build"},
+		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
+		"paramsMapping": map[string]any{"ref": `{{ index .Payload "ref" }}`},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	payload, _ := json.Marshal(map[string]any{"ref": "main; rm -rf /"})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "test-hook")
+	assert.Contains(t, rec.Body.String(), "ref")
+	assert.Contains(t, rec.Body.String(), "build")
+
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs, "an unvalidated payload-mapped param must not be allowed to create a run")
+}
+
+// TestWebhookIngress_PayloadMappedParamWithPatternAccepted verifies the
+// counterpart: a job input declaring pattern: accepts a conforming
+// payload-mapped value.
+func TestWebhookIngress_PayloadMappedParamWithPatternAccepted(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
+		"params": {"inputs": [{"name": "ref", "type": "string", "pattern": "^[A-Za-z0-9._/-]+$"}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger":       map[string]any{"job": "build"},
+		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
+		"paramsMapping": map[string]any{"ref": `{{ index .Payload "ref" }}`},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	payload, _ := json.Marshal(map[string]any{"ref": "refs/heads/main"})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, "refs/heads/main", runs[0].Params["ref"])
+}
+
+// TestWebhookIngress_PayloadMappedParamWithUnvalidatedAccepted verifies the
+// explicit unvalidated: true opt-out is honored for payload-mapped params.
+func TestWebhookIngress_PayloadMappedParamWithUnvalidatedAccepted(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
+		"params": {"inputs": [{"name": "message", "type": "string", "unvalidated": true}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger":       map[string]any{"job": "build"},
+		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
+		"paramsMapping": map[string]any{"message": `{{ index .Payload "message" }}`},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	payload, _ := json.Marshal(map[string]any{"message": "anything goes here!"})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// TestWebhookIngress_LiteralParamMappingNeedsNoPattern verifies a paramsMapping
+// entry that never references .Payload (a literal, author-controlled value)
+// is not subject to the pattern-or-unvalidated requirement.
+func TestWebhookIngress_LiteralParamMappingNeedsNoPattern(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
+		"params": {"inputs": [{"name": "image", "type": "string"}]},
+		"steps": [{"name": "s", "run": "echo x"}]
+	}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger":       map[string]any{"job": "build"},
+		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
+		"paramsMapping": map[string]any{"image": "myapp"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	payload, _ := json.Marshal(map[string]any{"ref": "refs/heads/main"})
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
 func TestWebhookIngress_FilterRejectsNonMain(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1",
 		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "build"},
-		"auth":    map[string]any{"type": "none"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
 		"filters": []string{`{{ eq (index .Payload "ref") "refs/heads/main" }}`},
 	})
 	_, _ = pg.UpsertWebhookReceiver(t.Context(), "filter-hook", spec)
@@ -374,7 +529,7 @@ func TestWebhookIngress_AppSourceTrigger(t *testing.T) {
 
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"appSource": "my-pipelines"},
-		"auth":    map[string]any{"type": "none"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
 		"filters": []string{`{{ eq (index .Payload "ref") "refs/heads/main" }}`},
 	})
 	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gitops-hook", spec)
@@ -407,7 +562,7 @@ func TestWebhookIngress_AppSourceTriggerFilteredOut(t *testing.T) {
 
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"appSource": "my-pipelines"},
-		"auth":    map[string]any{"type": "none"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
 		"filters": []string{`{{ eq (index .Payload "ref") "refs/heads/main" }}`},
 	})
 	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gitops-hook", spec)
@@ -430,7 +585,7 @@ func TestWebhookIngress_AppSourceNotFound(t *testing.T) {
 
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"appSource": "does-not-exist"},
-		"auth":    map[string]any{"type": "none"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
 	})
 	_, _ = pg.UpsertWebhookReceiver(t.Context(), "gitops-hook", spec)
 
@@ -567,7 +722,7 @@ func TestWebhookIngressMetricOutcomes(t *testing.T) {
 	// Receiver with no auth and a filter that only passes ref=="main".
 	spec, _ := json.Marshal(map[string]any{
 		"trigger": map[string]any{"job": "wh-metrics-job"},
-		"auth":    map[string]any{"type": "none"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
 		"filters": []string{`{{ eq .Payload.ref "main" }}`},
 	})
 	_, _ = pg.UpsertWebhookReceiver(t.Context(), "wh-metrics", spec)

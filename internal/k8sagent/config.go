@@ -49,14 +49,41 @@ type AgentPodTemplate struct {
 // own image, which ships /ucd-sh at its root (see docker/k8s-agent.Dockerfile).
 const defaultShimImage = "ghcr.io/eirueimi/unified-cd-k8s-agent:latest"
 
+// defaultPodImage is the default value of Config.PodImage: the fleet-wide
+// primary container image for isolated jobs that don't supply their own
+// podTemplate job container. It is digest-pinned — the tag is retained for
+// readability, but the digest is what is pulled. A mutable tag would let a
+// registry compromise execute code in that container on every such job
+// across the fleet. Rotate this together with the runner image release —
+// see docs/operations.md#rotating-the-default-runnerpause-image-digests for
+// the rotation procedure.
+const defaultPodImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3@sha256:d7fa1600cf2ec38b78a8893025db7a09cc70b8ac61ae474ceac48444905a729d"
+
+// defaultSidecarImage is the default value of Config.SidecarImage: the
+// fleet-wide artifact-transfer sidecar auto-injected into every k8s-agent pod
+// (see podbuilder.go's BuildPod/buildArtifactSidecarContainer) — unlike
+// PodImage, this is never a job-author-controlled value, so the "job authors
+// can already run their own code" carve-out doesn't apply here. It is
+// digest-pinned for the same reason as defaultPodImage: a mutable tag would
+// let a registry compromise execute code in this sidecar on every k8s-agent
+// pod across the fleet, and that sidecar holds long-lived, bucket-scoped
+// static S3 credentials (injected via SidecarS3SecretName; see
+// cmd/unified-sidecar/main.go and docs/kubernetes-integration.md's threat
+// model), making it a credential-exfiltration path, not just a code-exec one.
+// The tag is retained for readability, but the digest is what is pulled.
+// Rotate this together with the sidecar image release — see
+// docs/operations.md#rotating-the-default-runnerpause-image-digests for the
+// rotation procedure.
+const defaultSidecarImage = "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest@sha256:5e30d747d7ec954a88d84f4f7a8b5ac5c4b69d152555b80e253e7a0938eb14dd"
+
 const defaultServiceAccountTokenFile = "/var/run/secrets/unified-cd-agent/token"
 
 // DefaultConfig returns a Config with default values.
 func DefaultConfig() Config {
 	return Config{
 		Namespace:               "default",
-		PodImage:                "ghcr.io/eirueimi/unified-cd-runner:v0.0.3",
-		SidecarImage:            "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
+		PodImage:                defaultPodImage,
+		SidecarImage:            defaultSidecarImage,
 		ShimImage:               defaultShimImage,
 		ServiceAccountTokenFile: defaultServiceAccountTokenFile,
 		MaxConcurrent:           100,
@@ -169,10 +196,10 @@ func (c *Config) Validate() error {
 		c.Namespace = "default"
 	}
 	if c.PodImage == "" {
-		c.PodImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3"
+		c.PodImage = defaultPodImage
 	}
 	if c.SidecarImage == "" {
-		c.SidecarImage = "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest"
+		c.SidecarImage = defaultSidecarImage
 	}
 	if c.ShimImage == "" {
 		c.ShimImage = defaultShimImage

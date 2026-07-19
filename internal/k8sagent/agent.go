@@ -349,7 +349,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// b.CloseScopes, mirroring the pre-refactor scopePods defer (RunClaim
 	// installs the masker itself via SetMasker after fetching secrets, so
 	// this wrapper does neither).
-	backend := newK8sBackend(a, c.RunID, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
+	backend := newK8sBackend(a, c.RunID, c.JobName, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
 
 	agentlib.RunClaim(ctx, a.client, a.cfg.AgentID, c, backend)
 }

@@ -550,6 +550,13 @@ func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *C
 	return nil
 }
 
+// maxCacheTTLDays bounds cache.ttlDays so one entry cannot pin itself (and its
+// storage) indefinitely. ttlDays is attacker-controlled input to the cache's
+// findBestMatch tie-break (longest remaining TTL wins among prefix matches),
+// so an unbounded TTL let an entry outlive any reasonable retention policy
+// and dominate that tie-break for years.
+const maxCacheTTLDays = 365
+
 func validateCacheStep(name string, cache *CacheStep) error {
 	if cache == nil {
 		return nil
@@ -562,6 +569,9 @@ func validateCacheStep(name string, cache *CacheStep) error {
 	}
 	if cache.TTLDays < 0 {
 		return fmt.Errorf("step %q: cache.ttlDays must be non-negative", name)
+	}
+	if cache.TTLDays > maxCacheTTLDays {
+		return fmt.Errorf("step %q: cache.ttlDays %d exceeds the maximum of %d", name, cache.TTLDays, maxCacheTTLDays)
 	}
 	return nil
 }
