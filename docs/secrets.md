@@ -256,9 +256,18 @@ vault secrets enable transit
 vault write -f transit/keys/unified-cd-kek
 ```
 
-The controller needs two capabilities, plus two optional ones:
+The controller needs three capabilities, plus two optional ones:
 
 ```hcl
+# Required, not optional, despite only being used at startup: it is what
+# lets the controller tell "your key does not exist" from "your policy is
+# wrong" before the first secret write, instead of at it. A read can never
+# create anything, so granting it does not weaken least-privilege the way
+# `create` would. See "Why the key needs its own `read` capability" below.
+path "transit/keys/unified-cd-kek" {
+  capabilities = ["read"]
+}
+
 path "transit/encrypt/unified-cd-kek" {
   capabilities = ["update"]
 }
@@ -285,6 +294,27 @@ path "auth/token/lookup-self" {
   capabilities = ["read"]
 }
 ```
+
+### Why the key needs its own `read` capability
+
+At startup the controller checks that `unified-cd-kek` actually exists by
+reading `transit/keys/unified-cd-kek` before it ever calls `encrypt`. This
+matters because encrypt alone cannot tell "the key is missing" from "the
+policy is too narrow": Vault ACL-checks an encrypt against a key that does
+not exist as a `create` operation (the existence check runs before Transit's
+own "key not found" response), so a token holding only `update` — the
+capability above — is denied with `403` before Transit ever gets a chance to
+say the key is missing. Without the `read` check, a typo'd key name and an
+under-scoped policy are indistinguishable at startup, and if the token also
+happened to hold `create` (broader than this policy grants), that first
+encrypt would silently create the mistyped key instead of failing — the
+exact misconfiguration this startup check exists to catch. A read has no
+such side effect: it cannot create anything, whether or not the key exists.
+
+If the `read` grant above is missing, the controller fails to start with an
+error naming `transit/keys/unified-cd-kek` and telling you to grant `read`
+on it — it will not fall back to the ambiguous encrypt-only check, because
+that would silently reintroduce the exact failure mode above.
 
 Then configure the controller:
 
@@ -318,7 +348,7 @@ token is already projected by the kubelet, so there is no credential to
 distribute or rotate. The Kubernetes login response carries the token's TTL
 directly, so this path does not need — and does not perform — the
 `auth/token/lookup-self` call that token auth optionally makes; grant only the
-two Transit capabilities above.
+three Transit capabilities above.
 
 ```sh
 UNIFIED_VAULT_AUTH=kubernetes

@@ -106,17 +106,94 @@ func New(ctx context.Context, cfg Config) (*KeyManager, error) {
 	return km, nil
 }
 
-// startupProbe encrypts and discards a throwaway buffer, proving the
-// controller can actually use Transit rather than merely that its credential
-// is valid. It needs only the `update` capability the documented policy
-// already grants on transit/encrypt/<key>.
+// startupProbe verifies the controller can actually use Transit, in two
+// steps that classify failures cleanly instead of guessing from a single
+// encrypt's status code:
+//
+//  1. probeKeyExists reads the key's own metadata at <mount>/keys/<key>. A
+//     read cannot create anything, so a missing key comes back as an
+//     unambiguous 404 — unlike an encrypt (see below).
+//  2. Only once the key is confirmed to exist, probeEncrypt encrypts and
+//     discards a throwaway buffer to prove the `update` capability actually
+//     works.
+//
+// Why the encrypt call alone cannot classify "key missing" vs "permission
+// denied": Vault ACL-checks an encrypt against a key that does not yet exist
+// as a CreateOperation (the policy framework's existence check runs before
+// Transit's own "key not found" handler), so a token holding only `update`
+// — exactly the least-privilege policy docs/secrets.md documents — is denied
+// by the ACL layer with 403 before Transit ever gets a chance to report 400.
+// The 400 branch a naive implementation adds for this is therefore
+// unreachable under that policy: a typo'd key name is misreported as
+// "permission denied; grant `update`", a capability the operator already
+// has. Worse, a token that also holds `create` fares worse still: Transit
+// auto-vivifies a key on encrypt when the caller may create one, so the
+// probe would pass and silently create the wrong key instead of catching
+// the typo — precisely the silent misconfiguration this probe exists to
+// prevent.
 //
 // Design §5 lists "Transit key missing" and "Permission denied" as startup
-// error causes; without this call neither could ever fire, because nothing
-// touched transit/encrypt/<key> before the first real secret operation, and a
-// controller with a typo'd key name or an under-scoped policy would start
-// cleanly and then fail every write.
+// error causes; without this call neither could fire correctly, and a
+// controller with a typo'd key name or an under-scoped policy would either
+// get misdiagnosed or start cleanly and fail on the first real write.
 func (m *KeyManager) startupProbe(ctx context.Context) error {
+	if err := m.probeKeyExists(ctx); err != nil {
+		return err
+	}
+	return m.probeEncrypt(ctx)
+}
+
+// probeKeyExists reads <mount>/keys/<key> and classifies the result.
+//
+// `read` on this path is a required capability, not an optional one: it is
+// what lets the classification below distinguish "your key does not exist"
+// from "your policy is wrong" at startup instead of at the first secret
+// write. Degrading to an encrypt-only probe when `read` is denied would
+// silently resurrect the exact ambiguity — and the auto-vivify hazard —
+// this fix exists to remove, so a 403 here is reported as a policy gap to
+// close rather than tolerated. docs/secrets.md documents `read` on
+// <mount>/keys/<key> alongside the two Transit operations for this reason.
+func (m *KeyManager) probeKeyExists(ctx context.Context) error {
+	token, err := m.tokens.token(ctx)
+	if err != nil {
+		return err
+	}
+	c, err := m.client.Clone()
+	if err != nil {
+		return err
+	}
+	c.SetToken(token)
+
+	path := fmt.Sprintf("%s/keys/%s", m.mount, m.key)
+	secret, err := c.Logical().ReadWithContext(ctx, path)
+	if err != nil {
+		var respErr *vaultapi.ResponseError
+		if errors.As(err, &respErr) && respErr.StatusCode == http.StatusForbidden {
+			return fmt.Errorf(
+				"vault transit: permission denied reading %s; grant `read` on %[1]s to this "+
+					"token's policy — without it the controller cannot verify the key exists "+
+					"before using it: %w",
+				path, err)
+		}
+		return fmt.Errorf("vault transit: checking whether key %q exists on mount %q: %w", m.key, m.mount, err)
+	}
+	// A missing key surfaces here as (nil, nil), not as an error: the Vault
+	// API client special-cases 404 responses and swallows them rather than
+	// returning a *vaultapi.ResponseError (see (*Logical).ParseRawResponseAndCloseBody).
+	if secret == nil || len(secret.Data) == 0 {
+		return fmt.Errorf(
+			"vault transit: key %q not found on mount %q; create it with "+
+				"`vault write -f %s/keys/%s` (OpenBao: `bao write -f %s/keys/%s`)",
+			m.key, m.mount, m.mount, m.key, m.mount, m.key)
+	}
+	return nil
+}
+
+// probeEncrypt encrypts and discards a throwaway buffer, proving the
+// `update` capability actually works. By the time this runs, probeKeyExists
+// has already confirmed the key exists, so a 403 here means exactly one
+// thing: the policy lacks `update` on transit/encrypt/<key>.
+func (m *KeyManager) probeEncrypt(ctx context.Context) error {
 	_, err := m.write(ctx, "encrypt", map[string]any{
 		"plaintext": base64.StdEncoding.EncodeToString([]byte("unified-cd startup probe")),
 	})
@@ -125,19 +202,11 @@ func (m *KeyManager) startupProbe(ctx context.Context) error {
 	}
 
 	var respErr *vaultapi.ResponseError
-	if errors.As(err, &respErr) {
-		switch respErr.StatusCode {
-		case http.StatusForbidden:
-			return fmt.Errorf(
-				"vault transit: permission denied encrypting with %s/%s; grant `update` on "+
-					"transit/encrypt/%[2]s and transit/decrypt/%[2]s to this token's policy: %w",
-				m.mount, m.key, err)
-		case http.StatusBadRequest:
-			return fmt.Errorf(
-				"vault transit: key %q not found on mount %q; create it with "+
-					"`vault write -f %s/keys/%s` (OpenBao: `bao write -f %s/keys/%s`): %w",
-				m.key, m.mount, m.mount, m.key, m.mount, m.key, err)
-		}
+	if errors.As(err, &respErr) && respErr.StatusCode == http.StatusForbidden {
+		return fmt.Errorf(
+			"vault transit: permission denied encrypting with %s/%s; grant `update` on "+
+				"transit/encrypt/%[2]s and transit/decrypt/%[2]s to this token's policy: %w",
+			m.mount, m.key, err)
 	}
 	return fmt.Errorf("vault transit: startup probe against %s/%s failed: %w", m.mount, m.key, err)
 }

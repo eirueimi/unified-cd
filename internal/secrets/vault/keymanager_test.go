@@ -27,6 +27,9 @@ func fakeVault(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"auth": map[string]any{"lease_duration": 3600, "renewable": true}})
 	})
+	mux.HandleFunc("/v1/transit/keys/", func(w http.ResponseWriter, r *http.Request) {
+		writeExistingKey(w, r)
+	})
 	mux.HandleFunc("/v1/transit/encrypt/", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Plaintext string `json:"plaintext"`
@@ -51,6 +54,31 @@ func fakeVault(t *testing.T) *httptest.Server {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeExistingKey answers a transit/keys/<name> read as if the key exists,
+// which is what every fake-server test needs unless it is specifically
+// exercising probeKeyExists's own error paths.
+func writeExistingKey(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/v1/transit/keys/")
+	writeJSON(w, map[string]any{"data": map[string]any{"name": name, "type": "aes256-gcm96"}})
+}
+
+// writeMissingKey answers a transit/keys/<name> read the way Vault does when
+// the key does not exist: 404 with an empty errors list. The client library
+// treats this specially — ParseRawResponseAndCloseBody swallows a 404 into
+// (nil, nil) rather than surfacing a *vaultapi.ResponseError — which is
+// exactly the case probeKeyExists must still detect.
+func writeMissingKey(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]any{"errors": []string{}})
+}
+
+// writeKeyReadDenied answers a transit/keys/<name> read the way Vault does
+// when the policy lacks `read` on that path.
+func writeKeyReadDenied(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]any{"errors": []string{"permission denied"}})
 }
 
 func newTestKeyManager(t *testing.T, addr string) *KeyManager {
@@ -126,8 +154,12 @@ func TestKeyManager_CachesUnwrappedDEKs(t *testing.T) {
 	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"data": map[string]any{"ttl": 3600, "renewable": true}})
 	})
-	// New's startup probe performs one encrypt round trip; this must be wired
-	// up even though the test itself only exercises decrypt caching.
+	// New's startup probe reads the key's metadata and then performs one
+	// encrypt round trip; both must be wired up even though the test itself
+	// only exercises decrypt caching.
+	mux.HandleFunc("/v1/transit/keys/", func(w http.ResponseWriter, r *http.Request) {
+		writeExistingKey(w, r)
+	})
 	mux.HandleFunc("/v1/transit/encrypt/", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Plaintext string `json:"plaintext"`
@@ -179,6 +211,9 @@ func TestKeyManager_Write_RetriesOnceOn403ThenSucceeds(t *testing.T) {
 	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"data": map[string]any{"ttl": 3600, "renewable": true}})
 	})
+	mux.HandleFunc("/v1/transit/keys/", func(w http.ResponseWriter, r *http.Request) {
+		writeExistingKey(w, r)
+	})
 	mux.HandleFunc("/v1/transit/encrypt/", func(w http.ResponseWriter, r *http.Request) {
 		encryptCalls.Add(1)
 		if failNext.CompareAndSwap(true, false) {
@@ -215,6 +250,9 @@ func TestKeyManager_Write_PersistentDenialFailsAfterExactlyOneRetry(t *testing.T
 	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"data": map[string]any{"ttl": 3600, "renewable": true}})
 	})
+	mux.HandleFunc("/v1/transit/keys/", func(w http.ResponseWriter, r *http.Request) {
+		writeExistingKey(w, r)
+	})
 	mux.HandleFunc("/v1/transit/encrypt/", func(w http.ResponseWriter, r *http.Request) {
 		encryptCalls.Add(1)
 		if alwaysFail.Load() {
@@ -240,18 +278,33 @@ func TestKeyManager_Write_PersistentDenialFailsAfterExactlyOneRetry(t *testing.T
 	assert.EqualValues(t, 2, encryptCalls.Load(), "exactly one retry after the initial 403 (initial + 1 retry), then give up")
 }
 
-// vault.New's startup Transit round trip (design §5's "Transit key missing"
-// and "Permission denied" startup causes) must fire distinct, actionable
-// errors instead of letting the controller start cleanly and fail on the
-// first real secret write.
+// vault.New's startup probe (design §5's "Transit key missing" and
+// "Permission denied" startup causes) must fire distinct, actionable errors
+// instead of letting the controller start cleanly and fail on the first
+// real secret write. These three tests cover the classification
+// probeKeyExists/probeEncrypt now produce:
+//
+//   - a 404 reading the key -> key missing
+//   - a 403 reading the key -> the policy lacks `read` on <mount>/keys/<key>
+//   - a 403 encrypting (key read having already succeeded) -> the policy
+//     lacks `update` on <mount>/encrypt/<key>
+//
+// Before this fix, the encrypt call alone had to guess "missing" vs "denied"
+// from its own status code, and under the documented least-privilege policy
+// (update only, no create) a missing key came back as 403 — indistinguishable
+// from a policy that actually lacked `update` — because Vault ACL-checks an
+// encrypt against a nonexistent key as a CreateOperation before Transit's own
+// "key not found" handler ever runs.
 func TestKeyManager_New_FailsWhenTransitKeyMissing(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"data": map[string]any{"ttl": 3600, "renewable": true}})
 	})
+	mux.HandleFunc("/v1/transit/keys/", func(w http.ResponseWriter, r *http.Request) {
+		writeMissingKey(w)
+	})
 	mux.HandleFunc("/v1/transit/encrypt/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{"errors": []string{"encryption key not found"}})
+		t.Fatal("encrypt must not be attempted when the key read already reports the key missing")
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -266,10 +319,41 @@ func TestKeyManager_New_FailsWhenTransitKeyMissing(t *testing.T) {
 		"the error must give the exact command to create the missing key")
 }
 
+// A policy that omits `read` on <mount>/keys/<key> — the capability this fix
+// adds to the documented policy — must be told exactly that, not misreported
+// as a missing key or an opaque failure.
+func TestKeyManager_New_FailsWhenKeyReadDenied(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"data": map[string]any{"ttl": 3600, "renewable": true}})
+	})
+	mux.HandleFunc("/v1/transit/keys/", func(w http.ResponseWriter, r *http.Request) {
+		writeKeyReadDenied(w)
+	})
+	mux.HandleFunc("/v1/transit/encrypt/", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("encrypt must not be attempted when the key read is itself denied")
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	_, err := New(context.Background(), Config{
+		Address: srv.URL, Mount: "transit", Key: "unified-cd-kek",
+		Auth: "token", Token: "s.test",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transit/keys/unified-cd-kek", "the error must name the capability path needed")
+	assert.Contains(t, err.Error(), "read", "the error must name the capability needed")
+	assert.Contains(t, err.Error(), "cannot verify the key exists",
+		"the error must explain the consequence, not just the missing grant")
+}
+
 func TestKeyManager_New_FailsWhenEncryptDenied(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"data": map[string]any{"ttl": 3600, "renewable": true}})
+	})
+	mux.HandleFunc("/v1/transit/keys/", func(w http.ResponseWriter, r *http.Request) {
+		writeExistingKey(w, r)
 	})
 	mux.HandleFunc("/v1/transit/encrypt/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
