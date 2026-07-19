@@ -1,0 +1,72 @@
+# Compose override for local Vault/OpenBao Transit development
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.openbao.yml up -d
+#
+# How it works:
+#   OpenBao runs in dev mode: in-memory, auto-unsealed, with a fixed root token.
+#   Nothing it holds survives the container, so the fixed token below is a
+#   development convenience, not a secret. Every value has a ${VAR:-default}
+#   escape hatch so you can point at your own instance instead.
+#
+#   NOT FOR PRODUCTION. In production, Vault/OpenBao is operator-provided —
+#   either an existing organisational instance or a deployment made with the
+#   official Helm chart. See docs/high-availability.md.
+#
+#   openbao-init enables the transit engine and creates the key, then exits.
+#   The controller waits for it so the key exists before the first login.
+#
+#   UNIFIED_KMS_URI takes precedence over the UNIFIED_DEV_MODE=1 inherited from
+#   docker-compose.yaml (Resolve checks KMSURI first), so you do not need to
+#   unset the latter.
+
+services:
+
+  openbao:
+    image: openbao/openbao:latest
+    command: server -dev
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: ${BAO_DEV_ROOT_TOKEN:-dev-root-token}
+      BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      # The healthcheck below runs the `bao` CLI inside this container, which
+      # defaults to https://127.0.0.1:8200 unless told otherwise — dev mode
+      # serves plain HTTP, so without this every healthcheck attempt fails.
+      BAO_ADDR: http://127.0.0.1:8200
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: [ "CMD", "bao", "status" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  openbao-init:
+    image: openbao/openbao:latest
+    depends_on:
+      openbao:
+        condition: service_healthy
+    environment:
+      BAO_ADDR: http://openbao:8200
+      BAO_TOKEN: ${BAO_DEV_ROOT_TOKEN:-dev-root-token}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        bao secrets enable transit 2>/dev/null || true
+        bao write -f transit/keys/${UNIFIED_VAULT_KEY:-unified-cd-kek}
+    restart: "no"
+
+  controller:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+      openbao-init:
+        condition: service_completed_successfully
+    environment:
+      UNIFIED_KMS_URI: hashivault://${UNIFIED_VAULT_KEY:-unified-cd-kek}
+      UNIFIED_VAULT_ADDR: http://openbao:8200
+      UNIFIED_VAULT_AUTH: token
+      VAULT_TOKEN: ${BAO_DEV_ROOT_TOKEN:-dev-root-token}
