@@ -71,6 +71,7 @@ func TestDEKCache_ExpiresAfterTTL(t *testing.T) {
 	clock.advance(2 * time.Second)
 	_, ok = c.get("a")
 	assert.False(t, ok, "an entry past its TTL must not be served")
+	assert.Equal(t, 0, c.len(), "an entry past its TTL must be removed, not just skipped")
 }
 
 func TestDEKCache_EvictsLeastRecentlyUsed(t *testing.T) {

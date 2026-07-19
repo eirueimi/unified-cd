@@ -112,6 +112,21 @@ func TestParseKMSURI_RejectsEmptyKey(t *testing.T) {
 	require.Error(t, err)
 }
 
+// A trailing slash must be rejected, not silently trimmed: trimming it turns
+// "hashivault://mount/" into the single segment "mount", read as the key
+// name on the default "transit" mount instead of erroring on what was
+// probably a typo.
+func TestParseKMSURI_RejectsTrailingSlash(t *testing.T) {
+	_, _, err := parseHashiVaultURI("hashivault://mount/")
+	require.Error(t, err)
+
+	_, _, err = parseHashiVaultURI("hashivault://unified-cd-kek/")
+	require.Error(t, err)
+
+	_, _, err = parseHashiVaultURI("hashivault://kms-transit/unified-cd-kek/")
+	require.Error(t, err)
+}
+
 // A KMS URI with no address cannot work, and must say which variable is missing.
 func TestKeySource_KMSRequiresAddress(t *testing.T) {
 	_, err := KeySource{KMSURI: "hashivault://kek"}.Resolve(context.Background())

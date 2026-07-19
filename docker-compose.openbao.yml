@@ -16,6 +16,14 @@
 #   openbao-init enables the transit engine and creates the key, then exits.
 #   The controller waits for it so the key exists before the first login.
 #
+#   openbao does NOT restart automatically (restart: "no"), matching
+#   openbao-init: dev mode is in-memory, so a crash comes back empty (no
+#   transit engine, no key), and openbao-init does not re-run on its own.
+#   Restarting openbao without also rerunning openbao-init would leave the
+#   controller running against a Vault with no Transit key, so every secret
+#   operation would fail while everything looked "up". If openbao dies, bring
+#   the overlay back up with `docker compose ... up -d` so init reruns too.
+#
 #   UNIFIED_KMS_URI takes precedence over the UNIFIED_DEV_MODE=1 inherited from
 #   docker-compose.yaml (Resolve checks KMSURI first), so you do not need to
 #   unset the latter.
@@ -39,7 +47,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    restart: unless-stopped
+    restart: "no"
 
   openbao-init:
     image: openbao/openbao:latest

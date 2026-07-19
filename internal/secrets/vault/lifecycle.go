@@ -25,6 +25,13 @@ type tokenManagerConfig struct {
 	Renew func(ctx context.Context, token string) (time.Duration, error)
 	Now   func() time.Time
 	Sleep func(ctx context.Context, d time.Duration) error
+
+	// LoginCtx is used for the first login only, so a deadline set by the
+	// caller of vault.New (e.g. in main) actually bounds startup. It defaults
+	// to context.Background() when nil. The background renewal loop
+	// deliberately does NOT derive from this context: the loop outlives
+	// startup and must keep running even after a startup deadline expires.
+	LoginCtx context.Context
 }
 
 // tokenManager keeps a Vault token alive and hands it to callers.
@@ -38,6 +45,11 @@ type tokenManager struct {
 	mu      sync.RWMutex
 	current string
 
+	// reauthMu serialises reauthenticate calls so that several operations
+	// hitting a 403 concurrently coalesce into one login instead of each
+	// triggering its own. See reauthenticate.
+	reauthMu sync.Mutex
+
 	stopOnce sync.Once
 	cancel   context.CancelFunc
 	done     chan struct{}
@@ -50,11 +62,16 @@ func newTokenManager(cfg tokenManagerConfig) (*tokenManager, error) {
 	if cfg.Sleep == nil {
 		cfg.Sleep = sleepCtx
 	}
+	if cfg.LoginCtx == nil {
+		cfg.LoginCtx = context.Background()
+	}
 
 	// Startup fails fast: at this point a transient outage and a
 	// misconfiguration are indistinguishable, and a controller holding a
-	// broken key manager fails every secret operation anyway.
-	first, err := cfg.Auth.login(context.Background())
+	// broken key manager fails every secret operation anyway. LoginCtx (not
+	// context.Background()) is used here deliberately: it is the only hop
+	// that still honours a caller-supplied deadline.
+	first, err := cfg.Auth.login(cfg.LoginCtx)
 	if err != nil {
 		return nil, fmt.Errorf("vault login: %w", err)
 	}
@@ -78,6 +95,42 @@ func (m *tokenManager) token(_ context.Context) (string, error) {
 		return "", fmt.Errorf("vault: no valid token")
 	}
 	return m.current, nil
+}
+
+// reauthenticate forces a fresh login and returns the resulting token,
+// coalescing concurrent callers so that several operations that all observed
+// the same now-rejected token (staleToken) trigger exactly one login between
+// them rather than one each.
+//
+// reauthMu serialises the whole operation, including the login round trip
+// itself. A caller that acquires the lock after another caller already
+// refreshed the token notices via the staleToken comparison — the current
+// token no longer matches what it read before its request failed — and
+// returns the already-current token without logging in again. This is
+// simpler than singleflight and sufficient here: a burst of 403s all racing
+// in only needs to produce one login, not the lowest possible latency for it.
+func (m *tokenManager) reauthenticate(ctx context.Context, staleToken string) (string, error) {
+	m.reauthMu.Lock()
+	defer m.reauthMu.Unlock()
+
+	m.mu.RLock()
+	current := m.current
+	m.mu.RUnlock()
+	if current != staleToken {
+		// Someone else already refreshed the token since the caller read it.
+		return current, nil
+	}
+
+	result, err := m.cfg.Auth.login(ctx)
+	if err != nil {
+		return "", fmt.Errorf("vault re-login: %w", err)
+	}
+
+	m.mu.Lock()
+	m.current = result.Token
+	m.mu.Unlock()
+
+	return result.Token, nil
 }
 
 func (m *tokenManager) stop() {

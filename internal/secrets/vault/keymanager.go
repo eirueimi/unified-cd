@@ -3,7 +3,9 @@ package vault
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
@@ -50,8 +52,10 @@ type KeyManager struct {
 	cache  *dekCache
 }
 
-// New constructs a Transit key manager, authenticating immediately so a
-// misconfiguration surfaces at startup rather than at the first secret read.
+// New constructs a Transit key manager, authenticating immediately and
+// performing a Transit round trip so a misconfiguration — a bad credential, a
+// missing key, or a policy too narrow to actually use Transit — surfaces at
+// startup rather than at the first secret read.
 func New(ctx context.Context, cfg Config) (*KeyManager, error) {
 	apiCfg := vaultapi.DefaultConfig()
 	apiCfg.Address = cfg.Address
@@ -66,7 +70,8 @@ func New(ctx context.Context, cfg Config) (*KeyManager, error) {
 	}
 
 	tokens, err := newTokenManager(tokenManagerConfig{
-		Auth: auth,
+		Auth:     auth,
+		LoginCtx: ctx,
 		Renew: func(ctx context.Context, token string) (time.Duration, error) {
 			c, err := client.Clone()
 			if err != nil {
@@ -91,7 +96,50 @@ func New(ctx context.Context, cfg Config) (*KeyManager, error) {
 		mount = "transit"
 	}
 	cache := newDEKCache(dekCacheCapacity, dekCacheTTL, cfg.Now)
-	return &KeyManager{client: client, tokens: tokens, mount: mount, key: cfg.Key, cache: cache}, nil
+	km := &KeyManager{client: client, tokens: tokens, mount: mount, key: cfg.Key, cache: cache}
+
+	if err := km.startupProbe(ctx); err != nil {
+		_ = km.Close()
+		return nil, err
+	}
+
+	return km, nil
+}
+
+// startupProbe encrypts and discards a throwaway buffer, proving the
+// controller can actually use Transit rather than merely that its credential
+// is valid. It needs only the `update` capability the documented policy
+// already grants on transit/encrypt/<key>.
+//
+// Design §5 lists "Transit key missing" and "Permission denied" as startup
+// error causes; without this call neither could ever fire, because nothing
+// touched transit/encrypt/<key> before the first real secret operation, and a
+// controller with a typo'd key name or an under-scoped policy would start
+// cleanly and then fail every write.
+func (m *KeyManager) startupProbe(ctx context.Context) error {
+	_, err := m.write(ctx, "encrypt", map[string]any{
+		"plaintext": base64.StdEncoding.EncodeToString([]byte("unified-cd startup probe")),
+	})
+	if err == nil {
+		return nil
+	}
+
+	var respErr *vaultapi.ResponseError
+	if errors.As(err, &respErr) {
+		switch respErr.StatusCode {
+		case http.StatusForbidden:
+			return fmt.Errorf(
+				"vault transit: permission denied encrypting with %s/%s; grant `update` on "+
+					"transit/encrypt/%[2]s and transit/decrypt/%[2]s to this token's policy: %w",
+				m.mount, m.key, err)
+		case http.StatusBadRequest:
+			return fmt.Errorf(
+				"vault transit: key %q not found on mount %q; create it with "+
+					"`vault write -f %s/keys/%s` (OpenBao: `bao write -f %s/keys/%s`): %w",
+				m.key, m.mount, m.mount, m.key, m.mount, m.key, err)
+		}
+	}
+	return fmt.Errorf("vault transit: startup probe against %s/%s failed: %w", m.mount, m.key, err)
 }
 
 // Close stops the background token renewal loop.
@@ -145,11 +193,37 @@ func (m *KeyManager) DecryptKey(ctx context.Context, ciphertext []byte) ([]byte,
 	return dek, nil
 }
 
+// write performs one Transit call, and — per design §5 ("Token expired or
+// revoked — re-login, then retry the operation once") — retries exactly once
+// if the call fails with a 403. That covers an operator revoking this
+// controller's token and dropping a replacement into UNIFIED_VAULT_TOKEN_FILE
+// (see docs/secrets.md): without the retry, every operation would keep using
+// the stale token from tokenManager's cache until the next renewal tick, up
+// to half a lease away, even though the new token is already on disk.
+//
+// Only a 403 triggers a retry, and only once: a persistent denial (a policy
+// that genuinely lacks the capability) must still surface as an error rather
+// than loop.
 func (m *KeyManager) write(ctx context.Context, op string, body map[string]any) (map[string]any, error) {
 	token, err := m.tokens.token(ctx)
 	if err != nil {
 		return nil, err
 	}
+
+	out, err := m.doWrite(ctx, op, token, body)
+	if err == nil || !isPermissionDenied(err) {
+		return out, err
+	}
+
+	newToken, reauthErr := m.tokens.reauthenticate(ctx, token)
+	if reauthErr != nil {
+		return nil, fmt.Errorf("%w (re-login after permission denied also failed: %v)", err, reauthErr)
+	}
+	return m.doWrite(ctx, op, newToken, body)
+}
+
+// doWrite is the single, non-retrying Transit round trip that write wraps.
+func (m *KeyManager) doWrite(ctx context.Context, op, token string, body map[string]any) (map[string]any, error) {
 	c, err := m.client.Clone()
 	if err != nil {
 		return nil, err

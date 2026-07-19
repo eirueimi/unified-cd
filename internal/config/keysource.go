@@ -145,7 +145,14 @@ func parseHashiVaultURI(uri string) (mount, key string, err error) {
 	if !found {
 		return "", "", fmt.Errorf("UNIFIED_KMS_URI %q is malformed; expected hashivault://[<mount>/]<key>", uri)
 	}
-	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	// A trailing slash must be rejected, not silently trimmed away: trimming
+	// it turns "hashivault://mount/" into the single segment "mount", which
+	// is then read as the key name on the default "transit" mount — a
+	// plausible-looking but wrong interpretation of what was probably a typo.
+	if strings.HasSuffix(rest, "/") {
+		return "", "", fmt.Errorf("UNIFIED_KMS_URI %q is malformed: a trailing slash changes its meaning; expected hashivault://[<mount>/]<key>", uri)
+	}
+	parts := strings.Split(strings.TrimPrefix(rest, "/"), "/")
 	switch {
 	case len(parts) == 1 && parts[0] != "":
 		return "transit", parts[0], nil

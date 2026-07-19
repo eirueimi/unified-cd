@@ -3,6 +3,7 @@ package vault
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -380,6 +381,163 @@ func TestTokenManager_SuccessResetsBackoff(t *testing.T) {
 	// after recovery, [5]=first retry of the second outage.
 	assert.Equal(t, retryInitialWait, delays[5],
 		"backoff must reset to retryInitialWait after a success, not continue from the prior outage's backoff")
+}
+
+// blockingAuth blocks on login until its context is cancelled, standing in
+// for a login call against an address that never responds. Before LoginCtx
+// existed, the first login always used context.Background(), which never
+// cancels — so this auth would hang forever and the test below would time
+// out, proving the regression this guards against.
+type blockingAuth struct{}
+
+func (blockingAuth) login(ctx context.Context) (authResult, error) {
+	<-ctx.Done()
+	return authResult{}, ctx.Err()
+}
+
+// A cancelled LoginCtx must make newTokenManager fail promptly rather than
+// hang on the first login. Commit 0a9969b threaded a context through Resolve
+// -> resolveKMS -> vault.New for exactly this purpose, but it stopped at
+// vault.New: the first login was hardcoded to context.Background(), so a
+// caller-supplied deadline had no effect.
+func TestTokenManager_CancelledLoginCtxFailsFastInsteadOfHanging(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := newTokenManager(tokenManagerConfig{
+			Auth:     blockingAuth{},
+			LoginCtx: ctx,
+			Renew:    func(context.Context, string) (time.Duration, error) { return 0, nil },
+			Now:      newTestClock().now,
+			Sleep:    newRecordingSleep().sleep,
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "a cancelled LoginCtx must fail construction, not hang")
+	case <-time.After(2 * time.Second):
+		t.Fatal("newTokenManager did not return promptly for a cancelled LoginCtx")
+	}
+}
+
+// A nil LoginCtx (the zero value every existing caller and test uses) must
+// default to context.Background(), not panic or block forever.
+func TestTokenManager_NilLoginCtxDefaultsToBackground(t *testing.T) {
+	auth := &fakeAuth{result: authResult{Token: "s.tok", TTL: time.Hour, Renewable: true}}
+	m, err := newTokenManager(tokenManagerConfig{
+		Auth:  auth,
+		Renew: func(context.Context, string) (time.Duration, error) { return time.Hour, nil },
+		Now:   newTestClock().now,
+		Sleep: newRecordingSleep().sleep,
+	})
+	require.NoError(t, err)
+	t.Cleanup(m.stop)
+
+	got, err := m.token(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "s.tok", got)
+}
+
+// incrementingAuth returns a distinct token on every login, so a test can
+// tell "a new login happened" apart from "the same token came back again" —
+// which fakeAuth's fixed result cannot, since a coalesced reauthenticate call
+// that logs in again would otherwise look identical to one that didn't.
+type incrementingAuth struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (a *incrementingAuth) login(context.Context) (authResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.calls++
+	return authResult{Token: fmt.Sprintf("s.tok-%d", a.calls), TTL: time.Hour, Renewable: true}, nil
+}
+
+func (a *incrementingAuth) loginCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.calls
+}
+
+// blockingSleep never returns until ctx is cancelled. Tests that exercise
+// reauthenticate directly use this (instead of recordingSleep, which returns
+// immediately) to keep the background renewal loop parked at its first sleep
+// for the test's duration: recordingSleep's instant return makes that loop
+// spin fast enough to race reauthenticate's out-of-band update to m.current
+// with its own (stale, renewal-loop-local) view of the token, which is a test
+// artifact of the sped-up loop, not a production concern — in production
+// Sleep genuinely blocks for tens of minutes.
+func blockingSleep(ctx context.Context, _ time.Duration) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// Several operations can hit a 403 concurrently and all call reauthenticate
+// with the same stale token; they must coalesce into exactly one login rather
+// than each triggering its own.
+func TestTokenManager_ReauthenticateCoalescesConcurrentCallers(t *testing.T) {
+	auth := &incrementingAuth{}
+	m, err := newTokenManager(tokenManagerConfig{
+		Auth:  auth,
+		Renew: func(context.Context, string) (time.Duration, error) { return time.Hour, nil },
+		Now:   newTestClock().now,
+		Sleep: blockingSleep,
+	})
+	require.NoError(t, err)
+	t.Cleanup(m.stop)
+
+	staleToken, err := m.token(context.Background())
+	require.NoError(t, err)
+	loginsBeforeReauth := auth.loginCount()
+
+	const callers = 10
+	results := make([]string, callers)
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = m.reauthenticate(context.Background(), staleToken)
+		}(i)
+	}
+	wg.Wait()
+
+	assert.Equal(t, loginsBeforeReauth+1, auth.loginCount(),
+		"10 concurrent callers with the same stale token must produce exactly one login")
+	for i := range results {
+		require.NoError(t, errs[i])
+		assert.NotEqual(t, staleToken, results[i], "every caller must observe the refreshed token")
+		assert.Equal(t, results[0], results[i], "every caller must observe the same refreshed token")
+	}
+}
+
+// A caller whose stale token no longer matches the current one (because
+// another caller already reauthenticated) must be handed the current token
+// without triggering a second login.
+func TestTokenManager_ReauthenticateSkipsLoginWhenAlreadyCurrent(t *testing.T) {
+	auth := &incrementingAuth{}
+	m, err := newTokenManager(tokenManagerConfig{
+		Auth:  auth,
+		Renew: func(context.Context, string) (time.Duration, error) { return time.Hour, nil },
+		Now:   newTestClock().now,
+		Sleep: blockingSleep,
+	})
+	require.NoError(t, err)
+	t.Cleanup(m.stop)
+
+	loginsBefore := auth.loginCount()
+	got, err := m.reauthenticate(context.Background(), "a-token-nobody-has-seen-as-current")
+	require.NoError(t, err)
+	assert.Equal(t, loginsBefore, auth.loginCount(), "the current token already differs from staleToken; no login should occur")
+	current, err := m.token(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, current, got)
 }
 
 // stop must be safe to call twice — Resolved.Close may run from a defer and an

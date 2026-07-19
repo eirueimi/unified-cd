@@ -245,6 +245,10 @@ Secret **values cannot be retrieved via the API** by design. If you lose a value
 The controller wraps each data-encryption key with Transit, so the key-encryption
 key never leaves the KMS.
 
+> The commands below use the `vault` CLI. OpenBao's CLI is `bao`, with
+> identical subcommands — swap only the binary name (e.g. `bao secrets enable
+> transit`).
+
 Enable the engine and create the key:
 
 ```sh
@@ -252,7 +256,7 @@ vault secrets enable transit
 vault write -f transit/keys/unified-cd-kek
 ```
 
-The controller needs two capabilities, plus an optional third:
+The controller needs two capabilities, plus two optional ones:
 
 ```hcl
 path "transit/encrypt/unified-cd-kek" {
@@ -260,6 +264,17 @@ path "transit/encrypt/unified-cd-kek" {
 }
 
 path "transit/decrypt/unified-cd-kek" {
+  capabilities = ["update"]
+}
+
+# Needed to keep a token alive by renewal rather than only by re-login (see
+# "Tokens need renewing, not rotating" below) — keymanager.go calls this via
+# RenewSelfWithContext for every auth method, not just token auth. Vault's
+# built-in `default` policy already grants this, so it only needs to be
+# listed explicitly for a token minted with `-no-default-policy`, which is
+# exactly what granting a token *only* the capabilities in this block (as the
+# Kubernetes section below recommends) amounts to.
+path "auth/token/renew-self" {
   capabilities = ["update"]
 }
 
