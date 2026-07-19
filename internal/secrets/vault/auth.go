@@ -71,8 +71,10 @@ func newAuth(cfg Config, client *vaultapi.Client) (vaultAuth, error) {
 			return nil, err
 		}
 		return &selfLookupAuth{inner: inner, client: client}, nil
+	case "kubernetes":
+		return newKubernetesAuth(client, cfg.AuthParams, cfg.AuthParams["token_file"])
 	default:
-		return nil, fmt.Errorf("UNIFIED_VAULT_AUTH %q is not supported; supported methods: token", cfg.Auth)
+		return nil, fmt.Errorf("UNIFIED_VAULT_AUTH %q is not supported; supported methods: token, kubernetes", cfg.Auth)
 	}
 }
 
@@ -163,4 +165,71 @@ func (a *staticTokenAuth) login(_ context.Context) (authResult, error) {
 		return authResult{Token: token}, nil
 	}
 	return authResult{Token: a.literal}, nil
+}
+
+// defaultServiceAccountTokenFile is where the kubelet projects a pod's
+// ServiceAccount token. Nothing has to be distributed for this method to work,
+// which is what makes it the right answer at scale.
+const defaultServiceAccountTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+// kubernetesAuth logs in with the pod's projected ServiceAccount token. It is
+// never wrapped in selfLookupAuth: Vault's kubernetes login response already
+// carries lease_duration and renewable, so a self-lookup would be a redundant
+// round trip that also demands a lookup-self capability this token does not
+// otherwise need. See newAuth.
+type kubernetesAuth struct {
+	client    *vaultapi.Client
+	mount     string
+	role      string
+	tokenFile string
+}
+
+// newKubernetesAuth validates params against an allowlist so a typo in a
+// security-relevant setting is a startup error instead of being silently
+// ignored. token_file is accepted here (in addition to being read by newAuth
+// into the tokenFile argument) purely so it survives that allowlist check —
+// newAuth reads UNIFIED_VAULT_AUTH_PARAM into cfg.AuthParams as one map and
+// passes it both as params (for validation) and, keyed by "token_file", as
+// the tokenFile argument itself.
+func newKubernetesAuth(client *vaultapi.Client, params map[string]string, tokenFile string) (vaultAuth, error) {
+	role := params["role"]
+	if role == "" {
+		return nil, fmt.Errorf("UNIFIED_VAULT_AUTH=kubernetes requires role= in UNIFIED_VAULT_AUTH_PARAM")
+	}
+	mount := params["mount"]
+	if mount == "" {
+		mount = "kubernetes"
+	}
+	for k := range params {
+		if k != "role" && k != "mount" && k != "token_file" {
+			return nil, fmt.Errorf("UNIFIED_VAULT_AUTH_PARAM key %q is not recognised for kubernetes auth; supported: role, mount, token_file", k)
+		}
+	}
+	if tokenFile == "" {
+		tokenFile = defaultServiceAccountTokenFile
+	}
+	return &kubernetesAuth{client: client, mount: mount, role: role, tokenFile: tokenFile}, nil
+}
+
+func (a *kubernetesAuth) login(ctx context.Context) (authResult, error) {
+	// Re-read on every login: the kubelet rotates the projected token.
+	raw, err := os.ReadFile(a.tokenFile)
+	if err != nil {
+		return authResult{}, fmt.Errorf("read service account token %s: %w", a.tokenFile, err)
+	}
+	secret, err := a.client.Logical().WriteWithContext(ctx, "auth/"+a.mount+"/login", map[string]any{
+		"role": a.role,
+		"jwt":  strings.TrimSpace(string(raw)),
+	})
+	if err != nil {
+		return authResult{}, fmt.Errorf("vault kubernetes login (role %s): %w", a.role, err)
+	}
+	if secret == nil || secret.Auth == nil {
+		return authResult{}, fmt.Errorf("vault kubernetes login (role %s): empty auth response", a.role)
+	}
+	return authResult{
+		Token:     secret.Auth.ClientToken,
+		TTL:       time.Duration(secret.Auth.LeaseDuration) * time.Second,
+		Renewable: secret.Auth.Renewable,
+	}, nil
 }

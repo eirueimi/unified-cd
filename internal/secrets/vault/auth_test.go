@@ -155,3 +155,77 @@ func TestIsPermissionDenied(t *testing.T) {
 	assert.False(t, isPermissionDenied(&vaultapi.ResponseError{StatusCode: http.StatusInternalServerError}))
 	assert.False(t, isPermissionDenied(errors.New("dial tcp 127.0.0.1:1: connect: connection refused")))
 }
+
+func TestKubernetesAuth_LogsInWithServiceAccountToken(t *testing.T) {
+	var gotPath, gotRole, gotJWT string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var req map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		gotRole, gotJWT = req["role"], req["jwt"]
+		writeJSON(w, map[string]any{"auth": map[string]any{
+			"client_token": "s.k8s", "lease_duration": 1800, "renewable": true,
+		}})
+	}))
+	t.Cleanup(srv.Close)
+
+	jwtFile := writeTokenFile(t, "projected-sa-jwt")
+	client, err := vaultapi.NewClient(&vaultapi.Config{Address: srv.URL})
+	require.NoError(t, err)
+
+	a, err := newKubernetesAuth(client, map[string]string{"role": "unified-cd"}, jwtFile)
+	require.NoError(t, err)
+	got, err := a.login(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "/v1/auth/kubernetes/login", gotPath)
+	assert.Equal(t, "unified-cd", gotRole)
+	assert.Equal(t, "projected-sa-jwt", gotJWT)
+	assert.Equal(t, "s.k8s", got.Token)
+	assert.Equal(t, 30*time.Minute, got.TTL)
+	assert.True(t, got.Renewable)
+}
+
+// The mount is configurable for operators who mount the method elsewhere.
+func TestKubernetesAuth_HonoursMountParam(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		writeJSON(w, map[string]any{"auth": map[string]any{"client_token": "s.k8s", "lease_duration": 60}})
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := vaultapi.NewClient(&vaultapi.Config{Address: srv.URL})
+	require.NoError(t, err)
+	a, err := newKubernetesAuth(client, map[string]string{"role": "r", "mount": "k8s-prod"}, writeTokenFile(t, "jwt"))
+	require.NoError(t, err)
+	_, err = a.login(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "/v1/auth/k8s-prod/login", gotPath)
+}
+
+func TestKubernetesAuth_RequiresRole(t *testing.T) {
+	client, err := vaultapi.NewClient(vaultapi.DefaultConfig())
+	require.NoError(t, err)
+	_, err = newKubernetesAuth(client, map[string]string{}, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "role")
+}
+
+// An unrecognised parameter is a startup error: a typo in a security-relevant
+// setting must not fail open.
+func TestNewAuth_RejectsUnknownParam(t *testing.T) {
+	client, err := vaultapi.NewClient(vaultapi.DefaultConfig())
+	require.NoError(t, err)
+	_, err = newKubernetesAuth(client, map[string]string{"role": "r", "rolle": "typo"}, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rolle")
+}
+
+func TestNewAuth_RejectsUnknownMethod(t *testing.T) {
+	_, err := newAuth(Config{Auth: "approle"}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "approle")
+	assert.Contains(t, err.Error(), "token")
+	assert.Contains(t, err.Error(), "kubernetes")
+}
