@@ -20,6 +20,12 @@ metadata:
   name: unified-cd-k8s-agent
   namespace: unified-cd
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: unified-cd-kek-init
+  namespace: unified-cd
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -62,6 +68,20 @@ rules:
   - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-kek-init
+  namespace: unified-cd
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: unified-cd-controller-kubernetes-enrollment
@@ -99,6 +119,20 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: unified-cd-controller
+  namespace: unified-cd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: unified-cd-kek-init
+  namespace: unified-cd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: unified-cd-kek-init
+subjects:
+- kind: ServiceAccount
+  name: unified-cd-kek-init
   namespace: unified-cd
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -169,11 +203,20 @@ metadata:
 apiVersion: v1
 kind: Secret
 metadata:
+  annotations:
+    unified-cd.io/kek-provenance: 'The secret encryption key for this bundle is generated
+      once, at install time, by the unified-cd-kek-init Job (see kek-job.yaml) and
+      stored in the unified-cd-controller-kek Secret in this namespace. It is created
+      with `kubectl create`, not `apply`, specifically so that re-running `kubectl
+      apply -f install.yaml` does NOT regenerate or replace it — doing so would make
+      every secret already encrypted with the old key permanently unreadable. That
+      Secret, not this one, is what makes your registered secrets durable: back it
+      up. A Postgres dump alone is not enough to restore them, since the rows it contains
+      are ciphertext without the key.'
   name: unified-cd-controller
   namespace: unified-cd
 stringData:
   UNIFIED_DB_DSN: postgres://unified:unified@postgres.unified-cd.svc.cluster.local:5432/unified?sslmode=disable
-  UNIFIED_DEV_MODE: "1"
   UNIFIED_S3_BUCKET: unified-cd-logs
   UNIFIED_S3_ENDPOINT: garage.unified-cd.svc.cluster.local:3900
   UNIFIED_S3_KEY: garageadmin
@@ -381,7 +424,9 @@ spec:
       - args:
         - -f
         - /etc/unified-cd/controller-config.yaml
-        env: []
+        env:
+        - name: UNIFIED_CONTROLLER_KEY_FILE
+          value: /etc/unified-cd/kek
         envFrom:
         - secretRef:
             name: unified-cd-controller
@@ -404,12 +449,23 @@ spec:
           name: controller-config
           readOnly: true
           subPath: controller-config.yaml
+        - mountPath: /etc/unified-cd/kek
+          name: controller-kek
+          readOnly: true
+          subPath: kek
       serviceAccountName: unified-cd-controller
       terminationGracePeriodSeconds: 30
       volumes:
       - configMap:
           name: unified-cd-controller-config
         name: controller-config
+      - name: controller-kek
+        secret:
+          defaultMode: 256
+          items:
+          - key: kek
+            path: kek
+          secretName: unified-cd-controller-kek
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -454,3 +510,41 @@ spec:
               audience: unified-cd-agent-enrollment
               expirationSeconds: 3600
               path: token
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: unified-cd-kek-init
+  namespace: unified-cd
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: unified-cd-kek-init
+    spec:
+      containers:
+      - command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          key="$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          if kubectl -n unified-cd create secret generic unified-cd-controller-kek \
+              --from-literal=kek="$key"; then
+            echo "unified-cd-controller-kek created"
+            exit 0
+          fi
+          # create failed. The only acceptable reason is that the
+          # Secret already exists from a previous install — in which
+          # case it must be left alone. Anything else is a real error.
+          if kubectl -n unified-cd get secret unified-cd-controller-kek >/dev/null 2>&1; then
+            echo "unified-cd-controller-kek already exists; leaving it untouched"
+            exit 0
+          fi
+          echo "failed to create unified-cd-controller-kek and it does not already exist" >&2
+          exit 1
+        image: alpine/k8s:1.31.2
+        name: kek-init
+      restartPolicy: OnFailure
+      serviceAccountName: unified-cd-kek-init
