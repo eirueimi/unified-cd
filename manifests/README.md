@@ -42,10 +42,9 @@ The default k8s-agent Deployment does not receive `UNIFIED_TOKEN` or any shared 
 
 To wrap the controller's key-encryption key with Vault/OpenBao Transit instead of a local
 key file, set `UNIFIED_KMS_URI` and point the controller at Vault's Kubernetes auth method.
-Because the controller Pod already runs under a ServiceAccount (the same one used for
-Kubernetes workload enrollment), no additional token Secret needs to be mounted — the
-projected ServiceAccount token doubles as the credential Vault's Kubernetes auth method
-verifies:
+Because the controller Pod already runs under a ServiceAccount (`unified-cd-controller`),
+no additional token Secret needs to be mounted — the projected ServiceAccount token doubles
+as the credential Vault's Kubernetes auth method verifies:
 
 ```yaml
 stringData:
