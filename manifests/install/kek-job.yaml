@@ -1,0 +1,90 @@
+# Generates the unified-cd-controller-kek Secret at install time so this
+# quick-trial bundle has a persistent, file-backed encryption key instead of
+# UNIFIED_DEV_MODE's ephemeral in-memory one. See kek-secret-patch.yaml for
+# why the base placeholder Secret is dropped instead of shipped.
+#
+# Idempotency is the whole point: re-running `kubectl apply -f install.yaml`
+# must NOT rotate this key, or every secret already encrypted with it becomes
+# unreadable. `kubectl create secret` is used (never `apply` or
+# `--dry-run=client | kubectl apply`, both of which would overwrite the
+# Secret's data on every re-apply). A `create` against an existing Secret
+# fails with AlreadyExists; the script below treats that failure as success
+# and leaves the existing key untouched. The Job resource itself is also
+# idempotent under `kubectl apply` — once created, a re-apply of an
+# unchanged Job spec does not run it again.
+#
+# RBAC is scoped to exactly what the script needs: create a Secret, and get
+# it to confirm an AlreadyExists failure really means "the key already
+# exists" rather than some other error. Namespace-scoped Role only, no
+# ClusterRole.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: unified-cd-kek-init
+  namespace: unified-cd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: unified-cd-kek-init
+  namespace: unified-cd
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: unified-cd-kek-init
+  namespace: unified-cd
+subjects:
+  - kind: ServiceAccount
+    name: unified-cd-kek-init
+    namespace: unified-cd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: unified-cd-kek-init
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: unified-cd-kek-init
+  namespace: unified-cd
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: unified-cd-kek-init
+    spec:
+      serviceAccountName: unified-cd-kek-init
+      restartPolicy: OnFailure
+      containers:
+        - name: kek-init
+          # Pinned tag (not :latest); has kubectl plus a shell and the
+          # coreutils this script needs (sh, head, od, tr). No openssl in
+          # this image, hence the /dev/urandom fallback below rather than
+          # `openssl rand -hex 32` — verified in the actual image.
+          image: alpine/k8s:1.31.2
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              key="$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+              if kubectl -n unified-cd create secret generic unified-cd-controller-kek \
+                  --from-literal=kek="$key"; then
+                echo "unified-cd-controller-kek created"
+                exit 0
+              fi
+              # create failed. The only acceptable reason is that the
+              # Secret already exists from a previous install — in which
+              # case it must be left alone. Anything else is a real error.
+              if kubectl -n unified-cd get secret unified-cd-controller-kek >/dev/null 2>&1; then
+                echo "unified-cd-controller-kek already exists; leaving it untouched"
+                exit 0
+              fi
+              echo "failed to create unified-cd-controller-kek and it does not already exist" >&2
+              exit 1
