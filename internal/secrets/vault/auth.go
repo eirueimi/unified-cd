@@ -222,10 +222,10 @@ func (a *kubernetesAuth) login(ctx context.Context) (authResult, error) {
 		"jwt":  strings.TrimSpace(string(raw)),
 	})
 	if err != nil {
-		return authResult{}, fmt.Errorf("vault kubernetes login (role %s): %w", a.role, err)
+		return authResult{}, fmt.Errorf("vault kubernetes login (role %s, mount %s): %w", a.role, a.mount, err)
 	}
 	if secret == nil || secret.Auth == nil {
-		return authResult{}, fmt.Errorf("vault kubernetes login (role %s): empty auth response", a.role)
+		return authResult{}, fmt.Errorf("vault kubernetes login (role %s, mount %s): empty auth response", a.role, a.mount)
 	}
 	return authResult{
 		Token:     secret.Auth.ClientToken,
