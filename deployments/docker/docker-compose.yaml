@@ -130,6 +130,12 @@ services:
       UNIFIED_AGENT_ID: ${UNIFIED_AGENT_ID:-docker-agent-1}
       UNIFIED_AGENT_LABELS: ${UNIFIED_AGENT_LABELS:-kind:docker,pool:default}
       DOCKER_HOST: tcp://dind:2375
+      # Step environments are an allowlist since the security-hardening change:
+      # a native step no longer inherits the agent process env, so DOCKER_HOST
+      # must be named here or `docker` in a step falls back to the unix socket
+      # (which does not exist here) and fails. See
+      # docs/migration-2026-07-security-hardening.md#1-step-environment-is-now-an-allowlist
+      UNIFIED_AGENT_EXPOSE_ENV: DOCKER_HOST
       UNIFIED_AGENT_WORKSPACE_DIR: /ucd-workspaces
     volumes:
       - ucd-workspaces:/ucd-workspaces
