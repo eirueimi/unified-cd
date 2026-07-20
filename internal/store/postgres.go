@@ -1558,41 +1558,40 @@ func sanitizeChannel(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
-func (p *Postgres) UpsertSecret(ctx context.Context, name, scope, scopeRef string, encryptedDEK, ciphertext []byte) (*StoredSecret, error) {
+func (p *Postgres) UpsertSecret(ctx context.Context, name string, encryptedDEK, ciphertext []byte) (*StoredSecret, error) {
 	const q = `
-		INSERT INTO secrets(name, scope, scope_ref, encrypted_dek, ciphertext, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NOW())
-		ON CONFLICT (name, scope, scope_ref) DO UPDATE
+		INSERT INTO secrets(name, encrypted_dek, ciphertext, updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (name) DO UPDATE
 		  SET encrypted_dek = EXCLUDED.encrypted_dek,
 		      ciphertext     = EXCLUDED.ciphertext,
 		      updated_at     = NOW()
-		RETURNING id, name, scope, scope_ref, encrypted_dek, ciphertext, created_at, updated_at;
+		RETURNING id, name, encrypted_dek, ciphertext, created_at, updated_at;
 	`
 	var s StoredSecret
-	err := p.pool.QueryRow(ctx, q, name, scope, scopeRef, encryptedDEK, ciphertext).
-		Scan(&s.ID, &s.Name, &s.Scope, &s.ScopeRef, &s.EncryptedDEK, &s.Ciphertext, &s.CreatedAt, &s.UpdatedAt)
+	err := p.pool.QueryRow(ctx, q, name, encryptedDEK, ciphertext).
+		Scan(&s.ID, &s.Name, &s.EncryptedDEK, &s.Ciphertext, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("upsert secret: %w", err)
 	}
 	return &s, nil
 }
 
-func (p *Postgres) GetSecret(ctx context.Context, name, scope, scopeRef string) (*StoredSecret, error) {
-	const q = `SELECT id, name, scope, scope_ref, encrypted_dek, ciphertext, created_at, updated_at
-		FROM secrets WHERE name = $1 AND scope = $2 AND scope_ref = $3`
+func (p *Postgres) GetSecret(ctx context.Context, name string) (*StoredSecret, error) {
+	const q = `SELECT id, name, encrypted_dek, ciphertext, created_at, updated_at
+		FROM secrets WHERE name = $1`
 	var s StoredSecret
-	err := p.pool.QueryRow(ctx, q, name, scope, scopeRef).
-		Scan(&s.ID, &s.Name, &s.Scope, &s.ScopeRef, &s.EncryptedDEK, &s.Ciphertext, &s.CreatedAt, &s.UpdatedAt)
+	err := p.pool.QueryRow(ctx, q, name).
+		Scan(&s.ID, &s.Name, &s.EncryptedDEK, &s.Ciphertext, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get secret %q: %w", name, err)
 	}
 	return &s, nil
 }
 
-func (p *Postgres) ListSecrets(ctx context.Context, scope, scopeRef string) ([]SecretMeta, error) {
-	const q = `SELECT id, name, scope, scope_ref, created_at FROM secrets
-		WHERE scope = $1 AND scope_ref = $2 ORDER BY name`
-	rows, err := p.pool.Query(ctx, q, scope, scopeRef)
+func (p *Postgres) ListSecrets(ctx context.Context) ([]SecretMeta, error) {
+	const q = `SELECT id, name, created_at FROM secrets ORDER BY name`
+	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -1600,7 +1599,7 @@ func (p *Postgres) ListSecrets(ctx context.Context, scope, scopeRef string) ([]S
 	var out []SecretMeta
 	for rows.Next() {
 		var m SecretMeta
-		if err := rows.Scan(&m.ID, &m.Name, &m.Scope, &m.ScopeRef, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -1608,10 +1607,8 @@ func (p *Postgres) ListSecrets(ctx context.Context, scope, scopeRef string) ([]S
 	return out, rows.Err()
 }
 
-func (p *Postgres) DeleteSecret(ctx context.Context, name, scope, scopeRef string) error {
-	_, err := p.pool.Exec(ctx,
-		`DELETE FROM secrets WHERE name = $1 AND scope = $2 AND scope_ref = $3`,
-		name, scope, scopeRef)
+func (p *Postgres) DeleteSecret(ctx context.Context, name string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM secrets WHERE name = $1`, name)
 	return err
 }
 

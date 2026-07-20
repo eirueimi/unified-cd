@@ -269,12 +269,12 @@ func (s *Server) verifyWebhookSignature(r *http.Request, body []byte, auth dsl.W
 	if s.km == nil {
 		return fmt.Errorf("key manager not configured — cannot verify signature")
 	}
-	stored, err := s.store.GetSecret(r.Context(), auth.SecretRef, "global", "")
+	stored, err := s.store.GetSecret(r.Context(), auth.SecretRef)
 	if err != nil {
 		return fmt.Errorf("secret %q not found — create it with `unified-cli secret set %s <value>` using the same value configured on the sender", auth.SecretRef, auth.SecretRef)
 	}
 	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext,
-		secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
+		secrets.SecretBinding(stored.Name))
 	if err != nil {
 		logSecretDecryptFailure("webhook-hmac", auth.SecretRef, err)
 		return fmt.Errorf("decrypt secret %q: %w", auth.SecretRef, err)
@@ -323,12 +323,12 @@ func (s *Server) verifyWebhookToken(r *http.Request, auth dsl.WebhookAuth) error
 	if s.km == nil {
 		return fmt.Errorf("key manager not configured — cannot verify token")
 	}
-	stored, err := s.store.GetSecret(r.Context(), auth.SecretRef, "global", "")
+	stored, err := s.store.GetSecret(r.Context(), auth.SecretRef)
 	if err != nil {
 		return fmt.Errorf("secret %q not found — create it with `unified-cli secret set %s <value>` using the same value configured on the sender", auth.SecretRef, auth.SecretRef)
 	}
 	secretBytes, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext,
-		secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
+		secrets.SecretBinding(stored.Name))
 	if err != nil {
 		logSecretDecryptFailure("webhook-token", auth.SecretRef, err)
 		return fmt.Errorf("decrypt secret %q: %w", auth.SecretRef, err)

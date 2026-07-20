@@ -41,6 +41,7 @@ var schemaSentinels = []sentinel{
 	{13, "013_agent_identity_auth", "agent_credentials", "token_hash", ""},
 	{14, "014_agent_enrollment_policies", "agent_enrollment_policies", "", ""},
 	{15, "015_secrets_v2", "sessions", "refresh_token_dek", ""},
+	{16, "016_drop_secret_scope", "secrets", "", "secrets_name_key"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

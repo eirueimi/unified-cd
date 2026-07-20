@@ -11,7 +11,7 @@ import (
 
 func TestEnvelopeEncryptDecrypt(t *testing.T) {
 	km := mustNewLocalKeyManager(t)
-	b := SecretBinding("MY_SECRET", "global", "")
+	b := SecretBinding("MY_SECRET")
 	plaintext := "my-super-secret-value"
 	encDEK, ciphertext, err := Encrypt(context.Background(), km, []byte(plaintext), b)
 	require.NoError(t, err)
@@ -24,7 +24,7 @@ func TestEnvelopeEncryptDecrypt(t *testing.T) {
 
 func TestEnvelopeEncrypt_DifferentNonceEachTime(t *testing.T) {
 	km := mustNewLocalKeyManager(t)
-	b := SecretBinding("v", "global", "")
+	b := SecretBinding("v")
 	_, c1, err := Encrypt(context.Background(), km, []byte("val"), b)
 	require.NoError(t, err)
 	_, c2, err := Encrypt(context.Background(), km, []byte("val"), b)
@@ -36,8 +36,8 @@ func TestEnvelopeEncrypt_DifferentNonceEachTime(t *testing.T) {
 // identity must fail, not decrypt into the wrong secret's value.
 func TestEnvelopeDecrypt_WrongBindingFails(t *testing.T) {
 	km := mustNewLocalKeyManager(t)
-	stored := SecretBinding("staging-token", "global", "")
-	attacker := SecretBinding("prod-token", "global", "")
+	stored := SecretBinding("staging-token")
+	attacker := SecretBinding("prod-token")
 
 	encDEK, ciphertext, err := Encrypt(context.Background(), km, []byte("s3cr3t"), stored)
 	require.NoError(t, err)
@@ -49,7 +49,7 @@ func TestEnvelopeDecrypt_WrongBindingFails(t *testing.T) {
 
 func TestEnvelopeEncrypt_EmitsVersionByte(t *testing.T) {
 	km := mustNewLocalKeyManager(t)
-	b := SecretBinding("v", "global", "")
+	b := SecretBinding("v")
 	encDEK, ciphertext, err := Encrypt(context.Background(), km, []byte("x"), b)
 	require.NoError(t, err)
 	assert.Equal(t, CryptoVersion, ciphertext[0])
@@ -58,7 +58,7 @@ func TestEnvelopeEncrypt_EmitsVersionByte(t *testing.T) {
 
 func TestEnvelopeDecrypt_UnknownVersionRejected(t *testing.T) {
 	km := mustNewLocalKeyManager(t)
-	b := SecretBinding("v", "global", "")
+	b := SecretBinding("v")
 	encDEK, ciphertext, err := Encrypt(context.Background(), km, []byte("x"), b)
 	require.NoError(t, err)
 

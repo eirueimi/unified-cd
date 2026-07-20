@@ -254,18 +254,14 @@ type RunOutputs struct {
 
 // SetSecretRequest is the request for creating or updating a secret.
 type SetSecretRequest struct {
-	Name     string `json:"name"`
-	Scope    string `json:"scope,omitempty"`
-	ScopeRef string `json:"scopeRef,omitempty"`
-	Value    string `json:"value"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // SecretMeta is the metadata for a secret without its value (for API responses).
 type SecretMeta struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
-	Scope     string    `json:"scope"`
-	ScopeRef  string    `json:"scopeRef"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 

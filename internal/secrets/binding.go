@@ -19,9 +19,9 @@ type Binding struct {
 	fields []string
 }
 
-// SecretBinding binds a ciphertext to a row in the secrets table.
-func SecretBinding(name, scope, scopeRef string) Binding {
-	return Binding{kind: "secret", fields: []string{name, scope, scopeRef}}
+// SecretBinding binds a ciphertext to a secret's name.
+func SecretBinding(name string) Binding {
+	return Binding{kind: "secret", fields: []string{name}}
 }
 
 // SessionRefreshBinding binds an encrypted OIDC refresh token to its session.

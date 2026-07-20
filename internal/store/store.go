@@ -126,8 +126,6 @@ type Schedule struct {
 type StoredSecret struct {
 	ID           string
 	Name         string
-	Scope        string
-	ScopeRef     string
 	EncryptedDEK []byte
 	Ciphertext   []byte
 	CreatedAt    time.Time
@@ -138,8 +136,6 @@ type StoredSecret struct {
 type SecretMeta struct {
 	ID        string
 	Name      string
-	Scope     string
-	ScopeRef  string
 	CreatedAt time.Time
 }
 
@@ -385,10 +381,10 @@ type Store interface {
 	DeleteWebhookReceiver(ctx context.Context, name string) error
 
 	// Secrets
-	UpsertSecret(ctx context.Context, name, scope, scopeRef string, encryptedDEK, ciphertext []byte) (*StoredSecret, error)
-	GetSecret(ctx context.Context, name, scope, scopeRef string) (*StoredSecret, error)
-	ListSecrets(ctx context.Context, scope, scopeRef string) ([]SecretMeta, error)
-	DeleteSecret(ctx context.Context, name, scope, scopeRef string) error
+	UpsertSecret(ctx context.Context, name string, encryptedDEK, ciphertext []byte) (*StoredSecret, error)
+	GetSecret(ctx context.Context, name string) (*StoredSecret, error)
+	ListSecrets(ctx context.Context) ([]SecretMeta, error)
+	DeleteSecret(ctx context.Context, name string) error
 
 	// OIDCState
 	CreateOIDCState(ctx context.Context, state, redirectTo string, expiresAt time.Time) (*OIDCState, error)

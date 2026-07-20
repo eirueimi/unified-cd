@@ -31,16 +31,13 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("name %v", err), http.StatusBadRequest)
 		return
 	}
-	if req.Scope == "" {
-		req.Scope = "global"
-	}
 	encDEK, ct, err := secrets.Encrypt(r.Context(), s.km, []byte(req.Value),
-		secrets.SecretBinding(req.Name, req.Scope, req.ScopeRef))
+		secrets.SecretBinding(req.Name))
 	if err != nil {
 		http.Error(w, "encrypt: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if _, err := s.store.UpsertSecret(r.Context(), req.Name, req.Scope, req.ScopeRef, encDEK, ct); err != nil {
+	if _, err := s.store.UpsertSecret(r.Context(), req.Name, encDEK, ct); err != nil {
 		http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -49,12 +46,7 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 
 // handleListSecrets returns the metadata list of secrets (values are not included).
 func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
-	scope := r.URL.Query().Get("scope")
-	if scope == "" {
-		scope = "global"
-	}
-	scopeRef := r.URL.Query().Get("scopeRef")
-	list, err := s.store.ListSecrets(r.Context(), scope, scopeRef)
+	list, err := s.store.ListSecrets(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -62,7 +54,7 @@ func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 	result := make([]api.SecretMeta, 0, len(list))
 	for _, m := range list {
 		result = append(result, api.SecretMeta{
-			ID: m.ID, Name: m.Name, Scope: m.Scope, ScopeRef: m.ScopeRef, CreatedAt: m.CreatedAt,
+			ID: m.ID, Name: m.Name, CreatedAt: m.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -71,12 +63,7 @@ func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 // handleDeleteSecret deletes the secret with the given name.
 func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	scope := r.URL.Query().Get("scope")
-	if scope == "" {
-		scope = "global"
-	}
-	scopeRef := r.URL.Query().Get("scopeRef")
-	if err := s.store.DeleteSecret(r.Context(), name, scope, scopeRef); err != nil {
+	if err := s.store.DeleteSecret(r.Context(), name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -134,7 +121,7 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 	}
 	result := map[string]string{}
 	for _, name := range req.Names {
-		stored, err := s.store.GetSecret(r.Context(), name, "global", "")
+		stored, err := s.store.GetSecret(r.Context(), name)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				// Omitting the secret would hand the agent an empty value and let
@@ -149,7 +136,7 @@ func (s *Server) handleAgentSecretsFetch(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		plaintext, err := secrets.Decrypt(r.Context(), s.km, stored.EncryptedDEK, stored.Ciphertext,
-			secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
+			secrets.SecretBinding(stored.Name))
 		if err != nil {
 			logSecretDecryptFailure("agent-fetch", name, err)
 			http.Error(w, "decrypt "+name+": "+err.Error(), http.StatusInternalServerError)
