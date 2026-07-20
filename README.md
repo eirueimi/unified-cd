@@ -189,6 +189,7 @@ CLI / Browser / Webhook
 - **[Migration: agent capability routing](docs/migration-2026-07-agent-capability-routing.md)** — agent `capabilities`, the `pod` capability replacing the old `kubernetes`-label pin, and rolling upgrades
 - **[Migration: per-agent authentication](docs/migration-agent-auth.md)** — VM/Kubernetes enrollment, independent credential revocation, and shared-token retirement
 - **[Migration: `shell:` field, `ucd-sh` shim](docs/migration-2026-07-step-shell-shim.md)** — `bash -lc`/`sh -c` defaults replaced by the injected `ucd-sh` shim, the new `shell:` override field, and the `ucd-sh pause` keep-alive
+- **[Migration: secret scope removal](docs/migration-2026-07-secret-scope-removal.md)** — secrets are now name-only; upgrading clears existing secret rows and they must be re-set
 
 ### Infrastructure
 - **[Kubernetes Manifests](manifests/README.md)** — install manifests for production and evaluation
