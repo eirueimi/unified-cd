@@ -16,43 +16,42 @@ func TestPostgres_SecretsCRUD(t *testing.T) {
 	ct := []byte("ciphertext-bytes")
 
 	// Upsert
-	s, err := pg.UpsertSecret(ctx, "AWS_KEY", "global", "", encDEK, ct)
+	s, err := pg.UpsertSecret(ctx, "AWS_KEY", encDEK, ct)
 	require.NoError(t, err)
 	assert.Equal(t, "AWS_KEY", s.Name)
-	assert.Equal(t, "global", s.Scope)
 	assert.Equal(t, encDEK, s.EncryptedDEK)
 
 	// Get
-	got, err := pg.GetSecret(ctx, "AWS_KEY", "global", "")
+	got, err := pg.GetSecret(ctx, "AWS_KEY")
 	require.NoError(t, err)
 	assert.Equal(t, "AWS_KEY", got.Name)
 	assert.Equal(t, ct, got.Ciphertext)
 
 	// Upsert update
 	newCT := []byte("new-ciphertext")
-	_, err = pg.UpsertSecret(ctx, "AWS_KEY", "global", "", encDEK, newCT)
+	_, err = pg.UpsertSecret(ctx, "AWS_KEY", encDEK, newCT)
 	require.NoError(t, err)
-	updated, _ := pg.GetSecret(ctx, "AWS_KEY", "global", "")
+	updated, _ := pg.GetSecret(ctx, "AWS_KEY")
 	assert.Equal(t, newCT, updated.Ciphertext)
 
 	// List
-	_, _ = pg.UpsertSecret(ctx, "DB_PASS", "global", "", encDEK, ct)
-	list, err := pg.ListSecrets(ctx, "global", "")
+	_, _ = pg.UpsertSecret(ctx, "DB_PASS", encDEK, ct)
+	list, err := pg.ListSecrets(ctx)
 	require.NoError(t, err)
 	assert.Len(t, list, 2)
 
 	// Delete
-	require.NoError(t, pg.DeleteSecret(ctx, "AWS_KEY", "global", ""))
-	list2, _ := pg.ListSecrets(ctx, "global", "")
+	require.NoError(t, pg.DeleteSecret(ctx, "AWS_KEY"))
+	list2, _ := pg.ListSecrets(ctx)
 	assert.Len(t, list2, 1)
 
 	// Get deleted → error
-	_, err = pg.GetSecret(ctx, "AWS_KEY", "global", "")
+	_, err = pg.GetSecret(ctx, "AWS_KEY")
 	require.Error(t, err)
 }
 
 func TestPostgres_GetSecret_NotFound(t *testing.T) {
 	pg := NewTestPostgres(t)
-	_, err := pg.GetSecret(context.Background(), "NONEXISTENT", "global", "")
+	_, err := pg.GetSecret(context.Background(), "NONEXISTENT")
 	require.Error(t, err)
 }

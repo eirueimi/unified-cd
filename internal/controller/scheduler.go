@@ -299,12 +299,12 @@ func resolveGitPendingRuns(ctx context.Context, st store.Store, resolver *gittem
 			if gc == nil {
 				return gittemplate.Credential{}, nil // public repo
 			}
-			stored, err := st.GetSecret(ctx, gc.SecretRef, "global", "")
+			stored, err := st.GetSecret(ctx, gc.SecretRef)
 			if err != nil {
 				return gittemplate.Credential{}, fmt.Errorf("get secret %q for host %q: %w", gc.SecretRef, host, err)
 			}
 			plaintext, err := secrets.Decrypt(ctx, km, stored.EncryptedDEK, stored.Ciphertext,
-				secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
+				secrets.SecretBinding(stored.Name))
 			if err != nil {
 				return gittemplate.Credential{}, fmt.Errorf("decrypt secret for host %q: %w", host, err)
 			}

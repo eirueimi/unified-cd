@@ -342,12 +342,12 @@ func resolveCredential(ctx context.Context, st store.Store, km secrets.KeyManage
 		return gittemplate.Credential{}, nil
 	}
 
-	stored, err := st.GetSecret(ctx, gc.SecretRef, "global", "")
+	stored, err := st.GetSecret(ctx, gc.SecretRef)
 	if err != nil {
 		return gittemplate.Credential{}, fmt.Errorf("failed to get secret %q: %w", gc.SecretRef, err)
 	}
 	plaintext, err := secrets.Decrypt(ctx, km, stored.EncryptedDEK, stored.Ciphertext,
-		secrets.SecretBinding(stored.Name, stored.Scope, stored.ScopeRef))
+		secrets.SecretBinding(stored.Name))
 	if err != nil {
 		return gittemplate.Credential{}, fmt.Errorf("failed to decrypt secret for host %q: %w", host, err)
 	}

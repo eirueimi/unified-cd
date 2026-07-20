@@ -111,7 +111,7 @@ func TestIntegration_EnvelopeThroughTransit(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = m.Close() })
 
-	b := secrets.SecretBinding("MY_SECRET", "global", "")
+	b := secrets.SecretBinding("MY_SECRET")
 	encDEK, ct, err := secrets.Encrypt(context.Background(), m, []byte("hunter2"), b)
 	require.NoError(t, err)
 	plain, err := secrets.Decrypt(context.Background(), m, encDEK, ct, b)
