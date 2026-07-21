@@ -14,4 +14,3 @@ web/dist/
 internal/controller/web/
 .superpowers
 unified-cd
-internal/shim/embedded/ucd-sh-*
