@@ -89,6 +89,19 @@ unified-cli agent install \
   --enrollment-token-file /var/lib/unified-cd-agent/enrollment.token
 ```
 
+`agent enrollment create` prints the exact `agent install` and direct
+`unified-cd-agent` commands to run next, filled in with the server, agent ID,
+and enrollment-token path, so you can copy them straight onto the agent host.
+
+`--credential-file` is optional: when omitted, both `agent install` and the
+agent runtime default it to `$HOME/.unified-cd/<id>/credential.json` and create
+that owner-only directory automatically, so a fresh host only needs `--server`,
+`--id`, and `--enrollment-token-file`. Pass an explicit path (as above) when the
+agent runs as a service account with a dedicated state directory outside its
+home. To remove a service later, use `unified-cli agent uninstall` (add
+`--purge-credentials --id <id>` to also delete the default credential
+directory).
+
 The first start exchanges the `uce_` enrollment credential at
 `POST /api/v1/agents/enroll`. It receives a one-hour `uca_` access credential
 and a 30-day `ucr_` refresh credential. The agent rotates its refresh

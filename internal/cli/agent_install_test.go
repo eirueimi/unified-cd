@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,14 +80,19 @@ func TestNewAgentInstallCmd_FlagsExist(t *testing.T) {
 	assert.NotNil(t, cmd.Flags().Lookup("label"))
 }
 
-func TestAgentInstallRequiresCredentialFileForEnrollment(t *testing.T) {
+func TestAgentInstallDefaultsCredentialFileWhenOmitted(t *testing.T) {
 	dir := t.TempDir()
 	cmd := newAgentInstallCmd()
+	var out strings.Builder
+	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"--server", "https://master.example.com", "--id", "agent-1", "--enrollment-token-file", filepath.Join(dir, "enrollment"), "--dir", dir})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "credential file is required")
-	assert.NoFileExists(t, filepath.Join(dir, "agent.yaml"))
+	require.NoError(t, cmd.Execute())
+
+	wantPath, err := config.DefaultAgentCredentialFile("agent-1")
+	require.NoError(t, err)
+	data, err := os.ReadFile(filepath.Join(dir, "agent.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), wantPath)
 }
 
 func TestAgentInstallRequiresEnrollmentForMissingCredentialFile(t *testing.T) {
@@ -96,6 +103,80 @@ func TestAgentInstallRequiresEnrollmentForMissingCredentialFile(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "enrollment token file is required")
 	assert.NoFileExists(t, filepath.Join(dir, "agent.yaml"))
+}
+
+func platformServiceFile(dir string) string {
+	switch runtime.GOOS {
+	case "linux":
+		return filepath.Join(dir, "systemd", "unified-cd-agent.service")
+	case "darwin":
+		return filepath.Join(dir, "launchd", "dev.unified-cd.agent.plist")
+	default:
+		return ""
+	}
+}
+
+func TestAgentUninstallRemovesGeneratedFiles(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "agent.yaml")
+	require.NoError(t, os.WriteFile(yamlPath, []byte("server: x\n"), 0o600))
+	svcPath := platformServiceFile(dir)
+	if svcPath != "" {
+		require.NoError(t, os.MkdirAll(filepath.Dir(svcPath), 0o750))
+		require.NoError(t, os.WriteFile(svcPath, []byte("unit"), 0o644))
+	}
+
+	cmd := newAgentUninstallCmd()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--dir", dir})
+	require.NoError(t, cmd.Execute())
+
+	assert.NoFileExists(t, yamlPath)
+	assert.Contains(t, out.String(), "Removed "+yamlPath)
+	if svcPath != "" {
+		assert.NoFileExists(t, svcPath)
+	}
+	// Credentials are not touched without the opt-in flag.
+	assert.Contains(t, out.String(), "left in place")
+}
+
+func TestAgentUninstallReportsWhenNothingToRemove(t *testing.T) {
+	dir := t.TempDir()
+	cmd := newAgentUninstallCmd()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--dir", dir})
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, out.String(), "No generated service files were found")
+}
+
+func TestAgentUninstallPurgeCredentialsRequiresID(t *testing.T) {
+	cmd := newAgentUninstallCmd()
+	cmd.SetArgs([]string{"--dir", t.TempDir(), "--purge-credentials"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--id is required")
+}
+
+func TestAgentUninstallPurgeCredentialsRemovesDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir uses USERPROFILE on Windows
+
+	credPath, err := config.DefaultAgentCredentialFile("agent-1")
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(credPath), 0o700))
+	require.NoError(t, os.WriteFile(credPath, []byte("{}"), 0o600))
+
+	cmd := newAgentUninstallCmd()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--dir", t.TempDir(), "--purge-credentials", "--id", "agent-1"})
+	require.NoError(t, cmd.Execute())
+
+	assert.NoDirExists(t, filepath.Dir(credPath))
+	assert.Contains(t, out.String(), "Removed credential directory")
 }
 
 func newTestAgentCmd(t *testing.T, tr *captureTransport, serverURL string) (*cobra.Command, *strings.Builder) {

@@ -831,10 +831,10 @@ Manage agents and install them as system services.
 ### agent install
 
 ```
-unified-cli agent install --server <url> --id <id> --credential-file <path> [OPTIONS]
+unified-cli agent install --server <url> --id <id> [OPTIONS]
 
   --server  string   Controller URL (required)
-  --credential-file string   Protected VM refresh-credential file (required)
+  --credential-file string   Protected VM refresh-credential file (default: $HOME/.unified-cd/<id>/credential.json)
   --enrollment-token-file string  One-time enrollment-token file (required until first enrollment)
   --id      string   Agent identifier (required)
   --label   string   Agent label (repeatable, e.g. --label kind:linux)
@@ -863,6 +863,33 @@ The file is shown only once and the service rotates its VM refresh credential
 without placing plaintext credentials in its command line. `--token` is not an
 `agent install` option; `UNIFIED_AGENT_TOKEN` is reserved for explicitly
 enabled legacy shared-token migration.
+
+When `--credential-file` is omitted, both `agent install` and the agent runtime
+default it to `$HOME/.unified-cd/<id>/credential.json`, so a fresh host only
+needs `--server`, `--id`, and `--enrollment-token-file`.
+
+### agent uninstall
+
+```
+unified-cli agent uninstall [OPTIONS]
+
+  --dir     string   Installation directory (default: ~/.unified-cd)
+  --id      string   Agent identifier (required with --purge-credentials)
+  --purge-credentials  bool  Also delete the default $HOME/.unified-cd/<id>/ credential directory
+```
+
+Removes the files written by `agent install` (the `agent.yaml` and the
+platform service file under `<dir>`) and prints the commands to disable and
+remove an already-enabled service (`systemctl --user disable --now
+unified-cd-agent` on Linux, `launchctl unload ...` on macOS). Credentials are
+left in place unless `--purge-credentials --id <id>` is given, since they are
+independently revocable and deleting them is irreversible.
+
+```bash
+unified-cli agent uninstall --dir /opt/unified-cd
+# Fully remove, including the persisted refresh credential:
+unified-cli agent uninstall --id worker-01 --purge-credentials
+```
 
 ### agent enrollment, identity, and enrollment-policy
 
