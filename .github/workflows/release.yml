@@ -21,6 +21,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: shim is up to date (verify, do not regenerate)
+        run: |
+          go generate ./internal/shim/embedded/
+          git diff --exit-code internal/shim/embedded/ucd-sh-amd64 internal/shim/embedded/ucd-sh-arm64
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
