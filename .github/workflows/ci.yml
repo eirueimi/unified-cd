@@ -19,11 +19,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: shim is up to date
-        if: runner.os == 'Linux'
-        run: |
-          go generate ./internal/shim/embedded/
-          git diff --exit-code internal/shim/embedded/ucd-sh-amd64 internal/shim/embedded/ucd-sh-arm64
       - name: Run unit tests
         shell: bash
         run: |

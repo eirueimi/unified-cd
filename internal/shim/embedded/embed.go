@@ -16,9 +16,18 @@
 // schemas/unified-cd.schema.json. Regenerate them with
 // `go generate ./internal/shim/embedded/` (which runs cmd/shimgen) after
 // changing cmd/ucd-sh or internal/shim, and commit the result. cmd/shimgen
-// builds with -buildvcs=false -trimpath CGO_ENABLED=0 so the bytes are
-// reproducible; a CI drift guard and the release verify gate fail if the
-// committed bytes are stale. Because the bytes are committed, `go build`,
+// builds with -buildvcs=false -trimpath CGO_ENABLED=0.
+//
+// The committed bytes are NOT required to be byte-identical to a fresh
+// rebuild: Go builds are not byte-reproducible across build machines (BuildID
+// and other environment-derived bytes differ even for the same GOOS/GOARCH and
+// Go version), so a byte-exact `git diff` guard is unworkable. Instead,
+// embed_test.go validates the committed files functionally — each is a real,
+// statically-linked linux ELF of the expected architecture, and on a linux
+// host the embedded shim is executed and must behave as ucd-sh. That is all
+// `go install` and the release build need. (Trade-off: a source change to
+// cmd/ucd-sh left un-regenerated is not caught automatically; regenerate and
+// commit when you touch the shim.) Because the bytes are committed, `go build`,
 // `go test`, `go install .../cmd/agent@version`, container builds, and
 // goreleaser all embed the shim with no pre-build step.
 package embedded

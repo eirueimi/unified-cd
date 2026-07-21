@@ -3,6 +3,32 @@
 **Date:** 2026-07-21
 **Status:** Approved (brainstorming)
 
+## Addendum 2026-07-21 (implementation): byte-exact drift guard → functional validation
+
+The sections below (B6 "CI drift guard", B7 "Release-time verify gate", and the
+reproducibility notes) specified a **byte-exact** guard: CI runs
+`go generate` and `git diff --exit-code` on the committed `ucd-sh-<arch>`
+binaries. During implementation this proved **unworkable**. Go builds are not
+byte-reproducible across build machines even for the same GOOS/GOARCH, Go
+version (1.26.2), and flags (`-trimpath -buildvcs=false CGO_ENABLED=0`): a
+Windows-committed binary, a linux Docker (golang:1.26.2) rebuild, and the
+GitHub `ubuntu-latest` rebuild all produced three different blobs (BuildID and
+other environment-derived bytes differ). No committed bytes can satisfy a
+byte-exact `git diff`, and the Windows-vs-linux file mode (100644 vs 100755)
+compounded it.
+
+**Resolution (approved: option B + robust functional test):** the byte-exact
+guard is removed from `ci.yml` and `release.yml`. The committed bytes stay
+(they are valid linux shims — all `go install`/release needs). Staleness/
+validity is instead checked functionally by `internal/shim/embedded/embed_test.go`:
+both committed files are validated as real, statically-linked linux ELF of the
+expected arch (any host), and on a linux host the embedded shim is executed and
+must behave as ucd-sh (no-args → usage + exit 2; `-c "exit 7"` → exit 7).
+`cmd/shimgen` and the `//go:generate` directive remain for regeneration.
+Trade-off: an un-regenerated source change to `cmd/ucd-sh` is not caught
+automatically (accepted). Where the sections below say "drift guard"/"verify
+gate", read this addendum as superseding them.
+
 ## Motivation
 
 Three related cleanups requested:
