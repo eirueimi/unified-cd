@@ -13,6 +13,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ── DefaultAgentCredentialFile ──────────────────────────────────────────────
+
+func TestDefaultAgentCredentialFile(t *testing.T) {
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	path, err := config.DefaultAgentCredentialFile("build-gcp-01")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".unified-cd", "build-gcp-01", "credential.json"), path)
+
+	_, err = config.DefaultAgentCredentialFile("")
+	require.Error(t, err)
+	_, err = config.DefaultAgentCredentialFile("   ")
+	require.Error(t, err)
+}
+
 // ── FindFlag ────────────────────────────────────────────────────────────────
 
 func TestFindFlag(t *testing.T) {

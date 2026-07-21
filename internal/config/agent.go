@@ -3,12 +3,30 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// DefaultAgentCredentialFile returns the default persistent refresh-credential
+// path for an agent whose canonical ID is id:
+// $HOME/.unified-cd/<id>/credential.json. It is used when no credential file is
+// configured via flag, env, or the config file. The agent ID is part of the
+// path so multiple agents sharing a host (and $HOME) never share a credential
+// file; id must therefore be non-empty.
+func DefaultAgentCredentialFile(id string) (string, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", fmt.Errorf("agent ID is required to derive the default credential file path")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for default credential file: %w", err)
+	}
+	return filepath.Join(home, ".unified-cd", id, "credential.json"), nil
+}
 
 // AgentConfig holds all configuration for the agent binary.
 // Populated from a YAML file via LoadAgent; zero-value fields mean "not set".

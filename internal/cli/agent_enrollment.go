@@ -160,9 +160,11 @@ func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *htt
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Enrollment token written to %s (shown only once).\n", outputFile)
+				fmt.Fprint(cmd.OutOrStdout(), nextAgentCommands(cfg.Server, agentID, outputFile, labels))
 				return nil
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Enrollment token created (shown only once):\n\n%s\n", result.Token)
+			fmt.Fprint(cmd.OutOrStdout(), nextAgentCommands(cfg.Server, agentID, "", labels))
 			return nil
 		},
 	}
@@ -173,6 +175,44 @@ func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *htt
 	cmd.Flags().StringVar(&outputFile, "output-file", "", "create a new owner-only file containing the token")
 	_ = cmd.MarkFlagRequired("agent-id")
 	return cmd
+}
+
+// nextAgentCommands renders the two commands an operator can run on the agent
+// host after creating an enrollment token: `unified-cli agent install` (to run
+// the agent as a service) and a direct `unified-cd-agent` invocation. When
+// tokenFile is empty the token was printed to stdout, so a placeholder path and
+// a save-the-token hint are shown instead of a concrete file. The credential
+// file is intentionally omitted: the agent defaults it to
+// $HOME/.unified-cd/<id>/credential.json.
+func nextAgentCommands(server, agentID, tokenFile string, labels []string) string {
+	tokenRef := tokenFile
+	var b strings.Builder
+	b.WriteString("\n")
+	if tokenRef == "" {
+		tokenRef = "<path-to-token-file>"
+		b.WriteString("Save this token to a private file on the agent host, then either install the agent as a service:\n")
+	} else {
+		b.WriteString("Next, on the agent host, either install the agent as a service:\n")
+	}
+
+	installLabels := ""
+	directLabels := ""
+	if len(labels) > 0 {
+		parts := make([]string, 0, len(labels))
+		for _, l := range labels {
+			parts = append(parts, "--label "+l)
+		}
+		installLabels = " \\\n    " + strings.Join(parts, " ")
+		directLabels = " \\\n    --labels " + strings.Join(labels, ",")
+	}
+
+	fmt.Fprintf(&b, "  unified-cli agent install \\\n    --server %s \\\n    --id %s \\\n    --enrollment-token-file %s%s\n",
+		server, agentID, tokenRef, installLabels)
+	b.WriteString("\nor run the agent directly:\n")
+	fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s \\\n    --id %s \\\n    --enrollment-token-file %s%s\n",
+		server, agentID, tokenRef, directLabels)
+	fmt.Fprintf(&b, "\nThe credential file defaults to $HOME/.unified-cd/%s/credential.json.\n", agentID)
+	return b.String()
 }
 
 func newAgentEnrollmentListCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
