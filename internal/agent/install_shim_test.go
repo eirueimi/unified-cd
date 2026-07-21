@@ -12,10 +12,9 @@ import (
 )
 
 // withFakeShimBytes overrides the package-level shimBytes indirection (see
-// agent.go) so InstallShim's tests don't depend on the two-stage build
-// (`make embed-shim`) having populated internal/shim/embedded with a real
-// binary — the committed placeholders are intentionally zero bytes (see that
-// package's doc comment).
+// agent.go) so InstallShim's tests don't depend on the committed
+// internal/shim/embedded/ucd-sh-<arch> bytes; a zero-length payload means
+// that file is missing or empty.
 func withFakeShimBytes(t *testing.T, payload []byte) {
 	t.Helper()
 	orig := shimBytes
@@ -25,16 +24,17 @@ func withFakeShimBytes(t *testing.T, payload []byte) {
 
 // TestInstallShim_EmptyBytesIsHardError is the regression test for the
 // "EMPTY Bytes() = hard startup error" requirement (step-shell-shim spec,
-// Component 3 "/.ucd injection"): a zero-length embedded payload — the
-// committed placeholder, not overwritten by the two-stage build — must fail
-// loudly with an actionable message, not silently start without the shim.
+// Component 3 "/.ucd injection"): a zero-length embedded payload — meaning
+// the committed internal/shim/embedded/ucd-sh-<arch> bytes; a zero-length
+// payload means that file is missing or empty — must fail loudly with an
+// actionable message, not silently start without the shim.
 func TestInstallShim_EmptyBytesIsHardError(t *testing.T) {
 	withFakeShimBytes(t, nil)
 
 	_, err := InstallShim(filepath.Join(t.TempDir(), "workspace"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not embedded")
-	assert.Contains(t, err.Error(), "embed-shim", "error must name the two-stage build fix")
+	assert.Contains(t, err.Error(), "go generate", "error must name the regeneration fix")
 }
 
 // TestInstallShim_WritesExecutableFileUnderWorkspaceDir verifies InstallShim

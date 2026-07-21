@@ -110,8 +110,7 @@ parameterized.
 
 Jobs are isolated by default (see [Job Isolation: `native` and the claim
 pod](jobs.md#job-isolation-native-and-the-claim-pod)); most of the failures below are an
-isolation setup gap surfacing as a run failure. If you're migrating an existing job, also see the
-[job-isolation migration guide](migration-2026-07-job-isolation.md).
+isolation setup gap surfacing as a run failure.
 
 ### Run fails immediately: "isolated job requires a container runtime"
 
@@ -206,11 +205,6 @@ Treat this as routine hygiene: periodically prune claim-pod-shaped containers on
 itself.
 
 ---
-
-Compile-time migration errors — removed step-level `runsIn:`, `native: true` combined with
-`podTemplate`, `native: true` combined with a step `container:` — are cataloged in the
-[migration guide's validation error
-table](migration-2026-07-job-isolation.md#validation-errors-you-may-see-after-upgrading).
 
 ## Webhook returns 401
 
@@ -497,10 +491,9 @@ the template's migration keep fetching the old `kind: Job` content forever.
 **Fix**
 
 Convert the template (`kind: Job` → `kind: JobTemplate`, drop unsupported
-fields) and re-pin tags/SHAs to a post-migration commit — see the
-[migration guide](migration-2026-07-uses-jobtemplate.md). If the target
-genuinely needs its own pod/agent/run semantics, keep it a `kind: Job` and
-invoke it with `call:` instead.
+fields) and re-pin tags/SHAs to a commit that uses the `JobTemplate` kind. If
+the target genuinely needs its own pod/agent/run semantics, keep it a
+`kind: Job` and invoke it with `call:` instead.
 
 ## Scoped `uses` step can't find workspace files
 

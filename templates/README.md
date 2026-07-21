@@ -100,5 +100,4 @@ Each template follows the house style below (`git-checkout.yaml` / `slack-notify
   called from a `native: true` job; note that requirement in the template's own header comment alongside its
   other tool prerequisites. Container-friendly templates (curl/git/go/node-based ones) run fine in the default
   isolated job and need no `native: true`. When a template's steps target a specific `podTemplate` container,
-  use the flat `container:` field — step-level `runsIn:` was removed (see the
-  [job-isolation migration guide](../docs/migration-2026-07-job-isolation.md)).
+  use the flat `container:` field — step-level `runsIn:` is not supported.

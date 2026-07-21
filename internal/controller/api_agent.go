@@ -316,13 +316,13 @@ func rejectPreMigrationRunsIn(jobName string, entries []dsl.StepEntry) error {
 		if len(entry.Parallel) > 0 {
 			for _, st := range entry.Parallel {
 				if st.RunsIn != nil && st.Uses == nil {
-					return fmt.Errorf("job %q: step %q uses the removed step-level runsIn: — re-apply the job after migrating to container: (see docs/migration-2026-07-job-isolation.md)", jobName, st.Name)
+					return fmt.Errorf("job %q: step %q uses the removed step-level runsIn: — set step-level container: (referencing a podTemplate container) instead", jobName, st.Name)
 				}
 			}
 			continue
 		}
 		if entry.RunsIn != nil && entry.Uses == nil {
-			return fmt.Errorf("job %q: step %q uses the removed step-level runsIn: — re-apply the job after migrating to container: (see docs/migration-2026-07-job-isolation.md)", jobName, entry.Name)
+			return fmt.Errorf("job %q: step %q uses the removed step-level runsIn: — set step-level container: (referencing a podTemplate container) instead", jobName, entry.Name)
 		}
 	}
 	return nil

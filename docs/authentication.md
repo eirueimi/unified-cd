@@ -138,9 +138,7 @@ as another identity or write a run claimed by another agent.
   from an agent request.
 
 Admin lifecycle endpoints are under `/api/v1/agent-enrollments`,
-`/api/v1/agent-identities`, and `/api/v1/agent-enrollment-policies`. See
-[Migration: agent authentication](migration-agent-auth.md) for commands,
-rollout, recovery, exact failures, and removal of legacy mode.
+`/api/v1/agent-identities`, and `/api/v1/agent-enrollment-policies`.
 
 Production deployments must use HTTPS. The repository-root Compose setup is
 development-only. mTLS certificate authentication is future work and is not

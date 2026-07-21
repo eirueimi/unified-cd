@@ -191,7 +191,7 @@ keys below.
 | `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | One-time VM enrollment credential file. Required only until initial enrollment succeeds. |
 | `UNIFIED_AGENT_ID` | Agent identifier (defaults to hostname if not set) |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:docker,env:prod` |
-| `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps. **This is an allowlist, not an add-on.** A native (`spec.native: true`) step no longer inherits the agent's process environment at all — it only sees a minimal OS baseline (`PATH`, `HOME`, etc.) plus whatever is named here plus the orchestrator's own step env (`env:`, secrets). A variable a job used to read implicitly must be named here explicitly, or the step sees it as unset. Agent credentials (`UNIFIED_AGENT_TOKEN`, `UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`, `UNIFIED_TOKEN`) are dropped unconditionally even if named here — there is no way to expose them to a step. See [Migration: security hardening](migration-2026-07-security-hardening.md#1-step-environment-is-now-an-allowlist). |
+| `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps. **This is an allowlist, not an add-on.** A native (`spec.native: true`) step no longer inherits the agent's process environment at all — it only sees a minimal OS baseline (`PATH`, `HOME`, etc.) plus whatever is named here plus the orchestrator's own step env (`env:`, secrets). A variable a job used to read implicitly must be named here explicitly, or the step sees it as unset. Agent credentials (`UNIFIED_AGENT_TOKEN`, `UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`, `UNIFIED_TOKEN`) are dropped unconditionally even if named here — there is no way to expose them to a step. |
 | `UNIFIED_AGENT_WORKSPACE_DIR` | Base directory for run workspaces (default: `~/workspace`) |
 | `UNIFIED_AGENT_LOG_LEVEL` | Log level: `debug`, `info` (default), `warn`, `error` |
 | `UNIFIED_CACHE_ENDPOINT` | S3/MinIO endpoint for cache storage (env equivalent of `--cache-endpoint`) |
@@ -246,8 +246,8 @@ owner-only directory on startup, so only `enrollmentTokenFile` is strictly
 required on a fresh host. Keep both files owner-readable only and do not put
 either value in a command line. The
 controller, not this file, is authoritative for labels and capabilities. A
-`token` field or `UNIFIED_AGENT_TOKEN` is supported only for the temporary
-legacy shared-token migration described in [Migration: agent authentication](migration-agent-auth.md).
+`token` field or `UNIFIED_AGENT_TOKEN` is supported only for temporary
+legacy shared-token compatibility.
 
 Start with config file:
 

@@ -11,8 +11,7 @@ This guide walks you through installing unified-cd, running your first job, and 
 Separately, jobs are isolated by default: an unmarked job runs its steps inside a container, so
 the **agent host** also needs a container runtime (docker, podman, or nerdctl) to run jobs —
 unless a job opts out with `spec.native: true`. See [Job Isolation: `native` and the claim
-pod](jobs.md#job-isolation-native-and-the-claim-pod) and the [job-isolation migration
-guide](migration-2026-07-job-isolation.md) for the full model. This guide's examples use
+pod](jobs.md#job-isolation-native-and-the-claim-pod) for the full model. This guide's examples use
 `native: true` so you can follow along without installing a runtime first — see the callout in
 step 6.
 
@@ -33,6 +32,20 @@ make build
 #   go build -o bin/unified-cd-k8s-agent ./cmd/k8s-agent
 # or use its Docker image.
 ```
+
+Alternatively, install the agent binary directly from the module (no clone
+needed):
+
+```bash
+go install github.com/eirueimi/unified-cd/cmd/agent@latest   # or @vX.Y.Z
+```
+
+This installs the `agent` binary into `$(go env GOBIN)` (or `$(go env GOPATH)/bin` if `GOBIN` is unset). The
+controller and CLI can be installed the same way
+(`go install github.com/eirueimi/unified-cd/cmd/controller@latest`,
+`.../cmd/unified-cli@latest`). Elsewhere in this guide the agent is run as
+`./bin/unified-cd-agent` (the `make build` output name); substitute `agent`
+(or your renamed binary) if you installed it this way.
 
 ---
 
@@ -433,7 +446,6 @@ The UI lets you:
 | CLI commands and flags | [CLI Reference](cli.md) |
 | Environment variables and startup flags | [Configuration Reference](configuration.md) |
 | Authentication (human PATs/SSO and per-agent credentials) | [Authentication Guide](authentication.md) |
-| Shared-agent-token migration | [Migration: agent authentication](migration-agent-auth.md) |
 | Agent labels and routing | [Agent Labels and Routing](agents.md) |
 | Secrets management and encryption model | [Secrets Management Guide](secrets.md) |
 | Kubernetes pod-based agents | [Kubernetes Integration Guide](kubernetes-integration.md) |

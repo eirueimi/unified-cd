@@ -909,8 +909,7 @@ Manage an identity with `agent identity get|enable|disable|revoke-credentials
 Kubernetes workload enrollment. Create/update accepts `--cluster`, repeatable
 `--namespace` and `--service-account`, repeatable labels/capabilities,
 `--access-token-ttl` (5 minutes to 4 hours), and `--enabled`; it never accepts
-kubeconfig contents. See [Migration: agent authentication](migration-agent-auth.md)
-for the complete rollout and API paths.
+kubeconfig contents.
 
 ### agent list
 

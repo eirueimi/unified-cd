@@ -28,7 +28,7 @@ gain scheduling authority.
 `UNIFIED_AGENT_TOKEN` and YAML `token` are legacy compatibility inputs only.
 They require an explicitly configured controller
 `UNIFIED_AGENT_LEGACY_TOKEN`/`agentAuth.legacySharedToken`; neither setting
-uses `UNIFIED_TOKEN`. See [Migration: agent authentication](migration-agent-auth.md).
+uses `UNIFIED_TOKEN`.
 
 ## Table of Contents
 
@@ -323,18 +323,16 @@ agent has a real host filesystem, so it takes a simpler path:
    that tools directory **read-only** at `/.ucd`, the same reserved path the
    k8s-agent uses.
 3. **A zero-byte embed is a hard startup failure**, not a first-exec
-   surprise. The `ucd-sh` binary is embedded via a two-stage build (`go
-   generate`/`go:embed` can't cross-compile a second binary in one pass): a
-   freshly cloned or plain `go build`'d agent has an empty placeholder
-   embedded, and `InstallShim` refuses to start rather than let every
-   isolated job fail its first exec with an opaque "no such file" error.
-   Build the shim in with **`make embed-shim`** (bundled into `make build`)
-   or **`scripts/build-shims.sh`** (used by the release pipeline) before
-   starting the agent. The failure is logged and the process exits
-   immediately:
+   surprise. The `ucd-sh` binary is embedded from the committed, generated
+   `internal/shim/embedded/ucd-sh-<arch>` bytes (produced by `go generate
+   ./internal/shim/embedded/`).
+   If that file is missing or truncated, `InstallShim` refuses to start
+   rather than let every isolated job fail its first exec with an opaque "no
+   such file" error. Regenerate with `go generate ./internal/shim/embedded/`
+   and rebuild. The failure is logged and the process exits immediately:
 
    ```
-   install ucd-sh shim failed error="ucd-sh shim is not embedded in this agent binary (0 bytes): build with `make embed-shim` (or `make build`), or run scripts/build-shims.sh, before starting the agent"
+   install ucd-sh shim failed error="ucd-sh shim is not embedded in this agent binary (0 bytes): the committed internal/shim/embedded/ucd-sh-<arch> is missing or empty — run `go generate ./internal/shim/embedded/` and rebuild before starting the agent"
    ```
 
 This check runs alongside — but independently of — the Windows Git Bash

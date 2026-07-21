@@ -63,10 +63,6 @@ request secret names the run's own spec declares, or it gets `403 secret not
 needed by this run` (see [Secrets: Access
 control](secrets.md#access-control)).
 
-See [Migration: agent authentication](migration-agent-auth.md) and
-[Migration: security hardening](migration-2026-07-security-hardening.md) for
-the rollout and the legacy-mode retirement check.
-
 ### OIDC role resolution config
 
 Add to the controller `oidc:` config:

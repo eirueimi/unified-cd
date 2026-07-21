@@ -1073,11 +1073,9 @@ this is checked at apply time. See [Kubernetes Pod Template
 (`podTemplate`)](#kubernetes-pod-template-podtemplate) below for the
 container fields the standard agent understands.
 
-> **Migrating from step-level `runsIn.image`/`runsIn.container`:** those
-> forms are gone. A step-level `runsIn:` key is now a parse error with a
-> migration hint. See [the migration
-> guide](migration-2026-07-job-isolation.md) for the mapping to `podTemplate`
-> + `container:` (or a `uses:` template — see below). The **uses-level**
+> **Step-level `runsIn.image`/`runsIn.container` are removed.** A step-level
+> `runsIn:` key is now a parse error with a hint to use `podTemplate` +
+> `container:` (or a `uses:` template — see below). The **uses-level**
 > `runsIn.image` (a scope spanning an entire inlined template) is unaffected
 > and still works exactly as before — see the next section.
 

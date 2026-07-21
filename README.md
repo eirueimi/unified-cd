@@ -19,7 +19,7 @@ An open-source CI/CD tool (Jenkins alternative) written in Go.
 ---
 
 Per-agent enrollment gives every VM and Kubernetes agent independently
-revocable credentials. See [Migration: per-agent authentication](docs/migration-agent-auth.md).
+revocable credentials.
 
 ## Installation
 
@@ -74,6 +74,14 @@ Pre-built binaries for Linux, macOS, and Windows (amd64/arm64) are available on 
 # Example: Linux amd64
 curl -L https://github.com/eirueimi/unified-cd/releases/latest/download/unified-cli_linux_amd64.tar.gz | tar xz
 sudo mv unified-cli /usr/local/bin/
+```
+
+Or install from source with Go:
+
+```bash
+go install github.com/eirueimi/unified-cd/cmd/agent@latest       # agent  → $GOBIN/agent
+go install github.com/eirueimi/unified-cd/cmd/controller@latest  # controller
+go install github.com/eirueimi/unified-cd/cmd/unified-cli@latest # CLI
 ```
 
 ---
@@ -185,11 +193,6 @@ CLI / Browser / Webhook
 - **[Audit Log Guide](docs/audit.md)** — what's recorded/excluded, `GET /api/v1/audit`, `audit list`, retention
 - **[Frontend Development Guide](docs/frontend-development.md)** — Svelte + Vite setup, hot reload, routing
 - **[Troubleshooting](docs/troubleshooting.md)** — symptom-indexed fixes for common failures
-- **[Migration: job-level isolation](docs/migration-2026-07-job-isolation.md)** — upgrading to isolated-by-default jobs, `native: true`, and the removal of step-level `runsIn:`
-- **[Migration: agent capability routing](docs/migration-2026-07-agent-capability-routing.md)** — agent `capabilities`, the `pod` capability replacing the old `kubernetes`-label pin, and rolling upgrades
-- **[Migration: per-agent authentication](docs/migration-agent-auth.md)** — VM/Kubernetes enrollment, independent credential revocation, and shared-token retirement
-- **[Migration: `shell:` field, `ucd-sh` shim](docs/migration-2026-07-step-shell-shim.md)** — `bash -lc`/`sh -c` defaults replaced by the injected `ucd-sh` shim, the new `shell:` override field, and the `ucd-sh pause` keep-alive
-- **[Migration: secret scope removal](docs/migration-2026-07-secret-scope-removal.md)** — secrets are now name-only; upgrading clears existing secret rows and they must be re-set
 
 ### Infrastructure
 - **[Kubernetes Manifests](manifests/README.md)** — install manifests for production and evaluation
