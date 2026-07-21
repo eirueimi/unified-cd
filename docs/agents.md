@@ -318,7 +318,7 @@ agent has a real host filesystem, so it takes a simpler path:
 3. **A zero-byte embed is a hard startup failure**, not a first-exec
    surprise. The `ucd-sh` binary is embedded from the committed, generated
    `internal/shim/embedded/ucd-sh-<arch>` bytes (produced by `go generate
-   ./internal/shim/embedded/` — see [Getting Started](getting-started.md)).
+   ./internal/shim/embedded/`).
    If that file is missing or truncated, `InstallShim` refuses to start
    rather than let every isolated job fail its first exec with an opaque "no
    such file" error. Regenerate with `go generate ./internal/shim/embedded/`
