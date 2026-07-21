@@ -40,7 +40,7 @@ needed):
 go install github.com/eirueimi/unified-cd/cmd/agent@latest   # or @vX.Y.Z
 ```
 
-This installs `$(go env GOBIN)/agent` (the binary is named `agent`). The
+This installs the `agent` binary into `$(go env GOBIN)` (or `$(go env GOPATH)/bin` if `GOBIN` is unset). The
 controller and CLI can be installed the same way
 (`go install github.com/eirueimi/unified-cd/cmd/controller@latest`,
 `.../cmd/unified-cli@latest`). Elsewhere in this guide the agent is run as

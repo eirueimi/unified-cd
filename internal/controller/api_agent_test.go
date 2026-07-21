@@ -393,11 +393,11 @@ func TestAgentAPI_Claim_FailsRunWhenBuildClaimResponseErrors(t *testing.T) {
 	require.NotEmpty(t, lines)
 	found := false
 	for _, l := range lines {
-		if l.StepIndex == -1 && l.Stream == "stderr" && strings.Contains(l.Line, "re-apply") {
+		if l.StepIndex == -1 && l.Stream == "stderr" && strings.Contains(l.Line, "container:") {
 			found = true
 		}
 	}
-	assert.True(t, found, "expected a stepIndex -1 System log line with the migration hint, got: %+v", lines)
+	assert.True(t, found, "expected a stepIndex -1 System log line with the runsIn guidance, got: %+v", lines)
 
 	// Lock release on failure is exercised and asserted by failOrphanedRun's own
 	// tests (stuckrun_reaper_test.go); not re-verified here to avoid duplicating
@@ -585,7 +585,7 @@ func TestBuildClaimResponse_RejectsPreMigrationStepRunsIn(t *testing.T) {
 	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "runsIn")
-	assert.Contains(t, err.Error(), "re-apply")
+	assert.Contains(t, err.Error(), "container:")
 }
 
 // TestBuildClaimResponse_RejectsPreMigrationParallelStepRunsIn verifies the
@@ -602,7 +602,7 @@ func TestBuildClaimResponse_RejectsPreMigrationParallelStepRunsIn(t *testing.T) 
 	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "runsIn")
-	assert.Contains(t, err.Error(), "re-apply")
+	assert.Contains(t, err.Error(), "container:")
 }
 
 // TestBuildClaimResponse_RejectsPreMigrationFinallyStepRunsIn verifies the
@@ -619,7 +619,7 @@ func TestBuildClaimResponse_RejectsPreMigrationFinallyStepRunsIn(t *testing.T) {
 	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "runsIn")
-	assert.Contains(t, err.Error(), "re-apply")
+	assert.Contains(t, err.Error(), "container:")
 }
 
 // TestBuildClaimResponse_UsesStepRunsInStillBuilds verifies a uses: entry's

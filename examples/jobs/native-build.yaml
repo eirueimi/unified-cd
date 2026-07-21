@@ -15,8 +15,8 @@
 #
 # native jobs are host-only: route them away from k8s-agents (which cannot
 # run them at all) and onto host agents that actually have the toolchain,
-# via agentSelector. See docs/migration-2026-07-job-isolation.md and
-# docs/jobs.md#native-true--host-process-jobs for the full model.
+# via agentSelector. See docs/jobs.md#native-true--host-process-jobs for
+# the full model.
 apiVersion: unified-cd/v1
 kind: Job
 metadata:

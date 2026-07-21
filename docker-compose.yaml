@@ -14,8 +14,7 @@
 # below to issue the agent a one-time enrollment token on first startup; the
 # agent exchanges that for its own persistent, per-agent, revocable
 # credential file (kept in the agent-credentials volume), and re-enrollment
-# is skipped on later restarts because that file already exists. See
-# docs/migration-agent-auth.md for the full model.
+# is skipped on later restarts because that file already exists.
 #
 # After startup:
 #   CLI: export UNIFIED_SERVER=http://localhost:8080
@@ -168,8 +167,7 @@ services:
 
   # ---- agent enrollment (one-shot bootstrap) ----
   # Issues the docker agent a one-time enrollment token so it can bootstrap
-  # its own per-agent identity instead of the legacy shared UNIFIED_AGENT_TOKEN
-  # (see docs/migration-agent-auth.md). Uses the admin/CLI UNIFIED_TOKEN only
+  # its own per-agent identity. Uses the admin/CLI UNIFIED_TOKEN only
   # to call the enrollment API -- that admin token is never handed to the
   # agent itself.
   #
@@ -251,11 +249,10 @@ services:
       UNIFIED_AGENT_ID: docker-agent-1
       UNIFIED_AGENT_LABELS: kind:docker,pool:default
       DOCKER_HOST: tcp://dind:2375
-      # Step environments are an allowlist since the security-hardening change:
-      # a native step no longer inherits the agent process env, so DOCKER_HOST
-      # must be named here or `docker` in a step falls back to the unix socket
-      # (which does not exist here) and fails. See
-      # docs/migration-2026-07-security-hardening.md#1-step-environment-is-now-an-allowlist
+      # Step environments are an allowlist: a native step no longer inherits
+      # the agent process env, so DOCKER_HOST must be named here or `docker`
+      # in a step falls back to the unix socket (which does not exist here)
+      # and fails.
       UNIFIED_AGENT_EXPOSE_ENV: DOCKER_HOST
       UNIFIED_AGENT_WORKSPACE_DIR: /ucd-workspaces
       # cache: steps store archives in the bundled garage S3 (bucket is
