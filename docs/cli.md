@@ -826,70 +826,13 @@ See the [Authentication Guide](authentication.md) for full SSO setup details.
 
 ## agent
 
-Manage agents and install them as system services.
-
-### agent install
-
-```
-unified-cli agent install --server <url> --id <id> [OPTIONS]
-
-  --server  string   Controller URL (required)
-  --credential-file string   Protected VM refresh-credential file (default: $HOME/.unified-cd/<id>/credential.json)
-  --enrollment-token-file string  One-time enrollment-token file (required until first enrollment)
-  --id      string   Agent identifier (required)
-  --label   string   Agent label (repeatable, e.g. --label kind:linux)
-  --dir     string   Installation directory (default: ~/.unified-cd)
-```
-
-Installs the agent as a system service:
-- **Linux**: writes a `systemd` unit file to `<dir>/systemd/unified-cd-agent.service`
-- **macOS**: writes a `launchd` plist to `<dir>/launchd/dev.unified-cd.agent.plist`
-- **Windows**: prints manual Task Scheduler instructions
-
-```bash
-unified-cli agent install \
-  --server https://controller.example.invalid \
-  --id worker-01 \
-  --credential-file /var/lib/unified-cd-agent/credentials.json \
-  --enrollment-token-file /var/lib/unified-cd-agent/enrollment.token \
-  --label kind:linux \
-  --label env:prod \
-  --dir /opt/unified-cd
-```
-
-Create the one-time enrollment file first with `unified-cli agent enrollment
-create --agent-id worker-01 --output-file /var/lib/unified-cd-agent/enrollment.token`.
-The file is shown only once and the service rotates its VM refresh credential
-without placing plaintext credentials in its command line. `--token` is not an
-`agent install` option; `UNIFIED_AGENT_TOKEN` is reserved for explicitly
-enabled legacy shared-token migration.
-
-When `--credential-file` is omitted, both `agent install` and the agent runtime
-default it to `$HOME/.unified-cd/<id>/credential.json`, so a fresh host only
-needs `--server`, `--id`, and `--enrollment-token-file`.
-
-### agent uninstall
-
-```
-unified-cli agent uninstall [OPTIONS]
-
-  --dir     string   Installation directory (default: ~/.unified-cd)
-  --id      string   Agent identifier (required with --purge-credentials)
-  --purge-credentials  bool  Also delete the default $HOME/.unified-cd/<id>/ credential directory
-```
-
-Removes the files written by `agent install` (the `agent.yaml` and the
-platform service file under `<dir>`) and prints the commands to disable and
-remove an already-enabled service (`systemctl --user disable --now
-unified-cd-agent` on Linux, `launchctl unload ...` on macOS). Credentials are
-left in place unless `--purge-credentials --id <id>` is given, since they are
-independently revocable and deleting them is irreversible.
-
-```bash
-unified-cli agent uninstall --dir /opt/unified-cd
-# Fully remove, including the persisted refresh credential:
-unified-cli agent uninstall --id worker-01 --purge-credentials
-```
+Manage agents: issue enrollment credentials, and list, inspect, and monitor
+registered agents. The agent itself runs as a separate binary
+(`unified-cd-agent`), started directly or as a hand-configured system
+service — see [Agent Identity and Enrollment](agents.md#agent-identity-and-enrollment)
+and [Configuration Reference: Agent](configuration.md#agent) for how to run
+it, including the `--credential-file` default of
+`$HOME/.unified-cd/<id>/credential.json`.
 
 ### agent enrollment, identity, and enrollment-policy
 
@@ -903,6 +846,13 @@ unified-cli agent enrollment create --agent-id worker-01 \
 unified-cli agent enrollment list
 unified-cli agent enrollment revoke <enrollment-id>
 ```
+
+`enrollment create` prints the exact `unified-cd-agent --server ... --id ...
+--enrollment-token-file ...` command to run on the target host once the
+token file is in place — there is no separate install step. An enrolled
+agent's labels come from `--label` on `enrollment create` and are fixed for
+that agent's lifetime; the agent process's own `--labels` flag is ignored
+for enrolled agents (it only applies to legacy shared-token agents).
 
 Manage an identity with `agent identity get|enable|disable|revoke-credentials
 <agent-id>`. Use `agent enrollment-policy create|update|get|list|delete` for
@@ -978,20 +928,13 @@ token: dev-secret
 
 Override the path with `--config /path/to/config.yaml`.
 
-**Agent service config** — `~/.unified-cd/agent.yaml` (or `<dir>/agent.yaml` if
-`--dir` was passed), written by [`agent install`](#agent-install). Read by the
-`agent` service process, not by the `unified-cli` CLI commands above.
-
-```yaml
-server: http://localhost:8080
-agentId: worker-01
-credentialFile: /var/lib/unified-cd-agent/credentials.json
-enrollmentTokenFile: /var/lib/unified-cd-agent/enrollment.token
-binPath: /usr/local/bin/unified-cli
-labels:
-  - kind:linux
-  - env:prod
-```
+**Agent runtime config** — an optional YAML file (e.g. `unified-agent.yaml`)
+passed to the `unified-cd-agent` binary with `-f`, hand-written by whoever
+deploys the agent. Read by the `unified-cd-agent` process, not by any
+`unified-cli` command above. See [Configuration Reference: Agent Config
+File](configuration.md#agent-config-file) for the full field list, flag/env
+equivalents, and defaults — including `credentialFile`, which defaults to
+`$HOME/.unified-cd/<id>/credential.json` when left unset.
 
 ---
 

@@ -62,13 +62,12 @@ func TestAgentEnrollmentCreatePrintsNextAgentCommands(t *testing.T) {
 	cmd.SetArgs([]string{"enrollment", "create", "--agent-id", "vm-agent-01", "--label", "kind:linux", "--output-file", path})
 	require.NoError(t, cmd.Execute())
 	s := out.String()
-	assert.Contains(t, s, "unified-cli agent install")
+	assert.NotContains(t, s, "agent install")
 	assert.Contains(t, s, "unified-cd-agent")
 	assert.Contains(t, s, "--server http://fake")
 	assert.Contains(t, s, "--id vm-agent-01")
 	assert.Contains(t, s, "--enrollment-token-file "+path)
-	assert.Contains(t, s, "--label kind:linux")
-	assert.Contains(t, s, "--labels kind:linux")
+	assert.NotContains(t, s, "--label")
 	assert.Contains(t, s, "$HOME/.unified-cd/vm-agent-01/credential.json")
 	assert.NotContains(t, s, token) // token went to the file, not stdout
 
@@ -80,7 +79,7 @@ func TestAgentEnrollmentCreatePrintsNextAgentCommands(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(s, token))
 	assert.Contains(t, s, "Save this token to a private file")
 	assert.Contains(t, s, "<path-to-token-file>")
-	assert.Contains(t, s, "unified-cli agent install")
+	assert.NotContains(t, s, "agent install")
 	assert.Contains(t, s, "unified-cd-agent")
 }
 

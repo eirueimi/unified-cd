@@ -112,7 +112,7 @@ func TestTokenPromptLogin_Success(t *testing.T) {
 	// Verify config file written correctly
 	b, err := os.ReadFile(configPath)
 	require.NoError(t, err)
-	var cfg AgentConfig
+	var cfg Config
 	require.NoError(t, yaml.Unmarshal(b, &cfg))
 	assert.Equal(t, srv.URL, cfg.Server)
 	assert.Equal(t, "mytoken123", cfg.Token)

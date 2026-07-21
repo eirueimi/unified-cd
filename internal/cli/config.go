@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -29,6 +30,19 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	return c, nil
+}
+
+// SaveConfig writes configuration to a YAML file at the given path, creating
+// its parent directory if needed.
+func SaveConfig(path string, c Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
 
 // DefaultConfigPath returns the default configuration file path.

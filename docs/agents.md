@@ -15,9 +15,10 @@ short-lived; the rotating refresh credential remains in the protected file.
 `credentialFile` is optional: when unset, the agent defaults it to
 `$HOME/.unified-cd/<id>/credential.json` and creates that owner-only directory
 on startup, so a fresh VM only needs an enrollment-token file. `unified-cli
-agent enrollment create` prints the ready-to-run `agent install` and direct
-`unified-cd-agent` commands for the new agent, and `unified-cli agent
-uninstall` reverses an install.
+agent enrollment create` prints the ready-to-run `unified-cd-agent` command
+for the new agent; run it directly, or wrap it in a hand-written service
+definition — see [Running the agent as a
+service](#running-the-agent-as-a-service) below.
 
 Kubernetes agents instead prove their projected ServiceAccount token against a
 controller enrollment policy. The controller derives their ID from the verified
@@ -30,8 +31,78 @@ They require an explicitly configured controller
 `UNIFIED_AGENT_LEGACY_TOKEN`/`agentAuth.legacySharedToken`; neither setting
 uses `UNIFIED_TOKEN`.
 
+## Running the agent as a service
+
+There is no built-in "install as a service" command — enroll the agent
+(above), then point your platform's own service manager at the
+`unified-cd-agent` binary directly. Two minimal, hand-written examples:
+
+**systemd** (`~/.config/systemd/user/unified-cd-agent.service`):
+
+```ini
+[Unit]
+Description=unified-cd Agent (agent-1)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/unified-cd-agent --server=https://ci.example.com --id=agent-1 --enrollment-token-file=/var/lib/unified-cd-agent/enrollment.token
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Enable with:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now unified-cd-agent
+```
+
+**launchd** (`~/Library/LaunchAgents/dev.unified-cd.agent.plist`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.unified-cd.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/unified-cd-agent</string>
+    <string>--server=https://ci.example.com</string>
+    <string>--id=agent-1</string>
+    <string>--enrollment-token-file=/var/lib/unified-cd-agent/enrollment.token</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+```
+
+Load with `launchctl load ~/Library/LaunchAgents/dev.unified-cd.agent.plist`.
+
+Both examples omit `--credential-file`: it defaults to
+`$HOME/.unified-cd/<id>/credential.json` when unset, so nothing needs to be
+customized there for a fresh host. They also deliberately omit `--labels`:
+an enrolled agent's labels are fixed at enrollment time (`unified-cli agent
+enrollment create --label ...`), and the agent's own `--labels` flag is
+honored only for legacy shared-token agents — for an enrolled agent it is
+ignored, so passing it to the service would have no effect.
+
+On Windows, use Task Scheduler (or a wrapper such as NSSM or WinSW) to run
+`unified-cd-agent.exe` with the same flags at logon/boot; there is no
+first-party template for it.
+
 ## Table of Contents
 
+- [Running the agent as a service](#running-the-agent-as-a-service)
 - [Agent Labels](#agent-labels)
 - [agentSelector](#agentselector)
 - [Capabilities and routing](#capabilities-and-routing)

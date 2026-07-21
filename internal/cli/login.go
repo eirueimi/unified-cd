@@ -105,7 +105,7 @@ func newLoginCmd() *cobra.Command {
 			if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 				return err
 			}
-			if err := writeAgentConfig(configPath, AgentConfig{
+			if err := SaveConfig(configPath, Config{
 				Server: serverURL,
 				Token:  apiToken,
 			}); err != nil {
@@ -192,7 +192,7 @@ func tokenPromptLogin(cmd *cobra.Command, serverURL, configPath string) error {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return err
 	}
-	if err := writeAgentConfig(configPath, AgentConfig{
+	if err := SaveConfig(configPath, Config{
 		Server: serverURL,
 		Token:  token,
 	}); err != nil {
