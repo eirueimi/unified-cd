@@ -46,6 +46,9 @@ existing `schemagen`/`docgen` generators produce committed
 - **Binary name:** keep `cmd/agent`; `go install` yields a binary named
   `agent`. Document that name (not `unified-cd-agent`).
 - **Drift guard:** yes — a linux CI step regenerates and asserts no diff.
+- **Release-time shim:** do **not** regenerate at tag time; add a verify gate
+  to `release.yml` that fails the release if committed bytes are stale (keeps
+  the `go install` binary and the release tarball byte-identical).
 - **Module path:** the real module is `github.com/eirueimi/unified-cd` (the
   request's `github.com/unified-cd/...` does not resolve).
 
@@ -109,12 +112,22 @@ New Go program (portable — no shell, works from Windows dev machines), mirrori
 `cmd/schemagen` / `cmd/docgen` conventions:
 
 - Cross-compiles `./cmd/ucd-sh` for `linux/amd64` and `linux/arm64` via
-  `exec.Command("go", "build", ...)` with `GOOS`/`GOARCH`/`CGO_ENABLED=0` set
-  in the child env and `-trimpath`.
+  `exec.Command("go", "build", ...)`.
+- **Reproducibility flags are mandatory** — without them the drift guard goes
+  red on every commit / every machine:
+  - `CGO_ENABLED=0` (child env) — static build, no host libc/linker.
+  - `GOOS=linux`, `GOARCH=<amd64|arm64>` (child env).
+  - `-trimpath` — strips the builder's absolute module path from the binary.
+  - `-buildvcs=false` — **critical.** shimgen builds ucd-sh from inside the
+    git repo, so Go's default `buildvcs=auto` would stamp
+    `vcs.revision`/`vcs.time`/`vcs.modified` into the binary, changing the
+    bytes on *every commit*. This flag removes that stamp.
 - Writes to `internal/shim/embedded/ucd-sh-amd64` and `ucd-sh-arm64`
   (paths resolved relative to the module root, not CWD).
-- Deterministic: same toolchain + source → identical bytes (required for the
-  drift guard). `-trimpath` + `CGO_ENABLED=0` static build.
+- Deterministic: with the flags above and the go.mod-pinned toolchain, the
+  committed bytes change **only** when `cmd/ucd-sh`, its imports
+  (notably `internal/shim`), a dependency, or the Go toolchain version
+  actually change — exactly what the drift guard should catch.
 
 ### B3. `go:generate` directive
 
@@ -173,6 +186,24 @@ In `.github/workflows/ci.yml`:
 - The unrelated inline shim build in the `k8s` job (builds a throwaway
   `ucd-shim-test:ci` image) stays.
 
+### B7. Release-time verify gate
+
+`.github/workflows/release.yml` (tag-triggered goreleaser) must **not**
+regenerate the shim — the release tarball and `go install @tag` both read the
+same committed bytes, so they stay byte-identical. But a tag pushed onto a
+commit that never passed the PR/main drift guard could ship stale bytes.
+
+Add a verify (not regenerate) step before goreleaser runs:
+
+```bash
+go generate ./internal/shim/embedded/
+git diff --exit-code internal/shim/embedded/ucd-sh-amd64 internal/shim/embedded/ucd-sh-arm64
+```
+
+If the committed shim is stale at the tag, the release **fails** rather than
+silently shipping (or silently rewriting) mismatched bytes. This preserves the
+"committed bytes are the single source of truth" invariant.
+
 ## Part C — `go install` for the agent
 
 With Part B, `cmd/agent` compiles from the proxy-published module.
@@ -204,10 +235,13 @@ With Part B, `cmd/agent` compiles from the proxy-published module.
 
 ## Risks / notes
 
-- **Binary reproducibility:** cross-Go-version `go build` output can differ,
-  which could red the drift guard for a dev on a different Go patch. Mitigation:
-  the guard runs only in CI on the go.mod-pinned toolchain; local regen is
-  advisory (CI is source of truth). Documented in the `embed.go` comment.
+- **Binary reproducibility:** the committed bytes drift only on real changes to
+  `cmd/ucd-sh` / `internal/shim` / their deps / the Go toolchain version.
+  Spurious drift (VCS stamp, absolute paths, CGO) is eliminated by the B2 build
+  flags (`-buildvcs=false -trimpath CGO_ENABLED=0`) — **without `-buildvcs=false`
+  the guard reds on every commit.** Cross-Go-version output can still differ, so
+  the guard runs on the go.mod-pinned toolchain; local regen is advisory (CI /
+  the release gate are source of truth). Documented in the `embed.go` comment.
 - **Repo size:** two ~5 MB linux binaries enter git history and grow on every
   `cmd/ucd-sh` change. Accepted tradeoff for a working `go install`.
 - **Existing convention:** schemagen/docgen have no CI drift guard; we add one
