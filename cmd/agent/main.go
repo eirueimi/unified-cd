@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -144,6 +145,24 @@ func main() {
 		slog.Warn("using deprecated legacy shared agent token")
 		cli = agent.NewClient(*server, *token)
 	} else {
+		// When no credential file is configured (flag/env/config), default to
+		// $HOME/.unified-cd/<id>/credential.json and create its directory with
+		// owner-only permissions so writeCredentialFile's directory check
+		// passes on a fresh host. An explicit path is left untouched — the
+		// operator owns its directory in that case.
+		if *credentialFile == "" {
+			defaultPath, err := config.DefaultAgentCredentialFile(*id)
+			if err != nil {
+				slog.Error("resolve default credential file", "error", err)
+				os.Exit(1)
+			}
+			if err := os.MkdirAll(filepath.Dir(defaultPath), 0o700); err != nil {
+				slog.Error("create credential directory", "error", err)
+				os.Exit(1)
+			}
+			*credentialFile = defaultPath
+			slog.Info("using default credential file", "path", defaultPath)
+		}
 		credentialExists := false
 		if *credentialFile != "" {
 			if _, err := os.Stat(*credentialFile); err == nil {

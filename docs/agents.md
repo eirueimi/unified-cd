@@ -12,6 +12,13 @@ administrator, put it in a private file, and configure the agent with
 `credentialFile` and `enrollmentTokenFile`. Its access credential is
 short-lived; the rotating refresh credential remains in the protected file.
 
+`credentialFile` is optional: when unset, the agent defaults it to
+`$HOME/.unified-cd/<id>/credential.json` and creates that owner-only directory
+on startup, so a fresh VM only needs an enrollment-token file. `unified-cli
+agent enrollment create` prints the ready-to-run `agent install` and direct
+`unified-cd-agent` commands for the new agent, and `unified-cli agent
+uninstall` reverses an install.
+
 Kubernetes agents instead prove their projected ServiceAccount token against a
 controller enrollment policy. The controller derives their ID from the verified
 cluster, namespace, and Pod UID and assigns their permitted labels and

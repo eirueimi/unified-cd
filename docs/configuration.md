@@ -155,7 +155,7 @@ unified-cd-agent [FLAGS]
   -f                      string    Config file path (default: unified-agent.yaml if exists)
   --server                string    Controller URL (env: UNIFIED_SERVER)
   --token                 string    Legacy shared agent token only (env: UNIFIED_AGENT_TOKEN)
-  --credential-file       string    Protected VM refresh-credential file (env: UNIFIED_AGENT_CREDENTIAL_FILE)
+  --credential-file       string    Protected VM refresh-credential file (default: $HOME/.unified-cd/<id>/credential.json; env: UNIFIED_AGENT_CREDENTIAL_FILE)
   --enrollment-token-file string    One-time VM enrollment-token file (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)
   --id                    string    Agent identifier (default: hostname; env: UNIFIED_AGENT_ID)
   --labels                string    Comma-separated labels, e.g. "kind:linux,env:prod" (env: UNIFIED_AGENT_LABELS)
@@ -239,8 +239,12 @@ logLevel: info
 
 New VM agents need no `token` field. On first start, the agent consumes the
 one-time enrollment-token file and writes the refresh credential to
-`credentialFile`; later starts rotate that credential automatically. Keep both
-files owner-readable only and do not put either value in a command line. The
+`credentialFile`; later starts rotate that credential automatically. When
+`credentialFile` is left unset (no flag, env, or config value), the agent
+defaults it to `$HOME/.unified-cd/<id>/credential.json` and creates that
+owner-only directory on startup, so only `enrollmentTokenFile` is strictly
+required on a fresh host. Keep both files owner-readable only and do not put
+either value in a command line. The
 controller, not this file, is authoritative for labels and capabilities. A
 `token` field or `UNIFIED_AGENT_TOKEN` is supported only for temporary
 legacy shared-token compatibility.
