@@ -67,8 +67,15 @@ Currently prints two options ("install the agent as a service:
 - Drop the "install the agent as a service" sentence and the
   `unified-cli agent install …` block, and the `installLabels` builder.
 - Keep and lead with the direct-run block (`unified-cd-agent --server … --id …
-  --enrollment-token-file …` + `directLabels`) and the trailing
+  --enrollment-token-file …`) and the trailing
   "The credential file defaults to $HOME/.unified-cd/<id>/credential.json."
+- **Drop `--labels` from the direct-run command** and remove the `labels`
+  parameter from `nextAgentCommands` entirely. Rationale (verified): the server
+  overrides an enrolled agent's advertised labels with the enrollment-bound
+  `AuthorizedLabels` (`api_agent.go`: `if principal.AuthMethod != "legacy" {
+  labels = principal.AuthorizedLabels }`); the runtime `--labels` flag is
+  honored only for legacy shared-token agents, so showing it for the enrollment
+  (modern) flow is misleading. Labels are set at enrollment via `--label`.
 - Simplify the intro wording (no "either … or …"): e.g. when no token file is
   known, "Save this token to a private file on the agent host, then run the
   agent:"; otherwise "Next, on the agent host, run the agent:".
