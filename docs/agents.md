@@ -21,7 +21,7 @@ gain scheduling authority.
 `UNIFIED_AGENT_TOKEN` and YAML `token` are legacy compatibility inputs only.
 They require an explicitly configured controller
 `UNIFIED_AGENT_LEGACY_TOKEN`/`agentAuth.legacySharedToken`; neither setting
-uses `UNIFIED_TOKEN`. See [Migration: agent authentication](migration-agent-auth.md).
+uses `UNIFIED_TOKEN`.
 
 ## Table of Contents
 

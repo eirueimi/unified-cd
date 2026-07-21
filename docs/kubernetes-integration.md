@@ -81,9 +81,8 @@ On k8s this was already native `corev1.Container` behavior and is
 unchanged. On the standard agent, this is a **breaking change** from the
 previous behavior, where `command` and `args` were merged into one
 positional `CMD` override and the image's `ENTRYPOINT` always ran
-regardless of `command` — see the [migration
-guide](migration-2026-07-host-entrypoint-parity.md) if a job relied on the
-old merge behavior.
+regardless of `command`; a job that relied on that merge behavior should set
+`command`/`args` explicitly to match the per-field semantics described above.
 
 **On both backends, the primary `job` container's own image `ENTRYPOINT`
 is always ignored**, regardless of any `command`/`args` a `podTemplate` sets

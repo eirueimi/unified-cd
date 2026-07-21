@@ -124,7 +124,7 @@ runtimes, sidecar behavior). The schema-level surface is small:
 |---|---|
 | `spec.native` | `true` opts the whole job out of isolation: every step runs as a host process, exactly like pre-isolation behavior. Host-agent only (a k8s-agent fails a `native: true` claim fast). Mutually exclusive with `podTemplate` and any step `container:` (apply-time errors). |
 | `podTemplate` | Sidecar container definitions for an isolated job. Full PodSpec is k8s-agent only; the standard agent reads `spec.containers` (name/image/env/`resources.limits`) to build its claim pod — see [Kubernetes Pod Template (`podTemplate`)](jobs.md#kubernetes-pod-template-podtemplate) in the Job Reference. |
-| `step.container` | Exec into a named `podTemplate` container instead of the job's primary container. Requires a `podTemplate` defining that container name (checked at apply time for isolated jobs). This is the **canonical** field for targeting a container — the old step-level `runsIn: { image / container }` is **removed**; see the [migration guide](migration-2026-07-job-isolation.md). |
+| `step.container` | Exec into a named `podTemplate` container instead of the job's primary container. Requires a `podTemplate` defining that container name (checked at apply time for isolated jobs). This is the **canonical** field for targeting a container — the old step-level `runsIn: { image / container }` is **removed**. |
 
 Resource limits for a `podTemplate` container (previously `runsIn.resources`)
 now live directly on the container definition, matching Kubernetes:

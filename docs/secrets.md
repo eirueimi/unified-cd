@@ -182,8 +182,7 @@ from the run's stored spec and rejects any requested secret name outside it with
 is deliberately generic — it doesn't confirm or deny whether the requested secret exists,
 so the endpoint can't be used to enumerate the store). An agent holding a valid
 credential for a run cannot use it to read secrets that run's own spec doesn't
-reference — see [Troubleshooting](#troubleshooting) and [Migration: security
-hardening](migration-2026-07-security-hardening.md#3-secret-fetch-is-limited-to-the-runs-declared-secrets).
+reference — see [Troubleshooting](#troubleshooting).
 
 ```
 Write {{ secrets.X }} in env/run of the Job YAML
