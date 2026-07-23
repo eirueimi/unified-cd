@@ -13,7 +13,7 @@ the next branches off `main`):
 |----|-------|-----------|
 | **A** | Rename `cmd/agent` → `cmd/unified-cd-agent` (fix binary-name drift) | — |
 | **B** | Fix: re-enrollment ignores changed labels; Feature: pass the enrollment token inline (not only via file) | — |
-| **C** | Remove the legacy shared-token agent auth path entirely | — |
+| **C** | Remove ALL legacy agent auth: the VM shared-token path AND the Kubernetes static-token (`--secret`/`UNIFIED_K8S_SECRET`) path | — |
 | **D** | Capabilities become auto-detected only (drop admin-set enrollment capabilities) | C |
 
 A and B are independent of everything. C simplifies the register/authorization
@@ -126,13 +126,21 @@ can be handed to the agent without a file step.
 
 ---
 
-## PR C — Remove the legacy shared-token agent auth path
+## PR C — Remove ALL legacy agent auth (VM shared-token + k8s static-token)
 
-**Why:** legacy shared-token auth is already off-by-default (controller must set
-`UNIFIED_AGENT_LEGACY_TOKEN`), deprecated (runtime warning), inherently weaker
-(a shared secret that "proves nothing about which physical agent is calling"),
-and restricted (no secret access). Removing it makes enrollment the single auth
-model and collapses every `AuthMethod == "legacy"` special case.
+**Why:** both legacy agent-auth paths are deprecated, off-by-default, migration-only,
+and inherently weaker than the enrollment paths. Removing them makes enrollment
+(VM) and workload/projected-ServiceAccount enrollment (k8s) the ONLY agent auth
+models and collapses every `AuthMethod == "legacy"` special case.
+
+**A precise removal map is produced by the mapping audit
+(`.superpowers/sdd/legacy-auth-removal-map.md`) — the plan must follow it.**
+
+### C1 — VM legacy shared-token
+
+Already off-by-default (controller must set `UNIFIED_AGENT_LEGACY_TOKEN`),
+deprecated (runtime warning), a shared secret that "proves nothing about which
+physical agent is calling", and restricted (no secret access).
 
 **Changes (verify complete via repo-wide scan):**
 - `internal/controller/agent_auth.go`: delete the legacy branch (the
@@ -159,9 +167,37 @@ model and collapses every `AuthMethod == "legacy"` special case.
   shared-token request is now rejected (unauthorized), and that agent
   self-declared labels are ignored (only authorized labels apply).
 
-**Behavior change / breaking:** any deployment still using the shared token
-breaks; accepted (deprecated, off-by-default, migration-only). k8s agents use
-kubernetes enrollment and are unaffected.
+### C2 — Kubernetes legacy static-token
+
+The k8s agent's `--secret` / `UNIFIED_K8S_SECRET` static-token mode (and the
+`UNIFIED_K8S_AGENT_ID` legacy static-token identity) — the counterpart of the VM
+shared token, retained "only for an explicit legacy static-token migration".
+Workload enrollment via the projected ServiceAccount token (audience
+`unified-cd-agent-enrollment`) is the modern path and STAYS.
+
+**Changes (follow the removal map):**
+- `cmd/k8s-agent/main.go`: remove `--secret` flag, `UNIFIED_K8S_SECRET` env, and
+  the static-token file reading; the agent uses only the projected-SA
+  enrollment path.
+- Controller: remove the static-token authorization branch for k8s agents (the
+  path that accepts a pre-shared secret instead of verifying the SA token).
+- Config: remove `UNIFIED_K8S_SECRET`, the `token`/`agentId` legacy-static YAML
+  fields for k8s, `UNIFIED_K8S_AGENT_ID`.
+- Docs: `docs/configuration.md` (the k8s legacy static-token sections),
+  manifests notes.
+- Tests: delete/adjust k8s static-token tests; assert static-token k8s auth is
+  now rejected.
+
+**Scope guard:** do NOT touch workload/projected-SA enrollment, `UNIFIED_TOKEN`
+(the human admin PAT — unrelated), the "legacy null-caps" capability semantics,
+"legacy data records", or "legacy job re-key" — those are different concepts.
+
+**No DB schema change** is expected for C (verify via the removal map; flag if
+any legacy-auth column/row surfaces).
+
+**Behavior change / breaking:** any deployment still using the VM shared token
+or the k8s static token breaks; accepted (both deprecated, off-by-default,
+migration-only).
 
 ---
 
