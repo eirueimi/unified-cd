@@ -26,7 +26,7 @@ func TestPhase2_StepOutputs(t *testing.T) {
 	}
 
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -93,7 +93,7 @@ func TestPhase2_Mutex(t *testing.T) {
 	}
 
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -173,7 +173,7 @@ func TestPhase2_Semaphores(t *testing.T) {
 	}
 
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -241,7 +241,7 @@ func TestPhase2_CallStep(t *testing.T) {
 	}
 
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()

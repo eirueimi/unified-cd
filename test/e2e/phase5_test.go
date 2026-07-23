@@ -31,7 +31,7 @@ func newControllerWithKM(t *testing.T) (*controller.Server, *store.Postgres, *ht
 	t.Helper()
 	pg := store.NewTestPostgres(t)
 	km := testKM(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	srv.SetKeyManager(km)
 	httpSrv := httptest.NewServer(srv.Router())

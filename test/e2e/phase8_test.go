@@ -102,7 +102,7 @@ func mockIdP(t *testing.T, privateKey *rsa.PrivateKey, sub, email string) *httpt
 
 func TestPhase8_OIDCConfig_NotConfigured(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -115,7 +115,7 @@ func TestPhase8_OIDCConfig_NotConfigured(t *testing.T) {
 
 func TestPhase8_OIDCConfig_WithoutSecret(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	srv.SetOIDCConfig(&controller.OIDCConfig{Issuer: "https://example.com", ClientID: "cid"})
 	httpSrv := httptest.NewServer(srv.Router())
@@ -132,7 +132,7 @@ func TestPhase8_OIDCConfig_WithoutSecret(t *testing.T) {
 
 func TestPhase8_OIDCConfig_WithSecret(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	srv.SetOIDCConfig(&controller.OIDCConfig{Issuer: "https://example.com", ClientID: "cid", ClientSecret: "secret"})
 	httpSrv := httptest.NewServer(srv.Router())
@@ -155,7 +155,7 @@ func TestPhase8_FullOIDCFlow(t *testing.T) {
 	defer idpSrv.Close()
 
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	km := newTestKeyManager(t)
 	srv.SetKeyManager(km)
@@ -214,7 +214,7 @@ func TestPhase8_FullOIDCFlow(t *testing.T) {
 
 func TestPhase8_PATAndSessionCoexist(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "static-token", LegacyAgentToken: "static-token"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "static-token"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "static-token"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
