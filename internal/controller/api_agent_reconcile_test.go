@@ -58,7 +58,8 @@ func TestAPI_AgentReconcile_FailsOrphanedRunsAndCascades(t *testing.T) {
 	// Link parent→child the same way a call: step does.
 	require.NoError(t, pg.UpsertStepReport(ctx, parent.ID, 0, 0, "call-step", "", "Running", nil, nil, nil, child.ID, "childjob"))
 
-	rec := reconcilePost(s, "agent-1", "agent-secret")
+	agentToken := issueAgentAccessForTest(t, pg, "agent-1", nil, nil)
+	rec := reconcilePost(s, "agent-1", agentToken)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	var body map[string]int
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
@@ -75,7 +76,7 @@ func TestAPI_AgentReconcile_FailsOrphanedRunsAndCascades(t *testing.T) {
 	assert.Equal(t, api.RunRunning, got.Status, "another agent's run must be untouched")
 
 	// Idempotent: nothing left to fail.
-	rec = reconcilePost(s, "agent-1", "agent-secret")
+	rec = reconcilePost(s, "agent-1", agentToken)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Equal(t, 0, body["failedRuns"])

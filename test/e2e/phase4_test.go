@@ -23,7 +23,7 @@ func TestPhase4_AgentLabelFilter(t *testing.T) {
 		t.Skip("phase 4 is linux/mac only")
 	}
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -33,7 +33,8 @@ func TestPhase4_AgentLabelFilter(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	// linux-only agent
-	linuxAgent := agent.NewWithLabels("linux-1", []string{"kind:linux"}, agent.NewClient(httpSrv.URL, "t"))
+	linuxToken := issueAgentAccessTokenWithLabels(t, pg, "linux-1", []string{"kind:linux"}, nil)
+	linuxAgent := agent.NewWithLabels("linux-1", []string{"kind:linux"}, agent.NewClient(httpSrv.URL, linuxToken))
 	go func() { _ = linuxAgent.Run(ctx) }()
 
 	// k8s-only job
@@ -80,7 +81,7 @@ func TestPhase4_AnyAgentRun(t *testing.T) {
 		t.Skip("phase 4 is linux/mac only")
 	}
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -89,7 +90,9 @@ func TestPhase4_AnyAgentRun(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.NewWithLabels("agent-any", []string{"kind:linux", "pool:default"}, agent.NewClient(httpSrv.URL, "t"))
+	anyLabels := []string{"kind:linux", "pool:default"}
+	anyToken := issueAgentAccessTokenWithLabels(t, pg, "agent-any", anyLabels, nil)
+	ag := agent.NewWithLabels("agent-any", anyLabels, agent.NewClient(httpSrv.URL, anyToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	yamlJob := `
@@ -133,7 +136,7 @@ func TestPhase4_LabeledAgentClaimsLabeledRun(t *testing.T) {
 		t.Skip("phase 4 is linux/mac only")
 	}
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -143,7 +146,9 @@ func TestPhase4_LabeledAgentClaimsLabeledRun(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	// k8s-labeled agent (simulated, not a real k8s agent — just uses the same label)
-	k8sAgent := agent.NewWithLabels("k8s-sim-1", []string{"kind:kubernetes", "pool:build"}, agent.NewClient(httpSrv.URL, "t"))
+	k8sLabels := []string{"kind:kubernetes", "pool:build"}
+	k8sToken := issueAgentAccessTokenWithLabels(t, pg, "k8s-sim-1", k8sLabels, nil)
+	k8sAgent := agent.NewWithLabels("k8s-sim-1", k8sLabels, agent.NewClient(httpSrv.URL, k8sToken))
 	go func() { _ = k8sAgent.Run(ctx) }()
 
 	k8sJob := `

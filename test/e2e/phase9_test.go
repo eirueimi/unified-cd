@@ -56,7 +56,7 @@ func TestPhase9_ParallelSteps(t *testing.T) {
 
 	pg := store.NewTestPostgres(t)
 	const tok = "test-token"
-	srv := controller.NewServer(controller.Config{Token: tok, LegacyAgentToken: tok}, pg)
+	srv := controller.NewServer(controller.Config{Token: tok}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, tok))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -65,7 +65,8 @@ func TestPhase9_ParallelSteps(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.NewWithLabels("agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, tok))
+	agentToken := issueAgentAccessTokenWithLabels(t, pg, "agent-1", []string{"kind:test"}, nil)
+	ag := agent.NewWithLabels("agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	applyJobPhase9(t, httpSrv.URL, tok, `
@@ -118,7 +119,7 @@ func TestPhase9_ParallelRunsToCompletion(t *testing.T) {
 
 	pg := store.NewTestPostgres(t)
 	const tok = "test-token"
-	srv := controller.NewServer(controller.Config{Token: tok, LegacyAgentToken: tok}, pg)
+	srv := controller.NewServer(controller.Config{Token: tok}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, tok))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -127,7 +128,8 @@ func TestPhase9_ParallelRunsToCompletion(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.NewWithLabels("agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, tok))
+	agentToken := issueAgentAccessTokenWithLabels(t, pg, "agent-1", []string{"kind:test"}, nil)
+	ag := agent.NewWithLabels("agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	applyJobPhase9(t, httpSrv.URL, tok, `
@@ -178,7 +180,7 @@ func TestPhase9_ContinueOnError(t *testing.T) {
 
 	pg := store.NewTestPostgres(t)
 	const tok = "test-token"
-	srv := controller.NewServer(controller.Config{Token: tok, LegacyAgentToken: tok}, pg)
+	srv := controller.NewServer(controller.Config{Token: tok}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, tok))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -187,7 +189,8 @@ func TestPhase9_ContinueOnError(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.NewWithLabels("agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, tok))
+	agentToken := issueAgentAccessTokenWithLabels(t, pg, "agent-1", []string{"kind:test"}, nil)
+	ag := agent.NewWithLabels("agent-1", []string{"kind:test"}, agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	applyJobPhase9(t, httpSrv.URL, tok, `

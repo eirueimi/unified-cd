@@ -224,7 +224,7 @@ in the database any more.
 |----------|----------------|
 | `UNIFIED_CONTROLLER_KEY_FILE` / `UNIFIED_KMS_URI` | **Same key on all replicas** (see above) |
 | `UNIFIED_DB_DSN` | Must point to the HA PostgreSQL endpoint (primary or pooler) |
-| `UNIFIED_TOKEN` | Same on all replicas (admin static token). Same applies to agent `UNIFIED_AGENT_TOKEN` |
+| `UNIFIED_TOKEN` | Same on all replicas (admin static token) |
 | `UNIFIED_S3_*` | All replicas must point to the same S3/Garage |
 | `UNIFIED_OIDC_*` | Same on all replicas when SSO is used (see [Authentication Guide](authentication.md)) |
 
@@ -346,7 +346,8 @@ for the policy and setup unified-cd itself requires.
 The k8s agent runs active-active: the install manifests default to
 `replicas: 2`. This is safe without leader election because run claiming is
 atomic (`FOR UPDATE SKIP LOCKED`), each pod registers under its own agent ID
-(`UNIFIED_K8S_AGENT_ID` from the Downward API), scope pods use
+(derived by the controller from the pod's verified enrollment identity —
+cluster, namespace, and Pod UID — during workload enrollment), scope pods use
 `generateName`, and pod GC only touches pods whose runs are terminal or
 absent. During a *full* k8s-agent outage (for example a node-pool upgrade
 taking every replica down), queued runs are failed once they have waited

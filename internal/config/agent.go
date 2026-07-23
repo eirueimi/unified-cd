@@ -32,7 +32,6 @@ func DefaultAgentCredentialFile(id string) (string, error) {
 // Populated from a YAML file via LoadAgent; zero-value fields mean "not set".
 type AgentConfig struct {
 	Server              string `yaml:"server"`
-	Token               string `yaml:"token"`
 	CredentialFile      string `yaml:"credentialFile"`
 	EnrollmentTokenFile string `yaml:"enrollmentTokenFile"`
 	// EnrollmentToken is a one-time secret and is intentionally not a YAML
@@ -93,7 +92,6 @@ func LoadAgent(path string) (*AgentConfig, error) {
 func AgentEffective(filePath string) (*AgentConfig, error) {
 	eff := &AgentConfig{
 		Server:              os.Getenv("UNIFIED_SERVER"),
-		Token:               os.Getenv("UNIFIED_AGENT_TOKEN"),
 		CredentialFile:      os.Getenv("UNIFIED_AGENT_CREDENTIAL_FILE"),
 		EnrollmentTokenFile: os.Getenv("UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE"),
 		EnrollmentToken:     os.Getenv("UNIFIED_AGENT_ENROLLMENT_TOKEN"),
@@ -139,9 +137,6 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.Server != "" {
 		eff.Server = file.Server
-	}
-	if file.Token != "" {
-		eff.Token = file.Token
 	}
 	if file.CredentialFile != "" {
 		eff.CredentialFile = file.CredentialFile

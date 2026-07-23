@@ -28,7 +28,7 @@ func TestMatrixSmoke(t *testing.T) {
 	}
 
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -37,7 +37,8 @@ func TestMatrixSmoke(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, "t"))
+	agentToken := issueAgentAccessToken(t, pg, "agent-e2e")
+	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	// os x arch = 4 combinations, minus one exclude = 3 expected variants.

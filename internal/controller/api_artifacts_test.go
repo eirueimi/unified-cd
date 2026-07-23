@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,30 +33,56 @@ func TestArtifactUpload_RejectsUnsafeName(t *testing.T) {
 }
 
 // newArtifactTestServer returns a Server whose router is wired and whose objStore
-// is a usable local object store, plus the agent token. Unlike newTestServer (which
-// wires a real Postgres test DB), this keeps the DB nil since these tests only
-// exercise object-store + agent-token paths.
-func newArtifactTestServer(t *testing.T) (*Server, string) {
+// is a usable local object store. Unlike newTestServer (which wires a real
+// Postgres test DB), this keeps the DB nil since these tests only exercise
+// object-store-only paths.
+//
+// A nil store means s.agentAuth's uca_ branch itself always 503s ("authentication
+// unavailable") before ever reaching a handler — there is no credential to look
+// up. So a real HTTP round trip through s.Router() can never exercise a handler's
+// own behavior against a nil store. Tests that need that (handleArtifactUpload's
+// nil-store fail-closed check, and handleArtifactList/handleArtifactDownload,
+// neither of which touch s.store at all) call the handler directly via
+// artifactPrincipalRequest instead, bypassing the HTTP auth layer on purpose —
+// they are about the handler, not about auth. Tests that ARE about auth
+// rejection (TestArtifactDownload_RejectsNoAuth, TestArtifactUpload_RejectsNonAgentToken)
+// still go through s.r.ServeHTTP for a real round trip.
+func newArtifactTestServer(t *testing.T) *Server {
 	t.Helper()
-	agentToken := "agent-secret"
-	s := NewServer(Config{LegacyAgentToken: agentToken}, nil)
+	s := NewServer(Config{}, nil)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
-	return s, agentToken
+	return s
+}
+
+// artifactPrincipalRequest builds a request pre-authenticated as an agent
+// principal, with the given chi URL params attached exactly as the router
+// would inject them — for invoking an artifact handler function directly,
+// skipping s.Router()'s auth middleware (see newArtifactTestServer).
+func artifactPrincipalRequest(method, target string, body io.Reader, params map[string]string) *http.Request {
+	req := httptest.NewRequest(method, target, body)
+	req = withAgentPrincipal(req, AgentPrincipal{AgentID: "artifact-test-agent", AuthMethod: "bearer"})
+	rctx := chi.NewRouteContext()
+	for k, v := range params {
+		rctx.URLParams.Add(k, v)
+	}
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 }
 
 func TestArtifact_ObjectStoreNil_Upload_Returns503(t *testing.T) {
-	s, _ := newTestServer(t)
+	s, st := newTestServer(t)
+	token := issueAgentAccessForTest(t, st, "objstore-nil-agent", nil, nil)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/run1/artifacts/myartifact", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
 func TestArtifact_ObjectStoreNil_Download_Returns503(t *testing.T) {
-	s, _ := newTestServer(t)
+	s, st := newTestServer(t)
+	token := issueAgentAccessForTest(t, st, "objstore-nil-agent", nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run1/artifacts/myartifact", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
@@ -72,11 +100,10 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 	run, err := st.CreateRun(t.Context(), "artifact-roundtrip-job", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 
-	// The upload route has no {agentId} path segment, so a legacy shared-token
-	// caller can never present a matching claimed_by identity and is always
-	// rejected now (see handleArtifactUpload) — this round trip must upload
-	// as the agent that actually claimed the run, via a real per-agent
-	// credential, exactly like a migrated agent would.
+	// The upload route has no {agentId} path segment, so the ownership check
+	// is made directly against the AgentID carried by the caller's credential
+	// (see handleArtifactUpload) — this round trip must upload as the agent
+	// that actually claimed the run, via a real per-agent credential.
 	ownerToken := issueAgentAccessForTest(t, st, "artifact-owner", nil, nil)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)
@@ -94,9 +121,10 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 	s.Router().ServeHTTP(uploadRec, uploadReq)
 	require.Equal(t, http.StatusNoContent, uploadRec.Code, uploadRec.Body.String())
 
-	// Download
+	// Download. Listing/download carry no ownership check, so any valid
+	// agent credential works here — reuse the owner's token.
 	downloadReq := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/artifacts/myartifact", nil)
-	downloadReq.Header.Set("Authorization", "Bearer agent-secret")
+	downloadReq.Header.Set("Authorization", "Bearer "+ownerToken)
 	downloadRec := httptest.NewRecorder()
 	s.Router().ServeHTTP(downloadRec, downloadReq)
 	require.Equal(t, http.StatusOK, downloadRec.Code, downloadRec.Body.String())
@@ -135,10 +163,9 @@ func TestArtifactList_ReturnsNames(t *testing.T) {
 			t.Fatalf("put %s: %d (%s)", name, rr.Code, rr.Body.String())
 		}
 	}
-	// list with the legacy agent token (combined auth accepts it; listing
-	// carries no ownership check)
+	// list — listing carries no ownership check, so the owner's token works fine.
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/artifacts", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
 	rr := httptest.NewRecorder()
 	s.Router().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -162,20 +189,20 @@ func TestArtifactList_ReturnsNames(t *testing.T) {
 // object store but no run store must refuse artifact uploads outright (503),
 // not silently skip the ownership check and accept the upload from anyone.
 func TestArtifactUpload_NilStore_FailsClosed(t *testing.T) {
-	s, agentToken := newArtifactTestServer(t)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/run1/artifacts/build", strings.NewReader("x"))
-	req.Header.Set("Authorization", "Bearer "+agentToken)
+	s := newArtifactTestServer(t)
+	req := artifactPrincipalRequest(http.MethodPut, "/api/v1/runs/run1/artifacts/build", strings.NewReader("x"),
+		map[string]string{"runID": "run1", "name": "build"})
 	rr := httptest.NewRecorder()
-	s.Router().ServeHTTP(rr, req)
+	s.handleArtifactUpload(rr, req)
 	assert.Equal(t, http.StatusServiceUnavailable, rr.Code, rr.Body.String())
 }
 
 func TestArtifactList_EmptyIsArrayNotNull(t *testing.T) {
-	s, agentToken := newArtifactTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/empty/artifacts", nil)
-	req.Header.Set("Authorization", "Bearer "+agentToken)
+	s := newArtifactTestServer(t)
+	req := artifactPrincipalRequest(http.MethodGet, "/api/v1/runs/empty/artifacts", nil,
+		map[string]string{"runID": "empty"})
 	rr := httptest.NewRecorder()
-	s.r.ServeHTTP(rr, req)
+	s.handleArtifactList(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("list: %d", rr.Code)
 	}
@@ -185,7 +212,7 @@ func TestArtifactList_EmptyIsArrayNotNull(t *testing.T) {
 }
 
 func TestArtifactDownload_RejectsNoAuth(t *testing.T) {
-	s, _ := newArtifactTestServer(t)
+	s := newArtifactTestServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run1/artifacts/build", nil)
 	rr := httptest.NewRecorder()
 	s.r.ServeHTTP(rr, req)
@@ -195,7 +222,7 @@ func TestArtifactDownload_RejectsNoAuth(t *testing.T) {
 }
 
 func TestArtifactUpload_RejectsNonAgentToken(t *testing.T) {
-	s, _ := newArtifactTestServer(t)
+	s := newArtifactTestServer(t)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/run1/artifacts/build", strings.NewReader("x"))
 	req.Header.Set("Authorization", "Bearer not-the-agent-token")
 	rr := httptest.NewRecorder()
@@ -205,13 +232,12 @@ func TestArtifactUpload_RejectsNonAgentToken(t *testing.T) {
 	}
 }
 
-// TestArtifactUpload_RejectsLegacyPrincipal proves the legacy shared-token
-// bypass this fix closes: the upload route has no {agentId} path segment, so
-// a legacy caller can never present a matching claimed_by identity and must
-// now be rejected for every run, claimed or not — the same fail-closed
-// outcome as the secrets-fetch path, reached via the shared ownership guard
-// instead of an explicit legacy check.
-func TestArtifactUpload_RejectsLegacyPrincipal(t *testing.T) {
+// TestArtifactUpload_RejectsMismatchedOwnerPrincipal proves the upload route
+// has no {agentId} path segment, so a bearer caller whose identity does not
+// match the run's claimed_by must always be rejected, claimed or not — the
+// same fail-closed outcome as the secrets-fetch path, reached via the shared
+// ownership guard.
+func TestArtifactUpload_RejectsMismatchedOwnerPrincipal(t *testing.T) {
 	s, st := newTestServer(t)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 	_, err := st.UpsertJob(t.Context(), "artifact-legacy-reject", "unified-cd/v1", []byte(`{"steps":[]}`))
@@ -220,12 +246,13 @@ func TestArtifactUpload_RejectsLegacyPrincipal(t *testing.T) {
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)
-	claimed, err := st.ClaimNextRun(t.Context(), "legacy-claimer", nil)
+	claimed, err := st.ClaimNextRun(t.Context(), "run-claimer", nil)
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID)
 
+	strangerToken := issueAgentAccessForTest(t, st, "stranger", nil, nil)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/build", strings.NewReader("x"))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+strangerToken)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 
@@ -255,11 +282,11 @@ func TestArtifactUpload_RejectsNonOwnerPrincipal(t *testing.T) {
 }
 
 func TestArtifactDownload_MissingArtifact_Returns404(t *testing.T) {
-	s, agentToken := newArtifactTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run1/artifacts/nope", nil)
-	req.Header.Set("Authorization", "Bearer "+agentToken)
+	s := newArtifactTestServer(t)
+	req := artifactPrincipalRequest(http.MethodGet, "/api/v1/runs/run1/artifacts/nope", nil,
+		map[string]string{"runID": "run1", "name": "nope"})
 	rr := httptest.NewRecorder()
-	s.r.ServeHTTP(rr, req)
+	s.handleArtifactDownload(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("missing-artifact download = %d, want 404 (body=%q)", rr.Code, rr.Body.String())
 	}

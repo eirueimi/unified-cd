@@ -33,7 +33,7 @@ func (f *fakeGuardStore) GetRun(ctx context.Context, id string) (*api.Run, error
 }
 
 func guardServer(st store.Store) *Server {
-	return NewServer(Config{LegacyAgentToken: "agent-secret"}, st)
+	return NewServer(Config{}, st)
 }
 
 func TestAgentRunGuard_Verdicts(t *testing.T) {
@@ -118,10 +118,10 @@ func TestAgentRunGuard_NilCacheIsSafe(t *testing.T) {
 	assert.Equal(t, 2, st.getCalls)
 }
 
-// newGuardFixture wires a real (test-Postgres-backed) Server with the legacy
-// shared token "agent-secret" configured, matching the fixture pattern used
-// by the PR #63 legacy-agent tests elsewhere in this package (see
-// api_agent_test.go's newTestServer / claimRunForTest).
+// newGuardFixture wires a real (test-Postgres-backed) Server, matching the
+// fixture pattern used elsewhere in this package (see api_agent_test.go's
+// newTestServer / claimRunForTest). Callers mint per-agent uca_ credentials
+// via issueAgentAccessForTest rather than relying on any shared token.
 func newGuardFixture(t *testing.T) (*Server, store.Store) {
 	t.Helper()
 	return newTestServer(t)
@@ -143,34 +143,35 @@ func mustCreateClaimedRun(t *testing.T, srv *Server, agentID string) string {
 	return run.ID
 }
 
-// postStepReportAsLegacy posts a step report to /api/v1/agents/{pathAgentID}/steps
-// using the legacy shared token, exactly as TestAgentAPI_ReportStep does.
-func postStepReportAsLegacy(t *testing.T, srv *Server, pathAgentID, runID string) *httptest.ResponseRecorder {
+// postStepReportAsAgent posts a step report to /api/v1/agents/{pathAgentID}/steps
+// using a freshly-minted uca_ access token bound to pathAgentID, exactly as
+// TestAgentAPI_ReportStep does for enrolled agents.
+func postStepReportAsAgent(t *testing.T, srv *Server, st store.Store, pathAgentID, runID string) *httptest.ResponseRecorder {
 	t.Helper()
+	token := issueAgentAccessForTest(t, st, pathAgentID, nil, nil)
 	body, err := json.Marshal(api.StepReportRequest{
 		RunID: runID, StepIndex: 0, Status: "Running", StartedAt: time.Now(),
 	})
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/"+pathAgentID+"/steps", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	srv.Router().ServeHTTP(rec, req)
 	return rec
 }
 
-func TestAgentRunGuard_AppliesToLegacyPrincipal(t *testing.T) {
-	// A legacy (shared-token) caller must not be able to write to a run it did
-	// not claim. Compatibility mode keeps such agents CONNECTED; it must not
-	// exempt them from run ownership.
-	srv, _ := newGuardFixture(t)
+func TestAgentRunGuard_AppliesToBearerPrincipal(t *testing.T) {
+	// A bearer-authenticated caller must not be able to write to a run it did
+	// not claim, regardless of how it authenticated.
+	srv, st := newGuardFixture(t)
 	claimedRun := mustCreateClaimedRun(t, srv, "agent-a")
 	otherRun := mustCreateClaimedRun(t, srv, "agent-b")
 
-	rr := postStepReportAsLegacy(t, srv, "agent-a", otherRun)
-	assert.Equal(t, http.StatusForbidden, rr.Code, "legacy caller must not write to another agent's run")
+	rr := postStepReportAsAgent(t, srv, st, "agent-a", otherRun)
+	assert.Equal(t, http.StatusForbidden, rr.Code, "bearer caller must not write to another agent's run")
 
-	rr = postStepReportAsLegacy(t, srv, "agent-a", claimedRun)
-	assert.Less(t, rr.Code, 400, "legacy caller must still write to the run it claimed")
+	rr = postStepReportAsAgent(t, srv, st, "agent-a", claimedRun)
+	assert.Less(t, rr.Code, 400, "bearer caller must still write to the run it claimed")
 }
 
 func TestClaimedByCache_EvictsPastCap(t *testing.T) {

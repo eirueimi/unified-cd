@@ -52,7 +52,7 @@ func TestPhase3_LogArchival(t *testing.T) {
 	pg := store.NewTestPostgres(t)
 	obj := objectstore.NewLocalObjectStore(t.TempDir())
 
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	srv.SetObjectStore(obj)
 	httpSrv := httptest.NewServer(srv.Router())
@@ -63,7 +63,7 @@ func TestPhase3_LogArchival(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 	go controller.RunLogArchiver(ctx, pg, obj, 200*time.Millisecond)
 
-	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, "t"))
+	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-e2e")))
 	go func() { _ = ag.Run(ctx) }()
 
 	yamlJob := `
@@ -128,7 +128,7 @@ func TestPhase3_SSE(t *testing.T) {
 		t.Skip("phase 3 is linux/mac only")
 	}
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -137,7 +137,7 @@ func TestPhase3_SSE(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.New("agent-sse", agent.NewClient(httpSrv.URL, "t"))
+	ag := agent.New("agent-sse", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-sse")))
 	go func() { _ = ag.Run(ctx) }()
 
 	yamlJob := `
@@ -199,7 +199,7 @@ func TestPhase3_BulkLogPush(t *testing.T) {
 		t.Skip("phase 3 is linux/mac only")
 	}
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -208,7 +208,7 @@ func TestPhase3_BulkLogPush(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.New("agent-bulk", agent.NewClient(httpSrv.URL, "t"))
+	ag := agent.New("agent-bulk", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-bulk")))
 	go func() { _ = ag.Run(ctx) }()
 
 	yamlJob := `

@@ -21,11 +21,10 @@ import (
 
 // Config holds the configuration for the master server.
 type Config struct {
-	Token            string
-	LegacyAgentToken string
-	ListenAddr       string
-	WebDir           string // Directory for static web files. When empty, /ui/* returns 404.
-	UIProxyTarget    string // URL of the Vite dev server to proxy /ui/* to when WebDir is not set (e.g. http://vite:5173). When empty, /ui/* returns 404.
+	Token         string
+	ListenAddr    string
+	WebDir        string // Directory for static web files. When empty, /ui/* returns 404.
+	UIProxyTarget string // URL of the Vite dev server to proxy /ui/* to when WebDir is not set (e.g. http://vite:5173). When empty, /ui/* returns 404.
 
 	// MatrixMaxCombinations caps matrix step expansion; 0 means the default (64).
 	MatrixMaxCombinations int

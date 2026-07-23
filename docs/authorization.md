@@ -31,37 +31,32 @@ Each caller gets a role:
 
 - **PAT**: stored per-token (`role` column). Created via the API, clamped to ≤ the creator's role. The bootstrap `UNIFIED_TOKEN` PAT is always **admin** (break-glass).
 - **OIDC (SSO login / id_token)**: resolved from token claims via configuration (below).
-- **Agent principal**: separate from human roles. New agents authenticate with
-  a short-lived per-agent access credential; controller-issued identity labels
-  and capabilities are authoritative. The legacy shared token, when explicitly
-  configured, is temporary compatibility only.
+- **Agent principal**: separate from human roles. Every agent authenticates
+  with a short-lived per-agent access credential (`uca_...`) obtained via
+  enrollment; controller-issued identity labels and capabilities are
+  authoritative.
 
 ## Agent authorization boundaries
 
-A non-legacy credential is bound to one immutable `agentId`. The controller
+An agent credential is bound to one immutable `agentId`. The controller
 rejects a differing route/body ID with `agent identity mismatch` (403), and
 preserves the run's immutable `claimed_by` check for writes. An agent cannot
 grant itself scheduling labels or capabilities. Administrators manage
 one-time VM enrollments, Kubernetes enrollment policies, and identity enable,
 disable, and credential revocation through the agent lifecycle API/CLI.
 
-**Legacy shared-token agents are guarded by the same per-run ownership
-check, not exempted from it.** Every write to a run — step reports, log
+**Every write to a run is guarded by the same per-run ownership check,
+applied uniformly to every bearer (enrolled) agent.** Step reports, log
 lines, step/run outputs, sidecar status, finishing the run, and artifact
-uploads — is checked against that run's `claimed_by`, whether the caller
-presents a per-agent credential or the legacy shared token. A write to a run
+uploads are all checked against that run's `claimed_by`. A write to a run
 the caller did not claim under the agent ID it presents gets `403 run <id>
 is claimed by another agent`. The artifact-upload route has no per-agent
-path segment for a legacy caller to bind an identity to, so a legacy shared
-token can never satisfy that check there: **every legacy artifact upload is
-unconditionally rejected with 403** (which fails the step and the run,
-absent `continueOnError`), regardless of which run it targets. A fleet with
-legacy agents that upload artifacts must migrate those agents to per-agent
-enrollment credentials before running jobs with `uploadArtifact:` steps.
-Secret fetch is fenced the same way for every principal: an agent can only
-request secret names the run's own spec declares, or it gets `403 secret not
-needed by this run` (see [Secrets: Access
-control](secrets.md#access-control)).
+path segment, so the ownership guard is applied against the `agentId` carried
+by the caller's own credential: an agent whose ID does not match the run's
+`claimed_by` gets `403`, exactly like every other run-write path. Secret
+fetch is fenced the same way for every principal: an agent can only request
+secret names the run's own spec declares, or it gets `403 secret not needed
+by this run` (see [Secrets: Access control](secrets.md#access-control)).
 
 ### OIDC role resolution config
 

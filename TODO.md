@@ -109,7 +109,7 @@
 
 - **分類:** 可用性ギャップ。標準エージェント・k8s-agent 共通(= いわゆる「k8s-agent の HA 化」の本丸)。設計から要検討(brainstorm → spec → plan)。
 - **現状の整理(コード確認済み):**
-  - **水平スケール自体は既に成立** — 実行は `ClaimNextRun` = `FOR UPDATE SKIP LOCKED`(`internal/store/postgres.go:486`)で二重 claim なし。k8s-agent は `UNIFIED_K8S_AGENT_ID`(pod 名)で各レプリカが一意 ID を持てる。→ Deployment replicas>1 で片方が死んでも残りが claim 継続。
+  - **水平スケール自体は既に成立** — 実行は `ClaimNextRun` = `FOR UPDATE SKIP LOCKED`(`internal/store/postgres.go:486`)で二重 claim なし。k8s-agent は(当時のconfig入力だった静的識別子。2026-07 legacy-auth 除去後は enrollment 由来の AgentID)各レプリカが一意 ID を持てる。→ Deployment replicas>1 で片方が死んでも残りが claim 継続。
   - **ギャップ:** run は claim 時に `claimed_by` / `claimed_at` / status=`Running` を持ち(`postgres.go:500`)、agents には `last_seen_at` もあるが、**`Running` のまま取り残された run を失敗/再投入する reaper が存在しない**。既存 reaper は `RunScheduler`(Pending→queue)と `RunApprovalReaper`(承認 timeout)のみ。
   - **結果:** エージェントが実行中に死ぬと run は永久に `Running`。k8s では加えて **Pod がリーク**(agent の deferred `DeletePod` が走らない)。TODO #12(DB 消失で inventory ドリフト)と地続き。
 - **修正案(設計方針):**

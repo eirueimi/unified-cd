@@ -21,13 +21,14 @@ func TestAgentAPI_SidecarStatus(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	claimRunForTest(t, pg, "a1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	req := api.SidecarStatusRequest{RunID: run.ID, Name: "mysql", Index: 100, Phase: "running"}
 	body, _ := json.Marshal(req)
 	httpReq := httptest.NewRequest(http.MethodPost,
 		"/api/v1/agents/a1/runs/"+run.ID+"/sidecars",
 		bytes.NewReader(body))
-	httpReq.Header.Set("Authorization", "Bearer agent-secret")
+	httpReq.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, httpReq)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
@@ -49,13 +50,14 @@ func TestAgentAPI_SidecarStatus_UpsertsOnExit(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	claimRunForTest(t, pg, "a1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	post := func(req api.SidecarStatusRequest) {
 		body, _ := json.Marshal(req)
 		httpReq := httptest.NewRequest(http.MethodPost,
 			"/api/v1/agents/a1/runs/"+run.ID+"/sidecars",
 			bytes.NewReader(body))
-		httpReq.Header.Set("Authorization", "Bearer agent-secret")
+		httpReq.Header.Set("Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
 		s.Router().ServeHTTP(rec, httpReq)
 		require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())

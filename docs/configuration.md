@@ -154,7 +154,6 @@ unified-cd-agent [FLAGS]
 
   -f                      string    Config file path (default: unified-agent.yaml if exists)
   --server                string    Controller URL (env: UNIFIED_SERVER)
-  --token                 string    Legacy shared agent token only (env: UNIFIED_AGENT_TOKEN)
   --credential-file       string    Protected VM refresh-credential file (default: $HOME/.unified-cd/<id>/credential.json; env: UNIFIED_AGENT_CREDENTIAL_FILE)
   --enrollment-token-file string    One-time VM enrollment-token file (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)
   --id                    string    Agent identifier (default: hostname; env: UNIFIED_AGENT_ID)
@@ -186,12 +185,11 @@ keys below.
 | Variable | Description |
 |---|---|
 | `UNIFIED_SERVER` | Controller URL |
-| `UNIFIED_AGENT_TOKEN` | Legacy shared agent token only. New VM agents use a credential and one-time enrollment-token file; it must not be derived from `UNIFIED_TOKEN`. |
 | `UNIFIED_AGENT_CREDENTIAL_FILE` | Protected persistent VM refresh-credential file. Required for secure VM mode. |
 | `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | One-time VM enrollment credential file. Required only until initial enrollment succeeds. |
 | `UNIFIED_AGENT_ID` | Agent identifier (defaults to hostname if not set) |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:docker,env:prod` |
-| `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps. **This is an allowlist, not an add-on.** A native (`spec.native: true`) step no longer inherits the agent's process environment at all — it only sees a minimal OS baseline (`PATH`, `HOME`, etc.) plus whatever is named here plus the orchestrator's own step env (`env:`, secrets). A variable a job used to read implicitly must be named here explicitly, or the step sees it as unset. Agent credentials (`UNIFIED_AGENT_TOKEN`, `UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`, `UNIFIED_TOKEN`) are dropped unconditionally even if named here — there is no way to expose them to a step. |
+| `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps. **This is an allowlist, not an add-on.** A native (`spec.native: true`) step no longer inherits the agent's process environment at all — it only sees a minimal OS baseline (`PATH`, `HOME`, etc.) plus whatever is named here plus the orchestrator's own step env (`env:`, secrets). A variable a job used to read implicitly must be named here explicitly, or the step sees it as unset. Agent credentials (`UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`, `UNIFIED_TOKEN`) are dropped unconditionally even if named here — there is no way to expose them to a step. |
 | `UNIFIED_AGENT_WORKSPACE_DIR` | Base directory for run workspaces (default: `~/workspace`) |
 | `UNIFIED_AGENT_LOG_LEVEL` | Log level: `debug`, `info` (default), `warn`, `error` |
 | `UNIFIED_CACHE_ENDPOINT` | S3/MinIO endpoint for cache storage (env equivalent of `--cache-endpoint`) |
@@ -237,17 +235,16 @@ workspaceRetentionDays: 0      # >0 opts in to the periodic per-job workspace GC
 logLevel: info
 ```
 
-New VM agents need no `token` field. On first start, the agent consumes the
-one-time enrollment-token file and writes the refresh credential to
-`credentialFile`; later starts rotate that credential automatically. When
-`credentialFile` is left unset (no flag, env, or config value), the agent
-defaults it to `$HOME/.unified-cd/<id>/credential.json` and creates that
-owner-only directory on startup, so only `enrollmentTokenFile` is strictly
-required on a fresh host. Keep both files owner-readable only and do not put
-either value in a command line. The
-controller, not this file, is authoritative for labels and capabilities. A
-`token` field or `UNIFIED_AGENT_TOKEN` is supported only for temporary
-legacy shared-token compatibility.
+VM agents authenticate only via enrollment; there is no `token` config field.
+On first start, the agent consumes the one-time enrollment-token file and
+writes the refresh credential to `credentialFile`; later starts rotate that
+credential automatically. When `credentialFile` is left unset (no flag, env,
+or config value), the agent defaults it to
+`$HOME/.unified-cd/<id>/credential.json` and creates that owner-only
+directory on startup, so only `enrollmentTokenFile` is strictly required on
+a fresh host. Keep both files owner-readable only and do not put either
+value in a command line. The controller, not this file, is authoritative for
+labels and capabilities.
 
 Start with config file:
 
@@ -318,11 +315,10 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
 unified-cd-k8s-agent [FLAGS]
 
   --config       string   Config file path (env: UNIFIED_K8S_CONFIG)
-  --secret       string   Legacy static-token override file path (env: UNIFIED_K8S_SECRET)
   --log-level    string   Log level: debug, info, warn, error (env: UNIFIED_K8S_LOG_LEVEL)
 ```
 
-All agent settings live in the config file (`--config` / `UNIFIED_K8S_CONFIG`). The secure Kubernetes mode uses the projected ServiceAccount token mounted by the Pod; it does not need a Secret file. `--secret` / `UNIFIED_K8S_SECRET` remains only for an explicit legacy static-token migration.
+All agent settings live in the config file (`--config` / `UNIFIED_K8S_CONFIG`). The agent authenticates via the projected ServiceAccount token mounted by the Pod (workload enrollment); it does not need a Secret file.
 
 Kubernetes workload enrollment requires an `https://` controller URL. The controller process itself does not terminate TLS, so production deployments must provide this URL through an Ingress, load balancer, or service-mesh TLS gateway. Plain HTTP is accepted only for loopback local development, or when the configuration explicitly sets `allowInsecureHTTP: true`; the latter is reserved for intentional development-only deployments such as the bundled `install.yaml`.
 
@@ -416,8 +412,7 @@ podTemplates:
 | `server` | string | Yes | - | Controller base URL the agent claims runs from |
 | `enrollmentPolicy` | string | Yes (secure mode) | - | Controller policy used to exchange the projected ServiceAccount token. The controller assigns the canonical agent ID and authorized labels. |
 | `serviceAccountTokenFile` | string | No | `/var/run/secrets/unified-cd-agent/token` | Projected ServiceAccount token file. It is reread whenever the agent re-enrolls after access-token expiry. |
-| `token` | string | Legacy only | - | Explicit static-token compatibility mode. Requires `agentId`; do not use for new Kubernetes agents. |
-| `agentId` | string | Legacy only | - | Static-token agent identity. In workload enrollment mode the controller derives it from verified Kubernetes identity. |
+| `agentId` | string | No (runtime only) | - | Populated by the agent after enrollment from verified Kubernetes identity; not a config input. |
 | `labels` | []string | No | — | Agent labels matched against a Job's `agentSelector` |
 | `namespace` | string | No | `default` | Namespace the agent creates job/scope Pods in |
 | `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Fallback job-container image when no `podTemplate` is referenced. Bash-less/sh-less images work (`alpine`, busybox-based) — steps exec via the injected `ucd-sh` shim by default, not a shell the image must provide. Truly empty images (`scratch`, distroless-static) cannot run steps on the k8s agent: env application prepends the `env` binary, which they lack (exit 127). See [Job Reference: Shell (`shell:`)](jobs.md#shell-shell). |
@@ -431,9 +426,9 @@ podTemplates:
 | `poolIdleTimeout` | string | No | `0` (no reuse) | Go duration an idle pooled Pod is kept for reuse before teardown (e.g. `10m`) |
 | `podTemplates` | map | No | — | Named Pod templates referenced from Job YAML via `podTemplate.name` (see below) |
 
-The default agent Deployment projects a ServiceAccount token with audience `unified-cd-agent-enrollment` and mounts it read-only at `/var/run/secrets/unified-cd-agent`. Do not add a token Secret to that Deployment. A legacy `token` may be placed in `UNIFIED_K8S_SECRET` only during an explicit static-token migration.
+The default agent Deployment projects a ServiceAccount token with audience `unified-cd-agent-enrollment` and mounts it read-only at `/var/run/secrets/unified-cd-agent`. Do not add a token Secret to that Deployment.
 
-`UNIFIED_K8S_AGENT_ID` applies only to the legacy static-token identity. `UNIFIED_K8S_POD_START_TIMEOUT` and `UNIFIED_K8S_DRAIN_TIMEOUT` override their config fields in both modes.
+`UNIFIED_K8S_POD_START_TIMEOUT` and `UNIFIED_K8S_DRAIN_TIMEOUT` override their config fields.
 
 ### Pod template fields
 
@@ -506,6 +501,4 @@ UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/enrollment.token"
 
 Create the private enrollment-token file with `unified-cli agent enrollment
 create` before starting the VM agent. Production requires HTTPS; the
-repository-root Compose files are development-only. The legacy
-`UNIFIED_AGENT_TOKEN` input is not a substitute for this flow and must only be
-used with an explicit temporary `UNIFIED_AGENT_LEGACY_TOKEN` controller setting.
+repository-root Compose files are development-only.

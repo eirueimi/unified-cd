@@ -167,8 +167,7 @@ services:
 
   # ---- agent enrollment (one-shot bootstrap) ----
   # Issues the docker agent a one-time enrollment token so it can bootstrap
-  # its own per-agent identity instead of the legacy shared UNIFIED_AGENT_TOKEN.
-  # Uses the admin/CLI UNIFIED_TOKEN only
+  # its own per-agent, revocable identity. Uses the admin/CLI UNIFIED_TOKEN only
   # to call the enrollment API -- that admin token is never handed to the
   # agent itself.
   #

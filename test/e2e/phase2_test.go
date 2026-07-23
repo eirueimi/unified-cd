@@ -26,7 +26,7 @@ func TestPhase2_StepOutputs(t *testing.T) {
 	}
 
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -35,7 +35,8 @@ func TestPhase2_StepOutputs(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, "t"))
+	agentToken := issueAgentAccessToken(t, pg, "agent-e2e")
+	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, agentToken))
 	go func() { _ = ag.Run(ctx) }()
 
 	yamlJob := `
@@ -92,7 +93,7 @@ func TestPhase2_Mutex(t *testing.T) {
 	}
 
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -101,8 +102,8 @@ func TestPhase2_Mutex(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag1 := agent.New("agent-1", agent.NewClient(httpSrv.URL, "t"))
-	ag2 := agent.New("agent-2", agent.NewClient(httpSrv.URL, "t"))
+	ag1 := agent.New("agent-1", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-1")))
+	ag2 := agent.New("agent-2", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-2")))
 	go func() { _ = ag1.Run(ctx) }()
 	go func() { _ = ag2.Run(ctx) }()
 
@@ -172,7 +173,7 @@ func TestPhase2_Semaphores(t *testing.T) {
 	}
 
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -182,7 +183,8 @@ func TestPhase2_Semaphores(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	for i := 0; i < 3; i++ {
-		ag := agent.New(fmt.Sprintf("agent-%d", i), agent.NewClient(httpSrv.URL, "t"))
+		agentID := fmt.Sprintf("agent-%d", i)
+		ag := agent.New(agentID, agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, agentID)))
 		go func() { _ = ag.Run(ctx) }()
 	}
 
@@ -239,7 +241,7 @@ func TestPhase2_CallStep(t *testing.T) {
 	}
 
 	pg := store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -248,10 +250,14 @@ func TestPhase2_CallStep(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	// Start 2 agents (parent needs one, child needs another)
+	// Start 2 agents (parent needs one, child needs another). Either agent
+	// may claim the parent run and execute its `call:` step, so both need a
+	// token that also authenticates the internal child-run creation (see
+	// issueCallStepAgentToken).
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
-		ag := agent.New(fmt.Sprintf("agent-%d", i), agent.NewClient(httpSrv.URL, "t"))
+		agentID := fmt.Sprintf("agent-%d", i)
+		ag := agent.New(agentID, agent.NewClient(httpSrv.URL, issueCallStepAgentToken(t, pg, agentID)))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

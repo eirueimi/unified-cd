@@ -73,7 +73,7 @@ func TestGenerateState(t *testing.T) {
 
 func TestHandleMe_NoCookie(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := NewServer(Config{Token: "t"}, pg)
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
@@ -85,7 +85,7 @@ func TestHandleMe_NoCookie(t *testing.T) {
 
 func TestHandleMe_InvalidCookie(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := NewServer(Config{Token: "t"}, pg)
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
@@ -99,7 +99,7 @@ func TestHandleMe_InvalidCookie(t *testing.T) {
 
 func TestHandleMe_ValidSession(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := NewServer(Config{Token: "t"}, pg)
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
@@ -120,7 +120,7 @@ func TestHandleMe_ValidSession(t *testing.T) {
 
 func TestHandleLogout_ClearsSession(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := NewServer(Config{Token: "t"}, pg)
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
 
@@ -147,7 +147,7 @@ func TestHandleLogout_ClearsSession(t *testing.T) {
 
 func TestHandleOIDCLogin_NotConfigured(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := NewServer(Config{Token: "t"}, pg)
 	// OIDCConfig is not configured.
 	httpSrv := httptest.NewServer(srv.Router())
 	defer httpSrv.Close()
@@ -163,7 +163,7 @@ func TestHandleOIDCLogin_NotConfigured(t *testing.T) {
 
 func TestHandleOIDCLogin_NoClientSecret(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	srv := NewServer(Config{Token: "t", LegacyAgentToken: "t"}, pg)
+	srv := NewServer(Config{Token: "t"}, pg)
 	// No ClientSecret (CLI device flow only configuration).
 	srv.SetOIDCConfig(&OIDCConfig{Issuer: "https://example.com", ClientID: "cid"})
 	httpSrv := httptest.NewServer(srv.Router())

@@ -2,7 +2,6 @@ package k8sagent
 
 import (
 	"os"
-	"path/filepath"
 	"regexp"
 	"testing"
 	"time"
@@ -35,89 +34,31 @@ func writeTempYAML(t *testing.T, content string) string {
 func TestLoadConfig_ConfigOnly(t *testing.T) {
 	cfg := writeTempYAML(t, `
 server: http://localhost:8080
-agentId: agent-1
 labels:
   - kind:k8s
 namespace: ci
 maxConcurrent: 3
 podImage: alpine:3.20
-token: from-config
 `)
-	got, err := LoadConfig(cfg, "")
+	got, err := LoadConfig(cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got.Server != "http://localhost:8080" {
 		t.Errorf("Server = %q, want %q", got.Server, "http://localhost:8080")
 	}
-	if got.Token != "from-config" {
-		t.Errorf("Token = %q, want %q", got.Token, "from-config")
-	}
 	if got.MaxConcurrent != 3 {
 		t.Errorf("MaxConcurrent = %d, want 3", got.MaxConcurrent)
-	}
-}
-
-func TestLoadConfig_SecretOverridesToken(t *testing.T) {
-	cfg := writeTempYAML(t, `
-server: http://localhost:8080
-agentId: agent-1
-namespace: ci
-`)
-	secret := writeTempYAML(t, `
-token: secret-token
-`)
-	got, err := LoadConfig(cfg, secret)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Token != "secret-token" {
-		t.Errorf("Token = %q, want %q", got.Token, "secret-token")
-	}
-}
-
-func TestLoadConfig_MissingSecretFileIsSkipped(t *testing.T) {
-	cfg := writeTempYAML(t, `
-server: http://localhost:8080
-agentId: agent-1
-namespace: ci
-token: from-config
-`)
-	nonExistent := filepath.Join(t.TempDir(), "does-not-exist.yaml")
-	got, err := LoadConfig(cfg, nonExistent)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Token != "from-config" {
-		t.Errorf("Token = %q, want %q", got.Token, "from-config")
-	}
-}
-
-func TestLoadConfig_EmptySecretPathIsSkipped(t *testing.T) {
-	cfg := writeTempYAML(t, `
-server: http://localhost:8080
-agentId: agent-1
-namespace: ci
-token: from-config
-`)
-	got, err := LoadConfig(cfg, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Token != "from-config" {
-		t.Errorf("Token = %q, want %q", got.Token, "from-config")
 	}
 }
 
 func TestLoadConfig_SidecarS3SecretName(t *testing.T) {
 	cfg := writeTempYAML(t, `
 server: http://localhost:8080
-agentId: agent-1
 namespace: ci
-token: from-config
 sidecarS3SecretName: my-s3-secret
 `)
-	got, err := LoadConfig(cfg, "")
+	got, err := LoadConfig(cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -129,9 +70,8 @@ sidecarS3SecretName: my-s3-secret
 func TestLoadConfig_DefaultsApplied(t *testing.T) {
 	cfg := writeTempYAML(t, `
 server: http://localhost:8080
-agentId: agent-1
 `)
-	got, err := LoadConfig(cfg, "")
+	got, err := LoadConfig(cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,9 +135,8 @@ func TestDefaultConfig_ShimImage(t *testing.T) {
 // fallback Validate() already does for PodImage/SidecarImage.
 func TestValidate_ShimImageFallback(t *testing.T) {
 	cfg := Config{
-		Server:  "http://localhost:8080",
-		Token:   "t",
-		AgentID: "agent-1",
+		Server:           "http://localhost:8080",
+		EnrollmentPolicy: "p",
 		// ShimImage intentionally left zero-value.
 	}
 	if err := cfg.Validate(); err != nil {
@@ -213,10 +152,9 @@ func TestValidate_ShimImageFallback(t *testing.T) {
 // copy) with the default.
 func TestValidate_ShimImagePreserved(t *testing.T) {
 	cfg := Config{
-		Server:    "http://localhost:8080",
-		Token:     "t",
-		AgentID:   "agent-1",
-		ShimImage: "registry.internal/mirror/ucd-k8s-agent:v1",
+		Server:           "http://localhost:8080",
+		EnrollmentPolicy: "p",
+		ShimImage:        "registry.internal/mirror/ucd-k8s-agent:v1",
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -254,7 +192,7 @@ func TestDrainTimeoutDuration_DefaultAndParse(t *testing.T) {
 
 func TestValidate_MaxConcurrentDefaultAndUnlimited(t *testing.T) {
 	base := func() Config {
-		return Config{Server: "s", Token: "t", AgentID: "a"}
+		return Config{Server: "https://s", EnrollmentPolicy: "p"}
 	}
 	// 0 -> 100
 	c := base()
@@ -288,7 +226,7 @@ func TestValidate_MaxConcurrentDefaultAndUnlimited(t *testing.T) {
 func TestValidate_DurationEnvOverridesAndParseError(t *testing.T) {
 	t.Setenv("UNIFIED_K8S_POD_START_TIMEOUT", "42s")
 	t.Setenv("UNIFIED_K8S_DRAIN_TIMEOUT", "7s")
-	c := Config{Server: "s", Token: "t", AgentID: "a"}
+	c := Config{Server: "https://s", EnrollmentPolicy: "p"}
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -301,11 +239,11 @@ func TestValidate_DurationEnvOverridesAndParseError(t *testing.T) {
 }
 
 func TestValidate_DurationParseError(t *testing.T) {
-	bad := Config{Server: "s", Token: "t", AgentID: "a", PodStartTimeout: "not-a-duration"}
+	bad := Config{Server: "https://s", EnrollmentPolicy: "p", PodStartTimeout: "not-a-duration"}
 	if err := bad.Validate(); err == nil {
 		t.Fatal("expected Validate to reject an unparseable podStartTimeout")
 	}
-	badDrain := Config{Server: "s", Token: "t", AgentID: "a", DrainTimeout: "not-a-duration"}
+	badDrain := Config{Server: "https://s", EnrollmentPolicy: "p", DrainTimeout: "not-a-duration"}
 	if err := badDrain.Validate(); err == nil {
 		t.Fatal("expected Validate to reject an unparseable drainTimeout")
 	}
@@ -314,7 +252,6 @@ func TestValidate_DurationParseError(t *testing.T) {
 func TestKubernetesCredentialConfigAllowsAutomaticEnrollmentWithoutLegacyTokenOrAgentID(t *testing.T) {
 	c := Config{Server: "https://controller", EnrollmentPolicy: "cluster-agents"}
 	require.NoError(t, c.Validate())
-	assert.Empty(t, c.Token)
 	assert.Empty(t, c.AgentID)
 	assert.Equal(t, defaultServiceAccountTokenFile, c.ServiceAccountTokenFile)
 }

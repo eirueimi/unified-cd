@@ -25,8 +25,7 @@ import (
 
 // startArtifactController builds a controller Server backed by a real Postgres
 // store (like every other e2e test in this package) plus a local object
-// store, and a legacy agent token for auth on non-ownership routes (list,
-// download).
+// store.
 //
 // A store-less controller (object store, no Postgres) is not a configuration
 // that can occur in production (cmd/controller/main.go always wires a store),
@@ -36,19 +35,18 @@ import (
 // now mirrors production: a real store, a real claimed run, and a real
 // per-agent credential for the uploading agent, exactly like
 // TestArtifact_UploadDownload_RoundTrip in internal/controller/api_artifacts_test.go.
-func startArtifactController(t *testing.T) (baseURL, listenAgentToken string, pg *store.Postgres) {
+func startArtifactController(t *testing.T) (baseURL string, pg *store.Postgres) {
 	t.Helper()
-	const legacyAgentToken = "e2e-token"
 
 	pg = store.NewTestPostgres(t)
-	srv := controller.NewServer(controller.Config{Token: "t", LegacyAgentToken: legacyAgentToken}, pg)
+	srv := controller.NewServer(controller.Config{Token: "t"}, pg)
 	require.NoError(t, mustSeedBootstrapPAT(t, pg, "t"))
 	srv.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 
 	httpSrv := httptest.NewServer(srv.Router())
 	t.Cleanup(httpSrv.Close)
 
-	return httpSrv.URL, legacyAgentToken, pg
+	return httpSrv.URL, pg
 }
 
 // issueArtifactAgentAccessToken mints a real per-agent credential the same way
@@ -125,7 +123,7 @@ func TestArtifactRoundTrip(t *testing.T) {
 		t.Skip("e2e harness (dockertest postgres) is linux/mac only")
 	}
 
-	baseURL, legacyAgentToken, pg := startArtifactController(t)
+	baseURL, pg := startArtifactController(t)
 	ctx := context.Background()
 
 	// Seed a real job+run and claim it as the agent that will upload, so the
@@ -155,9 +153,9 @@ func TestArtifactRoundTrip(t *testing.T) {
 	putResp.Body.Close()
 
 	// 2. List and assert the name appears. Listing carries no ownership
-	// check, so the legacy shared token is fine here.
+	// check, so any valid agent credential is fine here.
 	listReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/runs/"+run.ID+"/artifacts", nil)
-	listReq.Header.Set("Authorization", "Bearer "+legacyAgentToken)
+	listReq.Header.Set("Authorization", "Bearer "+ownerToken)
 	listResp, err := http.DefaultClient.Do(listReq)
 	if err != nil || code(listResp) != http.StatusOK {
 		t.Fatalf("list: %v code=%d", err, code(listResp))
@@ -174,7 +172,7 @@ func TestArtifactRoundTrip(t *testing.T) {
 	// 3. Download and extract; assert content round-trips. Downloading also
 	// carries no ownership check.
 	getReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/runs/"+run.ID+"/artifacts/build", nil)
-	getReq.Header.Set("Authorization", "Bearer "+legacyAgentToken)
+	getReq.Header.Set("Authorization", "Bearer "+ownerToken)
 	getResp, err := http.DefaultClient.Do(getReq)
 	if err != nil || code(getResp) != http.StatusOK {
 		t.Fatalf("download: %v code=%d", err, code(getResp))

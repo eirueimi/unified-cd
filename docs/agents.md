@@ -40,11 +40,6 @@ cluster, namespace, and Pod UID and assigns their permitted labels and
 capabilities. A requested label is therefore only a request, never a way to
 gain scheduling authority.
 
-`UNIFIED_AGENT_TOKEN` and YAML `token` are legacy compatibility inputs only.
-They require an explicitly configured controller
-`UNIFIED_AGENT_LEGACY_TOKEN`/`agentAuth.legacySharedToken`; neither setting
-uses `UNIFIED_TOKEN`.
-
 ## Running the agent as a service
 
 There is no built-in "install as a service" command — enroll the agent
@@ -107,8 +102,7 @@ Both examples omit `--credential-file`: it defaults to
 customized there for a fresh host. They also deliberately omit `--labels`:
 an enrolled agent's labels are fixed at enrollment time (`unified-cli agent
 enrollment create --label ...`), and the agent's own `--labels` flag is
-honored only for legacy shared-token agents — for an enrolled agent it is
-ignored, so passing it to the service would have no effect.
+ignored for every agent, so passing it to the service would have no effect.
 
 On Windows, use Task Scheduler (or a wrapper such as NSSM or WinSW) to run
 `unified-cd-agent.exe` with the same flags at logon/boot; there is no

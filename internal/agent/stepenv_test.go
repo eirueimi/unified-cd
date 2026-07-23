@@ -20,7 +20,6 @@ func envMap(t *testing.T, env []string) map[string]string {
 }
 
 func TestStepEnv_ExcludesAgentCredentials(t *testing.T) {
-	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret")
 	t.Setenv("UNIFIED_CACHE_KEY", "ck")
 	t.Setenv("UNIFIED_CACHE_SECRET", "cs")
 	t.Setenv("UNIFIED_TOKEN", "ut")
@@ -29,7 +28,7 @@ func TestStepEnv_ExcludesAgentCredentials(t *testing.T) {
 
 	got := envMap(t, StepEnv(nil, nil))
 	for _, banned := range []string{
-		"UNIFIED_AGENT_TOKEN", "UNIFIED_CACHE_KEY", "UNIFIED_CACHE_SECRET",
+		"UNIFIED_CACHE_KEY", "UNIFIED_CACHE_SECRET",
 		"UNIFIED_TOKEN",
 		"UNIFIED_AGENT_CREDENTIAL_FILE", "UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE",
 	} {
@@ -52,10 +51,10 @@ func TestStepEnv_ExposeEnvAllowlisted(t *testing.T) {
 }
 
 func TestStepEnv_DenylistBeatsExposeEnv(t *testing.T) {
-	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret")
+	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret")
 	// An operator must not be able to foot-gun a credential into steps.
-	got := envMap(t, StepEnv([]string{"UNIFIED_AGENT_TOKEN"}, nil))
-	assert.NotContains(t, got, "UNIFIED_AGENT_TOKEN")
+	got := envMap(t, StepEnv([]string{"UNIFIED_CACHE_SECRET"}, nil))
+	assert.NotContains(t, got, "UNIFIED_CACHE_SECRET")
 }
 
 func TestStepEnv_ExtraEnvWins(t *testing.T) {

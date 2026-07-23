@@ -136,7 +136,6 @@ func TestK8sAgent_CacheRoundTrip_Integration(t *testing.T) {
 		ShimImage:           shimImage,
 		SidecarImage:        "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest",
 		Server:              srv.URL,
-		Token:               "tok",
 		SidecarS3SecretName: s3Secret,
 	}
 	a := NewK8sAgent(cfg, agentClient, pm, exec, pool)

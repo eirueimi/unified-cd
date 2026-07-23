@@ -137,7 +137,6 @@ The agent registers itself with the controller and starts polling for jobs.
 | `UNIFIED_SERVER` | Controller URL |
 | `UNIFIED_AGENT_CREDENTIAL_FILE` | Private file where the agent keeps its rotating VM refresh credential |
 | `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | Private one-time enrollment credential file, required only before first enrollment |
-| `UNIFIED_AGENT_TOKEN` | Legacy shared-token migration only; never set it from `UNIFIED_TOKEN` for a new agent |
 | `UNIFIED_AGENT_ID` | Unique agent identifier |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:linux,env:prod` |
 

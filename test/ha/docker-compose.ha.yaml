@@ -41,18 +41,100 @@ services:
       - controller2
       - controller3
 
-  agent1: &agent
+  # ---- agent enrollment (one-shot bootstrap) ----
+  # Agents no longer authenticate with a shared runtime token, so each of the
+  # two agents below needs its own one-time enrollment token and its own
+  # persistent, per-agent credential file. This builds from source
+  # (dev.Dockerfile, which has the Go toolchain) purely to run
+  # `unified-cli agent enrollment create` — the published agent image doesn't
+  # bundle the CLI. It retries against the LB for a while since, unlike the
+  # other services here, this one needs the controller to actually be
+  # accepting requests, not just started.
+  agent-enroll:
+    build:
+      context: ../..
+      dockerfile: docker/dev.Dockerfile
+    volumes:
+      - ../..:/app
+      - agent-credentials:/var/lib/unified-cd-agent
+    depends_on:
+      - nginx
+    environment:
+      UNIFIED_SERVER: http://nginx:8080
+      UNIFIED_TOKEN: ha-admin-token
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        for AGENTID in agent1 agent2; do
+          DIR=/var/lib/unified-cd-agent/$$AGENTID
+          mkdir -p "$$DIR"
+          if [ -f "$$DIR/credentials.json" ]; then
+            echo "agent-enroll: $$AGENTID already has a credential file, skipping"
+            continue
+          fi
+          rm -f "$$DIR/enrollment.token"
+          OK=0
+          for i in $$(seq 1 60); do
+            if go run -buildvcs=false ./cmd/unified-cli agent enrollment create \
+              --agent-id "$$AGENTID" --label kind:linux \
+              --expires-in 10m --output-file "$$DIR/enrollment.token"; then
+              OK=1
+              break
+            fi
+            echo "agent-enroll: controller not ready yet for $$AGENTID, retrying..."
+            sleep 2
+          done
+          if [ "$$OK" != "1" ]; then
+            echo "agent-enroll: controller never became ready for $$AGENTID" >&2
+            exit 1
+          fi
+          echo "agent-enroll: wrote enrollment token for $$AGENTID"
+        done
+    restart: "no"
+
+  agent1:
     build:
       context: ../..
       dockerfile: docker/agent.Dockerfile
+    volumes:
+      - agent-credentials:/var/lib/unified-cd-agent
     command:
       - "--server"
       - "http://nginx:8080"
-      - "--token"
-      - "ha-admin-token"
+      - "--id"
+      - "agent1"
+      - "--credential-file"
+      - "/var/lib/unified-cd-agent/agent1/credentials.json"
+      - "--enrollment-token-file"
+      - "/var/lib/unified-cd-agent/agent1/enrollment.token"
       - "--labels"
       - "kind:linux"
     depends_on:
-      - nginx
+      agent-enroll:
+        condition: service_completed_successfully
 
-  agent2: *agent
+  agent2:
+    build:
+      context: ../..
+      dockerfile: docker/agent.Dockerfile
+    volumes:
+      - agent-credentials:/var/lib/unified-cd-agent
+    command:
+      - "--server"
+      - "http://nginx:8080"
+      - "--id"
+      - "agent2"
+      - "--credential-file"
+      - "/var/lib/unified-cd-agent/agent2/credentials.json"
+      - "--enrollment-token-file"
+      - "/var/lib/unified-cd-agent/agent2/enrollment.token"
+      - "--labels"
+      - "kind:linux"
+    depends_on:
+      agent-enroll:
+        condition: service_completed_successfully
+
+volumes:
+  agent-credentials:
