@@ -108,6 +108,54 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ---- agent enrollment (one-shot bootstrap) ----
+  # Issues the agent a one-time enrollment token so it can bootstrap its own
+  # persistent, per-agent, revocable credential file (kept in the
+  # agent-credentials volume) instead of a shared runtime token. Builds from
+  # source (dev.Dockerfile, which has the Go toolchain) solely to run
+  # `unified-cli agent enrollment create` — the published controller/agent
+  # images don't bundle the CLI.
+  #
+  # Idempotent across `docker compose up` re-runs:
+  #   - if the agent's persisted credential file already exists (a prior
+  #     enrollment succeeded), this exits immediately without creating a new
+  #     enrollment token or contacting the controller.
+  #   - otherwise it removes any stale/unconsumed enrollment-token file
+  #     first, because `agent enrollment create --output-file` creates that
+  #     file exclusively and errors if one is already there.
+  agent-enroll:
+    build:
+      context: ../../
+      dockerfile: docker/dev.Dockerfile
+    volumes:
+      - ../../:/app
+      - agent-credentials:/var/lib/unified-cd-agent
+    depends_on:
+      controller:
+        condition: service_healthy
+    environment:
+      UNIFIED_SERVER: http://controller:8080
+      UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        CRED=/var/lib/unified-cd-agent/credentials.json
+        ENROLL=/var/lib/unified-cd-agent/enrollment.token
+        if [ -f "$$CRED" ]; then
+          echo "agent-enroll: credential file already present, skipping enrollment"
+          exit 0
+        fi
+        rm -f "$$ENROLL"
+        go run -buildvcs=false ./cmd/unified-cli agent enrollment create \
+          --agent-id ${UNIFIED_AGENT_ID:-docker-agent-1} \
+          --label kind:docker --label pool:default \
+          --expires-in 10m \
+          --output-file "$$ENROLL"
+        echo "agent-enroll: wrote enrollment token to $$ENROLL"
+    restart: "no"
+
   # ---- Agent (Linux/Docker worker) ----
   # No agent image is published to GHCR yet, so this is built locally from the
   # same Dockerfile the release workflow would use. Once release-docker.yml
@@ -124,9 +172,12 @@ services:
         condition: service_healthy
       dind:
         condition: service_healthy
+      agent-enroll:
+        condition: service_completed_successfully
     environment:
       UNIFIED_SERVER: http://controller:8080
-      UNIFIED_AGENT_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
+      UNIFIED_AGENT_CREDENTIAL_FILE: /var/lib/unified-cd-agent/credentials.json
+      UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE: /var/lib/unified-cd-agent/enrollment.token
       UNIFIED_AGENT_ID: ${UNIFIED_AGENT_ID:-docker-agent-1}
       UNIFIED_AGENT_LABELS: ${UNIFIED_AGENT_LABELS:-kind:docker,pool:default}
       DOCKER_HOST: tcp://dind:2375
@@ -138,6 +189,7 @@ services:
       UNIFIED_AGENT_WORKSPACE_DIR: /ucd-workspaces
     volumes:
       - ucd-workspaces:/ucd-workspaces
+      - agent-credentials:/var/lib/unified-cd-agent
     restart: unless-stopped
 
   # ---- Docker-in-Docker (container runtime for isolated jobs) ----
@@ -166,3 +218,4 @@ volumes:
   garagedata:
   ucd-workspaces:
   dind-storage:
+  agent-credentials:

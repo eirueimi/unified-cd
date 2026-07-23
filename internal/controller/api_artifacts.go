@@ -28,14 +28,11 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	// Apply the same per-run ownership check to every principal, including
-	// legacy shared-token callers: this route has no {agentId} path segment,
-	// so a legacy principal's AgentID is always empty (there is nothing to
-	// bind it to, unlike the agentId-scoped agent routes) — which means
-	// agentRunGuard can never find a matching claimed_by for it. That is the
-	// correct outcome, not a bug: a legacy caller presents no identity at all
-	// here, so it cannot be trusted to write to any run's artifacts, exactly
-	// like the (deliberately fail-closed) secrets-fetch path.
+	// Apply the same per-run ownership check to every principal. This route
+	// has no {agentId} path segment, so the check is made directly against
+	// the AgentID carried by the caller's own credential — the same
+	// agentRunGuard every other run-write path uses, just without an
+	// {agentId} intermediary to validate first.
 	//
 	// A nil store means this guard cannot run at all — not "no ownership to
 	// check", but "no way to check it". Silently skipping it (the previous

@@ -31,8 +31,8 @@ which tries the following **3 methods** in order. The first successful method gr
 
 > The agent API (`/api/v1/agents/*`) uses a separate per-agent credential path.
 > Human PATs, OIDC tokens, and `UNIFIED_TOKEN` cannot authorize a new agent.
-> `UNIFIED_AGENT_TOKEN` is retained only for an explicitly configured, temporary
-> legacy shared-token migration and is not subject to SSO.
+> Agents authenticate with an enrolled `uca_...` access token obtained via
+> agent enrollment (see [Agents](agents.md)); it is not subject to SSO.
 
 `ServerAuth` has no special branch for static tokens. **`UNIFIED_TOKEN` is automatically synced to the DB
 as a PAT named `env:UNIFIED_TOKEN` at startup and is treated as one of the method-1 PATs.**

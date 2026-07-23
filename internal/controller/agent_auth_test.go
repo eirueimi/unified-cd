@@ -101,8 +101,8 @@ func TestAgentAuth_RejectsWrongExpiredAndDisabledCredentials(t *testing.T) {
 }
 
 func TestAgentAuth_RejectsSharedTokenBearer(t *testing.T) {
-	// A non-uca_ bearer (e.g. a former VM legacy shared token or a k8s static
-	// token) is never accepted: legacy shared-token auth has been removed, so
+	// A non-uca_ bearer (e.g. an arbitrary static token from an unmigrated
+	// fleet) is never accepted: enrollment is the only agent-auth model, so
 	// there is no fallback path. The credential handler is never reached.
 	s, _ := newTestServer(t)
 	handlerReached := false

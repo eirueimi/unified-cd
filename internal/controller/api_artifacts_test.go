@@ -100,11 +100,10 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 	run, err := st.CreateRun(t.Context(), "artifact-roundtrip-job", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
 
-	// The upload route has no {agentId} path segment, so a legacy shared-token
-	// caller can never present a matching claimed_by identity and is always
-	// rejected now (see handleArtifactUpload) — this round trip must upload
-	// as the agent that actually claimed the run, via a real per-agent
-	// credential, exactly like a migrated agent would.
+	// The upload route has no {agentId} path segment, so the ownership check
+	// is made directly against the AgentID carried by the caller's credential
+	// (see handleArtifactUpload) — this round trip must upload as the agent
+	// that actually claimed the run, via a real per-agent credential.
 	ownerToken := issueAgentAccessForTest(t, st, "artifact-owner", nil, nil)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)

@@ -69,8 +69,8 @@ The following are deliberately **not** recorded:
 
 - **Agent-facing endpoints** (`/api/v1/agents/register`, `/heartbeat`, `/claim`, `/steps`,
   `/logs`, `/finish`, `/outputs`, `/secrets/fetch`, agent-created approvals, etc.) — these use
-  a per-agent principal (or temporary legacy compatibility token), not a human
-  `Principal`, and would otherwise flood the audit log with routine bookkeeping.
+  a per-agent principal, not a human `Principal`, and would otherwise flood
+  the audit log with routine bookkeeping.
 - **Credential plaintext and hashes** — enrollment creation is audited by its
   metadata/action only. Access, refresh, and enrollment credentials are never
   audit fields, response-captured values, or metric labels.

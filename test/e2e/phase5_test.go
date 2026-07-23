@@ -39,13 +39,11 @@ func newControllerWithKM(t *testing.T) (*controller.Server, *store.Postgres, *ht
 	return srv, pg, httpSrv
 }
 
-// issueAgentAccessToken mints a real opaque (non-legacy) agent access
-// credential bound to agentID, the same store-level mechanism
-// internal/controller/agent_auth_test.go's issueAgentAccessForTest uses.
-// handleAgentSecretsFetch (internal/controller/api_secrets.go) forbids the
-// shared legacy agent token from fetching secrets at all (403, before any
-// per-secret lookup), so an e2e agent that exercises secret injection must
-// authenticate this way instead of with the legacy shared token.
+// issueAgentAccessToken mints a real opaque agent access credential bound to
+// agentID, the same store-level mechanism internal/controller/agent_auth_test.go's
+// issueAgentAccessForTest uses. Agents authenticate only via enrolled
+// per-agent credentials, so an e2e agent that exercises secret injection must
+// authenticate this way.
 func issueAgentAccessToken(t *testing.T, pg *store.Postgres, agentID string) string {
 	t.Helper()
 	issued, err := agentauth.Generate(agentauth.AccessToken)

@@ -852,8 +852,7 @@ unified-cli agent enrollment revoke <enrollment-id>
 <value>`) command to run on the target host once the token is in place —
 there is no separate install step. An enrolled agent's labels come from
 `--label` on `enrollment create` and are fixed for that agent's lifetime; the
-agent process's own `--labels` flag is ignored for enrolled agents (it only
-applies to legacy shared-token agents).
+agent process's own `--labels` flag is ignored for every agent.
 
 By default (no `--output-file`), `enrollment create` prints the token to
 stdout once and embeds it inline in the suggested run command via

@@ -322,9 +322,8 @@ func mustSetSecret(t *testing.T, srv *Server, name, value string) {
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 }
 
-// postFetchSecrets issues a fresh non-legacy agent credential for agentID and
-// POSTs a secrets-fetch request for runID/names, returning the recorded
-// response.
+// postFetchSecrets issues a fresh agent credential for agentID and POSTs a
+// secrets-fetch request for runID/names, returning the recorded response.
 func postFetchSecrets(t *testing.T, srv *Server, agentID, runID string, names []string) *httptest.ResponseRecorder {
 	t.Helper()
 	token := issueAgentAccessForTest(t, srv.store, agentID, nil, nil)
