@@ -34,10 +34,11 @@ func claimRunForTest(t *testing.T, pg store.Store, agentID, runID string) {
 }
 
 func TestAgentAPI_Register(t *testing.T) {
-	s, _ := newTestServer(t)
+	s, st := newTestServer(t)
+	token := issueAgentAccessForTest(t, st, "a1", nil, nil)
 	body, _ := json.Marshal(api.AgentRegisterRequest{AgentID: "a1", Hostname: "host1", OS: "linux"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
@@ -46,6 +47,13 @@ func TestAgentAPI_Register(t *testing.T) {
 // TestAgentAPI_Register_DefaultsHostnameLabel verifies that a hostname label is automatically
 // added at registration so a specific agent can be pinned via agentSelector even when the
 // client does not send explicit labels.
+//
+// NOT migrated off the legacy bearer: the hostname-label synthesis this test
+// asserts (handleAgentRegister's `if principal.AuthMethod == "legacy" &&
+// req.Hostname != ""` block, api_agent.go) only runs for legacy principals —
+// an enrolled/uca_ principal's labels are always the credential's authorized
+// set, never self-reported, so this behavior has no enrolled equivalent to
+// test. Left for the task that removes that branch (removal map A.2).
 func TestAgentAPI_Register_DefaultsHostnameLabel(t *testing.T) {
 	s, pg := newTestServer(t)
 	body, _ := json.Marshal(api.AgentRegisterRequest{AgentID: "a1", Hostname: "host1", OS: "linux"})
@@ -62,6 +70,11 @@ func TestAgentAPI_Register_DefaultsHostnameLabel(t *testing.T) {
 
 // TestAgentAPI_Register_DoesNotDuplicateExplicitHostnameLabel verifies that when the client
 // already specifies a hostname:* label, the server does not add a duplicate.
+//
+// NOT migrated off the legacy bearer, same reason as
+// TestAgentAPI_Register_DefaultsHostnameLabel immediately above: this pins
+// the duplicate-avoidance check inside the legacy-only hostname synthesis
+// block, which never runs for an enrolled/uca_ principal.
 func TestAgentAPI_Register_DoesNotDuplicateExplicitHostnameLabel(t *testing.T) {
 	s, pg := newTestServer(t)
 	body, _ := json.Marshal(api.AgentRegisterRequest{
@@ -90,25 +103,31 @@ func TestAgentAPI_Register_DoesNotDuplicateExplicitHostnameLabel(t *testing.T) {
 // an agent with a smaller label set actually removes the dropped label from inventory.
 // Before the fix, UpsertAgent used the #12 claim-style DISTINCT-union label merge for
 // registration too, so labels could never be removed once seen (audit/inventory lie).
+//
+// Migrated off the legacy bearer: an enrolled principal's registered labels
+// always come from its credential's authorized set, not the self-reported
+// request body (handleAgentRegister overwrites req.Labels for any non-legacy
+// principal), so "a smaller label set" here means re-minting the agent's
+// credential with a smaller authorized set — mirroring an admin re-issuing
+// it — rather than sending a smaller Labels field. No hostname:<h> label is
+// expected either: that synthesis is legacy-only (see
+// TestAgentAPI_Register_DefaultsHostnameLabel above).
 func TestAgentAPI_Register_RemovesDroppedLabel(t *testing.T) {
 	s, pg := newTestServer(t)
 
-	body, _ := json.Marshal(api.AgentRegisterRequest{
-		AgentID: "a1", Hostname: "host1", OS: "linux",
-		Labels: []string{"a", "b"},
-	})
+	token1 := issueAgentAccessForTest(t, pg, "a1", []string{"a", "b"}, nil)
+	body, _ := json.Marshal(api.AgentRegisterRequest{AgentID: "a1", Hostname: "host1", OS: "linux"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token1)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 
-	body2, _ := json.Marshal(api.AgentRegisterRequest{
-		AgentID: "a1", Hostname: "host1", OS: "linux",
-		Labels: []string{"a"},
-	})
+	// Re-mint with a smaller authorized set and register again.
+	token2 := issueAgentAccessForTest(t, pg, "a1", []string{"a"}, nil)
+	body2, _ := json.Marshal(api.AgentRegisterRequest{AgentID: "a1", Hostname: "host1", OS: "linux"})
 	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body2))
-	req2.Header.Set("Authorization", "Bearer agent-secret")
+	req2.Header.Set("Authorization", "Bearer "+token2)
 	rec2 := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec2, req2)
 	require.Equal(t, http.StatusNoContent, rec2.Code, rec2.Body.String())
@@ -116,15 +135,14 @@ func TestAgentAPI_Register_RemovesDroppedLabel(t *testing.T) {
 	got, err := pg.GetAgent(context.Background(), "a1")
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	// The register handler always auto-attaches a hostname:<h> label (see
-	// TestAgentAPI_Register_DefaultsHostnameLabel), so it's expected alongside "a".
-	assert.ElementsMatch(t, []string{"a", "hostname:host1"}, got.Labels, "re-registration must remove dropped label b")
+	assert.ElementsMatch(t, []string{"a"}, got.Labels, "re-registration must remove dropped label b")
 }
 
 func TestAgentAPI_Claim_EmptyWhenNoQueued(t *testing.T) {
-	s, _ := newTestServer(t)
+	s, st := newTestServer(t)
+	token := issueAgentAccessForTest(t, st, "a1", nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=200ms", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -141,8 +159,9 @@ func TestAgentAPI_Claim_ReturnsQueuedRun(t *testing.T) {
 		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=2s", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -157,8 +176,13 @@ func TestAgentAPI_Claim_ReturnsQueuedRun(t *testing.T) {
 // TestAgentAPI_Claim_UpsertsUnregisteredAgent verifies bug #12's fix: an agent that
 // never called /register (e.g. because the controller DB was reset out from under a
 // still-running agent) still (re)appears in inventory as soon as it claims a run, with
-// the labels it presented on the claim request. This closes the "invisible agents run
-// jobs" monitoring/audit hole.
+// its labels. This closes the "invisible agents run jobs" monitoring/audit hole.
+//
+// Migrated off the legacy bearer: handleAgentClaim only parses the `?labels=`
+// query param for a legacy principal; an enrolled/uca_ principal's claim-time
+// labels always come from the credential's authorized set instead
+// (api_agent.go), so the labels are attached to the minted token, not the
+// query string.
 func TestAgentAPI_Claim_UpsertsUnregisteredAgent(t *testing.T) {
 	s, pg := newTestServer(t)
 
@@ -167,9 +191,9 @@ func TestAgentAPI_Claim_UpsertsUnregisteredAgent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, before, "agent must not exist before its first claim")
 
-	req := httptest.NewRequest(http.MethodPost,
-		"/api/v1/agents/ghost-agent/claim?timeout=200ms&labels=kind:linux,zone:us-east", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	token := issueAgentAccessForTest(t, pg, "ghost-agent", []string{"kind:linux", "zone:us-east"}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/ghost-agent/claim?timeout=200ms", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -198,18 +222,22 @@ func TestAgentAPI_Claim_UpsertsUnregisteredAgent(t *testing.T) {
 func TestAgentAPI_Claim_DoesNotClobberRegisteredAgent(t *testing.T) {
 	s, pg := newTestServer(t)
 
+	// A single credential authorized for "kind:linux" backs both the register
+	// and the claim call below, matching what a real enrolled agent presents
+	// to both routes.
+	token := issueAgentAccessForTest(t, pg, "a1", []string{"kind:linux"}, nil)
+
 	regBody, _ := json.Marshal(api.AgentRegisterRequest{
 		AgentID: "a1", Hostname: "host1", OS: "linux", Version: "v1.2.3",
-		Labels: []string{"kind:linux"},
 	})
 	regReq := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(regBody))
-	regReq.Header.Set("Authorization", "Bearer agent-secret")
+	regReq.Header.Set("Authorization", "Bearer "+token)
 	regRec := httptest.NewRecorder()
 	s.Router().ServeHTTP(regRec, regReq)
 	require.Equal(t, http.StatusNoContent, regRec.Code, regRec.Body.String())
 
 	claimReq := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=200ms", nil)
-	claimReq.Header.Set("Authorization", "Bearer agent-secret")
+	claimReq.Header.Set("Authorization", "Bearer "+token)
 	claimRec := httptest.NewRecorder()
 	s.Router().ServeHTTP(claimRec, claimReq)
 	require.Equal(t, http.StatusOK, claimRec.Code, claimRec.Body.String())
@@ -228,11 +256,12 @@ func TestAgentAPI_ReportStep(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	claimRunForTest(t, pg, "a1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 	body, _ := json.Marshal(api.StepReportRequest{
 		RunID: run.ID, StepIndex: 0, Status: "Running", StartedAt: time.Now(),
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/steps", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
@@ -243,11 +272,12 @@ func TestAgentAPI_AppendLog(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	claimRunForTest(t, pg, "a1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 	body, _ := json.Marshal(api.LogAppendRequest{
 		RunID: run.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "hello",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/logs", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
@@ -271,8 +301,9 @@ func TestAgentAPI_Claim_IncludesOutputsAndCall(t *testing.T) {
 	_, _ = pg.CreateRun(t.Context(), "multi", map[string]string{"env": "prod"}, specJSON, nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=2s", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -294,6 +325,7 @@ func TestAgentAPI_SetStepOutputs(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	claimRunForTest(t, pg, "a1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	body, _ := json.Marshal(api.SetOutputsRequest{
 		Outputs: map[string]string{"artifact_url": "s3://bucket/a.tar.gz"},
@@ -301,7 +333,7 @@ func TestAgentAPI_SetStepOutputs(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/agents/a1/runs/"+run.ID+"/steps/0/outputs",
 		bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
@@ -316,6 +348,7 @@ func TestAgentAPI_SetRunOutputs(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	claimRunForTest(t, pg, "a1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	body, _ := json.Marshal(api.SetOutputsRequest{
 		Outputs: map[string]string{"result": "ok"},
@@ -323,7 +356,7 @@ func TestAgentAPI_SetRunOutputs(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/agents/a1/runs/"+run.ID+"/outputs",
 		bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
@@ -345,8 +378,9 @@ func TestAgentAPI_ClaimResponse_CollectsSecretsNeeded(t *testing.T) {
 	_, _ = pg.CreateRun(t.Context(), "s", nil, specJSON, nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=2s", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -374,8 +408,9 @@ func TestAgentAPI_Claim_FailsRunWhenBuildClaimResponseErrors(t *testing.T) {
 	run, _ := pg.CreateRun(t.Context(), "legacy-job", nil, specJSON, nil, nil, "")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=2s", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -409,6 +444,7 @@ func TestAgentAPI_LogBulk(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	claimRunForTest(t, pg, "a1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	lines := []api.LogAppendRequest{
 		{RunID: run.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "line1"},
@@ -419,7 +455,7 @@ func TestAgentAPI_LogBulk(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/agents/a1/runs/"+run.ID+"/steps/0/logs/bulk",
 		bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
@@ -447,6 +483,7 @@ func TestAgentAPI_LogBulk_MixedOwnershipRejectsWholeBatch(t *testing.T) {
 
 	otherRun, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	claimRunForTest(t, pg, "a2", otherRun.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	lines := []api.LogAppendRequest{
 		{RunID: ownedRun.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now(), Line: "line1"},
@@ -456,7 +493,7 @@ func TestAgentAPI_LogBulk_MixedOwnershipRejectsWholeBatch(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/agents/a1/runs/"+ownedRun.ID+"/steps/0/logs/bulk",
 		bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
@@ -471,12 +508,13 @@ func TestAgentAPI_LogBulk_MixedOwnershipRejectsWholeBatch(t *testing.T) {
 }
 
 func TestClaimDrainOnShutdown(t *testing.T) {
-	s, _ := newTestServer(t)
+	s, st := newTestServer(t)
+	token := issueAgentAccessForTest(t, st, "a1", nil, nil)
 
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=60s", nil)
-		req.Header.Set("Authorization", "Bearer agent-secret")
+		req.Header.Set("Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
 		s.Router().ServeHTTP(rec, req)
 		done <- rec
@@ -694,12 +732,13 @@ func TestBuildClaimResponse_ApprovalDefaultsTimeout(t *testing.T) {
 
 func TestAgentHeartbeat_TouchesLastSeen(t *testing.T) {
 	s, pg := newTestServer(t)
+	token := issueAgentAccessForTest(t, pg, "agent-hb", []string{"kind:linux"}, nil)
 	// register an agent so a row exists
-	reg := api.AgentRegisterRequest{AgentID: "agent-hb", Hostname: "h", OS: "linux", Labels: []string{"kind:linux"}}
+	reg := api.AgentRegisterRequest{AgentID: "agent-hb", Hostname: "h", OS: "linux"}
 	body, _ := json.Marshal(reg)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	s.Router().ServeHTTP(rr, req)
 	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
 
@@ -710,7 +749,7 @@ func TestAgentHeartbeat_TouchesLastSeen(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb/heartbeat", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	s.Router().ServeHTTP(rr, req)
 	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
 
@@ -767,9 +806,10 @@ func TestAgentHeartbeat_ReconcilesLostClaims(t *testing.T) {
 
 	body, err := json.Marshal(api.HeartbeatRequest{ActiveRunIDs: []string{r1.ID}})
 	require.NoError(t, err)
+	token := issueAgentAccessForTest(t, pg, "agent-hb-reconcile", nil, nil)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-reconcile/heartbeat", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	s.Router().ServeHTTP(rr, req)
 	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
@@ -813,9 +853,10 @@ func TestAgentHeartbeat_ReconcileEmptyActiveSetStillFails(t *testing.T) {
 	body, err := json.Marshal(api.HeartbeatRequest{ActiveRunIDs: []string{}})
 	require.NoError(t, err)
 	require.Equal(t, `{"activeRunIds":[]}`, string(body), "no omitempty: an empty set must still marshal a body")
+	token := issueAgentAccessForTest(t, pg, "agent-hb-empty", nil, nil)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-empty/heartbeat", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	s.Router().ServeHTTP(rr, req)
 	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
@@ -847,9 +888,10 @@ func TestAgentHeartbeat_BodylessSkipsReconcile(t *testing.T) {
 	require.Equal(t, r5.ID, claimed.ID)
 	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r5.ID, 5*time.Minute))
 
+	token := issueAgentAccessForTest(t, pg, "agent-hb-legacy", nil, nil)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-legacy/heartbeat", nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	s.Router().ServeHTTP(rr, req)
 	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
 
@@ -961,14 +1003,15 @@ func TestBuildClaimResponse_ParallelInnerStepMatrixAndForeach(t *testing.T) {
 }
 
 func TestClaimDrainBroadcast(t *testing.T) {
-	s, _ := newTestServer(t)
+	s, st := newTestServer(t)
+	token := issueAgentAccessForTest(t, st, "a1", nil, nil)
 
 	const n = 3
 	done := make(chan *httptest.ResponseRecorder, n)
 	for range n {
 		go func() {
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=60s", nil)
-			req.Header.Set("Authorization", "Bearer agent-secret")
+			req.Header.Set("Authorization", "Bearer "+token)
 			rec := httptest.NewRecorder()
 			s.Router().ServeHTTP(rec, req)
 			done <- rec
@@ -999,10 +1042,11 @@ func TestAgentAPI_FinishRun_FreshTransition(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	claimRunForTest(t, pg, "a1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	body, _ := json.Marshal(map[string]string{"status": string(api.RunSucceeded)})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+run.ID+"/finish", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
@@ -1023,10 +1067,11 @@ func TestAgentAPI_FinishRun_FailedCancelsChildren(t *testing.T) {
 	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	// Link the parent's call step to the child run.
 	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	body, _ := json.Marshal(map[string]string{"status": string(api.RunFailed)})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/finish", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
@@ -1050,10 +1095,11 @@ func TestAgentAPI_FinishRun_AlreadyTerminal(t *testing.T) {
 	claimRunForTest(t, pg, "a1", run.ID)
 	// Simulate the reaper finalizing the run as Failed before the agent's late report.
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunFailed))
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	body, _ := json.Marshal(map[string]string{"status": string(api.RunSucceeded)})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+run.ID+"/finish", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 
@@ -1077,12 +1123,13 @@ func TestAgentAPI_ReportStep_AlreadyTerminal(t *testing.T) {
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
 	claimRunForTest(t, pg, "a1", run.ID)
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunFailed))
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	body, _ := json.Marshal(api.StepReportRequest{
 		RunID: run.ID, StepIndex: 0, Status: "Succeeded", StartedAt: time.Now(), EndedAt: time.Now(),
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/steps", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 
