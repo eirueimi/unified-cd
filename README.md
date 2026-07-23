@@ -79,7 +79,7 @@ sudo mv unified-cli /usr/local/bin/
 Or install from source with Go:
 
 ```bash
-go install github.com/eirueimi/unified-cd/cmd/agent@latest       # agent  → $GOBIN/agent
+go install github.com/eirueimi/unified-cd/cmd/unified-cd-agent@latest    # → $GOBIN/unified-cd-agent
 go install github.com/eirueimi/unified-cd/cmd/controller@latest  # controller
 go install github.com/eirueimi/unified-cd/cmd/unified-cli@latest # CLI
 ```

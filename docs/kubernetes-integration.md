@@ -29,7 +29,7 @@ unified-cd-master
 ```
 
 The k8s agent implements the same step DSL and master-communication interface as the standard
-agent (`cmd/agent`); job steps run inside a Pod instead of locally. Orchestration itself is now a
+agent (`cmd/unified-cd-agent`); job steps run inside a Pod instead of locally. Orchestration itself is now a
 single shared implementation (`internal/agent`'s `RunClaim`, driven through the `ExecBackend`
 seam) — only the execution backend differs per agent. The remaining intentional differences are:
 

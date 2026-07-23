@@ -384,7 +384,7 @@ container — see [Kubernetes Integration: `/.ucd` shim
 injection](kubernetes-integration.md#ucd-shim-injection)), the standard
 agent has a real host filesystem, so it takes a simpler path:
 
-1. **At startup**, before serving any claims, `cmd/agent`'s `main()` writes
+1. **At startup**, before serving any claims, `cmd/unified-cd-agent`'s `main()` writes
    the `ucd-sh` binary embedded in the agent's own binary (`internal/shim/
    embedded`) to `<tools-dir>/ucd-sh` (mode `0755`) — `tools-dir` is a
    sibling of `--workspace-dir` (e.g. `--workspace-dir ~/workspace` →

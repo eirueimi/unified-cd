@@ -255,7 +255,7 @@ func TestExecuteRun_Isolated_PodStartFailure_TeardownAndFailsRun(t *testing.T) {
 
 // TestExecuteRun_Isolated_MissingPauseImage_FailsRunNoContainer verifies that
 // an isolated (Native:false) claim on an agent whose PauseImage was never
-// configured (e.g. an Agent built via agent.New, which — unlike cmd/agent —
+// configured (e.g. an Agent built via agent.New, which — unlike cmd/unified-cd-agent —
 // does not default it) fails the run fast with an actionable reason, instead of
 // letting the claim pod try to start a pause container with an empty image and
 // surfacing a cryptic `docker run -d ...: exit status 125`. The guard must fire

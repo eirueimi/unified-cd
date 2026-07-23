@@ -71,7 +71,7 @@
 
 ### 9b. エージェントのワークスペース位置が `~/workspace` にハードコード
 
-- `internal/agent/agent.go:99-101` — `Agent.WorkspaceDir` フィールドは存在するが、`cmd/agent/main.go` からも設定ファイルからも一切セットされない(テストのみ使用)。フラグ `--help` にも `docs/configuration.md` にも設定手段がない。
+- `internal/agent/agent.go:99-101` — `Agent.WorkspaceDir` フィールドは存在するが、`cmd/unified-cd-agent/main.go` からも設定ファイルからも一切セットされない(テストのみ使用)。フラグ `--help` にも `docs/configuration.md` にも設定手段がない。
 - Windows では `C:\Users\<user>\workspace` に直接作られる(実機確認)。ユーザーの既存ディレクトリと衝突し得る。`-workspace-dir` フラグ / 設定ファイルキーとして公開すべき。
 
 ### 9c. Windows: ラン中キャンセルで子プロセスが孤児化し、ステップが Running 表示のまま残る
@@ -404,7 +404,7 @@
   - **リーダー kill 後 約20秒で別コントローラがリーダー継承**、新規トリガー・ログ取得とも正常続行
   - ※実行中エージェント kill → ランが Running のまま放置されるのを実測(45秒+)。セクション A(reaper 未実装)の分析どおり。死んだエージェントは agent list に残存
 - Windows ネイティブエージェント(ホスト実機で検証):
-  - `go build ./cmd/agent` → 起動・登録(os=windows、hostname ラベル自動付与)
+  - `go build ./cmd/unified-cd-agent` → 起動・登録(os=windows、hostname ラベル自動付与)
   - `agentSelector: [kind:windows]` のルーティング(docker ジョブと相互に混線なし)
   - Git Bash(MINGW64)でのステップ実行、`UNIFIED_AGENT_OS=windows` の注入
   - ステップ間のワークスペース共有・ファイル受け渡し
