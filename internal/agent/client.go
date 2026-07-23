@@ -211,11 +211,16 @@ func (c *Client) FinishRun(ctx context.Context, agentID, runID string, status ap
 	return err
 }
 
-// CreateRun creates a new Run with the given job name and parameters.
-func (c *Client) CreateRun(ctx context.Context, jobName string, params map[string]string) (api.Run, error) {
+// CreateChildRun creates a child Run for a call: step, authorized by the
+// parent run the agent has claimed. agentID/parentRunID scope the request to
+// the agent-authenticated child-run endpoint (the human POST /api/v1/runs is
+// not reachable with a uca_ credential).
+func (c *Client) CreateChildRun(ctx context.Context, agentID, parentRunID, jobName string, params map[string]string) (api.Run, error) {
 	body := api.TriggerRunRequest{JobName: jobName, Params: params}
 	var run api.Run
-	_, err := c.do(ctx, http.MethodPost, "/api/v1/runs", body, &run)
+	_, err := c.do(ctx, http.MethodPost,
+		fmt.Sprintf("/api/v1/agents/%s/runs/%s/children", agentID, parentRunID),
+		body, &run)
 	return run, err
 }
 

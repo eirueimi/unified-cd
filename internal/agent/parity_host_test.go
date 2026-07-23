@@ -292,9 +292,9 @@ func newParityHostServer(t *testing.T, agentID string, h *parityHostHarness) *ht
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(api.RunOutputs{Outputs: map[string]string{}})
 	})
-	// CreateRun: for the call-succeeds-with-link case, always returns the
+	// CreateChildRun: for the call-succeeds-with-link case, always returns the
 	// fixed child id.
-	mux.HandleFunc("POST /api/v1/runs", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/children", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(api.Run{ID: paritycases.ChildRunIDFixture, Status: api.RunSucceeded})
 	})

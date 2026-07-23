@@ -42,7 +42,7 @@ func runCallStepThroughFakeClient(t *testing.T, jobName, childRunID string) []ap
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("POST /api/v1/runs", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/children", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(api.Run{ID: childRunID, Status: api.RunSucceeded}) //nolint:errcheck
 	})
@@ -166,7 +166,7 @@ func TestExecuteRun_CallStep_BadParamTemplate_FailsStep(t *testing.T) {
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("POST /api/v1/runs", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/children", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		createRunCalled = true
 		mu.Unlock()
