@@ -20,7 +20,6 @@ import (
 // regardless of whether the env var naming it is exposed. Denying them here
 // costs nothing and keeps this list matching the spec's stated scope.
 var stepEnvDenied = map[string]bool{
-	"UNIFIED_AGENT_TOKEN":                 true,
 	"UNIFIED_CACHE_KEY":                   true,
 	"UNIFIED_CACHE_SECRET":                true,
 	"UNIFIED_TOKEN":                       true,

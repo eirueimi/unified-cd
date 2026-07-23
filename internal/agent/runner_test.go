@@ -126,13 +126,13 @@ func TestRunStepWithShell_MultiArgPrefixPreserved(t *testing.T) {
 // child) matters because without it a shell that silently failed to run
 // would also satisfy the negative assertion below.
 func TestRunStep_CredentialsNotInheritedByChild(t *testing.T) {
-	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+	t.Setenv("SOME_HOST_VAR", "super-secret-value")
 	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret-value")
 	t.Setenv("MY_BUILD_FLAG", "visible-value")
 
 	var stdout, stderr bytes.Buffer
 	exit, err := RunStep(t.Context(),
-		`echo "token=$UNIFIED_AGENT_TOKEN cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
+		`echo "token=$SOME_HOST_VAR cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
 		&stdout, &stderr, nil, []string{"MY_BUILD_FLAG"}, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
@@ -149,11 +149,11 @@ func TestRunStep_CredentialsNotInheritedByChild(t *testing.T) {
 // TestStepEnv_DenylistBeatsExposeEnv but proving it through an actual exec
 // rather than only through the StepEnv() builder.
 func TestRunStep_DeniedCredentialStaysHiddenEvenIfExposed(t *testing.T) {
-	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret-value")
 
 	var stdout, stderr bytes.Buffer
-	exit, err := RunStep(t.Context(), `echo "token=$UNIFIED_AGENT_TOKEN"`,
-		&stdout, &stderr, nil, []string{"UNIFIED_AGENT_TOKEN"}, "")
+	exit, err := RunStep(t.Context(), `echo "token=$UNIFIED_CACHE_SECRET"`,
+		&stdout, &stderr, nil, []string{"UNIFIED_CACHE_SECRET"}, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
 
@@ -164,13 +164,13 @@ func TestRunStep_DeniedCredentialStaysHiddenEvenIfExposed(t *testing.T) {
 // TestRunStepWithShell_CredentialsNotInheritedByChild mirrors
 // TestRunStep_CredentialsNotInheritedByChild for the explicit-shell exec path.
 func TestRunStepWithShell_CredentialsNotInheritedByChild(t *testing.T) {
-	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+	t.Setenv("SOME_HOST_VAR", "super-secret-value")
 	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret-value")
 	t.Setenv("MY_BUILD_FLAG", "visible-value")
 
 	var stdout, stderr bytes.Buffer
 	exit, err := RunStepWithShell(t.Context(), []string{"bash", "-c"},
-		`echo "token=$UNIFIED_AGENT_TOKEN cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
+		`echo "token=$SOME_HOST_VAR cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
 		&stdout, &stderr, nil, []string{"MY_BUILD_FLAG"}, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)
@@ -184,13 +184,13 @@ func TestRunStepWithShell_CredentialsNotInheritedByChild(t *testing.T) {
 // TestRunStepCapture_CredentialsNotInheritedByChild mirrors
 // TestRunStep_CredentialsNotInheritedByChild for the captured-stdout exec path.
 func TestRunStepCapture_CredentialsNotInheritedByChild(t *testing.T) {
-	t.Setenv("UNIFIED_AGENT_TOKEN", "super-secret-value")
+	t.Setenv("SOME_HOST_VAR", "super-secret-value")
 	t.Setenv("UNIFIED_CACHE_SECRET", "super-secret-value")
 	t.Setenv("MY_BUILD_FLAG", "visible-value")
 
 	var stderr bytes.Buffer
 	stdout, exit, err := RunStepCapture(t.Context(),
-		`echo "token=$UNIFIED_AGENT_TOKEN cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
+		`echo "token=$SOME_HOST_VAR cache=$UNIFIED_CACHE_SECRET flag=$MY_BUILD_FLAG"`,
 		&stderr, nil, []string{"MY_BUILD_FLAG"}, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, exit)

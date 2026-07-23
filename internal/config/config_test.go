@@ -140,14 +140,12 @@ func writeFile(t *testing.T, content string) string {
 
 func TestAgentEffective_EnvOnly(t *testing.T) {
 	t.Setenv("UNIFIED_SERVER", "http://env-server")
-	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
 	t.Setenv("UNIFIED_AGENT_ID", "env-id")
 	t.Setenv("UNIFIED_AGENT_LABELS", "kind:linux, env:prod")
 
 	eff, err := config.AgentEffective("")
 	require.NoError(t, err)
 	assert.Equal(t, "http://env-server", eff.Server)
-	assert.Equal(t, "env-token", eff.Token)
 	assert.Equal(t, "env-id", eff.ID)
 	assert.Equal(t, []string{"kind:linux", "env:prod"}, eff.Labels)
 }
@@ -165,11 +163,9 @@ func TestAgentEffective_CredentialFiles(t *testing.T) {
 
 func TestAgentEffective_FileOverridesEnv(t *testing.T) {
 	t.Setenv("UNIFIED_SERVER", "http://env-server")
-	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
 
 	path := writeFile(t, `
 server: http://file-server
-token: file-token
 id: file-id
 labels: [kind:mac, env:staging]
 cacheEndpoint: minio:9000
@@ -180,7 +176,6 @@ cacheBucket: bucket
 	eff, err := config.AgentEffective(path)
 	require.NoError(t, err)
 	assert.Equal(t, "http://file-server", eff.Server)
-	assert.Equal(t, "file-token", eff.Token)
 	assert.Equal(t, "file-id", eff.ID)
 	assert.Equal(t, []string{"kind:mac", "env:staging"}, eff.Labels)
 	assert.Equal(t, "minio:9000", eff.CacheEndpoint)
@@ -307,7 +302,6 @@ oidc:
 
 func TestAgentEffective_WorkspaceDirFromEnv(t *testing.T) {
 	t.Setenv("UNIFIED_SERVER", "http://env-server")
-	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
 	t.Setenv("UNIFIED_AGENT_WORKSPACE_DIR", "/data/ws")
 
 	eff, err := config.AgentEffective("")
@@ -317,12 +311,10 @@ func TestAgentEffective_WorkspaceDirFromEnv(t *testing.T) {
 
 func TestAgentEffective_WorkspaceDirFileOverridesEnv(t *testing.T) {
 	t.Setenv("UNIFIED_SERVER", "http://env-server")
-	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
 	t.Setenv("UNIFIED_AGENT_WORKSPACE_DIR", "/env/ws")
 
 	path := writeFile(t, `
 server: http://file-server
-token: file-token
 id: file-id
 workspaceDir: /file/ws
 `)
@@ -333,7 +325,6 @@ workspaceDir: /file/ws
 
 func TestAgentEffective_WorkspaceRetentionDaysDefaultZero(t *testing.T) {
 	t.Setenv("UNIFIED_SERVER", "http://env-server")
-	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
 
 	eff, err := config.AgentEffective("")
 	require.NoError(t, err)
@@ -342,7 +333,6 @@ func TestAgentEffective_WorkspaceRetentionDaysDefaultZero(t *testing.T) {
 
 func TestAgentEffective_WorkspaceRetentionDaysFromEnv(t *testing.T) {
 	t.Setenv("UNIFIED_SERVER", "http://env-server")
-	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
 	t.Setenv("UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS", "14")
 
 	eff, err := config.AgentEffective("")
@@ -352,12 +342,10 @@ func TestAgentEffective_WorkspaceRetentionDaysFromEnv(t *testing.T) {
 
 func TestAgentEffective_WorkspaceRetentionDaysFileOverridesEnv(t *testing.T) {
 	t.Setenv("UNIFIED_SERVER", "http://env-server")
-	t.Setenv("UNIFIED_AGENT_TOKEN", "env-token")
 	t.Setenv("UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS", "14")
 
 	path := writeFile(t, `
 server: http://file-server
-token: file-token
 id: file-id
 workspaceRetentionDays: 30
 `)

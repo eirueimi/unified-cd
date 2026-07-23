@@ -64,7 +64,6 @@ func main() {
 	// Register flags with merged (env+file) defaults. Explicit flags override.
 	f := flag.String("f", configFile, "config file path (YAML) (default: unified-agent.yaml if exists)")
 	server := flag.String("server", eff.Server, "master base URL")
-	token := flag.String("token", eff.Token, "agent bearer token")
 	credentialFile := flag.String("credential-file", eff.CredentialFile, "path to persistent VM refresh credentials (env: UNIFIED_AGENT_CREDENTIAL_FILE)")
 	enrollmentTokenFile := flag.String("enrollment-token-file", eff.EnrollmentTokenFile, "path to one-time enrollment token (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)")
 	enrollmentToken := flag.String("enrollment-token", eff.EnrollmentToken, "one-time enrollment token value; use - to read from stdin (env: UNIFIED_AGENT_ENROLLMENT_TOKEN)")
@@ -156,47 +155,41 @@ func main() {
 		}
 	}
 
-	var cli *agent.Client
-	if *token != "" {
-		slog.Warn("using deprecated legacy shared agent token")
-		cli = agent.NewClient(*server, *token)
-	} else {
-		// When no credential file is configured (flag/env/config), default to
-		// $HOME/.unified-cd/<id>/credential.json and create its directory with
-		// owner-only permissions so writeCredentialFile's directory check
-		// passes on a fresh host. An explicit path is left untouched — the
-		// operator owns its directory in that case.
-		if *credentialFile == "" {
-			defaultPath, err := config.DefaultAgentCredentialFile(*id)
-			if err != nil {
-				slog.Error("resolve default credential file", "error", err)
-				os.Exit(1)
-			}
-			if err := os.MkdirAll(filepath.Dir(defaultPath), 0o700); err != nil {
-				slog.Error("create credential directory", "error", err)
-				os.Exit(1)
-			}
-			*credentialFile = defaultPath
-			slog.Info("using default credential file", "path", defaultPath)
-		}
-		credentialExists := false
-		if *credentialFile != "" {
-			if _, err := os.Stat(*credentialFile); err == nil {
-				credentialExists = true
-			} else if !os.IsNotExist(err) {
-				slog.Error("credential file", "error", err)
-				os.Exit(1)
-			}
-		}
-		if !credentialExists && (*credentialFile == "" || (*enrollmentTokenFile == "" && tokenValue == "")) {
-			slog.Error("agent credentials are required")
+	// When no credential file is configured (flag/env/config), default to
+	// $HOME/.unified-cd/<id>/credential.json and create its directory with
+	// owner-only permissions so writeCredentialFile's directory check
+	// passes on a fresh host. An explicit path is left untouched — the
+	// operator owns its directory in that case.
+	if *credentialFile == "" {
+		defaultPath, err := config.DefaultAgentCredentialFile(*id)
+		if err != nil {
+			slog.Error("resolve default credential file", "error", err)
 			os.Exit(1)
 		}
-		source := agent.NewCredentialManager(agent.CredentialManagerConfig{
-			Server: *server, AgentID: *id, CredentialFile: *credentialFile, EnrollmentTokenFile: *enrollmentTokenFile, EnrollmentToken: tokenValue,
-		})
-		cli = agent.NewClientWithTokenSource(*server, source, nil)
+		if err := os.MkdirAll(filepath.Dir(defaultPath), 0o700); err != nil {
+			slog.Error("create credential directory", "error", err)
+			os.Exit(1)
+		}
+		*credentialFile = defaultPath
+		slog.Info("using default credential file", "path", defaultPath)
 	}
+	credentialExists := false
+	if *credentialFile != "" {
+		if _, err := os.Stat(*credentialFile); err == nil {
+			credentialExists = true
+		} else if !os.IsNotExist(err) {
+			slog.Error("credential file", "error", err)
+			os.Exit(1)
+		}
+	}
+	if !credentialExists && (*credentialFile == "" || (*enrollmentTokenFile == "" && tokenValue == "")) {
+		slog.Error("agent credentials are required")
+		os.Exit(1)
+	}
+	source := agent.NewCredentialManager(agent.CredentialManagerConfig{
+		Server: *server, AgentID: *id, CredentialFile: *credentialFile, EnrollmentTokenFile: *enrollmentTokenFile, EnrollmentToken: tokenValue,
+	})
+	cli := agent.NewClientWithTokenSource(*server, source, nil)
 
 	// First SIGINT/SIGTERM begins a graceful shutdown (drain in-flight runs up to
 	// DrainTimeout); a second signal forces an immediate shutdown. On the force
