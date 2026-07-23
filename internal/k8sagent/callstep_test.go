@@ -47,8 +47,9 @@ func TestOrchestrate_CallStepLaunchesChildRun(t *testing.T) {
 	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/steps/{idx}/outputs", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/finish", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	// CreateRun: the call launches the child job here.
-	mux.HandleFunc("POST /api/v1/runs", func(w http.ResponseWriter, r *http.Request) {
+	// CreateChildRun: the call launches the child job here, via the
+	// agent-authenticated child-run endpoint (scoped to the parent run).
+	mux.HandleFunc("POST /api/v1/agents/{id}/runs/{runId}/children", func(w http.ResponseWriter, r *http.Request) {
 		createRunCalled.Store(true)
 		orchestrateWriteJSON(w, api.Run{ID: childRunID, Status: api.RunSucceeded})
 	})
