@@ -1356,3 +1356,20 @@ func TestAgentAPI_ReadRunAndOutputs(t *testing.T) {
 		assert.Equal(t, http.StatusOK, rec.Code, "GET %s: %s", path, rec.Body.String())
 	}
 }
+
+// TestAgentAPI_ReadRunAndOutputs_RejectsAnonymous locks the human-auth floor on
+// the two run-read routes after they were moved out of the ServerAuth group: a
+// request with no credential (neither an enrolled agent bearer nor a human PAT/
+// session) must still be rejected, not fall through to the handler.
+func TestAgentAPI_ReadRunAndOutputs_RejectsAnonymous(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+
+	for _, path := range []string{"/api/v1/runs/" + run.ID, "/api/v1/runs/" + run.ID + "/outputs"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil) // no Authorization header
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, "anonymous GET %s must be rejected: %s", path, rec.Body.String())
+	}
+}
