@@ -193,10 +193,6 @@ func main() {
 	if matrixMaxEnvWarning != "" {
 		slog.Warn(matrixMaxEnvWarning)
 	}
-	if warning := legacyAgentAuthWarning(eff.AgentAuth.LegacySharedToken); warning != "" {
-		slog.Warn(warning)
-	}
-
 	if *dsn == "" {
 		slog.Error("dsn is required (--dsn, UNIFIED_DB_DSN, or config file)")
 		os.Exit(1)
@@ -296,7 +292,7 @@ func main() {
 		}
 		verifiers[cluster.Name] = controller.NewKubernetesEnrollmentVerifier(cluster.Name, client)
 	}
-	srv := controller.NewServer(controller.Config{Token: *token, LegacyAgentToken: eff.AgentAuth.LegacySharedToken, KubernetesEnrollmentVerifiers: verifiers, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
+	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
 	srv.SetMetrics(m)
 	srv.SetKeyManager(km)
 	if obj != nil {
@@ -429,13 +425,6 @@ func main() {
 		slog.Error("listen", "error", err)
 		os.Exit(1)
 	}
-}
-
-func legacyAgentAuthWarning(token string) string {
-	if token == "" {
-		return ""
-	}
-	return "legacy shared agent authentication is enabled; remove agentAuth.legacySharedToken or UNIFIED_AGENT_LEGACY_TOKEN after migration"
 }
 
 var inClusterKubernetesConfig = rest.InClusterConfig

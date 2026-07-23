@@ -231,8 +231,9 @@ func TestAgentGuardHTTP_IntruderForbidden(t *testing.T) {
 			s, pg := newTestServer(t)
 			runID := seedGuardRun(t, pg, false)
 
+			token := issueAgentAccessForTest(t, pg, guardIntruderAgent, nil, nil)
 			req := httptest.NewRequest(http.MethodPost, c.path(guardIntruderAgent, runID), bytes.NewReader(c.body(runID)))
-			req.Header.Set("Authorization", "Bearer agent-secret")
+			req.Header.Set("Authorization", "Bearer "+token)
 			rec := httptest.NewRecorder()
 			s.Router().ServeHTTP(rec, req)
 
@@ -256,8 +257,9 @@ func TestAgentGuardHTTP_OwnerTerminalNoop(t *testing.T) {
 			s, pg := newTestServer(t)
 			runID := seedGuardRun(t, pg, true)
 
+			token := issueAgentAccessForTest(t, pg, guardOwnerAgent, nil, nil)
 			req := httptest.NewRequest(http.MethodPost, c.path(guardOwnerAgent, runID), bytes.NewReader(c.body(runID)))
-			req.Header.Set("Authorization", "Bearer agent-secret")
+			req.Header.Set("Authorization", "Bearer "+token)
 			rec := httptest.NewRecorder()
 			s.Router().ServeHTTP(rec, req)
 
@@ -283,9 +285,10 @@ func TestAgentGuardHTTP_OwnerTerminalRun_SidecarStatusLands(t *testing.T) {
 	body, _ := json.Marshal(api.SidecarStatusRequest{
 		RunID: runID, Name: "mysql", Index: 0, Phase: "exited", ExitCode: &exitCode,
 	})
+	token := issueAgentAccessForTest(t, pg, guardOwnerAgent, nil, nil)
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/v1/agents/"+guardOwnerAgent+"/runs/"+runID+"/sidecars", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 

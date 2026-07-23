@@ -34,7 +34,7 @@ func newTestServerWithKM(t *testing.T) (*Server, store.Store) {
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	km := testKeyManager(t)
-	s := NewServer(Config{LegacyAgentToken: "agent-secret"}, pg)
+	s := NewServer(Config{}, pg)
 	s.SetKeyManager(km)
 	return s, pg
 }
@@ -127,30 +127,6 @@ func TestAgentAPI_FetchSecrets(t *testing.T) {
 	assert.Equal(t, "plaintext-value", resp.Secrets["MY_SECRET"])
 }
 
-func TestAgentAPI_FetchSecrets_RejectsLegacyTokenPathImpersonation(t *testing.T) {
-	s, pg := newTestServerWithKM(t)
-
-	body, _ := json.Marshal(api.SetSecretRequest{Name: "MY_SECRET", Value: "plaintext-value"})
-	set := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(body))
-	set.Header.Set("Authorization", "Bearer secret")
-	set.Header.Set("Content-Type", "application/json")
-	s.Router().ServeHTTP(httptest.NewRecorder(), set)
-
-	_, err := pg.UpsertJob(t.Context(), "legacy-secret-fetch", "unified-cd/v1", []byte(`{"steps":[]}`))
-	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "legacy-secret-fetch", nil, []byte(`{"steps":[]}`), nil, nil, "")
-	require.NoError(t, err)
-	claimRunForTest(t, pg, "victim-agent", run.ID)
-
-	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: run.ID, Names: []string{"MY_SECRET"}})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/victim-agent/secrets/fetch", bytes.NewReader(fetchBody))
-	req.Header.Set("Authorization", "Bearer agent-secret")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	s.Router().ServeHTTP(rec, req)
-	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-}
-
 func TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent(t *testing.T) {
 	s, pg := newTestServerWithKM(t)
 
@@ -196,12 +172,9 @@ func TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent(t *testing.T) {
 // Silently returning 200 with the name missing produces a step that runs with
 // an empty value — e.g. `curl -H "Authorization: Bearer $TOKEN"` with no token.
 //
-// Uses a real opaque agent credential + a claimed run, not the shared legacy
-// token: handleAgentSecretsFetch forbids legacy credentials from fetching
-// secrets at all (403, before the per-name lookup this test targets), so a
-// "Bearer agent-secret" request never reaches the code under test here — see
-// TestAgentAPI_FetchSecrets_RejectsLegacyTokenPathImpersonation above and the
-// task-7 report for how this was discovered.
+// Uses a real opaque agent credential + a claimed run: only an enrolled
+// (uca_) principal can reach handleAgentSecretsFetch — a non-uca_ bearer is
+// rejected with 401 at the auth middleware before ever reaching this handler.
 //
 // The run's spec must also declare the secret it fetches, same as
 // TestAgentAPI_FetchSecrets and TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent

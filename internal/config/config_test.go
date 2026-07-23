@@ -224,41 +224,19 @@ func TestControllerEffective_EnvOnly(t *testing.T) {
 	assert.Equal(t, "env-token", eff.Token)
 	assert.Nil(t, eff.OIDC)
 	require.NotNil(t, eff.AgentAuth)
-	assert.Empty(t, eff.AgentAuth.LegacySharedToken, "UNIFIED_TOKEN must remain human PAT-only")
 }
 
-func TestControllerLegacyAgentAuthConfiguration(t *testing.T) {
-	t.Setenv("UNIFIED_AGENT_LEGACY_TOKEN", "legacy")
-
-	t.Run("environment enables explicit compatibility mode", func(t *testing.T) {
-		eff, err := config.ControllerEffective("")
-		require.NoError(t, err)
-		require.NotNil(t, eff.AgentAuth)
-		assert.Equal(t, "legacy", eff.AgentAuth.LegacySharedToken)
-	})
-
-	t.Run("YAML overrides environment", func(t *testing.T) {
-		path := writeFile(t, `agentAuth:
-  legacySharedToken: yaml-legacy
+func TestControllerAgentAuth_ParsesKubernetesClusters(t *testing.T) {
+	path := writeFile(t, `agentAuth:
   kubernetesClusters:
     - name: prod
       kubeconfig: /secrets/prod-kubeconfig
 `)
-		eff, err := config.ControllerEffective(path)
-		require.NoError(t, err)
-		require.NotNil(t, eff.AgentAuth)
-		assert.Equal(t, "yaml-legacy", eff.AgentAuth.LegacySharedToken)
-		require.Len(t, eff.AgentAuth.KubernetesClusters, 1)
-		assert.Equal(t, "prod", eff.AgentAuth.KubernetesClusters[0].Name)
-	})
-
-	t.Run("empty YAML compatibility setting keeps UCA-only mode", func(t *testing.T) {
-		path := writeFile(t, "agentAuth:\n  legacySharedToken: ''\n")
-		eff, err := config.ControllerEffective(path)
-		require.NoError(t, err)
-		require.NotNil(t, eff.AgentAuth)
-		assert.Empty(t, eff.AgentAuth.LegacySharedToken)
-	})
+	eff, err := config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.NotNil(t, eff.AgentAuth)
+	require.Len(t, eff.AgentAuth.KubernetesClusters, 1)
+	assert.Equal(t, "prod", eff.AgentAuth.KubernetesClusters[0].Name)
 }
 
 func TestControllerAgentAuth_RejectsInvalidKubernetesClusters(t *testing.T) {

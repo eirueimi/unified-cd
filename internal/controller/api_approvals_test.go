@@ -101,6 +101,7 @@ func TestApprovals_AgentCreateAndGet(t *testing.T) {
 	// Claim the run as ag1 so the ownership guard on the agent-facing
 	// create-approval endpoint lets this request through.
 	claimRunForTest(t, pg, "ag1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "ag1", nil, nil)
 
 	// Agent creates an approval.
 	createBody, _ := json.Marshal(api.CreateApprovalRequest{
@@ -112,7 +113,7 @@ func TestApprovals_AgentCreateAndGet(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost,
 		fmt.Sprintf("/api/v1/agents/ag1/runs/%s/approvals", run.ID),
 		bytes.NewReader(createBody))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
@@ -120,7 +121,7 @@ func TestApprovals_AgentCreateAndGet(t *testing.T) {
 	// Agent polls the approval.
 	req2 := httptest.NewRequest(http.MethodGet,
 		fmt.Sprintf("/api/v1/agents/ag1/runs/%s/approvals/2", run.ID), nil)
-	req2.Header.Set("Authorization", "Bearer agent-secret")
+	req2.Header.Set("Authorization", "Bearer "+token)
 	rec2 := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec2, req2)
 	require.Equal(t, http.StatusOK, rec2.Code, rec2.Body.String())
@@ -139,10 +140,11 @@ func TestApprovals_AgentGet_NotFound(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil, nil))
+	token := issueAgentAccessForTest(t, pg, "ag1", nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet,
 		fmt.Sprintf("/api/v1/agents/ag1/runs/%s/approvals/99", run.ID), nil)
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)

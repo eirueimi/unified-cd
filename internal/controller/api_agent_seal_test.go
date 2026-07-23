@@ -44,9 +44,10 @@ func TestAgentLogAppend_SealedRunDropsLine(t *testing.T) {
 	s, st := newTestServer(t)
 	runID := sealRun(t, st)
 
+	token := issueAgentAccessForTest(t, st, "a1", nil, nil)
 	body, _ := json.Marshal(api.LogAppendRequest{RunID: runID, StepIndex: 0, Stream: "stdout", Line: "late line"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/logs", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 
@@ -64,9 +65,10 @@ func TestAgentLogBulk_SealedRunDropsLines(t *testing.T) {
 		{RunID: runID, StepIndex: 1, Stream: "stdout", Line: "late 1"},
 		{RunID: runID, StepIndex: 1, Stream: "stderr", Line: "late 2"},
 	}
+	token := issueAgentAccessForTest(t, st, "a1", nil, nil)
 	body, _ := json.Marshal(lines)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+runID+"/steps/1/logs/bulk", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 
@@ -77,13 +79,14 @@ func TestAgentLogBulk_SealedRunDropsLines(t *testing.T) {
 }
 
 func TestArtifactUpload_NonexistentRun404(t *testing.T) {
-	s, _ := newTestServer(t)
+	s, st := newTestServer(t)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 
+	token := issueAgentAccessForTest(t, st, "a1", nil, nil)
 	req := httptest.NewRequest(http.MethodPut,
 		"/api/v1/runs/00000000-0000-0000-0000-000000000000/artifacts/out",
 		strings.NewReader("data"))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 

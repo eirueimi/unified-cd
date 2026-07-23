@@ -11,7 +11,6 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/agentauth"
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/require"
 )
@@ -101,58 +100,33 @@ func TestAgentAuth_RejectsWrongExpiredAndDisabledCredentials(t *testing.T) {
 	}
 }
 
-func TestAgentAuth_LegacyTokenIsExplicitAndNeverFallsBackFromUCA(t *testing.T) {
-	legacyServer := NewServer(Config{LegacyAgentToken: "legacy-agent-token"}, nil)
-	legacyHandler := legacyServer.agentAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		principal, ok := agentPrincipalFromContext(r.Context())
-		require.True(t, ok)
-		require.Equal(t, "legacy", principal.AuthMethod)
+func TestAgentAuth_RejectsSharedTokenBearer(t *testing.T) {
+	// A non-uca_ bearer (e.g. a former VM legacy shared token or a k8s static
+	// token) is never accepted: legacy shared-token auth has been removed, so
+	// there is no fallback path. The credential handler is never reached.
+	s, _ := newTestServer(t)
+	handlerReached := false
+	handler := s.agentAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerReached = true
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	legacyReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	legacyReq.Header.Set("Authorization", "Bearer legacy-agent-token")
-	legacyRec := httptest.NewRecorder()
-	legacyHandler.ServeHTTP(legacyRec, legacyReq)
-	require.Equal(t, http.StatusNoContent, legacyRec.Code, legacyRec.Body.String())
-
-	ucaToken, err := agentauth.Generate(agentauth.AccessToken)
-	require.NoError(t, err)
-	ucaStore := store.NewTestPostgres(t)
-	ucaServer := NewServer(Config{LegacyAgentToken: ucaToken.Plaintext}, ucaStore)
-	ucaReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	ucaReq.Header.Set("Authorization", "Bearer "+ucaToken.Plaintext)
-	ucaRec := httptest.NewRecorder()
-	ucaServer.agentAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(ucaRec, ucaReq)
-	require.Equal(t, http.StatusUnauthorized, ucaRec.Code, ucaRec.Body.String())
-
-	noLegacyServer := NewServer(Config{Token: "legacy-agent-token"}, nil)
-	noLegacyReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	noLegacyReq.Header.Set("Authorization", "Bearer legacy-agent-token")
-	noLegacyRec := httptest.NewRecorder()
-	noLegacyServer.agentAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})).ServeHTTP(noLegacyRec, noLegacyReq)
-	require.Equal(t, http.StatusUnauthorized, noLegacyRec.Code, noLegacyRec.Body.String())
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer some-shared-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
+	require.False(t, handlerReached, "credential handler must not run for a shared-token bearer")
 }
 
-func TestLegacyAgentRequestIncrementsMigrationCounter(t *testing.T) {
+func TestAgentAuth_SharedTokenBearerToAgentRouteReturns401(t *testing.T) {
+	// End-to-end through the router: a shared-token bearer sent to a real
+	// agent route is rejected at the auth middleware with 401.
 	s, _ := newTestServer(t)
-	m := metrics.New()
-	s.SetMetrics(m)
-
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader([]byte(`{"agentId":"legacy-agent","os":"linux"}`)))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer some-shared-token")
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
-	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
-
-	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	metricsRec := httptest.NewRecorder()
-	s.Router().ServeHTTP(metricsRec, metricsReq)
-	require.Equal(t, http.StatusOK, metricsRec.Code, metricsRec.Body.String())
-	require.Contains(t, metricsRec.Body.String(), "unifiedcd_agent_legacy_auth_total 1")
+	require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
 }
 
 func TestAgentAuth_RejectsCredentialOnAnotherAgentPath(t *testing.T) {

@@ -32,17 +32,13 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	labels := req.Labels
-	capabilities := req.Capabilities
-	if principal.AuthMethod != "legacy" {
-		if req.AgentID != principal.AgentID {
-			s.recordAgentAuth("access", "failure", "policy")
-			http.Error(w, "agent identity mismatch", http.StatusForbidden)
-			return
-		}
-		labels = append([]string(nil), principal.AuthorizedLabels...)
-		capabilities = append([]string(nil), principal.AuthorizedCapabilities...)
+	if req.AgentID != principal.AgentID {
+		s.recordAgentAuth("access", "failure", "policy")
+		http.Error(w, "agent identity mismatch", http.StatusForbidden)
+		return
 	}
+	labels := append([]string(nil), principal.AuthorizedLabels...)
+	capabilities := append([]string(nil), principal.AuthorizedCapabilities...)
 	// Validate every advertised capability against the known vocabulary before
 	// persisting. An unrecognized capability string would silently never match
 	// any run's required_caps (or worse, mean something unintended), so reject
@@ -56,20 +52,6 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	// Use an empty slice when labels is nil to avoid a NULL constraint violation.
 	if labels == nil {
 		labels = []string{}
-	}
-	// Legacy registrations may attach a self-reported hostname label. Principal
-	// registrations use only controller-authorized labels.
-	if principal.AuthMethod == "legacy" && req.Hostname != "" {
-		hasHostnameLabel := false
-		for _, l := range labels {
-			if strings.HasPrefix(l, "hostname:") {
-				hasHostnameLabel = true
-				break
-			}
-		}
-		if !hasHostnameLabel {
-			labels = append(labels, "hostname:"+req.Hostname)
-		}
 	}
 	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, capabilities, req.Env); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -151,21 +133,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	var agentLabels []string
-	if principal.AuthMethod == "legacy" {
-		// Parse agent labels from the comma-separated query parameter.
-		labelsStr := r.URL.Query().Get("labels")
-		if labelsStr != "" {
-			for _, l := range strings.Split(labelsStr, ",") {
-				l = strings.TrimSpace(l)
-				if l != "" {
-					agentLabels = append(agentLabels, l)
-				}
-			}
-		}
-	} else {
-		agentLabels = append([]string(nil), principal.AuthorizedLabels...)
-	}
+	agentLabels := append([]string(nil), principal.AuthorizedLabels...)
 
 	// Upsert the agent's registration record on every claim so an agent that is
 	// actively claiming/running jobs always (re)appears in inventory (agent list /

@@ -44,61 +44,6 @@ func TestAgentAPI_Register(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 }
 
-// TestAgentAPI_Register_DefaultsHostnameLabel verifies that a hostname label is automatically
-// added at registration so a specific agent can be pinned via agentSelector even when the
-// client does not send explicit labels.
-//
-// NOT migrated off the legacy bearer: the hostname-label synthesis this test
-// asserts (handleAgentRegister's `if principal.AuthMethod == "legacy" &&
-// req.Hostname != ""` block, api_agent.go) only runs for legacy principals —
-// an enrolled/uca_ principal's labels are always the credential's authorized
-// set, never self-reported, so this behavior has no enrolled equivalent to
-// test. Left for the task that removes that branch (removal map A.2).
-func TestAgentAPI_Register_DefaultsHostnameLabel(t *testing.T) {
-	s, pg := newTestServer(t)
-	body, _ := json.Marshal(api.AgentRegisterRequest{AgentID: "a1", Hostname: "host1", OS: "linux"})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
-	rec := httptest.NewRecorder()
-	s.Router().ServeHTTP(rec, req)
-	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
-
-	got, err := pg.GetAgent(context.Background(), "a1")
-	require.NoError(t, err)
-	assert.Contains(t, got.Labels, "hostname:host1")
-}
-
-// TestAgentAPI_Register_DoesNotDuplicateExplicitHostnameLabel verifies that when the client
-// already specifies a hostname:* label, the server does not add a duplicate.
-//
-// NOT migrated off the legacy bearer, same reason as
-// TestAgentAPI_Register_DefaultsHostnameLabel immediately above: this pins
-// the duplicate-avoidance check inside the legacy-only hostname synthesis
-// block, which never runs for an enrolled/uca_ principal.
-func TestAgentAPI_Register_DoesNotDuplicateExplicitHostnameLabel(t *testing.T) {
-	s, pg := newTestServer(t)
-	body, _ := json.Marshal(api.AgentRegisterRequest{
-		AgentID: "a1", Hostname: "host1", OS: "linux",
-		Labels: []string{"hostname:custom"},
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
-	rec := httptest.NewRecorder()
-	s.Router().ServeHTTP(rec, req)
-	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
-
-	got, err := pg.GetAgent(context.Background(), "a1")
-	require.NoError(t, err)
-	count := 0
-	for _, l := range got.Labels {
-		if strings.HasPrefix(l, "hostname:") {
-			count++
-		}
-	}
-	assert.Equal(t, 1, count, "hostname label must not be duplicated: %v", got.Labels)
-	assert.Contains(t, got.Labels, "hostname:custom")
-}
-
 // TestAgentAPI_Register_RemovesDroppedLabel verifies the TODO #23 fix: re-registering
 // an agent with a smaller label set actually removes the dropped label from inventory.
 // Before the fix, UpsertAgent used the #12 claim-style DISTINCT-union label merge for

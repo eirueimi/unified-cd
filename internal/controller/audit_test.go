@@ -176,9 +176,10 @@ func TestAudit_GetRequestsNotRecorded(t *testing.T) {
 func TestAudit_AgentEndpointsNotRecorded(t *testing.T) {
 	s, pg := newTestServer(t)
 
-	body, _ := json.Marshal(map[string]any{"hostname": "h", "os": "linux"})
+	token := issueAgentAccessForTest(t, pg, "audit-agent", nil, nil)
+	body, _ := json.Marshal(map[string]any{"agentId": "audit-agent", "hostname": "h", "os": "linux"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)

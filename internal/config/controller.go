@@ -13,7 +13,6 @@ import (
 )
 
 type ControllerAgentAuthConfig struct {
-	LegacySharedToken            string                                       `yaml:"legacySharedToken"`
 	KubernetesClusters           []ControllerKubernetesClusterConfig          `yaml:"kubernetesClusters"`
 	KubernetesEnrollmentPolicies []ControllerKubernetesEnrollmentPolicyConfig `yaml:"kubernetesEnrollmentPolicies"`
 }
@@ -171,7 +170,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		UIProxyTarget:   os.Getenv("UNIFIED_UI_PROXY_TARGET"),
 		StderrPlain:     envBool("UNIFIED_LOG_STDERR_PLAIN"),
 		InsecureCookies: envBool("UNIFIED_INSECURE_COOKIES"),
-		AgentAuth:       &ControllerAgentAuthConfig{LegacySharedToken: os.Getenv("UNIFIED_AGENT_LEGACY_TOKEN")},
+		AgentAuth:       &ControllerAgentAuthConfig{},
 	}
 	// OIDC from env vars
 	oidcIssuer := os.Getenv("UNIFIED_OIDC_ISSUER")
@@ -272,9 +271,6 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		}
 	}
 	if file.AgentAuth != nil {
-		// YAML has higher precedence than environment variables, including an
-		// explicit empty legacySharedToken that disables compatibility mode.
-		eff.AgentAuth.LegacySharedToken = file.AgentAuth.LegacySharedToken
 		// Cluster credentials remain YAML-only.
 		eff.AgentAuth.KubernetesClusters = append([]ControllerKubernetesClusterConfig(nil), file.AgentAuth.KubernetesClusters...)
 		eff.AgentAuth.KubernetesEnrollmentPolicies = append([]ControllerKubernetesEnrollmentPolicyConfig(nil), file.AgentAuth.KubernetesEnrollmentPolicies...)
