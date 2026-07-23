@@ -211,17 +211,38 @@ func (c *Client) FinishRun(ctx context.Context, agentID, runID string, status ap
 	return err
 }
 
+// ErrParentRunAlreadyTerminal is returned by CreateChildRun when the parent run
+// finalized (e.g. reaper-failed or cancelled) between the agent claiming the
+// call: step and spawning the child. The controller declines to create a child
+// under a terminal parent and replies with an alreadyFinalized acknowledgement
+// (no new run) rather than an error status. Callers must stop — there is no
+// child run to poll.
+var ErrParentRunAlreadyTerminal = errors.New("parent run already terminal; child run not created")
+
 // CreateChildRun creates a child Run for a call: step, authorized by the
 // parent run the agent has claimed. agentID/parentRunID scope the request to
 // the agent-authenticated child-run endpoint (the human POST /api/v1/runs is
-// not reachable with a uca_ credential).
+// not reachable with a uca_ credential). It returns ErrParentRunAlreadyTerminal
+// if the parent had already finalized (the controller creates no child in that
+// case).
 func (c *Client) CreateChildRun(ctx context.Context, agentID, parentRunID, jobName string, params map[string]string) (api.Run, error) {
 	body := api.TriggerRunRequest{JobName: jobName, Params: params}
-	var run api.Run
-	_, err := c.do(ctx, http.MethodPost,
+	// The success response is a full api.Run; the terminal-parent response is
+	// respondRunWriteVerdict's {"runId":…, "alreadyFinalized":true} (which
+	// carries no "id", so run.ID stays empty). Decode both shapes at once.
+	var resp struct {
+		api.Run
+		AlreadyFinalized bool `json:"alreadyFinalized"`
+	}
+	if _, err := c.do(ctx, http.MethodPost,
 		fmt.Sprintf("/api/v1/agents/%s/runs/%s/children", agentID, parentRunID),
-		body, &run)
-	return run, err
+		body, &resp); err != nil {
+		return api.Run{}, err
+	}
+	if resp.AlreadyFinalized {
+		return api.Run{}, ErrParentRunAlreadyTerminal
+	}
+	return resp.Run, nil
 }
 
 // GetRun retrieves the Run with the given RunID.

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
@@ -95,6 +96,86 @@ func terminalCallReport(reports []api.StepReportRequest) *api.StepReportRequest 
 		}
 	}
 	return nil
+}
+
+// TestExecuteRun_CallStep_ParentTerminal_NoPoll verifies that when the parent
+// run finalized before the child could be created, the controller's
+// alreadyFinalized response short-circuits the call step: the agent must fail
+// the step immediately and never poll GetRun against a nonexistent (empty) run
+// ID. Before the fix, CreateChildRun returned a nil error with an empty-ID Run
+// and ExecuteCallStep polled GET /api/v1/runs/ for up to 30 minutes.
+func TestExecuteRun_CallStep_ParentTerminal_NoPoll(t *testing.T) {
+	const agentID = "call-terminal-agent"
+	const runID = "run-call-terminal"
+
+	var mu sync.Mutex
+	var getRunCalled bool
+	var finishStatus string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// Terminal parent: mirror respondRunWriteVerdict's alreadyFinalized reply.
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/children", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"runId": runID, "alreadyFinalized": true}) //nolint:errcheck
+	})
+	// If the step short-circuits correctly, this must never be hit.
+	mux.HandleFunc("GET /api/v1/runs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		getRunCalled = true
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.Run{ID: r.PathValue("id"), Status: api.RunRunning}) //nolint:errcheck
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Status string `json:"status"`
+		}
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		mu.Lock()
+		finishStatus = body.Status
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	claim := api.ClaimResponse{
+		Native:  true,
+		RunID:   runID,
+		JobName: "test-call-terminal",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0, StageIndex: 0, Name: "call-child",
+				Call: &api.ClaimCallStep{Job: "child-job"},
+			}},
+		},
+	}
+
+	// A generous guard: with the bug this would spin for 30 minutes. The fix
+	// makes executeRun return effectively immediately.
+	done := make(chan struct{})
+	go func() {
+		a.executeRun(context.Background(), claim, t.TempDir())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("executeRun did not return promptly — the call step is polling instead of short-circuiting on a terminal parent")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.False(t, getRunCalled, "the agent must not poll GetRun when the parent is already terminal (no child run exists)")
+	assert.Equal(t, "Failed", finishStatus, "a call step whose parent is already terminal must fail the step")
 }
 
 func TestExecuteRun_CallStep_ReportsChildLink(t *testing.T) {
