@@ -1337,3 +1337,22 @@ func TestAgentAPI_CreateChildRun_TerminalParent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, childRuns, "no child run must be created when the parent is already terminal")
 }
+
+// TestAgentAPI_ReadRunAndOutputs verifies an enrolled agent may read a run and
+// its outputs (the call: poll path), even a run it did not claim.
+func TestAgentAPI_ReadRunAndOutputs(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	// Claimed by a different agent; the reader (a1) never claimed it.
+	claimRunForTest(t, pg, "a2", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	for _, path := range []string{"/api/v1/runs/" + run.ID, "/api/v1/runs/" + run.ID + "/outputs"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code, "GET %s: %s", path, rec.Body.String())
+	}
+}
