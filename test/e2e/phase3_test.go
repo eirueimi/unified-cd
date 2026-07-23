@@ -63,7 +63,7 @@ func TestPhase3_LogArchival(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 	go controller.RunLogArchiver(ctx, pg, obj, 200*time.Millisecond)
 
-	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, "t"))
+	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-e2e")))
 	go func() { _ = ag.Run(ctx) }()
 
 	yamlJob := `
@@ -137,7 +137,7 @@ func TestPhase3_SSE(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.New("agent-sse", agent.NewClient(httpSrv.URL, "t"))
+	ag := agent.New("agent-sse", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-sse")))
 	go func() { _ = ag.Run(ctx) }()
 
 	yamlJob := `
@@ -208,7 +208,7 @@ func TestPhase3_BulkLogPush(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.New("agent-bulk", agent.NewClient(httpSrv.URL, "t"))
+	ag := agent.New("agent-bulk", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-bulk")))
 	go func() { _ = ag.Run(ctx) }()
 
 	yamlJob := `

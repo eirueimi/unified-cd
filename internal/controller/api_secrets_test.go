@@ -265,12 +265,13 @@ func TestAPI_FetchSecrets_ReturnsExistingSecret(t *testing.T) {
 
 func TestAPI_FetchSecrets_NotConfigured(t *testing.T) {
 	pg := store.NewTestPostgres(t)
-	s := NewServer(Config{Token: "secret", LegacyAgentToken: "agent-secret"}, pg)
+	s := NewServer(Config{Token: "secret"}, pg)
 	// KeyManager is not configured.
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
 	fetchBody, _ := json.Marshal(api.AgentFetchSecretsRequest{RunID: "run", Names: []string{"X"}})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/secrets/fetch", bytes.NewReader(fetchBody))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotImplemented, rec.Code)

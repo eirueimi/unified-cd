@@ -205,13 +205,12 @@ func TestArtifactUpload_RejectsNonAgentToken(t *testing.T) {
 	}
 }
 
-// TestArtifactUpload_RejectsLegacyPrincipal proves the legacy shared-token
-// bypass this fix closes: the upload route has no {agentId} path segment, so
-// a legacy caller can never present a matching claimed_by identity and must
-// now be rejected for every run, claimed or not — the same fail-closed
-// outcome as the secrets-fetch path, reached via the shared ownership guard
-// instead of an explicit legacy check.
-func TestArtifactUpload_RejectsLegacyPrincipal(t *testing.T) {
+// TestArtifactUpload_RejectsMismatchedOwnerPrincipal proves the upload route
+// has no {agentId} path segment, so a bearer caller whose identity does not
+// match the run's claimed_by must always be rejected, claimed or not — the
+// same fail-closed outcome as the secrets-fetch path, reached via the shared
+// ownership guard.
+func TestArtifactUpload_RejectsMismatchedOwnerPrincipal(t *testing.T) {
 	s, st := newTestServer(t)
 	s.SetObjectStore(objectstore.NewLocalObjectStore(t.TempDir()))
 	_, err := st.UpsertJob(t.Context(), "artifact-legacy-reject", "unified-cd/v1", []byte(`{"steps":[]}`))
@@ -220,12 +219,13 @@ func TestArtifactUpload_RejectsLegacyPrincipal(t *testing.T) {
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)
-	claimed, err := st.ClaimNextRun(t.Context(), "legacy-claimer", nil)
+	claimed, err := st.ClaimNextRun(t.Context(), "run-claimer", nil)
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID)
 
+	strangerToken := issueAgentAccessForTest(t, st, "stranger", nil, nil)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/runs/"+run.ID+"/artifacts/build", strings.NewReader("x"))
-	req.Header.Set("Authorization", "Bearer agent-secret")
+	req.Header.Set("Authorization", "Bearer "+strangerToken)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 

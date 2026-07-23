@@ -73,7 +73,7 @@ func TestPhase6_WebhookTrigger(t *testing.T) {
 	defer cancel()
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
-	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, "t"))
+	ag := agent.New("agent-e2e", agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, "agent-e2e")))
 	go func() { _ = ag.Run(ctx) }()
 
 	// Register the job

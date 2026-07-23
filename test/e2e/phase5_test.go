@@ -65,6 +65,55 @@ func issueAgentAccessToken(t *testing.T, pg *store.Postgres, agentID string) str
 	return issued.Plaintext
 }
 
+// issueAgentAccessTokenWithLabels is issueAgentAccessToken plus authorized
+// labels/capabilities. Enrolled (non-legacy) principals no longer get to
+// self-report labels the way agent.NewWithLabels does for a legacy bearer:
+// handleAgentRegister (internal/controller/api_agent.go) overwrites
+// labels/capabilities with the principal's authorized set for any non-legacy
+// AuthMethod, so an e2e agent whose test depends on agentSelector matching
+// must carry the labels on the minted credential instead of the client.
+func issueAgentAccessTokenWithLabels(t *testing.T, pg *store.Postgres, agentID string, labels, capabilities []string) string {
+	t.Helper()
+	issued, err := agentauth.Generate(agentauth.AccessToken)
+	require.NoError(t, err)
+	_, err = pg.IssueExternalAgentAccess(context.Background(), store.AgentCredentialIssue{
+		AgentID:                agentID,
+		EnrollmentMethod:       "test",
+		ExternalSubject:        "test:" + agentID,
+		AuthorizedLabels:       labels,
+		AuthorizedCapabilities: capabilities,
+		Access: store.NewAgentCredential{
+			ID:        issued.ID,
+			Kind:      "access",
+			TokenHash: issued.Hash,
+			ExpiresAt: time.Now().Add(time.Hour),
+		},
+	})
+	require.NoError(t, err)
+	return issued.Plaintext
+}
+
+// issueCallStepAgentToken mints a uca_ agent access token for agentID and
+// additionally registers that same plaintext as a developer-role PAT.
+//
+// ExecuteCallStep (internal/agent/callstep.go) creates the child run for a
+// `call:` step by reusing the executing agent's own *Client — i.e. its own
+// bearer — against POST /api/v1/runs, a ServerAuth-only route (PAT / OIDC /
+// session; agentAuth's uca_ credentials are never accepted there). So an
+// agent that may execute a call: step needs a token valid on both paths.
+// Pre-migration, e2e fixtures satisfied this by accident: Config.Token and
+// Config.LegacyAgentToken were set to the identical literal ("t"), so the
+// agent's shared legacy bearer happened to also hash-match the seeded
+// bootstrap PAT. A minted uca_ token has no such double life, so tests that
+// exercise call: must register it as a PAT explicitly instead.
+func issueCallStepAgentToken(t *testing.T, pg *store.Postgres, agentID string) string {
+	t.Helper()
+	token := issueAgentAccessToken(t, pg, agentID)
+	_, err := pg.CreatePAT(context.Background(), "callstep-"+agentID, controller.HashToken(token), "developer", nil)
+	require.NoError(t, err)
+	return token
+}
+
 // TestPhase5_SecretInjection verifies that a secret is injected as an env var and the step can use it.
 func TestPhase5_SecretInjection(t *testing.T) {
 	if runtime.GOOS == "windows" {
