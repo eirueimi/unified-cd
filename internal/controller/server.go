@@ -241,6 +241,7 @@ var agentRouteIdentityMatrix = []agentIdentityRoute{
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/logs", bindPath: true, handler: (*Server).handleAgentLogAppend},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/reconcile", bindPath: true, handler: (*Server).handleAgentReconcileRuns},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/finish", bindPath: true, handler: (*Server).handleAgentFinishRun},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/children", bindPath: true, handler: (*Server).handleAgentCreateChildRun},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", bindPath: true, handler: (*Server).handleAgentSetStepOutputs},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/outputs", bindPath: true, handler: (*Server).handleAgentSetRunOutputs},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", bindPath: true, handler: (*Server).handleAgentLogBulk},
@@ -327,6 +328,22 @@ func (s *Server) routes() {
 	s.r.With(ServerAuth(s.store, s), requireMinRole("viewer")).
 		Get("/api/v1/runs/{id}/events", s.handleRunEvents)
 
+	// Run + outputs reads are also reachable by an enrolled agent (the call:
+	// step polls the child run it created), so they use agentOrServerAuth like
+	// the artifact routes rather than the human-only /api/v1 group. viewerOrAgent
+	// keeps the human viewer floor while letting agent principals through.
+	//
+	// /runs/active is registered here too (auth unchanged: ServerAuth + viewer,
+	// no agent access) purely so it stays a sibling of /runs/{id} in the SAME
+	// chi tree. chi prefers a static match ("active") over a param match
+	// ({id}) only when both live in the same routing tree; the /api/v1 group
+	// below is mounted as its own sub-router, so once /runs/{id} is registered
+	// directly on the top-level tree it would otherwise swallow "active" as an
+	// id before the request ever reaches the mounted group.
+	s.r.With(ServerAuth(s.store, s), requireMinRole("viewer")).Get("/api/v1/runs/active", s.handleListActiveRuns)
+	s.r.With(s.agentOrServerAuth, s.viewerOrAgent).Get("/api/v1/runs/{id}", s.handleGetRun)
+	s.r.With(s.agentOrServerAuth, s.viewerOrAgent).Get("/api/v1/runs/{id}/outputs", s.handleGetRunOutputs)
+
 	s.r.Route("/api/v1", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))
 		r.Use(auditLogMiddleware(s.store))
@@ -344,15 +361,12 @@ func (s *Server) routes() {
 
 		r.With(dev).Post("/runs", s.handleTriggerRun)
 		r.With(dev).Post("/runs/{id}/replay", s.handleReplayRun)
-		r.With(view).Get("/runs/active", s.handleListActiveRuns)
 		r.With(view).Get("/runs", s.handleListRunsByJob)
-		r.With(view).Get("/runs/{id}", s.handleGetRun)
 		r.With(view).Get("/runs/{id}/yaml", s.handleGetRunYAML)
 		r.With(dev).Post("/runs/{id}/cancel", s.handleCancelRun)
 		r.With(dev).Delete("/runs/{id}", s.handleDeleteRun)
 		r.With(view).Get("/runs/{id}/logs", s.handleTailLogs)
 		r.With(view).Get("/runs/{id}/steps", s.handleGetRunSteps)
-		r.With(view).Get("/runs/{id}/outputs", s.handleGetRunOutputs)
 		r.With(view).Get("/runs/{id}/logs/archive", s.handleLogsArchive)
 		r.With(view).Get("/runs/{id}/logs/stats", s.handleLogStats)
 		r.With(view).Get("/runs/{id}/logs/range", s.handleLogRange)

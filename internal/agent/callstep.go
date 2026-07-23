@@ -41,7 +41,7 @@ func ExecuteCallStep(ctx context.Context, client *Client, agentID, runID string,
 		expandedParams[k] = expanded
 	}
 
-	childRun, err := client.CreateRun(ctx, step.Call.Job, expandedParams)
+	childRun, err := client.CreateChildRun(ctx, agentID, runID, step.Call.Job, expandedParams)
 	if err != nil {
 		return nil, "", fmt.Errorf("create child run for job %q: %w", step.Call.Job, err)
 	}

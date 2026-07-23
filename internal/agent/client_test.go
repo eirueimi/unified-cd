@@ -190,17 +190,20 @@ func TestClient_ReportSidecarStatus(t *testing.T) {
 	assert.Equal(t, 3, *got.ExitCode)
 }
 
-func TestClient_CreateRun(t *testing.T) {
+func TestClient_CreateChildRun(t *testing.T) {
 	var got api.TriggerRunRequest
+	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&got)
 		_ = json.NewEncoder(w).Encode(api.Run{ID: "run-123", Status: api.RunPending})
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	run, err := c.CreateRun(t.Context(), "hello", map[string]string{"k": "v"})
+	run, err := c.CreateChildRun(t.Context(), "agent-1", "parent-run-1", "hello", map[string]string{"k": "v"})
 	require.NoError(t, err)
 	assert.Equal(t, "run-123", run.ID)
+	assert.Equal(t, "/api/v1/agents/agent-1/runs/parent-run-1/children", gotPath)
 	assert.Equal(t, "hello", got.JobName)
 	assert.Equal(t, "v", got.Params["k"])
 }

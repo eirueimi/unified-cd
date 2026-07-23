@@ -132,3 +132,17 @@ func (s *Server) agentOrServerAuth(next http.Handler) http.Handler {
 		serverAuth(next).ServeHTTP(w, r)
 	})
 }
+
+// viewerOrAgent admits an authenticated agent principal, otherwise enforces the
+// human viewer role. Pair it with agentOrServerAuth on read routes that both an
+// enrolled agent and a human viewer may call.
+func (s *Server) viewerOrAgent(next http.Handler) http.Handler {
+	viewer := requireMinRole("viewer")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := agentPrincipalFromContext(r.Context()); ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		viewer(next).ServeHTTP(w, r)
+	})
+}

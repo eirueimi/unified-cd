@@ -514,7 +514,7 @@ func TestAgent_CallStep_NonexistentJob_FailsRun(t *testing.T) {
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("POST /api/v1/runs", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/children", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "job not found: missing-job", http.StatusNotFound)
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/finish", func(w http.ResponseWriter, r *http.Request) {

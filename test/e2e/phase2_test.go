@@ -251,13 +251,14 @@ func TestPhase2_CallStep(t *testing.T) {
 	go controller.RunScheduler(ctx, pg, 50*time.Millisecond)
 
 	// Start 2 agents (parent needs one, child needs another). Either agent
-	// may claim the parent run and execute its `call:` step, so both need a
-	// token that also authenticates the internal child-run creation (see
-	// issueCallStepAgentToken).
+	// may claim the parent run and execute its `call:` step; each agent uses
+	// its own enrolled uca_ credential and creates the child run via the
+	// agent child-run endpoint (POST /api/v1/agents/{id}/runs/{id}/children) —
+	// no developer PAT is involved.
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		agentID := fmt.Sprintf("agent-%d", i)
-		ag := agent.New(agentID, agent.NewClient(httpSrv.URL, issueCallStepAgentToken(t, pg, agentID)))
+		ag := agent.New(agentID, agent.NewClient(httpSrv.URL, issueAgentAccessToken(t, pg, agentID)))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -29,10 +29,26 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "jobName is required", http.StatusBadRequest)
 		return
 	}
-	job, err := s.store.GetJob(r.Context(), req.JobName)
-	if err != nil {
-		http.Error(w, "job not found: "+req.JobName, http.StatusNotFound)
+	triggeredBy := "api"
+	if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
+		triggeredBy = p.Name
+	}
+	run, status, msg := s.createRunFromJob(r.Context(), req.JobName, req.Params, triggeredBy)
+	if status != 0 {
+		http.Error(w, msg, status)
 		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+// createRunFromJob resolves a job's spec, validates params, derives routing
+// (agentSelector + required capability), and creates the run. Shared by the
+// human trigger route and the agent child-run route. Returns (run, 0, "") on
+// success or (nil, httpStatus, message) describing the failure.
+func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams map[string]string, triggeredBy string) (*api.Run, int, string) {
+	job, err := s.store.GetJob(ctx, jobName)
+	if err != nil {
+		return nil, http.StatusNotFound, "job not found: " + jobName
 	}
 	// Extract the agentSelector from the stored spec JSON.
 	var spec dsl.Spec
@@ -40,15 +56,13 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(job.Spec, &spec); err == nil {
 		agentSelector = spec.AgentSelector
 	}
-	params, err := resolveParams(spec.Params.Inputs, req.Params)
+	params, err := resolveParams(spec.Params.Inputs, reqParams)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return nil, http.StatusBadRequest, err.Error()
 	}
 	agentSelector, err = dsl.ExpandAgentSelector(agentSelector, params)
 	if err != nil {
-		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
-		return
+		return nil, http.StatusBadRequest, "agentSelector: " + err.Error()
 	}
 	// Infer the capability a run of this spec needs from an agent (native /
 	// container / pod). A podTemplate that uses features the host agent's
@@ -62,16 +76,11 @@ func (s *Server) handleTriggerRun(w http.ResponseWriter, r *http.Request) {
 	// "container" and is left to route by the author's agentSelector, so it
 	// can run on a standard agent too.
 	requiredCaps := dsl.RequiredCaps(spec)
-	triggeredBy := "api"
-	if p, ok := principalFromContext(r.Context()); ok && p.Name != "" {
-		triggeredBy = p.Name
-	}
-	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, requiredCaps, triggeredBy)
+	run, err := s.store.CreateRun(ctx, job.Name, params, job.Spec, agentSelector, requiredCaps, triggeredBy)
 	if err != nil {
-		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
-		return
+		return nil, http.StatusInternalServerError, "create run: " + err.Error()
 	}
-	writeJSON(w, http.StatusOK, run)
+	return run, 0, ""
 }
 
 // handleReplayRun creates a new run from an existing run's ORIGINAL spec

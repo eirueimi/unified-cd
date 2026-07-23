@@ -1257,3 +1257,119 @@ func TestBuildOneClaimStep_CarriesRetry(t *testing.T) {
 	assert.Equal(t, 3, cs.Retry.Attempts)
 	assert.Equal(t, "30s", cs.Retry.Backoff)
 }
+
+// TestAgentAPI_CreateChildRun_OwnedParent verifies an enrolled agent can create
+// a child run for a run it has claimed (the call: step path), authorized purely
+// by parent-run ownership.
+func TestAgentAPI_CreateChildRun_OwnedParent(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`))
+	parent, _ := pg.CreateRun(t.Context(), "parent-job", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", parent.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "child-job"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/children", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var child api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &child))
+	assert.NotEmpty(t, child.ID)
+	assert.Equal(t, "child-job", child.JobName)
+	assert.NotEqual(t, parent.ID, child.ID)
+	assert.Equal(t, "agent:a1", child.TriggeredBy, "child run must be attributed to the spawning agent")
+}
+
+// TestAgentAPI_CreateChildRun_NotOwnedParent verifies an agent cannot spawn a
+// child for a run claimed by a DIFFERENT agent (403, no run created).
+func TestAgentAPI_CreateChildRun_NotOwnedParent(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`))
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a2", parent.ID) // owned by a2, not a1
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "child-job"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/children", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+}
+
+// TestAgentAPI_CreateChildRun_TerminalParent verifies that an agent cannot
+// spawn a child under a parent run that has already reached a terminal state
+// (e.g. the reaper Failed it before the call: step's spawn request arrived).
+// agentRunGuard is invoked with rejectTerminal=true here, so a terminal
+// parent yields the runWriteTerminal verdict — respondRunWriteVerdict
+// replies 200 with an alreadyFinalized body (mirroring
+// TestAgentAPI_FinishRun_AlreadyTerminal) rather than creating a run, so this
+// asserts no child run was created rather than a 4xx status.
+func TestAgentAPI_CreateChildRun_TerminalParent(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`))
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", parent.ID)
+	// Simulate the reaper finalizing the parent before the call: step's spawn
+	// request arrives.
+	require.NoError(t, pg.MarkRunFinished(t.Context(), parent.ID, api.RunFailed))
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "child-job"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/children", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["alreadyFinalized"], "terminal parent must short-circuit to the alreadyFinalized body, not create a run")
+
+	// Direct proof no child run was created: no run for child-job exists.
+	childRuns, err := pg.ListRunsByJob(t.Context(), "child-job", 50)
+	require.NoError(t, err)
+	assert.Empty(t, childRuns, "no child run must be created when the parent is already terminal")
+}
+
+// TestAgentAPI_ReadRunAndOutputs verifies an enrolled agent may read a run and
+// its outputs (the call: poll path), even a run it did not claim.
+func TestAgentAPI_ReadRunAndOutputs(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	// Claimed by a different agent; the reader (a1) never claimed it.
+	claimRunForTest(t, pg, "a2", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	for _, path := range []string{"/api/v1/runs/" + run.ID, "/api/v1/runs/" + run.ID + "/outputs"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code, "GET %s: %s", path, rec.Body.String())
+	}
+}
+
+// TestAgentAPI_ReadRunAndOutputs_RejectsAnonymous locks the human-auth floor on
+// the two run-read routes after they were moved out of the ServerAuth group: a
+// request with no credential (neither an enrolled agent bearer nor a human PAT/
+// session) must still be rejected, not fall through to the handler.
+func TestAgentAPI_ReadRunAndOutputs_RejectsAnonymous(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+
+	for _, path := range []string{"/api/v1/runs/" + run.ID, "/api/v1/runs/" + run.ID + "/outputs"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil) // no Authorization header
+		rec := httptest.NewRecorder()
+		s.Router().ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, "anonymous GET %s must be rejected: %s", path, rec.Body.String())
+	}
+}
