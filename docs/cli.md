@@ -848,11 +848,31 @@ unified-cli agent enrollment revoke <enrollment-id>
 ```
 
 `enrollment create` prints the exact `unified-cd-agent --server ... --id ...
---enrollment-token-file ...` command to run on the target host once the
-token file is in place — there is no separate install step. An enrolled
-agent's labels come from `--label` on `enrollment create` and are fixed for
-that agent's lifetime; the agent process's own `--labels` flag is ignored
-for enrolled agents (it only applies to legacy shared-token agents).
+--enrollment-token-file ...` (or, without `--output-file`, `--enrollment-token
+<value>`) command to run on the target host once the token is in place —
+there is no separate install step. An enrolled agent's labels come from
+`--label` on `enrollment create` and are fixed for that agent's lifetime; the
+agent process's own `--labels` flag is ignored for enrolled agents (it only
+applies to legacy shared-token agents).
+
+By default (no `--output-file`), `enrollment create` prints the token to
+stdout once and embeds it inline in the suggested run command via
+`--enrollment-token <value>` — convenient, but the token is then visible in
+shell history and `ps`. `--output-file <path>` instead writes the token to a
+new owner-only (`0600`) file and suggests `--enrollment-token-file <path>`;
+prefer this on shared hosts. `--quiet` prints *only* the raw token (no other
+output) and is mutually exclusive with `--output-file`, for piping straight
+into the agent:
+
+```bash
+unified-cli agent enrollment create --agent-id agent-1 --label kind:linux --quiet \
+  | unified-cd-agent --server https://ci.example.com --id agent-1 --enrollment-token -
+```
+
+On the agent side, `--enrollment-token-file <path>` and `--enrollment-token
+<value>` (also settable via `UNIFIED_AGENT_ENROLLMENT_TOKEN`, or
+`--enrollment-token -` to read the value from stdin, as above) are mutually
+exclusive; the agent exits with an error if both are set.
 
 Manage an identity with `agent identity get|enable|disable|revoke-credentials
 <agent-id>`. Use `agent enrollment-policy create|update|get|list|delete` for

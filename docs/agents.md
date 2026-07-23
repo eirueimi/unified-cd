@@ -14,11 +14,25 @@ short-lived; the rotating refresh credential remains in the protected file.
 
 `credentialFile` is optional: when unset, the agent defaults it to
 `$HOME/.unified-cd/<id>/credential.json` and creates that owner-only directory
-on startup, so a fresh VM only needs an enrollment-token file. `unified-cli
-agent enrollment create` prints the ready-to-run `unified-cd-agent` command
-for the new agent; run it directly, or wrap it in a hand-written service
-definition — see [Running the agent as a
-service](#running-the-agent-as-a-service) below.
+on startup, so a fresh VM only needs an enrollment token. `unified-cli agent
+enrollment create` prints the ready-to-run `unified-cd-agent` command for the
+new agent; run it directly, or wrap it in a hand-written service definition —
+see [Running the agent as a service](#running-the-agent-as-a-service) below.
+
+The token can be supplied either as a file (`--enrollment-token-file`, the
+more secure default — nothing sensitive touches shell history or `ps`) or
+inline (`--enrollment-token <value>` / `UNIFIED_AGENT_ENROLLMENT_TOKEN`, or
+`--enrollment-token -` to read it from stdin). `enrollment create --quiet`
+prints only the raw token, so it pipes straight into the agent without ever
+hitting a file or the terminal:
+
+```bash
+unified-cli agent enrollment create --agent-id agent-1 --label kind:linux --quiet \
+  | unified-cd-agent --server https://ci.example.com --id agent-1 --enrollment-token -
+```
+
+Only one of the file and inline/env/stdin forms may be set at a time; the
+agent exits with an error if both are given.
 
 Kubernetes agents instead prove their projected ServiceAccount token against a
 controller enrollment policy. The controller derives their ID from the verified

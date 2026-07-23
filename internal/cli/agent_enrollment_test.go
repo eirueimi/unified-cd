@@ -40,7 +40,10 @@ func TestAgentEnrollmentCreateDisplaysTokenOnce(t *testing.T) {
 	assert.Equal(t, "/api/v1/agent-enrollments", tr.records[0].path)
 	assert.Equal(t, "Bearer admin-token", tr.records[0].authorization)
 	assert.NotContains(t, tr.records[0].path, token)
-	assert.Equal(t, 1, strings.Count(out.String(), token))
+	// The token appears twice by design: once in the "shown only once" banner
+	// and once more embedded inline in the suggested --enrollment-token run
+	// command.
+	assert.Equal(t, 2, strings.Count(out.String(), token))
 	var request api.CreateAgentEnrollmentRequest
 	require.NoError(t, json.Unmarshal(tr.records[0].body, &request))
 	assert.Equal(t, "vm-agent-01", request.AgentID)
@@ -71,16 +74,29 @@ func TestAgentEnrollmentCreatePrintsNextAgentCommands(t *testing.T) {
 	assert.Contains(t, s, "$HOME/.unified-cd/vm-agent-01/credential.json")
 	assert.NotContains(t, s, token) // token went to the file, not stdout
 
-	// Without --output-file, the token prints once and a placeholder path is shown.
+	// Without --output-file, the token prints once and is embedded inline in
+	// the suggested run command via --enrollment-token.
 	cmd, out = newTestAgentLifecycleCmd(t, tr)
 	cmd.SetArgs([]string{"enrollment", "create", "--agent-id", "vm-agent-01"})
 	require.NoError(t, cmd.Execute())
 	s = out.String()
-	assert.Equal(t, 1, strings.Count(s, token))
-	assert.Contains(t, s, "Save this token to a private file")
-	assert.Contains(t, s, "<path-to-token-file>")
+	assert.Equal(t, 2, strings.Count(s, token))
+	assert.Contains(t, s, "--enrollment-token "+token)
+	assert.NotContains(t, s, "<path-to-token-file>")
 	assert.NotContains(t, s, "agent install")
 	assert.Contains(t, s, "unified-cd-agent")
+}
+
+func TestAgentEnrollmentCreateQuietPrintsOnlyToken(t *testing.T) {
+	const token = "uce_550e8400-e29b-41d4-a716-446655440000_abcdefghijklmnopqrstuvwxyz"
+	tr := &captureTransport{responseFor: func(path string) (int, []byte) {
+		b, _ := json.Marshal(api.CreateAgentEnrollmentResponse{ID: "enroll-1", AgentID: "vm-agent-01", Token: token, ExpiresAt: time.Now().Add(10 * time.Minute)})
+		return http.StatusCreated, b
+	}}
+	cmd, out := newTestAgentLifecycleCmd(t, tr)
+	cmd.SetArgs([]string{"enrollment", "create", "--agent-id", "vm-agent-01", "--quiet"})
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, token+"\n", out.String())
 }
 
 func TestAgentEnrollmentCreateOutputFileIsExclusiveAndPrivate(t *testing.T) {
