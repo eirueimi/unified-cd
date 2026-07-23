@@ -1281,6 +1281,7 @@ func TestAgentAPI_CreateChildRun_OwnedParent(t *testing.T) {
 	assert.NotEmpty(t, child.ID)
 	assert.Equal(t, "child-job", child.JobName)
 	assert.NotEqual(t, parent.ID, child.ID)
+	assert.Equal(t, "agent:a1", child.TriggeredBy, "child run must be attributed to the spawning agent")
 }
 
 // TestAgentAPI_CreateChildRun_NotOwnedParent verifies an agent cannot spawn a
@@ -1299,4 +1300,40 @@ func TestAgentAPI_CreateChildRun_NotOwnedParent(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+}
+
+// TestAgentAPI_CreateChildRun_TerminalParent verifies that an agent cannot
+// spawn a child under a parent run that has already reached a terminal state
+// (e.g. the reaper Failed it before the call: step's spawn request arrived).
+// agentRunGuard is invoked with rejectTerminal=true here, so a terminal
+// parent yields the runWriteTerminal verdict — respondRunWriteVerdict
+// replies 200 with an alreadyFinalized body (mirroring
+// TestAgentAPI_FinishRun_AlreadyTerminal) rather than creating a run, so this
+// asserts no child run was created rather than a 4xx status.
+func TestAgentAPI_CreateChildRun_TerminalParent(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`))
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", parent.ID)
+	// Simulate the reaper finalizing the parent before the call: step's spawn
+	// request arrives.
+	require.NoError(t, pg.MarkRunFinished(t.Context(), parent.ID, api.RunFailed))
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "child-job"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/children", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["alreadyFinalized"], "terminal parent must short-circuit to the alreadyFinalized body, not create a run")
+
+	// Direct proof no child run was created: no run for child-job exists.
+	childRuns, err := pg.ListRunsByJob(t.Context(), "child-job", 50)
+	require.NoError(t, err)
+	assert.Empty(t, childRuns, "no child run must be created when the parent is already terminal")
 }
