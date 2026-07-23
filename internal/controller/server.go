@@ -241,6 +241,7 @@ var agentRouteIdentityMatrix = []agentIdentityRoute{
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/logs", bindPath: true, handler: (*Server).handleAgentLogAppend},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/reconcile", bindPath: true, handler: (*Server).handleAgentReconcileRuns},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/finish", bindPath: true, handler: (*Server).handleAgentFinishRun},
+	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/children", bindPath: true, handler: (*Server).handleAgentCreateChildRun},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/outputs", bindPath: true, handler: (*Server).handleAgentSetStepOutputs},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/outputs", bindPath: true, handler: (*Server).handleAgentSetRunOutputs},
 	{method: http.MethodPost, path: "/api/v1/agents/{agentId}/runs/{runId}/steps/{stepIndex}/logs/bulk", bindPath: true, handler: (*Server).handleAgentLogBulk},

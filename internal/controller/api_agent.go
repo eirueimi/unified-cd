@@ -764,6 +764,39 @@ func (s *Server) handleAgentSidecarStatus(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleAgentCreateChildRun lets an agent executing a call: step create the
+// child run. Authorized purely by parent-run ownership: the agent may spawn a
+// child only for a run it currently holds (claimed_by == agentID, non-terminal).
+// This is the agent-authenticated counterpart to the human-only
+// POST /api/v1/runs — an enrolled uca_ credential is never accepted there.
+func (s *Server) handleAgentCreateChildRun(w http.ResponseWriter, r *http.Request) {
+	agentID := chi.URLParam(r, "agentId")
+	parentRunID := chi.URLParam(r, "runId")
+	v, gerr := s.agentRunGuard(r.Context(), agentID, parentRunID, true)
+	if gerr != nil {
+		http.Error(w, gerr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respondRunWriteVerdict(w, v, parentRunID) {
+		return
+	}
+	var req api.TriggerRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.JobName == "" {
+		http.Error(w, "jobName is required", http.StatusBadRequest)
+		return
+	}
+	run, status, msg := s.createRunFromJob(r.Context(), req.JobName, req.Params, "agent:"+agentID)
+	if status != 0 {
+		http.Error(w, msg, status)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
 // handleAgentReconcileRuns fails Running runs still claimed by the calling
 // agent. An agent calls this BEFORE it starts claiming (startup reconcile: a
 // restarted process no longer executes runs its previous incarnation claimed

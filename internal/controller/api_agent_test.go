@@ -1257,3 +1257,46 @@ func TestBuildOneClaimStep_CarriesRetry(t *testing.T) {
 	assert.Equal(t, 3, cs.Retry.Attempts)
 	assert.Equal(t, "30s", cs.Retry.Backoff)
 }
+
+// TestAgentAPI_CreateChildRun_OwnedParent verifies an enrolled agent can create
+// a child run for a run it has claimed (the call: step path), authorized purely
+// by parent-run ownership.
+func TestAgentAPI_CreateChildRun_OwnedParent(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`))
+	parent, _ := pg.CreateRun(t.Context(), "parent-job", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", parent.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "child-job"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/children", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var child api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &child))
+	assert.NotEmpty(t, child.ID)
+	assert.Equal(t, "child-job", child.JobName)
+	assert.NotEqual(t, parent.ID, child.ID)
+}
+
+// TestAgentAPI_CreateChildRun_NotOwnedParent verifies an agent cannot spawn a
+// child for a run claimed by a DIFFERENT agent (403, no run created).
+func TestAgentAPI_CreateChildRun_NotOwnedParent(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	_, _ = pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{"native":true}`))
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a2", parent.ID) // owned by a2, not a1
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "child-job"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/children", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+}
