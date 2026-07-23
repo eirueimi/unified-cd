@@ -129,6 +129,7 @@ func newAgentEnrollmentPolicyDeleteCmd(resolve func() (Config, error), client *h
 func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	var agentID, expiresIn, outputFile string
 	var labels, capabilities []string
+	var quiet bool
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a one-time agent enrollment token",
@@ -155,16 +156,20 @@ func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *htt
 			if err := json.Unmarshal(responseBody, &result); err != nil {
 				return err
 			}
+			if quiet {
+				fmt.Fprintln(cmd.OutOrStdout(), result.Token)
+				return nil
+			}
 			if outputFile != "" {
 				if err := writeNewEnrollmentTokenFile(outputFile, result.Token); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Enrollment token written to %s (shown only once).\n", outputFile)
-				fmt.Fprint(cmd.OutOrStdout(), nextAgentCommands(cfg.Server, agentID, outputFile))
+				fmt.Fprint(cmd.OutOrStdout(), nextAgentCommands(cfg.Server, agentID, outputFile, ""))
 				return nil
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Enrollment token created (shown only once):\n\n%s\n", result.Token)
-			fmt.Fprint(cmd.OutOrStdout(), nextAgentCommands(cfg.Server, agentID, ""))
+			fmt.Fprint(cmd.OutOrStdout(), nextAgentCommands(cfg.Server, agentID, "", result.Token))
 			return nil
 		},
 	}
@@ -173,29 +178,38 @@ func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *htt
 	cmd.Flags().StringArrayVar(&labels, "label", nil, "authorized agent label (repeatable)")
 	cmd.Flags().StringArrayVar(&capabilities, "capability", nil, "authorized agent capability (repeatable)")
 	cmd.Flags().StringVar(&outputFile, "output-file", "", "create a new owner-only file containing the token")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "print only the token (for piping to unified-cd-agent --enrollment-token -)")
+	cmd.MarkFlagsMutuallyExclusive("quiet", "output-file")
 	_ = cmd.MarkFlagRequired("agent-id")
 	return cmd
 }
 
 // nextAgentCommands renders the command an operator can run on the agent host
 // after creating an enrollment token: a direct `unified-cd-agent` invocation.
-// When tokenFile is empty the token was printed to stdout, so a placeholder
-// path and a save-the-token hint are shown instead of a concrete file. The
-// credential file is intentionally omitted: the agent defaults it to
-// $HOME/.unified-cd/<id>/credential.json.
-func nextAgentCommands(server, agentID, tokenFile string) string {
-	tokenRef := tokenFile
+// When tokenFile is set the token was written to that file, so the command
+// references it via --enrollment-token-file. When tokenValue is set instead
+// (no --output-file, no --quiet) the token was printed to stdout, so it is
+// embedded inline via --enrollment-token with a shell-history/ps warning.
+// Otherwise (neither set) a placeholder path and a save-the-token hint are
+// shown. The credential file is intentionally omitted: the agent defaults it
+// to $HOME/.unified-cd/<id>/credential.json.
+func nextAgentCommands(server, agentID, tokenFile, tokenValue string) string {
 	var b strings.Builder
 	b.WriteString("\n")
-	if tokenRef == "" {
-		tokenRef = "<path-to-token-file>"
-		b.WriteString("Save this token to a private file on the agent host, then run the agent:\n")
-	} else {
+	switch {
+	case tokenFile != "":
 		b.WriteString("Next, on the agent host, run the agent:\n")
+		fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s \\\n    --id %s \\\n    --enrollment-token-file %s\n",
+			server, agentID, tokenFile)
+	case tokenValue != "":
+		b.WriteString("Next, on the agent host, run the agent (the token is visible in shell history/ps — prefer --output-file for shared hosts):\n")
+		fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s \\\n    --id %s \\\n    --enrollment-token %s\n",
+			server, agentID, tokenValue)
+	default:
+		b.WriteString("Save this token to a private file on the agent host, then run the agent:\n")
+		fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s \\\n    --id %s \\\n    --enrollment-token-file <path-to-token-file>\n",
+			server, agentID)
 	}
-
-	fmt.Fprintf(&b, "  unified-cd-agent \\\n    --server %s \\\n    --id %s \\\n    --enrollment-token-file %s\n",
-		server, agentID, tokenRef)
 	fmt.Fprintf(&b, "\nThe credential file defaults to $HOME/.unified-cd/%s/credential.json.\n", agentID)
 	return b.String()
 }

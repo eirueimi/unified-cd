@@ -31,23 +31,28 @@ func DefaultAgentCredentialFile(id string) (string, error) {
 // AgentConfig holds all configuration for the agent binary.
 // Populated from a YAML file via LoadAgent; zero-value fields mean "not set".
 type AgentConfig struct {
-	Server              string        `yaml:"server"`
-	Token               string        `yaml:"token"`
-	CredentialFile      string        `yaml:"credentialFile"`
-	EnrollmentTokenFile string        `yaml:"enrollmentTokenFile"`
-	ID                  string        `yaml:"id"`
-	Labels              []string      `yaml:"labels"`
-	ExposeEnv           []string      `yaml:"exposeEnv"`
-	CacheEndpoint       string        `yaml:"cacheEndpoint"`
-	CacheKey            string        `yaml:"cacheKey"`
-	CacheSecret         string        `yaml:"cacheSecret"`
-	CacheBucket         string        `yaml:"cacheBucket"`
-	MaxConcurrent       int           `yaml:"maxConcurrent"`
-	CleanWorkspace      bool          `yaml:"cleanWorkspace"`
-	WorkspaceDir        string        `yaml:"workspaceDir"`
-	DrainTimeout        time.Duration `yaml:"drainTimeout"`
-	PauseImage          string        `yaml:"pauseImage"`
-	RunnerImage         string        `yaml:"runnerImage"`
+	Server              string `yaml:"server"`
+	Token               string `yaml:"token"`
+	CredentialFile      string `yaml:"credentialFile"`
+	EnrollmentTokenFile string `yaml:"enrollmentTokenFile"`
+	// EnrollmentToken is a one-time secret and is intentionally not a YAML
+	// field: it is populated only from the --enrollment-token flag, the
+	// UNIFIED_AGENT_ENROLLMENT_TOKEN env var, or stdin, never from a
+	// persisted config file.
+	EnrollmentToken string        `yaml:"-"`
+	ID              string        `yaml:"id"`
+	Labels          []string      `yaml:"labels"`
+	ExposeEnv       []string      `yaml:"exposeEnv"`
+	CacheEndpoint   string        `yaml:"cacheEndpoint"`
+	CacheKey        string        `yaml:"cacheKey"`
+	CacheSecret     string        `yaml:"cacheSecret"`
+	CacheBucket     string        `yaml:"cacheBucket"`
+	MaxConcurrent   int           `yaml:"maxConcurrent"`
+	CleanWorkspace  bool          `yaml:"cleanWorkspace"`
+	WorkspaceDir    string        `yaml:"workspaceDir"`
+	DrainTimeout    time.Duration `yaml:"drainTimeout"`
+	PauseImage      string        `yaml:"pauseImage"`
+	RunnerImage     string        `yaml:"runnerImage"`
 
 	// MinFreeDisk is the minimum free space (bytes) required on the
 	// workspace filesystem for the host agent to keep claiming runs. Zero
@@ -91,6 +96,7 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 		Token:               os.Getenv("UNIFIED_AGENT_TOKEN"),
 		CredentialFile:      os.Getenv("UNIFIED_AGENT_CREDENTIAL_FILE"),
 		EnrollmentTokenFile: os.Getenv("UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE"),
+		EnrollmentToken:     os.Getenv("UNIFIED_AGENT_ENROLLMENT_TOKEN"),
 		ID:                  os.Getenv("UNIFIED_AGENT_ID"),
 		CacheEndpoint:       os.Getenv("UNIFIED_CACHE_ENDPOINT"),
 		CacheKey:            os.Getenv("UNIFIED_CACHE_KEY"),

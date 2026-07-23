@@ -53,6 +53,28 @@ func TestCredentialManagerEnrollsAndPersistsRefreshOnly(t *testing.T) {
 	assert.NotContains(t, string(data), "uce_enroll")
 }
 
+func TestCredentialManagerEnrollsWithInlineTokenAndPersistsRefreshOnly(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	credentialPath := filepath.Join(dir, "credentials.json")
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/agents/enroll", r.URL.Path)
+		assert.Equal(t, "Bearer uce_enroll_inline", r.Header.Get("Authorization"))
+		_ = json.NewEncoder(w).Encode(tokenResponse("uca_access", "ucr_refresh", now))
+	})
+	defer srv.Close()
+
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", EnrollmentToken: "uce_enroll_inline", CredentialFile: credentialPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 }})
+	token, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "uca_access", token)
+	data, err := os.ReadFile(credentialPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "uca_access")
+	assert.Contains(t, string(data), "ucr_refresh")
+	assert.NotContains(t, string(data), "uce_enroll_inline")
+}
+
 func TestCredentialManagerRefreshesOnceForConcurrentCallers(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	dir := t.TempDir()

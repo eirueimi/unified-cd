@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -66,6 +67,7 @@ func main() {
 	token := flag.String("token", eff.Token, "agent bearer token")
 	credentialFile := flag.String("credential-file", eff.CredentialFile, "path to persistent VM refresh credentials (env: UNIFIED_AGENT_CREDENTIAL_FILE)")
 	enrollmentTokenFile := flag.String("enrollment-token-file", eff.EnrollmentTokenFile, "path to one-time enrollment token (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)")
+	enrollmentToken := flag.String("enrollment-token", eff.EnrollmentToken, "one-time enrollment token value; use - to read from stdin (env: UNIFIED_AGENT_ENROLLMENT_TOKEN)")
 	id := flag.String("id", defaultID, "agent ID (default: hostname)")
 	labelsStr := flag.String("labels", eff.LabelsString(), "comma-separated agent labels (env: UNIFIED_AGENT_LABELS)")
 	exposeEnvStr := flag.String("expose-env", strings.Join(eff.ExposeEnv, ","), "comma-separated environment variable names to expose (env: UNIFIED_AGENT_EXPOSE_ENV)")
@@ -89,6 +91,20 @@ func main() {
 	workspaceRetentionDays := flag.Int("workspace-retention-days", eff.WorkspaceRetentionDays, "age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; persistent workspaces are a feature) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
+
+	tokenValue := *enrollmentToken
+	if tokenValue == "-" {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			slog.Error("read enrollment token from stdin", "error", err)
+			os.Exit(1)
+		}
+		tokenValue = strings.TrimSpace(string(b))
+	}
+	if tokenValue != "" && *enrollmentTokenFile != "" {
+		slog.Error("specify only one of --enrollment-token / UNIFIED_AGENT_ENROLLMENT_TOKEN or --enrollment-token-file")
+		os.Exit(1)
+	}
 
 	level, err := config.ParseLogLevel(*logLevel)
 	if err != nil {
@@ -172,12 +188,12 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		if !credentialExists && (*credentialFile == "" || *enrollmentTokenFile == "") {
+		if !credentialExists && (*credentialFile == "" || (*enrollmentTokenFile == "" && tokenValue == "")) {
 			slog.Error("agent credentials are required")
 			os.Exit(1)
 		}
 		source := agent.NewCredentialManager(agent.CredentialManagerConfig{
-			Server: *server, AgentID: *id, CredentialFile: *credentialFile, EnrollmentTokenFile: *enrollmentTokenFile,
+			Server: *server, AgentID: *id, CredentialFile: *credentialFile, EnrollmentTokenFile: *enrollmentTokenFile, EnrollmentToken: tokenValue,
 		})
 		cli = agent.NewClientWithTokenSource(*server, source, nil)
 	}
