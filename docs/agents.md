@@ -36,9 +36,11 @@ agent exits with an error if both are given.
 
 Kubernetes agents instead prove their projected ServiceAccount token against a
 controller enrollment policy. The controller derives their ID from the verified
-cluster, namespace, and Pod UID and assigns their permitted labels and
-capabilities. A requested label is therefore only a request, never a way to
-gain scheduling authority.
+cluster, namespace, and Pod UID and assigns their permitted labels. A
+requested label is therefore only a request, never a way to gain scheduling
+authority. Capabilities are never assigned by the policy: each agent
+auto-detects and self-reports its own capabilities — see [Capabilities and
+routing](#capabilities-and-routing).
 
 ## Running the agent as a service
 
@@ -211,8 +213,10 @@ as any other trigger.
 Alongside labels, every agent advertises a typed `capabilities` list —
 `native`, `container`, or `pod` — describing what kind of step execution it
 can actually perform. Unlike labels (author-chosen, free-form topology tags),
-capabilities are machine-determined at agent startup and cannot be
-mistyped or forgotten by a job author:
+capabilities are auto-detected and self-reported by the agent at startup (and
+on every subsequent registration) — there is no admin flag or enrollment
+setting to configure them, so they cannot be mistyped or forgotten by a job
+author:
 
 | Capability | Meaning | Reported by |
 |---|---|---|

@@ -20,7 +20,6 @@ type AgentEnrollmentPolicyRequest struct {
 	AgentIDTemplate string   `json:"agentIdTemplate"`
 	AllowedLabels   []string `json:"allowedLabels"`
 	RequiredLabels  []string `json:"requiredLabels"`
-	Capabilities    []string `json:"capabilities"`
 	AccessTokenTTL  string   `json:"accessTokenTTL"`
 	Enabled         bool     `json:"enabled"`
 }
@@ -40,10 +39,9 @@ type AgentTokenResponse struct {
 // CreateAgentEnrollmentRequest requests a one-time enrollment token for one
 // fixed agent identity.
 type CreateAgentEnrollmentRequest struct {
-	AgentID      string   `json:"agentId"`
-	ExpiresIn    string   `json:"expiresIn,omitempty"`
-	Labels       []string `json:"labels,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	AgentID   string   `json:"agentId"`
+	ExpiresIn string   `json:"expiresIn,omitempty"`
+	Labels    []string `json:"labels,omitempty"`
 }
 
 // CreateAgentEnrollmentResponse is returned only when an enrollment token is

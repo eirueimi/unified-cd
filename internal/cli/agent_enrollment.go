@@ -34,14 +34,14 @@ func newAgentEnrollmentPolicyCmd(resolve func() (Config, error), httpClient *htt
 }
 func newAgentEnrollmentPolicyWriteCmd(resolve func() (Config, error), client *http.Client, action string) *cobra.Command {
 	var cluster, template, ttl string
-	var namespaces, serviceAccounts, allowed, required, capabilities []string
+	var namespaces, serviceAccounts, allowed, required []string
 	var enabled bool
 	cmd := &cobra.Command{Use: action + " <name>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := resolve()
 		if err != nil {
 			return err
 		}
-		body, err := json.Marshal(api.AgentEnrollmentPolicyRequest{Name: args[0], Provider: "kubernetes", Cluster: cluster, Namespaces: namespaces, ServiceAccounts: serviceAccounts, AgentIDTemplate: template, AllowedLabels: allowed, RequiredLabels: required, Capabilities: capabilities, AccessTokenTTL: ttl, Enabled: enabled})
+		body, err := json.Marshal(api.AgentEnrollmentPolicyRequest{Name: args[0], Provider: "kubernetes", Cluster: cluster, Namespaces: namespaces, ServiceAccounts: serviceAccounts, AgentIDTemplate: template, AllowedLabels: allowed, RequiredLabels: required, AccessTokenTTL: ttl, Enabled: enabled})
 		if err != nil {
 			return err
 		}
@@ -66,7 +66,6 @@ func newAgentEnrollmentPolicyWriteCmd(resolve func() (Config, error), client *ht
 	cmd.Flags().StringVar(&template, "agent-id-template", "k8s:{cluster}:{namespace}:{podUID}", "canonical agent ID template")
 	cmd.Flags().StringArrayVar(&allowed, "allowed-label", nil, "allowed agent label (repeatable)")
 	cmd.Flags().StringArrayVar(&required, "required-label", nil, "required agent label (repeatable)")
-	cmd.Flags().StringArrayVar(&capabilities, "capability", nil, "authorized capability (repeatable)")
 	cmd.Flags().StringVar(&ttl, "access-token-ttl", "1h", "access token lifetime (5m to 4h)")
 	cmd.Flags().BoolVar(&enabled, "enabled", true, "enable policy")
 	_ = cmd.MarkFlagRequired("cluster")
@@ -128,7 +127,7 @@ func newAgentEnrollmentPolicyDeleteCmd(resolve func() (Config, error), client *h
 
 func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *http.Client) *cobra.Command {
 	var agentID, expiresIn, outputFile string
-	var labels, capabilities []string
+	var labels []string
 	var quiet bool
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -140,7 +139,7 @@ func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *htt
 				return err
 			}
 			body, err := json.Marshal(api.CreateAgentEnrollmentRequest{
-				AgentID: agentID, ExpiresIn: expiresIn, Labels: labels, Capabilities: capabilities,
+				AgentID: agentID, ExpiresIn: expiresIn, Labels: labels,
 			})
 			if err != nil {
 				return err
@@ -176,7 +175,6 @@ func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *htt
 	cmd.Flags().StringVar(&agentID, "agent-id", "", "fixed canonical agent ID (required)")
 	cmd.Flags().StringVar(&expiresIn, "expires-in", "10m", "positive enrollment-token lifetime")
 	cmd.Flags().StringArrayVar(&labels, "label", nil, "authorized agent label (repeatable)")
-	cmd.Flags().StringArrayVar(&capabilities, "capability", nil, "authorized agent capability (repeatable)")
 	cmd.Flags().StringVar(&outputFile, "output-file", "", "create a new owner-only file containing the token")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "print only the token (for piping to unified-cd-agent --enrollment-token -)")
 	cmd.MarkFlagsMutuallyExclusive("quiet", "output-file")
@@ -300,9 +298,9 @@ func newAgentIdentityGetCmd(resolve func() (Config, error), httpClient *http.Cli
 			if err := json.Unmarshal(body, &identity); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "ID: %s\nAgentID: %s\nStatus: %s\nEnrollmentMethod: %s\nLabels: %s\nCapabilities: %s\n",
+			fmt.Fprintf(cmd.OutOrStdout(), "ID: %s\nAgentID: %s\nStatus: %s\nEnrollmentMethod: %s\nLabels: %s\n",
 				identity.ID, identity.AgentID, identity.Status, identity.EnrollmentMethod,
-				strings.Join(identity.AuthorizedLabels, ","), strings.Join(identity.AuthorizedCapabilities, ","))
+				strings.Join(identity.AuthorizedLabels, ","))
 			return nil
 		},
 	}
