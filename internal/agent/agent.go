@@ -105,7 +105,7 @@ type Agent struct {
 	// doc comment for why it must not be a sibling of the workspace dir),
 	// bind-mounted read-only at /.ucd into every container this agent
 	// creates (claim-pod containers, uses-scope containers, the
-	// workspace-cleanup container). cmd/agent sets this by calling
+	// workspace-cleanup container). cmd/unified-cd-agent sets this by calling
 	// InstallShim before Run, mirroring RequireShell — NOT called from Run
 	// itself, so tests that drive Run()/executeRun() directly without a
 	// container runtime (native-only claims) are unaffected by whether the
@@ -558,7 +558,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			failClaim("isolated job requires a container runtime (docker/podman/nerdctl); mark the job native: true or route it via agentSelector", err)
 			return
 		}
-		// The claim pod needs a pause image to hold the netns. cmd/agent
+		// The claim pod needs a pause image to hold the netns. cmd/unified-cd-agent
 		// defaults it, but an Agent built directly (agent.New) leaves it empty;
 		// starting a container with an empty image only surfaces as a cryptic
 		// `docker run -d: exit status 125`, so fail fast with an actionable
@@ -698,7 +698,7 @@ var shimBytes = embedded.Bytes
 // by prepareWorkspace's cleanup, which only os.RemoveAll's a specific
 // per-job workDir, never wsBase itself (see workspace.go).
 //
-// Called once at startup by cmd/agent's main(), mirroring RequireShell —
+// Called once at startup by cmd/unified-cd-agent's main(), mirroring RequireShell —
 // deliberately NOT from Agent.Run, so unit tests driving Run()/executeRun()
 // directly (native claims, or isolated claims against a fake runtime) are
 // unaffected by whether internal/shim/embedded holds the committed

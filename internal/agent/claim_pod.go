@@ -222,7 +222,7 @@ type claimPodManager struct {
 	// so the shim is available as the exec target for the shell argv
 	// default and as the pause/keep-alive binary. Empty means "no shim
 	// mount" — used by tests that never exec anything shim-dependent; a
-	// real agent (via cmd/agent's InstallShim wiring) always sets it.
+	// real agent (via cmd/unified-cd-agent's InstallShim wiring) always sets it.
 	toolsDir string
 
 	mu    sync.Mutex

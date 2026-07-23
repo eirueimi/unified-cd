@@ -178,7 +178,7 @@ don't supply their own `podTemplate` job container, the claim pod's pause
 (netns-holder) container, and the k8s-agent's auto-injected artifact
 sidecar — are referenced by **digest**, not by mutable tag:
 
-- Host agent: `defaultRunnerImage` / `defaultPauseImage` constants in `cmd/agent/main.go`
+- Host agent: `defaultRunnerImage` / `defaultPauseImage` constants in `cmd/unified-cd-agent/main.go`
 - k8s-agent: `defaultPodImage` constant in `internal/k8sagent/config.go` (also consumed by the fallback in `internal/k8sagent/podbuilder.go`'s `defaultPodSpec`)
 - k8s-agent artifact sidecar: `defaultSidecarImage` constant in `internal/k8sagent/config.go` (fleet-wide default for `Config.SidecarImage`, auto-injected into every k8s-agent pod by `internal/k8sagent/podbuilder.go`'s `buildArtifactSidecarContainer` — not job-author-controlled, and this sidecar holds long-lived, bucket-scoped static S3 credentials, so treat its pin with at least the same care as the runner/pod image)
 
@@ -210,7 +210,7 @@ step of every runner-image release**, not an optional follow-up:
    per-platform digest would break agents on other architectures.
 
 2. Update, in the same commit:
-   - `cmd/agent/main.go`: `defaultRunnerImage` and/or `defaultPauseImage`
+   - `cmd/unified-cd-agent/main.go`: `defaultRunnerImage` and/or `defaultPauseImage`
    - `internal/k8sagent/config.go`: `defaultPodImage` and/or `defaultSidecarImage`
    - Bump the tag portion of the string (e.g. `v0.0.3` → `vX.Y.Z`) alongside the digest so the two never drift apart. **Exception: `defaultSidecarImage`** is intentionally pinned as `...:latest@sha256:<digest>` — there is no `vX.Y.Z` release tag to bump for this image, so only its digest changes on rotation; the tag portion (`latest`) stays as-is.
 
@@ -218,7 +218,7 @@ step of every runner-image release**, not an optional follow-up:
    is auditable in `git log`/`git blame`.
 
 4. Run `go test ./cmd/... ./internal/agent/ ./internal/k8sagent/ -count=1` —
-   `TestDefaultImagesAreDigestPinned` (`cmd/agent/main_test.go`),
+   `TestDefaultImagesAreDigestPinned` (`cmd/unified-cd-agent/main_test.go`),
    `TestDefaultPodImageIsDigestPinned`, and `TestDefaultSidecarImageIsDigestPinned`
    (both in `internal/k8sagent/config_test.go`) only assert the string is a
    well-formed `@sha256:<64 hex chars>` pin, so they will **not** catch a

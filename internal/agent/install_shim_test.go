@@ -76,7 +76,7 @@ func TestInstallShim_WritesExecutableFileUnderWorkspaceDir(t *testing.T) {
 
 // TestInstallShim_DefaultsEmptyWorkspaceDir verifies InstallShim applies the
 // same "~/workspace" default Agent.Run applies to an unset WorkspaceDir, so
-// cmd/agent's InstallShim(*workspaceDir) call agrees with Run's own wsBase
+// cmd/unified-cd-agent's InstallShim(*workspaceDir) call agrees with Run's own wsBase
 // computation even when the flag is left empty. Points HOME/USERPROFILE at a
 // throwaway temp dir first so this never touches the real home directory.
 func TestInstallShim_DefaultsEmptyWorkspaceDir(t *testing.T) {

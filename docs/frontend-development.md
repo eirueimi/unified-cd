@@ -92,7 +92,7 @@ disk, and the Go binaries are built independently of the frontend:
 
 ```bash
 make build
-# builds web/dist (Vite) and the Go binaries (cmd/controller, cmd/agent, ...)
+# builds web/dist (Vite) and the Go binaries (cmd/controller, cmd/unified-cd-agent, ...)
 # as separate, independent artifacts — neither embeds the other
 ```
 

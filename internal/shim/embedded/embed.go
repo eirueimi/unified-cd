@@ -28,7 +28,7 @@
 // `go install` and the release build need. (Trade-off: a source change to
 // cmd/ucd-sh left un-regenerated is not caught automatically; regenerate and
 // commit when you touch the shim.) Because the bytes are committed, `go build`,
-// `go test`, `go install .../cmd/agent@version`, container builds, and
+// `go test`, `go install .../cmd/unified-cd-agent@version`, container builds, and
 // goreleaser all embed the shim with no pre-build step.
 package embedded
 

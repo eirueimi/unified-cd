@@ -12,7 +12,7 @@ ui-build:
 
 build: ui-build
 	$(GO) build $(GOFLAGS) -o bin/unified-cd-controller ./cmd/controller
-	$(GO) build $(GOFLAGS) -o bin/unified-cd-agent ./cmd/agent
+	$(GO) build $(GOFLAGS) -o bin/unified-cd-agent ./cmd/unified-cd-agent
 	$(GO) build $(GOFLAGS) -ldflags "-X github.com/eirueimi/unified-cd/internal/cli.version=$(VERSION)" -o bin/unified-cli ./cmd/unified-cli
 
 generate:

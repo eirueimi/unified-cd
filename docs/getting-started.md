@@ -37,15 +37,15 @@ Alternatively, install the agent binary directly from the module (no clone
 needed):
 
 ```bash
-go install github.com/eirueimi/unified-cd/cmd/agent@latest   # or @vX.Y.Z
+go install github.com/eirueimi/unified-cd/cmd/unified-cd-agent@latest   # or @vX.Y.Z
 ```
 
-This installs the `agent` binary into `$(go env GOBIN)` (or `$(go env GOPATH)/bin` if `GOBIN` is unset). The
+This installs the `unified-cd-agent` binary into `$(go env GOBIN)` (or `$(go env GOPATH)/bin` if `GOBIN` is unset). The
 controller and CLI can be installed the same way
 (`go install github.com/eirueimi/unified-cd/cmd/controller@latest`,
 `.../cmd/unified-cli@latest`). Elsewhere in this guide the agent is run as
-`./bin/unified-cd-agent` (the `make build` output name); substitute `agent`
-(or your renamed binary) if you installed it this way.
+`./bin/unified-cd-agent` (the `make build` output name), which now matches the
+`go install` binary name.
 
 ---
 
