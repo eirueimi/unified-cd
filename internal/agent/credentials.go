@@ -57,6 +57,7 @@ type CredentialManagerConfig struct {
 	Server              string
 	AgentID             string
 	EnrollmentTokenFile string
+	EnrollmentToken     string
 	CredentialFile      string
 	HTTPClient          *http.Client
 	Now                 func() time.Time
@@ -70,6 +71,7 @@ type CredentialManager struct {
 	server              string
 	agentID             string
 	enrollmentTokenFile string
+	enrollmentToken     string
 	credentialFile      string
 	http                *http.Client
 	now                 func() time.Time
@@ -99,7 +101,7 @@ func NewCredentialManager(cfg CredentialManagerConfig) *CredentialManager {
 		jitter = defaultCredentialJitter
 	}
 	return &CredentialManager{
-		server: cfg.Server, agentID: cfg.AgentID, enrollmentTokenFile: cfg.EnrollmentTokenFile,
+		server: cfg.Server, agentID: cfg.AgentID, enrollmentTokenFile: cfg.EnrollmentTokenFile, enrollmentToken: cfg.EnrollmentToken,
 		credentialFile: cfg.CredentialFile, http: httpClient, now: now, jitter: jitter, refreshJitter: jitter(),
 		persist: writeCredentialFile, sleep: sleepContext,
 	}
@@ -124,11 +126,15 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	if m.refresh.RefreshToken != "" {
 		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
 	} else {
-		enrollment, readErr := readSecretFile(m.enrollmentTokenFile)
-		if readErr != nil {
-			return "", readErr
+		enrollment := m.enrollmentToken
+		if enrollment == "" {
+			var readErr error
+			enrollment, readErr = readSecretFile(m.enrollmentTokenFile)
+			if readErr != nil {
+				return "", readErr
+			}
 		}
-		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/enroll", enrollment)
+		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/enroll", strings.TrimSpace(enrollment))
 	}
 	if err != nil {
 		return "", err
@@ -187,7 +193,7 @@ func (m *CredentialManager) loadRefreshCredential() error {
 	if !os.IsNotExist(backupErr) {
 		return fmt.Errorf("read credential backup: %w", backupErr)
 	}
-	if os.IsNotExist(err) && m.enrollmentTokenFile != "" {
+	if os.IsNotExist(err) && (m.enrollmentTokenFile != "" || m.enrollmentToken != "") {
 		m.loaded = true
 		return nil
 	}
