@@ -202,7 +202,7 @@ func (p *Postgres) ConsumeAgentEnrollment(ctx context.Context, enrollmentID, pre
 			identity.ID, nonNilStrings(labels)); err != nil {
 			return nil, fmt.Errorf("consume agent enrollment: update labels: %w", err)
 		}
-		identity.AuthorizedLabels = labels
+		identity.AuthorizedLabels = nonNilStrings(labels)
 	}
 
 	if err := insertAgentCredential(ctx, tx, identity.ID, issue.Access); err != nil {
