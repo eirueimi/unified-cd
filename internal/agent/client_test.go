@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -206,6 +207,26 @@ func TestClient_CreateChildRun(t *testing.T) {
 	assert.Equal(t, "/api/v1/agents/agent-1/runs/parent-run-1/children", gotPath)
 	assert.Equal(t, "hello", got.JobName)
 	assert.Equal(t, "v", got.Params["k"])
+}
+
+// TestClient_CreateChildRun_ParentTerminal verifies that when the parent run is
+// already terminal, the controller's alreadyFinalized acknowledgement (no child
+// run created) is surfaced as ErrParentRunAlreadyTerminal — not a nil error
+// with an empty-ID Run, which would send ExecuteCallStep polling a nonexistent
+// run ID.
+func TestClient_CreateChildRun_ParentTerminal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Mirror respondRunWriteVerdict's runWriteTerminal branch.
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"runId": "parent-run-1", "alreadyFinalized": true})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "t")
+
+	run, err := c.CreateChildRun(t.Context(), "agent-1", "parent-run-1", "hello", nil)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrParentRunAlreadyTerminal), "want ErrParentRunAlreadyTerminal, got %v", err)
+	assert.Empty(t, run.ID, "no child run is created when the parent is terminal")
 }
 
 func TestClient_GetRun(t *testing.T) {
