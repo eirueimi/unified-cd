@@ -192,6 +192,17 @@ func (p *Postgres) ConsumeAgentEnrollment(ctx context.Context, enrollmentID, pre
 		return nil, ErrAgentIdentityDisabled
 	} else if identity.EnrollmentMethod != issue.EnrollmentMethod || identity.ExternalSubject != issue.ExternalSubject {
 		return nil, ErrAgentEnrollmentInvalid
+	} else {
+		// Re-enrollment: a freshly minted token can carry changed authorized
+		// labels (an admin re-issues a token to change an agent's labels). Apply
+		// them to the existing identity — otherwise the change is silently
+		// ignored. (Capabilities are handled by PR D, which removes admin-set
+		// enrollment capabilities; do not update them here.)
+		if _, err := tx.Exec(ctx, `UPDATE agent_identities SET authorized_labels = $2 WHERE id = $1`,
+			identity.ID, nonNilStrings(labels)); err != nil {
+			return nil, fmt.Errorf("consume agent enrollment: update labels: %w", err)
+		}
+		identity.AuthorizedLabels = labels
 	}
 
 	if err := insertAgentCredential(ctx, tx, identity.ID, issue.Access); err != nil {

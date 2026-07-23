@@ -170,6 +170,41 @@ func TestPostgres_ConsumeAgentEnrollmentIsSingleUse(t *testing.T) {
 	assert.Equal(t, 1, invalid)
 }
 
+func TestPostgres_ConsumeAgentEnrollmentReenrollUpdatesLabels(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	// First enrollment token, labeled kind:a.
+	presented1 := "enrollment-reenroll-1"
+	enrollmentID1 := uuid.NewString()
+	_, err := pg.CreateAgentEnrollmentToken(ctx, AgentEnrollmentToken{
+		ID: enrollmentID1, AgentID: "agent-reenroll", CreatedBy: "admin",
+		AuthorizedLabels: []string{"kind:a"}, ExpiresAt: time.Now().Add(time.Hour),
+	}, agentCredentialHash(presented1))
+	require.NoError(t, err)
+	id1, err := pg.ConsumeAgentEnrollment(ctx, enrollmentID1, agentCredentialHash(presented1),
+		testAgentCredentialIssue("agent-reenroll", "enrollment", "", ptrCredential(testCredential("refresh", uuid.NewString(), 1))))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"kind:a"}, id1.AuthorizedLabels)
+
+	// Second token for the same agent, labeled kind:b; re-enroll.
+	presented2 := "enrollment-reenroll-2"
+	enrollmentID2 := uuid.NewString()
+	_, err = pg.CreateAgentEnrollmentToken(ctx, AgentEnrollmentToken{
+		ID: enrollmentID2, AgentID: "agent-reenroll", CreatedBy: "admin",
+		AuthorizedLabels: []string{"kind:b"}, ExpiresAt: time.Now().Add(time.Hour),
+	}, agentCredentialHash(presented2))
+	require.NoError(t, err)
+	id2, err := pg.ConsumeAgentEnrollment(ctx, enrollmentID2, agentCredentialHash(presented2),
+		testAgentCredentialIssue("agent-reenroll", "enrollment", "", ptrCredential(testCredential("refresh", uuid.NewString(), 1))))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"kind:b"}, id2.AuthorizedLabels, "re-enrollment must apply the new token's labels")
+
+	got, err := pg.GetAgentIdentity(ctx, "agent-reenroll")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"kind:b"}, got.AuthorizedLabels)
+}
+
 func TestPostgres_CredentialAuthRejectsExpiredRevokedAndDisabled(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
