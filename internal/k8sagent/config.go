@@ -13,9 +13,11 @@ import (
 
 // Config holds the configuration for the Kubernetes agent.
 type Config struct {
-	Server                  string   `yaml:"server"`
-	Token                   string   `yaml:"token"`
-	AgentID                 string   `yaml:"agentId"`
+	Server string `yaml:"server"`
+	// AgentID is not a config input (no yaml tag): it is runtime-populated
+	// by the Kubernetes enrollment credential source's AgentID() after
+	// bootstrap (see cmd/k8s-agent/main.go's bootstrapAgentClient).
+	AgentID                 string
 	EnrollmentPolicy        string   `yaml:"enrollmentPolicy"`
 	AllowInsecureHTTP       bool     `yaml:"allowInsecureHTTP,omitempty"`
 	ServiceAccountTokenFile string   `yaml:"serviceAccountTokenFile"`
@@ -90,20 +92,11 @@ func DefaultConfig() Config {
 	}
 }
 
-// LoadConfig loads configuration from configPath. If secretPath is non-empty
-// and the file exists, its fields are merged on top (secret values take
-// precedence), allowing sensitive fields to be stored in a separate Secret.
-func LoadConfig(configPath, secretPath string) (Config, error) {
+// LoadConfig loads configuration from configPath.
+func LoadConfig(configPath string) (Config, error) {
 	cfg := DefaultConfig()
 	if err := loadYAML(configPath, &cfg); err != nil {
 		return cfg, err
-	}
-	if secretPath != "" {
-		if _, err := os.Stat(secretPath); err == nil {
-			if err := loadYAML(secretPath, &cfg); err != nil {
-				return cfg, fmt.Errorf("secret file: %w", err)
-			}
-		}
 	}
 	return cfg, nil
 }
@@ -163,12 +156,7 @@ func (c *Config) DrainTimeoutDuration() time.Duration {
 }
 
 // Validate validates the configuration values and fills in default values.
-// If UNIFIED_K8S_AGENT_ID is set in the environment, it overrides agentId from the config file,
-// allowing each pod in a Deployment to use its own pod name as a unique agent ID.
 func (c *Config) Validate() error {
-	if v := os.Getenv("UNIFIED_K8S_AGENT_ID"); v != "" {
-		c.AgentID = v
-	}
 	if v := os.Getenv("UNIFIED_K8S_POD_START_TIMEOUT"); v != "" {
 		c.PodStartTimeout = v
 	}
@@ -186,11 +174,8 @@ func (c *Config) Validate() error {
 	if c.ServiceAccountTokenFile == "" {
 		c.ServiceAccountTokenFile = defaultServiceAccountTokenFile
 	}
-	if c.Token == "" && c.EnrollmentPolicy == "" {
-		return fmt.Errorf("token or enrollmentPolicy is required")
-	}
-	if c.Token != "" && c.AgentID == "" {
-		return fmt.Errorf("agentId is required")
+	if c.EnrollmentPolicy == "" {
+		return fmt.Errorf("enrollmentPolicy is required")
 	}
 	if c.Namespace == "" {
 		c.Namespace = "default"

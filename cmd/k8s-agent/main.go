@@ -18,7 +18,6 @@ import (
 
 func main() {
 	configPath := flag.String("config", os.Getenv("UNIFIED_K8S_CONFIG"), "config file path (env: UNIFIED_K8S_CONFIG)")
-	secretPath := flag.String("secret", os.Getenv("UNIFIED_K8S_SECRET"), "secret override file path (env: UNIFIED_K8S_SECRET)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_K8S_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_K8S_LOG_LEVEL)")
 	flag.Parse()
 
@@ -35,7 +34,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, err := k8sagent.LoadConfig(*configPath, *secretPath)
+	cfg, err := k8sagent.LoadConfig(*configPath)
 	if err != nil {
 		slog.Error("load config", "error", err)
 		os.Exit(1)
@@ -105,14 +104,11 @@ func buildRestConfig(kubeconfig string) (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", kubeconfig)
 }
 
-// bootstrapAgentClient keeps the legacy static-token path intact while
-// resolving a Kubernetes workload identity before the agent registers. The
+// bootstrapAgentClient resolves a Kubernetes workload identity before the
+// agent registers, via the projected-ServiceAccount enrollment path. The
 // controller, not the Pod name, is authoritative for the enrolled identity
 // and labels.
 func bootstrapAgentClient(ctx context.Context, cfg *k8sagent.Config, httpClient *http.Client) (*agentlib.Client, error) {
-	if cfg.Token != "" {
-		return agentlib.NewClient(cfg.Server, cfg.Token), nil
-	}
 	source := k8sagent.NewKubernetesCredentialSource(k8sagent.KubernetesCredentialSourceConfig{
 		Server: cfg.Server, Policy: cfg.EnrollmentPolicy, ServiceAccountTokenFile: cfg.ServiceAccountTokenFile,
 		Labels: cfg.Labels, Capabilities: []string{"pod", "container"}, HTTPClient: httpClient,
