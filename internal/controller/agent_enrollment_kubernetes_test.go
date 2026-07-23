@@ -156,11 +156,13 @@ func TestKubernetesEnrollment_AuthorizationRejectsRequestedLabelEscalation(t *te
 	policy := kubernetesEnrollmentPolicy()
 	policy.AllowedLabels = []string{"kind:kubernetes"}
 	policy.RequiredLabels = []string{"kind:kubernetes"}
-	policy.AuthorizedCapabilities = []string{"pod"}
-	_, _, ok := authorizedKubernetesRequest(api.AgentEnrollRequest{Labels: []string{"pool:admin"}}, policy)
-	assert.False(t, ok)
-	_, _, ok = authorizedKubernetesRequest(api.AgentEnrollRequest{Capabilities: []string{"native"}}, policy)
-	assert.False(t, ok)
+	_, ok := authorizedKubernetesRequest(api.AgentEnrollRequest{Labels: []string{"pool:admin"}}, policy)
+	assert.False(t, ok, "a label outside the policy's allowed set must be rejected")
+
+	// Capabilities are the agent's own auto-detected advertisement, not an
+	// enrollment-policy boundary: requested capabilities never cause rejection.
+	_, ok = authorizedKubernetesRequest(api.AgentEnrollRequest{Labels: []string{"kind:kubernetes"}, Capabilities: []string{"pod", "container"}}, policy)
+	assert.True(t, ok, "auto-detected capabilities must not be authorized against the policy")
 }
 
 func kubernetesEnrollmentPolicy() store.AgentEnrollmentPolicy {

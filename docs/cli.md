@@ -841,7 +841,7 @@ metadata without plaintext values:
 
 ```bash
 unified-cli agent enrollment create --agent-id worker-01 \
-  --label kind:linux --capability container \
+  --label kind:linux \
   --output-file /var/lib/unified-cd-agent/enrollment.token
 unified-cli agent enrollment list
 unified-cli agent enrollment revoke <enrollment-id>
@@ -852,7 +852,10 @@ unified-cli agent enrollment revoke <enrollment-id>
 <value>`) command to run on the target host once the token is in place —
 there is no separate install step. An enrolled agent's labels come from
 `--label` on `enrollment create` and are fixed for that agent's lifetime; the
-agent process's own `--labels` flag is ignored for every agent.
+agent process's own `--labels` flag is ignored for every agent. Capabilities
+are not set at enrollment: the agent auto-detects and self-reports them
+(`native` always, plus `container` when it can reach a container runtime) on
+every registration — see [Capabilities and routing](agents.md#capabilities-and-routing).
 
 By default (no `--output-file`), `enrollment create` prints the token to
 stdout once and embeds it inline in the suggested run command via
@@ -876,9 +879,11 @@ exclusive; the agent exits with an error if both are set.
 Manage an identity with `agent identity get|enable|disable|revoke-credentials
 <agent-id>`. Use `agent enrollment-policy create|update|get|list|delete` for
 Kubernetes workload enrollment. Create/update accepts `--cluster`, repeatable
-`--namespace` and `--service-account`, repeatable labels/capabilities,
-`--access-token-ttl` (5 minutes to 4 hours), and `--enabled`; it never accepts
-kubeconfig contents.
+`--namespace` and `--service-account`, repeatable `--allowed-label` and
+`--required-label`, `--access-token-ttl` (5 minutes to 4 hours), and
+`--enabled`; it never accepts kubeconfig contents. Capabilities are not part
+of the policy: each enrolled pod's agent auto-detects and self-reports its
+own capabilities on registration.
 
 ### agent list
 

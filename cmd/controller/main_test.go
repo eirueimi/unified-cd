@@ -40,7 +40,7 @@ func TestBootstrapKubernetesEnrollmentPoliciesUpsertsEnabledPolicyBeforeServing(
 	st := &policyBootstrapStore{}
 	auth := &config.ControllerAgentAuthConfig{KubernetesEnrollmentPolicies: []config.ControllerKubernetesEnrollmentPolicyConfig{{
 		Name: "unified-cd-k8s-agents", Cluster: "in-cluster", Namespaces: []string{"unified-cd"}, ServiceAccounts: []string{"unified-cd-k8s-agent"},
-		AllowedLabels: []string{"kind:kubernetes"}, RequiredLabels: []string{"kind:kubernetes"}, Capabilities: []string{"pod", "container"}, AccessTokenTTL: "1h", Enabled: true,
+		AllowedLabels: []string{"kind:kubernetes"}, RequiredLabels: []string{"kind:kubernetes"}, AccessTokenTTL: "1h", Enabled: true,
 	}}}
 
 	require.NoError(t, bootstrapKubernetesEnrollmentPolicies(t.Context(), st, auth))
@@ -48,7 +48,9 @@ func TestBootstrapKubernetesEnrollmentPoliciesUpsertsEnabledPolicyBeforeServing(
 	assert.Equal(t, "unified-cd-k8s-agents", st.policies[0].Name)
 	assert.True(t, st.policies[0].Enabled)
 	assert.Equal(t, []string{"kind:kubernetes"}, st.policies[0].RequiredLabels)
-	assert.Equal(t, []string{"pod", "container"}, st.policies[0].AuthorizedCapabilities)
+	// Capabilities are auto-detected/self-reported at register time, never
+	// seeded from the enrollment policy.
+	assert.Empty(t, st.policies[0].AuthorizedCapabilities)
 }
 
 // TestEnvIntOr covers the malformed-value warning path added for review

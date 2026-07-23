@@ -33,7 +33,7 @@ func TestAgentEnrollmentAdminCreateAndList(t *testing.T) {
 
 	before := time.Now().Add(9 * time.Minute)
 	rec := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{
-		AgentID: "vm-agent-01", Labels: []string{"kind:linux"}, Capabilities: []string{"container"},
+		AgentID: "vm-agent-01", Labels: []string{"kind:linux"},
 	})
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	var created api.CreateAgentEnrollmentResponse
@@ -57,13 +57,12 @@ func TestAgentEnrollmentAdminCreateAndList(t *testing.T) {
 	assert.Equal(t, created.ID, listed[0].ID)
 }
 
-func TestAgentEnrollmentAdminRejectsInvalidDurationAndCapability(t *testing.T) {
+func TestAgentEnrollmentAdminRejectsInvalidDuration(t *testing.T) {
 	s, _ := newTestServer(t)
 	for _, body := range []api.CreateAgentEnrollmentRequest{
 		{AgentID: "vm-agent-01", ExpiresIn: "not-a-duration"},
 		{AgentID: "vm-agent-01", ExpiresIn: "0s"},
 		{AgentID: "vm-agent-01", ExpiresIn: "-1m"},
-		{AgentID: "vm-agent-01", Capabilities: []string{"gpu"}},
 		{AgentID: ""},
 	} {
 		rec := enrollmentRequest(t, s, "secret", body)
@@ -101,7 +100,7 @@ func TestAgentEnrollmentAdminAuthorizationAndRevoke(t *testing.T) {
 func TestAgentEnrollmentPolicyAdminCRUD(t *testing.T) {
 	s, pg := newTestServer(t)
 	makeRolePAT(t, pg, "viewer-token", "viewer")
-	body := []byte(`{"name":"prod-k8s","provider":"kubernetes","cluster":"prod","namespaces":["unified-cd"],"serviceAccounts":["unified-cd-k8s-agent"],"agentIdTemplate":"k8s:{cluster}:{namespace}:{podUID}","allowedLabels":["kind:kubernetes"],"requiredLabels":["kind:kubernetes"],"capabilities":["pod"],"accessTokenTTL":"15m","enabled":true}`)
+	body := []byte(`{"name":"prod-k8s","provider":"kubernetes","cluster":"prod","namespaces":["unified-cd"],"serviceAccounts":["unified-cd-k8s-agent"],"agentIdTemplate":"k8s:{cluster}:{namespace}:{podUID}","allowedLabels":["kind:kubernetes"],"requiredLabels":["kind:kubernetes"],"accessTokenTTL":"15m","enabled":true}`)
 	require.Equal(t, http.StatusForbidden, doReq(t, s, http.MethodPost, "/api/v1/agent-enrollment-policies", "viewer-token", body))
 	require.Equal(t, http.StatusCreated, doReq(t, s, http.MethodPost, "/api/v1/agent-enrollment-policies", "secret", body))
 	require.Equal(t, http.StatusOK, doReq(t, s, http.MethodGet, "/api/v1/agent-enrollment-policies/prod-k8s", "viewer-token", nil))
@@ -163,7 +162,7 @@ func refreshAgent(t *testing.T, s *Server, token string) *httptest.ResponseRecor
 func TestAgentEnrollIssuesVMAccessAndRefreshTokens(t *testing.T) {
 	s, _ := newTestServer(t)
 	created := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{
-		AgentID: "vm-agent-exchange", Labels: []string{"pool:vm"}, Capabilities: []string{"native"},
+		AgentID: "vm-agent-exchange", Labels: []string{"pool:vm"},
 	})
 	require.Equal(t, http.StatusCreated, created.Code, created.Body.String())
 	var enrollment api.CreateAgentEnrollmentResponse
@@ -177,7 +176,7 @@ func TestAgentEnrollIssuesVMAccessAndRefreshTokens(t *testing.T) {
 	require.NotNil(t, response.RefreshExpiresAt)
 	require.WithinDuration(t, time.Now().Add(30*24*time.Hour), *response.RefreshExpiresAt, 5*time.Second)
 	require.Equal(t, []string{"pool:vm"}, response.Labels)
-	require.Equal(t, []string{"native"}, response.Capabilities)
+	require.Empty(t, response.Capabilities)
 
 	second := refreshAgent(t, s, response.AccessToken)
 	require.Equal(t, http.StatusUnauthorized, second.Code, second.Body.String())

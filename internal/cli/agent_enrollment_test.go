@@ -33,7 +33,7 @@ func TestAgentEnrollmentCreateDisplaysTokenOnce(t *testing.T) {
 		return http.StatusCreated, b
 	}}
 	cmd, out := newTestAgentLifecycleCmd(t, tr)
-	cmd.SetArgs([]string{"enrollment", "create", "--agent-id", "vm-agent-01", "--label", "kind:linux", "--capability", "container"})
+	cmd.SetArgs([]string{"enrollment", "create", "--agent-id", "vm-agent-01", "--label", "kind:linux"})
 	require.NoError(t, cmd.Execute())
 	require.Len(t, tr.records, 1)
 	assert.Equal(t, http.MethodPost, tr.records[0].method)
@@ -49,7 +49,6 @@ func TestAgentEnrollmentCreateDisplaysTokenOnce(t *testing.T) {
 	assert.Equal(t, "vm-agent-01", request.AgentID)
 	assert.Equal(t, "10m", request.ExpiresIn)
 	assert.Equal(t, []string{"kind:linux"}, request.Labels)
-	assert.Equal(t, []string{"container"}, request.Capabilities)
 }
 
 func TestAgentEnrollmentCreatePrintsNextAgentCommands(t *testing.T) {
@@ -258,4 +257,25 @@ func TestAgentIdentityCommandsUseAdminAPI(t *testing.T) {
 	for _, record := range tr.records {
 		assert.Equal(t, "Bearer admin-token", record.authorization)
 	}
+}
+
+// TestAgentEnrollmentCommandsHaveNoCapabilityFlag guards against the
+// admin --capability surface reappearing on enrollment create or
+// enrollment-policy create/update: capabilities are auto-detected and
+// self-reported by the agent, never admin-assigned at enrollment time.
+func TestAgentEnrollmentCommandsHaveNoCapabilityFlag(t *testing.T) {
+	cmd, out := newTestAgentLifecycleCmd(t, &captureTransport{})
+	cmd.SetArgs([]string{"enrollment", "create", "--help"})
+	require.NoError(t, cmd.Execute())
+	assert.NotContains(t, out.String(), "--capability")
+
+	cmd, out = newTestAgentLifecycleCmd(t, &captureTransport{})
+	cmd.SetArgs([]string{"enrollment-policy", "create", "--help"})
+	require.NoError(t, cmd.Execute())
+	assert.NotContains(t, out.String(), "--capability")
+
+	cmd, out = newTestAgentLifecycleCmd(t, &captureTransport{})
+	cmd.SetArgs([]string{"enrollment-policy", "update", "--help"})
+	require.NoError(t, cmd.Execute())
+	assert.NotContains(t, out.String(), "--capability")
 }

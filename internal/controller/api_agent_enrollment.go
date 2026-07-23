@@ -11,7 +11,6 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/agentauth"
 	"github.com/eirueimi/unified-cd/internal/api"
-	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -51,12 +50,6 @@ func (s *Server) handleCreateAgentEnrollment(w http.ResponseWriter, r *http.Requ
 		}
 		ttl = parsed
 	}
-	for _, capability := range req.Capabilities {
-		if !dsl.ValidCapability(capability) {
-			http.Error(w, "unknown capability: "+capability, http.StatusBadRequest)
-			return
-		}
-	}
 
 	issued, err := agentauth.Generate(agentauth.EnrollmentToken)
 	if err != nil {
@@ -66,8 +59,8 @@ func (s *Server) handleCreateAgentEnrollment(w http.ResponseWriter, r *http.Requ
 	creator, _ := principalFromContext(r.Context())
 	created, err := s.store.CreateAgentEnrollmentToken(r.Context(), store.AgentEnrollmentToken{
 		ID: issued.ID, AgentID: req.AgentID, CreatedBy: creator.Name,
-		AuthorizedLabels: req.Labels, AuthorizedCapabilities: req.Capabilities,
-		ExpiresAt: time.Now().Add(ttl),
+		AuthorizedLabels: req.Labels,
+		ExpiresAt:        time.Now().Add(ttl),
 	}, issued.Hash)
 	if err != nil {
 		http.Error(w, "create enrollment token: "+err.Error(), http.StatusInternalServerError)
@@ -176,7 +169,7 @@ func enrollmentPolicyFromRequest(name string, req api.AgentEnrollmentPolicyReque
 	}
 	providerConfig, _ := json.Marshal(map[string]string{"cluster": req.Cluster})
 	constraints, _ := json.Marshal(map[string][]string{"namespaces": req.Namespaces, "serviceAccounts": req.ServiceAccounts})
-	return store.AgentEnrollmentPolicy{Name: name, Provider: req.Provider, ProviderConfig: providerConfig, SubjectConstraints: constraints, AgentIDTemplate: req.AgentIDTemplate, AllowedLabels: req.AllowedLabels, RequiredLabels: req.RequiredLabels, AuthorizedCapabilities: req.Capabilities, AccessTokenTTL: ttl, Enabled: req.Enabled}, nil
+	return store.AgentEnrollmentPolicy{Name: name, Provider: req.Provider, ProviderConfig: providerConfig, SubjectConstraints: constraints, AgentIDTemplate: req.AgentIDTemplate, AllowedLabels: req.AllowedLabels, RequiredLabels: req.RequiredLabels, AccessTokenTTL: ttl, Enabled: req.Enabled}, nil
 }
 
 func (s *Server) upsertAgentEnrollmentPolicy(w http.ResponseWriter, r *http.Request, name string, status int) {
@@ -189,12 +182,6 @@ func (s *Server) upsertAgentEnrollmentPolicy(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
-	}
-	for _, capability := range policy.AuthorizedCapabilities {
-		if !dsl.ValidCapability(capability) {
-			http.Error(w, "unknown capability: "+capability, http.StatusBadRequest)
-			return
-		}
 	}
 	created, err := s.store.UpsertAgentEnrollmentPolicy(r.Context(), policy)
 	if err != nil {
@@ -250,7 +237,7 @@ func enrollmentPolicyResponse(policy store.AgentEnrollmentPolicy) api.AgentEnrol
 	}
 	_ = json.Unmarshal(policy.ProviderConfig, &config)
 	_ = json.Unmarshal(policy.SubjectConstraints, &constraints)
-	return api.AgentEnrollmentPolicyRequest{Name: policy.Name, Provider: policy.Provider, Cluster: config.Cluster, Namespaces: constraints.Namespaces, ServiceAccounts: constraints.ServiceAccounts, AgentIDTemplate: policy.AgentIDTemplate, AllowedLabels: policy.AllowedLabels, RequiredLabels: policy.RequiredLabels, Capabilities: policy.AuthorizedCapabilities, AccessTokenTTL: policy.AccessTokenTTL.String(), Enabled: policy.Enabled}
+	return api.AgentEnrollmentPolicyRequest{Name: policy.Name, Provider: policy.Provider, Cluster: config.Cluster, Namespaces: constraints.Namespaces, ServiceAccounts: constraints.ServiceAccounts, AgentIDTemplate: policy.AgentIDTemplate, AllowedLabels: policy.AllowedLabels, RequiredLabels: policy.RequiredLabels, AccessTokenTTL: policy.AccessTokenTTL.String(), Enabled: policy.Enabled}
 }
 
 // handleAgentEnroll exchanges a valid one-time enrollment credential for the
@@ -358,7 +345,7 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 		}
 		return
 	}
-	labels, capabilities, ok := authorizedKubernetesRequest(req, *policy)
+	labels, ok := authorizedKubernetesRequest(req, *policy)
 	if !ok {
 		s.recordAgentAuth("kubernetes", "failure", "policy")
 		http.Error(w, "enrollment policy rejected", http.StatusForbidden)
@@ -372,7 +359,7 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 	}
 	now := time.Now()
 	agentID := "k8s:" + identity.Cluster + ":" + identity.Namespace + ":" + identity.PodUID
-	agentIdentity, err := s.store.IssueExternalAgentAccess(r.Context(), store.AgentCredentialIssue{AgentID: agentID, EnrollmentMethod: "kubernetes", ExternalSubject: agentID, AuthorizedLabels: labels, AuthorizedCapabilities: capabilities, Access: newAgentCredential(access, "access", "", 0, now.Add(policy.AccessTokenTTL))})
+	agentIdentity, err := s.store.IssueExternalAgentAccess(r.Context(), store.AgentCredentialIssue{AgentID: agentID, EnrollmentMethod: "kubernetes", ExternalSubject: agentID, AuthorizedLabels: labels, Access: newAgentCredential(access, "access", "", 0, now.Add(policy.AccessTokenTTL))})
 	if err != nil {
 		s.respondAgentCredentialError(r, w, "kubernetes", "agent.enrollment.exchange", policy.Name, err)
 		return
@@ -382,22 +369,22 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, api.AgentTokenResponse{AgentID: agentIdentity.AgentID, AccessToken: access.Plaintext, AccessExpiresAt: now.Add(policy.AccessTokenTTL), Labels: agentIdentity.AuthorizedLabels, Capabilities: agentIdentity.AuthorizedCapabilities})
 }
 
-func authorizedKubernetesRequest(req api.AgentEnrollRequest, policy store.AgentEnrollmentPolicy) ([]string, []string, bool) {
+// authorizedKubernetesRequest authorizes an enrollment request against the
+// policy's LABEL boundary (the admin-authorized escalation guard) and returns
+// the effective labels. Requested capabilities are NOT authorized here:
+// capabilities are the agent's own runtime auto-detection, self-reported and
+// validated at register time, not an enrollment-policy boundary.
+func authorizedKubernetesRequest(req api.AgentEnrollRequest, policy store.AgentEnrollmentPolicy) ([]string, bool) {
 	labels := append([]string(nil), policy.RequiredLabels...)
 	for _, label := range req.Labels {
 		if !contains(policy.AllowedLabels, label) {
-			return nil, nil, false
+			return nil, false
 		}
 		if !contains(labels, label) {
 			labels = append(labels, label)
 		}
 	}
-	for _, capability := range req.Capabilities {
-		if !contains(policy.AuthorizedCapabilities, capability) {
-			return nil, nil, false
-		}
-	}
-	return labels, append([]string(nil), req.Capabilities...), true
+	return labels, true
 }
 
 // handleAgentRefresh rotates a VM refresh credential. Access credentials are

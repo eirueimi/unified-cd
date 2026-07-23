@@ -15,6 +15,5 @@ data:
           serviceAccounts: [unified-cd-k8s-agent]
           allowedLabels: [kind:kubernetes]
           requiredLabels: [kind:kubernetes]
-          capabilities: [pod, container]
           accessTokenTTL: 1h
           enabled: true

@@ -136,7 +136,6 @@ agentAuth:
       serviceAccounts: [unified-cd-k8s-agent]
       allowedLabels: [kind:kubernetes]
       requiredLabels: [kind:kubernetes]
-      capabilities: [pod, container]
       accessTokenTTL: 1h
       enabled: true
 ```
@@ -244,7 +243,9 @@ or config value), the agent defaults it to
 directory on startup, so only `enrollmentTokenFile` is strictly required on
 a fresh host. Keep both files owner-readable only and do not put either
 value in a command line. The controller, not this file, is authoritative for
-labels and capabilities.
+labels (fixed at enrollment time by an administrator). Capabilities are not
+configurable at all — the agent auto-detects and self-reports them on every
+registration; see [Capabilities and routing](agents.md#capabilities-and-routing).
 
 Start with config file:
 

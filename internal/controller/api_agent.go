@@ -38,7 +38,12 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	labels := append([]string(nil), principal.AuthorizedLabels...)
-	capabilities := append([]string(nil), principal.AuthorizedCapabilities...)
+	// Capabilities are the agent's own runtime auto-detection (native; container
+	// if a container runtime is present) — a technical advertisement of what it
+	// can run, not an authorization boundary. Trust the authenticated agent's
+	// self-report, validated against the known vocabulary below. (Labels, by
+	// contrast, remain controller-authorized above.)
+	capabilities := append([]string(nil), req.Capabilities...)
 	// Validate every advertised capability against the known vocabulary before
 	// persisting. An unrecognized capability string would silently never match
 	// any run's required_caps (or worse, mean something unintended), so reject
