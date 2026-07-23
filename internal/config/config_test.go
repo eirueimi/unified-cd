@@ -81,7 +81,6 @@ func TestControllerEffectiveResolvesKubernetesEnrollmentBootstrapPolicy(t *testi
       serviceAccounts: [unified-cd-k8s-agent]
       allowedLabels: [kind:kubernetes]
       requiredLabels: [kind:kubernetes]
-      capabilities: [pod, container]
       accessTokenTTL: 1h
       enabled: true
 `)
@@ -100,7 +99,9 @@ func TestControllerEffectiveResolvesKubernetesEnrollmentBootstrapPolicy(t *testi
 	assert.JSONEq(t, `{"namespaces":["unified-cd"],"serviceAccounts":["unified-cd-k8s-agent"]}`, string(policy.SubjectConstraints))
 	assert.Equal(t, []string{"kind:kubernetes"}, policy.AllowedLabels)
 	assert.Equal(t, []string{"kind:kubernetes"}, policy.RequiredLabels)
-	assert.Equal(t, []string{"pod", "container"}, policy.AuthorizedCapabilities)
+	// Capabilities are auto-detected/self-reported at register time, never seeded
+	// from the enrollment policy.
+	assert.Empty(t, policy.AuthorizedCapabilities)
 }
 
 func TestDefaultControllerManifestConfiguresKubernetesEnrollment(t *testing.T) {

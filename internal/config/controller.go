@@ -30,7 +30,6 @@ type ControllerKubernetesEnrollmentPolicyConfig struct {
 	ServiceAccounts []string `yaml:"serviceAccounts"`
 	AllowedLabels   []string `yaml:"allowedLabels"`
 	RequiredLabels  []string `yaml:"requiredLabels"`
-	Capabilities    []string `yaml:"capabilities"`
 	AccessTokenTTL  string   `yaml:"accessTokenTTL"`
 	Enabled         bool     `yaml:"enabled"`
 }
@@ -58,10 +57,14 @@ func (c ControllerKubernetesEnrollmentPolicyConfig) StorePolicy() (store.AgentEn
 	if err != nil {
 		return store.AgentEnrollmentPolicy{}, err
 	}
+	// Capabilities are auto-detected and self-reported by the agent at register
+	// time (a technical advertisement of what it can run), not admin-authorized
+	// via the enrollment policy — so no AuthorizedCapabilities are seeded here.
+	// Labels, by contrast, remain the admin-authorized boundary.
 	return store.AgentEnrollmentPolicy{
 		Name: c.Name, Provider: "kubernetes", ProviderConfig: providerConfig, SubjectConstraints: constraints,
 		AgentIDTemplate: "k8s:{cluster}:{namespace}:{podUID}", AllowedLabels: append([]string(nil), c.AllowedLabels...),
-		RequiredLabels: append([]string(nil), c.RequiredLabels...), AuthorizedCapabilities: append([]string(nil), c.Capabilities...),
+		RequiredLabels: append([]string(nil), c.RequiredLabels...),
 		AccessTokenTTL: ttl, Enabled: c.Enabled,
 	}, nil
 }

@@ -345,7 +345,7 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 		}
 		return
 	}
-	labels, capabilities, ok := authorizedKubernetesRequest(req, *policy)
+	labels, ok := authorizedKubernetesRequest(req, *policy)
 	if !ok {
 		s.recordAgentAuth("kubernetes", "failure", "policy")
 		http.Error(w, "enrollment policy rejected", http.StatusForbidden)
@@ -359,7 +359,7 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 	}
 	now := time.Now()
 	agentID := "k8s:" + identity.Cluster + ":" + identity.Namespace + ":" + identity.PodUID
-	agentIdentity, err := s.store.IssueExternalAgentAccess(r.Context(), store.AgentCredentialIssue{AgentID: agentID, EnrollmentMethod: "kubernetes", ExternalSubject: agentID, AuthorizedLabels: labels, AuthorizedCapabilities: capabilities, Access: newAgentCredential(access, "access", "", 0, now.Add(policy.AccessTokenTTL))})
+	agentIdentity, err := s.store.IssueExternalAgentAccess(r.Context(), store.AgentCredentialIssue{AgentID: agentID, EnrollmentMethod: "kubernetes", ExternalSubject: agentID, AuthorizedLabels: labels, Access: newAgentCredential(access, "access", "", 0, now.Add(policy.AccessTokenTTL))})
 	if err != nil {
 		s.respondAgentCredentialError(r, w, "kubernetes", "agent.enrollment.exchange", policy.Name, err)
 		return
@@ -369,22 +369,22 @@ func (s *Server) handleKubernetesAgentEnroll(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, api.AgentTokenResponse{AgentID: agentIdentity.AgentID, AccessToken: access.Plaintext, AccessExpiresAt: now.Add(policy.AccessTokenTTL), Labels: agentIdentity.AuthorizedLabels, Capabilities: agentIdentity.AuthorizedCapabilities})
 }
 
-func authorizedKubernetesRequest(req api.AgentEnrollRequest, policy store.AgentEnrollmentPolicy) ([]string, []string, bool) {
+// authorizedKubernetesRequest authorizes an enrollment request against the
+// policy's LABEL boundary (the admin-authorized escalation guard) and returns
+// the effective labels. Requested capabilities are NOT authorized here:
+// capabilities are the agent's own runtime auto-detection, self-reported and
+// validated at register time, not an enrollment-policy boundary.
+func authorizedKubernetesRequest(req api.AgentEnrollRequest, policy store.AgentEnrollmentPolicy) ([]string, bool) {
 	labels := append([]string(nil), policy.RequiredLabels...)
 	for _, label := range req.Labels {
 		if !contains(policy.AllowedLabels, label) {
-			return nil, nil, false
+			return nil, false
 		}
 		if !contains(labels, label) {
 			labels = append(labels, label)
 		}
 	}
-	for _, capability := range req.Capabilities {
-		if !contains(policy.AuthorizedCapabilities, capability) {
-			return nil, nil, false
-		}
-	}
-	return labels, append([]string(nil), req.Capabilities...), true
+	return labels, true
 }
 
 // handleAgentRefresh rotates a VM refresh credential. Access credentials are
