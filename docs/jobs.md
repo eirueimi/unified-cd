@@ -654,6 +654,14 @@ steps:
 
 `call` steps wait for the called job to complete. The called job's run shares the parent run's context.
 
+On success the child run's ID is available to later steps as
+`{{ .Steps.<call-step-name>.ChildRunID }}` (for matrix call steps, a map keyed
+by combination key — `{{ index .Steps.<name>.ChildRunID "linux/amd64" }}`) —
+see [Downloading from another run (`runId`)](#downloading-from-another-run-runid)
+for fetching the child's artifacts. Note that Go template dot-notation cannot
+address step names containing hyphens; name the call step with underscores
+(e.g. `build_app`) or use `index .Steps "build-app"`.
+
 > **⚠️ Slot deadlock: the called job needs a *free* agent slot.**
 > A `call` step holds the parent run's agent slot while it waits for the called
 > job to finish. The called job is a **separate run** that must be claimed by an
@@ -1193,7 +1201,10 @@ incompatible with holding one isolated environment across the whole template):
 
 ## Artifacts
 
-Upload and download files between jobs within the same or across runs.
+Upload and download files between steps and jobs. By default artifacts are
+scoped to the current run; a `downloadArtifact` step can fetch from another
+run — most usefully a `call:` child run — with `runId:` (see
+[Downloading from another run (`runId`)](#downloading-from-another-run-runid)).
 
 ```yaml
 steps:
@@ -1221,6 +1232,34 @@ Artifacts are stored in the S3-compatible object store. Artifact names must be u
 The `path`/`destDir` of an artifact step must be workspace-relative — see [Artifact and cache path rules](#artifact-and-cache-path-rules) below.
 
 Artifacts work on both the standard and Kubernetes agents; on the k8s-agent, transfers are handled by an auto-injected workspace sidecar (`unified-artifact`).
+
+### Downloading from another run (`runId`)
+
+`downloadArtifact.runId` selects the run to download from. It is
+template-expandable; combined with `{{ .Steps.<call-step>.ChildRunID }}`
+(set on every successful `call:` step) it retrieves artifacts produced by a
+called job:
+
+```yaml
+steps:
+  - name: build_app
+    call:
+      job: build
+      with: { tag: "{{ .Params.tag }}" }
+
+  - name: fetch-child-binary
+    downloadArtifact:
+      name: app-binary                              # name in the child run
+      runId: "{{ .Steps.build_app.ChildRunID }}"    # default: current run
+      destDir: artifacts
+```
+
+- For matrix `call:` steps, `ChildRunID` aggregates per combination key,
+  like outputs: `{{ index .Steps.build_app.ChildRunID "linux/amd64" }}`.
+- The expanded `runId` must match `^[A-Za-z0-9_-]{1,64}$`; the expansion
+  context excludes `Secrets` and `Stdout`. A template or validation failure
+  fails the step.
+- `runId` works on both the standard and Kubernetes agents.
 
 ### Listing and downloading artifacts (humans)
 
