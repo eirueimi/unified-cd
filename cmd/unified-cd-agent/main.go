@@ -53,21 +53,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ID defaults to the hostname. Explicit specification is only needed when running multiple agents on the same host.
-	defaultID := eff.ID
-	if defaultID == "" {
-		if h, err := os.Hostname(); err == nil {
-			defaultID = h
-		}
-	}
-
 	// Register flags with merged (env+file) defaults. Explicit flags override.
 	f := flag.String("f", configFile, "config file path (YAML) (default: unified-agent.yaml if exists)")
 	server := flag.String("server", eff.Server, "master base URL")
 	credentialFile := flag.String("credential-file", eff.CredentialFile, "path to persistent VM refresh credentials (env: UNIFIED_AGENT_CREDENTIAL_FILE)")
 	enrollmentTokenFile := flag.String("enrollment-token-file", eff.EnrollmentTokenFile, "path to one-time enrollment token (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)")
 	enrollmentToken := flag.String("enrollment-token", eff.EnrollmentToken, "one-time enrollment token value; use - to read from stdin (env: UNIFIED_AGENT_ENROLLMENT_TOKEN)")
-	id := flag.String("id", defaultID, "agent ID (default: hostname)")
+	// id is optional: when omitted, the effective agent ID is resolved at
+	// startup from the enrollment response or persisted credential (see
+	// EnsureIdentity below) rather than defaulting to the hostname.
+	id := flag.String("id", eff.ID, "agent ID (optional; defaults to the identity bound to the enrollment token / persisted credential)")
 	labelsStr := flag.String("labels", eff.LabelsString(), "comma-separated agent labels (env: UNIFIED_AGENT_LABELS)")
 	exposeEnvStr := flag.String("expose-env", strings.Join(eff.ExposeEnv, ","), "comma-separated environment variable names to expose (env: UNIFIED_AGENT_EXPOSE_ENV)")
 	cacheEndpoint := flag.String("cache-endpoint", eff.CacheEndpoint, "MinIO endpoint for cache (e.g. localhost:9000)")
@@ -191,6 +186,19 @@ func main() {
 	})
 	cli := agent.NewClientWithTokenSource(*server, source, nil)
 
+	// Resolve the effective agent ID before building the run loop. With --id
+	// set this is a no-op assertion; with --id omitted it is adopted from the
+	// persisted credential (no network call) or, on a genuinely first run,
+	// from the enrollment response.
+	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	agentID, err := source.EnsureIdentity(resolveCtx)
+	resolveCancel()
+	if err != nil {
+		slog.Error("resolve agent identity", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("agent identity resolved", "agentId", agentID)
+
 	// First SIGINT/SIGTERM begins a graceful shutdown (drain in-flight runs up to
 	// DrainTimeout); a second signal forces an immediate shutdown. On the force
 	// path, best-effort report the abandoned in-flight runs so the controller
@@ -198,14 +206,14 @@ func main() {
 	ctx, cancel := agent.ShutdownContext(func() {
 		fctx, fcancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer fcancel()
-		if n, err := cli.ReconcileRuns(fctx, *id); err != nil {
+		if n, err := cli.ReconcileRuns(fctx, agentID); err != nil {
 			slog.Warn("force shutdown: reconcile runs failed", "error", err)
 		} else if n > 0 {
 			slog.Warn("force shutdown: reported abandoned in-flight runs", "count", n)
 		}
 	})
 	defer cancel()
-	a := agent.NewWithLabels(*id, labels, cli)
+	a := agent.NewWithLabels(agentID, labels, cli)
 	a.ExposeEnv = exposeEnv
 	a.MaxConcurrent = *maxConcurrent
 	a.CleanWorkspace = *cleanWorkspace

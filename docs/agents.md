@@ -12,12 +12,25 @@ administrator, put it in a private file, and configure the agent with
 `credentialFile` and `enrollmentTokenFile`. Its access credential is
 short-lived; the rotating refresh credential remains in the protected file.
 
-`credentialFile` is optional: when unset, the agent defaults it to
-`$HOME/.unified-cd/<id>/credential.json` and creates that owner-only directory
-on startup, so a fresh VM only needs an enrollment token. `unified-cli agent
-enrollment create` prints the ready-to-run `unified-cd-agent` command for the
-new agent; run it directly, or wrap it in a hand-written service definition —
-see [Running the agent as a service](#running-the-agent-as-a-service) below.
+`--id` is optional: the agent adopts its canonical ID from the enrollment
+token / persisted credential rather than requiring one up front. When `--id`
+is supplied, it is instead asserted — the agent errors out if the enrollment
+response or persisted credential disagrees with it, which is useful for
+catching copy-paste mistakes. Because the ID may not be known until after the
+first enrollment, `credentialFile`'s default path is ID-independent — see
+below.
+
+`credentialFile` is optional: when unset and `--id` is set, the agent
+defaults it to `$HOME/.unified-cd/<id>/credential.json`; when `--id` is
+omitted, it defaults to the shared `$HOME/.unified-cd/credential.json`
+instead. Either way the agent creates that owner-only directory on startup,
+so a fresh VM only needs an enrollment token. Running more than one agent on
+the same host without `--id` set therefore collides on that single shared
+default path — set `--id` or `--credential-file` explicitly for each agent
+in that case. `unified-cli agent enrollment create` prints the ready-to-run
+`unified-cd-agent` command for the new agent; run it directly, or wrap it in
+a hand-written service definition — see [Running the agent as a
+service](#running-the-agent-as-a-service) below.
 
 The token can be supplied either as a file (`--enrollment-token-file`, the
 more secure default — nothing sensitive touches shell history or `ps`) or
@@ -28,11 +41,19 @@ hitting a file or the terminal:
 
 ```bash
 unified-cli agent enrollment create --agent-id agent-1 --label kind:linux --quiet \
-  | unified-cd-agent --server https://ci.example.com --id agent-1 --enrollment-token -
+  | unified-cd-agent --server https://ci.example.com --enrollment-token -
 ```
 
 Only one of the file and inline/env/stdin forms may be set at a time; the
 agent exits with an error if both are given.
+
+Supplying a **new** enrollment token to an agent that is already enrolled
+(has a valid persisted credential) re-enrolls it: the token is exchanged
+again, and any authorized labels attached to that token take effect. If the
+token has expired or was already consumed (the controller rejects it with
+`401`), the agent logs a WARN and keeps running on its existing credential
+instead of failing startup — it only refuses to start when it has neither a
+usable credential nor a usable token.
 
 Kubernetes agents instead prove their projected ServiceAccount token against a
 controller enrollment policy. The controller derives their ID from the verified
