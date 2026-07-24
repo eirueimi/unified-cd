@@ -71,7 +71,10 @@ services:
       - .:/app
       - gocache:/gocache
       - gomodcache:/gomodcache
-    command: air -c .air.controller.toml
+    command:
+      - sh
+      - -c
+      - 'mkdir -p /app/secrets; test -f /app/secrets/kek || go run ./cmd/unified-cli keygen --out /app/secrets/kek; exec air -c .air.controller.toml'
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,17 +85,16 @@ services:
       GOMODCACHE: /gomodcache
       UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
       UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
-      # Defaults to dev mode: an ephemeral, in-memory key, so secrets do not
-      # survive a restart. For a persistent local setup:
-      #   unified-cli keygen --out ./kek
-      # then in .env set:
-      #   UNIFIED_CONTROLLER_KEY_FILE=/run/secrets/kek
-      # and add "- ./kek:/run/secrets/kek:ro" to the existing volumes: list
-      # for this service above (do not add a second volumes: key).
-      # (UNIFIED_CONTROLLER_KEY_FILE takes precedence over UNIFIED_DEV_MODE
-      # when both are set, so you don't need to unset the latter.)
+      # Persistent secret-encryption key. The controller command above
+      # auto-generates secrets/kek with `unified-cli keygen` on first boot if it
+      # is absent, and reuses it on every later start, so stored secrets survive
+      # restarts. secrets/ is gitignored, so the key is never committed. (Do NOT
+      # use tmp/ — that is air's build dir and is wiped on restart.) Back up
+      # secrets/kek — losing it makes every stored secret undecryptable.
+      # (UNIFIED_CONTROLLER_KEY_FILE takes precedence over UNIFIED_DEV_MODE, so
+      # the latter can stay set.)
       UNIFIED_DEV_MODE: "${UNIFIED_DEV_MODE:-1}"
-      UNIFIED_CONTROLLER_KEY_FILE: "${UNIFIED_CONTROLLER_KEY_FILE:-}"
+      UNIFIED_CONTROLLER_KEY_FILE: "${UNIFIED_CONTROLLER_KEY_FILE:-/app/secrets/kek}"
       UNIFIED_S3_ENDPOINT: garage:3900
       UNIFIED_S3_BUCKET: unified-cd-logs
       UNIFIED_S3_KEY: garageadmin
