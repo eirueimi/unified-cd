@@ -41,6 +41,12 @@ func stepEnvBaseline() []string {
 		return []string{
 			"PATH", "PATHEXT", "SystemRoot", "SystemDrive", "COMSPEC",
 			"TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+			// Machine-wide config/data dir. PROGRAMDATA is where tools keep
+			// system-scoped config — e.g. Unity's Package Manager resolves its
+			// local config folder as %PROGRAMDATA%\Unity\config and crashes on
+			// startup ("path undefined") when it is unset. ALLUSERSPROFILE is
+			// the legacy alias for the same directory.
+			"PROGRAMDATA", "ALLUSERSPROFILE",
 		}
 	}
 	return []string{
