@@ -71,3 +71,17 @@ export function flattenJobTree(root, collapsed, query) {
   walk(root, 0);
   return rows;
 }
+
+// folderPaths lists every folder path in the tree, depth-first. Used to seed
+// the initial collapsed set so folders default to collapsed.
+export function folderPaths(root) {
+  const paths = [];
+  function walk(node) {
+    for (const f of node.folders.values()) {
+      paths.push(f.path);
+      walk(f);
+    }
+  }
+  walk(root);
+  return paths;
+}

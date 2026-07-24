@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { matchesFilter, buildJobTree, flattenJobTree, collapseCarriageReturns } from './utils.js';
+import { matchesFilter, buildJobTree, flattenJobTree, collapseCarriageReturns, folderPaths } from './utils.js';
 
 describe('matchesFilter', () => {
   it('matches on partial match', () => {
@@ -73,5 +73,21 @@ describe('collapseCarriageReturns', () => {
   it('passes through empty and null-ish values', () => {
     expect(collapseCarriageReturns('')).toBe('');
     expect(collapseCarriageReturns(undefined)).toBe(undefined);
+  });
+});
+
+describe('folderPaths', () => {
+  it('lists every folder path depth-first, excluding root and leaf jobs', () => {
+    const jobs = [
+      { name: 'team-a/build', path: 'team-a' },
+      { name: 'team-a/edge/x', path: 'team-a/edge' },
+      { name: 'top', path: '' },
+    ];
+    const paths = folderPaths(buildJobTree(jobs));
+    expect(paths.sort()).toEqual(['team-a', 'team-a/edge']);
+  });
+
+  it('returns an empty array when there are no folders', () => {
+    expect(folderPaths(buildJobTree([{ name: 'a', path: '' }]))).toEqual([]);
   });
 });

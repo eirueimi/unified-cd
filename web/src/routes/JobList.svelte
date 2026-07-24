@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import AuthSetup from '../components/AuthSetup.svelte';
   import { apiFetch } from '../lib/api.js';
-  import { fmtTime, fmtRelative, statusBadge, buildJobTree, flattenJobTree } from '../lib/utils.js';
+  import { fmtTime, fmtRelative, statusBadge, buildJobTree, flattenJobTree, folderPaths } from '../lib/utils.js';
 
   let jobs = [], loading = true, error = '';
   let filterQuery = '';
@@ -14,12 +14,34 @@
   let expandedRuns = [];
   let expandedLoading = false;
 
-  let collapsed = new Set();
-  $: rows = flattenJobTree(buildJobTree(jobs), collapsed, filterQuery);
+  const EXPANDED_KEY = 'ucd.joblist.expanded';
+  function loadExpanded() {
+    try { return new Set(JSON.parse(localStorage.getItem(EXPANDED_KEY) || '[]')); }
+    catch { return new Set(); }
+  }
+  function saveExpanded(s) {
+    try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...s])); } catch { /* ignore */ }
+  }
+  // Folders default to collapsed: a folder is open only if the user has
+  // expanded it (persisted). collapsed = every folder minus the expanded set,
+  // so folders that appear later also default collapsed.
+  let expanded = loadExpanded();
+  $: tree = buildJobTree(jobs);
+  $: collapsed = new Set(folderPaths(tree).filter((p) => !expanded.has(p)));
+  $: rows = flattenJobTree(tree, collapsed, filterQuery);
+
+  $: runningJobs = jobs
+    .filter((j) => activeRunsByJob[j.name]?.length)
+    .sort((a, b) => {
+      const ar = activeRunsByJob[a.name].some((r) => r.status === 'Running') ? 0 : 1;
+      const br = activeRunsByJob[b.name].some((r) => r.status === 'Running') ? 0 : 1;
+      return ar - br || a.name.localeCompare(b.name);
+    });
 
   function toggleFolder(path) {
-    if (collapsed.has(path)) collapsed.delete(path); else collapsed.add(path);
-    collapsed = collapsed;
+    if (expanded.has(path)) expanded.delete(path); else expanded.add(path);
+    expanded = expanded;
+    saveExpanded(expanded);
   }
 
   async function load() {
@@ -82,6 +104,32 @@
     placeholder="Filter jobs..."
     bind:value={filterQuery}
   />
+  {#if runningJobs.length}
+    <div class="meta" style="margin:0.75rem 0 0.25rem;font-size:0.8rem">Running</div>
+    <table>
+      <tbody>
+        {#each runningJobs as j (j.name)}
+          {@const _runs = activeRunsByJob[j.name]}
+          {@const _running = _runs.filter((r) => r.status === 'Running').length}
+          {@const _queued = _runs.filter((r) => r.status === 'Queued').length}
+          <tr>
+            <td style="padding-left:0.75rem">
+              <a href="#/jobs/{encodeURIComponent(j.name)}">{j.name}</a>
+              {#if _running}
+                <span class="badge badge-running" style="margin-left:0.5rem">● Running{_running > 1 ? ` (${_running})` : ''}</span>
+              {/if}
+              {#if _queued}
+                <span class="badge badge-queued" style="margin-left:0.5rem" title="Waiting for an available agent">◷ Queued{_queued > 1 ? ` (${_queued})` : ''}</span>
+              {/if}
+            </td>
+            <td class="meta">{fmtTime(j.updatedAt)}</td>
+            <td><a href="#/jobs/{encodeURIComponent(j.name)}" class="btn">Runs →</a></td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+    <div class="meta" style="margin:0.75rem 0 0.25rem;font-size:0.8rem">All jobs</div>
+  {/if}
   {#if !rows.length}
     <div class="empty">No jobs match "{filterQuery}".</div>
   {:else}
