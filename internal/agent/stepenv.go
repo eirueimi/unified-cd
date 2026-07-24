@@ -47,11 +47,19 @@ func stepEnvBaseline() []string {
 			// startup ("path undefined") when it is unset. ALLUSERSPROFILE is
 			// the legacy alias for the same directory.
 			"PROGRAMDATA", "ALLUSERSPROFILE",
+			// Identity, CPU count, and arch — the Windows counterparts of the
+			// unix USER/nproc that build tools read (USERNAME parallels USER;
+			// NUMBER_OF_PROCESSORS drives MSBuild/cargo/make -j parallelism;
+			// HOMEDRIVE+HOMEPATH is how some cross-platform tools construct the
+			// home path; PROCESSOR_ARCHITECTURE for arch detection). Non-secret.
+			"USERNAME", "HOMEDRIVE", "HOMEPATH", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
 		}
 	}
 	return []string{
 		"PATH", "HOME", "PWD", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TZ", "USER",
 		"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+		// LOGNAME is the twin of USER that many tools read instead.
+		"LOGNAME",
 	}
 }
 
