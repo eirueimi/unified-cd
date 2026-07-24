@@ -601,6 +601,26 @@ func TestCredentialManager_AdoptsAgentID(t *testing.T) {
 	assert.Equal(t, "vm-agent-01", id)
 }
 
+// TestCredentialManager_RejectsEmptyAgentID verifies a malformed enroll response
+// with an empty agentId is rejected up front rather than adopted as a blank
+// identity when --id is omitted.
+func TestCredentialManager_RejectsEmptyAgentID(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	enrollmentPath := filepath.Join(dir, "enrollment")
+	require.NoError(t, os.WriteFile(enrollmentPath, []byte("uce_enroll"), 0o600))
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := tokenResponse("uca_access", "ucr_refresh", now)
+		resp.AgentID = "" // malformed: no identity
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, EnrollmentTokenFile: enrollmentPath, CredentialFile: filepath.Join(dir, "credentials.json"), HTTPClient: srv.Client(), Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 }})
+	_, err := m.Token(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "credential response is invalid")
+}
+
 // (f) --id omitted, valid persisted credential present: EnsureIdentity
 // resolves the ID from the credential file WITHOUT any HTTP call.
 func TestCredentialManager_EnsureIdentityOfflineFromCredential(t *testing.T) {

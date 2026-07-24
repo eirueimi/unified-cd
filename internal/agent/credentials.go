@@ -159,7 +159,7 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	} else if response.AgentID != m.agentID {
 		return "", fmt.Errorf("credential response agent ID %q does not match configured agent ID %q", response.AgentID, m.agentID)
 	}
-	if response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
+	if response.AgentID == "" || response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
 		return "", fmt.Errorf("credential response is invalid")
 	}
 
