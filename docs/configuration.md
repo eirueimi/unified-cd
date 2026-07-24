@@ -153,9 +153,9 @@ unified-cd-agent [FLAGS]
 
   -f                      string    Config file path (default: unified-agent.yaml if exists)
   --server                string    Controller URL (env: UNIFIED_SERVER)
-  --credential-file       string    Protected VM refresh-credential file (default: $HOME/.unified-cd/<id>/credential.json; env: UNIFIED_AGENT_CREDENTIAL_FILE)
+  --credential-file       string    Protected VM refresh-credential file (default: $HOME/.unified-cd/<id>/credential.json, or $HOME/.unified-cd/credential.json when --id is unset; env: UNIFIED_AGENT_CREDENTIAL_FILE)
   --enrollment-token-file string    One-time VM enrollment-token file (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)
-  --id                    string    Agent identifier (default: hostname; env: UNIFIED_AGENT_ID)
+  --id                    string    Agent identifier (optional; adopted from the enrollment token / persisted credential when unset, asserted when set; env: UNIFIED_AGENT_ID)
   --labels                string    Comma-separated labels, e.g. "kind:linux,env:prod" (env: UNIFIED_AGENT_LABELS)
   --expose-env            string    Comma-separated env vars to allow into job steps; steps get ONLY these plus a minimal OS baseline, never the agent's full environment (env: UNIFIED_AGENT_EXPOSE_ENV)
   --cache-endpoint        string    S3/MinIO endpoint for cache storage
@@ -186,7 +186,7 @@ keys below.
 | `UNIFIED_SERVER` | Controller URL |
 | `UNIFIED_AGENT_CREDENTIAL_FILE` | Protected persistent VM refresh-credential file. Required for secure VM mode. |
 | `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | One-time VM enrollment credential file. Required only until initial enrollment succeeds. |
-| `UNIFIED_AGENT_ID` | Agent identifier (defaults to hostname if not set) |
+| `UNIFIED_AGENT_ID` | Agent identifier (optional; adopted from the enrollment token / persisted credential when unset, asserted when set) |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:docker,env:prod` |
 | `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps. **This is an allowlist, not an add-on.** A native (`spec.native: true`) step no longer inherits the agent's process environment at all — it only sees a minimal OS baseline (`PATH`, `HOME`, etc.) plus whatever is named here plus the orchestrator's own step env (`env:`, secrets). A variable a job used to read implicitly must be named here explicitly, or the step sees it as unset. Agent credentials (`UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`, `UNIFIED_TOKEN`) are dropped unconditionally even if named here — there is no way to expose them to a step. |
 | `UNIFIED_AGENT_WORKSPACE_DIR` | Base directory for run workspaces (default: `~/workspace`) |
