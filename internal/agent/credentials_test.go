@@ -468,3 +468,230 @@ func TestCredentialFileRejectsLooseUnixPermissions(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "permissions"), err)
 }
+
+// (a) With a valid persisted credential AND an enrollment token configured,
+// Token() consumes the token (hits /enroll, not /refresh) — the re-enroll path.
+func TestCredentialManager_EnrollFirst_WithExistingCredential(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	credentialPath := filepath.Join(dir, "credentials.json")
+	require.NoError(t, writeCredentialFile(credentialPath, persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "ucr_old", RefreshExpiresAt: now.Add(time.Hour)}))
+	var enrollHits, refreshHits int
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/enroll":
+			enrollHits++
+			assert.Equal(t, "Bearer uce_new_token", r.Header.Get("Authorization"))
+			_ = json.NewEncoder(w).Encode(tokenResponse("uca_enroll_access", "ucr_new", now))
+		case "/api/v1/agents/token/refresh":
+			refreshHits++
+			_ = json.NewEncoder(w).Encode(tokenResponse("uca_refresh_access", "ucr_refreshed", now))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", EnrollmentToken: "uce_new_token", CredentialFile: credentialPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 }})
+	token, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "uca_enroll_access", token)
+	assert.Equal(t, 1, enrollHits)
+	assert.Equal(t, 0, refreshHits)
+}
+
+// (b) Enroll rejected 401 + credential present -> fall back to /refresh.
+func TestCredentialManager_Fallback401_WithCredential(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	credentialPath := filepath.Join(dir, "credentials.json")
+	require.NoError(t, writeCredentialFile(credentialPath, persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "ucr_valid", RefreshExpiresAt: now.Add(time.Hour)}))
+	var calledPaths []string
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calledPaths = append(calledPaths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v1/agents/enroll":
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/api/v1/agents/token/refresh":
+			assert.Equal(t, "Bearer ucr_valid", r.Header.Get("Authorization"))
+			_ = json.NewEncoder(w).Encode(tokenResponse("uca_refreshed", "ucr_rotated", now))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", EnrollmentToken: "uce_expired_token", CredentialFile: credentialPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 }})
+	token, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "uca_refreshed", token)
+	require.Equal(t, []string{"/api/v1/agents/enroll", "/api/v1/agents/token/refresh"}, calledPaths)
+}
+
+// (c) Enroll rejected 401 + NO credential -> Token() returns an error.
+func TestCredentialManager_Fallback401_NoCredentialErrors(t *testing.T) {
+	dir := t.TempDir()
+	credentialPath := filepath.Join(dir, "credentials.json")
+	var enrollHits, refreshHits int
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/enroll":
+			enrollHits++
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/api/v1/agents/token/refresh":
+			refreshHits++
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", EnrollmentToken: "uce_expired_token", CredentialFile: credentialPath, HTTPClient: srv.Client()})
+	token, err := m.Token(t.Context())
+	require.Error(t, err)
+	assert.Empty(t, token)
+	assert.Equal(t, 1, enrollHits)
+	assert.Zero(t, refreshHits)
+}
+
+// (d) Enroll fails 503 (retryable) -> Token() surfaces an error and does NOT
+// call /refresh (no silent fallback).
+func TestCredentialManager_No503Fallback(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	credentialPath := filepath.Join(dir, "credentials.json")
+	require.NoError(t, writeCredentialFile(credentialPath, persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "ucr_valid", RefreshExpiresAt: now.Add(time.Hour)}))
+	var refreshHits int
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/enroll":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case "/api/v1/agents/token/refresh":
+			refreshHits++
+			_ = json.NewEncoder(w).Encode(tokenResponse("uca_refreshed", "ucr_rotated", now))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", EnrollmentToken: "uce_token", CredentialFile: credentialPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 }})
+	m.sleep = func(context.Context, time.Duration) error { return nil }
+	token, err := m.Token(t.Context())
+	require.Error(t, err)
+	assert.Empty(t, token)
+	assert.Zero(t, refreshHits)
+}
+
+// (e) --id omitted: after enroll, m.agentID adopted from the response;
+// EnsureIdentity returns it.
+func TestCredentialManager_AdoptsAgentID(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	credentialPath := filepath.Join(dir, "credentials.json")
+	enrollmentPath := filepath.Join(dir, "enrollment")
+	require.NoError(t, os.WriteFile(enrollmentPath, []byte("uce_enroll"), 0o600))
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/agents/enroll", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(tokenResponse("uca_access", "ucr_refresh", now))
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, EnrollmentTokenFile: enrollmentPath, CredentialFile: credentialPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 }})
+	_, err := m.Token(t.Context())
+	require.NoError(t, err)
+	id, err := m.EnsureIdentity(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "vm-agent-01", id)
+}
+
+// TestCredentialManager_RejectsEmptyAgentID verifies a malformed enroll response
+// with an empty agentId is rejected up front rather than adopted as a blank
+// identity when --id is omitted.
+func TestCredentialManager_RejectsEmptyAgentID(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	enrollmentPath := filepath.Join(dir, "enrollment")
+	require.NoError(t, os.WriteFile(enrollmentPath, []byte("uce_enroll"), 0o600))
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := tokenResponse("uca_access", "ucr_refresh", now)
+		resp.AgentID = "" // malformed: no identity
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, EnrollmentTokenFile: enrollmentPath, CredentialFile: filepath.Join(dir, "credentials.json"), HTTPClient: srv.Client(), Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 }})
+	_, err := m.Token(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "credential response is invalid")
+}
+
+// (f) --id omitted, valid persisted credential present: EnsureIdentity
+// resolves the ID from the credential file WITHOUT any HTTP call.
+func TestCredentialManager_EnsureIdentityOfflineFromCredential(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	credentialPath := filepath.Join(dir, "credentials.json")
+	require.NoError(t, writeCredentialFile(credentialPath, persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "ucr_valid", RefreshExpiresAt: now.Add(time.Hour)}))
+	var calls int
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) { calls++ })
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, CredentialFile: credentialPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 }})
+	id, err := m.EnsureIdentity(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "vm-agent-01", id)
+	assert.Zero(t, calls)
+}
+
+// (g) --id set to a value that mismatches the response/credential AgentID ->
+// error (assertion preserved).
+func TestCredentialManager_AssertsConfiguredID(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	credentialPath := filepath.Join(dir, "credentials.json")
+	enrollmentPath := filepath.Join(dir, "enrollment")
+	require.NoError(t, os.WriteFile(enrollmentPath, []byte("uce_enroll"), 0o600))
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse("uca_access", "ucr_refresh", now))
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-99", EnrollmentTokenFile: enrollmentPath, CredentialFile: credentialPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 }})
+	token, err := m.Token(t.Context())
+	require.Error(t, err)
+	assert.Empty(t, token)
+	assert.Contains(t, err.Error(), "vm-agent-99")
+}
+
+// (h) Enroll attempted at most once: after a successful enroll, force an
+// access-token refresh (advance fake time past the lead time) and assert the
+// second exchange hits /refresh, not /enroll.
+func TestCredentialManager_EnrollOnce(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	credentialPath := filepath.Join(dir, "credentials.json")
+	enrollmentPath := filepath.Join(dir, "enrollment")
+	require.NoError(t, os.WriteFile(enrollmentPath, []byte("uce_enroll"), 0o600))
+	var enrollHits, refreshHits int
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/agents/enroll":
+			enrollHits++
+			_ = json.NewEncoder(w).Encode(tokenResponse("uca_access_1", "ucr_refresh_1", now))
+		case "/api/v1/agents/token/refresh":
+			refreshHits++
+			_ = json.NewEncoder(w).Encode(tokenResponse("uca_access_2", "ucr_refresh_2", now.Add(2*time.Hour)))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	defer srv.Close()
+	currentNow := now
+	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, EnrollmentTokenFile: enrollmentPath, CredentialFile: credentialPath, HTTPClient: srv.Client(), Now: func() time.Time { return currentNow }, Jitter: func() time.Duration { return 0 }})
+	_, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, enrollHits)
+	assert.Equal(t, 0, refreshHits)
+
+	// Advance time past the access-token lead time so the second Token() call
+	// must refresh rather than reuse the cached access token.
+	currentNow = now.Add(2 * time.Hour)
+	_, err = m.Token(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, enrollHits)
+	assert.Equal(t, 1, refreshHits)
+}

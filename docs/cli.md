@@ -831,8 +831,12 @@ registered agents. The agent itself runs as a separate binary
 (`unified-cd-agent`), started directly or as a hand-configured system
 service — see [Agent Identity and Enrollment](agents.md#agent-identity-and-enrollment)
 and [Configuration Reference: Agent](configuration.md#agent) for how to run
-it, including the `--credential-file` default of
-`$HOME/.unified-cd/<id>/credential.json`.
+it. `--id` is optional; it defaults to the identity bound to the enrollment
+token / persisted credential. `--credential-file` defaults to
+`$HOME/.unified-cd/<id>/credential.json` when `--id` is set, or the shared
+`$HOME/.unified-cd/credential.json` when it is omitted — set `--id` or
+`--credential-file` explicitly if you run more than one agent on the same
+host without `--id`.
 
 ### agent enrollment, identity, and enrollment-policy
 
@@ -868,8 +872,13 @@ into the agent:
 
 ```bash
 unified-cli agent enrollment create --agent-id agent-1 --label kind:linux --quiet \
-  | unified-cd-agent --server https://ci.example.com --id agent-1 --enrollment-token -
+  | unified-cd-agent --server https://ci.example.com --enrollment-token -
 ```
+
+`--id` is optional on `unified-cd-agent`: when omitted (as above), the agent
+adopts the identity bound to the enrollment token / persisted credential
+instead of requiring it up front; when supplied, it is asserted against that
+resolved identity.
 
 On the agent side, `--enrollment-token-file <path>` and `--enrollment-token
 <value>` (also settable via `UNIFIED_AGENT_ENROLLMENT_TOKEN`, or

@@ -16,14 +16,18 @@ import (
 // $HOME/.unified-cd/<id>/credential.json. It is used when no credential file is
 // configured via flag, env, or the config file. The agent ID is part of the
 // path so multiple agents sharing a host (and $HOME) never share a credential
-// file; id must therefore be non-empty.
+// file. When id is empty (the agent's ID has not yet been resolved — e.g.
+// --id was omitted and the agent hasn't enrolled/loaded its credential yet),
+// it returns the ID-independent shared path $HOME/.unified-cd/credential.json
+// instead; running more than one such agent on the same host requires an
+// explicit --id or --credential-file to avoid colliding on that shared path.
 func DefaultAgentCredentialFile(id string) (string, error) {
-	if strings.TrimSpace(id) == "" {
-		return "", fmt.Errorf("agent ID is required to derive the default credential file path")
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory for default credential file: %w", err)
+	}
+	if strings.TrimSpace(id) == "" {
+		return filepath.Join(home, ".unified-cd", "credential.json"), nil
 	}
 	return filepath.Join(home, ".unified-cd", id, "credential.json"), nil
 }

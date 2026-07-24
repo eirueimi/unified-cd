@@ -23,10 +23,24 @@ func TestDefaultAgentCredentialFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(home, ".unified-cd", "build-gcp-01", "credential.json"), path)
 
-	_, err = config.DefaultAgentCredentialFile("")
-	require.Error(t, err)
-	_, err = config.DefaultAgentCredentialFile("   ")
-	require.Error(t, err)
+	// An empty (or whitespace-only) id no longer errors: it resolves to the
+	// shared, ID-independent default path so --id can be omitted.
+	path, err = config.DefaultAgentCredentialFile("")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".unified-cd", "credential.json"), path)
+
+	path, err = config.DefaultAgentCredentialFile("   ")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".unified-cd", "credential.json"), path)
+}
+
+// id set → ~/.unified-cd/<id>/credential.json (unchanged)
+// id ""  → ~/.unified-cd/credential.json (no per-id segment)
+func TestDefaultAgentCredentialFile_NoID(t *testing.T) {
+	got, err := config.DefaultAgentCredentialFile("")
+	require.NoError(t, err)
+	home, _ := os.UserHomeDir()
+	assert.Equal(t, filepath.Join(home, ".unified-cd", "credential.json"), got)
 }
 
 // ── FindFlag ────────────────────────────────────────────────────────────────
