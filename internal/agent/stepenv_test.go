@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -39,6 +40,26 @@ func TestStepEnv_ExcludesAgentCredentials(t *testing.T) {
 func TestStepEnv_KeepsShellBaseline(t *testing.T) {
 	got := envMap(t, StepEnv(nil, nil))
 	assert.Contains(t, got, "PATH", "a step needs PATH to resolve binaries")
+}
+
+// TestStepEnv_BaselineIncludesWellKnownConfigDirs pins that the per-user
+// config/data/cache directory variables common toolchains need (Unity, npm,
+// dotnet, pip, …) are in the OS baseline, so they work without per-agent
+// ExposeEnv. These are non-secret path variables, not credentials.
+func TestStepEnv_BaselineIncludesWellKnownConfigDirs(t *testing.T) {
+	var wantVars []string
+	if runtime.GOOS == "windows" {
+		wantVars = []string{"APPDATA", "LOCALAPPDATA"}
+	} else {
+		wantVars = []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"}
+	}
+	for _, k := range wantVars {
+		t.Setenv(k, "/some/"+k)
+	}
+	got := envMap(t, StepEnv(nil, nil))
+	for _, k := range wantVars {
+		assert.Contains(t, got, k, "%s should be in the OS baseline (non-secret per-user dir)", k)
+	}
 }
 
 func TestStepEnv_ExposeEnvAllowlisted(t *testing.T) {
