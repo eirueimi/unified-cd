@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import { token, serverURL } from '../lib/api.js';
 import JobList from './JobList.svelte';
 
@@ -109,6 +109,30 @@ describe('JobList — collapse-by-default and pinned Running section (Task 2)', 
     await vi.waitFor(() => {
       expect(getByText('build')).toBeTruthy();
     });
+  });
+
+  it('persists a folder to localStorage when expanded by clicking (write path)', async () => {
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/api/v1/runs/active')) return jsonResponse([]);
+      if (u.includes('/api/v1/jobs')) {
+        return jsonResponse([
+          { name: 'team-a/build', leaf: 'build', path: 'team-a', updatedAt: '2026-07-01T00:00:00Z' },
+        ]);
+      }
+      return jsonResponse({});
+    });
+    global.fetch = fetchMock;
+
+    const { getByText } = render(JobList);
+    // Starts collapsed (nothing stored): the child is hidden until we click.
+    // The folder cell's text is "📁 team-a", so match by substring.
+    await vi.waitFor(() => expect(getByText('team-a', { exact: false })).toBeTruthy());
+
+    await fireEvent.click(getByText('team-a', { exact: false }));
+
+    expect(JSON.parse(localStorage.getItem('ucd.joblist.expanded') || '[]')).toContain('team-a');
+    await vi.waitFor(() => expect(getByText('build')).toBeTruthy());
   });
 
   it('pins a Running section that mirrors an active job even while its folder is collapsed', async () => {
