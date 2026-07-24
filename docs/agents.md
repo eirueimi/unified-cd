@@ -55,6 +55,12 @@ token has expired or was already consumed (the controller rejects it with
 instead of failing startup — it only refuses to start when it has neither a
 usable credential nor a usable token.
 
+Because of this, leaving a **consumed** enrollment token in place (file or env)
+makes every later restart log that one WARN before falling back to the
+credential. Once the agent has enrolled and written its credential file, you can
+remove the enrollment token to keep restarts quiet; re-add a fresh token only
+when you want to re-enroll (e.g. to change authorized labels).
+
 Kubernetes agents instead prove their projected ServiceAccount token against a
 controller enrollment policy. The controller derives their ID from the verified
 cluster, namespace, and Pod UID and assigns their permitted labels. A

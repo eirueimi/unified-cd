@@ -492,8 +492,9 @@ UNIFIED_S3_SECRET="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" \
 ### Agent
 
 ```bash
+# The agent ID is adopted from the enrollment token (set UNIFIED_AGENT_ID only
+# to assert a specific ID — it must then equal the token's --agent-id).
 UNIFIED_SERVER="https://controller.example.invalid" \
-UNIFIED_AGENT_ID="worker-$(hostname)" \
 UNIFIED_AGENT_LABELS="kind:linux,env:prod" \
 UNIFIED_AGENT_CREDENTIAL_FILE="/var/lib/unified-cd-agent/credentials.json" \
 UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE="/var/lib/unified-cd-agent/enrollment.token" \

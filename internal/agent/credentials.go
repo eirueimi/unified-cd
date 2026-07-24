@@ -151,7 +151,6 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	m.bootstrapDone = true
 	// Adopt the agent ID from the response when --id was omitted; otherwise
 	// assert the server agrees with the configured identity.
 	if m.agentID == "" {
@@ -162,6 +161,11 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	if response.AgentID == "" || response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
 		return "", fmt.Errorf("credential response is invalid")
 	}
+	// Latch the once-per-process guard only after the response fully validates,
+	// so a malformed (but 2xx) enroll response is re-attempted as an enrollment
+	// on the next call rather than degrading to the refresh/"credentials
+	// required" branch with no usable credential.
+	m.bootstrapDone = true
 
 	next := persistedCredential{Version: 1, AgentID: response.AgentID, RefreshToken: response.RefreshToken, RefreshExpiresAt: response.RefreshExpiresAt.UTC()}
 	// Do not expose the new access token until its paired refresh credential is
