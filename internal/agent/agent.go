@@ -728,8 +728,14 @@ func InstallShim(workspaceDir string) (toolsDir string, err error) {
 		return "", fmt.Errorf("create tools dir %s: %w", toolsDir, err)
 	}
 	shimPath := filepath.Join(toolsDir, "ucd-sh")
-	if err := os.WriteFile(shimPath, payload, 0o755); err != nil {
-		return "", fmt.Errorf("write shim to %s: %w", shimPath, err)
+	// Write via a temp file + atomic rename rather than an in-place
+	// os.WriteFile: EnsureShimIntact tightens an installed shim to 0o555
+	// (read-only) on every tamper check, so on a re-run the existing ucd-sh
+	// cannot be reopened for writing (EACCES / "Access is denied"). The rename
+	// only needs toolsDir writable and also sidesteps ETXTBSY against an
+	// already-executing shim.
+	if err := writeShimAtomic(toolsDir, shimPath, payload, 0o755); err != nil {
+		return "", err
 	}
 	return toolsDir, nil
 }
@@ -850,6 +856,23 @@ func EnsureShimIntact(toolsDir string) (repaired bool, err error) {
 // cleaned up on every error path so a failed repair never leaves debris in
 // toolsDir.
 func repairShim(toolsDir, shimPath string, want []byte) error {
+	if err := writeShimAtomic(toolsDir, shimPath, want, 0o555); err != nil {
+		return fmt.Errorf("repair shim %s: %w", shimPath, err)
+	}
+	return nil
+}
+
+// writeShimAtomic writes want to a fresh temp file in toolsDir, sets its final
+// mode, and atomically renames it over shimPath. Both InstallShim and
+// repairShim go through it so they can never drift: the rename replaces
+// shimPath regardless of the existing file's mode (a shim EnsureShimIntact has
+// tightened to 0o555 would block an in-place write), needs only toolsDir
+// writable, and sidesteps ETXTBSY against an already-executing shim. The mode
+// is set on the temp file BEFORE the rename so the file that lands at shimPath
+// already has its intended permissions the instant it appears — no window where
+// it is briefly more permissive. The temp file is cleaned up on every error
+// path so a failed write never leaves debris in toolsDir.
+func writeShimAtomic(toolsDir, shimPath string, want []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(toolsDir, "ucd-sh.tmp*")
 	if err != nil {
 		return fmt.Errorf("create temp shim in %s: %w", toolsDir, err)
@@ -869,15 +892,11 @@ func repairShim(toolsDir, shimPath string, want []byte) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp shim %s: %w", tmpPath, err)
 	}
-	// Set the final mode on the temp file BEFORE the rename, so the file
-	// that lands at shimPath is already 0o555 the instant it appears there
-	// — no window where the just-repaired shim is briefly more permissive
-	// than intended.
-	if err := os.Chmod(tmpPath, 0o555); err != nil {
+	if err := os.Chmod(tmpPath, mode); err != nil {
 		return fmt.Errorf("chmod temp shim %s: %w", tmpPath, err)
 	}
 	if err := renameOverExisting(tmpPath, shimPath); err != nil {
-		return fmt.Errorf("repair shim %s: %w", shimPath, err)
+		return fmt.Errorf("write shim %s: %w", shimPath, err)
 	}
 	succeeded = true
 	return nil
