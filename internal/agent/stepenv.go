@@ -27,13 +27,26 @@ var stepEnvDenied = map[string]bool{
 	"UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE": true,
 }
 
-// stepEnvBaseline returns the environment variable names a shell needs to
-// function at all. Everything else must be opted in via ExposeEnv.
+// stepEnvBaseline returns the environment variable names a shell — and the
+// common per-user toolchains a job step is likely to invoke — need to function
+// at all. Beyond the bare shell essentials it includes the well-known per-user
+// config/data/cache directory variables (Windows: APPDATA/LOCALAPPDATA;
+// XDG_* on Linux/macOS) that tools such as Unity, npm, dotnet, and pip resolve
+// their config/cache from — these are non-secret filesystem paths, not
+// credentials, so requiring an operator to opt each one in via ExposeEnv only
+// produces confusing "path undefined" failures. Anything else must still be
+// opted in via ExposeEnv, and stepEnvDenied always wins.
 func stepEnvBaseline() []string {
 	if runtime.GOOS == "windows" {
-		return []string{"PATH", "PATHEXT", "SystemRoot", "SystemDrive", "COMSPEC", "TEMP", "TMP", "USERPROFILE"}
+		return []string{
+			"PATH", "PATHEXT", "SystemRoot", "SystemDrive", "COMSPEC",
+			"TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+		}
 	}
-	return []string{"PATH", "HOME", "PWD", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TZ", "USER"}
+	return []string{
+		"PATH", "HOME", "PWD", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TZ", "USER",
+		"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+	}
 }
 
 // StepEnv builds the environment for a job step. It deliberately does NOT
