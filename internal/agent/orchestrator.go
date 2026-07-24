@@ -446,11 +446,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					slog.Error("call step failed", "step", step.Name, "error", callErr)
 					status = "Failed"
 				} else {
-					if step.MatrixKey != "" {
-						sctx.setStepMatrixOutputs(step.Name, step.MatrixKey, childOutputs)
-					} else {
-						sctx.setStep(step.Name, dsl.StepData{Outputs: dsl.StringOutputs(childOutputs)})
-					}
+					sctx.setCallStepResult(step.Name, step.MatrixKey, childOutputs, childRunID)
 					if len(childOutputs) > 0 {
 						safe := FilterSecretOutputs(childOutputs, masker, func(k string) {
 							warnSkippedOutput(stepCtx, step.Index, k)

@@ -78,6 +78,24 @@ func (s *safeStepCtx) setStepMatrixOutputs(name, comboKey string, outputs map[st
 	s.data.Steps = newSteps
 }
 
+// setCallStepResult records a completed call step's child outputs and child
+// run ID in one critical section, with the same copy-on-write rebuild as
+// setStepMatrixOutputs so concurrent snapshots never observe partial writes.
+func (s *safeStepCtx) setCallStepResult(name, comboKey string, outputs map[string]string, childRunID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	newSteps := make(map[string]dsl.StepData, len(s.data.Steps)+1)
+	for k, v := range s.data.Steps {
+		newSteps[k] = v
+	}
+
+	ApplyStepOutputs(newSteps, name, comboKey, outputs)
+	ApplyChildRunID(newSteps, name, comboKey, childRunID)
+
+	s.data.Steps = newSteps
+}
+
 // ConcurrencyMode controls how stage members (parallel groups / matrix
 // expansions) are executed.
 type ConcurrencyMode int
