@@ -8,6 +8,7 @@ vendor/
 coverage.txt
 .env
 .envrc
+/secrets/
 .claude/
 web/node_modules/
 web/dist/
