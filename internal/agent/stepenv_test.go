@@ -62,6 +62,25 @@ func TestStepEnv_BaselineIncludesWellKnownConfigDirs(t *testing.T) {
 	}
 }
 
+// TestStepEnv_BaselineIncludesIdentityAndCPU pins the non-secret identity,
+// CPU-count, and arch variables build tools read (USERNAME/LOGNAME parity with
+// USER; NUMBER_OF_PROCESSORS for -j parallelism; PROCESSOR_ARCHITECTURE).
+func TestStepEnv_BaselineIncludesIdentityAndCPU(t *testing.T) {
+	var wantVars []string
+	if runtime.GOOS == "windows" {
+		wantVars = []string{"USERNAME", "HOMEDRIVE", "HOMEPATH", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"}
+	} else {
+		wantVars = []string{"LOGNAME"}
+	}
+	for _, k := range wantVars {
+		t.Setenv(k, "v-"+k)
+	}
+	got := envMap(t, StepEnv(nil, nil))
+	for _, k := range wantVars {
+		assert.Contains(t, got, k, "%s should be in the OS baseline", k)
+	}
+}
+
 func TestStepEnv_ExposeEnvAllowlisted(t *testing.T) {
 	t.Setenv("MY_BUILD_FLAG", "on")
 	t.Setenv("NOT_LISTED", "nope")
