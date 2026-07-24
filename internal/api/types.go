@@ -355,6 +355,9 @@ type UploadArtifactStep struct {
 type DownloadArtifactStep struct {
 	Name    string `json:"name"`
 	DestDir string `json:"destDir,omitempty"`
+	// RunID selects the run to download from; template-expanded and
+	// validated agent-side. Empty means the current run.
+	RunID string `json:"runId,omitempty"`
 }
 
 // ---- post step ----

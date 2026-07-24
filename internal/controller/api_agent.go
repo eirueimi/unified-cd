@@ -388,7 +388,7 @@ func buildOneClaimStep(stepIdx, stageIdx int, entry dsl.StepEntry, jobShell []st
 		cs.UploadArtifact = &api.UploadArtifactStep{Name: entry.UploadArtifact.Name, Path: entry.UploadArtifact.Path}
 	}
 	if entry.DownloadArtifact != nil {
-		cs.DownloadArtifact = &api.DownloadArtifactStep{Name: entry.DownloadArtifact.Name, DestDir: entry.DownloadArtifact.DestDir}
+		cs.DownloadArtifact = &api.DownloadArtifactStep{Name: entry.DownloadArtifact.Name, DestDir: entry.DownloadArtifact.DestDir, RunID: entry.DownloadArtifact.RunID}
 	}
 	if entry.Foreach != nil {
 		cs.Matrix = &api.ClaimMatrixDef{Dimensions: []api.ClaimMatrixDimension{{
