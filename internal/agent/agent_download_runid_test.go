@@ -112,3 +112,82 @@ func TestExecuteRun_DownloadArtifact_InvalidRunIDValue_Fails(t *testing.T) {
 		})
 	}
 }
+
+// Full flow: a call step records its child run ID, and a later
+// downloadArtifact with runId: "{{ .Steps.<call>.ChildRunID }}" downloads
+// the child run's artifact.
+func TestExecuteRun_CallThenDownloadChildArtifact(t *testing.T) {
+	const agentID = "call-dl-agent"
+	const runID = "run-parent"
+	const childRunID = "run-child-42"
+	workDir := t.TempDir()
+
+	finishCh := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/children", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.Run{ID: childRunID, Status: api.RunSucceeded}) //nolint:errcheck
+	})
+	mux.HandleFunc("GET /api/v1/runs/"+childRunID, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.Run{ID: childRunID, Status: api.RunSucceeded}) //nolint:errcheck
+	})
+	mux.HandleFunc("GET /api/v1/runs/"+childRunID+"/outputs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.RunOutputs{Outputs: map[string]string{}}) //nolint:errcheck
+	})
+	mux.HandleFunc("GET /api/v1/runs/"+childRunID+"/artifacts/app-binary", func(w http.ResponseWriter, r *http.Request) {
+		w.Write(makeAgentTestTarZstd(t, map[string]string{"app.txt": "from-child"})) //nolint:errcheck
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/finish", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Status string `json:"status"`
+		}
+		json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck
+		select {
+		case finishCh <- body.Status:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
+	resp := api.ClaimResponse{
+		Native:  true,
+		RunID:   runID,
+		JobName: "test-call-dl",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0, StageIndex: 0, Name: "build_app",
+				Call: &api.ClaimCallStep{Job: "build"},
+			}},
+			{Step: &api.ClaimStep{
+				Index: 1, StageIndex: 1, Name: "fetch",
+				DownloadArtifact: &api.DownloadArtifactStep{
+					Name:  "app-binary",
+					RunID: "{{ .Steps.build_app.ChildRunID }}",
+				},
+			}},
+		},
+	}
+	a.executeRun(context.Background(), resp, workDir)
+
+	select {
+	case status := <-finishCh:
+		assert.Equal(t, "Succeeded", status)
+	default:
+		t.Fatal("FinishRun was not called")
+	}
+	got, err := os.ReadFile(filepath.Join(workDir, "app.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "from-child", string(got))
+}

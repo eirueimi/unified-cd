@@ -648,3 +648,15 @@ func orchestrateWriteJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+func TestOrchestrate_DownloadArtifactRunIDOverridesSidecarRun(t *testing.T) {
+	c := api.ClaimResponse{RunID: "r1", Stages: []api.ClaimStage{
+		{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "dl",
+			DownloadArtifact: &api.DownloadArtifactStep{Name: "app", DestDir: "out", RunID: "r-child"}}},
+	}}
+	rec, statuses, _ := runOrchestrateArtifact(t, c, 0)
+	require.Len(t, rec, 1)
+	assert.Equal(t, []string{"unified-sidecar", "artifact", "download",
+		"--run", "r-child", "--name", "app", "--dest", "/workspace/out"}, rec[0].argv)
+	assert.Equal(t, "Succeeded", statuses["dl"])
+}
