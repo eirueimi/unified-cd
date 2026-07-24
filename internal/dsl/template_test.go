@@ -276,3 +276,24 @@ func TestExpandTemplate_ForeachContext(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "deploy to prod", result)
 }
+
+func TestExpandTemplate_ChildRunID(t *testing.T) {
+	data := TemplateData{
+		Steps: map[string]StepData{"build_app": {ChildRunID: "run-child-1"}},
+	}
+	out, err := ExpandTemplate("{{ .Steps.build_app.ChildRunID }}", data)
+	require.NoError(t, err)
+	assert.Equal(t, "run-child-1", out)
+}
+
+func TestExpandTemplate_ChildRunID_MatrixAggregated(t *testing.T) {
+	data := TemplateData{
+		Steps: map[string]StepData{"build": {ChildRunID: map[string]string{
+			"linux/amd64": "run-a",
+			"linux/arm64": "run-b",
+		}}},
+	}
+	out, err := ExpandTemplate(`{{ index .Steps.build.ChildRunID "linux/arm64" }}`, data)
+	require.NoError(t, err)
+	assert.Equal(t, "run-b", out)
+}

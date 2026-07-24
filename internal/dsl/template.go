@@ -29,6 +29,10 @@ type TemplateData struct {
 // map[string]string keyed by combination key (e.g. "linux/amd64").
 type StepData struct {
 	Outputs map[string]any
+	// ChildRunID is set for completed call: steps only. A plain string for
+	// non-matrix call steps; a map[string]string keyed by combination key
+	// for matrix call steps (mirroring how Outputs aggregates).
+	ChildRunID any
 }
 
 // secretsRefRe matches "{{ secrets.NAME }}" (without leading dot).

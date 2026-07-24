@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -410,7 +411,12 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					markFailed(context.WithoutCancel(stepCtx))
 					return nil
 				}
-				if err := executeDownloadArtifact(stepCtx, client, agentID, step, c.RunID, b, scope); err != nil {
+				dlData := sctx.snapshot()
+				if step.MatrixValues != nil {
+					dlData.Matrix = step.MatrixValues
+					dlData.Foreach = step.MatrixValues // foreach sugar compatibility: {{ .Foreach.key }}
+				}
+				if err := executeDownloadArtifact(stepCtx, client, agentID, step, c.RunID, b, scope, dlData); err != nil {
 					slog.Error("download artifact failed", "step", step.Name, "error", err)
 					markFailed(context.WithoutCancel(stepCtx))
 				}
@@ -446,11 +452,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					slog.Error("call step failed", "step", step.Name, "error", callErr)
 					status = "Failed"
 				} else {
-					if step.MatrixKey != "" {
-						sctx.setStepMatrixOutputs(step.Name, step.MatrixKey, childOutputs)
-					} else {
-						sctx.setStep(step.Name, dsl.StepData{Outputs: dsl.StringOutputs(childOutputs)})
-					}
+					sctx.setCallStepResult(step.Name, step.MatrixKey, childOutputs, childRunID)
 					if len(childOutputs) > 0 {
 						safe := FilterSecretOutputs(childOutputs, masker, func(k string) {
 							warnSkippedOutput(stepCtx, step.Index, k)
@@ -825,22 +827,27 @@ func executeUploadArtifact(ctx context.Context, client *Client, agentID string, 
 	return nil
 }
 
+// artifactRunIDRe constrains the expanded downloadArtifact.runId value. The
+// value is spliced into a URL path (host backend) and a sidecar --run
+// argument (k8s backend), so it must not contain path separators, dots, or
+// any URL-structure characters.
+var artifactRunIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 // executeDownloadArtifact runs a download-artifact step, mirroring
 // executeUploadArtifact's path resolution (see ExecBackend.ResolveArtifactPath).
-func executeDownloadArtifact(ctx context.Context, client *Client, agentID string, step api.ClaimStep, runID string, b ExecBackend, scope ScopeHandle) error {
+// tplData is used to expand DownloadArtifact.RunID; Secrets and Stdout are
+// deliberately excluded from the expansion context because the expanded
+// value is embedded in a URL path and appears in logs (same precedent as
+// call: param expansion in ExecuteCallStep).
+func executeDownloadArtifact(ctx context.Context, client *Client, agentID string, step api.ClaimStep, runID string, b ExecBackend, scope ScopeHandle, tplData dsl.TemplateData) error {
 	started := time.Now().UTC()
 	_ = client.ReportStep(ctx, agentID, api.StepReportRequest{
 		RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Running", StartedAt: started,
 	})
 
 	da := step.DownloadArtifact
-	destDir := da.DestDir
-	if destDir == "" {
-		destDir = "."
-	}
-	resolvedDestDir, err := b.ResolveArtifactPath(scope, destDir)
-	if err != nil {
-		slog.Error("download-artifact path rejected", "step", step.Name, "error", err)
+	failStep := func(err error) error {
+		slog.Error("download-artifact failed", "step", step.Name, "error", err)
 		_ = client.ReportStep(ctx, agentID, api.StepReportRequest{
 			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
 			StartedAt: started, EndedAt: time.Now().UTC(),
@@ -848,13 +855,32 @@ func executeDownloadArtifact(ctx context.Context, client *Client, agentID string
 		return fmt.Errorf("download-artifact %q: %w", da.Name, err)
 	}
 
-	if err := b.DownloadArtifact(ctx, scope, runID, da.Name, resolvedDestDir); err != nil {
-		slog.Error("download-artifact failed", "step", step.Name, "error", err)
-		_ = client.ReportStep(ctx, agentID, api.StepReportRequest{
-			RunID: runID, StepIndex: step.Index, StageIndex: step.StageIndex, StepName: step.DisplayName(), Variant: step.MatrixKey, Status: "Failed",
-			StartedAt: started, EndedAt: time.Now().UTC(),
-		})
-		return fmt.Errorf("download-artifact %q: %w", da.Name, err)
+	targetRunID := runID
+	if da.RunID != "" {
+		restricted := dsl.TemplateData{Params: tplData.Params, Steps: tplData.Steps, Matrix: tplData.Matrix, Foreach: tplData.Foreach}
+		expanded, err := dsl.ExpandTemplate(da.RunID, restricted)
+		if err != nil {
+			return failStep(fmt.Errorf("runId template: %w", err))
+		}
+		if !artifactRunIDRe.MatchString(expanded) {
+			// Do not echo the expanded value: it is attacker-influenced on
+			// the failure path and would land in operator-read logs.
+			return failStep(fmt.Errorf("runId expanded to a value not matching %s", artifactRunIDRe.String()))
+		}
+		targetRunID = expanded
+	}
+
+	destDir := da.DestDir
+	if destDir == "" {
+		destDir = "."
+	}
+	resolvedDestDir, err := b.ResolveArtifactPath(scope, destDir)
+	if err != nil {
+		return failStep(err)
+	}
+
+	if err := b.DownloadArtifact(ctx, scope, targetRunID, da.Name, resolvedDestDir); err != nil {
+		return failStep(err)
 	}
 
 	_ = client.ReportStep(ctx, agentID, api.StepReportRequest{

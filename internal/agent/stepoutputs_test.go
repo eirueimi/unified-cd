@@ -36,3 +36,32 @@ func TestApplyStepOutputs_MatrixDoesNotMutatePriorSnapshot(t *testing.T) {
 	assert.Equal(t, map[string]string{"v1": "1"}, before.Outputs["k"])
 	assert.Equal(t, map[string]string{"v1": "1", "v2": "2"}, steps["build"].Outputs["k"])
 }
+
+func TestApplyChildRunID_Plain(t *testing.T) {
+	steps := map[string]dsl.StepData{}
+	ApplyStepOutputs(steps, "call-child", "", map[string]string{"v": "1"})
+	ApplyChildRunID(steps, "call-child", "", "run-child-1")
+	assert.Equal(t, "run-child-1", steps["call-child"].ChildRunID)
+	assert.Equal(t, "1", steps["call-child"].Outputs["v"])
+}
+
+func TestApplyChildRunID_MatrixAggregates(t *testing.T) {
+	steps := map[string]dsl.StepData{}
+	ApplyChildRunID(steps, "call-child", "linux/amd64", "run-a")
+	ApplyChildRunID(steps, "call-child", "linux/arm64", "run-b")
+	assert.Equal(t, map[string]string{
+		"linux/amd64": "run-a",
+		"linux/arm64": "run-b",
+	}, steps["call-child"].ChildRunID)
+}
+
+// Copy-on-write: a snapshot of the ChildRunID map taken before a later
+// matrix variant lands must not observe the merge (mirrors ApplyStepOutputs'
+// COW contract for concurrent snapshot safety).
+func TestApplyChildRunID_MatrixCopyOnWrite(t *testing.T) {
+	steps := map[string]dsl.StepData{}
+	ApplyChildRunID(steps, "call-child", "linux/amd64", "run-a")
+	snap := steps["call-child"].ChildRunID.(map[string]string)
+	ApplyChildRunID(steps, "call-child", "linux/arm64", "run-b")
+	assert.Equal(t, map[string]string{"linux/amd64": "run-a"}, snap)
+}

@@ -1373,3 +1373,19 @@ func TestAgentAPI_ReadRunAndOutputs_RejectsAnonymous(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, rec.Code, "anonymous GET %s must be rejected: %s", path, rec.Body.String())
 	}
 }
+
+func TestBuildOneClaimStep_DownloadArtifactRunID(t *testing.T) {
+	entry := dsl.StepEntry{
+		Name: "fetch",
+		DownloadArtifact: &dsl.DownloadArtifactStep{
+			Name:    "app-binary",
+			DestDir: "artifacts",
+			RunID:   "{{ .Steps.build_app.ChildRunID }}",
+		},
+	}
+	cs := buildOneClaimStep(0, 0, entry, nil)
+	require.NotNil(t, cs.DownloadArtifact)
+	assert.Equal(t, "app-binary", cs.DownloadArtifact.Name)
+	assert.Equal(t, "artifacts", cs.DownloadArtifact.DestDir)
+	assert.Equal(t, "{{ .Steps.build_app.ChildRunID }}", cs.DownloadArtifact.RunID)
+}

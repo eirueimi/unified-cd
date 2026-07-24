@@ -43,3 +43,32 @@ func ApplyStepOutputs(steps map[string]dsl.StepData, stepName, matrixKey string,
 	sd.Outputs = newOutputs
 	steps[stepName] = sd
 }
+
+// ApplyChildRunID records a call step's child run ID into steps under
+// stepName, next to the outputs ApplyStepOutputs recorded.
+//
+// If matrixKey is empty, it sets StepData.ChildRunID to the plain string.
+// If matrixKey is non-empty, it merges into an aggregated map[string]string
+// keyed by combination key, using the same copy-on-write discipline as
+// ApplyStepOutputs: the merged map is rebuilt fresh on every call so a
+// previously published snapshot is never mutated.
+//
+// Like ApplyStepOutputs this is a pure function and does not lock; callers
+// sharing steps across goroutines must hold their own lock.
+func ApplyChildRunID(steps map[string]dsl.StepData, stepName, matrixKey, childRunID string) {
+	sd := steps[stepName]
+	if matrixKey == "" {
+		sd.ChildRunID = childRunID
+		steps[stepName] = sd
+		return
+	}
+	merged := map[string]string{matrixKey: childRunID}
+	if prev, ok := sd.ChildRunID.(map[string]string); ok {
+		for k, v := range prev {
+			merged[k] = v
+		}
+		merged[matrixKey] = childRunID
+	}
+	sd.ChildRunID = merged
+	steps[stepName] = sd
+}

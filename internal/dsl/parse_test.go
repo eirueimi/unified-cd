@@ -1826,3 +1826,26 @@ spec:
 		t.Errorf("invalid override container name must fail apply validation, got %v", err)
 	}
 }
+
+func TestParse_DownloadArtifactRunID(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: fetch
+spec:
+  steps:
+    - name: fetch-child-binary
+      downloadArtifact:
+        name: app-binary
+        runId: "{{ .Steps.build-app.ChildRunID }}"
+        destDir: artifacts
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Steps, 1)
+	require.NotNil(t, job.Spec.Steps[0].DownloadArtifact)
+	assert.Equal(t, "app-binary", job.Spec.Steps[0].DownloadArtifact.Name)
+	assert.Equal(t, "{{ .Steps.build-app.ChildRunID }}", job.Spec.Steps[0].DownloadArtifact.RunID)
+	assert.Equal(t, "artifacts", job.Spec.Steps[0].DownloadArtifact.DestDir)
+}
