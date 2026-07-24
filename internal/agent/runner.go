@@ -88,6 +88,27 @@ func RequireShell() error {
 	return requireShellFor(runtime.GOOS, exec.LookPath, fileExists, os.UserHomeDir)
 }
 
+// buildBashStepCmd builds the *exec.Cmd for running a native step's script with
+// bash. On Windows the script travels via the __UCD_STEP_SCRIPT environment
+// variable and the argv is a fixed, backslash-free loader (eval "$__UCD_STEP_SCRIPT"):
+// Go's Windows argv escaping halves runs of backslashes before MSYS (Git Bash)
+// re-parses the command line, which corrupts any script that spells out
+// backslashes (e.g. a sed s|\\...|\\...). The environment block is not subject
+// to that escaping, so the bytes survive. On every other platform the script is
+// passed directly as the -lc argument, unchanged. baseEnv is the caller's
+// already-built StepEnv result; the returned cmd has Env set but leaves
+// Stdout/Stderr/Dir to the caller.
+func buildBashStepCmd(script string, baseEnv []string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command(findShell(), "-lc", `eval "$__UCD_STEP_SCRIPT"`)
+		cmd.Env = append(baseEnv, "__UCD_STEP_SCRIPT="+script)
+		return cmd
+	}
+	cmd := exec.Command(findShell(), "-lc", script)
+	cmd.Env = baseEnv
+	return cmd
+}
+
 // RunStep executes the given script with bash, writing stdout/stderr to the provided writers.
 // Returns the exit code and any error. The process is interrupted if the context is cancelled.
 // On cancellation the whole process tree is killed (not just the shell), so children the
@@ -99,12 +120,12 @@ func RequireShell() error {
 // made visible to the step. If workDir is non-empty, the command runs with
 // that directory as the working directory.
 func RunStep(ctx context.Context, script string, stdout, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (int, error) {
-	cmd := exec.Command(findShell(), "-lc", script)
+	// Env is set inside buildBashStepCmd (never nil): a nil cmd.Env makes
+	// os/exec inherit the agent's whole environment, which is exactly the leak
+	// StepEnv exists to prevent.
+	cmd := buildBashStepCmd(script, StepEnv(exposeEnv, extraEnv))
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	// Always set Env: a nil cmd.Env makes os/exec inherit the agent's whole
-	// environment, which is exactly the leak StepEnv exists to prevent.
-	cmd.Env = StepEnv(exposeEnv, extraEnv)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
@@ -128,6 +149,12 @@ func RunStep(ctx context.Context, script string, stdout, stderr io.Writer, extra
 // path) otherwise. Cancellation/process-tree-kill semantics mirror RunStep
 // (see runTreeKilled). exposeEnv is the agent's ExposeEnv allowlist; see
 // RunStep's doc comment.
+//
+// Windows note: the script is passed as a process argument, so a custom
+// interpreter script that contains runs of backslashes can be corrupted by
+// Windows argv escaping (Go escapes with MSVCRT rules, MSYS bash parses with
+// its own). The default bash path (RunStep) avoids this via the
+// __UCD_STEP_SCRIPT environment variable; this explicit-shell path does not yet.
 func RunStepWithShell(ctx context.Context, shell []string, script string, stdout, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (int, error) {
 	argv := append(append([]string{}, shell[1:]...), script)
 	cmd := exec.Command(shell[0], argv...)
@@ -157,12 +184,12 @@ func RunStepWithShell(ctx context.Context, shell []string, script string, stdout
 // If workDir is non-empty, the command runs with that directory as the working directory.
 func RunStepCapture(ctx context.Context, script string, stderr io.Writer, extraEnv []string, exposeEnv []string, workDir string) (stdout string, exitCode int, err error) {
 	var stdoutBuf bytes.Buffer
-	cmd := exec.Command(findShell(), "-lc", script)
+	// Env is set inside buildBashStepCmd (never nil): a nil cmd.Env makes
+	// os/exec inherit the agent's whole environment, which is exactly the leak
+	// StepEnv exists to prevent.
+	cmd := buildBashStepCmd(script, StepEnv(exposeEnv, extraEnv))
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = stderr
-	// Always set Env: a nil cmd.Env makes os/exec inherit the agent's whole
-	// environment, which is exactly the leak StepEnv exists to prevent.
-	cmd.Env = StepEnv(exposeEnv, extraEnv)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
