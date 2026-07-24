@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"os"
@@ -81,6 +82,7 @@ type CredentialManager struct {
 
 	mu            sync.Mutex
 	loaded        bool
+	bootstrapDone bool // true once the first enroll/refresh resolution has run
 	refresh       persistedCredential
 	accessToken   string
 	accessExpires time.Time
@@ -123,23 +125,41 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 
 	var response api.AgentTokenResponse
 	var err error
-	if m.refresh.RefreshToken != "" {
-		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
-	} else {
-		enrollment := m.enrollmentToken
-		if enrollment == "" {
-			var readErr error
-			enrollment, readErr = readSecretFile(m.enrollmentTokenFile)
-			if readErr != nil {
-				return "", readErr
+	enrollTok, tokErr := m.enrollmentTokenValue()
+	switch {
+	case !m.bootstrapDone && enrollTok != "":
+		// An explicit enrollment token means "(re-)enroll" — prefer it even when
+		// a credential already exists, so authorized-label changes take effect.
+		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/enroll", enrollTok)
+		if err != nil {
+			var reqErr *credentialRequestError
+			if errors.As(err, &reqErr) && reqErr.status == http.StatusUnauthorized && m.refresh.RefreshToken != "" {
+				// The token is definitively rejected (expired/already consumed),
+				// but we hold a working credential — keep running on it rather
+				// than bricking. Labels are not updated in this case.
+				slog.Warn("enrollment token rejected (expired or already consumed); continuing with the existing credential", "agentId", m.agentID)
+				response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
 			}
 		}
-		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/enroll", strings.TrimSpace(enrollment))
+	case m.refresh.RefreshToken != "":
+		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
+	case tokErr != nil:
+		return "", tokErr
+	default:
+		return "", fmt.Errorf("agent credentials are required")
 	}
 	if err != nil {
 		return "", err
 	}
-	if response.AgentID != m.agentID || response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
+	m.bootstrapDone = true
+	// Adopt the agent ID from the response when --id was omitted; otherwise
+	// assert the server agrees with the configured identity.
+	if m.agentID == "" {
+		m.agentID = response.AgentID
+	} else if response.AgentID != m.agentID {
+		return "", fmt.Errorf("credential response agent ID %q does not match configured agent ID %q", response.AgentID, m.agentID)
+	}
+	if response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
 		return "", fmt.Errorf("credential response is invalid")
 	}
 
@@ -154,6 +174,52 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	m.accessToken = response.AccessToken
 	m.accessExpires = response.AccessExpiresAt
 	return m.accessToken, nil
+}
+
+// enrollmentTokenValue returns the explicitly-configured one-time enrollment
+// token (inline value preferred over file), or "" when none is configured.
+func (m *CredentialManager) enrollmentTokenValue() (string, error) {
+	if strings.TrimSpace(m.enrollmentToken) != "" {
+		return strings.TrimSpace(m.enrollmentToken), nil
+	}
+	if m.enrollmentTokenFile != "" {
+		v, err := readSecretFile(m.enrollmentTokenFile)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(v), nil
+	}
+	return "", nil
+}
+
+// EnsureIdentity resolves the agent's canonical ID before the run loop starts.
+// With --id set it is returned as-is. With --id omitted it is adopted from the
+// persisted credential (no network) when one exists, or by performing the
+// first enrollment when there is none.
+func (m *CredentialManager) EnsureIdentity(ctx context.Context) (string, error) {
+	m.mu.Lock()
+	if m.agentID != "" {
+		id := m.agentID
+		m.mu.Unlock()
+		return id, nil
+	}
+	err := m.loadRefreshCredential()
+	id := m.agentID
+	m.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	if id != "" {
+		return id, nil // adopted from the persisted credential, no network
+	}
+	// No credential and no configured ID → must enroll to learn the identity.
+	if _, err := m.Token(ctx); err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	id = m.agentID
+	m.mu.Unlock()
+	return id, nil
 }
 
 func (m *CredentialManager) loadRefreshCredential() error {
@@ -204,13 +270,16 @@ func (m *CredentialManager) useCredential(credential persistedCredential) error 
 	if err := m.validateCredential(credential); err != nil {
 		return err
 	}
+	if m.agentID == "" {
+		m.agentID = credential.AgentID
+	}
 	m.refresh, m.loaded = credential, true
 	return nil
 }
 
 func (m *CredentialManager) validateCredential(credential persistedCredential) error {
-	if credential.AgentID != m.agentID {
-		return fmt.Errorf("credential file agent ID does not match configured agent ID")
+	if m.agentID != "" && credential.AgentID != m.agentID {
+		return fmt.Errorf("credential file agent ID %q does not match configured agent ID %q", credential.AgentID, m.agentID)
 	}
 	if !credential.RefreshExpiresAt.After(m.now()) {
 		return fmt.Errorf("agent refresh credential has expired")
