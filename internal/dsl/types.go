@@ -320,6 +320,11 @@ type UploadArtifactStep struct {
 type DownloadArtifactStep struct {
 	Name    string `yaml:"name"`
 	DestDir string `yaml:"destDir,omitempty"` // defaults to the current directory if omitted
+	// RunID selects the run to download from. Template-expandable (e.g.
+	// "{{ .Steps.build_app.ChildRunID }}" to fetch from a call step's child
+	// run). Empty means the current run. The expanded value must match
+	// ^[A-Za-z0-9_-]{1,64}$; the expansion context excludes Secrets and Stdout.
+	RunID string `yaml:"runId,omitempty"`
 }
 
 // ApprovalStep pauses the run until an authenticated user approves or rejects.

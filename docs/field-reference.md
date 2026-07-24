@@ -158,6 +158,10 @@ TimeoutMinutes defaults to 60 (applied at compile time) when zero.
 |-------|------|----------|-------------|
 | `destDir` | string | no | defaults to the current directory if omitted |
 | `name` | string | yes |  |
+| `runId` | string | no | RunID selects the run to download from. Template-expandable (e.g.
+"{{ .Steps.build_app.ChildRunID }}" to fetch from a call step's child
+run). Empty means the current run. The expanded value must match
+^[A-Za-z0-9_-]{1,64}$; the expansion context excludes Secrets and Stdout. |
 
 ### ForeachDef
 
@@ -469,6 +473,10 @@ TimeoutMinutes defaults to 60 (applied at compile time) when zero.
 |-------|------|----------|-------------|
 | `destDir` | string | no | defaults to the current directory if omitted |
 | `name` | string | yes |  |
+| `runId` | string | no | RunID selects the run to download from. Template-expandable (e.g.
+"{{ .Steps.build_app.ChildRunID }}" to fetch from a call step's child
+run). Empty means the current run. The expanded value must match
+^[A-Za-z0-9_-]{1,64}$; the expansion context excludes Secrets and Stdout. |
 
 ### ForeachDef
 

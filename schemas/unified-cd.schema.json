@@ -155,6 +155,10 @@
         },
         "name": {
           "type": "string"
+        },
+        "runId": {
+          "description": "RunID selects the run to download from. Template-expandable (e.g.\n\"{{ .Steps.build_app.ChildRunID }}\" to fetch from a call step's child\nrun). Empty means the current run. The expanded value must match\n^[A-Za-z0-9_-]{1,64}$; the expansion context excludes Secrets and Stdout.",
+          "type": "string"
         }
       },
       "required": [
