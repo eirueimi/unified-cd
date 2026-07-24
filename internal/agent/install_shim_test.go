@@ -91,3 +91,33 @@ func TestInstallShim_DefaultsEmptyWorkspaceDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(fakeHome, "workspace", ".ucd-tools"), toolsDir)
 }
+
+// TestInstallShim_OverwritesReadOnlyShim is the regression test for the
+// "install ucd-sh shim failed: ... permission denied" startup failure on a
+// re-run. EnsureShimIntact tightens the shim to 0o555 (read-only) on every
+// tamper check, so on the next agent start InstallShim must still be able to
+// reinstall it. An in-place os.WriteFile fails ("permission denied" / "Access
+// is denied") on the read-only file; the atomic temp-file + rename approach
+// replaces it regardless (rename only needs the directory writable, and on
+// Windows renameOverExisting's remove-then-rename fallback clears the way).
+// Verified reproducible on both POSIX and Windows, so this is not guarded.
+func TestInstallShim_OverwritesReadOnlyShim(t *testing.T) {
+	payload := []byte("#!/bin/sh\necho new-shim\n")
+	withFakeShimBytes(t, payload)
+
+	wsDir := filepath.Join(t.TempDir(), "workspace")
+	toolsDir := filepath.Join(wsDir, ".ucd-tools")
+	require.NoError(t, os.MkdirAll(toolsDir, 0o755))
+	shimPath := filepath.Join(toolsDir, "ucd-sh")
+	// Simulate the state EnsureShimIntact leaves behind: a read-only shim with
+	// stale contents.
+	require.NoError(t, os.WriteFile(shimPath, []byte("old"), 0o555))
+
+	got, err := InstallShim(wsDir)
+	require.NoError(t, err, "InstallShim must overwrite a read-only shim, not fail with permission denied")
+	assert.Equal(t, toolsDir, got)
+
+	content, err := os.ReadFile(shimPath)
+	require.NoError(t, err)
+	assert.Equal(t, payload, content, "the read-only shim must be replaced with the new payload")
+}
