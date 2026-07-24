@@ -49,7 +49,7 @@ func TestStepEnv_KeepsShellBaseline(t *testing.T) {
 func TestStepEnv_BaselineIncludesWellKnownConfigDirs(t *testing.T) {
 	var wantVars []string
 	if runtime.GOOS == "windows" {
-		wantVars = []string{"APPDATA", "LOCALAPPDATA"}
+		wantVars = []string{"APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "ALLUSERSPROFILE"}
 	} else {
 		wantVars = []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"}
 	}
