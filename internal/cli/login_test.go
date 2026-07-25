@@ -2,18 +2,66 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
+
+// TestLogin_DeviceFlow_CancelsWithContext verifies that a cancelled command
+// context (what main.go wires Ctrl-C to) aborts the OIDC device flow promptly
+// instead of leaving `login` hung waiting for browser approval.
+func TestLogin_DeviceFlow_CancelsWithContext(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/oidc-config":
+			w.Header().Set("Content-Type", "application/json")
+			// Point the device + token endpoints back at this server so the
+			// device flow actually starts and, on the OLD (buggy) code path,
+			// polls forever — only ctx cancellation can stop it.
+			_, _ = w.Write([]byte(`{"issuer":"` + srv.URL + `","deviceClientId":"cli","deviceAuthEndpoint":"` + srv.URL + `/device","tokenEndpoint":"` + srv.URL + `/token"}`))
+		case "/device":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"device_code":"dc","user_code":"UC","verification_uri":"` + srv.URL + `/v","verification_uri_complete":"` + srv.URL + `/v?uc=UC","expires_in":600,"interval":1}`))
+		case "/token":
+			// Never approves: the token endpoint keeps the flow polling, so the
+			// only way out is context cancellation.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	cmd := newLoginCmd()
+	cmd.SetArgs([]string{"--server", srv.URL})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled — the device flow must fail fast, not hang.
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	select {
+	case err := <-done:
+		require.Error(t, err, "login must fail fast under a cancelled context, not hang")
+	case <-time.After(5 * time.Second):
+		t.Fatal("login hung despite a cancelled context — Ctrl-C would not abort it")
+	}
+}
 
 func TestFetchServerOIDCConfig_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -22,6 +22,17 @@ import (
 // has no OIDC provider configured (HTTP 404).
 var errOIDCNotConfigured = errors.New("OIDC not configured on this server")
 
+// cmdCtx returns the command's context, falling back to context.Background()
+// when it is nil (e.g. a command invoked in tests without ExecuteContext).
+// Production runs go through main.go's ExecuteContext, so the returned context
+// carries the SIGINT/SIGTERM cancellation that lets Ctrl-C abort login.
+func cmdCtx(cmd *cobra.Command) context.Context {
+	if ctx := cmd.Context(); ctx != nil {
+		return ctx
+	}
+	return context.Background()
+}
+
 func newLoginCmd() *cobra.Command {
 	var oidcIssuer, clientID, serverURL string
 	cmd := &cobra.Command{
@@ -54,7 +65,11 @@ func newLoginCmd() *cobra.Command {
 				}
 			}
 
-			ctx := context.Background()
+			// Use cmd.Context() (not context.Background()) so a Ctrl-C / SIGINT —
+			// which main.go wires to this context via signal.NotifyContext —
+			// cancels the OIDC device-flow polling (DeviceAuth/DeviceAccessToken)
+			// promptly instead of leaving `login` hung waiting for browser approval.
+			ctx := cmdCtx(cmd)
 			// Use the endpoints provided by the server if it has already performed discovery
 			// (the Dex device authorization endpoint is implementation-specific, e.g. /device/code,
 			//  so trust the discovery result rather than hardcoding it).
@@ -185,7 +200,7 @@ func tokenPromptLogin(cmd *cobra.Command, serverURL, configPath string) error {
 		return fmt.Errorf("token cannot be empty")
 	}
 
-	if err := verifyToken(serverURL, token); err != nil {
+	if err := verifyToken(cmdCtx(cmd), serverURL, token); err != nil {
 		return err
 	}
 
@@ -203,8 +218,10 @@ func tokenPromptLogin(cmd *cobra.Command, serverURL, configPath string) error {
 }
 
 // verifyToken calls GET /api/v1/tokens with the given Bearer token to confirm it is valid.
-func verifyToken(serverURL, token string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func verifyToken(ctx context.Context, serverURL, token string) error {
+	// Derive the timeout from the caller's context (cmd.Context()) so a Ctrl-C
+	// cancels verification immediately rather than waiting out the 10s bound.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL+"/api/v1/tokens", nil)
 	if err != nil {
