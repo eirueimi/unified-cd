@@ -53,9 +53,9 @@ type AgentConfig struct {
 	MaxConcurrent   int      `yaml:"maxConcurrent"`
 	// MaxDetachedConcurrent caps how many detached (spec.detached) runs this
 	// agent claims concurrently, from a pool separate from MaxConcurrent.
-	// 0 / unset -> off (this agent does not host detached runs); a positive value
-	// is the cap. Detached hosting is opt-in per agent so enabling the feature
-	// never changes existing agents' behavior.
+	// 0 / unset -> the agent applies the default (16), so detached jobs are
+	// claimable out of the box; a negative value disables detached hosting on
+	// this agent; a positive value is the cap.
 	MaxDetachedConcurrent int           `yaml:"maxDetachedConcurrent"`
 	CleanWorkspace        bool          `yaml:"cleanWorkspace"`
 	WorkspaceDir          string        `yaml:"workspaceDir"`

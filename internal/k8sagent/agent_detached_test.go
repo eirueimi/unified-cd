@@ -52,9 +52,9 @@ func TestRun_DetachedClaimUsesSeparatePool(t *testing.T) {
 	assert.True(t, sawDetached.Load(), "agent must poll the detached pool with kind=detached")
 }
 
-// TestRun_DetachedOffByDefault verifies detached claiming is off when
-// MaxDetachedConcurrent is unset (0), preserving legacy behavior.
-func TestRun_DetachedOffByDefault(t *testing.T) {
+// TestRun_DetachedOffWhenNegative verifies a negative MaxDetachedConcurrent
+// disables detached claiming (0/unset now defaults to 16).
+func TestRun_DetachedOffWhenNegative(t *testing.T) {
 	const agentID = "k8s-nodetached-agent"
 	var sawDetached atomic.Bool
 
@@ -77,11 +77,11 @@ func TestRun_DetachedOffByDefault(t *testing.T) {
 	defer srv.Close()
 
 	client := agentlib.NewClient(srv.URL, "tok")
-	a := newK8sAgentForTest(t, Config{AgentID: agentID, Namespace: "ns", MaxConcurrent: 1}, client)
+	a := newK8sAgentForTest(t, Config{AgentID: agentID, Namespace: "ns", MaxConcurrent: 1, MaxDetachedConcurrent: -1}, client)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
 	_ = a.Run(ctx)
 
-	assert.False(t, sawDetached.Load(), "detached claiming must be off when MaxDetachedConcurrent is unset")
+	assert.False(t, sawDetached.Load(), "a negative MaxDetachedConcurrent must disable detached claiming")
 }

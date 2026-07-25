@@ -140,14 +140,18 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 
 	// Concurrency gates: MaxConcurrent for normal runs; a SEPARATE
 	// MaxDetachedConcurrent pool for detached (spec.detached) runs so a detached
-	// orchestrator's call: wait never holds a normal semaphore token. Detached is
-	// off by default (0/unset); set a positive MaxDetachedConcurrent to enable it.
+	// orchestrator's call: wait never holds a normal semaphore token. 0/unset
+	// defaults to 16 (detached claimable out of the box); a negative value
+	// disables the pool.
 	// (positive MaxConcurrent -> semaphore; negative -> unlimited; Validate 0->100.)
 	var sem chan struct{}
 	if a.cfg.MaxConcurrent > 0 {
 		sem = make(chan struct{}, a.cfg.MaxConcurrent)
 	}
 	dmax := a.cfg.MaxDetachedConcurrent
+	if dmax == 0 {
+		dmax = 16
+	}
 	if dmax < 0 {
 		dmax = 0
 	}

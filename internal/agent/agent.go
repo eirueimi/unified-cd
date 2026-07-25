@@ -68,8 +68,8 @@ type Agent struct {
 	CacheStore    objectstore.ObjectStore // nil = cache disabled
 	MaxConcurrent int
 	// MaxDetachedConcurrent caps detached-run claims in a pool separate from
-	// MaxConcurrent. 0/unset = off; positive = cap. Used by Run (see the detached
-	// claim pool). Wired from --max-detached-concurrent.
+	// MaxConcurrent. 0/unset defaults to 16; a negative value disables the pool.
+	// Used by Run (see the detached claim pool). Wired from --max-detached-concurrent.
 	MaxDetachedConcurrent int
 	WorkspaceDir          string
 	CleanWorkspace        bool
@@ -314,10 +314,13 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Detached claim pool: separate from the MaxConcurrent slots so a detached
 	// (spec.detached) orchestrator run — which mostly issues call: steps and
-	// waits — does not occupy a normal execution slot. Off by default (0/unset);
-	// set a positive MaxDetachedConcurrent on the agents that should host
-	// orchestrators. Negatives are clamped to off.
+	// waits — does not occupy a normal execution slot. 0/unset defaults to 16 so
+	// detached jobs are claimable out of the box; a negative value disables the
+	// pool (an agent that must not host detached runs).
 	d := a.MaxDetachedConcurrent
+	if d == 0 {
+		d = 16
+	}
 	if d < 0 {
 		d = 0
 	}
