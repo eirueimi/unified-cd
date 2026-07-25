@@ -1733,6 +1733,89 @@ spec:
 	assert.Contains(t, err.Error(), "step name")
 }
 
+func TestValidate_ParamsInputName_MustBeIdentifier(t *testing.T) {
+	for _, n := range []string{"target", "_hidden", "env0"} {
+		yaml := "apiVersion: unified-cd/v1\nkind: Job\nmetadata: {name: j}\nspec:\n  params:\n    inputs:\n      - {name: " + n + ", type: string}\n  steps:\n    - {name: s, run: \"true\"}"
+		_, err := Parse(strings.NewReader(yaml))
+		require.NoError(t, err, "input name %q should be a valid identifier", n)
+	}
+
+	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  params:
+    inputs:
+      - {name: "target-env", type: string}
+  steps:
+    - {name: s, run: "true"}`))
+	require.Error(t, err, "a hyphenated input name must be rejected")
+	assert.Contains(t, err.Error(), `spec.params.inputs[0].name "target-env"`)
+}
+
+func TestValidate_ParamsOutputName_MustBeIdentifier(t *testing.T) {
+	for _, n := range []string{"artifact_url", "_hidden", "url0"} {
+		yaml := "apiVersion: unified-cd/v1\nkind: Job\nmetadata: {name: j}\nspec:\n  params:\n    outputs:\n      - {name: " + n + ", type: string}\n  steps:\n    - {name: s, run: \"true\"}"
+		_, err := Parse(strings.NewReader(yaml))
+		require.NoError(t, err, "output name %q should be a valid identifier", n)
+	}
+
+	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  params:
+    outputs:
+      - {name: "artifact-url", type: string}
+  steps:
+    - {name: s, run: "true"}`))
+	require.Error(t, err, "a hyphenated output name must be rejected")
+	assert.Contains(t, err.Error(), `spec.params.outputs[0].name "artifact-url"`)
+}
+
+// TestValidate_StepOutputsKey_MustBeIdentifier mirrors the step-name rule: an
+// outputs: map key is exposed as {{ .Steps.<step>.Outputs.<key> }} and as
+// steps.<step>.outputs.<key> in CEL if: expressions, both dot-notation
+// addressing that only resolves a valid identifier.
+func TestValidate_StepOutputsKey_MustBeIdentifier(t *testing.T) {
+	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  steps:
+    - name: build
+      run: "true"
+      outputs:
+        version: "1.0"`))
+	require.NoError(t, err, "an identifier output key should be valid")
+
+	_, err = Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  steps:
+    - name: build
+      run: "true"
+      outputs:
+        artifact-url: "1.0"`))
+	require.Error(t, err, "a hyphenated output key must be rejected")
+	assert.Contains(t, err.Error(), `outputs["artifact-url"]`)
+
+	// Same rule applies inside parallel: blocks.
+	_, err = Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  steps:
+    - parallel:
+        - name: build
+          run: "true"
+          outputs:
+            artifact-url: "1.0"`))
+	require.Error(t, err, "a hyphenated output key inside parallel: must be rejected")
+	assert.Contains(t, err.Error(), `outputs["artifact-url"]`)
+}
+
 func TestValidate_Retry_AttemptsMustBePositive(t *testing.T) {
 	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
 kind: Job
