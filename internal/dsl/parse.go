@@ -24,6 +24,15 @@ var matrixDimNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // likewise surfaced into templates.
 var stepNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// identifierRe constrains param names (spec.params.inputs[].name,
+// spec.params.outputs[].name) and step outputs: map keys to valid Go
+// identifiers. Both are surfaced into Go-template dot-notation
+// ({{ .Params.<name> }}, {{ .Steps.<call>.Outputs.<name> }}) and CEL
+// if: expressions (steps.<step>.outputs.<key>), which can only address a
+// valid identifier — same rule and pattern as stepNameRe/orLockNameRe/
+// matrixDimNameRe.
+var identifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // validShellArgv validates the shell: field's runtime shape: nil (unset) is
 // valid — the field falls through to the resolution chain's next tier — but
 // once set, it must be a non-empty array of non-empty strings. v1 accepts
@@ -230,6 +239,12 @@ func (j *Job) Validate() error {
 		if p.Name == "" {
 			return fmt.Errorf("spec.params.inputs[%d].name is required", i)
 		}
+		// An input name is referenced as {{ .Params.<name> }}, a Go-template
+		// dot-notation selector, so it must be a valid identifier (same rule as
+		// step names / orLock names / matrix dimension names).
+		if !identifierRe.MatchString(p.Name) {
+			return fmt.Errorf("spec.params.inputs[%d].name %q must match %s", i, p.Name, identifierRe.String())
+		}
 		validTypes := map[string]bool{"string": true, "bool": true, "int": true, "array": true}
 		if !validTypes[p.Type] {
 			return fmt.Errorf("spec.params.inputs[%d].type %q is invalid (want string|bool|int|array)", i, p.Type)
@@ -238,6 +253,11 @@ func (j *Job) Validate() error {
 	for i, o := range j.Spec.Params.Outputs {
 		if o.Name == "" {
 			return fmt.Errorf("spec.params.outputs[%d].name is required", i)
+		}
+		// An output name is referenced as a job output and as
+		// {{ .Steps.<call>.Outputs.<name> }}, so it must be a valid identifier.
+		if !identifierRe.MatchString(o.Name) {
+			return fmt.Errorf("spec.params.outputs[%d].name %q must match %s", i, o.Name, identifierRe.String())
 		}
 		if o.Type == "" {
 			return fmt.Errorf("spec.params.outputs[%d].type is required", i)
@@ -307,7 +327,7 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				if st.Uses != nil {
 					return fmt.Errorf("%s: uses: is not supported inside parallel: (a uses template expands to a sequence of steps); move it to a top-level step", subPath)
 				}
-				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Approval, st.Foreach, st.Matrix, subPath, nameSet, st.UploadArtifact, st.DownloadArtifact); err != nil {
+				if err := validateStepFull(st.Name, st.Run, st.Call, st.Uses, st.Cache, st.Approval, st.Foreach, st.Matrix, subPath, nameSet, st.UploadArtifact, st.DownloadArtifact, st.Outputs); err != nil {
 					return err
 				}
 				if err := validateCacheStep(st.Name, st.Cache); err != nil {
@@ -353,7 +373,7 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 					return fmt.Errorf("%s: approval: is not supported in finally steps", entryPath)
 				}
 			}
-			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Approval, entry.Foreach, entry.Matrix, entryPath, nameSet, entry.UploadArtifact, entry.DownloadArtifact); err != nil {
+			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Approval, entry.Foreach, entry.Matrix, entryPath, nameSet, entry.UploadArtifact, entry.DownloadArtifact, entry.Outputs); err != nil {
 				return err
 			}
 			if err := validateCacheStep(entry.Name, entry.Cache); err != nil {
@@ -453,7 +473,7 @@ func validateRetry(name, path string, retry *RetrySpec, isRunStep bool) error {
 	return nil
 }
 
-func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *CacheStep, approval *ApprovalStep, foreach *ForeachDef, matrix *MatrixDef, path string, nameSet map[string]bool, upload *UploadArtifactStep, download *DownloadArtifactStep) error {
+func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *CacheStep, approval *ApprovalStep, foreach *ForeachDef, matrix *MatrixDef, path string, nameSet map[string]bool, upload *UploadArtifactStep, download *DownloadArtifactStep, outputs map[string]string) error {
 	if nameSet[name] {
 		return fmt.Errorf("%s: duplicate step name %q", path, name)
 	}
@@ -465,6 +485,15 @@ func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *C
 	// anonymous). Hyphens, leading digits, dots and spaces are rejected here.
 	if name != "" && !stepNameRe.MatchString(name) {
 		return fmt.Errorf("%s: step name %q must match %s (use underscores, e.g. build_app — hyphenated names are not addressable via {{ .Steps.<name> }})", path, name, stepNameRe.String())
+	}
+
+	// Each outputs: map key is referenced as {{ .Steps.<name>.Outputs.<key> }}
+	// and CEL steps.<name>.outputs.<key>, both dot-notation selectors, so keys
+	// must be valid identifiers (same rule as step names).
+	for key := range outputs {
+		if !identifierRe.MatchString(key) {
+			return fmt.Errorf("%s (%s): outputs[%q] must match %s", path, name, key, identifierRe.String())
+		}
 	}
 
 	actionCount := 0
