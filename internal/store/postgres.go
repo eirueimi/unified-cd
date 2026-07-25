@@ -151,15 +151,24 @@ func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[str
 	if err != nil {
 		return nil, err
 	}
+	// Derive the detached flag from the run's spec so ClaimNextRun can filter on
+	// a persisted column without re-parsing the spec on the hot claim path.
+	var detached bool
+	if len(spec) > 0 {
+		var s dsl.Spec
+		if json.Unmarshal(spec, &s) == nil {
+			detached = s.Detached
+		}
+	}
 	const q = `
-		INSERT INTO runs(job_name, params, spec, agent_selector, required_caps, triggered_by)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO runs(job_name, params, spec, agent_selector, required_caps, triggered_by, detached)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, job_name, status, params, created_at, updated_at, triggered_by;
 	`
 	var r api.Run
 	var paramsOut []byte
 	var status string
-	err = p.pool.QueryRow(ctx, q, jobName, paramsJSON, spec, agentSelector, requiredCaps, triggeredBy).
+	err = p.pool.QueryRow(ctx, q, jobName, paramsJSON, spec, agentSelector, requiredCaps, triggeredBy, detached).
 		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy)
 	if err != nil {
 		return nil, fmt.Errorf("create run: %w", err)
