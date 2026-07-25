@@ -55,7 +55,7 @@ spec:
         default: "https://uploads.github.com"
         description: "Base URL for asset uploads (change for GitHub Enterprise Server)"
   steps:
-    - name: create-release-and-upload-assets
+    - name: create_release_and_upload_assets
       env:
         GITHUB_TOKEN: "{{ index .Secrets .Params.token_secret }}"
         REPO: "{{ .Params.repo }}"

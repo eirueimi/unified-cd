@@ -14,13 +14,13 @@
 #
 # Two steps, two ways of reaching the sidecar (this dual demonstration is the
 # point of the example):
-# - "wait-for-mysql" is a default (container:-less) step: it execs into the
+# - "wait_for_mysql" is a default (container:-less) step: it execs into the
 #   injected primary container (the runner image, which has curl but no mysql
 #   client) and polls the mysql sidecar at localhost:3306 using `curl
 #   telnet://` — steps run under sh, not bash, so bash-only features like
 #   /dev/tcp are not portable here; host ports are never published and
 #   concurrent claims of this job never collide.
-# - "seed-and-verify" uses container: mysql to exec directly INTO the mysql
+# - "seed_and_verify" uses container: mysql to exec directly INTO the mysql
 #   sidecar (which has the mysql client) and runs a real query against the
 #   app_test database.
 #
@@ -41,7 +41,7 @@ spec:
             - name: MYSQL_DATABASE
               value: app_test
   steps:
-    - name: wait-for-mysql
+    - name: wait_for_mysql
       # sidecars have no readiness probes — wait/retry on our own. Steps run
       # under sh, so use curl (present in the runner image) rather than bash's
       # /dev/tcp; `curl telnet://` exits 0 once the TCP port accepts.
@@ -54,7 +54,7 @@ spec:
         echo "mysql sidecar did not become ready in time" >&2
         exit 1
 
-    - name: seed-and-verify
+    - name: seed_and_verify
       container: mysql       # exec into the mysql sidecar, where the mysql client is available
       run: |
         set -e

@@ -23,7 +23,7 @@ spec:
   steps:
     - name: checkout
       run: echo hi
-    - name: restore-cache
+    - name: restore_cache
       cache:
         path: p
         key: k
@@ -51,7 +51,7 @@ spec:
 	assert.Equal(t, 0, ps[0].StageIndex)
 	assert.Equal(t, "Pending", ps[0].Status)
 
-	assert.Equal(t, "restore-cache", ps[1].Name)
+	assert.Equal(t, "restore_cache", ps[1].Name)
 	assert.Equal(t, "cache", ps[1].Kind)
 	assert.Equal(t, 1, ps[1].StageIndex)
 

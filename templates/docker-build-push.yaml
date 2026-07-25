@@ -58,7 +58,7 @@ spec:
         default: ""
         description: "Multi-platform build targets (e.g. linux/amd64,linux/arm64). Empty uses a regular docker build"
   steps:
-    - name: build-and-push
+    - name: build_and_push
       env:
         IMAGE: "{{ .Params.image }}"
         TAGS: "{{ .Params.tags }}"

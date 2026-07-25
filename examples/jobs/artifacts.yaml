@@ -21,12 +21,12 @@ spec:
         echo "demo-binary v1" > bin/app
         echo "built bin/app"
 
-    - name: upload-binary
+    - name: upload_binary
       uploadArtifact:
         name: app-binary     # artifact name (unique within the run)
         path: bin/app        # file or directory to upload (tar+zstd in the object store)
 
-    - name: download-binary
+    - name: download_binary
       downloadArtifact:
         name: app-binary     # must match the upload name
         destDir: restored    # default: current directory

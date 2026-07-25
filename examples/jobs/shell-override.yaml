@@ -21,11 +21,11 @@ spec:
   agentSelector:
     - kind:docker
   steps:
-    - name: default-shim
+    - name: default_shim
       # No shell: — this runs under the ucd-sh shim (the default). Portable,
       # POSIX-ish, needs no shell binary in the image.
       run: echo "default step ran under the ucd-sh shim"
-    - name: real-bash
+    - name: real_bash
       # Opt into real bash: BASH_VERSION and bash-only syntax (arrays, [[ ]])
       # work here, unlike under the shim. This is the migration escape hatch
       # for scripts that were written against bash.
@@ -52,7 +52,7 @@ spec:
         - name: job
           image: python:3.12-slim
   steps:
-    - name: run-python
+    - name: run_python
       shell: [python3, -c]
       run: |
         import sys, json

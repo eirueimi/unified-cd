@@ -52,7 +52,7 @@ spec:
         default: ""
         description: "ACL to use on upload (e.g. public-read. optional)"
   steps:
-    - name: s3-sync
+    - name: s3_sync
       env:
         AWS_ACCESS_KEY_ID: "{{ index .Secrets .Params.access_key_secret }}"
         AWS_SECRET_ACCESS_KEY: "{{ index .Secrets .Params.secret_key_secret }}"

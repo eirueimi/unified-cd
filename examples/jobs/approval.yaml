@@ -4,7 +4,7 @@
 # Usage:
 #   unified-cd apply -f examples/jobs/approval.yaml
 #   unified-cd run trigger approval-gate
-#   # the run pauses at gate-deploy (step index 1); then either:
+#   # the run pauses at gate_deploy (step index 1); then either:
 #   unified-cli approve <run-id> 1
 #   unified-cli reject  <run-id> 1 --comment "not today"
 #   # (or use the Approve / Reject buttons on the run detail page in the Web UI)
@@ -19,12 +19,12 @@ spec:
     - name: build
       run: echo "Build finished — ready to deploy"
 
-    - name: gate-deploy
+    - name: gate_deploy
       approval:
         message: "Approve deployment to production?"
         timeoutMinutes: 15   # fail the step automatically if nobody decides (default 60)
 
-    # Runs only after gate-deploy is approved. A rejection or timeout fails the
+    # Runs only after gate_deploy is approved. A rejection or timeout fails the
     # run instead (and spec.finally, if present, still runs).
     - name: deploy
       run: echo "Deploying to production"

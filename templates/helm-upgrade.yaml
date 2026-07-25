@@ -48,7 +48,7 @@ spec:
         default: "5m"
         description: "helm upgrade --timeout"
   steps:
-    - name: helm-upgrade-install
+    - name: helm_upgrade_install
       env:
         KUBECONFIG_CONTENT: "{{ index .Secrets .Params.kubeconfig_secret }}"
         RELEASE: "{{ .Params.release }}"

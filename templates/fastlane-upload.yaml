@@ -50,7 +50,7 @@ spec:
         default: ""
         description: "Secret name holding the App Store Connect API key (.p8 contents) (optional)"
   steps:
-    - name: run-fastlane
+    - name: run_fastlane
       env:
         LANE: "{{ .Params.lane }}"
         PROJECT_DIR: "{{ .Params.project_dir }}"

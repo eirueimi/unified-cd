@@ -41,7 +41,7 @@ spec:
         required: true
         description: "Secret name holding the Google Play service account JSON key"
   steps:
-    - name: supply-upload
+    - name: supply_upload
       env:
         SERVICE_ACCOUNT_JSON: "{{ index .Secrets .Params.service_account_json_secret }}"
         AAB_PATH: "{{ .Params.aab_path }}"

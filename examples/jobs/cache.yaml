@@ -18,7 +18,7 @@ spec:
   agentSelector:
     - kind:docker
   steps:
-    - name: restore-deps
+    - name: restore_deps
       cache:
         path: deps/              # directory to cache (template expansion supported)
         # A real job would derive the key from a lockfile, e.g.
@@ -29,7 +29,7 @@ spec:
           - cache-demo-deps-
         ttlDays: 7               # default 30
 
-    - name: install-deps
+    - name: install_deps
       run: |
         set -e
         if [ -f deps/marker ]; then
