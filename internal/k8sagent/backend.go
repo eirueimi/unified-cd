@@ -135,6 +135,14 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 // is only ever touched from orchestrate's single-goroutine, Sequential-mode
 // step loop, so no mutex is needed.
 //
+// The scope pod's Ready wait is bounded by the same configurable knob as the
+// run pod (Config.PodStartTimeout / UNIFIED_K8S_POD_START_TIMEOUT, resolved
+// via Config.PodStartTimeoutDuration — see config.go and agent.go's
+// awaitPodRunning). Under RestartPolicy: Never a pod stuck in
+// Pending/ImagePullBackOff never transitions to Failed, so without this bound
+// the wait would hang until the whole run is cancelled; this gives a bad
+// scope image the same fast, explicit failure the run pod gets.
+//
 // The scope pod's env mirrors the expanded-env fix (commit 9e09c76): the
 // orchestrator's already-template-expanded env (KEY=VALUE pairs) is merged
 // over imageStepEnv(step)'s k8s-specific defaults, so the caller's expanded
@@ -156,13 +164,14 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 		return "", fmt.Errorf("uses-scope %q (image %q): create pod: %w", step.ScopeID, step.ScopeImage, err)
 	}
 	name := created.Name
-	waitCtx, cancel := context.WithTimeout(ctx, imagePodStartTimeout)
+	podStartTimeout := b.a.cfg.PodStartTimeoutDuration()
+	waitCtx, cancel := context.WithTimeout(ctx, podStartTimeout)
 	defer cancel()
 	if err := b.a.pm.WaitForPodRunning(waitCtx, name); err != nil {
 		// Best-effort cleanup of the pod that never became ready; CloseScopes
 		// also sweeps b.scopePods, but this one never made it into the map.
 		_ = b.a.pm.DeletePod(context.WithoutCancel(ctx), name)
-		return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready within %s: %w", step.ScopeID, step.ScopeImage, imagePodStartTimeout, err)
+		return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready within %s: %w", step.ScopeID, step.ScopeImage, podStartTimeout, err)
 	}
 	b.scopePods[key] = name
 	return name, nil

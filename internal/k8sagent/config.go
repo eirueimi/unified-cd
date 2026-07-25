@@ -125,8 +125,10 @@ func (c *Config) PoolIdleTimeoutDuration() time.Duration {
 }
 
 // defaultPodStartTimeout bounds how long executeRun waits for a run Pod to
-// reach Running before failing the run (see agent.go). Matches the throwaway
-// scope-pod bound (imagePodStartTimeout).
+// reach Running before failing the run (see agent.go's awaitPodRunning). The
+// same PodStartTimeoutDuration also bounds the throwaway uses-scope pod's
+// Ready wait (see backend.go's ensureScopePod) — one configurable knob for
+// both pod-start waits.
 const defaultPodStartTimeout = 5 * time.Minute
 
 // PodStartTimeoutDuration parses PodStartTimeout, returning defaultPodStartTimeout
