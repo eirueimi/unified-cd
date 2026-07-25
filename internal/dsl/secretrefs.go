@@ -9,7 +9,10 @@ import (
 
 var (
 	secretIndexRe = regexp.MustCompile(
-		`index[ \t]+\.Secrets[ \t]+("(?:\\.|[^"\\])*"|[^\s}]+)`,
+		`index[ \t\r\n]+\.Secrets[ \t\r\n]+("(?:\\.|[^"\\])*"|[^\s}]+)`,
+	)
+	secretPipelineIndexRe = regexp.MustCompile(
+		`(?s){{-?[ \t\r\n]*[^}]*\|[ \t\r\n]*index[ \t\r\n]+\.Secrets(?:[ \t\r\n]|}})`,
 	)
 	secretParamOperandRe = regexp.MustCompile(
 		`^\.Params\.([A-Za-z_][A-Za-z0-9_]*)$`,
@@ -72,11 +75,25 @@ func ResolveSecretNameParams(tpl string, params map[string]string) (string, erro
 		prefix := strings.TrimSuffix(match, operand)
 		return prefix + strconv.Quote(name)
 	})
-	return out, resolveErr
+	if resolveErr != nil {
+		return out, resolveErr
+	}
+	if secretPipelineIndexRe.MatchString(tpl) {
+		return out, fmt.Errorf(
+			"dynamic secret name must be resolved from a parameter before execution",
+		)
+	}
+	return out, nil
 }
 
 // ReferencedSecretNames returns the statically named secrets in a template.
 func ReferencedSecretNames(tpl string) ([]string, error) {
+	if secretPipelineIndexRe.MatchString(tpl) {
+		return nil, fmt.Errorf(
+			"dynamic secret name must be resolved from a parameter before execution",
+		)
+	}
+
 	var names []string
 	for _, match := range directSecretRefRe.FindAllStringSubmatch(tpl, -1) {
 		name := match[1]

@@ -59,6 +59,16 @@ func TestResolveSecretNameParams(t *testing.T) {
 			tpl:     `{{ index .Secrets .Foreach.secret_name }}`,
 			wantErr: "dynamic secret name must be resolved from a parameter before execution",
 		},
+		{
+			name:    "multiline step output is rejected",
+			tpl:     "{{ index .Secrets\n.Steps.detect.Outputs.secret_name }}",
+			wantErr: "dynamic secret name must be resolved from a parameter before execution",
+		},
+		{
+			name:    "pipelined step output is rejected",
+			tpl:     `{{ .Steps.detect.Outputs.secret_name | index .Secrets }}`,
+			wantErr: "dynamic secret name must be resolved from a parameter before execution",
+		},
 	}
 
 	for _, tt := range tests {
@@ -83,8 +93,36 @@ func TestReferencedSecretNames(t *testing.T) {
 }
 
 func TestReferencedSecretNamesRejectsRuntimeOperand(t *testing.T) {
-	_, err := ReferencedSecretNames(`{{ index .Secrets .Steps.pick.Outputs.name }}`)
-	require.ErrorContains(t, err, "dynamic secret name must be resolved from a parameter before execution")
+	tests := []struct {
+		name string
+		tpl  string
+	}{
+		{
+			name: "ordinary index",
+			tpl:  `{{ index .Secrets .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "multiline index",
+			tpl:  "{{ index .Secrets\n.Steps.pick.Outputs.name }}",
+		},
+		{
+			name: "pipelined index",
+			tpl:  `{{ .Steps.pick.Outputs.name | index .Secrets }}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ReferencedSecretNames(tt.tpl)
+			require.ErrorContains(t, err, "dynamic secret name must be resolved from a parameter before execution")
+		})
+	}
+}
+
+func TestReferencedSecretNamesSkipsEmptyLiteralIndex(t *testing.T) {
+	got, err := ReferencedSecretNames(`{{ index .Secrets "" }}`)
+	require.NoError(t, err)
+	assert.Empty(t, got)
 }
 
 func TestResolveSecretNameParamsInSpec(t *testing.T) {
