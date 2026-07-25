@@ -79,11 +79,11 @@ spec:
   agentSelector: [kind:test]
   steps:
     - parallel:
-      - name: step-a
+      - name: step_a
         run: sleep 0.2
-      - name: step-b
+      - name: step_b
         run: sleep 0.2
-    - name: step-c
+    - name: step_c
       run: echo done
 `)
 
@@ -98,7 +98,7 @@ spec:
 	require.NoError(t, err)
 	assert.Equal(t, api.RunSucceeded, r.Status)
 
-	// Confirm via logs that step-c was executed (runs after step-a and step-b)
+	// Confirm via logs that step_c was executed (runs after step_a and step_b)
 	lines, err := pg.TailLogs(ctx, runID, 0, 100)
 	require.NoError(t, err)
 	var seenDone bool
@@ -108,7 +108,7 @@ spec:
 			break
 		}
 	}
-	assert.True(t, seenDone, "step-c should have run and logged 'done'")
+	assert.True(t, seenDone, "step_c should have run and logged 'done'")
 }
 
 // TestPhase9_ParallelRunsToCompletion verifies that when one parallel step fails, the other runs to completion.
@@ -142,9 +142,9 @@ spec:
   agentSelector: [kind:test]
   steps:
     - parallel:
-      - name: fail-step
+      - name: fail_step
         run: exit 1
-      - name: complete-step
+      - name: complete_step
         run: echo parallel-ran
 `)
 
@@ -159,7 +159,7 @@ spec:
 	require.NoError(t, err)
 	assert.Equal(t, api.RunFailed, r.Status)
 
-	// Confirm that complete-step ran to completion (parallel steps run to completion even if one fails)
+	// Confirm that complete_step ran to completion (parallel steps run to completion even if one fails)
 	lines, err := pg.TailLogs(ctx, runID, 0, 100)
 	require.NoError(t, err)
 	var seen bool
@@ -169,7 +169,7 @@ spec:
 			break
 		}
 	}
-	assert.True(t, seen, "complete-step should have run to completion despite fail-step failing")
+	assert.True(t, seen, "complete_step should have run to completion despite fail_step failing")
 }
 
 // TestPhase9_ContinueOnError verifies that a Run succeeds even when a step with continueOnError=true fails.

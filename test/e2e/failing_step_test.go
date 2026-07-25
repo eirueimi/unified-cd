@@ -56,9 +56,9 @@ metadata:
 spec:
   native: true
   steps:
-    - name: step-one-fails
+    - name: step_one_fails
       run: exit 1
-    - name: step-two-should-be-skipped
+    - name: step_two_should_be_skipped
       run: printf "should not run\n"
 `
 	body, _ := json.Marshal(api.ApplyJobRequest{YAML: yamlJob})
