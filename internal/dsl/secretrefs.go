@@ -5,8 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"text/template"
-	"text/template/parse"
 )
 
 var (
@@ -47,9 +45,7 @@ func ResolveSecretNameParams(tpl string, params map[string]string) (string, erro
 
 		param := secretParamOperandRe.FindStringSubmatch(operand)
 		if len(param) != 2 {
-			resolveErr = fmt.Errorf(
-				"dynamic secret name must be resolved from a parameter before execution",
-			)
+			resolveErr = errDynamicSecretName
 			return match
 		}
 		paramName := param[1]
@@ -77,22 +73,18 @@ func ResolveSecretNameParams(tpl string, params map[string]string) (string, erro
 	if resolveErr != nil {
 		return out, resolveErr
 	}
-	if hasUnsupportedSecretIndex(out) {
-		return out, fmt.Errorf(
-			"dynamic secret name must be resolved from a parameter before execution",
-		)
+	if err := validateSecretReferences(out); err != nil {
+		return out, err
 	}
 	return out, nil
 }
 
 // ReferencedSecretNames returns the statically named secrets in a template.
 func ReferencedSecretNames(tpl string) ([]string, error) {
-	searchable := templateWithoutCommentActions(tpl)
-	if hasUnsupportedSecretIndex(tpl) {
-		return nil, fmt.Errorf(
-			"dynamic secret name must be resolved from a parameter before execution",
-		)
+	if err := validateSecretReferences(tpl); err != nil {
+		return nil, err
 	}
+	searchable := templateWithoutCommentActions(tpl)
 
 	var names []string
 	for _, match := range directSecretRefRe.FindAllStringSubmatch(searchable, -1) {
@@ -106,9 +98,7 @@ func ReferencedSecretNames(tpl string) ([]string, error) {
 	for _, match := range secretIndexMatches(searchable) {
 		operand := secretIndexRe.FindStringSubmatch(match)[1]
 		if !strings.HasPrefix(operand, `"`) {
-			return nil, fmt.Errorf(
-				"dynamic secret name must be resolved from a parameter before execution",
-			)
+			return nil, errDynamicSecretName
 		}
 		name, err := strconv.Unquote(operand)
 		if err != nil {
@@ -123,270 +113,6 @@ func ReferencedSecretNames(tpl string) ([]string, error) {
 		names = append(names, name)
 	}
 	return names, nil
-}
-
-type secretTemplateValue uint8
-
-const (
-	secretTemplateValueUnknown secretTemplateValue = iota
-	secretTemplateValueRoot
-	secretTemplateValueMap
-)
-
-type secretTemplateAnalysisKey struct {
-	name string
-	dot  secretTemplateValue
-}
-
-type secretTemplateAnalyzer struct {
-	trees       map[string]*parse.Tree
-	active      map[secretTemplateAnalysisKey]bool
-	unsupported bool
-}
-
-func hasUnsupportedSecretIndex(tpl string) bool {
-	parsed, err := template.New("").Funcs(funcMap).Option("missingkey=zero").Parse(normalizeSecretsRefs(tpl))
-	if err != nil {
-		// Preserve the existing focused behavior for templates that the runtime
-		// parser will reject independently.
-		return hasSecretPipelineIndex(tpl)
-	}
-
-	trees := make(map[string]*parse.Tree)
-	for _, defined := range parsed.Templates() {
-		if defined.Tree != nil {
-			trees[defined.Name()] = defined.Tree
-		}
-	}
-	analyzer := secretTemplateAnalyzer{
-		trees:  trees,
-		active: make(map[secretTemplateAnalysisKey]bool),
-	}
-	for name := range trees {
-		analyzer.analyzeTemplate(name, secretTemplateValueRoot)
-		if analyzer.unsupported {
-			return true
-		}
-	}
-	return false
-}
-
-func (a *secretTemplateAnalyzer) analyzeTemplate(name string, dot secretTemplateValue) {
-	if a.unsupported {
-		return
-	}
-	key := secretTemplateAnalysisKey{name: name, dot: dot}
-	if a.active[key] {
-		return
-	}
-	tree := a.trees[name]
-	if tree == nil || tree.Root == nil {
-		return
-	}
-	a.active[key] = true
-	defer delete(a.active, key)
-
-	vars := map[string]secretTemplateValue{"$": dot}
-	a.analyzeList(tree.Root, dot, vars)
-}
-
-func (a *secretTemplateAnalyzer) analyzeList(list *parse.ListNode, dot secretTemplateValue, vars map[string]secretTemplateValue) {
-	if list == nil || a.unsupported {
-		return
-	}
-	for _, node := range list.Nodes {
-		switch node := node.(type) {
-		case *parse.ActionNode:
-			value := a.analyzePipe(node.Pipe, dot, vars)
-			assignTemplateVariables(vars, node.Pipe, value)
-		case *parse.IfNode:
-			a.analyzeBranch(&node.BranchNode, dot, vars, dot, false)
-		case *parse.WithNode:
-			value := a.analyzePipe(node.Pipe, dot, vars)
-			a.analyzeBranch(&node.BranchNode, dot, vars, value, true)
-		case *parse.RangeNode:
-			a.analyzeRange(node, dot, vars)
-		case *parse.TemplateNode:
-			templateDot := a.analyzePipe(node.Pipe, dot, vars)
-			a.analyzeTemplate(node.Name, templateDot)
-		}
-		if a.unsupported {
-			return
-		}
-	}
-}
-
-func (a *secretTemplateAnalyzer) analyzeBranch(
-	branch *parse.BranchNode,
-	dot secretTemplateValue,
-	vars map[string]secretTemplateValue,
-	listDot secretTemplateValue,
-	pipeAlreadyAnalyzed bool,
-) {
-	value := listDot
-	if !pipeAlreadyAnalyzed {
-		value = a.analyzePipe(branch.Pipe, dot, vars)
-	}
-	branchVars := cloneSecretTemplateVars(vars)
-	assignTemplateVariables(branchVars, branch.Pipe, value)
-	a.analyzeList(branch.List, listDot, branchVars)
-
-	elseVars := cloneSecretTemplateVars(vars)
-	assignTemplateVariables(elseVars, branch.Pipe, value)
-	a.analyzeList(branch.ElseList, dot, elseVars)
-	mergeSecretTemplateAssignments(vars, branchVars, elseVars)
-}
-
-func (a *secretTemplateAnalyzer) analyzeRange(node *parse.RangeNode, dot secretTemplateValue, vars map[string]secretTemplateValue) {
-	a.analyzePipe(node.Pipe, dot, vars)
-	rangeVars := cloneSecretTemplateVars(vars)
-	for _, variable := range node.Pipe.Decl {
-		rangeVars[variable.Ident[0]] = secretTemplateValueUnknown
-	}
-	a.analyzeList(node.List, secretTemplateValueUnknown, rangeVars)
-
-	elseVars := cloneSecretTemplateVars(vars)
-	a.analyzeList(node.ElseList, dot, elseVars)
-	mergeSecretTemplateAssignments(vars, rangeVars, elseVars)
-}
-
-func (a *secretTemplateAnalyzer) analyzePipe(
-	pipe *parse.PipeNode,
-	dot secretTemplateValue,
-	vars map[string]secretTemplateValue,
-) secretTemplateValue {
-	if pipe == nil {
-		return dot
-	}
-	for _, command := range pipe.Cmds {
-		a.analyzeCommand(command, dot, vars)
-	}
-	if len(pipe.Cmds) != 1 || len(pipe.Cmds[0].Args) != 1 {
-		return secretTemplateValueUnknown
-	}
-	return secretTemplateNodeValue(pipe.Cmds[0].Args[0], dot, vars)
-}
-
-func (a *secretTemplateAnalyzer) analyzeCommand(
-	command *parse.CommandNode,
-	dot secretTemplateValue,
-	vars map[string]secretTemplateValue,
-) {
-	for _, arg := range command.Args {
-		if nested, ok := arg.(*parse.PipeNode); ok {
-			a.analyzePipe(nested, dot, vars)
-		}
-	}
-	if len(command.Args) == 0 {
-		return
-	}
-	identifier, ok := command.Args[0].(*parse.IdentifierNode)
-	if !ok || identifier.Ident != "index" || len(command.Args) < 2 {
-		return
-	}
-	if secretTemplateNodeValue(command.Args[1], dot, vars) != secretTemplateValueMap {
-		return
-	}
-	if len(command.Args) == 3 && isCanonicalSecretMapNode(command.Args[1]) {
-		if _, ok := command.Args[2].(*parse.StringNode); ok {
-			return
-		}
-	}
-	a.unsupported = true
-}
-
-func secretTemplateNodeValue(
-	node parse.Node,
-	dot secretTemplateValue,
-	vars map[string]secretTemplateValue,
-) secretTemplateValue {
-	switch node := node.(type) {
-	case *parse.DotNode:
-		return dot
-	case *parse.FieldNode:
-		if dot == secretTemplateValueRoot && len(node.Ident) == 1 && node.Ident[0] == "Secrets" {
-			return secretTemplateValueMap
-		}
-	case *parse.VariableNode:
-		value := vars[node.Ident[0]]
-		if len(node.Ident) == 1 {
-			return value
-		}
-		if value == secretTemplateValueRoot && len(node.Ident) == 2 && node.Ident[1] == "Secrets" {
-			return secretTemplateValueMap
-		}
-	case *parse.PipeNode:
-		if len(node.Cmds) == 1 && len(node.Cmds[0].Args) == 1 {
-			return secretTemplateNodeValue(node.Cmds[0].Args[0], dot, vars)
-		}
-	case *parse.ChainNode:
-		value := secretTemplateNodeValue(node.Node, dot, vars)
-		if value == secretTemplateValueRoot && len(node.Field) == 1 && node.Field[0] == "Secrets" {
-			return secretTemplateValueMap
-		}
-	}
-	return secretTemplateValueUnknown
-}
-
-func isCanonicalSecretMapNode(node parse.Node) bool {
-	field, ok := node.(*parse.FieldNode)
-	return ok && len(field.Ident) == 1 && field.Ident[0] == "Secrets"
-}
-
-func assignTemplateVariables(vars map[string]secretTemplateValue, pipe *parse.PipeNode, value secretTemplateValue) {
-	if pipe == nil {
-		return
-	}
-	for _, variable := range pipe.Decl {
-		vars[variable.Ident[0]] = value
-	}
-}
-
-func cloneSecretTemplateVars(vars map[string]secretTemplateValue) map[string]secretTemplateValue {
-	cloned := make(map[string]secretTemplateValue, len(vars))
-	for name, value := range vars {
-		cloned[name] = value
-	}
-	return cloned
-}
-
-func mergeSecretTemplateAssignments(
-	vars map[string]secretTemplateValue,
-	branches ...map[string]secretTemplateValue,
-) {
-	for name, original := range vars {
-		merged := original
-		for _, branch := range branches {
-			if branch[name] == secretTemplateValueMap {
-				merged = secretTemplateValueMap
-				break
-			}
-			if branch[name] != merged {
-				merged = secretTemplateValueUnknown
-			}
-		}
-		vars[name] = merged
-	}
-}
-
-func hasSecretPipelineIndex(tpl string) bool {
-	for offset := 0; offset < len(tpl); {
-		start := strings.Index(tpl[offset:], "{{")
-		if start < 0 {
-			return false
-		}
-		start += offset + len("{{")
-		end, ok := templateActionEnd(tpl, start)
-		if !ok {
-			return false
-		}
-		action := tpl[start:end]
-		if !isTemplateCommentAction(action) && actionHasSecretPipelineIndex(action) {
-			return true
-		}
-		offset = end + len("}}")
-	}
-	return false
 }
 
 func replaceSecretIndexMatches(tpl string, replace func(string) string) string {
@@ -524,45 +250,6 @@ func templateActionEnd(tpl string, start int) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-func actionHasSecretPipelineIndex(action string) bool {
-	var quote byte
-	for i := 0; i < len(action); i++ {
-		char := action[i]
-		if quote != 0 {
-			if quote != '`' && char == '\\' {
-				i++
-				continue
-			}
-			if char == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch char {
-		case '"', '\'', '`':
-			quote = char
-		case '|':
-			indexStart := skipTemplateWhitespace(action, i+1)
-			if !strings.HasPrefix(action[indexStart:], "index") {
-				continue
-			}
-			operandStart := indexStart + len("index")
-			if operandStart == len(action) || !isTemplateWhitespace(action[operandStart]) {
-				continue
-			}
-			secretStart := skipTemplateWhitespace(action, operandStart)
-			if !strings.HasPrefix(action[secretStart:], ".Secrets") {
-				continue
-			}
-			secretEnd := secretStart + len(".Secrets")
-			if secretEnd == len(action) || isTemplateWhitespace(action[secretEnd]) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func isTemplateCommentAction(action string) bool {
