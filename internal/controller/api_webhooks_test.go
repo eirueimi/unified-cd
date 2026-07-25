@@ -176,6 +176,35 @@ func TestWebhookIngressStoresResolvedSecretNameParameter(t *testing.T) {
 	assert.Equal(t, `{{ index .Secrets "webhook-token" }}`, snapshot.Steps[0].Env["TOKEN"])
 }
 
+func TestWebhookIngressRejectsInvalidStoredJobSpecWithoutCreatingRun(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(
+		t.Context(),
+		"build",
+		"unified-cd/v1",
+		[]byte(`{"steps":"not-an-array"}`),
+	)
+	require.NoError(t, err)
+	webhookSpec, err := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
+	})
+	require.NoError(t, err)
+	_, err = pg.UpsertWebhookReceiver(t.Context(), "test-hook", webhookSpec)
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "invalid stored job spec")
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
 // TestWebhookIngress_ExpandsAgentSelectorParams verifies that the agentSelector template
 // `{{ .Params.pool }}` is also expanded with the params determined by paramsMapping during webhook ingress.
 func TestWebhookIngress_ExpandsAgentSelectorParams(t *testing.T) {

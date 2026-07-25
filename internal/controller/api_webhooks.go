@@ -234,10 +234,12 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 
 	// Extract the agentSelector from the job spec.
 	var jobSpec dsl.Spec
-	agentSelector := []string{}
-	if err := json.Unmarshal(job.Spec, &jobSpec); err == nil {
-		agentSelector = jobSpec.AgentSelector
+	if err := json.Unmarshal(job.Spec, &jobSpec); err != nil {
+		s.countWebhookEvent(name, "error")
+		http.Error(w, "invalid stored job spec: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
+	agentSelector := jobSpec.AgentSelector
 	// A valid signature proves the request's origin, not that its content is
 	// benign: an outside contributor who can open a PR or push a branch
 	// controls payload fields like .Payload.pull_request.head.ref. Reject any

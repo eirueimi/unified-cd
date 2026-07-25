@@ -130,6 +130,34 @@ func TestAPI_ReplayRunStoresResolvedSecretNameParameter(t *testing.T) {
 	assert.Equal(t, `{{ index .Secrets "replay-token" }}`, snapshot.Steps[0].Env["TOKEN"])
 }
 
+func TestAPI_ReplayRunRejectsInvalidStoredRunSpecWithoutCreatingRun(t *testing.T) {
+	s, pg := newTestServer(t)
+	ctx := context.Background()
+	_, err := pg.UpsertJob(ctx, "invalid-replay-spec", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	original, err := pg.CreateRun(
+		ctx,
+		"invalid-replay-spec",
+		nil,
+		[]byte(`{"steps":"not-an-array"}`),
+		nil,
+		nil,
+		"api",
+	)
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+original.ID+"/replay", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "invalid stored run spec")
+	runs, err := pg.ListRunsByJob(ctx, "invalid-replay-spec", 10)
+	require.NoError(t, err)
+	assert.Len(t, runs, 1, "the rejected replay must not create another run")
+}
+
 func TestAPI_ReplayRun_NotFound(t *testing.T) {
 	s, _ := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/00000000-0000-0000-0000-000000000000/replay", nil)

@@ -512,17 +512,20 @@ func TestCheckAndFireSchedules_PropagatesAgentSelector(t *testing.T) {
 // derived without a parsed dsl.Spec.
 func TestCheckAndFireSchedules_SpecParseFailure_FiresWithNilCapsAndSelector(t *testing.T) {
 	lastFired := testNow.Add(-25 * time.Hour)
+	rawSpec := []byte("  not valid json\r\n")
 	m := &mockScheduleFireStore{
 		schedules: []store.Schedule{
 			{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
 		},
 		jobs: map[string]*api.Job{
-			"build": {Name: "build", Spec: []byte(`not valid json`)},
+			"build": {Name: "build", Spec: rawSpec},
 		},
 	}
 	checkAndFireSchedules(context.Background(), m, testNow)
 
 	require.Len(t, m.created, 1, "an unparseable spec still fires best-effort")
+	require.Len(t, m.createdSpecs, 1)
+	assert.Equal(t, rawSpec, m.createdSpecs[0], "the degraded path must preserve the stored spec bytes exactly")
 	require.Len(t, m.createdRequiredCaps, 1)
 	assert.Empty(t, m.createdRequiredCaps[0])
 	require.Len(t, m.createdAgentSelectors, 1)

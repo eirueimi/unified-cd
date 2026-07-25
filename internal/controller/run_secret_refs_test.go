@@ -54,3 +54,38 @@ func TestPrepareRunSpecRejectsRuntimeOnlySecretName(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "dynamic secret name must be resolved from a parameter before execution")
 }
+
+func TestPrepareRunSpecDoesNotMutateCallerExecutableFields(t *testing.T) {
+	const unresolved = `{{ index .Secrets .Params.token_secret }}`
+	spec := dsl.Spec{
+		Steps: []dsl.StepEntry{
+			{
+				Name: "main",
+				Run:  unresolved,
+				Env:  map[string]string{"TOKEN": unresolved},
+			},
+			{
+				Parallel: []dsl.Step{{
+					Name: "parallel",
+					Run:  unresolved,
+					Env:  map[string]string{"TOKEN": unresolved},
+				}},
+			},
+		},
+		Finally: []dsl.StepEntry{{
+			Name: "cleanup",
+			Run:  unresolved,
+			Env:  map[string]string{"TOKEN": unresolved},
+		}},
+	}
+
+	_, err := prepareRunSpec(spec, map[string]string{"token_secret": "deploy-token"})
+
+	require.NoError(t, err)
+	assert.Equal(t, unresolved, spec.Steps[0].Run)
+	assert.Equal(t, unresolved, spec.Steps[0].Env["TOKEN"])
+	assert.Equal(t, unresolved, spec.Steps[1].Parallel[0].Run)
+	assert.Equal(t, unresolved, spec.Steps[1].Parallel[0].Env["TOKEN"])
+	assert.Equal(t, unresolved, spec.Finally[0].Run)
+	assert.Equal(t, unresolved, spec.Finally[0].Env["TOKEN"])
+}

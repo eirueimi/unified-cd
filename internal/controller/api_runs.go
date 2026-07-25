@@ -52,10 +52,10 @@ func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams
 	}
 	// Extract the agentSelector from the stored spec JSON.
 	var spec dsl.Spec
-	agentSelector := []string{}
-	if err := json.Unmarshal(job.Spec, &spec); err == nil {
-		agentSelector = spec.AgentSelector
+	if err := json.Unmarshal(job.Spec, &spec); err != nil {
+		return nil, http.StatusInternalServerError, "invalid stored job spec: " + err.Error()
 	}
+	agentSelector := spec.AgentSelector
 	params, err := resolveParams(spec.Params.Inputs, reqParams)
 	if err != nil {
 		return nil, http.StatusBadRequest, err.Error()
@@ -122,10 +122,11 @@ func (s *Server) handleReplayRun(w http.ResponseWriter, r *http.Request) {
 	// routes the same way the original run did, independent of the job's
 	// current definition.
 	var spec dsl.Spec
-	agentSelector := []string{}
-	if json.Unmarshal(specJSON, &spec) == nil {
-		agentSelector = spec.AgentSelector
+	if err := json.Unmarshal(specJSON, &spec); err != nil {
+		http.Error(w, "invalid stored run spec: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
+	agentSelector := spec.AgentSelector
 	// Re-validate the original run's stored params against the SNAPSHOT
 	// spec's declared inputs before replaying, rather than reusing
 	// orig.Params verbatim: resolveParams is the choke point every other

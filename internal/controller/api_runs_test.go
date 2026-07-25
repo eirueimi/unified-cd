@@ -88,6 +88,30 @@ func TestAPI_TriggerRunStoresResolvedSecretNameParameter(t *testing.T) {
 	assert.Equal(t, `{{ index .Secrets "gitlab-token" }}`, snapshot.Steps[0].Env["TOKEN"])
 }
 
+func TestAPI_TriggerRunRejectsInvalidStoredJobSpecWithoutCreatingRun(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(
+		t.Context(),
+		"invalid-spec",
+		"unified-cd/v1",
+		[]byte(`{"steps":"not-an-array"}`),
+	)
+	require.NoError(t, err)
+	body, err := json.Marshal(api.TriggerRunRequest{JobName: "invalid-spec"})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "invalid stored job spec")
+	runs, err := pg.ListRunsByJob(t.Context(), "invalid-spec", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
 func TestAPI_TriggerRun_UnknownJob(t *testing.T) {
 	s, _ := newTestServer(t)
 	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "missing"})
