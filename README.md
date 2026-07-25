@@ -151,8 +151,9 @@ unified-cli logs -f "$RUN_ID"
 Jobs execute on **agents**, which enroll with a one-time token minted by the controller:
 
 ```bash
-# Mint a one-time enrollment token (labels are optional, used for routing):
-TOKEN=$(unified-cli agent enrollment create --agent-id my-agent --label kind:linux --quiet)
+# Mint a one-time enrollment token. --agent-id is optional (the server
+# auto-generates agent-XXXXXXXX when omitted); labels are used for routing:
+TOKEN=$(unified-cli agent enrollment create --label kind:linux --quiet)
 
 # Start an agent; it enrolls, then persists a credential so restarts need no new token:
 unified-cd-agent --server http://localhost:8080 --enrollment-token "$TOKEN"

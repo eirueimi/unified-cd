@@ -164,21 +164,22 @@ func newAgentEnrollmentCreateCmd(resolve func() (Config, error), httpClient *htt
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Enrollment token written to %s (shown only once).\n", outputFile)
-				fmt.Fprint(cmd.OutOrStdout(), nextAgentCommands(cfg.Server, agentID, outputFile, ""))
+				// Use result.AgentID (the server's value), which is the one the
+				// server auto-generated when --agent-id was omitted.
+				fmt.Fprint(cmd.OutOrStdout(), nextAgentCommands(cfg.Server, result.AgentID, outputFile, ""))
 				return nil
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Enrollment token created (shown only once):\n\n%s\n", result.Token)
-			fmt.Fprint(cmd.OutOrStdout(), nextAgentCommands(cfg.Server, agentID, "", result.Token))
+			fmt.Fprintf(cmd.OutOrStdout(), "Enrollment token created for agent %q (shown only once):\n\n%s\n", result.AgentID, result.Token)
+			fmt.Fprint(cmd.OutOrStdout(), nextAgentCommands(cfg.Server, result.AgentID, "", result.Token))
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&agentID, "agent-id", "", "fixed canonical agent ID (required)")
+	cmd.Flags().StringVar(&agentID, "agent-id", "", "fixed canonical agent ID (optional; the server auto-generates one, agent-XXXXXXXX, when omitted)")
 	cmd.Flags().StringVar(&expiresIn, "expires-in", "10m", "positive enrollment-token lifetime")
 	cmd.Flags().StringArrayVar(&labels, "label", nil, "authorized agent label (repeatable)")
 	cmd.Flags().StringVar(&outputFile, "output-file", "", "create a new owner-only file containing the token")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "print only the token (for piping to unified-cd-agent --enrollment-token -)")
 	cmd.MarkFlagsMutuallyExclusive("quiet", "output-file")
-	_ = cmd.MarkFlagRequired("agent-id")
 	return cmd
 }
 

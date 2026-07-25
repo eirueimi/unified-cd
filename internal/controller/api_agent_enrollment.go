@@ -27,6 +27,15 @@ const (
 	maxAgentEnrollmentTTL     = 24 * time.Hour
 )
 
+// generateAgentID returns a random canonical agent ID of the form
+// "agent-XXXXXXXX" (8 hex chars) for enrollment requests that omit an explicit
+// agentId. The suffix comes from a crypto-random uuid v4; ~4.3e9 values is ample
+// for identifying agents in a fleet, and the operator can always pass an
+// explicit --agent-id when a stable, human-meaningful name is wanted.
+func generateAgentID() string {
+	return "agent-" + uuid.NewString()[:8]
+}
+
 // handleCreateAgentEnrollment creates an opaque, one-time enrollment token.
 // The plaintext token is returned only in this creation response.
 func (s *Server) handleCreateAgentEnrollment(w http.ResponseWriter, r *http.Request) {
@@ -37,8 +46,9 @@ func (s *Server) handleCreateAgentEnrollment(w http.ResponseWriter, r *http.Requ
 	}
 	req.AgentID = strings.TrimSpace(req.AgentID)
 	if req.AgentID == "" {
-		http.Error(w, "agentId is required", http.StatusBadRequest)
-		return
+		// No explicit identity requested: mint a random canonical agent ID. The
+		// generated ID is returned in the response so the operator/agent knows it.
+		req.AgentID = generateAgentID()
 	}
 
 	ttl := defaultAgentEnrollmentTTL

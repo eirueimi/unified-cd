@@ -32,6 +32,13 @@ in that case. `unified-cli agent enrollment create` prints the ready-to-run
 a hand-written service definition — see [Running the agent as a
 service](#running-the-agent-as-a-service) below.
 
+`--agent-id` is optional: omit it and the controller auto-generates a canonical
+ID (`agent-XXXXXXXX`), returned in the command output — handy for ephemeral or
+autoscaling agents. Pass an explicit `--agent-id` when you want a stable,
+human-meaningful name. Note that running several *auto-generated* agents on one
+host requires an explicit `--credential-file` per agent, since without `--id`
+they share the single default credential path (see above).
+
 The token can be supplied either as a file (`--enrollment-token-file`, the
 more secure default — nothing sensitive touches shell history or `ps`) or
 inline (`--enrollment-token <value>` / `UNIFIED_AGENT_ENROLLMENT_TOKEN`, or
