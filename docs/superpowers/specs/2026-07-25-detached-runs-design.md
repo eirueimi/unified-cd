@@ -1,7 +1,22 @@
 # Detached runs: exempt lightweight orchestrators from MaxConcurrent
 
 Date: 2026-07-25
-Status: Proposed (design)
+Status: Approved (design)
+
+## Decisions (locked)
+
+- **Opt-in flag:** `spec.detached: true` (top-level boolean; default `false`).
+- **Budget:** agent `MaxDetachedConcurrent` (`--max-detached-concurrent` /
+  `UNIFIED_AGENT_MAX_DETACHED`); default `16`, `0` = off, `-1` = unlimited.
+- **`native: true` + `detached: true`:** rejected at parse time (hard error).
+- **k8s pod handling:** Approach A — detached changes only claim accounting, not
+  pod allocation. Detached runs still allocate a pod on k8s exactly as today; we
+  do NOT lazily skip the pod (Approach B) in this version. Because a detached
+  parent holds its pod idle for the whole `call:` wait, `podTemplate.reuse` gives
+  no benefit for detached jobs and is documented as "do not combine." Skipping
+  the pod for pure orchestrators (Approach B) is deferred to future work — it
+  only helps when k8s *cluster* capacity (not the agent semaphore) is the
+  bottleneck, and orchestrators on host agents have no pod at all.
 
 ## Problem
 
@@ -111,11 +126,9 @@ This is backend-agnostic and serves both agent types identically.
 - `detached` is a spec-level boolean; default `false` (fully backward
   compatible, opt-in).
 - A detached job that is also `native: true` executes real host work while
-  exempt from `MaxConcurrent`, which can over-subscribe a host agent. Reject
-  `native: true` together with `detached: true` at parse time (clear error), or
-  at minimum emit a parse-time warning. **Recommendation: reject** — detached is
-  meant for pod-offloaded / waiting orchestrators, and a hard error prevents the
-  most damaging misuse. (Confirm during review.)
+  exempt from `MaxConcurrent`, which can over-subscribe a host agent. This is
+  **rejected at parse time** (clear error) — detached is meant for pod-offloaded
+  / waiting orchestrators, and a hard error prevents the most damaging misuse.
 - `detached` composes with `agentSelector` and concurrency groups normally: a
   detached run may still target a pool and still participate in
   `mutex`/`semaphores`/`orLocks` serialization.
@@ -173,13 +186,6 @@ future pure-orchestrator no-pod optimization. Until then, prefer NOT enabling
 Fully backward compatible: `detached` defaults to `false`, so existing jobs and
 agents behave exactly as today. Adopting it is per-job opt-in plus setting
 `MaxDetachedConcurrent` on the agents that should host orchestrators.
-
-## Open decisions (confirm at review)
-
-1. Flag name/location: `spec.detached` (recommended) vs under `spec.concurrency`.
-2. `MaxDetachedConcurrent` default value (recommended: 16; `0` = off; `-1` =
-   unlimited).
-3. `native: true` + `detached: true`: reject (recommended) vs warn.
 
 ## Out of scope (future)
 
