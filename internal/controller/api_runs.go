@@ -64,7 +64,7 @@ func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams
 	if err != nil {
 		return nil, http.StatusBadRequest, "agentSelector: " + err.Error()
 	}
-	runSpec, err := prepareRunSpec(spec, params)
+	runSpec, err := prepareRunSpec(job.Spec, params)
 	if err != nil {
 		return nil, http.StatusBadRequest, err.Error()
 	}
@@ -150,7 +150,7 @@ func (s *Server) handleReplayRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	runSpec, err := prepareRunSpec(spec, params)
+	runSpec, err := prepareRunSpec(specJSON, params)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

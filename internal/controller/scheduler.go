@@ -180,7 +180,7 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 						"schedule", sc.Name, "element", bad)
 					continue // Do not update last_fired_at — warn again next tick.
 				}
-				runSpec, err = prepareRunSpec(jobSpec, params)
+				runSpec, err = prepareRunSpec(job.Spec, params)
 				if err != nil {
 					slog.Warn("checkAndFireSchedules: secret name resolution failed", "schedule", sc.Name, "error", err)
 					continue

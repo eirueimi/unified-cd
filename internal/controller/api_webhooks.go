@@ -264,7 +264,7 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	runSpec, err := prepareRunSpec(jobSpec, params)
+	runSpec, err := prepareRunSpec(job.Spec, params)
 	if err != nil {
 		s.countWebhookEvent(name, "error")
 		http.Error(w, err.Error(), http.StatusBadRequest)
