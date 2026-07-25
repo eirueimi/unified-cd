@@ -52,9 +52,12 @@ resolution boundary and performs these operations:
 1. Leave `index .Secrets "literal-name"` unchanged.
 2. Replace `index .Secrets .Params.NAME` with
    `index .Secrets "resolved-value"`.
-3. Fail if `NAME` is absent, empty, not a valid secret name, or still contains
-   a template expression.
-4. Fail if the operand to `index .Secrets` is any other expression.
+3. Replace an absent or empty optional parameter with `index .Secrets ""`;
+   the collector ignores the empty name, preserving templates that guard an
+   optional secret with `if .Params.NAME`.
+4. Fail if a non-empty resolved value is not a valid secret name or still
+   contains a template expression.
+5. Fail if the operand to `index .Secrets` is any other expression.
 
 The replacement must use a correctly quoted Go-template string literal. Secret
 values are never read or written by this transformation; it handles secret
@@ -112,7 +115,6 @@ Errors must identify the unsupported or invalid reference without exposing a
 secret value. Representative messages are:
 
 ```text
-secret name parameter "token_secret" resolved to an empty value
 dynamic secret name must be resolved from a parameter before execution
 secret name parameter "token_secret" must be a literal secret name
 ```
@@ -130,7 +132,8 @@ Add focused tests for:
 - A JobTemplate input supplied by `uses.with` rewritten before input-step
   reference rewriting.
 - A JobTemplate default used when `with` omits the input.
-- Empty, missing, malformed, and templated secret-name parameter values.
+- Empty and missing optional parameters producing no secret dependency.
+- Malformed and templated non-empty secret-name parameter values.
 - Rejection of ordinary `.Steps`, `.Matrix`, and `.Foreach` operands.
 - Claim and secret-fetch allowlists containing the resolved secret name.
 - End-to-end `git-checkout` expansion producing `gitlab-token` in
