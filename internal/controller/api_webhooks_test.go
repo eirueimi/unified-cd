@@ -14,10 +14,23 @@ import (
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/metrics"
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newTestServerWithConfig is like newTestServer but lets the caller supply a
+// non-default Config (e.g. a custom WebhookMaxBodyBytes for the body-limit
+// tests below).
+func newTestServerWithConfig(t *testing.T, cfg Config) (*Server, store.Store) {
+	t.Helper()
+	pg := store.NewTestPostgres(t)
+	_, err := pg.UpsertBootstrapPAT(t.Context(), "test-bootstrap", HashToken("secret"))
+	require.NoError(t, err)
+	s := NewServer(cfg, pg)
+	return s, pg
+}
 
 const testWebhookYAML = `
 apiVersion: unified-cd/v1
@@ -705,6 +718,145 @@ func TestWebhookIngress_TokenCustomHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
+// TestWebhookIngress_BodyOverConfiguredLimitRejected verifies that a request
+// body larger than the configured WebhookMaxBodyBytes is rejected with 413
+// and never creates a Run — instead of being silently truncated by
+// io.LimitReader (the historical bug), which would corrupt HMAC verification
+// and any DSL-mapped payload fields past the truncation point.
+func TestWebhookIngress_BodyOverConfiguredLimitRejected(t *testing.T) {
+	s, pg := newTestServerWithConfig(t, Config{WebhookMaxBodyBytes: 16})
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	payload := []byte(`{"ref":"refs/heads/main-this-is-longer-than-16-bytes"}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs, "an oversized body must not create a run")
+}
+
+// TestWebhookIngress_BodyOverLimitSkipsAuthVerification verifies that an
+// oversized body is rejected with 413 even when it carries a signature that
+// is valid for the full (over-limit) body — proving the reject happens
+// before signature verification runs, not that verification merely fails on
+// truncated bytes.
+func TestWebhookIngress_BodyOverLimitSkipsAuthVerification(t *testing.T) {
+	s, pg := newTestServerWithConfig(t, Config{WebhookMaxBodyBytes: 16})
+	s.SetKeyManager(testKeyManager(t))
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+
+	setBody, _ := json.Marshal(api.SetSecretRequest{Name: "webhook-secret", Value: "mysecret"})
+	sreq := httptest.NewRequest(http.MethodPost, "/api/v1/secrets", bytes.NewReader(setBody))
+	sreq.Header.Set("Authorization", "Bearer secret")
+	sreq.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(httptest.NewRecorder(), sreq)
+
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "hmac-sha256", "secretRef": "webhook-secret"},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "secured-hook", spec)
+
+	payload := []byte(`{"event":"push","extra":"padding-to-exceed-the-limit"}`)
+	mac := hmac.New(sha256.New, []byte("mysecret"))
+	mac.Write(payload)
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/secured-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Signature", sig) // valid for the full body; must never be checked
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
+// TestWebhookIngress_BodyOverLimitRecordsRejectedMetric verifies the reject
+// path records the same "rejected" outcome label used by the handler's other
+// rejection branches.
+func TestWebhookIngress_BodyOverLimitRecordsRejectedMetric(t *testing.T) {
+	s, pg := newTestServerWithConfig(t, Config{WebhookMaxBodyBytes: 8})
+	m := metrics.New()
+	s.SetMetrics(m)
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", strings.NewReader(`{"ref":"main"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.WebhookEventsForTest("test-hook", "rejected")))
+}
+
+// TestWebhookIngress_BodyAtConfiguredLimitAccepted verifies a body exactly at
+// (or under) the configured limit still succeeds unchanged.
+func TestWebhookIngress_BodyAtConfiguredLimitAccepted(t *testing.T) {
+	s, pg := newTestServerWithConfig(t, Config{WebhookMaxBodyBytes: 64})
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	payload := []byte(`{"ref":"main"}`)
+	require.LessOrEqual(t, len(payload), 64)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+}
+
+// TestWebhookIngress_DefaultBodyLimitAppliesWhenUnconfigured verifies that
+// leaving WebhookMaxBodyBytes unset (its Go zero value, 0) still enforces the
+// documented 1 MiB default rather than falling back to unlimited or to the
+// old silent-truncation behavior.
+func TestWebhookIngress_DefaultBodyLimitAppliesWhenUnconfigured(t *testing.T) {
+	s, pg := newTestServer(t) // Config{} -> WebhookMaxBodyBytes == 0 -> default 1<<20
+	_, _ = pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	spec, _ := json.Marshal(map[string]any{
+		"trigger": map[string]any{"job": "build"},
+		"auth":    map[string]any{"type": "none", "allowUnauthenticated": true},
+	})
+	_, _ = pg.UpsertWebhookReceiver(t.Context(), "test-hook", spec)
+
+	// One byte over the 1 MiB default must be rejected with 413, not truncated.
+	oversized := bytes.Repeat([]byte("a"), (1<<20)+1)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(oversized))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
 }
 
 // TestWebhookIngressMetricOutcomes verifies that handleWebhookIngress records
