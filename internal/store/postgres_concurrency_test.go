@@ -8,6 +8,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestPostgres_ClaimNextRun_DetachedFilter verifies normal and detached claims
+// draw from disjoint pools: a normal claim never returns a detached run, and a
+// detached claim returns only detached runs.
+func TestPostgres_ClaimNextRun_DetachedFilter(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	normal, err := pg.CreateRun(ctx, "n", nil, []byte(`{"steps":[{"name":"s","run":"true"}]}`), nil, nil, "")
+	require.NoError(t, err)
+	det, err := pg.CreateRun(ctx, "d", nil, []byte(`{"detached":true,"steps":[{"name":"s","call":{"job":"c"}}]}`), nil, nil, "")
+	require.NoError(t, err)
+	_, err = pg.TransitionPendingToQueued(ctx, 10)
+	require.NoError(t, err)
+
+	c1, err := pg.ClaimNextRun(ctx, "a1", nil)
+	require.NoError(t, err)
+	require.NotNil(t, c1)
+	assert.Equal(t, normal.ID, c1.ID, "normal claim must skip the detached run")
+
+	c2, err := pg.ClaimNextRunDetached(ctx, "a2", nil)
+	require.NoError(t, err)
+	require.NotNil(t, c2)
+	assert.Equal(t, det.ID, c2.ID, "detached claim returns only detached runs")
+}
+
 func TestPostgres_MutexAcquireAndRelease(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()

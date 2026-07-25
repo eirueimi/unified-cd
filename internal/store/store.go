@@ -205,6 +205,9 @@ type Store interface {
 	ListActiveRuns(ctx context.Context) ([]api.Run, error)
 	TransitionPendingToQueued(ctx context.Context, limit int) (int, error)
 	ClaimNextRun(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error)
+	// ClaimNextRunDetached claims the next queued detached run (see spec.detached);
+	// detached runs are claimed from a budget separate from ClaimNextRun.
+	ClaimNextRunDetached(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error)
 	MarkRunRunning(ctx context.Context, runID string) error
 	MarkRunFinished(ctx context.Context, runID string, status api.RunStatus) error
 	// FinishRun is like MarkRunFinished but reports whether the run actually

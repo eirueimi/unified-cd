@@ -582,7 +582,19 @@ func (p *Postgres) tryQueueRun(ctx context.Context, runID string, specJSON []byt
 	return true, tx.Commit(ctx)
 }
 
+// ClaimNextRun claims the next queued NON-detached run for the agent. Detached
+// runs are claimed separately via ClaimNextRunDetached so an agent's normal and
+// detached budgets do not draw from the same pool (see the detached-runs design).
 func (p *Postgres) ClaimNextRun(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error) {
+	return p.claimNextRun(ctx, agentID, agentLabels, false)
+}
+
+// ClaimNextRunDetached claims the next queued detached run for the agent.
+func (p *Postgres) ClaimNextRunDetached(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error) {
+	return p.claimNextRun(ctx, agentID, agentLabels, true)
+}
+
+func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels []string, detached bool) (*ClaimedRun, error) {
 	if agentLabels == nil {
 		agentLabels = []string{}
 	}
@@ -599,6 +611,7 @@ func (p *Postgres) ClaimNextRun(ctx context.Context, agentID string, agentLabels
 		    SELECT r.id FROM runs r
 		    LEFT JOIN agents a ON a.id = $1
 		    WHERE r.status = 'Queued'
+		      AND r.detached = $3
 		      AND (r.agent_selector = '{}' OR r.agent_selector <@ $2::TEXT[])
 		      AND (a.capabilities IS NULL OR r.required_caps <@ a.capabilities)
 		    ORDER BY r.created_at
@@ -612,7 +625,7 @@ func (p *Postgres) ClaimNextRun(ctx context.Context, agentID string, agentLabels
 	var cr ClaimedRun
 	var status string
 	var paramsOut []byte
-	err := p.pool.QueryRow(ctx, q, agentID, agentLabels).
+	err := p.pool.QueryRow(ctx, q, agentID, agentLabels, detached).
 		Scan(&cr.ID, &cr.JobName, &status, &paramsOut, &cr.Spec, &cr.CreatedAt, &cr.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
