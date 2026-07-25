@@ -181,9 +181,22 @@ func (c *Client) Heartbeat(ctx context.Context, agentID string, activeRunIDs []s
 
 // Claim requests an executable Run for the agent. labels is the list of agent labels.
 func (c *Client) Claim(ctx context.Context, agentID, timeout string, labels []string) (api.ClaimResponse, error) {
+	return c.claim(ctx, agentID, timeout, labels, false)
+}
+
+// ClaimDetached long-polls the claim endpoint for a detached run (kind=detached),
+// drawn from the controller's detached pool rather than the normal one.
+func (c *Client) ClaimDetached(ctx context.Context, agentID, timeout string, labels []string) (api.ClaimResponse, error) {
+	return c.claim(ctx, agentID, timeout, labels, true)
+}
+
+func (c *Client) claim(ctx context.Context, agentID, timeout string, labels []string, detached bool) (api.ClaimResponse, error) {
 	path := fmt.Sprintf("/api/v1/agents/%s/claim?timeout=%s", agentID, timeout)
 	if len(labels) > 0 {
 		path += "&labels=" + strings.Join(labels, ",")
+	}
+	if detached {
+		path += "&kind=detached"
 	}
 	var out api.ClaimResponse
 	_, err := c.do(ctx, http.MethodPost, path, nil, &out)

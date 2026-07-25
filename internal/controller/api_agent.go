@@ -127,6 +127,9 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 // Long-polls until a Run is available or the timeout is reached.
 func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	agentID := chi.URLParam(r, "agentId")
+	// kind=detached claims from the detached pool (spec.detached); anything else
+	// (including absent) claims normal runs, preserving legacy agent behavior.
+	detached := r.URL.Query().Get("kind") == "detached"
 	const maxClaimTimeout = 60 * time.Second
 	const claimPollInterval = 1 * time.Second
 	timeout, err := time.ParseDuration(r.URL.Query().Get("timeout"))
@@ -159,7 +162,12 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 
-		claimed, err := s.store.ClaimNextRun(r.Context(), agentID, agentLabels)
+		var claimed *store.ClaimedRun
+		if detached {
+			claimed, err = s.store.ClaimNextRunDetached(r.Context(), agentID, agentLabels)
+		} else {
+			claimed, err = s.store.ClaimNextRun(r.Context(), agentID, agentLabels)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
