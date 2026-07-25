@@ -11,9 +11,6 @@ var (
 	secretIndexRe = regexp.MustCompile(
 		`index[ \t\r\n]+\.Secrets[ \t\r\n]+("(?:\\.|[^"\\])*"|[^\s}]+)`,
 	)
-	secretPipelineIndexRe = regexp.MustCompile(
-		`(?s){{-?[ \t\r\n]*[^}]*\|[ \t\r\n]*index[ \t\r\n]+\.Secrets(?:[ \t\r\n]|}})`,
-	)
 	secretParamOperandRe = regexp.MustCompile(
 		`^\.Params\.([A-Za-z_][A-Za-z0-9_]*)$`,
 	)
@@ -26,7 +23,7 @@ var (
 // expressions with validated string literals before a template is executed.
 func ResolveSecretNameParams(tpl string, params map[string]string) (string, error) {
 	var resolveErr error
-	out := secretIndexRe.ReplaceAllStringFunc(tpl, func(match string) string {
+	out := replaceSecretIndexMatches(tpl, func(match string) string {
 		if resolveErr != nil {
 			return match
 		}
@@ -78,7 +75,7 @@ func ResolveSecretNameParams(tpl string, params map[string]string) (string, erro
 	if resolveErr != nil {
 		return out, resolveErr
 	}
-	if secretPipelineIndexRe.MatchString(tpl) {
+	if hasSecretPipelineIndex(tpl) {
 		return out, fmt.Errorf(
 			"dynamic secret name must be resolved from a parameter before execution",
 		)
@@ -88,7 +85,7 @@ func ResolveSecretNameParams(tpl string, params map[string]string) (string, erro
 
 // ReferencedSecretNames returns the statically named secrets in a template.
 func ReferencedSecretNames(tpl string) ([]string, error) {
-	if secretPipelineIndexRe.MatchString(tpl) {
+	if hasSecretPipelineIndex(tpl) {
 		return nil, fmt.Errorf(
 			"dynamic secret name must be resolved from a parameter before execution",
 		)
@@ -103,8 +100,8 @@ func ReferencedSecretNames(tpl string) ([]string, error) {
 		names = append(names, name)
 	}
 
-	for _, match := range secretIndexRe.FindAllStringSubmatch(tpl, -1) {
-		operand := match[1]
+	for _, match := range secretIndexMatches(tpl) {
+		operand := secretIndexRe.FindStringSubmatch(match)[1]
 		if !strings.HasPrefix(operand, `"`) {
 			return nil, fmt.Errorf(
 				"dynamic secret name must be resolved from a parameter before execution",
@@ -123,6 +120,185 @@ func ReferencedSecretNames(tpl string) ([]string, error) {
 		names = append(names, name)
 	}
 	return names, nil
+}
+
+func hasSecretPipelineIndex(tpl string) bool {
+	for offset := 0; offset < len(tpl); {
+		start := strings.Index(tpl[offset:], "{{")
+		if start < 0 {
+			return false
+		}
+		start += offset + len("{{")
+		end, ok := templateActionEnd(tpl, start)
+		if !ok {
+			return false
+		}
+		if actionHasSecretPipelineIndex(tpl[start:end]) {
+			return true
+		}
+		offset = end + len("}}")
+	}
+	return false
+}
+
+func replaceSecretIndexMatches(tpl string, replace func(string) string) string {
+	var out strings.Builder
+	offset := 0
+	for offset < len(tpl) {
+		start := strings.Index(tpl[offset:], "{{")
+		if start < 0 {
+			break
+		}
+		start += offset + len("{{")
+		end, ok := templateActionEnd(tpl, start)
+		if !ok {
+			break
+		}
+		out.WriteString(tpl[offset:start])
+		out.WriteString(replaceSecretIndexMatchesInAction(tpl[start:end], replace))
+		offset = end
+	}
+	out.WriteString(tpl[offset:])
+	return out.String()
+}
+
+func secretIndexMatches(tpl string) []string {
+	var matches []string
+	for offset := 0; offset < len(tpl); {
+		start := strings.Index(tpl[offset:], "{{")
+		if start < 0 {
+			break
+		}
+		start += offset + len("{{")
+		end, ok := templateActionEnd(tpl, start)
+		if !ok {
+			break
+		}
+		for _, match := range secretIndexRe.FindAllStringIndex(tpl[start:end], -1) {
+			if !templatePositionQuoted(tpl[start:end], match[0]) {
+				matches = append(matches, tpl[start+match[0]:start+match[1]])
+			}
+		}
+		offset = end + len("}}")
+	}
+	return matches
+}
+
+func replaceSecretIndexMatchesInAction(action string, replace func(string) string) string {
+	matches := secretIndexRe.FindAllStringIndex(action, -1)
+	if len(matches) == 0 {
+		return action
+	}
+	var out strings.Builder
+	offset := 0
+	for _, match := range matches {
+		if templatePositionQuoted(action, match[0]) {
+			continue
+		}
+		out.WriteString(action[offset:match[0]])
+		out.WriteString(replace(action[match[0]:match[1]]))
+		offset = match[1]
+	}
+	out.WriteString(action[offset:])
+	return out.String()
+}
+
+func templatePositionQuoted(action string, position int) bool {
+	var quote byte
+	for i := 0; i < position; i++ {
+		char := action[i]
+		if quote != 0 {
+			if quote != '`' && char == '\\' {
+				i++
+				continue
+			}
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch char {
+		case '"', '\'', '`':
+			quote = char
+		}
+	}
+	return quote != 0
+}
+
+func templateActionEnd(tpl string, start int) (int, bool) {
+	var quote byte
+	for i := start; i < len(tpl); i++ {
+		char := tpl[i]
+		if quote != 0 {
+			if quote != '`' && char == '\\' {
+				i++
+				continue
+			}
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch char {
+		case '"', '\'', '`':
+			quote = char
+		case '}':
+			if i+1 < len(tpl) && tpl[i+1] == '}' {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func actionHasSecretPipelineIndex(action string) bool {
+	var quote byte
+	for i := 0; i < len(action); i++ {
+		char := action[i]
+		if quote != 0 {
+			if quote != '`' && char == '\\' {
+				i++
+				continue
+			}
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch char {
+		case '"', '\'', '`':
+			quote = char
+		case '|':
+			indexStart := skipTemplateWhitespace(action, i+1)
+			if !strings.HasPrefix(action[indexStart:], "index") {
+				continue
+			}
+			operandStart := indexStart + len("index")
+			if operandStart == len(action) || !isTemplateWhitespace(action[operandStart]) {
+				continue
+			}
+			secretStart := skipTemplateWhitespace(action, operandStart)
+			if !strings.HasPrefix(action[secretStart:], ".Secrets") {
+				continue
+			}
+			secretEnd := secretStart + len(".Secrets")
+			if secretEnd == len(action) || isTemplateWhitespace(action[secretEnd]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func skipTemplateWhitespace(value string, start int) int {
+	for start < len(value) && isTemplateWhitespace(value[start]) {
+		start++
+	}
+	return start
+}
+
+func isTemplateWhitespace(char byte) bool {
+	return char == ' ' || char == '\t' || char == '\r' || char == '\n'
 }
 
 // ResolveSecretNameParamsInSpec resolves parameter-selected secret names in

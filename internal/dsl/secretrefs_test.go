@@ -125,6 +125,18 @@ func TestReferencedSecretNamesSkipsEmptyLiteralIndex(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestSecretPipelineTextInsideStringIsNotReference(t *testing.T) {
+	tpl := `{{ printf "| index .Secrets arbitrary text" }}`
+
+	resolved, err := ResolveSecretNameParams(tpl, nil)
+	require.NoError(t, err)
+	assert.Equal(t, tpl, resolved)
+
+	names, err := ReferencedSecretNames(tpl)
+	require.NoError(t, err)
+	assert.Empty(t, names)
+}
+
 func TestResolveSecretNameParamsInSpec(t *testing.T) {
 	spec := Spec{
 		Steps: []StepEntry{
