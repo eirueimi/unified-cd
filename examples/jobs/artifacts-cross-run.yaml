@@ -1,0 +1,69 @@
+# Demonstrates: downloadArtifact.runId — fetching an artifact produced by
+# ANOTHER run, specifically a job called via `call:`.
+#
+# On success, a `call:` step exposes the child run's ID to later steps as
+# `{{ .Steps.<call-step-name>.ChildRunID }}` (see docs/jobs.md "call steps"
+# and "Downloading from another run (runId)"). Passing that expression as
+# downloadArtifact.runId retrieves an artifact the child run uploaded via
+# uploadArtifact, instead of looking in the current run (the default when
+# runId is omitted — see examples/jobs/artifacts.yaml for the same-run case).
+#
+# See internal/dsl/types.go DownloadArtifactStep.RunID: it is
+# template-expandable, defaults to the current run when empty, and the
+# expanded value must match ^[A-Za-z0-9_-]{1,64}$ (the expansion context
+# excludes Secrets and Stdout).
+#
+# Usage:
+#   unified-cd apply -f examples/jobs/artifacts-cross-run.yaml
+#   unified-cd run trigger artifacts-cross-run-parent
+---
+# parent: calls the child job, then downloads the artifact the child
+# uploaded, using the child run's ID from ChildRunID.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: artifacts-cross-run-parent
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: build_child
+      call:
+        job: artifacts-cross-run-child
+
+    - name: fetch_child_artifact
+      downloadArtifact:
+        name: child-binary                              # name uploaded by the child run
+        runId: "{{ .Steps.build_child.ChildRunID }}"    # fetch from the call step's child run
+        destDir: from-child
+
+    - name: verify
+      run: |
+        set -e
+        cat from-child/app
+        grep -q "built-by-child" from-child/app
+        echo "cross-run artifact download OK"
+
+---
+# child: a self-contained job that produces and uploads the artifact the
+# parent downloads above. Registered separately so `call:` can address it by
+# name (see examples/jobs/call-job.yaml for more on call:).
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: artifacts-cross-run-child
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: build
+      run: |
+        set -e
+        mkdir -p bin
+        echo "built-by-child v1" > bin/app
+        echo "built bin/app"
+
+    - name: upload_binary
+      uploadArtifact:
+        name: child-binary   # artifact name (unique within this run)
+        path: bin/app        # file or directory to upload

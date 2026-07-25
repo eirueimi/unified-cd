@@ -1,0 +1,51 @@
+# Demonstrates: retry: — automatically re-running a failing `run:` step, with
+# a fixed backoff between tries and a per-attempt timeout.
+#
+# Semantics (see docs/jobs.md "Retry" and internal/dsl/types.go RetrySpec):
+#   - retry.attempts is the TOTAL number of tries, including the first one.
+#     attempts: 3 means "try, and if it fails, try up to 2 more times."
+#   - retry.backoff is a fixed Go-duration wait between tries (default: 0,
+#     i.e. retry immediately).
+#   - timeoutMinutes bounds EACH attempt individually, not the overall retry
+#     budget — with attempts: 3 and timeoutMinutes: 2, the step can take up
+#     to 6 minutes across all tries.
+#   - retry: is only valid on a run: step.
+#   - continueOnError (if set) is evaluated only after every attempt has
+#     failed.
+#
+# This step simulates a flaky command: it persists an attempt counter to a
+# file in the workspace and fails on purpose for the first two attempts,
+# succeeding on the third — so `retry: { attempts: 3 }` is exactly enough to
+# get it to pass.
+# Usage:
+#   unified-cd apply -f examples/jobs/retry.yaml
+#   unified-cd run trigger retry-demo
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: retry-demo
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: flaky_step
+      run: |
+        set -e
+        mkdir -p .retry-demo
+        count_file=.retry-demo/attempt-count
+        if [ ! -f "$count_file" ]; then
+          echo 0 > "$count_file"
+        fi
+        n=$(cat "$count_file")
+        n=$((n + 1))
+        echo "$n" > "$count_file"
+        echo "attempt $n"
+        if [ "$n" -lt 3 ]; then
+          echo "simulated transient failure on attempt $n" >&2
+          exit 1
+        fi
+        echo "succeeded on attempt $n"
+      timeoutMinutes: 2   # bounds EACH attempt, not the whole retry budget
+      retry:
+        attempts: 3       # total tries including the first (1 = no retry)
+        backoff: 5s        # fixed wait between tries
