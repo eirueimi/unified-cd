@@ -74,7 +74,7 @@ func main() {
 		maxConcurrentDefault = 1
 	}
 	maxConcurrent := flag.Int("max-concurrent", maxConcurrentDefault, "maximum number of runs that can execute concurrently")
-	maxDetachedConcurrent := flag.Int("max-detached-concurrent", eff.MaxDetachedConcurrent, "max concurrent detached (spec.detached) runs, separate from --max-concurrent; 0=default 16, negative=off (env: UNIFIED_AGENT_MAX_DETACHED)")
+	maxDetachedConcurrent := flag.Int("max-detached-concurrent", eff.MaxDetachedConcurrent, "max concurrent detached (spec.detached) runs, separate from --max-concurrent; 0=off (default), positive=cap (env: UNIFIED_AGENT_MAX_DETACHED)")
 	cleanWorkspace := flag.Bool("clean-workspace", eff.CleanWorkspace, "delete and recreate the workspace before starting a run")
 	workspaceDir := flag.String("workspace-dir", eff.WorkspaceDir, "base directory for run workspaces (default: ~/workspace) (env: UNIFIED_AGENT_WORKSPACE_DIR)")
 	drainTimeout := flag.Duration("drain-timeout", eff.DrainTimeout, "maximum drain wait time after SIGTERM (0=wait indefinitely). Applies to running steps; post-hooks such as cache saves always wait for completion to preserve data")

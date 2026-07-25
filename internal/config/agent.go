@@ -42,27 +42,26 @@ type AgentConfig struct {
 	// field: it is populated only from the --enrollment-token flag, the
 	// UNIFIED_AGENT_ENROLLMENT_TOKEN env var, or stdin, never from a
 	// persisted config file.
-	EnrollmentToken string        `yaml:"-"`
-	ID              string        `yaml:"id"`
-	Labels          []string      `yaml:"labels"`
-	ExposeEnv       []string      `yaml:"exposeEnv"`
-	CacheEndpoint   string        `yaml:"cacheEndpoint"`
-	CacheKey        string        `yaml:"cacheKey"`
-	CacheSecret     string        `yaml:"cacheSecret"`
-	CacheBucket     string        `yaml:"cacheBucket"`
-	MaxConcurrent   int           `yaml:"maxConcurrent"`
+	EnrollmentToken string   `yaml:"-"`
+	ID              string   `yaml:"id"`
+	Labels          []string `yaml:"labels"`
+	ExposeEnv       []string `yaml:"exposeEnv"`
+	CacheEndpoint   string   `yaml:"cacheEndpoint"`
+	CacheKey        string   `yaml:"cacheKey"`
+	CacheSecret     string   `yaml:"cacheSecret"`
+	CacheBucket     string   `yaml:"cacheBucket"`
+	MaxConcurrent   int      `yaml:"maxConcurrent"`
 	// MaxDetachedConcurrent caps how many detached (spec.detached) runs this
 	// agent claims concurrently, from a pool separate from MaxConcurrent.
-	// 0 / unset -> the agent applies the default (16); a negative value disables
-	// detached claiming on this agent (off); a positive value is the cap.
-	// "Off" is expressed as a negative (non-zero) value so it survives config
-	// merge, which treats 0 as "not set".
-	MaxDetachedConcurrent int `yaml:"maxDetachedConcurrent"`
-	CleanWorkspace  bool          `yaml:"cleanWorkspace"`
-	WorkspaceDir    string        `yaml:"workspaceDir"`
-	DrainTimeout    time.Duration `yaml:"drainTimeout"`
-	PauseImage      string        `yaml:"pauseImage"`
-	RunnerImage     string        `yaml:"runnerImage"`
+	// 0 / unset -> off (this agent does not host detached runs); a positive value
+	// is the cap. Detached hosting is opt-in per agent so enabling the feature
+	// never changes existing agents' behavior.
+	MaxDetachedConcurrent int           `yaml:"maxDetachedConcurrent"`
+	CleanWorkspace        bool          `yaml:"cleanWorkspace"`
+	WorkspaceDir          string        `yaml:"workspaceDir"`
+	DrainTimeout          time.Duration `yaml:"drainTimeout"`
+	PauseImage            string        `yaml:"pauseImage"`
+	RunnerImage           string        `yaml:"runnerImage"`
 
 	// MinFreeDisk is the minimum free space (bytes) required on the
 	// workspace filesystem for the host agent to keep claiming runs. Zero

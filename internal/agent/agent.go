@@ -61,19 +61,19 @@ type postHookEntry struct {
 
 // Agent represents an agent that communicates with the master server to execute jobs.
 type Agent struct {
-	ID             string
-	Labels         []string // agent labels used for ClaimNextRun filtering
-	ExposeEnv      []string
-	Client         *Client
-	CacheStore     objectstore.ObjectStore // nil = cache disabled
-	MaxConcurrent  int
+	ID            string
+	Labels        []string // agent labels used for ClaimNextRun filtering
+	ExposeEnv     []string
+	Client        *Client
+	CacheStore    objectstore.ObjectStore // nil = cache disabled
+	MaxConcurrent int
 	// MaxDetachedConcurrent caps detached-run claims in a pool separate from
-	// MaxConcurrent. 0 = default (16); negative = off. Used by Run (see the
-	// detached claim pool). Wired from --max-detached-concurrent.
+	// MaxConcurrent. 0/unset = off; positive = cap. Used by Run (see the detached
+	// claim pool). Wired from --max-detached-concurrent.
 	MaxDetachedConcurrent int
-	WorkspaceDir   string
-	CleanWorkspace bool
-	DrainTimeout   time.Duration
+	WorkspaceDir          string
+	CleanWorkspace        bool
+	DrainTimeout          time.Duration
 
 	// MinFreeDisk is the minimum free space (in bytes) required on the
 	// workspace filesystem for this agent to keep claiming runs. Zero
@@ -314,12 +314,10 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Detached claim pool: separate from the MaxConcurrent slots so a detached
 	// (spec.detached) orchestrator run — which mostly issues call: steps and
-	// waits — does not occupy a normal execution slot. 0/unset -> default 16;
-	// negative -> off (no detached claiming on this agent).
+	// waits — does not occupy a normal execution slot. Off by default (0/unset);
+	// set a positive MaxDetachedConcurrent on the agents that should host
+	// orchestrators. Negatives are clamped to off.
 	d := a.MaxDetachedConcurrent
-	if d == 0 {
-		d = 16
-	}
 	if d < 0 {
 		d = 0
 	}

@@ -138,74 +138,39 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval, activeRuns.Snapshot)
 	go a.runPodGC(runCtx, time.Minute)
 
-	// Concurrency gate: positive MaxConcurrent -> semaphore of that size;
-	// negative -> unlimited (nil sem, dispatch ungated). Validate mapped 0->100.
+	// Concurrency gates: MaxConcurrent for normal runs; a SEPARATE
+	// MaxDetachedConcurrent pool for detached (spec.detached) runs so a detached
+	// orchestrator's call: wait never holds a normal semaphore token. Detached is
+	// off by default (0/unset); set a positive MaxDetachedConcurrent to enable it.
+	// (positive MaxConcurrent -> semaphore; negative -> unlimited; Validate 0->100.)
 	var sem chan struct{}
 	if a.cfg.MaxConcurrent > 0 {
 		sem = make(chan struct{}, a.cfg.MaxConcurrent)
 	}
-
-	var wg sync.WaitGroup
-claimLoop:
-	for {
-		if ctx.Err() != nil {
-			break
-		}
-		if sem != nil {
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				break claimLoop
-			}
-		}
-		resp, err := a.client.Claim(ctx, a.cfg.AgentID, "30s", labels)
-		if err != nil {
-			if sem != nil {
-				<-sem
-			}
-			slog.Error("claim error", "error", err)
-			select {
-			case <-ctx.Done():
-				break claimLoop
-			case <-time.After(2 * time.Second):
-			}
-			continue
-		}
-		if resp.RunID == "" {
-			if sem != nil {
-				<-sem
-			}
-			continue
-		}
-		wg.Add(1)
-		go func(c api.ClaimResponse) {
-			defer wg.Done()
-			if sem != nil {
-				defer func() { <-sem }()
-			}
-			// Defense-in-depth: a.dispatch (executeRun) has its own internal
-			// error handling, but a panic anywhere in that call graph would
-			// otherwise crash the whole agent process and take every other
-			// in-flight run down with it. Recover here and fail just this run,
-			// mirroring the host agent's executeRun guard
-			// (internal/agent/agent.go).
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("k8s: agent panic in dispatch", "runId", c.RunID, "panic", r, "stack", string(debug.Stack()))
-					// An inner recover so a panic INSIDE failRun (e.g. a nil
-					// client) can't re-crash the dispatch goroutine.
-					defer func() { _ = recover() }()
-					a.failRun(runCtx, c.RunID, fmt.Sprintf("agent panic: %v", r))
-				}
-			}()
-			// Enrolled/retired around dispatch so the heartbeat reports this run
-			// as active for its whole execution, including the panic-recover
-			// path above (defers run LIFO regardless of outcome).
-			activeRuns.Add(c.RunID)
-			defer activeRuns.Remove(c.RunID)
-			a.dispatch(runCtx, c)
-		}(resp)
+	dmax := a.cfg.MaxDetachedConcurrent
+	if dmax < 0 {
+		dmax = 0
 	}
+	var detSem chan struct{}
+	if dmax > 0 {
+		detSem = make(chan struct{}, dmax)
+	}
+
+	var wg sync.WaitGroup     // in-flight dispatched runs
+	var loopWG sync.WaitGroup // the claim loops themselves
+	loopWG.Add(1)
+	go func() {
+		defer loopWG.Done()
+		a.k8sClaimLoop(ctx, runCtx, labels, sem, &wg, activeRuns, false)
+	}()
+	if dmax > 0 {
+		loopWG.Add(1)
+		go func() {
+			defer loopWG.Done()
+			a.k8sClaimLoop(ctx, runCtx, labels, detSem, &wg, activeRuns, true)
+		}()
+	}
+	loopWG.Wait()
 
 	// Stop claiming; wait for in-flight runs to drain (bounded by DrainTimeout),
 	// then stop and join the heartbeat before returning.
@@ -223,6 +188,75 @@ claimLoop:
 		slog.Info("k8s agent deregistered", "agentId", a.cfg.AgentID)
 	}
 	return ctx.Err()
+}
+
+// k8sClaimLoop claims runs for one pool until ctx is cancelled. sem gates
+// concurrency (nil = ungated); detached selects the claim kind (ClaimDetached vs
+// Claim) so the normal and detached pools draw from independent semaphores. wg
+// tracks in-flight dispatched runs (shared across both pools so drain waits for
+// all), and activeRuns feeds the heartbeat.
+func (a *K8sAgent) k8sClaimLoop(ctx, runCtx context.Context, labels []string, sem chan struct{}, wg *sync.WaitGroup, activeRuns *agentlib.RunSet, detached bool) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if sem != nil {
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		var resp api.ClaimResponse
+		var err error
+		if detached {
+			resp, err = a.client.ClaimDetached(ctx, a.cfg.AgentID, "30s", labels)
+		} else {
+			resp, err = a.client.Claim(ctx, a.cfg.AgentID, "30s", labels)
+		}
+		if err != nil {
+			if sem != nil {
+				<-sem
+			}
+			slog.Error("claim error", "error", err, "detached", detached)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+			continue
+		}
+		if resp.RunID == "" {
+			if sem != nil {
+				<-sem
+			}
+			continue
+		}
+		wg.Add(1)
+		go func(c api.ClaimResponse) {
+			defer wg.Done()
+			if sem != nil {
+				defer func() { <-sem }()
+			}
+			// Defense-in-depth: a.dispatch has its own error handling, but a panic
+			// anywhere in that call graph would otherwise crash the whole agent
+			// process and take every other in-flight run down with it. Recover here
+			// and fail just this run (mirrors the host agent's executeRun guard).
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("k8s: agent panic in dispatch", "runId", c.RunID, "panic", r, "stack", string(debug.Stack()))
+					// An inner recover so a panic INSIDE failRun can't re-crash this goroutine.
+					defer func() { _ = recover() }()
+					a.failRun(runCtx, c.RunID, fmt.Sprintf("agent panic: %v", r))
+				}
+			}()
+			// Enrolled/retired around dispatch so the heartbeat reports this run as
+			// active for its whole execution (defers run LIFO regardless of outcome).
+			activeRuns.Add(c.RunID)
+			defer activeRuns.Remove(c.RunID)
+			a.dispatch(runCtx, c)
+		}(resp)
+	}
 }
 
 // executeRun is the k8s agent's thin wrapper over the shared orchestration
