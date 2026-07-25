@@ -316,7 +316,12 @@ func TestAgentAPI_ClaimResponse_CollectsSecretsNeeded(t *testing.T) {
 	specJSON := []byte(`{
 		"steps":[
 			{"name":"deploy","env":{"AWS_KEY":"{{ secrets.AWS_ACCESS_KEY_ID }}"},"run":"./deploy.sh"},
-			{"name":"test","run":"echo {{ secrets.DB_PASS }}"}
+			{"name":"test","run":"echo {{ secrets.DB_PASS }}"},
+			{
+				"name":"checkout",
+				"env":{"GIT_TOKEN":"{{ index .Secrets \"gitlab-token\" }}"},
+				"run":"git clone https://example.invalid/repo.git"
+			}
 		]
 	}`)
 	_, _ = pg.UpsertJob(t.Context(), "s", "unified-cd/v1", specJSON)
@@ -332,9 +337,50 @@ func TestAgentAPI_ClaimResponse_CollectsSecretsNeeded(t *testing.T) {
 
 	var got api.ClaimResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	assert.ElementsMatch(t, []string{"AWS_ACCESS_KEY_ID", "DB_PASS"}, got.SecretsNeeded)
+	assert.ElementsMatch(t, []string{"AWS_ACCESS_KEY_ID", "DB_PASS", "gitlab-token"}, got.SecretsNeeded)
 	require.NotNil(t, got.Stages[0].Step)
 	assert.Equal(t, `{{ secrets.AWS_ACCESS_KEY_ID }}`, got.Stages[0].Step.Env["AWS_KEY"])
+}
+
+func TestBuildClaimResponse_RejectsDynamicSecretNamesWithFieldContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		entry   dsl.StepEntry
+		context string
+	}{
+		{
+			name: "run",
+			entry: dsl.StepEntry{
+				Name: "deploy",
+				Run:  `echo {{ index .Secrets .Steps.pick.Outputs.name }}`,
+			},
+			context: `step "deploy" run`,
+		},
+		{
+			name: "env",
+			entry: dsl.StepEntry{
+				Name: "deploy",
+				Env: map[string]string{
+					"TOKEN": `{{ index .Secrets .Steps.pick.Outputs.name }}`,
+				},
+			},
+			context: `step "deploy" env "TOKEN"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			specJSON, err := json.Marshal(dsl.Spec{Steps: []dsl.StepEntry{tt.entry}})
+			require.NoError(t, err)
+
+			_, err = buildClaimResponse(&store.ClaimedRun{
+				Run:  api.Run{ID: "dynamic-secret-run", JobName: "dynamic-secret-job"},
+				Spec: specJSON,
+			})
+			require.ErrorContains(t, err, tt.context)
+			assert.ErrorContains(t, err, "dynamic secret name must be resolved from a parameter before execution")
+		})
+	}
 }
 
 // TestAgentAPI_Claim_FailsRunWhenBuildClaimResponseErrors verifies the fix for

@@ -356,3 +356,40 @@ func TestAgentSecretsFetch_RejectsNameNotNeededByRun(t *testing.T) {
 	require.Equal(t, http.StatusOK, rr.Code)
 	assert.Contains(t, rr.Body.String(), "ok")
 }
+
+func TestAgentSecretsFetch_AuthorizesLiteralIndexName(t *testing.T) {
+	srv, agentID, runID := newSecretsFetchFixture(t, `steps:
+  - name: checkout
+    env:
+      GIT_TOKEN: '{{ index .Secrets "gitlab-token" }}'
+    run: git clone https://example.invalid/repo.git
+`)
+	mustSetSecret(t, srv, "gitlab-token", "literal-index-value")
+
+	rr := postFetchSecrets(t, srv, agentID, runID, []string{"gitlab-token"})
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+
+	var resp api.AgentFetchSecretsResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "literal-index-value", resp.Secrets["gitlab-token"])
+}
+
+func TestDynamicSecretNameRejectedByClaimAndFetchAuthorization(t *testing.T) {
+	srv, _, runID := newSecretsFetchFixture(t, `steps:
+  - name: deploy
+    run: echo {{ index .Secrets .Steps.pick.Outputs.name }}
+`)
+	specJSON, err := srv.store.GetRunSpec(t.Context(), runID)
+	require.NoError(t, err)
+
+	_, claimErr := buildClaimResponse(&store.ClaimedRun{
+		Run:  api.Run{ID: runID, JobName: "dynamic-secret-job"},
+		Spec: specJSON,
+	})
+	require.ErrorContains(t, claimErr, `step "deploy" run`)
+	assert.ErrorContains(t, claimErr, "dynamic secret name must be resolved from a parameter before execution")
+
+	_, fetchErr := srv.secretNamesForRun(t.Context(), runID)
+	require.ErrorContains(t, fetchErr, `step "deploy" run`)
+	assert.ErrorContains(t, fetchErr, "dynamic secret name must be resolved from a parameter before execution")
+}

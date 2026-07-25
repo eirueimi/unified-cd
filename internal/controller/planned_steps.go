@@ -30,8 +30,10 @@ func plannedSteps(spec dsl.Spec) []api.StepReport {
 			}
 		}
 	}
-	add(buildStages(spec.Steps, &stepIdx, secrets, spec.Shell), "main")
-	add(buildStages(spec.Finally, &stepIdx, secrets, spec.Shell), "finally")
+	stages, _ := buildStages(spec.Steps, &stepIdx, secrets, spec.Shell)
+	add(stages, "main")
+	stages, _ = buildStages(spec.Finally, &stepIdx, secrets, spec.Shell)
+	add(stages, "finally")
 	for k, name := range dsl.SidecarContainerNames(spec.PodTemplate) {
 		out = append(out, api.StepReport{
 			Index:   dsl.SidecarLogIndex(k),
