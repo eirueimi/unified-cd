@@ -55,6 +55,9 @@ func validateSecretReferenceNode(node parse.Node) error {
 	case *parse.TemplateNode:
 		return validateSecretReferenceNode(node.Pipe)
 	case *parse.PipeNode:
+		if node == nil {
+			return nil
+		}
 		for _, command := range node.Cmds {
 			if err := validateSecretReferenceCommand(command); err != nil {
 				return err

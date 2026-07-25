@@ -87,8 +87,8 @@ func ReferencedSecretNames(tpl string) ([]string, error) {
 	searchable := templateWithoutCommentActions(tpl)
 
 	var names []string
-	for _, match := range directSecretRefRe.FindAllStringSubmatch(searchable, -1) {
-		name := match[1]
+	for _, match := range directSecretRefMatches(searchable) {
+		name := directSecretRefRe.FindStringSubmatch(match)[1]
 		if err := ValidateSecretName(name); err != nil {
 			return nil, fmt.Errorf("secret name %q %w", name, err)
 		}
@@ -161,6 +161,33 @@ func secretIndexMatches(tpl string) []string {
 		for _, match := range secretIndexRe.FindAllStringIndex(action, -1) {
 			if !templatePositionQuoted(action, match[0]) {
 				matches = append(matches, tpl[start+match[0]:start+match[1]])
+			}
+		}
+		offset = end + len("}}")
+	}
+	return matches
+}
+
+func directSecretRefMatches(tpl string) []string {
+	var matches []string
+	for offset := 0; offset < len(tpl); {
+		start := strings.Index(tpl[offset:], "{{")
+		if start < 0 {
+			break
+		}
+		start += offset + len("{{")
+		end, ok := templateActionEnd(tpl, start)
+		if !ok {
+			break
+		}
+		action := tpl[start:end]
+		if isTemplateCommentAction(action) {
+			offset = end + len("}}")
+			continue
+		}
+		for _, match := range directSecretRefRe.FindAllStringIndex(action, -1) {
+			if !templatePositionQuoted(action, match[0]) {
+				matches = append(matches, action[match[0]:match[1]])
 			}
 		}
 		offset = end + len("}}")

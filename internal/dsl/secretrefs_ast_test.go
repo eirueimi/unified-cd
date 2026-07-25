@@ -151,3 +151,62 @@ func TestSecretReferencePolicyRejectsUnparseableTemplate(t *testing.T) {
 	_, extractErr := ReferencedSecretNames(tpl)
 	require.ErrorContains(t, extractErr, "parse secret references")
 }
+
+func TestSecretReferencePolicyAllowsNoArgumentNamedTemplate(t *testing.T) {
+	tpl := `{{ define "helper" }}ok{{ end }}{{ template "helper" }}`
+
+	t.Run("parameter resolution", func(t *testing.T) {
+		var resolved string
+		var err error
+		require.NotPanics(t, func() {
+			resolved, err = ResolveSecretNameParams(tpl, nil)
+		})
+		require.NoError(t, err)
+		assert.Equal(t, tpl, resolved)
+	})
+
+	t.Run("name extraction", func(t *testing.T) {
+		var names []string
+		var err error
+		require.NotPanics(t, func() {
+			names, err = ReferencedSecretNames(tpl)
+		})
+		require.NoError(t, err)
+		assert.Empty(t, names)
+	})
+}
+
+func TestReferencedSecretNamesCollectsOnlyTemplateReferences(t *testing.T) {
+	tests := []struct {
+		name      string
+		tpl       string
+		wantNames []string
+	}{
+		{
+			name: "secret reference text in template string",
+			tpl:  `{{ printf ".Secrets.API_TOKEN" }}`,
+		},
+		{
+			name: "secret reference text outside template action",
+			tpl:  `echo .Secrets.API_TOKEN`,
+		},
+		{
+			name:      "direct dot reference",
+			tpl:       `{{ .Secrets.API_TOKEN }}`,
+			wantNames: []string{"API_TOKEN"},
+		},
+		{
+			name:      "normalized no-dot reference",
+			tpl:       `{{ secrets.API_TOKEN }}`,
+			wantNames: []string{"API_TOKEN"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			names, err := ReferencedSecretNames(tt.tpl)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tt.wantNames, names)
+		})
+	}
+}
