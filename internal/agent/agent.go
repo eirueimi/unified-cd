@@ -67,6 +67,10 @@ type Agent struct {
 	Client         *Client
 	CacheStore     objectstore.ObjectStore // nil = cache disabled
 	MaxConcurrent  int
+	// MaxDetachedConcurrent caps detached-run claims in a pool separate from
+	// MaxConcurrent. 0 = default (16); negative = off. Used by Run (see the
+	// detached claim pool). Wired from --max-detached-concurrent.
+	MaxDetachedConcurrent int
 	WorkspaceDir   string
 	CleanWorkspace bool
 	DrainTimeout   time.Duration

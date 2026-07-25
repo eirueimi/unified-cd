@@ -51,6 +51,13 @@ type AgentConfig struct {
 	CacheSecret     string        `yaml:"cacheSecret"`
 	CacheBucket     string        `yaml:"cacheBucket"`
 	MaxConcurrent   int           `yaml:"maxConcurrent"`
+	// MaxDetachedConcurrent caps how many detached (spec.detached) runs this
+	// agent claims concurrently, from a pool separate from MaxConcurrent.
+	// 0 / unset -> the agent applies the default (16); a negative value disables
+	// detached claiming on this agent (off); a positive value is the cap.
+	// "Off" is expressed as a negative (non-zero) value so it survives config
+	// merge, which treats 0 as "not set".
+	MaxDetachedConcurrent int `yaml:"maxDetachedConcurrent"`
 	CleanWorkspace  bool          `yaml:"cleanWorkspace"`
 	WorkspaceDir    string        `yaml:"workspaceDir"`
 	DrainTimeout    time.Duration `yaml:"drainTimeout"`
@@ -130,6 +137,11 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 			eff.WorkspaceRetentionDays = v
 		}
 	}
+	if v := os.Getenv("UNIFIED_AGENT_MAX_DETACHED"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			eff.MaxDetachedConcurrent = n
+		}
+	}
 
 	if filePath == "" {
 		return eff, nil
@@ -171,6 +183,9 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.MaxConcurrent != 0 {
 		eff.MaxConcurrent = file.MaxConcurrent
+	}
+	if file.MaxDetachedConcurrent != 0 {
+		eff.MaxDetachedConcurrent = file.MaxDetachedConcurrent
 	}
 	if file.CleanWorkspace {
 		eff.CleanWorkspace = true
