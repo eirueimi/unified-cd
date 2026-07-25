@@ -163,7 +163,7 @@ unified-cd-agent [FLAGS]
   --cache-secret          string    Cache storage secret access key
   --cache-bucket          string    Cache storage bucket name
   --max-concurrent        int       Max simultaneous runs (default: 1)
-  --max-detached-concurrent int     Max simultaneous detached (spec.detached) runs, from a pool separate from --max-concurrent; 0=off (default), positive=cap (env: UNIFIED_AGENT_MAX_DETACHED)
+  --max-detached-concurrent int     Max simultaneous detached (spec.detached) runs, from a pool separate from --max-concurrent; 0/unset=default 16, negative=off (env: UNIFIED_AGENT_MAX_DETACHED)
   --clean-workspace       bool      Wipe workspace before each run
   --workspace-dir         string    Base directory for run workspaces (default: ~/workspace; env: UNIFIED_AGENT_WORKSPACE_DIR)
   --drain-timeout         duration  Max wait after SIGTERM before forced shutdown (0 = wait forever)
@@ -423,7 +423,7 @@ podTemplates:
 | `sidecarS3SecretName` | string | No | — | Secret carrying `UNIFIED_S3_*` for the sidecar. Without it, cache steps are no-ops (Succeeded) and artifact steps fail |
 | `kubeconfig` | string | No | in-cluster / `~/.kube/config` | Path to a kubeconfig; omit to use `InClusterConfig` (in cluster) or `~/.kube/config` (out of cluster) |
 | `maxConcurrent` | int | No | `100` | Max simultaneous job Pods, enforced by a semaphore around the claim loop. `0`/unset → `100`. A **negative** value (e.g. `-1`) → unlimited: no agent-side cap, bounded only by cluster scheduling/quota. A positive value is that exact concurrency bound. |
-| `maxDetachedConcurrent` | int | No | off | Max simultaneous detached (`spec.detached`) runs, from a pool separate from `maxConcurrent`. `0`/unset → **off** (this agent does not host detached runs); a positive value is the cap. Opt-in per agent (env: `UNIFIED_K8S_MAX_DETACHED`). See [Detached runs](jobs.md#detached-runs-detached). |
+| `maxDetachedConcurrent` | int | No | `16` | Max simultaneous detached (`spec.detached`) runs, from a pool separate from `maxConcurrent`. `0`/unset → **16** (detached jobs are claimable out of the box); a **negative** value disables detached hosting on this agent; a positive value is the cap (env: `UNIFIED_K8S_MAX_DETACHED`). See [Detached runs](jobs.md#detached-runs-detached). |
 | `podStartTimeout` | string | No | `5m` | Go duration bounding how long the agent waits for a run Pod to reach `Running` before failing the run. Env override: `UNIFIED_K8S_POD_START_TIMEOUT`. Prevents an unschedulable or `ImagePullBackOff` Pod (which under `RestartPolicy: Never` never transitions to `Failed` on its own) from wedging a run forever. Unset, unparseable, or non-positive values fall back to the default. The wait is also aborted early, without overriding the controller's status, if the run is already terminal at the controller (cancel/reap raced the Pod becoming ready). |
 | `drainTimeout` | string | No | `0` (wait indefinitely) | Go duration bounding the graceful-shutdown drain window. Env override: `UNIFIED_K8S_DRAIN_TIMEOUT`. On SIGTERM/rollout the agent immediately stops claiming new runs but lets in-flight runs keep going — heartbeats keep beating during drain so a draining run isn't reaped as stuck — until either they finish or `drainTimeout` elapses, whichever comes first. `0`/unset waits forever for in-flight runs to finish (no forced cutoff). Parity with the standard agent's `--drain-timeout`. |
 | `poolIdleTimeout` | string | No | `0` (no reuse) | Go duration an idle pooled Pod is kept for reuse before teardown (e.g. `10m`) |

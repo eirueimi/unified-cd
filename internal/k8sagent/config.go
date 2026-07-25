@@ -36,9 +36,9 @@ type Config struct {
 	Kubeconfig    string `yaml:"kubeconfig"`
 	MaxConcurrent int    `yaml:"maxConcurrent"`
 	// MaxDetachedConcurrent caps concurrent detached (spec.detached) run claims,
-	// separate from MaxConcurrent. 0/unset -> off; positive -> cap. Opt-in per
-	// agent (same convention as the host agent), so enabling detached never
-	// changes existing agents' behavior.
+	// separate from MaxConcurrent. 0/unset -> default 16; negative -> off; positive
+	// -> cap. Same convention as the host agent, so detached jobs are claimable
+	// out of the box.
 	MaxDetachedConcurrent int                         `yaml:"maxDetachedConcurrent"`
 	PoolIdleTimeout       string                      `yaml:"poolIdleTimeout,omitempty"`
 	PodStartTimeout       string                      `yaml:"podStartTimeout,omitempty"`

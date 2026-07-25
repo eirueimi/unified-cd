@@ -107,7 +107,11 @@ func TestRun_SemaphoreBoundsConcurrency(t *testing.T) {
 	remaining.Store(6)
 	srv := claimController(t, "k8s-1", &remaining)
 	client := agentlib.NewClient(srv.URL, "tok")
-	a := newK8sAgentForTest(t, Config{AgentID: "k8s-1", Namespace: "ns", MaxConcurrent: 2}, client)
+	// Disable the detached pool (0 now defaults to 16) so this test isolates the
+	// MaxConcurrent semaphore: the fake claim source returns runs for any claim
+	// (it does not model the detached filter), so a live detached pool would
+	// otherwise dispatch extra runs past MaxConcurrent.
+	a := newK8sAgentForTest(t, Config{AgentID: "k8s-1", Namespace: "ns", MaxConcurrent: 2, MaxDetachedConcurrent: -1}, client)
 
 	var cur, max atomic.Int32
 	var mu sync.Mutex

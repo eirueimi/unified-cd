@@ -727,11 +727,11 @@ spec:
       call: { job: unity-build-android }
 ```
 
-- **Opt-in on both sides.** A detached run is only claimed by agents configured
-  to host them — set `max-detached-concurrent` to a positive value on those
-  agents (default is **off**, so enabling the feature never changes existing
-  agents). A `detached` job whose fleet has no agent with detached capacity
-  stays `Queued`.
+- **Claimed out of the box.** Every agent hosts up to `max-detached-concurrent`
+  detached runs, which **defaults to 16**, so a `detached` job runs without extra
+  agent configuration. Set a positive value to change the cap, or a **negative**
+  value on agents that must not host detached runs. (If every agent has detached
+  disabled, a `detached` job stays `Queued`.)
 - **Independent workspace.** On host agents a detached run gets its own per-run
   workspace (removed when the run finishes); on Kubernetes each run already has
   its own pod, so nothing changes there.
