@@ -22,7 +22,7 @@ spec:
       pvc:
         claimName: go-build-cache
   steps:
-    - name: download-deps
+    - name: download_deps
       # if /workspace/vendor is present from a previous run, this step is a no-op
       run: |
         if [ ! -d /workspace/vendor ]; then

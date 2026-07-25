@@ -15,7 +15,7 @@
 # cache: since a cache step can only specify a single path, this is split
 # into two cache steps, one for GOMODCACHE and one for GOCACHE.
 # Because path expands template expressions, it can point directly at the
-# cache directories under working_dir (created by configure-go-env).
+# cache directories under working_dir (created by configure_go_env).
 #
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/setup-go.yaml@v1
@@ -32,7 +32,7 @@ spec:
         description: "Directory to look for go.sum in (default: current directory)"
         # working_dir must be relative to the run workspace; absolute paths are rejected.
   steps:
-    - name: configure-go-env
+    - name: configure_go_env
       env:
         WORKING_DIR: "{{ .Params.working_dir }}"
       run: |
@@ -43,14 +43,14 @@ spec:
         mkdir -p "$(pwd)/.gomodcache" "$(pwd)/.gocache"
         echo "[setup-go] GOMODCACHE=$(go env GOMODCACHE) GOCACHE=$(go env GOCACHE)"
 
-    - name: restore-mod-cache
+    - name: restore_mod_cache
       cache:
         path: "{{ .Params.working_dir }}/.gomodcache"
         key: "go-mod-{{ hashFile \"go.sum\" }}"
         restoreKeys:
           - "go-mod-"
 
-    - name: restore-build-cache
+    - name: restore_build_cache
       cache:
         path: "{{ .Params.working_dir }}/.gocache"
         key: "go-build-{{ hashFile \"go.sum\" }}"

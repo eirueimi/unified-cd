@@ -1099,11 +1099,11 @@ spec:
       run: make build
   finally:
     - parallel:
-      - name: cleanup-a
-        run: ./cleanup-a.sh
+      - name: cleanup_a
+        run: ./cleanup_a.sh
         needs: [build]
-      - name: cleanup-b
-        run: ./cleanup-b.sh
+      - name: cleanup_b
+        run: ./cleanup_b.sh
 `
 		_, err := Parse(strings.NewReader(input))
 		require.Error(t, err)
@@ -1124,10 +1124,10 @@ spec:
       run: make build
   finally:
     - parallel:
-      - name: notify-slack
-        run: ./notify-slack.sh
-      - name: notify-email
-        run: ./notify-email.sh
+      - name: notify_slack
+        run: ./notify_slack.sh
+      - name: notify_email
+        run: ./notify_email.sh
     - name: teardown
       run: ./teardown.sh
 `
@@ -1135,8 +1135,8 @@ spec:
 	require.NoError(t, err)
 	require.Len(t, job.Spec.Finally, 2)
 	assert.Len(t, job.Spec.Finally[0].Parallel, 2)
-	assert.Equal(t, "notify-slack", job.Spec.Finally[0].Parallel[0].Name)
-	assert.Equal(t, "notify-email", job.Spec.Finally[0].Parallel[1].Name)
+	assert.Equal(t, "notify_slack", job.Spec.Finally[0].Parallel[0].Name)
+	assert.Equal(t, "notify_email", job.Spec.Finally[0].Parallel[1].Name)
 	assert.Equal(t, "teardown", job.Spec.Finally[1].Name)
 }
 
@@ -1688,6 +1688,51 @@ spec:
 	require.NoError(t, err)
 }
 
+func TestValidate_StepName_MustBeIdentifier(t *testing.T) {
+	for _, n := range []string{"build_app", "deploy", "_hidden", "step0"} {
+		yaml := "apiVersion: unified-cd/v1\nkind: Job\nmetadata: {name: j}\nspec:\n  steps:\n    - {name: " + n + ", run: \"true\"}"
+		_, err := Parse(strings.NewReader(yaml))
+		require.NoError(t, err, "step name %q should be a valid identifier", n)
+	}
+
+	for _, tc := range []struct{ label, name string }{
+		{"hyphen", `"build-app"`},
+		{"leading-digit", `"0step"`},
+		{"dot", `"my.step"`},
+		{"space", `"my step"`},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			yaml := "apiVersion: unified-cd/v1\nkind: Job\nmetadata: {name: j}\nspec:\n  steps:\n    - {name: " + tc.name + ", run: \"true\"}"
+			_, err := Parse(strings.NewReader(yaml))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "step name")
+		})
+	}
+}
+
+func TestValidate_StepName_Identifier_InParallelAndFinally(t *testing.T) {
+	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  steps:
+    - parallel:
+        - {name: "build-app", run: "true"}`))
+	require.Error(t, err, "a hyphenated name inside parallel: must be rejected")
+	assert.Contains(t, err.Error(), "step name")
+
+	_, err = Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: j}
+spec:
+  steps:
+    - {name: main, run: "true"}
+  finally:
+    - {name: "clean-up", run: "true"}`))
+	require.Error(t, err, "a hyphenated name inside finally: must be rejected")
+	assert.Contains(t, err.Error(), "step name")
+}
+
 func TestValidate_Retry_AttemptsMustBePositive(t *testing.T) {
 	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
 kind: Job
@@ -1835,7 +1880,7 @@ metadata:
   name: fetch
 spec:
   steps:
-    - name: fetch-child-binary
+    - name: fetch_child_binary
       downloadArtifact:
         name: app-binary
         runId: "{{ .Steps.build-app.ChildRunID }}"

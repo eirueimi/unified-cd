@@ -41,5 +41,5 @@ spec:
     - parallel:
       - name: lint
         run: ruff check /workspace/math.py --output-format=github
-      - name: format-check
+      - name: format_check
         run: ruff format /workspace/math.py --check

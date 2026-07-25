@@ -43,7 +43,7 @@ spec:
         default: "gitlab-token"
         description: "Name of the secret holding the GitLab token"
   steps:
-    - name: update-status
+    - name: update_status
       env:
         GITLAB_TOKEN: "{{ index .Secrets .Params.token_secret }}"
         BASE_URL: "{{ .Params.base_url }}"

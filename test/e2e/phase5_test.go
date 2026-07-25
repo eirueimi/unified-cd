@@ -125,7 +125,7 @@ metadata:
 spec:
   native: true
   steps:
-    - name: use-secret
+    - name: use_secret
       env:
         MY_VAR: "{{ secrets.MY_SECRET }}"
       run: 'echo "value=${MY_VAR}"'
@@ -210,7 +210,7 @@ metadata:
 spec:
   native: true
   steps:
-    - name: leak-attempt
+    - name: leak_attempt
       env:
         SECRET_VAL: "{{ secrets.MASK_ME }}"
       run: 'echo "secret=${SECRET_VAL}" && echo "safe line"'

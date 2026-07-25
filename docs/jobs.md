@@ -176,6 +176,20 @@ Steps are the individual execution units within a job. They run **sequentially, 
 order listed** under `steps:`. To run steps concurrently, group them inside a `parallel:`
 block (see [Concurrent Steps (`parallel`)](#concurrent-steps-parallel)).
 
+### Step names
+
+A step's `name` must be a valid identifier matching `^[A-Za-z_][A-Za-z0-9_]*$`
+(a letter or underscore, then letters, digits, or underscores). This is checked
+at **apply time** — a name with a hyphen, leading digit, dot, or space fails
+`apply` immediately, naming the offending step. The constraint exists because
+steps are referenced in templates via dot-notation
+(`{{ .Steps.<name>.Outputs.x }}`, `{{ .Steps.<name>.ChildRunID }}`) and in CEL
+`if:` expressions (`steps.<name>.outputs.x`), which can only address a valid
+identifier. Use underscores instead of hyphens (e.g. `build_app`, not
+`build-app`). Steps inside a `parallel:` block may still be anonymous (no
+`name`); the rule applies only to named steps. Note this differs from job,
+container, and secret names, which follow their own (hyphen-allowing) rules.
+
 ### Shell Execution (`run`)
 
 ```yaml
@@ -665,9 +679,9 @@ On success the child run's ID is available to later steps as
 `{{ .Steps.<call-step-name>.ChildRunID }}` (for matrix call steps, a map keyed
 by combination key — `{{ index .Steps.<name>.ChildRunID "linux/amd64" }}`) —
 see [Downloading from another run (`runId`)](#downloading-from-another-run-runid)
-for fetching the child's artifacts. Note that Go template dot-notation cannot
-address step names containing hyphens; name the call step with underscores
-(e.g. `build_app`) or use `index .Steps "build-app"`.
+for fetching the child's artifacts. Reference the call step by its name with
+dot-notation (e.g. `build_app`); step names are validated as identifiers (see
+[Step names](#step-names)), so a name like `build_app` is always addressable.
 
 > **⚠️ Slot deadlock: the called job needs a *free* agent slot.**
 > A `call` step holds the parent run's agent slot while it waits for the called

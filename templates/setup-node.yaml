@@ -25,14 +25,14 @@ spec:
         default: "package-lock.json"
         description: "Name of the lockfile used to compute the cache key"
   steps:
-    - name: restore-node-modules-cache
+    - name: restore_node_modules_cache
       cache:
         path: "{{ .Params.working_dir }}/node_modules"
         key: "npm-{{ hashFile .Params.lockfile }}"
         restoreKeys:
           - "npm-"
 
-    - name: npm-ci
+    - name: npm_ci
       env:
         WORKING_DIR: "{{ .Params.working_dir }}"
       run: |

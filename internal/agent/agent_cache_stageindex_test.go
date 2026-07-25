@@ -34,8 +34,8 @@ func TestExecuteCacheStep_ReportsStageIndex(t *testing.T) {
 
 	a := &Agent{ID: "a1", Client: NewClient(srv.URL, "tok")} // CacheStore nil: restore/save skipped, reporting still happens
 
-	// index 1, stage 1 (like restore-cache after checkout)
-	step := api.ClaimStep{Index: 1, StageIndex: 1, Name: "restore-cache", Cache: &dsl.CacheStep{Path: "p", Key: "k"}}
+	// index 1, stage 1 (like restore_cache after checkout)
+	step := api.ClaimStep{Index: 1, StageIndex: 1, Name: "restore_cache", Cache: &dsl.CacheStep{Path: "p", Key: "k"}}
 	sctx := &safeStepCtx{data: dsl.TemplateData{}}
 
 	var postHooksMu sync.Mutex

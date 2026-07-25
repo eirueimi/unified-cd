@@ -46,7 +46,7 @@ spec:
       volumes:
         - {name: toolcache, emptyDir: {}}
   steps:
-    - name: run-in-tools
+    - name: run_in_tools
       container: tools
       run: echo hi
 `

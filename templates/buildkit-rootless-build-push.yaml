@@ -110,7 +110,7 @@ spec:
             runAsUser: 1000
             runAsGroup: 1000
   steps:
-    - name: build-and-push
+    - name: build_and_push
       env:
         BUILDKIT_HOST: "tcp://localhost:1234"
         DOCKER_CONFIG: "/tmp/.docker"

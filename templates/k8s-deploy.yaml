@@ -36,7 +36,7 @@ spec:
         default: "120s"
         description: "Timeout for kubectl rollout status"
   steps:
-    - name: apply-manifests
+    - name: apply_manifests
       env:
         KUBECONFIG_CONTENT: "{{ index .Secrets .Params.kubeconfig_secret }}"
         MANIFEST_PATH: "{{ .Params.manifest_path }}"

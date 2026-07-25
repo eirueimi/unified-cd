@@ -17,6 +17,13 @@ const SupportedAPIVersion = "unified-cd/v1"
 var orLockNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var matrixDimNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// stepNameRe constrains step names to valid Go identifiers so they are
+// addressable via Go-template dot-notation (e.g. {{ .Steps.<name>.ChildRunID }}).
+// A hyphenated or otherwise non-identifier name cannot be referenced with
+// dot-notation at all. Same rule as orLockNameRe/matrixDimNameRe, which are
+// likewise surfaced into templates.
+var stepNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // validShellArgv validates the shell: field's runtime shape: nil (unset) is
 // valid — the field falls through to the resolution chain's next tier — but
 // once set, it must be a non-empty array of non-empty strings. v1 accepts
@@ -451,6 +458,14 @@ func validateStepFull(name, run string, call *CallStep, uses *UsesStep, cache *C
 		return fmt.Errorf("%s: duplicate step name %q", path, name)
 	}
 	nameSet[name] = true
+
+	// A named step must be a valid identifier so it is addressable via
+	// Go-template dot-notation ({{ .Steps.<name> }}). Empty names are left to
+	// the callers' own required-name checks (parallel: children may be
+	// anonymous). Hyphens, leading digits, dots and spaces are rejected here.
+	if name != "" && !stepNameRe.MatchString(name) {
+		return fmt.Errorf("%s: step name %q must match %s (use underscores, e.g. build_app — hyphenated names are not addressable via {{ .Steps.<name> }})", path, name, stepNameRe.String())
+	}
 
 	actionCount := 0
 	if run != "" {

@@ -17,5 +17,5 @@ spec:
   steps:
     - name: hello
       run: echo "Hello from Docker agent! $(date)"
-    - name: check-env
+    - name: check_env
       run: uname -a && echo "container user=$(id)"

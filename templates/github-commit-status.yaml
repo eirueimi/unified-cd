@@ -43,7 +43,7 @@ spec:
         default: ""
         description: "Details link URL (e.g. the run's detail page URL)"
   steps:
-    - name: update-status
+    - name: update_status
       env:
         GITHUB_TOKEN: "{{ .Secrets.github-token }}"
         OWNER: "{{ .Params.owner }}"
