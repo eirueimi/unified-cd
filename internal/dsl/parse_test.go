@@ -1,6 +1,7 @@
 package dsl
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -28,6 +29,57 @@ spec:
 	require.Len(t, job.Spec.Steps, 1)
 	assert.Equal(t, "greet", job.Spec.Steps[0].Name)
 	assert.Equal(t, "echo hello", job.Spec.Steps[0].Run)
+}
+
+func TestParse_Detached_ParsesAndDefaultsFalse(t *testing.T) {
+	job, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: orch}
+spec:
+  detached: true
+  steps:
+    - {name: s, call: {job: child}}`))
+	require.NoError(t, err)
+	assert.True(t, job.Spec.Detached)
+
+	job2, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: normal}
+spec:
+  steps:
+    - {name: s, run: "true"}`))
+	require.NoError(t, err)
+	assert.False(t, job2.Spec.Detached, "detached defaults to false")
+}
+
+func TestParse_Detached_AllowedWithNative(t *testing.T) {
+	_, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: native-orch}
+spec:
+  native: true
+  detached: true
+  steps:
+    - {name: s, call: {job: child}}`))
+	require.NoError(t, err, "native and detached are orthogonal and may be combined")
+}
+
+func TestParse_Detached_SurvivesJSONRoundTrip(t *testing.T) {
+	// The store persists the spec as JSON and re-reads Detached from it, so the
+	// field needs a json tag, not only yaml.
+	job, err := Parse(strings.NewReader(`apiVersion: unified-cd/v1
+kind: Job
+metadata: {name: orch}
+spec:
+  detached: true
+  steps:
+    - {name: s, call: {job: child}}`))
+	require.NoError(t, err)
+	b, err := json.Marshal(job.Spec)
+	require.NoError(t, err)
+	var back Spec
+	require.NoError(t, json.Unmarshal(b, &back))
+	assert.True(t, back.Detached, "Detached must round-trip through JSON")
 }
 
 func TestParse_RejectsWrongAPIVersion(t *testing.T) {
