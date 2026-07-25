@@ -699,8 +699,50 @@ dot-notation (e.g. `build_app`); step names are validated as identifiers (see
 > **Requirement:** any agent pool that runs `call` chains must have
 > **`max-concurrent` ≥ 2** (and ≥ 1 + the maximum `call` nesting depth for
 > nested calls), or route the called job to a *different* agent pool via its
-> `agentSelector`. Cancelling the parent releases its slot, after which the child
-> completes (and the parent's `finally` block still runs).
+> `agentSelector`, **or mark the orchestrator job `detached: true`** (see below)
+> so it never holds a normal slot while it waits. Cancelling the parent releases
+> its slot, after which the child completes (and the parent's `finally` block
+> still runs).
+
+### Detached runs (`detached`)
+
+A job with `spec.detached: true` is a **lightweight orchestrator**: its runs do
+**not** consume an agent's `max-concurrent` budget and are claimed from a
+separate `max-detached-concurrent` pool. Use it for jobs that mostly issue
+`call:` steps and wait — marking the orchestrator `detached` keeps it from
+holding a scarce execution slot while its child runs, which is the cleanest fix
+for the call-slot deadlock above.
+
+```yaml
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: release-orchestrator
+spec:
+  detached: true                 # this run does not occupy a normal slot
+  steps:
+    - name: build_ios
+      call: { job: unity-build-ios }
+    - name: build_android
+      call: { job: unity-build-android }
+```
+
+- **Opt-in on both sides.** A detached run is only claimed by agents configured
+  to host them — set `max-detached-concurrent` to a positive value on those
+  agents (default is **off**, so enabling the feature never changes existing
+  agents). A `detached` job whose fleet has no agent with detached capacity
+  stays `Queued`.
+- **Independent workspace.** On host agents a detached run gets its own per-run
+  workspace (removed when the run finishes); on Kubernetes each run already has
+  its own pod, so nothing changes there.
+- **Orthogonal to `native`.** `detached` (concurrency accounting) and `native`
+  (host-process execution) may be combined — a native host orchestrator is a
+  valid detached job.
+- **Keep them lightweight.** `detached` exempts the run from `max-concurrent`, so
+  a *heavy* detached job can over-subscribe the host/cluster. Use it for
+  orchestration, not for real compute.
+- **Do not combine with `podTemplate.reuse`.** A detached run holds its pod idle
+  while it waits, so pooling gives no benefit.
 
 ---
 
