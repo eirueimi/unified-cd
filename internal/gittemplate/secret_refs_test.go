@@ -48,4 +48,7 @@ func TestResolveSpecResolvesCheckoutSecretReference(t *testing.T) {
 	require.Equal(t, "checkout__checkout", expanded.Steps[1].Name)
 	assert.Contains(t, expanded.Steps[1].Env["GIT_TOKEN"], `index .Secrets "gitlab-token"`)
 	assert.NotContains(t, expanded.Steps[1].Env["GIT_TOKEN"], "index .Secrets .Steps")
+	names, err := dsl.ReferencedSecretNames(expanded.Steps[1].Env["GIT_TOKEN"])
+	require.NoError(t, err)
+	assert.Equal(t, []string{"gitlab-token"}, names)
 }

@@ -375,6 +375,8 @@ func TestAgentSecretsFetch_AuthorizesLiteralIndexName(t *testing.T) {
 }
 
 func TestDynamicSecretNameRejectedByClaimAndFetchAuthorization(t *testing.T) {
+	const errDynamicSecretNameText = "dynamic secret name must be resolved from a parameter before execution"
+
 	tests := []struct {
 		name string
 		run  string
@@ -390,6 +392,18 @@ func TestDynamicSecretNameRejectedByClaimAndFetchAuthorization(t *testing.T) {
 		{
 			name: "aliased secrets",
 			run:  `echo {{ $secretMap := .Secrets }}{{ index $secretMap .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "built-in mediated alias",
+			run:  `echo {{ $secretMap := or .Secrets .Secrets }}{{ index $secretMap .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "root alias selection",
+			run:  `echo {{ $root := . }}{{ index $root.Secrets "gitlab-token" }}`,
+		},
+		{
+			name: "with secret map",
+			run:  `echo {{ with .Secrets }}{{ index . "gitlab-token" }}{{ end }}`,
 		},
 	}
 
@@ -407,11 +421,11 @@ func TestDynamicSecretNameRejectedByClaimAndFetchAuthorization(t *testing.T) {
 				Spec: specJSON,
 			})
 			require.ErrorContains(t, claimErr, `step "deploy" run`)
-			assert.ErrorContains(t, claimErr, "dynamic secret name must be resolved from a parameter before execution")
+			assert.ErrorContains(t, claimErr, errDynamicSecretNameText)
 
 			_, fetchErr := srv.secretNamesForRun(t.Context(), runID)
 			require.ErrorContains(t, fetchErr, `step "deploy" run`)
-			assert.ErrorContains(t, fetchErr, "dynamic secret name must be resolved from a parameter before execution")
+			assert.ErrorContains(t, fetchErr, errDynamicSecretNameText)
 		})
 	}
 }

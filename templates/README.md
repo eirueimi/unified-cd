@@ -88,6 +88,8 @@ Each template follows the house style below (`git-checkout.yaml` / `slack-notify
   optional parameter adds no secret dependency. Secret names selected from
   `.Steps`, `.Matrix`, or `.Foreach` are rejected because the controller
   cannot authorize them before execution.
+  The exact expression is intentional. Do not alias or transform `.Secrets`;
+  non-canonical secret-map access is rejected before claim and secret fetch.
 - When writing sensitive information such as private keys or tokens to a file, create a temp file with `mktemp`,
   `chmod 600` it, and clean it up with `trap ... EXIT`.
 - The `path` / `key` / `restoreKeys` fields of a `cache:` step all expand template expressions (use

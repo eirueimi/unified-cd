@@ -1885,6 +1885,13 @@ steps:
   `uses.with` value. An empty optional parameter creates no secret dependency.
   Names selected from `.Steps`, `.Matrix`, or `.Foreach` are rejected because
   the controller must authorize every secret before execution.
+
+  The secret map itself cannot be aliased, parenthesized, passed to a function,
+  used as a control-action value, or passed to a named template. Only direct
+  static references and the exact pre-resolution
+  `index .Secrets .Params.NAME` form are supported. These restrictions let the
+  controller authorize the complete secret-name set before an agent claims the
+  run.
 - Secrets referenced in `env` values and `run` strings are auto-detected; no explicit declaration needed.
 - Secret values are transmitted to the agent over HTTPS at claim time.
 - All occurrences of the secret value in log output are automatically masked as `***`.
