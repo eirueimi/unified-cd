@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,10 @@ import (
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/go-chi/chi/v5"
 )
+
+// defaultWebhookMaxBodyBytes is the fallback webhook body-size limit applied
+// when Config.WebhookMaxBodyBytes is unset (0) or invalid (negative).
+const defaultWebhookMaxBodyBytes int64 = 1 << 20
 
 // handleApplyWebhook accepts a WebhookReceiver YAML and creates or updates it.
 func (s *Server) handleApplyWebhook(w http.ResponseWriter, r *http.Request) {
@@ -101,9 +106,23 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read the body (up to 1 MB).
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	// Read the body, rejecting (not truncating) anything over the configured
+	// limit. The body is used for auth verification below (HMAC/token), so a
+	// silently truncated body — io.LimitReader's behavior — would either fail
+	// verification confusingly or drop DSL-mapped payload fields past the cut
+	// point instead of failing loudly.
+	maxBodyBytes := s.cfg.WebhookMaxBodyBytes
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = defaultWebhookMaxBodyBytes
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			s.countWebhookEvent(name, "rejected")
+			http.Error(w, fmt.Sprintf("request body exceeds the %d byte limit", maxBodyBytes), http.StatusRequestEntityTooLarge)
+			return
+		}
 		s.countWebhookEvent(name, "error")
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return

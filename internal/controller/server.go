@@ -29,6 +29,14 @@ type Config struct {
 	// MatrixMaxCombinations caps matrix step expansion; 0 means the default (64).
 	MatrixMaxCombinations int
 
+	// WebhookMaxBodyBytes caps the size of an inbound webhook request body;
+	// 0 means the default (1 MiB / 1<<20). A body over the limit is rejected
+	// with 413 rather than silently truncated — the ingress handler uses the
+	// (possibly truncated) body for HMAC/token verification and DSL payload
+	// mapping, so truncation would corrupt auth checks and drop fields
+	// instead of failing loudly.
+	WebhookMaxBodyBytes int64
+
 	// StderrPlain, when true, tells the web UI (via /api/v1/ui-config) to render
 	// step stderr in the run log the same color as stdout instead of red.
 	StderrPlain bool

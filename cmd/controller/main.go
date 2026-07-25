@@ -177,6 +177,8 @@ func main() {
 	logTrimDays := flag.Int("log-trim-days", logTrimDaysDefault(), "days after archival to delete a run's DB log rows (reads switch to the archive); 0 = never trim (env: UNIFIED_LOG_TRIM_DAYS)")
 	var matrixMaxEnvWarning string
 	matrixMax := flag.Int("matrix-max-combinations", envIntOr("UNIFIED_MATRIX_MAX_COMBINATIONS", 64, &matrixMaxEnvWarning), "max combinations a matrix step may expand to (env: UNIFIED_MATRIX_MAX_COMBINATIONS)")
+	var webhookMaxBodyBytesEnvWarning string
+	webhookMaxBodyBytes := flag.Int("webhook-max-body-bytes", envIntOr("UNIFIED_WEBHOOK_MAX_BODY_BYTES", 1<<20, &webhookMaxBodyBytesEnvWarning), "max webhook ingress request body size in bytes; larger bodies are rejected with 413 instead of being truncated (env: UNIFIED_WEBHOOK_MAX_BODY_BYTES)")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
 
@@ -192,6 +194,9 @@ func main() {
 	// so a malformed value's warning is collected then and only logged now.
 	if matrixMaxEnvWarning != "" {
 		slog.Warn(matrixMaxEnvWarning)
+	}
+	if webhookMaxBodyBytesEnvWarning != "" {
+		slog.Warn(webhookMaxBodyBytesEnvWarning)
 	}
 	if *dsn == "" {
 		slog.Error("dsn is required (--dsn, UNIFIED_DB_DSN, or config file)")
@@ -292,7 +297,7 @@ func main() {
 		}
 		verifiers[cluster.Name] = controller.NewKubernetesEnrollmentVerifier(cluster.Name, client)
 	}
-	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
+	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
 	srv.SetMetrics(m)
 	srv.SetKeyManager(km)
 	if obj != nil {
