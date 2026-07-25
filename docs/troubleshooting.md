@@ -2,6 +2,29 @@
 
 Symptom-indexed fixes for the failures most commonly hit when running unified-cd.
 
+## Run fails with `dynamic secret name must be resolved from a parameter before execution`
+
+**Symptom**
+
+A run fails before any step starts with:
+
+```
+dynamic secret name must be resolved from a parameter before execution
+```
+
+**Cause**
+
+The job selects a secret name from a runtime value such as `.Steps`, `.Matrix`,
+or `.Foreach`. The controller must know the literal secret names before an
+agent claims the run so it can authorize only those secrets.
+
+**Fix**
+
+Pass a literal secret name through a Job parameter, a JobTemplate default, or
+`uses.with`, then reference it as `{{ index .Secrets .Params.token_secret }}`.
+Do not derive the secret name from a normal step output or another runtime
+value.
+
 ## Run stays `Queued` forever
 
 **Symptom**
