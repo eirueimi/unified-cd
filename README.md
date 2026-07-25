@@ -117,13 +117,26 @@ make build     # outputs bin/unified-cli
 
 ### 4. Configure the CLI
 
+Point the CLI at the server and give it a token — pick any one:
+
 ```bash
+# a) Interactive login: OIDC SSO device flow, or a PAT prompt when SSO is off.
+#    Saves server + token to ~/.config/unified-cd/config.yaml.
+unified-cli login --server http://localhost:8080
+
+# b) Environment variables (handy for CI/scripts):
+export UNIFIED_SERVER=http://localhost:8080
+export UNIFIED_TOKEN=dev-token-change-me
+
+# c) Config file:
 mkdir -p ~/.config/unified-cd
 cat > ~/.config/unified-cd/config.yaml <<EOF
 server: http://localhost:8080
 token: dev-token-change-me
 EOF
 ```
+
+Precedence is `--server`/`--token` flags > env vars (`UNIFIED_SERVER`/`UNIFIED_TOKEN`) > config file.
 
 ### 5. Run your first job
 
@@ -132,6 +145,30 @@ unified-cli apply -f examples/jobs/hello.yaml
 RUN_ID=$(unified-cli run trigger hello)
 unified-cli logs -f "$RUN_ID"
 ```
+
+### 6. Connect an agent
+
+Jobs execute on **agents**, which enroll with a one-time token minted by the controller:
+
+```bash
+# Mint a one-time enrollment token (labels are optional, used for routing):
+TOKEN=$(unified-cli agent enrollment create --agent-id my-agent --label kind:linux --quiet)
+
+# Start an agent; it enrolls, then persists a credential so restarts need no new token:
+unified-cd-agent --server http://localhost:8080 --enrollment-token "$TOKEN"
+```
+
+Or pipe the token straight in:
+
+```bash
+unified-cli agent enrollment create --agent-id my-agent --quiet \
+  | unified-cd-agent --server http://localhost:8080 --enrollment-token -
+```
+
+The token can also be given via `--enrollment-token-file` or `UNIFIED_AGENT_ENROLLMENT_TOKEN`.
+See [docs/agents.md](docs/agents.md) for labels/routing and running the agent as a
+systemd/launchd service, and [docs/kubernetes-integration.md](docs/kubernetes-integration.md)
+for the Kubernetes agent.
 
 ### Tests
 
