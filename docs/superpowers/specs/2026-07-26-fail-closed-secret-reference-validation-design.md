@@ -51,13 +51,17 @@ The only permitted index form after static parameter resolution is:
 {{ index .Secrets "literal-secret-name" }}
 ```
 
-The existing direct static forms remain supported because they are normalized
-to the same canonical index form before validation:
+The existing direct static forms remain supported:
 
 ```gotemplate
 {{ .Secrets.API_TOKEN }}
 {{ secrets.API_TOKEN }}
 ```
+
+`secrets.API_TOKEN` and hyphenated dot forms such as
+`.Secrets.unity-license` are normalized to the canonical index form.
+Go-template-compatible `.Secrets.API_TOKEN` remains a direct two-segment field
+node and is allowed as a static secret-value reference.
 
 The pre-resolution form remains supported:
 
@@ -96,8 +100,9 @@ For run creation and template inlining:
 
 1. Resolve exact `index .Secrets .Params.NAME` operands from the already
    validated literal parameter map.
-2. Normalize `.Secrets.NAME` and `secrets.NAME` to canonical literal `index`
-   calls.
+2. Normalize `secrets.NAME` and hyphenated `.Secrets.NAME` references to
+   canonical literal `index` calls. Preserve Go-template-compatible
+   `.Secrets.NAME` field references.
 3. Parse the normalized template with the same function map used by runtime
    expansion.
 4. Validate every parsed template tree, including named definitions.
@@ -112,9 +117,15 @@ defense in depth covers old snapshots and every run-creation path.
 `Secrets` is a reserved template namespace. An AST node that selects a field
 named `Secrets` is never treated as an ordinary user-data field.
 
-After normalization, the validator permits the exact `.Secrets` field node only
-as the second argument of an `index` command that has exactly one string-literal
-key. The validator rejects that node in every other context.
+After normalization, the validator permits:
+
+- the exact `.Secrets` field node only as the second argument of an `index`
+  command that has exactly one string-literal key; and
+- an exact two-segment `.Secrets.NAME` field node as a direct static
+  secret-value reference.
+
+The validator rejects the `.Secrets` map node in every other context and
+rejects longer field chains such as `.Secrets.NAME.More`.
 
 Selections through another receiver, such as `$root.Secrets` or
 `.Payload.Secrets`, are rejected rather than analyzed. This conservative rule
