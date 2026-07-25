@@ -12,25 +12,31 @@ var errDynamicSecretName = errors.New(
 )
 
 func validateSecretReferences(tpl string) error {
+	_, err := referencedSecretNamesFromAST(tpl)
+	return err
+}
+
+func referencedSecretNamesFromAST(tpl string) ([]string, error) {
 	parsed, err := template.New("").
 		Funcs(funcMap).
 		Option("missingkey=zero").
 		Parse(normalizeSecretsRefs(tpl))
 	if err != nil {
-		return fmt.Errorf("parse secret references: %w", err)
+		return nil, fmt.Errorf("parse secret references: %w", err)
 	}
+	var names []string
 	for _, defined := range parsed.Templates() {
 		if defined.Tree == nil || defined.Tree.Root == nil {
 			continue
 		}
-		if err := validateSecretReferenceNode(defined.Tree.Root); err != nil {
-			return err
+		if err := collectSecretReferenceNames(defined.Tree.Root, &names); err != nil {
+			return nil, err
 		}
 	}
-	return nil
+	return names, nil
 }
 
-func validateSecretReferenceNode(node parse.Node) error {
+func collectSecretReferenceNames(node parse.Node, names *[]string) error {
 	if node == nil {
 		return nil
 	}
@@ -40,37 +46,38 @@ func validateSecretReferenceNode(node parse.Node) error {
 			return nil
 		}
 		for _, child := range node.Nodes {
-			if err := validateSecretReferenceNode(child); err != nil {
+			if err := collectSecretReferenceNames(child, names); err != nil {
 				return err
 			}
 		}
 	case *parse.ActionNode:
-		return validateSecretReferenceNode(node.Pipe)
+		return collectSecretReferenceNames(node.Pipe, names)
 	case *parse.IfNode:
-		return validateSecretReferenceBranch(&node.BranchNode)
+		return collectSecretReferenceNamesFromBranch(&node.BranchNode, names)
 	case *parse.WithNode:
-		return validateSecretReferenceBranch(&node.BranchNode)
+		return collectSecretReferenceNamesFromBranch(&node.BranchNode, names)
 	case *parse.RangeNode:
-		return validateSecretReferenceBranch(&node.BranchNode)
+		return collectSecretReferenceNamesFromBranch(&node.BranchNode, names)
 	case *parse.TemplateNode:
-		return validateSecretReferenceNode(node.Pipe)
+		return collectSecretReferenceNames(node.Pipe, names)
 	case *parse.PipeNode:
 		if node == nil {
 			return nil
 		}
 		for _, command := range node.Cmds {
-			if err := validateSecretReferenceCommand(command); err != nil {
+			if err := collectSecretReferenceNamesFromCommand(command, names); err != nil {
 				return err
 			}
 		}
 	case *parse.CommandNode:
-		return validateSecretReferenceCommand(node)
+		return collectSecretReferenceNamesFromCommand(node, names)
 	case *parse.FieldNode:
 		if isAllowedDirectSecretValue(node) {
 			name := node.Ident[1]
 			if err := ValidateSecretName(name); err != nil {
 				return fmt.Errorf("secret name %q %w", name, err)
 			}
+			*names = append(*names, name)
 			return nil
 		}
 		if containsReservedSecrets(node.Ident) {
@@ -84,47 +91,57 @@ func validateSecretReferenceNode(node parse.Node) error {
 		if containsReservedSecrets(node.Field) {
 			return errDynamicSecretName
 		}
-		return validateSecretReferenceNode(node.Node)
+		return collectSecretReferenceNames(node.Node, names)
 	}
 	return nil
 }
 
-func validateSecretReferenceBranch(branch *parse.BranchNode) error {
-	if err := validateSecretReferenceNode(branch.Pipe); err != nil {
+func collectSecretReferenceNamesFromBranch(branch *parse.BranchNode, names *[]string) error {
+	if err := collectSecretReferenceNames(branch.Pipe, names); err != nil {
 		return err
 	}
-	if err := validateSecretReferenceNode(branch.List); err != nil {
+	if err := collectSecretReferenceNames(branch.List, names); err != nil {
 		return err
 	}
-	return validateSecretReferenceNode(branch.ElseList)
+	return collectSecretReferenceNames(branch.ElseList, names)
 }
 
-func validateSecretReferenceCommand(command *parse.CommandNode) error {
-	if isCanonicalSecretIndex(command) {
+func collectSecretReferenceNamesFromCommand(command *parse.CommandNode, names *[]string) error {
+	if name, ok := canonicalSecretIndexName(command); ok {
+		if name == "" {
+			return nil
+		}
+		if err := ValidateSecretName(name); err != nil {
+			return fmt.Errorf("secret name %q %w", name, err)
+		}
+		*names = append(*names, name)
 		return nil
 	}
 	for _, argument := range command.Args {
-		if err := validateSecretReferenceNode(argument); err != nil {
+		if err := collectSecretReferenceNames(argument, names); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func isCanonicalSecretIndex(command *parse.CommandNode) bool {
+func canonicalSecretIndexName(command *parse.CommandNode) (string, bool) {
 	if len(command.Args) != 3 {
-		return false
+		return "", false
 	}
 	identifier, ok := command.Args[0].(*parse.IdentifierNode)
 	if !ok || identifier.Ident != "index" {
-		return false
+		return "", false
 	}
 	receiver, ok := command.Args[1].(*parse.FieldNode)
 	if !ok || len(receiver.Ident) != 1 || receiver.Ident[0] != "Secrets" {
-		return false
+		return "", false
 	}
-	_, ok = command.Args[2].(*parse.StringNode)
-	return ok
+	key, ok := command.Args[2].(*parse.StringNode)
+	if !ok {
+		return "", false
+	}
+	return key.Text, true
 }
 
 func isAllowedDirectSecretValue(field *parse.FieldNode) bool {

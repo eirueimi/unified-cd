@@ -125,7 +125,35 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" \
 
 ### Basic syntax
 
-Write `{{ secrets.SECRET_NAME }}` inside `env:` values or `run:` strings.
+Use a direct static reference inside `env:` values or `run:` strings:
+
+```gotemplate
+{{ secrets.DATABASE_URL }}
+{{ .Secrets.DATABASE_URL }}
+{{ index .Secrets "slack-webhook-url" }}
+```
+
+`secrets.NAME` is normalized internally. The canonical literal `index` form is
+useful when the name contains a hyphen.
+
+A JobTemplate may select the name from a literal parameter with this exact
+pre-resolution form:
+
+```gotemplate
+{{ index .Secrets .Params.token_secret }}
+```
+
+Before the run starts, the controller validates the parameter as a secret name
+and rewrites the expression to a literal such as
+`{{ index .Secrets "gitlab-token" }}`. An empty optional parameter adds no
+secret dependency.
+
+The `.Secrets` map cannot be aliased, parenthesized, passed through a function
+or pipeline, used as a control-action value, or passed to a named template.
+Computed names from `.Steps`, `.Matrix`, or `.Foreach` are also rejected with
+`dynamic secret name must be resolved from a parameter before execution`.
+This fail-closed rule ensures that the controller can prove the complete secret
+set before an agent claims the run.
 
 ```yaml
 apiVersion: unified-cd/v1
@@ -171,13 +199,20 @@ steps:
 
 ### How it works
 
-Before dispatching a job to an agent, the controller scans all `env:` and `run:` strings
-for `secrets.NAME` patterns, collects only the secrets needed, and fetches them.
-You don't need to declare them separately — just write `{{ secrets.X }}` and they are fetched automatically.
+Before dispatching a job to an agent, the controller normalizes supported
+shorthand, resolves exact `index .Secrets .Params.NAME` expressions, parses the
+templates in all `env:` and `run:` strings, and validates their syntax trees.
+It collects names only from validated direct static references and canonical
+literal indexes. Non-secret fields such as `.Params.secrets.API_TOKEN` do not
+declare a secret dependency.
+
+You do not need a separate declaration: a supported static reference is the
+declaration.
 
 This "only what's needed" set is not just computed for the claim response — it is
 **enforced** on the agent's secrets-fetch call. The controller recomputes the same set
-from the run's stored spec and rejects any requested secret name outside it with
+from the run's stored spec using the same parser and AST validation, then rejects
+any requested secret name outside it with
 `403 secret not needed by this run`, before attempting to decrypt anything (the message
 is deliberately generic — it doesn't confirm or deny whether the requested secret exists,
 so the endpoint can't be used to enumerate the store). An agent holding a valid
@@ -185,16 +220,22 @@ credential for a run cannot use it to read secrets that run's own spec doesn't
 reference — see [Troubleshooting](#troubleshooting).
 
 ```
-Write {{ secrets.X }} in env/run of the Job YAML
-         │
-         ▼ (controller scans at dispatch time)
-SecretsNeeded: ["X"] included in the claim response
-         │
-         ▼ (agent fetches)
-POST /api/v1/agents/{id}/secrets/fetch → {X: "plaintext value"}
-         │
-         ▼
-Template expansion + log masker setup → step execution
+Supported static reference in env/run
+        │
+        ▼
+Resolve .Params name + normalize shorthand
+        │
+        ▼
+Parse and validate AST + collect literal names
+        │
+        ▼
+SecretsNeeded: ["X"] in claim response
+        │
+        ▼
+Agent requests X; controller revalidates the stored spec
+        │
+        ▼
+Decrypt X → template expansion + log masking → step execution
 ```
 
 ---
@@ -375,6 +416,7 @@ for what changes when Vault runs in HA.
 |---------|---------------|
 | Controller exits at startup naming `unified-cli keygen --out` | No key source is configured. Set `UNIFIED_CONTROLLER_KEY_FILE` (or `UNIFIED_KMS_URI`, or `UNIFIED_DEV_MODE=1` for local development) and restart. |
 | `{{ secrets.NAME }}` appears unexpanded, or the run fails with a "secret not found" / decrypt error | The secret name doesn't match a registered secret (or the name casing doesn't match), or contains a character other than alphanumerics/underscores/hyphens. An unregistered or unresolvable secret now fails the run rather than expanding to an empty value. Check the exact name with `unified-cli secret list`. |
+| `dynamic secret name must be resolved from a parameter before execution` | The job uses `.Secrets` outside a supported direct static reference, or computes a name at runtime. Use `secrets.NAME`, `.Secrets.NAME`, `index .Secrets "literal-name"`, or pass a literal name through the exact pre-resolution form `index .Secrets .Params.NAME`. Do not alias or transform `.Secrets`. |
 | `decrypt` errors in HA setup | Replicas were given different key files, or different `UNIFIED_KMS_URI` values. Give every replica the identical key file (or the same KMS URI). |
 | `secret set` from CI returns `unauthorized` | The token in use does not have admin privileges (agent tokens cannot manage secrets). |
-| `secret not needed by this run` (403, from an agent's secrets-fetch call) | The agent requested a secret name that the run's own job spec does not reference (no matching `{{ secrets.NAME }}` in that job's `env:`/`run:`). Add the reference to the job spec — see [How it works](#how-it-works). This is enforced even for an agent that legitimately owns the run; it is not an ownership error. |
+| `secret not needed by this run` (403, from an agent's secrets-fetch call) | The agent requested a name that the stored run spec does not reference through a supported direct static form. Add `secrets.NAME`, `.Secrets.NAME`, or a canonical literal index to the job's `env:`/`run:`; a lookalike non-secret field such as `.Params.secrets.NAME` does not authorize it. See [How it works](#how-it-works). This is enforced even for an agent that legitimately owns the run; it is not an ownership error. |

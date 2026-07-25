@@ -210,3 +210,38 @@ func TestReferencedSecretNamesCollectsOnlyTemplateReferences(t *testing.T) {
 		})
 	}
 }
+
+func TestReferencedSecretNamesDoesNotTreatNonSecretIdentifiersAsSecretReferences(t *testing.T) {
+	tests := []struct {
+		name      string
+		tpl       string
+		wantNames []string
+	}{
+		{
+			name: "variable name ending in secrets",
+			tpl:  `{{ $nosecrets := .Params }}{{ $nosecrets.API_TOKEN }}`,
+		},
+		{
+			name: "nested lowercase secrets field",
+			tpl:  `{{ .Params.secrets.API_TOKEN }}`,
+		},
+		{
+			name:      "non-secret variable beside direct secret reference",
+			tpl:       `{{ $nosecrets := .Params }}{{ $nosecrets.API_TOKEN }}{{ .Secrets.REAL_TOKEN }}`,
+			wantNames: []string{"REAL_TOKEN"},
+		},
+		{
+			name:      "non-secret field beside canonical secret index",
+			tpl:       `{{ .Params.secrets.API_TOKEN }}{{ index .Secrets "real-token" }}`,
+			wantNames: []string{"real-token"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			names, err := ReferencedSecretNames(tt.tpl)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tt.wantNames, names)
+		})
+	}
+}

@@ -14,9 +14,6 @@ var (
 	secretParamOperandRe = regexp.MustCompile(
 		`^\.Params\.([A-Za-z_][A-Za-z0-9_]*)$`,
 	)
-	directSecretRefRe = regexp.MustCompile(
-		`(?:secrets|\.Secrets)\.([A-Za-z_][A-Za-z0-9_-]*)`,
-	)
 )
 
 // ResolveSecretNameParams replaces parameter operands in secret index
@@ -81,38 +78,7 @@ func ResolveSecretNameParams(tpl string, params map[string]string) (string, erro
 
 // ReferencedSecretNames returns the statically named secrets in a template.
 func ReferencedSecretNames(tpl string) ([]string, error) {
-	if err := validateSecretReferences(tpl); err != nil {
-		return nil, err
-	}
-	searchable := templateWithoutCommentActions(tpl)
-
-	var names []string
-	for _, match := range directSecretRefMatches(searchable) {
-		name := directSecretRefRe.FindStringSubmatch(match)[1]
-		if err := ValidateSecretName(name); err != nil {
-			return nil, fmt.Errorf("secret name %q %w", name, err)
-		}
-		names = append(names, name)
-	}
-
-	for _, match := range secretIndexMatches(searchable) {
-		operand := secretIndexRe.FindStringSubmatch(match)[1]
-		if !strings.HasPrefix(operand, `"`) {
-			return nil, errDynamicSecretName
-		}
-		name, err := strconv.Unquote(operand)
-		if err != nil {
-			return nil, fmt.Errorf("invalid secret name literal: %w", err)
-		}
-		if name == "" {
-			continue
-		}
-		if err := ValidateSecretName(name); err != nil {
-			return nil, fmt.Errorf("secret name %q %w", name, err)
-		}
-		names = append(names, name)
-	}
-	return names, nil
+	return referencedSecretNamesFromAST(tpl)
 }
 
 func replaceSecretIndexMatches(tpl string, replace func(string) string) string {
@@ -139,60 +105,6 @@ func replaceSecretIndexMatches(tpl string, replace func(string) string) string {
 	}
 	out.WriteString(tpl[offset:])
 	return out.String()
-}
-
-func secretIndexMatches(tpl string) []string {
-	var matches []string
-	for offset := 0; offset < len(tpl); {
-		start := strings.Index(tpl[offset:], "{{")
-		if start < 0 {
-			break
-		}
-		start += offset + len("{{")
-		end, ok := templateActionEnd(tpl, start)
-		if !ok {
-			break
-		}
-		action := tpl[start:end]
-		if isTemplateCommentAction(action) {
-			offset = end + len("}}")
-			continue
-		}
-		for _, match := range secretIndexRe.FindAllStringIndex(action, -1) {
-			if !templatePositionQuoted(action, match[0]) {
-				matches = append(matches, tpl[start+match[0]:start+match[1]])
-			}
-		}
-		offset = end + len("}}")
-	}
-	return matches
-}
-
-func directSecretRefMatches(tpl string) []string {
-	var matches []string
-	for offset := 0; offset < len(tpl); {
-		start := strings.Index(tpl[offset:], "{{")
-		if start < 0 {
-			break
-		}
-		start += offset + len("{{")
-		end, ok := templateActionEnd(tpl, start)
-		if !ok {
-			break
-		}
-		action := tpl[start:end]
-		if isTemplateCommentAction(action) {
-			offset = end + len("}}")
-			continue
-		}
-		for _, match := range directSecretRefRe.FindAllStringIndex(action, -1) {
-			if !templatePositionQuoted(action, match[0]) {
-				matches = append(matches, action[match[0]:match[1]])
-			}
-		}
-		offset = end + len("}}")
-	}
-	return matches
 }
 
 func replaceSecretIndexMatchesInAction(action string, replace func(string) string) string {
@@ -285,32 +197,6 @@ func isTemplateCommentAction(action string) bool {
 		start = skipTemplateWhitespace(action, start+1)
 	}
 	return strings.HasPrefix(action[start:], "/*")
-}
-
-func templateWithoutCommentActions(tpl string) string {
-	var out strings.Builder
-	offset := 0
-	for offset < len(tpl) {
-		open := strings.Index(tpl[offset:], "{{")
-		if open < 0 {
-			break
-		}
-		open += offset
-		actionStart := open + len("{{")
-		end, ok := templateActionEnd(tpl, actionStart)
-		if !ok {
-			break
-		}
-		if isTemplateCommentAction(tpl[actionStart:end]) {
-			out.WriteString(tpl[offset:open])
-			out.WriteString("{{}}")
-		} else {
-			out.WriteString(tpl[offset : end+len("}}")])
-		}
-		offset = end + len("}}")
-	}
-	out.WriteString(tpl[offset:])
-	return out.String()
 }
 
 func skipTemplateWhitespace(value string, start int) int {

@@ -429,3 +429,41 @@ func TestDynamicSecretNameRejectedByClaimAndFetchAuthorization(t *testing.T) {
 		})
 	}
 }
+
+func TestNonSecretExpressionsDoNotWidenClaimOrFetchAuthorization(t *testing.T) {
+	tests := []struct {
+		name string
+		run  string
+	}{
+		{
+			name: "variable name ending in secrets",
+			run:  `echo {{ $nosecrets := .Params }}{{ $nosecrets.API_TOKEN }}`,
+		},
+		{
+			name: "nested lowercase secrets field",
+			run:  `echo {{ .Params.secrets.API_TOKEN }}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _, runID := newSecretsFetchFixture(t, `steps:
+  - name: deploy
+    run: `+tt.run+`
+`)
+			specJSON, err := srv.store.GetRunSpec(t.Context(), runID)
+			require.NoError(t, err)
+
+			claim, err := buildClaimResponse(&store.ClaimedRun{
+				Run:  api.Run{ID: runID, JobName: "non-secret-expression-job"},
+				Spec: specJSON,
+			})
+			require.NoError(t, err)
+			assert.Empty(t, claim.SecretsNeeded)
+
+			fetchNames, err := srv.secretNamesForRun(t.Context(), runID)
+			require.NoError(t, err)
+			assert.Empty(t, fetchNames)
+		})
+	}
+}
