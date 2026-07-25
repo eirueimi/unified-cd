@@ -63,11 +63,20 @@ func TestAgentEnrollmentAdminRejectsInvalidDuration(t *testing.T) {
 		{AgentID: "vm-agent-01", ExpiresIn: "not-a-duration"},
 		{AgentID: "vm-agent-01", ExpiresIn: "0s"},
 		{AgentID: "vm-agent-01", ExpiresIn: "-1m"},
-		{AgentID: ""},
 	} {
 		rec := enrollmentRequest(t, s, "secret", body)
 		assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
+}
+
+func TestAgentEnrollmentAdminAutogeneratesAgentIDWhenOmitted(t *testing.T) {
+	s, _ := newTestServer(t)
+	rec := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{}) // no agentId
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var response api.CreateAgentEnrollmentResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	assert.Regexp(t, `^agent-[0-9a-f]{8}$`, response.AgentID,
+		"an omitted agentId must be auto-generated as agent-<8 hex>")
 }
 
 func TestAgentEnrollmentAdminEnforcesMaximumLifetime(t *testing.T) {

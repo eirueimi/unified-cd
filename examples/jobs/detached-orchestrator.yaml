@@ -1,0 +1,44 @@
+# Detached orchestrator example.
+#
+# `detached: true` marks this run as a lightweight orchestrator: it only issues
+# `call:` steps and waits for the children, so it must NOT occupy a normal
+# execution slot while they run. On a single-slot agent a non-detached parent
+# that call:s a child on the same agent deadlocks (parent holds the only slot,
+# child can never be claimed); marking the parent `detached` frees that slot.
+#
+# Requires an agent started with a positive detached budget, e.g.
+#   unified-cd-agent --server ... --enrollment-token ... --max-detached-concurrent 4
+# (or maxDetachedConcurrent in the k8s agent config). detached is off by default.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: detached-orchestrator
+spec:
+  detached: true
+  steps:
+    - name: build_service_a
+      call:
+        job: detached-child
+        with:
+          target: service-a
+    - name: build_service_b
+      call:
+        job: detached-child
+        with:
+          target: service-b
+---
+# The child job the orchestrator fans out to. Apply both jobs, then trigger
+# `detached-orchestrator`.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: detached-child
+spec:
+  params:
+    inputs:
+      - name: target
+        type: string
+        required: true
+  steps:
+    - name: build
+      run: echo "building {{ .Params.target }}"

@@ -37,9 +37,10 @@ type AgentTokenResponse struct {
 }
 
 // CreateAgentEnrollmentRequest requests a one-time enrollment token for one
-// fixed agent identity.
+// agent identity. AgentID is optional: when empty, the server auto-generates a
+// canonical ID (agent-XXXXXXXX) and returns it in CreateAgentEnrollmentResponse.
 type CreateAgentEnrollmentRequest struct {
-	AgentID   string   `json:"agentId"`
+	AgentID   string   `json:"agentId,omitempty"`
 	ExpiresIn string   `json:"expiresIn,omitempty"`
 	Labels    []string `json:"labels,omitempty"`
 }
