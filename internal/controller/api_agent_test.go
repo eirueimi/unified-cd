@@ -1284,6 +1284,40 @@ func TestAgentAPI_CreateChildRun_OwnedParent(t *testing.T) {
 	assert.Equal(t, "agent:a1", child.TriggeredBy, "child run must be attributed to the spawning agent")
 }
 
+func TestAgentAPI_CreateChildRunStoresResolvedSecretNameParameter(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{
+		"params":{"inputs":[{"name":"token_secret","type":"string"}]},
+		"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Params.token_secret }}"},"run":"true"}]
+	}`))
+	require.NoError(t, err)
+	parent, err := pg.CreateRun(t.Context(), "parent-job", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "a1", parent.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, err := json.Marshal(api.TriggerRunRequest{
+		JobName: "child-job",
+		Params:  map[string]string{"token_secret": "child-token"},
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/children", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var child api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &child))
+	raw, err := pg.GetRunSpec(t.Context(), child.ID)
+	require.NoError(t, err)
+	var snapshot dsl.Spec
+	require.NoError(t, json.Unmarshal(raw, &snapshot))
+	require.Len(t, snapshot.Steps, 1)
+	assert.Equal(t, `{{ index .Secrets "child-token" }}`, snapshot.Steps[0].Env["TOKEN"])
+}
+
 // TestAgentAPI_CreateChildRun_NotOwnedParent verifies an agent cannot spawn a
 // child for a run claimed by a DIFFERENT agent (403, no run created).
 func TestAgentAPI_CreateChildRun_NotOwnedParent(t *testing.T) {

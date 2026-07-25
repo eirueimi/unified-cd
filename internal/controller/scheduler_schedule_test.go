@@ -194,6 +194,57 @@ func TestCheckAndFireSchedules_MissingRequiredParam_SkipsAndDoesNotAdvance(t *te
 	assert.Empty(t, m.updated)
 }
 
+func TestCheckAndFireSchedulesStoresResolvedSecretNameParameter(t *testing.T) {
+	lastFired := testNow.Add(-25 * time.Hour)
+	m := &mockScheduleFireStore{
+		schedules: []store.Schedule{{
+			Name:        "daily",
+			Cron:        "0 10 * * *",
+			JobName:     "build",
+			LastFiredAt: &lastFired,
+			Params:      map[string]string{"token_secret": "schedule-token"},
+		}},
+		jobs: map[string]*api.Job{
+			"build": {Name: "build", Spec: []byte(`{
+				"params":{"inputs":[{"name":"token_secret","type":"string"}]},
+				"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Params.token_secret }}"},"run":"true"}]
+			}`)},
+		},
+	}
+
+	checkAndFireSchedules(context.Background(), m, testNow)
+
+	require.Len(t, m.created, 1)
+	require.Len(t, m.createdSpecs, 1)
+	var snapshot dsl.Spec
+	require.NoError(t, json.Unmarshal(m.createdSpecs[0], &snapshot))
+	require.Len(t, snapshot.Steps, 1)
+	assert.Equal(t, `{{ index .Secrets "schedule-token" }}`, snapshot.Steps[0].Env["TOKEN"])
+	require.NotNil(t, m.updated["daily"])
+}
+
+func TestCheckAndFireSchedulesRejectsRuntimeOnlySecretName(t *testing.T) {
+	lastFired := testNow.Add(-25 * time.Hour)
+	m := &mockScheduleFireStore{
+		schedules: []store.Schedule{{
+			Name:        "daily",
+			Cron:        "0 10 * * *",
+			JobName:     "build",
+			LastFiredAt: &lastFired,
+		}},
+		jobs: map[string]*api.Job{
+			"build": {Name: "build", Spec: []byte(`{
+				"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Steps.discover.Outputs.token_secret }}"},"run":"true"}]
+			}`)},
+		},
+	}
+
+	checkAndFireSchedules(context.Background(), m, testNow)
+
+	assert.Empty(t, m.created)
+	assert.Empty(t, m.updated)
+}
+
 // TestCheckAndFireSchedules_PersistsRequiredCaps verifies that a fired
 // schedule infers dsl.RequiredCaps from the job spec loaded via GetJob and
 // passes it into CreateRun, mirroring the direct-trigger and webhook paths

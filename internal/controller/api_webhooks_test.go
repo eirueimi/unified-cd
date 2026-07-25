@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -139,6 +140,40 @@ func TestWebhookIngress_NoAuth_AllowedWithFlag(t *testing.T) {
 	require.Len(t, runs, 1)
 	assert.Equal(t, "refs/heads/main", runs[0].Params["branch"])
 	assert.Equal(t, "webhook:test-hook", runs[0].TriggeredBy)
+}
+
+func TestWebhookIngressStoresResolvedSecretNameParameter(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(t.Context(), "build", "unified-cd/v1", []byte(`{
+		"params":{"inputs":[{"name":"token_secret","type":"string","pattern":"^[A-Za-z0-9_-]+$"}]},
+		"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Params.token_secret }}"},"run":"true"}]
+	}`))
+	require.NoError(t, err)
+	webhookSpec, err := json.Marshal(map[string]any{
+		"trigger":       map[string]any{"job": "build"},
+		"auth":          map[string]any{"type": "none", "allowUnauthenticated": true},
+		"paramsMapping": map[string]any{"token_secret": `{{ index .Payload "token_secret" }}`},
+	})
+	require.NoError(t, err)
+	_, err = pg.UpsertWebhookReceiver(t.Context(), "test-hook", webhookSpec)
+	require.NoError(t, err)
+
+	payload := []byte(`{"token_secret":"webhook-token"}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-hook", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	runs, err := pg.ListRunsByJob(t.Context(), "build", 10)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	raw, err := pg.GetRunSpec(t.Context(), runs[0].ID)
+	require.NoError(t, err)
+	var snapshot dsl.Spec
+	require.NoError(t, json.Unmarshal(raw, &snapshot))
+	require.Len(t, snapshot.Steps, 1)
+	assert.Equal(t, `{{ index .Secrets "webhook-token" }}`, snapshot.Steps[0].Env["TOKEN"])
 }
 
 // TestWebhookIngress_ExpandsAgentSelectorParams verifies that the agentSelector template
