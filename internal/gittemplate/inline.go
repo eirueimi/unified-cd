@@ -466,6 +466,13 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 		}
 		inputsOutputs[k] = v
 	}
+	if err := dsl.ResolveSecretNameParamsInSpec(&tplSpec, inputsOutputs); err != nil {
+		return nil, podContribution{}, fmt.Errorf(
+			"uses %q: resolve secret name parameters: %w",
+			usesName,
+			err,
+		)
+	}
 	inputsStep := dsl.StepEntry{
 		Name:    inputsStepName(usesName),
 		Run:     "true",
