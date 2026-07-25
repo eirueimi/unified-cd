@@ -69,6 +69,16 @@ func TestResolveSecretNameParams(t *testing.T) {
 			tpl:     `{{ .Steps.detect.Outputs.secret_name | index .Secrets }}`,
 			wantErr: "dynamic secret name must be resolved from a parameter before execution",
 		},
+		{
+			name:    "parenthesized secrets step output is rejected",
+			tpl:     `{{ index (.Secrets) .Steps.detect.Outputs.secret_name }}`,
+			wantErr: "dynamic secret name must be resolved from a parameter before execution",
+		},
+		{
+			name:    "aliased secrets step output is rejected",
+			tpl:     `{{ $secretMap := .Secrets }}{{ index $secretMap .Steps.detect.Outputs.secret_name }}`,
+			wantErr: "dynamic secret name must be resolved from a parameter before execution",
+		},
 	}
 
 	for _, tt := range tests {
@@ -108,6 +118,18 @@ func TestReferencedSecretNamesRejectsRuntimeOperand(t *testing.T) {
 		{
 			name: "pipelined index",
 			tpl:  `{{ .Steps.pick.Outputs.name | index .Secrets }}`,
+		},
+		{
+			name: "parenthesized secrets",
+			tpl:  `{{ index (.Secrets) .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "aliased secrets",
+			tpl:  `{{ $secretMap := .Secrets }}{{ index $secretMap .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "aliased secrets after comment",
+			tpl:  `{{/* deployment secret */}}{{ $secretMap := .Secrets }}{{ index $secretMap .Steps.pick.Outputs.name }}`,
 		},
 	}
 

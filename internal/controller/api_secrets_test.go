@@ -375,21 +375,43 @@ func TestAgentSecretsFetch_AuthorizesLiteralIndexName(t *testing.T) {
 }
 
 func TestDynamicSecretNameRejectedByClaimAndFetchAuthorization(t *testing.T) {
-	srv, _, runID := newSecretsFetchFixture(t, `steps:
+	tests := []struct {
+		name string
+		run  string
+	}{
+		{
+			name: "ordinary index",
+			run:  `echo {{ index .Secrets .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "parenthesized secrets",
+			run:  `echo {{ index (.Secrets) .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "aliased secrets",
+			run:  `echo {{ $secretMap := .Secrets }}{{ index $secretMap .Steps.pick.Outputs.name }}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _, runID := newSecretsFetchFixture(t, `steps:
   - name: deploy
-    run: echo {{ index .Secrets .Steps.pick.Outputs.name }}
+    run: `+tt.run+`
 `)
-	specJSON, err := srv.store.GetRunSpec(t.Context(), runID)
-	require.NoError(t, err)
+			specJSON, err := srv.store.GetRunSpec(t.Context(), runID)
+			require.NoError(t, err)
 
-	_, claimErr := buildClaimResponse(&store.ClaimedRun{
-		Run:  api.Run{ID: runID, JobName: "dynamic-secret-job"},
-		Spec: specJSON,
-	})
-	require.ErrorContains(t, claimErr, `step "deploy" run`)
-	assert.ErrorContains(t, claimErr, "dynamic secret name must be resolved from a parameter before execution")
+			_, claimErr := buildClaimResponse(&store.ClaimedRun{
+				Run:  api.Run{ID: runID, JobName: "dynamic-secret-job"},
+				Spec: specJSON,
+			})
+			require.ErrorContains(t, claimErr, `step "deploy" run`)
+			assert.ErrorContains(t, claimErr, "dynamic secret name must be resolved from a parameter before execution")
 
-	_, fetchErr := srv.secretNamesForRun(t.Context(), runID)
-	require.ErrorContains(t, fetchErr, `step "deploy" run`)
-	assert.ErrorContains(t, fetchErr, "dynamic secret name must be resolved from a parameter before execution")
+			_, fetchErr := srv.secretNamesForRun(t.Context(), runID)
+			require.ErrorContains(t, fetchErr, `step "deploy" run`)
+			assert.ErrorContains(t, fetchErr, "dynamic secret name must be resolved from a parameter before execution")
+		})
+	}
 }
