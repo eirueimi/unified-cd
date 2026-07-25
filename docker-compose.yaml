@@ -208,10 +208,6 @@ services:
         set -e
         CRED=/var/lib/unified-cd-agent/credentials.json
         ENROLL=/var/lib/unified-cd-agent/enrollment.token
-        if [ -f "$$CRED" ]; then
-          echo "agent-enroll: credential file already present, skipping enrollment"
-          exit 0
-        fi
         rm -f "$$ENROLL"
         go run -buildvcs=false ./cmd/unified-cli agent enrollment create \
           --agent-id docker-agent-1 \
