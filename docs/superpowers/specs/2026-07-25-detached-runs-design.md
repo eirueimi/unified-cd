@@ -8,7 +8,12 @@ Status: Approved (design)
 - **Opt-in flag:** `spec.detached: true` (top-level boolean; default `false`).
 - **Budget:** agent `MaxDetachedConcurrent` (`--max-detached-concurrent` /
   `UNIFIED_AGENT_MAX_DETACHED`); default `16`, `0` = off, `-1` = unlimited.
-- **`native: true` + `detached: true`:** rejected at parse time (hard error).
+- **`native: true` + `detached: true`:** allowed — `native` (execution mode) and
+  `detached` (concurrency accounting) are orthogonal. A native host orchestrator
+  that mostly `call:`s is a valid, important case (it is exactly the kind of run
+  that must be exempted to fix the deadlock on a host/native fleet). Heavy work
+  under `detached` is an author misuse regardless of `native`, so there is no
+  native-specific rejection; this is a documentation caution, not a hard error.
 - **k8s pod handling:** Approach A — detached changes only claim accounting, not
   pod allocation. Detached runs still allocate a pod on k8s exactly as today; we
   do NOT lazily skip the pod (Approach B) in this version. Because a detached
@@ -125,10 +130,10 @@ This is backend-agnostic and serves both agent types identically.
 
 - `detached` is a spec-level boolean; default `false` (fully backward
   compatible, opt-in).
-- A detached job that is also `native: true` executes real host work while
-  exempt from `MaxConcurrent`, which can over-subscribe a host agent. This is
-  **rejected at parse time** (clear error) — detached is meant for pod-offloaded
-  / waiting orchestrators, and a hard error prevents the most damaging misuse.
+- `native: true` + `detached: true` is **allowed** (orthogonal — see Decisions).
+  detached is an author assertion that the run is a lightweight orchestrator;
+  marking a heavy job detached (native or not) can over-subscribe the host /
+  cluster and is a documented misuse, not a validation error.
 - `detached` composes with `agentSelector` and concurrency groups normally: a
   detached run may still target a pool and still participate in
   `mutex`/`semaphores`/`orLocks` serialization.
