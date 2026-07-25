@@ -654,6 +654,13 @@ steps:
 
 `call` steps wait for the called job to complete. The called job's run shares the parent run's context.
 
+By default a `call` step waits **indefinitely** for the child run to finish. To
+bound the wait, set the step's `timeoutMinutes`: if the child run has not
+reached a terminal state within that many minutes, the call step fails with a
+timeout and — once the parent run finalizes — the child run is cancelled. When
+`timeoutMinutes` is unset there is no timeout (the call waits until the child
+finishes or the parent run is cancelled).
+
 On success the child run's ID is available to later steps as
 `{{ .Steps.<call-step-name>.ChildRunID }}` (for matrix call steps, a map keyed
 by combination key — `{{ index .Steps.<name>.ChildRunID "linux/amd64" }}`) —
@@ -667,7 +674,9 @@ address step names containing hyphens; name the call step with underscores
 > job to finish. The called job is a **separate run** that must be claimed by an
 > agent — if it can only run on the same agent pool and that pool has no free
 > slot, it deadlocks: the child stays `Queued` forever while the parent stays
-> `Running`, with no timeout or warning.
+> `Running`. Unless the call step sets `timeoutMinutes` (which fails the parent
+> step and releases its slot after that many minutes), nothing breaks the
+> deadlock automatically.
 >
 > The common trigger is an agent (or pool) with **`max-concurrent: 1`** calling a
 > job that targets the same agent: the parent occupies the only slot, so the
