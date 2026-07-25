@@ -42,20 +42,26 @@ type AgentConfig struct {
 	// field: it is populated only from the --enrollment-token flag, the
 	// UNIFIED_AGENT_ENROLLMENT_TOKEN env var, or stdin, never from a
 	// persisted config file.
-	EnrollmentToken string        `yaml:"-"`
-	ID              string        `yaml:"id"`
-	Labels          []string      `yaml:"labels"`
-	ExposeEnv       []string      `yaml:"exposeEnv"`
-	CacheEndpoint   string        `yaml:"cacheEndpoint"`
-	CacheKey        string        `yaml:"cacheKey"`
-	CacheSecret     string        `yaml:"cacheSecret"`
-	CacheBucket     string        `yaml:"cacheBucket"`
-	MaxConcurrent   int           `yaml:"maxConcurrent"`
-	CleanWorkspace  bool          `yaml:"cleanWorkspace"`
-	WorkspaceDir    string        `yaml:"workspaceDir"`
-	DrainTimeout    time.Duration `yaml:"drainTimeout"`
-	PauseImage      string        `yaml:"pauseImage"`
-	RunnerImage     string        `yaml:"runnerImage"`
+	EnrollmentToken string   `yaml:"-"`
+	ID              string   `yaml:"id"`
+	Labels          []string `yaml:"labels"`
+	ExposeEnv       []string `yaml:"exposeEnv"`
+	CacheEndpoint   string   `yaml:"cacheEndpoint"`
+	CacheKey        string   `yaml:"cacheKey"`
+	CacheSecret     string   `yaml:"cacheSecret"`
+	CacheBucket     string   `yaml:"cacheBucket"`
+	MaxConcurrent   int      `yaml:"maxConcurrent"`
+	// MaxDetachedConcurrent caps how many detached (spec.detached) runs this
+	// agent claims concurrently, from a pool separate from MaxConcurrent.
+	// 0 / unset -> off (this agent does not host detached runs); a positive value
+	// is the cap. Detached hosting is opt-in per agent so enabling the feature
+	// never changes existing agents' behavior.
+	MaxDetachedConcurrent int           `yaml:"maxDetachedConcurrent"`
+	CleanWorkspace        bool          `yaml:"cleanWorkspace"`
+	WorkspaceDir          string        `yaml:"workspaceDir"`
+	DrainTimeout          time.Duration `yaml:"drainTimeout"`
+	PauseImage            string        `yaml:"pauseImage"`
+	RunnerImage           string        `yaml:"runnerImage"`
 
 	// MinFreeDisk is the minimum free space (bytes) required on the
 	// workspace filesystem for the host agent to keep claiming runs. Zero
@@ -130,6 +136,11 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 			eff.WorkspaceRetentionDays = v
 		}
 	}
+	if v := os.Getenv("UNIFIED_AGENT_MAX_DETACHED"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			eff.MaxDetachedConcurrent = n
+		}
+	}
 
 	if filePath == "" {
 		return eff, nil
@@ -171,6 +182,9 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.MaxConcurrent != 0 {
 		eff.MaxConcurrent = file.MaxConcurrent
+	}
+	if file.MaxDetachedConcurrent != 0 {
+		eff.MaxDetachedConcurrent = file.MaxDetachedConcurrent
 	}
 	if file.CleanWorkspace {
 		eff.CleanWorkspace = true

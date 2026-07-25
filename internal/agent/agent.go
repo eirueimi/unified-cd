@@ -61,15 +61,19 @@ type postHookEntry struct {
 
 // Agent represents an agent that communicates with the master server to execute jobs.
 type Agent struct {
-	ID             string
-	Labels         []string // agent labels used for ClaimNextRun filtering
-	ExposeEnv      []string
-	Client         *Client
-	CacheStore     objectstore.ObjectStore // nil = cache disabled
-	MaxConcurrent  int
-	WorkspaceDir   string
-	CleanWorkspace bool
-	DrainTimeout   time.Duration
+	ID            string
+	Labels        []string // agent labels used for ClaimNextRun filtering
+	ExposeEnv     []string
+	Client        *Client
+	CacheStore    objectstore.ObjectStore // nil = cache disabled
+	MaxConcurrent int
+	// MaxDetachedConcurrent caps detached-run claims in a pool separate from
+	// MaxConcurrent. 0/unset = off; positive = cap. Used by Run (see the detached
+	// claim pool). Wired from --max-detached-concurrent.
+	MaxDetachedConcurrent int
+	WorkspaceDir          string
+	CleanWorkspace        bool
+	DrainTimeout          time.Duration
 
 	// MinFreeDisk is the minimum free space (in bytes) required on the
 	// workspace filesystem for this agent to keep claiming runs. Zero
@@ -304,9 +308,27 @@ func (a *Agent) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func(slot int) {
 			defer wg.Done()
-			a.runLoop(ctx, runCtx, slot, wsBase, activeRuns, activeWorkDirs)
+			a.runLoop(ctx, runCtx, slot, wsBase, activeRuns, activeWorkDirs, false)
 		}(i)
 	}
+
+	// Detached claim pool: separate from the MaxConcurrent slots so a detached
+	// (spec.detached) orchestrator run — which mostly issues call: steps and
+	// waits — does not occupy a normal execution slot. Off by default (0/unset);
+	// set a positive MaxDetachedConcurrent on the agents that should host
+	// orchestrators. Negatives are clamped to off.
+	d := a.MaxDetachedConcurrent
+	if d < 0 {
+		d = 0
+	}
+	for i := 0; i < d; i++ {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			a.runLoop(ctx, runCtx, slot, wsBase, activeRuns, activeWorkDirs, true)
+		}(i)
+	}
+
 	wg.Wait()
 
 	// All slots are done: stop the heartbeat and GC loop and JOIN them before
@@ -361,7 +383,7 @@ func (a *Agent) Run(ctx context.Context) error {
 // (so it runs LAST): both active-set entries are retired by the defers
 // below it before the recover's failRun runs, so a panicking claim is never
 // left in either active set.
-func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string, activeRuns, activeWorkDirs *RunSet) {
+func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string, activeRuns, activeWorkDirs *RunSet, detached bool) {
 	for {
 		if claimCtx.Err() != nil {
 			return
@@ -386,9 +408,15 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				continue
 			}
 		}
-		resp, err := a.Client.Claim(claimCtx, a.ID, "30s", a.Labels)
+		var resp api.ClaimResponse
+		var err error
+		if detached {
+			resp, err = a.Client.ClaimDetached(claimCtx, a.ID, "30s", a.Labels)
+		} else {
+			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels)
+		}
 		if err != nil {
-			slog.Error("claim", "error", err, "slot", slot)
+			slog.Error("claim", "error", err, "slot", slot, "detached", detached)
 			select {
 			case <-claimCtx.Done():
 				return
@@ -400,6 +428,13 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			continue
 		}
 		workDir := claimWorkDir(wsBase, slot, resp.JobName)
+		if detached {
+			// Detached runs get a per-run workspace, decoupled from the slot-keyed
+			// working<slot>/<job> pool, so a detached claim never contends on a
+			// normal slot's workspace. It is removed after the run finishes below
+			// (detached runs have no cross-run workspace reuse).
+			workDir = detachedWorkDir(wsBase, resp.RunID)
+		}
 		// Protect workDir from the workspace GC BEFORE prepareWorkspace, not
 		// after: prepareWorkspace (and executeRun) populate this directory,
 		// and a job resuming after being idle past retention is exactly the
@@ -427,6 +462,12 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 					a.failRun(runCtx, resp.RunID, fmt.Sprintf("agent panic before run execution: %v", r))
 				}
 			}()
+			if detached {
+				// Per-run workspace: remove it once the run is done (after the
+				// active-set retires below, via LIFO), so detached dirs do not
+				// accumulate. Registered before the Remove defers so it runs after them.
+				defer os.RemoveAll(workDir)
+			}
 			defer activeWorkDirs.Remove(workDir)
 			defer activeRuns.Remove(resp.RunID)
 

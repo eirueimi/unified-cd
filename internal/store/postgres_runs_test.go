@@ -27,6 +27,32 @@ func TestPostgres_GetRun_NotFound(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrRunNotFound), "missing run should yield ErrRunNotFound, got %v", err)
 }
 
+// TestPostgres_CreateRun_PersistsDetached verifies CreateRun derives the
+// detached column from the run's spec (default false when absent).
+func TestPostgres_CreateRun_PersistsDetached(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	// runs.job_name has a FK to jobs; upsert the jobs first.
+	_, err := pg.UpsertJob(ctx, "orch", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	_, err = pg.UpsertJob(ctx, "normal", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+
+	run, err := pg.CreateRun(ctx, "orch", nil,
+		[]byte(`{"detached":true,"steps":[{"name":"s","call":{"job":"c"}}]}`), nil, nil, "")
+	require.NoError(t, err)
+	var detached bool
+	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT detached FROM runs WHERE id=$1`, run.ID).Scan(&detached))
+	assert.True(t, detached)
+
+	run2, err := pg.CreateRun(ctx, "normal", nil,
+		[]byte(`{"steps":[{"name":"s","run":"true"}]}`), nil, nil, "")
+	require.NoError(t, err)
+	require.NoError(t, pg.pool.QueryRow(ctx, `SELECT detached FROM runs WHERE id=$1`, run2.ID).Scan(&detached))
+	assert.False(t, detached, "a spec without detached defaults to false")
+}
+
 // TestPostgres_RunParentLinkage verifies ListChildRunIDs returns exactly the
 // direct children recorded via call: step reports (child_run_id).
 func TestPostgres_RunParentLinkage(t *testing.T) {

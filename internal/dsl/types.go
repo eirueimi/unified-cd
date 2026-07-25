@@ -38,6 +38,13 @@ type Spec struct {
 	// no podTemplate, no container: steps). Host agents only; the default
 	// (false) is the isolated pod model on both backends.
 	Native bool `yaml:"native,omitempty" json:"native,omitempty"`
+	// Detached marks this job's runs as lightweight orchestrators: they do not
+	// consume an agent's MaxConcurrent budget and are claimed from a separate
+	// MaxDetachedConcurrent pool, and get an independent per-run workspace on
+	// host agents. Intended for jobs that mostly issue call: steps and wait.
+	// Orthogonal to Native — a native host orchestrator may be detached. The
+	// json tag matters: the store persists the spec as JSON and re-reads this.
+	Detached bool `yaml:"detached,omitempty" json:"detached,omitempty"`
 	// Shell overrides the default interpreter argv for every step in this
 	// job that does not declare its own step-level shell:. Array-only (no
 	// scalar shorthand); the run: script is appended as the final argv

@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
@@ -31,14 +32,19 @@ type Config struct {
 	// Component 3). It defaults to the k8s-agent's own image, which ships
 	// /ucd-sh at its root (docker/k8s-agent.Dockerfile) — configurable so
 	// air-gapped registries can point it at a mirrored copy.
-	ShimImage           string                      `yaml:"shimImage"`
-	Kubeconfig          string                      `yaml:"kubeconfig"`
-	MaxConcurrent       int                         `yaml:"maxConcurrent"`
-	PoolIdleTimeout     string                      `yaml:"poolIdleTimeout,omitempty"`
-	PodStartTimeout     string                      `yaml:"podStartTimeout,omitempty"`
-	DrainTimeout        string                      `yaml:"drainTimeout,omitempty"`
-	PodTemplates        map[string]AgentPodTemplate `yaml:"podTemplates,omitempty"`
-	SidecarS3SecretName string                      `yaml:"sidecarS3SecretName,omitempty"`
+	ShimImage     string `yaml:"shimImage"`
+	Kubeconfig    string `yaml:"kubeconfig"`
+	MaxConcurrent int    `yaml:"maxConcurrent"`
+	// MaxDetachedConcurrent caps concurrent detached (spec.detached) run claims,
+	// separate from MaxConcurrent. 0/unset -> off; positive -> cap. Opt-in per
+	// agent (same convention as the host agent), so enabling detached never
+	// changes existing agents' behavior.
+	MaxDetachedConcurrent int                         `yaml:"maxDetachedConcurrent"`
+	PoolIdleTimeout       string                      `yaml:"poolIdleTimeout,omitempty"`
+	PodStartTimeout       string                      `yaml:"podStartTimeout,omitempty"`
+	DrainTimeout          string                      `yaml:"drainTimeout,omitempty"`
+	PodTemplates          map[string]AgentPodTemplate `yaml:"podTemplates,omitempty"`
+	SidecarS3SecretName   string                      `yaml:"sidecarS3SecretName,omitempty"`
 }
 
 // AgentPodTemplate is a Pod template defined in the agent configuration file.
@@ -164,6 +170,11 @@ func (c *Config) Validate() error {
 	}
 	if v := os.Getenv("UNIFIED_K8S_DRAIN_TIMEOUT"); v != "" {
 		c.DrainTimeout = v
+	}
+	if v := os.Getenv("UNIFIED_K8S_MAX_DETACHED"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxDetachedConcurrent = n
+		}
 	}
 	if c.Server == "" {
 		return fmt.Errorf("server is required")

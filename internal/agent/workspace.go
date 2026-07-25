@@ -71,6 +71,15 @@ func claimWorkDir(wsBase string, slot int, jobName string) string {
 	return filepath.Join(wsBase, fmt.Sprintf("working%d", slot), sanitizeJobName(jobName))
 }
 
+// detachedWorkDir is the per-run workspace directory for a detached run
+// (spec.detached), decoupled from the slot-keyed claimWorkDir pool so a detached
+// claim never contends on a normal execution slot's workspace. Keyed by run ID
+// (not job name) because detached runs get a fresh workspace per run and it is
+// removed when the run finishes — there is no cross-run reuse to preserve.
+func detachedWorkDir(wsBase, runID string) string {
+	return filepath.Join(wsBase, "detached", sanitizeJobName(runID))
+}
+
 // prepareWorkspace readies workDir for a claim running in mode
 // ("native"|"isolated"): resets the directory when cleaning is requested OR
 // the recorded mode flipped, falling back to a root cleanup container when a
