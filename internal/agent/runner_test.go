@@ -664,3 +664,29 @@ func TestLogPusher_DropMarker_ResetsOnlyOnDelivery(t *testing.T) {
 	require.Len(t, markerLines, 1, "expected exactly one dropped-lines marker line delivered")
 	assert.Contains(t, markerLines[0], "8 log line(s) dropped", "marker should report the accumulated count (5 + 3)")
 }
+
+// TestRunStep_PreservesBackslashRuns guards the Windows argv-escaping bug: a
+// native step script that spells out runs of backslashes (e.g. a sed
+// s|\\\\|\\|g) must reach bash intact. On Windows, passing the script as an
+// exec argv halves backslash runs (s|\\|\|g), corrupting the script; the fix
+// routes the script through an environment variable instead. On Unix there is
+// no such corruption, so this test also documents the expected behavior there.
+func TestRunStep_PreservesBackslashRuns(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	// printf %s of a single-quoted literal: bash echoes the argument verbatim.
+	exit, err := RunStep(t.Context(), `printf '%s' 's|\\\\|\\|g'`, &stdout, &stderr, nil, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	assert.Equal(t, `s|\\\\|\\|g`, stdout.String(), "backslash runs must survive (stderr: %s)", stderr.String())
+}
+
+// TestRunStepCapture_PreservesBackslashRuns mirrors
+// TestRunStep_PreservesBackslashRuns for the capture path: the returned stdout
+// string must contain the un-halved backslash runs.
+func TestRunStepCapture_PreservesBackslashRuns(t *testing.T) {
+	var stderr bytes.Buffer
+	stdout, exit, err := RunStepCapture(t.Context(), `printf '%s' 's|\\\\|\\|g'`, &stderr, nil, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	assert.Equal(t, `s|\\\\|\\|g`, stdout, "backslash runs must survive (stderr: %s)", stderr.String())
+}
