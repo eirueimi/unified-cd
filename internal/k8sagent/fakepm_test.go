@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -20,6 +21,7 @@ type fakePM struct {
 	deleted         []string
 	waitHadDeadline bool
 	waitCtxSeen     bool
+	waitDeadline    time.Time // the actual deadline WaitForPodRunning's ctx carried, when waitHadDeadline is true
 }
 
 func (f *fakePM) CreatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
@@ -31,8 +33,9 @@ func (f *fakePM) CreatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod, err
 }
 func (f *fakePM) WaitForPodRunning(ctx context.Context, _ string) error {
 	f.waitCtxSeen = true
-	_, hasDeadline := ctx.Deadline()
+	deadline, hasDeadline := ctx.Deadline()
 	f.waitHadDeadline = hasDeadline
+	f.waitDeadline = deadline
 	if f.waitBlock != nil {
 		select {
 		case <-f.waitBlock:
