@@ -137,6 +137,16 @@ func TestSecretPipelineTextInsideStringIsNotReference(t *testing.T) {
 	assert.Empty(t, names)
 }
 
+func TestSecretIndexAfterTemplateCommentIsRejected(t *testing.T) {
+	tpl := `{{/* " */}}{{ index .Secrets .Steps.pick.Outputs.name }}`
+
+	_, err := ResolveSecretNameParams(tpl, nil)
+	require.ErrorContains(t, err, "dynamic secret name must be resolved from a parameter before execution")
+
+	_, err = ReferencedSecretNames(tpl)
+	require.ErrorContains(t, err, "dynamic secret name must be resolved from a parameter before execution")
+}
+
 func TestResolveSecretNameParamsInSpec(t *testing.T) {
 	spec := Spec{
 		Steps: []StepEntry{

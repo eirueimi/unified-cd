@@ -226,6 +226,23 @@ func templatePositionQuoted(action string, position int) bool {
 }
 
 func templateActionEnd(tpl string, start int) (int, bool) {
+	commentStart := skipTemplateWhitespace(tpl, start)
+	if commentStart < len(tpl) && tpl[commentStart] == '-' {
+		commentStart = skipTemplateWhitespace(tpl, commentStart+1)
+	}
+	if strings.HasPrefix(tpl[commentStart:], "/*") {
+		commentEnd := strings.Index(tpl[commentStart+len("/*"):], "*/")
+		if commentEnd < 0 {
+			return 0, false
+		}
+		commentEnd += commentStart + len("/*")
+		close := strings.Index(tpl[commentEnd+len("*/"):], "}}")
+		if close < 0 {
+			return 0, false
+		}
+		return commentEnd + len("*/") + close, true
+	}
+
 	var quote byte
 	for i := start; i < len(tpl); i++ {
 		char := tpl[i]
