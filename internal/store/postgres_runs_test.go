@@ -33,6 +33,12 @@ func TestPostgres_CreateRun_PersistsDetached(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
+	// runs.job_name has a FK to jobs; upsert the jobs first.
+	_, err := pg.UpsertJob(ctx, "orch", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	_, err = pg.UpsertJob(ctx, "normal", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+
 	run, err := pg.CreateRun(ctx, "orch", nil,
 		[]byte(`{"detached":true,"steps":[{"name":"s","call":{"job":"c"}}]}`), nil, nil, "")
 	require.NoError(t, err)

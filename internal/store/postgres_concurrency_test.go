@@ -15,6 +15,12 @@ func TestPostgres_ClaimNextRun_DetachedFilter(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
+	// runs.job_name has a FK to jobs; upsert the jobs first.
+	_, err := pg.UpsertJob(ctx, "n", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	_, err = pg.UpsertJob(ctx, "d", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+
 	normal, err := pg.CreateRun(ctx, "n", nil, []byte(`{"steps":[{"name":"s","run":"true"}]}`), nil, nil, "")
 	require.NoError(t, err)
 	det, err := pg.CreateRun(ctx, "d", nil, []byte(`{"detached":true,"steps":[{"name":"s","call":{"job":"c"}}]}`), nil, nil, "")
