@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
@@ -10,7 +12,15 @@ import (
 
 func prepareRunSpec(specJSON []byte, params map[string]string) ([]byte, error) {
 	var root map[string]any
-	if err := json.Unmarshal(specJSON, &root); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(specJSON))
+	decoder.UseNumber()
+	if err := decoder.Decode(&root); err != nil {
+		return nil, fmt.Errorf("decode stored run spec: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("decode stored run spec: invalid trailing JSON value")
+		}
 		return nil, fmt.Errorf("decode stored run spec: %w", err)
 	}
 	if root == nil {

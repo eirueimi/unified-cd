@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -78,6 +79,32 @@ func TestPrepareRunSpecPreservesExistingGoStyleKeySpelling(t *testing.T) {
 	assert.Contains(t, snapshot, "Steps")
 	assert.NotContains(t, snapshot, "steps")
 	assert.Contains(t, snapshot, "Finally")
+	steps, ok := snapshot["Steps"].([]any)
+	require.True(t, ok)
+	step, ok := steps[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, `{{ index .Secrets "deploy-token" }}`, step["Run"])
+	env, ok := step["Env"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, `{{ index .Secrets "deploy-token" }}`, env["TOKEN"])
+}
+
+func TestPrepareRunSpecPreservesUnknownLargeInteger(t *testing.T) {
+	specJSON := []byte(`{
+		"steps":[],
+		"x-extension":{"large-integer":9007199254740993}
+	}`)
+
+	got, err := prepareRunSpec(specJSON, nil)
+
+	require.NoError(t, err)
+	decoder := json.NewDecoder(bytes.NewReader(got))
+	decoder.UseNumber()
+	var snapshot map[string]any
+	require.NoError(t, decoder.Decode(&snapshot))
+	extension, ok := snapshot["x-extension"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, json.Number("9007199254740993"), extension["large-integer"])
 }
 
 func TestPrepareRunSpecRejectsWrongStepsContainerType(t *testing.T) {
