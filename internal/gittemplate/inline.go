@@ -153,6 +153,47 @@ func rewriteMap(m map[string]string, usesName string, innerNames map[string]bool
 	return out
 }
 
+// cloneSpecForSecretNameResolution isolates the executable fields that secret
+// name resolution mutates. expandUsesStep receives a Spec by value, but its
+// step slices and environment maps still share backing storage with the caller.
+func cloneSpecForSecretNameResolution(spec dsl.Spec) dsl.Spec {
+	spec.Steps = cloneEntriesForSecretNameResolution(spec.Steps)
+	spec.Finally = cloneEntriesForSecretNameResolution(spec.Finally)
+	return spec
+}
+
+func cloneEntriesForSecretNameResolution(entries []dsl.StepEntry) []dsl.StepEntry {
+	if entries == nil {
+		return nil
+	}
+	cloned := make([]dsl.StepEntry, len(entries))
+	for i, entry := range entries {
+		clonedEntry := entry
+		clonedEntry.Env = cloneStringMap(entry.Env)
+		if entry.Parallel != nil {
+			clonedEntry.Parallel = make([]dsl.Step, len(entry.Parallel))
+			for j, step := range entry.Parallel {
+				clonedStep := step
+				clonedStep.Env = cloneStringMap(step.Env)
+				clonedEntry.Parallel[j] = clonedStep
+			}
+		}
+		cloned[i] = clonedEntry
+	}
+	return cloned
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 // renameInnerEntry transforms one template step entry (a concrete step or a
 // parallel block) into its inlined, uses-prefixed form: it renames the
 // step(s), rewrites .Params./.Steps. references via rewriteRefs, combines
@@ -466,6 +507,7 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 		}
 		inputsOutputs[k] = v
 	}
+	tplSpec = cloneSpecForSecretNameResolution(tplSpec)
 	if err := dsl.ResolveSecretNameParamsInSpec(&tplSpec, inputsOutputs); err != nil {
 		return nil, podContribution{}, fmt.Errorf(
 			"uses %q: resolve secret name parameters: %w",

@@ -490,3 +490,43 @@ func TestExpandUsesStepRejectsDynamicSecretNameReference(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dynamic secret name must be resolved from a parameter before execution")
 }
+
+func TestExpandUsesStepDoesNotMutateTemplateWhenResolvingSecretNameInput(t *testing.T) {
+	tpl := dsl.Spec{
+		Params: dsl.Params{Inputs: []dsl.Input{{
+			Name: "token_secret",
+			Type: "string",
+		}}},
+		Steps: []dsl.StepEntry{{
+			Name: "checkout",
+			Env: map[string]string{
+				"GIT_TOKEN": `{{ index .Secrets .Params.token_secret }}`,
+			},
+			Run: "true",
+		}},
+	}
+
+	first, err := ExpandUsesStep(
+		"first",
+		map[string]string{"token_secret": "first-token"},
+		tpl,
+		nil,
+		"",
+		"",
+	)
+	require.NoError(t, err)
+
+	second, err := ExpandUsesStep(
+		"second",
+		map[string]string{"token_secret": "second-token"},
+		tpl,
+		nil,
+		"",
+		"",
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, `{{ index .Secrets "first-token" }}`, first[1].Env["GIT_TOKEN"])
+	assert.Equal(t, `{{ index .Secrets "second-token" }}`, second[1].Env["GIT_TOKEN"])
+	assert.Equal(t, `{{ index .Secrets .Params.token_secret }}`, tpl.Steps[0].Env["GIT_TOKEN"])
+}
