@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -14,6 +15,11 @@ import (
 // completes. It is backend-agnostic (used by both the host agent and the k8s
 // agent) so that where the child actually runs is decided by the child job's
 // own scheduling, not by which agent executed the call.
+//
+// How long it waits is bounded solely by ctx: the step's timeoutMinutes when
+// set (applied to stepCtx by the orchestrator), or unbounded when unset — a
+// call with no timeoutMinutes waits until the child run reaches a terminal
+// state or the run is cancelled.
 //
 // Returns the child Run's outputs and the child Run's ID (so the caller can
 // report it on the step's terminal StepReport for caller→child linking in the
@@ -59,10 +65,8 @@ func ExecuteCallStep(ctx context.Context, client *Client, agentID, runID string,
 		ChildRunID: childRun.ID, CallJobName: step.Call.Job,
 	})
 
-	const maxWait = 30 * time.Minute
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	deadline := time.Now().Add(maxWait)
 
 	for {
 		run, err := client.GetRun(ctx, childRun.ID)
@@ -82,13 +86,20 @@ func ExecuteCallStep(ctx context.Context, client *Client, agentID, runID string,
 			}
 		}
 
-		if time.Now().After(deadline) {
-			return nil, childRun.ID, fmt.Errorf("call: child run %s timed out after %s", childRun.ID, maxWait)
-		}
+		// The only wait bound is ctx. It carries the step's timeoutMinutes when
+		// set (orchestrator.go wraps stepCtx with that deadline); when unset it
+		// has no deadline, so the call waits until the child reaches a terminal
+		// state. There is deliberately no separate hardcoded cap here. On a
+		// timeout or run cancellation the child is not stopped from here — the
+		// calling agent does not own the child run — but the controller's
+		// parent-finish cascade (cancelDescendantRuns in api_agent.go) cancels
+		// it once the parent run finalizes Failed/Cancelled.
 		select {
 		case <-ctx.Done():
-			// child run orphaned; log for visibility
-			slog.Warn("call: parent context cancelled, child run may be orphaned", "childRunId", childRun.ID)
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, childRun.ID, fmt.Errorf("call: child run %s did not complete within the step timeout", childRun.ID)
+			}
+			slog.Warn("call: context done before child finished; child run will be cancelled once the parent run finalizes", "childRunId", childRun.ID, "error", ctx.Err())
 			return nil, childRun.ID, ctx.Err()
 		case <-ticker.C:
 		}

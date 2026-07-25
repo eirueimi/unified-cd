@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -96,6 +97,56 @@ func terminalCallReport(reports []api.StepReportRequest) *api.StepReportRequest 
 		}
 	}
 	return nil
+}
+
+// TestExecuteCallStep_TimeoutHonorsContext verifies that when the step context
+// deadline fires before the child run completes, ExecuteCallStep aborts at the
+// ctx deadline (not the old hardcoded 30-minute cap) and returns a clear,
+// call-specific timeout error while preserving the child run ID for the
+// caller->child link. The step's timeoutMinutes reaches ExecuteCallStep as the
+// ctx deadline; when timeoutMinutes is unset the ctx has no deadline and the
+// call waits indefinitely.
+func TestExecuteCallStep_TimeoutHonorsContext(t *testing.T) {
+	const agentID = "call-timeout-agent"
+	const parentRunID = "run-call-timeout"
+	const childRunID = "child-forever-running"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+parentRunID+"/children", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.Run{ID: childRunID, Status: api.RunRunning}) //nolint:errcheck
+	})
+	// The child never finishes: every poll reports Running.
+	mux.HandleFunc("GET /api/v1/runs/"+childRunID, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.Run{ID: childRunID, Status: api.RunRunning}) //nolint:errcheck
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := NewClient(srv.URL, "tok")
+	step := api.ClaimStep{
+		Index: 0, StageIndex: 0, Name: "call-child",
+		Call: &api.ClaimCallStep{Job: "child-job"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	outputs, gotChildID, err := ExecuteCallStep(ctx, client, agentID, parentRunID, step, dsl.TemplateData{})
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.Nil(t, outputs)
+	assert.Equal(t, childRunID, gotChildID, "childRunID must be preserved on timeout for the caller->child link")
+	assert.Less(t, elapsed, 20*time.Second, "must abort at the ctx deadline, not the old 30-minute cap")
+	assert.Contains(t, err.Error(), "did not complete within the step timeout",
+		"a deadline-exceeded call must return a clear, call-specific timeout message")
 }
 
 // TestExecuteRun_CallStep_ParentTerminal_NoPoll verifies that when the parent
