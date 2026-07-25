@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
@@ -57,6 +58,34 @@ func TestAPI_TriggerRun_ExpandsAgentSelectorParams(t *testing.T) {
 	claimed2, err := pg.ClaimNextRun(t.Context(), "agent-with-label", []string{"pool:build"})
 	require.NoError(t, err)
 	require.NotNil(t, claimed2, "agent with the expanded label must claim the run")
+}
+
+func TestAPI_TriggerRunStoresResolvedSecretNameParameter(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", []byte(`{
+"params":{"inputs":[{"name":"token_secret","type":"string"}]},
+"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Params.token_secret }}"},"run":"true"}]
+}`))
+	require.NoError(t, err)
+	body, err := json.Marshal(api.TriggerRunRequest{
+		JobName: "deploy",
+		Params:  map[string]string{"token_secret": "gitlab-token"},
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var run api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &run))
+	raw, err := pg.GetRunSpec(t.Context(), run.ID)
+	require.NoError(t, err)
+	var snapshot dsl.Spec
+	require.NoError(t, json.Unmarshal(raw, &snapshot))
+	require.Len(t, snapshot.Steps, 1)
+	assert.Equal(t, `{{ index .Secrets "gitlab-token" }}`, snapshot.Steps[0].Env["TOKEN"])
 }
 
 func TestAPI_TriggerRun_UnknownJob(t *testing.T) {

@@ -64,6 +64,10 @@ func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams
 	if err != nil {
 		return nil, http.StatusBadRequest, "agentSelector: " + err.Error()
 	}
+	runSpec, err := prepareRunSpec(spec, params)
+	if err != nil {
+		return nil, http.StatusBadRequest, err.Error()
+	}
 	// Infer the capability a run of this spec needs from an agent (native /
 	// container / pod). A podTemplate that uses features the host agent's
 	// claim pod cannot honor (named template, override, pod-level spec beyond
@@ -76,7 +80,7 @@ func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams
 	// "container" and is left to route by the author's agentSelector, so it
 	// can run on a standard agent too.
 	requiredCaps := dsl.RequiredCaps(spec)
-	run, err := s.store.CreateRun(ctx, job.Name, params, job.Spec, agentSelector, requiredCaps, triggeredBy)
+	run, err := s.store.CreateRun(ctx, job.Name, params, runSpec, agentSelector, requiredCaps, triggeredBy)
 	if err != nil {
 		return nil, http.StatusInternalServerError, "create run: " + err.Error()
 	}
@@ -145,8 +149,13 @@ func (s *Server) handleReplayRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	runSpec, err := prepareRunSpec(spec, params)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	requiredCaps := dsl.RequiredCaps(spec)
-	run, err := s.store.CreateRun(r.Context(), orig.JobName, params, specJSON, agentSelector, requiredCaps, "replay:"+id)
+	run, err := s.store.CreateRun(r.Context(), orig.JobName, params, runSpec, agentSelector, requiredCaps, "replay:"+id)
 	if err != nil {
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
 		return

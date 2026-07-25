@@ -2,11 +2,13 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,6 +38,14 @@ type mockScheduleFireStore struct {
 	updated               map[string]time.Time
 	createErr             error
 	jobs                  map[string]*api.Job // optional; GetJob returns "not found" when absent
+}
+
+func assertStoredScheduleSpec(t *testing.T, want, got []byte) {
+	t.Helper()
+	var wantSpec, gotSpec dsl.Spec
+	require.NoError(t, json.Unmarshal(want, &wantSpec))
+	require.NoError(t, json.Unmarshal(got, &gotSpec))
+	assert.Equal(t, wantSpec, gotSpec)
 }
 
 func (m *mockScheduleFireStore) ListSchedules(_ context.Context) ([]store.Schedule, error) {
@@ -96,7 +106,7 @@ func TestCheckAndFireSchedules_FiresWhenDue(t *testing.T) {
 	assert.Equal(t, "build", m.created[0].JobName)
 	assert.Equal(t, "schedule:daily", m.created[0].TriggeredBy)
 	require.Len(t, m.createdSpecs, 1)
-	assert.Equal(t, jobSpec, m.createdSpecs[0], "the run's spec must be the job's spec, not an empty {}")
+	assertStoredScheduleSpec(t, jobSpec, m.createdSpecs[0])
 	require.NotNil(t, m.updated["daily"])
 }
 
@@ -211,7 +221,7 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		require.Len(t, m.createdRequiredCaps, 1)
 		assert.Equal(t, []string{"native"}, m.createdRequiredCaps[0])
 		require.Len(t, m.createdSpecs, 1)
-		assert.Equal(t, jobSpec, m.createdSpecs[0])
+		assertStoredScheduleSpec(t, jobSpec, m.createdSpecs[0])
 	})
 
 	t.Run("kubernetes-only podTemplate infers pod capability", func(t *testing.T) {
@@ -232,7 +242,7 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		require.Len(t, m.createdRequiredCaps, 1)
 		assert.Equal(t, []string{"pod"}, m.createdRequiredCaps[0])
 		require.Len(t, m.createdSpecs, 1)
-		assert.Equal(t, podSpec, m.createdSpecs[0])
+		assertStoredScheduleSpec(t, podSpec, m.createdSpecs[0])
 	})
 
 	t.Run("plain job infers container capability", func(t *testing.T) {
@@ -252,7 +262,7 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		require.Len(t, m.createdRequiredCaps, 1)
 		assert.Equal(t, []string{"container"}, m.createdRequiredCaps[0])
 		require.Len(t, m.createdSpecs, 1)
-		assert.Equal(t, jobSpec, m.createdSpecs[0])
+		assertStoredScheduleSpec(t, jobSpec, m.createdSpecs[0])
 	})
 
 	t.Run("job spec unavailable skips firing entirely", func(t *testing.T) {

@@ -262,6 +262,12 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	runSpec, err := prepareRunSpec(jobSpec, params)
+	if err != nil {
+		s.countWebhookEvent(name, "error")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	// Infer the capability a run of this spec needs from an agent (native /
 	// container / pod), mirroring handleTriggerRun. A podTemplate that uses
 	// features the host agent's claim pod cannot honor can only run on
@@ -271,7 +277,7 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	requiredCaps := dsl.RequiredCaps(jobSpec)
 
 	// Create the Run.
-	run, err := s.store.CreateRun(r.Context(), job.Name, params, job.Spec, agentSelector, requiredCaps, "webhook:"+name)
+	run, err := s.store.CreateRun(r.Context(), job.Name, params, runSpec, agentSelector, requiredCaps, "webhook:"+name)
 	if err != nil {
 		s.countWebhookEvent(name, "error")
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
