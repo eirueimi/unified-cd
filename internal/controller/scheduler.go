@@ -148,6 +148,7 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 			}
 			var requiredCaps []string
 			var agentSelector []string
+			runSpec := job.Spec
 			if serr == nil {
 				requiredCaps = dsl.RequiredCaps(jobSpec)
 				var selErr error
@@ -179,8 +180,13 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 						"schedule", sc.Name, "element", bad)
 					continue // Do not update last_fired_at — warn again next tick.
 				}
+				runSpec, err = prepareRunSpec(job.Spec, params)
+				if err != nil {
+					slog.Warn("checkAndFireSchedules: secret name resolution failed", "schedule", sc.Name, "error", err)
+					continue
+				}
 			}
-			_, err := st.CreateRun(ctx, sc.JobName, params, job.Spec, agentSelector, requiredCaps, "schedule:"+sc.Name)
+			_, err := st.CreateRun(ctx, sc.JobName, params, runSpec, agentSelector, requiredCaps, "schedule:"+sc.Name)
 			if err != nil {
 				slog.Warn("checkAndFireSchedules: failed to create Run", "schedule", sc.Name, "error", err)
 				continue // Do not update last_fired_at — allow retry on the next tick.

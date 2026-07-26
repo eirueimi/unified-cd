@@ -392,3 +392,141 @@ func TestExpandUsesStep_ParallelSteps_ShellSurvivesAndStamps(t *testing.T) {
 	assert.Equal(t, []string{"python3", "-c"}, par.Parallel[0].Shell, "parallel step's own shell survives")
 	assert.Equal(t, []string{"bash", "-lc"}, par.Parallel[1].Shell, "template-level shell stamped onto undeclared parallel step")
 }
+
+func TestExpandUsesStepResolvesSecretNameInput(t *testing.T) {
+	tpl := dsl.Spec{
+		Params: dsl.Params{Inputs: []dsl.Input{{
+			Name: "token_secret",
+			Type: "string",
+		}}},
+		Steps: []dsl.StepEntry{{
+			Name: "checkout",
+			Env: map[string]string{
+				"GIT_TOKEN": `{{ index .Secrets .Params.token_secret }}`,
+			},
+			Run: "true",
+		}},
+	}
+
+	steps, err := ExpandUsesStep(
+		"checkout",
+		map[string]string{"token_secret": "gitlab-token"},
+		tpl,
+		nil,
+		"",
+		"",
+	)
+	require.NoError(t, err)
+	require.Len(t, steps, 3)
+	assert.Equal(
+		t,
+		`{{ index .Secrets "gitlab-token" }}`,
+		steps[1].Env["GIT_TOKEN"],
+	)
+}
+
+func TestExpandUsesStepResolvesSecretNameInputDefaultsAndRejectsDynamicValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   dsl.Input
+		with    map[string]string
+		want    string
+		wantErr string
+	}{
+		{
+			name:  "template default",
+			input: dsl.Input{Name: "token_secret", Type: "string", Default: "github-token"},
+			want:  `{{ index .Secrets "github-token" }}`,
+		},
+		{
+			name:  "empty optional default",
+			input: dsl.Input{Name: "token_secret", Type: "string", Default: ""},
+			want:  `{{ index .Secrets "" }}`,
+		},
+		{
+			name:    "templated with value",
+			input:   dsl.Input{Name: "token_secret", Type: "string"},
+			with:    map[string]string{"token_secret": "{{ .Params.outer_secret }}"},
+			wantErr: `secret name parameter "token_secret" must be a literal secret name`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tpl := dsl.Spec{
+				Params: dsl.Params{Inputs: []dsl.Input{tt.input}},
+				Steps: []dsl.StepEntry{{
+					Name: "checkout",
+					Env: map[string]string{
+						"GIT_TOKEN": `{{ index .Secrets .Params.token_secret }}`,
+					},
+					Run: "true",
+				}},
+			}
+
+			steps, err := ExpandUsesStep("checkout", tt.with, tpl, nil, "", "")
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, steps, 3)
+			assert.Equal(t, tt.want, steps[1].Env["GIT_TOKEN"])
+		})
+	}
+}
+
+func TestExpandUsesStepRejectsDynamicSecretNameReference(t *testing.T) {
+	tpl := dsl.Spec{Steps: []dsl.StepEntry{{
+		Name: "checkout",
+		Env: map[string]string{
+			"GIT_TOKEN": `{{ index .Secrets .Steps.pick.Outputs.name }}`,
+		},
+		Run: "true",
+	}}}
+
+	_, err := ExpandUsesStep("checkout", nil, tpl, nil, "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dynamic secret name must be resolved from a parameter before execution")
+}
+
+func TestExpandUsesStepDoesNotMutateTemplateWhenResolvingSecretNameInput(t *testing.T) {
+	tpl := dsl.Spec{
+		Params: dsl.Params{Inputs: []dsl.Input{{
+			Name: "token_secret",
+			Type: "string",
+		}}},
+		Steps: []dsl.StepEntry{{
+			Name: "checkout",
+			Env: map[string]string{
+				"GIT_TOKEN": `{{ index .Secrets .Params.token_secret }}`,
+			},
+			Run: "true",
+		}},
+	}
+
+	first, err := ExpandUsesStep(
+		"first",
+		map[string]string{"token_secret": "first-token"},
+		tpl,
+		nil,
+		"",
+		"",
+	)
+	require.NoError(t, err)
+
+	second, err := ExpandUsesStep(
+		"second",
+		map[string]string{"token_secret": "second-token"},
+		tpl,
+		nil,
+		"",
+		"",
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, `{{ index .Secrets "first-token" }}`, first[1].Env["GIT_TOKEN"])
+	assert.Equal(t, `{{ index .Secrets "second-token" }}`, second[1].Env["GIT_TOKEN"])
+	assert.Equal(t, `{{ index .Secrets .Params.token_secret }}`, tpl.Steps[0].Env["GIT_TOKEN"])
+}

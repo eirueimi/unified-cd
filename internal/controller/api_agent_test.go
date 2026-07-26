@@ -316,7 +316,12 @@ func TestAgentAPI_ClaimResponse_CollectsSecretsNeeded(t *testing.T) {
 	specJSON := []byte(`{
 		"steps":[
 			{"name":"deploy","env":{"AWS_KEY":"{{ secrets.AWS_ACCESS_KEY_ID }}"},"run":"./deploy.sh"},
-			{"name":"test","run":"echo {{ secrets.DB_PASS }}"}
+			{"name":"test","run":"echo {{ secrets.DB_PASS }}"},
+			{
+				"name":"checkout",
+				"env":{"GIT_TOKEN":"{{ index .Secrets \"gitlab-token\" }}"},
+				"run":"git clone https://example.invalid/repo.git"
+			}
 		]
 	}`)
 	_, _ = pg.UpsertJob(t.Context(), "s", "unified-cd/v1", specJSON)
@@ -332,9 +337,50 @@ func TestAgentAPI_ClaimResponse_CollectsSecretsNeeded(t *testing.T) {
 
 	var got api.ClaimResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	assert.ElementsMatch(t, []string{"AWS_ACCESS_KEY_ID", "DB_PASS"}, got.SecretsNeeded)
+	assert.ElementsMatch(t, []string{"AWS_ACCESS_KEY_ID", "DB_PASS", "gitlab-token"}, got.SecretsNeeded)
 	require.NotNil(t, got.Stages[0].Step)
 	assert.Equal(t, `{{ secrets.AWS_ACCESS_KEY_ID }}`, got.Stages[0].Step.Env["AWS_KEY"])
+}
+
+func TestBuildClaimResponse_RejectsDynamicSecretNamesWithFieldContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		entry   dsl.StepEntry
+		context string
+	}{
+		{
+			name: "run",
+			entry: dsl.StepEntry{
+				Name: "deploy",
+				Run:  `echo {{ index .Secrets .Steps.pick.Outputs.name }}`,
+			},
+			context: `step "deploy" run`,
+		},
+		{
+			name: "env",
+			entry: dsl.StepEntry{
+				Name: "deploy",
+				Env: map[string]string{
+					"TOKEN": `{{ index .Secrets .Steps.pick.Outputs.name }}`,
+				},
+			},
+			context: `step "deploy" env "TOKEN"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			specJSON, err := json.Marshal(dsl.Spec{Steps: []dsl.StepEntry{tt.entry}})
+			require.NoError(t, err)
+
+			_, err = buildClaimResponse(&store.ClaimedRun{
+				Run:  api.Run{ID: "dynamic-secret-run", JobName: "dynamic-secret-job"},
+				Spec: specJSON,
+			})
+			require.ErrorContains(t, err, tt.context)
+			assert.ErrorContains(t, err, "dynamic secret name must be resolved from a parameter before execution")
+		})
+	}
 }
 
 // TestAgentAPI_Claim_FailsRunWhenBuildClaimResponseErrors verifies the fix for
@@ -1282,6 +1328,40 @@ func TestAgentAPI_CreateChildRun_OwnedParent(t *testing.T) {
 	assert.Equal(t, "child-job", child.JobName)
 	assert.NotEqual(t, parent.ID, child.ID)
 	assert.Equal(t, "agent:a1", child.TriggeredBy, "child run must be attributed to the spawning agent")
+}
+
+func TestAgentAPI_CreateChildRunStoresResolvedSecretNameParameter(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "parent-job", "unified-cd/v1", []byte(`{}`))
+	_, err := pg.UpsertJob(t.Context(), "child-job", "unified-cd/v1", []byte(`{
+		"params":{"inputs":[{"name":"token_secret","type":"string"}]},
+		"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Params.token_secret }}"},"run":"true"}]
+	}`))
+	require.NoError(t, err)
+	parent, err := pg.CreateRun(t.Context(), "parent-job", nil, []byte(`{}`), nil, nil, "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "a1", parent.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, err := json.Marshal(api.TriggerRunRequest{
+		JobName: "child-job",
+		Params:  map[string]string{"token_secret": "child-token"},
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/runs/"+parent.ID+"/children", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var child api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &child))
+	raw, err := pg.GetRunSpec(t.Context(), child.ID)
+	require.NoError(t, err)
+	var snapshot dsl.Spec
+	require.NoError(t, json.Unmarshal(raw, &snapshot))
+	require.Len(t, snapshot.Steps, 1)
+	assert.Equal(t, `{{ index .Secrets "child-token" }}`, snapshot.Steps[0].Env["TOKEN"])
 }
 
 // TestAgentAPI_CreateChildRun_NotOwnedParent verifies an agent cannot spawn a

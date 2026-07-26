@@ -755,10 +755,11 @@ func TestAgent_RunLoop_PreparePanicIsRecoveredAndFailsRun(t *testing.T) {
 	defer cancelClaim()
 
 	a := &Agent{
-		ID:            "a5",
-		Client:        NewClient(srv.URL, "tok"),
-		MaxConcurrent: 1,
-		WorkspaceDir:  wsDir,
+		ID:                    "a5",
+		Client:                NewClient(srv.URL, "tok"),
+		MaxConcurrent:         1,
+		MaxDetachedConcurrent: -1,
+		WorkspaceDir:          wsDir,
 	}
 
 	done := make(chan error, 1)

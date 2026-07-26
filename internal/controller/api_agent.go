@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -244,8 +243,15 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 	secretsNeeded := map[string]struct{}{}
 	stepIdx := 0 // flat step counter across steps and finally
 
-	resp.Stages = buildStages(spec.Steps, &stepIdx, secretsNeeded, spec.Shell)
-	resp.Finally = buildStages(spec.Finally, &stepIdx, secretsNeeded, spec.Shell)
+	var err error
+	resp.Stages, err = buildStages(spec.Steps, &stepIdx, secretsNeeded, spec.Shell)
+	if err != nil {
+		return api.ClaimResponse{}, err
+	}
+	resp.Finally, err = buildStages(spec.Finally, &stepIdx, secretsNeeded, spec.Shell)
+	if err != nil {
+		return api.ClaimResponse{}, err
+	}
 
 	for name := range secretsNeeded {
 		resp.SecretsNeeded = append(resp.SecretsNeeded, name)
@@ -276,8 +282,12 @@ func (s *Server) secretNamesForRun(ctx context.Context, runID string) (map[strin
 	}
 	needed := map[string]struct{}{}
 	stepIdx := 0 // flat step counter across steps and finally, mirroring buildClaimResponse
-	_ = buildStages(spec.Steps, &stepIdx, needed, spec.Shell)
-	_ = buildStages(spec.Finally, &stepIdx, needed, spec.Shell)
+	if _, err := buildStages(spec.Steps, &stepIdx, needed, spec.Shell); err != nil {
+		return nil, err
+	}
+	if _, err := buildStages(spec.Finally, &stepIdx, needed, spec.Shell); err != nil {
+		return nil, err
+	}
 	return needed, nil
 }
 
@@ -314,7 +324,7 @@ func rejectPreMigrationRunsIn(jobName string, entries []dsl.StepEntry) error {
 // the job-level spec.shell default (may be nil); it applies identically to
 // top-level steps, parallel: sub-steps, and finally: steps — buildStages is
 // used for all three (see buildClaimResponse).
-func buildStages(entries []dsl.StepEntry, stepIdx *int, secretsNeeded map[string]struct{}, jobShell []string) []api.ClaimStage {
+func buildStages(entries []dsl.StepEntry, stepIdx *int, secretsNeeded map[string]struct{}, jobShell []string) ([]api.ClaimStage, error) {
 	stages := make([]api.ClaimStage, 0, len(entries))
 	for stageIdx, entry := range entries {
 		if len(entry.Parallel) > 0 {
@@ -322,24 +332,32 @@ func buildStages(entries []dsl.StepEntry, stepIdx *int, secretsNeeded map[string
 			for _, st := range entry.Parallel {
 				cs := buildOneClaimStep(*stepIdx, stageIdx, stepToStepEntry(st), jobShell)
 				stage.Parallel = append(stage.Parallel, cs)
-				collectSecretNames(st.Run, secretsNeeded)
-				for _, v := range st.Env {
-					collectSecretNames(v, secretsNeeded)
+				if err := collectSecretNames(st.Run, secretsNeeded); err != nil {
+					return stages, fmt.Errorf("step %q run: %w", st.Name, err)
+				}
+				for key, value := range st.Env {
+					if err := collectSecretNames(value, secretsNeeded); err != nil {
+						return stages, fmt.Errorf("step %q env %q: %w", st.Name, key, err)
+					}
 				}
 				*stepIdx++
 			}
 			stages = append(stages, stage)
 		} else {
 			cs := buildOneClaimStep(*stepIdx, stageIdx, entry, jobShell)
-			stages = append(stages, api.ClaimStage{Step: &cs})
-			collectSecretNames(entry.Run, secretsNeeded)
-			for _, v := range entry.Env {
-				collectSecretNames(v, secretsNeeded)
+			if err := collectSecretNames(entry.Run, secretsNeeded); err != nil {
+				return stages, fmt.Errorf("step %q run: %w", entry.Name, err)
 			}
+			for key, value := range entry.Env {
+				if err := collectSecretNames(value, secretsNeeded); err != nil {
+					return stages, fmt.Errorf("step %q env %q: %w", entry.Name, key, err)
+				}
+			}
+			stages = append(stages, api.ClaimStage{Step: &cs})
 			*stepIdx++
 		}
 	}
-	return stages
+	return stages, nil
 }
 
 // stepToStepEntry converts a dsl.Step (used inside parallel: blocks) into the
@@ -442,35 +460,17 @@ func resolveShell(stepShell, jobShell []string) []string {
 	return nil
 }
 
-// collectSecretNames scans a template string for secret name references and
-// adds each name to seen. It recognises both "secrets.NAME" (normalised form
-// written by users) and ".Secrets.NAME" (direct dot-access form that also
-// appears in examples). Names may contain letters, digits, underscores, and
-// hyphens.
-func collectSecretNames(tpl string, seen map[string]struct{}) {
-	for _, prefix := range []string{"secrets.", ".Secrets."} {
-		s := tpl
-		for {
-			idx := strings.Index(s, prefix)
-			if idx < 0 {
-				break
-			}
-			s = s[idx+len(prefix):]
-			end := 0
-			for end < len(s) && (s[end] == '_' || s[end] == '-' || (s[end] >= 'a' && s[end] <= 'z') ||
-				(s[end] >= 'A' && s[end] <= 'Z') || (s[end] >= '0' && s[end] <= '9')) {
-				end++
-			}
-			if end > 0 {
-				seen[s[:end]] = struct{}{}
-			}
-			if end < len(s) {
-				s = s[end:]
-			} else {
-				break
-			}
-		}
+// collectSecretNames adds each statically named secret reference in tpl to
+// seen and rejects references whose names cannot be known before execution.
+func collectSecretNames(tpl string, seen map[string]struct{}) error {
+	names, err := dsl.ReferencedSecretNames(tpl)
+	if err != nil {
+		return err
 	}
+	for _, name := range names {
+		seen[name] = struct{}{}
+	}
+	return nil
 }
 
 // handleAgentStepReport records step execution status reported by an agent.

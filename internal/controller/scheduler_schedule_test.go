@@ -2,11 +2,13 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,6 +38,14 @@ type mockScheduleFireStore struct {
 	updated               map[string]time.Time
 	createErr             error
 	jobs                  map[string]*api.Job // optional; GetJob returns "not found" when absent
+}
+
+func assertStoredScheduleSpec(t *testing.T, want, got []byte) {
+	t.Helper()
+	var wantSpec, gotSpec dsl.Spec
+	require.NoError(t, json.Unmarshal(want, &wantSpec))
+	require.NoError(t, json.Unmarshal(got, &gotSpec))
+	assert.Equal(t, wantSpec, gotSpec)
 }
 
 func (m *mockScheduleFireStore) ListSchedules(_ context.Context) ([]store.Schedule, error) {
@@ -96,7 +106,7 @@ func TestCheckAndFireSchedules_FiresWhenDue(t *testing.T) {
 	assert.Equal(t, "build", m.created[0].JobName)
 	assert.Equal(t, "schedule:daily", m.created[0].TriggeredBy)
 	require.Len(t, m.createdSpecs, 1)
-	assert.Equal(t, jobSpec, m.createdSpecs[0], "the run's spec must be the job's spec, not an empty {}")
+	assertStoredScheduleSpec(t, jobSpec, m.createdSpecs[0])
 	require.NotNil(t, m.updated["daily"])
 }
 
@@ -184,6 +194,57 @@ func TestCheckAndFireSchedules_MissingRequiredParam_SkipsAndDoesNotAdvance(t *te
 	assert.Empty(t, m.updated)
 }
 
+func TestCheckAndFireSchedulesStoresResolvedSecretNameParameter(t *testing.T) {
+	lastFired := testNow.Add(-25 * time.Hour)
+	m := &mockScheduleFireStore{
+		schedules: []store.Schedule{{
+			Name:        "daily",
+			Cron:        "0 10 * * *",
+			JobName:     "build",
+			LastFiredAt: &lastFired,
+			Params:      map[string]string{"token_secret": "schedule-token"},
+		}},
+		jobs: map[string]*api.Job{
+			"build": {Name: "build", Spec: []byte(`{
+				"params":{"inputs":[{"name":"token_secret","type":"string"}]},
+				"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Params.token_secret }}"},"run":"true"}]
+			}`)},
+		},
+	}
+
+	checkAndFireSchedules(context.Background(), m, testNow)
+
+	require.Len(t, m.created, 1)
+	require.Len(t, m.createdSpecs, 1)
+	var snapshot dsl.Spec
+	require.NoError(t, json.Unmarshal(m.createdSpecs[0], &snapshot))
+	require.Len(t, snapshot.Steps, 1)
+	assert.Equal(t, `{{ index .Secrets "schedule-token" }}`, snapshot.Steps[0].Env["TOKEN"])
+	require.NotNil(t, m.updated["daily"])
+}
+
+func TestCheckAndFireSchedulesRejectsRuntimeOnlySecretName(t *testing.T) {
+	lastFired := testNow.Add(-25 * time.Hour)
+	m := &mockScheduleFireStore{
+		schedules: []store.Schedule{{
+			Name:        "daily",
+			Cron:        "0 10 * * *",
+			JobName:     "build",
+			LastFiredAt: &lastFired,
+		}},
+		jobs: map[string]*api.Job{
+			"build": {Name: "build", Spec: []byte(`{
+				"steps":[{"name":"deploy","env":{"TOKEN":"{{ index .Secrets .Steps.discover.Outputs.token_secret }}"},"run":"true"}]
+			}`)},
+		},
+	}
+
+	checkAndFireSchedules(context.Background(), m, testNow)
+
+	assert.Empty(t, m.created)
+	assert.Empty(t, m.updated)
+}
+
 // TestCheckAndFireSchedules_PersistsRequiredCaps verifies that a fired
 // schedule infers dsl.RequiredCaps from the job spec loaded via GetJob and
 // passes it into CreateRun, mirroring the direct-trigger and webhook paths
@@ -211,7 +272,7 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		require.Len(t, m.createdRequiredCaps, 1)
 		assert.Equal(t, []string{"native"}, m.createdRequiredCaps[0])
 		require.Len(t, m.createdSpecs, 1)
-		assert.Equal(t, jobSpec, m.createdSpecs[0])
+		assertStoredScheduleSpec(t, jobSpec, m.createdSpecs[0])
 	})
 
 	t.Run("kubernetes-only podTemplate infers pod capability", func(t *testing.T) {
@@ -232,7 +293,7 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		require.Len(t, m.createdRequiredCaps, 1)
 		assert.Equal(t, []string{"pod"}, m.createdRequiredCaps[0])
 		require.Len(t, m.createdSpecs, 1)
-		assert.Equal(t, podSpec, m.createdSpecs[0])
+		assertStoredScheduleSpec(t, podSpec, m.createdSpecs[0])
 	})
 
 	t.Run("plain job infers container capability", func(t *testing.T) {
@@ -252,7 +313,7 @@ func TestCheckAndFireSchedules_PersistsRequiredCaps(t *testing.T) {
 		require.Len(t, m.createdRequiredCaps, 1)
 		assert.Equal(t, []string{"container"}, m.createdRequiredCaps[0])
 		require.Len(t, m.createdSpecs, 1)
-		assert.Equal(t, jobSpec, m.createdSpecs[0])
+		assertStoredScheduleSpec(t, jobSpec, m.createdSpecs[0])
 	})
 
 	t.Run("job spec unavailable skips firing entirely", func(t *testing.T) {
@@ -451,17 +512,20 @@ func TestCheckAndFireSchedules_PropagatesAgentSelector(t *testing.T) {
 // derived without a parsed dsl.Spec.
 func TestCheckAndFireSchedules_SpecParseFailure_FiresWithNilCapsAndSelector(t *testing.T) {
 	lastFired := testNow.Add(-25 * time.Hour)
+	rawSpec := []byte("  not valid json\r\n")
 	m := &mockScheduleFireStore{
 		schedules: []store.Schedule{
 			{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
 		},
 		jobs: map[string]*api.Job{
-			"build": {Name: "build", Spec: []byte(`not valid json`)},
+			"build": {Name: "build", Spec: rawSpec},
 		},
 	}
 	checkAndFireSchedules(context.Background(), m, testNow)
 
 	require.Len(t, m.created, 1, "an unparseable spec still fires best-effort")
+	require.Len(t, m.createdSpecs, 1)
+	assert.Equal(t, rawSpec, m.createdSpecs[0], "the degraded path must preserve the stored spec bytes exactly")
 	require.Len(t, m.createdRequiredCaps, 1)
 	assert.Empty(t, m.createdRequiredCaps[0])
 	require.Len(t, m.createdAgentSelectors, 1)

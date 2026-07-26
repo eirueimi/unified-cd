@@ -82,6 +82,14 @@ Each template follows the house style below (`git-checkout.yaml` / `slack-notify
   Do not interpolate them directly into shell code.
 - Indirect reference pattern for optional secrets:
   `"{{ if .Params.token_secret }}{{ index .Secrets .Params.token_secret }}{{ end }}"`
+  Secret-name parameters are resolved to literal secret references before a run
+  starts. `index .Secrets .Params.token_secret` is supported when
+  `token_secret` is a literal `with:` value or template default. An empty
+  optional parameter adds no secret dependency. Secret names selected from
+  `.Steps`, `.Matrix`, or `.Foreach` are rejected because the controller
+  cannot authorize them before execution.
+  The exact expression is intentional. Do not alias or transform `.Secrets`;
+  non-canonical secret-map access is rejected before claim and secret fetch.
 - When writing sensitive information such as private keys or tokens to a file, create a temp file with `mktemp`,
   `chmod 600` it, and clean it up with `trap ... EXIT`.
 - The `path` / `key` / `restoreKeys` fields of a `cache:` step all expand template expressions (use

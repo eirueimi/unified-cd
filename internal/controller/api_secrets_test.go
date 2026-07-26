@@ -356,3 +356,114 @@ func TestAgentSecretsFetch_RejectsNameNotNeededByRun(t *testing.T) {
 	require.Equal(t, http.StatusOK, rr.Code)
 	assert.Contains(t, rr.Body.String(), "ok")
 }
+
+func TestAgentSecretsFetch_AuthorizesLiteralIndexName(t *testing.T) {
+	srv, agentID, runID := newSecretsFetchFixture(t, `steps:
+  - name: checkout
+    env:
+      GIT_TOKEN: '{{ index .Secrets "gitlab-token" }}'
+    run: git clone https://example.invalid/repo.git
+`)
+	mustSetSecret(t, srv, "gitlab-token", "literal-index-value")
+
+	rr := postFetchSecrets(t, srv, agentID, runID, []string{"gitlab-token"})
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+
+	var resp api.AgentFetchSecretsResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "literal-index-value", resp.Secrets["gitlab-token"])
+}
+
+func TestDynamicSecretNameRejectedByClaimAndFetchAuthorization(t *testing.T) {
+	const errDynamicSecretNameText = "dynamic secret name must be resolved from a parameter before execution"
+
+	tests := []struct {
+		name string
+		run  string
+	}{
+		{
+			name: "ordinary index",
+			run:  `echo {{ index .Secrets .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "parenthesized secrets",
+			run:  `echo {{ index (.Secrets) .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "aliased secrets",
+			run:  `echo {{ $secretMap := .Secrets }}{{ index $secretMap .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "built-in mediated alias",
+			run:  `echo {{ $secretMap := or .Secrets .Secrets }}{{ index $secretMap .Steps.pick.Outputs.name }}`,
+		},
+		{
+			name: "root alias selection",
+			run:  `echo {{ $root := . }}{{ index $root.Secrets "gitlab-token" }}`,
+		},
+		{
+			name: "with secret map",
+			run:  `echo {{ with .Secrets }}{{ index . "gitlab-token" }}{{ end }}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _, runID := newSecretsFetchFixture(t, `steps:
+  - name: deploy
+    run: `+tt.run+`
+`)
+			specJSON, err := srv.store.GetRunSpec(t.Context(), runID)
+			require.NoError(t, err)
+
+			_, claimErr := buildClaimResponse(&store.ClaimedRun{
+				Run:  api.Run{ID: runID, JobName: "dynamic-secret-job"},
+				Spec: specJSON,
+			})
+			require.ErrorContains(t, claimErr, `step "deploy" run`)
+			assert.ErrorContains(t, claimErr, errDynamicSecretNameText)
+
+			_, fetchErr := srv.secretNamesForRun(t.Context(), runID)
+			require.ErrorContains(t, fetchErr, `step "deploy" run`)
+			assert.ErrorContains(t, fetchErr, errDynamicSecretNameText)
+		})
+	}
+}
+
+func TestNonSecretExpressionsDoNotWidenClaimOrFetchAuthorization(t *testing.T) {
+	tests := []struct {
+		name string
+		run  string
+	}{
+		{
+			name: "variable name ending in secrets",
+			run:  `echo {{ $nosecrets := .Params }}{{ $nosecrets.API_TOKEN }}`,
+		},
+		{
+			name: "nested lowercase secrets field",
+			run:  `echo {{ .Params.secrets.API_TOKEN }}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _, runID := newSecretsFetchFixture(t, `steps:
+  - name: deploy
+    run: `+tt.run+`
+`)
+			specJSON, err := srv.store.GetRunSpec(t.Context(), runID)
+			require.NoError(t, err)
+
+			claim, err := buildClaimResponse(&store.ClaimedRun{
+				Run:  api.Run{ID: runID, JobName: "non-secret-expression-job"},
+				Spec: specJSON,
+			})
+			require.NoError(t, err)
+			assert.Empty(t, claim.SecretsNeeded)
+
+			fetchNames, err := srv.secretNamesForRun(t.Context(), runID)
+			require.NoError(t, err)
+			assert.Empty(t, fetchNames)
+		})
+	}
+}
