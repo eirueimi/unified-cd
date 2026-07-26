@@ -1406,15 +1406,16 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
   it('reapplies tail scrolling after a horizontal scrollbar changes the viewport height', async () => {
     const descCH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
     const originalRAF = globalThis.requestAnimationFrame;
-    let frameRan = false;
+    let frameCount = 0;
     let tailMaterialized = false;
+    let scrollbarVisible = false;
     let frameID = 0;
 
     Object.defineProperty(Element.prototype, 'clientHeight', {
       configurable: true,
       get() {
         if (!this.classList?.contains('log-box')) return 0;
-        return tailMaterialized ? 384 : 400;
+        return scrollbarVisible ? 384 : 400;
       },
     });
     Object.defineProperty(Element.prototype, 'scrollTop', {
@@ -1429,13 +1430,14 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
           value,
           this.scrollHeight - this.clientHeight,
         );
-        if (frameRan) tailMaterialized = true;
+        if (frameCount > 0) tailMaterialized = true;
       },
     });
     globalThis.requestAnimationFrame = (callback) => {
       const id = ++frameID;
       queueMicrotask(() => {
-        frameRan = true;
+        frameCount++;
+        if (tailMaterialized) scrollbarVisible = true;
         callback(performance.now());
       });
       return id;
@@ -1468,6 +1470,7 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
 
       const box = container.querySelector('.log-box');
       await vi.waitFor(() => expect(box.scrollTop).toBeGreaterThan(0));
+      expect(box.clientHeight).toBe(384);
       expect(box.scrollHeight - box.scrollTop - box.clientHeight).toBe(0);
     } finally {
       restore();
