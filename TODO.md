@@ -17,7 +17,7 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Status:** Needs verification
 - **Impact:** If the digest-pinned default is unavailable without registry credentials, installations that omit `sidecarImage` cannot start the sidecar and Kubernetes jobs remain blocked.
 - **Evidence:** `internal/k8sagent/config.go` `defaultSidecarImage` supplies the digest-pinned default consumed by `manifests/install.yaml`; `internal/k8sagent/config_test.go` `TestDefaultSidecarImageIsDigestPinned` checks only its syntax, while `docs/configuration.md` and `docs/kubernetes-integration.md` still describe a mutable `:latest` default.
-- **Done when:** A credential-isolated Docker pull of the image derived from `defaultSidecarImage` exits zero within 120 seconds, and a temporary Kubernetes namespace with a ServiceAccount that has no image pull secrets starts that exact image with pull policy `Always` and reaches `Ready` within 120 seconds with no pull waiting reason and an image ID ending in the configured digest; the namespace and isolated Docker configuration are always cleaned up, and both documents state the verified digest-derived default.
+- **Done when:** A credential-isolated Docker pull of the image derived from `defaultSidecarImage` exits zero within 120 seconds, and a temporary Kubernetes namespace with a ServiceAccount that has no image pull secrets starts that exact image with pull policy `Always` and reaches `Ready` within 120 seconds with no pull waiting reason and an image ID ending in the configured digest; every external Docker and Kubernetes setup, pull, wait, inspection, and namespace-deletion subprocess is bounded, safe-target checks guard cleanup, any cleanup failure fails the experiment and is combined with rather than hidden by any primary failure, and both documents state the verified digest-derived default.
 
 ### 33c. Prevent AppSource repository credentials from reaching API and UI output
 
@@ -93,12 +93,12 @@ Last audited: 2026-07-26 against `1e46459`.
 - **Evidence:** `test/e2e/matrix_smoke_test.go` `TestMatrixSmoke` substring-checks only one included and one excluded output, while `internal/store/postgres_outputs_test.go` `TestStepOutputs_VariantKeyed` accepts either value returned by variant-unaware `GetStepOutputs`.
 - **Done when:** Coverage JSON-decodes and exactly compares all three expected promoted key/value pairs, rejects extras and the excluded combination, and directly verifies the count and identity of variant-keyed rows through storage inspection or a variant-aware getter.
 
-### 35d. Cover human and enrolled-agent artifact downloads through the real router
+### 35d. Complete human and cross-agent artifact-download router coverage
 
-- **Status:** Open
-- **Impact:** The real authentication and authorization pipeline for successful artifact downloads is unproven for human viewers and enrolled agents, so router or principal regressions can block valid downloads or weaken unauthenticated rejection.
-- **Evidence:** `internal/controller/api_artifacts_test.go` covers unauthenticated rejection and direct-handler agent-principal behavior, but no successful human-viewer or valid-enrolled-agent request traverses the router configured in `internal/controller/server.go`; the current cross-run contract authorizes any valid enrolled agent.
-- **Done when:** Router-level tests seed exact artifact bytes and prove byte-for-byte success for a human viewer, success for a valid enrolled agent under the documented cross-run contract, and rejection for an unauthenticated request; agent ownership tightening remains a separate product decision.
+- **Status:** Partial
+- **Impact:** Owner-agent downloads already traverse the real router, but successful human-viewer access and cross-run access by a distinct enrolled agent remain unproven, so principal or router regressions can still violate the documented download contract.
+- **Evidence:** `internal/controller/api_artifacts_test.go` `TestArtifact_UploadDownload_RoundTrip` sends an owner enrolled-agent download through `s.Router().ServeHTTP`, requires HTTP 200, and compares the exact artifact bytes; `TestArtifactDownload_RejectsNoAuth` covers unauthenticated rejection only at the direct handler.
+- **Done when:** Router-level tests seed exact artifact bytes and prove byte-for-byte success for a human viewer and a distinct non-owner enrolled agent under the documented cross-run contract, plus unauthenticated rejection; agent ownership tightening remains a separate product decision.
 
 ### 35e. Assert HTTP methods for every CLI request constructor
 
