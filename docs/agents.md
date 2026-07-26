@@ -430,11 +430,12 @@ container — see [Kubernetes Integration: `/.ucd` shim
 injection](kubernetes-integration.md#ucd-shim-injection)), the standard
 agent has a real host filesystem, so it takes a simpler path:
 
-1. **At startup**, before serving any claims, `cmd/unified-cd-agent`'s `main()` writes
-   the `ucd-sh` binary embedded in the agent's own binary (`internal/shim/
-   embedded`) to `<tools-dir>/ucd-sh` (mode `0755`) — `tools-dir` is a
-   sibling of `--workspace-dir` (e.g. `--workspace-dir ~/workspace` →
-   `~/tools`).
+1. **At startup**, before serving any claims, `cmd/unified-cd-agent`'s `main()`
+   writes the `ucd-sh` binary embedded in the agent's own binary
+   (`internal/shim/embedded`) to
+   `<workspace-dir>/.ucd-tools/ucd-sh` (mode `0755`). Keeping `.ucd-tools`
+   inside the workspace base makes it visible to remote container runtimes
+   that share that base.
 2. **Every container the agent creates afterward** — claim-pod containers,
    `uses:`-scope containers, the workspace-cleanup container — bind-mounts
    that tools directory **read-only** at `/.ucd`, the same reserved path the
@@ -509,14 +510,19 @@ possible future work, not implemented today.
 ## Workspace lifecycle
 
 Each concurrency slot owns one slot directory:
-`<workspace-dir>/working<N>` (default `~/workspace`, override with
-`--workspace-dir`, `UNIFIED_AGENT_WORKSPACE_DIR`, or the `workspaceDir`
-config key). Within that slot directory, **every job gets its own
+`<workspace-dir>/working<N>`. When no override is supplied, `workspace-dir`
+is the agent's startup working directory; override it with `--workspace-dir`,
+`UNIFIED_AGENT_WORKSPACE_DIR`, or the `workspaceDir` config key.
+Within that slot directory, **every job gets its own
 subdirectory**, named after a sanitized form of the job's `metadata.name`:
 `working<N>/<sanitized-job-name>`. `run:` steps execute with this per-job
 directory as their working directory (bind-mounted at `/workspace` — or
 `podTemplate.workspace.mountPath` — into every claim-pod container for an
 isolated job), and relative artifact/cache paths resolve against it.
+
+The default also places `.ucd-tools` and, for detached runs, `detached`
+directly beneath the startup directory; cleanup never removes that base
+directory or unrelated direct children.
 
 `N` ranges from `0` to `--max-concurrent - 1`; each slot's claim loop always
 uses the same `working<N>/<job>` directory for every run of that job, so

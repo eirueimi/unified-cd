@@ -69,11 +69,6 @@
 - **状態: 別ジョブ間の漏えいは 2026-07-08 のジョブ単位分離実装で解消。** `working<slot>` 配下にジョブ名でサブディレクトリを切る(`working<slot>/<sanitized-job-name>`)ようになり、別ジョブが同じスロットを使い回してもファイルが混ざらなくなった(`internal/agent/workspace.go`)。加えてジョブ単位の `podTemplate.cleanWorkspace: true`(エージェント全体の `--clean-workspace` と OR)、モードが native/isolated で切り替わった際の自動ディレクトリリセット(`.ucd-mode` マーカー)も追加。詳細: `docs/agents.md`(Workspace lifecycle)。
 - **残る論点(同一ジョブ内の carry-over):** 同一ジョブの連続ランでは引き続きデフォルトでファイルが持ち越される(意図的な既定動作 — carry-over)。シークレットを書き込むジョブは `--clean-workspace` / `podTemplate.cleanWorkspace: true` を有効化するか `finally:` で消すこと。この情報漏えいリスクの文書化は `docs/agents.md` に記載済み。
 
-### 9b. エージェントのワークスペース位置が `~/workspace` にハードコード
-
-- `internal/agent/agent.go:99-101` — `Agent.WorkspaceDir` フィールドは存在するが、`cmd/unified-cd-agent/main.go` からも設定ファイルからも一切セットされない(テストのみ使用)。フラグ `--help` にも `docs/configuration.md` にも設定手段がない。
-- Windows では `C:\Users\<user>\workspace` に直接作られる(実機確認)。ユーザーの既存ディレクトリと衝突し得る。`-workspace-dir` フラグ / 設定ファイルキーとして公開すべき。
-
 ### 9c. Windows: ラン中キャンセルで子プロセスが孤児化し、ステップが Running 表示のまま残る
 
 - **症状(実機確認):** `sleep 120` 中のランをキャンセル → ランは `Cancelled` になり step の bash.exe は終了するが、**子プロセス `sleep.exe` は生き残る**(30秒以上生存を確認、手動 kill が必要)。また該当ステップの表示が永久に `Running` のまま。

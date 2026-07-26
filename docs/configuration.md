@@ -165,7 +165,7 @@ unified-cd-agent [FLAGS]
   --max-concurrent        int       Max simultaneous runs (default: 1)
   --max-detached-concurrent int     Max simultaneous detached (spec.detached) runs, from a pool separate from --max-concurrent; 0/unset=default 16, negative=off (env: UNIFIED_AGENT_MAX_DETACHED)
   --clean-workspace       bool      Wipe workspace before each run
-  --workspace-dir         string    Base directory for run workspaces (default: ~/workspace; env: UNIFIED_AGENT_WORKSPACE_DIR)
+  --workspace-dir         string    Base directory for run workspaces (default: current directory at agent startup; env: UNIFIED_AGENT_WORKSPACE_DIR)
   --drain-timeout         duration  Max wait after SIGTERM before forced shutdown (0 = wait forever)
   --pause-image           string    Image for the claim pod's pause (netns-holder) container (default: busybox:1.36)
   --runner-image          string    Default primary container image for isolated jobs without a podTemplate job container (default: ghcr.io/eirueimi/unified-cd-runner:v0.0.3)
@@ -190,7 +190,7 @@ keys below.
 | `UNIFIED_AGENT_ID` | Agent identifier (optional; adopted from the enrollment token / persisted credential when unset, asserted when set) |
 | `UNIFIED_AGENT_LABELS` | Comma-separated labels, e.g. `kind:docker,env:prod` |
 | `UNIFIED_AGENT_EXPOSE_ENV` | Comma-separated host environment variable names to pass through to job steps. **This is an allowlist, not an add-on.** A native (`spec.native: true`) step no longer inherits the agent's process environment at all — it only sees an OS baseline plus whatever is named here plus the orchestrator's own step env (`env:`, secrets). The baseline covers shell essentials **and** the well-known per-user config/data/cache directory variables common toolchains resolve their config from — Windows: `PATH`, `PATHEXT`, `SystemRoot`, `SystemDrive`, `COMSPEC`, `TEMP`, `TMP`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `ALLUSERSPROFILE`, `USERNAME`, `HOMEDRIVE`, `HOMEPATH`, `NUMBER_OF_PROCESSORS`, `PROCESSOR_ARCHITECTURE`; Linux/macOS: `PATH`, `HOME`, `PWD`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`, `TZ`, `USER`, `LOGNAME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` (so tools like Unity, npm, dotnet, and pip work without extra config). Any other variable a job reads must be named here explicitly, or the step sees it unset. Agent credentials (`UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`, `UNIFIED_TOKEN`) are dropped unconditionally even if named here — there is no way to expose them to a step. |
-| `UNIFIED_AGENT_WORKSPACE_DIR` | Base directory for run workspaces (default: `~/workspace`) |
+| `UNIFIED_AGENT_WORKSPACE_DIR` | Base directory for run workspaces (default: current directory at agent startup) |
 | `UNIFIED_AGENT_LOG_LEVEL` | Log level: `debug`, `info` (default), `warn`, `error` |
 | `UNIFIED_CACHE_ENDPOINT` | S3/MinIO endpoint for cache storage (env equivalent of `--cache-endpoint`) |
 | `UNIFIED_CACHE_KEY` | Cache storage access key ID (env equivalent of `--cache-key`) |
@@ -198,6 +198,15 @@ keys below.
 | `UNIFIED_CACHE_BUCKET` | Cache storage bucket name (env equivalent of `--cache-bucket`) |
 | `UNIFIED_AGENT_MIN_FREE_DISK` | Minimum free bytes on the workspace filesystem required to keep claiming runs (env equivalent of `--min-free-disk`). `0`/unset disables the check. **Host agent only** — the k8s-agent's job workspaces are pod volumes, not host disk, so there is no preflight to run there. |
 | `UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS` | Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC (env equivalent of `--workspace-retention-days`). `0` (default) disables the GC entirely. **Host agent only.** |
+
+When no workspace directory is set by flag, environment variable, or config
+file, the standard agent uses its startup working directory as an absolute
+workspace base. It creates `.ucd-tools`, `working<N>`, and, when needed,
+`detached` beneath that directory; it does not remove the base directory or
+unrelated files directly beneath it. Set an explicit dedicated path when those
+generated directories should be isolated. To preserve the pre-change location
+after an upgrade, set `--workspace-dir ~/workspace` (or the equivalent
+environment/config value). Existing workspace contents are not migrated.
 
 Additionally, every step receives the following environment variables automatically:
 - `UNIFIED_AGENT_OS` — the agent host OS (`linux`, `darwin`, or `windows`)
