@@ -668,6 +668,10 @@ steps:
 
 `call` steps wait for the called job to complete. The called job's run shares the parent run's context.
 
+Once the child run exists, the call step's status badge in the run detail view
+follows the child run's current status. This remains accurate if the parent
+agent stops before it can submit a final step report.
+
 By default a `call` step waits **indefinitely** for the child run to finish. To
 bound the wait, set the step's `timeoutMinutes`: if the child run has not
 reached a terminal state within that many minutes, the call step fails with a
