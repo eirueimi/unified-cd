@@ -145,7 +145,7 @@ func TestCredentialManagerDoesNotUseAccessWhenPersistenceFails(t *testing.T) {
 	assert.Empty(t, token)
 }
 
-func TestCredentialManagerDoesNotEnrollAfterInvalidCredentialFile(t *testing.T) {
+func TestCredentialManagerEnrollsBeforeInvalidCredentialFile(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	credentialPath := filepath.Join(dir, "credentials.json")
@@ -153,7 +153,11 @@ func TestCredentialManagerDoesNotEnrollAfterInvalidCredentialFile(t *testing.T) 
 	require.NoError(t, os.WriteFile(credentialPath, []byte("not-json"), 0o600))
 	require.NoError(t, os.WriteFile(enrollmentPath, []byte("enrollment-secret"), 0o600))
 	var calls int
-	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusInternalServerError) })
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		require.Equal(t, "/api/v1/agents/enroll", r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
 	defer srv.Close()
 
 	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: credentialPath, EnrollmentTokenFile: enrollmentPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
@@ -161,7 +165,7 @@ func TestCredentialManagerDoesNotEnrollAfterInvalidCredentialFile(t *testing.T) 
 		_, err := m.Token(t.Context())
 		require.Error(t, err)
 	}
-	assert.Zero(t, calls)
+	assert.Equal(t, 2*credentialRetryAttempts, calls)
 }
 
 func TestCredentialManagerRestoresInterruptedCredentialReplacement(t *testing.T) {
@@ -245,22 +249,25 @@ func TestCredentialManagerRestoresValidBackupWhenPrimaryIsExpired(t *testing.T) 
 	assert.NoFileExists(t, credentialBackupPath(path))
 }
 
-func TestCredentialManagerDoesNotEnrollWhenInterruptedBackupIsInvalid(t *testing.T) {
+func TestCredentialManagerEnrollsBeforeInterruptedBackupValidation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials.json")
 	require.NoError(t, os.WriteFile(credentialBackupPath(path), []byte("invalid"), 0o600))
 	enrollmentPath := filepath.Join(dir, "enrollment")
 	require.NoError(t, os.WriteFile(enrollmentPath, []byte("enrollment-secret"), 0o600))
 	calls := 0
-	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) { calls++ })
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		require.Equal(t, "/api/v1/agents/enroll", r.URL.Path)
+	})
 	defer srv.Close()
 	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: path, EnrollmentTokenFile: enrollmentPath, HTTPClient: srv.Client()})
 	_, err := m.Token(t.Context())
 	require.Error(t, err)
-	assert.Zero(t, calls)
+	assert.Equal(t, 1, calls)
 }
 
-func TestCredentialManagerDoesNotEnrollWhenBackupRestoreFails(t *testing.T) {
+func TestCredentialManagerEnrollsBeforeBackupRestoreValidation(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials.json")
@@ -271,15 +278,18 @@ func TestCredentialManagerDoesNotEnrollWhenBackupRestoreFails(t *testing.T) {
 	syncCredentialDirectoryFn = func(string) error { return fmt.Errorf("sync failed") }
 	t.Cleanup(func() { syncCredentialDirectoryFn = original })
 	calls := 0
-	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) { calls++ })
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		require.Equal(t, "/api/v1/agents/enroll", r.URL.Path)
+	})
 	defer srv.Close()
 	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: path, EnrollmentTokenFile: enrollmentPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
 	_, err := m.Token(t.Context())
 	require.Error(t, err)
-	assert.Zero(t, calls)
+	assert.Equal(t, 1, calls)
 }
 
-func TestCredentialManagerDoesNotEnrollAfterExpiredCredentialFile(t *testing.T) {
+func TestCredentialManagerEnrollsBeforeExpiredCredentialValidation(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	credentialPath := filepath.Join(dir, "credentials.json")
@@ -287,13 +297,17 @@ func TestCredentialManagerDoesNotEnrollAfterExpiredCredentialFile(t *testing.T) 
 	require.NoError(t, writeCredentialFile(credentialPath, persistedCredential{Version: 1, AgentID: "vm-agent-01", RefreshToken: "expired-refresh", RefreshExpiresAt: now.Add(-time.Minute)}))
 	require.NoError(t, os.WriteFile(enrollmentPath, []byte("enrollment-secret"), 0o600))
 	var calls int
-	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusInternalServerError) })
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		require.Equal(t, "/api/v1/agents/enroll", r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
 	defer srv.Close()
 
 	m := NewCredentialManager(CredentialManagerConfig{Server: srv.URL, AgentID: "vm-agent-01", CredentialFile: credentialPath, EnrollmentTokenFile: enrollmentPath, HTTPClient: srv.Client(), Now: func() time.Time { return now }})
 	_, err := m.Token(t.Context())
 	require.Error(t, err)
-	assert.Zero(t, calls)
+	assert.Equal(t, credentialRetryAttempts, calls)
 }
 
 func TestCredentialManagerDoesNotEnrollAfterInsecureCredentialFile(t *testing.T) {
@@ -834,4 +848,118 @@ func TestCredentialManager_Fallback401RejectsAmbiguousCredentials(t *testing.T) 
 	_, err := m.Token(t.Context())
 	require.EqualError(t, err, ambiguity)
 	assert.Equal(t, []string{"/api/v1/agents/enroll"}, calledPaths)
+}
+
+func TestCredentialManager_RejectsMismatchedRefreshAgentID(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "credential.json")
+	original := persistedCredential{Version: 1, AgentID: "agent-a", RefreshToken: "ucr_agent_a", RefreshExpiresAt: now.Add(time.Hour)}
+	require.NoError(t, writeCredentialFile(path, original))
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/agents/token/refresh", r.URL.Path)
+		response := tokenResponse("uca_rotated", "ucr_agent_b", now)
+		response.AgentID = "agent-b"
+		_ = json.NewEncoder(w).Encode(response)
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{
+		Server: srv.URL, CredentialFile: path, HTTPClient: srv.Client(),
+		Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 },
+	})
+
+	_, err := m.Token(t.Context())
+	require.EqualError(t, err, "credential response agent ID \"agent-b\" does not match loaded agent ID \"agent-a\"")
+	credential, readErr := readCredentialFile(path)
+	require.NoError(t, readErr)
+	assert.Equal(t, original, credential)
+}
+
+func TestCredentialManager_RejectsUnsafeEnrollmentResponseAgentIDBeforePathResolution(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, agentID := range []string{"..", "agent/other", `agent\other`} {
+		t.Run(agentID, func(t *testing.T) {
+			var defaultCalls int
+			srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+				response := tokenResponse("uca_new", "ucr_new", now)
+				response.AgentID = agentID
+				_ = json.NewEncoder(w).Encode(response)
+			})
+			defer srv.Close()
+			m := NewCredentialManager(CredentialManagerConfig{
+				Server: srv.URL, EnrollmentToken: "uce_new", HTTPClient: srv.Client(),
+				Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 },
+				DefaultCredentialFile: func(string) (string, error) {
+					defaultCalls++
+					return filepath.Join(t.TempDir(), "credential.json"), nil
+				},
+			})
+
+			_, err := m.Token(t.Context())
+			require.EqualError(t, err, "agent ID must be one path component")
+			assert.Zero(t, defaultCalls)
+		})
+	}
+}
+
+func TestCredentialManager_EnsureIdentityEnrollsConfiguredID(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "credential.json")
+	var enrollCalls int
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		enrollCalls++
+		require.Equal(t, "/api/v1/agents/enroll", r.URL.Path)
+		response := tokenResponse("uca_new", "ucr_new", now)
+		response.AgentID = "agent-configured"
+		_ = json.NewEncoder(w).Encode(response)
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{
+		Server: srv.URL, AgentID: "agent-configured", EnrollmentToken: "uce_new", CredentialFile: path, HTTPClient: srv.Client(),
+		Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 },
+	})
+
+	id, err := m.EnsureIdentity(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "agent-configured", id)
+	assert.Equal(t, 1, enrollCalls)
+}
+
+func TestCredentialManager_EnsureIdentityRejectsConfiguredIDMismatchDuringEnrollment(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		response := tokenResponse("uca_new", "ucr_new", now)
+		response.AgentID = "agent-returned"
+		_ = json.NewEncoder(w).Encode(response)
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{
+		Server: srv.URL, AgentID: "agent-configured", EnrollmentToken: "uce_new", CredentialFile: filepath.Join(t.TempDir(), "credential.json"), HTTPClient: srv.Client(),
+		Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 },
+	})
+
+	_, err := m.EnsureIdentity(t.Context())
+	require.EqualError(t, err, "credential response agent ID \"agent-returned\" does not match configured agent ID \"agent-configured\"")
+}
+
+func TestCredentialManager_Fallback401MissingDefaultCredentialReturnsOriginalError(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows ACL validation previously masked missing default directories")
+	}
+	var paths []string
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		require.Equal(t, "/api/v1/agents/enroll", r.URL.Path)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{
+		Server: srv.URL, AgentID: "agent-missing", EnrollmentToken: "uce_expired", HTTPClient: srv.Client(),
+		DefaultCredentialFile: func(string) (string, error) {
+			return filepath.Join(t.TempDir(), "missing", "credential.json"), nil
+		},
+	})
+
+	_, err := m.Token(t.Context())
+	require.EqualError(t, err, "credential request returned http 401")
+	assert.Equal(t, []string{"/api/v1/agents/enroll"}, paths)
 }

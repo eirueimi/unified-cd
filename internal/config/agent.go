@@ -21,6 +21,9 @@ func DefaultAgentCredentialFile(id string) (string, error) {
 	if strings.TrimSpace(id) == "" {
 		return "", fmt.Errorf("agent ID is required to derive the default credential file path")
 	}
+	if id == "." || id == ".." || strings.ContainsAny(id, `/\\`) || filepath.IsAbs(id) || filepath.VolumeName(id) != "" {
+		return "", fmt.Errorf("agent ID must be one path component")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory for default credential file: %w", err)

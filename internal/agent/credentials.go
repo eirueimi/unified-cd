@@ -136,6 +136,7 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	}
 	enrollmentToken, _ := m.enrollmentTokenValue()
 	if !m.bootstrapDone && enrollmentToken != "" {
+		enrolled := true
 		response, err := m.exchangeWithRetry(ctx, "/api/v1/agents/enroll", enrollmentToken)
 		if err != nil {
 			var requestErr *credentialRequestError
@@ -152,12 +153,13 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 			if m.refresh.RefreshToken == "" {
 				return "", originalErr
 			}
+			enrolled = false
 			response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
 			if err != nil {
 				return "", err
 			}
 		}
-		return m.persistTokenResponse(response)
+		return m.persistTokenResponse(response, enrolled)
 	}
 	if err := m.loadRefreshCredential(); err != nil {
 		return "", err
@@ -194,8 +196,14 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	if response.AgentID == "" || response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
 		return "", fmt.Errorf("credential response is invalid")
 	}
+	if err := validateAgentIDPathComponent(response.AgentID); err != nil {
+		return "", err
+	}
 	if m.configuredAgentID != "" && response.AgentID != m.configuredAgentID {
 		return "", fmt.Errorf("credential response agent ID %q does not match configured agent ID %q", response.AgentID, m.configuredAgentID)
+	}
+	if m.agentID != "" && response.AgentID != m.agentID {
+		return "", fmt.Errorf("credential response agent ID %q does not match loaded agent ID %q", response.AgentID, m.agentID)
 	}
 	m.agentID = response.AgentID
 	// Latch the once-per-process guard only after the response fully validates,
@@ -220,12 +228,18 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	return m.accessToken, nil
 }
 
-func (m *CredentialManager) persistTokenResponse(response api.AgentTokenResponse) (string, error) {
+func (m *CredentialManager) persistTokenResponse(response api.AgentTokenResponse, enrolled bool) (string, error) {
 	if response.AgentID == "" || response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
 		return "", fmt.Errorf("credential response is invalid")
 	}
+	if err := validateAgentIDPathComponent(response.AgentID); err != nil {
+		return "", err
+	}
 	if m.configuredAgentID != "" && response.AgentID != m.configuredAgentID {
 		return "", fmt.Errorf("credential response agent ID %q does not match configured agent ID %q", response.AgentID, m.configuredAgentID)
+	}
+	if !enrolled && m.agentID != "" && response.AgentID != m.agentID {
+		return "", fmt.Errorf("credential response agent ID %q does not match loaded agent ID %q", response.AgentID, m.agentID)
 	}
 	if err := m.ensureCredentialFile(response.AgentID); err != nil {
 		return "", err
@@ -265,11 +279,6 @@ func (m *CredentialManager) enrollmentTokenValue() (string, error) {
 // first enrollment when there is none.
 func (m *CredentialManager) EnsureIdentity(ctx context.Context) (string, error) {
 	m.mu.Lock()
-	if m.agentID != "" {
-		id := m.agentID
-		m.mu.Unlock()
-		return id, nil
-	}
 	enrollmentToken, tokenErr := m.enrollmentTokenValue()
 	if !m.bootstrapDone && enrollmentToken != "" {
 		m.mu.Unlock()
@@ -277,6 +286,11 @@ func (m *CredentialManager) EnsureIdentity(ctx context.Context) (string, error) 
 			return "", err
 		}
 		m.mu.Lock()
+		id := m.agentID
+		m.mu.Unlock()
+		return id, nil
+	}
+	if m.agentID != "" {
 		id := m.agentID
 		m.mu.Unlock()
 		return id, nil
@@ -325,6 +339,10 @@ func (m *CredentialManager) loadRefreshCredential() error {
 			}
 			m.credentialFile = path
 		}
+	}
+	if _, dirErr := os.Stat(filepath.Dir(m.credentialFile)); os.IsNotExist(dirErr) && (m.enrollmentTokenFile != "" || m.enrollmentToken != "") {
+		m.loaded = true
+		return nil
 	}
 	credential, err := readCredentialFile(m.credentialFile)
 	if err == nil {
@@ -403,6 +421,9 @@ func (m *CredentialManager) ensureCredentialFile(agentID string) error {
 	if m.credentialFile != "" {
 		return nil
 	}
+	if err := validateAgentIDPathComponent(agentID); err != nil {
+		return err
+	}
 	path, err := m.defaultCredentialFile(agentID)
 	if err != nil {
 		return err
@@ -411,6 +432,13 @@ func (m *CredentialManager) ensureCredentialFile(agentID string) error {
 		return fmt.Errorf("create credential directory: %w", err)
 	}
 	m.credentialFile = path
+	return nil
+}
+
+func validateAgentIDPathComponent(agentID string) error {
+	if agentID == "." || agentID == ".." || strings.ContainsAny(agentID, `/\\`) || filepath.IsAbs(agentID) || filepath.VolumeName(agentID) != "" {
+		return fmt.Errorf("agent ID must be one path component")
+	}
 	return nil
 }
 

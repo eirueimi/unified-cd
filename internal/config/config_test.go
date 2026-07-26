@@ -32,6 +32,13 @@ func TestDefaultAgentCredentialFileRequiresID(t *testing.T) {
 	}
 }
 
+func TestDefaultAgentCredentialFileRejectsUnsafeID(t *testing.T) {
+	for _, id := range []string{"..", "agent/other", `agent\other`} {
+		_, err := config.DefaultAgentCredentialFile(id)
+		require.EqualError(t, err, "agent ID must be one path component")
+	}
+}
+
 // ── FindFlag ────────────────────────────────────────────────────────────────
 
 func TestFindFlag(t *testing.T) {
