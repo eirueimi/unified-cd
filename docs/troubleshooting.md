@@ -1043,6 +1043,26 @@ the agent with private `credentialFile` and `enrollmentTokenFile` paths.
 the identity or replace it. `enrollment unavailable` is retryable only after
 PostgreSQL/controller availability is restored; auth fails closed.
 
+### Agent startup reports multiple default credential files
+
+**Symptom:** an ID-less agent start without an enrollment token fails with:
+
+```
+multiple default agent credential files found; set --id or --credential-file
+```
+
+**Cause:** more than one ID-scoped credential exists below
+`$HOME/.unified-cd/`, so the agent cannot safely infer which identity should
+run.
+
+**Fix:** restart with `--id <agent-id>` to use that ID's default credential,
+or use `--credential-file <path>` to select an explicit file. A valid explicit
+enrollment token takes precedence over local discovery and persists its
+credential under the returned ID. The former shared
+`$HOME/.unified-cd/credential.json` file is not discovered; migrate it or pass
+it explicitly with `--credential-file`. See
+[Migrating to ID-scoped agent credentials](migration-agent-id-scoped-credentials.md).
+
 ### Kubernetes agent returns 403 or 503 during enrollment
 
 **Symptom:** `enrollment policy rejected` (403) or `kubernetes identity

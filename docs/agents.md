@@ -12,22 +12,29 @@ administrator, put it in a private file, and configure the agent with
 `credentialFile` and `enrollmentTokenFile`. Its access credential is
 short-lived; the rotating refresh credential remains in the protected file.
 
-`--id` is optional: the agent adopts its canonical ID from the enrollment
-token / persisted credential rather than requiring one up front. When `--id`
-is supplied, it is instead asserted — the agent errors out if the enrollment
-response or persisted credential disagrees with it, which is useful for
-catching copy-paste mistakes. Because the ID may not be known until after the
-first enrollment, `credentialFile`'s default path is ID-independent — see
-below.
+`--id` is optional: the agent adopts its canonical ID from a valid enrollment
+token or persisted credential rather than requiring one up front. A valid
+explicit enrollment token is authoritative: its enrollment response supplies
+the effective ID before the agent looks for a local credential. When `--id` is
+supplied, it is asserted — the agent errors out if the enrollment response or
+persisted credential disagrees with it, which is useful for catching
+copy-paste mistakes.
 
-`credentialFile` is optional: when unset and `--id` is set, the agent
-defaults it to `$HOME/.unified-cd/<id>/credential.json`; when `--id` is
-omitted, it defaults to the shared `$HOME/.unified-cd/credential.json`
-instead. Either way the agent creates that owner-only directory on startup,
-so a fresh VM only needs an enrollment token. Running more than one agent on
-the same host without `--id` set therefore collides on that single shared
-default path — set `--id` or `--credential-file` explicitly for each agent
-in that case. `unified-cli agent enrollment create` prints the ready-to-run
+`credentialFile` is optional. Its default is always
+`$HOME/.unified-cd/<agent-id>/credential.json`; the agent creates the
+owner-only directory when it persists a credential. With no `--id`, a valid
+enrollment token supplies `<agent-id>` and the new credential is saved under
+that returned ID. With neither a token nor `--id`, the agent discovers and
+uses exactly one ID-scoped default credential. If more than one exists, start
+the intended agent with `--id` or `--credential-file`; it does not choose one
+arbitrarily. The former shared `$HOME/.unified-cd/credential.json` path is
+ignored by default and is used only when explicitly passed with
+`--credential-file`. A process never removes another ID's credential.
+
+See [Migrating to ID-scoped agent credentials](migration-agent-id-scoped-credentials.md)
+when upgrading a host that has the former shared credential path.
+
+`unified-cli agent enrollment create` prints the ready-to-run
 `unified-cd-agent` command for the new agent; run it directly, or wrap it in
 a hand-written service definition — see [Running the agent as a
 service](#running-the-agent-as-a-service) below.
@@ -35,9 +42,10 @@ service](#running-the-agent-as-a-service) below.
 `--agent-id` is optional: omit it and the controller auto-generates a canonical
 ID (`agent-XXXXXXXX`), returned in the command output — handy for ephemeral or
 autoscaling agents. Pass an explicit `--agent-id` when you want a stable,
-human-meaningful name. Note that running several *auto-generated* agents on one
-host requires an explicit `--credential-file` per agent, since without `--id`
-they share the single default credential path (see above).
+human-meaningful name. Several auto-generated agents can share a host because
+each persisted credential is scoped to its returned ID. For an ID-less,
+token-less restart with multiple local credentials, select the intended one
+with `--id` or `--credential-file`.
 
 The token can be supplied either as a file (`--enrollment-token-file`, the
 more secure default — nothing sensitive touches shell history or `ps`) or
@@ -134,7 +142,7 @@ systemctl --user enable --now unified-cd-agent
 Load with `launchctl load ~/Library/LaunchAgents/dev.unified-cd.agent.plist`.
 
 Both examples omit `--credential-file`: it defaults to
-`$HOME/.unified-cd/<id>/credential.json` when unset, so nothing needs to be
+`$HOME/.unified-cd/<agent-id>/credential.json` when unset, so nothing needs to be
 customized there for a fresh host. They also deliberately omit `--labels`:
 an enrolled agent's labels are fixed at enrollment time (`unified-cli agent
 enrollment create --label ...`), and the agent's own `--labels` flag is

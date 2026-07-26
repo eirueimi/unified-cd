@@ -831,12 +831,15 @@ registered agents. The agent itself runs as a separate binary
 (`unified-cd-agent`), started directly or as a hand-configured system
 service — see [Agent Identity and Enrollment](agents.md#agent-identity-and-enrollment)
 and [Configuration Reference: Agent](configuration.md#agent) for how to run
-it. `--id` is optional; it defaults to the identity bound to the enrollment
-token / persisted credential. `--credential-file` defaults to
-`$HOME/.unified-cd/<id>/credential.json` when `--id` is set, or the shared
-`$HOME/.unified-cd/credential.json` when it is omitted — set `--id` or
-`--credential-file` explicitly if you run more than one agent on the same
-host without `--id`.
+it. `--id` is optional; it defaults to the identity bound to a valid enrollment
+token or persisted credential. `--credential-file` always defaults to
+`$HOME/.unified-cd/<agent-id>/credential.json`. A valid explicit enrollment
+token supplies the effective ID before local discovery. Without a token or
+`--id`, the agent discovers exactly one ID-scoped default credential; if
+multiple exist, select one explicitly with `--id` or `--credential-file`.
+The former shared `$HOME/.unified-cd/credential.json` path is ignored unless
+explicitly selected with `--credential-file`. See [the migration guide](migration-agent-id-scoped-credentials.md)
+for existing installations.
 
 ### agent enrollment, identity, and enrollment-policy
 
@@ -967,7 +970,7 @@ deploys the agent. Read by the `unified-cd-agent` process, not by any
 `unified-cli` command above. See [Configuration Reference: Agent Config
 File](configuration.md#agent-config-file) for the full field list, flag/env
 equivalents, and defaults — including `credentialFile`, which defaults to
-`$HOME/.unified-cd/<id>/credential.json` when left unset.
+`$HOME/.unified-cd/<agent-id>/credential.json` when left unset.
 
 ---
 
