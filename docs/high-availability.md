@@ -38,7 +38,7 @@ Coordination between replicas happens entirely via PostgreSQL — no in-memory i
 
 ```
                     ┌──────────────┐
-   Browser / CLI ──►│ Load Balancer │  (L7, /healthz for health checks)
+   Browser / CLI ──►│ Load Balancer │  (L7, /readyz for routing checks)
    Agents           └──────┬───────┘
                            │  distributed (no sticky sessions needed)
         ┌──────────────────┼──────────────────┐
@@ -238,7 +238,7 @@ in the database any more.
 **Sticky sessions (session affinity) are not needed.**
 As described above, auth state lives in the DB or JWT, and SSE is propagated to all replicas via NOTIFY.
 
-- Use `/healthz` (see below) as the LB health check target.
+- Use `/readyz` (see below) as the LB routing health check target.
 - SSE is a long-lived connection; set the LB idle timeout generously (e.g. several minutes or more)
   and ensure buffering is disabled (the controller sends `X-Accel-Buffering: no`).
 
@@ -272,7 +272,7 @@ fast and re-dispatch in-flight requests to a healthy replica.
 
 On SIGINT/SIGTERM, the controller shuts down in stages:
 
-1. Calls `SetShuttingDown()`, causing `/healthz` to return **503** → the LB stops sending new traffic (drain begins).
+1. Calls `SetShuttingDown()`, causing `/healthz` and `/readyz` to return **503** → the LB stops sending new traffic (drain begins).
 2. Waits ~2 seconds, then gracefully shuts down the HTTP server with up to a 10-second grace period.
 3. Agent claim long-polls are immediately drained via `claimDrainCh`.
 
@@ -282,8 +282,8 @@ This enables one-at-a-time rolling deploys with no downtime.
 
 | Endpoint | Purpose | During shutdown |
 |----------|---------|-----------------|
-| `/healthz` | Liveness / LB health check | Returns 503 (for drain) |
-| `/readyz` | Readiness (also checks DB connectivity) | Returns 503 |
+| `/healthz` | Process liveness | Returns 503 (for drain) |
+| `/readyz` | Readiness / LB routing (also checks DB connectivity) | Returns 503 |
 
 In Kubernetes, assign `/healthz` as the liveness probe and `/readyz` as the readiness probe.
 `/readyz` pings the DB, so replicas with a DB connectivity issue are automatically rotated out.
@@ -528,13 +528,13 @@ spec:
 
 | Failure | Behavior |
 |---------|----------|
-| A non-leader controller goes down | LB stops routing to it (fails `/healthz`). Other replicas continue. No impact. |
+| A non-leader controller goes down | LB stops routing to it (fails `/readyz`). Other replicas continue. No impact. |
 | The **leader** controller goes down | Advisory lock is released, a follower becomes leader on the next tick. Scheduling pauses briefly. |
 | PostgreSQL primary fails → failover | All controllers get temporary DB errors. `/readyz` returns 503 and they are rotated out. Auto-reconnect and leader re-election after promotion. |
 | S3 failure | API continues. Log archive/retrieval temporarily fails (leader retries). In-progress Runs continue on agents. |
 | All controllers down | In-progress Runs continue on agents, but results cannot be reported and claiming stops. Resumes after controller recovery. |
 | An agent dies mid-Run | Its `Running` run is failed (not re-queued) by the stuck-run reaper within `staleAfter` (90s) + reaper interval (30s) of its last heartbeat. See [Orphaned-Run Recovery](#orphaned-run-recovery). |
-| Deploy (rolling) | One replica at a time: drain → stop → start new version. Zero-downtime via `/healthz` 503 drain. |
+| Deploy (rolling) | One replica at a time: drain → stop → start new version. Zero-downtime via `/readyz` 503 drain. |
 
 ---
 
@@ -546,7 +546,7 @@ spec:
 - [ ] PostgreSQL is in an HA configuration (managed service or Patroni etc.)
 - [ ] If using a pooler, it is in **session pooling mode** (required for advisory locks and NOTIFY)
 - [ ] S3 is managed or distributed Garage
-- [ ] LB health check is pointed at `/healthz` (readiness at `/readyz`)
+- [ ] LB routing health check is pointed at `/readyz`; process liveness monitoring uses `/healthz`
 - [ ] LB idle timeout is long enough for SSE connections
 - [ ] Sticky sessions are **disabled** (not needed)
 - [ ] Multiple agents are running in the same pool

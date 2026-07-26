@@ -918,6 +918,53 @@ of it is incomplete):
 - There is no way to recover the specific dropped lines after the fact; the
   count in the marker is the only remaining record that they existed.
 
+## Controller `/readyz` returns `503 db unavailable`
+
+**Symptom**
+
+`/healthz` returns `200`, but `/readyz` returns:
+
+```text
+db unavailable
+```
+
+Run, job, agent, claim, or heartbeat requests may stall or fail while the
+container still appears alive.
+
+**Cause**
+
+The process is running, but PostgreSQL is unavailable or the API connection
+pool cannot provide a connection before the readiness deadline. Pool
+exhaustion can result from sizing all controller replicas above PostgreSQL's
+`max_connections`; network and database outages produce the same readiness
+signal.
+
+**Diagnosis**
+
+Check PostgreSQL activity by state and wait event:
+
+```sql
+SELECT state, wait_event_type, wait_event, count(*)
+FROM pg_stat_activity
+WHERE datname = current_database()
+GROUP BY state, wait_event_type, wait_event
+ORDER BY count(*) DESC;
+```
+
+Compare the controller settings
+`UNIFIED_DB_API_MAX_CONNS`, `UNIFIED_DB_BACKGROUND_MAX_CONNS`,
+`UNIFIED_DB_LOCK_MAX_CONNS`, and `UNIFIED_DB_LISTEN_MAX_CONNS` across all
+replicas with PostgreSQL `max_connections`. The bundled Compose stack uses
+`128/32/16/128` per controller and sets the server limit to `1000`.
+
+**Fix**
+
+Restore PostgreSQL connectivity first. If the server is at its connection
+limit, reduce per-replica pool maxima or increase `max_connections` with
+memory and replica count included in the capacity calculation documented in
+[Operations: PostgreSQL connection budgeting](operations.md#postgresql-connection-budgeting).
+Do not rely on `/healthz` for traffic routing; use `/readyz`.
+
 ## Controller fails at startup with `schema drift: ... does not exist`
 
 **Symptom**

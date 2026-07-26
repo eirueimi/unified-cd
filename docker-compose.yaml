@@ -27,6 +27,7 @@ services:
   # ---- PostgreSQL ----
   postgres:
     image: postgres:16-alpine
+    command: [ "postgres", "-c", "max_connections=1000" ]
     environment:
       POSTGRES_USER: unified
       POSTGRES_PASSWORD: unified
@@ -84,6 +85,10 @@ services:
       GOCACHE: /gocache
       GOMODCACHE: /gomodcache
       UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
+      UNIFIED_DB_API_MAX_CONNS: "${UNIFIED_DB_API_MAX_CONNS:-128}"
+      UNIFIED_DB_BACKGROUND_MAX_CONNS: "${UNIFIED_DB_BACKGROUND_MAX_CONNS:-32}"
+      UNIFIED_DB_LOCK_MAX_CONNS: "${UNIFIED_DB_LOCK_MAX_CONNS:-16}"
+      UNIFIED_DB_LISTEN_MAX_CONNS: "${UNIFIED_DB_LISTEN_MAX_CONNS:-128}"
       UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
       # Persistent secret-encryption key. The controller command above
       # auto-generates secrets/kek with `unified-cli keygen` on first boot if it
@@ -110,7 +115,7 @@ services:
     ports:
       - "8080:8080"
     healthcheck:
-      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/healthz" ]
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/readyz" ]
       interval: 10s
       timeout: 5s
       start_period: 30s

@@ -50,6 +50,10 @@ unified-cd-controller [FLAGS]
 | Variable | Required | Description |
 |---|---|---|
 | `UNIFIED_DB_DSN` | **Yes** | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
+| `UNIFIED_DB_API_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for API, authentication, agent, bootstrap, and metrics queries. Positive integer; default `128`. |
+| `UNIFIED_DB_BACKGROUND_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for scheduler, reaper, archiver, retention, and reconciler queries. Positive integer; default `32`. |
+| `UNIFIED_DB_LOCK_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for session-level advisory locks. Positive integer; default `16`. |
+| `UNIFIED_DB_LISTEN_MAX_CONNS` | No | Maximum PostgreSQL connections reserved for SSE `LISTEN` sessions. Positive integer; default `128`. |
 | `UNIFIED_TOKEN` | Yes (without SSO) | Static admin bearer token. Auto-synced to DB as a PAT named `env:UNIFIED_TOKEN`. Required when OIDC is not configured. |
 | `UNIFIED_CONTROLLER_KEY_FILE` | Required | Path to a file containing a 32-byte hex master key (`unified-cli keygen --out /etc/unified-cd/kek`). Mutually exclusive with `UNIFIED_KMS_URI`. **All replicas must be given the same file in HA setups.** |
 | `UNIFIED_KMS_URI` | Optional | External KMS: `hashivault://[<mount>/]<key>` (default mount `transit`). The controller wraps DEKs with Vault/OpenBao Transit and never holds the key itself. |

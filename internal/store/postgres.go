@@ -26,18 +26,93 @@ import (
 var migrationsFS embed.FS
 
 type Postgres struct {
-	pool *pgxpool.Pool
+	pool           *pgxpool.Pool
+	backgroundPool *pgxpool.Pool
+	lockPool       *pgxpool.Pool
+	listenPool     *pgxpool.Pool
+	ownsPools      bool
+	closeOnce      *sync.Once
+}
+
+// PostgresPoolConfig bounds each independently reserved controller pool.
+type PostgresPoolConfig struct {
+	APIMaxConns        int32
+	BackgroundMaxConns int32
+	LockMaxConns       int32
+	ListenMaxConns     int32
+}
+
+// DefaultPostgresPoolConfig returns the controller's production pool limits.
+func DefaultPostgresPoolConfig() PostgresPoolConfig {
+	return PostgresPoolConfig{
+		APIMaxConns:        128,
+		BackgroundMaxConns: 32,
+		LockMaxConns:       16,
+		ListenMaxConns:     128,
+	}
 }
 
 func NewPostgres(ctx context.Context, dsn string) (*Postgres, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	return NewPostgresWithPoolConfig(ctx, dsn, DefaultPostgresPoolConfig())
+}
+
+// NewPostgresWithPoolConfig creates isolated API, background, lock, and listen pools.
+func NewPostgresWithPoolConfig(ctx context.Context, dsn string, cfg PostgresPoolConfig) (*Postgres, error) {
+	type poolSpec struct {
+		name string
+		max  int32
+		dst  **pgxpool.Pool
+	}
+	p := &Postgres{ownsPools: true, closeOnce: &sync.Once{}}
+	specs := []poolSpec{
+		{name: "api", max: cfg.APIMaxConns, dst: &p.pool},
+		{name: "background", max: cfg.BackgroundMaxConns, dst: &p.backgroundPool},
+		{name: "lock", max: cfg.LockMaxConns, dst: &p.lockPool},
+		{name: "listen", max: cfg.ListenMaxConns, dst: &p.listenPool},
+	}
+	for _, spec := range specs {
+		pool, err := newPostgresPool(ctx, dsn, spec.name, spec.max)
+		if err != nil {
+			p.Close()
+			return nil, err
+		}
+		*spec.dst = pool
+	}
+	for _, spec := range specs {
+		if err := (*spec.dst).Ping(ctx); err != nil {
+			p.Close()
+			return nil, fmt.Errorf("ping postgres %s pool: %w", spec.name, err)
+		}
+	}
+	return p, nil
+}
+
+func newPostgresPool(ctx context.Context, dsn, name string, maxConns int32) (*pgxpool.Pool, error) {
+	if maxConns <= 0 {
+		return nil, fmt.Errorf("postgres %s pool max connections must be positive", name)
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("pgx pool: %w", err)
+		return nil, fmt.Errorf("parse postgres %s pool config: %w", name, err)
 	}
-	if err := pool.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("ping postgres: %w", err)
+	cfg.MaxConns = maxConns
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create postgres %s pool: %w", name, err)
 	}
-	return &Postgres{pool: pool}, nil
+	return pool, nil
+}
+
+// BackgroundStore returns a non-owning view whose ordinary queries use the
+// background pool. Advisory locks and notification listeners remain isolated
+// in their dedicated pools.
+func (p *Postgres) BackgroundStore() *Postgres {
+	return &Postgres{
+		pool:           p.backgroundPool,
+		backgroundPool: p.backgroundPool,
+		lockPool:       p.lockPool,
+		listenPool:     p.listenPool,
+	}
 }
 
 func (p *Postgres) Migrate(dsn string) error {
@@ -72,9 +147,16 @@ func (p *Postgres) Ping(ctx context.Context) error {
 }
 
 func (p *Postgres) Close() {
-	if p.pool != nil {
-		p.pool.Close()
+	if !p.ownsPools || p.closeOnce == nil {
+		return
 	}
+	p.closeOnce.Do(func() {
+		for _, pool := range []*pgxpool.Pool{p.pool, p.backgroundPool, p.lockPool, p.listenPool} {
+			if pool != nil {
+				pool.Close()
+			}
+		}
+	})
 }
 
 // isUniqueViolation reports whether err is a PostgreSQL unique-constraint violation (23505).
@@ -1319,7 +1401,7 @@ const schedulerLockKey = int64(0x65786364) // 'excd'
 
 // AcquireAdvisoryLock acquires a session-level advisory lock for the given key on a dedicated connection.
 func (p *Postgres) AcquireAdvisoryLock(ctx context.Context, key int64) (func(), error) {
-	conn, err := p.pool.Acquire(ctx)
+	conn, err := p.lockPool.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1559,7 +1641,7 @@ func (p *Postgres) DeleteLogArchive(ctx context.Context, runID string) error {
 }
 
 func (p *Postgres) ListenForNotify(ctx context.Context, channel string, callback func(payload string)) error {
-	conn, err := p.pool.Acquire(ctx)
+	conn, err := p.listenPool.Acquire(ctx)
 	if err != nil {
 		return err
 	}

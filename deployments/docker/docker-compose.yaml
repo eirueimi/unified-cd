@@ -24,6 +24,10 @@ services:
   # ---- PostgreSQL ----
   postgres:
     image: postgres:16-alpine
+    # This limit covers the isolated controller pools with operational
+    # headroom. Configure the equivalent limit on an external PostgreSQL
+    # service before pointing UNIFIED_DB_DSN at it.
+    command: [ "postgres", "-c", "max_connections=1000" ]
     environment:
       POSTGRES_USER: unified
       POSTGRES_PASSWORD: unified
@@ -76,6 +80,10 @@ services:
         condition: service_healthy
     environment:
       UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
+      UNIFIED_DB_API_MAX_CONNS: "${UNIFIED_DB_API_MAX_CONNS:-128}"
+      UNIFIED_DB_BACKGROUND_MAX_CONNS: "${UNIFIED_DB_BACKGROUND_MAX_CONNS:-32}"
+      UNIFIED_DB_LOCK_MAX_CONNS: "${UNIFIED_DB_LOCK_MAX_CONNS:-16}"
+      UNIFIED_DB_LISTEN_MAX_CONNS: "${UNIFIED_DB_LISTEN_MAX_CONNS:-128}"
       UNIFIED_TOKEN: ${UNIFIED_TOKEN:-dev-token-change-me}
       # Defaults to dev mode: an ephemeral, in-memory key, so secrets do not
       # survive a restart. For a persistent local setup:
@@ -101,7 +109,7 @@ services:
     # The controller image is alpine-based (it needs the git CLI for AppSource
     # reconciliation), so busybox wget is available for a container healthcheck.
     healthcheck:
-      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/healthz" ]
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8080/readyz" ]
       interval: 10s
       timeout: 5s
       retries: 5
