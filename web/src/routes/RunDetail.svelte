@@ -64,10 +64,12 @@
       // below still kicks in, instead of poisoning totalCount with NaN.
       if (typeof s?.count === "number" && Number.isFinite(s.count)) {
         logWindow = { ...logWindow, totalCount: s.count };
+        return s;
       }
     } catch (e) {
       console.warn("log stats failed", e);
     }
+    return null;
   }
 
   let windowFetchToken = 0;
@@ -592,9 +594,19 @@
     // can observe a mismatched state in between.
     windowLoading = false;
     viewSwitching = false;
-    await refreshStats();
+    const initialStats = await refreshStats();
+    // The SSE endpoint replays rows that refreshStats() already counted before
+    // it starts sending live rows. A single server flush may be split across
+    // multiple ReadableStream chunks, so use the stats snapshot's max sequence
+    // to distinguish replayed rows from genuinely new ones across every chunk.
+    const backfillMaxSeq =
+      typeof initialStats?.maxSeq === "number" &&
+      Number.isFinite(initialStats.maxSeq)
+        ? initialStats.maxSeq
+        : null;
     if (logQuery) runSearch(); // re-run over the reconnected run (Task 5)
     let backfilled = false; // first non-empty batch is the SSE backfill, not a live append
+    let backfillWindowToken = null;
     abortController = new AbortController();
     const headers = {};
     const t = get(token);
@@ -682,7 +694,14 @@
             windowFetchToken++;
             windowLoading = false;
             viewSwitching = false;
-            const totalCount = Math.max(logWindow.totalCount, batch.length);
+            backfillWindowToken = windowFetchToken;
+            const replayedCount =
+              backfillMaxSeq === null
+                ? batch.length
+                : batch.filter((l) => l.seq <= backfillMaxSeq).length;
+            const liveCount = batch.length - replayedCount;
+            const totalCount =
+              Math.max(logWindow.totalCount, replayedCount) + liveCount;
             logWindow = {
               startRow: Math.max(0, totalCount - batch.length),
               lines: batch,
@@ -705,6 +724,26 @@
             const inView = logView.steps
               ? batch.filter((l) => logView.steps.includes(l.stepIndex))
               : batch;
+            const replayedCount =
+              backfillMaxSeq === null
+                ? 0
+                : inView.filter((l) => l.seq <= backfillMaxSeq).length;
+            const liveCount = inView.length - replayedCount;
+            // A range fetch or view switch increments windowFetchToken and
+            // installs an authoritative window that already contains its
+            // historical rows. Only extend the original all-steps SSE window
+            // with replay rows while that exact window generation is current;
+            // otherwise keep only genuinely live rows from this chunk.
+            const extendInitialBackfill =
+              backfillMaxSeq !== null &&
+              backfillWindowToken === windowFetchToken &&
+              logView.steps === null;
+            const linesToAppend =
+              backfillMaxSeq === null || extendInitialBackfill
+                ? inView
+                : inView.filter((l) => l.seq > backfillMaxSeq);
+            const appendedReplayCount =
+              extendInitialBackfill ? replayedCount : 0;
             const atTail = logWindow.startRow + logWindow.lines.length >= logWindow.totalCount;
             // A plain scroll-driven ensureRowsLoaded fetch (windowLoading
             // true, but NOT a view switch) is in flight: `lines`/`startRow`
@@ -715,16 +754,23 @@
             // totalCount is safe to grow — same as the "not at tail" case
             // below, which this reuses.
             if (atTail && !windowLoading) {
-              let lines = logWindow.lines.concat(inView);
-              let startRow = logWindow.startRow;
+              let lines = logWindow.lines.concat(linesToAppend);
+              // Later chunks from the initial replay belong immediately before
+              // the existing tail extent: they were already included in
+              // totalCount, so grow the materialized window backward instead
+              // of adding phantom rows after the end.
+              let startRow = Math.max(
+                0,
+                logWindow.startRow - appendedReplayCount,
+              );
               if (lines.length > WINDOW_MAX) {
                 const evict = lines.length - WINDOW_MAX;
                 lines = lines.slice(evict);
                 startRow += evict;
               }
-              logWindow = { ...logWindow, startRow, lines, totalCount: logWindow.totalCount + inView.length };
+              logWindow = { ...logWindow, startRow, lines, totalCount: logWindow.totalCount + liveCount };
             } else {
-              logWindow = { ...logWindow, totalCount: logWindow.totalCount + inView.length };
+              logWindow = { ...logWindow, totalCount: logWindow.totalCount + liveCount };
             }
           }
           // Stick-scroll applies to filtered views too: if the incoming
