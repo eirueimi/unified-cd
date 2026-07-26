@@ -170,6 +170,8 @@
   let logScrollTop = 0;
   let logViewportH = 600;
   let logStick = true; // keep auto-scrolling to the bottom while the user is there
+  let tailScrollFrame = null;
+  let tailScrollGeneration = 0;
 
   // Wrap long lines instead of scrolling horizontally. Wrapping makes rows a
   // VARIABLE height, so the virtual scroller switches from a fixed row height to
@@ -280,6 +282,87 @@
       logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight <
       LOG_ROW_H * 2;
   }
+  function invalidateLogTailScroll() {
+    tailScrollGeneration++;
+    const pending = tailScrollFrame;
+    tailScrollFrame = null;
+    if (pending && pending.id !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(pending.id);
+    }
+  }
+  function applyLogTailScroll() {
+    if (!logBox) return;
+    logBox.scrollTop = logBox.scrollHeight;
+    logScrollTop = logBox.scrollTop;
+  }
+  async function waitForLogLayout() {
+    await tick();
+    await new Promise((resolve) => {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(resolve);
+      } else {
+        resolve();
+      }
+    });
+  }
+  async function scrollLogToBottom() {
+    const generation = tailScrollGeneration;
+    await waitForLogLayout();
+    if (generation !== tailScrollGeneration) return;
+    applyLogTailScroll();
+    await waitForLogLayout();
+    if (generation !== tailScrollGeneration) return;
+    applyLogTailScroll();
+  }
+  async function scheduleLogTailScroll() {
+    if (tailScrollFrame !== null) return;
+    const generation = tailScrollGeneration;
+    const pending = { id: null };
+    tailScrollFrame = pending;
+    const clearPending = () => {
+      if (tailScrollFrame === pending) tailScrollFrame = null;
+    };
+    const canApply = () =>
+      tailScrollFrame === pending &&
+      generation === tailScrollGeneration &&
+      logStick;
+    const requestStage = (callback) => {
+      if (typeof requestAnimationFrame === "function") {
+        pending.id = requestAnimationFrame(callback);
+      } else {
+        pending.id = null;
+        queueMicrotask(callback);
+      }
+    };
+    await tick();
+    if (!canApply()) {
+      clearPending();
+      return;
+    }
+    requestStage(() => {
+      pending.id = null;
+      if (!canApply()) {
+        clearPending();
+        return;
+      }
+      applyLogTailScroll();
+      void tick().then(() => {
+        if (!canApply()) {
+          clearPending();
+          return;
+        }
+        requestStage(() => {
+          pending.id = null;
+          if (!canApply()) {
+            clearPending();
+            return;
+          }
+          applyLogTailScroll();
+          clearPending();
+        });
+      });
+    });
+  }
   // selectedStep/selectedParallelGroup select which server-side VIEW is
   // active (Task 4): null → all steps, a single step → [idx], a parallel
   // group → its indices. Switching views re-fetches stats + a fresh tail
@@ -297,6 +380,7 @@
     viewInitialized = true;
   }
   async function switchLogView(stepsSel) {
+    invalidateLogTailScroll();
     logView = { steps: stepsSel };
     logStick = true;
     const token = ++windowFetchToken; // invalidate any in-flight range fetch for the old view
@@ -350,11 +434,10 @@
       }
     }
     if (token !== windowFetchToken) return;
-    await tick();
+    const tailGeneration = tailScrollGeneration;
+    await scrollLogToBottom();
+    if (tailGeneration !== tailScrollGeneration) return;
     if (logQuery) runSearch(); // re-run over the new view (Task 5)
-    if (!logBox) return;
-    logBox.scrollTop = logBox.scrollHeight;
-    logScrollTop = logBox.scrollTop;
   }
 
   // ---- Server-side log search (Task 5) ----
@@ -595,6 +678,7 @@
     }, 3000);
   }
   async function startSSE() {
+    invalidateLogTailScroll();
     if (abortController) {
       abortController.abort();
       abortController = null;
@@ -794,11 +878,7 @@
           // batch is filtered out, scrollHeight is unchanged and the
           // assignment is a no-op.
           if (logStick) {
-            await tick();
-            if (logBox) {
-              logBox.scrollTop = logBox.scrollHeight;
-              logScrollTop = logBox.scrollTop;
-            }
+            void scheduleLogTailScroll();
           }
         }
         if (terminalStatus) {
@@ -838,6 +918,7 @@
   }
 
   async function init() {
+    invalidateLogTailScroll();
     // Reset the per-run log-view selection: step indices are per-run, so a
     // selection carried over from the previously-viewed run (this component
     // instance is REUSED across runID changes — see the `$: runID, init()`
@@ -873,6 +954,7 @@
   if (typeof window !== "undefined")
     window.addEventListener("resize", measureLogMetrics);
   onDestroy(() => {
+    invalidateLogTailScroll();
     if (abortController) abortController.abort();
     stopStepPolling();
     if (logSearchDebounce) clearTimeout(logSearchDebounce);
