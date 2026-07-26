@@ -74,22 +74,43 @@ func TestInstallShim_WritesExecutableFileUnderWorkspaceDir(t *testing.T) {
 	}
 }
 
-// TestInstallShim_DefaultsEmptyWorkspaceDir verifies InstallShim applies the
-// same "~/workspace" default Agent.Run applies to an unset WorkspaceDir, so
-// cmd/unified-cd-agent's InstallShim(*workspaceDir) call agrees with Run's own wsBase
-// computation even when the flag is left empty. Points HOME/USERPROFILE at a
-// throwaway temp dir first so this never touches the real home directory.
-func TestInstallShim_DefaultsEmptyWorkspaceDir(t *testing.T) {
+func TestResolveWorkspaceDir_DefaultsToCurrentDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	got, err := ResolveWorkspaceDir("")
+	require.NoError(t, err)
+	assert.Equal(t, cwd, got)
+	assert.True(t, filepath.IsAbs(got))
+}
+
+func TestResolveWorkspaceDir_PreservesExplicitRelativePath(t *testing.T) {
+	got, err := ResolveWorkspaceDir(filepath.Join("relative", "workspace"))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join("relative", "workspace"), got)
+}
+
+func TestResolveWorkspaceDir_ExpandsHome(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome)
+
+	got, err := ResolveWorkspaceDir("~/workspace")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(fakeHome, "workspace"), got)
+}
+
+func TestInstallShim_DefaultsEmptyWorkspaceDirToCurrentDirectory(t *testing.T) {
 	payload := []byte("fake-shim")
 	withFakeShimBytes(t, payload)
 
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
-	t.Setenv("USERPROFILE", fakeHome) // os.UserHomeDir() on Windows
+	cwd := t.TempDir()
+	t.Chdir(cwd)
 
 	toolsDir, err := InstallShim("")
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(fakeHome, "workspace", ".ucd-tools"), toolsDir)
+	assert.Equal(t, filepath.Join(cwd, ".ucd-tools"), toolsDir)
+	require.FileExists(t, filepath.Join(toolsDir, "ucd-sh"))
 }
 
 // TestInstallShim_OverwritesReadOnlyShim is the regression test for the

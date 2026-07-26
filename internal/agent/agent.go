@@ -220,12 +220,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		n = 1
 	}
 
-	wsBase := a.WorkspaceDir
-	if wsBase == "" {
-		wsBase = "~/workspace"
-	}
-	var err error
-	wsBase, err = expandHome(wsBase)
+	wsBase, err := ResolveWorkspaceDir(a.WorkspaceDir)
 	if err != nil {
 		return err
 	}
@@ -698,6 +693,21 @@ func resolveScopePath(p string) (string, error) {
 	return ContainWithinSlash(scopeWorkDir, p)
 }
 
+// ResolveWorkspaceDir resolves the workspace base used by the standard agent.
+// An empty value means the process's current working directory. Explicit
+// values retain the existing leading "~/" expansion and relative-path
+// semantics.
+func ResolveWorkspaceDir(workspaceDir string) (string, error) {
+	if workspaceDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve default workspace-dir from current directory: %w", err)
+		}
+		return cwd, nil
+	}
+	return expandHome(workspaceDir)
+}
+
 // expandHome expands a leading "~/" using os.UserHomeDir().
 func expandHome(path string) (string, error) {
 	if !strings.HasPrefix(path, "~/") {
@@ -717,8 +727,8 @@ func expandHome(path string) (string, error) {
 var shimBytes = embedded.Bytes
 
 // InstallShim writes the embedded ucd-sh binary into a tools directory
-// derived from workspaceDir (the same "~/workspace" default/expansion Run
-// applies to a.WorkspaceDir — see expandHome): a dot-prefixed subdirectory
+// derived from workspaceDir (the same current-directory default/expansion Run
+// applies to a.WorkspaceDir — see ResolveWorkspaceDir): a dot-prefixed subdirectory
 // INSIDE it, <expanded workspaceDir>/.ucd-tools/ucd-sh, mode 0755. It returns
 // the tools directory so the caller can set Agent.ToolsDir, which every
 // container-creating path (claim_pod.go, scope.go, workspace.go) reads to
@@ -759,11 +769,7 @@ func InstallShim(workspaceDir string) (toolsDir string, err error) {
 	if len(payload) == 0 {
 		return "", fmt.Errorf("ucd-sh shim is not embedded in this agent binary (0 bytes): the committed internal/shim/embedded/ucd-sh-<arch> is missing or empty — run `go generate ./internal/shim/embedded/` and rebuild before starting the agent")
 	}
-	wsBase := workspaceDir
-	if wsBase == "" {
-		wsBase = "~/workspace"
-	}
-	wsBase, err = expandHome(wsBase)
+	wsBase, err := ResolveWorkspaceDir(workspaceDir)
 	if err != nil {
 		return "", err
 	}
