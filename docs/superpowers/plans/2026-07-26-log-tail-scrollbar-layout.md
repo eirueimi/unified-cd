@@ -10,7 +10,23 @@
 applicability; `windowFetchToken` also changes for ordinary same-view range
 loads and must not cancel valid tail work. View switches perform both
 unconditional corrections before re-running an active search, so an immediate
-search match jump cannot be overwritten by tail placement.
+search match jump cannot be overwritten by tail placement. The caller
+re-checks the captured lifecycle generation after the awaited correction and
+does not start a stale search when a newer switch, run change, or teardown
+invalidated that correction.
+
+**Branch history through final re-review:** This work is a multi-commit branch,
+not a two-commit design/implementation pair:
+
+- `17cf744 docs: design stable log tail scrolling`
+- `f3f8d12 docs: plan stable log tail scrolling`
+- `2f7919c fix(web): keep long log views at tail`
+- `970a05b fix(web): schedule log tail scrolling`
+- `d602e27 fix(web): correct virtualized log tail layout`
+- `1b2641d test(web): model deferred log scrollbar layout`
+- `e340781 fix(web): preserve log tail correction races`
+
+The final lifecycle regression and documentation commit follows these commits.
 
 **Tech Stack:** Svelte 5, JavaScript, Vitest 4, Testing Library, jsdom, Vite 8
 
@@ -28,7 +44,9 @@ search match jump cannot be overwritten by tail placement.
 ## File Structure
 
 - `web/src/routes/RunDetail.svelte`: Owns the private unconditional view-switch helper and the non-blocking, coalesced SSE tail-scroll scheduler.
-- `web/src/routes/RunDetail.test.js`: Models delayed horizontal-scrollbar layout, non-blocking SSE consumption, callback coalescing, and manual scroll-away behavior.
+- `web/src/routes/RunDetail.test.js`: Models delayed horizontal-scrollbar layout, non-blocking SSE consumption, callback coalescing, manual scroll-away, same-view range-token movement, lifecycle invalidation, scheduler reuse, and view-search ordering.
+- `docs/superpowers/specs/2026-07-26-log-tail-scrollbar-layout-design.md`: Records the final two-stage scheduler, lifecycle, and search-ordering contract.
+- `docs/superpowers/plans/2026-07-26-log-tail-scrollbar-layout.md`: Records the final regression scope, inspection gates, and multi-commit branch evidence.
 
 ### Task 1: Stabilize Tail Scrolling After Layout
 
@@ -173,12 +191,14 @@ without an animation frame.
 
 - [ ] **Step 4: Route view switching and SSE following through their appropriate paths**
 
-In `switchLogView()`, keep search behavior and replace the immediate
-scroll block with:
+In `switchLogView()`, finish the unconditional correction first, then start
+search only if the correction still belongs to the current lifecycle:
 
 ```javascript
-if (logQuery) runSearch();
+const tailGeneration = tailScrollGeneration;
 await scrollLogToBottom();
+if (tailGeneration !== tailScrollGeneration) return;
+if (logQuery) runSearch();
 ```
 
 In the SSE read loop, schedule rather than await the post-layout scroll:
@@ -198,23 +218,28 @@ Run:
 
 ```powershell
 npm.cmd test -- RunDetail.test.js -t "reapplies tail scrolling after a horizontal scrollbar changes the viewport height"
+npm.cmd test -- RunDetail.test.js -t "same-view range load advances|scrollbar-adjusted geometry|changes runs|component is destroyed|scheduler after an early-return|stale view search"
 npm.cmd test -- RunDetail.test.js
 ```
 
-Expected: the regression test passes, followed by all `RunDetail.test.js`
-tests passing with zero failures.
+Expected: the initial-backfill geometry test and all six final controlled
+regressions pass, followed by the complete `RunDetail.test.js` suite with zero
+failures.
 
 - [ ] **Step 6: Inspect the implementation diff**
 
 Run:
 
 ```powershell
-git diff -- web/src/routes/RunDetail.svelte web/src/routes/RunDetail.test.js
+git diff -- web/src/routes/RunDetail.svelte web/src/routes/RunDetail.test.js docs/superpowers/specs/2026-07-26-log-tail-scrollbar-layout-design.md docs/superpowers/plans/2026-07-26-log-tail-scrollbar-layout.md
 git diff --check
 ```
 
-Confirm that the diff contains only the geometry regression test, the helper,
-and replacement of the two duplicate tail-scroll blocks.
+Confirm that the diff contains the stale-search lifecycle re-check, the six
+controlled final regressions, and documentation of scheduler applicability,
+invalidation, cleanup/reuse, view geometry, search ordering, and the actual
+multi-commit branch. Confirm no fetching, filtering, virtualization, search
+payload, or wrapping behavior changed.
 
 - [ ] **Step 7: Run the complete UI verification**
 
@@ -233,16 +258,17 @@ exit code 0.
 Run:
 
 ```powershell
-npm.cmd test -- RunDetail.test.js -t "reapplies tail scrolling after a horizontal scrollbar changes the viewport height"
+npm.cmd test -- RunDetail.test.js -t "reapplies tail scrolling|does not block SSE chunks|does not pull the user back|starts an active-query|same-view range load advances|scrollbar-adjusted geometry|changes runs|component is destroyed|scheduler after an early-return|stale view search"
 ```
 
-Expected: one matching test passes with zero failures.
+Expected: all ten tail lifecycle, geometry, non-blocking, coalescing, range,
+invalidation, reuse, and search-ordering regressions pass with zero failures.
 
 - [ ] **Step 9: Commit the tested implementation**
 
 ```powershell
-git add web/src/routes/RunDetail.svelte web/src/routes/RunDetail.test.js
-git commit -m "fix(web): keep long log views at tail"
+git add web/src/routes/RunDetail.svelte web/src/routes/RunDetail.test.js docs/superpowers/specs/2026-07-26-log-tail-scrollbar-layout-design.md docs/superpowers/plans/2026-07-26-log-tail-scrollbar-layout.md
+git commit -m "fix(web): close log tail lifecycle races"
 ```
 
 - [ ] **Step 10: Record final repository evidence**
@@ -251,8 +277,10 @@ Run:
 
 ```powershell
 git status --short --branch
-git log -2 --oneline
+git log --oneline b0ba3b4..HEAD
 ```
 
 Expected: a clean `fix/log-tail-scrollbar-layout` worktree containing the
-design commit and the implementation commit.
+design and plan commits, each scheduler and geometry fix wave, the fidelity
+test commit, the final race-ordering commit, and the final lifecycle regression
+commit.

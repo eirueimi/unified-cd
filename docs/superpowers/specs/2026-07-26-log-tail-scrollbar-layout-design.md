@@ -51,7 +51,10 @@ generation, not the ordinary range-fetch token: same-view range loads may
 advance their token between correction stages without making the run/view
 stale. A view switch completes both unconditional corrections before starting
 an active log search, preventing a fast match jump from being overwritten by
-the tail placement.
+the tail placement. The view-switch caller captures the lifecycle generation
+before awaiting the correction and re-checks it afterward. If a newer view
+switch, run change, or teardown invalidated the correction between stages, the
+stale caller returns without starting a search for the newer lifecycle.
 
 No observer or persistent event listener is needed. A `ResizeObserver` would
 cover unrelated future resizes but would add lifecycle management and could
@@ -84,8 +87,14 @@ that model the observed sequence:
 - same-view range-token movement between SSE stages does not discard a valid
   terminal correction; lifecycle invalidation still does, and the scheduler
   can be reused after an early-return cleanup;
+- a view switch reaches the scrollbar-reduced viewport and a zero bottom
+  distance through the unconditional two-stage helper;
+- run changes and teardown cancel and invalidate a pending second stage;
+- a first-stage early return clears the scheduler sentinel so a later eligible
+  SSE batch can schedule and complete both stages;
 - an active-query view switch delays its immediate search response until both
-  unconditional tail corrections complete.
+  unconditional tail corrections complete, while a superseded view switch
+  never starts a stale search after its correction returns early.
 
 The regression test must fail against the current immediate-scroll
 implementation and pass after the helper is used. Existing tests continue to

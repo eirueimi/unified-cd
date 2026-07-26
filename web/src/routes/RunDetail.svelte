@@ -434,7 +434,9 @@
       }
     }
     if (token !== windowFetchToken) return;
+    const tailGeneration = tailScrollGeneration;
     await scrollLogToBottom();
+    if (tailGeneration !== tailScrollGeneration) return;
     if (logQuery) runSearch(); // re-run over the new view (Task 5)
   }
 
