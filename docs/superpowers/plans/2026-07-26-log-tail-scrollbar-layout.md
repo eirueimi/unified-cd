@@ -4,7 +4,7 @@
 
 **Goal:** Keep the unwrapped Web UI log view at the true tail when a long line adds a horizontal scrollbar during browser layout.
 
-**Architecture:** Add a private `scrollLogToBottom()` helper in `RunDetail.svelte` that waits for Svelte DOM updates and the next browser animation frame before assigning the final scroll position. Use it from both log-view switching and SSE stick-scroll paths, while leaving the existing `logStick` decision and virtualization model unchanged.
+**Architecture:** Add private tail-scroll helpers in `RunDetail.svelte`. Log-view switching awaits Svelte's DOM update and the next browser animation frame before assigning the final position. SSE stick-scrolling schedules and coalesces that post-layout assignment without awaiting an animation frame in the reader; its callback re-checks `logStick` and the captured run/view generation. Pending callbacks are cancelled or invalidated on teardown, run changes, and superseding view switches.
 
 **Tech Stack:** Svelte 5, JavaScript, Vitest 4, Testing Library, jsdom, Vite 8
 
@@ -21,8 +21,8 @@
 
 ## File Structure
 
-- `web/src/routes/RunDetail.svelte`: Owns the private tail-scroll helper and calls it from the existing view-switch and SSE follow paths.
-- `web/src/routes/RunDetail.test.js`: Models delayed horizontal-scrollbar layout and verifies the resulting consumer-visible bottom distance.
+- `web/src/routes/RunDetail.svelte`: Owns the private unconditional view-switch helper and the non-blocking, coalesced SSE tail-scroll scheduler.
+- `web/src/routes/RunDetail.test.js`: Models delayed horizontal-scrollbar layout, non-blocking SSE consumption, callback coalescing, and manual scroll-away behavior.
 
 ### Task 1: Stabilize Tail Scrolling After Layout
 
@@ -32,7 +32,7 @@
 
 **Interfaces:**
 - Consumes: Svelte `tick(): Promise<void>`, browser `requestAnimationFrame(callback): number`, existing `logBox`, `logScrollTop`, and `logStick` state.
-- Produces: private `async function scrollLogToBottom(): Promise<void>`.
+- Produces: private `async function scrollLogToBottom(): Promise<void>` for view switches and a private non-blocking SSE tail-scroll scheduler.
 
 - [ ] **Step 1: Add the failing browser-geometry regression test**
 
@@ -71,9 +71,11 @@ it('reapplies tail scrolling after a horizontal scrollbar changes the viewport h
     },
   });
   globalThis.requestAnimationFrame = (callback) => {
-    layoutSettled = true;
     const id = ++frameID;
-    queueMicrotask(() => callback(performance.now()));
+    queueMicrotask(() => {
+      layoutSettled = true;
+      callback(performance.now());
+    });
     return id;
   };
 
@@ -131,7 +133,7 @@ Expected: FAIL with a bottom-distance comparison equivalent to
 `expected 16 to be 0`. A syntax error, timeout, or missing fixture is not the
 required RED result and must be corrected before proceeding.
 
-- [ ] **Step 3: Add the minimal deferred tail-scroll helper**
+- [ ] **Step 3: Add deferred view-switch scrolling and non-blocking SSE scheduling**
 
 Add the helper next to `onLogScroll()` in `RunDetail.svelte`:
 
@@ -151,10 +153,15 @@ async function scrollLogToBottom() {
 }
 ```
 
-The non-browser fallback keeps jsdom and any non-visual environment usable;
-real browsers always take the animation-frame path.
+Keep this awaited helper for unconditional current-view placement. Add a
+separate scheduler for SSE batches: mark a pending callback before `tick()`,
+coalesce redundant batches, then request one animation frame without awaiting
+it from the reader. The callback must re-check `logStick` and its captured
+run/view generation before assigning the tail. Invalidate or cancel pending
+work during teardown, run changes, SSE restarts, and superseding view switches.
+The non-browser fallback applies after `tick()` without an animation frame.
 
-- [ ] **Step 4: Route both existing tail-scroll paths through the helper**
+- [ ] **Step 4: Route view switching and SSE following through their appropriate paths**
 
 In `switchLogView()`, keep search behavior and replace the immediate
 scroll block with:
@@ -164,15 +171,16 @@ if (logQuery) runSearch();
 await scrollLogToBottom();
 ```
 
-In the SSE read loop, replace the `await tick()` and direct assignment with:
+In the SSE read loop, schedule rather than await the post-layout scroll:
 
 ```javascript
 if (logStick) {
-  await scrollLogToBottom();
+  void scheduleLogTailScroll();
 }
 ```
 
-Do not change when `logStick` is calculated or reset.
+Do not change when `logStick` is calculated or reset; re-check it at deferred
+callback time to avoid overriding a user scroll that occurs before the frame.
 
 - [ ] **Step 5: Run the regression test and focused component suite**
 

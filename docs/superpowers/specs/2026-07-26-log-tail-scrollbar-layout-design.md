@@ -25,7 +25,7 @@ when following live SSE batches, so both paths can exhibit the problem.
 
 ## Design
 
-Add one small asynchronous helper that owns tail scrolling:
+Use two tail-scroll paths that share the final assignment:
 
 1. Wait for Svelte's pending DOM update with `tick()`.
 2. Wait for the browser's next animation frame so layout and scrollbar
@@ -33,10 +33,13 @@ Add one small asynchronous helper that owns tail scrolling:
 3. Assign `scrollTop = scrollHeight` and mirror the resulting value into
    `logScrollTop`.
 
-Replace the duplicate immediate tail-scroll assignments in the log-view
-switch and SSE follow paths with this helper. The existing `logStick` check
-continues to decide whether SSE batches may trigger the helper, so manual
-scrolling away from the tail remains respected.
+Log-view switches await this sequence because their tail placement is
+unconditional for the current view. SSE batches must not await it: they mark
+one coalesced pending post-layout scroll and immediately continue reading the
+stream. The scheduled callback re-checks `logStick` and the captured run/view
+generation before assigning the tail, so a user scroll away, a view switch,
+or a run change invalidates stale work. Teardown, SSE restart, and every view
+switch also cancel or invalidate any pending callback.
 
 No observer or persistent event listener is needed. A `ResizeObserver` would
 cover unrelated future resizes but would add lifecycle management and could
@@ -45,9 +48,12 @@ directly addresses the observed DOM-to-layout timing gap.
 
 ## Failure Handling
 
-If the log element is no longer mounted when the deferred frame runs, the
-helper exits without changing state. This covers route changes and component
-teardown without introducing a new error path.
+If the log element is no longer mounted, the generation is stale, or the user
+has left the tail when the deferred frame runs, the scheduled callback exits
+without changing state. This covers route changes and component teardown
+without introducing a new error path. When animation frames are unavailable,
+the scheduled path applies after `tick()` without a frame so non-visual
+environments remain usable.
 
 ## Testing
 
@@ -56,7 +62,11 @@ that model the observed sequence:
 
 - the first tail assignment occurs against the pre-scrollbar viewport;
 - a horizontal scrollbar then reduces `clientHeight`;
-- the animation-frame follow-up must reach the new maximum scroll position.
+- the animation-frame follow-up must reach the new maximum scroll position;
+- suspended controlled frames do not block subsequent SSE chunks or terminal
+  status handling, and redundant batches coalesce into one callback;
+- a user who scrolls away before the controlled callback runs is not pulled
+  back to the tail.
 
 The regression test must fail against the current immediate-scroll
 implementation and pass after the helper is used. Existing tests continue to

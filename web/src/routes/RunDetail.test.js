@@ -1432,9 +1432,11 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
       },
     });
     globalThis.requestAnimationFrame = (callback) => {
-      layoutSettled = true;
       const id = ++frameID;
-      queueMicrotask(() => callback(performance.now()));
+      queueMicrotask(() => {
+        layoutSettled = true;
+        callback(performance.now());
+      });
       return id;
     };
 
@@ -1470,6 +1472,122 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
       restore();
       if (descCH) Object.defineProperty(Element.prototype, 'clientHeight', descCH);
       else delete Element.prototype.clientHeight;
+      if (originalRAF) globalThis.requestAnimationFrame = originalRAF;
+      else delete globalThis.requestAnimationFrame;
+    }
+  });
+
+  it('does not block SSE chunks or terminal status while a tail frame is pending, and coalesces callbacks', async () => {
+    const originalRAF = globalThis.requestAnimationFrame;
+    const frames = [];
+    const enc = new TextEncoder();
+    let readCount = 0;
+    globalThis.requestAnimationFrame = (callback) => {
+      frames.push(callback);
+      return frames.length;
+    };
+
+    try {
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            body: {
+              getReader() {
+                return {
+                  read: async () => {
+                    readCount++;
+                    if (readCount === 1) {
+                      return {
+                        done: false,
+                        value: enc.encode(`data: ${JSON.stringify({ type: 'log', seq: 1, stepIndex: 0, stream: 'stdout', line: 'first' })}\n\n`),
+                      };
+                    }
+                    if (readCount === 2) {
+                      return {
+                        done: false,
+                        value: enc.encode(
+                          `data: ${JSON.stringify({ type: 'log', seq: 2, stepIndex: 0, stream: 'stdout', line: 'second' })}\n\n` +
+                          `data: ${JSON.stringify({ type: 'status', status: 'Succeeded' })}\n\n`,
+                        ),
+                      };
+                    }
+                    return { done: true, value: undefined };
+                  },
+                };
+              },
+            },
+          });
+        }
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({
+          id: 'run-nonblocking-tail',
+          status: 'Running',
+          jobName: 'j',
+          triggeredBy: 'x',
+          createdAt: null,
+          params: {},
+        });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, {
+        props: { params: { id: 'run-nonblocking-tail' } },
+      });
+      await vi.waitFor(() => expect(readCount).toBeGreaterThanOrEqual(2));
+      expect(container.textContent).toContain('Succeeded');
+      expect(frames).toHaveLength(1);
+    } finally {
+      restore();
+      if (originalRAF) globalThis.requestAnimationFrame = originalRAF;
+      else delete globalThis.requestAnimationFrame;
+    }
+  });
+
+  it('does not pull the user back after they leave the tail before a pending frame runs', async () => {
+    const originalRAF = globalThis.requestAnimationFrame;
+    const frames = [];
+    globalThis.requestAnimationFrame = (callback) => {
+      frames.push(callback);
+      return frames.length;
+    };
+
+    try {
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(200, true);
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({
+          id: 'run-leave-tail',
+          status: 'Succeeded',
+          jobName: 'j',
+          triggeredBy: 'x',
+          createdAt: null,
+          params: {},
+        });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, {
+        props: { params: { id: 'run-leave-tail' } },
+      });
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+
+      const box = container.querySelector('.log-box');
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+      frames.shift()(performance.now());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(box.scrollTop).toBe(0);
+    } finally {
+      restore();
       if (originalRAF) globalThis.requestAnimationFrame = originalRAF;
       else delete globalThis.requestAnimationFrame;
     }
