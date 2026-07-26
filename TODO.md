@@ -97,8 +97,8 @@ Last audited: 2026-07-26 against `1e46459`.
 
 - **Status:** Partial
 - **Impact:** Owner-agent downloads already traverse the real router, but successful human-viewer access and cross-run access by a distinct enrolled agent remain unproven, so principal or router regressions can still violate the documented download contract.
-- **Evidence:** `internal/controller/api_artifacts_test.go` `TestArtifact_UploadDownload_RoundTrip` sends an owner enrolled-agent download through `s.Router().ServeHTTP`, requires HTTP 200, and compares the exact artifact bytes; `TestArtifactDownload_RejectsNoAuth` covers unauthenticated rejection only at the direct handler.
-- **Done when:** Router-level tests seed exact artifact bytes and prove byte-for-byte success for a human viewer and a distinct non-owner enrolled agent under the documented cross-run contract, plus unauthenticated rejection; agent ownership tightening remains a separate product decision.
+- **Evidence:** `internal/controller/api_artifacts_test.go` `TestArtifact_UploadDownload_RoundTrip` sends an owner enrolled-agent download through `s.Router().ServeHTTP`, requires HTTP 200, and compares the exact artifact bytes; `TestArtifactDownload_RejectsNoAuth` sends an unauthenticated request through `s.r.ServeHTTP` and requires HTTP 401.
+- **Done when:** Router-level tests seed exact artifact bytes and prove byte-for-byte successful downloads for a human viewer and a distinct non-owner enrolled agent under the documented cross-run contract.
 
 ### 35e. Assert HTTP methods for every CLI request constructor
 
