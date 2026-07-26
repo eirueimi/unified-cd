@@ -455,6 +455,178 @@ describe('RunDetail — log virtualization', () => {
     expect(rows.length).toBeLessThanOrEqual(60);
   });
 
+  it('does not count a split initial SSE backfill twice as phantom rows', async () => {
+    const N = 100;
+    const splitAt = 40;
+    const enc = new TextEncoder();
+    const chunks = [
+      Array.from({ length: splitAt }, (_, i) =>
+        `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'line ' + i })}\n\n`,
+      ).join(''),
+      Array.from({ length: N - splitAt }, (_, i) => {
+        const row = splitAt + i;
+        return `data: ${JSON.stringify({ type: 'log', seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'line ' + row })}\n\n`;
+      }).join(''),
+    ];
+    let chunkIndex = 0;
+    let finishStream;
+    const streamDone = new Promise((resolve) => {
+      finishStream = resolve;
+    });
+    const statsRange = statsAndRange(N, (row) => ({
+      seq: row + 1,
+      stepIndex: 0,
+      stream: 'stdout',
+      line: 'line ' + row,
+    }));
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          body: {
+            getReader() {
+              return {
+                read: async () => {
+                  if (chunkIndex < chunks.length) {
+                    return { done: false, value: enc.encode(chunks[chunkIndex++]) };
+                  }
+                  finishStream();
+                  return { done: true, value: undefined };
+                },
+              };
+            },
+          },
+        });
+      }
+      const sr = statsRange(url);
+      if (sr) return sr;
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      if (u.includes('/artifacts')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-split-backfill', status: 'Running', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-split-backfill' } } });
+    await streamDone;
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain(`${N} lines`);
+      expect(container.textContent).not.toContain(`${N + (N - splitAt)} lines`);
+    });
+  });
+
+  it('does not reinsert historical replay rows after a step range switch', async () => {
+    const descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    const descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 120000 : 0; },
+    });
+
+    try {
+      const TOTAL = 6000;
+      const enc = new TextEncoder();
+      const firstChunk = Array.from({ length: 10 }, (_, i) =>
+        `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'initial step 0 ' + i })}\n\n`,
+      ).join('');
+      const secondChunk = Array.from({ length: 10 }, (_, i) => {
+        const seq = TOTAL - 9 + i;
+        return `data: ${JSON.stringify({ type: 'log', seq, stepIndex: 1, stream: 'stdout', line: 'duplicate replay ' + seq })}\n\n`;
+      }).join('');
+      let readCount = 0;
+      let releaseSecondChunk;
+      const secondChunkGate = new Promise((resolve) => {
+        releaseSecondChunk = resolve;
+      });
+      let finishStream;
+      const streamDone = new Promise((resolve) => {
+        finishStream = resolve;
+      });
+      const stepLine = (row) => ({
+        seq: row + 1,
+        stepIndex: 1,
+        stream: 'stdout',
+        line: 'range row ' + row,
+      });
+      const stepStatsRange = statsAndRange(TOTAL, stepLine);
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            body: {
+              getReader() {
+                return {
+                  read: async () => {
+                    readCount++;
+                    if (readCount === 1) {
+                      return { done: false, value: enc.encode(firstChunk) };
+                    }
+                    if (readCount === 2) {
+                      await secondChunkGate;
+                      return { done: false, value: enc.encode(secondChunk) };
+                    }
+                    finishStream();
+                    return { done: true, value: undefined };
+                  },
+                };
+              },
+            },
+          });
+        }
+        if (u.includes('steps=1')) {
+          const sr = stepStatsRange(url);
+          if (sr) return sr;
+        }
+        if (u.includes('/logs/stats')) {
+          return jsonResponse({ count: TOTAL + 10, minSeq: 1, maxSeq: TOTAL });
+        }
+        if (u.includes('/logs/range')) return jsonResponse([]);
+        if (u.includes('/steps')) {
+          return jsonResponse([
+            { index: 0, stageIndex: 0, name: 'setup', status: 'Succeeded', kind: 'run', section: 'main' },
+            { index: 1, stageIndex: 1, name: 'build', status: 'Running', kind: 'run', section: 'main' },
+          ]);
+        }
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-split-switch', status: 'Running', jobName: 'job-a', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, { props: { params: { id: 'run-split-switch' } } });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.step-row').length).toBe(2);
+      });
+
+      await fireEvent.click(container.querySelectorAll('.step-row')[1]);
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((row) => row.textContent);
+        expect(texts.some((text) => text.includes('range row 5999'))).toBe(true);
+      });
+
+      releaseSecondChunk();
+      await streamDone;
+      await vi.waitFor(() => {
+        const texts = [...container.querySelectorAll('.log-row')].map((row) => row.textContent);
+        expect(texts.some((text) => text.includes('duplicate replay'))).toBe(false);
+      });
+      expect(container.textContent).toContain(`${TOTAL.toLocaleString()} lines`);
+    } finally {
+      if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+      if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+    }
+  });
+
   // Task 5: search is no longer client-side (scanning only the in-memory
   // window) — it's a server call over the FULL view via
   // `/logs/search?q=...`, which can find matches far outside the currently
