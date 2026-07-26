@@ -36,7 +36,7 @@ This requires `jq`.
 
 ```bash
 legacy="$HOME/.unified-cd/credential.json"
-agent_id=$(jq -er '.agentId | strings | select(length > 0 and test("^[^/\\\\]+$"))' "$legacy")
+agent_id=$(jq -er '.agentId | strings | select(test("\\S")) | select(. != "." and . != "..") | select(test("^[^/\\\\]+$"))' "$legacy")
 destination_dir="$HOME/.unified-cd/$agent_id"
 (umask 077; mkdir -p "$destination_dir")
 mv "$legacy" "$destination_dir/credential.json"
@@ -49,13 +49,27 @@ chmod 600 "$destination_dir/credential.json"
 ```powershell
 $legacy = Join-Path $HOME '.unified-cd\credential.json'
 $agentId = (Get-Content -Raw -LiteralPath $legacy | ConvertFrom-Json).agentId
-if ([string]::IsNullOrWhiteSpace($agentId) -or $agentId -match '[\\/]') {
+if ([string]::IsNullOrWhiteSpace($agentId) -or $agentId -in @('.', '..') -or $agentId -match '[\\/]') {
     throw 'credential .agentId must be one non-empty path component'
 }
 $destinationDir = Join-Path (Join-Path $HOME '.unified-cd') $agentId
-New-Item -ItemType Directory -Force -Path $destinationDir | Out-Null
-$owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-icacls $destinationDir /inheritance:r /grant:r "${owner}:(OI)(CI)F" | Out-Null
+if (Test-Path -LiteralPath $destinationDir) {
+    throw 'destination credential directory already exists'
+}
+New-Item -ItemType Directory -Path $destinationDir | Out-Null
+$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$directorySecurity = [System.Security.AccessControl.DirectorySecurity]::new()
+$directorySecurity.SetAccessRuleProtection($true, $false)
+$directorySecurity.SetOwner($currentUser.User)
+$ownerRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    $currentUser.User,
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+    [System.Security.AccessControl.PropagationFlags]::None,
+    [System.Security.AccessControl.AccessControlType]::Allow
+)
+$directorySecurity.AddAccessRule($ownerRule)
+Set-Acl -LiteralPath $destinationDir -AclObject $directorySecurity
 Move-Item -LiteralPath $legacy -Destination (Join-Path $destinationDir 'credential.json')
 ```
 
