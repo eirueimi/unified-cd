@@ -196,9 +196,6 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	if response.AgentID == "" || response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
 		return "", fmt.Errorf("credential response is invalid")
 	}
-	if err := validateAgentIDPathComponent(response.AgentID); err != nil {
-		return "", err
-	}
 	if m.configuredAgentID != "" && response.AgentID != m.configuredAgentID {
 		return "", fmt.Errorf("credential response agent ID %q does not match configured agent ID %q", response.AgentID, m.configuredAgentID)
 	}
@@ -231,9 +228,6 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 func (m *CredentialManager) persistTokenResponse(response api.AgentTokenResponse, enrolled bool) (string, error) {
 	if response.AgentID == "" || response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
 		return "", fmt.Errorf("credential response is invalid")
-	}
-	if err := validateAgentIDPathComponent(response.AgentID); err != nil {
-		return "", err
 	}
 	if m.configuredAgentID != "" && response.AgentID != m.configuredAgentID {
 		return "", fmt.Errorf("credential response agent ID %q does not match configured agent ID %q", response.AgentID, m.configuredAgentID)

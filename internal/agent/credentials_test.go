@@ -963,3 +963,25 @@ func TestCredentialManager_Fallback401MissingDefaultCredentialReturnsOriginalErr
 	require.EqualError(t, err, "credential request returned http 401")
 	assert.Equal(t, []string{"/api/v1/agents/enroll"}, paths)
 }
+
+func TestCredentialManager_ExplicitCredentialFileAllowsPathSensitiveReturnedID(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "credential.json")
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		response := tokenResponse("uca_new", "ucr_new", now)
+		response.AgentID = "agent/other"
+		_ = json.NewEncoder(w).Encode(response)
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{
+		Server: srv.URL, EnrollmentToken: "uce_new", CredentialFile: path, HTTPClient: srv.Client(),
+		Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 },
+	})
+
+	token, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "uca_new", token)
+	credential, readErr := readCredentialFile(path)
+	require.NoError(t, readErr)
+	assert.Equal(t, "agent/other", credential.AgentID)
+}
