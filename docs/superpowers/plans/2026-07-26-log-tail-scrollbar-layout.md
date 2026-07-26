@@ -6,6 +6,12 @@
 
 **Architecture:** Add private tail-scroll helpers in `RunDetail.svelte`. Log-view switching awaits two Svelte DOM update and browser animation-frame boundaries, assigning the final position after each: the first can materialize the virtualized long tail, and the second corrects its resulting horizontal scrollbar geometry. SSE stick-scrolling schedules and coalesces the same two-stage correction without awaiting an animation frame in the reader; callbacks re-check `logStick` and the captured run/view generation. Pending callbacks are cancelled or invalidated on teardown, run changes, and superseding view switches, and the sentinel is cleared on every completion or early return.
 
+**Final race ordering:** SSE corrections use only `tailScrollGeneration` for
+applicability; `windowFetchToken` also changes for ordinary same-view range
+loads and must not cancel valid tail work. View switches perform both
+unconditional corrections before re-running an active search, so an immediate
+search match jump cannot be overwritten by tail placement.
+
 **Tech Stack:** Svelte 5, JavaScript, Vitest 4, Testing Library, jsdom, Vite 8
 
 ## Global Constraints

@@ -317,7 +317,6 @@
   async function scheduleLogTailScroll() {
     if (tailScrollFrame !== null) return;
     const generation = tailScrollGeneration;
-    const viewGeneration = windowFetchToken;
     const pending = { id: null };
     tailScrollFrame = pending;
     const clearPending = () => {
@@ -326,7 +325,6 @@
     const canApply = () =>
       tailScrollFrame === pending &&
       generation === tailScrollGeneration &&
-      viewGeneration === windowFetchToken &&
       logStick;
     const requestStage = (callback) => {
       if (typeof requestAnimationFrame === "function") {
@@ -436,8 +434,8 @@
       }
     }
     if (token !== windowFetchToken) return;
-    if (logQuery) runSearch(); // re-run over the new view (Task 5)
     await scrollLogToBottom();
+    if (logQuery) runSearch(); // re-run over the new view (Task 5)
   }
 
   // ---- Server-side log search (Task 5) ----

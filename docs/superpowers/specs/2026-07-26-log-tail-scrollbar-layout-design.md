@@ -46,6 +46,13 @@ switch also cancel or invalidate any pending callback. The scheduler retains
 its pending sentinel across both correction stages and clears it on every
 completion or early-return path.
 
+The SSE scheduler guards only with the lifecycle-oriented tail-scroll
+generation, not the ordinary range-fetch token: same-view range loads may
+advance their token between correction stages without making the run/view
+stale. A view switch completes both unconditional corrections before starting
+an active log search, preventing a fast match jump from being overwritten by
+the tail placement.
+
 No observer or persistent event listener is needed. A `ResizeObserver` would
 cover unrelated future resizes but would add lifecycle management and could
 compete with intentional user scrolling. The animation-frame boundary
@@ -74,6 +81,11 @@ that model the observed sequence:
   status handling, and redundant batches coalesce into one callback;
 - a user who scrolls away before the controlled callback runs is not pulled
   back to the tail.
+- same-view range-token movement between SSE stages does not discard a valid
+  terminal correction; lifecycle invalidation still does, and the scheduler
+  can be reused after an early-return cleanup;
+- an active-query view switch delays its immediate search response until both
+  unconditional tail corrections complete.
 
 The regression test must fail against the current immediate-scroll
 implementation and pass after the helper is used. Existing tests continue to

@@ -1596,6 +1596,67 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
       else delete globalThis.requestAnimationFrame;
     }
   });
+
+  it('starts an active-query view search only after its two-stage tail correction', async () => {
+    const originalRAF = globalThis.requestAnimationFrame;
+    const frames = [];
+    const searchCalls = [];
+    globalThis.requestAnimationFrame = (callback) => {
+      frames.push(callback);
+      return frames.length;
+    };
+
+    try {
+      const stepLines = Array.from({ length: 200 }, (_, i) => (
+        { seq: i + 1, stepIndex: 1, stream: 'stdout', line: 'needle ' + i }
+      ));
+      const stepStatsRange = statsAndRange(stepLines.length, (row) => stepLines[row]);
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(200, true);
+        if (u.includes('/logs/search')) {
+          searchCalls.push(u);
+          return jsonResponse({ total: 0, matches: [] });
+        }
+        if (u.includes('steps=1')) {
+          const response = stepStatsRange(url);
+          if (response) return response;
+        }
+        if (u.includes('/steps')) return jsonResponse([
+          { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
+          { index: 1, stageIndex: 1, name: 'build', status: 'Succeeded', kind: 'run', section: 'main' },
+        ]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-search-tail-order', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, {
+        props: { params: { id: 'run-search-tail-order' } },
+      });
+      await vi.waitFor(() => expect(container.querySelectorAll('.step-row').length).toBe(2));
+
+      const input = container.querySelector('.log-search-input');
+      await fireEvent.input(input, { target: { value: 'needle' } });
+      await vi.waitFor(() => expect(searchCalls).toHaveLength(1), { timeout: 1000 });
+      frames.length = 0;
+
+      await fireEvent.click(container.querySelectorAll('.step-row')[1]);
+      await vi.waitFor(() => expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/logs/range') && String(c[0]).includes('steps=1'))).toBe(true));
+      expect(searchCalls).toHaveLength(1);
+
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      frames.shift()(performance.now());
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      frames.shift()(performance.now());
+      await vi.waitFor(() => expect(searchCalls).toHaveLength(2));
+    } finally {
+      restore();
+      if (originalRAF) globalThis.requestAnimationFrame = originalRAF;
+      else delete globalThis.requestAnimationFrame;
+    }
+  });
 });
 
 // Selecting a step used to reset the log view to the TOP and disable stick-
