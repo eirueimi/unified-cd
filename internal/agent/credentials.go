@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/config"
 )
 
 const (
@@ -55,30 +56,35 @@ type persistedCredential struct {
 // The refresh credential file must be distinct from the one-time enrollment
 // token file so the latter can remain a separately delivered secret.
 type CredentialManagerConfig struct {
-	Server              string
-	AgentID             string
-	EnrollmentTokenFile string
-	EnrollmentToken     string
-	CredentialFile      string
-	HTTPClient          *http.Client
-	Now                 func() time.Time
-	Jitter              func() time.Duration
+	Server                 string
+	AgentID                string
+	EnrollmentTokenFile    string
+	EnrollmentToken        string
+	CredentialFile         string
+	HTTPClient             *http.Client
+	Now                    func() time.Time
+	Jitter                 func() time.Duration
+	DefaultCredentialFile  func(string) (string, error)
+	DiscoverCredentialFile func() (string, error)
 }
 
 // CredentialManager obtains short-lived access tokens and persists only the
 // rotated VM refresh credential. Its mutex serializes network exchanges so a
 // burst of callers never consumes a refresh credential more than once.
 type CredentialManager struct {
-	server              string
-	agentID             string
-	enrollmentTokenFile string
-	enrollmentToken     string
-	credentialFile      string
-	http                *http.Client
-	now                 func() time.Time
-	jitter              func() time.Duration
-	refreshJitter       time.Duration
-	sleep               func(context.Context, time.Duration) error
+	server                 string
+	configuredAgentID      string
+	agentID                string
+	enrollmentTokenFile    string
+	enrollmentToken        string
+	credentialFile         string
+	defaultCredentialFile  func(string) (string, error)
+	discoverCredentialFile func() (string, error)
+	http                   *http.Client
+	now                    func() time.Time
+	jitter                 func() time.Duration
+	refreshJitter          time.Duration
+	sleep                  func(context.Context, time.Duration) error
 
 	mu            sync.Mutex
 	loaded        bool
@@ -102,9 +108,18 @@ func NewCredentialManager(cfg CredentialManagerConfig) *CredentialManager {
 	if jitter == nil {
 		jitter = defaultCredentialJitter
 	}
+	defaultCredentialFile := cfg.DefaultCredentialFile
+	if defaultCredentialFile == nil {
+		defaultCredentialFile = config.DefaultAgentCredentialFile
+	}
+	discoverCredentialFile := cfg.DiscoverCredentialFile
+	if discoverCredentialFile == nil {
+		discoverCredentialFile = config.DiscoverDefaultAgentCredentialFile
+	}
 	return &CredentialManager{
-		server: cfg.Server, agentID: cfg.AgentID, enrollmentTokenFile: cfg.EnrollmentTokenFile, enrollmentToken: cfg.EnrollmentToken,
-		credentialFile: cfg.CredentialFile, http: httpClient, now: now, jitter: jitter, refreshJitter: jitter(),
+		server: cfg.Server, configuredAgentID: cfg.AgentID, agentID: cfg.AgentID, enrollmentTokenFile: cfg.EnrollmentTokenFile, enrollmentToken: cfg.EnrollmentToken,
+		credentialFile: cfg.CredentialFile, defaultCredentialFile: defaultCredentialFile, discoverCredentialFile: discoverCredentialFile,
+		http: httpClient, now: now, jitter: jitter, refreshJitter: jitter(),
 		persist: writeCredentialFile, sleep: sleepContext,
 	}
 }
@@ -118,6 +133,31 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 
 	if m.accessToken != "" && m.now().Add(tokenRefreshLeadTime+m.refreshJitter).Before(m.accessExpires) {
 		return m.accessToken, nil
+	}
+	enrollmentToken, _ := m.enrollmentTokenValue()
+	if !m.bootstrapDone && enrollmentToken != "" {
+		response, err := m.exchangeWithRetry(ctx, "/api/v1/agents/enroll", enrollmentToken)
+		if err != nil {
+			var requestErr *credentialRequestError
+			if !errors.As(err, &requestErr) || requestErr.status != http.StatusUnauthorized {
+				return "", err
+			}
+			originalErr := err
+			if err := m.loadRefreshCredential(); err != nil {
+				if os.IsNotExist(err) {
+					return "", originalErr
+				}
+				return "", err
+			}
+			if m.refresh.RefreshToken == "" {
+				return "", originalErr
+			}
+			response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
+			if err != nil {
+				return "", err
+			}
+		}
+		return m.persistTokenResponse(response)
 	}
 	if err := m.loadRefreshCredential(); err != nil {
 		return "", err
@@ -151,16 +191,13 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Adopt the agent ID from the response when --id was omitted; otherwise
-	// assert the server agrees with the configured identity.
-	if m.agentID == "" {
-		m.agentID = response.AgentID
-	} else if response.AgentID != m.agentID {
-		return "", fmt.Errorf("credential response agent ID %q does not match configured agent ID %q", response.AgentID, m.agentID)
-	}
 	if response.AgentID == "" || response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
 		return "", fmt.Errorf("credential response is invalid")
 	}
+	if m.configuredAgentID != "" && response.AgentID != m.configuredAgentID {
+		return "", fmt.Errorf("credential response agent ID %q does not match configured agent ID %q", response.AgentID, m.configuredAgentID)
+	}
+	m.agentID = response.AgentID
 	// Latch the once-per-process guard only after the response fully validates,
 	// so a malformed (but 2xx) enroll response is re-attempted as an enrollment
 	// on the next call rather than degrading to the refresh/"credentials
@@ -168,11 +205,37 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	m.bootstrapDone = true
 
 	next := persistedCredential{Version: 1, AgentID: response.AgentID, RefreshToken: response.RefreshToken, RefreshExpiresAt: response.RefreshExpiresAt.UTC()}
+	if err := m.ensureCredentialFile(response.AgentID); err != nil {
+		return "", err
+	}
 	// Do not expose the new access token until its paired refresh credential is
 	// durable. Otherwise a process crash could strand the agent after rotation.
 	if err := m.persist(m.credentialFile, next); err != nil {
 		return "", fmt.Errorf("persist agent credentials: %w", err)
 	}
+	m.refresh = next
+	m.loaded = true
+	m.accessToken = response.AccessToken
+	m.accessExpires = response.AccessExpiresAt
+	return m.accessToken, nil
+}
+
+func (m *CredentialManager) persistTokenResponse(response api.AgentTokenResponse) (string, error) {
+	if response.AgentID == "" || response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
+		return "", fmt.Errorf("credential response is invalid")
+	}
+	if m.configuredAgentID != "" && response.AgentID != m.configuredAgentID {
+		return "", fmt.Errorf("credential response agent ID %q does not match configured agent ID %q", response.AgentID, m.configuredAgentID)
+	}
+	if err := m.ensureCredentialFile(response.AgentID); err != nil {
+		return "", err
+	}
+	next := persistedCredential{Version: 1, AgentID: response.AgentID, RefreshToken: response.RefreshToken, RefreshExpiresAt: response.RefreshExpiresAt.UTC()}
+	if err := m.persist(m.credentialFile, next); err != nil {
+		return "", fmt.Errorf("persist agent credentials: %w", err)
+	}
+	m.agentID = response.AgentID
+	m.bootstrapDone = true
 	m.refresh = next
 	m.loaded = true
 	m.accessToken = response.AccessToken
@@ -207,6 +270,17 @@ func (m *CredentialManager) EnsureIdentity(ctx context.Context) (string, error) 
 		m.mu.Unlock()
 		return id, nil
 	}
+	enrollmentToken, tokenErr := m.enrollmentTokenValue()
+	if !m.bootstrapDone && enrollmentToken != "" {
+		m.mu.Unlock()
+		if _, err := m.Token(ctx); err != nil {
+			return "", err
+		}
+		m.mu.Lock()
+		id := m.agentID
+		m.mu.Unlock()
+		return id, nil
+	}
 	err := m.loadRefreshCredential()
 	id := m.agentID
 	m.mu.Unlock()
@@ -215,6 +289,9 @@ func (m *CredentialManager) EnsureIdentity(ctx context.Context) (string, error) 
 	}
 	if id != "" {
 		return id, nil // adopted from the persisted credential, no network
+	}
+	if tokenErr != nil {
+		return "", tokenErr
 	}
 	// No credential and no configured ID → must enroll to learn the identity.
 	if _, err := m.Token(ctx); err != nil {
@@ -231,8 +308,23 @@ func (m *CredentialManager) loadRefreshCredential() error {
 		return nil
 	}
 	if m.credentialFile == "" {
-		m.loaded = true
-		return nil
+		if m.configuredAgentID != "" {
+			path, err := m.defaultCredentialFile(m.configuredAgentID)
+			if err != nil {
+				return err
+			}
+			m.credentialFile = path
+		} else {
+			path, err := m.discoverCredentialFile()
+			if err != nil {
+				return err
+			}
+			if path == "" {
+				m.loaded = true
+				return nil
+			}
+			m.credentialFile = path
+		}
 	}
 	credential, err := readCredentialFile(m.credentialFile)
 	if err == nil {
@@ -282,8 +374,8 @@ func (m *CredentialManager) useCredential(credential persistedCredential) error 
 }
 
 func (m *CredentialManager) validateCredential(credential persistedCredential) error {
-	if m.agentID != "" && credential.AgentID != m.agentID {
-		return fmt.Errorf("credential file agent ID %q does not match configured agent ID %q", credential.AgentID, m.agentID)
+	if m.configuredAgentID != "" && credential.AgentID != m.configuredAgentID {
+		return fmt.Errorf("credential file agent ID %q does not match configured agent ID %q", credential.AgentID, m.configuredAgentID)
 	}
 	if !credential.RefreshExpiresAt.After(m.now()) {
 		return fmt.Errorf("agent refresh credential has expired")
@@ -304,6 +396,21 @@ func (m *CredentialManager) removeStaleCredentialBackup() error {
 	if err := syncCredentialDirectoryFn(filepath.Dir(m.credentialFile)); err != nil {
 		return fmt.Errorf("remove stale credential backup: %w", err)
 	}
+	return nil
+}
+
+func (m *CredentialManager) ensureCredentialFile(agentID string) error {
+	if m.credentialFile != "" {
+		return nil
+	}
+	path, err := m.defaultCredentialFile(agentID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create credential directory: %w", err)
+	}
+	m.credentialFile = path
 	return nil
 }
 

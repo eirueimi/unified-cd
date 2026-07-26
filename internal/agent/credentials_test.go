@@ -695,3 +695,143 @@ func TestCredentialManager_EnrollOnce(t *testing.T) {
 	assert.Equal(t, 1, enrollHits)
 	assert.Equal(t, 1, refreshHits)
 }
+
+func TestCredentialManager_TokenFirstUsesReturnedIDPath(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "agent-old", "credential.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(oldPath), 0o700))
+	require.NoError(t, writeCredentialFile(oldPath, persistedCredential{
+		Version: 1, AgentID: "agent-old", RefreshToken: "ucr_old",
+		RefreshExpiresAt: now.Add(time.Hour),
+	}))
+	newPath := filepath.Join(root, "agent-new", "credential.json")
+	var discoveryCalls int
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/agents/enroll", r.URL.Path)
+		response := tokenResponse("uca_new", "ucr_new", now)
+		response.AgentID = "agent-new"
+		_ = json.NewEncoder(w).Encode(response)
+	})
+	defer srv.Close()
+
+	m := NewCredentialManager(CredentialManagerConfig{
+		Server: srv.URL, EnrollmentToken: "uce_new", HTTPClient: srv.Client(),
+		Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 },
+		DefaultCredentialFile: func(id string) (string, error) {
+			return filepath.Join(root, id, "credential.json"), nil
+		},
+		DiscoverCredentialFile: func() (string, error) {
+			discoveryCalls++
+			return oldPath, nil
+		},
+	})
+
+	id, err := m.EnsureIdentity(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "agent-new", id)
+	assert.Zero(t, discoveryCalls)
+	_, err = readCredentialFile(newPath)
+	require.NoError(t, err)
+	_, err = readCredentialFile(oldPath)
+	require.NoError(t, err)
+}
+
+func TestCredentialManager_EnsureIdentityDiscoversOneCredential(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "credential.json")
+	require.NoError(t, writeCredentialFile(path, persistedCredential{
+		Version: 1, AgentID: "agent-discovered", RefreshToken: "ucr_discovered",
+		RefreshExpiresAt: now.Add(time.Hour),
+	}))
+	var discoveryCalls int
+	m := NewCredentialManager(CredentialManagerConfig{
+		Now: func() time.Time { return now },
+		DiscoverCredentialFile: func() (string, error) {
+			discoveryCalls++
+			return path, nil
+		},
+	})
+
+	id, err := m.EnsureIdentity(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "agent-discovered", id)
+	assert.Equal(t, 1, discoveryCalls)
+}
+
+func TestCredentialManager_EnsureIdentityRejectsAmbiguousCredentials(t *testing.T) {
+	const ambiguity = "multiple default agent credential files found; set --id or --credential-file"
+	var discoveryCalls int
+	m := NewCredentialManager(CredentialManagerConfig{
+		DiscoverCredentialFile: func() (string, error) {
+			discoveryCalls++
+			return "", fmt.Errorf(ambiguity)
+		},
+	})
+
+	_, err := m.EnsureIdentity(t.Context())
+	require.EqualError(t, err, ambiguity)
+	assert.Equal(t, 1, discoveryCalls)
+}
+
+func TestCredentialManager_Fallback401DiscoversOneCredential(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "credential.json")
+	require.NoError(t, writeCredentialFile(path, persistedCredential{
+		Version: 1, AgentID: "agent-discovered", RefreshToken: "ucr_discovered",
+		RefreshExpiresAt: now.Add(time.Hour),
+	}))
+	var calledPaths []string
+	var discoveryCalls int
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calledPaths = append(calledPaths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v1/agents/enroll":
+			w.WriteHeader(http.StatusUnauthorized)
+		case "/api/v1/agents/token/refresh":
+			assert.Equal(t, "Bearer ucr_discovered", r.Header.Get("Authorization"))
+			response := tokenResponse("uca_refreshed", "ucr_rotated", now)
+			response.AgentID = "agent-discovered"
+			_ = json.NewEncoder(w).Encode(response)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{
+		Server: srv.URL, EnrollmentToken: "uce_expired", HTTPClient: srv.Client(),
+		Now: func() time.Time { return now }, Jitter: func() time.Duration { return 0 },
+		DiscoverCredentialFile: func() (string, error) {
+			discoveryCalls++
+			require.Equal(t, []string{"/api/v1/agents/enroll"}, calledPaths)
+			return path, nil
+		},
+	})
+
+	token, err := m.Token(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "uca_refreshed", token)
+	assert.Equal(t, 1, discoveryCalls)
+	assert.Equal(t, []string{"/api/v1/agents/enroll", "/api/v1/agents/token/refresh"}, calledPaths)
+}
+
+func TestCredentialManager_Fallback401RejectsAmbiguousCredentials(t *testing.T) {
+	const ambiguity = "multiple default agent credential files found; set --id or --credential-file"
+	var calledPaths []string
+	srv := credentialServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calledPaths = append(calledPaths, r.URL.Path)
+		require.Equal(t, "/api/v1/agents/enroll", r.URL.Path)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	defer srv.Close()
+	m := NewCredentialManager(CredentialManagerConfig{
+		Server: srv.URL, EnrollmentToken: "uce_expired", HTTPClient: srv.Client(),
+		DiscoverCredentialFile: func() (string, error) {
+			return "", fmt.Errorf(ambiguity)
+		},
+	})
+
+	_, err := m.Token(t.Context())
+	require.EqualError(t, err, ambiguity)
+	assert.Equal(t, []string{"/api/v1/agents/enroll"}, calledPaths)
+}
