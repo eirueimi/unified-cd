@@ -93,3 +93,24 @@ func TestStepReport_ChildRunStatusIsAuthoritative(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Failed", steps[0].Status)
 }
+
+func TestStepReport_MissingChildRunFallsBackToStoredStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres")
+	}
+	p := NewTestPostgres(t)
+	ctx := t.Context()
+
+	parent := mustCreateRun(t, p, "missing-child-status-parent-job")
+	missingChildID := "00000000-0000-4000-8000-000000000001"
+	require.NoError(t, p.UpsertStepReport(
+		ctx, parent, 0, 0, "call-missing-child", "", "Running",
+		nil, nil, nil, missingChildID, "missing-child-status-job",
+	))
+
+	steps, err := p.GetRunSteps(ctx, parent)
+	require.NoError(t, err)
+	require.Len(t, steps, 1)
+	assert.Equal(t, missingChildID, steps[0].ChildRunID)
+	assert.Equal(t, "Running", steps[0].Status)
+}
