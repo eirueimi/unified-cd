@@ -79,6 +79,17 @@ func TestAgentEnrollmentAdminAutogeneratesAgentIDWhenOmitted(t *testing.T) {
 		"an omitted agentId must be auto-generated as agent-<8 hex>")
 }
 
+func TestAgentEnrollmentAdminRejectsNonPortableAgentID(t *testing.T) {
+	s, _ := newTestServer(t)
+	for _, id := range []string{"Agent-A", "agent-é", "agent-a.", "con"} {
+		t.Run(id, func(t *testing.T) {
+			rec := enrollmentRequest(t, s, "secret", api.CreateAgentEnrollmentRequest{AgentID: id})
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			assert.Equal(t, "agent ID must use lowercase ASCII letters, digits, '.', '_', or '-', start and end with a letter or digit, and not use a reserved Windows name\n", rec.Body.String())
+		})
+	}
+}
+
 func TestAgentEnrollmentAdminEnforcesMaximumLifetime(t *testing.T) {
 	s, _ := newTestServer(t)
 

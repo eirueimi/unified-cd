@@ -36,12 +36,54 @@ This requires `jq`.
 
 ```bash
 legacy="$HOME/.unified-cd/credential.json"
-agent_id=$(jq -er '.agentId | strings | select(test("\\S")) | select(. != "." and . != "..") | select(test("^[^/\\\\]+$"))' "$legacy")
-destination_dir="$HOME/.unified-cd/$agent_id"
-(umask 077; mkdir -p "$destination_dir")
-mv "$legacy" "$destination_dir/credential.json"
+root="$HOME/.unified-cd"
+if ! agent_id=$(jq -er '.agentId | strings | select(test("^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$"))' "$legacy"); then
+  echo "credential .agentId is not a portable canonical agent ID" >&2
+  exit 1
+fi
+case "${agent_id%%.*}" in
+  con|prn|aux|nul|com[1-9]|lpt[1-9])
+    echo "credential .agentId uses a reserved Windows name" >&2
+    exit 1
+    ;;
+esac
+destination_dir="$root/$agent_id"
+destination_file="$destination_dir/credential.json"
+
+[ -d "$root" ] && [ ! -L "$root" ] || {
+  echo "credential root must be a real directory" >&2
+  exit 1
+}
+if [ -e "$destination_dir" ] || [ -L "$destination_dir" ]; then
+  echo "destination credential directory already exists" >&2
+  exit 1
+fi
+if [ -e "$destination_file" ] || [ -L "$destination_file" ]; then
+  echo "destination credential already exists" >&2
+  exit 1
+fi
+if ! (umask 077; mkdir "$destination_dir"); then
+  echo "could not create destination credential directory" >&2
+  exit 1
+fi
+[ -d "$destination_dir" ] && [ ! -L "$destination_dir" ] || {
+  echo "destination credential directory is redirected" >&2
+  exit 1
+}
+if [ -e "$destination_file" ] || [ -L "$destination_file" ]; then
+  echo "destination credential already exists" >&2
+  exit 1
+fi
+if ! mv -n "$legacy" "$destination_file"; then
+  echo "credential move failed" >&2
+  exit 1
+fi
+if [ -e "$legacy" ]; then
+  echo "credential move did not complete; destination may have appeared concurrently" >&2
+  exit 1
+fi
 chmod 700 "$destination_dir"
-chmod 600 "$destination_dir/credential.json"
+chmod 600 "$destination_file"
 ```
 
 ### PowerShell
@@ -49,14 +91,31 @@ chmod 600 "$destination_dir/credential.json"
 ```powershell
 $legacy = Join-Path $HOME '.unified-cd\credential.json'
 $agentId = (Get-Content -Raw -LiteralPath $legacy | ConvertFrom-Json).agentId
-if ([string]::IsNullOrWhiteSpace($agentId) -or $agentId -in @('.', '..') -or $agentId -match '[\\/]') {
-    throw 'credential .agentId must be one non-empty path component'
+if ($agentId -cnotmatch '^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$') {
+    throw "credential .agentId is not a portable canonical agent ID"
 }
-$destinationDir = Join-Path (Join-Path $HOME '.unified-cd') $agentId
+$reservedBase = ($agentId -split '\.', 2)[0]
+if ($reservedBase -in @('con', 'prn', 'aux', 'nul') -or $reservedBase -match '^(com|lpt)[1-9]$') {
+    throw "credential .agentId uses a reserved Windows name"
+}
+$root = Join-Path $HOME '.unified-cd'
+$rootItem = Get-Item -Force -LiteralPath $root
+if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'credential root must not be a reparse point'
+}
+$destinationDir = Join-Path $root $agentId
 if (Test-Path -LiteralPath $destinationDir) {
     throw 'destination credential directory already exists'
 }
 New-Item -ItemType Directory -Path $destinationDir | Out-Null
+$destinationItem = Get-Item -Force -LiteralPath $destinationDir
+if (($destinationItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'destination credential directory must not be a reparse point'
+}
+$destinationFile = Join-Path $destinationDir 'credential.json'
+if (Test-Path -LiteralPath $destinationFile) {
+    throw 'destination credential already exists'
+}
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $directorySecurity = [System.Security.AccessControl.DirectorySecurity]::new()
 $directorySecurity.SetAccessRuleProtection($true, $false)
@@ -70,7 +129,7 @@ $ownerRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
 )
 $directorySecurity.AddAccessRule($ownerRule)
 Set-Acl -LiteralPath $destinationDir -AclObject $directorySecurity
-Move-Item -LiteralPath $legacy -Destination (Join-Path $destinationDir 'credential.json')
+Move-Item -LiteralPath $legacy -Destination $destinationFile
 ```
 
 The commands deliberately do not enumerate or print credential contents. Do

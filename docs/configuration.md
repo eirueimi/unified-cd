@@ -265,6 +265,14 @@ agent auto-detects and self-reports them on every registration; see
 [Migrating to ID-scoped agent credentials](migration-agent-id-scoped-credentials.md)
 for the shared-path migration.
 
+VM IDs used with the default credential path must contain only lowercase ASCII
+letters, digits, `.`, `_`, or `-`, start and end with a letter or digit, and
+must not use Windows reserved names such as `con` or `com1`. The agent also
+rejects symbolic-link or Windows reparse-point redirection of the default
+credential root or ID directory. An explicit `credentialFile` preserves
+compatibility for a legacy credential whose embedded ID does not use this
+portable syntax.
+
 Start with config file:
 
 ```bash

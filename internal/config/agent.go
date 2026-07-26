@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/agentid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,8 +22,8 @@ func DefaultAgentCredentialFile(id string) (string, error) {
 	if strings.TrimSpace(id) == "" {
 		return "", fmt.Errorf("agent ID is required to derive the default credential file path")
 	}
-	if id == "." || id == ".." || strings.ContainsAny(id, `/\\`) || filepath.IsAbs(id) || filepath.VolumeName(id) != "" {
-		return "", fmt.Errorf("agent ID must be one path component")
+	if err := agentid.ValidatePortable(id); err != nil {
+		return "", err
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -56,6 +57,9 @@ func discoverAgentCredentialFile(root string) (string, error) {
 		}
 		path := filepath.Join(root, entry.Name(), "credential.json")
 		if _, err := os.Stat(path); err == nil {
+			if err := agentid.ValidatePortable(entry.Name()); err != nil {
+				return "", err
+			}
 			candidates = append(candidates, path)
 		} else if !os.IsNotExist(err) {
 			return "", fmt.Errorf("inspect default agent credential file: %w", err)

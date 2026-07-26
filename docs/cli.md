@@ -841,6 +841,12 @@ The former shared `$HOME/.unified-cd/credential.json` path is ignored unless
 explicitly selected with `--credential-file`. See [the migration guide](migration-agent-id-scoped-credentials.md)
 for existing installations.
 
+An explicit VM `--agent-id` must use lowercase ASCII letters and digits with
+internal `.`, `_`, or `-`, start and end with a letter or digit, and avoid
+Windows reserved names such as `con` and `com1`. This applies to IDs issued for
+the literal default credential directory. A legacy non-portable ID remains
+usable when its credential is selected with an explicit `--credential-file`.
+
 ### agent enrollment, identity, and enrollment-policy
 
 Administrators create or revoke VM enrollment credentials; viewers may list

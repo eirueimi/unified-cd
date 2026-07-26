@@ -41,6 +41,17 @@ func validateCredentialDirectory(dir string) error {
 	return nil
 }
 
+func validateNoCredentialRedirect(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf(credentialRedirectError)
+	}
+	return nil
+}
+
 func protectCredentialFile(_ string, file *os.File) error {
 	return file.Chmod(0o600)
 }

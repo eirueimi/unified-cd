@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/agentid"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/config"
 )
@@ -26,6 +27,7 @@ const (
 	tokenRefreshLeadTime    = 15 * time.Minute
 	maxCredentialJitter     = 5 * time.Minute
 	credentialRetryAttempts = 3
+	credentialRedirectError = "credential directory must not be a symbolic link or reparse point"
 )
 
 var (
@@ -77,7 +79,11 @@ type CredentialManager struct {
 	agentID                string
 	enrollmentTokenFile    string
 	enrollmentToken        string
+	enrollmentTokenLoaded  bool
+	enrollmentTokenErr     error
 	credentialFile         string
+	defaultCredentialPath  bool
+	discoveredAgentID      string
 	defaultCredentialFile  func(string) (string, error)
 	discoverCredentialFile func() (string, error)
 	http                   *http.Client
@@ -134,7 +140,7 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	if m.accessToken != "" && m.now().Add(tokenRefreshLeadTime+m.refreshJitter).Before(m.accessExpires) {
 		return m.accessToken, nil
 	}
-	enrollmentToken, _ := m.enrollmentTokenValue()
+	enrollmentToken, tokenErr := m.enrollmentTokenValue()
 	if !m.bootstrapDone && enrollmentToken != "" {
 		enrolled := true
 		response, err := m.exchangeWithRetry(ctx, "/api/v1/agents/enroll", enrollmentToken)
@@ -154,6 +160,7 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 				return "", originalErr
 			}
 			enrolled = false
+			slog.Warn("enrollment token rejected (expired or already consumed); continuing with the existing credential", "agentId", m.agentID)
 			response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
 			if err != nil {
 				return "", err
@@ -164,65 +171,17 @@ func (m *CredentialManager) Token(ctx context.Context) (string, error) {
 	if err := m.loadRefreshCredential(); err != nil {
 		return "", err
 	}
-
-	var response api.AgentTokenResponse
-	var err error
-	enrollTok, tokErr := m.enrollmentTokenValue()
-	switch {
-	case !m.bootstrapDone && enrollTok != "":
-		// An explicit enrollment token means "(re-)enroll" — prefer it even when
-		// a credential already exists, so authorized-label changes take effect.
-		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/enroll", enrollTok)
-		if err != nil {
-			var reqErr *credentialRequestError
-			if errors.As(err, &reqErr) && reqErr.status == http.StatusUnauthorized && m.refresh.RefreshToken != "" {
-				// The token is definitively rejected (expired/already consumed),
-				// but we hold a working credential — keep running on it rather
-				// than bricking. Labels are not updated in this case.
-				slog.Warn("enrollment token rejected (expired or already consumed); continuing with the existing credential", "agentId", m.agentID)
-				response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
-			}
+	if m.refresh.RefreshToken == "" {
+		if tokenErr != nil {
+			return "", tokenErr
 		}
-	case m.refresh.RefreshToken != "":
-		response, err = m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
-	case tokErr != nil:
-		return "", tokErr
-	default:
 		return "", fmt.Errorf("agent credentials are required")
 	}
+	response, err := m.exchangeWithRetry(ctx, "/api/v1/agents/token/refresh", m.refresh.RefreshToken)
 	if err != nil {
 		return "", err
 	}
-	if response.AgentID == "" || response.AccessToken == "" || response.RefreshToken == "" || response.RefreshExpiresAt == nil {
-		return "", fmt.Errorf("credential response is invalid")
-	}
-	if m.configuredAgentID != "" && response.AgentID != m.configuredAgentID {
-		return "", fmt.Errorf("credential response agent ID %q does not match configured agent ID %q", response.AgentID, m.configuredAgentID)
-	}
-	if m.agentID != "" && response.AgentID != m.agentID {
-		return "", fmt.Errorf("credential response agent ID %q does not match loaded agent ID %q", response.AgentID, m.agentID)
-	}
-	m.agentID = response.AgentID
-	// Latch the once-per-process guard only after the response fully validates,
-	// so a malformed (but 2xx) enroll response is re-attempted as an enrollment
-	// on the next call rather than degrading to the refresh/"credentials
-	// required" branch with no usable credential.
-	m.bootstrapDone = true
-
-	next := persistedCredential{Version: 1, AgentID: response.AgentID, RefreshToken: response.RefreshToken, RefreshExpiresAt: response.RefreshExpiresAt.UTC()}
-	if err := m.ensureCredentialFile(response.AgentID); err != nil {
-		return "", err
-	}
-	// Do not expose the new access token until its paired refresh credential is
-	// durable. Otherwise a process crash could strand the agent after rotation.
-	if err := m.persist(m.credentialFile, next); err != nil {
-		return "", fmt.Errorf("persist agent credentials: %w", err)
-	}
-	m.refresh = next
-	m.loaded = true
-	m.accessToken = response.AccessToken
-	m.accessExpires = response.AccessExpiresAt
-	return m.accessToken, nil
+	return m.persistTokenResponse(response, false)
 }
 
 func (m *CredentialManager) persistTokenResponse(response api.AgentTokenResponse, enrolled bool) (string, error) {
@@ -239,9 +198,16 @@ func (m *CredentialManager) persistTokenResponse(response api.AgentTokenResponse
 		return "", err
 	}
 	next := persistedCredential{Version: 1, AgentID: response.AgentID, RefreshToken: response.RefreshToken, RefreshExpiresAt: response.RefreshExpiresAt.UTC()}
+	if m.defaultCredentialPath {
+		if err := validateDefaultCredentialPath(m.credentialFile); err != nil {
+			return "", err
+		}
+	}
 	if err := m.persist(m.credentialFile, next); err != nil {
 		return "", fmt.Errorf("persist agent credentials: %w", err)
 	}
+	// Publish identity and token state together only after the replacement
+	// refresh credential is durable.
 	m.agentID = response.AgentID
 	m.bootstrapDone = true
 	m.refresh = next
@@ -251,20 +217,29 @@ func (m *CredentialManager) persistTokenResponse(response api.AgentTokenResponse
 	return m.accessToken, nil
 }
 
-// enrollmentTokenValue returns the explicitly-configured one-time enrollment
-// token (inline value preferred over file), or "" when none is configured.
+// enrollmentTokenValue reads the explicitly-configured one-time enrollment
+// token at most once (inline value preferred over file), or returns "" when
+// none is configured.
 func (m *CredentialManager) enrollmentTokenValue() (string, error) {
+	if m.enrollmentTokenLoaded {
+		return m.enrollmentToken, m.enrollmentTokenErr
+	}
+	m.enrollmentTokenLoaded = true
 	if strings.TrimSpace(m.enrollmentToken) != "" {
-		return strings.TrimSpace(m.enrollmentToken), nil
+		m.enrollmentToken = strings.TrimSpace(m.enrollmentToken)
+		return m.enrollmentToken, nil
 	}
-	if m.enrollmentTokenFile != "" {
-		v, err := readSecretFile(m.enrollmentTokenFile)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(v), nil
+	if m.enrollmentTokenFile == "" {
+		m.enrollmentToken = ""
+		return "", nil
 	}
-	return "", nil
+	m.enrollmentToken, m.enrollmentTokenErr = readSecretFile(m.enrollmentTokenFile)
+	if m.enrollmentTokenErr != nil {
+		m.enrollmentToken = ""
+		return "", m.enrollmentTokenErr
+	}
+	m.enrollmentToken = strings.TrimSpace(m.enrollmentToken)
+	return m.enrollmentToken, nil
 }
 
 // EnsureIdentity resolves the agent's canonical ID before the run loop starts.
@@ -322,6 +297,7 @@ func (m *CredentialManager) loadRefreshCredential() error {
 				return err
 			}
 			m.credentialFile = path
+			m.defaultCredentialPath = true
 		} else {
 			path, err := m.discoverCredentialFile()
 			if err != nil {
@@ -332,11 +308,18 @@ func (m *CredentialManager) loadRefreshCredential() error {
 				return nil
 			}
 			m.credentialFile = path
+			m.defaultCredentialPath = true
+			m.discoveredAgentID = filepath.Base(filepath.Dir(path))
 		}
 	}
 	if _, dirErr := os.Stat(filepath.Dir(m.credentialFile)); os.IsNotExist(dirErr) && (m.enrollmentTokenFile != "" || m.enrollmentToken != "") {
 		m.loaded = true
 		return nil
+	}
+	if m.defaultCredentialPath {
+		if err := validateDefaultCredentialPath(m.credentialFile); err != nil {
+			return err
+		}
 	}
 	credential, err := readCredentialFile(m.credentialFile)
 	if err == nil {
@@ -389,6 +372,9 @@ func (m *CredentialManager) validateCredential(credential persistedCredential) e
 	if m.configuredAgentID != "" && credential.AgentID != m.configuredAgentID {
 		return fmt.Errorf("credential file agent ID %q does not match configured agent ID %q", credential.AgentID, m.configuredAgentID)
 	}
+	if m.discoveredAgentID != "" && credential.AgentID != m.discoveredAgentID {
+		return fmt.Errorf("credential file agent ID %q does not match credential directory %q", credential.AgentID, m.discoveredAgentID)
+	}
 	if !credential.RefreshExpiresAt.After(m.now()) {
 		return fmt.Errorf("agent refresh credential has expired")
 	}
@@ -415,23 +401,44 @@ func (m *CredentialManager) ensureCredentialFile(agentID string) error {
 	if m.credentialFile != "" {
 		return nil
 	}
-	if err := validateAgentIDPathComponent(agentID); err != nil {
+	if err := agentid.ValidatePortable(agentID); err != nil {
 		return err
 	}
 	path, err := m.defaultCredentialFile(agentID)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create credential directory: %w", err)
+	if err := prepareDefaultCredentialDirectory(path); err != nil {
+		return err
 	}
 	m.credentialFile = path
+	m.defaultCredentialPath = true
 	return nil
 }
 
-func validateAgentIDPathComponent(agentID string) error {
-	if agentID == "." || agentID == ".." || strings.ContainsAny(agentID, `/\\`) || filepath.IsAbs(agentID) || filepath.VolumeName(agentID) != "" {
-		return fmt.Errorf("agent ID must be one path component")
+func prepareDefaultCredentialDirectory(path string) error {
+	directory := filepath.Dir(path)
+	root := filepath.Dir(directory)
+	for _, candidate := range []string{root, directory} {
+		if err := os.Mkdir(candidate, 0o700); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("create credential directory: %w", err)
+		}
+		if err := validateNoCredentialRedirect(candidate); err != nil {
+			return err
+		}
+		if err := validateCredentialDirectory(candidate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateDefaultCredentialPath(path string) error {
+	directory := filepath.Dir(path)
+	for _, candidate := range []string{filepath.Dir(directory), directory} {
+		if err := validateNoCredentialRedirect(candidate); err != nil {
+			return err
+		}
 	}
 	return nil
 }

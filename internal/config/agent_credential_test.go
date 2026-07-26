@@ -47,4 +47,14 @@ func TestDiscoverAgentCredentialFile(t *testing.T) {
 		_, err := discoverAgentCredentialFile(root)
 		require.EqualError(t, err, "multiple default agent credential files found; set --id or --credential-file")
 	})
+
+	t.Run("non-portable directory ID is rejected", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "Agent-A", "credential.json")
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
+
+		_, err := discoverAgentCredentialFile(root)
+		require.EqualError(t, err, "agent ID must use lowercase ASCII letters, digits, '.', '_', or '-', start and end with a letter or digit, and not use a reserved Windows name")
+	})
 }

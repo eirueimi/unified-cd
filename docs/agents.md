@@ -47,6 +47,15 @@ each persisted credential is scoped to its returned ID. For an ID-less,
 token-less restart with multiple local credentials, select the intended one
 with `--id` or `--credential-file`.
 
+An explicit VM `--agent-id` must be a portable canonical directory name:
+lowercase ASCII letters and digits with internal `.`, `_`, or `-`, starting
+and ending with a letter or digit. Windows reserved names such as `con`,
+`nul.json`, `com1`, and `lpt9.log` are rejected. This single syntax keeps the
+literal `$HOME/.unified-cd/<agent-id>/credential.json` layout injective across
+case-insensitive and Unicode-normalizing filesystems. Existing credentials
+with another ID syntax remain usable only through an explicit
+`--credential-file`; they are not implicit default-path candidates.
+
 The token can be supplied either as a file (`--enrollment-token-file`, the
 more secure default — nothing sensitive touches shell history or `ps`) or
 inline (`--enrollment-token <value>` / `UNIFIED_AGENT_ENROLLMENT_TOKEN`, or

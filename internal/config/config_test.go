@@ -33,9 +33,9 @@ func TestDefaultAgentCredentialFileRequiresID(t *testing.T) {
 }
 
 func TestDefaultAgentCredentialFileRejectsUnsafeID(t *testing.T) {
-	for _, id := range []string{"..", "agent/other", `agent\other`} {
+	for _, id := range []string{"..", "agent/other", `agent\other`, "Agent-A", "agent-é", "agent-a.", "con"} {
 		_, err := config.DefaultAgentCredentialFile(id)
-		require.EqualError(t, err, "agent ID must be one path component")
+		require.EqualError(t, err, "agent ID must use lowercase ASCII letters, digits, '.', '_', or '-', start and end with a letter or digit, and not use a reserved Windows name")
 	}
 }
 

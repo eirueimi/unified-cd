@@ -179,6 +179,10 @@ start with `--id` or `--credential-file`. The former shared
 `$HOME/.unified-cd/credential.json` location is ignored unless explicitly
 selected. Existing installations should follow the
 [ID-scoped credential migration guide](docs/migration-agent-id-scoped-credentials.md).
+Explicit VM agent IDs used with the default path must be portable canonical
+names: lowercase ASCII letters and digits, with internal `.`, `_`, or `-`.
+They must start and end with a letter or digit and cannot be Windows reserved
+names such as `con` or `com1`.
 
 ### Tests
 
