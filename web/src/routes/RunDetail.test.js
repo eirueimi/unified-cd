@@ -610,12 +610,12 @@ describe('RunDetail — log virtualization', () => {
 // the CURRENT view (all-steps or a step/group filter, same `viewStepsQuery()`
 // used by range/stats fetches), instead of scanning only the in-memory
 // window. Typing debounces 300ms before firing the request; jumping to a
-// match sets `scrollTop` and lets the existing scroll handler's
-// `ensureRowsLoaded` bring the row into the window (no direct fetch call
-// from the jump itself).
+// match loads that row's window directly, then centers it using the loaded
+// window's cumulative offsets when wrapping is enabled.
 describe('RunDetail — server-side log search (Task 5)', () => {
-  let descST, descSH;
+  let descST, descSH, stubScrollHeight;
   beforeEach(() => {
+    stubScrollHeight = 4000;
     descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
     descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
     Object.defineProperty(Element.prototype, 'scrollTop', {
@@ -625,7 +625,7 @@ describe('RunDetail — server-side log search (Task 5)', () => {
     });
     Object.defineProperty(Element.prototype, 'scrollHeight', {
       configurable: true,
-      get() { return this.classList && this.classList.contains('log-box') ? 4000 : 0; },
+      get() { return this.classList && this.classList.contains('log-box') ? stubScrollHeight : 0; },
     });
   });
   const restore = () => {
@@ -690,17 +690,26 @@ describe('RunDetail — server-side log search (Task 5)', () => {
     }
   });
 
-  it('jumps to a match on Enter by setting scrollTop, and the scroll handler fetches the range', async () => {
+  it('loads and centers a wrapped off-window match without moving input focus', async () => {
     try {
+      localStorage.setItem('ecd_log_wrap', '1');
       // TOTAL is deliberately bigger than FETCH_CHUNK (5000) so the initial
       // tail window does NOT cover every row. Two matches: #0 sits inside the
       // tail backfill (already loaded — the initial auto-jump-to-first-match
-      // is a no-op fetch-wise), #1 (row 10) is far outside it, so pressing
+      // is a no-op fetch-wise), #1 (row 100) is far outside it, so pressing
       // Enter to advance 0 -> 1 must trigger a genuinely new range fetch via
-      // the scroll handler, not just render from what's already loaded.
+      // gotoMatch, not just render from what's already loaded. Every ordinary
+      // row wraps to 50 visual lines, so row * LOG_ROW_H is deliberately far
+      // from the target's real pixel offset after its window is loaded.
       const TOTAL = 50000;
       const BACKFILL = 200;
-      const makeLine = (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row });
+      stubScrollHeight = TOTAL * 20;
+      const makeLine = (row) => ({
+        seq: row + 1,
+        stepIndex: 0,
+        stream: 'stdout',
+        line: row === TOTAL - 5 || row === 100 ? `target row ${row}` : 'x'.repeat(1000),
+      });
       const statsRange = statsAndRange(TOTAL, makeLine);
       const enc = new TextEncoder();
       let payload = '';
@@ -720,7 +729,7 @@ describe('RunDetail — server-side log search (Task 5)', () => {
             total: 2,
             matches: [
               { row: TOTAL - 5, seq: TOTAL - 4, stepIndex: 0 },
-              { row: 10, seq: 11, stepIndex: 0 },
+              { row: 100, seq: 101, stepIndex: 0 },
             ],
           });
         }
@@ -729,7 +738,7 @@ describe('RunDetail — server-side log search (Task 5)', () => {
         if (u.includes('/steps')) return jsonResponse([]);
         if (u.includes('/approvals')) return jsonResponse([]);
         if (u.includes('/artifacts')) return jsonResponse([]);
-        return jsonResponse({ id: 'run-search-jump', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+        return jsonResponse({ id: 'run-search-jump', status: 'Succeeded', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
       });
       global.fetch = fetchMock;
 
@@ -739,7 +748,7 @@ describe('RunDetail — server-side log search (Task 5)', () => {
       });
 
       const input = container.querySelector('.log-search-input');
-      await fireEvent.input(input, { target: { value: 'row' } });
+      await fireEvent.input(input, { target: { value: 'target' } });
       await vi.waitFor(() => {
         expect(container.textContent).toContain('1 / 2');
       }, { timeout: 1000 });
@@ -747,30 +756,28 @@ describe('RunDetail — server-side log search (Task 5)', () => {
       const box = container.querySelector('.log-box');
       const rangeCallsBefore = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
 
+      input.focus();
+      expect(document.activeElement).toBe(input);
       await fireEvent.keyDown(input, { key: 'Enter' });
 
       await vi.waitFor(() => {
         expect(container.textContent).toContain('2 / 2');
       });
 
-      // scrollTop lands near row * LOG_ROW_H (centered in the viewport), not
-      // at some other position — the jump itself must not call ensureRowsLoaded
-      // directly; it just moves the scrollbar and lets the scroll handler do it.
-      await vi.waitFor(() => {
-        expect(box.scrollTop).toBe(Math.max(0, 10 * 20 - box.clientHeight / 2));
-      });
-
-      await fireEvent.scroll(box);
       await vi.waitFor(() => {
         const rangeCallsAfter = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/logs/range')).length;
         expect(rangeCallsAfter).toBeGreaterThan(rangeCallsBefore);
       });
 
       await vi.waitFor(() => {
-        const texts = [...container.querySelectorAll('.log-row')].map((r) => r.textContent);
-        expect(texts.some((t) => t.includes('row 10'))).toBe(true);
+        const current = container.querySelector('.log-row-current');
+        expect(current?.textContent).toContain('target row 100');
       });
+      // 100 preceding rows * 50 wrapped visual lines * 20 px per visual line.
+      expect(box.scrollTop).toBe(Math.max(0, 100 * 50 * 20 - box.clientHeight / 2));
+      expect(document.activeElement).toBe(input);
     } finally {
+      localStorage.removeItem('ecd_log_wrap');
       restore();
     }
   });

@@ -5,10 +5,11 @@
 The run detail page searches the complete server-side log and returns absolute
 row numbers. Its current `gotoMatch` implementation only assigns
 `logBox.scrollTop` and relies on the browser to emit a later `scroll` event.
-That event is expected to trigger the virtual window fetch. This indirect
-dependency is unreliable: an off-window match can remain unloaded, so the
-current match counter changes without the matching row being rendered,
-centered, and highlighted.
+That event is expected to trigger the virtual window fetch. In wrap mode, the
+target window's cumulative line heights are not known yet, so `row * 20px`
+can map back into the currently loaded window. The target range is then never
+requested, leaving the match counter changed without the matching row being
+rendered, centered, and highlighted.
 
 ## Goals
 
@@ -30,13 +31,14 @@ centered, and highlighted.
 
 1. Normalize and store the requested match position.
 2. Disable tail sticking.
-3. Compute the centered scroll position from the match's absolute row.
-4. Update the virtual scroll coordinates immediately.
-5. Explicitly request a window that covers the target row through the existing
-   range-loading path instead of waiting for a browser `scroll` event.
-6. Wait for Svelte to render the fetched window.
-7. Reapply the centered scroll position so the highlighted current row is
-   stable after rendering.
+3. Move the virtual coordinate to the target and explicitly request a window
+   that covers its absolute row through the existing range-loading path.
+   Suppress that request's ordinary viewport settle re-check so the previous
+   wrapped window cannot replace the requested match window.
+4. Wait for Svelte to render the fetched window and calculate its cumulative
+   wrap offsets.
+5. Compute the target pixel position from those offsets and apply the centered
+   scroll position so the highlighted current row is stable.
 
 The implementation will not call `focus()` on the log row or container.
 Because navigation starts from the search input and does not move DOM focus,
@@ -48,12 +50,13 @@ stale range.
 
 ## Testing
 
-The UI regression test will use a match outside the initial log window. It
-will assert that, without manually dispatching a `scroll` event:
+The UI regression test will use a match outside the initial log window with
+long preceding lines in wrap mode. It will assert that:
 
 - the required `/logs/range` request is made;
 - the matching row is rendered and marked as current;
-- the log viewport is centered on the matching row; and
+- the log viewport is centered using the loaded rows' cumulative wrap
+  offsets; and
 - the search input retains `document.activeElement`.
 
 Existing search debounce, result-cap, step-filter, virtualization, reconnect,
