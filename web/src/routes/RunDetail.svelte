@@ -71,7 +71,7 @@
   }
 
   let windowFetchToken = 0;
-  async function ensureRowsLoaded(firstRow, lastRow) {
+  async function ensureRowsLoaded(firstRow, lastRow, recheckViewport = true) {
     const w = logWindow;
     if (firstRow >= w.startRow && lastRow <= w.startRow + w.lines.length) return; // already in window
     if (windowLoading) return; // fetch already in flight; re-checked after it settles
@@ -118,7 +118,7 @@
         // state, e.g. a view smaller than FETCH_CHUNK the server returned
         // whole) the in-window early-return inside the recursive call
         // terminates it normally.
-        if (settledOK) {
+        if (settledOK && recheckViewport) {
           const rc = Math.floor((logStart + logEnd) / 2);
           const nextStart = Math.max(0, rc - Math.floor(FETCH_CHUNK / 2));
           const covered =
@@ -363,11 +363,9 @@
   // use), with `matches` capped at 1000 while `total` reflects the true
   // (uncapped) count. `logMatches` holds just the `row` numbers (ABSOLUTE row
   // numbers within the current view, directly usable by the virtual scroller).
-  // Jumping to a match only moves `logBox.scrollTop` — it does not fetch a
-  // range itself; the existing scroll handler's `ensureRowsLoaded` (fired
-  // reactively off `logStart`/`logEnd`) brings the row's window in, so the
-  // jump doesn't fight the race discipline (windowFetchToken/windowLoading/
-  // viewSwitching) already governing scroll/view-switch/SSE-reconnect fetches.
+  // Jumping explicitly loads a range around the absolute match row. Deriving
+  // the request only from scrollTop is not reliable in wrap mode because the
+  // target window's cumulative line heights are unknown until it is loaded.
   let logQuery = "";
   let logMatchPos = 0;
   let logMatches = []; // absolute row numbers, from the server
@@ -414,23 +412,42 @@
       logMatchPos = 0;
     }
   }
-  function gotoMatch(pos) {
+  function centeredMatchScrollTop(rowIdx) {
+    const windowIdx = rowIdx - logWindow.startRow;
+    const targetY =
+      logWrap &&
+      logOffsets &&
+      windowIdx >= 0 &&
+      windowIdx < logOffsets.length - 1
+        ? logWindow.startRow * LOG_ROW_H + logOffsets[windowIdx]
+        : rowIdx * LOG_ROW_H;
+    return Math.max(0, targetY - logBox.clientHeight / 2);
+  }
+  async function gotoMatch(pos) {
     if (!logMatches.length) return;
     const n = logMatches.length;
     logMatchPos = ((pos % n) + n) % n; // wrap around
     const rowIdx = logMatches[logMatchPos];
     logStick = false; // don't fight the jump with auto-scroll
-    tick().then(() => {
-      if (!logBox) return;
-      // Jump by absolute row * LOG_ROW_H — same fixed-row-height addressing
-      // ensureRowsLoaded/logStart/logEnd use outside wrap mode. (Wrap mode's
-      // per-line offsets are only known for rows already in the window, which
-      // an off-window match generally isn't yet — this is a known v1
-      // approximation, consistent with logContentH's own wrap-mode note.)
-      const targetY = rowIdx * LOG_ROW_H;
-      logBox.scrollTop = Math.max(0, targetY - logBox.clientHeight / 2);
-      logScrollTop = logBox.scrollTop;
-    });
+    await tick();
+    if (!logBox) return;
+
+    // Move the virtual coordinate before loading, without assigning the DOM
+    // scroll position through stale wrap offsets from the previous window.
+    logScrollTop = rowIdx * LOG_ROW_H;
+    await ensureRowsLoaded(
+      Math.max(0, rowIdx - LOG_OVERSCAN),
+      Math.min(logWindow.totalCount, rowIdx + LOG_OVERSCAN + 1),
+      false,
+    );
+    await tick();
+    if (!logBox) return;
+
+    // Once the target window is present, wrap mode has exact cumulative
+    // offsets for the matching row. Center with that measured position.
+    logBox.scrollTop = centeredMatchScrollTop(rowIdx);
+    logScrollTop = logBox.scrollTop;
+    await tick();
   }
   function onSearchKey(e) {
     if (e.key === "Enter") {
