@@ -4,7 +4,7 @@
 
 **Goal:** Keep the unwrapped Web UI log view at the true tail when a long line adds a horizontal scrollbar during browser layout.
 
-**Architecture:** Add private tail-scroll helpers in `RunDetail.svelte`. Log-view switching awaits Svelte's DOM update and the next browser animation frame before assigning the final position. SSE stick-scrolling schedules and coalesces that post-layout assignment without awaiting an animation frame in the reader; its callback re-checks `logStick` and the captured run/view generation. Pending callbacks are cancelled or invalidated on teardown, run changes, and superseding view switches.
+**Architecture:** Add private tail-scroll helpers in `RunDetail.svelte`. Log-view switching awaits two Svelte DOM update and browser animation-frame boundaries, assigning the final position after each: the first can materialize the virtualized long tail, and the second corrects its resulting horizontal scrollbar geometry. SSE stick-scrolling schedules and coalesces the same two-stage correction without awaiting an animation frame in the reader; callbacks re-check `logStick` and the captured run/view generation. Pending callbacks are cancelled or invalidated on teardown, run changes, and superseding view switches, and the sentinel is cleared on every completion or early return.
 
 **Tech Stack:** Svelte 5, JavaScript, Vitest 4, Testing Library, jsdom, Vite 8
 
@@ -153,13 +153,17 @@ async function scrollLogToBottom() {
 }
 ```
 
-Keep this awaited helper for unconditional current-view placement. Add a
+Keep this awaited helper for unconditional current-view placement, and repeat
+the render/frame/assignment sequence once after the first assignment so a
+virtualized long tail can materialize and change the viewport geometry. Add a
 separate scheduler for SSE batches: mark a pending callback before `tick()`,
-coalesce redundant batches, then request one animation frame without awaiting
-it from the reader. The callback must re-check `logStick` and its captured
-run/view generation before assigning the tail. Invalidate or cancel pending
-work during teardown, run changes, SSE restarts, and superseding view switches.
-The non-browser fallback applies after `tick()` without an animation frame.
+coalesce redundant batches, then request each of the two correction frames
+without awaiting either from the reader. Each callback must re-check
+`logStick` and its captured run/view generation before assigning the tail,
+and every stale or completed path must clear the pending sentinel. Invalidate
+or cancel pending work during teardown, run changes, SSE restarts, and
+superseding view switches. The non-browser fallback applies after `tick()`
+without an animation frame.
 
 - [ ] **Step 4: Route view switching and SSE following through their appropriate paths**
 

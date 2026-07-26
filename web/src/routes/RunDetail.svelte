@@ -295,8 +295,7 @@
     logBox.scrollTop = logBox.scrollHeight;
     logScrollTop = logBox.scrollTop;
   }
-  async function scrollLogToBottom() {
-    const generation = tailScrollGeneration;
+  async function waitForLogLayout() {
     await tick();
     await new Promise((resolve) => {
       if (typeof requestAnimationFrame === "function") {
@@ -305,6 +304,13 @@
         resolve();
       }
     });
+  }
+  async function scrollLogToBottom() {
+    const generation = tailScrollGeneration;
+    await waitForLogLayout();
+    if (generation !== tailScrollGeneration) return;
+    applyLogTailScroll();
+    await waitForLogLayout();
     if (generation !== tailScrollGeneration) return;
     applyLogTailScroll();
   }
@@ -314,28 +320,50 @@
     const viewGeneration = windowFetchToken;
     const pending = { id: null };
     tailScrollFrame = pending;
-    await tick();
-    if (
-      tailScrollFrame !== pending ||
-      generation !== tailScrollGeneration ||
-      viewGeneration !== windowFetchToken ||
-      !logStick
-    ) return;
-    const apply = () => {
-      if (tailScrollFrame !== pending) return;
-      tailScrollFrame = null;
-      if (
-        generation !== tailScrollGeneration ||
-        viewGeneration !== windowFetchToken ||
-        !logStick
-      ) return;
-      applyLogTailScroll();
+    const clearPending = () => {
+      if (tailScrollFrame === pending) tailScrollFrame = null;
     };
-    if (typeof requestAnimationFrame === "function") {
-      pending.id = requestAnimationFrame(apply);
-    } else {
-      apply();
+    const canApply = () =>
+      tailScrollFrame === pending &&
+      generation === tailScrollGeneration &&
+      viewGeneration === windowFetchToken &&
+      logStick;
+    const requestStage = (callback) => {
+      if (typeof requestAnimationFrame === "function") {
+        pending.id = requestAnimationFrame(callback);
+      } else {
+        pending.id = null;
+        queueMicrotask(callback);
+      }
+    };
+    await tick();
+    if (!canApply()) {
+      clearPending();
+      return;
     }
+    requestStage(() => {
+      pending.id = null;
+      if (!canApply()) {
+        clearPending();
+        return;
+      }
+      applyLogTailScroll();
+      void tick().then(() => {
+        if (!canApply()) {
+          clearPending();
+          return;
+        }
+        requestStage(() => {
+          pending.id = null;
+          if (!canApply()) {
+            clearPending();
+            return;
+          }
+          applyLogTailScroll();
+          clearPending();
+        });
+      });
+    });
   }
   // selectedStep/selectedParallelGroup select which server-side VIEW is
   // active (Task 4): null → all steps, a single step → [idx], a parallel

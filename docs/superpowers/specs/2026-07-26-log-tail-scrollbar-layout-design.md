@@ -32,6 +32,9 @@ Use two tail-scroll paths that share the final assignment:
    geometry are current.
 3. Assign `scrollTop = scrollHeight` and mirror the resulting value into
    `logScrollTop`.
+4. Repeat the render/frame/assignment sequence once. The first assignment can
+   move the virtual window to the tail, materializing a long final row that
+   adds a horizontal scrollbar only after that first assignment.
 
 Log-view switches await this sequence because their tail placement is
 unconditional for the current view. SSE batches must not await it: they mark
@@ -39,7 +42,9 @@ one coalesced pending post-layout scroll and immediately continue reading the
 stream. The scheduled callback re-checks `logStick` and the captured run/view
 generation before assigning the tail, so a user scroll away, a view switch,
 or a run change invalidates stale work. Teardown, SSE restart, and every view
-switch also cancel or invalidate any pending callback.
+switch also cancel or invalidate any pending callback. The scheduler retains
+its pending sentinel across both correction stages and clears it on every
+completion or early-return path.
 
 No observer or persistent event listener is needed. A `ResizeObserver` would
 cover unrelated future resizes but would add lifecycle management and could
@@ -61,8 +66,10 @@ Extend the existing `RunDetail` tail-view tests with browser geometry stubs
 that model the observed sequence:
 
 - the first tail assignment occurs against the pre-scrollbar viewport;
-- a horizontal scrollbar then reduces `clientHeight`;
-- the animation-frame follow-up must reach the new maximum scroll position;
+- that assignment materializes the virtualized long tail, then a horizontal
+  scrollbar reduces `clientHeight`;
+- only the second post-render/frame correction can reach the new maximum
+  scroll position;
 - suspended controlled frames do not block subsequent SSE chunks or terminal
   status handling, and redundant batches coalesce into one callback;
 - a user who scrolls away before the controlled callback runs is not pulled
