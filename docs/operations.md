@@ -150,11 +150,37 @@ full flag/env/yaml forms.
 
 ## Monitoring Points
 
-- **`/healthz`** — liveness endpoint; returns `200` when up, `503` while draining/shutting down. Verified live: returns `200` on the dev stack. Use as the load balancer / uptime check target ([High Availability Guide](high-availability.md#health-check-endpoints) also documents `/readyz`, which additionally checks DB connectivity).
+- **`/healthz`** — liveness endpoint; returns `200` while the process is running and `503` while draining/shutting down. Use it only to decide whether the process must be restarted.
+- **`/readyz`** — readiness endpoint; also acquires an API-pool connection and pings PostgreSQL. Use it for Docker/Kubernetes readiness and load-balancer routing. A `503 db unavailable` response means the controller must not receive traffic even if `/healthz` is still `200`.
 - **Agent freshness** — `unified-cli agent list` prints each agent's `last_seen_at` (refreshed by the 15s heartbeat) as the last column. An agent whose timestamp stops advancing is not accepting new claims and any run it's holding is on the clock toward the reaper's 90s staleness threshold.
 - **Runs stuck in `Running`** — periodically check for runs that have been `Running` far longer than the job normally takes (`unified-cli run list --job <job-name>`). This can indicate a hung step even before the reaper's agent-liveness check would kick in, since the reaper only acts on a *dead* agent, not a live one stuck in a bad step.
 - **Controller logs: AppSource sync failures** — the AppSource reconciler runs on the leader replica only and logs a `WARN` when it fails to sync a Git repo (auth failure, unreachable host, malformed YAML). Watch controller logs for these if you rely on GitOps-style job sync.
 - **Approval-gate backlog** — visible via `unifiedcd_steps_completed_total{status="WaitingApproval"}`; a growing rate indicates approval gates are piling up faster than they're being actioned.
+
+### PostgreSQL connection budgeting
+
+The controller isolates four PostgreSQL pools so advisory locks and SSE
+listeners cannot consume API capacity:
+
+| Pool | Default maximum | Purpose |
+|---|---:|---|
+| API | 128 | HTTP APIs, authentication, agents, metrics, bootstrap |
+| Background | 32 | Scheduler, reapers, archivers, retention, reconcilers |
+| Lock | 16 | Session-level advisory locks |
+| Listen | 128 | SSE PostgreSQL `LISTEN` sessions |
+
+The repository's Docker Compose PostgreSQL service sets
+`max_connections=1000`. For an external database, configure a limit satisfying:
+
+```text
+controller replicas × (API + background + lock + listen)
+  + migration and administrative reserve
+  < PostgreSQL max_connections
+```
+
+Pool maxima are capacity limits, not startup allocation: pgx opens connections
+as demand grows. Leave the minimum at zero unless the database is sized for
+every replica's pre-opened connections.
 
 ---
 

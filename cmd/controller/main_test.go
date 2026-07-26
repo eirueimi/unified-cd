@@ -92,6 +92,71 @@ func TestEnvIntOr(t *testing.T) {
 	})
 }
 
+func TestPostgresPoolConfigFromEnv(t *testing.T) {
+	const (
+		apiEnv        = "UNIFIED_DB_API_MAX_CONNS"
+		backgroundEnv = "UNIFIED_DB_BACKGROUND_MAX_CONNS"
+		lockEnv       = "UNIFIED_DB_LOCK_MAX_CONNS"
+		listenEnv     = "UNIFIED_DB_LISTEN_MAX_CONNS"
+	)
+	clear := func(t *testing.T) {
+		t.Helper()
+		for _, name := range []string{apiEnv, backgroundEnv, lockEnv, listenEnv} {
+			t.Setenv(name, "")
+		}
+	}
+
+	t.Run("defaults", func(t *testing.T) {
+		clear(t)
+
+		got, warnings := postgresPoolConfigFromEnv()
+
+		assert.Equal(t, store.DefaultPostgresPoolConfig(), got)
+		assert.Empty(t, warnings)
+	})
+
+	t.Run("positive overrides", func(t *testing.T) {
+		clear(t)
+		t.Setenv(apiEnv, "256")
+		t.Setenv(backgroundEnv, "64")
+		t.Setenv(lockEnv, "24")
+		t.Setenv(listenEnv, "512")
+
+		got, warnings := postgresPoolConfigFromEnv()
+
+		assert.Equal(t, store.PostgresPoolConfig{
+			APIMaxConns:        256,
+			BackgroundMaxConns: 64,
+			LockMaxConns:       24,
+			ListenMaxConns:     512,
+		}, got)
+		assert.Empty(t, warnings)
+	})
+
+	for _, tc := range []struct {
+		name  string
+		env   string
+		value string
+	}{
+		{name: "malformed", env: apiEnv, value: "many"},
+		{name: "zero", env: backgroundEnv, value: "0"},
+		{name: "negative", env: lockEnv, value: "-1"},
+		{name: "overflow", env: listenEnv, value: "2147483648"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clear(t)
+			t.Setenv(tc.env, tc.value)
+
+			got, warnings := postgresPoolConfigFromEnv()
+
+			assert.Equal(t, store.DefaultPostgresPoolConfig(), got)
+			require.Len(t, warnings, 1)
+			assert.Contains(t, warnings[0], tc.env)
+			assert.Contains(t, warnings[0], tc.value)
+		})
+	}
+}
+
 func TestQueuedRunGraceDefault(t *testing.T) {
 	t.Setenv("UNIFIED_QUEUED_RUN_GRACE", "")
 	assert.Equal(t, 5*time.Minute, queuedRunGraceDefault())

@@ -113,6 +113,34 @@ func queuedRunGraceDefault() time.Duration {
 	return d
 }
 
+func postgresPoolConfigFromEnv() (store.PostgresPoolConfig, []string) {
+	cfg := store.DefaultPostgresPoolConfig()
+	var warnings []string
+	values := []struct {
+		name   string
+		target *int32
+	}{
+		{name: "UNIFIED_DB_API_MAX_CONNS", target: &cfg.APIMaxConns},
+		{name: "UNIFIED_DB_BACKGROUND_MAX_CONNS", target: &cfg.BackgroundMaxConns},
+		{name: "UNIFIED_DB_LOCK_MAX_CONNS", target: &cfg.LockMaxConns},
+		{name: "UNIFIED_DB_LISTEN_MAX_CONNS", target: &cfg.ListenMaxConns},
+	}
+	for _, value := range values {
+		raw := os.Getenv(value.name)
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || n <= 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"invalid %s=%q, using default", value.name, raw))
+			continue
+		}
+		*value.target = int32(n)
+	}
+	return cfg, warnings
+}
+
 func configureKubernetesEnrollmentClient(kubeConfig *rest.Config) {
 	// The verifier also sets a per-request context deadline. Set the transport
 	// timeout as a production backstop for Kubernetes client operations.
@@ -211,7 +239,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pg, err := store.NewPostgres(ctx, *dsn)
+	poolCfg, poolWarnings := postgresPoolConfigFromEnv()
+	for _, warning := range poolWarnings {
+		slog.Warn(warning)
+	}
+	slog.Info("postgres pool configuration",
+		"apiMaxConns", poolCfg.APIMaxConns,
+		"backgroundMaxConns", poolCfg.BackgroundMaxConns,
+		"lockMaxConns", poolCfg.LockMaxConns,
+		"listenMaxConns", poolCfg.ListenMaxConns)
+	pg, err := store.NewPostgresWithPoolConfig(ctx, *dsn, poolCfg)
 	if err != nil {
 		slog.Error("store init", "error", err)
 		os.Exit(1)
@@ -231,6 +268,8 @@ func main() {
 	m := metrics.New()
 	m.RegisterDBCollector(pg, 90*time.Second)
 	st := metrics.NewInstrumentedStore(pg, m)
+	backgroundPG := pg.BackgroundStore()
+	backgroundSt := metrics.NewInstrumentedStore(backgroundPG, m)
 
 	// UNIFIED_TOKEN is synced to the DB as a PAT. This allows it to be listed
 	// and deleted (revoked) via /api/v1/tokens just like regular PATs. If the
@@ -325,7 +364,7 @@ func main() {
 		}
 	}
 
-	go controller.RunScheduler(ctx, st, 200*time.Millisecond)
+	go controller.RunScheduler(ctx, backgroundSt, 200*time.Millisecond)
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
@@ -334,7 +373,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := pg.DeleteExpiredOIDCStates(context.Background()); err != nil {
+				if err := backgroundPG.DeleteExpiredOIDCStates(context.Background()); err != nil {
 					slog.Warn("oidc state cleanup", "error", err)
 				}
 			}
@@ -348,7 +387,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				n, err := pg.DeleteStaleAgents(ctx, 5*time.Minute)
+				n, err := backgroundPG.DeleteStaleAgents(ctx, 5*time.Minute)
 				if err != nil {
 					slog.Warn("deleteStaleAgents", "error", err)
 				} else if n > 0 {
@@ -358,33 +397,33 @@ func main() {
 		}
 	}()
 	if obj != nil {
-		go controller.RunLogArchiver(ctx, st, obj, 30*time.Second)
-		go controller.RunCacheCleanup(ctx, st, obj)
+		go controller.RunLogArchiver(ctx, backgroundSt, obj, 30*time.Second)
+		go controller.RunCacheCleanup(ctx, backgroundSt, obj)
 	}
-	go controller.RunApprovalReaper(ctx, st, time.Minute)
-	go controller.RunStuckRunReaper(ctx, st, 30*time.Second, 90*time.Second, 60*time.Second)
+	go controller.RunApprovalReaper(ctx, backgroundSt, time.Minute)
+	go controller.RunStuckRunReaper(ctx, backgroundSt, 30*time.Second, 90*time.Second, 60*time.Second)
 	// Fail runs that have sat Queued for longer than the grace period (default
 	// 5m, configurable via UNIFIED_QUEUED_RUN_GRACE) with no live agent able to
 	// claim them (the agent they need disconnected), so they don't stay
 	// "in progress" forever. staleAfter=90s matches the stuck-run reaper's
 	// agent-liveness window.
-	go controller.RunQueuedRunReaper(ctx, st, 30*time.Second, queuedRunGraceDefault(), 90*time.Second)
+	go controller.RunQueuedRunReaper(ctx, backgroundSt, 30*time.Second, queuedRunGraceDefault(), 90*time.Second)
 	// Reap AppSources stuck in "Syncing" (bug #33): the manual sync-trigger API sets
 	// sync_status="Syncing" synchronously, so a reconciler crash / restart / leadership
 	// change mid-sync can strand the row forever. Reset any Syncing row older than 5m.
-	go controller.RunAppSourceSyncReaper(ctx, st, 30*time.Second, 5*time.Minute)
+	go controller.RunAppSourceSyncReaper(ctx, backgroundSt, 30*time.Second, 5*time.Minute)
 	if *auditRetentionDays > 0 {
 		slog.Info("audit log retention enabled", "retentionDays", *auditRetentionDays)
 	} else {
 		slog.Info("audit log retention disabled (keep forever)")
 	}
-	go controller.RunAuditRetention(ctx, st, time.Hour, *auditRetentionDays)
+	go controller.RunAuditRetention(ctx, backgroundSt, time.Hour, *auditRetentionDays)
 	if *runRetentionDays > 0 {
 		slog.Info("run retention enabled", "retentionDays", *runRetentionDays)
 	} else {
 		slog.Info("run retention disabled (keep forever)")
 	}
-	go controller.RunRunRetention(ctx, st, obj, time.Hour, *runRetentionDays)
+	go controller.RunRunRetention(ctx, backgroundSt, obj, time.Hour, *runRetentionDays)
 	if *logTrimDays > 0 {
 		slog.Info("log trim enabled", "trimDays", *logTrimDays)
 		if *runRetentionDays > 0 && *logTrimDays >= *runRetentionDays {
@@ -394,7 +433,7 @@ func main() {
 	} else {
 		slog.Info("log trim disabled (DB log rows kept forever)")
 	}
-	go controller.RunLogTrim(ctx, st, obj, time.Hour, *logTrimDays)
+	go controller.RunLogTrim(ctx, backgroundSt, obj, time.Hour, *logTrimDays)
 	go func() {
 		var gitCache *gittemplate.Cache
 		if obj != nil {
@@ -402,11 +441,11 @@ func main() {
 		}
 		fetcher := gittemplate.NewFetcher()
 		resolver := gittemplate.NewResolver(fetcher, gitCache)
-		controller.RunGitResolver(ctx, st, resolver, km, 200*time.Millisecond, gitResolveDeadlineDefault())
+		controller.RunGitResolver(ctx, backgroundSt, resolver, km, 200*time.Millisecond, gitResolveDeadlineDefault())
 	}()
 	go func() {
 		fetcher := gittemplate.NewFetcher()
-		controller.RunAppSourceReconciler(ctx, st, fetcher, km, 30*time.Second)
+		controller.RunAppSourceReconciler(ctx, backgroundSt, fetcher, km, 30*time.Second)
 	}()
 
 	httpSrv := &http.Server{
