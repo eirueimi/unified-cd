@@ -1402,6 +1402,78 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
       restore();
     }
   });
+
+  it('reapplies tail scrolling after a horizontal scrollbar changes the viewport height', async () => {
+    const descCH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+    const originalRAF = globalThis.requestAnimationFrame;
+    let layoutSettled = false;
+    let frameID = 0;
+
+    Object.defineProperty(Element.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        if (!this.classList?.contains('log-box')) return 0;
+        return layoutSettled ? 384 : 400;
+      },
+    });
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(value) {
+        if (!this.classList?.contains('log-box')) {
+          this.__stubScrollTop = value;
+          return;
+        }
+        this.__stubScrollTop = Math.min(
+          value,
+          this.scrollHeight - this.clientHeight,
+        );
+        layoutSettled = true;
+      },
+    });
+    globalThis.requestAnimationFrame = (callback) => {
+      layoutSettled = true;
+      const id = ++frameID;
+      queueMicrotask(() => callback(performance.now()));
+      return id;
+    };
+
+    try {
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(200, true);
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({
+          id: 'run-scrollbar-tail',
+          status: 'Succeeded',
+          jobName: 'j',
+          triggeredBy: 'x',
+          createdAt: null,
+          params: {},
+        });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, {
+        props: { params: { id: 'run-scrollbar-tail' } },
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('.log-row').length).toBeGreaterThan(0);
+      });
+
+      const box = container.querySelector('.log-box');
+      await vi.waitFor(() => expect(box.scrollTop).toBeGreaterThan(0));
+      expect(box.scrollHeight - box.scrollTop - box.clientHeight).toBe(0);
+    } finally {
+      restore();
+      if (descCH) Object.defineProperty(Element.prototype, 'clientHeight', descCH);
+      else delete Element.prototype.clientHeight;
+      if (originalRAF) globalThis.requestAnimationFrame = originalRAF;
+      else delete globalThis.requestAnimationFrame;
+    }
+  });
 });
 
 // Selecting a step used to reset the log view to the TOP and disable stick-

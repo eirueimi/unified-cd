@@ -280,6 +280,19 @@
       logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight <
       LOG_ROW_H * 2;
   }
+  async function scrollLogToBottom() {
+    await tick();
+    await new Promise((resolve) => {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(resolve);
+      } else {
+        resolve();
+      }
+    });
+    if (!logBox) return;
+    logBox.scrollTop = logBox.scrollHeight;
+    logScrollTop = logBox.scrollTop;
+  }
   // selectedStep/selectedParallelGroup select which server-side VIEW is
   // active (Task 4): null → all steps, a single step → [idx], a parallel
   // group → its indices. Switching views re-fetches stats + a fresh tail
@@ -350,11 +363,8 @@
       }
     }
     if (token !== windowFetchToken) return;
-    await tick();
     if (logQuery) runSearch(); // re-run over the new view (Task 5)
-    if (!logBox) return;
-    logBox.scrollTop = logBox.scrollHeight;
-    logScrollTop = logBox.scrollTop;
+    await scrollLogToBottom();
   }
 
   // ---- Server-side log search (Task 5) ----
@@ -794,11 +804,7 @@
           // batch is filtered out, scrollHeight is unchanged and the
           // assignment is a no-op.
           if (logStick) {
-            await tick();
-            if (logBox) {
-              logBox.scrollTop = logBox.scrollHeight;
-              logScrollTop = logBox.scrollTop;
-            }
+            await scrollLogToBottom();
           }
         }
         if (terminalStatus) {
