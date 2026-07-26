@@ -353,4 +353,3 @@ Expected:
   it to this change.
 - The branch contains the design, implementation, and documentation commits,
   and the worktree is clean.
-
