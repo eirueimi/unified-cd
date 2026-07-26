@@ -727,11 +727,14 @@ func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex
 
 func (p *Postgres) GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error) {
 	const q = `
-		SELECT step_index, stage_index, step_name, status, exit_code, started_at, ended_at, variant,
-		       COALESCE(child_run_id::text, ''), COALESCE(call_job_name, '')
-		FROM step_reports
-		WHERE run_id = $1
-		ORDER BY step_index, variant;
+		SELECT sr.step_index, sr.stage_index, sr.step_name,
+		       COALESCE(child.status, sr.status),
+		       sr.exit_code, sr.started_at, sr.ended_at, sr.variant,
+		       COALESCE(sr.child_run_id::text, ''), COALESCE(sr.call_job_name, '')
+		FROM step_reports sr
+		LEFT JOIN runs child ON child.id = sr.child_run_id
+		WHERE sr.run_id = $1
+		ORDER BY sr.step_index, sr.variant;
 	`
 	rows, err := p.pool.Query(ctx, q, runID)
 	if err != nil {

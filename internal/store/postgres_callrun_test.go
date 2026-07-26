@@ -3,6 +3,7 @@ package store
 import (
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,4 +56,40 @@ func TestStepReport_ChildRunLink(t *testing.T) {
 	cbNone, err := p.GetRunParent(ctx, parent)
 	require.NoError(t, err)
 	assert.Nil(t, cbNone)
+}
+
+func TestStepReport_ChildRunStatusIsAuthoritative(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres")
+	}
+	p := NewTestPostgres(t)
+	ctx := t.Context()
+
+	parent := mustCreateRun(t, p, "status-parent-job")
+	child := mustCreateRun(t, p, "status-child-job")
+
+	require.NoError(t, p.UpsertStepReport(
+		ctx, parent, 0, 0, "call-child", "", "Running",
+		nil, nil, nil, child, "status-child-job",
+	))
+	require.NoError(t, p.UpsertStepReport(
+		ctx, parent, 1, 1, "plain-step", "", "Succeeded",
+		nil, nil, nil, "", "",
+	))
+
+	steps, err := p.GetRunSteps(ctx, parent)
+	require.NoError(t, err)
+	require.Len(t, steps, 2)
+	assert.Equal(t, "Pending", steps[0].Status)
+	assert.Equal(t, "Succeeded", steps[1].Status)
+
+	require.NoError(t, p.MarkRunRunning(ctx, child))
+	steps, err = p.GetRunSteps(ctx, parent)
+	require.NoError(t, err)
+	assert.Equal(t, "Running", steps[0].Status)
+
+	require.NoError(t, p.MarkRunFinished(ctx, child, api.RunFailed))
+	steps, err = p.GetRunSteps(ctx, parent)
+	require.NoError(t, err)
+	assert.Equal(t, "Failed", steps[0].Status)
 }
