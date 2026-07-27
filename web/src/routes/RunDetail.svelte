@@ -170,6 +170,7 @@
   let logScrollTop = 0;
   let logViewportH = 600;
   let logStick = true; // keep auto-scrolling to the bottom while the user is there
+  const programmaticLogScrollTops = new WeakMap();
   let tailScrollFrame = null;
   let tailScrollGeneration = 0;
 
@@ -274,15 +275,22 @@
       }
     } catch {}
   }
-  function onLogScroll() {
-    if (!logBox) return;
-    logScrollTop = logBox.scrollTop;
+  function onLogScroll(event) {
+    const box = event.currentTarget;
+    if (!box) return;
+    const currentScrollTop = box.scrollTop;
+    if (box === logBox) logScrollTop = currentScrollTop;
+    if (currentScrollTop === programmaticLogScrollTops.get(box)) return;
+    programmaticLogScrollTops.delete(box);
+    if (box !== logBox) return;
     // Stick to the bottom only while the user is within ~2 rows of the end.
     logStick =
-      logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight <
+      box.scrollHeight - currentScrollTop - box.clientHeight <
       LOG_ROW_H * 2;
   }
   function invalidateLogTailScroll() {
+    // Applied writes keep their element-scoped markers because their queued
+    // scroll events cannot be cancelled with a future animation frame.
     tailScrollGeneration++;
     const pending = tailScrollFrame;
     tailScrollFrame = null;
@@ -292,8 +300,11 @@
   }
   function applyLogTailScroll() {
     if (!logBox) return;
-    logBox.scrollTop = logBox.scrollHeight;
-    logScrollTop = logBox.scrollTop;
+    const box = logBox;
+    box.scrollTop = box.scrollHeight;
+    const currentScrollTop = box.scrollTop;
+    programmaticLogScrollTops.set(box, currentScrollTop);
+    logScrollTop = currentScrollTop;
   }
   async function waitForLogLayout() {
     await tick();
