@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/agentid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -16,20 +17,62 @@ import (
 // $HOME/.unified-cd/<id>/credential.json. It is used when no credential file is
 // configured via flag, env, or the config file. The agent ID is part of the
 // path so multiple agents sharing a host (and $HOME) never share a credential
-// file. When id is empty (the agent's ID has not yet been resolved — e.g.
-// --id was omitted and the agent hasn't enrolled/loaded its credential yet),
-// it returns the ID-independent shared path $HOME/.unified-cd/credential.json
-// instead; running more than one such agent on the same host requires an
-// explicit --id or --credential-file to avoid colliding on that shared path.
+// file. An ID is required to derive this path.
 func DefaultAgentCredentialFile(id string) (string, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", fmt.Errorf("agent ID is required to derive the default credential file path")
+	}
+	if err := agentid.ValidatePortable(id); err != nil {
+		return "", err
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory for default credential file: %w", err)
 	}
-	if strings.TrimSpace(id) == "" {
-		return filepath.Join(home, ".unified-cd", "credential.json"), nil
-	}
 	return filepath.Join(home, ".unified-cd", id, "credential.json"), nil
+}
+
+// DiscoverDefaultAgentCredentialFile finds the only ID-scoped default
+// credential file, if one exists.
+func DiscoverDefaultAgentCredentialFile() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for default credential discovery: %w", err)
+	}
+	return discoverAgentCredentialFile(filepath.Join(home, ".unified-cd"))
+}
+
+func discoverAgentCredentialFile(root string) (string, error) {
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read default agent credential directory: %w", err)
+	}
+	var candidates []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(root, entry.Name(), "credential.json")
+		if _, err := os.Stat(path); err == nil {
+			if err := agentid.ValidatePortable(entry.Name()); err != nil {
+				return "", err
+			}
+			candidates = append(candidates, path)
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspect default agent credential file: %w", err)
+		}
+	}
+	switch len(candidates) {
+	case 0:
+		return "", nil
+	case 1:
+		return candidates[0], nil
+	default:
+		return "", fmt.Errorf("multiple default agent credential files found; set --id or --credential-file")
+	}
 }
 
 // AgentConfig holds all configuration for the agent binary.

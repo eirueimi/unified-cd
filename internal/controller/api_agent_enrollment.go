@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/agentauth"
+	"github.com/eirueimi/unified-cd/internal/agentid"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
@@ -49,6 +50,10 @@ func (s *Server) handleCreateAgentEnrollment(w http.ResponseWriter, r *http.Requ
 		// No explicit identity requested: mint a random canonical agent ID. The
 		// generated ID is returned in the response so the operator/agent knows it.
 		req.AgentID = generateAgentID()
+	}
+	if err := agentid.ValidatePortable(req.AgentID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	ttl := defaultAgentEnrollmentTTL

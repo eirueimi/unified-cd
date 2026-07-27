@@ -157,7 +157,7 @@ unified-cd-agent [FLAGS]
 
   -f                      string    Config file path (default: unified-agent.yaml if exists)
   --server                string    Controller URL (env: UNIFIED_SERVER)
-  --credential-file       string    Protected VM refresh-credential file (default: $HOME/.unified-cd/<id>/credential.json, or $HOME/.unified-cd/credential.json when --id is unset; env: UNIFIED_AGENT_CREDENTIAL_FILE)
+  --credential-file       string    Protected VM refresh-credential file (default: $HOME/.unified-cd/<agent-id>/credential.json; env: UNIFIED_AGENT_CREDENTIAL_FILE)
   --enrollment-token-file string    One-time VM enrollment-token file (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)
   --id                    string    Agent identifier (optional; adopted from the enrollment token / persisted credential when unset, asserted when set; env: UNIFIED_AGENT_ID)
   --labels                string    Comma-separated labels, e.g. "kind:linux,env:prod" (env: UNIFIED_AGENT_LABELS)
@@ -249,17 +249,33 @@ logLevel: info
 ```
 
 VM agents authenticate only via enrollment; there is no `token` config field.
-On first start, the agent consumes the one-time enrollment-token file and
-writes the refresh credential to `credentialFile`; later starts rotate that
-credential automatically. When `credentialFile` is left unset (no flag, env,
-or config value), the agent defaults it to
-`$HOME/.unified-cd/<id>/credential.json` and creates that owner-only
-directory on startup, so only `enrollmentTokenFile` is strictly required on
-a fresh host. Keep both files owner-readable only and do not put either
-value in a command line. The controller, not this file, is authoritative for
-labels (fixed at enrollment time by an administrator). Capabilities are not
-configurable at all — the agent auto-detects and self-reports them on every
-registration; see [Capabilities and routing](agents.md#capabilities-and-routing).
+On first start, a valid explicit enrollment token supplies the effective ID
+before local credential discovery and writes the refresh credential to
+`credentialFile`; later starts rotate that credential automatically. When
+`credentialFile` is left unset (no flag, env, or config value), its default is
+always `$HOME/.unified-cd/<agent-id>/credential.json`, and the directory is
+owner-only. On a token-less, ID-less start, the agent discovers exactly one
+ID-scoped default credential. Multiple candidates fail with `multiple default
+agent credential files found; set --id or --credential-file`; use either flag
+to select the intended credential. The former shared
+`$HOME/.unified-cd/credential.json` location is ignored unless it is explicitly
+configured with `--credential-file` (or the equivalent environment/config
+value). A process never removes another ID's credential. Keep both files
+owner-readable only and do not put either value in a command line. The
+controller, not this file, is authoritative for labels (fixed at enrollment
+time by an administrator). Capabilities are not configurable at all — the
+agent auto-detects and self-reports them on every registration; see
+[Capabilities and routing](agents.md#capabilities-and-routing). See
+[Migrating to ID-scoped agent credentials](migration-agent-id-scoped-credentials.md)
+for the shared-path migration.
+
+VM IDs used with the default credential path must contain only lowercase ASCII
+letters, digits, `.`, `_`, or `-`, start and end with a letter or digit, and
+must not use Windows reserved names such as `con` or `com1`. The agent also
+rejects symbolic-link or Windows reparse-point redirection of the default
+credential root or ID directory. An explicit `credentialFile` preserves
+compatibility for a legacy credential whose embedded ID does not use this
+portable syntax.
 
 Start with config file:
 

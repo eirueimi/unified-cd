@@ -128,6 +128,10 @@ securely supplied admin PAT instead of the development value shown here.
 enrollment writer; it is safe to rerun and keeps the credential out of process
 arguments.
 
+Explicit VM IDs must be portable lowercase names. Use ASCII letters and
+digits with internal `.`, `_`, or `-`, start and end with a letter or digit,
+and avoid Windows reserved names such as `con` and `com1`.
+
 The agent registers itself with the controller and starts polling for jobs.
 
 **Key configuration options:**

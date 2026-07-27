@@ -64,6 +64,25 @@ func validateCredentialDirectory(path string) error {
 	return nil
 }
 
+func validateNoCredentialRedirect(path string) error {
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	attributes, err := windows.GetFileAttributes(pathPtr)
+	if err != nil {
+		return err
+	}
+	return rejectCredentialReparseAttributes(attributes)
+}
+
+func rejectCredentialReparseAttributes(attributes uint32) error {
+	if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return fmt.Errorf(credentialRedirectError)
+	}
+	return nil
+}
+
 func hasDirectoryWrite(mask windows.ACCESS_MASK) bool {
 	return mask&(windows.GENERIC_ALL|windows.GENERIC_WRITE|fileAddFile|fileAddSubdirectory|fileDeleteChild|windows.DELETE|windows.WRITE_DAC|windows.WRITE_OWNER) != 0
 }

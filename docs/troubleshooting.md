@@ -1090,6 +1090,62 @@ the agent with private `credentialFile` and `enrollmentTokenFile` paths.
 the identity or replace it. `enrollment unavailable` is retryable only after
 PostgreSQL/controller availability is restored; auth fails closed.
 
+### Agent startup reports multiple default credential files
+
+**Symptom:** an ID-less agent start without an enrollment token fails with:
+
+```
+multiple default agent credential files found; set --id or --credential-file
+```
+
+**Cause:** more than one ID-scoped credential exists below
+`$HOME/.unified-cd/`, so the agent cannot safely infer which identity should
+run.
+
+**Fix:** restart with `--id <agent-id>` to use that ID's default credential,
+or use `--credential-file <path>` to select an explicit file. A valid explicit
+enrollment token takes precedence over local discovery and persists its
+credential under the returned ID. The former shared
+`$HOME/.unified-cd/credential.json` file is not discovered; migrate it or pass
+it explicitly with `--credential-file`. See
+[Migrating to ID-scoped agent credentials](migration-agent-id-scoped-credentials.md).
+
+### Agent enrollment rejects a non-portable VM agent ID
+
+**Symptom:** enrollment creation or default credential-path resolution fails
+with:
+
+```
+agent ID must use lowercase ASCII letters, digits, '.', '_', or '-', start and end with a letter or digit, and not use a reserved Windows name
+```
+
+**Cause:** literal agent IDs are credential directory names, so uppercase,
+Unicode, leading or trailing punctuation, separators, and Windows reserved
+names could collide or fail on a supported filesystem.
+
+**Fix:** create the VM enrollment with a portable lowercase ID such as
+`build-agent-01`. For a pre-existing credential whose embedded ID cannot be
+renamed, select its file explicitly with `--credential-file`; implicit
+default-path discovery intentionally rejects it.
+
+### Agent rejects a redirected default credential directory
+
+**Symptom:** startup fails with:
+
+```
+credential directory must not be a symbolic link or reparse point
+```
+
+**Cause:** `$HOME/.unified-cd` or its selected `<agent-id>` directory is a
+symbolic link, junction, mount-point reparse path, or another redirecting
+filesystem object. Following it could write one agent's credential into
+another path.
+
+**Fix:** stop the agent, replace the redirect with a real owner-controlled
+directory, and retry enrollment. If an intentionally redirected legacy path
+must remain, pass the exact credential file with `--credential-file` and
+secure that directory separately.
+
 ### Kubernetes agent returns 403 or 503 during enrollment
 
 **Symptom:** `enrollment policy rejected` (403) or `kubernetes identity

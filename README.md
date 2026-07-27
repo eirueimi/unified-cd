@@ -171,6 +171,19 @@ See [docs/agents.md](docs/agents.md) for labels/routing and running the agent as
 systemd/launchd service, and [docs/kubernetes-integration.md](docs/kubernetes-integration.md)
 for the Kubernetes agent.
 
+Agent refresh credentials are stored by default at
+`$HOME/.unified-cd/<agent-id>/credential.json`. A valid enrollment token
+supplies the ID before local credential discovery; on a token-less, ID-less
+restart, exactly one ID-scoped credential is discovered. If several exist,
+start with `--id` or `--credential-file`. The former shared
+`$HOME/.unified-cd/credential.json` location is ignored unless explicitly
+selected. Existing installations should follow the
+[ID-scoped credential migration guide](docs/migration-agent-id-scoped-credentials.md).
+Explicit VM agent IDs used with the default path must be portable canonical
+names: lowercase ASCII letters and digits, with internal `.`, `_`, or `-`.
+They must start and end with a letter or digit and cannot be Windows reserved
+names such as `con` or `com1`.
+
 ### Tests
 
 ```bash
@@ -231,6 +244,7 @@ CLI / Browser / Webhook
 - **[Audit Log Guide](docs/audit.md)** — what's recorded/excluded, `GET /api/v1/audit`, `audit list`, retention
 - **[Frontend Development Guide](docs/frontend-development.md)** — Svelte + Vite setup, hot reload, routing
 - **[Troubleshooting](docs/troubleshooting.md)** — symptom-indexed fixes for common failures
+- **[ID-Scoped Agent Credential Migration](docs/migration-agent-id-scoped-credentials.md)** — move legacy shared agent credentials safely
 
 ### Infrastructure
 - **[Kubernetes Manifests](manifests/README.md)** — install manifests for production and evaluation

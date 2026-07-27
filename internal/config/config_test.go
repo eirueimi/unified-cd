@@ -23,24 +23,20 @@ func TestDefaultAgentCredentialFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(home, ".unified-cd", "build-gcp-01", "credential.json"), path)
 
-	// An empty (or whitespace-only) id no longer errors: it resolves to the
-	// shared, ID-independent default path so --id can be omitted.
-	path, err = config.DefaultAgentCredentialFile("")
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(home, ".unified-cd", "credential.json"), path)
-
-	path, err = config.DefaultAgentCredentialFile("   ")
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(home, ".unified-cd", "credential.json"), path)
 }
 
-// id set → ~/.unified-cd/<id>/credential.json (unchanged)
-// id ""  → ~/.unified-cd/credential.json (no per-id segment)
-func TestDefaultAgentCredentialFile_NoID(t *testing.T) {
-	got, err := config.DefaultAgentCredentialFile("")
-	require.NoError(t, err)
-	home, _ := os.UserHomeDir()
-	assert.Equal(t, filepath.Join(home, ".unified-cd", "credential.json"), got)
+func TestDefaultAgentCredentialFileRequiresID(t *testing.T) {
+	for _, id := range []string{"", "   "} {
+		_, err := config.DefaultAgentCredentialFile(id)
+		require.EqualError(t, err, "agent ID is required to derive the default credential file path")
+	}
+}
+
+func TestDefaultAgentCredentialFileRejectsUnsafeID(t *testing.T) {
+	for _, id := range []string{"..", "agent/other", `agent\other`, "Agent-A", "agent-é", "agent-a.", "con"} {
+		_, err := config.DefaultAgentCredentialFile(id)
+		require.EqualError(t, err, "agent ID must use lowercase ASCII letters, digits, '.', '_', or '-', start and end with a letter or digit, and not use a reserved Windows name")
+	}
 }
 
 // ── FindFlag ────────────────────────────────────────────────────────────────
