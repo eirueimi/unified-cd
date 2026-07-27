@@ -38,7 +38,7 @@ the gap from the tail grew beyond 20,000 pixels.
 
 ## Considered Approaches
 
-### Record the last programmatic scroll position
+### Record the last programmatic scroll position per element
 
 When the viewer applies a tail correction, record the resulting `scrollTop`.
 When `onLogScroll` later observes that exact position, treat the event as a
@@ -48,7 +48,10 @@ existing distance-from-tail calculation.
 
 This is the selected approach because it directly identifies the state
 produced by the viewer, changes only the affected data flow, and does not hide
-real user movement during a pending animation frame.
+real user movement during a pending animation frame. The record is scoped to
+the DOM element and survives lifecycle invalidation because invalidation can
+cancel a future animation-frame write, but cannot cancel a `scroll` event
+already queued by an applied write.
 
 ### Infer user intent from input events
 
@@ -63,32 +66,40 @@ a correction is pending, which would regress existing behavior.
 
 ## Design
 
-Add a nullable component-local value containing the latest `scrollTop`
-produced by `applyLogTailScroll`.
+Add a component-local `WeakMap` from log-box elements to the latest
+browser-clamped `scrollTop` produced by `applyLogTailScroll`. Element scoping
+prevents a position from a detached run's log box from acknowledging an event
+on a replacement element.
 
 `applyLogTailScroll` will:
 
 1. Assign `logBox.scrollTop = logBox.scrollHeight`.
 2. Read back the browser-clamped `scrollTop`.
-3. Store that value as the latest programmatic position.
+3. Store that value for the current log-box element.
 4. Copy it to `logScrollTop` as today.
 
-`onLogScroll` will always update `logScrollTop`. It will then compare the
-current position with the recorded programmatic position:
+`onLogScroll` will use `event.currentTarget`, updating `logScrollTop` only for
+the currently bound log box. It will then compare that element's current
+position with its recorded programmatic position:
 
 - If they match, the handler leaves `logStick` unchanged because a delayed
-  programmatic event must not be reclassified using newer log geometry.
+  programmatic event must not be reclassified using newer log geometry. The
+  marker remains recorded so multiple queued events, or one coalesced event
+  observed after multiple writes, receive the same acknowledgment.
 - If they differ, it clears the recorded position and performs the existing
   distance-from-tail calculation. This preserves immediate user opt-out and
   re-entry at the tail.
 
-Lifecycle invalidation will clear the recorded programmatic position so a
-position from an old run or log view cannot influence the next one.
+Lifecycle invalidation will continue to advance the generation and cancel
+future animation-frame writes, but it will not clear markers for writes that
+already ran. Old elements are weakly held, and events from an element that is
+no longer the current `logBox` cannot change current-view stickiness.
 
-The recorded value does not need an event counter. Browser scroll handlers read
-the element's current position, not a historical position embedded in the
-event. Keeping the latest viewer-produced position until a different scroll
-position is observed covers coalesced or delayed programmatic events.
+The recorded value does not need an event counter. Browser scroll handlers
+read the element's current position, not a historical position embedded in the
+event. Keeping each element's latest viewer-produced position until a
+different scroll position is observed covers coalesced, repeated, and delayed
+programmatic events.
 
 ## Testing
 
@@ -102,6 +113,16 @@ Add a regression test that models the observed browser order:
    programmatic position.
 5. Deliver another live batch and assert that a new tail correction is still
    scheduled and reaches the new bottom.
+
+Add a lifecycle regression that applies an old-view tail write, starts a log
+view switch (invalidating future writes), enlarges the new view's geometry,
+delivers the old queued event more than once, completes the switch, and then
+proves the next SSE batch still schedules and reaches a browser-clamped bottom.
+
+The modeled log box must expose a nonzero `clientHeight` and clamp its
+`scrollTop` setter to `scrollHeight - clientHeight`. Bottom assertions use a
+zero tail gap so recording the assigned `scrollHeight` instead of the
+browser-read `scrollTop` fails.
 
 The regression test must fail against the current implementation before the
 fix is applied.

@@ -4,7 +4,7 @@
 
 **Goal:** Keep the run detail log viewer pinned to live SSE output when a delayed programmatic `scroll` event arrives after the log extent has grown.
 
-**Architecture:** Record the browser-clamped `scrollTop` produced by the viewer's own tail correction. The scroll handler will ignore only events observed at that recorded position; any different position continues through the existing distance-from-tail user-intent calculation.
+**Architecture:** Record the browser-clamped `scrollTop` produced by the viewer's own tail correction per log-box element. Lifecycle invalidation cancels future animation-frame writes but retains acknowledgment for writes that already ran; the scroll handler ignores only events observed at that element's recorded position, while any different position continues through the existing distance-from-tail user-intent calculation.
 
 **Tech Stack:** Svelte 5, JavaScript, Vitest 4, Testing Library, Vite 8
 
@@ -21,8 +21,8 @@
 
 ## File Structure
 
-- Modify `web/src/routes/RunDetail.test.js`: model the real browser ordering in which a programmatic tail assignment queues a scroll event, another SSE batch grows the log, and the delayed event then runs.
-- Modify `web/src/routes/RunDetail.svelte`: track the latest programmatic scroll position and prevent only that position from disabling `logStick`.
+- Modify `web/src/routes/RunDetail.test.js`: model the real browser ordering in which a programmatic tail assignment queues a scroll event, later geometry grows, and the delayed event then runs, both within one view and across lifecycle invalidation during a view switch.
+- Modify `web/src/routes/RunDetail.svelte`: track the latest programmatic scroll position per element and prevent only that position from disabling `logStick`, including across lifecycle invalidation.
 
 ### Task 1: Reproduce the Delayed Programmatic Scroll Event
 
@@ -178,18 +178,18 @@ Run:
 npm.cmd test -- --run src/routes/RunDetail.test.js -t "keeps tailing when a programmatic scroll event arrives after the log grows"
 ```
 
-Expected: FAIL because the delayed `fireEvent.scroll(box)` computes the gap
-using `scrollHeight = 2000`, sets `logStick = false`, and the third batch does
-not add a new animation frame.
+Recorded RED: FAIL at `RunDetail.test.js:1518`. The delayed
+`fireEvent.scroll(box)` computes the gap using `scrollHeight = 2000`, sets
+`logStick = false`, and the already queued second-batch correction leaves
+`scrollTop` at `1000` instead of advancing it to `2000`.
 
 - [ ] **Step 3: Confirm the failure is the intended race**
 
-Check that the assertion waiting for `frames` to contain the third-batch tail
-correction fails. If the test fails earlier, correct the test fixture without
-changing `RunDetail.svelte`, then rerun until the failure isolates the missing
-programmatic-scroll distinction.
+The focused run received `1000` where line 1518 expected `2000`. This earlier
+failure is the intended race: the scheduler's `canApply()` guard observes the
+incorrectly cleared `logStick` before the pending second-batch frame can write.
 
-### Task 2: Preserve Tail State for the Recorded Programmatic Position
+### Task 2: Preserve Tail State for the Element-Scoped Programmatic Position
 
 **Files:**
 - Modify: `web/src/routes/RunDetail.svelte:170-175`
@@ -198,15 +198,15 @@ programmatic-scroll distinction.
 
 **Interfaces:**
 - Consumes: `logBox.scrollTop`, `logBox.scrollHeight`, `logScrollTop`, `logStick`, and `invalidateLogTailScroll()`.
-- Produces: nullable component state `programmaticLogScrollTop: number | null`; `applyLogTailScroll()` records it and `onLogScroll()` distinguishes it from a different user position.
+- Produces: component-local `WeakMap<Element, number>` state; `applyLogTailScroll()` records the browser-read value per element and `onLogScroll()` distinguishes it from a different user position.
 
-- [ ] **Step 1: Add the nullable programmatic position state**
+- [ ] **Step 1: Add the element-scoped programmatic position state**
 
 Place the state beside the existing tail scheduler fields:
 
 ```js
 let logStick = true; // keep auto-scrolling to the bottom while the user is there
-let programmaticLogScrollTop = null;
+const programmaticLogScrollTops = new WeakMap();
 let tailScrollFrame = null;
 let tailScrollGeneration = 0;
 ```
@@ -216,33 +216,41 @@ let tailScrollGeneration = 0;
 Replace the handler with:
 
 ```js
-function onLogScroll() {
-  if (!logBox) return;
-  const currentScrollTop = logBox.scrollTop;
-  logScrollTop = currentScrollTop;
-  if (currentScrollTop === programmaticLogScrollTop) return;
-  programmaticLogScrollTop = null;
+function onLogScroll(event) {
+  const box = event.currentTarget;
+  if (!box) return;
+  const currentScrollTop = box.scrollTop;
+  if (box === logBox) logScrollTop = currentScrollTop;
+  if (currentScrollTop === programmaticLogScrollTops.get(box)) return;
+  programmaticLogScrollTops.delete(box);
+  if (box !== logBox) return;
   // Stick to the bottom only while the user is within ~2 rows of the end.
   logStick =
-    logBox.scrollHeight - currentScrollTop - logBox.clientHeight <
+    box.scrollHeight - currentScrollTop - box.clientHeight <
     LOG_ROW_H * 2;
 }
 ```
 
 The strict equality is intentional: the stored value is read back from the
-same browser element immediately after assignment. A real user move to any
-different position clears the marker and follows the existing calculation.
+same browser element immediately after assignment. Matching does not consume
+the marker, so queued or coalesced programmatic events remain acknowledged. A
+real user move to any different position clears the marker and follows the
+existing calculation.
 
-- [ ] **Step 3: Clear the marker during lifecycle invalidation**
+- [ ] **Step 3: Retain applied markers during lifecycle invalidation**
 
-At the start of `invalidateLogTailScroll()` add:
+Do not delete the element-scoped marker from `invalidateLogTailScroll()`.
+Invalidation still advances the scheduler generation and cancels its pending
+animation frame:
 
 ```js
-programmaticLogScrollTop = null;
+tailScrollGeneration++;
 ```
 
-This prevents a position recorded for an old run or view from affecting a new
-one.
+An already-applied assignment has already queued an uncancellable browser
+event. Element scoping prevents its position from affecting a replacement log
+box, while retaining it allows the old event to be acknowledged after a
+same-element view switch.
 
 - [ ] **Step 4: Record the browser-clamped position in the tail assignment**
 
@@ -251,9 +259,11 @@ Update `applyLogTailScroll()`:
 ```js
 function applyLogTailScroll() {
   if (!logBox) return;
-  logBox.scrollTop = logBox.scrollHeight;
-  programmaticLogScrollTop = logBox.scrollTop;
-  logScrollTop = programmaticLogScrollTop;
+  const box = logBox;
+  box.scrollTop = box.scrollHeight;
+  const currentScrollTop = box.scrollTop;
+  programmaticLogScrollTops.set(box, currentScrollTop);
+  logScrollTop = currentScrollTop;
 }
 ```
 
@@ -265,8 +275,9 @@ Run:
 npm.cmd test -- --run src/routes/RunDetail.test.js -t "keeps tailing when a programmatic scroll event arrives after the log grows"
 ```
 
-Expected: PASS. The delayed event matches `programmaticLogScrollTop`, leaves
-`logStick` enabled, and the third SSE batch schedules another correction.
+Expected: PASS. The delayed event matches the current element's recorded
+position, leaves `logStick` enabled, and the third SSE batch schedules another
+correction.
 
 - [ ] **Step 6: Run the complete RunDetail test file**
 
@@ -291,8 +302,14 @@ git add web/src/routes/RunDetail.svelte web/src/routes/RunDetail.test.js
 git commit -m "fix(web): preserve live log tail across delayed scroll events"
 ```
 
-Expected: one implementation commit containing only the regression test and
-the minimal component state changes.
+Actual TDD history used separate commits:
+
+- `4c08e2e test: reproduce delayed log tail scroll event`
+- `36942ad test: restore delayed scroll race timing`
+- `2aca07c fix(web): preserve live log tail across delayed scroll events`
+
+The RED regression and its timing correction were committed before the
+production implementation rather than combined with it.
 
 ### Task 3: Full and Live Verification
 
@@ -389,3 +406,66 @@ git log --oneline -3
 Expected: only the committed design, plan, regression test, and implementation
 changes are present; `web/dist` remains ignored and no dependency or
 package-lock changes were introduced.
+
+---
+
+## Final Review Fix Wave
+
+The whole-branch review found that lifecycle invalidation erased the marker
+for a write that had already run, even though only its future animation frame
+could be cancelled. It also found that the original regression's zero-height,
+unclamped jsdom geometry did not enforce browser readback.
+
+### Task 4: Reproduce the Lifecycle-Crossing Race
+
+**Files:**
+- Test: `web/src/routes/RunDetail.test.js`
+
+- [x] Apply an old-view tail write and leave its next scheduled frame pending.
+- [x] Start a step-view switch, which invalidates and cancels that future frame.
+- [x] Let the new view's stats enlarge `scrollHeight`.
+- [x] Dispatch the old queued `scroll` event twice to cover repeated or
+  coalesced delivery.
+- [x] Complete the switch's two-stage bottom correction.
+- [x] Deliver the next live SSE batch and require a new tail frame.
+
+Focused RED command:
+
+```powershell
+npm.cmd test -- --run src/routes/RunDetail.test.js -t "keeps tailing after an applied scroll event crosses a log view switch"
+```
+
+Recorded RED: exit code 1 at `RunDetail.test.js:1748`; the next live batch
+left `frames` at length `0` instead of `1`. All earlier switch-completion and
+browser-bottom assertions passed, isolating the stale event's incorrect
+`logStick = false` transition.
+
+### Task 5: Harden Browser-Clamped Readback
+
+**Files:**
+- Test: `web/src/routes/RunDetail.test.js`
+
+The original same-view regression now exposes `clientHeight = 200`, clamps the
+log box's `scrollTop` setter to `scrollHeight - clientHeight`, and asserts both
+the clamped position and a zero tail gap after every correction. A mutation
+that records the assigned `scrollHeight` instead of reading back `scrollTop`
+therefore fails when the delayed event compares `800` with `1000`.
+
+### Task 6: Separate Future Cancellation from Applied-Write Acknowledgment
+
+**Files:**
+- Modify: `web/src/routes/RunDetail.svelte`
+- Modify: `docs/superpowers/specs/2026-07-27-live-log-tail-scroll-race-design.md`
+
+The final implementation stores browser-read positions in a
+`WeakMap<Element, number>`. Lifecycle invalidation still advances the
+generation and cancels pending frames, but retains markers for applied writes.
+Matching events do not consume the marker, so repeated/coalesced events remain
+acknowledged. A different position deletes the marker and executes the
+existing two-row user-intent calculation. Events from detached elements cannot
+change current-view stickiness.
+
+Focused GREEN result: the lifecycle regression passed (1 passed, 48 skipped).
+The hardened same-view regression passed (1 passed, 48 skipped). The complete
+`RunDetail` file passed 49 tests, the full Web UI suite passed 109 tests across
+8 files, and the production build transformed 133 modules successfully.

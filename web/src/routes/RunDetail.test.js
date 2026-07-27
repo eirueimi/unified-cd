@@ -1404,10 +1404,12 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
   });
 
   it('keeps tailing when a programmatic scroll event arrives after the log grows', async () => {
+    const descCH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
     const originalRAF = globalThis.requestAnimationFrame;
     const frames = [];
     const enc = new TextEncoder();
     let scrollHeight = 1000;
+    const clientHeight = 200;
     let readCount = 0;
     let releaseSecondBatch;
     let releaseThirdBatch;
@@ -1422,6 +1424,28 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
       configurable: true,
       get() {
         return this.classList?.contains('log-box') ? scrollHeight : 0;
+      },
+    });
+    Object.defineProperty(Element.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('log-box') ? clientHeight : 0;
+      },
+    });
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() {
+        return this.__stubScrollTop || 0;
+      },
+      set(value) {
+        if (!this.classList?.contains('log-box')) {
+          this.__stubScrollTop = value;
+          return;
+        }
+        this.__stubScrollTop = Math.max(
+          0,
+          Math.min(value, this.scrollHeight - this.clientHeight),
+        );
       },
     });
     globalThis.requestAnimationFrame = (callback) => {
@@ -1508,14 +1532,18 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
       const box = container.querySelector('.log-box');
       frames.shift()(performance.now());
       await vi.waitFor(() => expect(frames).toHaveLength(1));
-      expect(box.scrollTop).toBe(1000);
+      expect(box.scrollTop).toBe(scrollHeight - clientHeight);
+      expect(box.scrollHeight - box.scrollTop - box.clientHeight).toBe(0);
 
       scrollHeight = 2000;
       releaseSecondBatch();
       await vi.waitFor(() => expect(readCount).toBe(3));
       await fireEvent.scroll(box);
       frames.shift()(performance.now());
-      await vi.waitFor(() => expect(box.scrollTop).toBe(2000));
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(scrollHeight - clientHeight);
+        expect(box.scrollHeight - box.scrollTop - box.clientHeight).toBe(0);
+      });
       expect(frames).toHaveLength(0);
 
       scrollHeight = 3000;
@@ -1524,11 +1552,216 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
       frames.shift()(performance.now());
       await vi.waitFor(() => expect(frames).toHaveLength(1));
       frames.shift()(performance.now());
-      await vi.waitFor(() => expect(box.scrollTop).toBe(3000));
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(scrollHeight - clientHeight);
+        expect(box.scrollHeight - box.scrollTop - box.clientHeight).toBe(0);
+      });
     } finally {
       restore();
+      if (descCH) Object.defineProperty(Element.prototype, 'clientHeight', descCH);
+      else delete Element.prototype.clientHeight;
       if (originalRAF) globalThis.requestAnimationFrame = originalRAF;
       else delete globalThis.requestAnimationFrame;
+    }
+  });
+
+  it('keeps tailing after an applied scroll event crosses a log view switch', async () => {
+    const descCH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+    const originalRAF = globalThis.requestAnimationFrame;
+    const originalCAF = globalThis.cancelAnimationFrame;
+    const frames = [];
+    const enc = new TextEncoder();
+    const clientHeight = 200;
+    let scrollHeight = 1000;
+    let frameID = 0;
+    let readCount = 0;
+    let stepRangeRequested = false;
+    let releaseStepRange;
+    let releaseLiveBatch;
+    const stepRangeGate = new Promise((resolve) => {
+      releaseStepRange = resolve;
+    });
+    const liveBatchGate = new Promise((resolve) => {
+      releaseLiveBatch = resolve;
+    });
+
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('log-box') ? scrollHeight : 0;
+      },
+    });
+    Object.defineProperty(Element.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('log-box') ? clientHeight : 0;
+      },
+    });
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() {
+        return this.__stubScrollTop || 0;
+      },
+      set(value) {
+        if (!this.classList?.contains('log-box')) {
+          this.__stubScrollTop = value;
+          return;
+        }
+        this.__stubScrollTop = Math.max(
+          0,
+          Math.min(value, this.scrollHeight - this.clientHeight),
+        );
+      },
+    });
+    globalThis.requestAnimationFrame = (callback) => {
+      const frame = { id: ++frameID, callback };
+      frames.push(frame);
+      return frame.id;
+    };
+    globalThis.cancelAnimationFrame = (id) => {
+      const index = frames.findIndex((frame) => frame.id === id);
+      if (index >= 0) frames.splice(index, 1);
+    };
+
+    try {
+      const filteredLines = [
+        { seq: 10, stepIndex: 1, stream: 'stdout', line: 'filtered first' },
+        { seq: 11, stepIndex: 1, stream: 'stdout', line: 'filtered second' },
+      ];
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            body: {
+              getReader() {
+                return {
+                  read: async () => {
+                    readCount++;
+                    if (readCount === 1) {
+                      return {
+                        done: false,
+                        value: enc.encode(`data: ${JSON.stringify({
+                          type: 'log',
+                          seq: 1,
+                          stepIndex: 0,
+                          stream: 'stdout',
+                          line: 'old view',
+                        })}\n\n`),
+                      };
+                    }
+                    if (readCount === 2) {
+                      await liveBatchGate;
+                      return {
+                        done: false,
+                        value: enc.encode(`data: ${JSON.stringify({
+                          type: 'log',
+                          seq: 12,
+                          stepIndex: 1,
+                          stream: 'stdout',
+                          line: 'next live line',
+                        })}\n\n`),
+                      };
+                    }
+                    return { done: true, value: undefined };
+                  },
+                };
+              },
+            },
+          });
+        }
+        if (u.includes('/logs/stats') && u.includes('steps=1')) {
+          scrollHeight = 2000;
+          return jsonResponse({ count: filteredLines.length, minSeq: 10, maxSeq: 11 });
+        }
+        if (u.includes('/logs/range') && u.includes('steps=1')) {
+          stepRangeRequested = true;
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => {
+              await stepRangeGate;
+              return filteredLines;
+            },
+          });
+        }
+        if (u.includes('/logs/stats')) {
+          return jsonResponse({ count: 1, minSeq: 1, maxSeq: 1 });
+        }
+        if (u.includes('/logs/range')) {
+          return jsonResponse([
+            { seq: 1, stepIndex: 0, stream: 'stdout', line: 'old view' },
+          ]);
+        }
+        if (u.includes('/steps')) {
+          return jsonResponse([
+            { index: 0, stageIndex: 0, name: 'checkout', status: 'Succeeded', kind: 'run', section: 'main' },
+            { index: 1, stageIndex: 1, name: 'build', status: 'Running', kind: 'run', section: 'main' },
+          ]);
+        }
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({
+          id: 'run-view-switch-delayed-scroll',
+          status: 'Running',
+          jobName: 'j',
+          triggeredBy: 'x',
+          createdAt: null,
+          params: {},
+        });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, {
+        props: { params: { id: 'run-view-switch-delayed-scroll' } },
+      });
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      await vi.waitFor(() => expect(readCount).toBe(2));
+
+      const box = container.querySelector('.log-box');
+      frames.shift().callback(performance.now());
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      expect(box.scrollHeight - box.scrollTop - box.clientHeight).toBe(0);
+
+      await fireEvent.click(container.querySelectorAll('.step-row')[1]);
+      await vi.waitFor(() => expect(stepRangeRequested).toBe(true));
+      expect(frames).toHaveLength(0);
+      expect(box.scrollTop).toBe(800);
+
+      await fireEvent.scroll(box);
+      await fireEvent.scroll(box);
+
+      releaseStepRange();
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      frames.shift().callback(performance.now());
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      frames.shift().callback(performance.now());
+      await vi.waitFor(() => {
+        expect(box.scrollHeight - box.scrollTop - box.clientHeight).toBe(0);
+        expect(frames).toHaveLength(0);
+      });
+
+      scrollHeight = 3000;
+      releaseLiveBatch();
+      await vi.waitFor(() => expect(readCount).toBe(3));
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      frames.shift().callback(performance.now());
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      frames.shift().callback(performance.now());
+      await vi.waitFor(() => {
+        expect(box.scrollHeight - box.scrollTop - box.clientHeight).toBe(0);
+      });
+    } finally {
+      releaseStepRange();
+      releaseLiveBatch();
+      restore();
+      if (descCH) Object.defineProperty(Element.prototype, 'clientHeight', descCH);
+      else delete Element.prototype.clientHeight;
+      if (originalRAF) globalThis.requestAnimationFrame = originalRAF;
+      else delete globalThis.requestAnimationFrame;
+      if (originalCAF) globalThis.cancelAnimationFrame = originalCAF;
+      else delete globalThis.cancelAnimationFrame;
     }
   });
 
