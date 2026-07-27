@@ -1513,6 +1513,7 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
       scrollHeight = 2000;
       releaseSecondBatch();
       await vi.waitFor(() => expect(readCount).toBe(3));
+      await fireEvent.scroll(box);
       frames.shift()(performance.now());
       await vi.waitFor(() => expect(box.scrollTop).toBe(2000));
       expect(frames).toHaveLength(0);
@@ -1520,7 +1521,6 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
       scrollHeight = 3000;
       releaseThirdBatch();
       await vi.waitFor(() => expect(frames).toHaveLength(1));
-      await fireEvent.scroll(box);
       frames.shift()(performance.now());
       await vi.waitFor(() => expect(frames).toHaveLength(1));
       frames.shift()(performance.now());
