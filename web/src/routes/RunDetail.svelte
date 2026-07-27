@@ -170,6 +170,7 @@
   let logScrollTop = 0;
   let logViewportH = 600;
   let logStick = true; // keep auto-scrolling to the bottom while the user is there
+  let programmaticLogScrollTop = null;
   let tailScrollFrame = null;
   let tailScrollGeneration = 0;
 
@@ -276,13 +277,17 @@
   }
   function onLogScroll() {
     if (!logBox) return;
-    logScrollTop = logBox.scrollTop;
+    const currentScrollTop = logBox.scrollTop;
+    logScrollTop = currentScrollTop;
+    if (currentScrollTop === programmaticLogScrollTop) return;
+    programmaticLogScrollTop = null;
     // Stick to the bottom only while the user is within ~2 rows of the end.
     logStick =
-      logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight <
+      logBox.scrollHeight - currentScrollTop - logBox.clientHeight <
       LOG_ROW_H * 2;
   }
   function invalidateLogTailScroll() {
+    programmaticLogScrollTop = null;
     tailScrollGeneration++;
     const pending = tailScrollFrame;
     tailScrollFrame = null;
@@ -293,7 +298,8 @@
   function applyLogTailScroll() {
     if (!logBox) return;
     logBox.scrollTop = logBox.scrollHeight;
-    logScrollTop = logBox.scrollTop;
+    programmaticLogScrollTop = logBox.scrollTop;
+    logScrollTop = programmaticLogScrollTop;
   }
   async function waitForLogLayout() {
     await tick();
