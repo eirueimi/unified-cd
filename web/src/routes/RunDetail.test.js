@@ -1403,6 +1403,135 @@ describe('RunDetail — log tail view (auto-scroll after backfill)', () => {
     }
   });
 
+  it('keeps tailing when a programmatic scroll event arrives after the log grows', async () => {
+    const originalRAF = globalThis.requestAnimationFrame;
+    const frames = [];
+    const enc = new TextEncoder();
+    let scrollHeight = 1000;
+    let readCount = 0;
+    let releaseSecondBatch;
+    let releaseThirdBatch;
+    const secondBatchGate = new Promise((resolve) => {
+      releaseSecondBatch = resolve;
+    });
+    const thirdBatchGate = new Promise((resolve) => {
+      releaseThirdBatch = resolve;
+    });
+
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('log-box') ? scrollHeight : 0;
+      },
+    });
+    globalThis.requestAnimationFrame = (callback) => {
+      frames.push(callback);
+      return frames.length;
+    };
+
+    try {
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            body: {
+              getReader() {
+                return {
+                  read: async () => {
+                    readCount++;
+                    if (readCount === 1) {
+                      return {
+                        done: false,
+                        value: enc.encode(`data: ${JSON.stringify({
+                          type: 'log',
+                          seq: 1,
+                          stepIndex: 0,
+                          stream: 'stdout',
+                          line: 'first',
+                        })}\n\n`),
+                      };
+                    }
+                    if (readCount === 2) {
+                      await secondBatchGate;
+                      return {
+                        done: false,
+                        value: enc.encode(`data: ${JSON.stringify({
+                          type: 'log',
+                          seq: 2,
+                          stepIndex: 0,
+                          stream: 'stdout',
+                          line: 'second',
+                        })}\n\n`),
+                      };
+                    }
+                    if (readCount === 3) {
+                      await thirdBatchGate;
+                      return {
+                        done: false,
+                        value: enc.encode(`data: ${JSON.stringify({
+                          type: 'log',
+                          seq: 3,
+                          stepIndex: 0,
+                          stream: 'stdout',
+                          line: 'third',
+                        })}\n\n`),
+                      };
+                    }
+                    return { done: true, value: undefined };
+                  },
+                };
+              },
+            },
+          });
+        }
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({
+          id: 'run-delayed-programmatic-scroll',
+          status: 'Running',
+          jobName: 'j',
+          triggeredBy: 'x',
+          createdAt: null,
+          params: {},
+        });
+      });
+      global.fetch = fetchMock;
+
+      const { container } = render(RunDetail, {
+        props: { params: { id: 'run-delayed-programmatic-scroll' } },
+      });
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+
+      const box = container.querySelector('.log-box');
+      frames.shift()(performance.now());
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      expect(box.scrollTop).toBe(1000);
+
+      scrollHeight = 2000;
+      releaseSecondBatch();
+      await vi.waitFor(() => expect(readCount).toBe(3));
+      frames.shift()(performance.now());
+      await vi.waitFor(() => expect(box.scrollTop).toBe(2000));
+      expect(frames).toHaveLength(0);
+
+      scrollHeight = 3000;
+      releaseThirdBatch();
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      await fireEvent.scroll(box);
+      frames.shift()(performance.now());
+      await vi.waitFor(() => expect(frames).toHaveLength(1));
+      frames.shift()(performance.now());
+      await vi.waitFor(() => expect(box.scrollTop).toBe(3000));
+    } finally {
+      restore();
+      if (originalRAF) globalThis.requestAnimationFrame = originalRAF;
+      else delete globalThis.requestAnimationFrame;
+    }
+  });
+
   it('reapplies tail scrolling after a horizontal scrollbar changes the viewport height', async () => {
     const descCH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
     const originalRAF = globalThis.requestAnimationFrame;
