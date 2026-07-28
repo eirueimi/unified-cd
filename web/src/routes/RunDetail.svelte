@@ -378,14 +378,18 @@
   // whenever the viewport leaves the bottom — by an intentional scroll up, but
   // also, on a busy run, by a stray scroll event that lands while the log is
   // still growing. Either way the user is left stranded away from the live tail
-  // with no visible way back (the header used to expose none). jumpToLatest
-  // re-arms logStick and scrolls to the bottom; once parked there the next
-  // onLogScroll keeps logStick true, so later live batches auto-follow again.
-  // Mirrors switchLogView's own end-of-switch tail jump.
+  // with no visible way back (the header used to expose none).
+  //
+  // Delegate to switchLogView (re-fetch the current view's tail range, set
+  // logStick=true, then scroll to the bottom) rather than scrolling straight
+  // down: after scrolling up on a large virtualized log the window holds HEAD
+  // rows, not the tail, so a bare scrollLogToBottom parks scrollTop past the
+  // loaded content — the empty tail region collapses scrollHeight and the
+  // browser clamps scrollTop right back to the top, so the jump never sticks.
+  // switchLogView installs the [count-FETCH_CHUNK, count) tail window first, so
+  // there is real content to land on and later live batches auto-follow again.
   function jumpToLatest() {
-    invalidateLogTailScroll();
-    logStick = true;
-    void scrollLogToBottom();
+    void switchLogView(viewSteps);
   }
   // selectedStep/selectedParallelGroup select which server-side VIEW is
   // active (Task 4): null → all steps, a single step → [idx], a parallel
