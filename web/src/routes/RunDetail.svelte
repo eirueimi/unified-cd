@@ -374,6 +374,24 @@
       });
     });
   }
+  // Sync the real scrollbar to the tail via a microtask (tick), NOT
+  // requestAnimationFrame. The RAF-based scheduleLogTailScroll has proven
+  // unreliable in the live browser — box.scrollTop is left behind while the log
+  // streams, so content rendered at the tail's spacer offset stays off-screen.
+  // applyLogTailScroll is a synchronous scrollTop write; running it after
+  // tick() (once the batch's DOM update has flushed) reliably pins the viewport
+  // to the tail. The queued flag coalesces bursts so rapid appends don't pile
+  // up microtasks; using tick() (not RAF) also keeps the RAF-frame accounting
+  // the stick-scroll tests drive manually untouched.
+  let tailSyncQueued = false;
+  function syncTailScroll() {
+    if (!logStick || tailSyncQueued) return;
+    tailSyncQueued = true;
+    void tick().then(() => {
+      tailSyncQueued = false;
+      if (logStick) applyLogTailScroll();
+    });
+  }
   // Explicit "follow the tail" control. onLogScroll drops logStick to false
   // whenever the viewport leaves the bottom — by an intentional scroll up, but
   // also, on a busy run, by a stray scroll event that lands while the log is
@@ -440,6 +458,20 @@
         startRow: start,
         lines: lines.map((l) => ({ ...l, line: collapseCarriageReturns(l.line) })),
       };
+      // Seed the virtual scroll position at the tail. When the finally below
+      // flips windowLoading false, the reactive ensureRowsLoaded runs while
+      // box.scrollTop may still be at the top (the awaited scrollLogToBottom
+      // hasn't moved it yet); without this it would see the top-of-log viewport
+      // uncovered by this tail window and fire a HEAD fetch that clobbers it —
+      // the window collapses and the jump/switch shows a blank "Loading…". Also
+      // sync the real scrollbar via a microtask (tick, not RAF) once the tail
+      // window renders: on a large log the RAF-based scrollLogToBottom below has
+      // been observed to leave box.scrollTop at 0, so the content rendered at
+      // the tail's spacer offset stays off-screen.
+      if (logStick) {
+        logScrollTop = Math.max(0, count * LOG_ROW_H - logViewportH);
+        syncTailScroll();
+      }
     } catch (e) {
       console.warn("log view range fetch failed", e);
       // The switch already replaced logView (and, via refreshStats, may have
@@ -733,9 +765,73 @@
       Number.isFinite(initialStats.maxSeq)
         ? initialStats.maxSeq
         : null;
+    // minSeq anchors the backfill's absolute row placement: for the all-steps
+    // view seqs are contiguous, so a line's row = seq - minSeq. This lets the
+    // initial install place its batch by seq instead of assuming it is the tail
+    // (see the `!backfilled` branch below).
+    const backfillMinSeq =
+      typeof initialStats?.minSeq === "number" &&
+      Number.isFinite(initialStats.minSeq)
+        ? initialStats.minSeq
+        : null;
     if (logQuery) runSearch(); // re-run over the reconnected run (Task 5)
     let backfilled = false; // first non-empty batch is the SSE backfill, not a live append
     let backfillWindowToken = null;
+    // Establish the initial window authoritatively on the TAIL, mirroring
+    // switchLogView, instead of letting the SSE /events backfill be the window
+    // authority. The backfill is unreliable for that: for a log under
+    // sseBackfillLimit it replays the WHOLE log OLDEST-first, so split across
+    // read chunks its first chunk is the HEAD — the tail-assuming install then
+    // mislabeled rows, an initial head range-fetch clobbered the window, later
+    // chunks were dropped by the atTail append guard, and the scroll-to-bottom
+    // collapsed onto not-yet-loaded tail rows. The net effect was the log
+    // opening at the head and never following. Fetching the
+    // [count-FETCH_CHUNK, count) tail range up front makes the initial view
+    // deterministic; the stream below then only appends genuinely-live lines
+    // (seq > backfillMaxSeq). Skipped when stats reported no rows yet (an empty
+    // or not-yet-counted log) — the SSE backfill install then still handles the
+    // first lines as before (e.g. tests/servers without a /logs/stats count).
+    if (logWindow.totalCount > 0) {
+      const tailToken = ++windowFetchToken; // invalidate any in-flight head fetch
+      windowLoading = true;
+      try {
+        const count = logWindow.totalCount;
+        const start = Math.max(0, count - FETCH_CHUNK);
+        const lines = await apiFetch(
+          `/api/v1/runs/${runID}/logs/range?offset=${start}&limit=${FETCH_CHUNK}${viewStepsQuery()}`,
+        );
+        // Install ONLY when this fetch is still current AND returned rows. On a
+        // reject (catch), an empty result (stats say rows exist but the range
+        // came back empty — e.g. a fixture that only mocks stats + the SSE
+        // backfill), or supersession, leave `backfilled` false so the SSE
+        // backfill install below still establishes the window as it did before.
+        if (tailToken === windowFetchToken && lines.length) {
+          logWindow = {
+            startRow: start,
+            lines: lines.map((l) => ({ ...l, line: collapseCarriageReturns(l.line) })),
+            totalCount: count,
+          };
+          backfilled = true; // window established; SSE backfill must not re-install
+          // Seed the virtual scroll position at the TAIL synchronously. Without
+          // this, windowLoading flips false below while box.scrollTop is still 0
+          // (stick-scroll hasn't run yet), so the reactive ensureRowsLoaded sees
+          // the top-of-log viewport uncovered by this tail window and fires a
+          // HEAD range fetch (offset 0) that clobbers it — the window collapses
+          // to the head and never follows. Pointing logScrollTop at the tail
+          // makes ensureRowsLoaded see the viewport as covered; the SSE batch's
+          // scheduleLogTailScroll then sets box.scrollTop for real. Do NOT await
+          // a scroll here — that would block opening the /events stream below.
+          if (logStick) {
+            logScrollTop = Math.max(0, count * LOG_ROW_H - logViewportH);
+            syncTailScroll();
+          }
+        }
+      } catch (e) {
+        console.warn("initial tail load failed", e);
+      } finally {
+        if (tailToken === windowFetchToken) windowLoading = false;
+      }
+    }
     abortController = new AbortController();
     const headers = {};
     const t = get(token);
@@ -831,8 +927,30 @@
             const liveCount = batch.length - replayedCount;
             const totalCount =
               Math.max(logWindow.totalCount, replayedCount) + liveCount;
+            // Place the batch by its FIRST line's absolute row (row = seq -
+            // minSeq), not by assuming it is the tail. The /events backfill
+            // streams OLDEST-first; for a log under sseBackfillLimit it is the
+            // WHOLE log, and split across read chunks the first chunk is the
+            // HEAD — so `totalCount - batch.length` mislabeled its rows and,
+            // with the viewport (rows 0..) then uncovered, a HEAD range-fetch
+            // clobbered the window so the view never followed the tail. Seqs are
+            // contiguous across the all-steps view, so seq - minSeq is the row.
+            const seqStartRow =
+              backfillMinSeq !== null && logView.steps === null && batch.length
+                ? Math.max(0, batch[0].seq - backfillMinSeq)
+                : null;
+            // Only trust the seq-derived row when the resulting window actually
+            // FITS within totalCount. Fall back to the tail assumption when
+            // stats gave no minSeq, a step view is active (non-contiguous
+            // seqs), or the fixture/stats and the backfill disagree (e.g. an
+            // empty-stats placeholder whose minSeq doesn't match the delivered
+            // seqs) — otherwise a bad minSeq would push startRow out of bounds.
+            const startRow =
+              seqStartRow !== null && seqStartRow + batch.length <= totalCount
+                ? seqStartRow
+                : Math.max(0, totalCount - batch.length);
             logWindow = {
-              startRow: Math.max(0, totalCount - batch.length),
+              startRow,
               lines: batch,
               totalCount,
             };
@@ -904,9 +1022,12 @@
           }
           // Stick-scroll applies to filtered views too: if the incoming
           // batch is filtered out, scrollHeight is unchanged and the
-          // assignment is a no-op.
+          // assignment is a no-op. scheduleLogTailScroll keeps the RAF-driven
+          // path the tests exercise; syncTailScroll is the microtask fallback
+          // that actually keeps box.scrollTop pinned to the tail live.
           if (logStick) {
             void scheduleLogTailScroll();
+            syncTailScroll();
           }
         }
         if (terminalStatus) {
