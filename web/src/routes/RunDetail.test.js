@@ -3724,9 +3724,13 @@ describe('RunDetail — follow-tail control (jump to latest)', () => {
 
   it('clicking jump-to-latest re-arms follow and scrolls back to the tail', async () => {
     try {
+      const N = 200;
+      const statsRange = statsAndRange(N, (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row }));
       const fetchMock = vi.fn((url) => {
         const u = String(url);
-        if (u.includes('/events')) return eventsResponseWithLogs(200, true);
+        if (u.includes('/events')) return eventsResponseWithLogs(N, true);
+        const sr = statsRange(url);
+        if (sr) return sr;
         if (u.includes('/steps')) return jsonResponse([]);
         if (u.includes('/approvals')) return jsonResponse([]);
         if (u.includes('/artifacts')) return jsonResponse([]);
@@ -3770,6 +3774,9 @@ describe('RunDetail — follow-tail control (jump to latest)', () => {
     const backfill = Array.from({ length: 3 }, (_, i) =>
       `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'b' + i })}\n\n`,
     ).join('');
+    // jumpToLatest re-fetches the current view's tail via switchLogView, so the
+    // windowed HTTP contract must answer /logs/stats and /logs/range.
+    const statsRange = statsAndRange(3, (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'b' + row }));
     const fetchMock = vi.fn((url) => {
       const u = String(url);
       if (u.includes('/events')) {
@@ -3793,6 +3800,8 @@ describe('RunDetail — follow-tail control (jump to latest)', () => {
           },
         });
       }
+      const sr = statsRange(url);
+      if (sr) return sr;
       if (u.includes('/steps')) return jsonResponse([]);
       if (u.includes('/approvals')) return jsonResponse([]);
       if (u.includes('/artifacts')) return jsonResponse([]);
@@ -3830,6 +3839,89 @@ describe('RunDetail — follow-tail control (jump to latest)', () => {
         expect(box.scrollTop).toBe(6000);
       });
     } finally {
+      restore();
+    }
+  });
+
+  // Regression for the live-observed failure: on a LARGE virtualized log whose
+  // tail rows are NOT in the current window (the user scrolled up to the head),
+  // jump-to-latest must RE-FETCH the tail range before scrolling. A bare
+  // scroll-to-bottom parked scrollTop past the loaded content, the empty tail
+  // region collapsed scrollHeight, and the browser clamped scrollTop back to
+  // the top — the jump silently did nothing. Delegating to switchLogView issues
+  // a [count-FETCH_CHUNK, count) fetch first; assert that tail-offset fetch is
+  // made on click (the old bare-scroll path never fetched any range).
+  it('re-fetches the tail range when jumping to latest on a large virtualized log', async () => {
+    const descCH = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+    Object.defineProperty(Element.prototype, 'clientHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? 400 : 0; },
+    });
+    try {
+      const TOTAL = 50000; // >> FETCH_CHUNK (5000): the tail window cannot cover the head
+      const BACKFILL = 200;
+      const makeLine = (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row });
+      const statsRange = statsAndRange(TOTAL, makeLine);
+      const enc = new TextEncoder();
+      let payload = '';
+      for (let row = TOTAL - BACKFILL; row < TOTAL; row++) payload += `data: ${JSON.stringify({ type: 'log', ...makeLine(row) })}\n\n`;
+      let sent = false;
+      const eventsResp = Promise.resolve({
+        ok: true, status: 200,
+        body: { getReader() { return { read: async () => sent ? { done: true, value: undefined } : (sent = true, { done: false, value: enc.encode(payload) }) } } },
+      });
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResp;
+        const sr = statsRange(url);
+        if (sr) return sr;
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-follow-big', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+      const { container } = render(RunDetail, { props: { params: { id: 'run-follow-big' } } });
+      const box = await vi.waitFor(() => {
+        const b = container.querySelector('.log-box');
+        expect(b).toBeTruthy();
+        return b;
+      });
+      await vi.waitFor(() => expect(box.scrollTop).toBe(4000));
+
+      const tailOffset = TOTAL - 5000; // FETCH_CHUNK
+      const tailFetched = () =>
+        fetchMock.mock.calls.some((c) => {
+          const cu = String(c[0]);
+          return cu.includes('/logs/range') && cu.includes(`offset=${tailOffset}`);
+        });
+
+      // Scroll up to the head: the window loads head rows, follow drops. The
+      // tail range is NOT fetched by this (it fetches offset=0).
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+      const btn = await vi.waitFor(() => {
+        const b = container.querySelector('.log-follow-btn');
+        expect(b).toBeTruthy();
+        return b;
+      });
+      await vi.waitFor(() => {
+        expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/logs/range') && String(c[0]).includes('offset=0'))).toBe(true);
+      });
+      expect(tailFetched()).toBe(false);
+
+      // Click "↓ Latest" → switchLogView must re-fetch the TAIL range, then jump.
+      await fireEvent.click(btn);
+      await vi.waitFor(() => {
+        expect(tailFetched()).toBe(true);
+      });
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(4000);
+        expect(container.querySelector('.log-follow-btn')).toBeFalsy();
+      });
+    } finally {
+      if (descCH) Object.defineProperty(Element.prototype, 'clientHeight', descCH);
+      else delete Element.prototype.clientHeight;
       restore();
     }
   });
