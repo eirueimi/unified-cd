@@ -3034,7 +3034,10 @@ describe('RunDetail — ensureRowsLoaded re-checks the viewport after an in-flig
       const isFarRange = (u) => {
         if (!u.includes('/logs/range')) return false;
         const off = Number(new URL(u, 'http://localhost').searchParams.get('offset') || '0');
-        return off >= 30000;
+        // Only the deep-scroll fetch for row ~40000 (offset ~37500). The initial
+        // tail load fetches offset = TOTAL - FETCH_CHUNK = 45000; leave it
+        // ungated so the initial window renders.
+        return off >= 30000 && off <= 40000;
       };
 
       const fetchMock = vi.fn((url) => {
@@ -3890,14 +3893,13 @@ describe('RunDetail — follow-tail control (jump to latest)', () => {
       await vi.waitFor(() => expect(box.scrollTop).toBe(4000));
 
       const tailOffset = TOTAL - 5000; // FETCH_CHUNK
-      const tailFetched = () =>
-        fetchMock.mock.calls.some((c) => {
+      const tailFetchCount = () =>
+        fetchMock.mock.calls.filter((c) => {
           const cu = String(c[0]);
           return cu.includes('/logs/range') && cu.includes(`offset=${tailOffset}`);
-        });
+        }).length;
 
-      // Scroll up to the head: the window loads head rows, follow drops. The
-      // tail range is NOT fetched by this (it fetches offset=0).
+      // Scroll up to the head: the window loads head rows (offset=0), follow drops.
       box.scrollTop = 0;
       await fireEvent.scroll(box);
       const btn = await vi.waitFor(() => {
@@ -3908,12 +3910,14 @@ describe('RunDetail — follow-tail control (jump to latest)', () => {
       await vi.waitFor(() => {
         expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/logs/range') && String(c[0]).includes('offset=0'))).toBe(true);
       });
-      expect(tailFetched()).toBe(false);
+      // The tail was already loaded once on open (initial tail load); capture the
+      // count so we can assert the click issues ANOTHER tail fetch.
+      const tailBefore = tailFetchCount();
 
       // Click "↓ Latest" → switchLogView must re-fetch the TAIL range, then jump.
       await fireEvent.click(btn);
       await vi.waitFor(() => {
-        expect(tailFetched()).toBe(true);
+        expect(tailFetchCount()).toBeGreaterThan(tailBefore);
       });
       await vi.waitFor(() => {
         expect(box.scrollTop).toBe(4000);
@@ -3924,5 +3928,41 @@ describe('RunDetail — follow-tail control (jump to latest)', () => {
       else delete Element.prototype.clientHeight;
       restore();
     }
+  });
+});
+
+// Regression guard for the "log doesn't follow on open" rework: startSSE now
+// establishes the initial window with an AUTHORITATIVE tail range fetch
+// ([count-FETCH_CHUNK, count)) instead of relying on the SSE /events backfill
+// (which, for a log under sseBackfillLimit, replays the whole log oldest-first
+// and left the viewport stuck at the head). The old path fetched no such range
+// on open; asserting the tail-offset fetch happens distinguishes the fix.
+describe('RunDetail — initial load fetches the tail range authoritatively', () => {
+  it('fetches the [count-FETCH_CHUNK, count) tail range on open for a large log', async () => {
+    const TOTAL = 20000; // > FETCH_CHUNK (5000)
+    const makeLine = (row) => ({ seq: row + 1, stepIndex: 0, stream: 'stdout', line: 'row ' + row });
+    const statsRange = statsAndRange(TOTAL, makeLine);
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      // The /events backfill is deliberately NOT the tail (just 50 head-ish
+      // lines) — the authoritative window must come from the range fetch.
+      if (u.includes('/events')) return eventsResponseWithLogs(50);
+      const sr = statsRange(url);
+      if (sr) return sr;
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      if (u.includes('/artifacts')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-tailload', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+
+    render(RunDetail, { props: { params: { id: 'run-tailload' } } });
+
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some((c) => {
+        const cu = String(c[0]);
+        return cu.includes('/logs/range') && cu.includes(`offset=${TOTAL - 5000}`);
+      })).toBe(true);
+    });
   });
 });
