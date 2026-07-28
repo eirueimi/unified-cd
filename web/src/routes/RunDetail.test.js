@@ -3626,3 +3626,211 @@ describe('RunDetail — a deferred SSE backfill does not clobber an in-flight st
     }
   });
 });
+
+// The log header exposes an explicit "follow the tail" control. Auto-follow
+// (logStick) is a fragile, geometry-driven flag: onLogScroll drops it whenever
+// the viewport leaves the bottom, and on a busy run a stray mid-stream scroll
+// event can drop it too — leaving the viewer stranded at the head while a run
+// streams, with (before this control) no visible way back. These tests pin the
+// invariants that keep regressing: a RUNNING run opens parked at the tail (the
+// pre-existing auto-scroll test only covered a FINISHED run), the button
+// appears exactly when follow is lost, and clicking it both re-arms follow AND
+// keeps subsequent live lines pinned to the tail.
+describe('RunDetail — follow-tail control (jump to latest)', () => {
+  let descST, descSH, stubScrollHeight;
+  beforeEach(() => {
+    stubScrollHeight = 4000;
+    descST = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    descSH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return this.__stubScrollTop || 0; },
+      set(v) { this.__stubScrollTop = v; },
+    });
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return this.classList && this.classList.contains('log-box') ? stubScrollHeight : 0; },
+    });
+  });
+  const restore = () => {
+    if (descST) Object.defineProperty(Element.prototype, 'scrollTop', descST);
+    if (descSH) Object.defineProperty(Element.prototype, 'scrollHeight', descSH);
+  };
+
+  // Regression: the existing "auto-scroll after backfill" test only covers a
+  // FINISHED run. A RUNNING run takes the same startSSE backfill path and must
+  // ALSO park at the tail on open — the exact case that regressed (viewer left
+  // at the head, scrollTop 0, while the build streamed thousands of lines).
+  it('parks a running run at the tail on the initial backfill (no jump button while tailing)', async () => {
+    try {
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(200, true);
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-follow-running', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+      const { container } = render(RunDetail, { props: { params: { id: 'run-follow-running' } } });
+      const box = await vi.waitFor(() => {
+        const b = container.querySelector('.log-box');
+        expect(b).toBeTruthy();
+        return b;
+      });
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(4000);
+      });
+      // Tailing: no jump-to-latest button, and the header shows "Following".
+      expect(container.querySelector('.log-follow-btn')).toBeFalsy();
+      expect(container.querySelector('.log-sse')?.textContent).toContain('Following');
+    } finally {
+      restore();
+    }
+  });
+
+  it('reveals the jump-to-latest button after scrolling off the tail, hides it while tailing', async () => {
+    try {
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(200, true);
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-follow-toggle', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+      const { container } = render(RunDetail, { props: { params: { id: 'run-follow-toggle' } } });
+      const box = await vi.waitFor(() => {
+        const b = container.querySelector('.log-box');
+        expect(b).toBeTruthy();
+        return b;
+      });
+      await vi.waitFor(() => expect(box.scrollTop).toBe(4000));
+      expect(container.querySelector('.log-follow-btn')).toBeFalsy();
+
+      // Scroll up off the tail → follow drops, button appears, indicator flips.
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+      await vi.waitFor(() => {
+        expect(container.querySelector('.log-follow-btn')).toBeTruthy();
+      });
+      expect(container.querySelector('.log-sse')?.textContent).toContain('SSE');
+      expect(container.querySelector('.log-sse')?.textContent).not.toContain('Following');
+    } finally {
+      restore();
+    }
+  });
+
+  it('clicking jump-to-latest re-arms follow and scrolls back to the tail', async () => {
+    try {
+      const fetchMock = vi.fn((url) => {
+        const u = String(url);
+        if (u.includes('/events')) return eventsResponseWithLogs(200, true);
+        if (u.includes('/steps')) return jsonResponse([]);
+        if (u.includes('/approvals')) return jsonResponse([]);
+        if (u.includes('/artifacts')) return jsonResponse([]);
+        return jsonResponse({ id: 'run-follow-click', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+      });
+      global.fetch = fetchMock;
+      const { container } = render(RunDetail, { props: { params: { id: 'run-follow-click' } } });
+      const box = await vi.waitFor(() => {
+        const b = container.querySelector('.log-box');
+        expect(b).toBeTruthy();
+        return b;
+      });
+      await vi.waitFor(() => expect(box.scrollTop).toBe(4000));
+
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+      const btn = await vi.waitFor(() => {
+        const b = container.querySelector('.log-follow-btn');
+        expect(b).toBeTruthy();
+        return b;
+      });
+
+      await fireEvent.click(btn);
+      await vi.waitFor(() => {
+        expect(box.scrollTop).toBe(4000);
+        expect(container.querySelector('.log-follow-btn')).toBeFalsy();
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  // The core invariant that keeps regressing: re-arming follow must actually
+  // FOLLOW — a live SSE line arriving after the click has to pin the viewport
+  // to the new bottom, not just leave it where the click parked it.
+  it('keeps pinning live lines to the tail after jump-to-latest re-arms follow', async () => {
+    const enc = new TextEncoder();
+    let readCount = 0;
+    let releaseLive;
+    const liveGate = new Promise((r) => { releaseLive = r; });
+    const backfill = Array.from({ length: 3 }, (_, i) =>
+      `data: ${JSON.stringify({ type: 'log', seq: i + 1, stepIndex: 0, stream: 'stdout', line: 'b' + i })}\n\n`,
+    ).join('');
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          body: {
+            getReader() {
+              return {
+                read: async () => {
+                  readCount++;
+                  if (readCount === 1) return { done: false, value: enc.encode(backfill) };
+                  if (readCount === 2) {
+                    await liveGate;
+                    return { done: false, value: enc.encode(`data: ${JSON.stringify({ type: 'log', seq: 4, stepIndex: 0, stream: 'stdout', line: 'live' })}\n\n`) };
+                  }
+                  return { done: true, value: undefined };
+                },
+              };
+            },
+          },
+        });
+      }
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      if (u.includes('/artifacts')) return jsonResponse([]);
+      return jsonResponse({ id: 'run-follow-live', status: 'Running', jobName: 'j', triggeredBy: 'x', createdAt: null, params: {} });
+    });
+    global.fetch = fetchMock;
+    try {
+      const { container } = render(RunDetail, { props: { params: { id: 'run-follow-live' } } });
+      const box = await vi.waitFor(() => {
+        const b = container.querySelector('.log-box');
+        expect(b).toBeTruthy();
+        return b;
+      });
+      await vi.waitFor(() => expect(box.scrollTop).toBe(4000));
+
+      // Scroll away from the tail → follow drops.
+      box.scrollTop = 0;
+      await fireEvent.scroll(box);
+      const btn = await vi.waitFor(() => {
+        const b = container.querySelector('.log-follow-btn');
+        expect(b).toBeTruthy();
+        return b;
+      });
+
+      // Re-arm follow.
+      await fireEvent.click(btn);
+      await vi.waitFor(() => expect(box.scrollTop).toBe(4000));
+
+      // A live line lands and extends the log; following must track the new
+      // bottom, not stay parked at the old one.
+      stubScrollHeight = 6000;
+      releaseLive();
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain('4 lines');
+        expect(box.scrollTop).toBe(6000);
+      });
+    } finally {
+      restore();
+    }
+  });
+});

@@ -374,6 +374,19 @@
       });
     });
   }
+  // Explicit "follow the tail" control. onLogScroll drops logStick to false
+  // whenever the viewport leaves the bottom — by an intentional scroll up, but
+  // also, on a busy run, by a stray scroll event that lands while the log is
+  // still growing. Either way the user is left stranded away from the live tail
+  // with no visible way back (the header used to expose none). jumpToLatest
+  // re-arms logStick and scrolls to the bottom; once parked there the next
+  // onLogScroll keeps logStick true, so later live batches auto-follow again.
+  // Mirrors switchLogView's own end-of-switch tail jump.
+  function jumpToLatest() {
+    invalidateLogTailScroll();
+    logStick = true;
+    void scrollLogToBottom();
+  }
   // selectedStep/selectedParallelGroup select which server-side VIEW is
   // active (Task 4): null → all steps, a single step → [idx], a parallel
   // group → its indices. Switching views re-fetches stats + a fresh tail
@@ -1253,7 +1266,16 @@
           >
         {/if}
       </div>
-      <span class="meta" style="font-size:0.75rem">SSE</span>
+      {#if logTotal > 0 && !logStick}
+        <button
+          class="btn log-follow-btn"
+          title="Jump to the newest log line and resume auto-follow"
+          on:click={jumpToLatest}>↓ Latest</button
+        >
+      {/if}
+      <span class="meta log-sse" class:following={logStick} style="font-size:0.75rem"
+        >{logStick ? "Following" : "SSE"}</span
+      >
     </div>
     <div
       class="log-box"
@@ -1366,6 +1388,20 @@
   .log-wrap-btn.active {
     background: var(--primary-light, #e8f0fe);
     border-color: var(--primary, #4285f4);
+  }
+  .log-follow-btn {
+    padding: 0.15rem 0.5rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    background: var(--primary-light, #e8f0fe);
+    border-color: var(--primary, #4285f4);
+    color: var(--primary, #4285f4);
+  }
+  .log-sse {
+    white-space: nowrap;
+  }
+  .log-sse.following {
+    color: var(--success, #34a853);
   }
   .log-row-current {
     background: rgba(255, 150, 50, 0.12);
