@@ -56,9 +56,21 @@ W2-1 established that the stuck-run reaper's advisory lock is a **per-tick**
 mutex with no stickiness: every replica ticks every 30s, acquires, sweeps, and
 releases ~1ms later, so on N replicas the sweep runs up to N times per nominal
 interval. Measured on this exact 3-replica rig: **2.15 acquisitions per 30s
-nominal interval → a ~13.3s effective sweep cadence**
-(`w2-1/lock-analysis-idle.txt`). **Budget reap latency against ~13.3s, not
-30s.** A latency near 30s on this rig is *worth explaining*, not expected.
+nominal interval** (`w2-1/lock-analysis-idle.txt`).
+
+> **CORRECTED by this scenario's own execution — the two sentences that stood
+> here ("a ~13.3s effective sweep cadence … Budget reap latency against
+> ~13.3s, not 30s. A latency near 30s on this rig is *worth explaining*, not
+> expected.") were wrong and are struck.** The acquisition *count* is right;
+> the latency inference is not. Arm D0 measured the sweeps themselves and
+> found them **clustered within ~10 ms, then silent for a full 30 s**
+> (8 clusters / 17 executions over 210 s, between-cluster gap 29.987-30.001 s,
+> `w2-3/armD0-sweeps.txt`). **Budget query load at `interval / N`; budget
+> worst-case reap latency at the nominal `interval` (30 s) — and say which you
+> are budgeting.** The four latencies this scenario measured (19.246, 28.061,
+> 11.283, 8.013 s) are uniform over 30 s and three exceed 13.3 s. Full
+> reasoning and the rig-shaped caveat: **Execution notes, first bullet**, and
+> `docs/superpowers/plans/2026-07-30-edge-case-campaign-w2.md:47`.
 
 ### (3) Arm B as the plan writes it is not runnable, and that is a result
 
@@ -105,9 +117,9 @@ All three execute the same statement shape:
 Restoration is **asymmetric**, and this is the load-bearing fact for Arm C:
 
 - **Heartbeat does NOT restore the row.** `handleAgentHeartbeat` calls
-  `TouchAgent` (`api_agent.go:95`), which is a bare
+  `TouchAgent` (`api_agent.go:96`), which is a bare
   `UPDATE agents SET last_seen_at = NOW() WHERE id = $1`
-  (`postgres.go:1145-1148`). With the row gone this updates **zero rows**,
+  (`postgres.go:1144-1147`). With the row gone this updates **zero rows**,
   returns no error, and the handler still returns **204**. The agent logs
   nothing (`internal/agent/heartbeat.go:47-51` only warns on transport error).
 - **Claim polling DOES restore it.** `handleAgentClaim` calls
@@ -124,6 +136,18 @@ still restore its row within one detached long-poll (≤60s,
 `maxClaimTimeout` at `api_agent.go:129`). **Measure that restore latency in
 Arm C2 rather than assuming either outcome** — it is what decides whether the
 reaper or the agent wins.
+
+> **ANSWERED by Arm C2b: ≤28.642 s, with the run still `Running` and no slot
+> ever freed** (deleted `18:52:24.338116`, absent at the `18:52:50.41465`
+> sample, present at `18:52:52.980001`, `w2-3/armC2b-poll.txt`). The bound is
+> **~30 s, not the 60 s `maxClaimTimeout` above**, because the agent asks for a
+> 30 s long-poll (`ClaimDetached(..., "30s", ...)`, `internal/agent/agent.go:411-415`,
+> `internal/agent/client.go:189-200`) and `UpsertAgentOnClaim` fires at the
+> *start* of each poll (`api_agent.go:150`). The detached pool is 16 slots by
+> default (`agent.go:315-321`); it is off only when
+> `--max-detached-concurrent` is negative. **Consequence: the major finding's
+> exposure is a bounded ~30 s race window, not a permanent state** — do not
+> write it up as "a busy agent never claim-polls".
 
 ### (6) `failOrphanedRun` is three non-transactional writes
 
@@ -257,7 +281,9 @@ psql "SELECT run_id, step_index, status FROM step_reports WHERE run_id='$RUN' OR
 - `eligible_at` = `max(claimed_at + 60s, hb_freeze + 90s)` — and record which
   term won, that is Arm B1's evidence.
 - `reap_latency` = `runs.updated_at - eligible_at`. **Compare against the
-  ~13.3s effective cadence, not 30s.** A latency > 30s needs an explanation.
+  nominal 30s interval** — a latency > 30s needs an explanation, anything under
+  it does not. *(Corrected: this line originally said "Compare against the
+  ~13.3s effective cadence, not 30s"; see the banner in section (2).)*
 - `last_seen_at - claimed_at` at the moment of the claim (mechanism note 3).
 
 **I1 check:** the agent process is still executing the step at the moment the
@@ -441,7 +467,8 @@ Per attempt:
 3. `nginx-block` the parent's agent, then `DELETE FROM agents WHERE id=<parent
    agent>` so eligibility collapses to `claimed_at + 60s` (Arm C1's
    accelerated reap) — this makes the reap instant predictable to within one
-   ~13.3s sweep instead of one 30s+90s wait.
+   sweep (**30s**, per the section (2) banner; this line originally said
+   ~13.3s) instead of one 30s+90s wait.
 4. Across that sweep window, `kill-hard` all three controllers on a tight
    rolling loop (a few hundred ms apart), then bring them back with
    `docker compose $COMPOSE_FILES start controller1 controller2 controller3`.
@@ -480,9 +507,14 @@ the window is unreachable.
   *the* liveness gate and say nothing about the deleted-row branch, that is a
   documentation gap at minimum and a violation if the observed behaviour
   contradicts what they promise.
-- **Boundary latency within one effective sweep (~13.3s) = observation** with
-  the measured number. Latency beyond one *nominal* interval (30s) = worth its
-  own explanation.
+- **Boundary latency within one *nominal* sweep interval (30s) = observation**
+  with the measured number; latency beyond 30s = worth its own explanation.
+  **Corrected — this bullet originally read "within one effective sweep
+  (~13.3s)"**, which is the superseded `interval / N` latency budget; see the
+  banner in section (2) and the first Execution note. All four latencies
+  measured here (19.246, 28.061, 11.283, 8.013 s) are observations under the
+  corrected rule; three of them would have been spurious findings under the
+  old one.
 - **Heartbeat silently failing to restore a deleted row = minor
   (diagnosability, I5)** on its own; it becomes part of the major above only
   when it is what keeps a healthy agent's run reapable.
@@ -521,8 +553,11 @@ docker compose $COMPOSE_FILES ps -a
 - **`inject.sh nginx-unblock` required a service argument it never used**
   (`svc="${2:?service name required}"` at `tools/inject.sh:12`), so the
   documented `nginx-unblock` invocation exited 1 and silently left the
-  partition in place. Fixed in this branch (branch-internal asset defect, not
-  a product finding). Pass no argument now.
+  partition in place. Fixed in this branch, commit `a7ae25a` (branch-internal
+  asset defect, not a product finding). Pass no argument now. **Now also filed
+  as a FINDINGS entry** under the third bucket the W1 checkpoint established
+  (`FINDINGS.md:487`) — carrying a `Classification` line and reported outside
+  both tallies, matching the W1-4 `spec.mutex` precedent at `FINDINGS.md:278`.
 - **`SELECT '5m0s'::interval` is valid** (`00:05:00`), so `DeleteStaleAgents`
   passing Go's `(5*time.Minute).String()` into `NOW() - $1::interval`
   (`postgres.go:1226-1228`) works. Checked because a failure there would have
@@ -553,8 +588,12 @@ docker compose $COMPOSE_FILES ps -a
   **9 of 10** the reap instant fell *inside* the `docker kill` round trip
   (issued 0.400-0.677 s before the reap, returned 0.023-0.271 s after), so the
   signal was in flight across the 1 ms window every time and never landed in
-  it. Measured `docker kill` round trip: **0.642-0.657 s**. Derived per-attempt
-  probability ~`1/650` ≈ 0.15%. **Do not re-run this arm with container-level
+  it. **`docker kill` round trip, recomputed from `w2-3/armD1-attempts.txt`
+  (`returned` − `issued`, i.e. `T1 − T0` at `armD1.sh:54-56`): 0.636-0.707 s.**
+  An earlier version of this note said `0.642-0.657 s` and added a `docker
+  start` figure of `0.468-0.481 s`; neither traces to a capture, and
+  `armD1.sh:56` takes `T1` *before* the `docker start` at `:57`, so the restart
+  was never timed at all. Derived per-attempt probability ~`1/670` ≈ 0.15%. **Do not re-run this arm with container-level
   injection** — it needs a finer instrument. Note that an in-container
   `kill -9 1` does **not** work: the kernel ignores SIGKILL sent to PID 1 from
   inside its own PID namespace, and the controller is PID 1.
