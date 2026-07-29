@@ -549,6 +549,36 @@ docker compose $COMPOSE_FILES ps -a
   (`api_agent.go:608-627`); a reaped parent is already terminal, so the
   agent's later finish report takes the `!updated` branch and returns. The
   plan's "nothing re-drives it" holds.
-- **Budget ~35 minutes** for Arms A-C0-B2-C1/C2-D0 plus ~20 minutes for a
-  10-attempt Arm D1. Arm A alone is ~6.5 minutes because Arm C0 rides on it
-  (90 s to the reap, then 300 s to the row deletion).
+- **Arm D1 is a lottery with a known, tiny prize.** 10/10 attempts missed. In
+  **9 of 10** the reap instant fell *inside* the `docker kill` round trip
+  (issued 0.400-0.677 s before the reap, returned 0.023-0.271 s after), so the
+  signal was in flight across the 1 ms window every time and never landed in
+  it. Measured `docker kill` round trip: **0.642-0.657 s**. Derived per-attempt
+  probability ~`1/650` ≈ 0.15%. **Do not re-run this arm with container-level
+  injection** — it needs a finer instrument. Note that an in-container
+  `kill -9 1` does **not** work: the kernel ignores SIGKILL sent to PID 1 from
+  inside its own PID namespace, and the controller is PID 1.
+- **Arm C1 was folded away as redundant.** Its measurement (reap at
+  `claimed_at + 60s` in the null branch) is delivered by C2, and its "row never
+  returns while partitioned" limb is delivered by Arm A + C0 (row absent 199.4 s
+  under partition, restored 0.16 s after the heal). Do not spend a separate arm
+  on it.
+- **Arm C2b is worth keeping as a two-minute confirmation.** With statement
+  logging on, delete a busy agent's row and grep for
+  `UPDATE agents SET last_seen_at = NOW() WHERE id = $1` with that agent's
+  parameter: `w2-3/armC2b-heartbeats.txt` holds two `agent2` heartbeats
+  (`18:52:30.392`, `18:52:45.392`) executed while the row was absent
+  (deleted `18:52:24.338`, back between the `18:52:50.41` and `18:52:52.98`
+  samples). That is the direct proof that heartbeats land, update zero rows,
+  and do not restore the row.
+- **Teardown caveat.** `ALTER SYSTEM RESET log_statement; ALTER SYSTEM RESET
+  log_line_prefix; SELECT pg_reload_conf();` in a single `psql -tAc` fails with
+  `ALTER SYSTEM cannot run inside a transaction block` — issue them as separate
+  `-c` invocations. It did not matter here because `test/ha` gives `postgres` no
+  named volume (`docker-compose.ha.yaml:139-140` declares only
+  `agent-credentials`), so `down -v` discarded the data directory and the
+  setting with it — but on a rig with a persistent PG volume this would leave
+  statement logging on.
+- **Budget ~35 minutes** for Arms A-C0-B2-C2-C2b-D0 plus ~20 minutes for a
+  10-attempt Arm D1 (each attempt was ~105 s). Arm A alone is ~6.5 minutes
+  because Arm C0 rides on it (90 s to the reap, then 300 s to the row deletion).
