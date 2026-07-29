@@ -65,7 +65,7 @@ trimmed at the checkpoint after each wave if yield is low.
 | ID | Scenario | Invariants |
 |----|----------|-----------|
 | W0-1 (C8) | PgBouncer in transaction-pooling mode: verify advisory locks / LISTEN visibly break (docs warn this; confirm failure mode is diagnosable, not silent split-brain) | I1, I5 |
-| W0-2 (C14) | Clock skew / TZ mismatch between controllers (libfaketime); DST fold; the fixed one-hour schedule catch-up window | I1 |
+| W0-2 (C14) | Scheduler clock/TZ boundaries — TZ mismatch between replicas, DST gap/fold, one-hour catch-up window edges, backward clock step — probed via observational unit tests (build tag `edgeprobe`) driving `checkAndFireSchedules` with constructed `now` values. libfaketime cannot intercept static Go binaries (vDSO time calls) and Linux time namespaces do not cover CLOCK_REALTIME, so container-level skew injection is not implementable | I1 |
 
 ### W1 — Recovery / failover (compose)
 
@@ -161,7 +161,9 @@ runbook doubles as the test spec if the scenario is promoted in Phase 2.
 (`docker network disconnect/connect`), `partition-oneway` (in-container
 iptables OUTPUT drop — W1-5), `pause` / `unpause` (SIGSTOP: alive but
 unresponsive — distinct failure mode from kill and partition),
-`clock-skew` (libfaketime baked into the test images — W0-2).
+(clock-skew injection was dropped: libfaketime cannot intercept static Go
+binaries and time namespaces do not virtualize CLOCK_REALTIME — W0-2 covers
+clock boundaries via `edgeprobe` unit probes instead).
 
 ### Workloads (`workloads/`)
 
