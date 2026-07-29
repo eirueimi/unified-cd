@@ -86,31 +86,40 @@ one step. Do not report any other key's holder until that check passes.
 | Stuck-run reaper | `stuckRunReaperLockKey` (`stuckrun_reaper.go:15`) | `0x7374756B` | 1937012075 | 30s | **yes** |
 | Queued-run reaper | `queuedRunReaperLockKey` (`queuedrun_reaper.go:16`) | `0x71756575` | 1903519093 | 30s | **yes** |
 | AppSource sync reaper | `appSourceSyncReaperLockKey` (`appsource_sync_reaper.go:14`) | `0x73796E63` | 1937337955 | 30s | **yes** |
-| Audit retention | `auditRetentionLockKey` (`audit_retention.go:15`) | `0x61756474` | 1635083380 | 1h | **no** — flag 0 |
+| Audit retention | `auditRetentionLockKey` (`audit_retention.go:15`) | `0x61756474` | 1635083380 | 1h | **yes** — default 90 days, but first tick is boot+1h |
 | Run retention | `runRetentionLockKey` (`run_retention.go:17`) | `0x7272746E` | 1920103534 | 1h | **no** — flag 0 |
 | Log trim | `logTrimLockKey` (`log_trim.go:17`) | `0x6C74726D` | 1819570797 | 1h | **no** — flag 0 |
 | AppSource reconciler | `appSourceReconcilerLockKey` (`appsource_reconciler.go:22`) | `0x61707073` | 1634758771 | 30s | **yes** |
 
-**Why five of the eleven are not wired here — determine this from the stack,
-do not inherit it.** `test/ha/docker-compose.ha.yaml:19-25` sets only
-`UNIFIED_DB_DSN`, `UNIFIED_TOKEN` and `UNIFIED_CONTROLLER_KEY_FILE`, and
+**Why four of the eleven are not wired here, and a fifth is unobservable —
+determine this from the stack, do not inherit it.**
+`test/ha/docker-compose.ha.yaml:19-25` sets only `UNIFIED_DB_DSN`,
+`UNIFIED_TOKEN` and `UNIFIED_CONTROLLER_KEY_FILE`, and
 `docker/controller.Dockerfile` adds only `UNIFIED_WEB_DIR`. So:
 
 - No `UNIFIED_S3_*` and no `UNIFIED_DATA_DIR` ⇒ `obj == nil`
   (`cmd/controller/main.go:303-322`) ⇒ the two `obj != nil`-gated goroutines
   at `main.go:399-402` are **never started**. Boot-log fingerprint:
   `"no object store configured — log archival disabled"` (`main.go:321`).
-- No `UNIFIED_AUDIT_RETENTION_DAYS` / `UNIFIED_RUN_RETENTION_DAYS` /
-  `UNIFIED_LOG_TRIM_DAYS` ⇒ all three flags default to 0 ⇒
-  `RunAuditRetention` (`audit_retention.go:23`), `RunRunRetention`
+- No `UNIFIED_RUN_RETENTION_DAYS` / `UNIFIED_LOG_TRIM_DAYS` ⇒ both flags
+  default to 0 (`main.go:47-58`, `:64-75`) ⇒ `RunRunRetention`
   (`run_retention.go:29`) and `RunLogTrim` (`log_trim.go:29`) **return before
   creating their tickers**, so they never even attempt the lock. Boot-log
-  fingerprint: the three `"... disabled ..."` lines at `main.go:418`, `:424`,
-  `:434`.
+  fingerprint: `"run retention disabled (keep forever)"` (`main.go:424`) and
+  `"log trim disabled (DB log rows kept forever)"` (`main.go:434`).
+- **Audit retention is the exception, and the W2 plan's hint that it "needs its
+  flag" is wrong:** `auditRetentionDaysDefault()` (`main.go:26-41`) falls back
+  to **90 days** when `UNIFIED_AUDIT_RETENTION_DAYS` is unset, so the job *is*
+  started here. Boot-log fingerprint: `"audit log retention enabled"
+  retentionDays=90` (`main.go:416`). Its ticker is 1h, so its **first
+  acquisition is at boot + 1h** — outside any practical observation window.
+  Record it as *wired but unobserved*, which is a third category distinct from
+  both "held by exactly one replica" and "not wired".
 
-**A key with zero holders because its goroutine was never started is a null
-result, not a violation.** Confirm all five fingerprints in the Baseline gate
-before treating any absence as meaningful.
+**A key with zero holders because its goroutine was never started — or because
+its first tick has not arrived — is a null result, not a violation.** Confirm
+each fingerprint in the Baseline gate before treating any absence as
+meaningful.
 
 ### (4) The three jobs with no leader election — and what the docs say about them
 
@@ -174,10 +183,11 @@ done                                          # expect exactly one controller wi
 
 # 3. The five not-wired fingerprints (see mechanism note 3)
 docker compose -f docker-compose.ha.yaml logs controller1 \
-  | grep -E "no object store configured|retention disabled|log trim disabled"
-# expect 4 lines: no-object-store, audit retention disabled, run retention
-# disabled, log trim disabled.  Their presence is what makes a missing
-# advisory-lock holder a null result rather than a finding.
+  | grep -E "no object store configured|retention|log trim"
+# expect 4 lines: no-object-store (WARN), "audit log retention ENABLED
+# retentionDays=90", "run retention disabled", "log trim disabled".  Their
+# presence is what makes a missing advisory-lock holder a null result rather
+# than a finding.  Note the audit line says *enabled* — see mechanism note 3.
 
 # 4. Both agents registered (needed only for Phase 3)
 curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token"
@@ -261,9 +271,11 @@ docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c \
 and everything downstream must be re-derived — that is itself the finding.
 
 Expected shape, per mechanism note 1: **one row with a pid (scheduler), ten
-rows with `pid` NULL**, at all three samples. Six of those ten are wired jobs
-whose locks are simply not held at the sampling instant; five are not wired at
-all.
+rows with `pid` NULL**, at all three samples. Of those ten, **five** are wired
+and actively ticking (approval, stuck-run, queued-run and AppSource-sync
+reapers, plus the AppSource reconciler) but hold their locks for ~1ms;
+**one** (audit retention) is wired but has not reached its first hourly tick;
+**four** (log archiver, cache cleanup, run retention, log trim) are not wired.
 
 ## Phase 2 — statement-log audit of the per-tick jobs
 
@@ -336,13 +348,20 @@ strictly better than the plan's proposed inference from the `deleted=N` log
 line, which (as the plan itself notes) cannot distinguish "one replica ran"
 from "three raced and two saw N=0".
 
-**3b. Drive `DeleteStaleAgents` to actually delete something.** Stop one agent
-so its `last_seen_at` ages past the 5-minute threshold:
+**3b. Drive `DeleteStaleAgents` to actually delete something.** Kill one agent
+so its `last_seen_at` ages past the 5-minute threshold.
+
+**Use `kill -s SIGKILL`, not `stop`.** `docker compose stop` sends SIGTERM, and
+a healthy agent's shutdown path **deregisters itself** — it issues
+`DELETE FROM agents WHERE id = $1` and logs `"agent deregistered"`, so the row
+vanishes within ~1s and `DeleteStaleAgents` is never exercised at all. That is
+a real property worth recording once, but it is the wrong instrument for this
+probe.
 
 ```bash
 date -u +%FT%T.%3NZ
-docker compose -f docker-compose.ha.yaml stop agent2
-# wait > 5 min; sample every 30s
+docker compose -f docker-compose.ha.yaml kill -s SIGKILL agent2
+# wait > 5 min from the agent's LAST heartbeat (not from the kill); sample every 30s
 for i in $(seq 1 14); do
   date -u +%FT%T.%3NZ
   docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -tAc \
@@ -418,8 +437,9 @@ Then re-run the Phase 1 census and record:
   This is the pass/fail. Evidence must be the statement log's interval overlap
   or two pids on one `objid` in a single `pg_locks` row set — not an inference.
 - **A wired job with no holder across the whole observation window = major**
-  (the job is not running at all). Applies only to the six wired keys; the five
-  un-wired ones are null results and must be reported as such, with the
+  (the job is not running at all). Applies only to the six wired-and-ticking
+  keys; the four un-wired ones and audit retention (wired, first tick at
+  boot+1h) are null results and must be reported as such, with the
   boot-log fingerprint that proves they were never started.
 - **The three unlocked jobs.** Do **not** file a blanket violation. Judge each:
   - Git resolver and OIDC cleanup are **documented** as unlocked-and-idempotent
@@ -434,6 +454,43 @@ Then re-run the Phase 1 census and record:
   correction; do not manufacture a product defect out of it.
 - Failover leaving a key orphaned or doubly held = **major (I1)**. Failover
   latency alone, if bounded, = observation with the measured number.
+
+## Execution notes (added after the 2026-07-29 run — read before re-running)
+
+- **The instrumentation works exactly as designed and is the whole scenario.**
+  `log_parameter_max_length` is `-1` on `postgres:16-alpine`, so the
+  `DETAIL: parameters: $1 = '<key>'` line is emitted for every prepared-statement
+  execution and Phase 2b was never needed. pgx uses named prepared statements,
+  so the pair reads `execute stmtcache_<hash>: SELECT pg_try_advisory_lock($1)`
+  followed by the `DETAIL`. Cost on an idle three-replica stack: **~40MB of
+  Postgres log per 26 minutes** (~667k lines), compressing to ~0.9MB. Capture
+  with `docker compose logs --no-log-prefix postgres` and gzip before copying
+  to the evidence root.
+- **Budget ~30 minutes of wall clock**, dominated by two 5-minute-plus waits
+  (the idle observation window and the `DeleteStaleAgents` threshold). The
+  build was cached and `up -d --build` took 64s.
+- **The plan's census expectation was confirmed wrong, exactly as mechanism
+  note 1 predicted.** All eight censuses returned a single advisory-lock row
+  (the scheduler's). Do not read that as ten dead jobs — the statement log
+  showed 15,665 lock events over the same period.
+- **`docker compose stop agent2` does not make an agent go stale.** The agent
+  deregisters itself on SIGTERM (`internal/agent/agent.go:349`); its row was
+  gone 0.9s later and `DeleteStaleAgents` was never exercised. Use
+  `kill -s SIGKILL` and start the 5-minute clock from the agent's **last
+  heartbeat** (`agents.last_seen_at`), not from the kill.
+- **Audit retention is wired on this stack** — `auditRetentionDaysDefault()`
+  returns 90 when the env var is unset — but its first tick is boot+1h, so it
+  contributes nothing to a half-hour observation. Its exclusion behaviour is
+  the one part of the eleven this scenario did not exercise.
+- **Failover is fast enough that a 3s poll cannot resolve it.** The new leader
+  was elected 0.40s after the kill; the measurement that matters came from the
+  statement log (failed poll at `+0.196s`, successful poll at `+0.396s`), not
+  from the polling loop. Read the failover latency from the log, not the loop.
+- **Teardown caveat:** `SHOW log_statement` issued in the same `psql`
+  invocation as `ALTER SYSTEM RESET ...; SELECT pg_reload_conf()` still
+  reported `all` — that backend had not processed the SIGHUP yet. It is not
+  evidence the reset failed, and it is moot here because `down -v` destroys
+  the data directory (and `postgresql.auto.conf`) immediately afterwards.
 
 ## Teardown
 
