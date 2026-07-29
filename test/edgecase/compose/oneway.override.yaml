@@ -1,0 +1,16 @@
+# W1-5 overlay: nginx with a runtime-writable blocklist (per-agent one-way
+# partition via tools/inject.sh nginx-block), plus a shared host bind mount
+# for the side-effect workload so re-execution is observable from the host.
+services:
+  nginx:
+    volumes:
+      - ../edgecase/compose/nginx-edge.conf:/etc/nginx/nginx.conf:ro
+      - blocklist:/etc/nginx/blocklist
+  agent1:
+    volumes:
+      - ../edgecase/sideeffect-data:/data
+  agent2:
+    volumes:
+      - ../edgecase/sideeffect-data:/data
+volumes:
+  blocklist:

@@ -1,0 +1,1 @@
+{"yaml":"apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-sideeffect\nspec:\n  native: true\n  mutex: edge-mutex\n  agentSelector:\n    - kind:linux\n  steps:\n    - name: append\n      run: for i in $(seq 1 120); do echo \"run,$i,$(date -u +%H:%M:%S)\" >> /data/sideeffect.log; sleep 1; done\n"}

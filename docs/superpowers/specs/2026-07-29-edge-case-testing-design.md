@@ -75,7 +75,7 @@ trimmed at the checkpoint after each wave if yield is low.
 | W1-2 (#7) | PostgreSQL failover mid-run: reconnect, advisory-lock re-election, LISTEN/NOTIFY re-subscription | I1, I5 |
 | W1-3 (#8) | Controller restart/failover while a run is awaiting an approval gate; approval-reaper timeout behavior across the restart. (Run pause/resume does not exist in unified-cd — earlier drafts assumed it did; an approval gate is the only wait-state a run can be in.) | I1, I7 |
 | W1-4 (#11) | Run cancellation racing controller failover | I1, I3 |
-| W1-5 (C1) | One-way agent→controller partition (iptables): reaper fails the run and releases locks while the unfenced agent keeps executing — measure zombie duration and side effects | I2, I3, I6 |
+| W1-5 (C1) | One-way agent→controller partition (nginx blocklist): reaper fails the run and releases locks while the unfenced agent keeps executing — measure zombie duration and side effects | I2, I3, I6 |
 | W1-6 (C9) | Agent credential revocation while its run executes: 4xx-permanent report abandonment vs run reap; measure what the unauthenticated process keeps doing | I6, I7 |
 | W1-7 (C13) | DEFERRED past W3: AppSource reconciler crash mid apply/prune. No existing e2e exercises AppSource against real git (reconciler tests are fully mocked), and `file://` remotes are rejected by design (`dsl.ValidateGitRepoURL`), so this scenario needs a git-over-HTTP server container (dumb protocol: bare repo + `git update-server-info` + static file server) — too expensive to bolt onto W1 | I1, I7 |
 
@@ -159,8 +159,10 @@ runbook doubles as the test spec if the scenario is promoted in Phase 2.
 ### Fault-injection helpers (`tools/inject.sh`)
 
 `kill-soft` / `kill-hard` (SIGTERM/SIGKILL), `partition` / `heal`
-(`docker network disconnect/connect`), `partition-oneway` (in-container
-iptables OUTPUT drop — W1-5), `pause` / `unpause` (SIGSTOP: alive but
+(`docker network disconnect/connect`), `nginx-block` / `nginx-unblock`
+(per-agent deny at the nginx LB — a full one-way agent→controller partition
+since all agent traffic transits nginx and the system is strictly
+agent-polls-controller; W1-5), `pause` / `unpause` (SIGSTOP: alive but
 unresponsive — distinct failure mode from kill and partition),
 (clock-skew injection was dropped: libfaketime cannot intercept static Go
 binaries and time namespaces do not virtualize CLOCK_REALTIME — W0-2 covers
