@@ -1,0 +1,24 @@
+# W2-4 overlay: compress the queued-run reaper's grace period so the scenario
+# runs in bounded time.
+#
+# `queuedRunGraceDefault()` (cmd/controller/main.go:102-114) reads
+# UNIFIED_QUEUED_RUN_GRACE as a Go duration and falls back to 5m when the
+# variable is unset, unparseable, or non-positive — logging
+# `invalid UNIFIED_QUEUED_RUN_GRACE, using default` only in the latter two
+# cases. The ABSENCE of that WARN line in the controller boot logs is what
+# confirms the override took; there is no positive confirmation line.
+#
+# test/ha/docker-compose.ha.yaml defines controller1 with a `&ctrl` anchor and
+# aliases it for controller2/controller3, so the three services must each be
+# named here — an alias is expanded at parse time in the base file and carries
+# no link an override could follow.
+services:
+  controller1:
+    environment:
+      UNIFIED_QUEUED_RUN_GRACE: 30s
+  controller2:
+    environment:
+      UNIFIED_QUEUED_RUN_GRACE: 30s
+  controller3:
+    environment:
+      UNIFIED_QUEUED_RUN_GRACE: 30s

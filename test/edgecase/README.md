@@ -32,7 +32,9 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 ## Workload fixtures
 
 Every `*.payload.json` is the pre-encoded `{"yaml":"..."}` body for
-`POST /api/v1/jobs`. All are `native: true`, `agentSelector: [kind:linux]`.
+`POST /api/v1/jobs`. All are `agentSelector: [kind:linux]`, and all are
+`native: true` **except `container-job.payload.json`**, which is deliberately
+not native so its inferred capability is `container` (see the table).
 
 | File | Job | Purpose |
 |---|---|---|
@@ -47,6 +49,7 @@ Every `*.payload.json` is the pre-encoded `{"yaml":"..."}` body for
 | `approval-short.payload.json` | `edge-approval-short` | `before` → `gate` (`timeoutMinutes: 0.5` = **30s**) → `after` (W2-8) |
 | `mutex-hog.payload.json` | `edge-mutex-hog` | mutex `edge-mutex` lock holder, sleeps 600s (W2-9) |
 | `unrelated-probe.payload.json` | `edge-unrelated-probe` | **no mutex**, `echo probe-ran` — the W2-9 starvation probe |
+| `container-job.payload.json` | `edge-container-job` | **not** `native` — `dsl.RequiredCaps` infers `container`, which the `test/ha` agents (capabilities `["native"]`) cannot satisfy, so it is label-claimable but capability-unschedulable (W2-4 Part D) |
 
 ### Fractional `timeoutMinutes` — verified, do not re-derive
 
