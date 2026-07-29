@@ -310,6 +310,42 @@ Also confirm the scheduler's key never appears as a *successful* second
 acquisition: the leader holds it continuously, so the two non-leaders should
 show a `pg_try_advisory_lock` every 200ms with no unlock ever.
 
+### Two traps in the reduction script (found the hard way on 2026-07-29)
+
+The 2026-07-29 run's reduction script (`w2-1/analyze.py` in the evidence root)
+works and its lock numbers are sound, but it shipped with two defects that any
+later scenario reusing it — or reimplementing it — must handle. Both are in the
+*published* artifact, so a reader will meet them.
+
+1. **Statement matching sees only the first physical line of a statement, so
+   multi-line SQL silently matches the wrong query.** The line regex requires the
+   `%m [%p] h=%h` log prefix, which only the first line of a multi-line statement
+   carries. `analyze.py:54` therefore labels a row `ListPendingRuns(git resolver)`
+   while actually counting `TransitionPendingToQueued`: the latter's SQL is one
+   line (`internal/store/postgres.go:440`) containing all three required
+   substrings, the former's is three lines (`postgres.go:2066-2068`) whose first
+   line contains none of them. The published row reads
+   `controller1=2867 controller2=0 controller3=0` for a job that runs on **all
+   three** replicas — a column of zeroes for a per-replica job is the smell.
+   **Match on a substring unique to the statement's first line**, and sanity-check
+   every per-replica count against a plain
+   `grep '<first line>' | awk '{print $NF}' | sort | uniq -c` (which is what
+   `w2-1/unlocked-jobs-per-host-final.txt` does, and it is the file to trust).
+2. **The overlap check cannot see sticky holds, so it can never report a
+   split-brain on the scheduler's key.** Intervals are built only from
+   `try`→`unlock` pairs on one pid (`analyze.py:102-114`) and the overlap scan
+   iterates that interval list (`:130-141`). An acquisition that is never
+   released produces no interval at all — it lands in the separate "unreleased"
+   list — so the scheduler, the one job whose lock *is* sticky, contributes zero
+   intervals and `overlaps found: 0` is **vacuously true** for it. The same blind
+   spot makes the per-key acquisition tally under-report: the scheduler shows 0
+   acquisitions in the interval table even in the run where `controller3`
+   demonstrably took the lock at the failover.
+   **`overlaps found: 0` is evidence about the ten per-tick keys only.** For the
+   scheduler's key use the Phase 1 census, `pg_stat_activity` attribution, and
+   the `"scheduler became leader"` line count; or extend the analyzer to treat an
+   unmatched `try` as an interval open to the end of the window.
+
 ### Phase 2b — fallback if parameters are not logged
 
 If the `DETAIL: parameters` line is absent, sample `pg_locks` in-database at
