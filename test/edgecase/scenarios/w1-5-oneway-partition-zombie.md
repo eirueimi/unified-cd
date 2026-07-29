@@ -297,6 +297,21 @@ date -u +%H:%M:%S     # T_heal
 ../edgecase/tools/inject.sh nginx-unblock <any-service-arg>   # unblocks all
 ```
 
+**Caveat discovered on execution — check this before looking for replays.**
+The nginx deny answers with `403`, and `retryUntilSuccess`
+(`internal/agent/retry.go:33-36`) classifies **every** `HTTPError` with
+`StatusCode < 500` as *permanent* and returns without retrying. So the agent's
+step report and `FinishRun` for the partitioned run are abandoned outright at
+the moment the step ends — **before** the heal — and are never replayed
+afterwards. Grep for this first; if it is present, "what the buffered writes
+get answered with at heal" is unanswerable in this variant because no buffered
+write is ever attempted again:
+
+```bash
+grep -n "permanent error, giving up retry" "$SCRATCH/agent1.log"
+# expect two lines (step report + finish), timestamped at step-end, status 403
+```
+
 Then capture the healed agent's full log and classify every buffered write it
 replays:
 
@@ -337,6 +352,46 @@ one** run and the side-effect log must contain each iteration number exactly
 once. Any duplicated iteration number, or a second `edge-sideeffect` run, is
 re-execution = **major (I2)**.
 
+## Addendum (added during execution) — 4xx-permanent abandonment with no reap
+
+The main probe's partition outlasts the reaper, so the reaper's `Failed` masks
+what the agent's own abandoned reports would have done. This cheap addendum
+isolates that: partition a run whose step finishes **well inside** the reaper's
+eligibility window, then heal **before** the run could ever be reaped, and see
+what terminal status the control plane ends up with for a step that actually
+succeeded.
+
+```bash
+cat > /tmp/w1-5-short.payload.json <<'EOF'
+{"yaml":"apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-short\nspec:\n  native: true\n  agentSelector:\n    - kind:linux\n  steps:\n    - name: quick\n      run: sleep 25; echo done-short\n"}
+EOF
+curl -fsS -X POST localhost:18080/api/v1/jobs \
+  -H "Authorization: Bearer ha-admin-token" -H "Content-Type: application/json" \
+  --data-binary @/tmp/w1-5-short.payload.json
+
+# trigger, poll for claimedBy, block that agent immediately (same shape as above)
+# capture .id as SHORT_ID
+```
+
+Timing that makes this work, and why each bound matters:
+
+- the step ends at `claimed_at + ~28s` (`sleep 25` + startup), so the step's
+  report/finish attempts happen **while blocked**;
+- heal at `claimed_at + ~54s`, i.e. **before** `claimed_at + 60s`, so
+  `ListStuckRunIDs`'s grace clause has not yet made the run reapable and the
+  stuck-run reaper never touches it (verify: no `stuck-run reaper` line
+  mentioning `SHORT_ID` in `controllers.log`);
+- keep polling for ~2 more minutes: the run is now `Running` in the DB with
+  nothing left executing, so the only thing that can still settle it is the
+  **heartbeat reconcile** (`api_agent.go:99-124`), which fires on the healed
+  agent's first heartbeat past `heartbeatReconcileGrace` (60s from
+  `claimed_at`).
+
+Record: the run's final status, `runs.updated_at`, `step_reports` for the run,
+and `GET /runs/$SHORT_ID/logs/stats`. A step that ran to completion and whose
+run is nonetheless recorded terminal-**Failed**, with its stdout absent, is the
+outcome this addendum exists to expose.
+
 ## Recording (severity guidance)
 
 - `mutex_holders` still holds `edge-mutex` for the reaped run after it reads
@@ -356,6 +411,19 @@ re-execution = **major (I2)**.
   run in a way that changes visible state (e.g. a step report flipping a Failed
   run's step to Succeeded) = record precisely; severity depends on what state
   actually changed.
+- Addendum: a run whose step **succeeded** ending up permanently recorded
+  `Failed` (or any other status inversion) because its report was abandoned =
+  **major** — the terminal status is wrong, never self-corrects, and would push
+  an operator to re-run work whose side effects already landed. State plainly
+  in the finding that the `403` came from the injection's nginx deny, not from
+  the controller, and that a real packet-level partition would surface
+  *retryable* transport errors instead — the defect is that the agent cannot
+  distinguish an intermediary's transient 4xx from the controller's own
+  (legitimately permanent) ownership 4xx.
+- A terminal run whose `step_reports` row is left `Running` forever = **minor**
+  violation of I7: a real and permanent contradiction, but confined to a
+  display/audit row under an already-correct terminal run status — no lock
+  leak, no scheduling effect, no data loss.
 - Clean run: reap within the documented 90s+30s bound, mutex released, successor
   succeeds on the other agent, exactly one run, exactly 120 non-duplicated
   side-effect lines, zombie bounded by the step's own length = **observation**.
