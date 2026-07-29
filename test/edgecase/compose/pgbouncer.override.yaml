@@ -3,6 +3,7 @@
 # forbids (advisory locks and LISTEN/NOTIFY are session-level). The point
 # is to observe HOW it breaks: diagnosable failure vs silent split-brain.
 # Stack it onto the ha compose file; never use for other scenarios.
+# Pin the pgbouncer image tag when this scenario is promoted to a permanent test.
 services:
   pgbouncer:
     image: edoburu/pgbouncer:latest

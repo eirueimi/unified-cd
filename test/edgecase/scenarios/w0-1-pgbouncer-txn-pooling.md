@@ -43,6 +43,15 @@ docker compose -f docker-compose.ha.yaml down -v
 
 ## Probe (with PgBouncer overlay)
 
+> **Note:** the first `up` with this overlay may crash-loop `controller2`/
+> `controller3` — they have no DB-connect retry against a not-yet-ready
+> pgbouncer at boot (recorded as a W0-1 finding). If `up -d --build` reports
+> failure, recover with:
+> ```bash
+> docker compose -f docker-compose.ha.yaml -f ../edgecase/compose/pgbouncer.override.yaml up -d controller2 controller3 nginx
+> ```
+> then re-run agent-enroll/agents.
+
 ```bash
 docker compose -f docker-compose.ha.yaml -f ../edgecase/compose/pgbouncer.override.yaml up -d --build
 curl -fsS localhost:18080/readyz

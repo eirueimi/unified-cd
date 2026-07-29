@@ -80,7 +80,7 @@ func TestEdgeProbe_CatchupWindowBoundary(t *testing.T) {
 	require.NoError(t, err)
 	t.Logf("boundary next==now-1h: fired=%d last_fired_at=%v", after, scA.LastFiredAt)
 
-	// Case B: next == now-61m (just outside) — expect silent advance, no run.
+	// Case B: next == now-65m (just outside) — expect silent advance, no run.
 	require.NoError(t, pg.UpdateScheduleLastFiredAt(ctx, "probe-sched", now.Add(-66*time.Minute)))
 	before := countRuns(t, pg)
 	checkAndFireSchedules(ctx, pg, now)

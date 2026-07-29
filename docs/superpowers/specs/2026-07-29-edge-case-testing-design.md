@@ -141,9 +141,10 @@ Measurement-centric (documented limits, like I5) rather than pass/fail.
 test/edgecase/
   README.md            # campaign overview, how to run
   FINDINGS.md          # one entry per violation (see format below)
-  scenarios/           # one runbook per scenario: w1-05-oneway-partition.md ...
+  scenarios/           # one runbook per scenario: w1-5-oneway-partition.md ...
   compose/
-    docker-compose.edge.yaml   # overlay on test/ha stack: Garage, PgBouncer, load gen
+    <scenario>.override.yaml   # per-scenario overlays stacked onto the
+                                # test/ha stack (e.g. pgbouncer.override.yaml)
   workloads/           # job YAMLs (below)
   tools/
     inject.sh          # fault-injection helpers

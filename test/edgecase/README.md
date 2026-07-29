@@ -10,7 +10,9 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 - `scenarios/` — one runbook per scenario (`w<wave>-<n>-<slug>.md`).
 - `compose/` — overlay files stacked onto `test/ha/docker-compose.ha.yaml`.
 - `workloads/` — job/schedule YAML (and pre-encoded JSON API payloads).
-- `probes/` — see note below.
+- Scheduler/timing probes live next to the code they probe (e.g.
+  `internal/controller/`), gated by the `edgeprobe` build tag — not a
+  standalone `probes/` directory; see "Running probe tests" below.
 
 ## Running a compose scenario
 
