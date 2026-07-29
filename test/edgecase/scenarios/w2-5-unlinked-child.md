@@ -212,7 +212,9 @@ Four gates specific to this scenario:
 # G1. The overlay's nginx.conf actually replaced oneway's. Compose merges
 #     `volumes` entries by target path; verify rather than assume.
 docker compose $COMPOSE_FILES config | grep -A3 'nginx.conf'
-docker compose $COMPOSE_FILES exec -T nginx grep -c 'steplock' /etc/nginx/nginx.conf   # expect 4
+docker compose $COMPOSE_FILES exec -T nginx grep -c steplock /etc/nginx/nginx.conf   # expect 3
+# On Git Bash prefix the whole command with MSYS_NO_PATHCONV=1, or the
+# container path is rewritten to C:/Program Files/Git/etc/nginx/nginx.conf.
 
 # G2. Unarmed, the step-report endpoint is reachable (a bare POST with no body
 #     must NOT be 403 — 400/401 is fine, it proves the request reached a
