@@ -8,12 +8,12 @@ set -eu
 COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.ha.yaml}"
 dc() { docker compose $COMPOSE_FILES "$@"; }
 
-cmd="${1:?usage: inject.sh <kill-soft|kill-hard|pause|unpause|partition|heal|nginx-block|nginx-unblock> [service]}"
-# nginx-unblock clears the whole blocklist and takes no service argument;
-# every other command needs one.
+cmd="${1:?usage: inject.sh <kill-soft|kill-hard|pause|unpause|partition|heal|nginx-block|nginx-unblock|steplock|steplock-clear> [service]}"
+# nginx-unblock and steplock-clear clear the whole blocklist and take no
+# service argument; every other command needs one.
 case "$cmd" in
-  nginx-unblock) svc="${2:-}" ;;
-  *)             svc="${2:?service name required}" ;;
+  nginx-unblock|steplock-clear) svc="${2:-}" ;;
+  *)                            svc="${2:?service name required}" ;;
 esac
 
 case "$cmd" in
@@ -34,6 +34,20 @@ case "$cmd" in
   nginx-unblock)
     dc exec -T nginx sh -c ": > /etc/nginx/blocklist/deny.conf && nginx -s reload"
     echo "unblocked all at nginx"
+    ;;
+  steplock)
+    # Surgical injection (W2-5): refuse ONLY this agent's step-report endpoint
+    # (POST /api/v1/agents/<id>/steps) with 403, leaving every other agent API
+    # — child-run creation, claim, heartbeat, logs, finish — working. Requires
+    # the steplink.override.yaml overlay (nginx-steplink.conf); it is a no-op
+    # against nginx-edge.conf, so check the response code after arming.
+    dc exec -T nginx sh -c \
+      "mkdir -p /etc/nginx/steplock/$svc && echo 'deny all;' > /etc/nginx/steplock/$svc/deny.conf && nginx -s reload"
+    echo "steplock armed for $svc (POST /api/v1/agents/$svc/steps -> 403)"
+    ;;
+  steplock-clear)
+    dc exec -T nginx sh -c "rm -f /etc/nginx/steplock/*/deny.conf && nginx -s reload"
+    echo "steplock cleared for all agents"
     ;;
   *) echo "unknown command: $cmd" >&2; exit 2 ;;
 esac

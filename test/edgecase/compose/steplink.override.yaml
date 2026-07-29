@@ -1,0 +1,21 @@
+# W2-5 overlay: swaps nginx-edge.conf for nginx-steplink.conf and adds the
+# per-agent steplock volume, so ONE agent's step-report endpoint can be refused
+# while its child-run creation endpoint keeps working. Stack on top of
+# oneway.override.yaml (which provides the /data bind mount and the shared IP
+# blocklist volume); this file replaces the nginx.conf mount by targeting the
+# same container path.
+#
+#   COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/oneway.override.yaml \
+#     -f ../edgecase/compose/steplink.override.yaml"
+#
+# Verify the replacement actually took (compose merges volume entries by
+# target path) with `docker compose $COMPOSE_FILES config` and by grepping
+# nginx.conf inside the container — the W2-5 baseline gate does both.
+services:
+  nginx:
+    volumes:
+      - ../edgecase/compose/nginx-steplink.conf:/etc/nginx/nginx.conf:ro
+      - steplock:/etc/nginx/steplock
+volumes:
+  steplock:
