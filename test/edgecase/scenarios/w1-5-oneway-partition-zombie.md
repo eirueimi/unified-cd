@@ -377,10 +377,22 @@ Timing that makes this work, and why each bound matters:
 
 - the step ends at `claimed_at + ~28s` (`sleep 25` + startup), so the step's
   report/finish attempts happen **while blocked**;
-- heal at `claimed_at + ~54s`, i.e. **before** `claimed_at + 60s`, so
-  `ListStuckRunIDs`'s grace clause has not yet made the run reapable and the
-  stuck-run reaper never touches it (verify: no `stuck-run reaper` line
-  mentioning `SHORT_ID` in `controllers.log`);
+- heal at `claimed_at + ~54s`, i.e. **before** `claimed_at + 60s`. Note this
+  does **not** mean `ListStuckRunIDs`'s grace clause (`claimed_at < NOW() -
+  grace`, `internal/store/postgres.go:1216-1224`) stays unmet forever — it
+  expires normally at `claimed_at + 60s`, same as any other run, and by the
+  time this run settles that boundary has long since passed. What actually
+  keeps the run un-reaped is the **other** conjunct: once healed, the agent's
+  next successful heartbeat refreshes `last_seen_at` to a fresh value, so
+  `a.last_seen_at < NOW() - staleAfter` (90s, `internal/store/postgres.go:1224`)
+  never matches again — the run simply stops looking stuck to the reaper,
+  independent of the grace clause. (Verify: no `stuck-run reaper` line
+  mentioning `SHORT_ID` in `controllers.log`.) **Do not heal later than this**
+  (e.g. at `claimed_at + ~58s`) expecting the grace-clause margin to be what's
+  protecting the run — the margin that actually matters is against the 90s
+  staleness window on the agent's *next* heartbeat after heal, not against the
+  60s grace clause, and healing too close to a heartbeat boundary risks a
+  stale `last_seen_at` still being read by a reaper tick that lands in between;
 - keep polling for ~2 more minutes: the run is now `Running` in the DB with
   nothing left executing, so the only thing that can still settle it is the
   **heartbeat reconcile** (`api_agent.go:99-124`), which fires on the healed
