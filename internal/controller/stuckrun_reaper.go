@@ -74,6 +74,13 @@ func runStuckRunReaperOnce(ctx context.Context, st store.Store, staleAfter, grac
 // MarkRunFinished also releases the run's mutex/semaphore locks, so it must be
 // called per-run rather than via a bulk UPDATE.
 func failOrphanedRun(ctx context.Context, st store.Store, runID string) error {
+	// Terminalize the run's in-flight steps BEFORE failing the run, while the
+	// run is still listable by the reaper: a transient error here is then
+	// retried on the next tick instead of leaving a step stuck showing Running
+	// under an already-Failed run (which the reaper would never re-list).
+	if _, err := st.MarkRunStepsInterrupted(ctx, runID); err != nil {
+		return err
+	}
 	if err := st.MarkRunFinished(ctx, runID, api.RunFailed); err != nil {
 		return err
 	}

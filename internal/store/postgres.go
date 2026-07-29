@@ -807,6 +807,28 @@ func (p *Postgres) UpsertStepReport(ctx context.Context, runID string, stepIndex
 	return err
 }
 
+// MarkRunStepsInterrupted terminalizes a reaped run's Running step reports: a
+// step executing when its agent died becomes Failed, with ended_at stamped
+// where not already set. Only Running is affected — not-yet-started steps have
+// no step_reports row (the UI's "Pending" is filled in from the run plan), and
+// terminal steps (Succeeded/Failed/Skipped/Cancelled) are left untouched.
+// WaitingApproval is deliberately out of scope: it has a companion run_approvals
+// row and its own controller lifecycle. Call steps whose child run is separately
+// cancelled are unaffected in the UI because GetRunSteps coalesces the child's
+// status over the parent step's own. Returns the number of step rows updated.
+func (p *Postgres) MarkRunStepsInterrupted(ctx context.Context, runID string) (int64, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE step_reports
+		   SET status   = 'Failed',
+		       ended_at = COALESCE(ended_at, NOW())
+		 WHERE run_id = $1
+		   AND status = 'Running'`, runID)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (p *Postgres) GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error) {
 	const q = `
 		SELECT sr.step_index, sr.stage_index, sr.step_name,
