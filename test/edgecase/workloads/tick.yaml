@@ -1,0 +1,11 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-tick
+spec:
+  native: true
+  agentSelector:
+    - kind:linux
+  steps:
+    - name: tick
+      run: for i in $(seq 1 30); do echo "tick $i"; sleep 1; done
