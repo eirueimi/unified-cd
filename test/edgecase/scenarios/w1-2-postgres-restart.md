@@ -164,22 +164,50 @@ curl -fsS "localhost:18080/api/v1/runs/<RUN_ID>/logs/stats" \
 
 ### Injection variant B — soft kill (`SIGTERM`, clean shutdown)
 
-Repeat the whole sequence above (new job trigger, new RUN_ID) but inject
-with:
+**Caveat — SIGTERM alone will NOT reliably bring postgres down here, and the
+probe will stall if you wait on it.** `docker compose kill -s SIGTERM
+postgres` puts Postgres into "Smart Shutdown": it immediately refuses *new*
+connections but waits indefinitely for existing sessions to close on their
+own before the postmaster exits. In this compose stack the controllers hold
+persistent pooled connections that are never voluntarily closed, so
+`/readyz` (which pings the DB over an already-open pooled connection) keeps
+returning `200` and the postgres container stays `Up ... (unhealthy)`
+forever — confirmed here over a 3+ minute observation window with zero
+progress toward the container actually stopping. Do not treat a stuck
+`Up (unhealthy)` state as "still shutting down, give it more time"; it will
+not resolve on its own with this pool configuration. Escalate to a hard kill
+to actually force the outage before proceeding to the recovery steps below:
 
 ```bash
 date
 ../edgecase/tools/inject.sh kill-soft postgres
+# observe for ~1-2 minutes: readyz stays 200 on all controllers, postgres
+# container reports "Up ... (unhealthy)" and pg_isready reports "rejecting
+# connections" but never actually exits — this is expected, not a bug in
+# unified-cd (it's standard PostgreSQL SIGTERM/Smart-Shutdown semantics
+# colliding with a connection pool that doesn't evict idle connections).
+# Once confirmed stuck, force it down to continue the scenario:
+date
+../edgecase/tools/inject.sh kill-hard postgres
 ```
+
+(An alternative that avoids the container-level signal ambiguity entirely,
+not required but worth considering for a future revision: run
+`docker compose -f docker-compose.ha.yaml exec postgres pg_ctl stop -m fast`
+inside the container instead of a compose-level `kill`, which is closer to a
+"true" clean-shutdown probe since `-m fast` still terminates existing
+sessions immediately rather than waiting for them.)
 
 Use the same observation loops (per-controller `/readyz`, agent logs, bring
 postgres back with `up -d postgres`, leader re-election grep, SSE re-attach,
-line-accounting on the new RUN_ID). The point of variant B is to compare
-controller reconnect latency (time from `up -d postgres` to `/readyz` 200,
-per controller) against variant A's hard-kill figures — a clean `SIGTERM`
-FIN should, in principle, let the controller's connection pool notice the
-close faster/cleaner than a `SIGKILL` RST, but this is exactly what the probe
-is checking rather than assuming.
+line-accounting on the new RUN_ID). The point of variant B was originally to
+compare controller reconnect latency (time from `up -d postgres` to
+`/readyz` 200, per controller) against variant A's hard-kill figures — in
+practice, once both are forced into a genuine outage this way, the more
+interesting difference observed was *not* reconnect latency (which was
+comparable) but whether the outage happened to still be ongoing at the exact
+moment the running step finished locally (see FINDINGS.md for what that
+exposes).
 
 ## Recording
 
