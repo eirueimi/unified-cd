@@ -387,12 +387,18 @@ Timing that makes this work, and why each bound matters:
   `a.last_seen_at < NOW() - staleAfter` (90s, `internal/store/postgres.go:1224`)
   never matches again — the run simply stops looking stuck to the reaper,
   independent of the grace clause. (Verify: no `stuck-run reaper` line
-  mentioning `SHORT_ID` in `controllers.log`.) **Do not heal later than this**
-  (e.g. at `claimed_at + ~58s`) expecting the grace-clause margin to be what's
-  protecting the run — the margin that actually matters is against the 90s
-  staleness window on the agent's *next* heartbeat after heal, not against the
-  60s grace clause, and healing too close to a heartbeat boundary risks a
-  stale `last_seen_at` still being read by a reaper tick that lands in between;
+  mentioning `SHORT_ID` in `controllers.log`.) So when re-running this, **do
+  not pick the heal time off the 60s grace clause** — that clause expires
+  regardless and protects nothing. The margin that actually matters is the 90s
+  staleness window: staleness first opens 90s after the agent's *last
+  successful pre-block heartbeat* (not 90s after the block, and not at any
+  offset from `claimed_at` — the 15s heartbeat cadence is not phase-locked to
+  the claim, so this offset differs run to run). The heal must therefore be
+  early enough that the next successful heartbeat lands before that boundary.
+  Compute it for your own run: find the last heartbeat before the block in the
+  agent log, add 90s, and heal at least one heartbeat interval (15s) earlier.
+  Healing at +54s satisfied that here with room to spare; the +60s grace clause
+  is a coincidence of this run's timing, not the constraint;
 - keep polling for ~2 more minutes: the run is now `Running` in the DB with
   nothing left executing, so the only thing that can still settle it is the
   **heartbeat reconcile** (`api_agent.go:99-124`), which fires on the healed
