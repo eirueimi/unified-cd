@@ -407,6 +407,59 @@ operator can tell revoked-from-disabled by (a) the agent's own log, (b)
   revocation verb that does not revoke is a broken contract regardless of TTL
   design. Only file this if actually observed.
 
+## Execution notes (added after the 2026-07-29 run — read before re-running)
+
+- **The Part A hypothesis was disproved, as the mechanism section predicted.**
+  Revocation is effectively immediate: `agent_credentials.revoked_at` and the
+  agent's first `401` were 4.95s apart for `revoke-credentials` and 1.51s
+  apart for `disable`, and both intervals are the agent's own poll cadence,
+  not a server-side grace. `lastSeenAt` froze *before* the revocation instant
+  and never advanced again. Do not re-run this expecting a 45-minute window;
+  the 5-minute observation is more than sufficient and could safely be cut to
+  ~3 minutes (long enough to cover the reap at +90-120s).
+- **Victim agents are whichever agent claims — do not assume.** In this run
+  the first run landed on `agent2`, so Part A/B burned `agent2` and Part C
+  burned `agent1`, the reverse of the order written above. Everything works
+  either way; just keep one healthy agent for Part C.
+- **The restart failure lands in `EnsureIdentity`, not in `Agent.Run`'s
+  `Register`.** The runbook's mechanism section predicted `Register`, on the
+  reasoning that `--id` plus a persisted credential resolves the identity
+  locally. It does not: the `enrollment.token` file written by `agent-enroll`
+  is still present, so `Token()` takes the enroll-first branch
+  (`internal/agent/credentials.go:143-170`), gets `401` on
+  `/api/v1/agents/enroll`, logs `WARN "enrollment token rejected (expired or
+  already consumed); continuing with the existing credential"`, then fails the
+  refresh. Net observable output is exactly two lines and `os.Exit(1)`; the
+  `WARN` is a red herring and should not be read as the cause.
+- **Take the zombie `ps` check *during* the window, not after.** This run's
+  `docker compose exec -T agent2 ps -ef` landed ~60s after the step's loop had
+  already ended, so it corroborates nothing on its own. Either poll `ps` on
+  the same 15s cadence as the status loop, or rely (as the findings do) on the
+  step-end `"permanent error, giving up retry"` timestamps, which pin the end
+  of execution precisely.
+- **The reap always precedes the restart, so Part B's "who fails the run?"
+  is really answered by Part A.** The reaper's clock starts at the last
+  successful heartbeat, which stops at revocation, so the run is reaped
+  ~90-120s later regardless of when (or whether) the agent is restarted.
+  Measured: +106.9s (Part A) and +93.8s (Part C) from the revocation instant.
+  If a future variant wants to observe a restart racing a *still-Running* run,
+  it must restart within ~90s of revoking.
+- **Budget ~12s per `docker compose run --rm agent-enroll` invocation, every
+  time.** Each `run --rm` is a fresh container and the Go module cache is not
+  on a volume, so the module download repeats on every call — it is not a
+  one-off first-run cost. Issue the `date -u` stamp immediately around the
+  command and take the authoritative injection instant from
+  `agent_credentials.revoked_at` / `agent_identities.disabled_at` in Postgres
+  rather than from the CLI's own wall-clock, which is up to ~13s late.
+- **Where to read the ground truth.** The three most load-bearing reads, all
+  cheap: `SELECT i.agent_id, i.status, c.kind, c.revoked_at FROM
+  agent_credentials c JOIN agent_identities i ON i.id=c.identity_id;` for the
+  injection instant, `SELECT occurred_at, actor, action, resource, status FROM
+  audit_logs ORDER BY occurred_at;` for the `401`/`403` split, and
+  `docker compose exec -T <controller> wget -qO- http://localhost:8080/metrics
+  | grep agent_auth` for `unifiedcd_agent_auth_events_total`, which is the only
+  place `reason="disabled"` is distinguished from `reason="invalid"`.
+
 ## Teardown
 
 ```bash
