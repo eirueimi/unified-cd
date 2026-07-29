@@ -408,6 +408,48 @@ distinguish them before recording.
 - Timing that lands within one expected interval (10s stop grace, 15s
   heartbeat, 30s reaper tick) = observation with the measured number.
 
+## Execution notes (added after the 2026-07-29 run — read before re-running)
+
+- **`docker compose restart <svc>` gives the container 1.013 s, not 10 s.**
+  Measured with `docker events` (`w2-2/partB-docker-events.txt`): `kill sig=15`
+  at epoch `1785345889.394`, `kill sig=9` at `1785345890.407`, `die exit=137`.
+  So **a bare `restart` cannot test the drain** — it truncates it before the
+  agent can finish anything. Any later scenario that means "graceful restart"
+  must pass `-t <seconds>` explicitly. This invalidated the plan's premise that
+  a rolling restart has "no drain window": the window exists, the harness was
+  not giving it to the agent.
+- **The drain itself works, unbounded, exactly as documented.** With
+  `stop -t 200` the agent held an in-flight run for **107.31 s** past SIGTERM,
+  the run reached `Succeeded`, `"agent deregistered"` was logged, and the
+  container exited 0 (`w2-2/partB2-drain.txt`). Use this arm as the control
+  whenever a scenario claims an agent shutdown lost work.
+- **`--max-concurrent` defaults to 1, and that is load-bearing here.** The
+  parent's `call:` step occupies its agent's only normal slot for the whole
+  child wait, so the child is claimed by the *other* agent and Part A is a
+  genuine cross-agent cascade. It also means the detached pool (16 slots) is
+  the only thing still polling on the draining agent, which is why the
+  shutdown log is 16 `"claim" context canceled` ERROR lines — noise, not a
+  fault.
+- **Budget ~20 minutes** of wall clock for all four arms plus the two controls,
+  dominated by Part A's 20 s prelude + link wait and Part B2's 107 s drain.
+  `up -d --build` was cached.
+- **The `call:` link appears immediately, not after a delay.** `callstep.go:62`
+  sends the `ChildRunID` report right after creating the child, so the link was
+  present at the very first poll sample. The 20 s prelude is what you wait for,
+  not the link.
+- **Two no-fault controls are worth keeping.** Cancelling a `call:` parent
+  through the public API, and cancelling an ordinary single-step run, both
+  reproduce the dangling-`Running`-step row with no fault injection at all —
+  which is what turned a Part A curiosity into a finding with a system-wide
+  blast radius. Run them before concluding that any step-row anomaly is
+  specific to agent replacement.
+- **`mutex_holders`'s columns are `mutex_name, run_id, acquired_at`** (not
+  `name`), and `named_lock_slots` is `pool_name, slot_id, run_id, acquired_at`.
+  A `\d` beats guessing; the first Part B2 capture lost its lock reading to a
+  column-name typo.
+- **`docker events --since/--until` over a past window returned nothing here.**
+  Start the capture *before* the injection if the exit signal and code matter.
+
 ## Teardown
 
 ```bash

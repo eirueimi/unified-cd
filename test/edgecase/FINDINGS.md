@@ -583,3 +583,103 @@ Entry template:
   - **The fifth is wired but its first tick had not arrived, and this contradicts the W2 plan.** The plan lists audit retention as needing its flag, alongside run retention. It does not: `auditRetentionDaysDefault()` (`main.go:26-41`) falls back to **90 days** when `UNIFIED_AUDIT_RETENTION_DAYS` is unset, and all three controllers logged `INFO "audit log retention enabled" retentionDays=90` at boot. `RunAuditRetention` therefore *is* running here — but on a 1-hour ticker (`main.go:420`) whose first fire is at boot+1h, i.e. `~17:04Z` against a stack booted `16:04Z` and torn down at `16:32Z`. Its exclusion behaviour is **unobserved**, not absent, and no claim is made about it in either direction.
 - **Expected:** A key with no holder is only a defect if the job is both wired and past its first tick. The plan's Recording rule ("a wired job with no key holder across all samples = major") needs that third condition; without it, a 1-hour job on a 26-minute observation would be filed as a major defect.
 - **Notes:** The practical instruction for any later scenario reusing this census: check the boot log first. Four of the five absences here are visible as explicit `disabled` lines, the fifth as an `enabled` line whose interval exceeds the observation window. **A key with zero holders is three different results — not wired, wired but not yet ticked, and wired but broken — and only the third is a finding.** Audit retention is the one job of the eleven whose leader exclusion this campaign has not exercised at all; if it matters, it needs either a much longer soak or a direct `runAuditRetentionOnce` probe under the `edgeprobe` build tag rather than a compose scenario.
+
+## W2-2 — a cascade-cancelled `call:` child, and every plainly-cancelled run, is left with a step permanently reporting `Running` under a terminal run
+- **Invariant:** I1 (run accounting — the step-level limb)
+- **Severity:** minor
+- **Repro:** `test/edgecase/scenarios/w2-2-agent-replacement.md`, Part A and the two no-fault controls. Raw evidence: `w2-2/partA-step-reports.txt`, `w2-2/partA2-cancel-control.txt`, `w2-2/partA3-cancel-simple-run.txt`, `w2-2/final-sweep.txt`.
+- **Observed:** In Part A, `docker compose restart agent1` made the controller fail the parent `10c7834e` (`updated_at 17:12:42.889561`) and cascade-cancel its linked child `503a3d6e` (`17:12:42.892803`, 3.2 ms later). Both runs are correctly terminal. But the child's only step stayed `Running` with a NULL `ended_at` — at `17:16:43.729Z`, and still at the final sweep `17:27:28.931Z`, **14m35s after the run went `Cancelled`** (`w2-2/partA-step-reports.txt`, `w2-2/final-sweep.txt`):
+
+  ```
+   503a3d6e-5295-4057-81aa-8c4cbe17af76 | 0 | emit | Running |
+  ```
+
+  Two no-fault controls show this is **not** specific to agent replacement:
+  - **Plain `POST /runs/{id}/cancel` on a `call:` parent** (`w2-2/partA2-cancel-control.txt`): cancel at `17:18:28.171Z` → parent `Cancelled 17:18:28.214176`, child `Cancelled 17:18:28.217776`, and **both** the parent's own `invoke_child` step and the child's `emit` step left `Running/end=NULL` through the last sample at `17:19:35.579Z` and still at the final sweep.
+  - **Plain cancel of an ordinary single-step run** with no `call:` at all (`w2-2/partA3-cancel-simple-run.txt`): `edge-longrun` cancelled at `17:20:15.903Z` (204), run `Cancelled 17:20:15.938076`, step `0:tick=Running/end=NULL` at every sample to `17:20:58.808Z` and at the final sweep. It is visible through the public API, not just in the DB:
+
+    ```
+    GET /api/v1/runs/52a7be75-.../steps
+    [{"index":0,"stageIndex":0,"name":"tick","status":"Running","startedAt":"2026-07-29T17:20:09.432208Z","kind":"run","section":"main"}]
+    GET /api/v1/runs/52a7be75-...
+    {"...","status":"Cancelled","claimedBy":"agent1"}
+    ```
+
+  The mechanism is a two-sided gap, both sides confirmed from source. (a) Neither `handleCancelRun` (`internal/controller/api_runs.go:377-384`) nor `cancelDescendantRuns` (`:390-412`) calls `MarkRunStepsInterrupted`; only `failOrphanedRun` (`internal/controller/stuckrun_reaper.go:76-90`) does, and only for the run it is failing — which is exactly why the three runs terminalized by the reconcile path in this scenario (`10c7834e:1`, `998f3dc3:0`, `1897dd94:0`) all *do* carry an `ended_at` in `w2-2/final-sweep.txt`. (b) The agent's own late terminal report cannot fix it: agent2 was told to stop at `17:12:45.877601Z` (`w2-2/partA-agent2.log`, `"received cancellation signal from master; interrupting run"`) and POSTed `/api/v1/agents/agent2/steps` at `17:12:46.882986Z` — **HTTP 200** — but `handleAgentStepReport`'s already-finalized guard (`internal/controller/api_agent.go:511-523`) sees the run is `Cancelled` and returns `200 {"alreadyFinalized":true}` **without writing the row**. So the report is accepted, discarded, and the agent has no way to know.
+- **Expected:** `docs/high-availability.md:414-417` promises `call:` descendants are "cascade-cancelled" and says nothing about step rows, so there is no documented contract to contradict — this is filed on the internal inconsistency, not on a broken promise. The strongest statement of intent is `failOrphanedRun`'s own comment, which terminalizes steps first specifically to avoid leaving a step stuck showing Running under an already-Failed run that the reaper would never re-list; per the campaign's classification rule an unexported helper's comment is not a contract, so this is recorded as an asymmetry between two paths that reach the same end state, not as a violation.
+- **Notes:** Nothing re-drives it: `ListStuckRunIDs` selects `status='Running'` runs only, so a terminal run's dangling step is never revisited. Severity is **minor** rather than major because run-level accounting (I1's primary limb) is correct in every case — the run is terminal, locks are released, no work is lost or duplicated — and the damage is confined to one row that misreports state. A reviewer could reasonably argue major on "incorrect visible behavior", since `GET /runs/{id}/steps` will drive a never-ending spinner on the run detail page for **every cancelled run in the system**, not just an edge case; the blast radius is what makes this worth filing at all. The obvious fix is to call `MarkRunStepsInterrupted` from `handleCancelRun` and from `cancelDescendantRuns`' per-child branch, i.e. wherever `MarkRunFinished` is reached without it.
+
+## W2-2 — observation: the startup reconcile has no claim grace and failed a run 2.409s after it was claimed, while both other orphan definitions carry a 60s grace
+- **Invariant:** I1 (run accounting)
+- **Severity:** observation (as-designed; documented)
+- **Repro:** `test/edgecase/scenarios/w2-2-agent-replacement.md`, Part B. Raw evidence: `w2-2/partB-poll.txt`, `w2-2/partB-docker-events.txt`, `w2-2/partC-mutex.txt`, `w2-2/final-sweep.txt`.
+- **Observed:** `edge-longrun` `998f3dc3` was claimed by `agent1` at `claimed_at 17:24:48.599292`. `docker compose restart agent1` was issued **0.495 s later** at `17:24:49.094Z`. The replacement process registered at `17:24:51.004587Z`, its reconcile call made `controller2` log `"agent reconcile: failed orphaned run (agent process replaced)" runId=998f3dc3... agentId=agent1` at `17:24:51.010864Z`, and the run's terminalization landed at `updated_at 17:24:51.007957`. Postgres' own arithmetic (`w2-2/partB-poll.txt`, final DB view):
+
+  ```
+   status | claimed_at                    | updated_at                    | age_at_terminal
+   Failed | 2026-07-29 17:24:48.599292+00 | 2026-07-29 17:24:51.007957+00 | 00:00:02.408665
+  ```
+
+  Part C reproduced it independently at **4.050 s** (`1897dd94`, claimed `17:26:30.978435`, Failed `17:26:35.028818` — `w2-2/partC-mutex.txt`), and Part A at 98.073 s. Both other orphan definitions would have refused all three: the heartbeat path adds `claimed_at < NOW() - 60s` (`internal/store/postgres.go:292-294`, `heartbeatReconcileGrace = 60s` at `internal/controller/api_agent.go:71`) and the stuck-run reaper carries the same 60 s `grace` (`cmd/controller/main.go:404`). The startup path's `ListRunningRunIDsByAgent` (`internal/store/postgres.go:294-297`) is a bare `SELECT id FROM runs WHERE claimed_by = $1 AND status = 'Running'` with no time predicate at all.
+- **Expected:** This is exactly what `docs/high-availability.md:414-415` promises — "the controller fails every `Running` run still claimed by that agent ID" — with no time qualifier, and `:417-418` explains why the call is retried until it succeeds ("claiming with unreconciled orphans would leave the hole open"). **Recorded as an observation, not a violation**, because the documented contract and the code agree.
+- **Notes:** The operational cost is worth stating plainly even though the behavior is correct: because the reconcile is unconditional and `Failed` runs are never re-queued (`docs/high-availability.md:399-403`), restarting an agent destroys whatever it holds *at that instant* regardless of how recently the work started — and a fleet-wide rolling restart therefore fails every in-flight run in the fleet. The mitigation the product already provides is the drain (see the next entry), so the two entries should be read together: the no-grace reconcile is only reached when the drain has been cut short.
+
+## W2-2 — the plan's "rolling restart kills in-flight work with no drain window" premise is false: the drain works and completed a 107.3s run, but no orchestrator default gives it time to
+- **Invariant:** I5 (bounded recovery — documentation / deployment defaults)
+- **Severity:** minor
+- **Repro:** `test/edgecase/scenarios/w2-2-agent-replacement.md`, Part B2 versus Parts A/B/C. Raw evidence: `w2-2/partB2-drain.txt`, `w2-2/partB-docker-events.txt`, `w2-2/partA-agent1.log`.
+- **Observed:** With a stop grace longer than the work, the documented drain holds completely (`w2-2/partB2-drain.txt`). `edge-sideeffect` `7bb97900` was claimed by `agent1` at `17:21:37.531613`; `docker compose stop -t 200 agent1` was issued at `17:21:50.337Z`; the agent logged `"shutdown signal received; draining in-flight runs — press Ctrl-C again to force quit"` at `17:21:50.645653Z`, kept the run executing for a further **107.31 s**, and the run reached **`Succeeded` at `17:23:37.956706`**, followed by `"agent deregistered"` at `17:23:37.961899Z` and a clean container exit:
+
+  ```
+  exited exit=0 started=2026-07-29T17:12:42.670581621Z finished=2026-07-29T17:23:37.966350008Z
+  mutex_holders: 0
+  ```
+
+  On the way back up the reconcile found nothing to fail — a drained agent leaves no `Running` runs (`w2-2/final-sweep.txt` lists exactly three `agent reconcile` lines across the whole scenario, one per restart-based arm and none for this one).
+
+  What killed the runs in Parts A/B/C was therefore the *orchestrator's* stop grace, not a missing drain. `docker events` measured `docker compose restart`'s grace directly (`w2-2/partB-docker-events.txt`, epoch seconds):
+
+  ```
+  1785345889.394 unified-cd-ha-agent1-1 kill sig=15
+  1785345890.407 unified-cd-ha-agent1-1 kill sig=9
+  1785345890.753 unified-cd-ha-agent1-1 die  exit=137
+  ```
+
+  i.e. **SIGKILL 1.013 s after SIGTERM**, exit 137. Part A's agent log is consistent with the same ~1 s window (`w2-2/partA-agent1.log`: drain message at `17:12:41.264382Z`, no `"agent deregistered"` line at all, replacement process logging `"agent registered"` at `17:12:42.886068Z`) — that arm predates the `docker events` capture, so its grace is **inferred from the log gap, not measured**.
+- **Expected:** `docs/configuration.md:173` documents `--drain-timeout duration  Max wait after SIGTERM before forced shutdown (0 = wait forever)` and `docs/high-availability.md:341` states "Agents also support graceful drain (stop claiming = cordon → finish in-progress Runs → exit)". The default is 0 — unbounded. The gap is that an *unbounded* drain is unreachable under every orchestrator default: Docker's default stop timeout is 10 s, `docker compose restart` gives 1.013 s as measured above, and Kubernetes' default `terminationGracePeriodSeconds` is 30 s. `grep -rn terminationGracePeriodSeconds docs/` matches exactly one line — `docs/high-availability.md:511`, `terminationGracePeriodSeconds: 30   # drain grace period (>= 12s)`, in the **controller** Deployment. There is no agent Deployment guidance anywhere, and nothing tells an operator that an agent's pod grace must exceed the longest run or the drain they are relying on will be truncated into the no-grace reconcile of the previous entry.
+- **Notes:** Filed as **minor** (docs / deployment-defaults gap) rather than major: the mechanism works, is documented, and is configurable; what is missing is the sentence connecting `--drain-timeout 0` to the orchestrator's own grace. Two concrete asks: document a recommended agent `terminationGracePeriodSeconds` / `stop_grace_period` in the same place `--drain-timeout` is described, and consider logging at shutdown how many runs are still in flight when the drain begins, so a truncated drain is visible in the agent's last log line. Also note the force-shutdown reconcile (`docs/high-availability.md:419-423`, `internal/agent/shutdown.go:26-33`) requires a **second** SIGINT/SIGTERM and so is unreachable from `docker stop` / `docker compose restart` / a Kubernetes pod deletion, all of which send one SIGTERM then SIGKILL; `grep -ic "forcing shutdown"` over both agents' logs returned **0** for this entire scenario (`w2-2/final-sweep.txt`). The docs are literally accurate (they say "an operator who skips the drain"), but the path is terminal-only in practice.
+
+## W2-2 — minor: a run failed by the agent-replacement reconcile carries no operator-visible reason, unlike the queued-run reaper which appends one
+- **Invariant:** I5 (bounded recovery — diagnosability)
+- **Severity:** minor
+- **Repro:** `test/edgecase/scenarios/w2-2-agent-replacement.md`, Part B. Raw evidence: `w2-2/partB-poll.txt`.
+- **Observed:** After `998f3dc3` was reconcile-failed, everything the operator can see through the API is a bare status change (`w2-2/partB-poll.txt`):
+
+  ```
+  {"id":"998f3dc3-...","jobName":"edge-longrun","status":"Failed","params":{},"createdAt":"2026-07-29T17:24:47.87702Z",
+   "updatedAt":"2026-07-29T17:24:51.007957Z","triggeredBy":"env:UNIFIED_TOKEN","claimedBy":"agent1"}
+  step_index 0 | tick | Failed | 17:24:48.603522 | 17:24:51.007086
+  GET /api/v1/runs/998f3dc3-.../logs  ->  []
+  ```
+
+  There is no error/message field on the run, no message on the step, and no system log line. The only record of *why* is `controller2`'s `"agent reconcile: failed orphaned run (agent process replaced)"` at `17:24:51.010864Z` — a controller process log, not something attached to the run. This is a code-path property, not a timing artifact: neither `handleAgentReconcileRuns` (`internal/controller/api_agent.go:809-831`) nor `failOrphanedRun` (`internal/controller/stuckrun_reaper.go:76-90`) calls `AppendLog`.
+- **Expected:** The queued-run reaper does exactly the right thing for its own victims — `internal/controller/queuedrun_reaper.go:66-72` appends `"run failed: no eligible agent available to claim it"` to the run at step index `-1` *before* failing it, with the in-code rationale "Record why on the run so it is visible in the log view". The two reapers disagree about whether a machine-initiated failure should explain itself on the run.
+- **Notes:** The empty `logs` array is **not** by itself proof that the step produced nothing: `edge-longrun` echoes `tick N` once a second and only ran 2.4 s, so its output plausibly died in the agent's log buffer at SIGKILL — that is the separately-tracked LogPusher flush-loss issue, not this one. The claim here rests on the code read (no `AppendLog` on either reconcile path) with the empty log view as consistent evidence. Fix is one line, mirroring `queuedrun_reaper.go:70`.
+
+## W2-2 — observation: I1 and I3 both held under agent replacement — parent Failed, linked child transitively Cancelled 3.2ms later, mutex released with the run's own transaction, successor acquired in 0.11s
+- **Invariant:** I1 (run accounting), I3 (lock release)
+- **Severity:** observation (negative control)
+- **Repro:** `test/edgecase/scenarios/w2-2-agent-replacement.md`, Parts A and C. Raw evidence: `w2-2/partA-link-poll.txt`, `w2-2/partA-controller-reconcile.txt`, `w2-2/partC-mutex.txt`, `w2-2/final-sweep.txt`.
+- **Observed:** **Part A (I1, cross-agent cascade).** The parent→child link was confirmed present *before* injection — `--max-concurrent` defaults to 1 (`docs/configuration.md:169`), so the parent occupied `agent1`'s only slot and the child was claimed by `agent2`, giving a genuine cross-agent cascade (`w2-2/partA-link-poll.txt`):
+
+  ```
+  10c7834e-2361-406b-b33e-22482abfc901|edge-call-parent|Running|agent1|17:11:04.816503
+  503a3d6e-5295-4057-81aa-8c4cbe17af76|edge-call-child |Running|agent2|17:11:25.865645
+  LINK: 10c7834e... step=1 child=503a3d6e...
+  ```
+
+  `docker compose restart agent1` at `17:12:40.925Z` → SIGTERM at `17:12:41.264382Z` → replacement `"agent registered"` `17:12:42.886068Z` → `controller2` `"agent reconcile: failed orphaned run (agent process replaced)"` `17:12:42.894568Z` → parent `Failed 17:12:42.889561`, child `Cancelled 17:12:42.892803`. **Restart issued → child terminal in the DB: 1.968 s.** `agent2` acted on the cancellation at `17:12:45.877601Z` (`"received cancellation signal from master; interrupting run"`), i.e. **4.953 s** from the restart to the child's OS process actually stopping. The final sweep shows all 9 runs terminal, no run left `Running`, and exactly three `agent reconcile` lines — one per restart arm.
+
+  **Part C (I3).** `edge-sideeffect` `1897dd94` held the mutex (`edge-mutex <- 1897dd94... @17:26:30.94374`, `w2-2/partC-mutex.txt`). Restart issued `17:26:33.116Z`; run `Failed 17:26:35.028818` with its step terminalized at `17:26:35.027942`; `mutex_holders` / `named_lock_slots` both read 0 at the very first post-restart sample (`17:26:35.274Z`) and at every sample after. `MarkRunFinished` / `FinishRun` (`internal/store/postgres.go:746-780`) does the status CAS and both lock deletes inside one transaction, so release cannot lag terminalization. The successor is the real proof: `edge-mutex-successor` `cd69dfe9` created `17:26:57.076986` reached `Succeeded 17:26:57.187623` — **0.111 s** — with `acquired-mutex-ok` in its log at `17:26:57.18149Z`.
+- **Expected:** `docs/high-availability.md:414-417` (fails every Running run under that ID, locks released, `call:` descendants cascade-cancelled) and I3 (a terminal run holds no locks). Both held exactly as written.
+- **Notes:** Recorded because W2-5, W2-7 and the W2 checkpoint all need to know that the cascade *does* fire when the `step_reports.child_run_id` link is present — W2-5's premise is the case where it is absent, and this entry is the control that separates the two. The one caveat carried forward is the step-row inconsistency filed above: the cascade terminalizes the child *run* but not the child's *steps*.
