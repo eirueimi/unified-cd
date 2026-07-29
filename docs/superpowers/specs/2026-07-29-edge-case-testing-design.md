@@ -160,7 +160,9 @@ runbook doubles as the test spec if the scenario is promoted in Phase 2.
 
 `kill-soft` / `kill-hard` (SIGTERM/SIGKILL), `partition` / `heal`
 (`docker network disconnect/connect`), `partition-oneway` (in-container
-iptables OUTPUT drop — W1-5). (clock-skew injection was dropped: libfaketime cannot intercept static Go
+iptables OUTPUT drop — W1-5), `pause` / `unpause` (SIGSTOP: alive but
+unresponsive — distinct failure mode from kill and partition),
+(clock-skew injection was dropped: libfaketime cannot intercept static Go
 binaries and time namespaces do not virtualize CLOCK_REALTIME — W0-2 covers
 clock boundaries via `edgeprobe` unit probes instead).
 
