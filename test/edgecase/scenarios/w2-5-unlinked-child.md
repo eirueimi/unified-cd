@@ -415,6 +415,56 @@ docker compose $COMPOSE_FILES ps -a
 rm -f ../edgecase/sideeffect-data/child.log ../edgecase/sideeffect-data/parent.log
 ```
 
-## Execution notes
+## Execution notes (added after the 2026-07-29 run — read before re-running)
 
-(Added after the run — see the section appended at the bottom of this file.)
+- **Outcome: the major reproduced on the first valid trial, and the axis was
+  the right one.** Parent `b556c457` / child `a833b977`; the child ran all 90
+  iterations and reached `Succeeded` **38.840 s** after the parent's terminal
+  timestamp. Full numbers in `FINDINGS.md:885`.
+- **The URI-scoped injection works exactly as designed and needs no timing.**
+  Armed, `POST /api/v1/agents/agent2/steps` → 403 while
+  `POST /api/v1/agents/agent1/steps` → 401 and
+  `POST /api/v1/agents/agent2/runs/{id}/children` → 401 (proxied, not denied).
+  Three 403s landed on the blocked path at `23:44:16`, and the child was
+  created at `23:44:16.589078` in the middle of them.
+- **Trap that cost one trial: “the newest `edge-call-child` run” is not the
+  child you are waiting for.** v1 of the poll script matched a *previous*
+  arm's child and cleared the steplock ~7 s before the call step even started,
+  so that trial produced a normally-linked child. Poll for
+  `created_at > <parent.created_at>`; the fixed script is
+  `w2-5/partB-inject2.sh`. The void trial was not wasted — it became the
+  **second control** (parent on `agent2`, child on `agent1`, cascade 3.628 ms,
+  `w2-5/armA2-control2.txt`), which is worth keeping deliberately since the
+  first control had the agents the other way round.
+- **A tight `docker compose exec … psql` poll loop inside a `tee`d pipeline
+  died silently mid-run** (the tool call returned with the loop's output
+  truncated after the arm step). The steplock was still armed and the child had
+  been created, so the arm was recoverable by hand — but **do not depend on a
+  long-lived poll loop to also perform the injection teardown.** Split the
+  “detect” and “clear” steps, or re-check the armed state before recording. The
+  actual clear happened at `23:44:49.8`, ~33 s after the child appeared rather
+  than the ~1 s the runbook intends; harmless here (everything after the
+  child's creation was uninjected either way) but it must be reported as the
+  measured window, not the intended one.
+- **Git Bash rewrites container paths.** `docker compose exec -T nginx grep -c
+  steplock /etc/nginx/nginx.conf` becomes
+  `C:/Program Files/Git/etc/nginx/nginx.conf`. Export `MSYS_NO_PATHCONV=1` for
+  the whole scenario.
+- **Compose merged the two nginx.conf mounts by target path, so
+  `steplink.override.yaml` cleanly replaced `oneway.override.yaml`'s bind** —
+  verified in `docker compose config` (one `target: /etc/nginx/nginx.conf`,
+  source `nginx-steplink.conf`). Gate G1 is still worth keeping: it is one
+  command and the whole scenario is void if the merge ever behaves differently.
+- **`nginx-steplink.conf` must be extended by hand for a third agent.** The
+  locations are exact-match per agent id (`agent1`, `agent2`), which is what
+  makes the scoping airtight; a regex location would need the blocklist include
+  to be per-agent some other way.
+- **nginx access logs are the right instrument for “was this one request
+  accepted?”** Second precision only, but they distinguish `204` (step report
+  written), `200 87` (`alreadyFinalized`, dropped) and `403` (denied), which no
+  other surface does — the agent logs nothing for a 2xx and the controller logs
+  nothing for either.
+- **Budget ~12 minutes of wall time** for a full pass on a warm stack: baseline
+  gate ~1 min, Part A control ~1.5 min, Part B ~2.5 min (20 s prelude + 90 s
+  child), plus a spare trial. The `up -d --build` from cold dominates
+  everything else.

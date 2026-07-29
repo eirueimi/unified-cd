@@ -17,7 +17,18 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 ## Tools
 
 - `tools/inject.sh <cmd> <service>` — fault injection (kill/pause/partition/
-  nginx-block). Run from `test/ha/`.
+  nginx-block/steplock). Run from `test/ha/`.
+
+  `steplock <agent>` / `steplock-clear` are **URI-scoped**: they deny only
+  `POST /api/v1/agents/<agent>/steps` (403) and leave every other endpoint for
+  that agent working — notably
+  `POST /api/v1/agents/<agent>/runs/<runId>/children`. They require the
+  `compose/steplink.override.yaml` overlay (`nginx-steplink.conf`, which gives
+  each agent's step-report path an exact-match `location` with its own include
+  dir) and are a no-op against `nginx-edge.conf`, so always check the response
+  code after arming. Introduced by W2-5 to reach a sub-10 ms code window
+  deterministically instead of racing it; the locations are per-agent-id and
+  must be extended by hand for a third agent.
 - `tools/bulk-submit.sh <job-name> <count>` — submits `count` runs of an
   already-applied job and prints one run id per line (progress on stderr, so
   `| tee ids.txt` captures ids only). Honors `UNIFIED_SERVER`
