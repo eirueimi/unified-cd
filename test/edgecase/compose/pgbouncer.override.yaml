@@ -1,0 +1,29 @@
+# W0-1 overlay: route all controllers through PgBouncer in TRANSACTION
+# pooling mode — the configuration docs/high-availability.md explicitly
+# forbids (advisory locks and LISTEN/NOTIFY are session-level). The point
+# is to observe HOW it breaks: diagnosable failure vs silent split-brain.
+# Stack it onto the ha compose file; never use for other scenarios.
+# Pin the pgbouncer image tag when this scenario is promoted to a permanent test.
+services:
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DB_HOST: postgres
+      DB_USER: unified
+      DB_PASSWORD: unified
+      DB_NAME: unified
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      LISTEN_PORT: "5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+  controller1:
+    environment:
+      UNIFIED_DB_DSN: postgres://unified:unified@pgbouncer:5432/unified?sslmode=disable
+  controller2:
+    environment:
+      UNIFIED_DB_DSN: postgres://unified:unified@pgbouncer:5432/unified?sslmode=disable
+  controller3:
+    environment:
+      UNIFIED_DB_DSN: postgres://unified:unified@pgbouncer:5432/unified?sslmode=disable

@@ -1,0 +1,1 @@
+{"yaml":"apiVersion: unified-cd/v1\nkind: Schedule\nmetadata:\n  name: edge-every-minute\nspec:\n  cron: \"* * * * *\"\n  job: edge-tick\n"}
