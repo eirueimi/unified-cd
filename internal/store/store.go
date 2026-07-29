@@ -220,6 +220,12 @@ type Store interface {
 	DeleteRun(ctx context.Context, id string) error
 	UpsertStepReport(ctx context.Context, runID string, stepIndex int, stageIndex int, stepName, variant, status string, exitCode *int, startedAt, endedAt *time.Time, childRunID, callJobName string) error
 	GetRunSteps(ctx context.Context, runID string) ([]api.StepReport, error)
+	// MarkRunStepsInterrupted terminalizes a reaped run's Running step reports so
+	// a run failed by the stuck-run reaper / agent-reconcile (agent lost) does
+	// not leave a step stuck showing Running forever. The step that was executing
+	// when the agent died becomes Failed; already-terminal steps are untouched.
+	// Returns the number of step rows updated.
+	MarkRunStepsInterrupted(ctx context.Context, runID string) (int64, error)
 	// GetRunParent returns the call step (and parent run) that launched childRunID,
 	// or nil if the run was not created by a call step.
 	GetRunParent(ctx context.Context, childRunID string) (*api.CalledBy, error)

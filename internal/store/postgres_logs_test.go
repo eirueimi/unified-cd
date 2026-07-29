@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -73,6 +74,41 @@ func TestPostgres_UpsertStepReport(t *testing.T) {
 	ec := 0
 	end := time.Now().UTC()
 	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "step-one", "", "Succeeded", &ec, nil, &end, "", ""))
+}
+
+func TestPostgres_MarkRunStepsInterrupted(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+
+	ec := 0
+	end := time.Now().UTC()
+	// A terminal step, the Running step executing when the agent died, and a
+	// WaitingApproval step (a distinct lifecycle left untouched).
+	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "hello", "", "Succeeded", &ec, nil, &end, "", ""))
+	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 1, 0, "long_running", "", "Running", nil, nil, nil, "", ""))
+	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 2, 0, "gate", "", "WaitingApproval", nil, nil, nil, "", ""))
+
+	n, err := pg.MarkRunStepsInterrupted(ctx, run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n) // only the Running row
+
+	steps, err := pg.GetRunSteps(ctx, run.ID)
+	require.NoError(t, err)
+	byName := map[string]api.StepReport{}
+	for _, s := range steps {
+		byName[s.Name] = s
+	}
+	assert.Equal(t, "Succeeded", byName["hello"].Status)       // terminal, untouched
+	assert.Equal(t, "Failed", byName["long_running"].Status)   // Running -> Failed
+	assert.Equal(t, "WaitingApproval", byName["gate"].Status)  // out of scope, untouched
+	assert.NotNil(t, byName["long_running"].EndedAt)           // ended_at stamped
+
+	// Idempotent: a second call terminalizes nothing.
+	n2, err := pg.MarkRunStepsInterrupted(ctx, run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n2)
 }
 
 func TestPostgres_UpsertStepReport_StageIndex(t *testing.T) {
