@@ -41,11 +41,14 @@ implementation detail:
 
 "every `Running` run still claimed by that agent ID" has no time qualifier,
 and the code matches: `ListRunningRunIDsByAgent`
-(`internal/store/postgres.go:294-297`) is a bare
-`SELECT id FROM runs WHERE claimed_by = $1 AND status = 'Running'`, with none
-of the `claimed_at < NOW() - make_interval(...)` clause that its sibling
-`ListReconcilableRunIDsByAgent` (`:292-294`, used by the heartbeat path with
-`heartbeatReconcileGrace = 60s`) carries. `handleAgentReconcileRuns`
+(`internal/store/postgres.go:266-285`) is a bare
+`SELECT id FROM runs WHERE claimed_by = $1 AND status = 'Running'` (`:271`),
+with none of the `claimed_at < NOW() - make_interval(secs => $2)` clause that
+its sibling `ListReconcilableRunIDsByAgent` (`:287-309`, predicate at `:294`,
+used by the heartbeat path with `heartbeatReconcileGrace = 60s`) carries.
+**Get these two the right way round when citing them** — `:294` is the
+*graced* query, so citing it for the ungraced one inverts the whole point.
+`handleAgentReconcileRuns`
 (`internal/controller/api_agent.go:809-831`) calls `failOrphanedRun` per id and
 logs `"agent reconcile: failed orphaned run (agent process replaced)"` at
 `:828`.
@@ -76,9 +79,12 @@ not asserted. The agent has a full cordon/drain path:
 
 `test/ha/docker-compose.ha.yaml:97-113` passes no `--drain-timeout` to either
 agent, so **both agents drain forever by default in this rig**. What actually
-truncates the drain is the *orchestrator's* stop grace period: `docker compose
-restart` / `stop` default to **10s** before SIGKILL. That is a property of the
-rig's invocation, not of the product — so a runbook that only ever runs
+truncates the drain is the *orchestrator's* stop grace period. Docker's
+*documented* default stop timeout is 10s — but **do not budget on that**: the
+2026-07-29 execution measured bare `docker compose restart` sending SIGKILL
+**1.013s** after SIGTERM (see the execution notes at the end of this file;
+`w2-2/partB-docker-events.txt`). Either way it is a property of the rig's
+invocation, not of the product — so a runbook that only ever runs
 `docker compose restart agent1` cannot distinguish "the product has no drain"
 from "the harness did not wait for it".
 
@@ -200,7 +206,10 @@ psql "SELECT (SELECT count(*) FROM mutex_holders) AS mutex,
 ```
 
 ```bash
-# A4. Replace the claiming agent. Note: restart's default stop grace is 10s.
+# A4. Replace the claiming agent.
+#     MEASURED, not assumed: bare `restart` here gave the container 1.013s
+#     before SIGKILL (NOT the documented 10s) — see the execution notes at the
+#     end of this file. This step therefore injects a near-immediate kill.
 date -u +%FT%T.%3NZ
 docker compose -f docker-compose.ha.yaml restart <claiming-agent>
 date -u +%FT%T.%3NZ
@@ -328,9 +337,11 @@ psql "SELECT id, job_name, status, updated_at FROM runs WHERE job_name='edge-sid
 ```
 
 **If the drain holds here, Part B's failure is squarely attributable to the
-10s stop grace, and the finding is about the *default* (a 10s docker grace and
-a 30s-ish k8s `terminationGracePeriodSeconds` both truncate a drain the
-product documents as unbounded), not about a missing mechanism.** If the drain
+stop grace the harness gave it — measured at 1.013s for bare `docker compose
+restart`, not the documented 10s (execution notes below) — and the finding is
+about *defaults* (a sub-second-to-10s docker grace and a 30s k8s
+`terminationGracePeriodSeconds` both truncate a drain the product documents as
+unbounded), not about a missing mechanism.** If the drain
 does **not** hold — the run is failed or the process exits early despite the
 200s budget — that contradicts `docs/high-availability.md:341` and
 `docs/configuration.md:173` and **is** a violation. Record whichever happened,
@@ -405,14 +416,19 @@ distinguish them before recording.
   `FinishRun` does the release in the same transaction as the status CAS
   (`postgres.go:746-780`), so a survivor would mean the run never reached a
   terminal status at all — check that before concluding.
-- Timing that lands within one expected interval (10s stop grace, 15s
-  heartbeat, 30s reaper tick) = observation with the measured number.
+- Timing that lands within one expected interval (the stop grace — **measured
+  at 1.013s for bare `docker compose restart`, not the documented 10s**, see
+  the execution notes below; 15s heartbeat; 30s reaper tick) = observation with
+  the measured number.
 
 ## Execution notes (added after the 2026-07-29 run — read before re-running)
 
 - **`docker compose restart <svc>` gives the container 1.013 s, not 10 s.**
   Measured with `docker events` (`w2-2/partB-docker-events.txt`): `kill sig=15`
-  at epoch `1785345889.394`, `kill sig=9` at `1785345890.407`, `die exit=137`.
+  at epoch `1785345889.394` (`:7`), `kill sig=9` at `1785345890.407` (`:11`),
+  `die exit=137` (`:13`). **The cause of the ~1s is not established** — no
+  `stop_grace_period` is set in `test/ha/docker-compose.ha.yaml` and no further
+  instrumentation was run; the measurement stands regardless.
   So **a bare `restart` cannot test the drain** — it truncates it before the
   agent can finish anything. Any later scenario that means "graceful restart"
   must pass `-t <seconds>` explicitly. This invalidated the plan's premise that
