@@ -33,8 +33,9 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 
 Every `*.payload.json` is the pre-encoded `{"yaml":"..."}` body for
 `POST /api/v1/jobs`. All are `agentSelector: [kind:linux]`, and all are
-`native: true` **except `container-job.payload.json`**, which is deliberately
-not native so its inferred capability is `container` (see the table).
+`native: true` **except `podcap-job.payload.json`**, which carries a
+Kubernetes-only `podTemplate` so its inferred capability is `pod` (see the
+table).
 
 | File | Job | Purpose |
 |---|---|---|
@@ -49,7 +50,7 @@ not native so its inferred capability is `container` (see the table).
 | `approval-short.payload.json` | `edge-approval-short` | `before` → `gate` (`timeoutMinutes: 0.5` = **30s**) → `after` (W2-8) |
 | `mutex-hog.payload.json` | `edge-mutex-hog` | mutex `edge-mutex` lock holder, sleeps 600s (W2-9) |
 | `unrelated-probe.payload.json` | `edge-unrelated-probe` | **no mutex**, `echo probe-ran` — the W2-9 starvation probe |
-| `container-job.payload.json` | `edge-container-job` | **not** `native` — `dsl.RequiredCaps` infers `container`, which the `test/ha` agents (capabilities `["native"]`) cannot satisfy, so it is label-claimable but capability-unschedulable (W2-4 Part D) |
+| `podcap-job.payload.json` | `edge-podcap-job` | `podTemplate` with a pod-level `nodeSelector`, so `dsl.RequiredCaps` infers **`pod`** — label-claimable (`kind:linux`) but capability-unschedulable, because the `test/ha` agents report `["native","container"]` (W2-4 Part D) |
 
 ### Fractional `timeoutMinutes` — verified, do not re-derive
 

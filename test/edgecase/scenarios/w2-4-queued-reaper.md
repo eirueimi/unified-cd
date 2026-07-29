@@ -19,7 +19,7 @@
 
 - **Workloads:** `tick.payload.json` (`edge-tick`, Parts A and B),
   `mutex-hog.payload.json` + `sideeffect.payload.json` (both hold `edge-mutex`
-  — Part C), `container-job.payload.json` (`edge-container-job`, Part D).
+  — Part C), `podcap-job.payload.json` (`edge-podcap-job`, Part D).
 - **Instrumentation:** psql sampling at 0.2 s for every boundary; Postgres
   statement logging (W2-1's technique, `log_statement='all'` +
   `log_line_prefix='%m [%p] h=%h '`) for **Part B only**, reverted at teardown.
@@ -117,14 +117,21 @@ record it as an observation.** The open question worth answering is what else,
 besides that banner, tells an operator — check `GET /api/v1/runs/{id}`, the run
 log, `/metrics`, and the controller logs, not just the WebUI.
 
-The rig satisfies the precondition for free: `agentCapabilities`
-(`internal/agent/agent.go:137-139`) reports `["native"]` unless a container
-runtime is detected, and `dsl.RequiredCaps` (`internal/dsl/capabilities.go:24-33`)
-infers `container` for any job that is not `native: true` and has no
-Kubernetes-only `podTemplate`. `edge-container-job` is exactly that.
+**The fixture has to require `pod`, not `container` — corrected during
+execution.** `agentCapabilities` (`internal/agent/agent.go:137-139`) reports
+`["native"]` only when no container runtime is detected, and the `test/ha`
+agents report **`["native","container"]`** (`w2-4/baseline-gate.txt`), so a
+merely non-native job is perfectly schedulable here. The fixture is therefore
+`podcap-job.payload.json` (`edge-podcap-job`): a `podTemplate` carrying a
+pod-level key other than `containers` (`nodeSelector`) makes
+`PodTemplateNeedsKubernetes` true (`internal/dsl/podtemplate.go:40-46`), so
+`dsl.RequiredCaps` yields **`pod`** (`internal/dsl/capabilities.go:24-33`) —
+which no standard agent can ever advertise. Crucially there is **no blanket
+`kubernetes` label pin any more** (`internal/controller/api_runs.go:70-83`
+documents its removal), so the run keeps the author's
+`agentSelector: [kind:linux]` and is genuinely label-claimable.
 **Verify the agents' advertised capabilities live from `GET /api/v1/agents`
-before concluding anything** — if a runtime is present in the agent image the
-premise collapses.
+before concluding anything.**
 
 ### (5) What the docs promise (search these before filing a violation)
 
@@ -161,7 +168,7 @@ curl -s -o /dev/null -w 'readyz=%{http_code}\n' localhost:18080/readyz
 docker compose $COMPOSE_FILES ps --format '{{.Service}} {{.State}}'
 curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token"
 
-for f in tick mutex-hog sideeffect container-job; do
+for f in tick mutex-hog sideeffect podcap-job; do
   curl -fsS -X POST localhost:18080/api/v1/jobs \
     -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
     --data-binary @../edgecase/workloads/$f.payload.json -o /dev/null -w "$f=%{http_code}\n"
@@ -386,10 +393,10 @@ Both agents up and healthy for the whole arm.
 
 ```bash
 docker compose $COMPOSE_FILES start agent1 agent2   # confirm 2 rows in agents
-curl -fsS localhost:18080/api/v1/jobs/edge-container-job/schedulability \
+curl -fsS localhost:18080/api/v1/jobs/edge-podcap-job/schedulability \
   -H "Authorization: Bearer ha-admin-token" | tee "$SCRATCH/armD-schedulability.json"
 curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
-  -H 'Content-Type: application/json' -d '{"jobName":"edge-container-job"}' \
+  -H 'Content-Type: application/json' -d '{"jobName":"edge-podcap-job"}' \
   | tee "$SCRATCH/armD-trigger.json"
 DRUN=<id>
 sample_loop "$DRUN" 60 5 | tee "$SCRATCH/armD-poll.txt"     # 5 minutes = 10x grace
@@ -404,7 +411,7 @@ surface and record present/absent:
 ```bash
 curl -fsS "localhost:18080/api/v1/runs/$DRUN" -H "Authorization: Bearer ha-admin-token"
 curl -fsS "localhost:18080/api/v1/runs/$DRUN/logs" -H "Authorization: Bearer ha-admin-token"
-curl -fsS "localhost:18080/api/v1/jobs/edge-container-job/schedulability" -H "Authorization: Bearer ha-admin-token"
+curl -fsS "localhost:18080/api/v1/jobs/edge-podcap-job/schedulability" -H "Authorization: Bearer ha-admin-token"
 curl -fsS localhost:18080/metrics | grep -E "unifiedcd_runs_current|unifiedcd_agents"
 docker compose $COMPOSE_FILES logs controller1 controller2 controller3 | grep -i "$DRUN"
 ```

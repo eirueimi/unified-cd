@@ -1,0 +1,1 @@
+{"yaml": "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-podcap-job\nspec:\n  agentSelector:\n    - kind:linux\n  podTemplate:\n    spec:\n      nodeSelector:\n        disktype: ssd\n      containers:\n        - name: main\n          image: alpine:3.20\n  steps:\n    - name: probe\n      run: echo pod-ran\n"}
