@@ -323,6 +323,44 @@ result: it quantifies how much of the nominal 30 s post-grace window is
 survivable, which is the number an operator planning a maintenance restart
 actually needs. Report the distribution, not one outcome per offset.
 
+## Part B5 — amplify the reaper's stale-list window with a backlog (added during execution; this is the arm that found the major)
+
+Parts B1-B3 as the plan writes them cannot produce the major, and that is a
+result about the *axis*, not about the system: the reaper re-evaluates the
+`NOT EXISTS` conjunct in the same SELECT that lists the run, so an agent that
+registers **before** a sweep is always seen. The only way the reaper can fail a
+run with a live eligible agent is if the agent appears **after** the SELECT and
+**before** the reaper's own UPDATE reaches that run. That distance is 4 ms for a
+single-run batch — unhittable with container-level injection, the same wall
+W2-3's Arm D1 hit.
+
+**But it is not a fixed 4 ms.** `runQueuedRunReaperOnce`
+(`internal/controller/queuedrun_reaper.go:59-79`) lists the whole reapable set
+once and then loops `AppendLog` → `MarkRunFinished` → `cancelDescendantRuns` per
+run, re-reading nothing. The window is therefore `N × per-run cost`, and a full
+agent outage — the documented trigger — *is* a backlog. So:
+
+```bash
+# Both agents cleanly stopped (agents rows deleted). Then:
+sh <scratch>/partB-backlog.sh 250 bk1
+```
+
+which submits 250 `edge-tick` runs via `tools/bulk-submit.sh`, computes the
+first sweep instant strictly after the earliest run's `created_at + grace` from
+the measured grid, and issues a raw `docker start` so registration lands ~0.25 s
+into that sweep's loop. **Detector, stable and readable at leisure** (the run
+stays `Failed` and nothing re-drives it):
+
+```bash
+psql "SELECT r.id, r.status, r.claimed_by, r.claimed_at, r.updated_at
+      FROM runs r WHERE r.claimed_by IS NOT NULL AND r.status = 'Failed';"
+```
+
+A row here is unambiguous: only an agent writes `claimed_by`, and only the
+reaper writes the step-index −1 reason line, so a run carrying both was claimed
+by a live agent and then failed as unclaimable. Confirm the pairing with
+`SELECT ... FROM logs WHERE step_index = -1`.
+
 ## Part C — the `created_at` clock: grace consumed while Pending
 
 The age gate is `created_at`, so a run that spends the grace period legitimately
@@ -473,3 +511,87 @@ sh ../edgecase/tools/inject.sh nginx-unblock || true   # no service argument
 docker compose $COMPOSE_FILES down -v
 docker compose $COMPOSE_FILES ps -a
 ```
+
+## Execution notes (added after the 2026-07-29 run — read before re-running)
+
+- **The Part D fixture in the first draft of this runbook was wrong twice, and
+  the baseline gate caught both.** `container-job.payload.json` (a non-`native`
+  job) returned **400** — `invalid yaml: line 10: field image not found in type
+  dsl.StepEntry`; there is no step-level `image:` key. And the premise was
+  wrong anyway: **the `test/ha` agents advertise `["native","container"]`**, not
+  `["native"]` (`w2-4/baseline-gate.txt`), because a container runtime is
+  present in the agent image, so a merely non-native job is schedulable here.
+  The fixture is now `podcap-job.payload.json`, whose pod-level `nodeSelector`
+  forces `RequiredCaps` → `pod` (`internal/dsl/podtemplate.go:40-46`). Fixed in
+  commit `5080981`. **Generalisation for later waves: `agentCapabilities`
+  (`internal/agent/agent.go:137-139`) is runtime-detected, so any scenario that
+  depends on a capability being *absent* must read `GET /api/v1/agents` first —
+  `pod` is the only capability a standard agent can never have.**
+- **The plan's Part B axis is the wrong one, and this is the scenario's
+  methodological result.** Walking the return across `grace ± n` does not walk
+  it across anything the system reacts to: the reaper's only opportunities are
+  the discrete sweep instants, so the outcome is decided by
+  `registration − (first sweep past created_at + grace)`. Trials at −5, −1, +1,
+  **+15 and +25** all survived, because those triggers happened to land where
+  the boundary fell 25-27 s before the next sweep. **To make the boundary a real
+  coin flip you must phase-lock the trigger** (`partB-phase.sh`): the sweep grid
+  sits at a stable `(epoch mod interval)`, so choosing `created_at mod 30` fixes
+  the head-room. At `created_at mod 30 ≈ 26.6` (≈2.4 s of head-room) a **+5.086 s**
+  return lost and a **+1.110 s** return won. Report offsets measured from the
+  `agents`-row appearance, never intended offsets.
+- **The sweep grid drifts, slowly.** `22:26:59.016` → `22:31:59.148` is 10 ticks
+  in 300.132 s, i.e. **30.013 s per tick**, so a phase computed once is good for
+  tens of minutes but not for hours; re-measure if the run is long. Grid position
+  here: wall seconds `:29.0x`/`:59.0x` early in the session, `:29.8`/`:59.8` two
+  hours later.
+- **`docker compose start <agent>` is 4× slower than `docker start` and much
+  noisier**, because compose re-resolves `agent1`'s `depends_on:
+  agent-enroll: service_completed_successfully` and re-runs the one-shot
+  enroll container first: **1.697 s** to the `agents`-row insert versus
+  **0.400 s** for `docker start unified-cd-ha-agent1-1`
+  (`w2-4/partB-calibration.txt`, `w2-4/partB-calibration2.txt`). Use the raw
+  form for any timed return. (Harmless side effect either way: the agent logs
+  `enrollment token rejected (expired or already consumed); continuing with the
+  existing credential` on every restart.)
+- **Three traps in dumping the Postgres statement log**, all of which cost time
+  here:
+  1. `docker logs c 2>&1 > file` writes an **empty** file — Postgres logs to
+     stderr, and `2>&1` before the redirect points stderr at the *old* stdout.
+     Write `docker logs c > file 2>&1`.
+  2. The reaper's SQL is a multi-line Go const, so the `%m ... LOG:  execute
+     stmtcache_...:` prefix line ends **before** the SQL. Grep with `-B1`:
+     `grep -B1 "SELECT r.id, r.agent_selector" | grep LOG:`.
+  3. `docker compose logs --since/--until` still returns nothing for a past
+     window (the same quirk W2-2 and W2-3 hit). Dump `--tail N` and filter by
+     timestamp. Cost here: 400k lines ≈ 36 MB for ~1 h on a mostly idle
+     3-replica stack; 613 KB gzipped.
+- **A long reaper loop really does exclude the other replicas.** Every sweep
+  cluster in `w2-4/partB-sweeps.txt` holds 2-3 executions (98 in 38 clusters =
+  **2.58 per nominal interval**, independently reproducing W2-3's clustering
+  result on a different query) — except `22:43:59`, which holds **one**, because
+  the 475 ms backlog loop kept the advisory lock long enough for the other two
+  replicas' `pg_try_advisory_lock` to fail. So the "no leader stickiness"
+  behaviour W2-1 measured is a property of the holds being ~1 ms, not of the
+  lock.
+- **Part C needs no DB mutation, and the trick is worth reusing.** To get a run
+  that is `Queued` while already past `minAge`, let a mutex holder be reaped
+  rather than cancelling it: `FinishRun` releases `mutex_holders` inside the
+  same transaction that terminalizes the run (`postgres.go:746-780`), so
+  `kill-hard` on the agent → stuck-run reap at `last_seen_at + 90 s` → mutex
+  released → scheduler queues the blocked run **196.9 ms** later, with every
+  transition performed by the product. Do **not** use `docker compose stop` on
+  the agent holding the hog: the drain is effectively unbounded (W2-2 measured
+  107.3 s) and would wait out the 600 s sleep.
+- **`docker compose stop` on an idle agent removes it from the reaper's
+  predicate in ~1-2 s, not 90 s.** Measured: rows present at `19:42:03.319816`,
+  `stop` returned `19:42:04.771`, `count(*) = 0` at `19:42:05.06929`
+  (`w2-4/armA-stop.txt`). The `staleAfter = 90s` term in
+  `ListUnclaimableQueuedRuns` therefore never engages on a clean stop — it only
+  matters after a `kill-hard`, which is what Part C uses. This is the flip side
+  of W2-1's deregistration fact and it makes Parts A and B *faster* than the
+  plan assumed, not slower.
+- **Budget ~35 minutes of wall time** for a full pass: baseline gate ~2 min,
+  Part D ~7 min (a 6.4-minute poll, deliberately longer than the 5 m *default*
+  grace so a failed override cannot be mistaken for the documented behaviour),
+  Part A ~2 min, seven Part B trials ~110 s each ≈ 13 min, Part B5 ~3 min,
+  Part C ~6 min.
