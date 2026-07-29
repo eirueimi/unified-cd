@@ -497,3 +497,58 @@ sh ../edgecase/tools/inject.sh nginx-unblock || true
 docker compose $COMPOSE_FILES down -v
 docker compose $COMPOSE_FILES ps -a
 ```
+
+## Execution notes (added after the 2026-07-29 run — read before re-running)
+
+- **The sweep cadence correction. The W2 plan's `interval / N` rule is right
+  about query load and wrong about latency.** W2-1 measured 2.15 stuck-run
+  lock acquisitions per 30s nominal interval on this rig and the plan drew the
+  consequence "the stuck-run reaper swept every ~13.3s here, not 30s … a
+  boundary test that budgets a full 30s tick will over-wait". Direct
+  measurement of the sweeps themselves (Postgres statement log, the
+  `ListStuckRunIDs` SELECT, `w2-3/armD0-sweeps.txt`) shows the acquisitions
+  are **clustered, not spread**: 8 clusters over 210 s, within-cluster spread
+  **0.002-0.011 s**, between-cluster gap **29.987-30.001 s**. All three
+  replicas tick at the same phase (they boot together under `compose up`), so
+  the 2-3 winners of a cluster all run within ~10 ms of each other and the
+  next opportunity is a full 30 s later. **Reap latency is therefore bounded
+  by ~30 s, not ~13.3 s**, and the four latencies measured here (19.246 s,
+  28.061 s, 11.283 s, 8.013 s) are uniform over a 30 s cycle, three of them
+  above 13.3 s. Budget latency at the nominal interval; use `interval / N`
+  only for query load. A cluster with staggered replica start times would
+  spread the phases and shorten latency, so this is rig-shaped in the same way
+  W2-1's 2.15 was.
+- **`inject.sh nginx-unblock` required a service argument it never used**
+  (`svc="${2:?service name required}"` at `tools/inject.sh:12`), so the
+  documented `nginx-unblock` invocation exited 1 and silently left the
+  partition in place. Fixed in this branch (branch-internal asset defect, not
+  a product finding). Pass no argument now.
+- **`SELECT '5m0s'::interval` is valid** (`00:05:00`), so `DeleteStaleAgents`
+  passing Go's `(5*time.Minute).String()` into `NOW() - $1::interval`
+  (`postgres.go:1226-1228`) works. Checked because a failure there would have
+  meant the job had never run at all; it is a null result
+  (`w2-3/baseline-gate.txt`).
+- **The claim's own upsert can leave `last_seen_at` *behind* `claimed_at`.**
+  Measured `last_seen_at - claimed_at = -0.981 s` in Arm A: `UpsertAgentOnClaim`
+  runs at the **start** of the claim request, and that request long-polls up to
+  60 s (`maxClaimTimeout`, `api_agent.go:129`) before a run arrives. The 15 s
+  heartbeat is what keeps the gap small in practice, not the claim.
+- **Postgres statement logging goes to `docker compose logs postgres`**, not to
+  a file — `logging_collector` is off on `postgres:16-alpine`. `docker compose
+  logs --since/--until` returned **nothing** for a past window (same quirk
+  W2-2 hit with `docker events`); dump the whole log and grep by timestamp
+  instead. Cost here: ~118k lines for ~4 minutes on a 3-replica stack.
+- **`failOrphanedRun`'s statement sequence, measured** (`w2-3/armD0-window.txt`):
+  `ListStuckRunIDs` `.189` → `UPDATE step_reports` `.190` → `begin` `.192` →
+  `UPDATE runs → Failed` `.193` → `DELETE mutex_holders` `.193` →
+  `UPDATE named_lock_slots` `.194` → `commit` `.194` → `SELECT child_run_id`
+  `.195` → child `begin/UPDATE/commit` `.196-.197`. **The crash window is
+  ~1 ms** and the whole sequence is 8 ms.
+- **`handleAgentFinishRun` does NOT re-drive a lost cascade.** It only calls
+  `cancelDescendantRuns` when `FinishRun` returned `updated == true`
+  (`api_agent.go:608-627`); a reaped parent is already terminal, so the
+  agent's later finish report takes the `!updated` branch and returns. The
+  plan's "nothing re-drives it" holds.
+- **Budget ~35 minutes** for Arms A-C0-B2-C1/C2-D0 plus ~20 minutes for a
+  10-attempt Arm D1. Arm A alone is ~6.5 minutes because Arm C0 rides on it
+  (90 s to the reap, then 300 s to the row deletion).

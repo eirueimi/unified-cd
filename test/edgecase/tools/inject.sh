@@ -8,8 +8,13 @@ set -eu
 COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.ha.yaml}"
 dc() { docker compose $COMPOSE_FILES "$@"; }
 
-cmd="${1:?usage: inject.sh <kill-soft|kill-hard|pause|unpause|partition|heal|nginx-block|nginx-unblock> <service>}"
-svc="${2:?service name required}"
+cmd="${1:?usage: inject.sh <kill-soft|kill-hard|pause|unpause|partition|heal|nginx-block|nginx-unblock> [service]}"
+# nginx-unblock clears the whole blocklist and takes no service argument;
+# every other command needs one.
+case "$cmd" in
+  nginx-unblock) svc="${2:-}" ;;
+  *)             svc="${2:?service name required}" ;;
+esac
 
 case "$cmd" in
   kill-soft)  dc kill -s SIGTERM "$svc" ;;
