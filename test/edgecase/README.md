@@ -14,6 +14,24 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
   `internal/controller/`), gated by the `edgeprobe` build tag — not a
   standalone `probes/` directory; see "Running probe tests" below.
 
+## Raw evidence
+
+`FINDINGS.md` cites captures by relative name (`w1-5/agent1.log`,
+`w1-6/metrics.txt`, ...). Those names resolve against the campaign's evidence
+root, which is **not in this repository**:
+
+    <project parent>/edgecase-evidence/
+
+i.e. a sibling of the checkout, so it survives worktree removal and
+`git clean -fdx`. It holds ~9 MB of container logs, psql output, API reads and
+metrics scrapes — too bulky and too raw to commit, but it is what every
+numeric claim in `FINDINGS.md` is derived from. See its own `README.md` for
+per-wave coverage; coverage is uneven, and the entries that rest on
+un-captured observations say so inline.
+
+While running a scenario, capture to the session scratchpad (fast, disposable)
+and copy the wave's directory into the evidence root at the wave checkpoint.
+
 ## Running a compose scenario
 
 Each runbook lists its exact stack invocation. The general shape:

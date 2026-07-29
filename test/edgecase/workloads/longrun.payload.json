@@ -1,0 +1,1 @@
+{"yaml":"apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-longrun\nspec:\n  native: true\n  agentSelector:\n    - kind:linux\n  steps:\n    - name: tick\n      run: for i in $(seq 1 300); do echo \"tick $i\"; sleep 1; done\n"}
