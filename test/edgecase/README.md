@@ -14,6 +14,62 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
   `internal/controller/`), gated by the `edgeprobe` build tag — not a
   standalone `probes/` directory; see "Running probe tests" below.
 
+## Tools
+
+- `tools/inject.sh <cmd> <service>` — fault injection (kill/pause/partition/
+  nginx-block). Run from `test/ha/`.
+- `tools/bulk-submit.sh <job-name> <count>` — submits `count` runs of an
+  already-applied job and prints one run id per line (progress on stderr, so
+  `| tee ids.txt` captures ids only). Honors `UNIFIED_SERVER`
+  (default `http://localhost:18080`) and `UNIFIED_TOKEN` (default
+  `ha-admin-token`). Used by W2-9 to push >50 runs into `Pending`.
+
+  The trigger endpoint is `POST /api/v1/runs` with body `{"jobName":"..."}`
+  (`internal/controller/server.go:370` → `handleTriggerRun`,
+  `api_runs.go:22-42`), which returns the full `api.Run` JSON — **there is no
+  `/api/v1/jobs/<job>/trigger` route**.
+
+## Workload fixtures
+
+Every `*.payload.json` is the pre-encoded `{"yaml":"..."}` body for
+`POST /api/v1/jobs`. All are `native: true`, `agentSelector: [kind:linux]`.
+
+| File | Job | Purpose |
+|---|---|---|
+| `tick.payload.json` | `edge-tick` | trivial run |
+| `longrun.payload.json` | `edge-longrun` | long-lived run for reaper timing |
+| `approval.payload.json` | `edge-approval` | approval gate, 10-minute timeout |
+| `sideeffect.payload.json` | `edge-sideeffect` | mutex `edge-mutex` holder, writes `/data/sideeffect.log` |
+| `mutex-successor.payload.json` | `edge-mutex-successor` | mutex `edge-mutex` successor probe (I3) |
+| `schedule-every-minute.payload.json` | — | schedule fixture |
+| `call-parent.payload.json` | `edge-call-parent` | 20s `prelude` then a `call:` step invoking `edge-call-child` (W2-2, W2-5) |
+| `call-child.payload.json` | `edge-call-child` | ~90s child, timestamped markers to `/data/child.log` so an orphaned child stays observable after its parent dies |
+| `approval-short.payload.json` | `edge-approval-short` | `before` → `gate` (`timeoutMinutes: 0.5` = **30s**) → `after` (W2-8) |
+| `mutex-hog.payload.json` | `edge-mutex-hog` | mutex `edge-mutex` lock holder, sleeps 600s (W2-9) |
+| `unrelated-probe.payload.json` | `edge-unrelated-probe` | **no mutex**, `echo probe-ran` — the W2-9 starvation probe |
+
+### Fractional `timeoutMinutes` — verified, do not re-derive
+
+`approval.timeoutMinutes` is `float64` (`internal/dsl/types.go:341`) and
+**fractional values round-trip end to end**; `approval-short.payload.json`
+therefore uses `0.5`, giving a **30-second** approval window (not 60s):
+
+- Parse + `Validate()` accept it — nothing in `internal/dsl` constrains the
+  value (no minimum, no integer check); `dsl.Parse` decodes `0.5` to `0.5`.
+- `buildClaimResponse` (`internal/controller/api_agent.go:436-440`) only
+  substitutes the default when `timeout == 0`, so `0.5` passes through.
+- The agent computes `time.Duration(timeoutMin*60) * time.Second`
+  (`internal/agent/approval.go:48`) → exactly 30s.
+- The controller computes `time.Now().Add(time.Duration(req.TimeoutMinutes *
+  float64(time.Minute)))` (`internal/controller/api_approvals.go:87`) → also
+  exactly 30s, so `timeout_at` and the agent deadline agree.
+
+Caveat: the agent's `time.Duration(timeoutMin*60)` truncates to whole
+seconds, so values finer than 1/60 minute lose resolution. `0.5` is exact.
+The controller's approval reaper still ticks at **1 minute**
+(`cmd/controller/main.go:403`), so a row can sit `Pending` up to ~60s past a
+30s `timeout_at` — the agent-local deadline is the one that fires first.
+
 ## Raw evidence
 
 `FINDINGS.md` cites captures by relative name (`w1-5/agent1.log`,

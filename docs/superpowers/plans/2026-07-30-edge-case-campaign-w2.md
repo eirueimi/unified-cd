@@ -62,7 +62,7 @@
 
 - Whether `api.Run.ParentRunID` (`api/types.go:65`) is ever populated. No write path found by grep; absence of evidence, not proof.
 - Whether unlocked `RunGitResolver` on N replicas causes observable harm. Absence of the lock is read from source; the consequence is inferred.
-- Whether `timeoutMinutes` accepts fractional values end-to-end through YAML schema validation (the Go type is `float64`). **Task 1 must verify this before any scenario depends on it.**
+- ~~Whether `timeoutMinutes` accepts fractional values end-to-end through YAML schema validation (the Go type is `float64`).~~ **RESOLVED by Task 1 (code-read + `dsl.Parse` executed against the real parser): fractional values round-trip.** Nothing in `internal/dsl` validates the field (declared `float64` at `types.go:341`; no minimum, no integer check), `buildClaimResponse` (`api_agent.go:436-440`) only defaults when `timeout == 0`, the agent computes `time.Duration(timeoutMin*60) * time.Second` (`agent/approval.go:48`) and the controller `time.Duration(req.TimeoutMinutes * float64(time.Minute))` (`api_approvals.go:87`) — both exactly 30s for `0.5`. `approval-short.payload.json` uses **`0.5` → a 30s window**, so W2-8's window is 30s, not 60s. Sub-second resolution is lost to the agent-side truncation to whole seconds; the approval reaper still ticks at 1m (`main.go:403`), so the agent-local deadline fires first. Full detail in `test/edgecase/README.md` § "Fractional `timeoutMinutes`".
 - Tiebreak of `ORDER BY created_at` for identical timestamps.
 - Direction and magnitude of clock skew between the agent's `WaitForApproval` deadline and the controller's `timeout_at`.
 

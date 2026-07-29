@@ -1,0 +1,1 @@
+{"yaml": "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-call-child\nspec:\n  native: true\n  agentSelector:\n    - kind:linux\n  steps:\n    - name: emit\n      run: for i in $(seq 1 90); do echo \"child,$i,$(date -u +%H:%M:%S)\" >> /data/child.log; sleep 1; done\n"}

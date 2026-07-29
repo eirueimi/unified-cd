@@ -1,0 +1,1 @@
+{"yaml": "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-mutex-hog\nspec:\n  native: true\n  concurrency:\n    mutex: edge-mutex\n  agentSelector:\n    - kind:linux\n  steps:\n    - name: hold\n      run: echo \"hog-acquired,$(date -u +%H:%M:%S)\" >> /data/mutex-hog.log; sleep 600\n"}
