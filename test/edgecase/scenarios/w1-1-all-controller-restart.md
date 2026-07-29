@@ -64,6 +64,21 @@ done
 curl -N --max-time 15 "localhost:18080/api/v1/runs/<RUN_ID>/events" -H "Authorization: Bearer ha-admin-token"
 ```
 
+> **Phase dependence — this is what makes or breaks the "zero log loss"
+> headline, so do not let it drift.** The sequence above consumes ~55s before
+> injection (the 4x10s poll loop plus the 15s SSE check), on top of the ~30s
+> startup wait, and the outage below is held ~60-80s — so against a 300s step
+> the whole outage necessarily starts *and ends* well before the step reaches
+> its natural end. That is the only reason this scenario sees zero loss: the
+> 2s auto-flush ticker gets many chances to drain `LogPusher.pending` before
+> `finishLogs` ever runs the bounded 5s step-end `Flush`. A re-runner who is
+> slower here (longer waits, a longer outage, or a shorter step) can push the
+> outage across the step's completion and **will** lose the log tail with no
+> drop marker. That is not a contradiction of this scenario's result — it is
+> W1-2's major I4 finding reproducing (see FINDINGS.md, "Postgres outage
+> overlapping a step's natural completion..."), and it should be attributed
+> there rather than re-filed or read as a regression in W1-1.
+
 Inject: kill all three controllers hard, one after another, then confirm the
 LB has no live upstream for ~60s:
 

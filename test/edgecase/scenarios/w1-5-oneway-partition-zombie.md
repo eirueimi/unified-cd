@@ -165,7 +165,7 @@ curl -fsS -X POST localhost:18080/api/v1/jobs \
   --data-binary @../edgecase/workloads/mutex-successor.payload.json
 # both expect 200. If either 400s, read the error body and check
 # internal/dsl/types.go — `mutex` lives under spec.concurrency, and
-# internal/dsl/parse.go:93 sets dec.KnownFields(true) so any stray field is a
+# internal/dsl/parse.go:94 sets dec.KnownFields(true) so any stray field is a
 # hard 400 rather than an ignored key.
 ```
 
