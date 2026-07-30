@@ -91,7 +91,7 @@ trimmed at the checkpoint after each wave if yield is low.
 | W2-6 (C3) | Scheduler crash between run creation and `last_fired_at` update: duplicate fire by the next leader | I1, I2 |
 | W2-7 (C4) | Two live agent processes sharing one agent ID: mutual orphan-classification failing each other's runs | I1 |
 | W2-8 (C11) | Approval decision racing the timeout boundary (clock skew between deadline checks): Approved audit row + Failed run contradiction | I7 |
-| W2-9 (C15) | Pending-queue head-of-line blocking: 50 oldest Pending runs all waiting on a held mutex starve unrelated runnable jobs | I1, I5 |
+| W2-9 (C15) | Pending-snapshot starvation (NOT claim-query head-of-line blocking). A mutex-blocked run stays `Pending`: `tryQueueRun` (`postgres.go:482+`) hits the `mutex_holders` unique violation and rolls back, leaving status untouched, so it never reaches the `Queued` claim query at all. The starvation is one phase earlier — `TransitionPendingToQueued` (`postgres.go:437-475`) snapshots only the **50 oldest** `Pending` runs (`LIMIT 50` from `scheduler.go:58`) each 200ms tick, so ≥51 runs blocked on one held mutex saturate every snapshot and a newer, unblocked, runnable run at position 51+ is never examined. Git-unresolved runs consume batch slots identically (`postgres.go:513-518`) | I1, I5 |
 
 ### W3 — Storage / keys (compose + Garage)
 

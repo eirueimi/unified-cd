@@ -63,7 +63,7 @@
     `RunStuckRunReaper(ctx, st, 30*time.Second, 90*time.Second, 60*time.Second)`):
     leader-elected via advisory lock `stuckRunReaperLockKey` (`0x7374756B`),
     ticks every **30s**, and calls
-    `ListStuckRunIDs(staleAfter=90s, grace=60s)` — `internal/store/postgres.go:1216`:
+    `ListStuckRunIDs(staleAfter=90s, grace=60s)` — `internal/store/postgres.go:1238`:
 
     ```sql
     SELECT r.id FROM runs r LEFT JOIN agents a ON r.claimed_by = a.id
@@ -379,12 +379,12 @@ Timing that makes this work, and why each bound matters:
   report/finish attempts happen **while blocked**;
 - heal at `claimed_at + ~54s`, i.e. **before** `claimed_at + 60s`. Note this
   does **not** mean `ListStuckRunIDs`'s grace clause (`claimed_at < NOW() -
-  grace`, `internal/store/postgres.go:1216-1224`) stays unmet forever — it
+  grace`, `internal/store/postgres.go:1238-1246`) stays unmet forever — it
   expires normally at `claimed_at + 60s`, same as any other run, and by the
   time this run settles that boundary has long since passed. What actually
   keeps the run un-reaped is the **other** conjunct: once healed, the agent's
   next successful heartbeat refreshes `last_seen_at` to a fresh value, so
-  `a.last_seen_at < NOW() - staleAfter` (90s, `internal/store/postgres.go:1224`)
+  `a.last_seen_at < NOW() - staleAfter` (90s, `internal/store/postgres.go:1246`)
   never matches again — the run simply stops looking stuck to the reaper,
   independent of the grace clause. (Verify: no `stuck-run reaper` line
   mentioning `SHORT_ID` in `controllers.log`.) So when re-running this, **do

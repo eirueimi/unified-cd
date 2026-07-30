@@ -1,0 +1,1 @@
+{"yaml": "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-approval-short\nspec:\n  native: true\n  agentSelector:\n    - kind:linux\n  steps:\n    - name: before\n      run: echo before-gate\n    - name: gate\n      approval:\n        message: edge-campaign short gate\n        timeoutMinutes: 0.5\n    - name: after\n      run: echo after-gate\n"}

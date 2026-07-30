@@ -1,0 +1,88 @@
+# W2-7 overlay: a FOURTH agent service that is a second live process sharing
+# `agent1`'s identity.
+#
+# Mirrors `test/ha/docker-compose.ha.yaml`'s `agent1` service exactly except for
+# the compose service name — same image build, same `--id agent1`, same
+# `--credential-file` / `--enrollment-token-file` paths, same labels, same
+# `agent-credentials` named volume. Nothing in the product prevents this: there
+# is no fencing token, session id or generation column on `agents`
+# (`internal/store/migrations/001_init.up.sql:18-27`), `UpsertAgent` is
+# `ON CONFLICT (id) DO UPDATE` (`internal/store/postgres.go:1083-1108`) and the
+# per-run ownership check is a bare string compare
+# (`internal/controller/agent_guard.go:121`).
+#
+# Usage (from test/ha):
+#
+#   COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/oneway.override.yaml \
+#     -f ../edgecase/compose/dupagent.override.yaml"
+#   docker compose $COMPOSE_FILES up -d --build          # agent1b NOT started
+#   docker compose $COMPOSE_FILES up -d --build agent1b  # start the twin
+#   docker compose $COMPOSE_FILES stop agent1b           # stop the twin
+#
+# `profiles: [dup]` keeps `agent1b` out of a bare `up -d` — W2-7's Part A needs
+# `agent1` running alone first and the twin introduced at a chosen instant.
+# Naming the service explicitly on the command line enables its profile
+# automatically, so no COMPOSE_PROFILES export is needed; conversely
+# `docker compose ps` will NOT list agent1b unless you pass `--profile dup`.
+#
+# CREDENTIALS — read before running. `agent1` does not hold a static token: it
+# enrols once and thereafter holds a rotating refresh credential in
+# `/var/lib/unified-cd-agent/agent1/credentials.json`, which lives in the
+# `agent-credentials` NAMED VOLUME (base compose file, `volumes:` at :139-140).
+# So "the same credentials as agent1" is achieved by mounting the same volume —
+# the twin literally reads the same file. Three consequences, all of which the
+# runbook records rather than works around:
+#
+#   1. The twin's `--enrollment-token-file` points at an enrollment token
+#      `agent1` has already consumed, so its `POST /api/v1/agents/enroll`
+#      answers 401. That is not fatal: `CredentialManager.Token`
+#      (`internal/agent/credentials.go:146-166`) falls back to the persisted
+#      refresh credential on exactly that status and logs `"enrollment token
+#      rejected (expired or already consumed); continuing with the existing
+#      credential"`. This fallback is what makes the overlay work at all.
+#   2. Refresh rotates. `handleAgentRefresh`
+#      (`internal/controller/api_agent_enrollment.go:407-445`) mints a new pair
+#      and `persistTokenResponse` (`credentials.go:186-215`) REWRITES the shared
+#      file, while `loadRefreshCredential` (`:289-292`) returns early once
+#      `m.loaded` is set — so each process keeps its own in-memory refresh token
+#      and does not re-read the other's. Bounded, not eliminated: the access
+#      token TTL is 1h (`api_agent_enrollment.go:21`) and the client refreshes
+#      15m + up to 5m jitter early (`credentials.go:27-28`), so a session
+#      shorter than ~40 min sees at most one rotation per process, and
+#      `agentRefreshOverlap` keeps the superseded token usable for a grace
+#      window. A scenario running longer than that must expect one of the two
+#      processes to start failing auth, and must not mistake that for a finding
+#      about duplicate IDs.
+#   3. Nothing anywhere warns that two processes share the ID.
+#      `UpsertAgentOnClaim`'s `ON CONFLICT (id) DO UPDATE`
+#      (`postgres.go:1129-1141`) makes the collision invisible: one row, one
+#      `last_seen_at`, whichever process wrote last.
+#
+# The `/data` bind mount mirrors what `oneway.override.yaml` gives `agent1` and
+# `agent2`, so `edge-sideeffect`'s append-only log is shared across every agent
+# process on the host and a duplicated side effect is observable. Stack this
+# file ON TOP of `oneway.override.yaml`.
+services:
+  agent1b:
+    profiles: ["dup"]
+    build:
+      context: ../..
+      dockerfile: docker/agent.Dockerfile
+    volumes:
+      - agent-credentials:/var/lib/unified-cd-agent
+      - ../edgecase/sideeffect-data:/data
+    command:
+      - "--server"
+      - "http://nginx:8080"
+      - "--id"
+      - "agent1"
+      - "--credential-file"
+      - "/var/lib/unified-cd-agent/agent1/credentials.json"
+      - "--enrollment-token-file"
+      - "/var/lib/unified-cd-agent/agent1/enrollment.token"
+      - "--labels"
+      - "kind:linux"
+    depends_on:
+      agent-enroll:
+        condition: service_completed_successfully
