@@ -288,6 +288,12 @@ curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token
 #     cannot run inside a transaction block`; pg_reload_conf() then still
 #     returns t and a NEW session still reports `none`, so the form below fails
 #     silently and looks exactly like the instrument working.
+#     This is a defect in the CHECKED-IN TEXT ONLY and invalidates NO W2-6
+#     measurement: W2-6's execution armed the instrument successfully (its report
+#     records log_statement='all' in force at 00:40:46.7 and the RESET verified in
+#     a fresh session at 01:29:13, and its own baseline finding that a NEW session
+#     reads `none` proves the revert landed). Filed in FINDINGS.md as a W2-7
+#     third-bucket asset entry.
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
   -c "ALTER SYSTEM SET log_statement='all'" \
   -c "ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h '" \

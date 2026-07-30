@@ -112,7 +112,10 @@
 > first is load-bearing for how the whole scenario should be read. Read the
 > "Execution notes" at the end of this file before re-running.**
 >
-> 1. **"The same zombie shape as W1-5" is FALSE for a connected agent.** Every
+> 1. **"The same zombie shape as W1-5" is right in kind and wrong by one to two
+>    orders of magnitude for a connected agent.** The literal deliverable held —
+>    the run was `Failed` while `agent1` still executed, for **1.798 s** — but the
+>    open-ended exposure the W1-5 comparison implies does not exist here. Every
 >    executing process was fenced within one `CancelPollInterval` (5 s,
 >    `internal/agent/orchestrator.go:37`) of the terminal write — measured
 >    **0.939-4.938 s** across six terminal writes. `RunClaim` runs a cancel
@@ -185,7 +188,8 @@ a second earlier, and `failOrphanedRun` (`stuckrun_reaper.go:76-90`) is the same
 three-write sequence the reaper uses: `MarkRunStepsInterrupted` →
 `MarkRunFinished` (which also releases mutex/named-lock rows) →
 `cancelDescendantRuns`. Nothing tells the *executing* process anything, so the
-zombie shape is W1-5's.
+zombie shape is W1-5's **in kind — but see correction 1 above: on a connected
+agent the window is one 5 s `CancelPollInterval`, not tens of seconds**.
 
 The function's own doc comment (`api_agent.go:808-814`) says a restarted process
 "no longer executes runs its previous incarnation claimed" — true of a restart,
@@ -449,10 +453,15 @@ turnaround short. Report the measured `updated_at − claimed_at`. This is the
 number that shows the startup reconcile has no grace *by construction*
 (`postgres.go:271`), and it is the direct analogue of W2-2's Part B.
 
-**Judge A2's severity on the contract, not on the surprise.** `postgres.go:271`
+**Judge A2's severity on the invariant, not on the surprise.** `postgres.go:271`
 has no grace by design and `api_agent.go:808-814` explains why; the *defect* is
-not the missing grace, it is that the design's premise ("the same agent ID means
-the previous incarnation is gone") is false for a twin and nothing checks it.
+not the missing grace, it is that a **live** process's run is terminalized on no
+evidence the work stopped — an **I1** violation on the accepted W2-3 precedent
+(`FINDINGS.md:687`), with I7 as a second limb. **CORRECTED AFTER THE RUN: do not
+frame this as a broken documented contract.** `docs/high-availability.md:408-411`
+is scoped entirely to the *replaced-process* case, and its one behavioural
+sentence (`:414-415`, "the controller fails every `Running` run still claimed by
+that agent ID") sanctions the observed behaviour — cite the invariant, not the doc.
 
 ## Part B — heartbeat mutual annihilation (the steady state)
 
@@ -650,11 +659,14 @@ rule).
   `UpsertAgent`/`UpsertAgentOnClaim`'s `ON CONFLICT DO UPDATE` as the reason the
   collision is **silently invisible** to operators — that invisibility is the
   operationally dangerous part and belongs in the entry body, not a footnote.
-- **Part A2's no-grace startup reconcile:** judge on the documented contract.
+- **Part A2's no-grace startup reconcile:** judge on the **invariant**, not on a
+  documented contract (**CORRECTED AFTER THE RUN** — the HA passage is scoped to
+  sequential replacement and its `:414-415` sentence sanctions the behaviour).
   `postgres.go:271` is ungraced by construction and `api_agent.go:808-814`
-  states the intent, so on its own this is as-designed — likely an
+  states the intent, so the missing grace on its own is as-designed — likely an
   **observation**, with the operational cost stated prominently. What makes it a
-  violation limb is the false premise, not the missing grace.
+  violation limb is that the run belonged to a **live** process (I1, per W2-3 at
+  `FINDINGS.md:687`; I7 second), not the missing grace.
 - **Part D, if reproduced:** this converts W2-3's major from induced to naturally
   reachable. **Cross-reference W2-3's entry; do not re-file it.** What is *new*
   here is the natural trigger and the measured absence window.
@@ -733,7 +745,8 @@ rule).
 - **The detector is the only instrument that can see the absence window** and it
   behaved well: **931 rows over ~25 min, max gap 1.73 s** with a host-side
   `docker compose exec` loop at `sleep 1` (~1.58 s effective cadence). It
-  independently confirmed Part D (19 consecutive `agents=0` rows, with the run
+  independently confirmed Part D (**18** consecutive `agents=0` rows — `detector.txt`
+  lines 748-765, `02:53:14.255` → `02:53:41.116`; an earlier note said 19 — with the run
   flipping `Running → Failed` between the `02:53:36.362` and `02:53:37.944`
   samples). **It was killed explicitly before `down -v`** and its tail is data,
   not connection errors — W2-6 left one running and polluted its own capture.
@@ -757,6 +770,19 @@ rule).
   the credential once and reuse the access token. Neither live process showed an
   auth failure afterwards. **Redact the two capture files** — they contain the
   rig's (now-dead) token material.
+- **Two things Part C's write-up must not understate, both corrected after the
+  run.** (i) **The arm does not depend on the duplicate ID.** One agent process
+  plus any local reader of `$HOME/.unified-cd/<id>/credential.json` is enough on a
+  real deployment; the twin only made the reader convenient. Frame it that way or
+  a triager will dismiss it as something a fencing token fixes. (ii) **The forged
+  terminal write leaves no audit row at all** — `auditLogMiddleware`
+  (`audit.go:163-172`) is mounted only on the four human subrouters
+  (`server.go:357`, `:417`, `:426`, `:435`), and the agent identity routes from
+  `agentRouteIdentityMatrix` (`server.go:242-261`) carry none. Since Part C's
+  invariant is I7, whose text names audit rows, that is part of the violation.
+  **This session read the router rather than measuring it** — no capture queried
+  `GET /api/v1/audit` after Part C. A re-run should: one admin `GET` after the
+  forged `finish` turns a code-read into evidence for the cost of one request.
 - **Reading the credential file also revealed that starting the twin had already
   rotated it**: `refreshExpiresAt` equalled the twin's registration instant to the
   millisecond. Two processes sharing one rotating credential file is a real
