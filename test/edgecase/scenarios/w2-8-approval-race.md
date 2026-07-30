@@ -223,7 +223,7 @@ Read it three ways and record which one you rely on:
    W2-7's error. Use this limb as **context for severity**, not as the violation.
 3. **As designating `run_approvals` an audit record — it does, twice, and this is
    the limb that matters.** `docs/jobs.md:1740` calls it "The approval audit
-   row"; `:1722` says "The identity of the decider is recorded (`decidedBy`) in
+   row"; `:1725` says "The identity of the decider is recorded (`decidedBy`) in
    the audit record"; `docs/audit.md:4-5` calls `run_approvals` "the existing
    per-run approval audit trail". So the product's own documentation classifies
    the falsified row as an audit artifact, which is what makes I7's "audit rows
