@@ -40,6 +40,29 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
   `api_runs.go:22-42`), which returns the full `api.Run` JSON — **there is no
   `/api/v1/jobs/<job>/trigger` route**.
 
+- `tools/w3/w3-4-logfault.sh <clear|truncate|lostack|show|probe>` — URI-scoped
+  fault on the agent **log-bulk** endpoint only
+  (`POST /api/v1/agents/<id>/runs/<runId>/steps/<n>/logs/bulk`). `truncate [t]`
+  cuts `proxy_read_timeout` so nginx 504s mid-loop and the closed upstream
+  connection cancels the controller's request context, leaving a **committed
+  prefix**; `lostack` mirrors the request to a real controller (which commits
+  the whole batch) while the client-facing leg goes to a dead upstream (502).
+  Requires `compose/logfault.override.yaml` (`nginx-logfault.conf`) and is a
+  **no-op** against `test/ha/nginx.conf` or `nginx-edge.conf`, so always
+  `probe` after arming — it prints the `X-Logfault-Arm` header.
+
+  **The probe proves the arm only for a NEW connection.** The authoritative
+  bracket is `nginx-logfault.conf`'s custom `logfault` access-log format, which
+  stamps `arm=` and the status onto **every** request, so armed/cleared claims
+  are made per request rather than per wall-clock window (the W2-5 lesson).
+  `worker_shutdown_timeout 1s` bounds how long an already-connected agent keeps
+  the old config — **and, as a side effect, severs in-flight SSE streams and
+  long-poll claims on every reload**; run SSE captures straight against a
+  controller, not through the LB.
+- `tools/w3/w3-4-partB.sh <attempt-n> [arm-delay-s] [hold-s] [timeout]` — the
+  W3-4 Part B driver: clear+probe, trigger `edge-logburst`, arm `truncate`
+  across the burst, clear+probe, with a host timestamp on every step.
+
 ## Workload fixtures
 
 Every `*.payload.json` is the pre-encoded `{"yaml":"..."}` body for
@@ -58,7 +81,7 @@ its inferred capability is `pod` (see the table).
 | `tick.payload.json` | `edge-tick` | trivial run |
 | `longrun.payload.json` | `edge-longrun` | long-lived run for reaper timing |
 | `approval.payload.json` | `edge-approval` | approval gate, 10-minute timeout |
-| `sideeffect.payload.json` | `edge-sideeffect` | mutex `edge-mutex` holder, writes `/data/sideeffect.log` |
+| `sideeffect.payload.json` | `edge-sideeffect` | mutex `edge-mutex` holder, writes `/data/sideeffect.log`. **Emits ZERO log lines** — its `echo` is redirected to the file, so its `logs` row count is 0. It is a side-effect (I2) fixture, never a log fixture (W3-4) |
 | `mutex-successor.payload.json` | `edge-mutex-successor` | mutex `edge-mutex` successor probe (I3) |
 | `schedule-every-minute.payload.json` | — | schedule fixture (`edge-every-minute`, `cron: "* * * * *"`, job `edge-tick`) — **`POST /api/v1/schedules`**, not `/api/v1/jobs` |
 | `call-parent.payload.json` | `edge-call-parent` | 20s `prelude` then a `call:` step invoking `edge-call-child` (W2-2, W2-5) |
@@ -67,6 +90,7 @@ its inferred capability is `pod` (see the table).
 | `mutex-hog.payload.json` | `edge-mutex-hog` | mutex `edge-mutex` lock holder, sleeps 600s (W2-9) |
 | `unrelated-probe.payload.json` | `edge-unrelated-probe` | **no mutex**, `echo probe-ran` — the W2-9 starvation probe |
 | `podcap-job.payload.json` | `edge-podcap-job` | `podTemplate` with a pod-level `nodeSelector`, so `dsl.RequiredCaps` infers **`pod`** — label-claimable (`kind:linux`) but capability-unschedulable, because the `test/ha` agents report `["native","container"]` (W2-4 Part D) |
+| `logburst.payload.json` | `edge-logburst` | the **chatty** fixture (W3-4): emits exactly **2002** stdout lines — `burst-begin`, `burst-1`…`burst-2000` written as fast as the shell can, then `burst-end` after a 30 s quiet window. Line contents are self-indexing so duplicates and reordering are measurable without joining anything. `sleep 8` before the burst gives a window to arm a fault against an already-connected agent |
 
 ### Fractional `timeoutMinutes` — verified, do not re-derive
 

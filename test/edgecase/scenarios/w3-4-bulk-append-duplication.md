@@ -1,5 +1,45 @@
 # W3-4 — bulk log append: partial commit + lost ack ⇒ permanent duplication
 
+> **CORRECTED AFTER EXECUTION — READ THIS BEFORE ANYTHING ELSE.**
+> **The hypothesis held in full and the I4 attribution survived review of the
+> measurement; nothing in the Invariants block below is withdrawn.** What
+> execution changed is four *procedural* claims, and one of them makes a step as
+> written impossible. Superseded text is kept in place and marked, per house
+> style, because the reason it was wrong is the deliverable.
+>
+> 1. **Part D1 as written cannot work.** It says to attach SSE to the LB before
+>    triggering. `worker_shutdown_timeout 1s` — added deliberately in
+>    `nginx-logfault.conf` to answer W2-5's reload lesson — **also severs every
+>    in-flight connection through nginx on each reload**, including the SSE
+>    stream and the agents' long-poll claims. The first live capture died after
+>    exactly one event. **Attach SSE directly to a controller instead**
+>    (`docker compose exec -T nginx curl -sSN … http://controller1:8080/…`),
+>    which is immune to the reloads; it is the same handler and the same
+>    LISTEN/NOTIFY path. See Part D, corrected in place.
+> 2. **The truncate arm needs no timing luck, which the runbook did not
+>    predict.** A 200 ms `proxy_read_timeout` **self-selects by batch size**:
+>    a 1-line batch completes in ~5 ms and returns 204, while the 421-line and
+>    1579-line batches take 423 ms and 1594 ms and are cut mid-loop every time.
+>    Part B's "cap the attempts" discipline was still honoured (4 attempts of a
+>    cap of 10, 3 hits), but the one miss was an **operator timing error**
+>    — the arm landed after the burst had already been delivered — not a race.
+> 3. **W2-5's failure mode did not recur, and the runbook should not be read as
+>    having merely got lucky.** Every arm took effect on the agent's very next
+>    flush, on an already-established connection. That is attributable to
+>    mitigation 1 of §"Why nginx" (`worker_shutdown_timeout`), and it is the
+>    same directive that caused correction 1 — the fix and the side effect are
+>    the same line of config.
+> 4. **An unanticipated blast radius, which is an artifact and not a finding.**
+>    Three consecutive upstream timeouts trip `max_fails=1` on all three
+>    `test/ha/nginx.conf` upstreams at once, briefly ejecting the entire
+>    controller pool and returning `502 no live upstreams` to unrelated agent
+>    traffic. Expect it, do not file it, and do not let it contaminate the
+>    per-request bracket (it is distinguishable: `ustatus=502 rt≈0.000`).
+>
+> **The scenario yields ONE major (I4) and ONE observation (minor).** Do not
+> split the truncate and lostack arms into two findings — they share the same
+> root cause (§"Verified mechanism" facts 1-4).
+
 **Wave W3, Task 1. Runs on today's `test/ha` rig with no infrastructure change** —
 the wave's other five scenarios need object storage that Task 3 adds; this one
 does not. **One consequence is load-bearing and is stated up front rather than
@@ -381,7 +421,11 @@ nginx access-log extract proving **every** bulk request in the run's window was
 - **A1.** With the fault cleared (G4) and confirmed, trigger:
   `API -X POST -d '{"jobName":"edge-logburst"}' /api/v1/runs`. Record
   `runID_ctrl`, the host clock at trigger, and the number of attempts (G8).
-- **A2.** Wait for terminal. Record status and `started_at`/`ended_at`.
+- **A2.** Wait for terminal. Record status and the run's timestamps —
+  **the `runs` table has `created_at`/`updated_at`, not `started_at`/`ended_at`**
+  (an earlier draft of this query errored with `column "started_at" does not
+  exist`; the error is in `$SCRATCH/partA-control.txt` and is the only `ERROR:`
+  in the whole Postgres capture, so do not misread it as a product fault).
   **STOP and re-run if not `Succeeded`** — I4's scope is a `Succeeded` run.
 - **A3 — the three measurements.** → `$SCRATCH/partA-control.txt`
 
@@ -533,12 +577,29 @@ ordinary `log` events, in duplicate, with increasing `seq`.
 This is what makes W3-4 an I4 finding rather than a database curiosity — the
 duplicate is not merely stored, it is **served**.
 
-- **D1.** `GET /api/v1/runs/{id}/events` is registered outside the `/api/v1`
-  group with `ServerAuth` + `requireMinRole("viewer")`
-  (`internal/controller/server.go:336-337`), so the admin token works.
-  Attach **before** triggering the Part B run, in the background, and capture the
-  raw stream: → `$SCRATCH/partD-sse.txt`. Record the PID in
-  `$SCRATCH/samplers.pid`.
+- **D1 — CORRECTED, see correction 1 in the box at the top of this file.**
+  ~~Attach to `http://localhost:18080/api/v1/runs/{id}/events` (the LB) before
+  triggering the Part B run, in the background.~~ **That capture dies at the
+  first arm**: `worker_shutdown_timeout 1s` closes every connection through
+  nginx on reload, and the first attempt recorded exactly one event before
+  `curl: (18) transfer closed with outstanding read data remaining`
+  (`$SCRATCH/partD-sse.txt`, kept as the counter-example). **Attach directly to
+  a controller instead**, from inside the nginx container so no new image is
+  needed:
+
+  ```bash
+  docker compose $COMPOSE_FILES exec -T nginx curl -sSN -m 90 \
+    -H "Authorization: Bearer ha-admin-token" \
+    "http://controller1:8080/api/v1/runs/$RID/events" > "$SCRATCH/partD3-sse-live.txt" &
+  ```
+
+  This is the same handler and the same `LISTEN "log_appended:"+id` path;
+  the LB adds nothing to the test. `GET /api/v1/runs/{id}/events` is registered
+  outside the `/api/v1` group with `ServerAuth` + `requireMinRole("viewer")`
+  (`internal/controller/server.go:336-337`), so the admin token works either
+  way. Record the PID in `$SCRATCH/samplers.pid` — **and note that a
+  `docker compose exec` sampler survives the shell that launched it**, which is
+  how one was still alive at teardown pass 2 (see the execution notes).
 - **D2.** After the run ends, count occurrences of a known-duplicated `burst-<i>`
   in the captured stream. **Expected: the same multiplicity as the DB**, because
   the backfill and the live path both read `TailLogs` by `seq` (fact 10) and the
@@ -654,3 +715,87 @@ docker compose $COMPOSE_FILES down -v
   amplification with no loss*. W3-4 is the fourth, disjoint shape: **no loss at
   all, and a permanent surplus instead**. Say so explicitly so triage does not
   merge them.
+
+---
+
+## Execution notes — 2026-07-30 run (read before re-running)
+
+Executed against `test/ha` + `compose/logfault.override.yaml` on branch
+`plan/edge-case-w3`, `23:35:26Z – 23:50:06Z`. **Two `FINDINGS` entries: 1
+violation (major, I4) and 1 observation (minor).** No branch-internal asset bug.
+The developer stack (`docker compose ls` project `unified-cd`) was untouched
+before and after (`w3-4/gate.txt`, `w3-4/teardown.txt`).
+
+**Six runs, all `Succeeded`** (`w3-4/consolidated.txt`). Emitted line count is
+2002 for every one of them:
+
+| run | arm | rows | surplus | dup groups | out-of-order |
+|---|---|---|---|---|---|
+| `a644004c` | none (control) | 2002 | 0 | 0 | 0 |
+| `e87666b7` | truncate 200 ms, 8.8 s | 2558 | 556 | 383 | 2383 |
+| `16683d6e` | lostack, 5.8 s | **8493** | 6491 | 2000 | 8490 |
+| `a0b22da5` | truncate 200 ms, 8.8 s | 2773 | 771 | 400 | 2581 |
+| `78788e0d` | none in window (timing miss ⇒ second control) | 2002 | 0 | 0 | 0 |
+| `f7d619ac` | truncate 200 ms, 8.9 s | 2626 | 624 | 276 | 2441 |
+
+**Every armed/cleared claim above is per-request from the nginx access log**, not
+from the wall clock: `w3-4/partA-nginx.txt`, `w3-4/partB-nginx-attempt1.txt`,
+`w3-4/partC-dup.txt`. Both control runs are called uninjected because **all** of
+their bulk requests logged `arm=none status=204`, which is the only basis on
+which the word is used anywhere in this scenario.
+
+**Instrument hygiene.** `log_statement='all'` was armed once
+(`w3-4/gate-g6-arm.txt`) for the Part B attempt-1 window only — 71,852 log lines
+in ~90 s — and `RESET` immediately after, verified in a fresh session
+(`w3-4/partB-pglog-disarm.txt`: `none`). `log_line_prefix` stayed armed until
+teardown and was `RESET` there, verified fresh (`w3-4/teardown.txt`:
+`%m [%p]`). **One `ALTER SYSTEM` per `psql -c` throughout**, per W2-7.
+
+**Sampler hygiene was captured, not asserted — and it caught something.** Two
+passes, `jobs` plus `ps -W | grep -iE "curl|psql|python"`, both empty on the
+host. But the pass-2 check inside the nginx container found a **still-running**
+`curl` SSE sampler (pid 169, the Part D2 stream, launched without `-m`), which
+was then terminated by `down -v` rather than explicitly killed
+(`w3-4/teardown.txt`; the background task exited 137). **Two lessons:** a
+`docker compose exec` sampler outlives the shell that launched it and does not
+appear in the host's `jobs` or `ps`, so **the container must be checked too**;
+and always pass `-m <seconds>` to a `curl -N` sampler.
+
+**Seven things a re-run should know.**
+
+1. **`logs.seq` is one global sequence** — settled from the migration, see Step 1.
+   The plan's guess was right; it is now evidence. Consequence that bit twice
+   while writing queries: a run's `max(seq)-min(seq)+1` is **not** its line count
+   once any other run is active, and the duplicate always sorts *after* the
+   original because `seq` is assigned at INSERT.
+2. **The lostack (mirror) arm was flagged as a risk and it worked perfectly.**
+   nginx's `mirror` runs in the precontent phase and the main request does not
+   finalise until the subrequest completes — visible directly in the access log
+   as `502 … rt=0.659 urt=0.000`: nginx spent 659 ms on a request whose only
+   upstream leg refused instantly, which is the mirror's own duration. The
+   controllers logged **204** for all 15 mirrored requests the agent was told had
+   failed. It is the strongest single result in the scenario (4.24x inflation)
+   and the cheapest to re-run.
+3. **Do not use `sideeffect.payload.json` as a chatty workload.** Its `echo` is
+   redirected to a file; it emits **zero** log lines (Correction 1 at the top).
+   `edge-logburst` exists for this and its 2002 is the comparand.
+4. **Batch shapes differ per agent and per run** and must be read off the data,
+   not assumed. `agent2` produced 421 + 1579; `agent1` produced 421 + 411 + 541 +
+   492 + 135. The `(line, ts)` grouping is what makes this irrelevant — each
+   distinct `ts` is exactly one batch (`runner.go:376`).
+5. **The controller reports 500 for a request nginx already answered 504**, at
+   `duration_ms:200` — exactly the injected timeout. That pair of log lines
+   (nginx 504 / controller 500, same instant, same URI) is the cleanest single
+   piece of evidence that the ack was lost *after* the commit, and it is what to
+   grep for first on a re-run.
+6. **Budget ~40 s per run.** Trigger → claim ≈ 2 s, `sleep 8`, burst, `sleep 30`.
+   Arm at trigger + 5 s, hold 8 s. Arming later than trigger + 8 s misses the
+   burst entirely (that is what run `78788e0d` is).
+7. **Part E was left as code-read and must be re-run after Task 3.** No object
+   store on this rig: `run_log_archives` = 0 rows, three
+   `no object store configured — log archival disabled` warnings
+   (`w3-4/consolidated.txt`). The claim that the duplication survives into the
+   archive and passes log-trim's coverage check rests entirely on
+   `archiver.go:81-92` / `:106` and is labelled as such in the finding. **It is
+   the limb that would raise the severity from major to critical**, so it is
+   worth ten minutes on the Garage rig.
