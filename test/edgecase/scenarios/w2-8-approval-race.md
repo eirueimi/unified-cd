@@ -1,0 +1,522 @@
+# W2-8 — approval decision racing the timeout boundary
+
+- **Invariants** (quoted verbatim from
+  `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:44-55`):
+  - **I7 (state display consistency)** — "run status, approval status, and audit
+    rows never contradict each other or reality" (`:55`). This is the primary
+    invariant and the fit is unusually literal: the three nouns I7 names are
+    exactly the three artifacts this scenario puts into contradiction —
+    `runs.status = 'Failed'`, `run_approvals.status = 'Approved'` with a named
+    human in `decided_by`, and an `audit_logs` row
+    `action=run.approval.decide … status=204` against that same run id. No
+    interpretive stretch is needed; state the three values from one capture and
+    the contradiction is on its face.
+  - **I1 (run accounting)** — "every API-accepted run reaches exactly one
+    terminal state; no phantom runs from duplicate fires/webhooks" (`:48`).
+    **Almost certainly NOT violated here, and must not be claimed.** The run
+    reaches exactly one terminal state (`Failed`) and stays there; the approval
+    decision does not resume it, does not create a second run, and does not
+    re-open the run's status. Check this rather than assume it (Part A gate A4
+    re-reads `runs.status` after the decision), and if it holds, say so
+    explicitly as a null result. W2-7 had to argue an I1 fit carefully because
+    its terminal state was *false*; here the run's terminal state is *correct* —
+    the gate really did fail — so I1 is the wrong home and I7 is the right one.
+  - **I5 (bounded recovery)** — "after fault injection the system returns to
+    steady state within documented bounds (leader re-election ≤ seconds;
+    stuck-run reap ≤ staleAfter 90s + interval 30s; the bounds in
+    `docs/high-availability.md` are the contract)" (`:52`). **In scope only for
+    one narrow number**: `docs/jobs.md:1740-1744` promises the approval reaper
+    reconciles an expired `Pending` row "within roughly one minute". Measure the
+    `timeout_at` → `TimedOut` latency and compare. But note this scenario injects
+    **no fault** — the window is produced by ordinary API use — so if the latency
+    is inside the bound, that is an I5 null result and not evidence of anything.
+    Report it as a measured number against the `docs/jobs.md` sentence, not as
+    an I5 pass/fail.
+  - **NOT I2, NOT I3, NOT I4, NOT I6.** No side-effect log, no mutex, no log
+    integrity claim, and nothing keeps executing after the terminal write (the
+    approval step's "work" is a poll loop that has already returned). W2-5 was
+    corrected for relabelling I3 and W2-7 for stretching a zombie limb; do not
+    invent either here. If the `after` step is observed to run, that *would* be
+    I1/I2 territory — Part A gate A5 checks for it precisely so that the "it does
+    not resume" claim is measured rather than assumed.
+- **Stack:** plain `test/ha`, **no overlay**. Nothing here needs a shared volume,
+  a second agent id, or nginx surgery. Every compose call is:
+
+  ```bash
+  cd test/ha
+  export COMPOSE_FILES="-f docker-compose.ha.yaml"
+  export MSYS_NO_PATHCONV=1          # Git Bash rewrites container paths (W2-5)
+  docker compose $COMPOSE_FILES up -d --build
+  ```
+
+  Throughout, `psql` means:
+
+  ```bash
+  docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "<sql>"
+  ```
+
+  and `API` means `curl -sS -H "Authorization: Bearer ha-admin-token"` against
+  `http://localhost:18080`.
+
+- **Both agents stay up.** Unlike W2-7, attribution is free here: the agent's
+  `"approval timed out"` line carries `runID=<id>` (`internal/agent/approval.go:64-67`),
+  so `docker compose logs agent1 agent2 | grep <runID>` attributes unambiguously
+  and two agents means two 30 s gates can be in flight at once. Record which
+  agent claimed each run anyway (`runs.claimed_by`), because the clock-skew
+  measurement in Part B is **per-agent-container** and mixing two containers'
+  clocks into one number would be wrong.
+- **Workload:** `approval-short.payload.json` (`edge-approval-short`: `before` →
+  `gate` with `timeoutMinutes: 0.5` → `after`). Applied with
+  `POST /api/v1/jobs`; triggered with `POST /api/v1/runs` body
+  `{"jobName":"edge-approval-short"}`. `approval.payload.json`
+  (`edge-approval`, 10-minute gate) is the **control** workload for Part E.
+
+## Verified mechanism (read before running; do not re-derive)
+
+### (1) Why this needs no race at all
+
+The plan's Task 9 premise and W1-3's carry-forward lead agree, and the code
+confirms it: the vulnerable state **arises by itself and persists**.
+
+| Step | Code | Effect |
+|---|---|---|
+| agent creates the row | `internal/agent/approval.go:33-38` → `api_approvals.go:69-93` → `CreatePendingApproval` (`postgres.go:2430-2437`) | `run_approvals` row `status='Pending'`, `timeout_at = controller_now + 30 s` |
+| agent's local deadline | `approval.go:48` (`deadline := time.Now().Add(...)`), polled every `ApprovalPollInterval = 3 s` (`agent.go:27`) | on expiry logs `"approval timed out"` (`:64`) and returns **false** |
+| step + run fail | `orchestrator.go:362-367` reports the step `Failed`, `recordFailure()` | run reaches `Failed` |
+| the row is **not** touched | `approval.go:17-20` — "On timeout the agent has no decision endpoint (decisions are human-only), so the controller-side `run_approvals` row stays `Pending`" | row still `Pending`, `decided_by` NULL |
+| the only healer | `RunApprovalReaper` (`approval_reaper.go:22-39`), **1-minute** tick (`cmd/controller/main.go:403`), advisory lock `0x61707276` | marks it `TimedOut`/`system` on its next tick after `timeout_at` |
+
+So between the run's terminal write and the reaper's next tick there is a window
+— **0 to ~60 s wide, expected mean ~30 s** — in which the row is `Pending` and
+the run is `Failed`. Nothing in `DecideApproval` (`postgres.go:2439-2450`) or
+`handleDecideApproval` (`api_approvals.go:13-54`) consults the run:
+
+```sql
+UPDATE run_approvals
+SET status = $3, decided_by = $4, comment = $5, decided_at = now()
+WHERE run_id = $1 AND step_index = $2 AND status = 'Pending';
+```
+
+No join to `runs`, no run-status check, **no `timeout_at` check**. The handler
+never calls `GetRun`. `changed == true` ⇒ `204 No Content`.
+
+**Consequence for the runbook: Part A is not a race and must not be written as
+one.** Wait for the natural state, verify it with a read, then fire one POST.
+Only Part C is a race, and it races the *reaper*, not the timeout.
+
+### (2) The two clocks, and what a naive measurement would get wrong
+
+Two independent `time.Now()` calls in two different containers:
+
+- **controller clock** — `timeout_at = time.Now().Add(TimeoutMinutes × time.Minute)`
+  at `api_approvals.go:86-89`, evaluated in whichever controller replica served
+  the agent's `CreateApproval` POST.
+- **agent clock** — `deadline = time.Now().Add(time.Duration(timeoutMin*60) * time.Second)`
+  at `approval.go:48`, evaluated in the agent container.
+
+The plan lists "direction and magnitude of clock skew between the agent's
+`WaitForApproval` deadline and the controller's `timeout_at`" as **unresolved**
+(`plans/2026-07-30-edge-case-campaign-w2.md:92`). Settling it needs three
+quantities kept apart, because the observable difference is a **sum**, not the
+skew:
+
+```
+(agent log ts of "approval timed out")  −  timeout_at
+   =  clock_skew(agent → controller)                    ← the unknown
+    + code_gap                                          ← CreateApproval RTT + ReportStep RTT, :33-38 → :48
+    + poll_granularity                                  ← 0 … ApprovalPollInterval (3 s), see below
+```
+
+`poll_granularity` is not zero-mean and is worth reading off the loop
+(`approval.go:50-72`): the deadline check is *after* the `GetApproval` call and
+*before* the ticker wait, so expiry is detected on the first tick at or after
+`deadline`, i.e. the log line lands in `[deadline, deadline + 3 s)`. It can
+therefore only push the difference **up**, never down.
+
+**So measure the skew directly and use the log line as a cross-check, not as the
+primary instrument.** Direct measurement: read `date -u +%s.%N` inside the agent
+container and `SELECT NOW()` (and `date -u` in the controller container) as close
+together as the harness allows, repeatedly, and report the offset with its own
+sampling error. Docker containers on one host share the kernel clock, so the
+honest expected answer is "no skew beyond sampling noise" — **which is a real
+answer to the open question and must be reported as such**, together with the
+sign of the *observable* difference, which the code path guarantees is positive
+(agent deadline later) regardless of skew.
+
+### (3) The reaper race (Part C) is a two-writer CAS on one row
+
+Both writers are single autocommit statements guarded on the same predicate:
+
+| Writer | Statement | Guard |
+|---|---|---|
+| human decision | `DecideApproval`, `postgres.go:2439-2450` | `run_id=$1 AND step_index=$2 AND status='Pending'` |
+| reaper | `MarkExpiredApprovalsTimedOut`, `postgres.go:2473-2484` | `status='Pending' AND timeout_at IS NOT NULL AND timeout_at < now()` |
+
+Note the reaper's guard has a third conjunct, `timeout_at IS NOT NULL`, which the
+plan's summary at `:81` elides. Harmless here (the row always has one) but quote
+the statement, not the summary.
+
+Exactly one can match a row. Postgres row-level locking makes the outcome
+well-defined but not predictable from outside: the loser's `UPDATE` matches 0
+rows, and for `DecideApproval` that means `changed == false`, which
+`handleDecideApproval:44-52` turns into **409 "already decided"** (because
+`GetApproval` still finds the row — the 404 branch needs the row to be absent
+entirely). So the observable per-attempt outcome is a clean binary:
+
+- **human wins** → `204`, `status='Approved'`, `decided_by=<actor>`
+- **reaper wins** → `409`, `status='TimedOut'`, `decided_by='system'`
+
+and the reaper's win is independently visible in the controller log:
+`"approval reaper: marked timed-out approvals" count=N` (`approval_reaper.go:56`,
+guarded by `if n > 0`, so it fires only on a tick that actually reaped).
+
+**Phase-locking is mandatory (W2-4's lesson, `plan:59`).** The reaper's sweep
+grid must be measured, not guessed. Its `UPDATE` runs on **every** winning tick
+regardless of whether any row matches, so `log_statement='all'` sees the grid
+even on an idle stack — this is the one instrument that works here, and it is
+better than the stuck-run reaper's because no work needs to exist to see it.
+Budget per `plan:47`: **query load at `interval / N`** (expect 2-3 `UPDATE`s per
+minute clustered within ~10 ms on this 3-replica rig), **worst-case latency at
+the nominal 60 s**.
+
+### (4) What the docs actually say — read this before filing a contract violation
+
+W2-7's cited contract turned out to *sanction* the behaviour it was cited
+against. The same trap is set here, so quote and scope carefully.
+
+`docs/jobs.md:1740-1744` (Approval Step → "Constraints and v1 limitations"):
+
+> "When the step times out, the agent fails the step itself, so the run is
+> correctly marked as Failed. The approval audit row in `run_approvals` is
+> reconciled separately: a leader-elected controller reaper marks any expired
+> `Pending` row as `TimedOut` (with `decidedBy` = `system`) within roughly one
+> minute. The reaper only fixes the audit row — it never changes run status."
+
+Read it three ways and record which one you rely on:
+
+1. **As a prohibition on post-timeout decisions — it is NOT one.** Nothing in
+   this passage, in `docs/jobs.md:1712-1725` ("How to approve or reject" /
+   "Behavior"), or in `docs/authorization.md:13` says the decision endpoint stops
+   accepting decisions once `timeout_at` has passed or once the run is terminal.
+   On this limb the docs are **silent, not contradicted**, and the finding must
+   rest on I7.
+2. **As a statement of the intended reconciled end state — it is that.** The
+   passage tells an operator that a timed-out gate ends up `TimedOut`/`system`.
+   The observed end state is `Approved`/`<human>`. But note the escape: the
+   reaper's promise is scoped to "any expired **`Pending`** row", and once the
+   human's `UPDATE` commits the row is no longer `Pending` — so the *reaper*
+   behaves exactly as documented and citing it as a broken promise would repeat
+   W2-7's error. Use this limb as **context for severity**, not as the violation.
+3. **As designating `run_approvals` an audit record — it does, twice, and this is
+   the limb that matters.** `docs/jobs.md:1740` calls it "The approval audit
+   row"; `:1722` says "The identity of the decider is recorded (`decidedBy`) in
+   the audit record"; `docs/audit.md:4-5` calls `run_approvals` "the existing
+   per-run approval audit trail". So the product's own documentation classifies
+   the falsified row as an audit artifact, which is what makes I7's "audit rows
+   never contradict … reality" bite on it directly rather than by analogy.
+
+Also grep before filing, per house rule:
+`grep -rn -i "timeout_at\|after the timeout\|expired approval" docs/` and
+`grep -rn -i "approval" docs/audit.md docs/operations.md`.
+
+### (5) Operator surfacing — code-read, then confirm live
+
+Two surfaces, and they disagree about whether the decision is even offerable:
+
+- **Web UI (`web/src/routes/RunDetail.svelte:1230-1273`, `:1278+`)** — the
+  Approve/Reject buttons render **only** `{#if s.status === 'WaitingApproval'}`,
+  so the UI does **not** offer the post-timeout decision. But the `{:else if
+  approval?.decidedBy}` branch renders `Decided by <strong>{decidedBy}</strong>`
+  under a step whose badge reads `Failed`, with **no indication** the decision
+  arrived after the failure. So the UI cannot *cause* this state but displays it
+  as though it were ordinary.
+- **CLI (`internal/cli/approvals.go:31-68`)** — `unified-cli approve <run-id>
+  <step-index>` performs **no** run-state or approval-state lookup: it POSTs and,
+  on any status < 400, prints `approved step <n> of run <id>`. **This is the
+  honest trigger to demonstrate** — it needs no crafted curl and no knowledge
+  that the run has failed, which is what makes the scenario an ordinary-use
+  finding rather than an API-abuse one. Record that the CLI reports success.
+
+Record the mitigation honestly alongside the finding: a UI-only operator cannot
+reach this state, so the realistic actor is the CLI, the API, or an automation
+holding a `dev`-or-better token (`server.go:383` gates the route with `dev`;
+`docs/authorization.md:13` grants approve/reject to dev and above).
+
+## BASELINE GATE — do not proceed past a failing check
+
+Write every gate output to `$SCRATCH/gate.txt`.
+
+```bash
+SCRATCH="<scratchpad>/w2-8" ; mkdir -p "$SCRATCH"
+```
+
+- **G0 — worktree.** `git rev-parse --show-toplevel` is `.../wt-edge-spec` and
+  the branch is `plan/edge-case-w2`. The `test/ha` project name is
+  `unified-cd-ha` (`docker-compose.ha.yaml:1`), distinct from the developer
+  stack's `unified-cd`, so the two do not collide — but confirm with
+  `docker compose ls` that the dev stack is untouched.
+- **G1 — stack health.** All three controllers `healthy`; `API /readyz` → 200;
+  `GET /api/v1/agents` lists **agent1 and agent2**, both with
+  `capabilities` including `native` (W2-4: they advertise
+  `["native","container"]`). Capture the full agent list — a scenario that
+  assumes a capability without reading this has been wrong twice already.
+- **G2 — Postgres statement logging armed, and *verified in a fresh session*.**
+  **One `ALTER SYSTEM` per `psql -c`** — two in one `-c` is an implicit
+  transaction, Postgres refuses it, and `pg_reload_conf()` still returns `t`, so
+  the broken form is indistinguishable from success (established by W2-7,
+  `plan:80`).
+
+  ```bash
+  docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM SET log_statement='all';"
+  docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h ';"
+  docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
+  # fresh session — this is the check that matters
+  docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_statement;"   # must print: all
+  docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;"
+  ```
+
+  Record both `SHOW` outputs in the gate. **Revert at teardown and say so in the
+  findings** (W2-6 shipped a runbook whose revert could not have worked).
+- **G3 — the reaper is actually ticking.** With G2 armed, wait ~150 s and grep
+  the Postgres log for the reaper's own statement:
+
+  ```bash
+  docker compose $COMPOSE_FILES logs --no-log-prefix postgres --since 3m \
+    | grep -n "UPDATE run_approvals" > "$SCRATCH/gate-reaper-grid.txt"
+  ```
+
+  Expect clusters of 2-3 statements ~60 s apart. **Zero occurrences is a gate
+  failure, not a finding** — it means the instrument or the job is not what this
+  runbook assumes, and per `plan:50` a silent job has three possible causes of
+  which only one is a defect. Derive the grid's `(epoch mod 60)` phase and record
+  it; Part C aims at it.
+- **G4 — clock census.** Sample, in one command, `date -u +%s.%N` in agent1,
+  agent2, controller1 and postgres containers plus the host, three times a few
+  seconds apart. This is the direct instrument for §(2). Record the spread and
+  the sampling cost (the `exec` round-trip is the error bar).
+- **G5 — job applied and the timeout is really 30 s.** `POST /api/v1/jobs` with
+  `approval-short.payload.json` → 200. Then trigger one **throwaway** run, read
+  `GET /api/v1/runs/{id}/approvals` and confirm `timeoutAt − createdAt ≈ 30 s`
+  from the API body. This checks `plan:90`'s fractional-`timeoutMinutes`
+  resolution at the point of use rather than trusting it (the W1 carry-forward
+  lesson at `FINDINGS.md:498`). Let this run die naturally; it also warms the
+  images so Part A's timings are not first-run timings.
+- **G6 — audit log readable.** `API /api/v1/audit?limit=5` → 200 and a JSON
+  array. If this 500s (the API has been intermittently 500ing on this rig),
+  retry and record how many attempts it took; Part A's strongest evidence
+  depends on it.
+
+## Part A — the natural window (no race)
+
+**Deliverable:** a single psql read showing `runs.status='Failed'` and
+`run_approvals.status='Approved'` with a named human in `decided_by`, plus the
+matching `audit_logs` row at `status=204`.
+
+- **A1.** Trigger `edge-approval-short`; record `runID`, the trigger response
+  time (host clock), and `runs.claimed_by`.
+- **A2.** Poll `GET /api/v1/runs/{id}/approvals` every 1 s into
+  `$SCRATCH/partA-approvals-poll.txt` and `GET /api/v1/runs/{id}` every 1 s into
+  `$SCRATCH/partA-run-poll.txt`. These two continuous samplers are what pin the
+  window's edges; a point read after the fact cannot. Also capture
+  `timeout_at` from the first sample.
+- **A3.** Wait for `runs.status = 'Failed'`. Record:
+  - `t_timeout_at` (controller clock, from the DB),
+  - `t_run_failed` = `runs.updated_at` (DB clock),
+  - `t_agent_log` = the agent's `"approval timed out"` line
+    (`docker compose logs --no-log-prefix agent1 agent2 | grep <runID>`;
+    container clock — save the full grep to `$SCRATCH/partA-agent-log.txt`).
+  - **Confirm `run_approvals.status` is still `Pending` at this moment.** This is
+    the load-bearing observation of the whole scenario and it must come from a
+    sampler line, not from a read taken later.
+- **A4.** Fire the decision **once**, from two channels in two separate trials so
+  both are on record:
+  - trial A-api: `POST /api/v1/runs/{id}/approvals/1` body
+    `{"decision":"approve","comment":"w2-8"}` — capture status code and body
+    (`-w '%{http_code} %{time_total}'`);
+  - trial A-cli: the same via `unified-cli approve <run-id> 1` inside a container
+    that has the CLI (the `agent-enroll` service builds from `dev.Dockerfile` and
+    mounts the repo, so `go run ./cmd/unified-cli` works there) — capture the
+    exact stdout. Expected: it prints success.
+
+  Then **one** psql read capturing both rows together:
+
+  ```sql
+  SELECT 'RUN'  AS kind, r.id, r.status, r.updated_at::text, NULL, NULL, NULL
+    FROM runs r WHERE r.id = '<runID>'
+  UNION ALL
+  SELECT 'APPR', a.run_id, a.status, a.decided_at::text, a.decided_by,
+         a.timeout_at::text, a.created_at::text
+    FROM run_approvals a WHERE a.run_id = '<runID>';
+  ```
+
+  → `$SCRATCH/partA-contradiction.txt`. One artifact, both rows, one DB clock.
+- **A5 — the null checks that keep the classification honest.** After the
+  decision: re-read `runs.status` (expect still `Failed` — I1 intact); read
+  `step_reports` for the run and confirm the `after` step never ran and the
+  `gate` step is still `Failed`; confirm no new run exists with
+  `triggered_by` referencing this one. Capture to
+  `$SCRATCH/partA-noresume.txt`. If any of these is false the finding is much
+  larger and the classification changes — check, do not assume.
+- **A6 — the audit row.** `API /api/v1/audit?limit=20` filtered to this run id →
+  `$SCRATCH/partA-audit.txt`. Expect
+  `action=run.approval.decide`, `resource=<runID>`, `status=204`,
+  `actor=<the token's principal name>`. Written synchronously
+  (`audit.go:222-227`), so no polling. Also confirm from the same read that the
+  route **is** audited (W2-7 established agent routes are not; `server.go:383`
+  sits under the `auditLogMiddleware` mounted at `:357` — verify live, since this
+  row is the entry's strongest evidence).
+- **A7 — the reaper's non-intervention.** After the decision, wait for the next
+  two sweeps and show the row stays `Approved` (the reaper's guard no longer
+  matches) and that no `"approval reaper: marked timed-out approvals"` line
+  mentions it. Also record the `timeout_at → next sweep` latency for the §(4)
+  limb-2 comparison against "roughly one minute".
+- **A8 — the display.** Fetch the run detail page's two API reads and record what
+  the UI would render per `RunDetail.svelte:1268-1273`: step badge `Failed`,
+  caption `Decided by <actor>`. Note explicitly whether **anything** anywhere
+  flags the contradiction (expected: nothing).
+
+## Part B — the two clocks
+
+**Deliverable:** a signed, magnitude-bounded answer to `plan:92`, decomposed per
+§(2).
+
+- **B1.** From G4's census plus a repeat census taken during Part A, compute
+  `offset(agent_container → postgres)` and `offset(agent → controller)` with the
+  `exec` round-trip as the error bar. Save raw to `$SCRATCH/partB-clocks.txt`.
+- **B2.** From Part A's three timestamps compute the **observable** difference
+  `t_agent_log − t_timeout_at` and decompose it: subtract the measured
+  `code_gap` (available from the Postgres log — the `INSERT INTO run_approvals`
+  statement timestamp is when the controller evaluated `timeout_at`, and the
+  following `INSERT INTO step_reports` for the same run is the `ReportStep` at
+  `approval.go:39-46`, so the gap between them bounds the RTT term) and report
+  the residual against `poll_granularity ∈ [0, 3 s)`.
+- **B3.** Repeat over **≥3 runs** so the poll-granularity term is visibly
+  variable and the skew term visibly constant. Report direction and magnitude,
+  and state plainly if the answer is "skew is below the measurement floor" —
+  that resolves the open question as well as a non-zero number would, provided
+  the floor is stated.
+
+## Part C — racing the reaper (a distribution, not a result)
+
+**Deliverable:** a per-attempt outcome table over **≥6 phase-locked attempts**,
+with the winner attributed by three independent signals (HTTP status, row
+contents, controller log line).
+
+- **C1 — measure the grid.** From the Postgres log, extract every
+  `UPDATE run_approvals` statement with its `%m` timestamp into
+  `$SCRATCH/partC-grid.txt`; compute cluster instants, within-cluster spread,
+  between-cluster period, and the stable `(epoch mod 60)` phase. Do this
+  **immediately before** the attempts and re-check after — W2-4 measured ~13 ms
+  of drift per tick on the 30 s grid, so a 60 s grid over ten minutes may drift
+  visibly.
+- **C2 — aim.** For a target sweep instant `S`, the row must be `Pending` and
+  expired at `S`, so `timeout_at ∈ (S − 60 s, S)`; and to make the race tight,
+  fire the POST at `S`. `timeout_at ≈ trigger + (claim latency) + 30 s`, so
+  trigger at `S − 30 s − ε` for a small `ε` (a few seconds) and schedule the
+  POST for `S` with a busy-wait on the host clock (sleep to `S − 0.5 s`, then
+  spin). Record the *intended* and *actual* POST instants for every attempt —
+  an attempt whose POST missed the cluster by more than a few tens of ms is a
+  **missed aim**, and must be reported separately from a lost race.
+- **C3 — sweep the offset.** Do not fire every attempt at exactly `S`. Vary the
+  intended offset across `{−200, −50, −10, 0, +10, +50, +200} ms` so the
+  distribution has an x-axis; the interesting cell is `|offset| < spread` where
+  both writers are genuinely concurrent. Each attempt: fresh run, fresh row.
+- **C4 — record per attempt:** intended offset, actual POST instant (host
+  clock), HTTP status + `time_total`, resulting `status`/`decided_by`/`decided_at`
+  from `run_approvals`, the reaper `UPDATE`'s own log timestamp for that cluster,
+  and whether a `"marked timed-out approvals"` line appeared with what `count`.
+  Tabulate into `$SCRATCH/partC-attempts.txt`.
+- **C5 — report as a distribution.** N attempts, N-human-wins, N-reaper-wins,
+  N-missed-aim. **State the sample size next to every ratio** and do not
+  generalise a 6-attempt split into a probability. If every attempt is won by one
+  side, that is a legitimate finding about the ordering, but say it is 6/6 and
+  not "always".
+- **C6 — the point that survives whatever the split is.** Either outcome leaves
+  a defect: a human win writes `Approved` onto a `Failed` run (Part A's finding),
+  and a reaper win means the human's 409 "already decided" is the *only* signal
+  they get that their approval had no effect — which is itself a misleading
+  message, since nobody decided anything and the run had already failed. Record
+  the exact 409 body text.
+
+## Part D — is the window bounded by anything else?
+
+Short, cheap, and it forecloses an obvious reviewer question: *is the exposure
+really only ~60 s?*
+
+- **D1 — a `Pending` row on a run that failed for a different reason.** The
+  reaper's guard needs `timeout_at < now()`. A gate with a **long** timeout
+  (`approval.payload.json`, 10 minutes) on a run that is failed early — cancel it
+  via `POST /api/v1/runs/{id}/cancel` — leaves a row that is `Pending` and **not
+  yet expired**, so the reaper cannot touch it for ten minutes. Fire an approve
+  into that state and record the outcome. If it returns 204, the exposure window
+  is **`timeoutMinutes`**, not 60 s, and the default is 60 minutes
+  (`docs/jobs.md:1731`, `approval.go:22`) — a materially larger finding than
+  Part A's, and one that needs no timeout to occur at all.
+- **D2** — confirm from the same read whether the *cancelled* run's approval row
+  is ever reconciled by anything (grep the reaper's log lines and re-read after
+  two sweeps). If nothing ever reconciles a `Pending` row on a terminal run
+  before `timeout_at`, say so with the sample window that supports it.
+
+## Part E — controls
+
+A control is only a control if the injection was demonstrably clear for its whole
+window (house rule; W2-4/W2-6 both had to state this).
+
+- **E1 — the happy path.** A run approved **while the step is genuinely
+  `WaitingApproval`**: expect 204, `Approved`, run continues, `after` step runs,
+  run `Succeeded`, audit row `status=204`. This shows the 204 in Part A is not
+  simply "this endpoint always 204s" and that the fixture works.
+- **E2 — the already-decided path.** A second approve on E1's row: expect
+  **409** and an unchanged `decided_at`. This is the response code the buggy path
+  *should* have produced, and having it measured on the same rig is what makes
+  "204 is wrong" a comparison rather than an assertion.
+- **E3 — the absent-row path.** Approve step index `0` (the `before` step, which
+  has no approval row): expect **404 "no pending approval"**. Distinguishes the
+  three codes so Part A's 204 cannot be misread.
+- **E4 — after the reaper has run.** Approve a row that is already `TimedOut`:
+  expect 409. Bounds Part A's window on the far side.
+
+## Teardown
+
+```bash
+# revert the instrument FIRST, and verify in a fresh session
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM RESET log_statement;"
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM RESET log_line_prefix;"
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_statement;"   # must print: none
+docker compose $COMPOSE_FILES down -v
+```
+
+- **Kill every background sampler before teardown and say so in the findings.**
+  W2-6 left one running. Keep their PIDs in `$SCRATCH/samplers.pid` and `kill`
+  them explicitly, then show the process list is clear.
+- Copy `$SCRATCH` into the campaign evidence root at the wave checkpoint
+  (`test/edgecase/README.md` § "Raw evidence").
+
+## Recording rules
+
+- **Part A ⇒ major, I7**, if it reproduces: the record contradicts reality on all
+  three of I7's nouns at once, and one of them is an *audit* artifact, which is
+  the one thing that must not lie. Severity argument, stated rather than
+  asserted: the falsified row is durable, is attributed to a **named human**, is
+  surfaced in the UI as an ordinary decision, and is reachable by a documented
+  CLI command that reports success — but it does **not** cause execution
+  (nothing resumes, no side effect fires), which is why it is major and not
+  critical. Say both halves.
+- **Part D ⇒ escalates Part A's scope if it returns 204** — same invariant, same
+  entry or a sibling entry, but the window becomes `timeoutMinutes` (default 60
+  **minutes**) rather than ≤60 s, and no timeout is required. If it 404s or 409s,
+  record that as the bound it is.
+- **Part C ⇒ observation**, whichever way the split falls: the two-writer CAS is
+  as-designed (both statements are correct in isolation) and the risk it reveals
+  is the misleading 409. Do not inflate a lost race into a violation.
+- **Part B ⇒ measurement**, not a finding, unless the skew is large enough to
+  make `timeout_at` and the agent deadline disagree by more than the poll
+  interval — in which case it is a new observation about the fixture's
+  assumptions.
+- Entry titles must say **"observation"** for observation entries
+  (`FINDINGS.md:481`). A defect found in this campaign's own assets gets an
+  explicit `Classification:` line and sits outside both tallies (`FINDINGS.md:487`).
+- Every number cites a `$SCRATCH` filename whose time window covers it. Derived
+  figures say "derived"; code-read figures say "code-read"; uncaptured live
+  observations say `(observed live, raw output not captured to scratchpad)`.
