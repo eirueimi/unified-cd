@@ -66,9 +66,9 @@
 
 ## Verified mechanism (read before running; do not re-derive)
 
-> **CORRECTED AFTER THE 2026-07-30 RUN — four claims below are wrong or
-> incomplete, and the mistake in the first one is load-bearing. Read the
-> "Execution notes" at the end of this file before re-running.**
+> **CORRECTED AFTER THE 2026-07-30 RUN — five claims below are wrong or
+> incomplete, and the mistakes in the first and the fifth are load-bearing. Read
+> the "Execution notes" at the end of this file before re-running.**
 >
 > 1. **§(1)'s "the difference between `last_fired_at` and `created_at` is the
 >    check phase, in (0, 60)" is FALSE for a 1-minute cron.** A schedule with
@@ -79,17 +79,31 @@
 >    (`FINDINGS.md`, W2-6 "born ~59.9 minutes behind").
 > 2. **§(3)'s three failover cases collapse in the state actually observed.**
 >    Because the schedule is permanently in backlog, *every* check has an
->    occurrence due, so *every* promotion fires immediately — measured 5 times as
->    pairs of fires 198-372 ms apart carrying **different** occurrence binds.
->    That makes an ordinary failover an *extra catch-up* fire, never a duplicate,
->    which is the control §(3) was written to provide — but the reasoning that
->    gets there is different from what §(3) says.
+>    occurrence due, so *every* promotion fires immediately — measured **8** times
+>    as pairs of fires **123-372 ms** apart carrying **different** occurrence
+>    binds (whenever the promotion landed *after* that minute's check had already
+>    run; the other 12 promotions merely pulled the check a few hundred ms
+>    earlier). That makes an ordinary failover an *extra catch-up* fire, never a
+>    duplicate, which is the control §(3) was written to provide — but the
+>    reasoning that gets there is different from what §(3) says. **And the extra
+>    fire is not free bookkeeping: each one cut ~59.7 s off the schedule's lag
+>    (total −478.156 s over Arm A), so 20 kills left the schedule *healthier* than
+>    they found it.** Any re-run must expect leader churn to mask the drift.
 > 3. **The detector's "steady state: `d` ≈ the check phase" reading is wrong for
 >    the same reason** (it is ~3587), and the "`d` jumps by a full cron period"
 >    fingerprint is **transient — it lasted 60.36 s and was then erased** by the
 >    silent-advance branch. Read `n` (the fire count) as the durable signal.
 > 4. **Part E's DB backdating was not needed and was not performed.** Part D
 >    reached the `:197-201` silent-skip branch by pure fault injection.
+> 5. **§(1)'s table said the `:194` `UPDATE` runs "on another pool connection".
+>    It does not, and this is the load-bearing correction — it has been fixed in
+>    the table below.** In all 48 fires captured live under `log_statement='all'`
+>    the `INSERT INTO runs` and the `UPDATE schedules SET last_fired_at` were
+>    logged under the **same** Postgres backend pid (the pid changes *between*
+>    fires, as pgxpool hands out different connections, never *within* one). The
+>    defect is **two autocommit statements with no enclosing `Begin`**, not two
+>    connections — and the difference matters because the wrong phrasing sends a
+>    fixer to pool configuration instead of to the missing transaction.
 
 ### (1) The window, and what `last_fired_at` actually stores
 
@@ -98,8 +112,8 @@
 
 | # | Line | Call | Failure handling |
 |---|---|---|---|
-| 1 | `:189` | `st.CreateRun(...)` → `INSERT INTO runs … RETURNING id` on one pool connection (`internal/store/postgres.go:219-263`) | error → `continue`, `last_fired_at` untouched, retried next check |
-| 2 | `:194` | `st.UpdateScheduleLastFiredAt(ctx, sc.Name, next)` → `UPDATE schedules SET last_fired_at=$1, updated_at=NOW() WHERE name=$2` on **another** pool connection (`postgres.go:2159-2166`) | **error → `slog.Warn` at `:195` and nothing else. No retry, no compensation, no metric.** |
+| 1 | `:189` | `st.CreateRun(...)` → `INSERT INTO runs … RETURNING id` on a pooled connection (`internal/store/postgres.go:219-263`) | error → `continue`, `last_fired_at` untouched, retried next check |
+| 2 | `:194` | `st.UpdateScheduleLastFiredAt(ctx, sc.Name, next)` → `UPDATE schedules SET last_fired_at=$1, updated_at=NOW() WHERE name=$2` (`postgres.go:2159-2166`) — **measured live: the same Postgres backend pid as row 1, in all 48 fires.** The two statements are separate *autocommit transactions*, not separate connections; there is no `Begin` anywhere in `checkAndFireSchedules` | **error → `slog.Warn` at `:195` and nothing else. No retry, no compensation, no metric.** |
 
 **The value written is `next` — the cron occurrence — not the wall-clock instant
 of the fire.** That single fact governs every measurement below: for a
@@ -582,8 +596,10 @@ leaving no instrumentation behind rather than about this particular volume.
   schedule never fired again (8 consecutive checks, 0 runs, 0 log lines). Full
   numbers in `FINDINGS.md` (two W2-6 majors and two W2-6 observations).
 - **The stack needs no overlay, and the base `test/ha/nginx.conf` was
-  sufficient.** 22 `SIGKILL`s of controllers over 48 minutes produced no API
-  errors at all; the base config already carries `proxy_next_upstream`,
+  sufficient.** **21** `SIGKILL`s of controllers over 48 minutes (20 in Arm A plus
+  Part C's one — note that the session's *promotion* count is 22, one more, because
+  the initial election was not preceded by a kill) produced no API errors at all;
+  the base config already carries `proxy_next_upstream`,
   `max_fails=1` and a 2 s connect timeout. The `oneway` overlay was started
   once by mistake and then removed with a plain `up -d`, which cleanly recreated
   only nginx.
@@ -620,10 +636,20 @@ leaving no instrumentation behind rather than about this particular volume.
 - **A `BEFORE UPDATE … RAISE EXCEPTION` trigger is the way to fail one write;
   `REVOKE UPDATE` is not.** `unified` is the `POSTGRES_USER` superuser and
   bypasses privilege checks entirely.
-- **The host-side detector loop (`docker compose exec` per sample, 1.5 s cadence)
-  survived 48 minutes and 22 controller kills without a gap**, which is a better
-  record than the in-container `for` loops W2-5 lost. It must still be stopped
-  explicitly before teardown or it writes connection errors into its own capture.
+- **The host-side detector loop (`docker compose exec` per sample, `sleep 1.5` →
+  ~2.09 s effective cadence once exec latency is counted) survived 48 minutes and
+  21 controller kills without a gap**, which is a better record than the
+  in-container `for` loops W2-5 lost — **1,365 data rows over 2843.96 s, max gap
+  4.18 s, nothing above 5 s.** Budget ~2.1 s per sample, not 1.5 s, when sizing a
+  window. It must be stopped explicitly before teardown or it writes
+  connection errors into its own capture. **On this run that was not done**: the
+  loop outlived `down -v` and kept appending
+  `service "postgres" is not running` to `w2-6/detector.txt` indefinitely — 847
+  such rows within half an hour of teardown, and still growing when the capture
+  was audited. No evidence was damaged (every error row post-dates the last data
+  sample at `01:29:52.407`, and none is interleaved), but the file's tail is
+  garbage and it grows without bound. Kill the loop's PID explicitly; do not rely
+  on teardown to stop it.
 - **Budget ~50 minutes of wall time** on a warm stack: gate ~2 min, Part A
   ~6 min, Part B 20 attempts ~20 min (one per minute), Part C ~2 min, Part C2
   ~2 min, Part D ~11 min (recreate + 2 fires + 6 checks), census and teardown
