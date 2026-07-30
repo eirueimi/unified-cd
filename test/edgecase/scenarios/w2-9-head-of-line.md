@@ -482,3 +482,86 @@ docker compose $COMPOSE_FILES down -v
 - Every number cites a `$SCRATCH` filename whose time window covers it. Derived
   figures say "derived"; code-read figures say "code-read"; uncaptured live
   observations say `(observed live, raw output not captured to scratchpad)`.
+
+## Execution notes — 2026-07-30 run (read before re-running)
+
+Executed against `test/ha` at branch `plan/edge-case-w2`, `06:21:49Z – 06:49:55Z`.
+`log_statement='all'` was armed and reverted **three** times (short windows on
+purpose, see correction 3) and `log_line_prefix` was also `RESET` at teardown;
+every revert was verified in a **fresh** session (`w2-9/gate-g3-arm.txt`,
+`w2-9/partA-pglog-disarm.txt`, `w2-9/partB-pglog-disarm.txt`,
+`w2-9/partD-disarm.txt`, `w2-9/teardown.txt`). Stack torn down with `down -v`
+after cancelling all 64 non-terminal runs and confirming `mutex_holders` and
+held `named_lock_slots` were both empty. **Sampler hygiene was captured, not
+asserted:** `jobs` printed nothing and `ps -W | grep -iE "psql|curl|python"`
+matched nothing, on **two** passes (before the final revert and immediately
+before `down -v`) — `w2-9/teardown.txt`. Three `FINDINGS` entries: **2
+violations (both major) and 1 observation (minor)**; no branch-internal asset
+bug. The dev stack (`docker compose ls` project `unified-cd`) was untouched.
+
+**The hypothesis held in full, and the threshold is 50.** Part A reproduced on
+the first attempt: 36/36 poll samples `Pending`, 127 consecutive ticks whose
+candidate set was set-identical to the 50 oldest `Pending` rows, and the probe
+absent from every one. Part B's transition tick returned 50 candidates **with**
+the probe among them — the count at admission read off the snapshot's own row
+count. A second, cancel-free round agreed. §(1)'s arithmetic prediction was
+correct; it is now a measurement.
+
+**Six things a re-run should know.**
+
+1. **Part D did not exist in this runbook and is now the strongest single
+   result.** `docs/high-availability.md:163` — "After promotion, the new leader
+   processes any accumulated Pending Runs on the next tick — no runs are lost" —
+   is **false** above 50: with 58 accumulated, the first post-promotion tick
+   processed exactly 50. It is also the **cheapest** reproduction in the whole
+   scenario (51 `Pending` runs + one `docker compose kill`, no probe, no cancels,
+   no drain) and the only part that injects a real fault, which is what puts I5
+   properly in scope. **Run it first on a re-run.** Driver: `w2-9/partD.sh`.
+   §(4)'s doc survey missed this sentence because it greps for mutex/queue
+   vocabulary; grep `docs/high-availability.md` for `Pending` directly.
+2. **§G5 as written is unnecessary — the main experiment supplies it for free.**
+   The blocked runs *are* the ≥5-minute observation: 49 of them sat `Pending`
+   for 6 m 20.9 s – 6 m 26.4 s, and by teardown 58 were `Pending` with the
+   oldest at 25 m 50.2 s, with **0** `Failed` runs and **0** reaper log lines all
+   session. Do not spend a separate 5-minute serial wait on it.
+3. **Budget the instrument by the second, not the minute.** At 200 ms ticks with
+   50 candidates the leader alone writes ~2,300 Postgres log lines/s: a 25 s
+   window is **74,951 lines / 7.9 MB**, and the three captures here total 30 MB.
+   Arm, capture, disarm — never leave it on across a whole part. The rate itself
+   is a finding (252.0 aborted transactions/s), so capture one window
+   deliberately for that number.
+4. **The parser must match both pgx forms, and here *both* matter.** The phase-1
+   snapshot and the `FOR UPDATE` re-check are parameterised (`LOG: execute
+   stmtcache_<hash>: …` plus a `DETAIL: parameters: $1 = '<id>'` line), while
+   `begin` and `rollback` are arg-less (`LOG: statement: …`). The per-tick
+   candidate counter used throughout (inlined in `w2-9/partB.sh`-adjacent awk,
+   reproduced in `w2-9/partD.sh`) keys on the `execute … FOR UPDATE` line and
+   reads the *next* `DETAIL` line; it is what turns the raw log into the
+   "50 candidates, probe present/absent" table that carries the finding.
+5. **The probe's id will appear in the statement log even when it is starved —
+   from your own polling.** All 18 hits in the Part A capture were the
+   controller's `GetRun`/`GetRunParent` reads serving the harness's 5 s poll.
+   Do not read a bare `grep <probeID>` hit count as evidence either way; extract
+   the `FOR UPDATE` parameter set specifically.
+6. **Keep the holder alive for the whole experiment, or accept the churn
+   deliberately.** The 600 s hog gives ~4 minutes of margin after setup — enough
+   for Part A + Part B but not for a leisurely one. The *second* round exploited
+   the churn instead: after the hog exited, six `edge-sideeffect` runs held
+   `edge-mutex` back to back (each acquiring within 1.0 s of its predecessor's
+   release), and the probe stayed starved across **seven** holders for 787.6 s,
+   which demonstrates that the starvation depends on queue depth and not on any
+   one holder. That is a better result than the clean single-holder run and
+   costs only patience.
+
+**One number to read with care.** The two starvation windows (252.639 s and
+787.615 s) are **not** samples of a natural distribution — the first was ended by
+cancelling and the second by the backlog draining. Neither bounds the wait. What
+bounds it is the code, and the code does not: no reaper touches `Pending`, and
+`TransitionPendingToQueued` has no exclusion set for perpetually-blocked
+candidates (unlike `ListPendingRuns`). Report the measured windows and the
+code-read unboundedness separately; do not write "never".
+
+**Part C (the git-unresolved amplifier) was NOT executed** — it needs an
+unresolvable `git://` AppSource fixture this wave does not have. It is recorded
+as code-read only (`postgres.go:513-518`, `scheduler.go:291`), exactly as this
+runbook instructed.
