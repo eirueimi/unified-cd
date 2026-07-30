@@ -283,9 +283,15 @@ curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token
 
 # G1. Statement logging on, with host attribution. log_parameter_max_length is
 #     -1 on postgres:16-alpine (W2-1), so DETAIL parameter lines come free.
-docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c \
-  "ALTER SYSTEM SET log_statement='all'; ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h ';" \
-  -c "SELECT pg_reload_conf();"
+#     CORRECTED BY W2-7: one -c PER `ALTER SYSTEM`. Two of them in a single -c
+#     form one implicit transaction and Postgres refuses with `ALTER SYSTEM
+#     cannot run inside a transaction block`; pg_reload_conf() then still
+#     returns t and a NEW session still reports `none`, so the form below fails
+#     silently and looks exactly like the instrument working.
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
+  -c "ALTER SYSTEM SET log_statement='all'" \
+  -c "ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h '" \
+  -c "SELECT pg_reload_conf()"
 psql "SHOW log_statement;" ; psql "SHOW log_parameter_max_length;"   # expect all / -1
 
 # G2. Exactly one scheduler-lock holder, and identify it.
@@ -541,9 +547,11 @@ the ~60-minute total is **derived, and must be labelled derived**. Cross-referen
 
 ```bash
 # Revert the Postgres instrumentation and SAY that you did (campaign rule).
+# CORRECTED BY W2-7: one -c per ALTER SYSTEM — see gate G1.
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
-  -c "ALTER SYSTEM RESET log_statement; ALTER SYSTEM RESET log_line_prefix;" \
-  -c "SELECT pg_reload_conf();" -c "SHOW log_statement;"
+  -c "ALTER SYSTEM RESET log_statement" \
+  -c "ALTER SYSTEM RESET log_line_prefix" \
+  -c "SELECT pg_reload_conf()" -c "SHOW log_statement"
 # Drop the Part D injection if any arm exited early.
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
   -c "DROP TRIGGER IF EXISTS edge_block_sched_update ON schedules;" \

@@ -108,6 +108,41 @@
 
 ## Verified mechanism (read before running; do not re-derive)
 
+> **CORRECTED AFTER THE 2026-07-30 RUN — four claims below are wrong, and the
+> first is load-bearing for how the whole scenario should be read. Read the
+> "Execution notes" at the end of this file before re-running.**
+>
+> 1. **"The same zombie shape as W1-5" is FALSE for a connected agent.** Every
+>    executing process was fenced within one `CancelPollInterval` (5 s,
+>    `internal/agent/orchestrator.go:37`) of the terminal write — measured
+>    **0.939-4.938 s** across six terminal writes. `RunClaim` runs a cancel
+>    poller that `GetRun`s every 5 s and cancels the run's ctx on any terminal
+>    status (`orchestrator.go:124-152`). W1-5's 40.2 s / 162.5 s zombies were
+>    produced by a *partition*, which is what made its poller blind. So the harm
+>    in Parts A/B/D is **destroyed work**, not duplicated side effects, and I6's
+>    measurement is a *soft fence*, not an absence of one. Filed as a W2-7
+>    observation.
+> 2. **`MarkRunStepsInterrupted` writes `status = 'Failed'`, not
+>    `'Interrupted'`** (`internal/store/postgres.go:819-830`). The Part A
+>    deliverable that said "expect `Interrupted`" is wrong. The usable
+>    fingerprint of this path is `status='Failed'` with **`exit_code` NULL** and
+>    `ended_at` = the reap instant.
+> 3. **The gate's `ALTER SYSTEM` invocation as first written cannot work.** Two
+>    `ALTER SYSTEM` statements inside one `psql -c` are a single implicit
+>    transaction and Postgres answers `ERROR: ALTER SYSTEM cannot run inside a
+>    transaction block`; `pg_reload_conf()` then succeeds and a new session still
+>    reports `log_statement = none`, which looks exactly like the instrument
+>    working. **One `-c` per `ALTER SYSTEM`.** Fixed in the gate and teardown
+>    below (and in the W2-6 runbook, which carries the same broken form).
+> 4. **The route is `POST /api/v1/agents/{id}/runs/reconcile`**
+>    (`internal/controller/server.go:250`), not `.../reconcile-runs`. The Task 8
+>    brief and an earlier draft of this file used the latter.
+>
+> Two predictions that DID hold, for the record: Part D landed on the **first**
+> aimed attempt (predicted sweep instant `02:53:36.53` vs actual `02:53:36.543`),
+> and the twin's fallback onto `agent1`'s persisted credential worked exactly as
+> §"CREDENTIALS" in the overlay predicted.
+
 ### (1) Why two processes with one ID is a supported configuration by omission
 
 | Surface | File:line | What it does |
@@ -325,9 +360,14 @@ curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token
 
 # G2. Statement logging on. log_parameter_max_length is -1 on postgres:16-alpine
 #     (W2-1), so DETAIL parameter lines come free.
+#     ONE -c PER `ALTER SYSTEM`: two in a single -c form one implicit transaction
+#     and Postgres refuses with `ALTER SYSTEM cannot run inside a transaction
+#     block`, after which pg_reload_conf() still returns t and a new session
+#     still reports `none` — a silent no-op that looks like success.
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
-  -c "ALTER SYSTEM SET log_statement='all'; ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h ';" \
-  -c "SELECT pg_reload_conf();"
+  -c "ALTER SYSTEM SET log_statement='all'" \
+  -c "ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h '" \
+  -c "SELECT pg_reload_conf()"
 # SHOW in the SAME session still reports the old value (W2-6) — use a new one.
 psql "SHOW log_statement;" ; psql "SHOW log_parameter_max_length;"   # expect all / -1
 
@@ -578,8 +618,9 @@ Then watch the detector. Deliverables:
 kill $(cat "$SCRATCH/detector.pid")            # BEFORE down -v (W2-6 left one running)
 tail -3 "$SCRATCH/detector.txt"                # confirm the tail is data, not errors
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
-  -c "ALTER SYSTEM RESET log_statement; ALTER SYSTEM RESET log_line_prefix;" \
-  -c "SELECT pg_reload_conf();"
+  -c "ALTER SYSTEM RESET log_statement" \
+  -c "ALTER SYSTEM RESET log_line_prefix" \
+  -c "SELECT pg_reload_conf()"
 # Verify in a NEW session — SHOW in the reloading session still reports the old
 # value (W2-6).
 psql "SHOW log_statement;" ; psql "SHOW log_line_prefix;"
@@ -631,3 +672,115 @@ rule).
   `(observed live, raw output not captured to scratchpad)`.
 - Every numeric claim must trace to a capture whose time window covers it, and
   derived / inferred / code-read figures must be labelled as such.
+
+## Execution notes (added after the 2026-07-30 run — read before re-running)
+
+- **Outcome: all four parts landed, and Part D landed on the first aimed
+  attempt.** Seven `FINDINGS.md` entries (4 violations, 3 observations) — see
+  them for every number. Total wall time **28 minutes** on a warm image cache
+  (`02:30:50` up → `02:59:07` `down -v` complete), of which ~3 min was the
+  uninjected control and ~5 min was Part D's two-grid measurement. Budget 35 min
+  cold.
+- **The four corrections to the "Verified mechanism" section are at the top of
+  this file.** The load-bearing one is the soft fence: this scenario does **not**
+  produce W1-5-shaped zombies, because the agent's cancel poller can reach the
+  controller.
+- **`claimed_by` cannot attribute a run to a process, and this is the single
+  biggest practical constraint.** Both processes write the literal string
+  `agent1`. Every attribution in the findings comes from
+  `docker compose logs --no-log-prefix <service> | grep '"msg":"running"'`, and
+  in Part B the two runs happened to split one per process on the first try
+  (`edge-sideeffect` → `agent1`, `edge-longrun` → `agent1b`). **Do not assume the
+  split; check it, and re-trigger if both landed on one process.** Part D
+  additionally *requires* the run to be `agent1`'s, and got it first try — the
+  runbook's cancel-and-retry loop was never exercised.
+- **Part D's aim worked to 6-13 ms and the method generalises.** Measure two
+  grids from the statement log with the twin **stopped** — `agent1`'s claim-poll
+  `INSERT INTO agents(...)` clusters (17 requests within 5-17 ms, period
+  **30.033-30.040 s**) and `ListStuckRunIDs`' `LEFT JOIN agents a ON
+  r.claimed_by` clusters (2-3 within ~14 ms, period **30.002-30.007 s**) — then
+  trigger the run so `claimed_at` falls **2-10 s after** an upsert cluster and
+  stop the twin ~1 s after the last upsert cluster preceding `claimed_at + 58 s`.
+  That puts a ≥25 s slice of the ~28 s absence window past the 60 s claim grace,
+  which a 30 s sweep grid cannot miss. Predicted `02:53:36.53` / actual
+  `02:53:36.543`; predicted healing upsert `02:53:41.55` / actual `02:53:41.556`.
+- **`restart agent1` before Part D is not optional.** All 17 pollers of a freshly
+  started process fire together; a long-lived process's pollers drift and the gap
+  shrinks. Two independent grid measurements in this session (one after a
+  restart, one 5 minutes later with the twin also up) both showed clean 17-wide
+  clusters, so the drift is slow — but the restart makes the phase *known*.
+- **Both processes' upsert clusters are indistinguishable in the DB log.** The
+  statements are byte-identical and `log_line_prefix`'s `%h` is the
+  **controller's** address, not the agent's. Separate them by *phase*:
+  `agent1` at `02:48:41.165 + 30.038k`, the twin at `02:48:23.424 + 30.037k`.
+  Measure the grid with the twin stopped, then start it.
+- **`UpsertAgentOnClaim` vs `UpsertAgent` in the log:** the claim path's column
+  list is `(id, hostname, os, labels, version, env, last_seen_at)`; the register
+  path's has **`capabilities`** in it (`postgres.go:1083-1108` vs `:1118-1142`).
+  Grep on the exact list or you will conflate 17-per-30 s claim upserts with
+  one-per-process-start registrations.
+- **Cluster size is a busy-slot side channel:** 17 upserts when idle, **16**
+  while a run occupies the single execution slot. Useful as a cheap cross-check
+  that the run really is executing on the process you think.
+- **A bare `restart` of an *idle* agent deregisters cleanly, which qualifies
+  W2-2's fact.** W2-2 measured ~1.013 s to SIGKILL on a `restart`, but that agent
+  was *holding a run* (unbounded drain). An idle agent's SIGTERM path returns in
+  milliseconds and `Deregister` always lands: the `DELETE FROM agents` was
+  0.301-0.373 s after the host-clock SIGTERM in three statement-log measurements.
+  **Consequence: `restart agent1b` deletes the shared `agents` row too** (Part A2
+  produced a one-sample `agents=0` window at `02:39:15.452`). If an arm needs the
+  row preserved, do not restart either process.
+- **The detector is the only instrument that can see the absence window** and it
+  behaved well: **931 rows over ~25 min, max gap 1.73 s** with a host-side
+  `docker compose exec` loop at `sleep 1` (~1.58 s effective cadence). It
+  independently confirmed Part D (19 consecutive `agents=0` rows, with the run
+  flipping `Running → Failed` between the `02:53:36.362` and `02:53:37.944`
+  samples). **It was killed explicitly before `down -v`** and its tail is data,
+  not connection errors — W2-6 left one running and polluted its own capture.
+- **`psql -tAc` cannot use `left(id, 8)` on a `uuid` column** — `function
+  left(uuid, integer) does not exist`. Cast: `left(id::text,8)`. The detector's
+  first incarnation died on this instantly; the second uses a `.sql` file copied
+  into the container with `docker compose cp`, which also avoids the four-deep
+  quote nesting that `sh -c 'psql -c "…'\''…'\''…"'` requires.
+- **`bc` is not installed in this Git Bash.** For a wait-until-instant loop use
+  `awk 'BEGIN{...}'` with `exit !(a>=b)`, and never a tight busy loop without a
+  `sleep 0.05` — the first attempt spun for the full 2-minute tool timeout.
+- **`curl -o /dev/null` prints `curl: (23) Failure writing output to
+  destination` under `MSYS_NO_PATHCONV=1`.** The `-w '%{http_code}'` value is
+  still correct; it is noise, not a failure.
+- **Part C's token exchange is cheap and safe on a disposable rig, and it is the
+  strongest single piece of evidence in the scenario.** `docker compose run --rm
+  --no-deps -T agent-enroll sh -c 'cat /var/lib/unified-cd-agent/agent1/credentials.json'`
+  → `POST /api/v1/agents/token/refresh` with the refresh token as the bearer →
+  a 1 h access token, and then `logs`/`steps`/`finish` against a run a *different*
+  process is executing all answer 2xx. Note that the refresh **rotates**: capture
+  the credential once and reuse the access token. Neither live process showed an
+  auth failure afterwards. **Redact the two capture files** — they contain the
+  rig's (now-dead) token material.
+- **Reading the credential file also revealed that starting the twin had already
+  rotated it**: `refreshExpiresAt` equalled the twin's registration instant to the
+  millisecond. Two processes sharing one rotating credential file is a real
+  hazard past ~40 min (1 h access TTL minus a 15 m + ≤5 m jitter refresh lead);
+  it did not bite in a 28-minute session.
+- **Do NOT use `edge-sideeffect` for both Part B runs.** It holds `edge-mutex`, so
+  the second would sit `Pending` on the mutex and never be claimed. One
+  `edge-sideeffect` + one `edge-longrun`, with the `edge-sideeffect` triggered
+  first.
+- **`agent2` must be stopped for the whole scenario** or the arms become coin
+  tosses; it deregisters itself cleanly on `stop` (W2-1) and the agent inventory
+  then legitimately shows one row.
+- **`--profile dup` is needed for `ps`** but not for `up -d agent1b` /
+  `stop agent1b` (naming a service enables its profile). `--profile dup ps -a`
+  listing no `agent1b` row at all is the *evidence* that the control window had
+  no injection armed — capture it inside the control's own file.
+- **Instrumentation was reverted and verified in a fresh session**: `ALTER SYSTEM
+  RESET log_statement` / `RESET log_line_prefix` / `pg_reload_conf()`, then
+  `SHOW log_statement` → `none` and `SHOW log_line_prefix` → `%m [%p] `
+  (`w2-7/teardown.txt`). The stack was torn down with `--profile dup down -v`
+  (both volumes and the network removed, `ps -a` empty), and
+  `test/edgecase/sideeffect-data/sideeffect.log` was copied to the evidence root
+  and then deleted so the next scenario starts from zero.
+- **Postgres statement logging cost ~52 MB for 28 minutes** on this stack (~1.7
+  MB/min, lighter than W2-6's ~114 MB/50 min because there is no every-minute
+  schedule). The four `pg-*.log` captures are gzipped in the evidence root; total
+  evidence 2.7 MB.
