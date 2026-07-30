@@ -1,15 +1,24 @@
 # W2-5 — a `call:` child whose parent link is never written, and the orphan it leaves behind
 
-- **Invariants:**
-  - **I1 (run accounting)** is the pass/fail limb: every run must be reachable
-    from the system's own bookkeeping. A `call:` child's *only* persisted edge
-    to its parent is one column in one row; if that row is never written the
-    child is unreachable in both directions and no cascade, reaper, or UI can
-    attribute it to anything.
-  - **I3 (no orphaned side effects)** is the consequence limb: a child that
-    survives its parent's cancellation keeps executing real side effects — here
-    appends to `/data/child.log` — after the operator has been told the work is
-    cancelled.
+- **Invariants** (corrected after the 2026-07-29 run — the original draft of
+  this header cited **I3** for the consequence limb, which is wrong: campaign I3
+  is *no lock leaks* (`docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:50`)
+  and no mutex, semaphore or named-lock slot is involved in either workload here):
+  - **I1 (run accounting)** is cited as the **closest fit only**, not as the
+    limb that fails. The orphan does reach exactly one terminal state, so I1's
+    literal text is not contradicted; what I1 is stretched to cover is that the
+    run reaches it with no accounting edge to the parent. **The violation must
+    rest on published documentation, not on I1** — see §6.
+  - **I6 (zombie containment — *measure, don't judge*, per the design spec's own
+    caveat at `:53`)** is the consequence limb: a child that survives its
+    parent's cancellation keeps executing real side effects — here appends to
+    `/data/child.log` — after the operator has been told the work is cancelled.
+    Record the measured lifetime and side-effect count; do **not** score it
+    pass/fail.
+  - **I7 (state display consistency)** covers the reads: the child's
+    `GET /api/v1/runs/{id}` carries no `calledBy` and the parent's run detail
+    carries no call step at all, both of which contradict the reality that the
+    parent created that child.
 - **Stack:** `test/ha` + `oneway.override.yaml` (the `/data` bind mount both
   fixtures write to, plus the shared nginx IP blocklist) +
   `steplink.override.yaml` (this scenario's overlay: `nginx-steplink.conf`,
@@ -123,7 +132,7 @@ produces, for three independent reasons:
 3. **Even a delivered terminal report is discarded once the parent run is
    terminal.** `handleAgentStepReport` re-reads the run and, for
    `Succeeded/Failed/Cancelled`, returns **200 with `{"alreadyFinalized":true}`
-   before touching `step_reports`** (`api_agent.go:506-520`). So in exactly the
+   before touching `step_reports`** (`api_agent.go:506-521`). So in exactly the
    situation the link matters — the parent has been cancelled and the cascade
    has already run — the “self-heal” is answered `200 OK` and writes nothing.
    The agent cannot tell the difference.
@@ -152,7 +161,12 @@ location = /api/v1/agents/agent1/steps { include /etc/nginx/steplock/agent1/*.co
 `POST .../agents/agent1/runs/{runId}/children` → unaffected, because an
 nginx exact-match location wins over the prefix location and the child-create
 URI is a different path. Call 2 succeeds and call 3 is refused, deterministically,
-with no timing precision required at all.
+with no timing precision required at all. **Precisely: the substitution is
+deterministic *per URI*, but its *activation instant* is not** — the arm takes
+effect via `nginx -s reload`, and the 2026-07-29 run contains a counter-example
+where an already-connected agent's step report still succeeded inside a
+nominally armed window (see the execution notes below). Always probe-confirm the
+armed state from the agent's own traffic, not only from a host-side `curl`.
 
 **Be honest about the two costs of this substitution.**
 
@@ -171,6 +185,32 @@ with no timing precision required at all.
   specific observed production incident.
 
 ### (6) What the docs promise (search these before filing a violation)
+
+**RESOLVED by the 2026-07-29 run — use these three verdicts, do not re-derive
+them, and note that the obvious-looking citation is the wrong one:**
+
+- **`docs/jobs.md:671-673` is the PRIMARY citation and it holds without
+  qualification.** "Once the child run exists, the call step's status badge …
+  **remains accurate if the parent agent stops before it can submit a final step
+  report**." The child exists, the final report never lands, and there is no
+  step-1 row at all — so there is no badge to remain accurate.
+- **`docs/jobs.md:678` is NOT the contract, and citing it as one is a scoping
+  error.** Its "the child run is cancelled" clause lives inside the
+  `timeoutMinutes` sentence (`:675-678`), and this scenario's workload
+  (`test/edgecase/workloads/call-parent.payload.json`) sets **no**
+  `timeoutMinutes`. The sentence that governs the unset case (`:679-680`)
+  promises only that the *wait* ends, not that the child is cancelled. Quote
+  both and disclose the scoping; cite `:678` as evidence of *intent*.
+  `docs/high-availability.md:415-416` is likewise intent-corroboration only —
+  it is scoped to the startup/heartbeat reconcile endpoint, not to the human
+  cancel `POST /api/v1/runs/{id}/cancel` this scenario drives.
+- **`docs/jobs.md:707-708` says the *opposite* and must be adjudicated inside
+  the entry, not filed as a separate passing remark.** "Cancelling the parent
+  releases its slot, after which the child completes" describes exactly the
+  buggy outcome. Resolve it in place: the code cascades (`api_runs.go:382` under
+  the `:378-381` comment), a `Queued` descendant is cancelled just as readily as
+  a `Running` one, and both controls measured the cascade at 3.6-3.8 ms — so
+  `:707` is the stale sentence.
 
 - `docs/troubleshooting.md` — grep for `call:`/child/descendant/cascade before
   filing; record what is and is not said about a child outliving its parent.
@@ -379,14 +419,21 @@ docker compose $COMPOSE_FILES logs "$AG" | tail -40 | tee "$SCRATCH/armB-agentlo
 ## Recording (severity guidance)
 
 - **An orphan child that survives its parent's cancellation and runs to
-  completion = major (I1)**: the run reached a terminal state with no edge to
+  completion = major**: the run reached a terminal state with no edge to
   the only parent it ever had, so it is unreachable from every one of the seven
   `cancelDescendantRuns` entry points and from both directions of the WebUI
-  navigation. Cite the invariant *and* whatever `docs/` says about the cascade;
-  if the docs are silent, say so and rest the entry on I1.
-- **I3 is the second limb** if `/data/child.log` grows past the parent's
+  navigation. **Rest the entry on the published `docs/jobs.md:671-673` promise
+  (see §6), with I1 cited as closest fit only** — the orphan does reach exactly
+  one terminal state, so I1's literal text is not what is contradicted. Do not
+  rest a major on I1 alone here.
+- **I6 is the second limb** if `/data/child.log` grows past the parent's
   terminal timestamp: side effects continued after the operator was told the
-  work was cancelled. Quantify with marker timestamps, not adjectives.
+  work was cancelled. Quantify with marker timestamps, not adjectives — and per
+  I6's *measure, don't judge* caveat, report the lifetime and marker count
+  rather than scoring it. **Note the marker log is second-granular**, so derived
+  offsets from it carry ±1 s and must not be quoted to three decimals; only
+  DB-clock-to-DB-clock figures (e.g. child `Succeeded` minus parent terminal)
+  are exact. **Not I3** — I3 is *no lock leaks* and no lock is involved here.
 - **The `alreadyFinalized` 200 on the late self-heal report is a separate
   finding** — an observation at minimum (the agent is told its report
   succeeded when it was dropped), and it is what makes the
@@ -435,7 +482,36 @@ rm -f ../edgecase/sideeffect-data/child.log ../edgecase/sideeffect-data/parent.l
   `w2-5/partB-inject2.sh`. The void trial was not wasted — it became the
   **second control** (parent on `agent2`, child on `agent1`, cascade 3.628 ms,
   `w2-5/armA2-control2.txt`), which is worth keeping deliberately since the
-  first control had the agents the other way round.
+  first control had the agents the other way round. **But it is not an
+  *uninjected* control** — see the next note.
+- **`steplock` arms via `nginx -s reload`, and a host-side probe does NOT prove
+  the arm is in force for an already-connected agent.** This run contains a
+  direct counter-example: the lock was re-armed for `agent2` at `23:42:44.459Z`
+  (`w2-5/partB-rearm.txt`) and not cleared until `23:44:48.865Z`
+  (`w2-5/partB-b4-unlinked.txt`), yet `POST /api/v1/agents/agent2/steps`
+  **succeeded** inside that window twice — `200 87` at `23:43:19`
+  (`w2-5/nginx-full.log:451`) and `204` at `23:43:56` (`:498`). The captured
+  nginx exec PIDs are `43, 51, 59, 67, 75,
+  91, 105, 113, 121` — stride 8 everywhere, so **`83` is missing** and one nginx
+  exec in that interval went uncaptured. The plausible mechanism is that a
+  reload leaves the agent's established keepalive upstream connection served by
+  an old worker with the old config; either way, **treat "armed" as unproven
+  until you see a denial on traffic originating from the agent's own IP**
+  (`172.20.0.x`, `Go-http-client/1.1`), not just from a `curl` on
+  `172.20.0.1`.
+  - **Consequences for how the controls may be described:** control 1
+    (`09b5013b`, `23:40:52.085023` → `23:41:27.415940`) is fully clean — the
+    lock was cleared at `23:40:26` and not re-armed until `23:42:27` — and it
+    alone is sufficient to establish that the cascade works when the link
+    exists. Control 2 (`6eebe7ba`) must be described as *"the injection did not
+    cover its link-report window"* — its link WAS written at `23:42:35` while
+    clear (`nginx-full.log:335,336,338`, three `204`s) — and **not** as
+    uninjected.
+  - **Part B is unaffected and its window is independently verified from
+    inside:** the arm at `23:44:08.510227` was probe-confirmed `403` at
+    `23:44:09.321` and is bracketed by three logged agent-originated denials at
+    `23:44:16` (`nginx-full.log:539-545`); the clear is likewise confirmed by
+    the post-cancel `200 87` at `23:45:11` (`:672`) on the same path.
 - **A tight `docker compose exec … psql` poll loop inside a `tee`d pipeline
   died silently mid-run** (the tool call returned with the loop's output
   truncated after the arm step). The steplock was still armed and the child had
