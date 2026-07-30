@@ -1,8 +1,34 @@
 # W2-9 — Pending-snapshot head-of-line blocking
 
+> **CORRECTED AFTER EXECUTION — READ THIS BEFORE THE INVARIANTS BLOCK BELOW.**
+> **I1 is NOT the invariant for this scenario and must not be claimed on a
+> re-run.** The I1 reasoning set out immediately below was written before the
+> measurement and is **wrong**; it is kept verbatim, struck through in effect by
+> this note, because the *reason* it is wrong is a trap the campaign keeps
+> falling into. Two things killed it. (1) **Both probes reached exactly one
+> terminal state** — `Succeeded` at `06:27:52.866707` and `06:43:35.688398`
+> (`w2-9/partB4-outcome.txt`) — so the "zero terminal states" premise is false
+> on this scenario's own evidence. (2) **I1 has no liveness bound**, so "in zero
+> terminal states right now" is true of every non-terminal run at every instant;
+> the lower-bound reading proves too much and would make I1 violated by every
+> `Pending` row in the system. The only reading that would bite is "never
+> reaches one", and that is exactly what cannot be measured here, because every
+> starvation window has to be ended deliberately to end the experiment.
+> **What the scenario actually rests on:** a contradicted published contract,
+> `docs/high-availability.md:163`, **plus I5** — and I5 only on the Part D limb,
+> which is the only limb with a fault injection. See correction 1 in the
+> execution notes at the end of this file, and the single merged `FINDINGS.md`
+> entry.
+>
+> **The scenario yields ONE major and ONE observation.** An earlier draft filed
+> two majors; both described the same root cause (`scheduler.go:58`) and were
+> merged. Do not re-split them, and do not count `scheduler.go:58` twice in a
+> wave tally.
+
 - **Invariants** (quoted verbatim from
   `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:48-54`):
-  - **I1 (run accounting)** — "every API-accepted run reaches exactly one
+  - **I1 (run accounting)** — ***SUPERSEDED, see the correction box above; do not
+    claim this.*** "every API-accepted run reaches exactly one
     terminal state; no phantom runs from duplicate fires/webhooks" (`:48`).
     **This is the primary invariant and the fit is on the "exactly one" clause
     read as a lower bound, not an upper one.** The probe run is accepted by
@@ -23,9 +49,15 @@
   - **I5 (bounded recovery)** — "after fault injection the system returns to
     steady state within documented bounds (leader re-election ≤ seconds;
     stuck-run reap ≤ staleAfter 90s + interval 30s; the bounds in
-    `docs/high-availability.md` are the contract)" (`:52`). **Read the wording
-    before leaning on it: I5 has two preconditions and this scenario satisfies
-    neither cleanly.** (i) It injects **no fault** — no kill, no partition, no
+    `docs/high-availability.md` are the contract)" (`:52`). **PARTLY SUPERSEDED
+    — the two-gate test below is right and was kept, but its verdict changed
+    once Part D existed. Part D (SIGKILL of the scheduler leader, contradicting
+    `docs/high-availability.md:163`) satisfies BOTH gates, so I5 IS claimed
+    there and is the invariant that makes that document binding. On the no-fault
+    limb (Parts A/B) the verdict below stands unchanged: neither gate holds, and
+    I5 is an explicit null result.** The pre-execution reasoning follows. **Read
+    the wording before leaning on it: I5 has two preconditions and the Part A/B
+    setup satisfies neither cleanly.** (i) It injects **no fault** — no kill, no partition, no
     revocation; the state is produced by ordinary `POST /api/v1/runs` traffic
     against a documented feature. (ii) I5 names
     **`docs/high-availability.md`** as the source of the bounds, and that
@@ -450,6 +482,16 @@ docker compose $COMPOSE_FILES down -v
 
 ## Recording rules
 
+> **CORRECTED AFTER EXECUTION.** The two rules below that name I1 as the primary
+> invariant and I5 as "secondary and analogical" are **superseded**. As executed:
+> **I1 is not claimed at all** (both probes reached exactly one terminal state,
+> and I1 has no liveness bound — see the correction box at the top of this file);
+> **I5 IS claimed, but only on the Part D limb**, where a real fault is injected
+> and the contradicted sentence lives in the document I5 names; and Parts A/B
+> alone breach **no** invariant and **no** contract, which is precisely why the
+> Part D door is not filed separately. The severity argument in the first rule is
+> otherwise sound and was carried into the entry. Original text follows.
+
 - **Part A + Part B ⇒ major, primary I1**, if it reproduces: an API-accepted,
   fully runnable run with no concurrency configuration is never examined by the
   scheduler while an agent idles and nothing anywhere says why. Severity argument,
@@ -495,16 +537,26 @@ after cancelling all 64 non-terminal runs and confirming `mutex_holders` and
 held `named_lock_slots` were both empty. **Sampler hygiene was captured, not
 asserted:** `jobs` printed nothing and `ps -W | grep -iE "psql|curl|python"`
 matched nothing, on **two** passes (before the final revert and immediately
-before `down -v`) — `w2-9/teardown.txt`. Three `FINDINGS` entries: **2
-violations (both major) and 1 observation (minor)**; no branch-internal asset
-bug. The dev stack (`docker compose ls` project `unified-cd`) was untouched.
+before `down -v`) — `w2-9/teardown.txt`. **Two `FINDINGS` entries: 1 violation
+(major) and 1 observation (minor)**; no branch-internal asset bug. (An earlier
+draft filed **three** entries, splitting the Parts A/B door and the Part D door
+into two majors. They are the same root cause — the `limit = 50` at
+`scheduler.go:58` — and were merged into one; **W2-9 contributes 1 major + 1
+minor to the wave tally**.) The dev stack (`docker compose ls` project
+`unified-cd`) was untouched.
 
 **The hypothesis held in full, and the threshold is 50.** Part A reproduced on
 the first attempt: 36/36 poll samples `Pending`, 127 consecutive ticks whose
 candidate set was set-identical to the 50 oldest `Pending` rows, and the probe
 absent from every one. Part B's transition tick returned 50 candidates **with**
-the probe among them — the count at admission read off the snapshot's own row
-count. A second, cancel-free round agreed. §(1)'s arithmetic prediction was
+the probe among them. **State the instrument precisely when you write this up:**
+the count at admission is the per-candidate
+`SELECT status FROM runs WHERE id = $1 FOR UPDATE` tally used as a **1:1 proxy**
+for the snapshot's row count — verified from `internal/store/postgres.go:482-489`
+(that `FOR UPDATE` is `tryQueueRun`'s first statement after `BEGIN`, with no
+earlier return path, so exactly one is issued per snapshot row). It is not read
+off the snapshot statement itself, which logs no row count. A second,
+cancel-free round agreed. §(1)'s arithmetic prediction was
 correct; it is now a measurement.
 
 **Six things a re-run should know.**
@@ -519,6 +571,18 @@ correct; it is now a measurement.
    properly in scope. **Run it first on a re-run.** Driver: `w2-9/partD.sh`.
    §(4)'s doc survey missed this sentence because it greps for mutex/queue
    vocabulary; grep `docs/high-availability.md` for `Pending` directly.
+   **But do not file it as a finding of its own.** On its own the deviation from
+   `:163` is one extra tick per 50 runs (~200 ms, bounded) on a *queueable*
+   backlog — and this session never exercised a queueable backlog, because the
+   head 50 stayed mutex-blocked through all 41 post-promotion ticks. Alone that
+   is a docs gap, i.e. **minor**. It carries a major only in conjunction with
+   the Parts A/B measurements, which is why the two are one merged entry.
+   Two scoping escapes were checked and neither applies: "no runs are lost" is
+   a **second conjunct joined by an em dash** (a further promise, not a
+   narrowing of "any accumulated … on the next tick"), and the W2-7 scoping
+   check passes — `:163` sits under §"What happens during leader absence"
+   (`:157`), is about the post-promotion tick specifically, and nothing in
+   `:159-162` authorises a batch size.
 2. **§G5 as written is unnecessary — the main experiment supplies it for free.**
    The blocked runs *are* the ≥5-minute observation: 49 of them sat `Pending`
    for 6 m 20.9 s – 6 m 26.4 s, and by teardown 58 were `Pending` with the
@@ -538,6 +602,20 @@ correct; it is now a measurement.
    reproduced in `w2-9/partD.sh`) keys on the `execute … FOR UPDATE` line and
    reads the *next* `DETAIL` line; it is what turns the raw log into the
    "50 candidates, probe present/absent" table that carries the finding.
+   **And halve any grep count for a statement that FAILS.** A bare
+   `grep -c "INSERT INTO mutex_holders"` over the Part A capture returns
+   **12,700**, not 6,350, because each failing INSERT is logged **twice** —
+   once as the `execute` line and once as the `STATEMENT:` echo Postgres
+   attaches to the `ERROR`. The semantic count is `12,700 / 2 = 127 × 50 =`
+   **6,350**. `begin`, `rollback`, the `FOR UPDATE` and the `ERROR` line each
+   read directly at 6,350; only the INSERT doubles. Both
+   `w2-9/partA-pglog-analysis.txt` and `w2-9/derived-numbers.txt` record the raw
+   12,700, so anyone re-reading the captures will hit this.
+   **Also: `w2-9/partA-claim-log.txt`'s header line is wrong.** It says
+   "during 06:23:40-06:26:30", but the 273 figure it reports is its own
+   "count of agent1 claim polls in the whole 8m window" and its sample rows
+   start at `06:21:50.407`. Trust the 8-minute framing, not the header range;
+   re-deriving 273 from the header's ~2m50s span will not reproduce it.
 5. **The probe's id will appear in the statement log even when it is starved —
    from your own polling.** All 18 hits in the Part A capture were the
    controller's `GetRun`/`GetRunParent` reads serving the harness's 5 s poll.
@@ -547,8 +625,11 @@ correct; it is now a measurement.
    deliberately.** The 600 s hog gives ~4 minutes of margin after setup — enough
    for Part A + Part B but not for a leisurely one. The *second* round exploited
    the churn instead: after the hog exited, six `edge-sideeffect` runs held
-   `edge-mutex` back to back (each acquiring within 1.0 s of its predecessor's
-   release), and the probe stayed starved across **seven** holders for 787.6 s,
+   `edge-mutex` back to back (each acquiring within **~1 s** of its
+   predecessor's release — the largest gap is
+   `06:35:31.700684 → 06:35:32.707` = **1.006 s**, so do not write "within
+   1.0 s" as an earlier draft did; it is false by 6 ms), and the probe stayed
+   starved across **seven** holders for 787.6 s,
    which demonstrates that the starvation depends on queue depth and not on any
    one holder. That is a better result than the clean single-holder run and
    costs only patience.
