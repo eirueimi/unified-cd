@@ -105,6 +105,11 @@
      (`slog.Warn` at `:115`). So a run failed by a heartbeat reconcile is
      attributable only by *elimination* plus `runs.updated_at` and
      `step_reports`.
+- **Evidence root / drivers.** Captures from the 2026-07 execution are cited
+  by relative name (`w2-7/...`). They resolve against the campaign evidence
+  root, which is **not in this repository**: `<project parent>/edgecase-evidence/`,
+  a sibling of the checkout (`test/edgecase/README.md` § "Raw evidence"). The
+  drivers this runbook names are in the repo, under `test/edgecase/tools/w2/`.
 
 ## Verified mechanism (read before running; do not re-derive)
 

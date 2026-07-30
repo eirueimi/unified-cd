@@ -79,6 +79,11 @@
     (`Pending`) is *accurate* — the run really is pending. **The absence of an
     I7 hook is itself worth stating:** every surface tells the operator the
     truth, which is precisely why the condition is invisible.
+- **Evidence root / drivers.** Captures from the 2026-07 execution are cited
+  by relative name (`w2-9/...`). They resolve against the campaign evidence
+  root, which is **not in this repository**: `<project parent>/edgecase-evidence/`,
+  a sibling of the checkout (`test/edgecase/README.md` § "Raw evidence"). The
+  drivers this runbook names are in the repo, under `test/edgecase/tools/w2/`.
 
 ## Verified mechanism — the spec's original premise was inverted; read this first
 
@@ -684,7 +689,9 @@ correct; it is now a measurement.
    processed exactly 50. It is also the **cheapest** reproduction in the whole
    scenario (51 `Pending` runs + one `docker compose kill`, no probe, no cancels,
    no drain) and the only part that injects a real fault, which is what puts I5
-   properly in scope. **Run it first on a re-run.** Driver: `w2-9/partD.sh`.
+   properly in scope. **Run it first on a re-run.** Driver:
+   `../edgecase/tools/w2/w2-9-partD.sh`; the executable procedure is the Part D
+   section above.
    §(4)'s doc survey missed this sentence because it greps for mutex/queue
    vocabulary; grep `docs/high-availability.md` for `Pending` directly.
    **But do not file it as a finding of its own.** On its own the deviation from
@@ -714,8 +721,8 @@ correct; it is now a measurement.
    snapshot and the `FOR UPDATE` re-check are parameterised (`LOG: execute
    stmtcache_<hash>: …` plus a `DETAIL: parameters: $1 = '<id>'` line), while
    `begin` and `rollback` are arg-less (`LOG: statement: …`). The per-tick
-   candidate counter used throughout (inlined in `w2-9/partB.sh`-adjacent awk,
-   reproduced in `w2-9/partD.sh`) keys on the `execute … FOR UPDATE` line and
+   candidate counter used throughout (reproduced in
+   `../edgecase/tools/w2/w2-9-partD.sh` and in Part D above) keys on the `execute … FOR UPDATE` line and
    reads the *next* `DETAIL` line; it is what turns the raw log into the
    "50 candidates, probe present/absent" table that carries the finding.
    **And halve any grep count for a statement that FAILS.** A bare

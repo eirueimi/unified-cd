@@ -29,6 +29,11 @@ Throughout, `psql` means:
 ```bash
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "<sql>"
 ```
+- **Evidence root / drivers.** Captures from the 2026-07 execution are cited
+  by relative name (`w2-4/...`). They resolve against the campaign evidence
+  root, which is **not in this repository**: `<project parent>/edgecase-evidence/`,
+  a sibling of the checkout (`test/edgecase/README.md` § "Raw evidence"). The
+  drivers this runbook names are in the repo, under `test/edgecase/tools/w2/`.
 
 ## Verified mechanism (read before running; do not re-derive)
 
@@ -349,7 +354,7 @@ agent outage — the documented trigger — *is* a backlog. So:
 
 ```bash
 # Both agents cleanly stopped (agents rows deleted). Then:
-sh <scratch>/partB-backlog.sh 250 bk1
+sh ../edgecase/tools/w2/w2-4-partB-backlog.sh 250 bk1
 ```
 
 which submits 250 `edge-tick` runs via `tools/bulk-submit.sh`, computes the
@@ -541,7 +546,9 @@ docker compose $COMPOSE_FILES ps -a
   `registration − (first sweep past created_at + grace)`. Trials at −5, −1, +1,
   **+15 and +25** all survived, because those triggers happened to land where
   the boundary fell 25-27 s before the next sweep. **To make the boundary a real
-  coin flip you must phase-lock the trigger** (`partB-phase.sh`): the sweep grid
+  coin flip you must phase-lock the trigger**
+  (`../edgecase/tools/w2/w2-4-partB-phase.sh`, which calls
+  `w2-4-partB-trial.sh`): the sweep grid
   sits at a stable `(epoch mod interval)`, so choosing `created_at mod 30` fixes
   the head-room. At `created_at mod 30 ≈ 26.6` (≈2.4 s of head-room) a **+5.086 s**
   return lost and a **+1.110 s** return won. Report offsets measured from the

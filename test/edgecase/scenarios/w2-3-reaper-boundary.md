@@ -27,6 +27,11 @@ Throughout, `psql` means:
 ```bash
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "<sql>"
 ```
+- **Evidence root / drivers.** Captures from the 2026-07 execution are cited
+  by relative name (`w2-3/...`). They resolve against the campaign evidence
+  root, which is **not in this repository**: `<project parent>/edgecase-evidence/`,
+  a sibling of the checkout (`test/edgecase/README.md` § "Raw evidence"). The
+  drivers this runbook names are in the repo, under `test/edgecase/tools/w2/`.
 
 ## Verified mechanism (read before running; do not re-derive)
 
@@ -605,10 +610,11 @@ docker compose $COMPOSE_FILES ps -a
   (issued 0.400-0.677 s before the reap, returned 0.023-0.271 s after), so the
   signal was in flight across the 1 ms window every time and never landed in
   it. **`docker kill` round trip, recomputed from `w2-3/armD1-attempts.txt`
-  (`returned` − `issued`, i.e. `T1 − T0` at `armD1.sh:54-56`): 0.636-0.707 s.**
+  (`returned` − `issued`, i.e. the `T1` − `T0` pair bracketing the `docker kill` in
+  `test/edgecase/tools/w2/w2-3-armD1.sh`): 0.636-0.707 s.**
   An earlier version of this note said `0.642-0.657 s` and added a `docker
   start` figure of `0.468-0.481 s`; neither traces to a capture, and
-  `armD1.sh:56` takes `T1` *before* the `docker start` at `:57`, so the restart
+  the script takes `T1` *before* the `docker start` that follows, so the restart
   was never timed at all. Derived per-attempt probability ~`1/670` ≈ 0.15%. **Do not re-run this arm with container-level
   injection** — it needs a finer instrument. Note that an in-container
   `kill -9 1` does **not** work: the kernel ignores SIGKILL sent to PID 1 from

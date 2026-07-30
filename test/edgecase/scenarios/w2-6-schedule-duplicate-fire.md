@@ -63,6 +63,11 @@
   (4) `pg_locks` for the scheduler key, which per W2-1 is the *one* advisory key
   a point-in-time census can see reliably, because the scheduler is the one job
   that holds its lock across ticks (`scheduler.go:30,45-56`).
+- **Evidence root / drivers.** Captures from the 2026-07 execution are cited
+  by relative name (`w2-6/...`). They resolve against the campaign evidence
+  root, which is **not in this repository**: `<project parent>/edgecase-evidence/`,
+  a sibling of the checkout (`test/edgecase/README.md` § "Raw evidence"). The
+  drivers this runbook names are in the repo, under `test/edgecase/tools/w2/`.
 
 ## Verified mechanism (read before running; do not re-derive)
 

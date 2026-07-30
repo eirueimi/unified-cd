@@ -84,6 +84,11 @@
   `POST /api/v1/jobs`; triggered with `POST /api/v1/runs` body
   `{"jobName":"edge-approval-short"}`. `approval.payload.json`
   (`edge-approval`, 10-minute gate) is the **control** workload for Part E.
+- **Evidence root / drivers.** Captures from the 2026-07 execution are cited
+  by relative name (`w2-8/...`). They resolve against the campaign evidence
+  root, which is **not in this repository**: `<project parent>/edgecase-evidence/`,
+  a sibling of the checkout (`test/edgecase/README.md` § "Raw evidence"). The
+  drivers this runbook names are in the repo, under `test/edgecase/tools/w2/`.
 
 ## Verified mechanism (read before running; do not re-derive)
 
@@ -555,12 +560,12 @@ has **no** `ctx.Err()` check between stages; and `EvalCondition`
   `GET /api/v1/runs/{rid}`. Predict one period forward and fire `cancel` then
   `approve` from **one process** so that the approve commits ~0.45 s before the next
   predicted approval tick while the next cancel tick is still ≥3 s away. Firer:
-  `w2-8/partF.py`. Measured aim accuracy: predicted-vs-actual approval tick
+  `../edgecase/tools/w2/w2-8-partF.py`. Measured aim accuracy: predicted-vs-actual approval tick
   **+1.77 ms / −0.61 ms**.
   - **Do not poll `GET /api/v1/runs/{id}` from the host while doing this** — that is
     the cancel poller's exact path and it pollutes the grid you are about to read
     back. Use `GET /api/v1/runs?limit=N` or `/steps` instead.
-- **F2 — capture, per attempt** (`w2-8/partF-capture.sh`). The five artifacts that
+- **F2 — capture, per attempt** (`../edgecase/tools/w2/w2-8-partF-capture.sh`). The five artifacts that
   matter, in order of load-bearing-ness:
   1. **`SELECT … FROM logs WHERE run_id=… AND step_index=2`** — the post-gate step's
      own stdout. **This is the proof of execution**; nothing else could write it.
@@ -580,7 +585,8 @@ has **no** `ctx.Err()` check between stages; and `EvalCondition`
   Repeat with the approve fired **8 s** after the cancel (outside the 5 s fence).
   Expect: `204` and `Approved` (the Part A defect, unchanged) but **zero** step-2
   log lines, and the agent's `"received cancellation signal from master;
-  interrupting run"` line present. Firer: `w2-8/partF-control.py`.
+  interrupting run"` line present. Firer:
+  `../edgecase/tools/w2/w2-8-partF-control.py`.
 - **F4 — one wide-gap attempt.** Repeat F1 with the cancel→approve gap at ~2.5 s to
   show the window is the whole fence and not just the ~120 ms of the first hits.
 - **Recording.** If a post-gate step runs, this is a **separate violation entry**,
@@ -647,8 +653,8 @@ Executed against `test/ha` at branch `plan/edge-case-w2`, `03:52:16Z – 04:42:1
 Instrument armed at `03:52:45.9` (verified `log_statement=all` in a fresh session)
 and reverted at `04:42:08` (verified `none` in a fresh session, `w2-8/teardown.txt`);
 stack torn down with `down -v`. **No background sampler was left running** — every
-sampler in this scenario is a bounded foreground loop inside `partA.sh` /
-`partC2.sh` / the Part D2 command, `jobs` was empty and no stray `psql`/`curl`
+sampler in this scenario is a bounded foreground loop inside
+`../edgecase/tools/w2/w2-8-partA.sh` / `w2-8-partC2.sh` / the Part D2 command, `jobs` was empty and no stray `psql`/`curl`
 process remained at teardown (that claim was prose-only in this session — it was
 actually captured in the Part F session, see below). Three FINDINGS entries from
 this session: **1 violation (major, I7) and 2 observations (minor)**; no
@@ -684,7 +690,8 @@ and E3 exactly. The audit row was present with no polling.
 3. **A shell busy-wait cannot phase-lock anything on Windows.** The first Part C
    driver looped on `date`+`awk` subprocesses and overshot by **~120 ms**, so
    attempts C1–C3 are missed aims, not lost races. Fire from a single process:
-   `w2-8/fire.py` sleeps to an absolute epoch and spins the last 15 ms
+   `../edgecase/tools/w2/w2-8-fire.py` sleeps to an absolute epoch and spins
+   the last 15 ms
    (overshoot 0.33–0.94 ms measured). **But the real floor is the request
    pipeline** — host→`UPDATE` latency is **49.9–64.3 ms** with ~14 ms of jitter,
    so aims inside about −55 ms are a coin toss and −100 ms or wider wins
@@ -694,7 +701,7 @@ and E3 exactly. The audit row was present with no polling.
    reaper's arg-less query logs as `LOG: statement: …`. A parser matching only
    `statement:` sees every sweep and **zero** decisions — the first version of
    this scenario's `grid.awk` did exactly that and looked like it was working.
-   Use `w2-8/grid2.awk`, which also reads `DETAIL: parameters: $1 = '<run id>'`.
+   Use `../edgecase/tools/w2/w2-8-grid2.awk`, which also reads `DETAIL: parameters: $1 = '<run id>'`.
    Comparing the two statements on the Postgres clock is the right instrument for
    the race anyway: it removes every cross-clock correction.
 5. **`docker compose logs --since` lags several seconds.** A read taken 3 s after

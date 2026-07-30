@@ -22,6 +22,11 @@
 - **Instrumentation:** none beyond `docker compose logs` and psql. Unlike W2-1
   this scenario does not need Postgres statement logging: every transition it
   cares about is either a controller log line or a `runs`/`step_reports` row.
+- **Evidence root / drivers.** Captures from the 2026-07 execution are cited
+  by relative name (`w2-2/...`). They resolve against the campaign evidence
+  root, which is **not in this repository**: `<project parent>/edgecase-evidence/`,
+  a sibling of the checkout (`test/edgecase/README.md` § "Raw evidence"). The
+  drivers this runbook names are in the repo, under `test/edgecase/tools/w2/`.
 
 ## Verified API/mechanism (do not re-derive)
 

@@ -19,6 +19,11 @@
   This changes a *database server* setting, not product code and not
   `test/ha/`, and it is reverted in Teardown. It is the only way to observe
   the ten per-tick jobs, whose locks are held for milliseconds (see below).
+- **Evidence root / drivers.** Captures from the 2026-07 execution are cited
+  by relative name (`w2-1/...`). They resolve against the campaign evidence
+  root, which is **not in this repository**: `<project parent>/edgecase-evidence/`,
+  a sibling of the checkout (`test/edgecase/README.md` § "Raw evidence"). The
+  drivers this runbook names are in the repo, under `test/edgecase/tools/w2/`.
 
 ## Verified API/mechanism (do not re-derive)
 
@@ -324,7 +329,8 @@ show a `pg_try_advisory_lock` every 200ms with no unlock ever.
 
 ### Two traps in the reduction script (found the hard way on 2026-07-29)
 
-The 2026-07-29 run's reduction script (`w2-1/analyze.py` in the evidence root)
+The 2026-07-29 run's reduction script (`test/edgecase/tools/w2/w2-1-analyze.py`;
+the 2026-07-29 output is `w2-1/analyze-*.txt` in the evidence root)
 works and its lock numbers are sound, but it shipped with two defects that any
 later scenario reusing it — or reimplementing it — must handle. Both are in the
 *published* artifact, so a reader will meet them.
@@ -332,7 +338,7 @@ later scenario reusing it — or reimplementing it — must handle. Both are in 
 1. **Statement matching sees only the first physical line of a statement, so
    multi-line SQL silently matches the wrong query.** The line regex requires the
    `%m [%p] h=%h` log prefix, which only the first line of a multi-line statement
-   carries. `analyze.py:54` therefore labels a row `ListPendingRuns(git resolver)`
+   carries. `w2-1-analyze.py` therefore labels a row `ListPendingRuns(git resolver)`
    while actually counting `TransitionPendingToQueued`: the latter's SQL is one
    line (`internal/store/postgres.go:440`) containing all three required
    substrings, the former's is three lines (`postgres.go:2066-2068`) whose first
@@ -345,7 +351,7 @@ later scenario reusing it — or reimplementing it — must handle. Both are in 
    `w2-1/unlocked-jobs-per-host-final.txt` does, and it is the file to trust).
 2. **The overlap check cannot see sticky holds, so it can never report a
    split-brain on the scheduler's key.** Intervals are built only from
-   `try`→`unlock` pairs on one pid (`analyze.py:102-114`) and the overlap scan
+   `try`→`unlock` pairs on one pid (`w2-1-analyze.py`, the pairing pass) and the overlap scan
    iterates that interval list (`:130-141`). An acquisition that is never
    released produces no interval at all — it lands in the separate "unreleased"
    list — so the scheduler, the one job whose lock *is* sticky, contributes zero

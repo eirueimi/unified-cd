@@ -46,6 +46,11 @@ Throughout, `psql` means:
 ```bash
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "<sql>"
 ```
+- **Evidence root / drivers.** Captures from the 2026-07 execution are cited
+  by relative name (`w2-5/...`). They resolve against the campaign evidence
+  root, which is **not in this repository**: `<project parent>/edgecase-evidence/`,
+  a sibling of the checkout (`test/edgecase/README.md` § "Raw evidence"). The
+  drivers this runbook names are in the repo, under `test/edgecase/tools/w2/`.
 
 ## Verified mechanism (read before running; do not re-derive)
 
@@ -489,7 +494,7 @@ rm -f ../edgecase/sideeffect-data/child.log ../edgecase/sideeffect-data/parent.l
   arm's child and cleared the steplock ~7 s before the call step even started,
   so that trial produced a normally-linked child. Poll for
   `created_at > <parent.created_at>`; the fixed script is
-  `w2-5/partB-inject2.sh`. The void trial was not wasted — it became the
+  `test/edgecase/tools/w2/w2-5-partB-inject2.sh`. The void trial was not wasted — it became the
   **second control** (parent on `agent2`, child on `agent1`, cascade 3.628 ms,
   `w2-5/armA2-control2.txt`), which is worth keeping deliberately since the
   first control had the agents the other way round. **But it is not an
