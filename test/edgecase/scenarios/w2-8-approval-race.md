@@ -25,7 +25,7 @@
     steady state within documented bounds (leader re-election ≤ seconds;
     stuck-run reap ≤ staleAfter 90s + interval 30s; the bounds in
     `docs/high-availability.md` are the contract)" (`:52`). **In scope only for
-    one narrow number**: `docs/jobs.md:1740-1744` promises the approval reaper
+    one narrow number**: `docs/jobs.md:1739-1742` promises the approval reaper
     reconciles an expired `Pending` row "within roughly one minute". Measure the
     `timeout_at` → `TimedOut` latency and compare. But note this scenario injects
     **no fault** — the window is produced by ordinary API use — so if the latency
@@ -198,7 +198,7 @@ the nominal 60 s**.
 W2-7's cited contract turned out to *sanction* the behaviour it was cited
 against. The same trap is set here, so quote and scope carefully.
 
-`docs/jobs.md:1740-1744` (Approval Step → "Constraints and v1 limitations"):
+`docs/jobs.md:1739-1742` (Approval Step → "Constraints and v1 limitations"):
 
 > "When the step times out, the agent fails the step itself, so the run is
 > correctly marked as Failed. The approval audit row in `run_approvals` is
@@ -209,7 +209,7 @@ against. The same trap is set here, so quote and scope carefully.
 Read it three ways and record which one you rely on:
 
 1. **As a prohibition on post-timeout decisions — it is NOT one.** Nothing in
-   this passage, in `docs/jobs.md:1712-1725` ("How to approve or reject" /
+   this passage, in `docs/jobs.md:1698-1725` ("How to approve or reject" /
    "Behavior"), or in `docs/authorization.md:13` says the decision endpoint stops
    accepting decisions once `timeout_at` has passed or once the run is terminal.
    On this limb the docs are **silent, not contradicted**, and the finding must
@@ -385,7 +385,9 @@ matching `audit_logs` row at `status=204`.
   mentions it. Also record the `timeout_at → next sweep` latency for the §(4)
   limb-2 comparison against "roughly one minute".
 - **A8 — the display.** Fetch the run detail page's two API reads and record what
-  the UI would render per `RunDetail.svelte:1268-1273`: step badge `Failed`,
+  the UI would render per `RunDetail.svelte:1316-1320` (the single-sequential copy;
+  the grouped/matrix copy at `:1269-1273` is identical but is not the one this
+  one-step-per-stage fixture reaches): step badge `Failed`,
   caption `Decided by <actor>`. Note explicitly whether **anything** anywhere
   flags the contradiction (expected: nothing).
 
@@ -464,7 +466,7 @@ really only ~60 s?*
   yet expired**, so the reaper cannot touch it for ten minutes. Fire an approve
   into that state and record the outcome. If it returns 204, the exposure window
   is **`timeoutMinutes`**, not 60 s, and the default is 60 minutes
-  (`docs/jobs.md:1731`, `approval.go:22`) — a materially larger finding than
+  (`docs/jobs.md:1732`, `approval.go:22`) — a materially larger finding than
   Part A's, and one that needs no timeout to occur at all.
 - **D2** — confirm from the same read whether the *cancelled* run's approval row
   is ever reconciled by anything (grep the reaper's log lines and re-read after
@@ -643,7 +645,12 @@ and E3 exactly. The audit row was present with no polling.
    said it was not.** §(5) is right for the *timed-out* case (the gate step reads
    `Failed`, so no buttons render) and **wrong** for the cancelled case:
    `GET /runs/{id}/steps` still returns step 1 `WaitingApproval` on a `Cancelled`
-   run, so `RunDetail.svelte:1246-1266` renders live Approve/Reject buttons.
+   run, so `RunDetail.svelte` renders live Approve/Reject buttons — and cite the
+   branch that actually draws them: `edge-approval` puts one step per stage, so
+   `group.steps.length == 1` (`:1206`) and the **single-sequential** copy renders
+   (`{#if s0.status === 'WaitingApproval'}` at **`:1295`**, handlers at **`:1308`**
+   / **`:1312`**, caption **`:1316-1320`**), not the grouped/matrix copy at
+   `:1247-1266`/`:1269-1273` that an earlier draft cited.
    Do not repeat the claim that only the CLI/API can reach this.
 3. **A shell busy-wait cannot phase-lock anything on Windows.** The first Part C
    driver looped on `date`+`awk` subprocesses and overshot by **~120 ms**, so
@@ -675,7 +682,9 @@ and E3 exactly. The audit row was present with no polling.
    and the *controller* image's `date` has no `%N` at all, so the controller clock
    cannot be read directly. What settles it is **row-internal brackets**:
    `(timeout_at − run_approvals.created_at) − 30 s` bounds controller↔Postgres to
-   **<54 µs**, and `step_reports[0].started_at − runs.claimed_at` together with
+   **<51 µs** (the tightest of the 16 rows, `a9b519eb` at `−51 µs`; the widest is
+   `−525 µs`, and the bracket is **one-sided** — a two-sided bound needs the stated
+   assumption `|skew(pg−ctrl)| ≲ 51 µs`), and `step_reports[0].started_at − runs.claimed_at` together with
    `run_approvals.created_at − step_reports[0].ended_at` bracket agent↔Postgres to
    `(−3.54, +4.69) ms`. Use those.
 8. **§(2)'s `poll_granularity` term is ~0 for this fixture, not `U(0, 3 s)`.**
