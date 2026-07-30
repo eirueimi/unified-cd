@@ -1,9 +1,9 @@
 # W2-8 — approval decision racing the timeout boundary
 
 - **Invariants** (quoted verbatim from
-  `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:44-55`):
+  `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:48-54`):
   - **I7 (state display consistency)** — "run status, approval status, and audit
-    rows never contradict each other or reality" (`:55`). This is the primary
+    rows never contradict each other or reality" (`:54`). This is the primary
     invariant and the fit is unusually literal: the three nouns I7 names are
     exactly the three artifacts this scenario puts into contradiction —
     `runs.status = 'Failed'`, `run_approvals.status = 'Approved'` with a named
@@ -520,3 +520,85 @@ docker compose $COMPOSE_FILES down -v
 - Every number cites a `$SCRATCH` filename whose time window covers it. Derived
   figures say "derived"; code-read figures say "code-read"; uncaptured live
   observations say `(observed live, raw output not captured to scratchpad)`.
+
+## Execution notes — 2026-07-30 run (read before re-running)
+
+Executed against `test/ha` at branch `plan/edge-case-w2`, `03:52:16Z – 04:42:19Z`.
+Instrument armed at `03:52:45.9` (verified `log_statement=all` in a fresh session)
+and reverted at `04:42:08` (verified `none` in a fresh session, `w2-8/teardown.txt`);
+stack torn down with `down -v`. **No background sampler was left running** — every
+sampler in this scenario is a bounded foreground loop inside `partA.sh` /
+`partC2.sh` / the Part D2 command, `jobs` was empty and no stray `psql`/`curl`
+process remained at teardown. Three FINDINGS entries: **1 violation (major, I7)
+and 2 observations (minor)**; no branch-internal asset bug.
+
+**Predictions that held.** Part A needed no race, exactly as §(1) argued: the
+`Failed`/`Pending` state was on a sampler line within 0.66 s of the terminal
+write, and one POST returned `204`. The reaper grid was visible from the first
+gate check (§G3 never failed). The `409`/`404` disambiguation in §(3) matched E2
+and E3 exactly. The audit row was present with no polling.
+
+**Eight corrections for a re-run:**
+
+1. **Part D was the bigger finding, and the runbook under-weighted it.** It is
+   written as a short "forecloses a reviewer question" probe; in fact it removes
+   the timeout from the story altogether. A 10-minute gate on a **cancelled** run
+   sat `Pending` with **9m48s** left on `timeout_at` and accepted `204`. Run Part
+   D **before** Part C on a re-run: the exposure window is `timeoutMinutes`
+   (default 60 **minutes**), not the ≤60 s the timeout path gives, and no timeout
+   need occur.
+2. **And Part D's shape is reachable from the Web UI, which the runbook's §(5)
+   said it was not.** §(5) is right for the *timed-out* case (the gate step reads
+   `Failed`, so no buttons render) and **wrong** for the cancelled case:
+   `GET /runs/{id}/steps` still returns step 1 `WaitingApproval` on a `Cancelled`
+   run, so `RunDetail.svelte:1246-1266` renders live Approve/Reject buttons.
+   Do not repeat the claim that only the CLI/API can reach this.
+3. **A shell busy-wait cannot phase-lock anything on Windows.** The first Part C
+   driver looped on `date`+`awk` subprocesses and overshot by **~120 ms**, so
+   attempts C1–C3 are missed aims, not lost races. Fire from a single process:
+   `w2-8/fire.py` sleeps to an absolute epoch and spins the last 15 ms
+   (overshoot 0.33–0.94 ms measured). **But the real floor is the request
+   pipeline** — host→`UPDATE` latency is **49.9–64.3 ms** with ~14 ms of jitter,
+   so aims inside about −55 ms are a coin toss and −100 ms or wider wins
+   reliably. Budget that, not the clock.
+4. **The Postgres log parser must handle both statement forms.** `DecideApproval`
+   is parameterised, so it logs as `LOG: execute stmtcache_<hash>: …`; the
+   reaper's arg-less query logs as `LOG: statement: …`. A parser matching only
+   `statement:` sees every sweep and **zero** decisions — the first version of
+   this scenario's `grid.awk` did exactly that and looked like it was working.
+   Use `w2-8/grid2.awk`, which also reads `DETAIL: parameters: $1 = '<run id>'`.
+   Comparing the two statements on the Postgres clock is the right instrument for
+   the race anyway: it removes every cross-clock correction.
+5. **`docker compose logs --since` lags several seconds.** A read taken 3 s after
+   a sweep did not contain that sweep, which looked momentarily like a *skipped*
+   sweep (it was not — the row was `TimedOut` at the expected instant). Use
+   `--since 150s` and wait ≥6 s before reading, and never conclude "the job did
+   not run" from a `logs --since` window alone.
+6. **Two Windows path traps.** With `MSYS_NO_PATHCONV=1` set (required, W2-5),
+   `curl -o /c/Users/...` fails with "No such file or directory" — write bodies
+   to stdout instead — and Windows `python` must be handed a `C:/Users/...` path,
+   not `/c/Users/...`. Both cost an attempt here.
+7. **The clock instruments the runbook proposed are the wrong ones.** §(2)'s
+   `docker exec date` census has a **±280 ms** error bar (exec startup dominates)
+   and the *controller* image's `date` has no `%N` at all, so the controller clock
+   cannot be read directly. What settles it is **row-internal brackets**:
+   `(timeout_at − run_approvals.created_at) − 30 s` bounds controller↔Postgres to
+   **<54 µs**, and `step_reports[0].started_at − runs.claimed_at` together with
+   `run_approvals.created_at − step_reports[0].ended_at` bracket agent↔Postgres to
+   `(−3.54, +4.69) ms`. Use those.
+8. **§(2)'s `poll_granularity` term is ~0 for this fixture, not `U(0, 3 s)`.**
+   30 s is exactly ten `ApprovalPollInterval`s and the ticker starts with the
+   deadline, so the last tick lands on the deadline. Every observed difference was
+   6.6–19.5 ms. A `timeoutMinutes` whose truncated whole-second value is not a
+   multiple of 3 (e.g. `0.52` → 31 s) would add up to ~2 s — so the fixture, not
+   the design, is why this scenario's numbers are milliseconds.
+
+**One measurement to read with care.** The `timeout_at → TimedOut` latencies
+(19.056–21.744 s, 11 rows) are **not** a sample of the natural distribution: 10 of
+the 11 come from Part C, which deliberately placed `timeout_at` ~20 s ahead of a
+sweep. The only unaimed sample is the §G5 throwaway run at **21.744 s**. The
+structural bound from the measured 60.012 s grid is `[0, 60.02) s`.
+
+**Invariant citation:** the invariant table is at
+`docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:48-54` (I7 = `:54`).
+An earlier draft of this file cited `:44-55`.
