@@ -301,7 +301,16 @@ times if the budget allows). Statement logging is on for the whole of Part B.
 psql "ALTER SYSTEM SET log_statement='all';"
 psql "ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h ';"
 psql "SELECT pg_reload_conf();"
+# Verify from FRESH sessions — each `psql` above is its own invocation, and a
+# SHOW issued in the reloading session still reports the stale value (W2-6/W2-7).
+# Both settings, because `h=%h` is what carries per-replica attribution.
+psql "SHOW log_statement;"     # must print: all         — STOP if it prints none
+psql "SHOW log_line_prefix;"   # must print: %m [%p] h=%h — STOP if the h= is missing
 ```
+
+**Both gates are STOP-on-mismatch.** `t_sweep` below is read out of the
+statement log and every per-replica attribution in this scenario rests on
+`h=%h`; with the instrument unarmed the trials produce no usable timing.
 
 **Per trial, record — all measured, none intended:**
 
@@ -325,6 +334,9 @@ gzip -9 "$SCRATCH/partB-postgres-full.log"
 psql "ALTER SYSTEM RESET log_statement;"
 psql "ALTER SYSTEM RESET log_line_prefix;"
 psql "SELECT pg_reload_conf();"
+# Verify the revert from FRESH sessions, both settings (see the arm block).
+psql "SHOW log_statement;"     # must print: none
+psql "SHOW log_line_prefix;"   # must print: %m [%p]
 ```
 
 **Recording:** a run **failed while an eligible agent was already live and
@@ -515,10 +527,13 @@ nothing can claim it. Demonstrate that at the end of the arm — it is one
 
 ```bash
 # ALTER SYSTEM cannot run inside a transaction block, so these must be separate
-# psql invocations (W2-3 execution note).
+# psql invocations (W2-3 execution note), and the SHOW verification must be
+# separate again — a SHOW in the reloading session reports the stale value.
 psql "ALTER SYSTEM RESET log_statement;"
 psql "ALTER SYSTEM RESET log_line_prefix;"
 psql "SELECT pg_reload_conf();"
+psql "SHOW log_statement;"     # must print: none
+psql "SHOW log_line_prefix;"   # must print: %m [%p]
 sh ../edgecase/tools/inject.sh nginx-unblock || true   # no service argument
 docker compose $COMPOSE_FILES down -v
 docker compose $COMPOSE_FILES ps -a

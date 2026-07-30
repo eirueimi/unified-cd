@@ -296,8 +296,12 @@ SCRATCH="<scratchpad>/w2-9" ; mkdir -p "$SCRATCH"
   docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
   # fresh session — this is the check that matters
   docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_statement;"    # must print: all
-  docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;"
+  docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;"  # must print: %m [%p] h=%h
   ```
+
+  **STOP on either mismatch.** Part D's tick/candidate parser keys on `host=`
+  from the prefix, so an unarmed `h=%h` silently destroys the attribution that
+  every per-replica claim in this scenario rests on.
 
   Record both `SHOW` outputs. **Revert at teardown and say so in the findings**
   (W2-6 shipped a runbook whose revert could not have worked).
@@ -517,6 +521,10 @@ docker compose $COMPOSE_FILES logs controller1 controller2 controller3 --since 3
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM SET log_statement='all';"
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_statement;"   # must print: all
+# D7's parser reads host= out of the prefix, so re-confirm the Phase 0 prefix is
+# STILL in force here. Both checks are STOP-on-mismatch: with either one wrong
+# the tick/candidate measurement below is unattributable and must not be scored.
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;"   # must print: %m [%p] h=%h
 sleep 3
 
 # D4. SIGKILL the leader; poll the two survivors for the promotion line.
@@ -536,6 +544,8 @@ docker compose $COMPOSE_FILES logs --no-log-prefix postgres --since 120s > "$SCR
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM RESET log_statement;"
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_statement;"   # must print: none
+# This step disarms log_statement ONLY; the prefix stays armed until Teardown.
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;"   # must STILL print: %m [%p] h=%h
 
 # D6. Restore the killed replica so later parts still have >=2 candidates.
 docker compose $COMPOSE_FILES start "$LEADER"
@@ -585,6 +595,7 @@ docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM 
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM RESET log_line_prefix;"
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_statement;"   # must print: none
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;" # must print: %m [%p]
 docker compose $COMPOSE_FILES down -v
 ```
 

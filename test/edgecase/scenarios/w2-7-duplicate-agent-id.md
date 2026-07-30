@@ -383,8 +383,12 @@ docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
   -c "ALTER SYSTEM SET log_statement='all'" \
   -c "ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h '" \
   -c "SELECT pg_reload_conf()"
-# SHOW in the SAME session still reports the old value (W2-6) — use a new one.
-psql "SHOW log_statement;" ; psql "SHOW log_parameter_max_length;"   # expect all / -1
+# SHOW in the SAME session still reports the old value (W2-6) — use a new one,
+# and read BOTH armed settings: `h=%h` is what attributes each statement to a
+# replica, which is the whole basis of this scenario's duplicate-ID evidence.
+psql "SHOW log_statement;"     # must print: all         — STOP if it prints none
+psql "SHOW log_line_prefix;"   # must print: %m [%p] h=%h — STOP if the h= is missing
+psql "SHOW log_parameter_max_length;"   # expect -1 (informational, not a gate)
 
 # G3. Exactly one scheduler leader (0x65786364 = 1702388580 decimal — W2-6 got
 #     this conversion wrong once and read 0, which looks like a dead scheduler).
@@ -649,7 +653,7 @@ docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
   -c "SELECT pg_reload_conf()"
 # Verify in a NEW session — SHOW in the reloading session still reports the old
 # value (W2-6).
-psql "SHOW log_statement;" ; psql "SHOW log_line_prefix;"
+psql "SHOW log_statement;" ; psql "SHOW log_line_prefix;"   # must print: none / %m [%p]
 docker compose $COMPOSE_FILES logs postgres > "$SCRATCH/pg-full.log"
 docker compose $COMPOSE_FILES logs -t controller1 controller2 controller3 > "$SCRATCH/controllers-full.log"
 docker compose $COMPOSE_FILES logs --no-log-prefix agent1  > "$SCRATCH/agent1-full.log"

@@ -318,7 +318,12 @@ docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
   -c "ALTER SYSTEM SET log_statement='all'" \
   -c "ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h '" \
   -c "SELECT pg_reload_conf()"
-psql "SHOW log_statement;" ; psql "SHOW log_parameter_max_length;"   # expect all / -1
+# Verify from FRESH sessions (a SHOW in the reloading session reports the stale
+# value), and read BOTH armed settings — `h=%h` is what carries the per-replica
+# attribution this scenario's fire-source claims rest on.
+psql "SHOW log_statement;"     # must print: all         — STOP if it prints none
+psql "SHOW log_line_prefix;"   # must print: %m [%p] h=%h — STOP if the h= is missing
+psql "SHOW log_parameter_max_length;"   # expect -1 (informational, not a gate)
 
 # G2. Exactly one scheduler-lock holder, and identify it.
 psql "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=1702388580;"  # expect 1
@@ -603,7 +608,12 @@ the ~60-minute total is **derived, and must be labelled derived**. Cross-referen
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
   -c "ALTER SYSTEM RESET log_statement" \
   -c "ALTER SYSTEM RESET log_line_prefix" \
-  -c "SELECT pg_reload_conf()" -c "SHOW log_statement"
+  -c "SELECT pg_reload_conf()"
+# The SHOW must NOT be a fourth -c of the invocation above: that session predates
+# the reload and always reports the stale value, so it would "pass" regardless.
+# Separate invocations = fresh sessions, and read BOTH settings.
+psql "SHOW log_statement;"     # must print: none
+psql "SHOW log_line_prefix;"   # must print: %m [%p]
 # Drop the Part D injection if any arm exited early.
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified \
   -c "DROP TRIGGER IF EXISTS edge_block_sched_update ON schedules;" \

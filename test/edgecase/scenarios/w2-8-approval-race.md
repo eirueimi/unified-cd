@@ -305,8 +305,12 @@ SCRATCH="<scratchpad>/w2-8" ; mkdir -p "$SCRATCH"
   docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
   # fresh session — this is the check that matters
   docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_statement;"   # must print: all
-  docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;"
+  docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;"  # must print: %m [%p] h=%h
   ```
+
+  **STOP on either mismatch.** The `h=%h` prefix is what attributes each
+  statement to a replica; without it the approval-race captures below lose the
+  per-replica attribution they are scored on, and nothing else would reveal it.
 
   Record both `SHOW` outputs in the gate. **Revert at teardown and say so in the
   findings** (W2-6 shipped a runbook whose revert could not have worked).
@@ -606,6 +610,7 @@ docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM 
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM RESET log_line_prefix;"
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
 docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_statement;"   # must print: none
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;" # must print: %m [%p]
 docker compose $COMPOSE_FILES down -v
 ```
 
