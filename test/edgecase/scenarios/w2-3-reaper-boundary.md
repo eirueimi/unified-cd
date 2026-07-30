@@ -426,10 +426,21 @@ SQL, best stated as such rather than dressed up as a measurement.
 Do this **first**. An attempt count is only interpretable next to a window
 width. Use W2-1's statement-logging technique:
 
+**One `ALTER SYSTEM` per `psql` invocation, and verify from a fresh session.**
+`psql` here is `-tAc`, i.e. a single `-c`: two `ALTER SYSTEM` statements inside
+one of them form an implicit transaction that Postgres refuses outright
+(`ERROR: ALTER SYSTEM cannot run inside a transaction block`), while the
+trailing `pg_reload_conf()` still returns `t` — so the broken form looks exactly
+like a working instrument and records **nothing**. Arm D0's whole 1 ms-window
+measurement rides on this statement log, so the `SHOW` is not optional. Each
+`psql` call above is its own `docker compose exec`, hence its own fresh session.
+
 ```bash
-psql "ALTER SYSTEM SET log_statement='all';
-      ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h ';
-      SELECT pg_reload_conf();"
+psql "ALTER SYSTEM SET log_statement='all';"
+psql "ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h ';"
+psql "SELECT pg_reload_conf();"
+psql "SHOW log_statement;"     # must print: all      — STOP if it prints none
+psql "SHOW log_line_prefix;"   # must print: %m [%p] h=%h
 ```
 
 Then drive **one natural reap of a linked parent**: trigger `edge-call-parent`,
@@ -524,7 +535,12 @@ the window is unreachable.
 ## Teardown
 
 ```bash
-psql "ALTER SYSTEM RESET log_statement; ALTER SYSTEM RESET log_line_prefix; SELECT pg_reload_conf();"
+# One ALTER SYSTEM per psql invocation (see Arm D0), verified from a fresh session.
+psql "ALTER SYSTEM RESET log_statement;"
+psql "ALTER SYSTEM RESET log_line_prefix;"
+psql "SELECT pg_reload_conf();"
+psql "SHOW log_statement;"     # must print: none
+psql "SHOW log_line_prefix;"   # must print: %m [%p]
 sh ../edgecase/tools/inject.sh nginx-unblock || true
 docker compose $COMPOSE_FILES down -v
 docker compose $COMPOSE_FILES ps -a

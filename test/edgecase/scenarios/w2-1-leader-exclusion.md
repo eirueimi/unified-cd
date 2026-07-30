@@ -204,11 +204,23 @@ done | tee "$SCRATCH/controller-ips.txt"
 
 ## Phase 0 — enable statement logging
 
+**One `ALTER SYSTEM` per `psql -c`.** Two of them in a single `-c` form one
+implicit transaction and Postgres refuses the whole thing with `ERROR: ALTER
+SYSTEM cannot run inside a transaction block` — but the trailing
+`pg_reload_conf()` still returns `t`, so the broken form is indistinguishable
+from success at the terminal and records nothing (established by W2-7). The
+only check that matters is the `SHOW` from a **fresh session**, i.e. a separate
+`docker compose exec` after the reload.
+
 ```bash
-docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c \
-  "ALTER SYSTEM SET log_statement='all'; ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h '; SELECT pg_reload_conf();"
-docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c "SHOW log_statement;"
+docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c "ALTER SYSTEM SET log_statement='all';"
+docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c "ALTER SYSTEM SET log_line_prefix='%m [%p] h=%h ';"
+docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
+# fresh session — this is the check that matters
+docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -tAc "SHOW log_statement;"
 # expect: all
+docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;"
+# expect: %m [%p] h=%h
 ```
 
 Every `pg_try_advisory_lock` and `pg_advisory_unlock` is now recorded with a
@@ -531,8 +543,12 @@ Then re-run the Phase 1 census and record:
 ## Teardown
 
 ```bash
-docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c \
-  "ALTER SYSTEM RESET log_statement; ALTER SYSTEM RESET log_line_prefix; SELECT pg_reload_conf();"
+# One ALTER SYSTEM per -c (Phase 0), and verify from a FRESH session.
+docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c "ALTER SYSTEM RESET log_statement;"
+docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c "ALTER SYSTEM RESET log_line_prefix;"
+docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
+docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -tAc "SHOW log_statement;"    # must print: none
+docker compose -f docker-compose.ha.yaml exec -T postgres psql -U unified -tAc "SHOW log_line_prefix;"  # must print: %m [%p]
 docker compose -f docker-compose.ha.yaml down -v
 docker compose -f docker-compose.ha.yaml ps -a
 ```
