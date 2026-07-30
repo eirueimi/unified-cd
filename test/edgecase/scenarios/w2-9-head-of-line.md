@@ -466,6 +466,112 @@ this wave does not have. **Record it as code-read** (`postgres.go:513-518`,
 `scheduler.go:291`) and say plainly that it was not executed and why. Do not
 present it as measured.
 
+## Part D — the post-promotion tick, against a published contract
+
+**RUN THIS FIRST.** It is the scenario's strongest single result and its
+cheapest: 51+ accumulated `Pending` runs and one `docker compose kill`. No
+probe, no cancel series, no drain — Part A's A1+A2 (hog plus bulk submit) is the
+entire setup, and Part D can be taken straight off the back of them before the
+probe is ever triggered. It is also the **only** limb with a fault injection,
+which is what puts I5 properly in scope; Parts A/B alone breach no invariant and
+no contract.
+
+**The contract.** `docs/high-availability.md:163`, under §"What happens during
+leader absence" (`:157`):
+
+> "After promotion, the new leader processes any accumulated Pending Runs on the
+> next tick — no runs are lost"
+
+Above 50 accumulated this is false: `scheduler.go:58`'s `limit = 50` caps the
+snapshot, so the first post-promotion tick processes 50, not "any accumulated".
+§(4)'s doc survey misses this sentence because it greps for mutex/queue
+vocabulary — grep `docs/high-availability.md` for `Pending` directly.
+
+Two scoping escapes were checked and neither applies: "no runs are lost" is a
+**second conjunct joined by an em dash** (a further promise, not a narrowing of
+"any accumulated … on the next tick"), and `:159-162` authorises no batch size.
+
+**Driver:** `../edgecase/tools/w2/w2-9-partD.sh` (run from `test/ha` with
+`SCRATCH` exported and `MSYS_NO_PATHCONV=1`). Procedure, if running it by hand:
+
+```bash
+# D1. Precondition: strictly more than 50 accumulated Pending runs, and the
+#     mutex still held so none of them can drain. STOP if pending <= 50 — the
+#     contract is not contradicted at or below the limit.
+psql "SELECT status, count(*) FROM runs GROUP BY status ORDER BY status;"
+psql "SELECT count(*) AS pending FROM runs WHERE status='Pending';"
+psql "SELECT mutex_name, left(run_id::text,8) FROM mutex_holders;"
+
+# D2. Identify the current scheduler leader — the only leadership log line there
+#     is. This is the kill target.
+docker compose $COMPOSE_FILES logs controller1 controller2 controller3 --since 30m \
+  | grep -i "scheduler became leader" | tee "$SCRATCH/partD-leader.txt"
+
+# D3. Arm the statement log for a SHORT window only (see §G3's volume budget:
+#     ~2,300 lines/s at 200 ms ticks with 50 candidates). Verify fresh-session.
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM SET log_statement='all';"
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_statement;"   # must print: all
+sleep 3
+
+# D4. SIGKILL the leader; poll the two survivors for the promotion line.
+LEADER=<from D2>
+date -u +%FT%T.%3NZ ; docker compose $COMPOSE_FILES kill -s SIGKILL "$LEADER"
+for i in $(seq 1 40); do
+  L=$(docker compose $COMPOSE_FILES logs controller1 controller2 controller3 --since 3m \
+      | grep -i "scheduler became leader" | tail -1)
+  [ -n "$L" ] && { echo "PROMOTED: $L (seen $(date -u +%FT%T.%3NZ))"; break; }
+  sleep 2
+done
+sleep 6
+psql "SELECT status, count(*) FROM runs GROUP BY status ORDER BY status;"
+
+# D5. Capture and DISARM immediately, verified in a fresh session.
+docker compose $COMPOSE_FILES logs --no-log-prefix postgres --since 120s > "$SCRATCH/partD-pglog-raw.txt"
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "ALTER SYSTEM RESET log_statement;"
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c "SELECT pg_reload_conf();"
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified -tAc "SHOW log_statement;"   # must print: none
+
+# D6. Restore the killed replica so later parts still have >=2 candidates.
+docker compose $COMPOSE_FILES start "$LEADER"
+```
+
+**D7 — the measurement.** Reduce the raw log to a per-tick candidate count. The
+count is the per-candidate `SELECT status FROM runs WHERE id = $1 FOR UPDATE`
+tally used as a **1:1 proxy** for the snapshot's row count — `postgres.go:482-489`
+shows that `FOR UPDATE` is `tryQueueRun`'s first statement after `BEGIN` with no
+earlier return path, so exactly one is issued per snapshot row. It is **not**
+read off the snapshot statement, which logs no row count. Say that explicitly in
+the write-up. The parser must key on the **extended-protocol** form
+(`LOG: execute stmtcache_<hash>: …` plus the following
+`DETAIL: parameters: $1 = '<id>'`) — a `statement:`-only matcher sees nothing:
+
+```bash
+awk '
+/FROM runs WHERE status = .Pending. ORDER BY created_at LIMIT/ {
+  if (tick!="") printf "tick %s host=%s : %d candidates\n", tick, host, n;
+  tick=$1" "$2; host=$5; n=0; next }
+/execute stmtcache_[0-9a-f]+: SELECT status FROM runs WHERE id = \$1 FOR UPDATE/ { want=1; next }
+want && /DETAIL:  parameters: \$1 = / { n++; want=0 }
+END { if (tick!="") printf "tick %s host=%s : %d candidates\n", tick, host, n }
+' "$SCRATCH/partD-pglog-raw.txt" | tee "$SCRATCH/partD-tick-candidates.txt"
+```
+
+**Deliverable.** The accumulated `Pending` count at D1, the kill and promotion
+instants, and the candidate count of the **first tick issued by the new leader** —
+which must be compared against that accumulated count, not against 50. On the
+2026-07-30 run: 58 accumulated, first post-promotion tick processed exactly 50,
+promotion 0.36 s ahead of the kill's own return.
+
+**Recording — do NOT file this as a finding of its own.** On its own the
+deviation from `:163` is one extra tick per 50 runs (~200 ms, bounded) on a
+*queueable* backlog, and this rig never exercised a queueable backlog because the
+head 50 stayed mutex-blocked through all 41 post-promotion ticks. Alone that is a
+docs gap, i.e. **minor**. It carries a major only in conjunction with Parts A/B,
+which is why the two are **one merged entry** resting on the single root cause
+`scheduler.go:58`. Do not re-split them and do not count `scheduler.go:58` twice
+in a wave tally.
+
 ## Teardown
 
 ```bash
