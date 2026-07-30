@@ -47,8 +47,12 @@
 
 - **Workloads:** `tick.payload.json` (job `edge-tick`: one 30 s native step) and
   `schedule-every-minute.payload.json` (schedule `edge-every-minute`,
-  `cron: "* * * * *"`, job `edge-tick`). Schedules are applied through
-  `POST /api/v1/jobs` exactly like jobs.
+  `cron: "* * * * *"`, job `edge-tick`). **Schedules are NOT applied through
+  `POST /api/v1/jobs`** — the plan, the Task 7 brief and `test/edgecase/README.md`
+  all said they were, and all three were wrong. `POST /api/v1/jobs` unmarshals the
+  body into `dsl.Spec` and answers **400** `invalid yaml: … field cron not found in
+  type dsl.Spec`; the schedule endpoint is **`POST /api/v1/schedules`**, which
+  answers 200 with the schedule JSON. `README.md` is corrected on this branch.
 - **Instrumentation:** (1) the continuous divergence sampler of §"The detector";
   (2) Postgres `log_statement='all'`, the campaign's established per-tick DB
   instrument (W2-1 → W2-4) — here it is not optional, because the *bind
@@ -61,6 +65,31 @@
   that holds its lock across ticks (`scheduler.go:30,45-56`).
 
 ## Verified mechanism (read before running; do not re-derive)
+
+> **CORRECTED AFTER THE 2026-07-30 RUN — four claims below are wrong or
+> incomplete, and the mistake in the first one is load-bearing. Read the
+> "Execution notes" at the end of this file before re-running.**
+>
+> 1. **§(1)'s "the difference between `last_fired_at` and `created_at` is the
+>    check phase, in (0, 60)" is FALSE for a 1-minute cron.** A schedule with
+>    `last_fired_at IS NULL` fires the first occurrence after `now-1h`
+>    (`scheduler.go:92-97`), and a 1-minute schedule can never drain that
+>    backlog, so the steady-state difference is **~3587-3592 s**, measured on two
+>    independent incarnations. This is itself a major finding
+>    (`FINDINGS.md`, W2-6 "born ~59.9 minutes behind").
+> 2. **§(3)'s three failover cases collapse in the state actually observed.**
+>    Because the schedule is permanently in backlog, *every* check has an
+>    occurrence due, so *every* promotion fires immediately — measured 5 times as
+>    pairs of fires 198-372 ms apart carrying **different** occurrence binds.
+>    That makes an ordinary failover an *extra catch-up* fire, never a duplicate,
+>    which is the control §(3) was written to provide — but the reasoning that
+>    gets there is different from what §(3) says.
+> 3. **The detector's "steady state: `d` ≈ the check phase" reading is wrong for
+>    the same reason** (it is ~3587), and the "`d` jumps by a full cron period"
+>    fingerprint is **transient — it lasted 60.36 s and was then erased** by the
+>    silent-advance branch. Read `n` (the fire count) as the durable signal.
+> 4. **Part E's DB backdating was not needed and was not performed.** Part D
+>    reached the `:197-201` silent-skip branch by pure fault injection.
 
 ### (1) The window, and what `last_fired_at` actually stores
 
@@ -210,11 +239,11 @@ the file's tail before recording anything and restart the sampler if it stalled.
 ### Leader identification (needed by Arm A and Part C)
 
 ```bash
-# 0x65786364 = 1702389604. Per W2-1 this is the ONE advisory key a point-in-time
+# 0x65786364 = 1702388580 (decimal). Per W2-1 this is the ONE advisory key a point-in-time
 # census can see, because it is the one lock held across ticks.
 psql "SELECT a.client_addr, a.pid, to_char(a.backend_start,'HH24:MI:SS.MS')
       FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid
-      WHERE l.locktype='advisory' AND l.objid=1702389604;"
+      WHERE l.locktype='advisory' AND l.objid=1702388580;"
 for c in controller1 controller2 controller3; do
   printf '%s %s\n' "$c" "$(docker inspect unified-cd-ha-$c-1 \
     --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"
@@ -246,15 +275,18 @@ docker compose $COMPOSE_FILES exec -T postgres psql -U unified -c \
 psql "SHOW log_statement;" ; psql "SHOW log_parameter_max_length;"   # expect all / -1
 
 # G2. Exactly one scheduler-lock holder, and identify it.
-psql "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=1702389604;"  # expect 1
+psql "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND objid=1702388580;"  # expect 1
 
 # G3. Apply the job, then the schedule. Schedule fires start immediately:
 #     last_fired_at is NULL so base = now-1h and the newest past occurrence is due.
-for f in tick schedule-every-minute; do
-  curl -fsS -X POST localhost:18080/api/v1/jobs \
-    -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
-    --data-binary @../edgecase/workloads/$f.payload.json -o /dev/null -w "$f=%{http_code}\n"
-done                                                            # expect 200 x2
+curl -fsS -X POST localhost:18080/api/v1/jobs \
+  -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
+  --data-binary @../edgecase/workloads/tick.payload.json -o /dev/null -w "tick=%{http_code}\n"
+# NOTE the DIFFERENT path. POST /api/v1/jobs returns 400 for a kind: Schedule.
+curl -fsS -X POST localhost:18080/api/v1/schedules \
+  -H "Authorization: Bearer ha-admin-token" -H 'Content-Type: application/json' \
+  --data-binary @../edgecase/workloads/schedule-every-minute.payload.json \
+  -w "\nschedule=%{http_code}\n"                                # expect 200 x2
 psql "SELECT name, cron, job_name, last_fired_at FROM schedules;"
 
 # G4. Host <-> DB clock skew (kill instants are host clock; everything else is DB clock).
@@ -537,3 +569,71 @@ leaving no instrumentation behind rather than about this particular volume.
   "observation" (`FINDINGS.md:481`).
 - Uncaptured live observations carry
   `(observed live, raw output not captured to scratchpad)`.
+
+## Execution notes (added after the 2026-07-30 run — read before re-running)
+
+- **Outcome: both results landed, and they turned out to be two sides of one
+  threshold.** Part C produced the duplicate (two runs bound to occurrence
+  `2026-07-30 00:22:00+00`, 2.030 s apart, both `Succeeded`, 30 log rows each);
+  Part D produced the opposite outcome from the *same* fault (one refused
+  `last_fired_at` write) because the next check arrived 60.005 s later against
+  only 8.418 s of headroom, so the occurrence had fallen out of the 1-hour
+  catch-up window and was silently dropped instead of re-fired — after which the
+  schedule never fired again (8 consecutive checks, 0 runs, 0 log lines). Full
+  numbers in `FINDINGS.md` (two W2-6 majors and two W2-6 observations).
+- **The stack needs no overlay, and the base `test/ha/nginx.conf` was
+  sufficient.** 22 `SIGKILL`s of controllers over 48 minutes produced no API
+  errors at all; the base config already carries `proxy_next_upstream`,
+  `max_fails=1` and a 2 s connect timeout. The `oneway` overlay was started
+  once by mistake and then removed with a plain `up -d`, which cleanly recreated
+  only nginx.
+- **The decimal form of the scheduler advisory key is `1702388580`, not
+  `1702389604`.** The first draft of gate G2 had the wrong conversion and read
+  **0** holders, which looks exactly like "the scheduler is dead". Always
+  cross-check with `SELECT objid FROM pg_locks WHERE locktype='advisory'`.
+- **`client_addr` is `inet`, so it renders as `172.20.0.3/32`.** A `case`
+  statement matching bare IPs silently falls through to "no leader". Strip with
+  `${ip%%/*}`.
+- **`docker compose logs -t <service>` prefixes the service name even for a
+  single service** — `awk '{print $1}'` yields `controller2-1`. Use
+  `--no-log-prefix`. And `--tail 500` is not enough to reach a promotion line on
+  a quiet controller (531 total lines, the promotion was line ~1); use a large
+  `--tail` or none.
+- **Aiming Arm A at `promotion + 60k` works to ~±0.5 s and that is not close
+  enough.** 20 attempts, kills issued between −0.515 s and +0.037 s of the
+  predicted check, 0 hits against a measured 1-3 ms window. Do not spend more
+  attempts on it: widen the window instead (Part C), which is deterministic and
+  took one trial.
+- **A held `SELECT … FOR UPDATE` on the schedule row is the right widening
+  tool, and it does three useful things at once**: it holds the `:189`→`:194`
+  window open for as long as you like, it is observable from inside
+  (`pg_stat_activity.wait_event_type = 'Lock'` for the leader's own backend), and
+  it doubles as the scheduler-stall probe. It writes nothing, so it is not a
+  state mutation.
+- **Order the stall probe BEFORE the kill, not after.** The first attempt
+  triggered the manual run 0.03 s before the `SIGKILL`, so the successor's
+  promotion queued it immediately and the stall measured nothing. Part C2 re-ran
+  it with no kill at all and measured 51.335 s of `Pending` on an unrelated run.
+- **Recreating a schedule requires DELETE + POST.** `UpsertSchedule`
+  (`internal/store/postgres.go:2108-2122`) preserves `last_fired_at` on conflict,
+  so re-applying does not reset it.
+- **A `BEFORE UPDATE … RAISE EXCEPTION` trigger is the way to fail one write;
+  `REVOKE UPDATE` is not.** `unified` is the `POSTGRES_USER` superuser and
+  bypasses privilege checks entirely.
+- **The host-side detector loop (`docker compose exec` per sample, 1.5 s cadence)
+  survived 48 minutes and 22 controller kills without a gap**, which is a better
+  record than the in-container `for` loops W2-5 lost. It must still be stopped
+  explicitly before teardown or it writes connection errors into its own capture.
+- **Budget ~50 minutes of wall time** on a warm stack: gate ~2 min, Part A
+  ~6 min, Part B 20 attempts ~20 min (one per minute), Part C ~2 min, Part C2
+  ~2 min, Part D ~11 min (recreate + 2 fires + 6 checks), census and teardown
+  ~2 min. Postgres statement logging costs ~114 MB for that window; gzip the
+  captures before copying them to the evidence root.
+- **Instrumentation was reverted and verified in a fresh session**:
+  `ALTER SYSTEM RESET log_statement; ALTER SYSTEM RESET log_line_prefix;
+  SELECT pg_reload_conf();` then `SHOW log_statement` → `none` and
+  `SHOW log_line_prefix` → `%m [%p] ` (`w2-6/teardown.txt`). Note that `SHOW` in
+  the *same* psql session that issued the reload still returned `all`; only a new
+  session showed the reverted value. The Part D trigger and function were dropped
+  and confirmed absent from `pg_trigger`/`pg_proc` before teardown, and the stack
+  was torn down with `down -v`.

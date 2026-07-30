@@ -43,10 +43,15 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 ## Workload fixtures
 
 Every `*.payload.json` is the pre-encoded `{"yaml":"..."}` body for
-`POST /api/v1/jobs`. All are `agentSelector: [kind:linux]`, and all are
-`native: true` **except `podcap-job.payload.json`**, which carries a
-Kubernetes-only `podTemplate` so its inferred capability is `pod` (see the
-table).
+`POST /api/v1/jobs` — **except `schedule-every-minute.payload.json`, which is a
+`kind: Schedule` and must go to `POST /api/v1/schedules`.** Posting it to
+`/api/v1/jobs` returns **400** `invalid yaml: ... field cron not found in type
+dsl.Spec` (verified live during W2-6): the jobs handler unmarshals the body into
+`dsl.Spec`, which has no `cron`/`job` fields. `POST /api/v1/schedules` accepts it
+and returns `200` with the schedule JSON. All the *job* fixtures are
+`agentSelector: [kind:linux]`, and all are `native: true` **except
+`podcap-job.payload.json`**, which carries a Kubernetes-only `podTemplate` so
+its inferred capability is `pod` (see the table).
 
 | File | Job | Purpose |
 |---|---|---|
@@ -55,7 +60,7 @@ table).
 | `approval.payload.json` | `edge-approval` | approval gate, 10-minute timeout |
 | `sideeffect.payload.json` | `edge-sideeffect` | mutex `edge-mutex` holder, writes `/data/sideeffect.log` |
 | `mutex-successor.payload.json` | `edge-mutex-successor` | mutex `edge-mutex` successor probe (I3) |
-| `schedule-every-minute.payload.json` | — | schedule fixture |
+| `schedule-every-minute.payload.json` | — | schedule fixture (`edge-every-minute`, `cron: "* * * * *"`, job `edge-tick`) — **`POST /api/v1/schedules`**, not `/api/v1/jobs` |
 | `call-parent.payload.json` | `edge-call-parent` | 20s `prelude` then a `call:` step invoking `edge-call-child` (W2-2, W2-5) |
 | `call-child.payload.json` | `edge-call-child` | ~90s child, timestamped markers to `/data/child.log` so an orphaned child stays observable after its parent dies |
 | `approval-short.payload.json` | `edge-approval-short` | `before` → `gate` (`timeoutMinutes: 0.5` = **30s**) → `after` (W2-8) |
