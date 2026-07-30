@@ -1,0 +1,21 @@
+# W3-4 overlay: swaps test/ha/nginx.conf for nginx-logfault.conf and adds the
+# runtime-writable include volume, so the agent log-bulk endpoint alone can be
+# faulted (504 mid-loop, or a mirrored 502 lost ack) while every other agent
+# API keeps working.
+#
+#   cd test/ha
+#   export COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/logfault.override.yaml"
+#   docker compose $COMPOSE_FILES up -d --build
+#
+# Compose merges volume entries by target path, so this replaces the nginx.conf
+# mount rather than adding to it. Verify the replacement actually took with
+# `docker compose $COMPOSE_FILES config` and by grepping nginx.conf inside the
+# container — the W3-4 baseline gate does both.
+services:
+  nginx:
+    volumes:
+      - ../edgecase/compose/nginx-logfault.conf:/etc/nginx/nginx.conf:ro
+      - logfault:/etc/nginx/logfault
+volumes:
+  logfault:
