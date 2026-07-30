@@ -159,8 +159,13 @@ Grep for the status: the only writers are the scheduler's snapshot (`:440`), the
 `FOR UPDATE` re-check (`:500`), the git resolver's list (`:2067`) and spec update
 (`:2087`). The queued-run reaper's predicate is `r.status = 'Queued'`
 (`postgres.go:1279`); the stuck-run reaper's is `Running`. So a `Pending` run has
-**no timeout, no grace, and no reaper**. This is what makes the I1 limb possible
-and it must be confirmed live (gate G5), not assumed.
+**no timeout, no grace, and no reaper**. **This is not an I1 limb** — I1 was
+withdrawn for this scenario (see the correction box at the top of this file): it
+has no liveness bound, so "in zero terminal states right now" is true of every
+non-terminal run at every instant. What §(3) establishes is that the starvation
+window has no code-side upper bound, which is what lets Parts A/B state a
+*measured* window plus a *code-read* unboundedness. Confirm it live (gate G5),
+do not assume it.
 
 ### (4) What the docs say about mutexes — and what they do not
 
@@ -176,7 +181,11 @@ say which it rests on:
 
 1. **As a prohibition on affecting unrelated runs — it is not one.** No sentence
    says a mutex cannot delay a run that does not use it. On this limb the docs
-   are **silent, not contradicted**, and the finding rests on I1.
+   are **silent, not contradicted**. An earlier draft rested the finding on I1
+   here; I1 is withdrawn (correction box at the top). What the finding rests on
+   is the contradicted published contract at `docs/high-availability.md:163`
+   (Part D) plus I5 on that same limb — grep that file for `Pending` directly,
+   because this survey's mutex/queue vocabulary misses the sentence.
 2. **As a scoping statement — it is one, and it is the honest severity limb.**
    "when they *share* a resource" and "Runs that cannot acquire *the mutex*"
    both scope the wait to contenders. An operator reading only this cannot
@@ -303,7 +312,8 @@ SCRATCH="<scratchpad>/w2-9" ; mkdir -p "$SCRATCH"
   otherwise the Postgres log outgrows `docker compose logs`.
 - **G4 — jobs applied.** `POST /api/v1/jobs` with all three payloads → 200 each.
   Capture the responses.
-- **G5 — nothing reaps `Pending` (the I1 precondition), confirmed live.**
+- **G5 — nothing reaps `Pending`, confirmed live** (§(3)'s precondition — not an
+  I1 precondition; I1 is withdrawn, see the correction box at the top).
   Trigger **one** `edge-sideeffect` run while `edge-mutex` is held by the hog and
   leave it alone for **≥ 5 min** (longer than `UNIFIED_QUEUED_RUN_GRACE`'s 5 min
   default, `docs/high-availability.md:355-357`). It must still be `Pending`, not

@@ -355,7 +355,9 @@ Part A's runs hold no mutex, so I3 needs its own arm using the mutex fixtures.
 # C1. edge-sideeffect declares `spec.concurrency.mutex: edge-mutex`.
 curl -fsS -X POST localhost:18080/api/v1/runs -H "Authorization: Bearer ha-admin-token" \
   -H 'Content-Type: application/json' -d '{"jobName":"edge-sideeffect"}'
-psql "SELECT run_id, name FROM mutex_holders;" | tee "$SCRATCH/partC-held.txt"   # expect one row
+#     The column is `mutex_name`, NOT `name` (001_init.up.sql:123) — see the
+#     execution note below; a typo here lost the first Part B2 lock reading.
+psql "SELECT run_id, mutex_name FROM mutex_holders;" | tee "$SCRATCH/partC-held.txt"   # expect one row
 ```
 
 ```bash

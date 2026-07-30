@@ -147,15 +147,29 @@ skew:
 `deadline`, i.e. the log line lands in `[deadline, deadline + 3 s)`. It can
 therefore only push the difference **up**, never down.
 
-**So measure the skew directly and use the log line as a cross-check, not as the
-primary instrument.** Direct measurement: read `date -u +%s.%N` inside the agent
-container and `SELECT NOW()` (and `date -u` in the controller container) as close
-together as the harness allows, repeatedly, and report the offset with its own
-sampling error. Docker containers on one host share the kernel clock, so the
-honest expected answer is "no skew beyond sampling noise" — **which is a real
-answer to the open question and must be reported as such**, together with the
-sign of the *observable* difference, which the code path guarantees is positive
-(agent deadline later) regardless of skew.
+**So measure the skew from row-internal brackets, and use the log line as a
+cross-check.** **Do not use a `docker exec date` census** — the instrument this
+section originally prescribed is unusable and was replaced during execution (see
+note 7 in the execution notes): `exec` startup dominates and gives a **±280 ms**
+error bar, three orders of magnitude wider than the effect, and the *controller*
+image's `date` has **no `%N` at all**, so the controller clock cannot be read
+that way in the first place. What settles it is a pair of brackets built from
+columns written by two different processes inside one row:
+
+- **controller ↔ Postgres**: `(run_approvals.timeout_at − run_approvals.created_at) − 30 s`.
+  The controller evaluates `timeout_at` from its own clock at `approval.go:87`
+  and Postgres stamps `created_at` on the INSERT that necessarily follows, so
+  the residual is a **one-sided** bound on `skew(pg − ctrl)`; take the tightest
+  row, and say plainly that it is one-sided.
+- **agent ↔ Postgres**: `step_reports[0].started_at − runs.claimed_at` together
+  with `run_approvals.created_at − step_reports[0].ended_at` bracket it from
+  both sides.
+
+Docker containers on one host share the kernel clock, so the honest expected
+answer is "skew is below the measurement floor" — **which is a real answer to
+the open question and must be reported as such**, together with the sign of the
+*observable* difference, which the code path guarantees is positive (agent
+deadline later) regardless of skew.
 
 ### (3) The reaper race (Part C) is a two-writer CAS on one row
 
@@ -304,10 +318,12 @@ SCRATCH="<scratchpad>/w2-8" ; mkdir -p "$SCRATCH"
   runbook assumes, and per `plan:50` a silent job has three possible causes of
   which only one is a defect. Derive the grid's `(epoch mod 60)` phase and record
   it; Part C aims at it.
-- **G4 — clock census.** Sample, in one command, `date -u +%s.%N` in agent1,
-  agent2, controller1 and postgres containers plus the host, three times a few
-  seconds apart. This is the direct instrument for §(2). Record the spread and
-  the sampling cost (the `exec` round-trip is the error bar).
+- **G4 — clock sanity, NOT a `date` census.** The `docker exec date` census this
+  gate originally prescribed does not work (§(2), execution note 7): ±280 ms of
+  `exec` startup noise, and the controller image's `date` has no `%N`. Do a
+  single cheap sanity read — host `date -u +%s.%N` against
+  `psql -c "SELECT NOW();"` — purely to catch a grossly wrong clock, record it
+  as such, and get the real numbers in Part B from §(2)'s row-internal brackets.
 - **G5 — job applied and the timeout is really 30 s.** `POST /api/v1/jobs` with
   `approval-short.payload.json` → 200. Then trigger one **throwaway** run, read
   `GET /api/v1/runs/{id}/approvals` and confirm `timeoutAt − createdAt ≈ 30 s`
@@ -396,18 +412,31 @@ matching `audit_logs` row at `status=204`.
 **Deliverable:** a signed, magnitude-bounded answer to `plan:92`, decomposed per
 §(2).
 
-- **B1.** From G4's census plus a repeat census taken during Part A, compute
-  `offset(agent_container → postgres)` and `offset(agent → controller)` with the
-  `exec` round-trip as the error bar. Save raw to `$SCRATCH/partB-clocks.txt`.
+- **B1.** From §(2)'s **row-internal brackets**, over every `run_approvals` row
+  the session produces, compute `skew(pg − ctrl)` from
+  `(timeout_at − created_at) − 30 s` (one-sided; report the tightest row and the
+  widest, and say which bound the tightest one gives) and bracket
+  `skew(agent − pg)` from `step_reports[0].started_at − runs.claimed_at` and
+  `run_approvals.created_at − step_reports[0].ended_at`. Combining them into
+  `skew(agent − ctrl)` needs the stated assumption that the one-sided
+  controller↔Postgres bound is symmetric in magnitude — say so rather than
+  quoting a two-sided figure the brackets do not support. Save raw to
+  `$SCRATCH/partB-clocks.txt`. **Do not compute this from a `docker exec date`
+  census** — see §(2) and execution note 7.
 - **B2.** From Part A's three timestamps compute the **observable** difference
   `t_agent_log − t_timeout_at` and decompose it: subtract the measured
   `code_gap` (available from the Postgres log — the `INSERT INTO run_approvals`
   statement timestamp is when the controller evaluated `timeout_at`, and the
   following `INSERT INTO step_reports` for the same run is the `ReportStep` at
   `approval.go:39-46`, so the gap between them bounds the RTT term) and report
-  the residual against `poll_granularity ∈ [0, 3 s)`.
-- **B3.** Repeat over **≥3 runs** so the poll-granularity term is visibly
-  variable and the skew term visibly constant. Report direction and magnitude,
+  the residual against `poll_granularity`. **`poll_granularity` is ~0 for this
+  fixture, not `U(0, 3 s)`** (execution note 8): 30 s is exactly ten
+  `ApprovalPollInterval`s and the ticker starts with the deadline, so the last
+  tick lands on the deadline. A `timeoutMinutes` whose truncated whole-second
+  value is not a multiple of 3 would restore the term.
+- **B3.** Repeat over **≥3 runs**. Note that with this fixture the
+  poll-granularity term will *not* vary visibly (see B2), so do not read a
+  constant residual as evidence the decomposition failed. Report direction and magnitude,
   and state plainly if the answer is "skew is below the measurement floor" —
   that resolves the open question as well as a non-zero number would, provided
   the floor is stated.

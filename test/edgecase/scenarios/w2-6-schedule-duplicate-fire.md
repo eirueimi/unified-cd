@@ -119,8 +119,23 @@
 of the fire.** That single fact governs every measurement below: for a
 `* * * * *` schedule, `last_fired_at` is always exactly on a `:00`-second minute
 boundary, while the run's `created_at` is the instant the leader's minute-cadence
-gate happened to fire. The difference between them is not error — it is the
-**check phase**, and it is stable for the lifetime of one leadership epoch.
+gate happened to fire.
+
+**But the difference between them is NOT "the check phase, in (0, 60)" — that
+model is false for a 1-minute cron and was measured false twice** (correction 1
+above). A schedule with `last_fired_at IS NULL` fires the first occurrence after
+`now-1h` (`scheduler.go:92-97`), and a 1-minute schedule fires **one occurrence
+per check**, so it can never drain that one-hour backlog: it is born ~59.9
+minutes behind and stays there. The measured steady-state difference is
+**~3587-3592 s**, not a sub-minute phase, and it is a major finding in its own
+right rather than an instrument constant. Read `n` — the count of runs with
+`triggered_by='schedule:edge-every-minute'` — as the durable signal; `d` is a
+lag, and the "`d` jumps by a full cron period" fingerprint an earlier draft
+relied on is **transient** (it lasted 60.36 s and was then erased by the
+silent-advance branch).
+
+The one thing that *is* stable for a leadership epoch is the **check cadence**:
+`promotion + 60k` (§(2)). Aim at that, not at a phase derived from `d`.
 
 ### (2) Why a leadership change re-checks *immediately*, and why that matters
 
@@ -320,10 +335,15 @@ psql "SELECT NOW();" ; date -u +%FT%T.%3NZ
 ```
 
 **Gate G5 — the detector's normal range must be established before any
-injection.** Start the sampler and let it run ≥ 3 full minutes uninjected. It
-must show `n` incrementing by exactly 1 per minute and `d` stable to within a
-second or so. If `d` is not stable, the phase model in §(1) is wrong and the
-whole detector is invalid — STOP and report that instead.
+injection.** Start the sampler (`../edgecase/tools/w2/w2-6-detector.sh`) and let
+it run ≥ 3 full minutes uninjected. The pass condition is **`n` incrementing by
+exactly 1 per minute**. **Do NOT gate on `d` being small or on a sub-minute
+phase** — for a 1-minute cron the schedule is permanently in catch-up backlog
+(§(1), correction 1), so the expected `d` is **~3587-3592 s** and it *decreases*
+by ~59.7 s on every extra catch-up fire a leadership change provokes. A `d` of
+~3590 s is the healthy reading here, not a failure; an earlier draft of this
+gate would have stopped the scenario on a correct stack. STOP only if `n` does
+not advance once per minute — that means the scheduler is not checking at all.
 
 ## Part A — control: uninjected steady state, and the width of the window being raced
 
@@ -364,18 +384,24 @@ the code-read argument, never as "the window is unreachable".
 **Aiming, not spraying.** Per §(3) most kill instants cannot produce a duplicate
 at all, so each attempt must be aimed at a fire:
 
-- The incoming leader fires **immediately on promotion** whenever an occurrence
-  is due (§(2)). So kill the current leader at a wall-clock instant just past a
-  minute boundary at which the *outgoing* leader has not yet fired that
-  occurrence — i.e. when `NOW() - last_fired_at > 60 s`. The detector's `d`/`lfa`
-  columns tell you this directly.
-- That converts each attempt into "the incoming leader's fire happens within
-  ~200 ms–2 s of my kill", and the attempt is then to kill *that* leader inside
-  its own `:189`→`:194` window.
-- **Phase-locking, per W2-4's rule:** the fire instant is predicted by the
-  *promotion* instant (`"scheduler became leader"`), and thereafter by
-  `T0 + 60k`. Aim at those, not at nominal cron boundaries. Record the predicted
-  instant, the actual kill instant, and their difference for every attempt.
+- **The `NOW() - last_fired_at > 60 s` trigger condition an earlier draft gave
+  here is useless on this rig, and it is why Part B went 0/20.** The schedule is
+  permanently in catch-up backlog (§(1) correction 1), so `NOW() - last_fired_at`
+  is ~3590 s **always** — the condition is true at every instant and selects no
+  instant at all. For the same reason *every* check has an occurrence due, so
+  *every* promotion fires immediately; that makes the failover an extra catch-up
+  fire, never a duplicate, and it is the control §(3) was written to provide.
+- **Phase-lock on the check cadence instead, per W2-4's rule:** the fire instant
+  is predicted by the *promotion* instant (`"scheduler became leader"`), and
+  thereafter by `T0 + 60k`. Aim at those, not at nominal cron boundaries and not
+  at anything derived from `d`. Record the predicted instant, the actual kill
+  instant, and their difference for every attempt. Driver:
+  `../edgecase/tools/w2/w2-6-armA.sh <first> <last>`.
+- **Expect this arm to miss, and cap it hard.** `promotion + 60k` aims to about
+  **±0.5 s** and the window is **1-3 ms**; the 2026-07-30 run issued 20 kills
+  between `−0.515 s` and `+0.037 s` of the predicted check and hit **0** times.
+  Do not spend more attempts widening the aim — widen the *window* instead, which
+  is Part C, and which is deterministic and took one trial.
 
 ```bash
 # Repeat per attempt; ATTEMPT is the trial number.
@@ -411,16 +437,28 @@ technique (`FINDINGS.md:885` notes). Instead of racing the gap between the two
 writes, **make the second write block** and kill the leader while it is blocked.
 
 ```bash
-# C1. Take an exclusive row lock on the schedule and hold it. Run BACKGROUNDED:
-#     it occupies the session for the duration.
-docker compose $COMPOSE_FILES exec -T postgres psql -U unified <<'SQL'
+# C1. Take an exclusive row lock on the schedule and hold it. This MUST be
+#     backgrounded — the `&` is load-bearing. `pg_sleep(150)` occupies the
+#     session for its whole duration, so without it the shell blocks here for
+#     150 s and steps C2-C4 can never be issued at all (an earlier draft was
+#     commented "Run BACKGROUNDED" but carried no `&`). Keep the PID: C5 waits
+#     on it, and it must be reaped before teardown.
+docker compose $COMPOSE_FILES exec -T postgres psql -U unified > "$SCRATCH/partC-lock.txt" 2>&1 <<'SQL' &
+\timing on
 BEGIN;
 SELECT NOW() AS lock_taken, name, last_fired_at FROM schedules
   WHERE name='edge-every-minute' FOR UPDATE;
 SELECT pg_sleep(150);
 ROLLBACK;
+SELECT NOW() AS lock_released;
 SQL
+LOCKPID=$!
+echo "$LOCKPID" >> "$SCRATCH/samplers.pid"
+sleep 3     # let the lock actually be taken before C2 looks for a waiter
 ```
+
+Full driver for this arm, including the blocked-waiter poll and the kill:
+`../edgecase/tools/w2/w2-6-partC.sh`.
 
 ```bash
 # C2. Confirm the leader is blocked ON that row, from Postgres itself, before
@@ -441,6 +479,9 @@ date -u +%FT%T.%3NZ ; sh ../edgecase/tools/inject.sh kill-hard "$LEADER"
 Then, after the lock's `pg_sleep` expires and both updates drain:
 
 ```bash
+# C5. Reap the backgrounded lock session explicitly, and show its own output.
+wait "$LOCKPID" ; cat "$SCRATCH/partC-lock.txt"
+sleep 5
 docker compose $COMPOSE_FILES logs postgres > "$SCRATCH/pg-partC.log"
 grep -nE "INSERT INTO runs|UPDATE schedules SET last_fired_at|parameters: \\\$1" "$SCRATCH/pg-partC.log" \
   | tee "$SCRATCH/partC-binds.txt"

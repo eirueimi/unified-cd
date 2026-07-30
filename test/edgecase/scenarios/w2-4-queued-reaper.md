@@ -190,9 +190,16 @@ docker compose $COMPOSE_FILES exec -T controller3 printenv UNIFIED_QUEUED_RUN_GR
 #     against DB-column deadlines. Record it; correct for it if non-trivial.
 psql "SELECT NOW();" ; date -u +%FT%T.%3NZ
 
-# G3. The agents advertise `native` only — Part D's premise (mechanism note 4).
+# G3. Read the agents' ADVERTISED capabilities — Part D's premise (mechanism
+#     note 4). Expect `["native","container"]`, NOT `native` only: the test/ha
+#     agents detect a container runtime, so a merely non-native job is
+#     schedulable here and the fixture has to require `pod`. An earlier draft of
+#     this gate expected `native` only; treating that as the pass condition
+#     stops the scenario on a correct stack.
 curl -fsS localhost:18080/api/v1/agents -H "Authorization: Bearer ha-admin-token" \
   | tee "$SCRATCH/agents-caps.json"
+# PASS = no agent advertises `pod`. FAIL (STOP) = any agent advertises `pod`,
+# because then `edge-podcap-job` is claimable and Part D has no premise.
 
 # G4. Scheduler leader, from the only leadership log line there is (NOT readyz).
 docker compose $COMPOSE_FILES logs controller1 controller2 controller3 \

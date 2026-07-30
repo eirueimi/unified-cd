@@ -224,8 +224,14 @@ evidence each limb:
   (`GET /api/v1/audit`) for `run.cancel` and show zero;
 - therefore the heartbeat reconcile, corroborated positively by `runs.updated_at`
   landing in a 15 s heartbeat slot rather than on the reaper's 30 s grid, and by
-  `step_reports.status = 'Interrupted'` (written by `MarkRunStepsInterrupted`
-  inside `failOrphanedRun`, so it marks *that* code path, not a cancel).
+  the `step_reports` fingerprint `MarkRunStepsInterrupted` leaves — **which is
+  `status = 'Failed'` with `exit_code` NULL and `ended_at` = the reap instant,
+  NOT `'Interrupted'`** (`postgres.go:822` writes `'Failed'`; the string
+  `'Interrupted'` appears nowhere in `internal/`). Querying for `'Interrupted'`
+  returns zero rows and reads exactly like "the reap path was never taken",
+  which is a false negative on this scenario's major. `'Failed'` alone does not
+  distinguish a reap from a cancel — the NULL `exit_code` plus the zero
+  `run.cancel` audit rows above are what do.
 
 ### (5) Part D's mechanism — the natural path to W2-3's major
 
@@ -436,8 +442,13 @@ Deliverables:
    with `alreadyFinalized:true`** without touching `step_reports`, and
    `handleAgentFinishRun` returns early at `:613-621` on the CAS miss — so
    confirm the run's recorded status is never corrected.
-4. `step_reports` for `RID`: expect `Interrupted` from
-   `MarkRunStepsInterrupted`. This distinguishes `failOrphanedRun` from a cancel.
+4. `step_reports` for `RID`: expect **`status = 'Failed'` with `exit_code` NULL
+   and `ended_at` = the reap instant** — that is what `MarkRunStepsInterrupted`
+   writes (`postgres.go:822`), despite the function's name. **Do not query for
+   `'Interrupted'`**: that string is written nowhere in `internal/`, so the
+   query returns zero rows and looks like the reap path was never taken.
+   `'Failed'` on its own does not separate a reap from a cancel — pair it with
+   the NULL `exit_code` and with §(4)'s zero `run.cancel` audit rows.
 5. The twin's credential path, from its own log: expect
    `"enrollment token rejected (expired or already consumed); continuing with the
    existing credential"`. If instead it exits, the overlay is wrong and the whole
@@ -492,8 +503,9 @@ Then wait out the 60 s grace and up to one 15 s heartbeat, and record:
 3. **The attribution chain of §(4)**, each limb evidenced: the
    `api_agent.go:828` count unchanged, the `stuckrun_reaper.go:64`/`:66` count
    unchanged, `NOW()-last_seen_at` sampled small throughout, zero `run.cancel`
-   audit rows, `step_reports.status='Interrupted'`, and `updated_at` landing off
-   the reaper grid.
+   audit rows, `step_reports.status='Failed'` with NULL `exit_code` (the
+   `MarkRunStepsInterrupted` fingerprint — **not** `'Interrupted'`, see §(4)),
+   and `updated_at` landing off the reaper grid.
 4. **I3, in the unusual direction.** `mutex_holders` must be empty after the
    `edge-sideeffect` run is failed — while its executor is still appending to
    `/data/sideeffect.log`. Then trigger `edge-mutex-successor` and show it

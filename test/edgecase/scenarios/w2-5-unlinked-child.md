@@ -331,11 +331,19 @@ sh ../edgecase/tools/inject.sh steplock "$AG" | tee -a "$SCRATCH/armB-arm.txt"
 # B3. Poll at 0.2s for the child run to appear (created via the UNBLOCKED
 #     children endpoint), then clear the steplock immediately so nothing after
 #     the child's creation is injected.
-docker compose $COMPOSE_FILES exec -T postgres sh -c '
-  for i in $(seq 1 300); do
-    psql -U unified -tAc "SELECT NOW(), id, status, claimed_by, triggered_by, created_at FROM runs WHERE job_name='"'"'edge-call-child'"'"' ORDER BY created_at DESC LIMIT 1;"
+#
+#     The predicate MUST be `created_at > <this parent's created_at>`, not
+#     "the newest edge-call-child". A bare ORDER BY created_at DESC LIMIT 1
+#     matches a PREVIOUS trial's child and clears the steplock seconds before
+#     this trial's call step even starts, producing a normally-linked child and
+#     a void trial. That cost one trial on the 2026-07-29 run; the corrected
+#     driver is `test/edgecase/tools/w2/w2-5-partB-inject2.sh`.
+PCREATED=$(psql "SELECT created_at FROM runs WHERE id='$PARENT';")
+docker compose $COMPOSE_FILES exec -T postgres sh -c "
+  for i in \$(seq 1 300); do
+    psql -U unified -tAc \"SELECT NOW(), id, status, claimed_by, triggered_by, created_at FROM runs WHERE job_name='edge-call-child' AND created_at > '$PCREATED' ORDER BY created_at DESC LIMIT 1;\"
     sleep 0.2
-  done' | tee "$SCRATCH/armB-childwait.txt"
+  done" | tee "$SCRATCH/armB-childwait.txt"
 CHILD=<id>
 date -u +%FT%T.%3NZ | tee "$SCRATCH/armB-clear.txt"
 sh ../edgecase/tools/inject.sh steplock-clear | tee -a "$SCRATCH/armB-clear.txt"
@@ -383,11 +391,13 @@ docker compose $COMPOSE_FILES logs controller1 controller2 controller3 | grep -i
 
 # B8. The consequence. Sample the child until terminal; the child log is the
 #     side effect that must be shown continuing past the parent's terminal ts.
-docker compose $COMPOSE_FILES exec -T postgres sh -c '
-  for i in $(seq 1 400); do
-    psql -U unified -tAc "SELECT NOW(), id, status, claimed_by, updated_at FROM runs WHERE job_name='"'"'edge-call-child'"'"' ORDER BY created_at DESC LIMIT 1;"
+#     Poll by `$CHILD`'s id — same trap as B3, and here the id is already known,
+#     so there is no excuse for "the newest edge-call-child".
+docker compose $COMPOSE_FILES exec -T postgres sh -c "
+  for i in \$(seq 1 400); do
+    psql -U unified -tAc \"SELECT NOW(), id, status, claimed_by, updated_at FROM runs WHERE id='$CHILD';\"
     sleep 0.5
-  done' | tee "$SCRATCH/armB-childpoll.txt"
+  done" | tee "$SCRATCH/armB-childpoll.txt"
 tail -20 ../edgecase/sideeffect-data/child.log | tee "$SCRATCH/armB-childlog-tail.txt"
 psql "SELECT id, status, created_at, updated_at FROM runs WHERE id='$CHILD';" | tee "$SCRATCH/armB-childfinal.txt"
 ```
