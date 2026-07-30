@@ -32,13 +32,27 @@
     is inside the bound, that is an I5 null result and not evidence of anything.
     Report it as a measured number against the `docs/jobs.md` sentence, not as
     an I5 pass/fail.
-  - **NOT I2, NOT I3, NOT I4, NOT I6.** No side-effect log, no mutex, no log
-    integrity claim, and nothing keeps executing after the terminal write (the
-    approval step's "work" is a poll loop that has already returned). W2-5 was
-    corrected for relabelling I3 and W2-7 for stretching a zombie limb; do not
-    invent either here. If the `after` step is observed to run, that *would* be
-    I1/I2 territory — Part A gate A5 checks for it precisely so that the "it does
-    not resume" claim is measured rather than assumed.
+  - **NOT I2, NOT I3, NOT I4** for Parts A-E. No side-effect log, no mutex, no log
+    integrity claim. W2-5 was corrected for relabelling I3 and W2-7 for stretching
+    a zombie limb; do not invent either here.
+  - **I6 (zombie containment) — CORRECTED after Part F. The original text of this
+    bullet said "NOT I6 … nothing keeps executing after the terminal write (the
+    approval step's 'work' is a poll loop that has already returned)", and that is
+    FALSE as a general statement.** It is true only when the decision lands after
+    the agent has exited (the timeout path) or after it has already detected the
+    cancel (Part D, +9.19 s) — which was every trial the first execution ran. When
+    the decision commits **inside** the agent's cancel-detection fence
+    (`CancelPollInterval = 5 s`, `internal/agent/orchestrator.go:37`),
+    `WaitForApproval` returns **`true`** and the **post-gate step body executes** on
+    a `Cancelled` run — 4/4 in Part F. So I6 **is** engaged, as the
+    measured-and-documented (explicitly not pass/fail) invariant it is; and
+    `docs/jobs.md:1775-1777`'s "an in-flight step is interrupted" is contradicted.
+    **I2 is still NOT violated even then** — the step executes exactly *once*, so
+    the defect is zero-vs-once, not once-vs-twice, and I2's text is "at most once".
+    **I1 is still NOT violated** — one terminal state, no phantom run. If a later
+    author is tempted to file the Part F shape as I2, re-read I2's wording first.
+    Part A gate A5 and Part F's step-2 checks are what make these claims measured
+    rather than assumed.
 - **Stack:** plain `test/ha`, **no overlay**. Nothing here needs a shared volume,
   a second agent id, or nginx surgery. Every compose call is:
 
@@ -476,6 +490,77 @@ window (house rule; W2-4/W2-6 both had to state this).
 - **E4 — after the reaper has run.** Approve a row that is already `TimedOut`:
   expect 409. Bounds Part A's window on the far side.
 
+## Part F — the decision inside the agent's cancel-detection fence
+
+**Added after the first execution and after review; this is the part that carries
+the *execution* half of the defect.** Parts A-E all fired the decision with the
+agent already gone or already past its fence, so every one of them could only
+produce a false record. Part F fires it **inside** the fence.
+
+**Why it can work at all — read this before aiming.** Two agent-side pollers race,
+and `WaitForApproval` consults the wrong one first:
+
+| Poller | Interval | Code |
+|---|---|---|
+| cancel poller (`client.GetRun`) | **5 s** — `CancelPollInterval` | `internal/agent/orchestrator.go:37`, loop `:123-149`; only its tick sets `cancelledByMaster` and calls `cancelRun()` |
+| approval poller (`GetApproval`) | **3 s** — `ApprovalPollInterval` | `internal/agent/agent.go:27`; loop `internal/agent/approval.go:51-73` |
+
+`WaitForApproval` returns **`true`** on an `Approved` read at `approval.go:55-56`
+*before* it ever reaches `case <-ctx.Done()` at `:69`. So if **any** 3 s approval
+tick falls between the decision's commit and the next 5 s cancel tick, the gate
+succeeds. Nothing downstream stops the next step: `orchestrator.go:357-362`
+reports the gate `Succeeded`; `RunPipeline` (`internal/agent/pipeline.go:126-157`)
+has **no** `ctx.Err()` check between stages; and `EvalCondition`
+(`internal/dsl/condition.go:44`) computes `successVal` from `cancelledByMaster`
+(`orchestrator.go:93-99`), still **`false`**. The step body then runs.
+
+- **Workload:** `approval.payload.json` (`edge-approval`, `timeoutMinutes: 10`) —
+  a long gate so no timeout can interfere. Its `after` step is `echo after-gate`,
+  which is what makes execution *provable*: the string lands in the `logs` table.
+- **F1 — aim, do not guess.** Trigger, wait for step 1 `WaitingApproval`, then wait
+  ≥13 s so **both** grids have laid down samples, then read them out of the
+  controller HTTP log for that run. **The two grids separate by path**: the approval
+  grid is `GET /api/v1/agents/{id}/runs/{rid}/approvals/1`, the cancel grid is
+  `GET /api/v1/runs/{rid}`. Predict one period forward and fire `cancel` then
+  `approve` from **one process** so that the approve commits ~0.45 s before the next
+  predicted approval tick while the next cancel tick is still ≥3 s away. Firer:
+  `w2-8/partF.py`. Measured aim accuracy: predicted-vs-actual approval tick
+  **+1.77 ms / −0.61 ms**.
+  - **Do not poll `GET /api/v1/runs/{id}` from the host while doing this** — that is
+    the cancel poller's exact path and it pollutes the grid you are about to read
+    back. Use `GET /api/v1/runs?limit=N` or `/steps` instead.
+- **F2 — capture, per attempt** (`w2-8/partF-capture.sh`). The five artifacts that
+  matter, in order of load-bearing-ness:
+  1. **`SELECT … FROM logs WHERE run_id=… AND step_index=2`** — the post-gate step's
+     own stdout. **This is the proof of execution**; nothing else could write it.
+  2. **`step_reports`** — expect **no row for step 2** and step 1 stuck
+     `WaitingApproval`. The absence is itself a finding (I7).
+  3. **`POST /api/v1/agents/*/steps`** in the controller HTTP log. **This path
+     carries NO run id**, so it must be matched by time window, not by run — the
+     first version of this capture grepped by run id and saw nothing, which reads
+     exactly like "the agent never reported". Status **`204` = persisted, `200` =
+     `alreadyFinalized` no-op** (`internal/controller/api_agent.go:513-521`).
+  4. **The agent container log.** Expect **no** `"received cancellation signal from
+     master"` line at all on a successful attempt — the pipeline finished before the
+     poller's next tick.
+  5. **One-statement ordering read** on the Postgres clock: `runs.updated_at`,
+     `run_approvals.decided_at`, and `min(logs.ts) WHERE step_index=2`.
+- **F3 — the control is mandatory, and it is what makes the fence a measurement.**
+  Repeat with the approve fired **8 s** after the cancel (outside the 5 s fence).
+  Expect: `204` and `Approved` (the Part A defect, unchanged) but **zero** step-2
+  log lines, and the agent's `"received cancellation signal from master;
+  interrupting run"` line present. Firer: `w2-8/partF-control.py`.
+- **F4 — one wide-gap attempt.** Repeat F1 with the cancel→approve gap at ~2.5 s to
+  show the window is the whole fence and not just the ~120 ms of the first hits.
+- **Recording.** If a post-gate step runs, this is a **separate violation entry**,
+  not a note on Part A's: primary **I7** (the `logs`/`step_reports` contradiction),
+  **I6** as the measured-not-scored zombie limb, a **published-contract** limb at
+  `docs/jobs.md:1775-1777`, and **explicitly NOT I2** (exactly one execution) and
+  **NOT I1** (one terminal state). It also requires **editing Part A's entry**:
+  its "nothing executes" and "NOT I6" claims must be scoped to Part A-E's aims.
+  Report the attempt count either way, and separate *aborted-before-firing* attempts
+  from *fired-and-missed* ones — they are not the same result.
+
 ## Teardown
 
 ```bash
@@ -500,9 +585,13 @@ docker compose $COMPOSE_FILES down -v
   the one thing that must not lie. Severity argument, stated rather than
   asserted: the falsified row is durable, is attributed to a **named human**, is
   surfaced in the UI as an ordinary decision, and is reachable by a documented
-  CLI command that reports success — but it does **not** cause execution
-  (nothing resumes, no side effect fires), which is why it is major and not
-  critical. Say both halves.
+  CLI command that reports success — but for the Parts A-E aims it does **not** cause
+  execution (nothing resumes, no side effect fires), which is why it is major and
+  not critical. Say both halves — **and scope the negative half explicitly to the
+  aims you actually fired.** Parts A-E all fire with the agent gone or already past
+  its cancel-detection fence, so "nothing executes" is a property of the aim, not
+  of the system; Part F fires inside the fence and the step **does** execute. Do not
+  write "nothing executes" unqualified.
 - **Part D ⇒ escalates Part A's scope if it returns 204** — same invariant, same
   entry or a sibling entry, but the window becomes `timeoutMinutes` (default 60
   **minutes**) rather than ≤60 s, and no timeout is required. If it 404s or 409s,
@@ -529,8 +618,11 @@ and reverted at `04:42:08` (verified `none` in a fresh session, `w2-8/teardown.t
 stack torn down with `down -v`. **No background sampler was left running** — every
 sampler in this scenario is a bounded foreground loop inside `partA.sh` /
 `partC2.sh` / the Part D2 command, `jobs` was empty and no stray `psql`/`curl`
-process remained at teardown. Three FINDINGS entries: **1 violation (major, I7)
-and 2 observations (minor)**; no branch-internal asset bug.
+process remained at teardown (that claim was prose-only in this session — it was
+actually captured in the Part F session, see below). Three FINDINGS entries from
+this session: **1 violation (major, I7) and 2 observations (minor)**; no
+branch-internal asset bug. **A fourth entry (major) was added by the Part F session
+below**, bringing the scenario to 2 violations + 2 observations.
 
 **Predictions that held.** Part A needed no race, exactly as §(1) argued: the
 `Failed`/`Pending` state was on a sampler line within 0.66 s of the terminal
@@ -600,5 +692,45 @@ sweep. The only unaimed sample is the §G5 throwaway run at **21.744 s**. The
 structural bound from the measured 60.012 s grid is `[0, 60.02) s`.
 
 **Invariant citation:** the invariant table is at
-`docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:48-54` (I7 = `:54`).
-An earlier draft of this file cited `:44-55`.
+`docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:48-54` (I7 = `:54`,
+I6 = `:53`). An earlier draft of this file cited `:44-55`.
+
+## Execution notes — Part F, 2026-07-30 second session (read with the above)
+
+Executed against a freshly rebuilt `test/ha` on the same branch,
+`05:12:47Z – 05:33:36Z`. Instrument armed at `05:12:47` (verified `all` in a fresh
+session) and reverted at `05:30:52`, re-verified `none` in a fresh session at both
+`05:30:52` and `05:33:07` (`w2-8/partF-gate.txt`, `w2-8/partF-teardown.txt`); stack
+torn down with `down -v`. **Sampler hygiene was captured, not asserted this
+time** — `jobs` printed nothing and `ps -W | grep -iE "psql|curl|python"` matched
+nothing, on **two** passes (before the revert and immediately before `down -v`).
+The earlier session's identical claim was prose-only; the structural reason it held
+either way is that every sampler in this scenario is a bounded foreground loop
+inside a single script.
+
+**Result: the fence was probed and it does not hold.** 7 runs triggered — **4 aimed
+inside the fence, 4 hits**; **1 control aimed outside it, 0 execution**; **2 aborted
+at the aiming stage before any cancel/approve pair fired** (harness bugs: the
+`/steps` API returns `index`, not `stepIndex`; and a 9 s observation window caught
+only one cancel-poll sample, since widened to 13.5 s). Filed as a **new violation
+entry (major, I7 primary + I6 measured + a `docs/jobs.md:1775-1777` contract limb)**,
+which brings this scenario to **4 entries: 2 violations (both major) and 2
+observations (both minor)**.
+
+**Three things a re-run should know.**
+
+1. **`POST /api/v1/agents/{id}/steps` — the `ReportStep` path — carries no run id**
+   (`internal/agent/client.go:208`). Grepping the controller log by run id shows
+   `logs/bulk` and `finish` but **zero** step reports, which reads exactly like "the
+   agent never reported the step". Match it by time window instead, and read the
+   status code: **`204` = persisted, `200` = `{"alreadyFinalized":true}` no-op**
+   (`internal/controller/api_agent.go:513-521`).
+2. **Do not poll `GET /api/v1/runs/{id}` from the host during Part F.** That is the
+   agent cancel poller's exact path; host polling pollutes the very grid the aimer
+   reads back. Use `GET /api/v1/runs?limit=N` for run status and `/steps` for steps.
+3. **The `logs` table has no terminal-run guard, and that is the only reason the
+   execution is visible.** Step reports under a terminal run are dropped with `200`,
+   but `POST …/steps/{i}/logs/bulk` returned **`204`** and the `after-gate` line
+   persisted. Any future scenario asking "did work happen after the terminal
+   write?" should key on `logs`, not `step_reports` — the step table is silent by
+   design.

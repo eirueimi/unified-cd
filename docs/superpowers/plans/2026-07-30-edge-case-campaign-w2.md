@@ -244,9 +244,9 @@
 
 **Files:** Create `test/edgecase/scenarios/w2-8-approval-race.md`; Modify `test/edgecase/FINDINGS.md`
 
-**Invariants:** I7
+**Invariants:** I7 — **and I6 after Part F** (see note (c) below); I1 and I2 checked and NOT violated.
 
-**Interfaces:** Consumes `approval-short.payload.json` (Task 1).
+**Interfaces:** Consumes `approval-short.payload.json` (Task 1), and `approval.payload.json` for Part D / Part E / Part F.
 
 > **EXECUTED 2026-07-30 — the task's own premise is confirmed, and one bullet
 > below is materially too narrow. Read `test/edgecase/scenarios/w2-8-approval-race.md`
@@ -265,6 +265,33 @@
 > `Cancelled` run, so `RunDetail.svelte:1246-1266` renders live Approve/Reject
 > buttons. Any later task reasoning about approval exposure must use
 > `timeoutMinutes`, not 60 s.
+>
+> **(c) ADDED AFTER REVIEW — Part F, a second execution, found the *execution* half
+> of this defect, and it invalidates the "nothing executes" reasoning above.** Every
+> Parts A-E trial fired the decision with the agent already exited (timeout path) or
+> already past its cancel-detection fence (Part D, +9.19 s), so none of them *could*
+> execute anything. Firing the approve **inside** the fence changes the outcome:
+> `WaitForApproval` (`internal/agent/approval.go:51-73`) returns `true` on an
+> `Approved` read at `:55-56` **before** it consults `ctx.Done()` at `:69`, so if any
+> 3 s `ApprovalPollInterval` tick falls between the decision's commit and the next
+> 5 s `CancelPollInterval` tick (`internal/agent/orchestrator.go:37`), the gate
+> succeeds and the **post-gate step body executes on a `Cancelled` run** —
+> **4/4 aimed attempts**, `echo` output persisted to `logs` **0.56–2.96 s after the
+> cancel**, while `step_reports` holds no row for that step at all and the agent
+> reports `FinishRun(Succeeded)` (refused `200 alreadyFinalized`). A control at
+> **+8.008 s** (outside the fence) executed nothing; the agent's cancel detection
+> there took **3.861 s**, inside W2-7's measured 0.939–4.938 s. Filed as a **second
+> major** (I7 primary; I6 as the measured-not-scored zombie limb; **explicitly NOT
+> I2** — exactly one execution, so zero-vs-once not once-vs-twice; **NOT I1**) with a
+> published-contract limb at `docs/jobs.md:1775-1777` ("an in-flight step is
+> interrupted"), which is contradicted. **Two reusable facts for later tasks:**
+> `ReportStep` posts to `/api/v1/agents/{id}/steps`, a path carrying **no run id**
+> (`internal/agent/client.go:208`), so a run-id grep of the controller log shows zero
+> step reports and reads like the agent never reported — match by time window and
+> read the code (`204` persisted vs `200 alreadyFinalized`,
+> `internal/controller/api_agent.go:513-521`); and **`logs` has no terminal-run
+> guard while `step_reports` does**, so "did work happen after the terminal write?"
+> must be answered from `logs`, never from `step_reports`.
 
 - [x] **Step 1: Write the runbook.**
   - **The window is wide and does not require winning a race.** Per `approval.go:17-20`, when the agent's local deadline expires it fails the step and the controller-side `run_approvals` row **stays `Pending`**, because the agent has no decision endpoint. So: let the gate time out on the agent, confirm the run is `Failed`, and confirm `SELECT status FROM run_approvals` is still `Pending`. That state is the vulnerability, and it persists until the 1-minute approval reaper happens to tick.
@@ -274,6 +301,7 @@
   - **Measure the two clocks.** Capture `run_approvals.timeout_at` (controller clock, `api_approvals.go:86-89`) and the agent's `"approval timed out"` log timestamp (agent clock, `approval.go:64-67`) and record the skew. The exploration inferred the agent's deadline is normally the later of the two but did not measure it — **settle it here**.
   - Recording: `Approved` written onto a terminal run + a 204 audit row = major (I7 — the recorded state contradicts reality, and it is an *audit* record, which is the one thing that must not lie). Note whether anything anywhere surfaces the contradiction to an operator.
 - [x] **Step 2: Commit runbook.** **Step 3: Execute.** **Step 4: Findings + teardown `-v` + commit** (scenario id w2-8). — runbook `c4f3c36`, findings `b56563a`; stack `down -v`, `log_statement` reverted and verified `none` in a fresh session, no sampler left running.
+- [x] **Step 5 (added after review): Part F — probe the cancel-detection fence.** A second execution session (`05:12:47Z–05:33:36Z`), same branch, freshly rebuilt `test/ha`: 7 runs, 4 aimed inside the fence (4 hits), 1 control outside it (0 execution), 2 aborted at the aiming stage before firing. `log_statement` armed and reverted with the fresh-session check on both ends, sampler hygiene **captured** (`jobs` empty, no stray `psql`/`curl`/`python`) on two passes rather than asserted, stack `down -v`. Runbook § "Part F" + § "Execution notes — Part F"; the new FINDINGS entry brings W2-8 to **2 violations (both major) and 2 observations (both minor)**.
 
 ---
 
