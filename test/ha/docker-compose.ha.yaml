@@ -12,6 +12,67 @@ services:
       timeout: 3s
       retries: 30
 
+  # ---- Garage (S3-compatible object store) ----
+  # Copied verbatim from the dev ../../docker-compose.yaml `garage` service,
+  # except for the volume name (see the `ha-garagedata` note under `volumes:`).
+  # Without an object store this rig starts NO log archiver and NO cache
+  # cleanup, answers 503 to every artifact upload, and leaves the agent cache
+  # disabled — see cmd/controller/main.go:303-322 and internal/agent/agent.go:68.
+  #
+  # Bucket creation is automatic and needs no `mc mb` step: `--default-bucket`
+  # plus GARAGE_DEFAULT_* creates it at boot, and NewS3ObjectStore MakeBuckets
+  # it anyway if absent (internal/objectstore/s3.go:45-49).
+  garage:
+    image: dxflrs/garage:v2.3.0
+    command: /garage server --single-node --default-bucket
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-0000000000000000000000000000000000000000000000000000000000000000}
+      GARAGE_DEFAULT_ACCESS_KEY: garageadmin
+      GARAGE_DEFAULT_SECRET_KEY: garageadmin12345
+      GARAGE_DEFAULT_BUCKET: unified-cd-logs
+    volumes:
+      - ha-garagedata:/data
+      - ../../deployments/garage/garage.toml:/etc/garage.toml:ro
+    healthcheck:
+      test: [ "CMD", "/garage", "status" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ---- out-of-band object manipulation (mc) ----
+  # Garage's own CLI can only INSPECT an object (`garage bucket inspect-object`,
+  # v2.3.0); it has no object delete/put verb at all — `garage bucket` exposes
+  # alias/allow/cleanup-incomplete-uploads/create/delete/deny/info/
+  # inspect-object/list/set-quotas/unalias/website and nothing else. So
+  # scenarios that must delete or plant an individual S3 object out of band
+  # (W3-1's cache-object injection, W3-6's orphan verification) need a real S3
+  # client in the stack. This container idles with the alias preconfigured, so
+  # a scenario reaches it with:
+  #   docker compose $COMPOSE_FILES exec -T mc mc ls --recursive garage/unified-cd-logs/
+  #   docker compose $COMPOSE_FILES exec -T mc mc rm garage/unified-cd-logs/<key>
+  # It idles rather than one-shotting (like agent-enroll) because injection
+  # timing matters: `exec` into a running container costs milliseconds, a
+  # `compose run` costs container-start latency, and W3-6's TOCTOU window is
+  # bounded by an artifact Put.
+  mc:
+    # Pinned (same digest as :latest on 2026-07-31,
+    # sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727)
+    # so a scenario re-run months from now injects with the same client.
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until mc alias set garage http://garage:3900 garageadmin garageadmin12345; do
+          echo "mc: waiting for garage..." >&2
+          sleep 2
+        done
+        echo "mc: alias 'garage' ready"
+        exec sleep infinity
+    depends_on:
+      garage:
+        condition: service_healthy
+
   controller1: &ctrl
     build:
       context: ../..
@@ -21,10 +82,20 @@ services:
       UNIFIED_TOKEN: ha-admin-token
       # All replicas must share the same key file; see docs/high-availability.md.
       UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek
+      UNIFIED_S3_ENDPOINT: garage:3900
+      UNIFIED_S3_BUCKET: unified-cd-logs
+      UNIFIED_S3_KEY: garageadmin
+      UNIFIED_S3_SECRET: garageadmin12345
     volumes:
       - ./kek:/run/secrets/kek:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      # LOAD-BEARING, not politeness. NewS3ObjectStore calls BucketExists
+      # eagerly (internal/objectstore/s3.go:41-49) and cmd/controller/main.go:
+      # 311-313 does os.Exit(1) on failure, so a controller that starts before
+      # Garage is accepting S3 requests CRASHLOOPS rather than degrading.
+      garage:
         condition: service_healthy
 
   controller2: *ctrl
@@ -94,12 +165,35 @@ services:
         done
     restart: "no"
 
+  # The agent cache uses the agent's OWN S3 client, not the controller's
+  # (internal/config/agent.go:152-155 -> cmd/unified-cd-agent/main.go:204-217),
+  # so cache faults are injected on this path and archival/artifact faults on
+  # the controller's. ALL FOUR vars are required: main.go:204 gates the store on
+  # `endpoint != "" && key != "" && secret != "" && bucket != ""`, there is no
+  # default for any of them (the flags default to the env values, main.go:67-70),
+  # and a missing one leaves Agent.CacheStore nil, which is "cache disabled"
+  # (internal/agent/agent.go:68) — SILENTLY: the only trace is the ABSENCE of
+  # the `cache enabled` info line at main.go:215.
   agent1:
     build:
       context: ../..
       dockerfile: docker/agent.Dockerfile
     volumes:
       - agent-credentials:/var/lib/unified-cd-agent
+    environment: &agentcache
+      UNIFIED_CACHE_ENDPOINT: garage:3900
+      # A SECOND bucket, matching the dev compose (docker-compose.yaml:266):
+      # the controller owns unified-cd-logs (runs/, artifacts/) and the agent
+      # owns unified-cd-cache (caches/). Garage's --default-bucket only creates
+      # unified-cd-logs; this one is auto-created by NewS3ObjectStore's
+      # MakeBucket (internal/objectstore/s3.go:45-49) as a key-local alias, and
+      # the dev stack has been running that way since 2026-07-25. Splitting the
+      # buckets makes the S3 interposer's selectivity trivial — the bucket name
+      # is the first path segment, so `^/unified-cd-cache/` is exactly the agent
+      # cache path and `^/unified-cd-logs/` is exactly the controller's.
+      UNIFIED_CACHE_BUCKET: unified-cd-cache
+      UNIFIED_CACHE_KEY: garageadmin
+      UNIFIED_CACHE_SECRET: garageadmin12345
     command:
       - "--server"
       - "http://nginx:8080"
@@ -114,6 +208,8 @@ services:
     depends_on:
       agent-enroll:
         condition: service_completed_successfully
+      garage:
+        condition: service_healthy
 
   agent2:
     build:
@@ -121,6 +217,7 @@ services:
       dockerfile: docker/agent.Dockerfile
     volumes:
       - agent-credentials:/var/lib/unified-cd-agent
+    environment: *agentcache
     command:
       - "--server"
       - "http://nginx:8080"
@@ -135,6 +232,15 @@ services:
     depends_on:
       agent-enroll:
         condition: service_completed_successfully
+      garage:
+        condition: service_healthy
 
 volumes:
   agent-credentials:
+  # Dedicated to this rig (compose prefixes it: unified-cd-ha_ha-garagedata), so
+  # it can never collide with the dev stack's `garagedata`. It is also the
+  # reason `docker compose down -v` is now MANDATORY between edge-case
+  # scenarios: cache entries, artifacts and run-log archives survive a plain
+  # `down`, and a stale caches/<jobhash>/<keyhash> object from a previous
+  # scenario turns a cache-miss expectation into a hit.
+  ha-garagedata:
