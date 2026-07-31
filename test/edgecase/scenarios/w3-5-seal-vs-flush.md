@@ -721,7 +721,7 @@ teardown. **I1 held.**
 | Part | Result |
 |---|---|
 | G4 | archiver positive control: `edge-tick` terminal `05:41:27.653Z`, sealed `05:41:49.545Z` — **21.89 s**, `line_count=30` = `logs`=30, object 3038 B |
-| A | **the whole point, and it worked first time**: 20 lines land pre-seal; run finished `Succeeded`; **the real archiver** sealed it 2.62 s later (`archived Run logs` on controller1); 10 post-seal lines → **204, zero-byte body**, `dropped=10` on controller3, `logs` still 20 |
+| A | **the whole point, and it worked first time**: 20 lines land pre-seal; run finished `Succeeded`; **the real archiver** sealed it 2.615 s later (*derived against `runs.updated_at 05:43:16.9427Z`, not the client-side `finish` return at `05:43:16.978Z`, from which it is 2.580 s* — see `FINDINGS.md:1906`, which is authoritative) (`archived Run logs` on controller1); 10 post-seal lines → **204, zero-byte body**, `dropped=10` on controller3, `logs` still 20 |
 | A5 | single-line route also 204 + `"dropping log line for sealed run"` — **and that warning carries no count field**, unlike the bulk form's `dropped` |
 | B | **the natural race, HIT ON ATTEMPT 1 OF A CAP OF 3.** Real agent, real seal, one `partition`. **78 lines dropped, measured; 78 expected, derived — exact.** Post-heal agent log: **one INFO line, zero errors** |
 | C | mixed batch of 4 across two sealed runs → `dropped=4` naming only the **last** id; reversed order names the **other** run. Same loss, different attribution |

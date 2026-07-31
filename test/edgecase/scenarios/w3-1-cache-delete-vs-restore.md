@@ -61,10 +61,15 @@ take an interval.** Verified by enumeration, not by impression — every
 first cache cleanup is at t+24 h**, and a rig that is torn down between
 scenarios never reaches one. A repo-wide grep for a lever
 (`CACHE_CLEANUP|cache-cleanup|cacheCleanupInterval|CacheCleanup`, excluding this
-campaign's own files) returns **7** hits and **not one is a flag, an env var or
-a config field**: the call site (`cmd/controller/main.go:401`), the doc comment
-and the function (`scheduler.go:216`, `:219`), the leader helper (`:231`,
-`:235`), one docs row (`docs/high-availability.md:83`) and two unit tests.
+campaign's own files) returns ~~**7**~~ **10** hits and **not one is a flag, an
+env var or a config field**: the call site (`cmd/controller/main.go:401`), the
+doc comment and the function (`scheduler.go:216`, `:219`), the leader helper
+(`:231`, `:235`), one docs row (`docs/high-availability.md:83`) and four
+unit-test lines (`scheduler_test.go:52`, `:56`, `:59`, `:63` — two tests, each
+a name and a call). **The "7" was corrected to 10 at review** — re-running the
+same pattern at HEAD returns 10, and no capture of the original grep exists
+(`w3-1/` holds no code-read capture); the conclusion is unchanged. See
+`FINDINGS.md:2023`, which is authoritative.
 
 **So do not wait for the sweeper, and do not try to make it fire.** Compute the
 object key from `cache.go:49-53` and delete the payload with `mc` while a
@@ -671,9 +676,14 @@ session.
    65536 bytes of `/dev/urandom` costs the agent ~0.6 s to generate and zstd
    cannot compress it, so the archive is ~16.9 MB on the wire. Unthrottled, the
    same restore takes **~100 ms** — there is no window at all without the arm.
-7. **`docker compose exec` is ~200-400 ms**, which is why the sampler runs at
-   1 Hz and the entry counts advance ~8 per sample. That is fine; do not try to
-   sample faster.
+7. **`docker compose exec` is ~200-400 ms**, which is why the sampler is written
+   as a 1 Hz loop and the entry counts advance ~8 per sample. **1 Hz is the
+   nominal rate, NOT the achieved one:** the captures' own stamps are ~2.11 s
+   apart (`partA-torn.txt:15-17`, `06:59:04.129 → :06.243 → :08.365`; the same
+   spacing across `partA-attempt1.txt:4-39`), which is exactly why the counts
+   advance ~8 rather than ~4. Describe the cadence from the stamps, never from
+   the loop — `FINDINGS.md:1952` was corrected for saying "once per second".
+   That is fine; do not try to sample faster.
 8. **The `mc` image has no `sed` and no `ps`.** Build any planted object's bytes
    on the **host** and pipe them in (`printf '%s' "$json" | … mc pipe …`); one
    C3 attempt was lost to this and is recorded as VOID rather than quietly
