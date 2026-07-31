@@ -47,7 +47,12 @@
 >    with **`pause garage` behind the interposer**, which is a genuine hang
 >    (nginx accepts, proxies, and waits on `proxy_read_timeout 300s`) and gives a
 >    window bounded only by minio-go's 60 s `ResponseHeaderTimeout`. Both Part B
->    arms then hit on the first attempt. **A re-runner should not assume
+>    arms then hit on the first attempt **with that lever** — and the qualifier
+>    is load-bearing, because it is the whole reason `s3-latency`'s large-value
+>    failure is on record. Against the cap of 6, **arm 1's total was 2 attempts**
+>    (one with the failed `s3-latency` lever, one with `pause`) and **arm 2's was
+>    1** (`FINDINGS.md:1766`). An earlier version of this line dropped "with that
+>    lever" and so understated arm 1 as a single attempt. **A re-runner should not assume
 >    `s3-latency` is reliable at large values on every host** — see the note
 >    added to §Part B.
 > 3. **Part A's premise about what bounds an S3 hang was answered from the wrong
@@ -411,8 +416,17 @@ once the store returns.
   `edge-tick` emits (**count it from the control run in G4**, do not assume 30);
   `GET /api/v1/runs/{id}/logs/stats`. → `$SCRATCH/partA-runs.txt`.
 - **A1.4 — observe for a bounded window and SAY the window.** Hold the outage
-  for **8 minutes** from A1.2. Then, **before touching any container**, capture
-  all three controllers' logs for the window in full:
+  for ~~**8 minutes**~~ **at least 15 minutes** from A1.2 — **as executed the
+  hold ran `03:02:15.838Z` → `03:21:54.42Z`, i.e. 19 m 38 s**, because the
+  per-run backoff ladder needs a window wider than 8 minutes before the
+  per-process/per-tick multiplication is legible. The measured attempt window was
+  `03:03:37Z – 03:18:21Z` = **14.73 min** for 20 attempts across 2 runs
+  (`FINDINGS.md:1736`, `:1744`), and `FINDINGS.md:1752`'s comparison against the
+  single-process ladder turns on that boundary — so **state the outage span and
+  the attempt window separately, and do not quote the prescribed hold as
+  either.** The four-surface check of A1.3 was re-taken over the first 8 minutes
+  and that is the only figure "8 minutes" belongs to. Then, **before touching any
+  container**, capture all three controllers' logs for the window in full:
   `docker compose $COMPOSE_FILES logs controller1 controller2 controller3 --since <t0>`
   → `$SCRATCH/partA-controllers.txt`.
 - **A1.5 — THE MEASUREMENT, and the arm that tests a fact this plan corrected.**
@@ -807,12 +821,12 @@ archives and 1 orphan object left deliberately by Part B arm 2.
 | Part | Arm | Result |
 |---|---|---|
 | G4 | none | archival works: 3038 B / 30 lines / `maxSeq` 30, `controller1`, **28.4 s** after the run went terminal (`02:57:25.023Z` finish → `02:57:53.471` archived; the 59 s an earlier version quoted is measured from the **trigger**, `02:56:54.792Z`) |
-| A1 | `kill-hard garage`, 8 min held | **20** `failed to archive Run logs` lines for **2** runs across **all three** replicas; runs untouched on four surfaces |
+| A1 | `kill-hard garage`, **19 m 38 s of outage** (`03:02:15.838Z` → `03:21:54.42Z`) | **20** `failed to archive Run logs` lines for **2** runs across **all three** replicas, over an attempt window of `03:03:37Z – 03:18:21Z` = **14.73 min** (10 attempts per run; the arithmetic at `FINDINGS.md:1752` depends on that boundary, so quote the window, not the outage, when comparing against the single-process ladder); runs untouched on four surfaces, checked over the first **8 minutes**. ~~"8 min held"~~ — **superseded: 8 minutes is the runbook's §Part A prescribed hold and the span of the untouched-run checks, not the outage and not the attempt window.** The hold was extended during execution and this row was not updated; `FINDINGS.md:1736`/`:1744` are authoritative |
 | A1.7 | restore | both archived **59.1 s** and **89.1 s** after Garage returned, both by `controller1`, both complete (30/30 lines) |
 | A2 | `pause garage`, 7.5 min held | **4** attempts, each ~65 s of continuously-held cluster lock; error text differs from A1 and is misleading |
 | A2.4 | during the stall | `/readyz` **200** on all three, LB `/healthz` 200, a fresh run `Succeeded` in 35 s |
-| B arm 1 | `pause` + SQL `DELETE FROM runs` mid-`Put` | FK violation on `CreateLogArchive`, compensating `Delete` **204**, **no** object left |
-| B arm 2 | same + `s3-block DELETE unified-cd-logs/ 403` | same FK violation, compensating `Delete` **403**, `WARN` fired, **3.0 KiB orphan** left |
+| B arm 1 | `pause` + SQL `DELETE FROM runs` mid-`Put` | **2 attempts of a cap of 6** — 1 with the failed `s3-latency` lever, then hit on the first attempt *with the `pause` lever*. FK violation on `CreateLogArchive`, compensating `Delete` **204**, **no** object left |
+| B arm 2 | same + `s3-block DELETE unified-cd-logs/ 403` | **1 attempt of a cap of 6.** Same FK violation, compensating `Delete` **403**, `WARN` fired, **3.0 KiB orphan** left |
 | C1 | none | 64 MiB artifact `Succeeded`, `upload_blob` 0.813 s, controller `PUT` 204 in 807 ms, 3 S3 requests |
 | C3 | `s3-block PUT unified-cd-logs/artifacts/ 403` | run `Failed`, step `Failed`, **exactly 1** controller `PUT` (500, 160 ms), multipart aborted cleanly |
 | D2 | `kill-hard garage` + `restart controller1` | `s3 object store init` ERROR, **exit 1**, `restartCount=0`, container stays `exited` |

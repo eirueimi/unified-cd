@@ -195,13 +195,42 @@ silently off before. **Consequences you must plan for:**
   each logged `ustatus=504, 200` — black hole timed out, `backup` served it —
   so 3 × 3 s ≈ the 9 s of added width. The body-bearing request carries
   `reqlen=67203925` and still falls through, which is the point that was in
-  doubt. **So `s3-latency` is a usable width knob for W3-6 — at small values
-  only, see the large-value caveat above**, at ~3 s of
-  widening per armed second. Two cautions: the width scales with the *request
+  doubt. ~~"So `s3-latency` is a usable width knob for W3-6 — at small values
+  only, see the large-value caveat above"~~ — **CORRECTED, and this measurement is
+  not withdrawn: it answers a narrower question than the sentence claimed.** What
+  is measured is that `s3-latency 3` *delays* a 64 MiB artifact `PUT` to 9.702 s
+  rather than breaking it, at ~3 s of
+  widening per armed second. **W3-6 as executed REJECTED it** and used neither it
+  nor the interposer at all — see the width-knob rule below. Three cautions: the
+  width scales with the *request
   count*, so a payload large enough to be split into more parts widens more
-  than linearly in size; and `s3-latency` does **not** reach the `mc`
+  than linearly in size; `s3-latency` does **not** reach the `mc`
   container, whose alias points at `garage:3900` directly and bypasses the
-  interposer — use a job, not `mc`, to measure an arm.
+  interposer — use a job, not `mc`, to measure an arm; and at large values the arm
+  **breaks** the operation instead of widening it (the caveat above; W3-2 measured
+  a log-archive `Put` 502-ing at `s3-latency 30`).
+
+  **THE WIDTH-KNOB RULE FOR W4-W6 — read this before reaching for `s3-latency`,
+  because it is the arm the README used to recommend and W3-6 rejected it.**
+  Pick the knob by which side of the race you need to widen, and check that the
+  knob does not also hang your *instrument*:
+
+  | you need to widen | use | why not `s3-latency` |
+  |---|---|---|
+  | a controller-side S3 call you are **not** also measuring through S3 | `inject.sh pause garage` behind the interposer | a genuine hang bounded by minio-go's 60 s `ResponseHeaderTimeout`; `s3-latency` at large values 502s instead (W3-2) |
+  | the **client→controller** leg of an upload (W3-6's artifact TOCTOU) | `curl --limit-rate <R>` against `proxy_request_buffering off` from `bigbody` | `pause` would hang the `DELETE` being timed, because `deleteRunEverywhere` itself calls `obj.Delete`/`obj.List`; `s3-latency` widens the wrong side and is undependable at the values needed |
+  | a **response-body** stream (a cache restore) | `inject.sh s3-slow <bytes/s>` | `s3-latency` is per request, not per byte |
+  | the delete loop inside `deleteRunEverywhere` | pad the artifact prefix — 400 objects → 0.493 s, 10,000 → 12.739 s, ~1.2 ms/object, serial | not an S3-timing problem at all |
+
+  **W3-6's own note is the one to copy: `--limit-rate` + `proxy_request_buffering
+  off` "is a better width knob than anything in `inject.sh` for this race", and it
+  is fully deterministic** — a 32 s client-side upload produced a controller
+  `duration_ms` of 32374 (`scenarios/w3-6-retention-vs-upload.md` §Instrument and
+  execution note 3). **And pair whatever knob you pick with a positive in-flight
+  signal rather than a sleep** — W3-6 fired on `mc ls --incomplete`, W3-2 on three
+  consecutive granted `pg_locks` samples; both hit on the first attempt.
+  Consistent with the arm rule below, none of this is verified by a comment: each
+  row above is backed by a capture that measured the knob's effect.
 
   **On the two reload lessons, and why this overlay resolves them differently
   from `nginx-logfault.conf`:** it uses `keepalive_timeout 0`, **not**
@@ -326,7 +355,7 @@ its inferred capability is `pod` (see the table).
 | `unrelated-probe.payload.json` | `edge-unrelated-probe` | **no mutex**, `echo probe-ran` — the W2-9 starvation probe |
 | `podcap-job.payload.json` | `edge-podcap-job` | `podTemplate` with a pod-level `nodeSelector`, so `dsl.RequiredCaps` infers **`pod`** — label-claimable (`kind:linux`) but capability-unschedulable, because the `test/ha` agents report `["native","container"]` (W2-4 Part D) |
 | `logburst.payload.json` | `edge-logburst` | the **chatty** fixture (W3-4): emits exactly **2002** stdout lines — `burst-begin`, `burst-1`…`burst-2000` written as fast as the shell can, then `burst-end` after a 30 s quiet window. Line contents are self-indexing so duplicates and reordering are measurable without joining anything. `sleep 8` before the burst gives a window to arm a fault against an already-connected agent |
-| `artifact-large.payload.json` | `edge-artifact-large` | the **artifact** fixture (W3-2, W3-6): builds a `/dev/urandom` blob (`size_mb` param, default **64**) and uploads it. The upload duration IS W3-6's TOCTOU width (`api_artifacts.go:55` GetRun → `:79` Put, nothing between). Measured: 64 MiB → `upload_blob` **0.749 s** (`step5-bigbody-and-latency-recapture.txt`), 256 MiB → **3.060 s** (`step5-baseline.txt:89-94`) — ≈12 ms/MiB. **`s3-latency 3` widens the 64 MiB Put to 9.702 s** and does not break it (see the interposer notes above), which is the knob W3-6 should reach for first. **Needs `compose/bigbody.override.yaml`** — without it the LB 413s anything over 1 MiB. Random, not zeros, because the payload is compressed on the way out |
+| `artifact-large.payload.json` | `edge-artifact-large` | the **artifact** fixture (W3-2, W3-6): builds a `/dev/urandom` blob (`size_mb` param, default **64**) and uploads it. The upload duration IS W3-6's TOCTOU width (`api_artifacts.go:55` GetRun → `:79` Put, nothing between). Measured: 64 MiB → `upload_blob` **0.749 s** (`step5-bigbody-and-latency-recapture.txt`), 256 MiB → **3.060 s** (`step5-baseline.txt:89-94`) — ≈12 ms/MiB. **`s3-latency 3` widens the 64 MiB Put to 9.702 s** and does not break it (see the interposer notes above) — but ~~"which is the knob W3-6 should reach for first"~~ is **CORRECTED: W3-6 as executed rejected `s3-latency` and did not use the interposer at all.** The width knob that worked, and the one to reach for first here, is **payload size plus `curl --limit-rate` against `bigbody`'s `proxy_request_buffering off`** (32 MiB at `--limit-rate 1M` → controller `duration_ms=32374`), fired on a **positive in-flight signal** (`mc ls --incomplete`) rather than a sleep. Pausing the store behind the interposer is unusable for this race specifically, because the `DELETE` being timed itself calls `obj.Delete`/`obj.List` and would hang alongside the upload; and `s3-latency` at large values **breaks** the `Put` (W3-2, `502 … rt=21.037` at `s3-latency 30`) rather than widening it. See §"the width-knob rule for W4-W6" above. **Needs `compose/bigbody.override.yaml`** — required for **both** of its settings, the size cap and `proxy_request_buffering off`; without it the LB 413s anything over 1 MiB and the window does not exist at all. Random, not zeros, because the payload is compressed on the way out |
 | `cache-user.payload.json` | `edge-cache-user` | the **cache** fixture (W3-1): `wipe` → `cache:` (`ttlDays: 1`, the real floor — `0` is silently rewritten to 30 at `orchestrator.go:980-982`) → `use_deps`, printing `CACHE-HIT`/`CACHE-MISS` plus the marker's plant timestamp. **The `wipe` step must stay first**: the host agent keeps a persistent per-job workspace, so without it a second run would find `deps/` still present and a "hit" would prove nothing. Verified end to end — run 1 on agent2 planted `01:54:14.857`, run 2 on **agent1** restored that same timestamp, so the hit crossed agents and can only have come from the object store |
 | `cache-torn.payload.json` | `edge-cache-torn` | the **tearable** cache fixture (W3-1): same `wipe` → `cache:` (`ttlDays: 1`) → inspect shape as `cache-user`, but the payload is **256 x 65536 bytes of `/dev/urandom`** plus a last-sorting `zz-COMPLETE` sentinel, so "how far did the extract get" is a file count, a byte total and a truncated-file size rather than an impression. `cache-user`'s ~200-byte archive is delivered in one segment and **cannot** be torn. Unthrottled the restore takes ~100 ms; under `inject.sh s3-slow 262144` it is a ~64 s stream. **`inspect_deps` regenerates only on a COMPLETE miss** (zero entries) — on a torn restore it leaves the debris exactly as `extract` left it, which is what makes the deferred save's re-archival of that debris measurable |
 | `secret-user.payload.json` | `edge-secret-user` | the **secrets** fixture (W3-3): step `env` references `{{ .Secrets.EDGE_KEK_PROBE }}`, which is what makes the claim response carry a non-empty `SecretsNeeded` and the agent take the `FetchSecrets` path (`internal/agent/orchestrator.go:161`). Prints only the secret's **length** (`secret-len=<n>`), never its value. `secret-user.yaml` is the same job in plain YAML. **The secret must be registered first** — `POST /api/v1/secrets/` (trailing slash required) with `{"name":..., "value":...}`, `204` on success |

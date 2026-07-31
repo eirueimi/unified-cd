@@ -55,7 +55,9 @@ discovered in Part E: with no object store configured the log archiver never
 starts** (`cmd/controller/main.go:399`, `if obj != nil`), so **nothing on this
 rig can seal or archive a run's logs**. Every archive claim in this runbook is
 therefore **code-read only**, explicitly labelled, and must never be written up
-as measured. See Part E.
+as measured *from this runbook's captures*. See Part E — **whose deferred
+re-run has since been done on the Garage rig; the archive limb is measured and
+filed at `FINDINGS.md:1557`, and a re-runner should not redo it.**
 
 ---
 
@@ -239,7 +241,7 @@ Every row re-read at this branch's HEAD; the `file:line` is the claim.
 | 9 | Auto-flush cadence is **2 s**; the byte threshold is **4 KiB**; the pending cap is **1 MiB** | `runner.go:211`, `:255`, `:256` |
 | 10 | SSE re-reads from the DB by `seq` and does **not** forward what was appended — the NOTIFY payload is the seq but the callback ignores it and re-queries `TailLogs(ctx, id, lastSeq, 10_000)` | `internal/controller/sse.go:117-120` |
 | 11 | Therefore a duplicate is delivered to SSE clients **as an ordinary new line** with a strictly higher seq — the `seq > lastSeq` filter dedupes *transport* retries, never *content* duplicates | derived from 10 + Step 1 consequence 2 |
-| 12 | The archiver encodes **whatever `TailLogs` returns**, so `line_count`/`max_seq` record the inflated count and log-trim's coverage check still passes ⇒ **code-read only, never measured on this rig: the duplication would survive into the archive** (this rig has no object store, so the archiver never starts — see Part E) | `internal/controller/archiver.go:81-92`, `:106`; `postgres.go:1519-1528` |
+| 12 | The archiver encodes **whatever `TailLogs` returns**, so `line_count`/`max_seq` record the inflated count and log-trim's coverage check still passes ⇒ **code-read only on this rig: the duplication would survive into the archive** (this rig has no object store, so the archiver never starts — see Part E). **Since MEASURED on the Garage rig and confirmed exactly as written** — `FINDINGS.md:1557`, `line_count=8 max_seq=20`, all 8 records in the object | `internal/controller/archiver.go:81-92`, `:106`; `postgres.go:1519-1528` |
 | 13 | A log-append failure **cannot fail the step**: the orchestrator never sees it, and `LogPusher` returns no error to its `io.Writer` caller | `runner.go:319-329` (`Write` always returns `n, nil`) |
 
 **The single sentence the scenario tests:** facts 1-8 together mean that *any*
@@ -650,7 +652,26 @@ duplicate is not merely stored, it is **served**.
 
 ## Part E — the archive limb: CODE-READ ONLY on this rig, and why
 
-**This limb is not measured and must not be written up as if it were.**
+> **DISCHARGED — DO NOT RE-RUN THIS LIMB. It was measured after Task 3 and the
+> result is already filed.** Everything below describes this scenario's own rig,
+> which has no object store, and it stays accurate about that rig. The deferral
+> in E3 has since been taken up: on the Garage-equipped `test/ha` rig, at
+> `2026-07-31T01:59:43Z–02:00:34Z`, the archiver was measured to preserve W3-4
+> duplicates verbatim, with the inflated count recorded as authoritative
+> (`line_count=8 max_seq=20` for run `46e21b34`, all 8 records in the object
+> including the 4 duplicates). E2's code-read argument holds exactly as written
+> and the severity is unchanged.
+> **The measurement lives in `FINDINGS.md:1557` — the `AMENDED AFTER W3 TASK 3`
+> sub-bullet inside this scenario's violation entry — with its capture
+> (`w3-infra/w3-4-partE-rerun.txt`). Read the whole sub-bullet before citing it:
+> the duplicates were planted with SQL rather than reproduced through the `lostack`
+> arm, so it is faithful for the archiver claim and synthetic for the mechanism,
+> and it is not an independent reproduction of the scenario.**
+
+~~**This limb is not measured and must not be written up as if it were.**~~
+**SUPERSEDED by the box above — it is measured now.** What remains true is the
+narrower statement: **it cannot be measured on *this* rig**, and nothing in this
+runbook's own captures measures it.
 
 `test/ha/docker-compose.ha.yaml` sets only `UNIFIED_DB_DSN`, `UNIFIED_TOKEN` and
 `UNIFIED_CONTROLLER_KEY_FILE`, so `cmd/controller/main.go:303-322` takes neither
@@ -672,10 +693,17 @@ is ever written, and no run is ever sealed.
   recorded `line_count`/`max_seq` against the DB — would still pass, because both
   sides count the same inflated set. **The duplication is therefore permanent**:
   after a trim the archive is the only copy and it is the corrupted one.
-- **E3 — the honest option.** Either leave E2 as **code-read only**, or defer the
-  measurement to after Task 3 (which adds Garage) and re-run it there. **Say
-  which was chosen.** Do not present E2 as measured, and do not let the word
-  "permanent" in the finding rest on an unmeasured limb without that label.
+  **E2's prediction was subsequently confirmed by measurement** — see the box at
+  the head of this Part and `FINDINGS.md:1557`.
+- **E3 — the honest option. ANSWERED: the second option was chosen and taken.**
+  ~~Either leave E2 as **code-read only**, or defer the
+  measurement to after Task 3 (which adds Garage) and re-run it there.~~ The
+  measurement was deferred to after Task 3 and re-run there
+  (`w3-infra/w3-4-partE-rerun.txt`), and the entry's `AMENDED AFTER W3 TASK 3`
+  sub-bullet says so. **Nothing is left to choose here.** The two standing rules
+  survive and now bind the *amended* text instead: say which limb is measured and
+  which is code-read, and label the SQL-planted duplicate as the synthetic
+  instrument it is.
 
 ---
 
@@ -852,16 +880,25 @@ and always pass `-m <seconds>` to a `curl -N` sampler.
 6. **Budget ~40 s per run.** Trigger → claim ≈ 2 s, `sleep 8`, burst, `sleep 30`.
    Arm at trigger + 5 s, hold 8 s. Arming later than trigger + 8 s misses the
    burst entirely (that is what run `78788e0d` is).
-7. **Part E was left as code-read and must be re-run after Task 3.** No object
-   store on this rig: `run_log_archives` = 0 rows, three
+7. **Part E was left as code-read on this rig and HAS SINCE BEEN RE-RUN — do not
+   re-run it again.** ~~"and must be re-run after Task 3"~~ was discharged: the
+   limb was measured on the Garage-equipped rig at
+   `2026-07-31T01:59:43Z–02:00:34Z` and the result is filed as the
+   **`AMENDED AFTER W3 TASK 3` sub-bullet at `FINDINGS.md:1557`**
+   (`w3-infra/w3-4-partE-rerun.txt`): the archiver preserves the duplicates
+   verbatim and records the inflated count as authoritative —
+   `line_count=8 max_seq=20` for run `46e21b34`, all 8 records in
+   `runs/46e21b34-…/logs.ndjson` including the 4 duplicates, in seq order with the
+   copies trailing. **Read the sub-bullet's own METHOD label before citing it:**
+   the duplicates were planted with SQL, not reproduced through the `lostack` arm,
+   so it is faithful for the archiver claim and synthetic for the mechanism, and
+   it is **not** a second reproduction of the scenario. What this scenario's own
+   captures still show, unchanged, is only the absence: no object store on this
+   rig, `run_log_archives` = 0 rows, three
    `no object store configured — log archival disabled` warnings
-   (`w3-4/consolidated.txt`). The claim that the duplication survives into the
-   archive and passes log-trim's coverage check rests entirely on
-   `archiver.go:81-92` / `:106` and is labelled as such in the finding. **It is
-   NOT the major/critical discriminator** — an earlier version of this item said
-   it was. The archive creates no new corruption; it faithfully preserves
-   content that is already corrupt and already the only copy, so it extends the
-   corruption's *lifetime* (past a log trim, with the coverage check defeated by
-   the same inflated count), not its *kind*. Re-run it to **close an unmeasured
-   limb of the entry**, which is worth ten minutes on the Garage rig on its own
-   terms; do not expect the result to change the severity either way.
+   (`w3-4/consolidated.txt`). **It is NOT the major/critical discriminator** — an
+   earlier version of this item said it was, and the re-run confirmed that too:
+   the severity is unchanged. The archive creates no new corruption; it faithfully
+   preserves content that is already corrupt and already the only copy, so it
+   extends the corruption's *lifetime* (past a log trim, with the coverage check
+   defeated by the same inflated count), not its *kind*.

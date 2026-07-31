@@ -597,7 +597,10 @@ docker compose $COMPOSE_FILES down -v
   §"scheduler lever" table and the three-state table in Part C are both such
   claims (the W3-6 lesson).
 - **Observation entries say "observation" in the title** and repeat it in the
-  Severity line as `minor (observation)` (`FINDINGS.md:481`).
+  Severity line as `<severity> (observation)` (`FINDINGS.md:481`). **The severity
+  is argued separately from the classification and is not necessarily `minor`** —
+  this scenario's own headline entry is filed `major (observation)`
+  (`FINDINGS.md:1950`).
 - **A negative measured over a window the runbook itself ended is an absence,
   not a "never".**
 
@@ -607,10 +610,16 @@ docker compose $COMPOSE_FILES down -v
 
 Executed on branch `plan/edge-case-w3`, **`06:44:24Z – 07:03:0xZ`**, on the single
 stack §Stack specifies (`test/ha` + Garage + `mc` + the S3 interposer overlay),
-torn down with `down -v` (`w3-1/teardown.txt`). **Four `FINDINGS` entries: 2
-violations (1 major, 1 minor) and 2 observations (both minor), plus 1
+torn down with `down -v` (`w3-1/teardown.txt`). **Four `FINDINGS` entries: 1
+violation (minor) and 3 observations (1 major, 2 minor), plus 1
 branch-internal campaign-asset defect found and fixed here** (`inject.sh
-s3-slow`), reported outside both tallies. The developer stack (`docker compose
+s3-slow`), reported outside both tallies. ~~"2 violations (1 major, 1 minor) and
+2 observations (both minor)"~~ — **superseded: the headline entry was
+reclassified from violation to observation at review, at unchanged `major`
+severity** (`FINDINGS.md:1949-1950`), and this line was not updated with it. The
+W3 checkpoint caught the drift before inheriting it (`FINDINGS.md:2106`);
+`FINDINGS.md` is authoritative and this table is a record of what was done, not
+of what was concluded. The developer stack (`docker compose
 ls`, project `unified-cd`) was running and untouched at both ends.
 
 **Ten runs, all of them `edge-cache-torn`, all `Succeeded`, zero non-terminal at
