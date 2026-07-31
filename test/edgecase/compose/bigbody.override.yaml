@@ -1,0 +1,31 @@
+# W3 overlay: swaps test/ha/nginx.conf for nginx-bigbody.conf so artifact
+# uploads above nginx's 1 MiB default body cap reach a controller at all.
+#
+# REQUIRED by every scenario that uploads a non-trivial artifact (W3-2's
+# artifact limb, W3-6's retention-vs-upload race). Without it a 64 MiB upload
+# dies at the LB with 413 and the run Fails before the controller sees a byte
+# — see nginx-bigbody.conf's header for the captured evidence.
+#
+#   cd test/ha
+#   export COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/bigbody.override.yaml"
+#   docker compose $COMPOSE_FILES up -d --build
+#
+# Stacks with s3proxy.override.yaml (that one touches the `s3proxy` service,
+# this one touches `nginx`), and the two are independent:
+#
+#   export COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/bigbody.override.yaml \
+#     -f ../edgecase/compose/s3proxy.override.yaml"
+#
+# It does NOT stack with logfault.override.yaml or steplink.override.yaml —
+# all three replace the same /etc/nginx/nginx.conf mount and compose merges
+# volumes by target path, so the last file listed silently wins. If a scenario
+# needs both a URI-scoped fault and large artifacts, merge the two .conf files
+# by hand rather than stacking the overlays. Verify with
+# `docker compose $COMPOSE_FILES config` and by grepping nginx.conf inside the
+# container.
+services:
+  nginx:
+    volumes:
+      - ../edgecase/compose/nginx-bigbody.conf:/etc/nginx/nginx.conf:ro
