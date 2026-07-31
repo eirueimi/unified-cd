@@ -225,7 +225,16 @@ Quoted verbatim from `docs/superpowers/specs/2026-07-29-edge-case-testing-design
     So the sentence is about `UNIFIED_S3_*` being **absent**, which is true and
     was measured by W3-4. It says nothing about a **configured-but-unreachable**
     store. **Do not file it as contradicted without arguing that scoping
-    explicitly.**
+    explicitly.** **ADDED AT BRANCH REVIEW — READ THE SECOND SENTENCE TOO,
+    BECAUSE THE SCOPING ARGUMENT DOES NOT REACH IT.** "S3 is required for HA
+    operation" is unconditional and this rig is an HA deployment, so **the
+    governing doc says S3 is required here**, and a fail-closed start is then
+    structurally the same design the Vault paragraph below blesses. Do **not**
+    write Part D up as "an optional subsystem kills the process": that framing
+    was used and withdrawn (`FINDINGS.md:1716`, `:1729`, `:1734`). What the
+    scoping argument leaves intact is that the *behaviour* is stated nowhere,
+    and it adds a defect of its own — `:310` and `docs/configuration.md:68`
+    contradict each other about the same variable, with nothing arbitrating.
   - `docs/high-availability.md:322-325`, the Vault subsection, three paragraphs
     later in the same section: "**The controller fails closed.** It will not
     start if Vault is unreachable, so a Vault outage during a rollout crash-loops
@@ -736,9 +745,14 @@ a judgement against the documented startup contract.
      W0-1 entry — *"Controllers crash-loop with no DB-connect retry at startup"*,
      **I5, minor** — for the identical shape against **Postgres**. W3-2's
      contribution is not "the controller exits on a failed dependency"; it is
-     that (a) the dependency in question is documented as **optional**, (b) the
-     eager `BucketExists` makes an *optional* subsystem's outage fatal to the
-     whole process including every unrelated API, and (c) the same document
+     that (a) ~~the dependency in question is documented as **optional**~~
+     **CORRECTED at branch review — the dependency's published status is
+     self-contradictory** (`docs/high-availability.md:310` "required for HA
+     operation" versus `docs/configuration.md:68` Required: **No**), which is a
+     doc defect in its own right and is what this clause should say; (b) the
+     eager `BucketExists` makes the outage fatal to the
+     whole process including every unrelated API **while the same condition is
+     free to an already-running replica**, and (c) the same document
      documents this behaviour explicitly for Vault and not for S3. **If that
      delta does not survive scrutiny, fold it into W0-1's entry as a second
      instance instead of filing a new one.**
