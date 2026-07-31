@@ -195,7 +195,8 @@ silently off before. **Consequences you must plan for:**
   each logged `ustatus=504, 200` — black hole timed out, `backup` served it —
   so 3 × 3 s ≈ the 9 s of added width. The body-bearing request carries
   `reqlen=67203925` and still falls through, which is the point that was in
-  doubt. **So `s3-latency` is a usable width knob for W3-6**, at ~3 s of
+  doubt. **So `s3-latency` is a usable width knob for W3-6 — at small values
+  only, see the large-value caveat above**, at ~3 s of
   widening per armed second. Two cautions: the width scales with the *request
   count*, so a payload large enough to be split into more parts widens more
   than linearly in size; and `s3-latency` does **not** reach the `mc`

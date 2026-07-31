@@ -17,9 +17,26 @@
 >    the truth. `$SCRATCH/gate-g5-leader.txt` and `$SCRATCH/partA-lockhold.txt`
 >    are **VOID** and are kept only as the counter-example. Every lock number in
 >    the findings comes from `partA-lockhold-1s.txt` / `partA2-stall.txt`, which
->    use the correct value. **A capture that returns a clean negative is exactly
+>    use the correct value. **Both files now carry a first-line VOID banner in
+>    the capture itself**, because a reader who opens the archived evidence
+>    directory without this runbook would otherwise find two clean-looking
+>    negatives with nothing marking them — `grep -ri void` over the captures
+>    previously returned exactly one hit, in `consolidated.txt`, naming G5 only.
+>    **`gate-g5-leader.txt`'s healthy-baseline conclusion survives its own
+>    voiding**, and its banner says so: the second column, `all_advisory_objids`,
+>    is unfiltered and reads `1702388580` and **never** `1819240289` across all
+>    60 samples, so "the archiver lock is never held while healthy" is
+>    independently recoverable from the void file. That matters because
+>    execution-note 2 asserts the healthy/broken contrast and this is the only
+>    surviving capture behind its healthy half. **A capture that returns a clean negative is exactly
 >    the shape that hides a typo'd predicate; print the constant you are
 >    querying with, in the capture, next to the result.**
+>    **Follow-up: the wrong literal initially survived this correction in two
+>    OPERATIVE steps** — A2.2's poll and Part B's "Detecting that the Put is in
+>    flight", the latter being Part B's entire lever — so a re-runner following
+>    them verbatim would have reproduced the same false negative this box exists
+>    to prevent. Both now read **1819240289**. Striking a constant in the fact
+>    table is not enough; grep the whole file for the digits.
 > 2. **`inject.sh s3-latency 30` did NOT widen the window — it broke the Put**,
 >    which is the opposite of what `test/edgecase/README.md` records as verified
 >    (measured there at `s3-latency 3`). The black hole `192.0.2.1:3900` answered
@@ -364,7 +381,8 @@ SCRATCH="<scratchpad>/w3-2" ; mkdir -p "$SCRATCH"
 - **G7 — (Phase 2 only) `bigbody` took.**
   `docker compose $COMPOSE_FILES exec -T nginx grep -c client_max_body_size /etc/nginx/nginx.conf`
   is non-zero and `nginx -t` is ok. **STOP otherwise** — a 413 would make Part C
-  measure the LB. → `$SCRATCH/gate-g7-bigbody.txt`.
+  measure the LB. → ~~`$SCRATCH/gate-g7-bigbody.txt`~~ **no such file: G7 ran as
+  part of the phase-2 gate sweep and its output is in `$SCRATCH/gate-phase2.txt`.**
 - **G8 — API 500s.** The API on this rig has been intermittently returning 500s.
   Record, for every gate and every trigger, how many attempts it took. A 500 on a
   trigger is **not** a finding of this scenario; a 500 mid-measurement
@@ -444,12 +462,14 @@ one that exercises timeout paths. Fact 14 says nothing bounds it.
   `SELECT pid, objid, granted, pg_blocking_pids(pid) FROM pg_locks WHERE locktype='advisory';`
   every 5 s for **4 minutes**, alongside
   `docker compose $COMPOSE_FILES logs controller1 controller2 controller3 --since …`.
-  Two things to establish: (i) whether `objid` **1819242081** stays granted to
+  Two things to establish: (i) whether `objid` **1819240289** stays granted to
   one pid continuously rather than being taken and released every 30 s (compare
   against G5's healthy baseline — that comparison is what licenses the word
   "stalled"), and (ii) whether **any** replica logs anything at all during the
-  stall. → `$SCRATCH/partA2-stall.txt`, sampler script in
-  `$SCRATCH/partA2-sampler.sh`.
+  stall. → `$SCRATCH/partA2-stall.txt`. ~~sampler script in
+  `$SCRATCH/partA2-sampler.sh`~~ — **no such file: the Part A samplers were run
+  as foreground shell loops, not saved scripts.** The only driver scripts this
+  scenario left behind are `$SCRATCH/partB-arm.sh` and `$SCRATCH/partB-pause.sh`.
 - **A2.3 — bound the claim honestly.** After 4 minutes, `unpause garage` and
   record what happens. **The write-up must say the window was 4 minutes and that
   this runbook ended it** — the code-read claim that nothing would ever end it
@@ -516,7 +536,7 @@ re-measure**. So Part B produces the *archiver-side* half live and leaves the
 retention-side half code-read, with the cite.
 
 **Detecting that the Put is in flight.** Do not guess. `pg_locks` is the
-instrument: the archiver holds `objid` **1819242081** for the whole of
+instrument: the archiver holds `objid` **1819240289** for the whole of
 `archiveRunLogs` (fact 1 + Part A2), so a lock that has been continuously granted
 for longer than the healthy hold time means a `Put` is in flight *right now*.
 Poll it every second and fire the SQL delete on that signal.
@@ -622,7 +642,9 @@ once**, and every operator-visible surface enumerated.
   `[]`, and that the run reached exactly one terminal state. **A `Failed` run
   with no artifact is correct behaviour; a `Succeeded` run with no artifact would
   be the I4 violation.** Check which, do not assume.
-  → `$SCRATCH/partC-clean.txt`.
+  → ~~`$SCRATCH/partC-clean.txt`~~ **no such file: C4's cleanliness checks were
+  recorded inline in `$SCRATCH/partC-fail.txt` alongside the failure they
+  qualify.**
 - **C5 — the 500-vs-503 contrast.** Fact 10 is the notable part: a
   **configured-but-down** store gives 500, a **missing** one gives 503, and the
   agent's error text differs only in the digits. The 500 is measured in C3.
@@ -770,14 +792,21 @@ inside the same session before any finding rested on it. The developer stack
 (`docker compose ls`, project `unified-cd`) was running and untouched at both
 ends (`w3-2/gate.txt`, `w3-2/teardown.txt`).
 
-**Nine runs, all reaching exactly one terminal state — 8 `Succeeded`, 1
-`Failed`** (the Part C armed run, which is *supposed* to fail). Phase 1 ended
+**Eleven runs, all reaching exactly one terminal state — 10 `Succeeded`, 1
+`Failed`** (the Part C armed run, which is *supposed* to fail). Six in phase 1
+(`26e1f0fe`, `6fa56fd8`, `8f2ffebb`, `9a778d91`, `35e8caaf`, `7b1d023e`) and
+five in phase 2 (`a0ee8ebc`, `5e49c972`, `7e90dcaa`, `56904219`, `59404ade`),
+enumerable from the distinct `"msg":"running","runId"` lines in
+`$SCRATCH/phase1-all-logs.txt` / `phase2-all-logs.txt`. **An earlier version of
+this summary said nine, and the two it dropped were the Part B runs later
+deleted by raw SQL** — i.e. the ones the census exists to catch *before*
+deletion; count from the logs, not from what survives in `runs`. Phase 1 ended
 with 6 runs / 6 archives / 6 objects; phase 2 ended with 2 surviving runs, 2
 archives and 1 orphan object left deliberately by Part B arm 2.
 
 | Part | Arm | Result |
 |---|---|---|
-| G4 | none | archival works: 3038 B / 30 lines / `maxSeq` 30, `controller1`, 59 s after the run went terminal |
+| G4 | none | archival works: 3038 B / 30 lines / `maxSeq` 30, `controller1`, **28.4 s** after the run went terminal (`02:57:25.023Z` finish → `02:57:53.471` archived; the 59 s an earlier version quoted is measured from the **trigger**, `02:56:54.792Z`) |
 | A1 | `kill-hard garage`, 8 min held | **20** `failed to archive Run logs` lines for **2** runs across **all three** replicas; runs untouched on four surfaces |
 | A1.7 | restore | both archived **59.1 s** and **89.1 s** after Garage returned, both by `controller1`, both complete (30/30 lines) |
 | A2 | `pause garage`, 7.5 min held | **4** attempts, each ~65 s of continuously-held cluster lock; error text differs from A1 and is misleading |
@@ -807,9 +836,13 @@ archives and 1 orphan object left deliberately by Part B arm 2.
    ~15 min of held cluster-wide lock (derived from 20 × 44 s, **not measured**).
 4. **The `pause` and `kill-hard` errors are not interchangeable, and only one is
    diagnosable.** `kill-hard` gives `dial tcp: lookup garage … no such host`.
-   `pause` gives `readfrom tcp …: http: ContentLength=3047 with Body length 0`,
+   `pause` gives `readfrom tcp …: http: ContentLength=<n> with Body length 0`,
    which names no outage at all — see the observation entry on the
-   non-rewindable buffer.
+   non-rewindable buffer. **Quote `<n>` from the capture you are citing, not
+   from memory:** `partA2-stall.txt` reads **3070** on all four `pause`-arm
+   attempts and **3047** appears only in `partB-arm1.txt` (the failed
+   `s3-latency` lever). An earlier version of this note and of the findings
+   crossed the two.
 5. **Leadership rotates per tick and every replica pays its own first attempt.**
    The 20 attempts split 8 / 4 / 8 across `controller1` / `controller2` /
    `controller3`; passes alternated cleanly. Attribute from the log line's
@@ -851,5 +884,5 @@ defaults and there was nothing to revert. Said explicitly because the runbook
 budgets for it elsewhere in the wave.
 
 **The rig's intermittent-500 allowance (G8) was never spent** — zero API 500s on
-any trigger or gate command across 9 triggers and every gate. A re-run should not
+any trigger or gate command across **11** triggers and every gate. A re-run should not
 assume that.
