@@ -287,7 +287,7 @@ Every row re-read at this branch's HEAD; the `file:line` is the claim.
 | 13 | **The archiver's interval is hardcoded at the call site** — `30*time.Second`, no flag, no env. The parameter exists (`archiver.go:19-22`) but nothing sets it otherwise. Widening the window needs a code change | `cmd/controller/main.go:400` |
 | 14 | **Archival is leader-elected** (`logArchiverLockKey = 0x6C6F6761`), so exactly one replica seals, and a failing candidate is excluded by a per-process backoff (1 min → 1 h) | `archiver.go:15`, `:28`, `:39-52` |
 | 15 | **`line_count` / `max_seq` record what the archive object covers**, and `TrimRunLogs` refuses to trim a run that grew after archival (`ErrArchiveIncomplete`) — **which is the reason the seal exists at all**, per the `AppendLog` doc comment | `archiver.go:99-106`; `postgres.go:911-917` |
-| 16 | **All three F2 agent endpoints pass `rejectTerminal=false`** — logs single, logs bulk, sidecar status. The terminal gate is NOT what stops a late log line | `api_agent.go:551`, `:709`, `:760` (Correction 1) |
+| 16 | **Neither log endpoint is an F2 endpoint** — F2 is four named handlers (`handleAgentSetStepOutputs`, `handleAgentSetRunOutputs`, `handleAgentSidecarStatus`, `handleAgentCreateApproval`) and the log routes are not among them. Logs single, logs bulk **and** sidecar status all pass `rejectTerminal=false`, so **the terminal gate is NOT what stops a late log line**; the seal is, ~30 s later. The comment's "unlike the other F2 endpoints" is **correct at HEAD** — the other three F2 handlers pass `true`. The log channel was simply never in the gate's scope | `api_agent.go:551`, `:709`, `:760`; `:647`, `:673`; `api_approvals.go:77`; `2026-07-15-hardening-f1-f7-design.md:14-19` (Correction 1) |
 | 17 | **`CloseScopes` is deferred at `orchestrator.go:209` and therefore runs after `FinishRun` at `:787-788`** — the plan's structural window is real in the code and unreachable on this rig (§Vehicle) | `orchestrator.go:209`, `:787-788`; `backend_host.go:362-368` |
 | 18 | **The agent destroys every controller error body** (`&HTTPError{… Body: "response omitted"}`), so nothing controller-side is diagnosable from a run's own logs. Capture the controller's `slog` container-side, and **before** any `up -d --force-recreate` | `client.go:107-108` |
 
@@ -708,8 +708,8 @@ docker compose $COMPOSE_FILES down -v
 
 Executed on branch `plan/edge-case-w3`, **`05:40:18Z – 05:53:02Z`**, on the single
 stack §Stack specifies (plain `test/ha` + Garage + `mc`, no overlay, no
-interposer), torn down with `down -v` (`w3-5/teardown.txt`). **Three `FINDINGS`
-entries: 2 violations (1 major I4, 1 minor I7) and 1 observation (minor).** No
+interposer), torn down with `down -v` (`w3-5/teardown.txt`). **Two `FINDINGS`
+entries: 1 violation (major, I4) and 1 observation (minor), plus a one-line corroboration cross-reference to W2-2 (`FINDINGS.md:587`) for the cancelled-run dangling-`step_reports` residue — cross-referenced, not re-filed, because W2-2 owns that defect, is not marked FIXED, and already covers the plain-cancel route.** No
 branch-internal asset bug. The developer stack (`docker compose ls`, project
 `unified-cd`) was running and untouched at both ends.
 
