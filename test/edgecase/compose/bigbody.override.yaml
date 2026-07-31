@@ -18,9 +18,12 @@
 #     -f ../edgecase/compose/bigbody.override.yaml \
 #     -f ../edgecase/compose/s3proxy.override.yaml"
 #
-# It does NOT stack with logfault.override.yaml or steplink.override.yaml —
-# all three replace the same /etc/nginx/nginx.conf mount and compose merges
-# volumes by target path, so the last file listed silently wins. If a scenario
+# It does NOT stack with logfault.override.yaml, steplink.override.yaml or
+# oneway.override.yaml — all FOUR replace the same /etc/nginx/nginx.conf mount
+# on the nginx service and compose merges
+# volumes by target path, so the last file listed silently wins. (oneway was
+# missing from an earlier version of this list; -f oneway -f steplink in that
+# order is the one deliberate pairing.) If a scenario
 # needs both a URI-scoped fault and large artifacts, merge the two .conf files
 # by hand rather than stacking the overlays. Verify with
 # `docker compose $COMPOSE_FILES config` and by grepping nginx.conf inside the

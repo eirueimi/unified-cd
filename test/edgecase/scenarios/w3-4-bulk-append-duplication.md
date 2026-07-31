@@ -48,16 +48,35 @@
 > split the truncate and lostack arms into two findings — they share the same
 > root cause (§"Verified mechanism" facts 1-4).
 
-**Wave W3, Task 1. Runs on today's `test/ha` rig with no infrastructure change** —
+> **STOP — THE RIG PREMISE BELOW IS OUT OF DATE AND PART E IS UNRUNNABLE AS
+> WRITTEN. READ THIS BEFORE PART A.** This runbook was executed **before** Task 3
+> (`0b51fa3`) added Garage and the `UNIFIED_S3_*` wiring to
+> `test/ha/docker-compose.ha.yaml:87-90` for **all three** controllers. At HEAD
+> the rig **does** have an object store, the archiver **does** start, and runs
+> **are** archived and sealed. **Parts A-D re-run intact** — nothing in them
+> depends on the archiver's absence, and none of their measurements changes.
+> **Part E does not**: its premise is false and its gate E1 (`SELECT count(*)
+> FROM run_log_archives;` → 0, plus the `no object store configured` warning)
+> **will now fail**, correctly. E1 is not a gate a re-runner should try to
+> satisfy — the limb it guarded has already been measured on the Garage rig and
+> filed at `FINDINGS.md:1557`. **Skip Part E; do not "fix" the rig to make E1
+> pass.** Every present-tense "this rig has no object store" statement below is
+> scoped to the original session and is left in place, struck or annotated,
+> because the archive limb's *code-read* standing at the time is what
+> `FINDINGS.md:1522` and `:1556` record.
+
+~~**Wave W3, Task 1. Runs on today's `test/ha` rig with no infrastructure change** —
 the wave's other five scenarios need object storage that Task 3 adds; this one
-does not. **One consequence is load-bearing and is stated up front rather than
+does not.**One consequence is load-bearing and is stated up front rather than
 discovered in Part E: with no object store configured the log archiver never
 starts** (`cmd/controller/main.go:399`, `if obj != nil`), so **nothing on this
-rig can seal or archive a run's logs**. Every archive claim in this runbook is
-therefore **code-read only**, explicitly labelled, and must never be written up
-as measured *from this runbook's captures*. See Part E — **whose deferred
-re-run has since been done on the Garage rig; the archive limb is measured and
-filed at `FINDINGS.md:1557`, and a re-runner should not redo it.**
+rig can seal or archive a run's logs**.~~ **SUPERSEDED — true of the rig when
+this scenario executed, false at HEAD; see the box above.** Every archive claim
+in this runbook was **code-read only** *when it was written*, explicitly
+labelled, and must never be written up as measured from this runbook's own
+captures. See Part E — **whose deferred re-run has since been done on the Garage
+rig; the archive limb is measured and filed at `FINDINGS.md:1557`, and a
+re-runner should not redo it.**
 
 ---
 
@@ -170,8 +189,12 @@ Quoted verbatim from `docs/superpowers/specs/2026-07-29-edge-case-testing-design
   - *"no duplicates"* — measured by `GROUP BY line, ts HAVING count(*) > 1`.
   - *"no reordering"* — measured by checking whether the burst indices are
     monotonic in `seq` order.
-  - *"archives stay readable"* — **NOT exercised.** No object store on this rig
-    (§Part E). Do not claim this clause.
+  - *"archives stay readable"* — **NOT exercised by this session.** ~~No object
+    store on this rig~~ — **time-scoped: true when this ran, false at HEAD since
+    Task 3 (`0b51fa3`).** Do not claim this clause **from Parts A-D's captures**;
+    the limb was measured separately on the Garage rig and is filed at
+    `FINDINGS.md:1557`. A re-runner at HEAD will have an archiver running
+    alongside Parts A-D and should say so rather than repeating the old premise.
 - **NOT I1.** I1 is "every API-accepted run reaches exactly one terminal state;
   no phantom runs from duplicate fires/webhooks" (`:48`). Every run here reaches
   exactly one terminal state, and the word "duplicate" in I1 is scoped to *runs*
@@ -241,7 +264,7 @@ Every row re-read at this branch's HEAD; the `file:line` is the claim.
 | 9 | Auto-flush cadence is **2 s**; the byte threshold is **4 KiB**; the pending cap is **1 MiB** | `runner.go:211`, `:255`, `:256` |
 | 10 | SSE re-reads from the DB by `seq` and does **not** forward what was appended — the NOTIFY payload is the seq but the callback ignores it and re-queries `TailLogs(ctx, id, lastSeq, 10_000)` | `internal/controller/sse.go:117-120` |
 | 11 | Therefore a duplicate is delivered to SSE clients **as an ordinary new line** with a strictly higher seq — the `seq > lastSeq` filter dedupes *transport* retries, never *content* duplicates | derived from 10 + Step 1 consequence 2 |
-| 12 | The archiver encodes **whatever `TailLogs` returns**, so `line_count`/`max_seq` record the inflated count and log-trim's coverage check still passes ⇒ **code-read only on this rig: the duplication would survive into the archive** (this rig has no object store, so the archiver never starts — see Part E). **Since MEASURED on the Garage rig and confirmed exactly as written** — `FINDINGS.md:1557`, `line_count=8 max_seq=20`, all 8 records in the object | `internal/controller/archiver.go:81-92`, `:106`; `postgres.go:1519-1528` |
+| 12 | The archiver encodes **whatever `TailLogs` returns**, so `line_count`/`max_seq` record the inflated count and log-trim's coverage check still passes ⇒ **code-read only on the rig as it then was: the duplication would survive into the archive** (the rig had no object store when this scenario ran, so the archiver never started — **time-scoped: Task 3 `0b51fa3` has since wired one in; see the box at the head of this file and Part E**). **Since MEASURED on the Garage rig and confirmed exactly as written** — `FINDINGS.md:1557`, `line_count=8 max_seq=20`, all 8 records in the object | `internal/controller/archiver.go:81-92`, `:106`; `postgres.go:1519-1528` |
 | 13 | A log-append failure **cannot fail the step**: the orchestrator never sees it, and `LogPusher` returns no error to its `io.Writer` caller | `runner.go:319-329` (`Write` always returns `n, nil`) |
 
 **The single sentence the scenario tests:** facts 1-8 together mean that *any*
@@ -650,11 +673,16 @@ duplicate is not merely stored, it is **served**.
 
 ---
 
-## Part E — the archive limb: CODE-READ ONLY on this rig, and why
+## Part E — the archive limb: CODE-READ ONLY on the rig AS IT WAS, and why
 
-> **DISCHARGED — DO NOT RE-RUN THIS LIMB. It was measured after Task 3 and the
-> result is already filed.** Everything below describes this scenario's own rig,
-> which has no object store, and it stays accurate about that rig. The deferral
+> **DISCHARGED AND NOW UNRUNNABLE — DO NOT RE-RUN THIS LIMB AND DO NOT TRY TO
+> SATISFY ITS GATE.** It was measured after Task 3 and the result is already
+> filed. Everything below describes this scenario's own rig **as it stood at
+> execution time — a rig that no longer exists**: Task 3 (`0b51fa3`) wired
+> `UNIFIED_S3_*` into all three controllers at
+> `test/ha/docker-compose.ha.yaml:87-90`, so E1's premise is false at HEAD and
+> E1 will fail. The text stays accurate about the rig it describes and is kept
+> for that reason only. The deferral
 > in E3 has since been taken up: on the Garage-equipped `test/ha` rig, at
 > `2026-07-31T01:59:43Z–02:00:34Z`, the archiver was measured to preserve W3-4
 > duplicates verbatim, with the inflated count recorded as authoritative
@@ -673,17 +701,31 @@ duplicate is not merely stored, it is **served**.
 narrower statement: **it cannot be measured on *this* rig**, and nothing in this
 runbook's own captures measures it.
 
-`test/ha/docker-compose.ha.yaml` sets only `UNIFIED_DB_DSN`, `UNIFIED_TOKEN` and
+~~`test/ha/docker-compose.ha.yaml` sets only `UNIFIED_DB_DSN`, `UNIFIED_TOKEN` and
 `UNIFIED_CONTROLLER_KEY_FILE`, so `cmd/controller/main.go:303-322` takes neither
 object-store branch, `obj == nil`, and the controller logs
 `no object store configured — log archival disabled`. Consequently the archiver
 is **never started** (`main.go:399`, `if obj != nil`), no `run_log_archives` row
-is ever written, and no run is ever sealed.
+is ever written, and no run is ever sealed.~~
 
-- **E1 — verify the premise live rather than asserting it** (one command, and it
-  is the only thing Part E measures): confirm the warning in the controller logs
-  and `SELECT count(*) FROM run_log_archives;` → 0.
-  → `$SCRATCH/partE-noobjstore.txt`.
+**FALSIFIED INSIDE THIS BRANCH — Task 3 (`0b51fa3`) added `UNIFIED_S3_ENDPOINT`,
+`UNIFIED_S3_BUCKET`, `UNIFIED_S3_KEY` and `UNIFIED_S3_SECRET` to the shared
+controller block at `test/ha/docker-compose.ha.yaml:87-90`, so at HEAD all three
+controllers take the S3 branch, the archiver starts, and runs are archived and
+sealed.** The paragraph above is kept struck rather than deleted because
+`FINDINGS.md:1522` and `:1556` record the archive limb's **code-read** standing
+at the time, and that standing is only intelligible against the rig as it then
+was.
+
+- **E1 — ~~verify the premise live rather than asserting it~~ DO NOT RUN THIS
+  GATE. It will fail at HEAD, and failing is the correct result.** The premise
+  it verified (`no object store configured — log archival disabled` in the
+  controller logs, `SELECT count(*) FROM run_log_archives;` → 0) is false since
+  Task 3. `$SCRATCH/partE-noobjstore.txt` is a capture of a rig that no longer
+  exists. **Part E as a whole is unrunnable as written and must be skipped**;
+  the limb it guarded has been measured on the Garage rig and is filed at
+  `FINDINGS.md:1557`. If a future wave wants the archive limb again, it is a
+  fresh Part against the Garage rig, not a repair of this one.
 - **E2 — the code-read claim, stated as such.** `archiveRunLogs` encodes whatever
   `TailLogs` returns (`archiver.go:81-92`) and records `line_count`/`max_seq`
   from that same slice (`:106` → `postgres.go:1519-1528`). It applies no
@@ -893,8 +935,10 @@ and always pass `-m <seconds>` to a `curl -N` sampler.
    the duplicates were planted with SQL, not reproduced through the `lostack` arm,
    so it is faithful for the archiver claim and synthetic for the mechanism, and
    it is **not** a second reproduction of the scenario. What this scenario's own
-   captures still show, unchanged, is only the absence: no object store on this
-   rig, `run_log_archives` = 0 rows, three
+   captures still show, unchanged, is only the absence **as it was at execution
+   time — Task 3 (`0b51fa3`) has since wired an object store into all three
+   controllers, so this is a fact about the captures, not about the rig a
+   re-runner will meet**: no object store, `run_log_archives` = 0 rows, three
    `no object store configured — log archival disabled` warnings
    (`w3-4/consolidated.txt`). **It is NOT the major/critical discriminator** — an
    earlier version of this item said it was, and the re-run confirmed that too:

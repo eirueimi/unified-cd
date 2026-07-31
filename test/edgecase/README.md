@@ -278,9 +278,14 @@ silently off before. **Consequences you must plan for:**
   the second is load-bearing for W3-6, since buffering would spool the whole
   body before opening the upstream request and move the controller's `Put`
   outside the window the agent is uploading in. **It does not stack with
-  `logfault.override.yaml` or `steplink.override.yaml`** — all three replace
-  the same `/etc/nginx/nginx.conf` mount and the last file listed silently
-  wins. It *does* stack with `s3proxy.override.yaml` (different service).
+  `logfault.override.yaml`, `steplink.override.yaml` or `oneway.override.yaml`**
+  — all **four** replace the same `/etc/nginx/nginx.conf` mount on the `nginx`
+  service and the last file listed silently wins. (`oneway` was missing from an
+  earlier version of this list and from `FINDINGS.md:2117`; it is still in the
+  tree and is the base every `nginx-block` scenario needs.) **The one deliberate
+  pairing is `-f oneway -f steplink`, in that order** — `steplink` is designed to
+  override `oneway`'s `nginx.conf` while inheriting its `blocklist` volume. It
+  *does* stack with `s3proxy.override.yaml` (different service).
 
 - `tools/w3/fixcheck` — parses YAML fixtures through the real `dsl.Parse`
   (`KnownFields(true)` + `Job.Validate`) and prints what the controller would
