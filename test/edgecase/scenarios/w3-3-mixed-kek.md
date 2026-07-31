@@ -1,14 +1,18 @@
 # W3-3 — mixed-KEK replicas: one replica with the wrong key, and a ciphertext that carries no key identity
 
 > **CORRECTED AFTER EXECUTION — READ THIS BEFORE ANYTHING ELSE.**
-> **The scenario's framing survived in full: this was a conformance and
-> blast-radius measurement, the docs were right, I1 and I7 held on the runs
-> this scenario is about, and the yield is three observations plus one small
-> I7 violation that the scenario *reached* rather than caused.** Nothing in
-> the Invariants block is withdrawn. What execution changed is one inherited
-> fact that was the load-bearing premise of Part B, one stale schema fact, and
-> three procedural details. Superseded text is kept in place and marked, per
-> house style, because the reason it was wrong is the deliverable.
+> **The scenario's framing survived in part: this was a conformance and
+> blast-radius measurement, and I1 and I7 held on the runs this scenario is
+> about.** Nothing in the Invariants block is withdrawn. What execution changed
+> is one inherited fact that was the load-bearing premise of Part B, one stale
+> schema fact, and three procedural details. **This banner originally also said
+> ~~"the docs were right"~~ and claimed a yield of three observations plus one
+> minor violation. Both were corrected in review — see correction 6: the docs
+> were right in the HA guide and wrong in `docs/secrets.md:420`, a difference a
+> truncated survey had hidden, and the scenario yields TWO observations and TWO
+> violations.**
+> Superseded text is kept in place and marked, per house style, because the
+> reason it was wrong is the deliverable.
 >
 > 1. **THE PLAN'S CLAIM THAT "THE REASON IS VISIBLE IN THE RUN'S OWN LOGS" IS
 >    FALSE, AND IT IS THE OPPOSITE OF WHAT THE FACTS BLOCK PROMISED.**
@@ -58,11 +62,44 @@
 >    `w3-3/partB-controller.txt` because they were captured **before** Part D3
 >    repaired the misconfiguration; after the recreate they are gone from
 >    `docker compose logs controller3`. Capture before you repair.
+> 6. **ADDED IN REVIEW — THE DOC SURVEY WAS TRUNCATED, AND IT COST THIS
+>    SCENARIO ITS STRONGEST LIMB FOR A WHILE.** The capture backing the
+>    key-identity entry's "the docs are silent" verdict
+>    (`w3-3/docs-greps.txt`) was piped through `head` and stored **40** of the
+>    first grep's **55** hits, and the truncation was never disclosed, so the
+>    file read as exhaustive when it was not. Review caught it by re-running
+>    the identical command and comparing line counts:
+>    `grep -rn -iE 'same key|different key|key file|KEK|key id|key version|rotat' docs/*.md | wc -l`
+>    returns **55**, against the 40 lines recorded. Hit **#55** — the last line
+>    of the full output — is **`docs/secrets.md:420`**, the Troubleshooting
+>    table's only HA row: "| `decrypt` errors in HA setup | Replicas were given
+>    different key files, or different `UNIFIED_KMS_URI` values. **Give every
+>    replica the identical key file (or the same KMS URI).** |" That is an
+>    unconditional prescribed remedy **in `docs/`** for exactly the symptom
+>    Part D3 produced; it was applied verbatim at `00:46:03.977Z` and the
+>    symptom persisted at **100 % — 9/9 runs, decrypt WARNs on all three
+>    replicas**, and the row's stated *cause* is false of the repaired cluster
+>    besides. Per `FINDINGS.md:478-479` a documented contract is a violation
+>    limb, so the key-identity entry is **now a violation, severity major**
+>    (critical arguable; escalation left to the operator). `docs-greps.txt` has
+>    been re-captured untruncated and now records its own hit counts; the
+>    original is preserved as `w3-3/docs-greps-ORIGINAL-TRUNCATED.txt`.
+>    **What is NOT withdrawn:** the refusal to read
+>    `high-availability.md:218` / `operations.md:67` as an "only if" stands —
+>    they are backup-and-recovery guidance, not an enumeration, and `:420` is a
+>    different kind of statement (a prescribed fix, not a scope claim). So does
+>    the checkpoint flag that the campaign's invariant set has **no
+>    secret-store integrity clause** — I4 is logs/artifacts only. **Rule for
+>    later scenarios: a survey supporting a "the docs are silent" verdict must
+>    record its own line count and must never be piped through `head`.**
 >
-> **The scenario yields THREE observations and ONE minor I7 violation.** The
-> violation (a terminal run displaying a `Pending` step) is **reached by this
-> scenario, not caused by it** — it is general to any run that terminates
-> before its first step report. Do not merge it into the mixed-KEK entries.
+> **The scenario yields TWO observations and TWO violations** (corrected in
+> review; this banner originally said three and one). The **major** violation
+> is the key-identity / ineffective-documented-remedy entry, filed on the
+> documented-contract limb (`docs/secrets.md:420`). The **minor I7** violation
+> (a terminal run displaying a `Pending` step) is **reached by this scenario,
+> not caused by it** — it is general to any run that terminates before its
+> first step report. Do not merge it into the mixed-KEK entries.
 
 **Wave W3, Task 2. Runs on today's `test/ha` rig plus one extra key file and one
 per-replica env override — no object storage, so it is not blocked on Task 3.**
@@ -92,7 +129,13 @@ gets its own Part below:
 
 **Expect observations.** Three of W2's nine scenarios produced only observations
 and that was the right outcome each time. Do not manufacture a violation to make
-the scenario feel productive.
+the scenario feel productive. **Post-execution note (review):** this framing was
+right about the *warned-about* limb — the mixed state behaves exactly as
+`high-availability.md:204-206` says — and wrong about the docs as a whole. The
+contradicted promise is not in the HA guide at all but in `docs/secrets.md:420`,
+a Troubleshooting row prescribing a remedy that does not work once a secret has
+been written during the mixed window. **Survey `docs/*.md` in full, and print
+the hit count, before concluding "documented and behaving as documented".**
 
 ---
 
@@ -737,8 +780,10 @@ docker compose $MIXED down -v
 ## Execution notes — 2026-07-31 run (read before re-running)
 
 Executed against `test/ha` + `compose/mixedkek.override.yaml` on branch
-`plan/edge-case-w3`, **`00:36:31Z – 00:50:22Z`**. **Four `FINDINGS` entries: 3
-observations (minor) and 1 violation (minor, I7).** No branch-internal asset
+`plan/edge-case-w3`, **`00:36:31Z – 00:50:22Z`**. **Four `FINDINGS` entries: 2
+observations (minor) and 2 violations — 1 major on the documented-contract
+limb (`docs/secrets.md:420`, reclassified in review, see banner correction 6)
+and 1 minor I7.** No branch-internal asset
 bug — the fixture applied `200` and the secret registered `204` on the **first**
 attempt each, and **not one API 500 was seen on any trigger or gate command**
 across 51 run triggers (gate G6's flakiness allowance was never spent). The
@@ -807,6 +852,13 @@ the replica. 24 fetch lines for 24 Part A runs, 12 for 12 in D2, 9 for 9 in D3 �
     confirmed at defaults in a fresh session at teardown — `log_statement=none`,
     `log_line_prefix=%m [%p]` (`w3-3/teardown.txt`). Nothing in this scenario
     needs it.
+11. **ADDED IN REVIEW — never `head` a survey you are going to call
+    exhaustive.** `w3-3/docs-greps.txt` was truncated at 40 of 55 hits and the
+    truncation was undisclosed; the dropped tail contained
+    `docs/secrets.md:420`, which is the difference between an observation and
+    a major violation (banner correction 6). Every survey in a later scenario
+    must print its own `| wc -l` next to the output, and a "the docs are
+    silent" verdict must cite that count.
 
 **Sampler hygiene: none were launched.** Every capture was a synchronous
 foreground command; there was no SSE stream and no polling loop. Checked anyway
