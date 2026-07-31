@@ -35,6 +35,14 @@
 >    controller pool and returning `502 no live upstreams` to unrelated agent
 >    traffic. Expect it, do not file it, and do not let it contaminate the
 >    per-request bracket (it is distinguishable: `ustatus=502 rt≈0.000`).
+>    **But it is an artifact of the injection, not of the rig:**
+>    `docs/high-availability.md:253-254` names `test/ha/nginx.conf` as "a
+>    complete working example" and `:258` recommends `max_fails=1
+>    fail_timeout=5s` explicitly, so a doc-following production LB does the
+>    same thing. The docs' rationale (`:249-251`) is a **dead** controller and
+>    is silent on correlated slow-response ejection — recorded as a docs gap in
+>    the finding's Notes, not filed, because `:248-249` makes LB tuning the
+>    operator's responsibility.
 >
 > **The scenario yields ONE major (I4) and ONE observation (minor).** Do not
 > split the truncate and lostack arms into two findings — they share the same
@@ -231,7 +239,7 @@ Every row re-read at this branch's HEAD; the `file:line` is the claim.
 | 9 | Auto-flush cadence is **2 s**; the byte threshold is **4 KiB**; the pending cap is **1 MiB** | `runner.go:211`, `:255`, `:256` |
 | 10 | SSE re-reads from the DB by `seq` and does **not** forward what was appended — the NOTIFY payload is the seq but the callback ignores it and re-queries `TailLogs(ctx, id, lastSeq, 10_000)` | `internal/controller/sse.go:117-120` |
 | 11 | Therefore a duplicate is delivered to SSE clients **as an ordinary new line** with a strictly higher seq — the `seq > lastSeq` filter dedupes *transport* retries, never *content* duplicates | derived from 10 + Step 1 consequence 2 |
-| 12 | The archiver encodes **whatever `TailLogs` returns**, so `line_count`/`max_seq` record the inflated count and log-trim's coverage check still passes ⇒ **the duplication is permanent and survives into the archive** | `internal/controller/archiver.go:81-92`, `:106`; `postgres.go:1519-1528` — **code-read only on this rig, see Part E** |
+| 12 | The archiver encodes **whatever `TailLogs` returns**, so `line_count`/`max_seq` record the inflated count and log-trim's coverage check still passes ⇒ **code-read only, never measured on this rig: the duplication would survive into the archive** (this rig has no object store, so the archiver never starts — see Part E) | `internal/controller/archiver.go:81-92`, `:106`; `postgres.go:1519-1528` |
 | 13 | A log-append failure **cannot fail the step**: the orchestrator never sees it, and `LogPusher` returns no error to its `io.Writer` caller | `runner.go:319-329` (`Write` always returns `n, nil`) |
 
 **The single sentence the scenario tests:** facts 1-8 together mean that *any*
@@ -250,6 +258,31 @@ constraint, no dedupe and no ordering repair anywhere downstream.
 Both are the "lost ack" shape the brief names; `truncate` is additionally the
 brief's Part B (mid-batch partial commit). **They are not two findings** — the
 root cause is facts 1-4 in both cases.
+
+### Why nginx, and why NOT the brief's `inject.sh pause postgres`
+
+The Task 1 brief names `inject.sh pause postgres`, "timed into a bulk request",
+as the available lever for Part B's mid-batch failure. **It is rejected here
+deliberately, and a re-runner should not reach for it.** Three reasons:
+
+1. **It does not produce the Part B shape.** Pausing Postgres makes the *whole
+   controller* fail, not one endpoint — every replica, every route, every
+   background job. The prefix would still commit, but the surrounding evidence
+   (which requests were affected, what the healthy baseline was doing) is
+   destroyed at the same instant, and the entry could not distinguish this
+   scenario's mechanism from W1-2's outage shape.
+2. **It needs timing luck; the nginx read-timeout does not.** A 200 ms
+   `proxy_read_timeout` on the bulk location alone **self-selects by batch
+   size** — a 1-line batch completes in ~5 ms and returns 204, while a 421-line
+   batch takes ~423 ms and is cut mid-loop **every** time. The fault therefore
+   lands mid-batch by construction rather than by aim, which is why the arm hit
+   3 of 4 attempts against a budgeted cap of 10.
+3. **It keeps the injection URI-scoped**, so the per-request nginx bracket below
+   remains meaningful and the control comparison stays inside the same session.
+
+`pause postgres` remains the right lever for a scenario that *wants* the whole
+controller to fail; this one wants exactly one endpoint to fail exactly
+mid-loop.
 
 ### Why nginx, and how the W2-5 lesson is answered
 
@@ -682,9 +715,19 @@ docker compose $COMPOSE_FILES down -v
   effect repeats, nothing is lost — but the run's own log is silently and
   **permanently** wrong, the corruption is served to every reader including SSE,
   there is no marker of any kind, and the trigger is an ordinary transient
-  failure of one HTTP request rather than an exotic fault. Judge **major**, not
-  critical, unless Part E is actually measured (it is not on this rig): critical
-  would need the archive limb demonstrated, and it is code-read.
+  failure of one HTTP request rather than an exotic fault. Judge **major**.
+  ~~"unless Part E is actually measured (it is not on this rig): critical would
+  need the archive limb demonstrated, and it is code-read."~~ **SUPERSEDED at
+  review — the archive limb is not the discriminator and this rule understated
+  the finding.** The archive creates **no new corruption**: it faithfully
+  preserves content that is already corrupt and already the only copy, so it
+  extends the corruption's *lifetime*, not its *kind*, and a Garage re-run
+  cannot move the severity in either direction. The band's "silent corruption"
+  disjunct (`FINDINGS.md:6-8`) is **arguably met today**, with no archive
+  needed. Major is nevertheless the right filing, on **precedent consistency**:
+  the campaign has filed zero criticals, and W1-2 — silent, permanent log
+  *loss* with no marker — is a major. Say that in the entry and leave the
+  escalation call to the operator; do not use the archive to justify the band.
 - **A 500 that commits a prefix with no way for the client to learn how far it
   got** — judge on whether any doc promises atomicity. Per the pre-execution
   survey, **the docs are silent, not contradicted**; say exactly that and rest on
@@ -738,11 +781,29 @@ before and after (`w3-4/gate.txt`, `w3-4/teardown.txt`).
 | `78788e0d` | none in window (timing miss ⇒ second control) | 2002 | 0 | 0 | 0 |
 | `f7d619ac` | truncate 200 ms, 8.9 s | 2626 | 624 | 276 | 2441 |
 
-**Every armed/cleared claim above is per-request from the nginx access log**, not
-from the wall clock: `w3-4/partA-nginx.txt`, `w3-4/partB-nginx-attempt1.txt`,
-`w3-4/partC-dup.txt`. Both control runs are called uninjected because **all** of
-their bulk requests logged `arm=none status=204`, which is the only basis on
-which the word is used anywhere in this scenario.
+**Three of the six runs carry a captured per-request nginx bracket; three do
+not — and an earlier version of this paragraph claimed all six did.** The
+captured brackets are `w3-4/partA-nginx.txt` (`a644004c`, 4 requests),
+`w3-4/partB-nginx-attempt1.txt` (`e87666b7`, 10) and `w3-4/partC-dup.txt`
+(`16683d6e`, 22). `grep -rE "arm=(none|truncate|lostack) target=" $SCRATCH`
+returns **zero** lines for `a0b22da5`, `78788e0d` and `f7d619ac`, so their
+`arm` column above is a **wall-clock** attribution and carries the label this
+runbook requires for uncaptured live observations — *(observed live, raw output
+not captured to scratchpad)*. For the two truncate hits the wall clock is
+corroborated by the shape of the result (only the truncate arm can produce a
+mid-batch committed prefix); for `78788e0d` the argument is timing alone: run
+created `23:45:42.921404+00`, arm reload complete `23:46:06` — **23 s later**,
+against a fixture that bursts only after `sleep 8`, so the burst was long gone.
+Sound, but it is the wall clock, and this campaign does not call that a bracket.
+
+**No headline number depends on an unbracketed run.** 2002 (control), 8493 and
+4.24x (lostack) and 173/193/190 (the prefix boundaries) come from `a644004c`,
+`16683d6e` and `e87666b7` — the three that *are* fully bracketed. The other
+three contribute the attempt tally and corroborating row counts only.
+
+Where a run **is** bracketed, the rule is unchanged and is the only basis on
+which the word "uninjected" is used: every one of its bulk requests logged
+`arm=none status=204`.
 
 **Instrument hygiene.** `log_statement='all'` was armed once
 (`w3-4/gate-g6-arm.txt`) for the Part B attempt-1 window only — 71,852 log lines
@@ -797,5 +858,10 @@ and always pass `-m <seconds>` to a `curl -N` sampler.
    (`w3-4/consolidated.txt`). The claim that the duplication survives into the
    archive and passes log-trim's coverage check rests entirely on
    `archiver.go:81-92` / `:106` and is labelled as such in the finding. **It is
-   the limb that would raise the severity from major to critical**, so it is
-   worth ten minutes on the Garage rig.
+   NOT the major/critical discriminator** — an earlier version of this item said
+   it was. The archive creates no new corruption; it faithfully preserves
+   content that is already corrupt and already the only copy, so it extends the
+   corruption's *lifetime* (past a log trim, with the coverage check defeated by
+   the same inflated count), not its *kind*. Re-run it to **close an unmeasured
+   limb of the entry**, which is worth ten minutes on the Garage rig on its own
+   terms; do not expect the result to change the severity either way.

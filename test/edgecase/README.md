@@ -59,6 +59,19 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
   the old config — **and, as a side effect, severs in-flight SSE streams and
   long-poll claims on every reload**; run SSE captures straight against a
   controller, not through the LB.
+
+  **`worker_shutdown_timeout` is carried by `nginx-logfault.conf` ONLY**
+  (`nginx-logfault.conf:35`; `grep -rn worker_shutdown_timeout test/edgecase
+  test/ha --include=*.conf` matches only `nginx-logfault.conf` — the directive
+  at `:35` and its own explanatory comment at `:23`, nothing else).
+  `nginx-edge.conf` (used by `inject.sh
+  nginx-block`) and `nginx-steplink.conf` (used by `inject.sh steplock`) do
+  **not** have it, so those two injectors **still carry the original W2-5
+  trap**: after `nginx -s reload` an already-connected agent may keep being
+  served by an old worker with the old config, and a request can succeed
+  inside a nominally-armed window. Do not generalise the logfault overlay's
+  clean arm behaviour to them — either add the directive to the config you are
+  using, or bracket every claim per-request from an access log.
 - `tools/w3/w3-4-partB.sh <attempt-n> [arm-delay-s] [hold-s] [timeout]` — the
   W3-4 Part B driver: clear+probe, trigger `edge-logburst`, arm `truncate`
   across the burst, clear+probe, with a host timestamp on every step.
