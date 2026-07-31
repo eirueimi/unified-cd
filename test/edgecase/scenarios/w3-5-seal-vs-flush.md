@@ -243,7 +243,7 @@ the finding lives:
 **Check whether this branch has already ruled on every passage before citing
 it** (the Task-3 lesson). `docs/operations.md:51` and
 `docs/troubleshooting.md:889-899` are both already cited by
-`w3-4-bulk-append-duplication.md:205-216` and by `FINDINGS.md:1561`, which read
+`w3-4-bulk-append-duplication.md:226-246` and by `FINDINGS.md:1561`, which read
 `:889-899` narrowly — as *authorising retry* and saying nothing about what the
 controller already committed. **That narrow reading is binding and this
 scenario must stay consistent with it.** Run:
