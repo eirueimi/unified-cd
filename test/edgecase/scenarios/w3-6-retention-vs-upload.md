@@ -39,14 +39,29 @@ capture it **before** any `up -d --force-recreate`.
 
 ## The instrument, declared up front because it is the least obvious thing here
 
-**The scenario needs an artifact `PUT` against a run that is already terminal,
-and no ordinary run can supply one.** `DELETE /api/v1/runs/{id}` refuses a
-non-terminal run with **409** (`internal/controller/api_runs.go:427-432`), while
-a run driven by a real agent is `Running` for the whole of its
-`uploadArtifact` step. The two windows do not overlap, so `edge-artifact-large`
-executed normally can never be raced by the manual DELETE.
+**The scenario needs an artifact `PUT` against a run that is already terminal.**
+`DELETE /api/v1/runs/{id}` refuses a non-terminal run with **409**
+(`internal/controller/api_runs.go:427-432`), while a run driven by a real agent
+is `Running` for the whole of its `uploadArtifact` step *as long as nothing
+interferes*.
 
-What makes the scenario constructible is that
+**But the two windows DO overlap, and an earlier version of this section was
+wrong to say they never do.** `handleCancelRun` marks the row terminal
+**synchronously** — `MarkRunFinished(r.Context(), id, api.RunCancelled)`,
+`api_runs.go:374` — while the executing agent only learns by **polling**:
+`var CancelPollInterval = 5 * time.Second` (`internal/agent/orchestrator.go:37`),
+poller at `:122-147`, terminal branch at `:137-146` (which also covers a
+stuck-run reap and a failover-driven terminalisation, via `reapedByMaster`). So
+**an ordinary agent-driven run is terminal-while-still-uploading for up to 5 s**,
+and the manual DELETE is legal for all of it, with a real agent and no
+instrument. Whether the in-flight `Put` beats the poller's `cancelRun()` is an
+open empirical question — **the 2026-07-31 run did not attempt it**, so that
+window is *untested*, not unreachable. **A re-run with time to spare should try
+it**: it is the production shape, and producing it once would remove the only
+instrument in the scenario.
+
+What makes the scenario constructible *on demand*, with a window as wide as the
+payload rather than ≤5 s and no dependence on winning a footrace, is that
 **`handleArtifactUpload` accepts uploads for terminal-but-existing runs on
 purpose** — `agentRunGuard(..., rejectTerminal=false)`
 (`internal/controller/api_artifacts.go:47`,
@@ -490,8 +505,15 @@ after step 2 and before step 5 — which is exactly where race (b) lives.
      `runLogArchiveKey`, the key step 5 re-sweeps) and
      `artifacts/<id>/late-blob.tar.gz` (a key step 3 has already snapshotted
      past).
-  3. Wait for the DELETE to return. Record its status.
-  4. `mc ls --recursive garage/unified-cd-logs/` and report **which of the two
+  3. **Immediately after the plant and BEFORE the DELETE returns, `mc ls
+     runs/<id>/` and `mc ls artifacts/<id>/late-blob.tar.gz`, and record both.**
+     This is the step the 2026-07-31 run omitted, and its absence is the one
+     inference that entry has to declare: without it, a post-DELETE `[count=0]`
+     on the log-archive key is consistent with "step 5 deleted it" *and* with
+     "the plant never wrote it" — and note 1's silently-empty upload is proof
+     that this rig can produce the second. One `mc ls` closes it.
+  4. Wait for the DELETE to return. Record its status.
+  5. `mc ls --recursive garage/unified-cd-logs/` and report **which of the two
      survived**.
   → `$SCRATCH/partC-asymmetry.txt`.
 - **C3 — the expected result, stated in advance so a surprise is legible.** The
@@ -600,8 +622,11 @@ docker compose $COMPOSE_FILES down -v
 
 Executed on branch `plan/edge-case-w3`, **`04:36:29Z – 04:57:27Z`**, on the single
 stack §Stack specifies (`test/ha` + `bigbody`, no interposer), torn down with
-`down -v` (`w3-6/teardown.txt`). **Two `FINDINGS` entries: 1 violation (minor,
-documented contract) and 1 observation (minor).** No branch-internal asset bug.
+`down -v` (`w3-6/teardown.txt`). **Three `FINDINGS` entries: 1 violation (minor,
+documented contract), 1 observation (minor), and — added during review, from a
+code read rather than from this run — 1 further violation (major, documented
+contract) that was NOT executed**, the job-delete orphan producer of note 8. No
+branch-internal asset bug.
 The developer stack (`docker compose ls`, project `unified-cd`) was running and
 untouched at both ends (`w3-6/gate.txt`, `w3-6/teardown.txt`).
 
@@ -613,7 +638,7 @@ this scenario are deliberately destroyed by it.
 
 | Part | Arm | Result |
 |---|---|---|
-| G6 | none | a `PUT` to a **terminal** run is accepted: 204, object at 4.0 KiB, listed by the API. Fact 9 confirmed live, and the scenario is constructible |
+| G6 | none | a `PUT` to a **terminal** run is accepted, and this row is **two uploads, not one**: the first (`gate-blob`) returned 204 while writing **0 B** (the MSYS trap, note 1) and is what the `GET /runs/{id}/artifacts` → `[{"name":"gate-blob"}]` listing was taken against; the **4.0 KiB** object is the post-fix re-upload (`gate-blob2`). Either way fact 9 is confirmed live and the scenario is constructible |
 | G7 | none | archival works: `a50b9031` archived at **3036 B / 30 lines** (`w3-6/census.txt`) |
 | A2 | none | 32 MiB at `--limit-rate 1M`, chunked → controller `duration_ms=32374`. **The window is the payload transfer** |
 | A3 | DELETE fired on an `mc ls --incomplete` signal | **hit on attempt 1 of a cap of 6.** DELETE 204 in 13 ms at `04:45:28.891Z`, `PUT` handler started `04:45:28.2998Z` (derived) and finished `04:46:00.586Z` with **204**. Run row gone, **32 MiB object left** |
@@ -631,11 +656,15 @@ this scenario are deliberately destroyed by it.
    object and looked like a success (`w3-6/gate-g6-synthagent.txt`). Use a
    Windows-form path (`C:/Users/...`) for every `curl` file argument, and
    **check `%{size_upload}` against the object's size**, not the status code.
-2. **`DELETE /api/v1/runs/{id}` cannot race an ordinary run's upload, and this
-   is the first thing to internalise.** The route needs a terminal run (409
-   otherwise) and an agent-driven run is `Running` throughout its
-   `uploadArtifact` step. The synthetic agent is not a convenience; it is the
-   only way in. Building it costs five API calls and no SQL (`w3-6/synth.sh`).
+2. **The synthetic agent buys a WIDE window, not the only window — and the
+   original claim here that it was "the only way in" was false.** The route does
+   need a terminal run (409 otherwise), but `handleCancelRun` marks the row
+   terminal synchronously (`api_runs.go:374`) while the agent only notices on a
+   5 s poll (`orchestrator.go:37`, `:137-146`), so an ordinary agent-driven run
+   is terminal-while-still-uploading for up to 5 s and the DELETE is legal for
+   all of it. **That window was never attempted here.** The synthetic agent was
+   chosen because it makes the window as wide as the payload and repeatable;
+   building it costs five API calls and no SQL (`w3-6/synth.sh`).
 3. **`--limit-rate` + `proxy_request_buffering off` is a better width knob than
    anything in `inject.sh` for this race**, and it is fully deterministic: the
    controller's `duration_ms` came out at 32374 for a 32 s client-side upload.
@@ -652,15 +681,33 @@ this scenario are deliberately destroyed by it.
    Generating the pads inside the `mc` container and `mc cp --recursive`-ing
    them takes ~7 s for 10,000.
 7. **The whole event is silent.** Zero controller `WARN` and zero `ERROR` lines
-   across the session; the artifact `PUT` has **no audit row at all** (the route
-   lives outside the `/api/v1` audit group); the audit log's only word on the
-   raced run is `run.delete` → 204.
-8. **Do not re-file W3-2's orphan.** `FINDINGS.md:1760` is the sibling on the
-   log-archive key space and its own text hands this class to W3-6. The single
-   entry names both producers.
-9. **The rig's intermittent-500 allowance (G8) was never spent** — zero API 500s
-   on any gate, trigger, upload or delete across the whole session. A re-run
-   should not assume that.
+   **across the two windows in which an orphan was created** — the captures are
+   headed "in the window" (Part A) and "in the last 6 minutes" (Part C) and
+   together do **not** span `04:36:29Z – 04:57:27Z`, so do not restate this as a
+   session-wide negative; the load-bearing claim is that nothing was recorded at
+   the moments the orphans were created, and that is what the captures cover.
+   The artifact `PUT` has **no audit row at all** (the route lives outside the
+   `/api/v1` audit group); the audit log's only word on the raced run is
+   `run.delete` → 204.
+8. **Do not re-file W3-2's orphan — and know that the class has THREE
+   producers, not two.** `FINDINGS.md:1760` is the sibling on the log-archive
+   key space and its own text hands this class to W3-6; the W3-6 violation
+   entry names both **race-window** producers and scopes its completeness claim
+   to exactly those. The third was found in this scenario's own docs survey and
+   is filed as a separate, **unexecuted** entry (last in `FINDINGS.md`):
+   `DELETE /api/v1/jobs/{name}` calls only `store.DeleteJob`
+   (`api_jobs.go:220-231` → `postgres.go:2168-2171`), never reaches
+   `deleteRunEverywhere`, and cascades the `runs` rows away — so every artifact
+   **and** every log archive of every run of a deleted job survives with no
+   window at all. **A re-run of this scenario should measure it**: trigger,
+   archive, upload, `DELETE /api/v1/jobs/{name}`, then `mc ls --recursive` both
+   prefixes. It is minutes of work on this rig.
+9. **The rig's intermittent-500 allowance (G8) never had to be spent** — no
+   step of this scenario was retried for a 500. **That is an absence of trouble,
+   not a measurement: no capture counts 500s across the session, so the earlier
+   "zero API 500s across the whole session" claim is withdrawn** and appears in
+   no `FINDINGS` entry. A re-run should neither assume the rig is clean nor cite
+   this note as evidence that it was.
 
 **Sampler hygiene was captured, not asserted.** The two background jobs (Part
 A's slow upload, Part C's DELETE) were `wait`ed on in their own drivers; both
