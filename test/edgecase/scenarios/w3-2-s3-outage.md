@@ -249,7 +249,7 @@ Every row re-read at this branch's HEAD; the `file:line` is the claim.
 | 1 | The archiver is a 30 s ticker guarded by one advisory lock, `logArchiverLockKey = 0x6C6F6761` (~~= **1819242081** decimal~~ **= 1819240289 decimal** — see correction 1 in the box at the top of this file; that is what `pg_locks.objid` shows, with `classid=0` and `objsubid=1`) | `internal/controller/archiver.go:15`, `:19-23`; started at `cmd/controller/main.go:400` |
 | 2 | **The lock is acquired per tick and released per tick** — `AcquireAdvisoryLock` then `defer release()` inside `runArchiveAsLeader`, so leadership can move between ticks and is **not** sticky | `archiver.go:39-52` |
 | 3 | Candidate set: terminal status, **no `run_log_archives` row**, not in the excluded set, `ORDER BY updated_at LIMIT $1` (limit **20**) | `internal/store/postgres.go:1458-1467`; limit at `archiver.go:55` |
-| 4 | **`bo` is one instance per PROCESS, not per tick** — `bo := newFailureBackoff(time.Minute, time.Hour, 10_000)` at `:28`, the loop at `:29`. Its own doc comment says it is "Leader-local by design: a failover or restart clears it, costing one retry per poison before it is re-excluded" | `archiver.go:25-28`; `internal/controller/failure_backoff.go:9-15` |
+| 4 | **`bo` is one instance per PROCESS, not per tick** — `bo := newFailureBackoff(time.Minute, time.Hour, 10_000)` at `:28`, the loop at `:29`. Its own doc comment says it is "Leader-local by design: a failover or restart clears it, costing one retry per poison before it is re-excluded". **ADDED AT BRANCH REVIEW — the comment is NOT the contract and must not be the thing Part A is written up against.** `docs/operations.md:53` §"Sweep failure backoff" is a **published** paragraph naming the log archiver first and asserting the same thing in prose: "The log archiver, run-retention sweeper, and git resolver retry a persistently failing candidate with exponential backoff (1 min doubling to 1 h) instead of letting it occupy the head of every oldest-first batch — a handful of broken runs can no longer starve archival, deletion, or resolution for everything newer. The backoff state is held by the current leader only and resets on failover (each problem candidate is retried once, then re-excluded)." **Quote it verbatim before citing it, and check BOTH clauses — Part A falsifies both** (`FINDINGS.md:1736`, `:1752`, `:1753`) | `archiver.go:25-28`; `internal/controller/failure_backoff.go:9-15`; `docs/operations.md:53` |
 | 5 | Backoff schedule: `wait = base << (failures-1)` capped at `max` ⇒ **1 min, 2, 4, 8, 16, 32, 60 (capped)** | `failure_backoff.go:37-64` |
 | 6 | **The only trace of a failed archival is one `slog.Error`.** No run field, no log row, no status change, no metric named in the handler | `archiver.go:60-63` |
 | 7 | Order is **object first, record second**; on a record failure a best-effort `obj.Delete` compensates and a `slog.Warn` fires if *that* fails | `archiver.go:94-116`, delete at `:111`, warn at `:112-114` |
@@ -798,8 +798,20 @@ docker compose $COMPOSE_FILES down -v
 
 Executed on branch `plan/edge-case-w3`, **`02:54:55Z – 03:48:14Z`**, in the two
 phases §Stack specifies, with a `down -v` between them and after them
-(`w3-2/teardown.txt`). **Four `FINDINGS` entries: 1 violation (minor, I5) and 3
-observations (minor).** No branch-internal asset bug in the campaign's shipped
+(`w3-2/teardown.txt`). **Four `FINDINGS` entries: 2 violations (both minor — one
+documented contract, `docs/operations.md:53`; one I5) and 2 observations
+(minor).** ~~"1 violation (minor, I5) and 3 observations (minor)"~~ —
+**superseded at branch review**: the Part A archiver entry (`FINDINGS.md:1736`)
+was filed as an observation ruling "the docs are silent", and the paragraph it
+should have cited is `docs/operations.md:53` §"Sweep failure backoff", whose two
+clauses Part A's own measurements falsify. It is now a documented-contract
+violation. **The lesson for a re-runner is procedural, not numeric: this
+runbook's Part A brief carried the citation** (`FINDINGS.md:1498` handed W3-2 the
+paragraph by name and told it to quote `:53` verbatim before citing it), **and
+the entry's four docs surveys were all scoped to the object store, so none of
+them could surface a paragraph filed under the sweep that uses it.** Grep for a
+checkpoint-supplied citation specifically; a dependency-scoped survey will not
+find it. No branch-internal asset bug in the campaign's shipped
 assets — but **this runbook itself shipped a wrong constant** (correction 1),
 which is recorded here rather than filed, because it was caught and corrected
 inside the same session before any finding rested on it. The developer stack
