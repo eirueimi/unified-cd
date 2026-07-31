@@ -533,6 +533,14 @@ argument (facts 1-5) with an explicit **"not reproduced live"** label — the
 W2-3 Arm D precedent, accepted at 0/10. **Do not write that the window is
 unreachable.**
 
+**B1-B3 are already scripted — use the committed driver rather than retyping
+them.** `../edgecase/tools/w3/w3-4-partB.sh <attempt-n> [arm-delay-s] [hold-s]
+[timeout]` does clear+probe, trigger, arm `truncate` across the burst, hold, and
+clear+probe, stamping a host timestamp on every step. **It was committed for
+this Part and no runbook referenced it until the branch review**, which is how a
+re-runner ended up with a shipped asset they could not find. Run the steps by
+hand only if you need to vary something the driver does not parameterise.
+
 - **B1.** Clear + probe. Trigger `edge-logburst`, record `runID_trunc` and the
   trigger instant.
 - **B2 — arm during the `sleep 8`, i.e. against an already-connected agent.**

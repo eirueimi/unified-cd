@@ -149,13 +149,20 @@ check cheaply at the point of use. Three checks, three results.
   `docs/superpowers/plans/2026-07-30-edge-case-campaign-w3.md:80` says the key
   file is "mounted read-only into all three replicas at `/run/secrets/kek` via a
   **YAML anchor** (`docker-compose.ha.yaml:22-31`)". The span is roughly right
-  but names neither the anchor nor the mount. The actual sites are:
-  `controller1: &ctrl` at `docker-compose.ha.yaml:15` (the anchor, which is what
-  the Task 2 brief cites and which is correct), the comment "All replicas must
-  share the same key file; see docs/high-availability.md." at `:22`,
-  `UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek` at `:23`,
-  `- ./kek:/run/secrets/kek:ro` at `:25`, and the two aliases
-  `controller2: *ctrl` / `controller3: *ctrl` at `:30-31`. **The consequence is
+  but names neither the anchor nor the mount. **RE-READ AT HEAD AT THE BRANCH
+  REVIEW: every line number below moved when Task 3 (`0b51fa3`) inserted the
+  `garage` and `mc` services and the `UNIFIED_S3_*` block, so an entry whose
+  whole point is citation precision was itself citing a file that no longer
+  reads that way. The superseded numbers are struck; the claim is unchanged.**
+  The actual sites, at HEAD:
+  `controller1: &ctrl` at `docker-compose.ha.yaml:78` ~~`:15`~~ (the anchor,
+  which is what the Task 2 brief cites and which is correct), the comment "All
+  replicas must share the same key file; see docs/high-availability.md." at
+  `:85` ~~`:22`~~,
+  `UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek` at `:86` ~~`:23`~~,
+  `- ./kek:/run/secrets/kek:ro` at `:92` ~~`:25`~~, and the two aliases
+  `controller2: *ctrl` / `controller3: *ctrl` at `:103-104` ~~`:30-31`~~.
+  **The consequence is
   structural, not cosmetic**: a YAML alias cannot be partially overridden inside
   the file that defines it, which is precisely why the divergence has to be
   introduced from an overlay (§Stack) and why `test/ha/` is not edited.
@@ -285,7 +292,7 @@ The two candidates that survive that test are named in the preamble.
 | 15 | `GET /api/v1/secrets` returns `id`/`name`/`createdAt` only and **never attempts a decrypt**, so it cannot report a key mismatch | `api_secrets.go:48-61` |
 | 16 | nginx round-robins with no affinity (`upstream controllers` with three plain `server` lines) and `proxy_next_upstream` **does not include `http_500`** | `test/ha/nginx.conf:3-9`, `:24` |
 | 17 | nginx counts an "unsuccessful attempt" for `max_fails` only for `error`, `timeout`, `invalid_header` (always) plus whichever of `http_500/502/503/504/403/404/429` appear in `proxy_next_upstream`. **`http_500` is absent from `:24`, so a decrypt 500 does not count toward `max_fails=1` and cannot eject a controller** | nginx `ngx_http_upstream` documentation (doc-read); `test/ha/nginx.conf:6-8`, `:24` |
-| 18 | The agents connect to the LB (`--server http://nginx:8080`, `docker-compose.ha.yaml:104-105`, `:125-126`), so **claim and secrets-fetch are two independent round-robin picks** — the replica that serves the fetch decides the run's fate, and it need not be the one that served the claim | `docker-compose.ha.yaml:97-137` |
+| 18 | The agents connect to the LB (`"http://nginx:8080"` at `docker-compose.ha.yaml:201` and `:225`, plus `UNIFIED_SERVER` for `agent-enroll` at `:136`; ~~`:104-105`, `:125-126`~~ **re-read at HEAD — Task 3 `0b51fa3` moved every line**), so **claim and secrets-fetch are two independent round-robin picks** — the replica that serves the fetch decides the run's fate, and it need not be the one that served the claim | `docker-compose.ha.yaml:179-247` (~~`:97-137`~~) |
 
 **The single sentence the scenario tests:** with one replica holding a different
 local KEK, roughly one in three secret-fetches is answered by a replica that

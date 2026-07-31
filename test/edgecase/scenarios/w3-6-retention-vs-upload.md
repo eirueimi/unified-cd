@@ -115,8 +115,10 @@ conclusion changes**.
   no `Content-Length` is set anywhere in it. **W3-2 already filed this same
   correction** (its §"Corrections to inherited facts", CORRECTION 2) — recorded
   again only because this scenario's fixture header
-  (`test/edgecase/workloads/artifact-large.yaml`) still carries the old span.
-  **The fact is correct; the span is wrong.**
+  (`test/edgecase/workloads/artifact-large.yaml`) still carried the old span.
+  **The fact is correct; the span is wrong.** **The fixture header has since been
+  corrected at the branch review** — it was the last asset still quoting
+  `:352-360`.
 - **CORRECTION 2 — the guard comment spans `api_artifacts.go:57-61`, and the plan's `:60-61` names only its last clause.**
   The plan (`:126`) cites `:60-61` for "terminal-but-existing runs still accept
   uploads". At HEAD the comment runs `:57-61`; `:57-59` is the orphan warning
@@ -567,9 +569,15 @@ docker compose $COMPOSE_FILES down -v
 
 - **Cancel every surviving run before teardown** and confirm zero non-terminal
   runs in a census. The synthetic identity's runs count.
-- **Revoke the synthetic agent's credential** (`DELETE /api/v1/agents/w36-probe`)
-  or record that the `down -v` disposes of it. Either is fine; asserting neither
-  is not.
+- **Revoke the synthetic agent's credential** or record that the `down -v`
+  disposes of it. Either is fine; asserting neither is not. **CORRECTED AT
+  BRANCH REVIEW — `DELETE /api/v1/agents/w36-probe` DOES NOT WORK WITH THIS
+  RUNBOOK'S `API` ALIAS AND WILL RETURN 401.** The route carries the default
+  `agentRouteAuth`, i.e. `s.agentAuth` only, with no `agentRouteOrServerAuth`
+  and no `requiredRole` (`internal/controller/server.go:246`, registration at
+  `:265-271`), so the admin server token is rejected and only the probe's own
+  enrolment token is accepted. Send it with that token, or take the second
+  option and record the `down -v`.
 - **`down -v`, not `down`.** `ha-garagedata` is persistent and this scenario
   deliberately leaves orphans in it.
 - **Kill every background sampler and *capture* that, do not assert it.** Part A
@@ -664,7 +672,12 @@ this scenario are deliberately destroyed by it.
    is terminal-while-still-uploading for up to 5 s and the DELETE is legal for
    all of it. **That window was never attempted here.** The synthetic agent was
    chosen because it makes the window as wide as the payload and repeatable;
-   building it costs five API calls and no SQL (`w3-6/synth.sh`).
+   building it costs five API calls and no SQL. **The driver used
+   (`w3-6/synth.sh`) is a SESSION ARTEFACT archived in the evidence root, not a
+   committed asset** — it hardcodes an absolute scratchpad path and a captured
+   token file, so it is not re-runnable as-is. §Part A specifies every call it
+   makes; rebuild it from there, or promote it as `test/edgecase/README.md`
+   §"Which drivers are committed" recommends.
 3. **`--limit-rate` + `proxy_request_buffering off` is a better width knob than
    anything in `inject.sh` for this race**, and it is fully deterministic: the
    controller's `duration_ms` came out at 32374 for a 32 s client-side upload.

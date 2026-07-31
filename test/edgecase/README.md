@@ -76,6 +76,26 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 - `tools/w3/w3-4-partB.sh <attempt-n> [arm-delay-s] [hold-s] [timeout]` — the
   W3-4 Part B driver: clear+probe, trigger `edge-logburst`, arm `truncate`
   across the burst, clear+probe, with a host timestamp on every step.
+  Referenced from `scenarios/w3-4-bulk-append-duplication.md` §Part B (it was
+  committed with no runbook pointing at it until the branch review).
+
+**WHICH DRIVERS ARE COMMITTED AND WHICH ARE EVIDENCE — the rule, stated because
+W3 shipped one of each and neither said which it was.** A driver belongs in
+`tools/w3/` and is **committed** when it is parameterised and re-runnable by
+anyone: `w3-4-logfault.sh` and `w3-4-partB.sh` qualify. A driver that hardcodes
+a session scratchpad path, a captured token file, or a specific run id is a
+**session artefact**; it is archived in the evidence root, cited by the entry
+that used it, and is **not** re-runnable as-is. W3's session artefacts are
+`w3-2/partB-pause.sh` and `partB-arm.sh`, `w3-5/synth.sh` and `partB.sh`, and
+`w3-6/synth.sh`, `partA-race.sh` and `partC-asymmetry.sh` — each cited from its
+entry's Repro line, and none of them committed, which is correct rather than an
+omission. **One promotion is worth a W4 task:** the two `synth.sh` files are the
+same instrument (a curl-driven synthetic agent that enrolls, claims an
+otherwise-unclaimable job, finishes the run and then acts on it), the checkpoint
+already tells W4+ to reuse that instrument, and promoting it means removing two
+hardcoded absolute paths and taking the agent id and job name as arguments.
+Until that is done, **a re-runner of W3-5 or W3-6 must rebuild the helper from
+the runbook's own steps** — both runbooks specify every call it makes.
 - `compose/mixedkek.override.yaml` — no injector script; the fault **is** the
   configuration. Gives **controller3 alone** a different local KEK
   (`compose/kek-b`, a committed throwaway test key like `ha-admin-token`), by
@@ -147,7 +167,7 @@ silently off before. **Consequences you must plan for:**
   | `inject.sh s3-block <METHOD\|ANY> [keyPrefix] [status]` | fail matching requests; verified method- **and** prefix-selective |
   | `inject.sh s3-latency <seconds>` | fixed delay **per HTTP request** before Garage is reached |
   | `inject.sh s3-slow <bytes/s>` | throttle response bodies (holds a cache-restore stream open). **Emits `proxy_buffering on` + `proxy_limit_rate`, not `limit_rate`** — W3-1 measured `limit_rate` doing *nothing* under the server-level `proxy_buffering off` (a 10 s bounded read through the armed proxy returned the **whole** 16909275 B object, byte-identical to the direct-to-Garage control — `w3-1/partA-arm.txt:33-36`; ~~`rt=0.060`~~ was **not** an access-log field and is withdrawn, see `FINDINGS.md:2035`), and `proxy_limit_rate` additionally keeps the **upstream** GET in flight rather than draining it into nginx's buffers. Verified **through the verb** at 270312 B/s (2703126 B in a 10 s bounded read) against an armed 262144 B/s, versus the full 16909275 B direct to Garage in the same 10 s |
-  | `inject.sh s3-clear` / `s3-show` / `s3-probe [METHOD] [/bucket/key]` | clear, dump, confirm |
+  | `inject.sh s3-clear` / `s3-show` / `s3-probe [METHOD] [/bucket/key]` | clear, dump, confirm. **`s3-probe` now EXITS 4 if it gets no HTTP status line back** — it used to swallow that with `|| true`, so the arm-confirmation helper could never fail |
 
   **Choose the block status deliberately:** minio-go retries 429/500/502/503/504
   internally with backoff, so a `503` arm produces a slow retried failure

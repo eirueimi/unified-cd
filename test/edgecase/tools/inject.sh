@@ -53,11 +53,31 @@ s3_reload() {
 # prints the status line plus X-S3-Arm. 200 = that pair passes, 5xx = blocked.
 # This is the per-arm confirmation the W2-5 lesson demands: never assume a
 # reload took.
+#
+# THE `|| true` ON THE GREP IS GONE, AND THAT WAS A REAL DEFECT, NOT TIDYING.
+# With it, an empty probe — s3proxy gone, wget missing, the _s3probe location
+# not mounted, the container answering nothing at all — printed nothing and
+# returned 0, so the ARM-CONFIRMATION HELPER COULD NEVER FAIL. That is exactly
+# the class this wave paid for twice (`s3-slow` emitting a directive nginx
+# ignored, W3-1; FINDINGS.md:2116's arm rule). A confirmation step that cannot
+# report failure is worse than none, because callers print "armed" on its
+# strength. The probe now aborts loudly when it gets no HTTP status line back,
+# and `set -e` carries the failure to the caller.
 s3_probe() {
   _m="${1:-GET}"; _p="${2:-/}"
-  dc exec -T s3proxy sh -c \
-    "wget -S -q -O- 'http://127.0.0.1:3900/_s3probe?m=$_m&p=$_p' 2>&1 | \
-     grep -E 'HTTP/|X-S3-Arm|s3probe' || true"
+  if ! dc exec -T s3proxy sh -c \
+      "wget -S -q -O- 'http://127.0.0.1:3900/_s3probe?m=$_m&p=$_p' 2>&1 | \
+       grep -E 'HTTP/|X-S3-Arm|s3probe'" > /tmp/.s3probe.$$ 2>&1; then
+    echo "inject.sh: FATAL — s3_probe $_m $_p produced no HTTP status line." >&2
+    echo "  The arm is UNCONFIRMED; do not proceed on the assumption it took." >&2
+    echo "  Check: is s3proxy.override.yaml in COMPOSE_FILES, is s3proxy up," >&2
+    echo "  and does nginx-s3.conf still serve the /_s3probe location?" >&2
+    cat /tmp/.s3probe.$$ >&2
+    rm -f /tmp/.s3probe.$$
+    exit 4
+  fi
+  cat /tmp/.s3probe.$$
+  rm -f /tmp/.s3probe.$$
 }
 
 case "$cmd" in

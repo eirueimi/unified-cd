@@ -4,7 +4,9 @@
 # W3-6's TOCTOU is bounded by exactly this: handleArtifactUpload checks run
 # existence at internal/controller/api_artifacts.go:55 and calls Put at :79
 # with nothing in between, and the upload is chunked with no Content-Length
-# (internal/agent/client.go:352-360), so the width of the window IS the
+# (internal/agent/client.go:349-371 — UploadArtifact starts at :349 and returns
+# at :371; the inherited :352-360 span is wrong and was corrected by both W3-2
+# and W3-6, see FINDINGS.md:1806 and :1819), so the width of the window IS the
 # payload transfer time. size_mb is a param so a scenario can widen it without
 # a new fixture; the default is the size Task 3 measured.
 #

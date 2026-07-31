@@ -397,6 +397,13 @@ is permanently short by exactly `M` lines that the controller accepted with
 **A1 — build the synthetic agent.** Record every response.
 → `$SCRATCH/partA-synthagent.txt`.
 
+**The helper this session used (`w3-5/synth.sh`) is a SESSION ARTEFACT archived
+in the evidence root, not a committed asset** — it hardcodes an absolute
+scratchpad path and a token file, so it is not re-runnable as-is. The four steps
+below are its full contents; rebuild from them. See
+`test/edgecase/README.md` §"Which drivers are committed and which are evidence"
+for the rule and for the recommended promotion.
+
 1. `API -X POST /api/v1/agent-enrollments -d '{"agentId":"w35-probe","labels":["kind:w35probe"],"expiresIn":"2h"}'`
    → **201**, capture `.token`.
 2. `curl -X POST -H "Authorization: Bearer <enrollment token>" /api/v1/agents/enroll`
@@ -659,9 +666,18 @@ docker compose $COMPOSE_FILES down -v
   next scenario inherits a disconnected agent.
 - **Cancel every surviving run** and confirm zero non-terminal runs in a census.
   The synthetic identity's runs count.
-- **Revoke the synthetic agent's credential** (`DELETE /api/v1/agents/w35-probe`)
-  or record that the `down -v` disposes of it. Asserting neither is not an
-  option.
+- **Revoke the synthetic agent's credential** or record that the `down -v`
+  disposes of it. Asserting neither is not an option. **CORRECTED AT BRANCH
+  REVIEW — `DELETE /api/v1/agents/w35-probe` DOES NOT WORK WITH THIS RUNBOOK'S
+  `API` ALIAS AND WILL RETURN 401.** That route is registered with the default
+  `agentRouteAuth`, i.e. `s.agentAuth` only — no `agentRouteOrServerAuth`, no
+  `requiredRole` (`internal/controller/server.go:246`, registration at
+  `:265-271`) — so the **admin server token is not accepted on it**; the only
+  credential that works is the probe's own enrolment token. **So either send it
+  with the token the enrolment returned, or take the second option and record
+  that `down -v` disposes of the credential volume.** The second option is
+  always available, so this teardown is satisfiable — but a re-runner following
+  the first as previously written meets a 401 and has nothing telling them why.
 - **Kill every background sampler and *capture* that, do not assert it.** Keep
   PIDs in `$SCRATCH/samplers.pid`, `kill` them, show `jobs` empty and
   `ps -W | grep -iE "curl|psql|mc"` matching nothing — **and check inside the
