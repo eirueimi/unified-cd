@@ -17,7 +17,8 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 ## Tools
 
 - `tools/inject.sh <cmd> <service>` — fault injection (kill/pause/partition/
-  nginx-block/steplock). Run from `test/ha/`.
+  nginx-block/steplock, plus the `s3-*` family — see "The object store, and the
+  S3 interposer" below). Run from `test/ha/`.
 
   `steplock <agent>` / `steplock-clear` are **URI-scoped**: they deny only
   `POST /api/v1/agents/<agent>/steps` (403) and leave every other endpoint for
@@ -98,6 +99,120 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
   consecutive 500s across all three upstreams with zero ejection, which is the
   opposite of W3-4's experience with 504s under the same config.
 
+### The object store, and the S3 interposer (W3+)
+
+`test/ha/docker-compose.ha.yaml` now runs **Garage** and points the
+controllers (`UNIFIED_S3_*` → `unified-cd-logs`) and the agents
+(`UNIFIED_CACHE_*` → `unified-cd-cache`) at it. That turns on the log
+archiver, cache cleanup, artifact upload and the agent cache, all of which were
+silently off before. **Consequences you must plan for:**
+
+- **`docker compose down -v` between scenarios is now MANDATORY**, not hygiene.
+  Cache entries, artifacts and run-log archives live in the dedicated
+  `ha-garagedata` volume and survive a plain `down`; a leftover
+  `caches/<jobhash>/<keyhash>` object turns a cache-miss expectation into a hit.
+- **A controller that starts while Garage is unreachable CRASHLOOPS.**
+  `NewS3ObjectStore` calls `BucketExists` eagerly
+  (`internal/objectstore/s3.go:41-49`) and `cmd/controller/main.go:311-313`
+  does `os.Exit(1)`. This constrains injection ordering for any scenario that
+  both faults the store and restarts a replica.
+- **All four `UNIFIED_CACHE_*` vars are required and none has a default.**
+  `cmd/unified-cd-agent/main.go:204` gates the cache store on
+  `endpoint != "" && key != "" && secret != "" && bucket != ""`. A missing one
+  disables the cache **silently** — the only trace is the absence of the
+  `cache enabled` INFO line at `:215`. Verified live: with the bucket unset and
+  everything else identical, agent1 registered normally and logged no cache
+  line at all.
+
+- **Out-of-band object manipulation goes through the `mc` service.** Garage's
+  own CLI cannot delete an S3 object — `garage bucket` (v2.3.0) offers
+  `inspect-object` and no rm/delete verb. The `mc` container idles with the
+  alias preconfigured:
+  ```bash
+  docker compose $COMPOSE_FILES exec -T mc mc ls --recursive garage/unified-cd-logs/
+  docker compose $COMPOSE_FILES exec -T mc mc rm garage/unified-cd-logs/<key>
+  ```
+  It idles rather than one-shotting because `exec` costs milliseconds where a
+  `compose run` costs container start, and injection timing matters.
+
+- `compose/s3proxy.override.yaml` + `compose/nginx-s3.conf` — the **S3
+  interposer**, an nginx on port 3900 between the unified-cd processes and
+  Garage. Both sides are repointed at it, and **side selection is by bucket**,
+  which is the first path segment of a path-style S3 request:
+  `unified-cd-logs/runs/` and `unified-cd-logs/artifacts/` are the controller's,
+  `unified-cd-cache/caches/` is the agent's. Verbs:
+
+  | Command | Effect |
+  |---|---|
+  | `inject.sh s3-block <METHOD\|ANY> [keyPrefix] [status]` | fail matching requests; verified method- **and** prefix-selective |
+  | `inject.sh s3-latency <seconds>` | fixed delay **per HTTP request** before Garage is reached |
+  | `inject.sh s3-slow <bytes/s>` | throttle response bodies (holds a cache-restore stream open) |
+  | `inject.sh s3-clear` / `s3-show` / `s3-probe [METHOD] [/bucket/key]` | clear, dump, confirm |
+
+  **Choose the block status deliberately:** minio-go retries 429/500/502/503/504
+  internally with backoff, so a `503` arm produces a slow retried failure
+  (realistic, but it moves the timing) while `403` fails immediately.
+
+  **`s3-latency` is per request, not per operation** — measured, `mc cat` of a
+  6-byte object went 0.022 s → **9.034 s** under `s3-latency 3`, because mc
+  issues three requests for that one read.
+
+  **On the two reload lessons, and why this overlay resolves them differently
+  from `nginx-logfault.conf`:** it uses `keepalive_timeout 0`, **not**
+  `worker_shutdown_timeout 1s`. On reload nginx's old workers close their
+  listening sockets immediately, so only *established* connections carry stale
+  config — and with `keepalive_timeout 0` this proxy never has an established
+  idle connection, so the request after a reload is deterministically served by
+  a new worker. `worker_shutdown_timeout` would get there by **killing**
+  in-flight requests, which is exactly wrong on a path carrying multi-megabyte
+  artifact PUTs and cache-restore GET streams. W3-4's separate warning (that
+  `worker_shutdown_timeout` severs SSE and long-poll claims) does not apply
+  here at all: this nginx carries S3 traffic only, while SSE
+  (`/api/v1/runs/{id}/events`, `internal/controller/server.go:337`) and the
+  agent long-poll claim go to the controller LB on `nginx:8080` and never
+  traverse port 3900.
+
+  **Probe anyway.** Every arming verb ends by printing a probe, and `s3-block`
+  additionally prints a *control* probe for a pair it must NOT match. The
+  authoritative bracket is `nginx-s3.conf`'s `s3fault` access-log format, which
+  stamps `arm=` onto every request. `s3_reload` aborts with exit 3 if
+  `nginx -t` rejects an arm — building this caught exactly that failure, where
+  a duplicate directive made nginx keep the OLD config while the script
+  reported "armed".
+
+- `compose/bigbody.override.yaml` + `compose/nginx-bigbody.conf` — **required by
+  every scenario that uploads a non-trivial artifact.** `test/ha/nginx.conf`
+  inherits nginx's default `client_max_body_size 1m`, so a 64 MiB upload dies
+  at the LB with **413** and the run Fails before a controller sees a byte
+  (measured; filed in `FINDINGS.md`). The overlay gives artifact URIs their own
+  location with `client_max_body_size 0` and `proxy_request_buffering off` —
+  the second is load-bearing for W3-6, since buffering would spool the whole
+  body before opening the upstream request and move the controller's `Put`
+  outside the window the agent is uploading in. **It does not stack with
+  `logfault.override.yaml` or `steplink.override.yaml`** — all three replace
+  the same `/etc/nginx/nginx.conf` mount and the last file listed silently
+  wins. It *does* stack with `s3proxy.override.yaml` (different service).
+
+- `tools/w3/fixcheck` — parses YAML fixtures through the real `dsl.Parse`
+  (`KnownFields(true)` + `Job.Validate`) and prints what the controller would
+  see, offline. Run it on both the `.yaml` **and** the YAML re-extracted from
+  the `.payload.json` before spending an API call: W1 shipped two payloads that
+  400'd on a wrong key path.
+
+**Sidecars are NOT available on this rig, by two independent mechanisms.** The
+campaign envelope is `native: true`, which leaves `pod == nil`
+(`internal/agent/agent.go:593-623`), and `hostBackend.SetMasker` creates the
+sidecar log pump only when `b.pod != nil`
+(`internal/agent/backend_host.go:362-368`). Dropping `native: true` does not
+help: the claim then needs a container runtime and the agent containers have no
+Docker socket. Note the agents nonetheless *advertise* `["native","container"]`
+— `Available()` is a binary-on-PATH check (`internal/runtime/ocicli.go:42-45`)
+and `docker/agent.Dockerfile:17` installs `docker-cli`. Any scenario needing a
+post-`FinishRun` log flush must seal by hand
+(`INSERT INTO run_log_archives`) against a post-hook or `finally` flush, and
+must say that those flush **before** `FinishRun`, so the structural window is
+absent and the result is a hand-timed demonstration, not a natural race.
+
 ## Workload fixtures
 
 Every `*.payload.json` is the pre-encoded `{"yaml":"..."}` body for
@@ -126,6 +241,8 @@ its inferred capability is `pod` (see the table).
 | `unrelated-probe.payload.json` | `edge-unrelated-probe` | **no mutex**, `echo probe-ran` — the W2-9 starvation probe |
 | `podcap-job.payload.json` | `edge-podcap-job` | `podTemplate` with a pod-level `nodeSelector`, so `dsl.RequiredCaps` infers **`pod`** — label-claimable (`kind:linux`) but capability-unschedulable, because the `test/ha` agents report `["native","container"]` (W2-4 Part D) |
 | `logburst.payload.json` | `edge-logburst` | the **chatty** fixture (W3-4): emits exactly **2002** stdout lines — `burst-begin`, `burst-1`…`burst-2000` written as fast as the shell can, then `burst-end` after a 30 s quiet window. Line contents are self-indexing so duplicates and reordering are measurable without joining anything. `sleep 8` before the burst gives a window to arm a fault against an already-connected agent |
+| `artifact-large.payload.json` | `edge-artifact-large` | the **artifact** fixture (W3-2, W3-6): builds a `/dev/urandom` blob (`size_mb` param, default **64**) and uploads it. The upload duration IS W3-6's TOCTOU width (`api_artifacts.go:55` GetRun → `:79` Put, nothing between). Measured: 64 MiB → `upload_blob` **0.863 s**, 256 MiB → **3.060 s** (≈12 ms/MiB). **Needs `compose/bigbody.override.yaml`** — without it the LB 413s anything over 1 MiB. Random, not zeros, because the payload is compressed on the way out |
+| `cache-user.payload.json` | `edge-cache-user` | the **cache** fixture (W3-1): `wipe` → `cache:` (`ttlDays: 1`, the real floor — `0` is silently rewritten to 30 at `orchestrator.go:980-982`) → `use_deps`, printing `CACHE-HIT`/`CACHE-MISS` plus the marker's plant timestamp. **The `wipe` step must stay first**: the host agent keeps a persistent per-job workspace, so without it a second run would find `deps/` still present and a "hit" would prove nothing. Verified end to end — run 1 on agent2 planted `01:54:14.857`, run 2 on **agent1** restored that same timestamp, so the hit crossed agents and can only have come from the object store |
 | `secret-user.payload.json` | `edge-secret-user` | the **secrets** fixture (W3-3): step `env` references `{{ .Secrets.EDGE_KEK_PROBE }}`, which is what makes the claim response carry a non-empty `SecretsNeeded` and the agent take the `FetchSecrets` path (`internal/agent/orchestrator.go:161`). Prints only the secret's **length** (`secret-len=<n>`), never its value. `secret-user.yaml` is the same job in plain YAML. **The secret must be registered first** — `POST /api/v1/secrets/` (trailing slash required) with `{"name":..., "value":...}`, `204` on success |
 
 ### Fractional `timeoutMinutes` — verified, do not re-derive
