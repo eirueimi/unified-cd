@@ -726,6 +726,23 @@ cluster is mixed is a coin flip whose outcome nothing reports.
   only removing the overlay and re-reading `EDGE_KEK_PROBE_B`, which is one
   command — **do it, and if it is not done, say so explicitly rather than
   asserting the consequence.**
+  - **SHARPENED AT BRANCH REVIEW — write it as the CONVERSION, not as the end
+    state, because D2 and D3 together measure something stronger than either
+    alone.** D2 establishes the blob is **readable** (as executed: controller3
+    6/6 Succeeded on it). D3 establishes that after applying
+    `docs/secrets.md:420` verbatim, 9/9 fail on all three. **The documented
+    remedy converts a recoverable state into permanent loss** — that is the
+    sentence the write-up owes, and an earlier version established both halves
+    and stated neither. The mixed state is the state in which the data is still
+    there; the repair is the step that removes it.
+  - **AND CARRY THE QUALIFICATION, because it is what the doc fix turns on:**
+    "permanent" holds only once the **wrong** key file is discarded. The blob is
+    wrapped under `kek-b`, and `compose/kek-b` is a file that still exists in
+    this repository — so this scenario's own secret is recoverable by re-mounting
+    it. Record that. It is the reason the recommended doc fix is an *ordering*
+    fix (retrieve or re-`secret set` the affected values **before** removing the
+    wrong key, or retain the wrong key until you have) and not only a wording
+    one, and the ordering fix depends on no code change at all.
 - **D4 — scope the claim.** This is a consequence of operating in a state the
   docs tell you not to operate in. It is **not** a case of the docs being wrong.
   The candidate finding is the *undetectability*, not the misconfiguration.
