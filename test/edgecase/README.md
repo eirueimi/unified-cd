@@ -364,14 +364,35 @@ root, which is **not in this repository**:
     <project parent>/edgecase-evidence/
 
 i.e. a sibling of the checkout, so it survives worktree removal and
-`git clean -fdx`. It holds ~9 MB of container logs, psql output, API reads and
-metrics scrapes — too bulky and too raw to commit, but it is what every
-numeric claim in `FINDINGS.md` is derived from. See its own `README.md` for
-per-wave coverage; coverage is uneven, and the entries that rest on
+`git clean -fdx`. It holds ~110 MB of container logs, psql output, nginx and S3
+access logs, API reads and metrics scrapes — too bulky and too raw to commit, but
+it is what every numeric claim in `FINDINGS.md` is derived from. See its own
+`README.md` for per-wave coverage; coverage is uneven, and the entries that rest on
 un-captured observations say so inline.
+
+**Directory layout, and the one resolution wrinkle.** W0 and W1 sit directly under
+the root (`w01/`, `w02/`, `w1/`, `w1-5/`, `w1-6/`). W2 and W3 each sit one level
+down, so a W3 entry's `w3-4/partB-dup.txt` resolves to
+`edgecase-evidence/w3/w3-4/partB-dup.txt`:
+
+| Dir | Contents |
+|---|---|
+| `w3/w3-1/` … `w3/w3-6/` | one directory per W3 scenario |
+| `w3/w3-infra/` | the three `W3-infra` entries plus the Task 3 rig build-out (Garage, the S3 interposer, the 413, the sidecar and artifact-format probes, W3-4's archive re-run) |
+
+W3 totals ~4.9 MB across those seven directories, all verified byte-identical
+against the session scratchpad with `diff -r` at the wave checkpoint. Two things to
+know before citing from it: the wave's one Postgres statement log is stored gzipped
+(`w3/w3-4/partB-pglog-raw.txt.gz`; the entry cites the uncompressed name and its
+71,852 lines / 4,964,400 bytes, which `gunzip -c` reproduces exactly), and agent
+credentials were scrubbed in place at the checkpoint — the prefixes the entries cite
+survive, the full tokens do not.
 
 While running a scenario, capture to the session scratchpad (fast, disposable)
 and copy the wave's directory into the evidence root at the wave checkpoint.
+**Sweep the whole wave for `uca_`/`uce_` before copying** — W3-5 left a full agent
+credential in a dotfile, W3-1 found it, and W3-6 then repeated the mistake in three
+files that nobody caught until the checkpoint swept everything.
 
 ## Running a compose scenario
 
