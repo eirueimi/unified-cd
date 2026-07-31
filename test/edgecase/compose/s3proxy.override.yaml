@@ -1,0 +1,69 @@
+# W3 overlay: inserts the S3 interposer (compose/nginx-s3.conf) between the
+# unified-cd processes and Garage, so object-store faults can be made method-
+# and key-prefix-selective. See nginx-s3.conf's header for the design and for
+# why it uses `keepalive_timeout 0` rather than `worker_shutdown_timeout 1s`.
+#
+#   cd test/ha
+#   export COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/s3proxy.override.yaml"
+#   docker compose $COMPOSE_FILES up -d --build
+#   ../edgecase/tools/inject.sh s3-probe            # confirm the proxy is live
+#
+# Both sides are repointed, not just the controllers: the agent cache uses the
+# agent's OWN S3 client (cmd/unified-cd-agent/main.go:204-217), so a fault
+# armed only on the controller's endpoint would never touch the cache path.
+# Side selection is then done by key prefix instead of by endpoint — the two
+# sides use two different buckets, and the bucket is the first path segment:
+#   unified-cd-logs/   = controller (runs/, artifacts/)
+#   unified-cd-cache/  = agent (caches/)
+#
+# The controllers still `depends_on` garage directly (from the base file) AND
+# s3proxy here: NewS3ObjectStore's BucketExists is eager and a failure is
+# os.Exit(1) (internal/objectstore/s3.go:41-49, cmd/controller/main.go:311-313),
+# so a controller that starts before the proxy is listening crashloops.
+services:
+  s3proxy:
+    image: nginx:1.27-alpine
+    volumes:
+      - ../edgecase/compose/nginx-s3.conf:/etc/nginx/nginx.conf:ro
+      - s3fault:/etc/nginx/s3fault
+    # busybox wget is present in nginx:alpine; -S prints the status line, so a
+    # non-2xx still satisfies the grep. This only asserts "nginx is answering
+    # on 3900", which is all the controllers' startup needs.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -S -O /dev/null http://127.0.0.1:3900/_s3probe 2>&1 | grep -q 'HTTP/'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+    depends_on:
+      garage:
+        condition: service_healthy
+
+  controller1: &ctrlproxy
+    environment:
+      UNIFIED_S3_ENDPOINT: s3proxy:3900
+    depends_on:
+      postgres:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+      s3proxy:
+        condition: service_healthy
+  controller2: *ctrlproxy
+  controller3: *ctrlproxy
+
+  agent1: &agentproxy
+    environment:
+      UNIFIED_CACHE_ENDPOINT: s3proxy:3900
+    depends_on:
+      agent-enroll:
+        condition: service_completed_successfully
+      garage:
+        condition: service_healthy
+      s3proxy:
+        condition: service_healthy
+  agent2: *agentproxy
+
+volumes:
+  s3fault:
