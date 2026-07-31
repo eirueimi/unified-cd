@@ -157,6 +157,34 @@ silently off before. **Consequences you must plan for:**
   6-byte object went 0.022 s → **9.034 s** under `s3-latency 3`, because mc
   issues three requests for that one read.
 
+  **It DELAYS a large artifact PUT; it does not fail one — verified, because
+  the mechanism gave real grounds to doubt it.** The arm works by letting a
+  connect to a black hole time out and falling through to `backup` via
+  `proxy_next_upstream timeout`, while `nginx-s3.conf:118` sets
+  `proxy_request_buffering off` — and nginx cannot pass a request to the next
+  upstream once it has *sent* any of an unbuffered body. It is sound here only
+  because a **connect** timeout means nothing was sent yet. Measured on the
+  `bigbody + s3proxy` stack with the 64 MiB `edge-artifact-large` fixture
+  (`w3-infra/step5-bigbody-and-latency-recapture.txt`, phase 3):
+
+  | arm | `upload_blob` | controller `PUT …/artifacts` |
+  |---|---|---|
+  | none | 0.753 s | `status:204 duration_ms:747` |
+  | `s3-latency 3` | **9.702 s** | `status:204 duration_ms:9696` |
+
+  Both runs `Succeeded` and both objects are in Garage at 64 MiB. The
+  interposer's access log shows the arithmetic exactly: a 64 MiB Put is
+  **3** S3 requests (`POST ?uploads=`, `PUT ?partNumber=1`, `POST ?uploadId=`),
+  each logged `ustatus=504, 200` — black hole timed out, `backup` served it —
+  so 3 × 3 s ≈ the 9 s of added width. The body-bearing request carries
+  `reqlen=67203925` and still falls through, which is the point that was in
+  doubt. **So `s3-latency` is a usable width knob for W3-6**, at ~3 s of
+  widening per armed second. Two cautions: the width scales with the *request
+  count*, so a payload large enough to be split into more parts widens more
+  than linearly in size; and `s3-latency` does **not** reach the `mc`
+  container, whose alias points at `garage:3900` directly and bypasses the
+  interposer — use a job, not `mc`, to measure an arm.
+
   **On the two reload lessons, and why this overlay resolves them differently
   from `nginx-logfault.conf`:** it uses `keepalive_timeout 0`, **not**
   `worker_shutdown_timeout 1s`. On reload nginx's old workers close their
@@ -212,6 +240,12 @@ post-`FinishRun` log flush must seal by hand
 (`INSERT INTO run_log_archives`) against a post-hook or `finally` flush, and
 must say that those flush **before** `FinishRun`, so the structural window is
 absent and the result is a hand-timed demonstration, not a natural race.
+**The ordering, with the cites, because a scenario author will need to defend
+it:** in `runClaim` (`internal/agent/orchestrator.go`) a `post:` hook's log
+writers are closed by `finishPostLogs(hookCtx)` at **`:706`**, the whole
+`finally` pipeline runs at **`:727`** — both inside the main body — and
+`FinishRun` is only called afterwards, at **`:787-788`**, wrapped in
+`retryUntilSuccess`. There is no agent-side hook that runs *after* that call.
 
 ## Workload fixtures
 

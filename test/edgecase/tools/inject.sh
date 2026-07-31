@@ -113,6 +113,16 @@ case "$cmd" in
     # — realistic, but it moves the timing. Pass 403 for an immediate,
     # non-retried failure when the scenario is measuring a window rather than
     # a retry policy.
+    #
+    # ONE BLOCK ARM AT A TIME. Every s3-block writes the same single file
+    # ($S3FAULT_DIR/10-block.conf, truncating `>`), so a second s3-block
+    # silently REPLACES the first rather than adding to it — there is no
+    # "block PUT on the cache AND DELETE on artifacts" state reachable by
+    # calling this verb twice. (s3-block composes with s3-latency/s3-slow,
+    # which write 20-latency.conf / 30-slow.conf; it does not compose with
+    # itself.) A scenario needing two simultaneous block arms must either
+    # widen one regex to cover both pairs, or write a second numbered file
+    # into $S3FAULT_DIR by hand and reload — s3-clear removes all of them.
     meth="${2:?usage: inject.sh s3-block <METHOD|ANY> [keyPrefix] [status]}"
     pfx="${3:-}"
     status="${4:-503}"
@@ -136,6 +146,14 @@ EOF"
     # letting proxy_connect_timeout expire before falling back to Garage.
     # Widens Put/Get windows (W3-6's TOCTOU is bounded by Put duration).
     # Composes with s3-block: they are separate include files.
+    #
+    # VERIFIED ON A LARGE PUT, not just on a small GET: 64 MiB
+    # edge-artifact-large went upload_blob 0.753 s unarmed -> 9.702 s under
+    # `s3-latency 3`, Succeeded both times, object present in Garage both
+    # times. A 64 MiB Put is 3 S3 requests, hence ~3x the armed seconds; width
+    # scales with REQUEST COUNT, so a bigger payload split into more parts
+    # widens more than linearly. Does NOT reach the `mc` container, whose
+    # alias points straight at garage:3900 — measure an arm with a job.
     secs="${2:?usage: inject.sh s3-latency <seconds>}"
     dc exec -T s3proxy sh -c "mkdir -p $S3FAULT_DIR && cat > $S3FAULT_DIR/20-latency.conf <<'EOF'
 set \$s3_arm \"\${s3_arm}+latency[${secs}s]\";

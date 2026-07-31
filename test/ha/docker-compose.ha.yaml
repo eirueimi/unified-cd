@@ -56,9 +56,11 @@ services:
   # `compose run` costs container-start latency, and W3-6's TOCTOU window is
   # bounded by an artifact Put.
   mc:
-    # Pinned (same digest as :latest on 2026-07-31,
-    # sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727)
-    # so a scenario re-run months from now injects with the same client.
+    # Pinned by tag, and verified to resolve to
+    # sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    # when this rig was built on 2026-07-31, so a scenario re-run months from
+    # now injects with the same client. (What that digest is on the mutable
+    # :latest tag at any given moment is not something this repo can assert.)
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     entrypoint: ["/bin/sh", "-c"]
     command:
