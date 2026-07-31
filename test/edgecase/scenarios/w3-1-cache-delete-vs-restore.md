@@ -596,3 +596,104 @@ docker compose $COMPOSE_FILES down -v
   Severity line as `minor (observation)` (`FINDINGS.md:481`).
 - **A negative measured over a window the runbook itself ended is an absence,
   not a "never".**
+
+---
+
+## Execution notes — 2026-07-31 run (read before re-running)
+
+Executed on branch `plan/edge-case-w3`, **`06:44:24Z – 07:03:0xZ`**, on the single
+stack §Stack specifies (`test/ha` + Garage + `mc` + the S3 interposer overlay),
+torn down with `down -v` (`w3-1/teardown.txt`). **Four `FINDINGS` entries: 2
+violations (1 major, 1 minor) and 2 observations (both minor), plus 1
+branch-internal campaign-asset defect found and fixed here** (`inject.sh
+s3-slow`), reported outside both tallies. The developer stack (`docker compose
+ls`, project `unified-cd`) was running and untouched at both ends.
+
+**Ten runs, all of them `edge-cache-torn`, all `Succeeded`, zero non-terminal at
+teardown** (`census.txt`). **I1 held.** Zero controller `ERROR` lines all
+session.
+
+| Part | Result |
+|---|---|
+| G4 | real cache hit end to end: run 1 planted `06:46:11.213Z` on agent1, run 2 restored **that same timestamp**, 257 entries, `SHORT-FILES=0` |
+| G5 | object key computed **two ways** and identical — `mc ls` vs host `sha256`+`b64url` of `edge-cache-torn` / `edge-cache-torn-v1`. **The qualified job name is the bare name** |
+| A1 | **the shipped `s3-slow` verb was a no-op.** Diagnosed, fixed, re-verified through the verb. See the asset entry in `FINDINGS.md` |
+| A (delete route) | **negative, and it is the Part B answer**: `mc rm` 5.1 s into a 64.4 s restore; the GET delivered **all 16909275 bytes**; restore completed `complete=yes`; the run's own save then **re-created** the deleted object |
+| A' (sever route) | **hit on attempt 1 of a cap of 3.** 30/257 entries, `f0030` truncated at **49664** of 65536, `restore_deps` **`Succeeded`**, next step read the debris, deferred save **overwrote 16 MiB with 1.9 MiB**, and two later unfaulted runs on the **other** agent inherited it |
+| B | **backend fact established**: Garage v2.3.0 does **not** sever an in-flight GET whose key is deleted. Two independent measurements, one with no unified-cd and no proxy in the path |
+| C1 | payload with no `.meta` → **full hit**, one GET, **no `.meta` request at all** |
+| C2 | `.meta` with no payload → clean miss, and the **four-request shape** in the interposer log attributes it to the fallback `Get`, not to the expiry skip |
+| C3 | `.meta` expired by **six and a half years** → **full hit**. One earlier attempt recorded VOID (the `mc` image has no `sed`) |
+| D | code-read; the deletion order is the safe one and `DeleteExpired` never ran (first tick t+24 h) |
+| E | survey run in full, counts **97 / 33 / 87 / 11**; already-ruled check clean on every passage and on the finding itself |
+
+**Ten things a re-run should know.**
+
+1. **THE SCENARIO'S MECHANISM DOES NOT WORK AGAINST THIS BACKEND, AND THAT IS
+   THE HEADLINE, NOT A FOOTNOTE.** Deleting a cache object mid-restore does
+   nothing: Garage v2.3.0 finishes the in-flight GET and hands the reader every
+   byte, while the delete is immediately effective for *new* requests. Do not
+   design another scenario around a delete-vs-read race on this rig without
+   re-measuring the backend first.
+2. **To tear an extract, sever the connection.** `docker compose restart -t 1
+   s3proxy` (SIGTERM = nginx *fast* shutdown) does it in one command and the
+   proxy is back in ~2 s, so the run's deferred save still succeeds — which is
+   what makes the poisoning chain observable. `kill-hard garage` would also tear
+   it but would break the save too and hide the most important half.
+3. **THE PLAN'S PREDICTION WAS BACKWARDS AND THE TRUTH IS WORSE.** A torn
+   restore does **not** fail the step; the cache path is lenient by written
+   policy (`orchestrator.go:969-971`) and reports `Succeeded`. Budget for a
+   `Succeeded` run on a corrupt workspace, not for a clean failure.
+4. **The width knob is `s3-slow`, and only since this run.** It shipped emitting
+   `limit_rate`, which nginx ignores under the interposer's `proxy_buffering
+   off`; it now emits `proxy_buffering on` + `proxy_limit_rate`, which also
+   keeps the **upstream** GET in flight. **Probe the arm's EFFECT, never just
+   its presence** — `s3-show`, `s3-probe` and the `arm=` access-log stamp all
+   passed while the arm did nothing.
+5. **Time the injection off the workspace, never off a sleep.** Sampling
+   `ls -1 <ws>/deps | wc -l` once a second and firing on **two consecutive
+   rising counts** put the sever at 22/257 entries on the first try, and the
+   samples are the bracket.
+6. **16 MiB at 262144 B/s is a ~64 s window and that is comfortable.** 256 x
+   65536 bytes of `/dev/urandom` costs the agent ~0.6 s to generate and zstd
+   cannot compress it, so the archive is ~16.9 MB on the wire. Unthrottled, the
+   same restore takes **~100 ms** — there is no window at all without the arm.
+7. **`docker compose exec` is ~200-400 ms**, which is why the sampler runs at
+   1 Hz and the entry counts advance ~8 per sample. That is fine; do not try to
+   sample faster.
+8. **The `mc` image has no `sed` and no `ps`.** Build any planted object's bytes
+   on the **host** and pipe them in (`printf '%s' "$json" | … mc pipe …`); one
+   C3 attempt was lost to this and is recorded as VOID rather than quietly
+   re-run. The missing `ps` is recorded in `teardown.txt` rather than hidden.
+9. **The interposer keeps no access-log line for a request its worker was killed
+   during.** The severed GET has no proxy line at all, so do not go looking for
+   one and do not present the agent's `WARN` as if it were a proxy bracket.
+10. **The rig's intermittent-500 allowance (G7) was never spent** — nothing was
+    retried for a 500 all session. **That is an absence of trouble, not a
+    measurement**: no capture counts 500s and no `FINDINGS` entry cites one.
+
+**Sampler hygiene was captured, not asserted.** **No background job was launched
+by any driver** — every `curl` / `psql` / `mc` / `docker` call ran in the
+foreground and was waited on — so `$SCRATCH/samplers.pid` is deliberately empty
+and the capture proves that rather than claiming it: `jobs` empty, host `ps -W`
+for `curl|psql|mc` matching nothing, and an in-container `ps` on `postgres`,
+`garage`, `s3proxy`, `agent1`, `agent2` and `controller1` showing nothing left
+but the grep's own `sh -c` (the W3-4 lesson). No Postgres statement logging was
+armed, so there was nothing to revert. Every interposer arm was cleared and the
+clear confirmed (`s3-show` → `(unarmed)`) **before** the two poison-confirmation
+runs and again at teardown.
+
+**Credential scrub.** `uca_` → **0** hits over `$SCRATCH`; `ha-admin-token` →
+**0**; `garageadmin12345` → **1**, and it is not a leak — it is the repo's own
+`docs/configuration.md:237` example line reproduced inside the docs survey
+capture, left as-is rather than mangling a survey.
+
+**Two deviations from the runbook as written, recorded because a reader diffing
+the captures will see them.** (i) **A new fixture was added** —
+`test/edgecase/workloads/cache-torn.{yaml,payload.json}`, job `edge-cache-torn`
+— which the task's file list did not name. `cache-user.yaml`'s ~200-byte
+archive has no window in it and cannot be torn; the fixture's own header carries
+the justification. Verified through the real `dsl.Parse`
+(`w3-1/fixture-parse.txt`). (ii) **Part A's delete route produced a negative**,
+so Part A' (the sever) was added to reach the unified-cd half of the question.
+Both routes are reported; neither is presented as the other.

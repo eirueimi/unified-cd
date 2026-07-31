@@ -169,14 +169,38 @@ EOF"
     ;;
 
   s3-slow)
-    # s3-slow <bytes-per-second> — throttles RESPONSE bodies (limit_rate), so
-    # a cache-restore GET stream stays open long enough to race an out-of-band
+    # s3-slow <bytes-per-second> — throttles the response body so a
+    # cache-restore GET stream stays open long enough to race an out-of-band
     # delete against it (W3-1). Request bodies are unaffected; use a larger
     # payload for a wider Put window.
+    #
+    # MEASURED AND CORRECTED BY W3-1, 2026-07-31. This verb originally emitted
+    # `limit_rate`, the obvious directive — and `limit_rate` DOES NOTHING on
+    # this proxy. The server block sets `proxy_buffering off` (deliberately,
+    # see nginx-s3.conf's header), and nginx does not apply `limit_rate` to an
+    # unbuffered upstream response. Armed at 262144 B/s, a 16909275-byte
+    # object still went through in `rt=0.060` — 0/64 s of throttle, with the
+    # arm confirmed present on that very request line (`arm=none+slow[...]`),
+    # so the failure was NOT a reload that did not take.
+    #
+    # `proxy_limit_rate` is the directive that works here, and it is the
+    # BETTER one for W3-1 for a second reason: it limits the rate at which
+    # nginx reads FROM GARAGE, so the upstream GET is genuinely in flight for
+    # the whole window instead of having completed into nginx's buffers while
+    # only the client-side drip remains. A delete racing that window therefore
+    # races a real open backend read.
+    #
+    # nginx honours `proxy_limit_rate` only when `proxy_buffering` is on, so
+    # this arm re-enables buffering at LOCATION level. The server-level
+    # `proxy_buffering off` remains the default for every other arm and for
+    # the unarmed path, which is what artifact PUT timing (W3-6) depends on.
+    # Verified after the change: 2645782 bytes in a 10 s bounded read = 264578
+    # B/s against an armed 262144 B/s.
     rate="${2:?usage: inject.sh s3-slow <bytes-per-second, e.g. 65536>}"
     dc exec -T s3proxy sh -c "mkdir -p $S3FAULT_DIR && cat > $S3FAULT_DIR/30-slow.conf <<'EOF'
 set \$s3_arm \"\${s3_arm}+slow[${rate}B/s]\";
-limit_rate ${rate};
+proxy_buffering on;
+proxy_limit_rate ${rate};
 EOF"
     s3_reload
     echo "s3-slow armed: responses capped at ${rate} B/s"

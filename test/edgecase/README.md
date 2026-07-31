@@ -146,7 +146,7 @@ silently off before. **Consequences you must plan for:**
   |---|---|
   | `inject.sh s3-block <METHOD\|ANY> [keyPrefix] [status]` | fail matching requests; verified method- **and** prefix-selective |
   | `inject.sh s3-latency <seconds>` | fixed delay **per HTTP request** before Garage is reached |
-  | `inject.sh s3-slow <bytes/s>` | throttle response bodies (holds a cache-restore stream open) |
+  | `inject.sh s3-slow <bytes/s>` | throttle response bodies (holds a cache-restore stream open). **Emits `proxy_buffering on` + `proxy_limit_rate`, not `limit_rate`** — W3-1 measured `limit_rate` doing *nothing* under the server-level `proxy_buffering off` (16909275 B through an armed proxy in `rt=0.060`), and `proxy_limit_rate` additionally keeps the **upstream** GET in flight rather than draining it into nginx's buffers. Verified at 264578 B/s against an armed 262144 B/s |
   | `inject.sh s3-clear` / `s3-show` / `s3-probe [METHOD] [/bucket/key]` | clear, dump, confirm |
 
   **Choose the block status deliberately:** minio-go retries 429/500/502/503/504
