@@ -556,20 +556,35 @@ for longer than the healthy hold time means a `Put` is in flight *right now*.
 Poll it every second and fire the SQL delete on that signal.
 
 - **B1 — arm (i), compensation succeeds.**
-  1. `inject.sh s3-clear`, then `inject.sh s3-latency 30`, then `s3-probe` —
-     record the probe.
+  1. ~~`inject.sh s3-clear`, then `inject.sh s3-latency 30`, then `s3-probe` —
+     record the probe.~~ **SUPERSEDED — THIS STEP AS WRITTEN CANNOT PRODUCE B1,
+     AND IT IS THE LEVER §"How the window is opened" AND CORRECTION 2 BOTH
+     RECORD AS BROKEN.** `s3-latency 30` fails the `Put` (502 after `rt=21.037`)
+     instead of widening it, so steps 3-4 below can never fire under it and the
+     two captures taken with it were voided. **Do instead:**
+     `inject.sh s3-clear`, then `inject.sh s3-probe` — record the probe — and
+     open the window with **`inject.sh pause garage`** at step 3, per the second
+     bullet of §"How the window is opened". Nothing else in B1 changes.
   2. Trigger `edge-tick`, wait for `Succeeded`.
-  3. Poll `pg_locks` at 1 s. When the archiver lock has been held ≥ 5 s, run
+  3. Poll `pg_locks` at 1 s. **When the lock signal fires (next step), the `Put`
+     must already be hanging — so arm the hang first: `inject.sh pause garage`
+     immediately after the run goes `Succeeded`, and hold it until step 4's
+     delete has returned.** When the archiver lock has been held ≥ 5 s, run
      `DELETE FROM logs WHERE run_id='<id>'; DELETE FROM runs WHERE id='<id>';`
      (or rely on the cascade — **check which** and record it).
-  4. When the `Put` completes, expect: `failed to archive Run logs` with an FK
-     error, **no** `failed to clean up orphaned log archive object` warn, and
-     `mc ls --recursive garage/unified-cd-logs/runs/` showing **no** object for
-     that run id.
+  4. **`inject.sh unpause garage` once the delete has returned** — with the
+     `pause` lever the `Put` completes only when Garage is unpaused, so this is
+     the step that ends the window, not a wait. Then expect: `failed to archive
+     Run logs` with an FK error, **no** `failed to clean up orphaned log archive
+     object` warn, and `mc ls --recursive garage/unified-cd-logs/runs/` showing
+     **no** object for that run id. As executed the `Put` landed **4.862 s**
+     after the unpause, `200` at the interposer.
   → `$SCRATCH/partB-arm1.txt`.
-- **B2 — arm (ii), compensation blocked.** Same as B1 with
+- **B2 — arm (ii), compensation blocked.** Same as B1 **including the `pause`
+  lever** (B2 inherits B1's step 1 as corrected — it does **not** inherit the
+  superseded `s3-latency 30`), with
   `inject.sh s3-block DELETE unified-cd-logs/ 403` armed **as well**
-  (`s3-block` and `s3-latency` write different include files and compose;
+  (`s3-block` writes its own include file and composes with the rest;
   **`s3-block` does not compose with itself** — one block arm at a time). Expect:
   the same FK error **plus**
   `failed to clean up orphaned log archive object after CreateLogArchive failure`

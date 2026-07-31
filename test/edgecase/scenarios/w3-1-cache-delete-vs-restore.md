@@ -411,9 +411,16 @@ count is comfortably non-zero and still rising — **two consecutive rising
 samples, both captured** — which is the proof the extract is mid-flight rather
 than done or not started. → `$SCRATCH/partA-progress.txt`.
 
-**A4 — tear it.** `mc rm garage/unified-cd-cache/<archive key>` **direct to
-Garage, not through the proxy**. Stamp the instant before and after. Immediately
-re-sample the `deps/` count. → `$SCRATCH/partA-delete.txt`.
+**A4 — tear it.** ~~`mc rm garage/unified-cd-cache/<archive key>` **direct to
+Garage, not through the proxy**.~~ **THIS ROUTE IS A KNOWN NEGATIVE AND MUST NOT
+CONSUME THE 3-ATTEMPT CAP — execution note 1 settled it: Garage v2.3.0 finishes
+the in-flight GET and hands the reader every byte** (`mc rm` fired 5.1 s into a
+64.4 s restore; the GET delivered all **16909275** bytes; the restore completed
+`complete=yes`). **Run it exactly once, as the recorded control for Part B**,
+then go to **Part A′**, which is the route that produced this scenario's
+headline. Stamp the instant before and after. Immediately re-sample the `deps/`
+count. → `$SCRATCH/partA-delete.txt`. **Count this as attempt 0, not attempt 1:
+it is a control, not an attempt at the deliverable.**
 
 **A5 — the four measurements, each from a named capture.**
 1. **What error surfaced.** The claiming agent's container log for the window:
@@ -447,6 +454,61 @@ Report the count either way.**
 
 ---
 
+## Part A′ — the sever route (ADDED AT BRANCH REVIEW — THIS IS THE PART THAT PRODUCED THE HEADLINE)
+
+**Part A′ existed only as an execution note until the branch review, while being
+the route every finding in `FINDINGS.md:1938` rests on.** A re-runner following
+Parts A and B as previously written would burn the 3-attempt cap on a route
+execution note 1 already proves cannot work against this backend, and would then
+have no step telling them what to do instead. It is a Part now.
+
+**Deliverable:** identical to Part A's — a `Succeeded` `restore_deps` step over a
+partial `deps/`, a next step that reads the debris, and a deferred save that
+writes the debris back under the same key — reached by severing the *connection*
+instead of deleting the *object*.
+
+**Why this works when A4 does not.** A4 attacks the object; Garage v2.3.0
+answers an in-flight GET from the copy it is already streaming, so the reader is
+untouched (Part B). A′ attacks the **transport**: killing the interposer's worker
+mid-stream ends the response body early, which is what `cache.go`'s extract
+actually experiences as a torn archive. **The backend fact is not challenged by
+this Part — it is routed around.**
+
+- **A′1 — same setup as A1-A3.** `inject.sh s3-slow 262144` (probe-confirmed by
+  **effect**, per A1), trigger `edge-cache-torn`, and time the injection off the
+  workspace with the two-consecutive-rising-counts rule, never off a sleep. The
+  arm must be armed through the **interposer**, since the interposer is the thing
+  being severed.
+- **A′2 — sever.** `docker compose restart -t 1 s3proxy`. `-t 1` gives nginx a
+  SIGTERM *fast* shutdown, so in-flight workers die immediately; the proxy is
+  back in ~2 s, **which is the point** — the run's deferred save at the end still
+  succeeds, and the save is the half that makes the poisoning observable.
+  **Do not use `kill-hard garage`**: it tears the restore too, but it also breaks
+  the save and hides the more important consequence. Stamp before and after and
+  re-sample the `deps/` count. → `$SCRATCH/partA-torn.txt`.
+- **A′3 — the same four measurements as A5**, taken against this run: the agent's
+  `cache restore error` line verbatim; `step_reports.status` for `restore_deps`
+  (**expect `Succeeded`**, fact 7 / Correction 1); `inspect_deps`'s own
+  `STATE entries=<n> complete=<yes|no>` line (**expect `0 < n < 257`,
+  `complete=no`, one truncated file**); and what the deferred save then wrote —
+  `mc stat` the archive key and compare against G5's size. As executed: **30/257
+  entries, `f0030` truncated at 49664 of 65536, save overwrote 16 MiB with
+  1.9 MiB.**
+- **A′4 — the persistence limb, which is what makes this more than a torn read.**
+  With **no fault still present**, trigger two further runs and let at least one
+  land on the **other** agent. A `CACHE-PRESENT complete=no` on a clean workspace,
+  on a host that never saw the fault, is the finding.
+  → `$SCRATCH/partA-poison.txt`.
+- **A′5 — attempt discipline.** **Cap: 3 attempts, and report the count either
+  way.** As executed this hit on **attempt 1 of 3**.
+- **A′6 — one instrument caveat, so a re-runner does not go looking.** The
+  interposer keeps **no access-log line** for a request whose worker it killed,
+  so the severed GET has no proxy bracket at all. Use the agent's `WARN` and the
+  workspace samples as the bracket, and do not present the agent's `WARN` as if
+  it were a proxy line.
+
+---
+
 ## Part B — what Garage does to an in-flight GET whose key is deleted
 
 **This is listed NOT ESTABLISHED in the plan (`:139`), and the answer is a fact
@@ -474,7 +536,10 @@ the `cache.go` window is real in code and **unreachable against this backend**,
 and Part A's torn state has to be produced another way or recorded as not
 reproduced. **Say which**, with the W2-3 Arm D precedent (a 0/10 negative filed
 with an explicit "not reproduced live" label was accepted). If the backend does
-sever the stream, Part A's result stands on its own.
+sever the stream, Part A's result stands on its own. **AS EXECUTED THIS IS
+SETTLED: the backend does NOT sever, and the "another way" is Part A′ above,
+which is now a Part rather than an execution note. Run B before A′ if you like —
+B is what licenses A′ — but do not stop at "not reproduced".**
 
 ---
 
@@ -657,7 +722,11 @@ session.
    s3proxy` (SIGTERM = nginx *fast* shutdown) does it in one command and the
    proxy is back in ~2 s, so the run's deferred save still succeeds — which is
    what makes the poisoning chain observable. `kill-hard garage` would also tear
-   it but would break the save too and hide the most important half.
+   it but would break the save too and hide the most important half. **This is
+   no longer only an execution note: it is §Part A′ above, promoted at the branch
+   review, because the runbook was prescribing a known-negative route (A4's
+   `mc rm`) as its only path to the deliverable and leaving the working route
+   here, where a re-runner would meet it only after spending the cap.**
 3. **THE PLAN'S PREDICTION WAS BACKWARDS AND THE TRUTH IS WORSE.** A torn
    restore does **not** fail the step; the cache path is lenient by written
    policy (`orchestrator.go:969-971`) and reports `Succeeded`. Budget for a

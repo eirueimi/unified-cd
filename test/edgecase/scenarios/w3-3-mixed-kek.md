@@ -208,9 +208,16 @@ Quoted verbatim from `docs/superpowers/specs/2026-07-29-edge-case-testing-design
   > never contradict each other or reality"
 
   **Also expected to hold, and this is the more interesting of the two**,
-  because the plan calls this path "unusually well-instrumented": the reason for
-  the failure is written into the run's own logs, so `Failed` is not a bare
-  status. The I7 question is therefore not "is the status right" but "does any
+  because the plan calls this path "unusually well-instrumented": ~~the reason
+  for the failure is written into the run's own logs, so `Failed` is not a bare
+  status.~~ **SUPERSEDED BY BANNER CORRECTION 1 — the plan's premise is false
+  and this sentence inherited it.** The run's own log carries exactly one line
+  and it is `fetch secrets for run <id>: http 500: response omitted`
+  (`internal/agent/client.go:107-108` destroys the body), so `Failed` **is** a
+  bare status as far as the run's own logs are concerned. **Read the I7 question
+  below against that, not against the plan's claim** — the finding it produces
+  is a diagnosability gap (the union of every surface cannot name the cause),
+  not a contradiction. The I7 question is therefore not "is the status right" but "does any
   surface state something that is not true". Part B enumerates every surface and
   answers it. **If a surface names a cause that is not the cause** — e.g. an
   error text that sends an operator looking for a missing secret or a corrupted
@@ -550,8 +557,24 @@ wrong-key case compares with its two siblings on **both** level and content
   text after `decrypt <name>: decrypt dek:`" as **not established**, expecting
   `cipher: message authentication failed`. **Settle it and record it**, because
   the whole diagnosability argument turns on what that string tells an operator.
-  It reaches the agent as `client.FetchSecrets`'s error and is embedded in B1's
-  line, so B1 already contains it; quote it from there.
+  ~~It reaches the agent as `client.FetchSecrets`'s error and is embedded in B1's
+  line, so B1 already contains it; quote it from there.~~ **SUPERSEDED — THIS
+  STEP AS WRITTEN IS IMPOSSIBLE, AND THE REASON IS BANNER CORRECTION 1.** B1's
+  line does **not** contain it: `Client.do` replaces the body of every response
+  ≥ 400 with the literal `"response omitted"` (`internal/agent/client.go:107-108`),
+  so B1's line is `fetch secrets for run <id>: http 500: response omitted` and
+  carries no error text at all. **The HTTP 500 body cannot be captured on the
+  wire either** — the endpoint is agent-authenticated and run-guarded, and the
+  only client that reaches it discards the body. **Do instead: take the text
+  from B3's controller-side `slog.Warn`, which logs `err.Error()` verbatim
+  (`decrypt dek: cipher: message authentication failed`), and DERIVE the body by
+  composing it with the handler's own `"decrypt "+name+": "` prefix
+  (`internal/controller/api_secrets.go:142`). Label the result *derived*, name
+  both captured inputs, and do not present it as observed** — that the string is
+  unobservable from the agent side is part of the finding, not a gap in the
+  measurement (`FINDINGS.md:1599`). Note the refinement B3 settles: `err.Error()`
+  itself carries **no** secret name; the name in the body comes from the
+  handler's prefix.
 - **B3 — the controller side.** Find the `secret decrypt failed` line on
   controller3 and record its **level**, its keys, and the surrounding access-log
   line:
@@ -709,12 +732,74 @@ cluster is mixed is a coin flip whose outcome nothing reports.
 
 ---
 
+## Part E — the `docs/*.md` survey (ADDED AT BRANCH REVIEW — MANDATORY, NOT OPTIONAL)
+
+**This Part did not exist when the scenario was executed, and its absence is the
+single largest re-runnability defect in this runbook.** The survey was run
+ad hoc, piped through `head`, and truncated at 40 of 55 hits (banner correction
+6) — and **hit #55 was `docs/secrets.md:420`, which is the whole difference
+between three observations and this wave's second major violation**. A
+re-runner following Parts A-D as previously written would reproduce every
+measurement and reach the *wrong classification*, because nothing told them to
+look. The instruction existed only as prose at §"Expect observations"
+(`:137-138`); it is now a step.
+
+- **E1 — run the survey in full and print the hit count with the output.** No
+  `head`, no `tail`, no `| less`. If the output is long, that is the point.
+
+  ```bash
+  for pat in 'same key|different key|key file|KEK|key id|key version|rotat' \
+             'decrypt|encrypt|cipher|master key' \
+             'HA|replica|high.availability'; do
+    printf '=== %s ===\n' "$pat"
+    grep -rn -iE "$pat" docs/*.md | tee /dev/stderr | wc -l
+  done
+  ```
+  → `$SCRATCH/docs-greps.txt`. **The rule this pays for, from `FINDINGS.md:2101`:
+  a docs survey that is truncated is not a survey, and a truncation that is not
+  disclosed is a spec-compliance failure.** If you must bound the output, say so
+  in the capture and archive the untruncated original beside it.
+- **E2 — read the Troubleshooting tables, not only the grep hits.**
+  `docs/secrets.md`'s Troubleshooting table and `docs/high-availability.md`'s
+  checklist are prose tables; a keyword grep reaches a row's *symptom* column and
+  can miss its *remedy* column, which is where `:420` hides. Open both.
+- **E3 — check every candidate remedy against what Parts C and D measured, not
+  against what it says.** `docs/secrets.md:420`'s sole HA row prescribes "Give
+  every replica the identical key file" for "`decrypt` errors in HA setup".
+  **Applied verbatim after Part D it left 9 of 9 runs failing on all three
+  replicas** — see `FINDINGS.md:1620`. A remedy that is correct as *prevention*
+  and destructive as *repair* is a contradicted contract, and this is the shape
+  to look for: the docs are right about the state and wrong about the exit.
+- **E4 — grep `FINDINGS.md` for the finding, not only `docs/` for the passage.**
+  The already-ruled check must cover both. `grep -rn 'secrets.md:4' test/edgecase/`
+  and `grep -rn -i 'identical key file' test/edgecase/` before filing.
+
+---
+
 ## Teardown
 
+**Steps 1 and 2 were prose comments with no commands until the branch review;
+they are commands now, because a teardown a re-runner has to reinvent is a
+teardown that gets skipped.**
+
 ```bash
-# 1. cancel any surviving run
+# 1. cancel any surviving run (idempotent; 204 expected, 409 if already terminal)
+for id in $(API "/api/v1/runs?jobName=edge-secret-user" \
+              | python -c 'import sys,json; [print(r["id"]) for r in json.load(sys.stdin) if r["status"] in ("Pending","Queued","Running")]'); do
+  API -X POST "/api/v1/runs/$id/cancel" -o /dev/null -w "cancel $id -> %{http_code}\n"
+done
+psql "SELECT id,status FROM runs WHERE status NOT IN ('Succeeded','Failed','Cancelled');" \
+  | tee -a "$SCRATCH/teardown.txt"   # must be empty
+
 # 2. kill every background sampler and CAPTURE that, on two passes
-# 3. down
+{ echo "=== sampler pass 1 $(date -u +%FT%TZ) ==="
+  while read -r p; do kill "$p" 2>/dev/null; done < "$SCRATCH/samplers.pid"
+  jobs
+  ps -W | grep -iE "curl|psql|python" || echo "no host samplers"
+  docker compose $MIXED exec -T controller3 sh -c 'ps -o pid,args' || true
+} >> "$SCRATCH/teardown.txt" 2>&1
+
+# 3. down  (pass 2 of the sampler check goes immediately before this line)
 docker compose $MIXED down -v
 ```
 
