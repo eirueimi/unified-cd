@@ -593,3 +593,92 @@ docker compose $COMPOSE_FILES down -v
 - **Report every capped arm's attempt count either way**, with the cap stated.
 - **Label the synthetic agent and the `mc` plants as instruments every time they
   carry a claim**, not once in a preamble.
+
+---
+
+## Execution notes — 2026-07-31 run (read before re-running)
+
+Executed on branch `plan/edge-case-w3`, **`04:36:29Z – 04:57:27Z`**, on the single
+stack §Stack specifies (`test/ha` + `bigbody`, no interposer), torn down with
+`down -v` (`w3-6/teardown.txt`). **Two `FINDINGS` entries: 1 violation (minor,
+documented contract) and 1 observation (minor).** No branch-internal asset bug.
+The developer stack (`docker compose ls`, project `unified-cd`) was running and
+untouched at both ends (`w3-6/gate.txt`, `w3-6/teardown.txt`).
+
+**Six runs, all reaching exactly one terminal state (`Succeeded`)**; three were
+then deleted by the scenario. Enumerable from the audit log's nine
+`run.trigger` / `run.delete` rows over six distinct ids (`w3-6/census.txt`) --
+**count from there, not from what survives in `runs`**, because half the runs of
+this scenario are deliberately destroyed by it.
+
+| Part | Arm | Result |
+|---|---|---|
+| G6 | none | a `PUT` to a **terminal** run is accepted: 204, object at 4.0 KiB, listed by the API. Fact 9 confirmed live, and the scenario is constructible |
+| G7 | none | archival works: `a50b9031` archived at **3036 B / 30 lines** (`w3-6/census.txt`) |
+| A2 | none | 32 MiB at `--limit-rate 1M`, chunked → controller `duration_ms=32374`. **The window is the payload transfer** |
+| A3 | DELETE fired on an `mc ls --incomplete` signal | **hit on attempt 1 of a cap of 6.** DELETE 204 in 13 ms at `04:45:28.891Z`, `PUT` handler started `04:45:28.2998Z` (derived) and finished `04:46:00.586Z` with **204**. Run row gone, **32 MiB object left** |
+| B | the orphan's surfaces | 2 of 7 say 404; 5 answer 200; **2 of those serve its data** (list + a 33554432-byte download), for a server token **and** for an agent credential |
+| C1 | 400 pads, no race | DELETE 0.493 s, **all 400 deleted**, prefix empty — the positive control |
+| C2 | 10,000 pads, two plants ~3 s into a 12.739 s DELETE | **the asymmetry, live**: the late `runs/<id>/logs.ndjson` was **deleted** by step 5, the late `artifacts/<id>/late-blob.tar.gz` **survived** |
+| D | — | **skipped**, see §Part D; the sweeper was never exercised and every claim about it is code-read |
+
+**Nine things a re-run should know.**
+
+1. **The MSYS path trap cost one silent zero-byte capture and would have cost a
+   finding.** With `MSYS_NO_PATHCONV=1` exported (needed for `docker compose
+   exec` container paths), mingw `curl` cannot open `@/c/Users/...` — it uploads
+   an **empty body and still returns 204**. G6's first upload produced a **0 B**
+   object and looked like a success (`w3-6/gate-g6-synthagent.txt`). Use a
+   Windows-form path (`C:/Users/...`) for every `curl` file argument, and
+   **check `%{size_upload}` against the object's size**, not the status code.
+2. **`DELETE /api/v1/runs/{id}` cannot race an ordinary run's upload, and this
+   is the first thing to internalise.** The route needs a terminal run (409
+   otherwise) and an agent-driven run is `Running` throughout its
+   `uploadArtifact` step. The synthetic agent is not a convenience; it is the
+   only way in. Building it costs five API calls and no SQL (`w3-6/synth.sh`).
+3. **`--limit-rate` + `proxy_request_buffering off` is a better width knob than
+   anything in `inject.sh` for this race**, and it is fully deterministic: the
+   controller's `duration_ms` came out at 32374 for a 32 s client-side upload.
+   `bigbody` is required for both of its settings, not just the size cap.
+4. **Fire the DELETE on `mc ls --incomplete`, not on a sleep.** An incomplete
+   multipart upload under `artifacts/<runID>/` means the controller is *inside*
+   `objStore.Put` right now. It appeared **577 ms** after the upload started.
+5. **`accessLogMiddleware` stamps on completion**, so a handler's start instant
+   is `time - duration_ms`. That is what brackets the race, and it cross-checks
+   against the client's own stamp to within ~55 ms. Say "derived" when you use it.
+6. **Padding the artifact prefix is a clean, linear window knob inside
+   `deleteRunEverywhere`.** 400 objects → 0.493 s, 10,000 → 12.739 s
+   (~1.2 ms per object; the deletes are serial, `run_retention.go:152-156`).
+   Generating the pads inside the `mc` container and `mc cp --recursive`-ing
+   them takes ~7 s for 10,000.
+7. **The whole event is silent.** Zero controller `WARN` and zero `ERROR` lines
+   across the session; the artifact `PUT` has **no audit row at all** (the route
+   lives outside the `/api/v1` audit group); the audit log's only word on the
+   raced run is `run.delete` → 204.
+8. **Do not re-file W3-2's orphan.** `FINDINGS.md:1760` is the sibling on the
+   log-archive key space and its own text hands this class to W3-6. The single
+   entry names both producers.
+9. **The rig's intermittent-500 allowance (G8) was never spent** — zero API 500s
+   on any gate, trigger, upload or delete across the whole session. A re-run
+   should not assume that.
+
+**Sampler hygiene was captured, not asserted.** The two background jobs (Part
+A's slow upload, Part C's DELETE) were `wait`ed on in their own drivers; both
+PIDs were recorded in `$SCRATCH/samplers.pid` and re-checked at teardown, `jobs`
+was empty, a host `ps -W` for `curl|psql|mc` matched nothing, and — per the W3-4
+lesson that a `docker compose exec` sampler outlives its shell — an in-container
+`ps` on `postgres` and `nginx` showed nothing left. **The `mc` image has no `ps`**,
+which the capture records rather than hides (`w3-6/teardown.txt`).
+
+**No Postgres statement logging was armed**, so there was nothing to revert.
+Said explicitly because the wave budgets for it elsewhere.
+
+**Two runbook steps were not followed as written, and both are recorded rather
+than quietly dropped.** (i) Part A's `$SCRATCH/.delbody.N` capture of the
+DELETE's response body was never written, for the same MSYS path reason as
+note 1 — the DELETE returned 204 with an empty body, so nothing was lost, but
+the file named in the driver does not exist. (ii) Gate G7's capture
+(`gate-g7-archive.txt`) holds only the trigger; the archive **confirmation**
+(`run_log_archives` row, 3036 B / 30 lines, object present) is in
+`w3-6/census.txt`, taken at the end of the session rather than within 60 s of
+the run.
