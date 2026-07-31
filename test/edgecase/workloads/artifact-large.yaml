@@ -1,0 +1,43 @@
+# W3 fixture: uploads an artifact large enough that the controller's
+# objStore.Put window is measurable.
+#
+# W3-6's TOCTOU is bounded by exactly this: handleArtifactUpload checks run
+# existence at internal/controller/api_artifacts.go:55 and calls Put at :79
+# with nothing in between, and the upload is chunked with no Content-Length
+# (internal/agent/client.go:352-360), so the width of the window IS the
+# payload transfer time. size_mb is a param so a scenario can widen it without
+# a new fixture; the default is the size Task 3 measured.
+#
+# /dev/urandom, not zeros, on purpose: artifacts are tar+zstd'd, and a
+# compressible payload would collapse to a window far shorter than its
+# nominal size.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-artifact-large
+spec:
+  native: true
+  params:
+    inputs:
+      - name: size_mb
+        type: string
+        default: "64"
+  agentSelector:
+    - kind:linux
+  steps:
+    - name: make_blob
+      run: |
+        set -e
+        rm -rf big
+        mkdir -p big
+        head -c $(( {{ .Params.size_mb }} * 1024 * 1024 )) /dev/urandom > big/blob.bin
+        ls -l big/blob.bin
+        echo "blob-ready {{ .Params.size_mb }}MiB $(date -u +%FT%T.%NZ)"
+
+    - name: upload_blob
+      uploadArtifact:
+        name: big-blob
+        path: big/blob.bin
+
+    - name: after_upload
+      run: echo "upload-returned $(date -u +%FT%T.%NZ)"
