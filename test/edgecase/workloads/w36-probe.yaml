@@ -1,0 +1,27 @@
+# W3-6 fixture: a job NO REAL AGENT CAN CLAIM.
+#
+# W3-6 needs an artifact PUT against a run that is already terminal, and no
+# ordinary run can supply one: DELETE /api/v1/runs/{id} refuses a non-terminal
+# run with 409 (internal/controller/api_runs.go:427-432), while a run driven by
+# a real agent is Running for the whole of its uploadArtifact step. So the
+# scenario drives the upload itself, from a curl-driven "synthetic agent" that
+# enrolls, claims, finishes and then uploads — every step a documented
+# production HTTP route.
+#
+# The selector is the whole point. `kind:w36probe` matches neither agent1 nor
+# agent2 (both `kind:linux`), so a run of this job sits Queued until the
+# synthetic identity claims it, and the two real agents are never involved in
+# the measurement. The steps below never execute — the run is terminalised
+# through POST /api/v1/agents/{id}/runs/{runId}/finish — so their content is
+# deliberately trivial; they exist only because a Job needs at least one step.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w36-probe
+spec:
+  native: true
+  agentSelector:
+    - kind:w36probe
+  steps:
+    - name: never_runs
+      run: echo "w36-probe placeholder — this step is never executed"

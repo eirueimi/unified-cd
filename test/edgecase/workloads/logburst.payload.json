@@ -1,0 +1,1 @@
+{"yaml":"apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-logburst\nspec:\n  native: true\n  agentSelector:\n    - kind:linux\n  steps:\n    - name: burst\n      run: |\n        echo burst-begin\n        sleep 8\n        for i in $(seq 1 2000); do echo \"burst-$i\"; done\n        sleep 30\n        echo burst-end\n"}

@@ -1,0 +1,42 @@
+# W3-3 overlay: give **controller3 alone** a different local KEK, so the HA
+# stack runs in the state `docs/high-availability.md:204-206` explicitly warns
+# against ("Every replica must be given the **same** key ... a replica started
+# with a different key cannot read secrets written by another").
+#
+#   cd test/ha
+#   export COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/mixedkek.override.yaml"
+#   docker compose $COMPOSE_FILES up -d --build
+#
+# `test/ha/docker-compose.ha.yaml:78` defines controller1 as the `&ctrl` anchor
+# and controller2/controller3 are `*ctrl` aliases (`:103-104`), so all three
+# share one `UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek` (`:86`) and one
+# `./kek:/run/secrets/kek:ro` mount (`:92`).
+# (Line numbers re-read at HEAD; the original `:15` / `:30-31` / `:23` / `:25`
+# were correct before Task 3 `0b51fa3` inserted the garage/mc services and the
+# UNIFIED_S3_* block.) A YAML alias cannot be partially
+# overridden inside the file that defines it, so the divergence is introduced
+# here instead — `test/ha/` is not edited (Task 3 owns the one sanctioned
+# amendment to it this wave).
+#
+# The override is deliberately made by ENV, not by re-pointing the existing
+# mount. Re-pointing would rely on Compose merging volume entries by target
+# path, which is real but silent when it fails; adding a second mount at a NEW
+# target and moving the env var to it makes the divergence visible in
+# `docker compose $COMPOSE_FILES config` as two distinct lines. The original
+# `/run/secrets/kek` mount is left in place and simply unread by controller3 —
+# so the two key files can be diffed from inside the container, which is the
+# baseline gate's proof that the overlay took.
+#
+# `kek-b` is a THROWAWAY TEST KEY for a throwaway stack, exactly like the
+# `ha-admin-token` literal at `docker-compose.ha.yaml:84` and the `test/ha/kek`
+# fixture itself. It is committed on purpose: the scenario needs a second key
+# that is a *valid* key file (64 hex chars after TrimSpace, per
+# `internal/config/keysource.go:208-211`) but the *wrong* key. It guards nothing
+# and must never be used anywhere else. Generated with `unified-cli keygen --out`.
+services:
+  controller3:
+    environment:
+      UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek-b
+    volumes:
+      - ../edgecase/compose/kek-b:/run/secrets/kek-b:ro

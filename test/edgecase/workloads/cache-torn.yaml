@@ -1,0 +1,102 @@
+# W3-1 fixture: a cache entry big enough that its RESTORE STREAM can be torn.
+#
+# WHY A SECOND CACHE FIXTURE EXISTS. `cache-user.yaml` (job `edge-cache-user`)
+# caches a single `deps/marker` file — a ~200-byte tar+zstd archive. That is
+# enough to prove a hit crosses agents (which is what Task 3 built it for) and
+# useless for W3-1, whose whole mechanism is an object DELETE landing while a
+# cache-restore GET stream is still open: a 200-byte body is delivered in one
+# TCP segment and there is no window at all.
+#
+# THE WIDTH KNOB IS PAYLOAD SIZE PLUS `inject.sh s3-slow`, deliberately, and
+# NOT `s3-latency`. `s3-latency` adds a fixed pre-request connect delay, which
+# widens the gap BEFORE the body starts and does nothing to the body itself;
+# `s3-slow` emits `proxy_buffering on` + `proxy_limit_rate`, throttling nginx's
+# read FROM GARAGE, which is exactly the in-flight-GET window this scenario
+# needs to hold open. (It is NOT `limit_rate` — this header said so until W3-1
+# executed; `limit_rate` does nothing under the interposer's server-level
+# `proxy_buffering off`. See the verb's own comment in tools/inject.sh.)
+# 256 x 64 KiB of /dev/urandom = 16 MiB that zstd cannot compress, so the
+# archive is ~16 MiB on the wire; at `s3-slow 262144` that is a ~64 s stream.
+#
+# THE `wipe` STEP IS LOAD-BEARING AND MUST STAY FIRST, for the same reason it
+# is in `cache-user.yaml`: the host agent keeps a persistent per-job workspace
+# (working<slot>/<job>), so without the wipe a second run would find `deps/`
+# still populated from the first and every "restored" claim below would be
+# unfalsifiable.
+#
+# THE FILE LAYOUT IS THE MEASUREMENT INSTRUMENT.
+#   * `f0001`..`f0256`, each exactly 65536 bytes — so "how much of the archive
+#     was extracted before the stream died" is a file count and a byte total,
+#     not an impression.
+#   * `zz-COMPLETE`, which sorts LAST and therefore is the LAST entry in the
+#     tar (internal/artifact StreamTarZstd walks the tree in lexical order).
+#     Its presence means the whole archive was extracted; its absence with a
+#     non-zero file count means the extract was TORN.
+#
+# `inspect_deps` DELIBERATELY REGENERATES ONLY ON A COMPLETE MISS (zero
+# entries). On a torn restore it leaves the half-populated directory exactly as
+# `extract` left it and reports it. That is not laziness — it is the point:
+# the deferred cache save (orchestrator.go:984-1001) then re-archives whatever
+# is on disk under the SAME key, so a torn restore is measurable all the way
+# through to the state of the cache entry the NEXT run gets.
+#
+# ttlDays: 1 is the floor. `0` is silently rewritten to 30
+# (internal/agent/orchestrator.go:980-982); `<0` and `>365` are rejected
+# (internal/dsl/parse.go:614-619).
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-cache-torn
+spec:
+  native: true
+  agentSelector:
+    - kind:linux
+  steps:
+    - name: wipe
+      run: |
+        rm -rf deps
+        echo "WIPE-DONE $(date -u +%FT%T.%3NZ) deps-present=$(test -e deps && echo yes || echo no)"
+
+    - name: restore_deps
+      cache:
+        path: deps/
+        key: edge-cache-torn-v1
+        restoreKeys:
+          - edge-cache-torn-
+        ttlDays: 1
+
+    - name: inspect_deps
+      run: |
+        echo "INSPECT-START $(date -u +%FT%T.%3NZ)"
+        n=0
+        if [ -d deps ]; then n=$(ls -1 deps 2>/dev/null | wc -l); fi
+        c=no
+        if [ -f deps/zz-COMPLETE ]; then c=yes; fi
+        b=0
+        if [ -d deps ]; then b=$(du -sb deps 2>/dev/null | cut -f1); fi
+        echo "STATE entries=$n complete=$c bytes=$b"
+        if [ "$n" -eq 0 ]; then
+          echo "CACHE-MISS"
+          mkdir -p deps
+          i=1
+          while [ "$i" -le 256 ]; do
+            head -c 65536 /dev/urandom > "deps/f$(printf %04d "$i")"
+            i=$((i+1))
+          done
+          date -u +%FT%T.%3NZ > deps/zz-COMPLETE
+          echo "GENERATED entries=$(ls -1 deps | wc -l) bytes=$(du -sb deps | cut -f1) planted-at=$(cat deps/zz-COMPLETE)"
+        else
+          echo "CACHE-PRESENT complete=$c"
+          echo "FIRST=$(ls -1 deps | head -1) LAST=$(ls -1 deps | tail -1)"
+          short=0
+          for f in deps/f*; do
+            s=$(wc -c < "$f")
+            if [ "$s" -ne 65536 ]; then
+              short=$((short+1))
+              echo "SHORT-FILE $f $s"
+            fi
+          done
+          echo "SHORT-FILES=$short"
+          if [ "$c" = yes ]; then echo "planted-at=$(cat deps/zz-COMPLETE)"; fi
+        fi
+        echo "INSPECT-END $(date -u +%FT%T.%3NZ)"

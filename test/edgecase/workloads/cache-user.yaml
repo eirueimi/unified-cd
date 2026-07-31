@@ -1,0 +1,52 @@
+# W3 fixture: a cache save+restore pair at the lowest TTL the DSL permits.
+#
+# ttlDays: 1 is the floor, not 0. `0` is silently rewritten to 30
+# (internal/agent/orchestrator.go:980-982); `<0` and `>365` are rejected
+# (internal/dsl/parse.go:614-619). So 1 is the smallest value that actually
+# reaches internal/cache/cache.go:90's
+# `ExpiresAt: now.Add(ttlDays * 24h)`.
+#
+# THE `wipe` STEP IS LOAD-BEARING AND MUST STAY FIRST. The host agent keeps a
+# persistent per-job workspace (working<slot>/<job>), so on a second run
+# `deps/` would still be there from the first one and "CACHE-HIT" would prove
+# nothing about the object store. Wiping before the cache step means a hit can
+# only have come from `caches/<b64url(sha256(jobName))>/<b64url(sha256(key))>.tar.zst`.
+# examples/jobs/cache.yaml's own header makes the complementary warning — with
+# no cache store configured the cache step is a silent no-op — so a fixture
+# that merely "passes" proves nothing either way. Read the marker's timestamp:
+# on a genuine hit it is the PREVIOUS run's, which no no-op can produce.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-cache-user
+spec:
+  native: true
+  agentSelector:
+    - kind:linux
+  steps:
+    - name: wipe
+      run: |
+        rm -rf deps
+        echo "wiped; deps present after wipe: $(test -e deps && echo yes || echo no)"
+
+    - name: restore_deps
+      cache:
+        path: deps/
+        key: edge-cache-user-v1
+        restoreKeys:
+          - edge-cache-user-
+        ttlDays: 1
+
+    - name: use_deps
+      run: |
+        set -e
+        if [ -f deps/marker ]; then
+          echo "CACHE-HIT"
+          echo "marker-planted-at: $(cat deps/marker)"
+        else
+          echo "CACHE-MISS"
+          mkdir -p deps
+          date -u +%FT%T.%NZ > deps/marker
+          echo "marker-planted-at: $(cat deps/marker)"
+        fi
+        echo "now: $(date -u +%FT%T.%NZ)"
