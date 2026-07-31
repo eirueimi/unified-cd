@@ -1,5 +1,69 @@
 # W3-3 — mixed-KEK replicas: one replica with the wrong key, and a ciphertext that carries no key identity
 
+> **CORRECTED AFTER EXECUTION — READ THIS BEFORE ANYTHING ELSE.**
+> **The scenario's framing survived in full: this was a conformance and
+> blast-radius measurement, the docs were right, I1 and I7 held on the runs
+> this scenario is about, and the yield is three observations plus one small
+> I7 violation that the scenario *reached* rather than caused.** Nothing in
+> the Invariants block is withdrawn. What execution changed is one inherited
+> fact that was the load-bearing premise of Part B, one stale schema fact, and
+> three procedural details. Superseded text is kept in place and marked, per
+> house style, because the reason it was wrong is the deliverable.
+>
+> 1. **THE PLAN'S CLAIM THAT "THE REASON IS VISIBLE IN THE RUN'S OWN LOGS" IS
+>    FALSE, AND IT IS THE OPPOSITE OF WHAT THE FACTS BLOCK PROMISED.**
+>    `docs/superpowers/plans/2026-07-30-edge-case-campaign-w3.md:84` says the
+>    failing path is "unusually well-instrumented" because "the reason is
+>    visible in the run's own logs — record that". The run's own log line, all
+>    23 times, is **`fetch secrets for run <id>: http 500: response omitted`**
+>    (`w3-3/partB-runlogs.txt`, `w3-3/consolidated.txt`). `Client.do` replaces
+>    the body of **every** response ≥ 400 with the literal string
+>    `"response omitted"` (`internal/agent/client.go:107-108`; the same string
+>    is what the unused helper `safeResponseBody` at `:134` returns), so the
+>    controller's precise message — built at
+>    `internal/controller/api_secrets.go:142` — is discarded by the agent
+>    before it can ever be logged. The path is well-*structured* (one line, the
+>    right stream, the right `stepIndex`) and carries **no diagnostic content
+>    at all**. Fact 11 of §"Verified mechanism" is correct about the mechanism
+>    and its final clause about the *reason* being visible is struck below.
+> 2. **The live `secrets` table has six columns, not eight — and this makes
+>    Part C stronger, not weaker.** Fact 5 was read from
+>    `internal/store/migrations/001_init.up.sql:247-256`, which is stale:
+>    `016_drop_secret_scope.up.sql:13-18` drops `scope` and `scope_ref` and
+>    replaces the composite unique with `secrets_name_key UNIQUE (name)`. The
+>    C2 query errored (`column "scope" does not exist`, kept in
+>    `w3-3/partC-ciphertext.txt` as the only `ERROR:` in the capture — do not
+>    misread it as a product fault). **Always `\d` the live table; a v1 init
+>    migration is a snapshot, not the schema.**
+> 3. **The HTTP 500 body was NOT captured on the wire, and could not be.** The
+>    brief asks for it; the endpoint is agent-authenticated and guarded by
+>    `agentRunGuard`, and the only client that reaches it throws the body away
+>    (correction 1). The body is therefore reported as **derived** from two
+>    captured inputs — the format string at `api_secrets.go:142` and the
+>    `err.Error()` text, which the controller's own `slog.Warn` does log
+>    verbatim. **That the body is unobservable from the agent side is itself
+>    part of the finding**, not a gap in the measurement.
+> 4. **Round-robin does not give a clean per-replica third, and the headline
+>    8/24 partly conceals that.** The secrets fetch is one request among many
+>    the agents send through the LB (30 s long-poll claims, heartbeats, log
+>    appends, step reports), so the fetch's upstream is effectively arbitrary:
+>    Part A's 24 fetches split **3 / 13 / 8** across controller1/2/3, not
+>    8/8/8. **The exact, non-statistical result is the per-replica one** —
+>    controller3 failed 8 of the 8 fetches it served and the other two failed
+>    0 of 16 — and the fraction should be read as a consequence of that plus
+>    the split, not as a measured "rate".
+> 5. **A `docker compose up -d` recreate erases that container's own
+>    `docker compose logs` history.** controller3's eight mixed-window
+>    `secret decrypt failed` WARNs are in `w3-3/partA-fetchlog.txt` and
+>    `w3-3/partB-controller.txt` because they were captured **before** Part D3
+>    repaired the misconfiguration; after the recreate they are gone from
+>    `docker compose logs controller3`. Capture before you repair.
+>
+> **The scenario yields THREE observations and ONE minor I7 violation.** The
+> violation (a terminal run displaying a `Pending` step) is **reached by this
+> scenario, not caused by it** — it is general to any run that terminates
+> before its first step report. Do not merge it into the mixed-KEK entries.
+
 **Wave W3, Task 2. Runs on today's `test/ha` rig plus one extra key file and one
 per-replica env override — no object storage, so it is not blocked on Task 3.**
 
@@ -158,13 +222,13 @@ The two candidates that survive that test are named in the preamble.
 | 2 | `LocalKeyManager` wraps the DEK as `"local:" + AES-256-GCM(kek, dek, nil)` — **key wrapping carries no AAD** | `internal/secrets/keymanager.go:60-66`, prefix const `:25` |
 | 3 | **`LocalKeyManager` is `struct{ kek []byte }` — one field, no id, no version, no label** | `internal/secrets/keymanager.go:32-34` |
 | 4 | So the stored `encrypted_dek` is `0x02` ‖ `"local:"` ‖ nonce ‖ ct+tag. **The only self-describing parts are a FORMAT version and a PROVIDER tag.** Neither identifies *which* local key | derived from 1+2 |
-| 5 | The `secrets` table has `id, name, scope, scope_ref, encrypted_dek, ciphertext, created_at, updated_at` — **no key id, key version, key fingerprint or KMS-URI column** | `internal/store/migrations/001_init.up.sql:247-256` |
+| 5 | ~~The `secrets` table has `id, name, scope, scope_ref, encrypted_dek, ciphertext, created_at, updated_at`~~ **CORRECTED BY EXECUTION (box, item 2): the live table has SIX columns — `id, name, encrypted_dek, ciphertext, created_at, updated_at`.** `scope`/`scope_ref` were dropped and the composite unique replaced by `secrets_name_key UNIQUE (name)`. Either way: **no key id, key version, key fingerprint or KMS-URI column** | `001_init.up.sql:247-256` **as amended by** `016_drop_secret_scope.up.sql:13-18`; live `\d public.secrets` in `w3-3/partC-ciphertext.txt` |
 | 6 | A wrong local KEK fails in the **DEK-unwrap** layer: `km.DecryptKey` → the `local:` prefix matches → `aesGCMDecrypt(m.kek, …)` fails → wrapped as `decrypt dek: %w` | `keymanager.go:69-74`; `crypto.go:63-66` |
 | 7 | **It is therefore NOT `ErrBindingMismatch`**, which is produced only at `crypto.go:79`, *after* a clean unwrap; and NOT `ErrProviderMismatch`, which needs a non-`local:` prefix (`keymanager.go:70-72`) | `crypto.go:73-80`, `keymanager.go:70-72` |
 | 8 | `logSecretDecryptFailure` therefore falls past both special cases to `slog.Warn("secret decrypt failed", "site", …, "id", …, "error", err)` — **`Warn`, not `Error`, and the only branch of the three that logs the error text** | `internal/controller/api_secrets.go:161-173`, fall-through at `:172` |
 | 9 | HTTP **500** with body `"decrypt " + name + ": " + err.Error()` | `api_secrets.go:140-143` |
 | 10 | The agent calls `FetchSecrets` **once**, not wrapped in `retryUntilSuccess`, and only when `len(c.SecretsNeeded) > 0` | `internal/agent/orchestrator.go:161-162` |
-| 11 | On error the agent writes one System `stderr` line at `stepIndex: -1` carrying `fetch secrets for run %s: %v`, then `retryUntilSuccess(FinishRun(…, RunFailed))`, then returns **without running the DAG** | `orchestrator.go:174-188` |
+| 11 | On error the agent writes one System `stderr` line at `stepIndex: -1` carrying `fetch secrets for run %s: %v`, then `retryUntilSuccess(FinishRun(…, RunFailed))`, then returns **without running the DAG**. ~~The reason is therefore visible in the run's own logs.~~ **STRUCK — see correction 1 in the box.** The `%v` is an `*HTTPError` whose `Body` field `Client.do` has already overwritten with the literal `"response omitted"`, so the line carries the *status* and **no reason** | `orchestrator.go:174-188`; `internal/agent/client.go:26-28`, `:107-108`, `:134` |
 | 12 | `SecretsNeeded` is **not persisted** — the claim handler computes it, and the fetch handler independently recomputes the allowed set from the run's stored spec via the same `buildStages` | `api_agent.go:243-258`, `:263-275`, `collectSecretNames` `:465-474` |
 | 13 | Startup does **no** key-consistency check of any kind: `KeySource.Resolve` reads the file, checks it is 64 hex chars, and returns; `main.go` logs `slog.Info("encryption key loaded", "source", resolved.Description)` where `Description` is the literal string `"key file " + path` | `internal/config/keysource.go:85-89`, `:192-217`; `cmd/controller/main.go:287-301` |
 | 14 | `/readyz` checks `shuttingDown` and `store.Ping` only — **no secret round-trip, no key probe** | `internal/controller/server.go:318-333` |
@@ -667,3 +731,87 @@ docker compose $MIXED down -v
   single-replica temporal mismatch that the code warns about loudly at startup,
   whereas this is a multi-replica spatial mismatch that produces **no startup
   warning at all** (fact 13). Say so explicitly so triage does not merge them.
+
+---
+
+## Execution notes — 2026-07-31 run (read before re-running)
+
+Executed against `test/ha` + `compose/mixedkek.override.yaml` on branch
+`plan/edge-case-w3`, **`00:36:31Z – 00:50:22Z`**. **Four `FINDINGS` entries: 3
+observations (minor) and 1 violation (minor, I7).** No branch-internal asset
+bug — the fixture applied `200` and the secret registered `204` on the **first**
+attempt each, and **not one API 500 was seen on any trigger or gate command**
+across 51 run triggers (gate G6's flakiness allowance was never spent). The
+developer stack (`docker compose ls` project `unified-cd`, 7 containers) was
+untouched before and after (`w3-3/gate.txt`, `w3-3/teardown.txt`).
+
+**Four phases, 51 runs, every one terminal exactly once** (`w3-3/consolidated.txt`):
+
+| phase | key state | secret last written by | runs | Failed | measured |
+|---|---|---|---|---|---|
+| 1 — baseline | all three share `test/ha/kek` | controller1 (`00:36:53.155`) | 6 | 0 | 6/6 `Succeeded`, `secret-len=27`, and **all three replicas served a `200` fetch** |
+| 2 — Part A | controller3 on `kek-b` | controller1 | 24 | **8** | **8/24 = 33.3 %**; controller3 8/8 failed, controller1+2 0/16 |
+| 3 — Part D2 | controller3 on `kek-b` | **controller3** (`00:44:16.402`) | 12 | **6** | polarity **inverted**: controller1 0/5, controller2 0/1, **controller3 6/6 succeeded** |
+| 4 — Part D3 | repaired: all three share `test/ha/kek` | controller3 | 9 | **9** | **9/9 failed on every replica** — the repair does not undo the damage |
+
+**Every one of the 45 secret-fetches in phases 2-4 is bracketed per request**
+from the controllers' own access logs (`internal/controller/server.go:180-186`),
+which carry `method`, `path` and `status`, with `docker compose logs` supplying
+the replica. 24 fetch lines for 24 Part A runs, 12 for 12 in D2, 9 for 9 in D3 —
+**one fetch per run, no retries**, which is fact 10 confirmed live.
+**No claim in this scenario rests on a wall-clock attribution.**
+
+**Ten things a re-run should know.**
+
+1. **Capture before you repair.** Part D3's `up -d --force-recreate controller3`
+   erased controller3's own `docker compose logs`, taking its eight mixed-window
+   `secret decrypt failed` WARNs with it. They survive only because Part A and
+   Part B captured them first (`w3-3/partA-fetchlog.txt`,
+   `w3-3/partB-controller.txt`).
+2. **The agent throws the 500 body away** (`client.go:107-108`). Do not plan on
+   reading the controller's message from the run's logs; it is not there. See
+   correction 1.
+3. **`\d` the live table.** `001_init.up.sql` still describes a `scope`/
+   `scope_ref` shape that `016_drop_secret_scope.up.sql` removed.
+4. **The byte budget is the argument, not the absence.** `encrypted_dek` is
+   **67** bytes and `1 + 6 + 12 + 32 + 16 = 67` accounts for every one of them
+   (version, `local:`, GCM nonce, wrapped DEK, tag). There is no room for a key
+   identifier, which is a stronger statement than "no identifier was found".
+   The value `ciphertext` is **56** bytes for a 27-byte secret
+   (`1 + 12 + 27 + 16`) and carries **no provider tag at all** — only the DEK is
+   wrapped by the `KeyManager`.
+5. **Zero `ERROR` lines controller-side, for the entire session, on all three
+   replicas** (`w3-3/consolidated.txt`) — against 23 decrypt failures. The
+   agents logged 23 `ERROR`s (10 + 13) and **zero** mentions of `decrypt`, `kek`
+   or `encryption key`. The severity and the information are on opposite sides
+   of the socket.
+6. **`max_fails` did not contaminate anything, and phase 4 is the strong test.**
+   Nine consecutive 500s spread across all three upstreams produced **zero**
+   `no live upstreams` / `temporarily disabled` lines in 1,606 nginx log lines
+   (`w3-3/partA-nginx.txt`, `w3-3/consolidated.txt`). `http_500` is absent from
+   `proxy_next_upstream` (`test/ha/nginx.conf:24`), so it is not an
+   "unsuccessful attempt". **This is the opposite of W3-4's experience** and the
+   difference is the status code, not the rig.
+7. **No `nginx -s reload` was used and none was needed.** The W2-5 trap does not
+   apply to this scenario at all; the only reconfiguration is a container
+   recreate, which every client observes by definition.
+8. **Budget ~2 s per run.** Trigger → terminal was 0.2-1.1 s throughout. 24 runs
+   at 2 s spacing takes under a minute. The whole scenario is ~14 minutes
+   including two image-less recreates.
+9. **`test/ha/kek` is 66 bytes inside the container and `kek-b` is 65** — the
+   committed `test/ha/kek` is CRLF on a Windows checkout and the freshly
+   generated `kek-b` is LF. Both `TrimSpace` to 64 hex
+   (`internal/config/keysource.go:208-211`), so both work. **Check key length
+   inside the container, never on the host.**
+10. **Postgres statement logging was never armed** (gate G7's decision), and was
+    confirmed at defaults in a fresh session at teardown — `log_statement=none`,
+    `log_line_prefix=%m [%p]` (`w3-3/teardown.txt`). Nothing in this scenario
+    needs it.
+
+**Sampler hygiene: none were launched.** Every capture was a synchronous
+foreground command; there was no SSE stream and no polling loop. Checked anyway
+on two passes — host `jobs` empty, host `ps` matching nothing, and **`ps` inside
+all seven containers** matching no `curl`/`wget`/`psql` (the W3-4 lesson applied
+even though it could not apply) — `w3-3/teardown.txt`. Zero non-terminal runs at
+teardown, so nothing needed cancelling. Torn down with `down -v`; the
+`agent-credentials` volume was removed.

@@ -75,6 +75,28 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 - `tools/w3/w3-4-partB.sh <attempt-n> [arm-delay-s] [hold-s] [timeout]` — the
   W3-4 Part B driver: clear+probe, trigger `edge-logburst`, arm `truncate`
   across the burst, clear+probe, with a host timestamp on every step.
+- `compose/mixedkek.override.yaml` — no injector script; the fault **is** the
+  configuration. Gives **controller3 alone** a different local KEK
+  (`compose/kek-b`, a committed throwaway test key like `ha-admin-token`), by
+  adding a second mount at a **new** target and repointing
+  `UNIFIED_CONTROLLER_KEY_FILE` — not by re-pointing the existing
+  `/run/secrets/kek` mount, so the divergence shows as two distinct lines in
+  `docker compose config` instead of relying on Compose's silent
+  merge-by-target-path. `controller2`/`controller3` are `*ctrl` aliases of
+  `controller1`'s `&ctrl` anchor (`docker-compose.ha.yaml:15`, `:30-31`), so
+  this cannot be expressed inside `test/ha/` without editing it.
+
+  **A wrong key is still a *valid* key file** (64 hex chars after `TrimSpace`,
+  `internal/config/keysource.go:208-211`), so controller3 starts normally,
+  passes `/readyz`, and logs an `encryption key loaded` line that differs from
+  the healthy replicas' only by the file path. **Check key length inside the
+  container, never on the host** — `test/ha/kek` is CRLF on a Windows checkout
+  (66 bytes) and `kek-b` is LF (65); both `TrimSpace` to 64.
+  **A decrypt 500 is not an nginx failure**: `http_500` is absent from
+  `proxy_next_upstream` (`test/ha/nginx.conf:24`), so it is neither retried
+  against a healthy replica nor counted toward `max_fails=1` — W3-3 drove nine
+  consecutive 500s across all three upstreams with zero ejection, which is the
+  opposite of W3-4's experience with 504s under the same config.
 
 ## Workload fixtures
 
@@ -104,6 +126,7 @@ its inferred capability is `pod` (see the table).
 | `unrelated-probe.payload.json` | `edge-unrelated-probe` | **no mutex**, `echo probe-ran` — the W2-9 starvation probe |
 | `podcap-job.payload.json` | `edge-podcap-job` | `podTemplate` with a pod-level `nodeSelector`, so `dsl.RequiredCaps` infers **`pod`** — label-claimable (`kind:linux`) but capability-unschedulable, because the `test/ha` agents report `["native","container"]` (W2-4 Part D) |
 | `logburst.payload.json` | `edge-logburst` | the **chatty** fixture (W3-4): emits exactly **2002** stdout lines — `burst-begin`, `burst-1`…`burst-2000` written as fast as the shell can, then `burst-end` after a 30 s quiet window. Line contents are self-indexing so duplicates and reordering are measurable without joining anything. `sleep 8` before the burst gives a window to arm a fault against an already-connected agent |
+| `secret-user.payload.json` | `edge-secret-user` | the **secrets** fixture (W3-3): step `env` references `{{ .Secrets.EDGE_KEK_PROBE }}`, which is what makes the claim response carry a non-empty `SecretsNeeded` and the agent take the `FetchSecrets` path (`internal/agent/orchestrator.go:161`). Prints only the secret's **length** (`secret-len=<n>`), never its value. `secret-user.yaml` is the same job in plain YAML. **The secret must be registered first** — `POST /api/v1/secrets/` (trailing slash required) with `{"name":..., "value":...}`, `204` on success |
 
 ### Fractional `timeoutMinutes` — verified, do not re-derive
 
