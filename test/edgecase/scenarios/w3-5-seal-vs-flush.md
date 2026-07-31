@@ -701,3 +701,88 @@ docker compose $COMPOSE_FILES down -v
 - **Report every capped arm's attempt count either way**, with the cap stated.
 - **When claiming a class is fully enumerated, paste the enumeration.** W3-6
   claimed two producers and a third was sitting in its own capture.
+
+---
+
+## Execution notes — 2026-07-31 run (read before re-running)
+
+Executed on branch `plan/edge-case-w3`, **`05:40:18Z – 05:53:02Z`**, on the single
+stack §Stack specifies (plain `test/ha` + Garage + `mc`, no overlay, no
+interposer), torn down with `down -v` (`w3-5/teardown.txt`). **Three `FINDINGS`
+entries: 2 violations (1 major I4, 1 minor I7) and 1 observation (minor).** No
+branch-internal asset bug. The developer stack (`docker compose ls`, project
+`unified-cd`) was running and untouched at both ends.
+
+**Four runs, all reaching exactly one terminal state** (`census.txt`): `edge-tick`
+`3d32270a` Succeeded, `edge-w35-probe` `cd7c25a0` and `edb91160` Succeeded (both
+synthetic), `edge-longrun` `c158dcd4` Cancelled. Zero non-terminal runs at
+teardown. **I1 held.**
+
+| Part | Result |
+|---|---|
+| G4 | archiver positive control: `edge-tick` terminal `05:41:27.653Z`, sealed `05:41:49.545Z` — **21.89 s**, `line_count=30` = `logs`=30, object 3038 B |
+| A | **the whole point, and it worked first time**: 20 lines land pre-seal; run finished `Succeeded`; **the real archiver** sealed it 2.62 s later (`archived Run logs` on controller1); 10 post-seal lines → **204, zero-byte body**, `dropped=10` on controller3, `logs` still 20 |
+| A5 | single-line route also 204 + `"dropping log line for sealed run"` — **and that warning carries no count field**, unlike the bulk form's `dropped` |
+| B | **the natural race, HIT ON ATTEMPT 1 OF A CAP OF 3.** Real agent, real seal, one `partition`. **78 lines dropped, measured; 78 expected, derived — exact.** Post-heal agent log: **one INFO line, zero errors** |
+| C | mixed batch of 4 across two sealed runs → `dropped=4` naming only the **last** id; reversed order names the **other** run. Same loss, different attribution |
+| D | code-read only; produced two corrections to the plan/brief (below) |
+| E | docs survey run in full, counts **35 / 49 / 84 / 1**; the 84 filtered to log/agent hits → **0** |
+
+**Ten things a re-run should know.**
+
+1. **THE PLAN'S PREMISE IS WRONG IN A SECOND WAY NOBODY HAD NOTICED.** Beyond
+   sidecars being unavailable (Task 3), the sidecar race is **not structural**
+   even where sidecars exist: `CloseScopes` follows `FinishRun` by
+   microseconds-to-milliseconds (`orchestrator.go:209` vs `:787-788`) while the
+   archiver can only seal on its next **30 s** tick after that same commit
+   (`main.go:400`). **The flush wins essentially always.** Do not design a future
+   sidecar-capable scenario around "every run".
+2. **The realistic producer is delayed delivery, and it is cheap.**
+   `partition agent → cancel → wait for the seal → heal` hits on the first
+   attempt and takes ~95 s. It is also the exact cause
+   `docs/troubleshooting.md:865` names. **Prefer it to any hand-seal.**
+3. **NO ARM SEALS BY HAND.** `test/edgecase/README.md` advises
+   `INSERT INTO run_log_archives`; that advice is now superseded — a synthetic
+   *sender* against a real archiver seal is strictly stronger, and costs the same
+   five API calls W3-6's instrument does.
+4. **The seal latency is variable and must be measured, not assumed.** Observed
+   **21.89 s**, **2.62 s** and **26.9 s** in one session, because a 30 s ticker
+   is sampled at whatever phase the run finishes in. Poll for the row; never
+   `sleep 30`.
+5. **Probe-confirm the partition by watching the log count freeze.** Three
+   samples at 12/12/12 over 9.2 s, and the last stored line's own `ts`
+   (`05:47:07.066Z`) sits 177 ms before the partition instant. That is the
+   cheapest possible arm confirmation and it is exact.
+6. **The 2 s auto-flush cadence is visible in the stored rows** — two lines share
+   each `ts` — which is what makes the 78/78 accounting checkable rather than
+   asserted.
+7. **Grep every replica.** Part B's nine drop requests were served by **all
+   three** controllers within a 3 s burst, and the replica that sealed the run
+   (controller1) is not the one that warned about Part A's bulk drop
+   (controller3). A single-container grep undercounts.
+8. **The MSYS trap fires here too, but LOUDLY.** `curl -D/-o` with MSYS-form
+   output paths gives exit 23 / `http_code=000` / `size_upload=0` — the request
+   never leaves the client. (Contrast W3-6 note 1, where an MSYS `@` path
+   uploaded an empty body and still returned 204.) Windows-form paths for every
+   `curl` file argument, and check `%{size_upload}`.
+9. **`DELETE /api/v1/agents/{id}` is an AGENT-auth route** (`server.go:246` has
+   no `agentRouteOrServerAuth`), so the admin token gets **401**. Deregister the
+   synthetic identity with its own credential — it returns 204.
+10. **The rig's intermittent-500 allowance (G8) was never spent** — nothing was
+    retried for a 500. **That is an absence of trouble, not a measurement**: no
+    capture counts 500s across the session, and no `FINDINGS` entry cites it.
+
+**Sampler hygiene was captured, not asserted.** **No background job was launched
+by any driver** — every `curl`/`psql`/`mc` call ran in the foreground and was
+waited on — so `$SCRATCH/samplers.pid` is deliberately empty, and the capture
+proves that rather than claiming it: `jobs` empty, host `ps -W` for
+`curl|psql|mc` matching nothing, and an in-container `ps` on `postgres`, `nginx`
+and `controller1` showing nothing left (the W3-4 lesson). **The `mc` image has no
+`ps`**, which `teardown.txt` records rather than hides.
+
+**No Postgres statement logging was armed**, so there was nothing to revert.
+
+**One runbook step was not followed as written.** Part B's step 2 says "if the
+claiming agent is not `agent1`, partition whichever agent did" — `agent2`
+claimed, and `agent2` was partitioned. Recorded because the runbook names
+`agent1` throughout and a reader diffing the captures will see `agent2`.
