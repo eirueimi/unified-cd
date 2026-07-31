@@ -253,17 +253,36 @@ sidecar log pump only when `b.pod != nil`
 help: the claim then needs a container runtime and the agent containers have no
 Docker socket. Note the agents nonetheless *advertise* `["native","container"]`
 — `Available()` is a binary-on-PATH check (`internal/runtime/ocicli.go:42-45`)
-and `docker/agent.Dockerfile:17` installs `docker-cli`. Any scenario needing a
-post-`FinishRun` log flush must seal by hand
-(`INSERT INTO run_log_archives`) against a post-hook or `finally` flush, and
-must say that those flush **before** `FinishRun`, so the structural window is
-absent and the result is a hand-timed demonstration, not a natural race.
+and `docker/agent.Dockerfile:17` installs `docker-cli`.
 **The ordering, with the cites, because a scenario author will need to defend
 it:** in `runClaim` (`internal/agent/orchestrator.go`) a `post:` hook's log
 writers are closed by `finishPostLogs(hookCtx)` at **`:706`**, the whole
 `finally` pipeline runs at **`:727`** — both inside the main body — and
 `FinishRun` is only called afterwards, at **`:787-788`**, wrapped in
 `retryUntilSuccess`. There is no agent-side hook that runs *after* that call.
+
+**SUPERSEDED BY W3-5 — do not seal by hand.** This section used to say that any
+scenario needing a post-`FinishRun` log flush "must seal by hand
+(`INSERT INTO run_log_archives`)". **W3-5 found two better routes and one factual
+error, all executed or code-read at HEAD:**
+
+- **A real seal with a synthetic sender is strictly stronger than a hand-planted
+  row** — a hand-planted row only proves the guard reads a row; letting the real
+  archiver seal proves it plants one the guard then reads. Cost: the same five
+  API calls as W3-6's instrument (enroll → exchange → trigger → claim → finish),
+  then push after the seal. See `scenarios/w3-5-seal-vs-flush.md` Part A.
+- **A fully natural race needs no instrument at all** and hit on the first
+  attempt: `partition <agent>` → `POST /runs/{id}/cancel` (terminal
+  **synchronously**, `api_runs.go:374`, while the agent only polls every 5 s) →
+  wait for the seal → `heal`. The agent's `p.pending` backlog is then re-offered
+  into a sealed run. ~95 s per attempt. This is the cause
+  `docs/troubleshooting.md:865` names verbatim. See Part B.
+- **The sidecar window is NOT "structural, every run"**, contrary to the W3
+  plan (`:107-115`). `CloseScopes` follows `FinishRun` by *microseconds to
+  milliseconds*, while the archiver can only seal on its next **30 s** tick
+  after that same commit (`cmd/controller/main.go:400`) — so the sidecar flush
+  wins essentially always. A future sidecar-capable rig should not expect the
+  structural shape.
 
 ## Workload fixtures
 
@@ -296,6 +315,8 @@ its inferred capability is `pod` (see the table).
 | `artifact-large.payload.json` | `edge-artifact-large` | the **artifact** fixture (W3-2, W3-6): builds a `/dev/urandom` blob (`size_mb` param, default **64**) and uploads it. The upload duration IS W3-6's TOCTOU width (`api_artifacts.go:55` GetRun → `:79` Put, nothing between). Measured: 64 MiB → `upload_blob` **0.749 s** (`step5-bigbody-and-latency-recapture.txt`), 256 MiB → **3.060 s** (`step5-baseline.txt:89-94`) — ≈12 ms/MiB. **`s3-latency 3` widens the 64 MiB Put to 9.702 s** and does not break it (see the interposer notes above), which is the knob W3-6 should reach for first. **Needs `compose/bigbody.override.yaml`** — without it the LB 413s anything over 1 MiB. Random, not zeros, because the payload is compressed on the way out |
 | `cache-user.payload.json` | `edge-cache-user` | the **cache** fixture (W3-1): `wipe` → `cache:` (`ttlDays: 1`, the real floor — `0` is silently rewritten to 30 at `orchestrator.go:980-982`) → `use_deps`, printing `CACHE-HIT`/`CACHE-MISS` plus the marker's plant timestamp. **The `wipe` step must stay first**: the host agent keeps a persistent per-job workspace, so without it a second run would find `deps/` still present and a "hit" would prove nothing. Verified end to end — run 1 on agent2 planted `01:54:14.857`, run 2 on **agent1** restored that same timestamp, so the hit crossed agents and can only have come from the object store |
 | `secret-user.payload.json` | `edge-secret-user` | the **secrets** fixture (W3-3): step `env` references `{{ .Secrets.EDGE_KEK_PROBE }}`, which is what makes the claim response carry a non-empty `SecretsNeeded` and the agent take the `FetchSecrets` path (`internal/agent/orchestrator.go:161`). Prints only the secret's **length** (`secret-len=<n>`), never its value. `secret-user.yaml` is the same job in plain YAML. **The secret must be registered first** — `POST /api/v1/secrets/` (trailing slash required) with `{"name":..., "value":...}`, `204` on success |
+| `w36-probe.payload.json` | `edge-w36-probe` | the **unclaimable** fixture (W3-6): `agentSelector: [kind:w36probe]` matches neither `agent1` nor `agent2`, so a run of it sits Queued until a curl-driven **synthetic agent** claims it. Its one step never executes — the run is terminalised through `POST /api/v1/agents/{id}/runs/{runId}/finish` — so the fixture exists to give an instrument a run it exclusively owns |
+| `w35-probe.payload.json` | `edge-w35-probe` | the same shape for W3-5, with its own selector `kind:w35probe` so the two scenarios' instruments cannot collide. Used to put a genuinely `Succeeded` run in front of the **real** archiver and then push log lines at it after the seal (`scenarios/w3-5-seal-vs-flush.md` Part A/C) |
 
 ### Fractional `timeoutMinutes` — verified, do not re-derive
 
