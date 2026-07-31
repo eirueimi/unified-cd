@@ -194,8 +194,11 @@ EOF"
     # this arm re-enables buffering at LOCATION level. The server-level
     # `proxy_buffering off` remains the default for every other arm and for
     # the unarmed path, which is what artifact PUT timing (W3-6) depends on.
-    # Verified after the change: 2645782 bytes in a 10 s bounded read = 264578
-    # B/s against an armed 262144 B/s.
+    # VERIFIED AFTER THE CHANGE, THROUGH THIS VERB: 2703126 bytes in a 10 s
+    # bounded read = 270312 B/s against an armed 262144 B/s, versus the full
+    # 16909275 bytes direct to Garage in the same 10 s. (A manual pre-verb
+    # config test measured 2645782 B / 264578 B/s; both are real, but the
+    # number that belongs here is the one taken through the verb.)
     rate="${2:?usage: inject.sh s3-slow <bytes-per-second, e.g. 65536>}"
     dc exec -T s3proxy sh -c "mkdir -p $S3FAULT_DIR && cat > $S3FAULT_DIR/30-slow.conf <<'EOF'
 set \$s3_arm \"\${s3_arm}+slow[${rate}B/s]\";

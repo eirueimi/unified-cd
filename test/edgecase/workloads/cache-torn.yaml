@@ -10,10 +10,13 @@
 # THE WIDTH KNOB IS PAYLOAD SIZE PLUS `inject.sh s3-slow`, deliberately, and
 # NOT `s3-latency`. `s3-latency` adds a fixed pre-request connect delay, which
 # widens the gap BEFORE the body starts and does nothing to the body itself;
-# `s3-slow` is nginx `limit_rate` on the RESPONSE body, which is exactly the
-# in-flight-GET window this scenario needs to hold open. 256 x 64 KiB of
-# /dev/urandom = 16 MiB that zstd cannot compress, so the archive is ~16 MiB
-# on the wire; at `s3-slow 262144` that is a ~64 s stream.
+# `s3-slow` emits `proxy_buffering on` + `proxy_limit_rate`, throttling nginx's
+# read FROM GARAGE, which is exactly the in-flight-GET window this scenario
+# needs to hold open. (It is NOT `limit_rate` — this header said so until W3-1
+# executed; `limit_rate` does nothing under the interposer's server-level
+# `proxy_buffering off`. See the verb's own comment in tools/inject.sh.)
+# 256 x 64 KiB of /dev/urandom = 16 MiB that zstd cannot compress, so the
+# archive is ~16 MiB on the wire; at `s3-slow 262144` that is a ~64 s stream.
 #
 # THE `wipe` STEP IS LOAD-BEARING AND MUST STAY FIRST, for the same reason it
 # is in `cache-user.yaml`: the host agent keeps a persistent per-job workspace

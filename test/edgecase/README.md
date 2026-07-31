@@ -146,7 +146,7 @@ silently off before. **Consequences you must plan for:**
   |---|---|
   | `inject.sh s3-block <METHOD\|ANY> [keyPrefix] [status]` | fail matching requests; verified method- **and** prefix-selective |
   | `inject.sh s3-latency <seconds>` | fixed delay **per HTTP request** before Garage is reached |
-  | `inject.sh s3-slow <bytes/s>` | throttle response bodies (holds a cache-restore stream open). **Emits `proxy_buffering on` + `proxy_limit_rate`, not `limit_rate`** — W3-1 measured `limit_rate` doing *nothing* under the server-level `proxy_buffering off` (16909275 B through an armed proxy in `rt=0.060`), and `proxy_limit_rate` additionally keeps the **upstream** GET in flight rather than draining it into nginx's buffers. Verified at 264578 B/s against an armed 262144 B/s |
+  | `inject.sh s3-slow <bytes/s>` | throttle response bodies (holds a cache-restore stream open). **Emits `proxy_buffering on` + `proxy_limit_rate`, not `limit_rate`** — W3-1 measured `limit_rate` doing *nothing* under the server-level `proxy_buffering off` (16909275 B through an armed proxy in `rt=0.060`), and `proxy_limit_rate` additionally keeps the **upstream** GET in flight rather than draining it into nginx's buffers. Verified **through the verb** at 270312 B/s (2703126 B in a 10 s bounded read) against an armed 262144 B/s, versus the full 16909275 B direct to Garage in the same 10 s |
   | `inject.sh s3-clear` / `s3-show` / `s3-probe [METHOD] [/bucket/key]` | clear, dump, confirm |
 
   **Choose the block status deliberately:** minio-go retries 429/500/502/503/504
@@ -225,6 +225,20 @@ silently off before. **Consequences you must plan for:**
   `nginx -t` rejects an arm — building this caught exactly that failure, where
   a duplicate directive made nginx keep the OLD config while the script
   reported "armed".
+
+  **But a LOADED arm can still be a no-op, and only an EFFECT measurement
+  catches that** — W3-1 found `s3-slow` emitting `limit_rate`, which does
+  nothing under `proxy_buffering off`, while `s3-show`, `s3-probe` and the
+  `arm=` stamp all passed. **The rule for W4+: a verb is verified when SOME
+  capture measures its effect, not when its comment carries a measurement.**
+  On that test nothing in the table above is unverified today — `s3-block`
+  effect-probes itself per arm (method, prefix, plus a control that must not
+  match; confirmed live in W3-2), `s3-latency` carries its measurement in its
+  comment, `s3-slow` now carries a post-fix through-the-verb measurement, and
+  `steplock` — whose own comment warns it is a silent no-op against
+  `nginx-edge.conf` — was effect-confirmed by execution in W2-5. **Every new or
+  changed arm must ship with an effect measurement; "the config is present and
+  `nginx -t` passed" is never one.**
 
 - `compose/bigbody.override.yaml` + `compose/nginx-bigbody.conf` — **required by
   every scenario that uploads a non-trivial artifact.** `test/ha/nginx.conf`

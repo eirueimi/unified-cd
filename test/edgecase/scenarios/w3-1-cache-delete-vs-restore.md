@@ -289,9 +289,13 @@ docker compose $COMPOSE_FILES up -d --build
 
 - **`test/ha` + the S3 interposer overlay.** The interposer is required and it
   is required for exactly one thing: **`inject.sh s3-slow <bytes/s>` is the width
-  knob.** It is nginx `limit_rate` on the response body, which holds a
-  cache-restore GET open for as long as the arm says. **`s3-latency` is NOT the
-  knob** — it is a fixed pre-request connect delay (a black-holed primary with
+  knob.** It emits `proxy_buffering on` + `proxy_limit_rate`, which throttles
+  nginx's read **from Garage** and so holds a cache-restore GET open — at the
+  upstream, not merely at the client — for as long as the arm says. **It is NOT
+  `limit_rate`**: this section said so until W3-1 executed, and `limit_rate` is
+  a silent no-op here because the server block sets `proxy_buffering off`
+  (execution note 4 below, and the entry at `FINDINGS.md`'s W3-1 campaign-asset
+  item). **`s3-latency` is NOT the knob** — it is a fixed pre-request connect delay (a black-holed primary with
   `garage:3900` as `backup`), so it widens the gap *before* the body and does
   nothing to the body itself. W3-2 also measured it turning one logical Put into
   several delayed requests.
