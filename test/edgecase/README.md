@@ -157,6 +157,23 @@ silently off before. **Consequences you must plan for:**
   6-byte object went 0.022 s → **9.034 s** under `s3-latency 3`, because mc
   issues three requests for that one read.
 
+  **`s3-latency` is NOT dependable at large values — W3-2 measured it failing.**
+  The arm works by letting a connect to `192.0.2.1` (TEST-NET-1) time out and
+  falling through to `backup` via `proxy_next_upstream timeout`. That requires
+  the black hole to **hang**; if the host's network answers with an ICMP
+  unreachable instead, nginx sees `connect() failed (111: Connection refused)`,
+  which is `error` and **not** `timeout`, so `proxy_next_upstream` never fires
+  and the request **502s** rather than being delayed. Measured under
+  `s3-latency 30`: a log-archive `Put` got `502 … rt=21.037`, breaking the
+  operation instead of widening it (`w3-2/partB-arm1.txt`). The 3-second
+  measurements above are not withdrawn — at 3 s the connect deadline expires
+  first — but **a scenario that needs a wide window should use
+  `inject.sh pause garage` behind the interposer instead**: nginx accepts,
+  proxies to the paused container and waits on `proxy_read_timeout 300s`, which
+  is a genuine hang, and the window is then bounded only by minio-go's 60 s
+  `ResponseHeaderTimeout` (`minio-go/v7@v7.2.0/transport.go:52`). W3-2's Part B
+  hit both of its arms on the first attempt with that lever.
+
   **It DELAYS a large artifact PUT; it does not fail one — verified, because
   the mechanism gave real grounds to doubt it.** The arm works by letting a
   connect to a black hole time out and falling through to `backup` via

@@ -1,5 +1,52 @@
 # W3-2 — S3 outage during log archival and artifact upload
 
+> **CORRECTED AFTER EXECUTION — READ THIS BEFORE ANYTHING ELSE.**
+> **Every part produced its deliverable and no invariant attribution below is
+> withdrawn.** What execution changed is four *procedural* claims, one of which
+> made a step as written impossible and one of which invalidated two of this
+> runbook's own captures. Superseded text is kept in place and struck through,
+> per house style, because the reason it was wrong is the deliverable.
+>
+> 1. **THIS RUNBOOK SHIPPED A WRONG CONSTANT AND IT VOIDED TWO CAPTURES.**
+>    §"Verified mechanism" fact 1 said `logArchiverLockKey = 0x6C6F6761`
+>    ~~"(= **1819242081** decimal, which is what `pg_locks.objid` shows)"~~.
+>    **`0x6C6F6761` is 1819240289, not 1819242081** (`printf '%d' 0x6C6F6761`).
+>    Gate G5 and the first Part-A lock census were both run with the wrong
+>    literal, both returned 0 granted samples out of 60 and 75, and both were
+>    about to be written up as "the lock is never held" — the exact opposite of
+>    the truth. `$SCRATCH/gate-g5-leader.txt` and `$SCRATCH/partA-lockhold.txt`
+>    are **VOID** and are kept only as the counter-example. Every lock number in
+>    the findings comes from `partA-lockhold-1s.txt` / `partA2-stall.txt`, which
+>    use the correct value. **A capture that returns a clean negative is exactly
+>    the shape that hides a typo'd predicate; print the constant you are
+>    querying with, in the capture, next to the result.**
+> 2. **`inject.sh s3-latency 30` did NOT widen the window — it broke the Put**,
+>    which is the opposite of what `test/edgecase/README.md` records as verified
+>    (measured there at `s3-latency 3`). The black hole `192.0.2.1:3900` answered
+>    **`connect() failed (111: Connection refused)`** instead of hanging, so
+>    `proxy_next_upstream timeout` never fired — refused is `error`, not
+>    `timeout` — and nginx returned **502 after 21.037 s** instead of falling
+>    through to `backup` (`$SCRATCH/partB-arm1.txt`). Part B's lever was replaced
+>    with **`pause garage` behind the interposer**, which is a genuine hang
+>    (nginx accepts, proxies, and waits on `proxy_read_timeout 300s`) and gives a
+>    window bounded only by minio-go's 60 s `ResponseHeaderTimeout`. Both Part B
+>    arms then hit on the first attempt. **A re-runner should not assume
+>    `s3-latency` is reliable at large values on every host** — see the note
+>    added to §Part B.
+> 3. **Part A's premise about what bounds an S3 hang was answered from the wrong
+>    layer, and the answer is a third-party default.** §Invariants asked "is
+>    there any timeout at all on the controller's side?". There is none in
+>    unified-cd; the bound is **minio-go's `ResponseHeaderTimeout: time.Minute`**
+>    (`minio-go/v7@v7.2.0/transport.go:52`), measured as ~65 s of continuously
+>    held archiver lock per attempt.
+> 4. **Part C was executed BEFORE Part B**, not in the runbook's order. Part B
+>    deletes `runs` rows with raw SQL, which would have polluted Part C's run
+>    census; the swap costs nothing and the captures are independent.
+>
+> **The scenario yields ONE violation (minor, I5) and THREE observations
+> (minor).** Do not split Part A's arms into separate findings — `kill-hard` and
+> `pause` share one mechanism and differ only in which error text surfaces.
+
 **Wave W3, Task 4. The first scenario in the campaign that can fault object
 storage at all**, because Task 3 put Garage into `test/ha` and built the S3
 interposer. Everything below is on the **controller side of the socket**.
@@ -177,7 +224,7 @@ Every row re-read at this branch's HEAD; the `file:line` is the claim.
 
 | # | Fact | Site |
 |---|---|---|
-| 1 | The archiver is a 30 s ticker guarded by one advisory lock, `logArchiverLockKey = 0x6C6F6761` (= **1819242081** decimal, which is what `pg_locks.objid` shows) | `internal/controller/archiver.go:15`, `:19-23`; started at `cmd/controller/main.go:400` |
+| 1 | The archiver is a 30 s ticker guarded by one advisory lock, `logArchiverLockKey = 0x6C6F6761` (~~= **1819242081** decimal~~ **= 1819240289 decimal** — see correction 1 in the box at the top of this file; that is what `pg_locks.objid` shows, with `classid=0` and `objsubid=1`) | `internal/controller/archiver.go:15`, `:19-23`; started at `cmd/controller/main.go:400` |
 | 2 | **The lock is acquired per tick and released per tick** — `AcquireAdvisoryLock` then `defer release()` inside `runArchiveAsLeader`, so leadership can move between ticks and is **not** sticky | `archiver.go:39-52` |
 | 3 | Candidate set: terminal status, **no `run_log_archives` row**, not in the excluded set, `ORDER BY updated_at LIMIT $1` (limit **20**) | `internal/store/postgres.go:1458-1467`; limit at `archiver.go:55` |
 | 4 | **`bo` is one instance per PROCESS, not per tick** — `bo := newFailureBackoff(time.Minute, time.Hour, 10_000)` at `:28`, the loop at `:29`. Its own doc comment says it is "Leader-local by design: a failover or restart clears it, costing one retry per poison before it is re-excluded" | `archiver.go:25-28`; `internal/controller/failure_backoff.go:9-15` |
@@ -433,13 +480,28 @@ code-read.
 (`archiver.go:96`) and `st.CreateLogArchive` (`:106`) is microseconds for a tiny
 log. Two levers widen or trigger it:
 
-- **`inject.sh s3-latency <n>`** routes every S3 request at a black hole first
+- ~~**`inject.sh s3-latency <n>`** routes every S3 request at a black hole first
   and lets `proxy_connect_timeout` expire before falling through to Garage
   (`nginx-s3.conf:107-110`), so a single-request `Put` is delayed by ~`n`
   seconds. Task 3 measured this on a 64 MiB Put (0.753 s → 9.702 s under
   `s3-latency 3`, 3 requests) and confirmed it **delays** rather than **fails**.
   A `edge-tick` archive is a few kilobytes, so it should be **one** request —
-  **verify that from the interposer access log rather than assuming it.**
+  **verify that from the interposer access log rather than assuming it.**~~
+  **SUPERSEDED — see correction 2 at the top of this file. `s3-latency 30` broke
+  the Put instead of widening it**: the black hole answered `connection refused`
+  rather than hanging, `proxy_next_upstream timeout` does not cover a refusal,
+  and the request 502'd after 21.037 s (`$SCRATCH/partB-arm1.txt`). Task 3's
+  measurement at `s3-latency 3` is not withdrawn — at 3 s the connect deadline
+  expires before any ICMP unreachable arrives — but **the verb is not
+  dependable at large values**, and Part B needed a wide window.
+- **USE `inject.sh pause garage` BEHIND THE INTERPOSER instead.** nginx accepts
+  the controller's request, proxies it to the paused container and waits on
+  `proxy_read_timeout 300s` (`nginx-s3.conf:166`), which is a genuine hang. The
+  window is then bounded only by minio-go's 60 s `ResponseHeaderTimeout`
+  (`minio-go/v7@v7.2.0/transport.go:52`) — ample. Unpause once the `runs` row is
+  deleted and the in-flight `Put` completes against a live Garage. Measured
+  Put durations with this lever: **4.862 s** (arm 1) and **6.267 s** (arm 2),
+  both `200` at the interposer.
 - **Deleting the `runs` row inside that window** makes `CreateLogArchive` fail on
   the FK, which is the *exact* failure `archiver.go:107-110`'s own comment
   describes.
@@ -693,3 +755,101 @@ docker compose $COMPOSE_FILES down -v
   socket); **W3-4** (duplicate surplus in `logs`, with an archive-fidelity limb
   measured at `FINDINGS.md:1557`); and **W3-6** (orphan artifacts, Task 5). Name
   them explicitly so triage does not merge them.
+
+---
+
+## Execution notes — 2026-07-31 run (read before re-running)
+
+Executed on branch `plan/edge-case-w3`, **`02:54:55Z – 03:48:14Z`**, in the two
+phases §Stack specifies, with a `down -v` between them and after them
+(`w3-2/teardown.txt`). **Four `FINDINGS` entries: 1 violation (minor, I5) and 3
+observations (minor).** No branch-internal asset bug in the campaign's shipped
+assets — but **this runbook itself shipped a wrong constant** (correction 1),
+which is recorded here rather than filed, because it was caught and corrected
+inside the same session before any finding rested on it. The developer stack
+(`docker compose ls`, project `unified-cd`) was running and untouched at both
+ends (`w3-2/gate.txt`, `w3-2/teardown.txt`).
+
+**Nine runs, all reaching exactly one terminal state — 8 `Succeeded`, 1
+`Failed`** (the Part C armed run, which is *supposed* to fail). Phase 1 ended
+with 6 runs / 6 archives / 6 objects; phase 2 ended with 2 surviving runs, 2
+archives and 1 orphan object left deliberately by Part B arm 2.
+
+| Part | Arm | Result |
+|---|---|---|
+| G4 | none | archival works: 3038 B / 30 lines / `maxSeq` 30, `controller1`, 59 s after the run went terminal |
+| A1 | `kill-hard garage`, 8 min held | **20** `failed to archive Run logs` lines for **2** runs across **all three** replicas; runs untouched on four surfaces |
+| A1.7 | restore | both archived **59.1 s** and **89.1 s** after Garage returned, both by `controller1`, both complete (30/30 lines) |
+| A2 | `pause garage`, 7.5 min held | **4** attempts, each ~65 s of continuously-held cluster lock; error text differs from A1 and is misleading |
+| A2.4 | during the stall | `/readyz` **200** on all three, LB `/healthz` 200, a fresh run `Succeeded` in 35 s |
+| B arm 1 | `pause` + SQL `DELETE FROM runs` mid-`Put` | FK violation on `CreateLogArchive`, compensating `Delete` **204**, **no** object left |
+| B arm 2 | same + `s3-block DELETE unified-cd-logs/ 403` | same FK violation, compensating `Delete` **403**, `WARN` fired, **3.0 KiB orphan** left |
+| C1 | none | 64 MiB artifact `Succeeded`, `upload_blob` 0.813 s, controller `PUT` 204 in 807 ms, 3 S3 requests |
+| C3 | `s3-block PUT unified-cd-logs/artifacts/ 403` | run `Failed`, step `Failed`, **exactly 1** controller `PUT` (500, 160 ms), multipart aborted cleanly |
+| D2 | `kill-hard garage` + `restart controller1` | `s3 object store init` ERROR, **exit 1**, `restartCount=0`, container stays `exited` |
+| D3 | Garage restored | still `exited` after **2 minutes** with no operator action; `up -d` brings it straight back |
+
+**Ten things a re-run should know.**
+
+1. **Print the constant with the result.** Correction 1 is the whole lesson: two
+   captures returned a clean, plausible negative because the `objid` literal was
+   mistyped, and a clean negative is the one result nobody re-checks.
+   `0x6C6F6761` = **1819240289**.
+2. **The archiver lock is transient when healthy and continuous when the store
+   is broken, and that contrast IS the instrument.** Under `kill-hard`, 55 of 70
+   1-second samples had it granted; under `pause`, 86 of 120 2-second samples.
+   The gaps between holds are the backoff windows. It is also the only reliable
+   *in-flight* signal for Part B — poll it and fire on it, do not guess.
+3. **A failing archival pass is slow, and the lock is held for all of it.**
+   Under `kill-hard` each failing `Put` cost ~44 s and a two-run pass ~89 s;
+   under `pause`, ~65 s per attempt. The batch limit is **20**
+   (`archiver.go:55`), so a full poison batch is arithmetic nobody has done:
+   ~15 min of held cluster-wide lock (derived from 20 × 44 s, **not measured**).
+4. **The `pause` and `kill-hard` errors are not interchangeable, and only one is
+   diagnosable.** `kill-hard` gives `dial tcp: lookup garage … no such host`.
+   `pause` gives `readfrom tcp …: http: ContentLength=3047 with Body length 0`,
+   which names no outage at all — see the observation entry on the
+   non-rewindable buffer.
+5. **Leadership rotates per tick and every replica pays its own first attempt.**
+   The 20 attempts split 8 / 4 / 8 across `controller1` / `controller2` /
+   `controller3`; passes alternated cleanly. Attribute from the log line's
+   container prefix, and attribute the *lock* from
+   `pg_locks ⋈ pg_stat_activity.client_addr` against the container IPs.
+6. **Recovery is governed by the backoff, not by the 30 s interval.** 59.1 s and
+   89.1 s, both matching `controller1`'s derived `retryAt` (03:22:37 / 03:23:20)
+   to within one tick. Do not quote "30 s" as the recovery bound.
+7. **Part B needs `pause`, not `s3-latency`** (correction 2), and **raw SQL for
+   the `runs` row** — the API `DELETE` route runs `deleteRunEverywhere`, whose
+   own object deletes would collide with arm 2's `DELETE` block and mix two
+   mechanisms in one measurement. Label the SQL as the instrument it is.
+8. **Arm 2 leaves a real orphan on purpose.** `runs/<id>/logs.ndjson`, 3.0 KiB,
+   no `runs` row, no `run_log_archives` row, `GET /api/v1/runs/{id}` → 404. It
+   is destroyed by the `down -v`, so re-create it if you need it.
+9. **Part C's failure is correct and completely undiagnosable, and the second
+   half is the finding.** One `PUT`, 500, step `Failed`, run `Failed`, multipart
+   aborted (`DELETE … 204` at the interposer), no partial object — all correct.
+   And: **zero** controller `WARN`/`ERROR` lines, **zero** run log lines about
+   it, agent error `upload artifact http 500` with no body ever read, and the
+   failed step reports `"exitCode":0`.
+10. **`restart: "no"` is the rig's policy and it changes the vocabulary.** On
+    this stack the controller does not crash-*loop*; it exits once and stays
+    exited. Read `partD-policy.txt` before writing "crashloop" — the product
+    behaviour under test is `os.Exit(1)` with no in-process retry, and the
+    recovery story is entirely the supervisor's.
+
+**Sampler hygiene was captured, not asserted.** All polling loops in this
+scenario were foreground `bash` `for` loops that ran to completion, so there was
+nothing to kill; both passes recorded `jobs` empty, `ps -W | grep -iE
+"curl|psql|python"` empty on the host, and — per the W3-4 lesson that a
+`docker compose exec` sampler outlives its shell — an in-container `ps` check on
+`nginx`, `s3proxy` and `postgres`, all empty (`w3-2/teardown.txt`). The `mc`
+image has no `grep`, which the capture records rather than hides.
+
+**No Postgres statement logging was armed.** Nothing in this scenario needed the
+insert-side view, so `log_statement`/`log_line_prefix` were left at their
+defaults and there was nothing to revert. Said explicitly because the runbook
+budgets for it elsewhere in the wave.
+
+**The rig's intermittent-500 allowance (G8) was never spent** — zero API 500s on
+any trigger or gate command across 9 triggers and every gate. A re-run should not
+assume that.
