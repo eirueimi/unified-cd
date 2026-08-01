@@ -309,6 +309,14 @@ silently off before. **Consequences you must plan for:**
 
 ### The W4 Kubernetes rig, and the enrollment bypass it rests on
 
+**W4 is complete — see `FINDINGS.md` §"Checkpoint: W4 complete" for the wave's
+tally, its two false premises, the RBAC blind spot, and what survives the rig.**
+Five directories of raw captures are archived at
+`<project parent>/edgecase-evidence/w4/`; **their names follow the TASK, not the
+scenario** — `w4-2/` is the **rig**, `w4-2b/` is scenario W4-2, and `w4-1/` holds
+both W4-0's spike and W4-1 — so read that archive's own README trap table before
+resolving a `w4-*` citation.
+
 **Read `scenarios/w4-rig.md` before running any W4 scenario.** Summary, because
 this one caveat qualifies every W4 finding:
 
@@ -396,6 +404,49 @@ deferred to the W4-2 task, not dropped.**
   `enrollproxy.log` rather than truncating it, so a proxy restarted under a
   running agent does not destroy that line — truncation is what produced the
   misleading `0 enrollment exchange(s)` in `w4-2/step8-teardown.txt`.
+
+**What a later wave inherits from this rig, stated once so it is not
+re-derived.** Reusable as-is, all committed: the kind wiring (there is **no kind
+CLI and none is needed** — Docker Desktop's Kubernetes *is* kind, node
+`desktop-control-plane` on a Docker bridge literally named `kind`, and `ci` +
+`unified-cd` both already exist); the controller-side config file and its
+least-privilege RBAC (`compose/controller-k8senroll.yaml`,
+`compose/k8senroll.override.yaml`, `k8s/w4-spike-controller-rbac.yaml` — exactly
+`create tokenreviews` + `get pods`, which is also the minimum a real deployment
+needs) and its kubeconfig **generator** (`k8s/make-spike-kubeconfig.sh`; the
+kubeconfig itself is gitignored credential material and is regenerated, never
+archived); the two-way network bridge (`docker network connect` onto the `kind`
+network **in addition to** `default` — naming any network replaces implicit
+default membership and would cut the controllers off from postgres/garage/nginx,
+and **no `insecure-skip-tls-verify` is required** because the node cert's SANs
+cover the name the kubeconfig uses); the enrollment interposer
+(`tools/w4/enrollproxy`, 427 lines, stdlib only); the k8s fault verbs
+(`tools/w4/w4-k8s-inject.sh`, the table above); and **seven** fixtures
+(`workloads/w4-tick`, `w4-pending`, `w4-reuse`, `w4-longpod`,
+`w4-pending-reuse`, `w4-poolkey-b`, `w4-poolkey-c` — each with both a `.yaml` and
+a `.payload.json`, both validated through `tools/w3/fixcheck`) plus four agent
+configs under `k8s/`, the `w4-2-reuse-denied` Role and its restricted-kubeconfig
+generator (`k8s/make-w4-2-restricted-kubeconfig.sh`, which reads the server URL
+out of the developer's own kubeconfig — Docker Desktop publishes the apiserver on
+a **dynamic** host port, so a hardcoded one would break on the next restart).
+
+**Three bring-up gotchas that cost time once each and will cost it again.**
+(i) **The three bring-up commands are ordered and skipping one fails silently**:
+the overlay bind-mounts `compose/kubeconfig-k8senroll.yaml`, and if it does not
+exist Docker creates a **directory** at that path, **all three controllers
+exit(1)** on `is a directory`, and the empty directory persists to poison the
+next `up` until it is `rmdir`ed. That looks like the bootstrap-PAT race and is
+not — the race kills **one** replica, this kills three. If you do not need the
+403 control, use the plain `test/ha` compose file, which is what W4-1, W4-2 and
+W4-3 all did. (ii) **The bootstrap-PAT race is a race, not a certainty** — 3 up /
+2 down across the wave's five cold bring-ups (`FINDINGS.md:2270`). Verify all
+three are `Up`; do not assume failure either. (iii) **The primary container must
+be named `job`** — a `podTemplate` supplying its own `containers:` without one
+parses, validates, schedules and builds a Pod, then cannot execute a step
+(`FINDINGS.md:2220`). Also carried forward: labels come from the **enrollment
+token**, not the agent config; a `podTemplate` does **not** imply the `pod`
+capability; and under `reuse` a Pod's name and `unified-cd/runId` label name the
+**first** run forever (`FINDINGS.md:2246`).
 
 - `tools/w3/fixcheck` — parses YAML fixtures through the real `dsl.Parse`
   (`KnownFields(true)` + `Job.Validate`) and prints what the controller would
