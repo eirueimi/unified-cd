@@ -307,6 +307,76 @@ silently off before. **Consequences you must plan for:**
   override `oneway`'s `nginx.conf` while inheriting its `blocklist` volume. It
   *does* stack with `s3proxy.override.yaml` (different service).
 
+### The W4 Kubernetes rig, and the enrollment bypass it rests on
+
+**Read `scenarios/w4-rig.md` before running any W4 scenario.** Summary, because
+this one caveat qualifies every W4 finding:
+
+> Kubernetes agent enrollment is **unconditionally broken** — the verifier reads
+> the ServiceAccount UID from a TokenReview extra key the API server never
+> populates, so every k8s enrollment is 403 (W4-0), and PR #75 removed the
+> static-token alternative. W4 therefore runs behind an **enrollment
+> interposer**: `tools/w4/enrollproxy` forwards everything except
+> `POST /api/v1/agents/enroll`, which it answers with a **real
+> controller-issued** `uca_` obtained through the product's ordinary
+> `"enrollment"` method. **No W4 finding speaks to the enrollment path** beyond
+> what `scenarios/w4-0-enrollment-spike.md` records. Everything downstream of
+> authentication is the unmodified product path.
+
+The bypass is sound because **nothing on the request path reads
+`enrollment_method`** — `agent_auth.go:38-116` checks only the token, its kind,
+status, expiry and hash; the column is read in exactly three issuance sites
+(`postgres_agent_auth.go:193`, `:237`, `:526`) and nowhere else. Verified live
+across register / heartbeat / claim / log-bulk / finish / refresh
+(`w4-rig.md` §Step 2).
+
+Bring up / tear down:
+
+```bash
+docker compose -f test/ha/docker-compose.ha.yaml \
+               -f test/edgecase/compose/k8senroll.override.yaml up -d --build
+test/edgecase/tools/w4/w4-up.sh          # mints a credential, starts proxy + agent
+test/edgecase/tools/w4/w4-down.sh        # SIGTERM both, print their final output
+docker compose -f test/ha/docker-compose.ha.yaml \
+               -f test/edgecase/compose/k8senroll.override.yaml down -v
+```
+
+The `k8senroll` overlay is optional for the rig itself — it exists so the
+"same request, 403 direct / 200 through the interposer" control can be taken.
+The agent runs **on the host** (route decision and its cost, `w4-rig.md`
+§Step 1); **W4-2's RBAC-denial arm needs an in-cluster Deployment and is
+deferred to the W4-2 task, not dropped.**
+
+- `tools/w4/w4-k8s-inject.sh` — the first k8s fault tooling here. `inject.sh`'s
+  verbs are useless for it: they take compose **service names** and hardcode
+  `unified-cd-ha_default` / `unified-cd-ha-$svc-1`.
+
+  | Command | Effect |
+  |---|---|
+  | `pods` | list this agent's run Pods (`app=unified-cd-agent`) |
+  | `delete-pod <runId\|latest>` | delete by the `unified-cd/runId` label, not by the truncated pod name |
+  | `annotations [pod]` | read `unified-cd/pool-status`, `pool-key`, `pool-run-id`, `pool-template` |
+  | `block [reset\|hang\|<status>]` / `unblock` | **one-way agent→controller partition, one agent wide.** Measured: 40 s armed → the run stayed `Queued`, no pod, 56 blocked requests, while `agent1`/`agent2` kept heartbeating; cleared → claimed and `Succeeded` in 6 s |
+  | `show` / `probe` | arm state, and one request through the proxy |
+
+  **`block` shipped inert once and only an effect measurement caught it** — the
+  W3-1 `s3-slow` lesson, repeated. Every state check passed while the agent
+  claimed and ran a job 17 s into the armed window, because its 30 s claim long
+  poll had entered the handler *before* the arm. Fixed by severing live
+  connections on the arm transition (`ConnState` + `BLOCK-ARM severed N`);
+  re-measured before being believed.
+
+  **Why not `nginx-block`:** it denies an agent's source IP resolved via
+  `docker inspect` on a compose container. A host-run agent has none, and its
+  traffic shares the Docker-host address with every `curl` the scenario makes,
+  so an IP deny would cut the instrument too. **Why not "SIGKILL all three
+  controllers":** that also stops the reapers, archiver and scheduler, which
+  W4-1 needs running while the agent is isolated.
+
+- `tools/w4/w4-mint-credential.sh` / `w4-up.sh` / `w4-down.sh` — credential mint
+  (product enrollment path), rig up, rig down. `w4-down.sh` reports the
+  interposer's intercept count; **0 means the bypass was never in effect.**
+
 - `tools/w3/fixcheck` — parses YAML fixtures through the real `dsl.Parse`
   (`KnownFields(true)` + `Job.Validate`) and prints what the controller would
   see, offline. Run it on both the `.yaml` **and** the YAML re-extracted from
@@ -386,6 +456,19 @@ its inferred capability is `pod` (see the table).
 | `secret-user.payload.json` | `edge-secret-user` | the **secrets** fixture (W3-3): step `env` references `{{ .Secrets.EDGE_KEK_PROBE }}`, which is what makes the claim response carry a non-empty `SecretsNeeded` and the agent take the `FetchSecrets` path (`internal/agent/orchestrator.go:161`). Prints only the secret's **length** (`secret-len=<n>`), never its value. `secret-user.yaml` is the same job in plain YAML. **The secret must be registered first** — `POST /api/v1/secrets/` (trailing slash required) with `{"name":..., "value":...}`, `204` on success |
 | `w36-probe.payload.json` | `edge-w36-probe` | the **unclaimable** fixture (W3-6): `agentSelector: [kind:w36probe]` matches neither `agent1` nor `agent2`, so a run of it sits Queued until a curl-driven **synthetic agent** claims it. Its one step never executes — the run is terminalised through `POST /api/v1/agents/{id}/runs/{runId}/finish` — so the fixture exists to give an instrument a run it exclusively owns |
 | `w35-probe.payload.json` | `edge-w35-probe` | the same shape for W3-5, with its own selector `kind:w35probe` so the two scenarios' instruments cannot collide. Used to put a genuinely `Succeeded` run in front of the **real** archiver and then push log lines at it after the seal (`scenarios/w3-5-seal-vs-flush.md` Part A/C) |
+| `w4-tick.payload.json` | `edge-w4-tick` | the W4 **baseline** fixture: `agentSelector: [kind:kubernetes]`, one `echo` plus `hostname`. Trigger→`Succeeded` in **4 s**, pod gone within 6 s |
+| `w4-pending.payload.json` | `edge-w4-pending` | a **copy** of `podcap-job` with the selector moved to `kind:kubernetes`, keeping the pod-level `nodeSelector: disktype: ssd` that no node satisfies, so the pod sticks `Pending` — W4-3's trigger. Deliberately renamed to `edge-w4-pending`: reusing `metadata.name: edge-podcap-job` would **overwrite the job row** and break W2-4 Part D's premise, which copying the file alone does not prevent |
+| `w4-reuse.payload.json` | `edge-w4-reuse` | the **`podTemplate.reuse`** fixture — nothing else in the repo exercises it. Prints `hostname` and reads/writes a `/workspace` marker, so reuse is observable two ways. Verified: three runs, one pod, marker carried across all three |
+| `w4-longpod.payload.json` | `edge-w4-longpod` | 120 s of 1 Hz self-indexing ticks in a pod — the fixture for anything that must act on a run **while** its pod is alive (pod deletion, partition, podStartTimeout) |
+
+**W4 fixture traps, both measured:** (1) `dsl.RequiredCaps` returns `pod` only
+when `PodTemplateNeedsKubernetes` is true — a bare `containers:` list yields
+**`container`**, so three of the four W4 fixtures are capability-schedulable on
+the Linux agents and are kept off them *only by the label*. (2) The primary
+container **must be named `job`** (`dsl.PrimaryContainerName`); a podTemplate
+whose containers do not include one parses, validates and builds a Pod, then
+fails every step with `container job is not valid for pod`.
+`podcap-job.payload.json` has that shape and has never been executed.
 
 ### Fractional `timeoutMinutes` — verified, do not re-derive
 
