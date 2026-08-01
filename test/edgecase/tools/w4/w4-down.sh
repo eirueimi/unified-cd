@@ -43,10 +43,28 @@ stop k8s-agent
 stop enrollproxy
 
 # The interposer logs one INTERCEPT line per intercepted enrollment. That count
-# is the bypass's own evidence: if it is 0, the agent never went through the
-# interposer and any claim about the rig is unsupported.
-n=$(grep -c '^.*INTERCEPT #' "${logdir}/enrollproxy.log" 2>/dev/null || echo 0)
-echo "w4-down: interposer answered ${n} enrollment exchange(s) this session"
+# is the bypass's own evidence.
+#
+# READ IT CORRECTLY, because 0 is ambiguous and reporting it as a failure was a
+# real bug in the first version of this script. The agent enrolls ONCE at
+# startup and then not again until its cached access token is inside its
+# refresh lead time — 15 min plus up to 5 min of jitter before a 1 h expiry, so
+# roughly every 40-45 min (internal/k8sagent/credentials.go:83-84). A short
+# session, or a proxy restarted underneath a still-running agent, legitimately
+# shows 0. The count is over every enrollproxy.log* in the log dir so a restart
+# during the session is still covered.
+#
+# 0 means "no enrollment was intercepted while these logs were being written" —
+# NOT "the bypass was not in effect". The claim that rests on the bypass is
+# supported by the INTERCEPT line at the agent's own startup, wherever that
+# landed. If no log in the directory carries one, the rig was never brought up
+# by w4-up.sh and any claim about it IS unsupported.
+n=$(cat "${logdir}"/enrollproxy.log* 2>/dev/null | grep -c 'INTERCEPT #')
+echo "w4-down: ${n} enrollment exchange(s) intercepted across ${logdir}/enrollproxy.log*"
+if [ "${n}" -eq 0 ]; then
+  echo "w4-down: NOTE 0 is expected for a session shorter than the ~40 min refresh"
+  echo "         interval, or when the proxy was restarted under a running agent."
+fi
 
 if [ -n "${capture}" ]; then
   mkdir -p "${capture}"
