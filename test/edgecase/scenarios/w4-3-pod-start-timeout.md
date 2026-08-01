@@ -278,7 +278,7 @@ below traces to one of them.
 | A. Cold start | **CONFORMANT** — pod created and `Pending` throughout; run `Failed` after a **30.198 s** wait against a 30 s bound; reason written at `stepIndex -1`; pod deleted |
 | B. Pooled arm | **CONFORMANT** — **30.193 s**, 5 ms from Part A: the same bound, not a second one. Wedged pod **deleted**, not returned to the pool |
 | C. Second exit | **CONFORMANT** — agent abandoned 220 ms after the controller wrote `Cancelled`; no status written by the agent, pod still cleaned up. The *absence* of any `stepIndex -1` line is filed as an observation |
-| D. Config surface | **1 violation + 2 observations** — the docs promise a fallback the product does not perform; the brief's suspected env defect is **refuted** |
+| D. Config surface | **1 violation + 1 observation** — the docs promise a fallback the product does not perform; the brief's suspected env defect is **refuted** |
 
 **Three of the four parts found the product behaving exactly as designed and
 documented, and that is recorded as conformance rather than dressed up.** The
