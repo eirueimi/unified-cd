@@ -1,0 +1,44 @@
+# W4-0 enrollment spike overlay: make the HA rig's controllers capable of
+# Kubernetes agent enrollment.
+#
+# Two things the base rig lacks:
+#
+# 1. A config file. The base rig passes no `-f`, so eff.AgentAuth has no
+#    clusters, the verifier map built at cmd/controller/main.go is empty, and
+#    enrollment fails closed with 503 "kubernetes identity unavailable".
+#    `command:` here supplies the flag; the controller image's ENTRYPOINT is
+#    ["/controller"], so these become its arguments.
+#
+# 2. A route to the Kubernetes API. Enrollment is bidirectional — the
+#    controller itself calls TokenReviews().Create and Pods().Get
+#    (internal/controller/agent_enrollment_kubernetes.go). The cluster's node is
+#    a container named `desktop-control-plane` on the external `kind` bridge,
+#    so the controllers are attached to that network in addition to the rig's
+#    own default network. Docker's embedded DNS resolves the node by container
+#    name, and that name is in the apiserver certificate's SANs, so TLS
+#    verifies normally — no insecure-skip-tls-verify anywhere.
+#
+# Listing `default` explicitly is load-bearing: naming any network on a service
+# replaces the implicit default membership, which would cut the controllers off
+# from postgres, garage and nginx.
+#
+# Usage:
+#   docker compose -f test/ha/docker-compose.ha.yaml \
+#                  -f test/edgecase/compose/k8senroll.override.yaml up -d
+services:
+  controller1: &k8senroll
+    command: ["-f", "/etc/unified-cd/controller.yaml"]
+    volumes:
+      - ./kek:/run/secrets/kek:ro
+      - ../edgecase/compose/controller-k8senroll.yaml:/etc/unified-cd/controller.yaml:ro
+      - ../edgecase/compose/kubeconfig-k8senroll.yaml:/etc/unified-cd/kubeconfig.yaml:ro
+    networks:
+      - default
+      - kind
+  controller2: *k8senroll
+  controller3: *k8senroll
+
+networks:
+  kind:
+    external: true
+    name: kind
