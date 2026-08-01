@@ -63,13 +63,26 @@ That sentence is the **only** operator-facing statement about invalid values,
 and for the *unparseable* case it is **wrong**: an unparseable value does not
 fall back to anything, it **refuses to boot**
 (`cmd/k8s-agent/main.go:42-45` → `os.Exit(1)`). The boot rejection is documented
-**nowhere**. A docs survey for the knob returns **4 hits outside
+**nowhere operator-facing**. A docs survey for the knob returns **4 hits outside
 `docs/superpowers/`** — `docs/configuration.md:368` (the annotated sample
 config), `:456` (the field table row), `:463` (the env-override sentence), and
 `docs/kubernetes-integration.md:207` (the k8s field table row) — and **not one
 of the four mentions that an unparseable value is rejected at boot.** (Hit count
 reported, not truncated, per the recording rules; the full survey is in
 `w4-3/docsurvey.txt`.)
+
+**"Nowhere" needs that qualifier, and the correction comes from inside this
+scenario's own capture.** `w4-3/docsurvey.txt` line 8 is
+`docs/superpowers/plans/2026-07-15-k8s-agent-resilience.md:36`: *"`Validate`: …
+rejects an unparseable `podStartTimeout` / `drainTimeout` with an error."* The
+boot rejection **is** written down — in the implementation plan that introduced
+it. An unqualified "documented nowhere" would have been refuted by a line the
+survey itself produced, which is exactly the "a producer sat unevaluated inside
+its own capture" failure the recording rules name. **This strengthens the
+finding rather than weakening it:** the rejection was a deliberate design
+decision, recorded as such at design time, and simply never made the trip into
+the operator-facing docs when `docs/configuration.md:456` was written. The gap
+is a docs-propagation gap, not an accident of implementation.
 
 So the honest shape of the asymmetry is not "two documented behaviours" but
 **one documented behaviour that only two of its three stated inputs actually
@@ -210,8 +223,10 @@ calling `failRun`**.
 
 **This is documented behaviour** (`docs/kubernetes-integration.md:207`: "The wait
 also aborts early (without overriding the controller's status) if the run is
-already terminal at the controller"), so the expected filing is **conformance**,
-not a finding. Record precisely: the run's final status, its step rows, whether
+already terminal at the controller"), so the expected filing on the *behaviour*
+is **conformance**, not a finding — though what the run's owner is left holding
+afterwards is a separate question, and the Results file one observation on it.
+Record precisely: the run's final status, its step rows, whether
 any `stepIndex -1` line was written, and whether the pod was cleaned up (the
 deferred `DeletePod` runs on `context.Background()`, so it must survive the
 cancellation).
@@ -262,12 +277,14 @@ below traces to one of them.
 | --- | --- |
 | A. Cold start | **CONFORMANT** — pod created and `Pending` throughout; run `Failed` after a **30.198 s** wait against a 30 s bound; reason written at `stepIndex -1`; pod deleted |
 | B. Pooled arm | **CONFORMANT** — **30.193 s**, 5 ms from Part A: the same bound, not a second one. Wedged pod **deleted**, not returned to the pool |
-| C. Second exit | **CONFORMANT** — agent abandoned 220 ms after the controller wrote `Cancelled`; no status written by the agent, no `stepIndex -1` line, pod still cleaned up |
+| C. Second exit | **CONFORMANT** — agent abandoned 220 ms after the controller wrote `Cancelled`; no status written by the agent, pod still cleaned up. The *absence* of any `stepIndex -1` line is filed as an observation |
 | D. Config surface | **1 violation + 2 observations** — the docs promise a fallback the product does not perform; the brief's suspected env defect is **refuted** |
 
 **Three of the four parts found the product behaving exactly as designed and
 documented, and that is recorded as conformance rather than dressed up.** The
-one contradiction is in Part D, and it is against `docs/`, not against I5.
+one contradiction is in Part D, and it is against `docs/`, not against I5. The
+three observations are diagnosability costs of behaviour that is otherwise
+correct, and none of them is a defect in what the product *does*.
 
 ### I5 was attacked and **held**; this scenario files nothing on it
 
@@ -291,6 +308,23 @@ TRIGGER edge-w4-pending at 06:51:03.724 runId=9262f762-...
 06:51:34.090 t=30.16s status=Running  pods=ucd-run-9262f762-7bf3-45 0/2 Pending
 06:51:35.513 t=31.61s status=Failed   pods=<none>
 ```
+
+**Two failed probes precede the working queries in that capture, and no number
+below comes from either.** `w4-3/partA.txt` opens its DB section with two
+ad-hoc queries written against wrong identifiers — `=== run row (db) ===`
+selects `started_at` from `runs` (`ERROR: column "started_at" does not exist`;
+the run table has `claimed_at`/`created_at`/`updated_at`) and
+`=== step rows (db) ===` selects from `run_steps` (`ERROR: relation "run_steps"
+does not exist`; the table is `step_reports`). Both were corrected in
+`w4-3/trial.sh` and re-run in the same capture, and it is the corrected pair
+every figure is taken from: the run timestamps come from
+`select id,job_name,status,claimed_by,claimed_at,created_at,updated_at from runs
+where id=…` (`trial.sh:53`, output under the second `=== run row ===` heading),
+and the "zero step rows" claim from
+`select step_index,step_name,status,exit_code,started_at,ended_at from
+step_reports where run_id=…` (`:56`), whose `=== step_reports ===` section
+returns cleanly and empty and is followed by an explicit column listing that
+proves the query reached a real table. The `logs` query (`:60`) never failed.
 
 **The measurement window and what it bounds.** The 1 Hz sampler brackets the
 transition to `[30.16 s, 31.61 s]`, which is too coarse to state as a result.
@@ -332,11 +366,28 @@ following 9 s.
 
 **The reason text is the one thing here worth filing.** It names neither the
 timeout, nor its value, nor the Pod's `Pending` phase, nor the scheduling
-failure that caused it — it surfaces client-go's rate-limiter error, because
-`WaitForPodRunning`'s deadline is nearly always consumed inside the in-flight
-`Pods().Get` (`podmanager.go:98-100`, wrapped `failed to get Pod %s: %w`) rather
-than at the loop's own `ctx.Done()` check (`:108-110`), which would have
-returned a clean `context.DeadlineExceeded`. Filed as an observation.
+failure that caused it — it surfaces client-go's rate-limiter error. The
+mechanism, read at `podmanager.go:96-115`: the deadline nearly always expires
+during the loop's unconditional 500 ms `time.Sleep` (`:112`), so the *next*
+`Pods().Get` (`:98`) is rejected by client-go's own rate limiter **before the
+request is issued** and is wrapped as `failed to get Pod %s: %w` (`:98-100`),
+returning before the loop's `ctx.Done()` guard at `:108-112` is reached again.
+That guard is **not** unreachable — the `select` is non-blocking
+(`default: time.Sleep(500ms)`), so `ctx.Done()` is tested on **every**
+iteration; but it is only ever tested *after* a successful `Get`, and once the
+deadline has passed no `Get` succeeds. The clean `context.DeadlineExceeded`
+`:110` would have returned is therefore reachable only if expiry lands in the
+narrow interval between the `Get` returning and the `select` executing.
+Filed as an observation.
+
+*(This mechanism sentence was corrected at review. The earlier wording said the
+deadline is "consumed inside the in-flight `Get`" and that the guard "is only
+reached in the narrow window between a completed `Get` and the next sleep" —
+both `file:line` cites were right and the mechanism was wrong, the campaign's
+now-familiar failure shape. The captured message is what refutes it: `client
+rate limiter Wait returned an error` is client-go declining to issue a request,
+not a request timing out in flight. The conclusion and both proposed fixes are
+unaffected.)*
 
 ### Part B — the pooled arm (run `38b62b88-fb4a-45d3-9b7a-52d05b332895`)
 
@@ -370,10 +421,37 @@ cluster carries no `disktype: ssd` label.
 | failure logged | `06:51:34.2723` | `06:53:30.6959` |
 | **wait window** | **30.198 s** | **30.193 s** |
 
-**There is no second timeout.** The two arms differ by 5 ms on a 30 s bound,
-which is the expected result of one `context.WithTimeout` at one call site
-(`agent.go:340`) reached by both branches. The reason string, the `stepIndex -1`
-row, the `Failed` status and the empty `step_reports` are identical to Part A.
+**There is no second timeout — enumerated, not inferred.** The 5 ms agreement
+is corroboration only, and on its own it does not carry the claim: two *distinct*
+call sites both reading `PodStartTimeoutDuration()` would produce the same 5 ms
+agreement, because equal values prove a shared **knob**, not a shared **site**.
+Under the campaign's "when you claim a class is fully enumerated, verify the
+enumeration" rule the pooled acquisition path has to be swept for an independent
+wait. It was, at this branch's HEAD (`w4-3/poolsweep.txt`):
+
+```
+$ grep -nE "context\.WithTimeout|WaitFor|Poll|Sleep" internal/k8sagent/pool.go
+(exit 1 — no matches; the file is 354 lines)
+$ grep -n "awaitPodRunning" internal/k8sagent/agent.go
+340:    masterTerminal, err := a.awaitPodRunning(ctx, podName, c.RunID)      <- the one call site
+406:// awaitPodRunning waits for podName to reach Running, bounded by
+415:func (a *K8sAgent) awaitPodRunning(...)                                  <- the definition
+```
+
+Broadened to `WithTimeout|WithDeadline|WaitFor|Poll|Sleep|Ticker|After\(|time\.`
+so a ticker could not hide behind the narrower pattern, `pool.go` yields exactly
+one timing construct: the `time.NewTicker` in `StartEviction` (`:130-151`), a
+background idle-eviction goroutine that is **not on the acquisition path**. The
+acquisition path itself blocks on nothing: `ClaimPod` (`:182-213`) takes a
+mutex, does one `UpdatePodAnnotations` and one `Get`, and returns; on an empty
+pool it tail-calls `createPoolPod` (`:220-239`), which is `BuildPod` +
+`CreatePod` + return. Neither waits for readiness. **So the only bound on the
+pooled arm is `awaitPodRunning` at `agent.go:340`** — the same single call site
+the fresh arm reaches, after the `usePool` branch converges at `:279-338`. The
+5 ms then reads as the confirmation it is, rather than as the argument.
+
+The reason string, the `stepIndex -1` row, the `Failed` status and the empty
+`step_reports` are identical to Part A.
 
 **The wedged pod was deleted, not pooled — checked two ways, immediately after
 the terminal status:**
@@ -415,12 +493,31 @@ What the run looks like afterwards, stated as the brief asked:
 - **final status `Cancelled`** — the controller's, untouched. `failRun` was not
   called, so `FinishRun(RunFailed)` never raced it.
 - **zero rows in `logs`** — no `stepIndex -1` line. The whole run produced no
-  log output at all, which is the honest consequence of abandoning without
-  writing status: an operator inspecting a cancelled run sees nothing about the
-  pod that was created and destroyed on its behalf. **Recorded, not filed:**
-  this is the documented behaviour working, and `agent.go:341-344`'s
-  `slog.Info` gives the *agent's* operator the record. Nothing in `docs/`
-  promises the run's log carries it.
+  log output at all: an operator inspecting a cancelled run sees nothing about
+  the pod that was created and destroyed on its behalf. **Filed as an
+  observation** (#4 below).
+
+  **Why filed, having first been declined.** The first draft of this runbook
+  recorded this and declined to file it, on the ground that "nothing in `docs/`
+  promises the run's log carries it". That is the test for a **violation**, not
+  for an **observation** — an observation needs no contradicted document, only
+  as-designed-but-risky, so the stated ground did not support the conclusion
+  and the entry has to be re-argued or filed. Re-argued, it files, for three
+  reasons. **(a) The mechanism is distinct** from observation #2: that one is a
+  *misleading* record on the fail path, this is an *absent* record on the
+  abandon path. **(b) The campaign already files exactly this shape** —
+  `w4-rig.md` §Step 7's observation that a pod deleted mid-run leaves evidence
+  indistinguishable from a self-inflicted 137 is a missing-record observation
+  with no contradicted doc behind it either, and declining this one while
+  having filed that one is the inconsistency. **(c) The fix is available and
+  cheap, which is what makes it risky rather than merely inherent:** `failRun`
+  (`agent.go:392-404`) reaches the log through `AppendLogBulk` and the status
+  through a *separate* `FinishRun` call, so the abandon path at `:341-344`
+  could append a `stepIndex -1` line without going anywhere near the
+  controller's status. Not writing the line is not a consequence of not
+  overriding status; it is an independent choice. `agent.go:341-344`'s
+  `slog.Info` does give the *agent's* operator the record — but the agent log
+  is on the cluster, and the run's owner is the party looking at the run.
 - **zero rows in `step_reports`.**
 - **the pod was still cleaned up**, because the deferred `DeletePod` runs on
   `context.Background()` (`agent.go:307-337`) and so survives the cancellation
@@ -495,11 +592,22 @@ negative:
    non-positive values fall back to the default" — true for two of its three
    inputs and **false for the third**. No operator-facing document says an
    unparseable value refuses to boot. Filed as a violation on the
-   documented-contract limb. *(Enumeration checked, not assumed: the sibling
-   rows for `drainTimeout` and `poolIdleTimeout` at `:457-458` make no
-   equivalent unparseable-falls-back claim, even though `DrainTimeoutDuration`
-   has the same shape — so this is one wrong sentence, not a pattern across the
-   table.)*
+   documented-contract limb.
+
+   *(Enumeration, and it answers two questions rather than one. **(i) The wrong
+   sentence is one sentence.** The sibling rows for `drainTimeout` and
+   `poolIdleTimeout` at `:457-458` make no equivalent unparseable-falls-back
+   claim, even though `DrainTimeoutDuration` has the same accessor shape — so
+   the false promise is not a pattern across the table. **(ii) The
+   undocumented boot rejection, however, is a three-field pattern.** `Validate`
+   rejects an unparseable `poolIdleTimeout` (`config.go:210-214`),
+   `podStartTimeout` (`:215-219`) and `drainTimeout` (`:220-224`) with three
+   copies of the same four-line block, and **none of the three** is documented
+   operator-facing: `:457` and `:458` are silent on invalid values entirely,
+   just as `:456` is silent on the rejection. So `podStartTimeout` is the only
+   field whose docs say something false, and it is one of three whose docs omit
+   the boot behaviour. The docs fix is correspondingly two-part — see the
+   violation entry's Notes.)*
 2. **The running agent never states the duration it resolved.** The entire D3/D4
    agent log is **4 lines** — the `sidecarS3SecretName` warning, `k8s agent
    registered`, `executing Run`, and the failure — and none of them carries the
@@ -518,20 +626,38 @@ misled.
 
 ## Findings filed
 
-**1 violation + 2 observations.** All three are Part D; Parts A, B and C are
-conformance and are filed as nothing.
+**1 violation + 3 observations.** Every one is a diagnosability or docs cost;
+the *behaviour* under test — the bound firing, the failure being reported, the
+pooled pod being reclaimed, the controller's status not being overridden — is
+conformant in all four parts.
 
-| # | Kind | Title (see `FINDINGS.md`) |
-| --- | --- | --- |
-| 1 | **violation** (contract limb, minor) | `docs/configuration.md:456` promises an unparseable `podStartTimeout` falls back to the default; the agent refuses to boot instead |
-| 2 | observation (minor) | the pod-start timeout reports a client-go rate-limiter error, naming neither the timeout, its value, nor the Pod's `Pending` state |
-| 3 | observation (minor) | a non-positive `UNIFIED_K8S_POD_START_TIMEOUT` silently discards a valid config-file value and substitutes 5m; nothing logs the resolved duration |
+| # | Kind | From | Title (see `FINDINGS.md`) |
+| --- | --- | --- | --- |
+| 1 | **violation** (contract limb, minor) | Part D | `docs/configuration.md:456` promises an unparseable `podStartTimeout` falls back to the default; the agent refuses to boot instead |
+| 2 | observation (minor) | Parts A, B | the pod-start timeout reports a client-go rate-limiter error, naming neither the timeout, its value, nor the Pod's `Pending` state |
+| 3 | observation (minor) | Part D | a non-positive `UNIFIED_K8S_POD_START_TIMEOUT` silently discards a valid config-file value and substitutes 5m; nothing logs the resolved duration |
+| 4 | observation (minor) | Part C | a run cancelled while its Pod is still `Pending` ends with zero log rows and zero `step_reports`; nothing tells the run's owner a Pod was created and destroyed |
+
+*(The `From` column is new at review. An earlier draft said "all three are
+Part D", which was wrong about #2 — that one is Parts A and B.)*
 
 `FINDINGS.md` was grepped for the findings themselves before filing, not merely
 for the doc text: `podStartTimeout` / `PodStartTimeout` /
 `UNIFIED_K8S_POD_START_TIMEOUT` return **0** hits in the file at the time of
 writing, and `unparseable` returns 2, both W4-0 entries about
 `providerConfig`. Nothing here is a re-filing.
+
+**#4 was grepped separately when it was added at review**, since it is about a
+cancelled run rather than about the knob: `masterTerminal` returns **0** hits
+and no existing entry concerns an abandoned-before-ready run. **The near miss
+that is deliberately not merged is W2-2 (`FINDINGS.md:587`)**, "a
+cascade-cancelled `call:` child, and every plainly-cancelled run, is left with a
+step permanently reporting `Running` under a terminal run". That is the opposite
+shape: W2-2 is a step row that exists and says something **wrong**; #4 is a run
+with **no step row and no log row at all**, because the run was cancelled before
+any step began. W2-2's funnel fix (terminalise `Running` steps inside
+`FinishRun`) would not add a single row to the Part C run. Cross-referenced in
+the entry, not re-filed.
 
 ## Teardown
 
