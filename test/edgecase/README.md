@@ -323,12 +323,15 @@ this one caveat qualifies every W4 finding:
 > what `scenarios/w4-0-enrollment-spike.md` records. Everything downstream of
 > authentication is the unmodified product path.
 
-The bypass is sound because **nothing on the request path reads
+The bypass is sound because **nothing on the request path compares
 `enrollment_method`** — `agent_auth.go:38-116` checks only the token, its kind,
-status, expiry and hash; the column is read in exactly three issuance sites
-(`postgres_agent_auth.go:193`, `:237`, `:526`) and nowhere else. Verified live
-across register / heartbeat / claim / log-bulk / finish / refresh
-(`w4-rig.md` §Step 2).
+status, expiry and hash, and `GetAgentCredentialForAuth`
+(`postgres_agent_auth.go:272-276`) does not even select the column. It is
+**compared** in exactly two places, both credential issuance
+(`postgres_agent_auth.go:193`, `:526`); it is *selected* by the identity
+getters and surfaced read-only by the enrollment API and CLI, but never used to
+gate a request. Verified live across register / heartbeat / claim / log-bulk /
+finish / refresh (`w4-rig.md` §Step 2).
 
 Bring up / tear down:
 
@@ -356,8 +359,17 @@ deferred to the W4-2 task, not dropped.**
   | `pods` | list this agent's run Pods (`app=unified-cd-agent`) |
   | `delete-pod <runId\|latest>` | delete by the `unified-cd/runId` label, not by the truncated pod name |
   | `annotations [pod]` | read `unified-cd/pool-status`, `pool-key`, `pool-run-id`, `pool-template` |
-  | `block [reset\|hang\|<status>]` / `unblock` | **one-way agent→controller partition, one agent wide.** Measured: 40 s armed → the run stayed `Queued`, no pod, 56 blocked requests, while `agent1`/`agent2` kept heartbeating; cleared → claimed and `Succeeded` in 6 s |
+  | `block reset` / `unblock` | **one-way agent→controller partition, one agent wide.** Measured: 40 s armed → the run stayed `Queued`, no pod, 56 blocked requests, while `agent1`/`agent2` kept heartbeating; cleared → claimed and `Succeeded` in 6 s |
+  | `block <status>` | controller-shaped rejection. Measured: `block 503` → `http_code=503` at the probe while the direct `:18080` control stayed 200 |
+  | `block hang` | accept and never answer. Measured (`w4-2-fixes/f5-hang.txt`): probe consumes its full deadline (`curl_exit=28`), agent sees `context deadline exceeded`, run `Queued` 40 s with no pod. **Recovery is slow** — `unblock` does not sever hanging requests, so the agent waits out its own client timeout (~24 × 2 s samples, vs `reset`'s 6 s). Do not use it where the window must close sharply |
   | `show` / `probe` | arm state, and one request through the proxy |
+
+  **`block` asserts its own arm.** It probes through the interposer and exits
+  non-zero unless the probe failed in the shape the mode promises; `unblock`
+  requires a 200 back. Verified in all three modes and against a negative
+  control (an interposer started without `-block-file` ignores the arm file —
+  the verb now fails instead of printing "ARMED"). Before this, `probe_proxy`
+  ended in a no-op `if … then : fi`: dead code shaped like a verification.
 
   **`block` shipped inert once and only an effect measurement caught it** — the
   W3-1 `s3-slow` lesson, repeated. Every state check passed while the agent
@@ -375,7 +387,15 @@ deferred to the W4-2 task, not dropped.**
 
 - `tools/w4/w4-mint-credential.sh` / `w4-up.sh` / `w4-down.sh` — credential mint
   (product enrollment path), rig up, rig down. `w4-down.sh` reports the
-  interposer's intercept count; **0 means the bypass was never in effect.**
+  interposer's intercept count, per log file. **Read `0` correctly: it means no
+  enrollment was intercepted while these logs were being written, NOT that the
+  bypass was not in effect.** The agent enrolls once at startup and then not
+  again for ~40-45 min, so a short session legitimately reports 0; the
+  supporting evidence is the `INTERCEPT` line at the agent's own startup. It is
+  unsupported only if no log in the directory carries one. `w4-up.sh` **rotates**
+  `enrollproxy.log` rather than truncating it, so a proxy restarted under a
+  running agent does not destroy that line — truncation is what produced the
+  misleading `0 enrollment exchange(s)` in `w4-2/step8-teardown.txt`.
 
 - `tools/w3/fixcheck` — parses YAML fixtures through the real `dsl.Parse`
   (`KnownFields(true)` + `Job.Validate`) and prints what the controller would

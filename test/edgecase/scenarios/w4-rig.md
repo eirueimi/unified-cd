@@ -18,6 +18,13 @@ This is a **rig record**, like `w4-0-enrollment-spike.md`: it records what was
 built, what was measured, and what the next task may assume. It probes no
 invariant of its own.
 
+> **TIMESTAMPS: two clocks appear below and they are the same instant.**
+> The agent and the interposer run on the host and log **local time,
+> `+09:00`** (`15:26:27` etc.); the controller, the database and every
+> `date -u` in a capture script log **UTC** (`06:26:27Z` etc.). **Local =
+> UTC + 9 h.** Steps 5-7 alternate between them within a few lines, so
+> subtract 9 before comparing a host log line to a database row.
+
 ---
 
 ## Verdict summary
@@ -25,10 +32,10 @@ invariant of its own.
 | Step | Result |
 | --- | --- |
 | 1. Route decision recorded | **host-run** for W4-1/W4-3; in-cluster **deferred** to W4-2 |
-| 2. `uca_` from the `"enrollment"` method accepted for k8s-agent traffic | **YES** — all five request paths, verified live |
+| 2. `uca_` from the `"enrollment"` method accepted for k8s-agent traffic | **YES** — all six request paths in the table below, verified live |
 | 3. Interposer built and proven by effect | **YES** — agent enrolled, registered, claiming |
 | 4. Fixtures built, verified through the real `dsl.Parse` | **YES** — 4 fixtures, both source and payload-extracted YAML |
-| 5. k8s fault-injection verbs, each with an effect measurement | **YES** — and one of them was found inert and fixed |
+| 5. k8s fault-injection verbs, each with an effect measurement | **YES**, all of them — but `block hang` shipped unmeasured and was measured only at review (Step 5). One verb was found inert and fixed |
 | 6. End-to-end baseline | **PASS** — pod created, run `Succeeded`, pod cleaned up |
 | 7. Pod deleted mid-run → terminal status | **`Failed`, ~1 s, exit code 137** — not the reaper |
 
@@ -66,11 +73,21 @@ running W4-2 without that arm is not acceptable.**
 
 One consequence to carry forward: because the host agent holds the developer's
 own cluster rights, **no W4 host-run capture is evidence about the RBAC the
-shipped `manifests/` grant.** W4-0 already recorded a related, independent
-gap (`manifests/` Roles lack `pods update/patch`, which breaks `podTemplate.reuse`
-in every shipped manifest — see the memory note and `FINDINGS.md`); the
-host-run rig cannot see that, and `podTemplate.reuse` works here **because the
-kubeconfig is privileged**, not because the manifests are correct.
+shipped `manifests/` grant.** `podTemplate.reuse` works on this rig **because
+the kubeconfig is privileged**; that observation is silent about the manifests
+in both directions, and W4-2 depends on the distinction.
+
+**Withdrawn claim, recorded because it was published in three documents.** An
+earlier draft of this record asserted that "the shipped `manifests/` Roles lack
+`pods update/patch`, so reuse is broken there", citing W4-0 and a cross-session
+note. **That is false at HEAD, and W4-0 records nothing of the kind.**
+`manifests/base/k8s-agent/rbac.yaml:7-13` grants
+`create, get, list, delete, watch, update, patch` on `pods`, with a comment
+naming pod reuse as the reason. The gap was real once and was fixed in **PR #50
+(`6b0bf8f`, 2026-07-15)**; the note the claim came from carries a `RESOLVED`
+header that did not travel with the claim. Stale-premise reuse of a
+cross-session note is what forced W4-2 to be re-chartered; this is the same
+failure, caught in review.
 
 ---
 
@@ -86,11 +103,18 @@ authenticator for `uca_` bearers. It checks, in order: the `uca_` prefix,
 the token hash. **`enrollment_method` is never read.** The store query behind it
 (`internal/store/postgres_agent_auth.go:272-276`) joins `agent_credentials` to
 `agent_identities` and selects `status, authorized_labels,
-authorized_capabilities` — not `enrollment_method`. Across the tree the column
-is read in exactly three places, all of them credential *issuance*:
-`postgres_agent_auth.go:193` (re-issue conflict check), `:237` and `:526`
-(lookup by `(enrollment_method, external_subject)`, the Kubernetes path's
-identity key). **Nothing on the request path.**
+authorized_capabilities` — not `enrollment_method`.
+
+Across the tree the column is **compared** in exactly two places, both of them
+credential *issuance*: `postgres_agent_auth.go:193` (the re-issue conflict
+check) and `:526` (`WHERE enrollment_method = $1 AND external_subject = $2`,
+the Kubernetes path's identity key, reached from `:237`). It is additionally
+**selected** — and then only carried, never tested — by the three identity
+getters (`:507`, `:516`, `:525`), by `insertExternalAgentIdentity`'s
+`RETURNING` (`:544-557`), and read out for display by
+`internal/controller/api_agent_enrollment.go:171` and
+`internal/cli/agent_enrollment.go:302`. **Nothing on the request path compares
+it, and the request path's own query does not even select it.**
 
 **Measured live**, on the running HA stack (`step2-credential-path.txt`). One
 `uce_` created with `--label kind:kubernetes`, exchanged for a `uca_`, whose
@@ -146,8 +170,8 @@ the one put on the *enrollment token*, not the one in
 
 ## Step 3 — The interposer
 
-`test/edgecase/tools/w4/enrollproxy/` — ~250 lines of Go, no dependencies
-outside the standard library. It:
+`test/edgecase/tools/w4/enrollproxy/` — 427 lines of Go (`wc -l main.go`), no
+dependencies outside the standard library. It:
 
 - **forwards every path unchanged** via `httputil.ReverseProxy` with
   `FlushInterval: -1` (so SSE and any streamed response are not buffered) and
@@ -231,10 +255,22 @@ follow a 401 on a POST will wait forever.
 
 All four verified through the real `dsl.Parse` (`KnownFields(true)` +
 `Job.Validate`) via `tools/w3/fixcheck`, **twice**: once on the `.yaml` source
-and once on the YAML re-extracted from the `.payload.json`, per the README rule
-(`step4-fixcheck.txt`). Output, verbatim:
+and once on the YAML re-extracted from the `.payload.json`, per the README rule.
+
+> **Provenance, because the first version of this section got it wrong.** The
+> original capture (`w4-2/step4-fixcheck.txt`) covers **three** fixtures on each
+> side — `w4-longpod` was validated live but never captured, and this record
+> pasted its output under "Output, verbatim" anyway. That was a fabricated
+> citation, caught in review. The block below is the **re-run**, covering all
+> four on both sides, captured in full at
+> **`w4-2-fixes/f1-fixcheck.txt`**. The longpod lines are unchanged from what
+> the earlier draft claimed — the claim was true; it was the evidence that did
+> not exist.
+
+Output, verbatim (`w4-2-fixes/f1-fixcheck.txt`):
 
 ```
+=== fixcheck on the .yaml sources ===
 test/edgecase/workloads/w4-tick.yaml: OK
   name="edge-w4-tick" native=false agentSelector=[kind:kubernetes] requiredCaps=[container]
   step[0] name="probe" kind=run
@@ -253,22 +289,41 @@ test/edgecase/workloads/w4-longpod.yaml: OK
   step[0] name="tick" kind=run
 ------------------------------------------------------------
 === fixcheck on YAML RE-EXTRACTED from the .payload.json (README rule) ===
-.rt/w4-tick.yaml: OK
+.rt2/w4-tick.yaml: OK
   name="edge-w4-tick" native=false agentSelector=[kind:kubernetes] requiredCaps=[container]
   step[0] name="probe" kind=run
 ------------------------------------------------------------
-.rt/w4-pending.yaml: OK
+.rt2/w4-pending.yaml: OK
   name="edge-w4-pending" native=false agentSelector=[kind:kubernetes] requiredCaps=[pod]
   step[0] name="probe" kind=run
 ------------------------------------------------------------
-.rt/w4-reuse.yaml: OK
+.rt2/w4-reuse.yaml: OK
   name="edge-w4-reuse" native=false agentSelector=[kind:kubernetes] requiredCaps=[container]
   step[0] name="identity" kind=run
   step[1] name="marker" kind=run
 ------------------------------------------------------------
+.rt2/w4-longpod.yaml: OK
+  name="edge-w4-longpod" native=false agentSelector=[kind:kubernetes] requiredCaps=[container]
+  step[0] name="tick" kind=run
+------------------------------------------------------------
 ```
 
-All four `POST /api/v1/jobs` → **200** live.
+All four `POST /api/v1/jobs` → **200** live, also re-run and captured
+(`w4-2-fixes/f1-jobs.txt`); the original Step 6 capture
+(`w4-2/step6-baseline.txt:2-4`) shows only three, because `edge-w4-longpod` was
+created later, for Step 7:
+
+```
+POST /api/v1/jobs w4-tick.payload.json    -> 200
+POST /api/v1/jobs w4-pending.payload.json -> 200
+POST /api/v1/jobs w4-reuse.payload.json   -> 200
+POST /api/v1/jobs w4-longpod.payload.json -> 200
+--- the four job rows the controller now holds ---
+  edge-w4-longpod
+  edge-w4-pending
+  edge-w4-reuse
+  edge-w4-tick
+```
 
 ### Two things about the fixtures the brief did not anticipate
 
@@ -323,8 +378,11 @@ container on that network.
 | `pods` | `step5-annotations-reuse.txt` |
 | `delete-pod <runId\|latest>` | `step7-delete-pod.txt` |
 | `annotations [pod]` | `step5-annotations-reuse.txt` |
-| `block [reset\|hang\|<status>]` / `unblock` | `step5-block-recheck.txt` |
+| `block reset` / `unblock` | `step5-block-recheck.txt` (post-fix), `step5-block-verb.txt` (pre-fix) |
+| `block <status>` | `step5-block-verb.txt`, `block 503` section |
+| `block hang` | **`w4-2-fixes/f5-hang.txt`** — shipped unmeasured; measured at review |
 | `show` / `probe` | `step5-block-verb.txt` |
+| the arm assertion itself (all three modes + a negative control) | `w4-2-fixes/f5-hang-assert.txt` |
 
 ### `block` — the agent→controller partition, and why it is not `nginx-block`
 
@@ -362,12 +420,78 @@ Re-measured (`step5-block-recheck.txt`): a run triggered inside the armed
 window stayed **`Queued` for the full 40 s** with **no pod created**, against
 56 `BLOCK #n` lines; `unblock` → claimed and `Succeeded` within 6 s.
 
-Two supporting measurements from the same capture:
+Two supporting measurements, **both taken in the PRE-fix window**
+(`step5-block-verb.txt`), not in the recheck. Both are unaffected by the defect
+that window contains — it spared only requests already inside the handler, and
+neither of these is one — but the citation must name the window it came from:
 
-- **The partition is one agent wide.** With the k8s agent's `lastSeenAt` frozen
-  at `06:26:21`, `agent1`/`agent2` kept heartbeating (`06:26:42`).
-- **`block 503` behaves as documented** — `http_code=503` at the probe, while
-  the direct control against `:18080` stayed 200.
+- **The partition is one agent wide.** `step5-block-verb.txt` EFFECT 4: with
+  the k8s agent's `lastSeenAt` frozen at `06:26:21Z`, `agent1`/`agent2` kept
+  heartbeating (`06:26:42Z`). The k8s agent's own heartbeat is visible being
+  refused in the same file (`BLOCK #2 POST .../heartbeat`).
+- **`block 503` behaves as documented** — `step5-block-verb.txt`, the
+  `block 503` section: `http_code=503` at the probe, while the direct control
+  against `:18080` stayed 200.
+
+`step5-block-recheck.txt` contains neither of these (`grep 06:26` does not
+match it); it holds only the 40 s `Queued` re-measurement above.
+
+### The `hang` arm — shipped unmeasured, measured at review
+
+**This arm originally shipped with a comment describing what it does and no
+capture measuring it** — the exact pattern the house rule exists for, from the
+same author whose `block` arm had already shipped inert once in this session.
+It has now been measured. Capture `w4-2-fixes/f5-hang.txt`, on a freshly
+rebuilt rig (`w4-2-fixes/stack-up.txt`, `rig-up.txt`).
+
+**It works, and it is a different failure shape from `reset`, not a synonym.**
+
+| | `reset` | `hang` |
+| --- | --- | --- |
+| probe result | `http_code=000 curl_exit=52` in **1.5 ms** | `http_code=000 curl_exit=28` after the **full 5 s** deadline |
+| what the agent sees | `wsarecv: connection forcibly closed` | `context deadline exceeded (Client.Timeout exceeded while awaiting headers)` |
+| run triggered while armed | `Queued` 40 s, no pod | `Queued` 40 s, no pod |
+| recovery after `unblock` | claimed and `Succeeded` **within 6 s** | claimed only on the **24th** 2 s sample |
+
+The 40 s armed window (`f5-hang.txt`): `Queued` on all 40 samples, `pods=[]`
+throughout, 11 `BLOCK … mode=hang` lines covering both `heartbeat` and `claim`,
+and the one-agent-wide control holding — `k8s-agent-w4` frozen at
+`lastSeen=07:18:51Z` while `agent1`/`agent2` reported `07:20:08Z`, with the
+direct `:18080` control still 200. After `unblock` the run reached
+**`Succeeded`** and its pod was cleaned up (read back at `07:21:47Z`).
+
+**Two properties a scenario author must budget for, both measured here:**
+
+1. **`hang` costs a scenario its recovery latency.** `unblock` does *not* sever
+   the hanging requests — `watchArm` severs only on the transition *into* an
+   armed state — so the agent stays stuck on its own client timeout after the
+   arm is cleared. Measured: `reset` recovered in ~6 s, `hang` took ~24 samples
+   at a 2 s poll. Do not use `hang` for an arm whose window must close sharply.
+2. **The first probe after arming `hang` reports `curl_exit=52`, not 28.** The
+   arm transition severs every live connection, and a probe issued inside that
+   ~200 ms window is severed along with them (`f5-hang.txt`, first ARM). The
+   verb now settles past one `watchArm` tick before probing, so what it asserts
+   on is the steady-state arm rather than the transition.
+
+**The arm is now asserted, not merely printed.** `probe_proxy` previously ended
+in a no-op `if … then : fi` — dead code shaped like a verification — so an
+interposer started without `-block-file` would have printed `ARMED` and exited
+0. `block` now exits non-zero unless the probe fails in the shape the mode
+promises (`28` for `hang`, the exact status for `<status>`, any transport
+failure for `reset`), and `unblock` requires a 200. Verified in all three modes
+**and against a negative control** — a second interposer started on `:18098`
+with no `-block-file`, where the arm file is ignored
+(`w4-2-fixes/f5-hang-assert.txt`):
+
+```
+w4-k8s-inject: agent->controller partition ARMED (mode=reset)
+  probe GET /healthz via 127.0.0.1:18098: http_code=200 time=0.002401s curl_exit=0
+w4-k8s-inject: FAILED to arm 'reset' — probe still answered http_code=200. ...
+   exit=1
+```
+
+That is the check that would have caught the original inert `block` at arm
+time, instead of 17 s into a scenario.
 
 ### `delete-pod` and `annotations`
 
@@ -472,11 +596,18 @@ The mechanism is visible in the step row:
  898c342e-339a-45d3-b456-cf297c988750 |          0 | Failed |       137 | 06:30:42.463647+00    | 06:30:45.681615+00    | tick
 ```
 
-`exit_code = 137` is `128 + SIGKILL`: deleting the Pod killed the container,
-the exec stream returned that status, and `agentlib.RunClaim` treated it as an
-ordinary non-zero step exit and finished the run `Failed`. The run's
-`updated_at` is `06:30:45.779503Z` — **98 ms** after the step ended. The
-controller's stuck-run reaper never entered the picture.
+`exit_code = 137` is `128 + SIGKILL`: deleting the Pod killed the container and
+`agentlib.RunClaim` treated the result as an ordinary non-zero step exit and
+finished the run `Failed`. The run's `updated_at` is `06:30:45.779503Z` —
+**98 ms** after the step ended. The controller's stuck-run reaper never entered
+the picture.
+
+*(Labelled: "the exec stream returned that status" is **inferred**, from the
+recorded `exit_code` plus the shape of `internal/k8sagent/executor.go` — the
+exec stream is the only thing that supplies a step exit code on this path.
+**No agent log line records it**; this entry's own second finding is that the
+agent logged nothing at all for the event. What is measured is the `137` in
+the `steps` row, not the mechanism that carried it.)*
 
 **Three things this settles for W4-1, all of them measured:**
 
@@ -492,10 +623,25 @@ controller's stuck-run reaper never entered the picture.
    "pod-per-run does not resume" are both consistent with this — but neither is
    what produces the status; the step exit code is.
 
-*(One caveat on the "~1 s": the poll interval was 2 s and the transition was
-seen on the first sample after the delete. The database timestamps above are
-the precise measurement — 98 ms from step end to run update — and the delete
-itself precedes the step end by less than the 3.2 s the step ran.)*
+**The limits of this measurement, stated because the answer is load-bearing
+for W4-1:**
+
+- **n = 1.** One deletion, one run. Nothing here establishes a rate, a
+  distribution, or that the timing holds under a busier agent.
+- **The delete marker has 1 s resolution.** It is a
+  `date -u +%Y-%m-%dT%H:%M:%SZ` stamp printed by the capture script
+  immediately before `kubectl delete` — `06:30:45Z` means "somewhere in that
+  second", while the step's `ended_at` is `06:30:45.681615Z`. The two are
+  within the same second and cannot be ordered to sub-second precision from
+  this capture.
+- **Causality rests on the fixture, not on the timestamps.** `edge-w4-longpod`
+  is a 120 × 1 s loop, so it cannot reach a terminal exit 3.2 s in without an
+  external cause; that, plus the `137`, is what makes this a deletion effect
+  rather than a coincidence. It is not bare correlation, and it is also not a
+  sub-second ordering proof.
+- **On the "~1 s":** the status poll interval was 2 s and the transition was
+  seen on the first sample after the delete. The precise figure that *is*
+  measured is the 98 ms from step end to run `updated_at`.
 
 ---
 
@@ -514,6 +660,17 @@ that control can bring up plain `test/ha/docker-compose.ha.yaml` and skip the
 kubeconfig entirely. If you do use it, regenerate the (gitignored) kubeconfig
 first with `test/edgecase/k8s/make-spike-kubeconfig.sh`; its SA token lasts 24 h.
 
+> **Gotcha, hit live while re-running these measurements.** If the kubeconfig
+> is absent, the overlay's bind mount makes Docker **create a directory** at
+> `test/edgecase/compose/kubeconfig-k8senroll.yaml`, and **all three
+> controllers exit(1)** with
+> `error loading config file ".../kubeconfig.yaml": read ...: is a directory`.
+> That looks like the bootstrap-PAT race and is not: the race kills one
+> replica, this kills all three, and the empty directory persists to poison the
+> next `up` until it is `rmdir`ed. Either regenerate the kubeconfig first, or
+> — if you do not need the 403 control — use the plain `test/ha` compose file,
+> which is what these re-run measurements used.
+
 Then the agent rig:
 
 ```bash
@@ -526,10 +683,11 @@ credential, writes the dummy SA-token file, starts the interposer on
 Logs and pidfiles land in `.w4run/`.
 
 **Check all three controllers are `Up`.** W4-0 recorded a bootstrap-PAT race
-that kills one replica on a cold `up`. **It did not fire this time** — all
-three came up on the first cold `up -d --build` after a `down -v` — so it is a
-**race, not a certainty**; W4-0's "expect one controller to die on every cold
-`up`" is too strong. Verify, do not assume in either direction.
+that kills one replica on a cold `up`. **It did not fire on either of this
+rig's cold bring-ups** — 3/3 both times, on the first `up -d --build` after a
+`down -v` (`w4-2/stack-up.txt`, `w4-2-fixes/stack-up.txt`) — so it is a
+**race, not a certainty**. `w4-0-enrollment-spike.md` item 6 has been corrected
+at source to say so. Verify, do not assume in either direction.
 
 ## Teardown
 
@@ -541,9 +699,22 @@ docker compose -f test/ha/docker-compose.ha.yaml \
 
 `w4-down.sh` SIGTERMs the agent first (so its graceful-drain path runs),
 escalates to SIGKILL after 10 s, prints each process's final 25 log lines, and
-reports how many enrollment exchanges the interposer answered — a count of 0
-means the bypass was never in effect and any claim resting on the rig is
-unsupported. `down -v` is mandatory between scenarios (Garage volume).
+reports how many enrollment exchanges the interposer answered.
+
+**Read that count the way the script does.** `0` means **no enrollment was
+intercepted while these logs were being written** — it does *not* mean the
+bypass was not in effect. The agent enrolls once at startup and then not again
+for roughly 40-45 min (`internal/k8sagent/credentials.go:83-84`), so a short
+session legitimately reports 0. The supporting evidence for any claim resting
+on the rig is the **`INTERCEPT` line at the agent's own startup**, wherever it
+landed. It fired exactly this way on this task: `step8-teardown.txt:56` reports
+`0 enrollment exchange(s)` for a session whose bypass demonstrably *was* in
+effect — the startup `INTERCEPT #1` was in a proxy log the restart had already
+truncated (see `w4-up.sh`'s log rotation, added for this reason). The count is
+unsupported only if **no** log in the directory carries an `INTERCEPT` line at
+all.
+
+`down -v` is mandatory between scenarios (Garage volume).
 
 The W4-0 spike objects (`w4-spike-agent` SA, `w4-spike-agent-pod`, controller
 RBAC) are left in place, as W4-0 left them.
@@ -556,3 +727,40 @@ only a 4-character kind prefix or the credential's UUID prefix. The
 `serviceAccountTokenFile` this rig writes is a dummy string, not a token — the
 interposer never inspects the Bearer. The whole session's captures were swept
 for `uca_`/`ucr_`/`uce_` followed by a UUID before archival.
+
+---
+
+## Review corrections applied to this record
+
+A task-scoped review found the rig itself sound and its verdict intact, and
+found the **evidence discipline** wanting: three cited captures did not contain
+what they were cited for, one "verbatim" paste existed in no capture, and one
+claim was false at HEAD. Everything below was applied on top of `2d353eb`.
+Read this before citing any number in this record.
+
+| # | What was wrong | What was done |
+| --- | --- | --- |
+| F1 | The Step 4 "Output, verbatim" block pasted a `w4-longpod` fixcheck result that appeared in **no capture**, and claimed "all four `POST /api/v1/jobs` → 200" against a capture showing three | Both **re-run and captured** on a rebuilt rig: `w4-2-fixes/f1-fixcheck.txt` (4 fixtures × 2 forms), `w4-2-fixes/f1-jobs.txt` (4 × 200). The original claims were true; the evidence did not exist |
+| F2 | Both reader-facing documents still carried the retracted "a count of 0 means the bypass was never in effect" | Replaced with the script's own semantics, in `w4-rig.md` §Teardown and `README.md` |
+| F3 | `w4-up.sh` truncated `enrollproxy.log`, destroying the startup `INTERCEPT` line that `w4-down.sh` counts — the cause of the misleading `0` in `step8-teardown.txt` | `w4-up.sh` now **rotates**; `w4-down.sh` prints a per-file breakdown. Proven by effect this session: `3 intercepted — 1 in enrollproxy.log, 2 in enrollproxy.log.1785568655` |
+| F4 | Two supporting measurements were attributed to `step5-block-recheck.txt`; both live in the **pre-fix** `step5-block-verb.txt` | Citations split and each window named, in `w4-rig.md` §Step 5 and the FINDINGS entry |
+| F5 | The `hang` arm shipped with a comment and **no effect measurement** | **Measured**: `w4-2-fixes/f5-hang.txt`. It works, and it is not a synonym for `reset` — `unblock` does not sever hanging requests, so recovery costs ~24 × 2 s samples vs `reset`'s 6 s. The verb now **asserts** its arm, verified in all three modes plus a negative control (`f5-hang-assert.txt`) |
+| F6 | The `container job is not valid for pod` line and a pod phase history were cited to a capture since overwritten | Re-cited to `w4-2/final-logs/k8s-agent.log:5`; the phase history was never captured and is **dropped** |
+| F7 | "the shipped `manifests/` Roles lack `pods update/patch`" — unevidenced **and false at HEAD** | **Deleted and replaced with the verified fact** (`manifests/base/k8s-agent/rbac.yaml:7-13`; fixed in PR #50, `6b0bf8f`). The surrounding point — no host-run capture is evidence about shipped RBAC — is kept, because W4-2 depends on it |
+| F8 | "the column is read in exactly three places … and nowhere else" — a false enumeration in three documents | Corrected to *compared* in two (`:193`, `:526`), *selected* by the getters and the enrollment API/CLI, never used to gate a request. The GO decision is unchanged |
+| — | The W4-0 over-claim correction was filed where nothing was wrong | The over-claiming sentence is `w4-0-enrollment-spike.md` item 6 and has been **fixed at source**; the FINDINGS entry is reduced to a frequency datapoint |
+| — | Step 7's causality held but its limits were unstated | **n = 1** and the delete marker's **1 s resolution** are now stated, in both documents |
+
+Seven minor corrections also applied: the interposer's line count (~250 → 427),
+"all five request paths" → six, an explicit `+09:00` vs UTC note (F4 was hard to
+spot without it), the mint script's actual client (raw `curl`, not
+`unified-cli`), `probe_proxy`'s no-op `if … then : fi` replaced by a real
+assertion, the block-inert entry relabelled `n/a (campaign asset)` per the
+precedent at `FINDINGS.md:1110`/`:1270`, and "the exec stream returned that
+status" labelled **inferred**.
+
+Captures for this pass are under `w4-2-fixes/`. The rig was brought up on the
+plain `test/ha` compose file, measured, and torn down: `stack-up.txt`,
+`rig-up.txt`, `teardown.txt`, `stack-down.txt`, `final-logs/`. No stray
+process or container was left behind, and the captures were swept for
+credential material.

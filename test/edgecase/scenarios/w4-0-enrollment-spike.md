@@ -557,9 +557,15 @@ landing it is not this campaign's job.
    runs on a least-privilege SA. Separately, W4-2's RBAC-denial arm would still
    need an in-cluster agent bound to a restricted Role — but that is moot until
    enrollment works at all.
-6. **Expect one controller to die on every cold `up` of the HA rig** until the
-   bootstrap-PAT race is fixed. Either `docker compose start <dead controller>`
-   afterwards, or check all three are `Up` before trusting a 3-replica premise.
+6. **A cold `up` of the HA rig MAY lose one controller** to the bootstrap-PAT
+   race — **check all three are `Up` before trusting a 3-replica premise**, and
+   `docker compose start <dead controller>` if one is missing. **It is a race,
+   not a certainty:** it fired on this spike's first `up`, and two later cold
+   bring-ups on the same machine came up 3/3 (`w4-2/stack-up.txt`,
+   `w4-2-fixes/stack-up.txt`). *(This item originally read "expect one
+   controller to die on **every** cold `up`"; corrected at review. Do not
+   assume failure either — a wave that pre-emptively `start`s a controller
+   that never died will report a restart that did not happen.)*
 
 ### Corrections to the brief's premises
 
