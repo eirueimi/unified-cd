@@ -1,0 +1,18 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w4-pending-reuse
+spec:
+  agentSelector:
+    - kind:kubernetes
+  podTemplate:
+    reuse: true
+    spec:
+      nodeSelector:
+        disktype: ssd
+      containers:
+        - name: job
+          image: alpine:3.20
+  steps:
+    - name: probe
+      run: echo pooled-pod-ran
