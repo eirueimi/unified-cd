@@ -155,11 +155,15 @@ docs/operations.md:79  :87
 docs/troubleshooting.md:223
 ```
 
-*(An earlier, case-**sensitive** pass of the same pattern returned 37/7 and
-missed `docs/agents.md:513` and `docs/troubleshooting.md:223` — both of which
-turn out to carry a claim worth checking, see the Addendum in §Results. Recorded
-because "never truncate a docs survey" is worth nothing if the pattern is the
-thing that truncates it.)* Full survey in `w4-1/docsurvey.txt`.
+*(An earlier, case-**sensitive** pass of the same pattern returned **37 / 6** and
+missed `docs/agents.md:513` and `docs/troubleshooting.md:223` — 8 − 2 = 6, so 6
+is the only figure consistent with the two misses named here. Both missed lines
+turn out to carry a claim worth checking, and they are now filed — see the
+Addendum in §Results. Recorded because "never truncate a docs survey" is worth
+nothing if the pattern is the thing that truncates it.)* Full case-insensitive
+survey in `w4-1/docsurvey.txt`; the case-sensitive pass was **re-run and
+captured** during this correction pass, in `w4-1/docsurvey-casesensitive.txt`,
+which reproduces 37 / 6 and lists the 6.
 
 `:425` is the passage's heading and `:428` is the passage itself.
 `docs/operations.md:79` is the operator-facing restatement — "the k8s-agent's
@@ -205,9 +209,27 @@ selects on — `app=unified-cd-agent` and `unified-cd/runId=<a fresh random
 UUID>` — and no pool annotations. The controller genuinely 404s that UUID
 (`handleGetRun`, `api_runs.go:167-181`, returns 404 only for
 `store.ErrRunNotFound` and 500 for anything else), so the GC's own predicate
-resolves it as "definitively gone" and deletes it. Nothing else in the system
-touches it: it backs no run, so no `executeRun` defer knows about it, and it
-carries no pool annotation, so the pool ignores it.
+resolves it as "definitively gone" and deletes it.
+
+**Why the beacon does not perturb what it measures — the argument in the
+direction that matters.** The obvious argument is the converse one (nothing else
+in the system touches the beacon: it backs no run, so no `executeRun` defer
+knows about it; it carries no `unified-cd/pool-status` annotation, so
+`PodPool.Restore` — the **only** other consumer of the `app=unified-cd-agent`
+selector in the package, `pool.go:281` — `continue`s past it at `pool.go:292-299`
+on exactly that annotation being empty, which matters here because Part D starts
+a second agent whose `Restore` runs mid-scenario). That converse is necessary but
+not sufficient. The load-bearing direction is that **the beacon cannot change
+the GC's verdict on any other Pod**, and `runPodGCOnce` (`podgc.go:69-93`) gives
+that directly: it is a flat per-Pod loop over the lister's output, one `getRun`
+per Pod, no early exit, no accumulator, no cross-Pod state, and its only abort is
+a `lister` error that precedes every per-Pod decision. So planting a beacon adds
+exactly one loop iteration and one `GET /api/v1/runs/{id}` and **cannot** alter
+the disposition of the subject Pod in the same tick. This is what licenses
+reading a beacon's deletion as evidence about a sweep in which a subject
+survived.
+
+Nothing else in the system touches the beacon.
 
 That single device does three jobs:
 
@@ -216,9 +238,17 @@ That single device does three jobs:
 - it **times the sweep**, converting an invisible tick into a logged
   `pod GC deleted orphaned pod` line with a `slog` timestamp, which is how the
   phase is learned and how each subsequent arm is scheduled;
-- it is a **positive control inside every other arm** — when a beacon planted
-  alongside the arm's subject is deleted in the same sweep, "the subject
-  survived" cannot be confused with "the sweep never ran".
+- it is a **positive control for "a sweep ran"** — and that generic claim is all
+  it proves, so the per-arm evidence below is what proves the subject was
+  actually *evaluated*. The claim is deliberately not stated as "a positive
+  control inside every other arm", because the arms differ: in **Part A** the
+  beacon was **skipped**, not deleted, alongside the subject in the same 1.06 ms
+  — a *stronger* control than a deletion, since it shows both Pods reached the
+  same decision point on the same tick; in **Part B2** the beacon was deleted in
+  the same sweep as the subject; and in **Part C** the beacon covers **1** of the
+  **8** sweeps the pooled Pod survived, and the other 7 rest on the controller's
+  access log showing one `GET /api/v1/runs/{id}` per sweep per agent for that
+  Pod, which is what the Results cite.
 
 **Cost, stated up front.** Each arm needs its subject alive across a sweep whose
 phase is known only from the previous beacon, so each attempt costs up to
@@ -454,7 +484,8 @@ disclosure above applies. Raw captures are in the session scratchpad under
 | C. Pool-managed Pod | **CONFORMANT** — survived **8** GC evaluations across two agents with zero GC log lines, then was removed by the **pool's own** idle timeout, which is the lifecycle owner `podgc.go:99-100` names |
 | D. Two unsynchronised sweeps | **measured, not code-read** — agent B deleted two Pods it did not create; the loser of the race logs nothing; per-Pod controller load is **exactly linear** in replica count (1/min → 2/min) |
 | L1 (~1 minute interval) | **CONFORMANT** — 12 consecutive ticks over 720.019 s = **60.0016 s/tick** |
-| Spun out of Part A | **1 violation** — the k8s agent's **stdout** log path has no buffer, no retry and no drop marker; 21 of 122 lines permanently lost to a 22.0 s blip, contradicting `docs/troubleshooting.md:889-898` |
+| Spun out of Part A | **1 violation** — the k8s agent's **stdout** log path has no buffer, no retry and no drop marker; 21 of 122 lines permanently lost to a 22.0 s blip, contradicting `docs/troubleshooting.md:889-898` and I4 |
+| Addendum (docs survey + code read) | **1 violation, minor** — `docs/agents.md:513-514` and `docs/troubleshooting.md:223-225` credit "the cluster's own pod garbage collection" with reaping orphaned k8s Pods; the agent sets no owner reference, so kube's owner-reference-driven pod GC cannot reach them. Corroborated by a bounded 4 m 46 s measurement with no agent alive |
 
 **Attempt count, reported honestly because the brief required it: 5 timed
 trials, 5 successes, 0 failed attempts.** That is *not* a claim that the 60 s
@@ -666,8 +697,11 @@ request it answered:
    externally-issued `kubectl delete` produced `exit_code=137`. Here the 137
    existed but its report was abandoned at (2), so the row carries `Failed` with
    no exit code at all — *less* forensic evidence than the manual-delete case.
-4. **37 log rows of an expected 122**, and no drop marker. See the spin-out
-   below; the loss mechanism is the same one Part A exposed.
+4. **37 log rows stored, and no drop marker.** Stated as a loss, the figure is
+   **~6 lines** (`TICK 36`-`41`), not 85: the run was killed 41.2 s into a 120 s
+   loop and could only ever have emitted ~43 lines, of which 37 are stored. See
+   the spin-out below for the derivation; the loss mechanism is the same one
+   Part A exposed, and Part A's 122/101/21 is the exact measurement.
 
 **The one thing that is *better* here than in `w4-rig.md` §Step 7:** this kill
 is greppable. `pod GC deleted orphaned pod` names the Pod and the runId, so an
@@ -712,6 +746,14 @@ tests the guard, not a run that merely had not finished.
 point, since a fixture that failed to set `pool-status` would be deleted for the
 ordinary terminal-run reason and the arm would still *look* like a pass. It read
 `idle` before the window and `idle` after it, unchanged.
+
+**Deviation from the pre-execution runbook, stated rather than papered over.**
+§Part C above says the annotation is read "while the sweep window is open";
+`partC.txt` shows it was read **before** the window and **again after** it, not
+during. The bracketing is *stronger* than the plan — two reads that agree pin
+the annotation across the whole window, whereas a single mid-window read pins it
+at one instant — but the plan and the capture disagreed, so the capture is what
+is described here.
 
 **How many sweeps it survived, counted rather than asserted.** The controller's
 access log records one `GET /api/v1/runs/0fe86020-…` per sweep per agent, and
@@ -775,10 +817,16 @@ Agent A's next tick was `07:56:29.4`, **24.0 s** after B's. By then the Pods wer
 gone from A's own `ListPods`, so A produced **zero** GC lines in the window —
 not a `pod GC delete failed`, not anything. A genuine `DeletePod` collision would
 need the two ticks inside the ~10 ms it takes one sweep to run, which at 60 s
-periods and independent phases is a ~0.017 % coincidence per sweep pair. **So the
-predicted "benign but noisy delete race" does not occur; the failure mode is
-quieter than predicted, and the practical consequence is that neither agent's log
-tells you the other one exists.**
+periods and independent phases is a **~0.017 %** coincidence per sweep pair
+(*derived*, not measured: `10 ms / 60 s` on the assumption of uniformly
+distributed independent phases, and the ~10 ms sweep duration is itself read off
+this session's own two-Pod sweeps rather than instrumented). **So the predicted
+"benign but noisy delete race" does not occur; the failure mode is quieter than
+predicted, and the practical consequence is that neither agent's log tells you
+the other one exists** — that last clause is **code-read**, not a measurement
+over this window: `podgc.go` has no log statement that names another agent and
+no agent-id predicate to name one with, and what this window measured is the
+weaker fact that neither log did so across the ~4 minutes both agents ran.
 
 **3. Per-Pod controller load is exactly linear in replica count.** Counting
 `GET /api/v1/runs/0fe86020-…` (the surviving pooled Pod, resolved by every sweep
@@ -806,12 +854,19 @@ an observation.
 
 ### Spin-out of Part A — the k8s agent's stdout log path has no buffer, no retry and no marker
 
-Captures `partA-logloss.txt`, `partA-logloss-detail.txt`, `partB2-detail.txt`.
+Captures `partA-logloss-detail.txt`, `partB2-detail.txt`. (`partA-logloss.txt`
+is cited nowhere below on purpose: its **first** section is a failed capture — a
+Python `FileNotFoundError` traceback, because the helper's input file was never
+written — and only its second section, the `ts`-around-the-gap listing, is
+usable, and that listing is reproduced in full in `partA-logloss-detail.txt`.)
 
 Part A's fixture emits `W4-LONGPOD-BEGIN`, `TICK 0`…`TICK 119`, `W4-LONGPOD-END`
 — **122 lines**. The run reached `Succeeded` with `exit_code=0`. Its stored log
 holds **101** rows, all `stdout`, all distinct. **Ticks 35-55 — 21 lines — are
-permanently absent**, and the loss is invisible in every column but the text:
+permanently absent** (the count is **derived**: the two bracketing rows pin the
+gap's endpoints, and `122 − 101 = 21 = |35…55|` confirms the gap is single and
+contiguous rather than one of several), and the loss is invisible in every
+column but the text:
 
 ```
 seq | ts                            | line
@@ -824,9 +879,24 @@ lines that never arrived burn no sequence number), and `count(*) where line like
 '%dropped%'` is **0** — no `[N log line(s) dropped: controller unreachable]`
 marker. The hole is `07:44:23.670` → `07:44:45.694` = **22.024 s**, against an
 armed window of `~07:44:23.7` → `07:44:45.16`. **The partition ended 82 s before
-the step did**, so nothing about step-end timing is involved. Part B2 reproduced
-it independently: 37 rows of an expected 122, last delivered line `TICK 35` at
-`07:50:23.326`, arm at `07:50:23.694`.
+the step did**, so nothing about step-end timing is involved.
+
+**Part B2 reproduced it independently — on a second run and a second block mode
+— but its magnitude must be stated against what that run could emit, not
+against 122.** B2's run was SIGKILLed **41.2 s** into the 120 × 1 s loop
+(`step_reports.started_at 07:49:48.204` → the delete at `07:50:29.424`,
+`partB2-detail.txt`), so it could only ever have emitted about **43** lines:
+`BEGIN` + `TICK 0`…`TICK 41`. **37 rows are stored** — `BEGIN` + `TICK 0`…
+`TICK 35`, the last at `07:50:23.326`, 368 ms before the arm at `07:50:23.694`.
+**The loss is therefore the ~6 lines `TICK 36`-`TICK 41` emitted inside the
+armed window, not the 85 that "37 of 122" would imply** — ~80 of those 85 were
+never emitted by anything. *Derived, and the derivation is stated because the
+boundary is ±1 line:* the fixture's measured cadence across the five rows before
+the gap is **1.0014 s/tick**, which places `TICK 41` at ≈`07:50:29.34`, ~84 ms
+before the delete call was issued, so `TICK 41` was almost certainly emitted and
+`TICK 42` (≈`07:50:30.34`) certainly was not. **Part A's `122 / 101 / 21` is
+exact and is not derived this way** — that run ran its loop to completion and
+`Succeeded`, so 122 is what it emitted.
 
 **Mechanism, code-read and unambiguous.** The k8s agent splits its two streams:
 `StepLogWriters` (`internal/k8sagent/backend.go:406-421`) gives **stderr** a real
@@ -850,7 +920,18 @@ describes the behaviour as a property of "the agent", unconditionally, and the
 `Fix` section at `:908-912` states that after such a gap "only the buffered
 stdout/stderr text for that window is gone" — i.e. it tells the operator that
 stdout is buffered and that a gap will be reported. For the Kubernetes agent's
-stdout, none of the mechanism it describes exists. Filed as a violation.
+stdout, none of the mechanism it describes exists.
+
+**It also contradicts I4 by that invariant's own text**, which is the stronger
+of the two legs and was missed in the first filing: I4
+(`docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:51`) reads
+"Log/artifact integrity — a Succeeded run's log line count matches what the
+workload emitted; no duplicates, no reordering; archives stay readable." Run
+`2f1491cf` **reached `Succeeded`**, its workload **emitted 122**, and its stored
+log holds **101** — the line count does not match, which is the clause verbatim
+and not its spirit. (The I4 leg rests on the Part A run only: B2's run is
+`Failed`, and I4's text is scoped to a `Succeeded` run. The contract leg covers
+both.) Filed as a violation on **I4 and `docs/troubleshooting.md:889-898`**.
 
 **Relationship to what is already on file, checked before filing.** This is
 **not** W1-2's step-end-`Flush` loss (`FINDINGS.md:179`) — that is a `LogPusher`
@@ -878,18 +959,60 @@ The Pod was still `1/1 Running` at `08:00:17` and again at `08:04:08` — **4 m
 46 s with no unified-cd agent process in existence** (verified: `ps` shows no
 `k8s-agent` and no `enrollproxy`). Kubernetes did not reap it during that
 window. This is a *bounded* observation: it shows the Pod survives that window
-unattended, not that Kubernetes would never act on a longer horizon. **Recorded here rather than filed**, because the passage's operational
-advice (host agents need manual pruning, k8s ones do not) is correct — every
-sweep in this scenario cleaned up exactly as promised — and only its attribution
-of the mechanism is wrong. A reader who believes it will look for the wrong knob
-when the sweep stops happening: the sweep lives in `podgc.go` and dies with the
-agent process.
+unattended, not that Kubernetes would never act on a longer horizon.
+
+**The measurement alone would not carry a filing, and originally this section
+declined to file on exactly that ground. The code read does carry it, and the
+filing is now made.** Kubernetes' pod garbage collection is
+**owner-reference-driven**: the `PodGC` controller and cascading deletion act on
+Pods whose owner is gone, and a Pod with an empty `metadata.ownerReferences` has
+no owner to become gone. The agent sets none:
+
+```
+$ grep -rn "OwnerReference" internal/k8sagent/
+(no matches — exit 1)
+
+$ grep -rni "ownerref" internal/ | wc -l
+0
+
+$ grep -rni "ownerref" --include=*.go . | wc -l
+0
+```
+
+`BuildPod` (`podbuilder.go:78-82`) sets two labels and an empty annotation map
+and nothing else; the whole Go tree contains no owner reference of any kind
+(capture: `w4-1/ownerref-grep.txt`). This is the same absence Part D's finding
+already established from the sweep side, read from the construction side. So the
+Pods are un-owned, standalone Pods, and **the cluster's own pod GC is not
+reachable for them at any horizon** — the 4 m 46 s measurement stops being an
+unfalsifiable "eventually" and becomes corroboration of a code read. `docs/*.md`
+states something the code contradicts, which is the definition of a violation
+under the recording rules; it is filed **minor (docs gap)** because the
+passages' *operational* advice is correct (host agents need manual pruning, k8s
+ones do not — every sweep in this scenario cleaned up exactly as promised) and
+only the attribution of the mechanism is wrong. A reader who believes it will
+look for the wrong knob when the sweep stops happening: the sweep lives in
+`podgc.go` and dies with the agent process, and no cluster-side fallback exists
+behind it.
+
+**One entry, not two, and the choice is deliberate.** The two sites are the same
+claim written twice — `docs/troubleshooting.md:223-225` states it and then links
+to `agents.md#crash-orphaned-claim-containers` as its source — so they are one
+defect with two locations and one fix, and filing twice would double-count it in
+the campaign's tally. Both line numbers are cited in the entry.
+
+**Precedent for filing a code-read-only violation:** `FINDINGS.md:1864` (W3-6,
+`docs/cli.md:164`) is filed **NOT EXECUTED (code-read only)**. This entry is
+better evidenced than that one, since it carries a bounded live measurement as
+well.
 
 ### What the whole scenario says in one paragraph
 
 The pod GC does what `docs/high-availability.md:428-433` says it does, on all
 four limbs, measured on a live rig: it sweeps on a 60.0016 s tick, it deletes
-terminal and definitively-gone Pods, it never touches pooled Pods, and when it
+terminal and definitively-gone Pods, it did not touch a pooled Pod across the
+**8** evaluations measured (the verdict table's phrasing, and the only one the
+window supports), and when it
 cannot resolve a Run it skips that Pod and retries next cycle — demonstrated by
 a live run's Pod surviving an armed sweep in the same 1.06 ms window in which a
 beacon that *should* be deleted was also spared, and by that beacon being
@@ -901,25 +1024,34 @@ at all.
 
 ## Findings filed
 
-**1 violation + 3 observations.** Parts A, B1, C and the L1/L2/L3/L4 limbs are
-conformance and are filed as nothing. **The one violation is not against the pod
-GC at all** — it is against `docs/troubleshooting.md`, and it was found because
+**2 violations + 3 observations.** Parts A, B1, C and the L1/L2/L3/L4 limbs are
+conformance and are filed as nothing. **Neither violation is against the pod GC's
+four documented limbs** — one is against `docs/troubleshooting.md` (found because
 Part A's own fault-injection window happened to be a mid-step controller outage
-over a chatty run. Every finding the GC itself produced is an observation,
-because on all four documented limbs it did exactly what it says it does.
+over a chatty run), and the other is against a claim two `docs/` files make about
+what reaps an orphaned Pod *after* the agent is gone. Every finding the GC's own
+behaviour produced is an observation, because on all four documented limbs it did
+exactly what it says it does.
 
 | # | Kind | Title (see `FINDINGS.md`) |
 | --- | --- | --- |
-| 1 | **violation** (contract limb, major) | the Kubernetes agent's **stdout** log path is one un-retried POST per line with the error discarded — 21 lines lost to a 22.0 s blip on a `Succeeded` run, no marker, while `docs/troubleshooting.md:889-898` promises buffering and a drop marker |
+| 1 | **violation** (**I4** + contract limb, major) | the Kubernetes agent's **stdout** log path is one un-retried POST per line with the error discarded — 21 lines lost to a 22.0 s blip on a `Succeeded` run, no marker, while `docs/troubleshooting.md:889-898` promises buffering and a drop marker |
 | 2 | observation (major) | a 404 the controller did not mint makes the pod GC delete a live run's Pod; the run dies with a NULL exit code and no reason on any run-scoped surface |
 | 3 | observation (minor) | the GC's Pod set is "two labels in a namespace" — no owner reference, no agent-id predicate — so any agent sweeps every other agent's Pods, and per-Pod controller load is `pods × replicas` per minute with no coordination |
 | 4 | observation (minor) | the sweep interval is a literal at `agent.go:139` with no seam: no flag, env var, config field or test call site, and `runPodGC`'s own `<= 0` guard is unreachable |
+| 5 | **violation** (docs gap, minor) | `docs/agents.md:513-514` and `docs/troubleshooting.md:223-225` tell the operator an orphaned k8s Pod is "eventually reaped by the cluster's own pod garbage collection" — but the agent sets **no** owner reference on any Pod (`grep -rn "OwnerReference" internal/k8sagent/` → 0), and kube's pod GC is owner-reference-driven, so nothing outside `podgc.go` will ever reap them |
 
 `FINDINGS.md` was grepped for the **findings**, not merely the doc text, before
 appending: `logLineWriter` **0** hits, `podGCDecision` **0**, `isRunNotFound`
 **0**, `runPodGC` **0**, `listRunPods` **0**, `orphan-pod` **0**, `replicas: 2`
 **0**, and `pod GC` **1** — which is `FINDINGS.md:1502`, a W3→W4 carry-forward
-note about zombie budgeting, not a finding about the GC. Nothing here is a
+note about zombie budgeting, not a finding about the GC. Entry 5, filed later
+during the review-correction pass, was grepped the same way against the file as
+it then stood (`w4-1/ownerref-grep.txt`): `garbage collection` **0**,
+`eventually reaped` **0**, `agents.md:513` **0**, `troubleshooting.md:22` **0**,
+and `owner reference` / `ownerReference` **1** hit each — both inside entry 3
+above, which is about the *sweep's* candidate set rather than about what reaps a
+Pod once no agent is running. Nothing here is a
 re-filing. The two entries this scenario deliberately **corroborates without
 re-filing** are `FINDINGS.md:305` (4xx-permanent abandonment, reproduced in B2)
 and `FINDINGS.md:2233` (`w4-rig` §Step 7's indistinguishable 137, which B2
