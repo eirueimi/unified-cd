@@ -355,8 +355,15 @@ docker compose -f test/ha/docker-compose.ha.yaml \
 The `k8senroll` overlay is optional for the rig itself — it exists so the
 "same request, 403 direct / 200 through the interposer" control can be taken.
 The agent runs **on the host** (route decision and its cost, `w4-rig.md`
-§Step 1); **W4-2's RBAC-denial arm needs an in-cluster Deployment and is
-deferred to the W4-2 task, not dropped.**
+§Step 1). **W4-2 ran its RBAC-denial arm host-side** — a token-scoped kubeconfig
+for the `w4-2-reuse-denied` ServiceAccount is enough to deny a verb, and that
+arm produced the wave's headline violation (`FINDINGS.md:2393`). What still
+needs an in-cluster Deployment is narrower: **running an agent whose identity is
+the shipped `manifests/base/k8s-agent/` Role**, which no wave has done
+(`FINDINGS.md` checkpoint §(c)(i)). *(Corrected at the branch review — this
+paragraph previously asserted that the denial arm "needs an in-cluster
+Deployment", which is a false technical requirement and was already false when
+written.)*
 
 - `tools/w4/w4-k8s-inject.sh` — the first k8s fault tooling here. `inject.sh`'s
   verbs are useless for it: they take compose **service names** and hardcode

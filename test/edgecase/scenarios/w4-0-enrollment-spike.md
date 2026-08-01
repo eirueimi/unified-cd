@@ -560,9 +560,12 @@ landing it is not this campaign's job.
 6. **A cold `up` of the HA rig MAY lose one controller** to the bootstrap-PAT
    race — **check all three are `Up` before trusting a 3-replica premise**, and
    `docker compose start <dead controller>` if one is missing. **It is a race,
-   not a certainty:** it fired on this spike's first `up`, and two later cold
-   bring-ups on the same machine came up 3/3 (`w4-2/stack-up.txt`,
-   `w4-2-fixes/stack-up.txt`). *(This item originally read "expect one
+   not a certainty:** it fired on this spike's first `up`, and the two later
+   cold bring-ups **known to this record** came up 3/3 (`w4-2/stack-up.txt`,
+   `w4-2-fixes/stack-up.txt`). **Do not read that 3/3 as the wave's tally** —
+   two more cold bring-ups happened after this record was written, and the
+   full wave figure is **3 up / 2 down across five** (`FINDINGS.md:2270`,
+   amended at the W4 checkpoint). *(This item originally read "expect one
    controller to die on **every** cold `up`"; corrected at review. Do not
    assume failure either — a wave that pre-emptively `start`s a controller
    that never died will report a restart that did not happen.)*
@@ -572,7 +575,7 @@ landing it is not this campaign's job.
 | Brief claim | Outcome |
 | --- | --- |
 | k8s agent cannot use a static token; `enrollmentPolicy` mandatory | **Confirmed** (`internal/k8sagent/config.go:16-48`,`:190-192`) |
-| Enrollment is bidirectional; controller needs cluster access | **Confirmed** — both API calls observed to run |
+| Enrollment is bidirectional; controller needs cluster access | **Confirmed** — `TokenReviews().Create` observed; `Pods().Get` unreached, RBAC confirmed separately |
 | Compose controllers can't do this (env-only, no `-f`) → 503 | **Confirmed**, and fixed by the overlay |
 | HTTPS enforced agent-side unless `allowInsecureHTTP`/loopback | **Confirmed** (`config.go:228-248`); loopback alone suffices here |
 | Agent binary can run on host against the cluster | **Confirmed** — it ran; enrollment failed for unrelated reasons |

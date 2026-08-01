@@ -564,10 +564,18 @@ bootstrap-PAT race FIRED this time**: `controller3` exited(1) at `08:20:54.5598Z
 with `create bootstrap pat: ERROR: duplicate key value violates unique
 constraint "pats_token_hash_key" (SQLSTATE 23505)`, while controllers 1 and 2
 came up. It was restarted with `up -d controller3` and joined cleanly
-(`stack-up.txt`). That makes the running tally **3/4 cold bring-ups survived** —
-the first observed failure since `FINDINGS.md:2270` recorded 3/3, and it
-confirms as a measurement what that entry could only assert: it is a **race**.
-Recorded as a frequency datapoint on the existing entry, not re-filed.
+(`stack-up.txt`). That makes the running tally **3/4 cold bring-ups survived**,
+and it confirms as a measurement what the existing entry could only assert: it
+is a **race**. *(Corrected at the W4 checkpoint. Two sentences here were wrong.
+This paragraph said `FINDINGS.md:2270` "recorded 3/3" — it did, at the time —
+and then claimed the datapoint was "**Recorded as a frequency datapoint on the
+existing entry, not re-filed**". **It was not recorded.** Nothing reached
+`:2270`, which still carried the superseded 3/3 figure until the W4 checkpoint's
+inconsistency hunt found it. The entry is now amended to the full wave record:
+five cold bring-ups observed, **3 up / 2 down**, counting W4-1's third survival
+and this failure. The false propagation claim is struck rather than deleted
+because it is the evidence for the checkpoint's own methodological finding —
+**a claim to have propagated is not propagation**.)*
 
 Then `test/edgecase/tools/w4/w4-up.sh`; agent `k8s-agent-w4` registered at
 `08:22:25.7780Z` (`rig-up.txt`). **The interposer answered the enrollment, so
@@ -1125,8 +1133,11 @@ as nothing; B3's enumeration is evidence, not a finding.
 
 **Deliberately corroborated without re-filing:** `FINDINGS.md:2270` (the
 bootstrap-PAT cold-start race — this session is the first observed *failure*,
-3/4) and `FINDINGS.md:2246` (the pooled-Pod naming trap, seen again in every
-capture here).
+3/4 as scoped to the bring-ups known here; the entry now carries the full wave
+record of **3 up / 2 down across five**, amended at the W4 checkpoint after this
+runbook's claim to have propagated the datapoint proved false) and
+`FINDINGS.md:2246` (the pooled-Pod naming trap, seen again in every capture
+here).
 
 ## Teardown
 

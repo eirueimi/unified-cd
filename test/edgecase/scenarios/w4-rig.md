@@ -43,8 +43,9 @@ invariant of its own.
 
 ## Step 1 — Route decision
 
-**Host-run for everything in W4 except W4-2's RBAC-denial arm, which is
-deferred.**
+**Host-run for all of W4.** *(Amended at the branch review — this heading read
+"except W4-2's RBAC-denial arm, which is deferred", and the argument below it
+was wrong; see the amended paragraph at the end of this section.)*
 
 The agent runs as a host process (`test/edgecase/tools/w4/bin/k8s-agent`)
 against Docker Desktop's Kubernetes, using the developer's own
@@ -62,14 +63,31 @@ against Docker Desktop's Kubernetes, using the developer's own
    change.
 3. It is the route W4-0 already proved works end to end, minus the enrollment.
 
-**W4-2's RBAC-denial arm needs an in-cluster agent and is DEFERRED to the W4-2
-task, not dropped.** A host-run agent authenticates to the API server with a
-kubeconfig this rig controls; it cannot be denied a verb the way a Pod's
-ServiceAccount can, because there is no ServiceAccount in the picture at all.
-Reproducing the denial requires a Pod bound to a Role that lacks the verb —
-i.e. an image build plus a Deployment. That cost is charged to the task that
-needs it, and W4-2 must budget for it. **Deferring is a decision; silently
-running W4-2 without that arm is not acceptable.**
+**~~W4-2's RBAC-denial arm needs an in-cluster agent and is DEFERRED to the W4-2
+task, not dropped.~~ SUPERSEDED BY EXECUTION — this paragraph's argument was
+false, and W4-2 refuted it by construction.** It read: *"A host-run agent
+authenticates to the API server with a kubeconfig this rig controls; it cannot
+be denied a verb the way a Pod's ServiceAccount can, because there is no
+ServiceAccount in the picture at all. Reproducing the denial requires a Pod
+bound to a Role that lacks the verb — i.e. an image build plus a Deployment."*
+
+**A kubeconfig can carry a ServiceAccount token, which is the step this argument
+missed.** `k8s/make-w4-2-restricted-kubeconfig.sh` mints one for the
+`w4-2-reuse-denied` SA, and `k8s/w4-2-agent-config-restricted.yaml` points the
+**host-run** agent at it with a single `kubeconfig:` field. The agent then holds
+exactly that Role's permissions and is denied `pods update`/`patch` for real —
+proven three ways before anything ran through it (`kubectl auth can-i`, a live
+`PUT`, a live `PATCH`). **That arm ran, host-side, and produced the wave's
+headline violation** (`FINDINGS.md:2393`). No image build and no Deployment were
+involved.
+
+**What genuinely does need an in-cluster Deployment is narrower, and it is what
+remains deferred:** running an agent whose identity is the **shipped**
+`manifests/base/k8s-agent/` Role, applied as a bundle with its ServiceAccount
+and RoleBinding. No wave has done that (`FINDINGS.md` checkpoint §(c)(i)), which
+is why no W4 host-run capture is evidence about the shipped manifests **in
+either direction** — that limitation survives this correction unchanged, and it
+is the only part of it that was ever load-bearing.
 
 One consequence to carry forward: because the host agent holds the developer's
 own cluster rights, **no W4 host-run capture is evidence about the RBAC the
@@ -687,7 +705,10 @@ that kills one replica on a cold `up`. **It did not fire on either of this
 rig's cold bring-ups** — 3/3 both times, on the first `up -d --build` after a
 `down -v` (`w4-2/stack-up.txt`, `w4-2-fixes/stack-up.txt`) — so it is a
 **race, not a certainty**. `w4-0-enrollment-spike.md` item 6 has been corrected
-at source to say so. Verify, do not assume in either direction.
+at source to say so. **That 3/3 is this rig's own two bring-ups and is not the
+wave's tally**: across all five cold bring-ups W4 observed, the figure is
+**3 up / 2 down** (`FINDINGS.md:2270`, amended at the W4 checkpoint — W4-2's
+bring-up is the second failure). Verify, do not assume in either direction.
 
 ## Teardown
 

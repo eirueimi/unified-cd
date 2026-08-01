@@ -44,9 +44,13 @@ namespace: ci
 # kubeconfig is deliberately UNSET: buildRestConfig (cmd/k8s-agent/main.go)
 # falls back to clientcmd.RecommendedHomeFile, i.e. the developer's own
 # ~/.kube/config, whose current context is `docker-desktop`. Nothing secret is
-# committed as a result. A host-run agent therefore has the developer's own
-# cluster rights — which is exactly why W4-2's RBAC-denial arm cannot be run
-# from here (see scenarios/w4-rig.md §Route decision).
+# committed as a result. A host-run agent using THIS config therefore has the
+# developer's own cluster rights, so nothing captured with it is evidence about
+# restricted RBAC. Setting `kubeconfig:` to a ServiceAccount-token kubeconfig
+# scopes the same host-run agent down to that SA's Role — which is how W4-2's
+# RBAC-denial arm actually ran (k8s/w4-2-agent-config-restricted.yaml). An
+# earlier version of this comment said that arm "cannot be run from here"; it
+# was wrong. See scenarios/w4-rig.md §Route decision.
 
 # Pods are pulled from the node's containerd image store where possible.
 # alpine:3.20 and busybox:1.36 are already present on desktop-control-plane
