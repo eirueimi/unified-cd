@@ -903,8 +903,9 @@ the very page that promises the feature.
 **So the re-charter's premise is exactly half right, and this is the correction
 that matters.** "The missing-verbs mechanism is dead" is true of `manifests/` and
 **false of `docs/`**. An operator who does what the Kubernetes integration guide
-tells them — which is what an operator not using the bundled manifests will do,
-and the section exists for precisely that reader — builds a Role under which
+tells them — the reader the "RBAC example" section is addressed to, since an
+operator applying the bundled manifests needs no hand-written Role at all —
+builds a Role under which
 `podTemplate.reuse` cannot work, and gets no error, no failed run, and one
 `WARN` line per run whose wording implies a transient problem. **Part B is
 therefore not a synthetic experiment. It is a live execution of the documented
