@@ -332,7 +332,7 @@ this one caveat qualifies every W4 finding:
 > authentication is the unmodified product path.
 
 The bypass is sound because **nothing on the request path compares
-`enrollment_method`** — `agent_auth.go:38-116` checks only the token, its kind,
+`enrollment_method`** — `agent_auth.go:38-100` checks only the token, its kind,
 status, expiry and hash, and `GetAgentCredentialForAuth`
 (`postgres_agent_auth.go:272-276`) does not even select the column. It is
 **compared** in exactly two places, both credential issuance
@@ -431,8 +431,10 @@ cover the name the kubeconfig uses); the enrollment interposer
 (`tools/w4/w4-k8s-inject.sh`, the table above); and **seven** fixtures
 (`workloads/w4-tick`, `w4-pending`, `w4-reuse`, `w4-longpod`,
 `w4-pending-reuse`, `w4-poolkey-b`, `w4-poolkey-c` — each with both a `.yaml` and
-a `.payload.json`, both validated through `tools/w3/fixcheck`) plus four agent
-configs under `k8s/`, the `w4-2-reuse-denied` Role and its restricted-kubeconfig
+a `.payload.json`, both validated through `tools/w3/fixcheck`) plus **five**
+agent configs under `k8s/` (`w4-agent-config.yaml`, the W4-0
+`.template.yaml`, and W4-2's `-pooldefault`/`-poolevict`/`-restricted`; the
+count read "four" until the branch review — the template was omitted), the `w4-2-reuse-denied` Role and its restricted-kubeconfig
 generator (`k8s/make-w4-2-restricted-kubeconfig.sh`, which reads the server URL
 out of the developer's own kubeconfig — Docker Desktop publishes the apiserver on
 a **dynamic** host port, so a hardcoded one would break on the next restart).

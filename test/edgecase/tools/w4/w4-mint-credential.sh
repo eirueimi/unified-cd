@@ -10,7 +10,7 @@
 #
 # Nothing about the credential is synthetic. The identity row it creates has
 # enrollment_method = 'enrollment', and the controller's agent-auth middleware
-# never consults that column (internal/controller/agent_auth.go:38-116), which
+# never consults that column (internal/controller/agent_auth.go:38-100), which
 # is why the interposer works at all.
 #
 # CAPABILITIES ARE NOT SET HERE, and cannot be. `capabilities` on the identity

@@ -328,6 +328,16 @@ step_reports where run_id=…` (`:56`), whose `=== step_reports ===` section
 returns cleanly and empty and is followed by an explicit column listing that
 proves the query reached a real table. The `logs` query (`:60`) never failed.
 
+**Re-runnability note, added at the branch review: `trial.sh` is NOT committed.**
+It lives only in the evidence root (`edgecase-evidence/w4/w4-3/trial.sh`), so
+the `:53` / `:56` / `:60` line cites above resolve against the archive and not
+against this repo. The three queries are quoted in full in the paragraph above
+precisely so a re-runner needs neither the script nor the archive — run them
+against `unified-cd-ha-postgres-1` with `psql -U unified -d unified` and the
+same figures follow. A re-runner who wants the harness rather than the queries
+must take it from the archive or rewrite it; nothing in `test/edgecase/`
+supplies it.
+
 **The measurement window and what it bounds.** The 1 Hz sampler brackets the
 transition to `[30.16 s, 31.61 s]`, which is too coarse to state as a result.
 The precise figure is the agent's own pair of timestamps:
@@ -395,16 +405,26 @@ unaffected.)*
 
 Capture `w4-3/partB.txt`, `w4-3/partB-midflight.txt`.
 
-**Mid-flight (t ≈ 9 s), proving the claim really went through the pool** —
-`w4-k8s-inject.sh annotations`, reading `unified-cd/pool-*` (`pool.go:20-31`):
+**Mid-flight (t ≈ 9 s), proving the claim really went through the pool.**
+**This block is an authored digest of TWO commands, not one tool's output**
+*(annotated at the branch review; it was presented as a single block and the
+`Events:` section cannot come from the tool)*. The first four lines are
+`w4-k8s-inject.sh annotations`, reading `unified-cd/pool-*` (`pool.go:20-31`) —
+which emits **six** fixed lines per Pod (`w4-k8s-inject.sh:121-127`), of which
+`pool-run-id` and `pool-template` are elided here as empty/not-load-bearing —
+and it prints **no events at all**. The `Events:` section is from
+`kubectl -n ci describe pod <name>`, run in the same window:
 
 ```
+$ w4-k8s-inject.sh annotations          # 2 of 6 lines elided, both empty
 == ucd-run-38b62b88-fb4a-45 ==
   pool-status  = in-use
   pool-key     = a0e28a12adce9064a42fa3daff719ed8
   label runId  = 38b62b88-fb4a-45d3-9b7a-52d05b332895
   phase        = Pending
-
+```
+```
+$ kubectl -n ci describe pod ucd-run-38b62b88-fb4a-45   # tail
 Events:
   Warning  FailedScheduling  8s  default-scheduler  0/1 nodes are available:
     1 node(s) didn't match Pod's node affinity/selector. …

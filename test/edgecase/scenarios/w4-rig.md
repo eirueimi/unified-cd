@@ -31,7 +31,7 @@ invariant of its own.
 
 | Step | Result |
 | --- | --- |
-| 1. Route decision recorded | **host-run** for W4-1/W4-3; in-cluster **deferred** to W4-2 |
+| 1. Route decision recorded | **host-run for all of W4**, W4-2's RBAC arm included (see Step 1 — the original "in-cluster, deferred to W4-2" was superseded by execution); what stays deferred is the **shipped** `manifests/` Role as the agent's identity |
 | 2. `uca_` from the `"enrollment"` method accepted for k8s-agent traffic | **YES** — all six request paths in the table below, verified live |
 | 3. Interposer built and proven by effect | **YES** — agent enrolled, registered, claiming |
 | 4. Fixtures built, verified through the real `dsl.Parse` | **YES** — 4 fixtures, both source and payload-extracted YAML |
@@ -114,7 +114,7 @@ failure, caught in review.
 This was the go/no-go: if anything on the request path compared
 `enrollment_method`, the whole approach would have died.
 
-**Code read.** `internal/controller/agent_auth.go:38-116` is the only
+**Code read.** `internal/controller/agent_auth.go:38-100` is the only
 authenticator for `uca_` bearers. It checks, in order: the `uca_` prefix,
 `agentauth.Parse`, `GetAgentCredentialForAuth(parsed.ID)`, then
 `Kind == "access"`, `Status == "active"`, `RevokedAt == nil`, not expired, and
@@ -181,7 +181,7 @@ fixture.** `handleAgentRegister` **ignores** the agent's requested labels and
 uses `principal.AuthorizedLabels` — so the label the job selector must match is
 the one put on the *enrollment token*, not the one in
 `w4-agent-config.yaml`. The agent asks for `["kind:kubernetes","kubernetes"]`
-(it appends a bare `kubernetes` at `agent.go:71`) and is registered with
+(it appends a bare `kubernetes` at `agent.go:73`) and is registered with
 `{kind:kubernetes}` alone.
 
 ---

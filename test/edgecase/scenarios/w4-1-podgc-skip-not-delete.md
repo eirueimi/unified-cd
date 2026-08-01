@@ -218,7 +218,21 @@ shaped entirely by them.
 **The beacon.** Every arm below plants a *synthetic orphan Pod*: an ordinary
 `busybox` pod in namespace `ci` carrying exactly the two labels `listRunPods`
 selects on — `app=unified-cd-agent` and `unified-cd/runId=<a fresh random
-UUID>` — and no pool annotations. The controller genuinely 404s that UUID
+UUID>` — and no pool annotations. **The manifest, given rather than described,
+because this Part is not re-runnable without it** *(added at the branch review;
+the beacon was prose-only and reconstructable but not committed)*:
+
+```bash
+kubectl -n ci run "w4-1-beacon-$1" --image=busybox:1.36 --restart=Never \
+  --labels="app=unified-cd-agent,unified-cd/runId=$(uuidgen | tr 'A-Z' 'a-z')" \
+  -- sh -c 'sleep 3600'
+```
+
+`--restart=Never` matters: a beacon that a controller would re-create is not an
+orphan. The image is already in `desktop-control-plane`'s containerd store, so
+the Pod reaches `Running` without waiting on a registry. **Delete every beacon
+by hand at teardown** — nothing else will, which is this scenario's own
+addendum finding. The controller genuinely 404s that UUID
 (`handleGetRun`, `api_runs.go:167-181`, returns 404 only for
 `store.ErrRunNotFound` and 500 for anything else), so the GC's own predicate
 resolves it as "definitively gone" and deletes it.
@@ -426,6 +440,31 @@ a copy of `w4-agent-config.yaml` whose only edit is `server:`. Both agents then
 sweep namespace `ci` with independent 60 s tickers at unrelated phases. **If
 that bring-up fails, this Part is downgraded to an explicitly labelled code-read
 observation rather than reported as a measurement.**
+
+**Three details the recipe above omits, any one of which breaks a re-run.**
+*(Added at the branch review. The first was hit and recovered during execution
+and the fix is recorded verbatim in `partD-bringup.txt:8`, but it never reached
+this runbook — which is the "recorded is not propagated" failure this wave
+filed against itself.)*
+
+1. **`w4-mint-credential.sh` writes a FIXED path.** `out="${here}/w4-agent-credentials.json"`
+   (`w4-mint-credential.sh:41-42`) — it is not parameterised by agent id, so
+   minting the second credential **overwrites the first**, and interposer A
+   re-reads that file. **Back up agent A's credential file before minting, and
+   restore it after**, or A serves B's credential on its next enrollment:
+   ```bash
+   cp test/edgecase/tools/w4/w4-agent-credentials.json /tmp/w4-cred-A.json
+   test/edgecase/tools/w4/w4-mint-credential.sh k8s-agent-w4b kind:kubernetes
+   cp test/edgecase/tools/w4/w4-agent-credentials.json /tmp/w4-cred-B.json
+   cp /tmp/w4-cred-A.json test/edgecase/tools/w4/w4-agent-credentials.json
+   ```
+2. **The second interposer needs its own `-block-file`.** The arm is a file
+   (`.w4run/block.arm` by default); pointing both interposers at one arm file
+   **arms both agents at once**, which destroys Part D's premise that only one
+   agent is partitioned. Give B a distinct path.
+3. **The second agent needs its own `W4_LOG_DIR`** (or an explicit log path),
+   or B's log, pidfile and proxy log overwrite A's in `.w4run/` and the
+   two-agent comparison this Part rests on cannot be read back.
 
 **Method.** With both agents up and registered, plant **two** beacons and watch
 both agents' logs across ≥ 2 sweeps each. Measure:
@@ -755,6 +794,11 @@ Capture `partC.txt`, `partD-requestrate.txt`.
 read live with `w4-k8s-inject.sh annotations` (`pool.go:20-31`) **before** the
 sweep window opened:
 
+*(The tool emits **six** lines per Pod, `w4-k8s-inject.sh:121-127`; the
+`pool-template=` line is elided below because it is the human-readable template
+name and not the pool index. Noted at the branch review — the block was
+presented as complete tool output and was one line short of it.)*
+
 ```
 == ucd-run-0fe86020-e240-43 ==
   pool-status  = idle
@@ -762,6 +806,7 @@ sweep window opened:
   pool-run-id  =
   label runId  = 0fe86020-e240-4386-a913-d4f0ec1567d2
   phase        = Running
+                                    # pool-template= elided, see note above
 ```
 
 and the run that label names is **terminal**: `runs` reads
@@ -814,8 +859,11 @@ Captures `partD-bringup.txt`, `partD.txt`, `partD-requestrate.txt`.
 same route: a second credential minted for `k8s-agent-w4b` through the product's
 own enrollment path, a second interposer on `127.0.0.1:18098`, and a second
 `k8s-agent` against a copy of `w4-agent-config.yaml` whose only edit is
-`server:`. Both registered, both `[pod container]`, both `kind:kubernetes`, both
-sweeping namespace `ci`:
+`server:`. **The three bring-up traps are listed under the Part D method
+above** — the fixed credential path that `w4-mint-credential.sh` overwrites
+(hit and recovered here, `partD-bringup.txt:8`), the per-interposer
+`-block-file`, and the per-agent `W4_LOG_DIR`. Both registered, both
+`[pod container]`, both `kind:kubernetes`, both sweeping namespace `ci`:
 
 ```
 k8s-agent-w4   registered 07:41:29.3989  → sweeps at 07:5X:29.4
@@ -976,7 +1024,7 @@ The docs survey turned up two passages outside the GC's own section that
 attribute the cleanup to Kubernetes rather than to unified-cd.
 `docs/agents.md:513-514`: "Unlike the Kubernetes agent, where an orphaned pod is
 eventually reaped by the cluster's own pod garbage collection, **the host agent
-has no automatic container GC**"; `docs/troubleshooting.md:222-224` repeats it
+has no automatic container GC**"; `docs/troubleshooting.md:223-225` repeats it
 almost verbatim. Both use the claim as the *contrast* that justifies telling
 host-agent operators to prune by hand.
 

@@ -19,7 +19,7 @@
 // re-minted through the product's own `POST /api/v1/agents/token/refresh`.
 // The controller's authorization of every subsequent request is completely
 // untouched — verified in Step 2 of the W4 rig build: the agent-auth
-// middleware (internal/controller/agent_auth.go:38-116) never consults
+// middleware (internal/controller/agent_auth.go:38-100) never consults
 // enrollment_method, so a credential whose identity row says
 // `enrollment_method = enrollment` authenticates k8s-agent traffic exactly
 // like any other.

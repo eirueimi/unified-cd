@@ -202,6 +202,12 @@ the overlay's mounts are colon-bearing paths that MSYS rewrites otherwise.
 **Policy seeding confirmed** — `bootstrapKubernetesEnrollmentPolicies`
 (`cmd/controller/main.go:156-169`) wrote the row:
 
+**The block below is rendered, not raw** *(caveat added at the branch review,
+matching the one this document already uses correctly for the TokenReview
+block)*: `psql`'s table output is wider than this page, so the columns are
+reflowed and the header rule is shortened. Every value is unaltered; a
+re-runner gets the same row with different whitespace.
+
 ```
 $ docker exec unified-cd-ha-postgres-1 psql -U unified -d unified \
     -c "select name, provider, subject_constraints, agent_id_template, allowed_labels, enabled from agent_enrollment_policies;"
@@ -463,7 +469,48 @@ because five 403 exits in this handler share one response string (see the
 The obvious objection is that `kubectl create token` differs from the projected
 volume token a real in-cluster Deployment would use. **It does not.** A pod was
 created with a `serviceAccountToken` projected volume at the enrollment
-audience, its token read from inside the container, and reviewed:
+audience, its token read from inside the container, and reviewed.
+
+**The manifest and the two commands, given rather than described** *(added at
+the branch review — this leg carries the entry's "an in-cluster Deployment
+fails identically" claim and was past-tense prose with nothing to re-run)*:
+
+```yaml
+# kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata: { name: w4-spike-agent-pod, namespace: ci }
+spec:
+  serviceAccountName: w4-spike-agent
+  containers:
+    - name: probe
+      image: busybox:1.36
+      command: ["sh","-c","sleep 3600"]
+      volumeMounts:
+        - { name: enroll-token, mountPath: /var/run/secrets/unified-cd, readOnly: true }
+  volumes:
+    - name: enroll-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: token
+              audience: unified-cd-agent-enrollment
+              expirationSeconds: 3600
+# EOF
+```
+
+Then read the token from inside the container and review it — the token never
+leaves the pod except into the TokenReview, and is not captured:
+
+```bash
+tok=$(kubectl -n ci exec w4-spike-agent-pod -- cat /var/run/secrets/unified-cd/token)
+kubectl create -o json -f - <<EOF | python -c '<the .status reader used above>'
+{"apiVersion":"authentication.k8s.io/v1","kind":"TokenReview",
+ "spec":{"token":"${tok}","audiences":["unified-cd-agent-enrollment"]}}
+EOF
+```
+
+The response:
 
 ```
 === PROJECTED-VOLUME token (what an in-cluster Deployment gets) ===

@@ -277,6 +277,19 @@ than through `w4-up.sh`, which hardcodes `w4-agent-config.yaml`. The interposer
 `w4-up.sh` started is reused unchanged, so the enrollment bypass and its
 `INTERCEPT` evidence are identical across every arm.
 
+**"By hand" is the command `w4-up.sh:85-87` runs, with the config swapped**
+*(spelled out at the branch review; it was named and never given)*:
+
+```bash
+test/edgecase/tools/w4/bin/k8s-agent \
+  --config ./test/edgecase/k8s/<the arm's config>.yaml --log-level debug \
+  > .w4run/k8s-agent-<arm>.log 2>&1 &
+```
+
+Stop the previous agent first (SIGTERM, so the drain path runs) and wait for
+`k8s agent registered` in the new log before triggering anything; the agent
+re-enrols on every process start, so each swap costs one interception.
+
 Four configs, all committed, each differing from `w4-agent-config.yaml` in
 exactly one field:
 
@@ -717,7 +730,14 @@ INFO   2  running
 WARN   2  pool: failed to mark pod idle, deleting
 ```
 
-The two `WARN`s, verbatim (local `+09:00`):
+The two `WARN`s (local `+09:00`). **The first is verbatim; the second is
+ELIDED** — its `error` string is byte-identical to the first's except for the
+pod name, and the `… cannot update resource "pods" …` is this record's
+abbreviation, not the agent's output. *(Corrected at the branch review: this
+block was headed "verbatim" while containing an elision, which is exactly what
+`FINDINGS.md:2487`'s rule — if a block looks like pasted output, it must be
+pasted output — exists to prevent. The unelided pair is in
+`agent-logs/k8s-agent-partB1.log`.)*
 
 ```
 {"time":"2026-08-01T17:26:32.4317826+09:00","level":"WARN","msg":"pool: failed to mark pod idle, deleting",
