@@ -684,7 +684,14 @@ request it answered:
    the whole session. This is the heartbeat-reconcile signature W1-5 and W2-2
    established (a path that logs nothing on success), and the attribution is
    **derived** from those four facts rather than from a log line, because no log
-   line exists.
+   line exists. **The exclusion turns on an asymmetry worth naming, because
+   without it "no line appeared" would prove nothing:** the stuck-run reaper logs
+   **on success** — `slog.Warn` per run at `stuckrun_reaper.go:62`, `slog.Info`
+   summary at `:65` — so it would have announced itself; the heartbeat reconcile's
+   only log statement is `api_agent.go:115`, a `slog.Warn` inside
+   `if ferr != nil`, so it is silent when it works. The observed silence
+   therefore *excludes* the reaper and *is* what a successful reconcile looks
+   like.
 2. **The agent gave up on reporting.** Two
    `{"level":"ERROR","msg":"permanent error, giving up retry","status":404}`
    lines at `16:50:29.4462` and `16:50:29.4479` — the step report and the run
