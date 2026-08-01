@@ -955,9 +955,12 @@ host-agent operators to prune by hand.
 
 **Bounded measurement, and its bound is stated.** Beacon-7 was planted at
 `07:59:22.699`; both agents were stopped at `07:59:24` (`teardown-agents.txt`).
-The Pod was still `1/1 Running` at `08:00:17` and again at `08:04:08` — **4 m
-46 s with no unified-cd agent process in existence** (verified: `ps` shows no
-`k8s-agent` and no `enrollproxy`). Kubernetes did not reap it during that
+The Pod was `1/1 Running` at `07:59:25` (`age 3s`) and again at `08:04:08`
+(`age 4m46s`) in that same capture, with an intermediate sample at `08:00:17`
+(`age 55s`) appended to `partB2-attribution.txt` — **4 m 46 s with no unified-cd
+agent process in existence** (verified: `ps` shows no `k8s-agent` and no
+`enrollproxy`), and it was still `Running` when this scenario deleted it by hand
+at teardown (`teardown-stack.txt`). Kubernetes did not reap it during that
 window. This is a *bounded* observation: it shows the Pod survives that window
 unattended, not that Kubernetes would never act on a longer horizon.
 
