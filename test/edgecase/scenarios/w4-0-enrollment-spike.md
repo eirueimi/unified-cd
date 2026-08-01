@@ -176,12 +176,28 @@ yes
 The generated kubeconfig carries a live bearer token and is **gitignored**
 (`.gitignore` entry added); only the generator script is committed.
 
-Bring-up:
+Bring-up — **all three commands, in this order.** The order is load-bearing:
+the overlay bind-mounts `compose/kubeconfig-k8senroll.yaml`, which does not
+exist until the generator writes it, and the generator needs the controller
+RBAC to already be applied because it mints a token for that SA. Skipping the
+first two steps does not fail loudly — Docker silently creates a *directory* at
+the missing mount path, the controller finds no usable cluster, and enrollment
+answers **503**, which is the superseded symptom and not the finding:
 
 ```
-docker compose -f test/ha/docker-compose.ha.yaml \
-               -f test/edgecase/compose/k8senroll.override.yaml up -d
+MSYS_NO_PATHCONV=1 kubectl apply -f test/edgecase/k8s/w4-spike-identity.yaml \
+                                 -f test/edgecase/k8s/w4-spike-controller-rbac.yaml
+
+bash test/edgecase/k8s/make-spike-kubeconfig.sh
+# -> wrote .../test/edgecase/compose/kubeconfig-k8senroll.yaml (ttl 24h)
+
+MSYS_NO_PATHCONV=1 docker compose -f test/ha/docker-compose.ha.yaml \
+                   -f test/edgecase/compose/k8senroll.override.yaml up -d
 ```
+
+`MSYS_NO_PATHCONV=1` is the standing rule for every compose command on this
+Windows rig (W3 checkpoint, `FINDINGS.md:2118`), and it is not optional here:
+the overlay's mounts are colon-bearing paths that MSYS rewrites otherwise.
 
 **Policy seeding confirmed** — `bootstrapKubernetesEnrollmentPolicies`
 (`cmd/controller/main.go:156-169`) wrote the row:
@@ -279,11 +295,22 @@ $ docker exec unified-cd-ha-controller1-1 wget -q -O- --no-check-certificate --t
 ```
 
 `--no-check-certificate` here proves *transport* reachability only. Certificate
-validity is established separately by the SAN capture above, and conclusively
-by step 4: the controller's Go client — which verifies against the embedded CA
-with no insecure flag anywhere — completed a real TokenReview and a real
-Pods.Get. **The enrollment reached the policy-evaluation stage, which is only
-possible if both API calls succeeded.**
+validity is established separately by the SAN capture above, and then live by
+step 4 — but **by one API call, not two.** The controller's Go client, which
+verifies against the embedded CA with no insecure flag anywhere, completed a
+real `TokenReviews().Create` (`agent_enrollment_kubernetes.go:70`): an error
+there returns `ErrKubernetesEnrollmentUnavailable` and the handler answers 503
+(`:71-72`, `api_agent_enrollment.go:354-356`), so the observed **403** is only
+reachable if that call succeeded. That one call establishes kubeconfig load, CA
+verification, and `create tokenreviews` RBAC for the controller SA.
+
+**`Pods().Get` at `:93` never ran, and an earlier version of this record wrongly
+cited it as proof.** `Verify` returns at `:86`, upstream of it; the call is
+unreachable while the defect stands. The controller's `get pods` right is
+confirmed instead by the `kubectl auth can-i` capture at `:170-174` above —
+**RBAC confirmed, call path not exercised.** That is the correct standard of
+proof for this leg of step 3, and the same correction is applied to the
+`FINDINGS.md` W4-0 entry 1.
 
 Addresses used:
 - agent → controller: `http://localhost:18080` (loopback; note
@@ -331,7 +358,16 @@ field the parser demands is present:
 
 Agent run:
 
+The agent config used is committed as
+**`test/edgecase/k8s/w4-0-agent-config.template.yaml`** — copy it and fill its
+two placeholder paths (the token file written by the `kubectl create token`
+above, and a kubeconfig for the agent's own pod management). It is the file
+that was actually used, with the two host-specific absolute paths replaced;
+nothing in it is credential material.
+
 ```
+$ cp test/edgecase/k8s/w4-0-agent-config.template.yaml agent-config.yaml
+$ # edit the two <...> placeholders, then:
 $ ./k8s-agent.exe --config agent-config.yaml --log-level debug
 {"level":"WARN","msg":"sidecarS3SecretName is not set: ..."}
 {"level":"ERROR","msg":"bootstrap agent credentials","error":"kubernetes enrollment request failed"}
@@ -367,11 +403,16 @@ if claims.ServiceAccount.UID == "" || !hasReviewedUID || len(reviewedUID) != 1 |
 }
 ```
 
-Issuing that exact TokenReview by hand against the live cluster:
+Issuing that exact TokenReview by hand against the live cluster. **The block
+below is rendered, not raw:** `kubectl create -o json` emits JSON, and a small
+Python reader parsed `.status` and printed four fields plus a presence test,
+which is why `True` and `['…']` appear in Python repr form. A re-runner gets
+JSON and should read `.status.user.uid` and `.status.user.extra`.
 
 ```
 $ kubectl create -o json -f - <<< '{"apiVersion":"authentication.k8s.io/v1","kind":"TokenReview",
     "spec":{"token":"<redacted>","audiences":["unified-cd-agent-enrollment"]}}'
+  # ...piped through a reader that prints the following from .status:
 
 authenticated : True
 audiences     : ['unified-cd-agent-enrollment']
@@ -391,12 +432,31 @@ ServiceAccount UID is returned in **`review.Status.User.UID`** — and its value
 The code looks in the wrong place. `hasReviewedUID` is therefore always
 `false`, and the branch rejects **unconditionally**.
 
-This is fatal on its own, independent of everything downstream. Every other
-condition in `Verify` was independently confirmed satisfied (audience ✓,
-authenticated ✓, username matches claims ✓, all claim fields present ✓,
-namespace/SA within policy constraints ✓, pod live with matching UID and
-`serviceAccountName` ✓, requested labels ⊆ `allowedLabels` ✓), so the UID
-branch is the only reachable cause of the 403.
+This is fatal on its own, independent of everything downstream.
+
+**The elimination argument, stated correctly.** An earlier version of this
+record listed pod liveness, pod UID / `serviceAccountName`, and the
+labels ⊆ `allowedLabels` check among the conditions "eliminated". They cannot
+be causes of this 403: the pod checks are at `:100-102` and the label check is
+not in `Verify` at all but in the handler at `api_agent_enrollment.go:363` —
+all **downstream** of the return at `:86`. What actually needs eliminating is
+everything upstream:
+
+- **Inside `Verify`, upstream of `:84` — four conditions, all confirmed
+  satisfied:** policy constraints parse and are non-empty (`:65-67`, the seeded
+  row under Step 2); TokenReview authenticated + audience present (`:74-76`,
+  the capture above); `parseBoundPodClaims` succeeds (`:77-80`, the decoded
+  claims above); username equals `system:serviceaccount:ci:w4-spike-agent`
+  (`:81-83`, the capture above).
+- **Before `Verify` is even called — the three pre-verifier 403 exits in the
+  handler**, excluded by the agent having sent a bearer token at all (`:319`)
+  and by the seeded, **enabled**, `provider=kubernetes` policy row with a
+  parseable `providerConfig` (`:335`, `:343`).
+
+So `:84` is the only **reachable** cause of the 403. That is an inference from
+the code path plus the policy row — not something the 403 alone can prove,
+because five 403 exits in this handler share one response string (see the
+`FINDINGS.md` observation entry on 403 diagnosability).
 
 ### It is not an artifact of running the agent on the host
 
@@ -483,6 +543,7 @@ landing it is not this campaign's job.
    - `test/edgecase/k8s/w4-spike-identity.yaml` (SA + bound Pod)
    - `test/edgecase/k8s/w4-spike-controller-rbac.yaml` (minimum controller RBAC)
    - `test/edgecase/k8s/make-spike-kubeconfig.sh` (regenerates the gitignored kubeconfig)
+   - `test/edgecase/k8s/w4-0-agent-config.template.yaml` (the host-run agent config used in step 4)
    - `test/edgecase/compose/controller-k8senroll.yaml` + `k8senroll.override.yaml`
 
    The moment the UID check is fixed, this rig should enroll on the first try —
