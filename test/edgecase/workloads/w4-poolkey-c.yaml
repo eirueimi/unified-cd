@@ -1,0 +1,19 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w4-poolkey-c
+spec:
+  agentSelector:
+    - kind:kubernetes
+  podTemplate:
+    reuse: true
+    spec:
+      containers:
+        - name: job
+          image: alpine:3.20
+          env:
+            - name: W4_POOLKEY_DISCRIMINATOR
+              value: "c"
+  steps:
+    - name: identity
+      run: echo "W4-POOLKEY-C-HOSTNAME=$(hostname)"

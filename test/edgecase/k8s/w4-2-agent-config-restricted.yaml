@@ -1,0 +1,88 @@
+# W4-2 (Part B — the agent runs under a credential that CANNOT update pods).
+#
+# Derived from w4-agent-config.yaml (the W4 rig default) by changing ONLY the
+# fields named below. Everything else — server (the enrollment interposer),
+# enrollmentPolicy, serviceAccountTokenFile, labels, namespace, podImage,
+# maxConcurrent, podStartTimeout — is identical, so any difference this
+# scenario measures is attributable to the changed field and nothing else.
+#
+#
+# Route decision (see scenarios/w4-rig.md §Route decision): the agent runs as a
+# host process against Docker Desktop's Kubernetes, not as an in-cluster
+# Deployment. No image build, no `kind load`, no Deployment rollout, and the
+# process's stdout is directly readable — which matters because
+# internal/k8sagent/ emits ZERO Prometheus metrics, so every W4 signal is a log
+# line.
+#
+# `server:` points at the ENROLLMENT INTERPOSER, not at the LB. The interposer
+# forwards everything except POST /api/v1/agents/enroll, which it answers with
+# a real controller-issued access credential. This is the W4-0 bypass; see
+# test/edgecase/tools/w4/enrollproxy/main.go for why it exists and what it does
+# NOT change.
+server: http://127.0.0.1:18099
+
+# allowInsecureHTTP is set explicitly even though 127.0.0.1 is already exempt
+# via isLoopbackHost (internal/k8sagent/config.go:236-248), so that repointing
+# `server:` at a non-loopback address does not silently start failing config
+# validation.
+allowInsecureHTTP: true
+
+# enrollmentPolicy is MANDATORY (internal/k8sagent/config.go:190-192) even
+# though nothing consumes it here: the interposer answers the exchange without
+# looking at the policy name. The value matches the spike policy row so the
+# request the interposer logs is the one a real deployment would send.
+enrollmentPolicy: w4-spike-policy
+
+# The k8s agent reads this file and sends its contents as the enrollment
+# Bearer (internal/k8sagent/credentials.go readProjectedServiceAccountToken):
+# it must merely EXIST and be non-empty. The interposer never validates it, so
+# it is a dummy string, NOT credential material. Created by w4-up.sh.
+serviceAccountTokenFile: ./test/edgecase/tools/w4/w4-sa-token
+
+# Labels here are cosmetic: handleAgentRegister ignores the agent's requested
+# labels and uses principal.AuthorizedLabels from the credential
+# (internal/controller/api_agent.go:39). The label that decides claimability is
+# the one w4-mint-credential.sh put on the enrollment token (kind:kubernetes).
+labels:
+  - kind:kubernetes
+
+namespace: ci
+
+# THE ONE CHANGE FOR PART B. This kubeconfig authenticates as the
+# `ci/w4-2-reuse-denied` ServiceAccount, whose Role is
+# manifests/base/k8s-agent/rbac.yaml:7-13 minus `update` and `patch`
+# (test/edgecase/k8s/w4-2-reuse-denied-rbac.yaml). Every Kubernetes call the
+# agent makes — PodManager, Executor AND PodPool (cmd/k8s-agent/main.go:66-68)
+# — goes through it.
+#
+# The file is GITIGNORED (it carries a live SA bearer token). Mint it with
+#   test/edgecase/k8s/make-w4-2-restricted-kubeconfig.sh
+# Config.Validate never inspects this field (internal/k8sagent/config.go:166-226):
+# a missing file surfaces only when clientcmd tries to load it at startup.
+kubeconfig: ./test/edgecase/k8s/.w4-2-restricted.kubeconfig
+
+# Pods are pulled from the node's containerd image store where possible.
+# alpine:3.20 and busybox:1.36 are already present on desktop-control-plane
+# (the W4-0 spike pod uses busybox), so a run does not wait on a registry.
+podImage: alpine:3.20
+
+# One run at a time keeps W4's pod-lifecycle captures unambiguous: exactly one
+# run pod exists per claim, so `kubectl get pods -n ci` is a direct readout of
+# the agent's state rather than something to disambiguate.
+maxConcurrent: 1
+
+# 60s instead of the 5-minute default so W4-3's podStartTimeout arm resolves
+# inside a capture window rather than outside one. Scenarios that need the
+# product default must override it — UNIFIED_K8S_POD_START_TIMEOUT wins over
+# this file (internal/k8sagent/config.go:168-170).
+podStartTimeout: 60s
+
+# poolIdleTimeout is kept at the rig default 5m, NOT the product default, so
+# that Part B's "the pod was deleted" can only be ReleasePod's fallback delete
+# and never the pool's own eviction. Part D is where the product default is
+# the subject.
+poolIdleTimeout: 5m
+
+# sidecarS3SecretName is INTENTIONALLY UNSET. Consequence, stated so no
+# scenario trips over it: cache steps become silent no-ops reported Succeeded,
+# and artifact steps FAIL. No W4 fixture may depend on artifacts.

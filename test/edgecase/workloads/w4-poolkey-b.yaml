@@ -1,0 +1,16 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w4-poolkey-b
+spec:
+  agentSelector:
+    - kind:kubernetes
+  podTemplate:
+    reuse: true
+    spec:
+      containers:
+        - name: job
+          image: busybox:1.36
+  steps:
+    - name: identity
+      run: echo "W4-POOLKEY-B-HOSTNAME=$(hostname)"
