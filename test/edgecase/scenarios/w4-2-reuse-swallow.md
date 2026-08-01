@@ -180,20 +180,36 @@ unset — and it is corrected because `FINDINGS.md:2294` (W4-3) already establis
 this exact boot-rejection behaviour for all three duration fields, and a runbook
 that re-asserted the opposite would contradict the campaign's own record.
 
-### CORRECTION 4 — the `poolIdleTimeout` docs survey is 6 hits, not 9
+### CORRECTION 4 — WITHDRAWN: the `poolIdleTimeout` survey figure is a grep flag, not an error
 
-`grep -rn "poolIdleTimeout" docs/` returns **6** hits in **3** files
-(the brief said 9). Excluding `docs/superpowers/`: **2 hits in 1 file** —
-`docs/configuration.md:397` and `:458`. The brief's substantive point is
-confirmed exactly: **`docs/configuration.md` is the only operator-facing page
-that mentions the field at all**, and `docs/kubernetes-integration.md` — the
-page that documents pod reuse — never mentions it.
+**This correction was itself wrong and is withdrawn.** It originally read "the
+survey is 6 hits, not 9" and called the brief's figure wrong. The two numbers are
+the same survey under two flags, both correct, over the **same 3 files**:
+
+```
+grep -rn  "poolIdleTimeout" docs/ | wc -l   -> 6   files: 3   (this scenario's run)
+grep -rni "poolIdleTimeout" docs/ | wc -l   -> 9   files: 3   (the brief's figure)
+```
+
+The 3-line delta is four Go-identifier mentions of `PoolIdleTimeout` /
+`PoolIdleTimeoutDuration` in
+`docs/superpowers/plans/2026-07-15-k8s-agent-resilience.md` (`:17`, `:130`,
+`:145`) — all under `docs/superpowers/`, which this campaign does not treat as
+operator-facing, so the number that carries the finding is **unchanged under
+either flag**. `partB3-docsurvey.txt` labelled the `reuse` survey
+"(case-insensitive)" but stated no flag for this one; it now does.
+
+Excluding `docs/superpowers/`: **2 hits in 1 file** — `docs/configuration.md:397`
+and `:458` — under both flags. The brief's substantive point is confirmed
+exactly: **`docs/configuration.md` is the only operator-facing page that mentions
+the field at all**, and `docs/kubernetes-integration.md` — the page that
+documents pod reuse — never mentions it.
 
 The `reuse` survey reproduces the brief's numbers exactly: **176** hits in
 **65** files case-insensitively across `docs/`; **25** in **8** files excluding
 `docs/superpowers/` (`agents.md`, `configuration.md`, `field-reference.md`,
 `high-availability.md`, `jobs.md`, `kubernetes-integration.md`, `operations.md`,
-`resources.md`). Full survey in `w4-2b/docsurvey.txt`.
+`resources.md`). Full survey in `w4-2b/partB3-docsurvey.txt`.
 
 ### CORRECTION 5 — line-number drift, listed so no citation below is off by one
 
@@ -432,10 +448,18 @@ recorded as null rather than stretched.
   default nothing else touches them.
 
 **Idle pooled Pods therefore accumulate without bound, and survive agent
-restarts, at the default configuration.** The bound is one Pod per distinct
-`poolKey` — and `poolKey` (`pool.go:76-110`) hashes the *entire effective pod
-shape*, so the number of buckets is the number of distinct pod shapes any job in
-the fleet has ever asked for, which nothing caps.
+restarts, at the default configuration.** *(This paragraph originally predicted a
+bound of "one Pod per distinct `poolKey`". **That prediction is wrong and the
+corrected bound is in §Part D's severity discussion below**: `ReleasePod` appends
+to `p.pods[pp.PoolKey]` unconditionally (`pool.go:263`) while `ClaimPod` pops one
+(`:188-191`), so per-key depth is bounded by peak concurrency for that shape, not
+by 1. It is left here as written, with the correction attached, because the plan
+is the record of what was predicted.)* The number of **buckets** is what
+`poolKey` (`pool.go:76-110`) governs — it hashes the *entire effective pod
+shape*, so the bucket count is the number of distinct pod shapes any job in the
+fleet has ever asked for, which nothing caps; the depth *within* a bucket is
+governed by `maxConcurrent`, which this rig pins at 1 and therefore cannot
+measure.
 
 **This is measured live, not left as a code read.** A code-read leak and a
 measured leak are different findings.
@@ -565,7 +589,7 @@ rule (`fixtures.txt`).
 | B1. Cold pool, restricted credential | **Reuse totally defeated, both runs `Succeeded`.** Two distinct Pods, `MARKER=MISS` twice. **Complete** log enumeration for the window: 6 lines, 3 distinct messages, of which the only abnormal one is `WARN "pool: failed to mark pod idle, deleting"` ×2. No `k8s: failed to release Pod`. **Zero** controller-side signal of any kind |
 | B2. Warm pool (CORRECTION 1) | **Confirmed live** — `Restore` re-adopts the idle Pod with no `Update`, and the next `ClaimPod` reports the **403 as a "claim conflict"**. The brief's "this branch is never reached" was wrong |
 | B3. Any metric anywhere? | **No.** 53 files, 0 matches — enumeration verified, not repeated. `.Patch(` and `.Watch(` are 0: two of the seven granted verbs are dead |
-| C. The contract | **1 violation, and it is bigger than the one predicted.** `docs/kubernetes-integration.md:491-521` publishes, as "Minimum permissions required for k8s-agent to operate", a Role **byte-identical** to the one Part B just proved defeats reuse — on the same page that promises reuse at `:293` and `:341` |
+| C. The contract | **1 violation, and it is bigger than the one predicted.** `docs/kubernetes-integration.md:491-521` publishes, as "Minimum permissions required for k8s-agent to operate", a Role whose **`rules:` are byte-identical** to those of the one Part B just proved defeats reuse — on the same page that promises reuse at `:293` and `:341` |
 | D. `poolIdleTimeout: 0` | see §Part D |
 
 ### Part A — the control: reuse happens on this rig
@@ -647,6 +671,15 @@ not hit the hardcoded-port version of the same problem.
 ### Part B1 — a cold pool under the restricted credential
 
 Capture `partB1.txt`, `partB-controller.txt`, `agent-logs/k8s-agent-partB1-restricted.log`.
+
+**Capture hygiene, so the reader is not left with an unexplained traceback.**
+`partB1.txt`'s final block, headed "controller-side: did anything record a
+problem?", **failed**: its inline Python was handed non-JSON stdin and ended in a
+`JSONDecodeError`, so it measured nothing. It is left in the capture, annotated
+in place, rather than deleted. The check was redone successfully in
+`partB-controller.txt` — where two `psql` column errors are likewise visible and
+visibly recovered from — and **every controller-side number in this record and in
+`FINDINGS.md` comes from `partB-controller.txt`**, not from that failed block.
 
 Namespace cleared, agent restarted against
 `w4-2-agent-config-restricted.yaml`; `Restore` adopted nothing (**zero** pool
@@ -750,10 +783,22 @@ same run then produced the ordinary `ReleasePod` warning 3.51 s later, so **the
 first run after such a restart emits both messages and the ordering is fixed**.
 
 **The brief's reconnaissance said this branch is "never reached". It is reached
-on any agent restart that inherits an idle pooled Pod** — which, per Part D, is
-the state the *default* configuration leaves the namespace in permanently. The
-brief was right about a cold process and wrong in general, and the difference is
-one restart.
+on any agent restart that inherits an idle pooled Pod** — and per Part D, the
+*default* configuration guarantees that such a Pod, once created, is never
+removed. The brief was right about a cold process and wrong in general, and the
+difference is one restart.
+
+**But the reachability has one more condition, and this record states it rather
+than rounding it up to "every restart".** An agent holding *only* the restricted
+credential never creates an idle pooled Pod in the first place: every
+`ReleasePod` `Update` is refused and the Pod is deleted instead of pooled
+(`pool.go:255-258`) — which is exactly the violation Part B1 filed. So this
+branch requires a **credential downgrade or a mixed-credential history**: idle
+Pods left behind by a privileged agent generation, then a restart under the
+restricted one. That is precisely what Part A → Part B2 constructed here, and it
+is a realistic path — an operator tightening RBAC onto the documented "minimum
+permissions" example *is* that downgrade — but on a uniformly restricted
+deployment the pool is always empty and the branch is never taken.
 
 **A detail neither the brief nor the runbook predicted, read off the live
 annotations:** the replacement Pod carried `pool-status: in-use` right up to its
@@ -817,9 +862,14 @@ rules:
     verbs: ["create", "delete"]
 ```
 
-**That is byte-identical to the Role this scenario built to defeat reuse.** The
-diff is empty — verified mechanically, not by eye (`partC-rbac-docs.txt`, the
-`diff -u` of the two blocks prints nothing). `test/edgecase/k8s/w4-2-reuse-denied-rbac.yaml`
+**That `rules:` block is byte-identical to the `rules:` block of the Role this
+scenario built to defeat reuse.** The diff is empty — verified mechanically, not
+by eye (`partC-rbac-docs.txt`, the `diff -u` of the two `rules:` blocks prints
+nothing). *(Scoped deliberately: the two documents' Role/RoleBinding/SA **names**
+differ — `unified-cd-k8s-agent` versus `w4-2-reuse-denied` — so it is the
+permission grant that is identical, not the whole `:491-521` manifest, and the
+identity of the grant is the entire claim.)*
+`test/edgecase/k8s/w4-2-reuse-denied-rbac.yaml`
 was written as "the shipped manifest minus `update` and `patch`"; it landed on
 the documented example by construction, because the documented example **is** the
 pre-fix verb set.
@@ -899,23 +949,37 @@ ucd-run-4685a87c-afb9-40   pool-status=idle   pool-key=db63f75ad772fff085fd2b00d
 ucd-run-4f69515d-d2e1-46   pool-status=idle   pool-key=5a495bb77d29c505ff339c7ad7f8c09f
 ```
 
-**The hold: 7 min 44 s, sampled every 60 s, and its bound is stated.** All three
-Pods stayed `2/2 Running` and `pool-status: idle` at every one of the 8 samples,
-`08:29:09.9Z` → `08:36:13.3Z`, and the agent emitted **zero** lines matching
-`evict`. The window **exceeds** the rig's own `poolIdleTimeout` (5 m) and does
-**not** exceed the documented example (10 m). **This is not written as "the Pods
-are never evicted"** — it is written as: they survived a 7 m 44 s window that
-this scenario ended itself, during which the only component that could have
-evicted them was not running, because `StartEviction` returned at `<= 0` before
-launching its goroutine.
+**The hold: 7 m 03 s of holding, sampled every 60 s, and its bound is stated.**
+All three Pods stayed `2/2 Running` and `pool-status: idle` at every one of the 8
+samples, `08:29:09.9Z` → `08:36:13.3Z` — a span of **7 m 03 s** — and the agent
+emitted **zero** lines matching `evict`. **Two different numbers live in
+`partD2-hold.txt` and must not be conflated:** the *hold* is 7 m 03 s, while the
+oldest Pod's *age at the final sample* is **7 m 44 s**, because that Pod was
+created ~40 s before the hold opened (the capture prints `age=41s` for it at
+`t=+0m`). An earlier draft of this record paired the 7 m 44 s figure with the
+`08:29:09.9Z → 08:36:13.3Z` window, which does not cover it. The window
+**exceeds** the rig's own `poolIdleTimeout` (5 m) and does **not** exceed the
+documented example (10 m). **This is not written as "the Pods are never
+evicted"** — it is written as: they survived a window that this scenario ended
+itself, during which the only component that could have evicted them was not
+running, because `StartEviction` returned at `<= 0` before launching its
+goroutine.
 
 **And the pod GC saw them and declined, ten times each — corroborating W4-1 on
 different Pods.** The controller access log carries exactly **10**
-`GET /api/v1/runs/{id}` for each of the three pooled run ids across the hold,
-one per sweep per Pod, with no deletion and no GC log line
-(`partD2-hold.txt`). That is `podgc.go:99-100`'s deferral to "the pool's own
-idle-timeout/Restore logic" measured against a pool whose idle-timeout logic
-does not exist.
+`GET /api/v1/runs/{id}` for each of the three pooled run ids, with no deletion
+and no GC log line (`partD2-hold.txt`). **The window for that count is the whole
+access log, not the hold** — it opens at Pod creation, ~40 s before the hold —
+and the capture's own header bounds the hold itself at "~7 pod-GC sweeps", so 10
+is only consistent with a count that starts earlier. **And "one per sweep per
+Pod" is *derived*, not measured:** the access log does not record which client
+issued a request. The attribution rests on the agent's pod-GC ticker being the
+only plausible source of a repeating per-pooled-run-id GET at that cadence —
+`agent.go:139` passes `time.Minute` to `runPodGC`, whose ticker is
+`podgc.go:101-106`. What the capture *does* establish without inference is that
+the three Pods were repeatedly looked up and never deleted, which is
+`podgc.go:99-100`'s deferral to "the pool's own idle-timeout/Restore logic"
+measured against a pool whose idle-timeout logic does not exist.
 
 **D2 — the leak survives a restart.** SIGTERM, then restart against the same
 config:
@@ -980,15 +1044,37 @@ disagree with the band without disagreeing with the facts:
   `docs/kubernetes-integration.md` — the page that documents pod reuse — never
   mentions it. `docs/high-availability.md:431` states the GC half as a *feature*
   without noting that at the default nothing else touches these Pods.
-- **Held below critical**: nothing is lost, corrupted or exposed; no run fails;
-  the retained Pods are healthy and reusable, which is the *point* of a pool.
-- **The bound, stated so the finding is not inflated.** The leak is **one Pod per
-  distinct pod shape ever used with `reuse: true`**, not one per run — three
-  fixtures produced three Pods, and running `edge-w4-reuse` twice more produced
-  none. It is unbounded in shape diversity and in time, not in run count. It
+- **The bound, stated so the finding is not inflated — and CORRECTED, because
+  the first version of it claimed more than this rig could show.** What is
+  measured is that the leak is **not one per run**: three fixtures produced three
+  Pods, and running `edge-w4-reuse` twice more produced none. What was also
+  claimed — *one Pod per distinct pod shape* — is **withdrawn**. `ReleasePod`
+  appends to `p.pods[pp.PoolKey]` **unconditionally** (`pool.go:263`) while
+  `ClaimPod` pops exactly one (`pool.go:188-191`), so per-key depth is bounded by
+  the **peak concurrency ever reached for that shape**, and the total by
+  **`maxConcurrent` × distinct shapes**. `maxConcurrent` is a global semaphore
+  (`agent.go:148-149`); `Validate` defaults an unset value to **100**
+  (`config.go:207-208`); a negative value removes the semaphore altogether. **The
+  multiplier was not measured and could not have been** — all three Part D
+  configs pin `maxConcurrent: 1` (`w4-2-agent-config-pooldefault.yaml:63`,
+  `-poolevict.yaml:62`, `-restricted.yaml:72`), which structurally forbids a
+  per-key depth above 1. The factor is **code-read**. The leak is unbounded in
+  shape diversity and in time, and bounded in run count only by concurrency. It
   also only reaches deployments where some job sets `podTemplate.reuse: true`
   while the agent config never sets `poolIdleTimeout` — which is the default
   configuration, and the two live in different files owned by different people.
+- **Held below critical, re-checked against the corrected bound rather than
+  inherited.** The band turns on *kind*, not magnitude, and none of the kinds
+  `FINDINGS.md:6` reserves for critical is present: nothing is lost, corrupted or
+  exposed; no run fails; the retained Pods are healthy and reusable, which is the
+  *point* of a pool. The corrected bound is a much larger number than "one per
+  shape", and it does make one critical-adjacent path materially more plausible —
+  enough retained Pods exhaust a namespace `ResourceQuota` or node capacity, at
+  which point subsequent runs fail to schedule. That path is **code-read and
+  unmeasured** here, and even measured it would land in `FINDINGS.md:7`'s
+  "incorrect visible behavior, unbounded recovery", not in `:6`. **So the band
+  stands at major** — but on the rubric's categories, not on a small number,
+  because the small number was wrong.
 
 **The secondary hit is recorded, not filed.** `docs/configuration.md:395-396`
 ("Unset = no reuse window") is ambiguous rather than false — "reuse window" can
@@ -1014,9 +1100,9 @@ rather than a permanently dead feature, with nothing on any controller-side
 surface at all and no metric anywhere in the package. That would be a
 diagnosability observation if the restricted credential were exotic. It is not:
 `docs/kubernetes-integration.md:491-521` publishes it as the **minimum
-permissions required**, byte-identical, on the same page that promises reuse
-twice, because PR #50 fixed every Role it *shipped* and none of the one it
-*publishes*. And the field an operator would reach for on discovering pooled Pods
+permissions required**, with a `rules:` block byte-identical to the one under
+test, on the same page that promises reuse twice, because PR #50 fixed every Role
+it *shipped* and none of the one it *publishes*. And the field an operator would reach for on discovering pooled Pods
 piling up is documented, on the only page that mentions it, as meaning the exact
 opposite of what it does.
 

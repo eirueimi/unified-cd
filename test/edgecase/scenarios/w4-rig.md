@@ -719,6 +719,19 @@ all.
 The W4-0 spike objects (`w4-spike-agent` SA, `w4-spike-agent-pod`, controller
 RBAC) are left in place, as W4-0 left them.
 
+**If a scenario clears the `ci` namespace it destroys `w4-spike-agent-pod`, and
+recreating it mints a NEW Pod UID.** W4-2 did exactly this and recreated the Pod
+from `test/edgecase/k8s/w4-spike-identity.yaml` (`w4-2b/teardown.txt`: SA
+`unchanged`, Pod `created`, `1/1 Running`). Nothing is broken by that — spike
+tokens are re-minted per rig-up, and the controller's Kubernetes enrollment
+verifier binds a token to the Pod UID it was issued for
+(`internal/controller/agent_enrollment_kubernetes.go:100` compares
+`pod.UID` against the token's `claims.Pod.UID`, and `:103` carries `PodUID` into
+the resulting identity). But **any downstream artifact that pinned the old UID —
+a captured token, a recorded identity, a hand-written policy fixture — is now
+stale and will be rejected as a `pod UID mismatch`.** Re-mint rather than reuse.
+This is a non-defect note; no finding rests on it.
+
 ## Credential hygiene
 
 `uca_`/`ucr_`/`uce_` material, ServiceAccount tokens and kubeconfigs are all
