@@ -1,0 +1,23 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w4-longpod
+spec:
+  agentSelector:
+    - kind:kubernetes
+  podTemplate:
+    spec:
+      containers:
+        - name: job
+          image: alpine:3.20
+  steps:
+    - name: tick
+      run: |
+        echo "W4-LONGPOD-BEGIN $(hostname)"
+        i=0
+        while [ $i -lt 120 ]; do
+          echo "W4-LONGPOD-TICK $i"
+          i=$((i+1))
+          sleep 1
+        done
+        echo "W4-LONGPOD-END"
