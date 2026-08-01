@@ -52,7 +52,10 @@ stop enrollproxy
 # roughly every 40-45 min (internal/k8sagent/credentials.go:83-84). A short
 # session, or a proxy restarted underneath a still-running agent, legitimately
 # shows 0. The count is over every enrollproxy.log* in the log dir so a restart
-# during the session is still covered.
+# during the session is still covered — which works only because w4-up.sh
+# ROTATES enrollproxy.log on start instead of truncating it. Truncating is what
+# destroyed the startup INTERCEPT line and produced the misleading 0 recorded
+# in w4-2/step8-teardown.txt.
 #
 # 0 means "no enrollment was intercepted while these logs were being written" —
 # NOT "the bypass was not in effect". The claim that rests on the bypass is
@@ -61,9 +64,16 @@ stop enrollproxy
 # by w4-up.sh and any claim about it IS unsupported.
 n=$(cat "${logdir}"/enrollproxy.log* 2>/dev/null | grep -c 'INTERCEPT #')
 echo "w4-down: ${n} enrollment exchange(s) intercepted across ${logdir}/enrollproxy.log*"
+# Per-file breakdown: the total alone hides WHICH window each intercept came
+# from, and the window is the whole point.
+for f in "${logdir}"/enrollproxy.log*; do
+  [ -f "${f}" ] || continue
+  echo "         $(grep -c 'INTERCEPT #' "${f}" 2>/dev/null) in $(basename "${f}")"
+done
 if [ "${n}" -eq 0 ]; then
   echo "w4-down: NOTE 0 is expected for a session shorter than the ~40 min refresh"
   echo "         interval, or when the proxy was restarted under a running agent."
+  echo "         It does NOT mean the bypass was not in effect."
 fi
 
 if [ -n "${capture}" ]; then

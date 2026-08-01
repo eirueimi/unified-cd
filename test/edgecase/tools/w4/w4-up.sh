@@ -53,6 +53,16 @@ echo "== w4-up: 3/5 dummy ServiceAccount token file =="
 printf 'w4-rig-dummy-service-account-token-not-a-credential\n' > "${here}/w4-sa-token"
 
 echo "== w4-up: 4/5 start interposer =="
+# ROTATE, never truncate. The interposer's startup INTERCEPT line is the only
+# evidence that the bypass was in effect, and w4-down.sh counts INTERCEPT lines
+# over enrollproxy.log* precisely so that a proxy restarted under a running
+# agent is still covered. Truncating `enrollproxy.log` on every start defeated
+# that: it destroyed the earlier INTERCEPT line and produced the misleading
+# `0 enrollment exchange(s)` in w4-2/step8-teardown.txt.
+if [ -s "${logdir}/enrollproxy.log" ]; then
+  mv "${logdir}/enrollproxy.log" "${logdir}/enrollproxy.log.$(date +%s)"
+  echo "   rotated previous enrollproxy.log (its INTERCEPT lines still count)"
+fi
 "${bindir}/enrollproxy" \
   -listen "${listen}" \
   -upstream "${server}" \
