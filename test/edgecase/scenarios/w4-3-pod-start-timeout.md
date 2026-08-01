@@ -10,7 +10,9 @@ failure is *reported* as well as bounded, whether the pooled-pod arm shares it,
 and whether the config surface around it means what the docs say it means.
 
 **Invariant attacked: I5.** Quoted verbatim from
-`docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:49`:
+`docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:52`
+*(line corrected at review — this cited `:49`, which is I2; the quoted I5 text
+below was and is correct)*:
 
 > | I5 | **Bounded recovery** — after fault injection the system returns to
 > steady state within documented bounds (leader re-election ≤ seconds; stuck-run

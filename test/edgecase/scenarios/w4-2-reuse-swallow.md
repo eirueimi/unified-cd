@@ -406,11 +406,17 @@ already-ruled check covered doc passages only. Terms: `ReleasePod`, `PodPool`,
 `poolIdleTimeout`, `podTemplate.reuse`, `no reuse`.
 
 **Invariant limbs.** No invariant I1-I7 is expected to apply by its own text.
-I1 ("every run reaches exactly one terminal state, and that state matches what
-actually happened", `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:45`)
-is **not** contradicted: the runs succeed and they did succeed. Filing I1 for a
-lost optimisation would be the stretch `FINDINGS.md:1509` forbids. The limbs are
-recorded as null rather than stretched.
+I1 ("every API-accepted run reaches exactly one terminal state; no phantom runs
+from duplicate fires/webhooks",
+`docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:48`)
+is **not** contradicted: every run reaches exactly one terminal state, that
+state is `Succeeded`, and no phantom run is created — what is lost is pooling,
+not any part of the run record I1 speaks about. *(Citation and quotation
+corrected at review: this line previously cited `:45`, a blank line, and quoted a
+clause the spec does not contain. The null-limb call is unchanged and is
+stronger against the real text.)* Filing I1 for a lost optimisation would be the
+stretch `FINDINGS.md:1509` forbids. The limbs are recorded as null rather than
+stretched.
 
 ## Part D — `poolIdleTimeout: 0` — the default disables **eviction**, not **reuse**
 

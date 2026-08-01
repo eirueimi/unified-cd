@@ -19,21 +19,33 @@ shipped `replicas: 2`. The campaign invariants are cited only where their own
 text applies:
 
 - **I1**, quoted verbatim from
-  `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:45`:
+  `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:48`:
 
-  > | I1 | **Run accounting** — every run reaches exactly one terminal state,
-  > and that state matches what actually happened |
+  > | I1 | **Run accounting** — every API-accepted run reaches exactly one
+  > terminal state; no phantom runs from duplicate fires/webhooks |
 
-- **I2**, `:46`:
+- **I2**, `:49`:
 
-  > | I2 | **At-most-once side effects** — a step's side effects are never
-  > duplicated by a failover, retry, or reconnect |
+  > | I2 | **At-most-once side effects** — step side effects execute at most
+  > once (detected via an append-only side-effect log on a shared volume,
+  > closing the gap `ha_test.go` documents: upserted step reports cannot
+  > reveal re-execution) |
 
 Per `FINDINGS.md:1509`, an invariant must be contradicted by **its own text**,
-not its spirit. A pod GC that spuriously kills a live run would make the run's
-terminal state not match what actually happened, which is I1's text; nothing in
-this scenario duplicates a side effect, so I2 is a null limb and is recorded as
-one rather than stretched.
+not its spirit. **Both limbs are expected to be null, and I1's is narrower than
+an earlier draft of this section claimed.** I1's text is about *how many*
+terminal states a run reaches and about phantom runs — not about whether the
+state is the *right* one — so a pod GC that spuriously kills a live run does not
+contradict it: the killed run still reaches exactly one terminal state and no
+phantom run is created. *(Corrected at review. This section previously cited
+`:45` — a blank line — under the heading "quoted verbatim", and quoted "every
+run reaches exactly one terminal state, and that state matches what actually
+happened", **a clause that appears nowhere in the spec**. Its I2 quote was
+invented the same way, at `:46`, which is the table header. Both are replaced
+above with the spec's actual wording. No disposition changes: under the real I1
+the null-limb call at §"I1 and I2" is more clearly right, not less.)* Nothing in
+this scenario duplicates a side effect either, so I2 is a null limb and is
+recorded as one rather than stretched.
 
 ---
 
@@ -519,11 +531,19 @@ Nothing is filed on it.
 
 **I1 was attacked in Part B2 and is *not* filed on, after argument.** The
 temptation is real: a healthy 120 s job was destroyed at t≈45 s by its own
-agent's GC and recorded `Failed`. But I1's text is "every run reaches exactly
-one terminal state, and that state matches what actually happened", and the run
-*did* fail — its container was SIGKILLed and it never produced its remaining
-output. Exactly one terminal state was reached. Filing I1 here would be the
-stretch `FINDINGS.md:1509` forbids, of the same kind W2-5 and W2-7 were
+agent's GC and recorded `Failed`. But I1's text is "every **API-accepted** run
+reaches exactly one terminal state; no phantom runs from duplicate
+fires/webhooks", and this run reached exactly one terminal state and no phantom
+run was created — and the run *did* fail besides, since its container was
+SIGKILLed and it never produced its remaining output. I1's subject is the
+**arithmetic** of terminal states, which is undisturbed here; it says nothing
+about whether the state is the *deserved* one, so it does not reach this defect
+at all. *(Sharpened at review: an earlier version of this paragraph argued
+against a mis-quoted I1 that included the clause "and that state matches what
+actually happened" — text the spec does not contain. Against the real clause the
+decision not to file is **more** clearly right, because the mis-quote was the
+only version of I1 under which filing was even arguable.)* Filing I1 here would
+be the stretch `FINDINGS.md:1509` forbids, of the same kind W2-5 and W2-7 were
 corrected for. **What is wrong in B2 is not the arithmetic of the status; it is
 that the agent chose to destroy the run on evidence it could not attribute**,
 and that is filed on its own terms.
