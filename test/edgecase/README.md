@@ -502,6 +502,157 @@ error, all executed or code-read at HEAD:**
   wins essentially always. A future sidecar-capable rig should not expect the
   structural shape.
 
+### The W6 harnesses (scale / abuse)
+
+W6 is instrument work first: every W6 scenario was blocked on measurement tools
+that did not exist. They live in `tools/w6/` and are listed below **with the
+capture that proves each one works** — the campaign has shipped two arms inert
+while they passed every one of their own state checks, so "the code is present"
+is never the evidence.
+
+Build the two Go tools first (never `go run`; see `w6-build.sh`):
+
+```bash
+test/edgecase/tools/w6/w6-build.sh      # -> tools/w6/bin/{loadgen,ssehold}, gitignored
+```
+
+Most of them want the **direct controller ports**, and two also want the
+`logfault` access-log format:
+
+```bash
+cd test/ha
+export COMPOSE_FILES="-f docker-compose.ha.yaml \
+  -f ../edgecase/compose/logfault.override.yaml \
+  -f ../edgecase/compose/ctrlports.override.yaml"
+docker compose $COMPOSE_FILES up -d --build
+```
+
+| Harness | What it does | The capture that proves it |
+|---|---|---|
+| `w6-synth-agent.sh` | curl-driven synthetic agent: `enroll` / `register` / `heartbeat` / `trigger` / `claim` / `own` / `run-once` / `lines` / `push-bulk` / `finish` / `token` / `forget`. Agent id, label, job and server are all parameters | `w6-1/step1-synth-agent.txt` — enroll → register(204) → `own edge-w6-probe` → run reads back `Running`, 5 lines pushed through the real bulk route and read back through the admin API → `finish` → `Succeeded` |
+| `bin/loadgen` | N genuinely concurrent in-flight requests at ONE named controller; per-request start/end to CSV; `maxInFlight` swept from those timestamps | `w6-1/step2-loadgen.txt` — `-c 20 -mode burst` → `maxInFlight=20`, and the CSV shows all 20 sharing one start timestamp; the `-insecure-serial` control over the same 20 requests → `maxInFlight=1`, each start equal to the previous end |
+| `bin/ssehold` | S SSE streams held for a measured window against ONE controller; per-stream status, connect latency, event counts, alive-at-end | `w6-1/step3-4-sse-pg.txt` — 6 streams on `:18083` held 35 s, `aliveAtEnd=6 diedEarly=0`, 30 events each; and the PG sampler in the same window shows exactly 6 `listen` connections on `controller3` and none on the other two |
+| `w6-pgsample.sh` | `pg_stat_activity` on a grid, per replica and per **derived** pool, with a peak summary | same capture — the `listen` count tracked the stream count exactly, and `w6-1/unplanned-pg-saturation.txt` shows the same instrument reading the saturated case |
+| `w6-reqshape.sh` | per-request shape recorder off nginx's `logfault` access log, folded into buckets; plus `counter` and `contrast` verbs | `w6-1/step5-reqshape.txt` — 60 bulk requests resolved individually inside a 75 ms window (median gap 1 ms) that a 2 s grid would report as one number; `w6-1/step5-reqshape-b.txt` — a real agent's 15 auto-flush ticks at a measured 2.000 s median spacing; `w6-1/step5-reqshape-c.txt` — `contrast` and the combined-format guard |
+| `w6-idleload.sh` + `w6-idleanalyze.py` | arms Postgres statement logging, captures an untouched window, always reverts, and reports q/s in total, per replica and per statement class | `w6-1/step8-idlebaseline.txt` (arm, revert and read-backs) and `w6-1/step8-idle-report.txt` (the numbers below) |
+| `w6-build.sh` | builds `loadgen` and `ssehold` into a gitignored `bin/` | — |
+
+**`w6-synth-agent.sh` is the promotion the README asked for.** `w3-5/synth.sh`
+and `w3-6/synth.sh` were the same instrument twice, both session artefacts with
+hardcoded absolute scratchpad paths, and neither was committed; the note above
+("**one promotion is worth a W4 task**") is now discharged. It pairs with
+`workloads/w6-probe`, whose `kind:w6synth` selector no real agent carries.
+**Two traps it now encodes, both hit while building it:** the register route is
+`POST /api/v1/agents/register` — a **collection** route with the id in the body
+(`server.go:493`), not `/agents/{id}/register`, which 404s with no hint; and the
+script deliberately does **not** export `MSYS_NO_PATHCONV=1`, because on Git
+Bash that hands a native `curl.exe` unconverted `/tmp/...` paths and every
+`-o` / `--data-binary @file` fails with exit 23. The rule is per-docker-call, not
+per-script.
+
+**`loadgen` treats "were they actually concurrent?" as a measurement.**
+`tools/bulk-submit.sh` produces *depth* and no *rate* — it is a serial loop, and
+a generator that was secretly serial would not fail, it would quietly produce a
+smaller number. So `loadgen` sweeps the 2N start/end events and reports
+`maxInFlight`, and warns when `maxInFlight < -c`. Ties are broken **end-first**:
+Go's clock on Windows is coarse enough that a request's end and the next one's
+start share a timestamp, and breaking ties start-first made the serial control
+report `maxInFlight=2` — an instrument inventing overlap that provably did not
+exist.
+
+**Aim rate-bearing harnesses at a controller, never at the LB, and that needs
+`compose/ctrlports.override.yaml`** (18081/18082/18083 → controller1/2/3). The
+base compose publishes only `18080` on nginx, and `test/ha/nginx.conf` has no
+upstream `keepalive`, leaves `worker_connections` at 512, and can turn one
+client request into three upstream requests via `proxy_next_upstream_tries 3`.
+Through the LB you measure the rig. Confirmed the three ports are three distinct
+processes (`w6-1/step-ctrlports-verify.txt`): each replica owns its own registry
+(`internal/metrics/metrics.go:34`) and their `/metrics` outputs diverge at once.
+
+**The request-shape recorder: why the access log and not the counter.** W1-6
+derived its request numbers from `unifiedcd_agent_auth_events_total`, which
+worked only because every request was *rejected*. Under W6's faults the requests
+succeed, so that counter is useless — and
+`unifiedcd_http_requests_total{route=".../logs/bulk"}` is the wrong instrument
+for three further reasons, all now measured rather than argued:
+
+- **Resolution.** A counter has no timestamp; a 2 s scrape grid yields a delta
+  per cell and can never separate two requests 40 ms apart. The LogPusher's tick
+  IS 2 s (`internal/agent/runner.go:211`), so a 2 s grid has the same period as
+  the quantity being measured. The `logfault` format leads with `$msec`;
+  measured, 60 requests inside 75 ms came out as 60 rows with a **1 ms median
+  gap**.
+- **Blindness.** W6's faults are injected at nginx. `contrast` fires five
+  oversize requests that nginx answers itself with 413: **5 access-log rows, and
+  a counter delta of exactly 6 — which is the six `/metrics` scrapes the verb
+  itself made, and none of the five requests** (`w6-1/step5-reqshape-c.txt`).
+- **Self-perturbation.** Scraping three controllers every 2 s is itself load
+  that lands in the counter being read (`/metrics` goes through
+  `metricsMiddleware`). Reading a log perturbs nothing.
+
+The counter is still the right instrument for "how many did the controller
+*serve*", which is why `counter` is a verb rather than deleted. `shape`
+**exits 4** if the access log is in nginx's stock `combined` format (1 s
+resolution, no `arm=` stamp) rather than silently producing a blunt curve, so it
+requires `compose/logfault.override.yaml`. One limit worth knowing: a **413 is
+logged with `arm=` empty**, because nginx rejects an oversize body before the
+request enters the location that sets `$logfault_arm`.
+
+**The PG sampler cannot give you "by application", and says so.** The plan asked
+for a breakdown by pool/application; `application_name` is **empty for every
+controller connection** — `grep -rn 'application_name\|ApplicationName'
+internal/ cmd/` returns **zero** hits, no DSN sets it, and pgx does not default
+one. Pool attribution is therefore **derived from the retained last-statement
+text** and is honest about how far that goes: `listen` (only
+`ListenForNotify` runs `LISTEN`, and it holds the connection for the stream's
+life) and `lock` (only `AcquireAdvisoryLock` runs `pg_try_advisory_lock`) are
+sound; **api and background are not separable** and are reported together as
+`query`. The `listen` class was confirmed by effect — 6 SSE streams produced
+exactly 6 `listen` rows on the replica they were opened against.
+
+**`compose/maxconcurrent.override.yaml` — and the caveat that travels with it.**
+The rig runs exactly 2 concurrent real runs (2 agents × `MaxConcurrent` default
+1, `internal/agent/agent.go:218-221`). **There is no environment variable for
+`MaxConcurrent`** — `internal/config/agent.go:147-186` enumerates every env var
+the agent reads and it is not among them; `UNIFIED_AGENT_MAX_DETACHED` exists for
+the *separate* detached pool and is easy to mistake for it. An env-only overlay
+would be **silently inert**, so this one replaces `command:`. Verified by
+effect (`w6-1/step7-maxconcurrent.txt`): with `W6_MAX_CONCURRENT=4`, 10
+triggered `edge-longrun` runs gave **8 simultaneously `Running`** (2 `Queued`)
+where the stock rig gives 2, and each agent container had created
+`working0..working3`. **Every number taken under this overlay must say "N runs
+across 2 agent processes", not "N agents"**: they share one process's CPU, one
+HTTP client and one workspace filesystem. The one place it cuts the other way is
+`p.mu`, which is per `LogPusher` per step — a stalled flush stalls one step's
+stdout pipe, not all N.
+
+#### The idle floor (measure every W6 number net of this)
+
+Measured on the **plain `test/ha` rig**, no overlays, three controllers, two
+agents, **zero jobs and zero runs**, 300 s untouched
+(`w6-1/step8-idle-report.txt`, `w6-1/step8-idle-connections.txt`):
+
+| Quantity | Idle value |
+|---|---|
+| Total query rate | **21633 statements / 300 s = 72.11 q/s** across the stack |
+| Per replica | 24.10 / 23.68 / 24.32 q/s (controller1/2/3) |
+| Postgres backends | **73-74 of `max_connections` 100** — about **26 free slots at rest** |
+| Largest single consumer | `ClaimNextRun` (the agent claim long-poll), 10574 = **35.25 q/s**, i.e. **49% of the whole idle floor**, from just two agents |
+| Git resolver `ListPendingRuns` | 1508 per replica = **5.027 q/s per replica**, 15.08 q/s total |
+| Scheduler's own `ListPendingRuns` | 1508 on **controller1 only** (the lock holder) = 5.027 q/s |
+| `pg_try_advisory_lock` | 3181 = 10.60 q/s, split **55 / 1563 / 1563** — the leader retries far less because it already holds the key |
+| `DeleteStaleAgents` | 15 in 300 s = 1/min per replica |
+
+**`FINDINGS.md:563`'s 5.006 q/s per replica for the git resolver still holds** —
+5.027 measured, 0.4% apart, five waves later. What that entry did **not** say,
+and what dominates the floor, is the claim long-poll: at 35.25 q/s it is **7×**
+the git resolver. Two cautions on re-use: 300 s is too short to sample the
+10-minute `oidc_states` cleanup (it does not appear at all), and the **73-74
+connection floor is a settled-state figure, not a startup one** — a freshly
+restarted controller set read **19** total backends and climbed to the seventies
+over roughly ten idle minutes. The pools grow and do not shrink (see the W6-infra
+entry in `FINDINGS.md`).
+
 ## Workload fixtures
 
 Every `*.payload.json` is the pre-encoded `{"yaml":"..."}` body for
@@ -518,7 +669,7 @@ its inferred capability is `pod` (see the table).
 | File | Job | Purpose |
 |---|---|---|
 | `tick.payload.json` | `edge-tick` | trivial run |
-| `longrun.payload.json` | `edge-longrun` | long-lived run for reaper timing |
+| `longrun.payload.json` | `edge-longrun` | long-lived run for reaper timing. **It is also already a slow trickle** — `for i in $(seq 1 300); do echo "tick $i"; sleep 1; done`, i.e. 300 lines at 1 line/s over ~300 s — which the W6 plan missed when it assumed `tick` (30 lines / 30 s) was the longest emitter available. `longrun.yaml` did not exist until W6 and was reconstructed from this payload, byte-verified to round-trip |
 | `approval.payload.json` | `edge-approval` | approval gate, 10-minute timeout |
 | `sideeffect.payload.json` | `edge-sideeffect` | mutex `edge-mutex` holder, writes `/data/sideeffect.log`. **Emits ZERO log lines** — its `echo` is redirected to the file, so its `logs` row count is 0. It is a side-effect (I2) fixture, never a log fixture (W3-4) |
 | `mutex-successor.payload.json` | `edge-mutex-successor` | mutex `edge-mutex` successor probe (I3) |
@@ -541,6 +692,8 @@ its inferred capability is `pod` (see the table).
 | `w4-pending-reuse.payload.json` | `edge-w4-pending-reuse` | `w4-pending` plus `podTemplate.reuse: true` — the **pooled-pod not-ready** fixture (W4-3 Part B). Sends the claim down `pool.ClaimPod` and then wedges the pod `Pending`, so the arm can show that the pooled branch shares the **same** `podStartTimeout` (measured 30.193 s vs the fresh branch’s 30.198 s) and differs only in cleanup: a never-ready pooled pod is **deleted**, never released to the pool with `pool-status = idle`. Verified post-terminal by pod list and by pool annotation |
 | `w4-reuse.payload.json` | `edge-w4-reuse` | the **`podTemplate.reuse`** fixture — nothing else in the repo exercises it. Prints `hostname` and reads/writes a `/workspace` marker, so reuse is observable two ways. Verified: three runs, one pod, marker carried across all three |
 | `w4-longpod.payload.json` | `edge-w4-longpod` | 120 s of 1 Hz self-indexing ticks in a pod — the fixture for anything that must act on a run **while** its pod is alive (pod deletion, partition, podStartTimeout) |
+| `w6-trickle.payload.json` | `edge-w6-trickle` | the **slow-trickle** fixture (W6-S2b Arm 1): params `lines` (default 600) and `interval_s` (default 1), so 10 minutes at 1 line/s out of the box. Deliberately on the sparse side of `LogPusher`'s 4 KiB `flushBytes` threshold, so **every** flush is a 2 s timer flush and pending grows by exactly one batch per tick — the quadratic regime, which by construction **never drops** (the 1 MiB cap counts line text only, so the ceiling is tens of thousands of batches). **Do not use it to look for the drop marker**; that needs the chatty `logburst` and is a different arm |
+| `w6-probe.payload.json` | `edge-w6-probe` | the **unclaimable** fixture for `tools/w6/w6-synth-agent.sh` — `agentSelector: [kind:w6synth]` matches neither `agent1` nor `agent2`, so the synthetic identity owns the run's whole lifecycle. Same shape and reason as `w35-probe` / `w36-probe`, with its own selector so a W6 instrument cannot collide with a re-run of either W3 scenario |
 
 **W4 fixture traps, both measured:** (1) `dsl.RequiredCaps` returns `pod` only
 when `PodTemplateNeedsKubernetes` is true — a bare `containers:` list yields
