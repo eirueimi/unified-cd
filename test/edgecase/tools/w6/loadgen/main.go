@@ -17,6 +17,14 @@
 // kernel, or the proxy in between is the bottleneck, and the measurement is of
 // the rig rather than of the product.
 //
+// BOTH DIRECTIONS ARE GUARDED (`summarize`, bottom of this file). Under-report
+// means the rig serialised you. OVER-report — maxInFlight > -c — is impossible
+// for a bounded worker pool and always means the instrument is broken, never
+// that the client achieved extra concurrency; it is what a start-first tie
+// break produced on Windows' coarse clock, and the resulting `maxInFlight=19`
+// for `-c 8` reached a FINDINGS entry before it was caught by hand. Only the
+// under-report was warned about at the time. Both are now.
+//
 // AIM IT AT A CONTROLLER, NOT AT THE LOAD BALANCER. `test/ha/nginx.conf` has
 // no upstream `keepalive` and leaves `worker_connections` at 512, and its
 // `proxy_next_upstream_tries 3` can turn one client request into three
@@ -380,6 +388,25 @@ func summarize(label, mode string, serial bool, conc int, recs []record, runStar
 	if max < conc && !serial {
 		fmt.Printf("  WARNING: maxInFlight (%d) < -c (%d). Something between this process and the\n", max, conc)
 		fmt.Printf("           handler serialised the requests. Do NOT report this as a product number.\n")
+	}
+	// The symmetric guard, and the one that actually caught a bad number.
+	// maxInFlight can never EXCEED the worker count: the pool is bounded, so a
+	// worker cannot start request k+1 before its request k returned. An
+	// over-report is therefore never a product fact, it is always an
+	// instrument fault — which is exactly what happened here before the
+	// tie-break was fixed (start-first ties counted one request's end and the
+	// next one's start as overlap and printed maxInFlight=19 for -c 8, and
+	// that 19 reached a FINDINGS entry). Under-reports warned; over-reports
+	// passed silently. They no longer do.
+	if max > conc {
+		fmt.Printf("  WARNING: maxInFlight (%d) > -c (%d). This is IMPOSSIBLE for a bounded worker\n", max, conc)
+		fmt.Printf("           pool and means the sweep, the tie-break or the clock is wrong, not\n")
+		fmt.Printf("           that the client achieved extra concurrency. Do NOT report this number.\n")
+	}
+	if serial && max > 1 {
+		fmt.Printf("  WARNING: the SERIAL negative control reported maxInFlight=%d. It must be 1;\n", max)
+		fmt.Printf("           the instrument is inventing overlap. Every concurrency number from\n")
+		fmt.Printf("           this build is suspect.\n")
 	}
 }
 
