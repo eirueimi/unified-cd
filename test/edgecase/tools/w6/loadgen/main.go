@@ -31,11 +31,23 @@
 // upstream requests. Use `compose/ctrlports.override.yaml` and address
 // http://localhost:18081 / :18082 / :18083.
 //
+// `-delay` LOWERS THE RATE AT A FIXED WORKER COUNT, AND IT CANNOT DO WHAT
+// `FINDINGS.md:2535` ASKS FOR. That entry proposes separating rate from
+// concurrency with "`-c 8` with a per-worker delay, so 8 in flight at
+// ~50 req/s". By Little's Law in-flight = rate x latency, so 8 in flight at
+// 50 req/s requires 160 ms of server latency per request; the endpoint that
+// entry used answers in ~3 ms, so the same 8 workers paced to 50 req/s hold
+// ~0.15 in flight, not 8. IN-FLIGHT IS AN OUTCOME OF RATE AND LATENCY, NOT AN
+// INDEPENDENT CONTROL. What `-delay` actually gives is the pair "same worker
+// count and same sockets, 50x less rate", which is the arm that isolates rate;
+// the complementary "high concurrency at ~zero rate" arm needs a LATENCY-
+// bearing endpoint and is `ssehold`, not this tool. W6-1 runs both.
+//
 // Usage:
 //
 //	loadgen -url URL [-method POST] [-body-file F] [-H 'K: V']...
 //	        -c N [-n TOTAL | -duration 30s] [-mode burst|sustained]
-//	        [-out requests.csv] [-timeout 60s] [-insecure-serial]
+//	        [-out requests.csv] [-timeout 60s] [-insecure-serial] [-delay 150ms]
 //
 //	-mode burst      exactly -c requests, all released from one barrier. The
 //	                 sharpest possible concurrency demonstration.
@@ -75,6 +87,12 @@ func (h *headerList) Set(v string) error {
 var (
 	errBodies  *os.File
 	errSamples = map[int]int{}
+	// paced is set when -delay > 0. A paced run deliberately leaves its
+	// workers idle between requests, so maxInFlight is EXPECTED to fall far
+	// below -c and the under-report guard must not call that a rig fault.
+	// The over-report guard is untouched: it is still arithmetically
+	// impossible and still always an instrument fault.
+	paced bool
 )
 
 type record struct {
@@ -101,6 +119,8 @@ func main() {
 	timeout := flag.Duration("timeout", 60*time.Second, "per-request timeout")
 	serial := flag.Bool("insecure-serial", false, "run serially — a NEGATIVE CONTROL, never a measurement")
 	label := flag.String("label", "", "free-form label copied into the summary line")
+	delay := flag.Duration("delay", 0, "sustained mode only: per-worker sleep between requests. "+
+		"THIS LOWERS THE RATE, IT DOES NOT LOWER IN-FLIGHT AT A FIXED RATE — see the note on Little's Law in the header")
 	errBodyPath := flag.String("error-bodies", "", "file to receive up to 3 sample response bodies per non-2xx status")
 	flag.Var(&headers, "H", "request header, repeatable (e.g. -H 'Authorization: Bearer ...')")
 	flag.Parse()
@@ -221,6 +241,11 @@ func main() {
 		add(r)
 	}
 
+	paced = *delay > 0
+	if paced && (*mode != "sustained" || *serial) {
+		fmt.Fprintln(os.Stderr, "loadgen: -delay applies to -mode sustained only")
+		os.Exit(2)
+	}
 	runStart := time.Now()
 	switch {
 	case *serial:
@@ -275,6 +300,13 @@ func main() {
 				defer wg.Done()
 				for take() {
 					do(w)
+					if *delay > 0 {
+						select {
+						case <-time.After(*delay):
+						case <-ctx.Done():
+							return
+						}
+					}
 				}
 			}(i)
 		}
@@ -385,9 +417,13 @@ func summarize(label, mode string, serial bool, conc int, recs []record, runStar
 		parts = append(parts, fmt.Sprintf("%d=%d", k, codes[k]))
 	}
 	fmt.Printf("  status   %s errors=%d\n", strings.Join(parts, " "), errs)
-	if max < conc && !serial {
+	if max < conc && !serial && !paced {
 		fmt.Printf("  WARNING: maxInFlight (%d) < -c (%d). Something between this process and the\n", max, conc)
 		fmt.Printf("           handler serialised the requests. Do NOT report this as a product number.\n")
+	}
+	if paced {
+		fmt.Printf("  PACED: -delay was set, so maxInFlight (%d) is EXPECTED below -c (%d) and is not a\n", max, conc)
+		fmt.Printf("         rig fault. In-flight is an OUTCOME (rate x latency), never a control here.\n")
 	}
 	// The symmetric guard, and the one that actually caught a bad number.
 	// maxInFlight can never EXCEED the worker count: the pool is bounded, so a
