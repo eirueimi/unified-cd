@@ -449,9 +449,16 @@ spread: the fault fails in **median `rt = 0.000 s`, max 0.001 s**, so a pass of
 150 requests completes in ~150 ms and the peak *second* carries the whole tick.
 Measured peak: **150 req/s at `06:12:29`**, the last outage tick, with
 149/148/147 in the preceding seconds. **The instantaneous rate is `k` per
-second, not `k/2`.** W1-6's derived `~67 req/s` peak (`FINDINGS.md:457`) is the
-same halving and is a factor of two low for the same reason; recorded here as a
-correction to that derived figure, not as a new finding.
+second, not `k/2`.** W1-6's derived `~67 req/s` peak is a factor of two low for
+the same arithmetic reason, and is now **corrected in place at
+`FINDINGS.md:457`, `:472` and `:495`** — all three sites that carried it —
+rather than only here. **The transfer is labelled an inference across rigs and
+faults, not a re-measurement of W1-6:** what carries over is the arithmetic
+error of dividing a pass across its tick, which is rig-independent; Arm 1's
+`rt` median of 0.000 s does **not**, because Arm 1's fault is an nginx 502 to a
+dead upstream on the W6 stack whereas W1-6's was a controller-minted 403 whose
+per-request time was never captured. Both fail fast, so the direction is not in
+doubt, but W1-6's peak would have to be re-measured to be stated as measured.
 
 **Recovery is a spike the same size as the outage's peak, and it lands on the
 controllers.** `06:12:31`: **151 requests, all 204, in 0.475 s** — one
@@ -480,7 +487,7 @@ running at the clear and for 90 s after it. Window `06:27:33Z .. 06:31:25Z`,
 | Peak second | — | **880 req/s** (`06:29:35`) |
 | Median second | — | **343 req/s** |
 | Bytes of line text emitted during the outage | — | ~1.33 MiB (1,245 lines × 1,065 B) |
-| Pending batches at the plateau | ~256 | **216-228** |
+| Pending batches at the plateau | ~256 | **216-228 at the tail** (noisy estimator: min 1, max 281, median 60, last-third mean 154.1) |
 | Lines dropped | ~1,024 | **263** |
 | Drop marker | fires once with the full count | **fires exactly once, count exactly right** |
 | I4 | count short by the dropped lines | count short by **exactly** the marker's number; zero duplicates; emission order preserved |
@@ -494,13 +501,35 @@ pipe read's worth", not "4 KiB". Measured over 42,356 requests:
 **median `reqlen` 5,143 B, max 21,990 B**, i.e. ~4.8 lines per batch here and up
 to ~35 lines per batch in the faster Part E run (median 13,558 B, max 37,290 B).
 
-The plateau follows directly: `1 MiB / 5,143 B = 204 batches`, and the measured
-`len(p.pending)` — recovered independently, from the **periodicity of the
-`reqlen` sequence**, since a flush pass re-sends the pending list in order and
-the sequence therefore repeats with period `len(p.pending)+1` — rose through
-`15 → 68 → 200 → 216 → 228` and settled at **216-228**. Prediction and
-measurement agree on the *mechanism* (the plateau is `cap ÷ batch bytes`) and
-disagree on the *number* by the factor the batch-size error introduced.
+The plateau follows directly — **but the divisor must be line-text bytes, not
+`reqlen`, and an earlier version of this paragraph conflated them.** The cap
+sums `len(r.Line)` and nothing else (`runner.go:438-446`), whereas `reqlen` is
+nginx's **wire** length: JSON framing, headers and the request line included.
+Written correctly the estimate is `1 MiB ÷ (4.8 lines × 1,065 B of line text) =
+205 batches`; the `1 MiB / 5,143 B = 204` an earlier version printed lands in
+the same place **only because this fixture's 1 KiB padding dominates the
+framing**. That is not general: **Arm 1 measured 512-690 B on the wire for ~90 B
+of line text — a wire:text ratio of ~6-7×** — where the `reqlen` form of the
+formula would be wrong by that whole factor. Use line-text bytes.
+
+The measured `len(p.pending)` was recovered independently, from the
+**periodicity of the `reqlen` sequence**, since a flush pass re-sends the
+pending list in order and the sequence therefore repeats with period
+`len(p.pending)+1`. **The estimator is noisy and its noise is reported here
+rather than smoothed away.** Over the outage it reads `min=1 max=281 median=60`,
+with a `last-third mean=154.1` (`arm2b/analysis.txt`); the series is not
+monotone — it opens `15, 5, 40, 15, 34, 53, …` — and the
+`15 → 68 → 200 → 216 → 228` an earlier version quoted is a **selected monotone
+subsequence**, not the series. The tail is what the plateau claim rests on and
+it is stable: the last six samples are `216, 216, 216, 216, 228, 152` (the final
+152 is the recovery pass, already draining). **The estimator's own maximum is
+281, above the 205-batch arithmetic**, and the capture prints it as
+`implied cap in batches ~ 281` — a single-sample excursion consistent with a
+pass whose period the sampler mis-segmented, disclosed rather than dropped. So
+the plateau is stated as **216-228 at the tail, against an estimator spanning
+1-281 over the whole outage**. Prediction and measurement agree on the
+*mechanism* (the plateau is `cap ÷ batch line-text bytes`) and disagree on the
+*number* by the factor the batch-size error introduced.
 
 **The plateau is the whole point for the gate: per-flush request cost is
 `len(p.pending)`, and `len(p.pending)` is `cap ÷ batch_bytes`. The cap is the
@@ -747,14 +776,32 @@ spill only after the first of them lands.**
 
 **The measurement that decides it.** Arm 2 established that per-flush request
 cost is `len(p.pending)`, and that `len(p.pending)` at steady state is
-`cap ÷ batch_bytes` — measured at **216-228 batches** for a 1 MiB cap and
-5,143-byte batches, producing **324 req/s sustained and 880 req/s peak from a
-single step**. Disk spill's *only* effect is to raise the cap. With
-`flushLocked` unchanged, **raising the cap raises the sustained request rate
-proportionally**: a 100 MiB spill buffer would plateau near 20,000 pending
-batches, and each 2 s tick would then attempt 20,000 sequential HTTP requests.
-`FINDINGS.md:465` warned this in the abstract; Arm 2 measures the constant of
-proportionality, and it is 1:1.
+`min(cap, line-text bytes emitted during the outage) ÷ batch line-text bytes` —
+measured at **216-228 batches at the tail** for a 1 MiB cap and ~5.1 KiB of line
+text per batch, producing **324 req/s sustained and 880 req/s peak from a single
+step**. Disk spill's *only* effect is to raise the cap, so with `flushLocked`
+unchanged, **raising the cap raises the ceiling on the storm**.
+
+**Two labels this paragraph must carry, because neither was measured.**
+**(1) The 1:1 relation between cap and per-flush request count is a CODE
+INFERENCE, not a measurement — no arm varied `maxPendingBytes`.** All four arms
+ran the stock 1 MiB (`runner.go:256`). The relation is read off `flushLocked`
+(one request per pending batch, `:358-366`) and `appendPendingLocked` (evict
+oldest until `pendingSizeBytes <= maxPendingBytes`, `:429-446`): the cap bounds
+the batch count and the batch count *is* the request count, with no coalescing
+anywhere between them. What Arm 2 measures is the **left** side — that the
+plateau exists and sits where the cap divided by the batch size puts it. An arm
+that raised the cap and re-measured the plateau would close this, and it is the
+single cheapest follow-up in this scenario. **(2) The "100 MiB ⇒ ~20,000
+batches" figure is arithmetic on that inference and is bounded by the `min()`
+above, not reached on demand.** The backlog cannot exceed what the step has
+actually emitted: Arm 2 emitted ~1.33 MiB of line text in 131 s, so at that rate
+a 100 MiB buffer would need **~2.7 hours** of unbroken outage to fill. The
+correct statement is that spill removes the only bound on the storm and lets it
+grow with outage duration; the 20,000-request tick is the ceiling that bound
+would no longer impose, not a rate anything was observed to reach.
+`FINDINGS.md:465` warned this in the abstract, and none of it reverses the
+recommendation — it sharpens what the recommendation is entitled to claim.
 
 **The second measurement that decides it.** Spill addresses loss at the byte
 cap. Of the three loss paths this scenario exercised, **the byte cap is the only
@@ -856,10 +903,25 @@ and leaves every silent failure silent.**
 
 | # | `FINDINGS.md` | Kind | Severity | Subject |
 |---|---|---|---|---|
-| 1 | `:2630` | **violation, I4 ("no reordering")** | minor | a fault that fails only *some* requests reorders a `Succeeded` run's stored log — 137 of 400 lines out of emission order, count exact, **zero** duplicates. Distinguished from W3-4 on trigger, mechanism and fix |
+| 1 | `:2630` | **violation, I4 ("no reordering")** | **major** *(raised from minor at review)* | a fault that fails only *some* requests reorders a `Succeeded` run's stored log — 137 of 400 lines out of emission order, count exact, **zero** duplicates. Distinguished from W3-4 on trigger, mechanism and fix — as a *distinction*, not as the severity basis |
 | 2 | `:2643` | observation | major | a controller that accepts and never answers stalls the **step itself** for 176.3 s; the auto-flush path has no per-flush deadline and the 5 s bound is applied after `p.mu` is acquired |
 | 3 | `:2657` | observation | major | the drop marker's `len(p.pending) == 0` precondition makes it unreachable exactly when the loss is total — a `Succeeded` run, 2,002 lines emitted, **0** delivered, no marker |
 | 4 | `:2670` | observation (campaign asset) | minor | `w6-reqshape.sh` had the same unstoppable-capture defect Task 2 fixed elsewhere, and the black-hole arm's own probe destroyed the arm it verified |
+
+**Finding 1's band was raised from minor to major at review, and the reason is
+methodological before it is substantive.** The original Severity line calibrated
+against W3-4's clause count — argument by analogy, which is the exact move
+commit `066e421` disallowed one task earlier in this same wave when it dropped
+W6-2a's D2 to minor on the ground that a band must come from `FINDINGS.md:6-8`.
+Re-argued from that text alone: **"incorrect visible behavior" fits word for
+word** (every read surface orders by `seq`, so every reader is served the wrong
+order, permanently, with nothing marking it), **none of "diagnosability / docs
+gap / cosmetic" fits** (the stored artifact is wrong rather than
+under-observed; no document is wrong; and a log's order is its content, not its
+presentation), and **critical is excluded on the limb `:2336` already worked
+through** for silent permanent *loss* — nothing is lost here and emission order
+is fully recoverable from the stored `ts`. The W3-4 comparison stays in the
+entry's Notes as a distinction carrying no severity weight.
 
 **Cited, not re-filed** — four, per the standing rule, and each was grepped for
 before this scenario filed anything:
@@ -870,8 +932,12 @@ before this scenario filed anything:
   measured total. **One correction is supplied rather than a new entry:** W1-6's
   derived peak of `~67 req/s` divides a tick's requests by the 2 s tick, and the
   requests do not spread — they complete in ~150 ms, so the true peak is
-  **`k` per second, not `k/2`**, measured here at **150 req/s**. That figure at
-  `:457` is a factor of two low.
+  **`k` per second, not `k/2`**, measured here at **150 req/s**. That figure was
+  a factor of two low and has been **corrected in place at `:457`, `:472` and
+  `:495`**, the three sites that carried it (`:457` had already been corrected
+  once, in the same direction, per the note at `:458`). The correction is
+  labelled a **cross-rig inference on the arithmetic**, not a re-measurement of
+  W1-6's 403 path.
 - `FINDINGS.md:179` (W1-2) — the bounded step-end `Flush` losing the tail. Part E
   reproduces it at 100 % loss; finding 3 above is about the *marker*, not the loss.
 - `FINDINGS.md:1521` (W3-4) — duplication-and-reordering under retry. Finding 1

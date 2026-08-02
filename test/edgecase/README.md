@@ -674,8 +674,32 @@ plugin keeps the pipe. Measured in W6-2b before fixing: `follow -d 5` printed
 `follow -d` now exits 5 and names the replacement. Verified live: two
 consecutive 12 s windows against a 1 Hz probe are disjoint (`06:05:57.426`
 against `06:05:58.512`) and window 1 was byte-identical before and after window
-2 ran. **Any W6 number taken with `follow -d` before 2026-08-02 should be
-re-derived from a bounded window.**
+2 ran.
+
+**The blast radius, enumerated instead of dated — and it is zero.** The previous
+version of this paragraph said "any W6 number taken with `follow -d` **before
+2026-08-02** should be re-derived", which **protected nothing**: every W6
+capture in the campaign was taken *on* 2026-08-02 and the fix landed the same
+day, so the cutoff excluded the entire exposed set. Replaced with the
+enumeration. `grep -rc reqshape scenarios/` returns **0** for
+`w6-2a-log-write-amplification.md` (W6-2a used `w6-idleload.sh`, fixed
+separately by Task 2 — **untouched by this defect**), **1** for
+`w6-1-connection-pressure.md` and **5** for `w6-2b-logpusher-curve.md`. Of those
+two: **W6-2b's arms are all bounded by `window` sidecars** (`-window.txt` in all
+six evidence dirs), and **W6-1's three `step5-reqshape*.txt` captures are
+self-bounding** — 60 of 60 deliberately fired requests, 15 of 15 ticks, filtered
+by URI, so a longer file cannot change the count. **No published number moves;
+nothing needs re-deriving.** The record is kept because the instrument was wrong,
+not because a result was.
+
+**The leak still exists in bare `follow`, which is warned about rather than
+refused.** Only `follow -d` exits 5 (`w6-reqshape.sh:126-131`); plain `follow`
+prints a WARNING that the PID it echoes is the subshell and not the
+docker-compose plugin (`:133-134`) and then starts the same unstoppable capture.
+That is deliberate — a caller who wants a live stream and tears down the stack
+afterwards is fine — but **a bare `follow` capture is not window-bounded and
+must not be treated as one.** Use `window` for anything a number will be read
+off.
 
 **A verification that is not idempotent can consume the thing it verifies —
 re-probe at the point of use.** W6-2b's `hang` arm passed `hangprobe` at setup
