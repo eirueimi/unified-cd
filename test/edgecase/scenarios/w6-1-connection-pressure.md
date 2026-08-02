@@ -899,14 +899,17 @@ computed, not extrapolated from here.**
    readiness surface that rotates a DB-broken replica out; measured in-window,
    `/readyz` reads 200 in 143 of 144 saturated replica-readings (47 of 48
    sample instants) across four independent
-   arms while Postgres refuses every new connection — and the controllers log
-   nothing.** This is the settled version of the question `FINDINGS.md:2532`
+   arms while Postgres refuses every new connection — and **no controller `ERROR`
+   line was observed** (see C2 for what that capture does and does not
+   support).** This is the settled version of the question `FINDINGS.md:2532`
    deliberately left open and handed here.
 2. **Observation: sixty concurrent agent claim long-polls — three requests per
    second, every one answered 200 — pin Postgres at `max_connections`**, because
    the claim handler polls the database once a second inside the request; the
-   API surface, the health surface and the controller log are all clean
-   throughout.
+   API surface and the health surface are clean throughout and no `ERROR` line
+   was observed. **Filed as a capacity relationship, not as a concurrency
+   conclusion** — the arm changes endpoint as well as concurrency and the
+   single-variable isolation was not run (Part B).
 3. **Observation: an SSE subscriber past the connection ceiling receives 200 and
    a complete backfill and then has its stream closed by the server, with no
    error event, no status event and no server-side log line** — settles
@@ -922,5 +925,14 @@ computed, not extrapolated from here.**
 
 Not filed, deliberately: the 24-stream ceiling and the ~2450 req/s rate trigger
 (both are `FINDINGS.md:2517` measured properly — **cited, not re-filed**); I5
-(met at 89 ms); the crash-loop at `FINDINGS.md:43` (**cited**, and given a scope
-note rather than a new entry).
+(its re-election bound met at 89 ms, its other bounds not exercised); the
+crash-loop at `FINDINGS.md:43` (**cited**, and given a scope note rather than a
+new entry).
+
+**Outstanding measurements, all needing the rig and none taken** (another
+scenario held it when these corrections were made): (a) the **E-20 / E-40 / E-60
+dose-response on one endpoint** that would isolate concurrency; (b) an
+**in-window count of background-job executions** to give C2's zero a
+denominator; (c) a **B3 re-run from a reset floor** to remove its carry-over
+confound; (d) a **connection sample inside Part D's 3 min 21 s gap** to measure
+the survivors expanding rather than infer it.
