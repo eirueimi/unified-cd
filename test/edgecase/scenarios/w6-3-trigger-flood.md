@@ -49,9 +49,14 @@ against the file for this runbook, because three W4 runbooks got them wrong.
 - **W6-1's settled result.** Concurrency drives saturation decisively: 8 workers
   at 20 req/s did not saturate; 60 concurrent claim long-polls at 3 req/s did.
   Rate is a genuine but ~800x more expensive second route. **`/readyz` does not
-  degrade** (200 in 144 of 145 saturated in-window samples) — this scenario does
-  not predict otherwise. **Background jobs do not starve first** (zero
-  controller `ERROR` lines across two saturated arms).
+  degrade** — **200 in 143 of 144 saturated in-window replica-readings, 47 of 48
+  sample instants** (`FINDINGS.md:2680`/`:2686`, as corrected at W6-1's review;
+  the pre-review "144 of 145 samples" figure was wrong on both the count and the
+  unit, and is not used here). This scenario does not predict otherwise.
+  **Background jobs were not observed to starve** — note that W6-1's review
+  **withdrew** the stronger claim "background jobs did not starve" as
+  unsupported by its capture (`w6-1-connection-pressure.md:658-670`), leaving
+  only "no `ERROR` line was observed". This scenario inherits the weaker form.
 - **The idle floor** (`README.md` §"The idle floor"): ~71.8-72.0 q/s across three
   controllers and two agents with zero runs, `ClaimNextRun` ~49% of it, 73-74 of
   100 backends at rest. Every q/s number below is read net of this.
@@ -494,10 +499,11 @@ replica-readings taken at or above `max_connections - 3`. This is the pairing
 and it confirms W6-1's result rather than extending it. **An operator watching
 the documented health surface (`docs/operations.md:154`) sees nothing.**
 
-**One refinement to W6-1's "background jobs do not starve first".** W6-1 measured
-zero controller `ERROR` lines across two saturated arms. This session logged
-**three across the whole run**, two of them genuine background-job failures under
-saturation:
+**One refinement to W6-1's "no `ERROR` line was observed".** W6-1 observed zero
+controller `ERROR` lines in the window `C-bgstarve.txt` covers, and its own
+review (`w6-1-connection-pressure.md:658-670`) withdrew any stronger reading of
+that. This session logged **three across the whole run**, two of them genuine
+background-job failures under saturation:
 
 ```
 09:15:46 controller1 ERROR queued-run reaper list error ... FATAL: sorry, too many clients
@@ -505,10 +511,14 @@ saturation:
 ```
 
 Two lines for roughly three and a half minutes of total DB unavailability. So
-background jobs **do** complain — at a rate of about one line per two minutes of
-outage, which is close enough to silence that W6-1's conclusion stands. Recorded
-because "zero" is now known to be "nearly zero", and a future wave should not
-treat an ERROR line here as a new phenomenon.
+background jobs **do** complain, at roughly one line per two minutes of outage —
+close enough to silence that an operator tailing controller logs would not
+notice, which is the operationally relevant statement and the one W6-1's
+surviving claim also supports. Recorded because "no `ERROR` line was observed"
+is now known to be window-dependent, and a future wave should not treat an
+`ERROR` line here as a new phenomenon. **This says nothing about whether the
+background pool starved** — that is the claim W6-1's review withdrew, and this
+session did not instrument it either.
 
 ### What actually exhausted the pool is NOT measured, and this runbook does not guess
 
