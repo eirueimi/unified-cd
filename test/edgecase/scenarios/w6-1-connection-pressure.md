@@ -18,8 +18,9 @@ pool, and the variable that drives it is **concurrency, not rate**: 8 workers at
 20 req/s do not saturate, while **60 concurrent agent claim long-polls at three
 requests per second** do — every one of them answered `200`. Rate is a real but
 far more expensive second route (8 workers at 2,451 req/s also saturates). When
-it happens, **nothing reports it**: `/readyz` reads 200 in 144 of 145 saturated
-in-window samples, the controllers log nothing, and the first visible symptom is
+it happens, **nothing reports it**: `/readyz` reads 200 in 143 of 144 saturated
+in-window replica-readings (47 of 48 sample instants), the controllers log
+nothing, and the first visible symptom is
 401s on a valid admin token. **No sizing number appears below; see the charter.**
 
 **Invariants attacked:** I5 and I7.
@@ -498,17 +499,36 @@ instance.
 **inside the same loop iteration** as the backend count. Across the saturated
 arms:
 
-| Arm | saturated samples | `/readyz` still 200 |
-|---|---:|---:|
-| E-60 | 42 of 42 | **42** |
-| B4 | 15 of 15 | **15** |
-| B3 | 57 of 57 | **57** |
-| B1 | 15 of 15 | **14** (one 503, on the loaded replica) |
-| post-A3 standalone | 15 of 15 | **15** |
+**The unit, first, because the published headline got it wrong.** One row of the
+health series is **one port at one sample instant**, so a 14-sample window across
+three replicas yields 42 rows. `w6-pgsample.sh` called those rows "samples", and
+this runbook inherited the word — which triple-counts the denominator. Both
+denominators are given below, and the tool now prints both.
 
-**144 of 145 saturated in-window samples read 200.** The single 503 is on
-port 18081 during B1 — the replica taking 2451 req/s — and is the api-pool
-`Acquire` losing its 3 s race, exactly as Amendment 2 predicted; it is a
+| Arm | sample instants | replica-readings (instants × 3) | saturated readings | `/readyz` still 200 |
+|---|---:|---:|---:|---:|
+| E-60 | 14 | 42 | 42 of 42 | **42** |
+| B4 | 5 | 15 | 15 of 15 | **15** |
+| B3 | 19 | 57 | 57 of 57 | **57** |
+| B1 | 5 | 15 | 15 of 15 | **14** (one 503, on the loaded replica) |
+| post-A3 standalone | 5 | 15 | 15 of 15 | **15** |
+| **total** | **48** | **144** | **144** | **143** |
+
+**143 of 144 saturated in-window replica-readings read 200 — i.e. 47 of the 48
+sampling instants read 200 on all three replicas.** *(An earlier version of this
+line said `144 of 145`. The per-arm figures were and are correct; the total was
+wrong on both sides, and it was the headline of the wave's one violation. It is
+corrected here, at `FINDINGS.md`, in `README.md` and in the tool. **The commit
+subject and body of `1c9988f` still carry `144 of 145` and cannot be changed** —
+a reader who finds that number in the git log should read this table instead.)*
+
+The single 503 is on port 18081 during B1 — the replica taking 2451 req/s — and
+is **inferred** to be the api-pool `Acquire` losing its 3 s race, exactly as
+Amendment 2 predicted. **The inference is labelled because the body was not
+captured**: `internal/controller/server.go:318-332` returns 503 for *both*
+`shuttingDown` and a failed `Ping`, and the capture records only the status code.
+Nothing was draining at 08:32, so the `Acquire` reading is very likely right —
+but it is a code-read plus an absence, not a measurement. On that reading it is a
 symptom of *load on that replica*, not of Postgres exhaustion, and it did not
 recur in B4 which had 25× the concurrency on the same replica.
 
@@ -695,7 +715,8 @@ computed, not extrapolated from here.**
 
 1. **`docs/high-availability.md:289` and `docs/operations.md:154` promise a
    readiness surface that rotates a DB-broken replica out; measured in-window,
-   `/readyz` reads 200 in 144 of 145 saturated samples across four independent
+   `/readyz` reads 200 in 143 of 144 saturated replica-readings (47 of 48
+   sample instants) across four independent
    arms while Postgres refuses every new connection — and the controllers log
    nothing.** This is the settled version of the question `FINDINGS.md:2532`
    deliberately left open and handed here.

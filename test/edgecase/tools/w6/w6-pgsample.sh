@@ -310,7 +310,7 @@ for port in sorted(per):
     rs = per[port]
     codes = collections.Counter(r["readyz"] for r in rs)
     hcodes = collections.Counter(r["healthz"] for r in rs)
-    print("  port %s  readyz %s   healthz %s   over %d samples" % (
+    print("  port %s  readyz %s   healthz %s   over %d sample instants" % (
         port,
         " ".join("%s=%d" % kv for kv in sorted(codes.items())),
         " ".join("%s=%d" % kv for kv in sorted(hcodes.items())),
@@ -336,16 +336,29 @@ def saturated(r):
     return (r["max_connections"].isdigit() and d.isdigit()
             and int(d) >= int(r["max_connections"]) - reserved)
 sat = [r for r in rows if saturated(r)]
+# UNITS, and this label was wrong until a W6-1 review caught it. One ROW here is
+# ONE PORT AT ONE SAMPLE INSTANT, so with three replicas on the grid a 14-sample
+# window produces 42 rows. Calling those 42 "samples" triple-counts the
+# denominator, and W6-1 published "144 of 145 samples" off exactly that (the
+# right figure being 143 of 144 replica-readings over 48 sample instants).
+# Both denominators are printed now, and neither is called a "sample" alone.
+instants = sorted({r["sample"] for r in rows})
+sat_instants = sorted({r["sample"] for r in sat})
+bad_instants = {r["sample"] for r in sat if r["readyz"] != "200"}
 if sat:
     ok = sum(1 for r in sat if r["readyz"] == "200")
     print("  AT/NEAR the client-backend budget (max_connections - superuser_reserved=%d)"
-          " in %d of %d samples:" % (reserved, len(sat), len(rows)))
+          " in %d of %d replica-readings"
+          " (%d of %d sample instants x %d ports):"
+          % (reserved, len(sat), len(rows), len(sat_instants), len(instants), len(per)))
     # ASCII only in this print: the console encoding on the machine this was
     # built on is cp932, and an em dash here raised UnicodeEncodeError and
     # killed the summary after the per-port table.
-    print("    readyz still 200 in %d of those %d - the health surface %s the degradation."
+    print("    readyz still 200 in %d of those %d replica-readings - the health surface %s the degradation."
           % (ok, len(sat), "did NOT report" if ok else "reported"))
+    print("    per instant: %d of %d saturated instants read 200 on EVERY replica on the grid."
+          % (len(sat_instants) - len(bad_instants), len(sat_instants)))
 else:
-    print("  no sample reached the client-backend budget; this window says nothing about the saturated case.")
+    print("  no sample instant reached the client-backend budget; this window says nothing about the saturated case.")
 PY
 fi

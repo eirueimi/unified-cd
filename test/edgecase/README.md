@@ -929,7 +929,11 @@ the foreground, one per invocation.
   401 — `:2517` reproduced from a clean floor), but it takes ~800× the rate.
   `:2535`'s own caution — *"Do not read this entry as '8 concurrent requests at
   any rate will do this'"* — is **confirmed**.
-- **`/readyz` is 200 in 144 of 145 saturated in-window samples**, and a warm pool
+- **`/readyz` is 200 in 143 of 144 saturated in-window replica-readings — 47 of
+  48 sample instants.** One health row is one port at one instant, so a
+  three-replica grid yields three rows per instant; the published `144 of 145`
+  was wrong twice (bad total, and "samples" for what were replica-readings) and
+  is corrected in `FINDINGS.md`, the runbook and `w6-pgsample.sh`. A warm pool
   makes saturation **completely silent server-side**: zero controller `ERROR`
   lines across two fully saturated arms. Background jobs only starve when they
   need a *new* connection, i.e. after a restart.
