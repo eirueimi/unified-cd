@@ -94,15 +94,32 @@ done > "${mapfile}"
 echo "== container IPs =="
 sed 's/^/   /' "${mapfile}"
 
+# THE CAPTURE IS A BOUNDED PULL, NOT A FOLLOW — and that is a bug fix, not a
+# style preference. This step used to be
+#
+#     dc logs -f --no-log-prefix --since 0s postgres > "${raw}" & lpid=$!
+#     ... ; kill "${lpid}"
+#
+# and the kill DID NOT STOP THE CAPTURE. `dc` is a shell function, so `$!` is
+# the subshell running it; the process actually holding the pipe is the
+# `docker-compose` CLI PLUGIN two levels down, and it survives. W6-2a measured
+# the consequence: the `floor` capture read 10948 statements when its own
+# analyser ran and 26523 when re-read after the next arm — three plugin
+# processes were still writing into three "finished" files, and every one of
+# them was silently accumulating later arms. A capture that keeps growing after
+# its window is worse than no capture, because it still analyses.
+#
+# `docker compose logs --since T --until T` takes RFC3339 and returns the same
+# bytes with no background process at all, so there is nothing left to leak.
+# The window is also written into the report, so a re-analysis of an old file
+# can bound itself.
 echo "== capture ${dur}s (LEAVE THE STACK ALONE — this window IS the baseline) =="
-dc logs -f --no-log-prefix --since 0s postgres > "${raw}" 2>&1 &
-lpid=$!
 t0=$(date -u +%FT%T.%3NZ)
 sleep "${dur}"
 t1=$(date -u +%FT%T.%3NZ)
-kill "${lpid}" 2>/dev/null || true
-wait "${lpid}" 2>/dev/null || true
+dc logs --no-log-prefix --since "${t0}" --until "${t1}" postgres > "${raw}" 2>&1
 echo "   window ${t0} .. ${t1}; raw -> ${raw} ($(wc -l < "${raw}") lines)"
+printf '%s\n%s\n' "${t0}" "${t1}" > "${outdir}/w6-idleload-${label}-window.txt"
 
 revert
 

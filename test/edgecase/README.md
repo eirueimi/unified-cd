@@ -534,7 +534,7 @@ docker compose $COMPOSE_FILES up -d --build
 | `bin/ssehold` | S SSE streams held for a measured window against ONE controller; per-stream status, connect latency, event counts, alive-at-end | `w6-1/step3-4-sse-pg.txt` — 6 streams on `:18083` held 35 s, `aliveAtEnd=6 diedEarly=0`, 30 events each. **The targeting is proven by a delta, not by a snapshot**: `controller3` has **no `listen` row at all in sample 1** and exactly **6 from sample 2 onward**, when the streams opened. `controller1` carries a **flat `listen` peak=8 across every sample including sample 1** — stale listen connections an earlier run left behind, which the pools never released; that is the same "the pools only grow" mechanism the `W6-infra` entry describes, showing up as free corroboration. So: 6 new `listen` connections, all on the targeted replica, none on the other two |
 | `w6-pgsample.sh` | `pg_stat_activity` on a grid, per replica and per **derived** pool, with a peak summary; `-p` also probes `/readyz` and `/healthz` on the same grid | same capture — the `listen` **delta** tracked the stream count exactly, and `w6-1/unplanned-pg-saturation.txt` shows the same instrument reading the saturated case. The `-p` health probe post-dates that capture and is proven off-rig: against a live throwaway port and a dead one it returns real codes and `000` respectively, and its summary was exercised on saturated-and-200, saturated-and-not-200 and never-saturated inputs |
 | `w6-reqshape.sh` | per-request shape recorder off nginx's `logfault` access log, folded into buckets; plus `counter` and `contrast` verbs | `w6-1/step5-reqshape.txt` — 60 bulk requests resolved individually inside a 75 ms window (median gap 1 ms) that a 2 s grid would report as one number; `w6-1/step5-reqshape-b.txt` — a real agent's 15 auto-flush ticks at a measured 2.000 s median spacing; `w6-1/step5-reqshape-c.txt` — `contrast` and the combined-format guard |
-| `w6-idleload.sh` + `w6-idleanalyze.py` | arms Postgres statement logging, captures an untouched window, always reverts, and reports q/s in total, per replica and per statement class | `w6-1/step8-idlebaseline.txt` (arm, revert and read-backs) and `w6-1/step8-idle-report.txt` (the numbers below) |
+| `w6-idleload.sh` + `w6-idleanalyze.py` | arms Postgres statement logging, captures a **bounded** window, always reverts, and reports q/s in total, per replica and per statement class. Despite the name it is a **generic window recorder** — W6-2a drove four loaded arms through it | `w6-1/step8-idlebaseline.txt` (arm, revert and read-backs) and `w6-1/step8-idle-report.txt` (the numbers below); **and `w6-2a/harnessfix/verify.txt` for the capture-leak fix — see the warning below** |
 | `w6-build.sh` | builds `loadgen` and `ssehold` into a gitignored `bin/` | — |
 
 **`w6-synth-agent.sh` is the promotion the README asked for.** `w3-5/synth.sh`
@@ -705,6 +705,89 @@ is code-read (`newPostgresPool` sets no `MaxConnIdleTime` or `MaxConnLifetime`),
 not traced. See the W6-infra entry in `FINDINGS.md`. A wave that needs the curve
 should take it with `w6-pgsample.sh -i 10 -d 900` from a cold start; it is cheap
 and nobody has done it.
+
+**Re-confirmed by W6-2a one day later: 72.99 q/s over 150 s (24.47 / 24.31 /
+24.18 per replica), 1.2 % from the figure above** — and two things that arm adds
+rather than re-derives. The floor's **per-second** shape on one replica is
+**median 22, max 61** statements/s (`w6-2a/floor/persec.txt`), which is the
+number a peak is meaningful against; and that arm's own class breakdown carries
+**zero** log-path statements, so the subtraction of the floor from a loaded arm
+is checkable rather than asserted. Its connection samples were 69 at window open
+and 74 at close, consistent with the 73-74 above.
+
+**One correction to "the pools only grow", supplied because it is load-bearing
+and cheap.** `newPostgresPool` (`internal/store/postgres.go:90-103`) indeed sets
+no `MaxConnIdleTime` and no `MaxConnLifetime` — but pgxpool **applies defaults
+when they are unset**: `MaxConnLifetime = 1h` and `MaxConnIdleTime = 30m`
+(pgx **v5.9.2**, `pgxpool/pool.go:22-23`, reached from `ParseConfig` at
+`:417-430`). So the code read does **not** support unbounded accumulation; it
+supports "connections are not returned promptly, and are reclaimed on a 30-minute
+idle / 1-hour lifetime horizon". W6-2a's own session is consistent with that and
+does not test it: backends went 69 → 74 → 75 → 76 → 84 → 90 → 95 → 93 over
+~45 minutes of continuous use, with no 30-minute idle period anywhere in it.
+
+#### Two instrument corrections from W6-2a — read these before trusting either tool
+
+**1. `w6-idleload.sh` used to leak its own capture, and it is fixed.** The
+capture step was `dc logs -f ... > "${raw}" &` followed by `kill "${lpid}"`, and
+**the kill did not stop the capture**: `dc` is a shell function, so `$!` is the
+subshell, while the process holding the pipe is the `docker-compose` CLI
+**plugin** two levels down. Three arms left three survivors still writing into
+three "finished" files. The `floor` capture read **10948** statements when its
+own analyser ran and **26523** when re-read after the next arm — and the second
+number looks exactly as plausible as the first, which is the whole hazard. The
+step is now a **bounded pull**, `docker compose logs --since T0 --until T1`,
+with no background process to leak, and it writes the window to a
+`-window.txt` sidecar so an already-captured file can bound its own
+re-analysis. Verified live (`w6-2a/harnessfix/verify.txt`): two consecutive
+25 s windows against a 1 Hz probe captured probes **5-20** and **27-42** —
+disjoint, non-empty — and window 1's file was byte-identical before and after
+window 2 ran. **Any capture taken before this fix must be analysed with an
+explicit window**; W6-2a's `breakdown.py`, archived beside its evidence, is the
+model.
+
+**2. `w6-pgsample.sh`'s `TOTAL backends ... of max_connections=100` line reads
+as saturation and is not.** `pg_stat_activity` includes Postgres's own
+background workers, which carry a NULL `datname` and **do not consume
+`max_connections` slots**. Measured (`w6-2a/post-bs10-connstate.txt`): a line
+reading `total_backends=100 of max_connections=100` decomposed as 95 rows for
+`datname='unified'`, one further `unified` row, and **4 NULL-`datname` rows** —
+i.e. **96 client backends of 100** with `superuser_reserved_connections = 3`,
+one free non-superuser slot rather than none. Split by `datname` before claiming
+exhaustion.
+
+#### The log write path, measured (W6-2a) — do not re-derive
+
+`scenarios/w6-2a-log-write-amplification.md` carries the full derivation. The
+numbers a later W6 arm will want:
+
+- **One appended log line costs 2 statements** — `INSERT INTO logs` plus
+  `SELECT pg_notify` (`internal/store/postgres.go:918-937`) — with no
+  transaction and no multi-row insert, so an N-line request is **2N** sequential
+  round trips. Measured exactly, five times: `2N = 4004` for the 2002-line
+  `logburst` fixture, `2N = 70200` for 35,100 lines.
+- **The batch guard is a constant, not a term.** `handleAgentLogBulk` runs
+  `agentRunGuard` once per distinct `runID` and an in-process LRU answers
+  thereafter, so the cost is `2N + G` with **G measured at 2** — one `GetRun` per
+  replica that saw the run for the first time.
+- **Each SSE subscriber multiplies it by 2, and the multiplier lands on the API
+  pool, not the listen pool** (`sse.go:120`/`:138` call `s.store`, which
+  `cmd/controller/main.go:270`/`:339` make the api-pool store). Measured at
+  exactly `2002 × S` for S = 1, 5, 10, alongside exactly S `listen` backends.
+- **A released listen-pool connection keeps its `LISTEN`s** (no `UNLISTEN`
+  anywhere, and pgxpool's `Release` does no reset), so the real multiplier is
+  "streams sitting on connections that carry this run's channel", not S. See the
+  W6-2a entries in `FINDINGS.md`.
+- **Peak: 11,085 statements/s on one replica** from one 2,002-line burst with ten
+  viewers, against that replica's resting median of 22/s — about 504×.
+- **Ingest is ~812 lines/s per request** (1.23 ms/line), identical through the LB
+  and direct to a controller, so the loop is the cost and nginx contributes
+  nothing. A 1 MiB body — the most the reference LB passes — is **7,600 lines,
+  15,200 statements and 9.356 s** on one goroutine and one backend.
+- **`logburst`'s `burst-end` arrives 30 s after the burst**, so a `first..last`
+  span over a run reads as a ~27 s SSE backlog that **is not there**. Read the
+  per-second histogram, never the span — this one survived a first review before
+  the histogram killed it.
 
 ## Workload fixtures
 
