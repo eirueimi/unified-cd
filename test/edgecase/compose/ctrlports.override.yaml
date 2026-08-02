@@ -43,7 +43,7 @@
 # replica owns its own registry (`internal/metrics/metrics.go:34`,
 # "never the global default").
 #
-# `/metrics` and `/healthz` need no auth (`internal/controller/server.go:299`,
+# `/metrics` and `/healthz` need no auth (`internal/controller/server.go:297`,
 # `:308`); everything else on these ports takes the same tokens as the LB.
 services:
   controller1:

@@ -10,7 +10,7 @@
 #
 # WHY THE RATE MATTERS, AND WHY THIS SIDE OF THE 4 KiB THRESHOLD.
 # `LogPusher.Write` flushes synchronously when the buffer crosses `flushBytes`
-# = 4 KiB (`internal/agent/runner.go:249`), and `StartAutoFlush` flushes every
+# = 4 KiB (`internal/agent/runner.go:255`), and `StartAutoFlush` flushes every
 # `logPusherAutoFlushEvery` = 2 s (`runner.go:211`). A trickle of one ~40-byte
 # line per second never reaches 4 KiB between ticks, so EVERY flush is a
 # timer flush and each one appends exactly one small pending batch while the

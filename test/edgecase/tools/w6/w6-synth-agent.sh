@@ -27,7 +27,7 @@
 # agent_auth.go:38-100`; see README §"the enrollment bypass").
 #
 # LABELS COME FROM THE ENROLLMENT, NOT FROM THE AGENT. handleAgentClaim uses
-# `principal.AuthorizedLabels` (`api_agent.go:145`), i.e. the labels baked into
+# `principal.AuthorizedLabels` (`api_agent.go:143`), i.e. the labels baked into
 # the credential here — a job's `agentSelector` must match THIS script's
 # --label, not anything sent at register. `register` is therefore optional and
 # is provided only because capabilities are the agent's own self-report
@@ -123,7 +123,7 @@ register)
   # The route is POST /api/v1/agents/register — a COLLECTION route, not
   # /agents/{agentId}/register (`internal/controller/server.go:493`); the id
   # travels in the body and must equal the principal's or the handler 403s
-  # (`api_agent.go:33-37`). Getting that wrong yields a bare 404 with no hint.
+  # (`api_agent.go:34-38`). Getting that wrong yields a bare 404 with no hint.
   agt -o /dev/null -w 'register http_code=%{http_code}\n' -X POST -H 'Content-Type: application/json' \
     -d "{\"agentId\":\"${agent_id}\",\"labels\":[\"${label}\"],\"capabilities\":${capjson}}" \
     "${server}/api/v1/agents/register"

@@ -37,7 +37,7 @@
 #  4. SELF-PERTURBATION. Scraping `/metrics` every 2 s from three controllers
 #     is itself 1.5 req/s of load that lands in the very counter being read
 #     (`/metrics` goes through `metricsMiddleware`,
-#     `internal/controller/server.go:284`). Reading a log perturbs nothing.
+#     `internal/controller/server.go:288`). Reading a log perturbs nothing.
 #
 # The counter is not useless in general — it is the right instrument for
 # "how many did the controller SERVE", and `contrast` prints both numbers side

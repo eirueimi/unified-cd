@@ -30,7 +30,7 @@
 #   * they share ONE HTTP client and its connection pool
 #     (`internal/agent/client.go`), so per-run request latency is coupled;
 #   * each run still gets its OWN `LogPusher` and therefore its own `p.mu`
-#     (`internal/agent/runner.go:230`) — the mutex is per pusher, per step, so
+#     (`internal/agent/runner.go:229`) — the mutex is per pusher, per step, so
 #     a stalled flush stalls ONE step's stdout pipe, not all N. That is the one
 #     place where "not N independent agents" cuts in the product's favour, and
 #     it should not be quietly generalised in either direction;
