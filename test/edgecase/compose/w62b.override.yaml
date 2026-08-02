@@ -1,0 +1,59 @@
+# W6-2b overlay. Three changes, all rig-side; no product configuration is
+# touched.
+#
+#   1. swaps test/ha/nginx.conf for compose/nginx-w62b.conf and adds the
+#      runtime-writable include volume the fault script writes into. Compose
+#      merges volume entries by TARGET path, so the nginx.conf line replaces
+#      rather than adds — verify with `docker compose $COMPOSE_FILES config`
+#      and by grepping the file inside the container, which the baseline gate
+#      does.
+#   2. adds `logsink`: a container that accepts a TCP connection on 8080 and
+#      never writes to it, which is how Arm 4's black hole is built on a rig
+#      whose agent image has no iptables and no NET_ADMIN. `tail -f /dev/null`
+#      holds nc's stdin open forever so nc never sees EOF and never shuts the
+#      connection down; the outer loop re-listens after a client goes away.
+#      Concurrent connections past the one nc has accepted complete their
+#      handshake in the kernel accept queue and hang exactly the same way,
+#      which is the behaviour the arm wants. It reuses nginx:1.27-alpine only
+#      because that image is already pulled by this stack — nothing about it
+#      is nginx.
+#   3. binds edgecase/sideeffect-data into both agents at /data, the same bind
+#      oneway.override.yaml:11,14 provides. workloads/w6-chatty.yaml writes its
+#      per-line heartbeat there, on a channel that does not pass through the
+#      LogPusher, so a stall of the step's own process is measurable
+#      independently of anything the logging path reports.
+#
+#   cd test/ha
+#   export COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/w62b.override.yaml \
+#     -f ../edgecase/compose/ctrlports.override.yaml"
+#   docker compose $COMPOSE_FILES up -d --build
+services:
+  nginx:
+    volumes:
+      - ../edgecase/compose/nginx-w62b.conf:/etc/nginx/nginx.conf:ro
+      - logfault:/etc/nginx/logfault
+    depends_on:
+      - controller1
+      - controller2
+      - controller3
+      - logsink
+
+  logsink:
+    image: nginx:1.27-alpine
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "while true; do tail -f /dev/null | nc -l -p 8080 >/dev/null; done"
+
+  agent1:
+    volumes:
+      - agent-credentials:/var/lib/unified-cd-agent
+      - ../edgecase/sideeffect-data:/data
+
+  agent2:
+    volumes:
+      - agent-credentials:/var/lib/unified-cd-agent
+      - ../edgecase/sideeffect-data:/data
+
+volumes:
+  logfault:

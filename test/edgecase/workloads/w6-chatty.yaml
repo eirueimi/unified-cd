@@ -1,0 +1,73 @@
+# W6 fixture: the CHATTY emitter for the LogPusher's DROP regime, and the
+# stall probe for its black-hole arm.
+#
+# WHY A NEW FIXTURE. Nothing in workloads/ can reach the 1 MiB pending cap.
+# `logburst` is 2,000 lines of ~10 bytes = ~20 KB, i.e. 2% of the cap, and it
+# was built for W6-2a where the LINE COUNT was the quantity. `w6-trickle`'s own
+# header says explicitly not to use it for the drop marker. The cap
+# (`internal/agent/runner.go:256`) counts LINE TEXT only (`pendingSizeBytes`,
+# `:438-446`), so the only way to reach it in seconds rather than hours is wide
+# lines. At the default 1 KiB, ~1,024 lines fill the cap and 2,000 lines
+# overshoot it by 2x, which is what makes drop-oldest engage and the per-flush
+# request cost plateau instead of growing triangularly.
+#
+# WHY THE HEARTBEAT FILE, AND WHY IT IS NOT OPTIONAL FOR ARM 4.
+# The black-hole arm's claim is that a blocked flush stalls the step's own
+# process, via: auto-flush holds p.mu -> LogPusher.Write blocks (`:320`) ->
+# the agent stops draining the step's stdout pipe -> the 64 KiB pipe buffer
+# fills -> the shell's own `echo` blocks. Every signal for that chain except
+# the last one travels THROUGH the logging path, so using the logs to measure
+# a logging stall is circular. `hbfile` is appended on a separate fd to a
+# volume bind (`/data`, from compose/w62b.override.yaml, the same bind
+# oneway.override.yaml:11,14 provides) and never touches the LogPusher. A GAP
+# IN THAT FILE IS A STALL OF THE STEP ITSELF, readable from the host at
+# test/edgecase/sideeffect-data/ while the run is still going.
+#
+# PARAMS
+#   lines        total lines to emit (default 2000 -> ~2.05 MiB at the default
+#                width, i.e. 2x the 1 MiB cap)
+#   pad_bytes    width of the padding on each line (default 1024). Each line is
+#                pad_bytes plus ~40 bytes of index and timestamp.
+#   interval_s   seconds between lines (default 0 = as fast as the shell goes;
+#                busybox ash's builtin sleep accepts fractions, so 0.2 works)
+#   hbfile       heartbeat path (default /data/w62b-hb.log). PASS A DISTINCT
+#                NAME PER ARM: the file is appended, never truncated, and the
+#                bind is shared by both agents.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w6-chatty
+spec:
+  native: true
+  params:
+    inputs:
+      - name: lines
+        type: string
+        default: "2000"
+      - name: pad_bytes
+        type: string
+        default: "1024"
+      - name: interval_s
+        type: string
+        default: "0"
+      - name: hbfile
+        type: string
+        default: "/data/w62b-hb.log"
+  agentSelector:
+    - kind:linux
+  steps:
+    - name: chatty
+      run: |
+        pad=$(awk 'BEGIN{s="";for(i=0;i<{{ .Params.pad_bytes }};i++)s=s "x";print s}')
+        echo "chatty-begin lines={{ .Params.lines }} pad_bytes={{ .Params.pad_bytes }} interval_s={{ .Params.interval_s }} $(date -u +%FT%T.%NZ)"
+        echo "== begin $(date -u +%FT%T.%NZ)" >> {{ .Params.hbfile }}
+        i=1
+        while [ "$i" -le {{ .Params.lines }} ]; do
+          ts=$(date -u +%FT%T.%NZ)
+          echo "chatty $i $ts $pad"
+          echo "$i $ts" >> {{ .Params.hbfile }}
+          i=$((i + 1))
+          sleep {{ .Params.interval_s }}
+        done
+        echo "== end $(date -u +%FT%T.%NZ)" >> {{ .Params.hbfile }}
+        echo "chatty-end $(date -u +%FT%T.%NZ)"
