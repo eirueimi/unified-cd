@@ -772,7 +772,7 @@ one agent's serial write path, however fast.
 
 ### Recommendation: **do not implement disk spill as specified. Implement four
 cheaper changes first, three of which are strictly better value, and re-open
-spill only after the first of them lands.**
+spill only after the fourth of them lands.**
 
 **The measurement that decides it.** Arm 2 established that per-flush request
 cost is `len(p.pending)`, and that `len(p.pending)` at steady state is

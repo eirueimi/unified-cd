@@ -57,7 +57,7 @@ against the file for this runbook, because three W4 runbooks got them wrong.
   endpoint is by far the cheaper route to `max_connections`; the clean
   single-variable isolation was not run"*. (ii) The settled ratio is **~820x**
   (2451/s ÷ 2.98/s, derived) and it is **cross-endpoint**
-  (`w6-1-connection-pressure.md:589-594`, `README.md:955-958`); ~800x is the
+  (`w6-1-connection-pressure.md:589-594`, `README.md:973-978`); ~800x is the
   retired README figure. Nothing measured in this scenario rests on either.
   **`/readyz` does not
   degrade** — **200 in 143 of 144 saturated in-window replica-readings, 47 of 48
@@ -177,7 +177,7 @@ gives three different predictions, and a spot check would conflate them.
    idempotency mechanism anywhere on run creation**: `CreateRun` is an
    unconditional `INSERT` with no `ON CONFLICT` (`postgres.go:245-254`), `runs`
    carries no `UNIQUE` index other than `runs_pkey`
-   (`migrations/001_init.up.sql:460-463`; the other run indexes at
+   (`internal/store/migrations/001_init.up.sql:460-463`; the other run indexes at
    `008_run_indexes.up.sql:10-12`, `011:11-12`, `017:5` are all non-unique), and
    no handler reads any idempotency header. N identical client POSTs therefore
    create N runs **by design** — that is not a phantom. The reachable phantom
@@ -411,7 +411,7 @@ probe) are scheduler-starved by the 50-row ceiling**, plus the 1 run actually
 | C1 | four independent counts all equal | **HELD, but they are three, not four.** 2,241 / 2,241 / 2,241; the fourth column is a `job_name` filter on the third, i.e. a subset refinement, not an instrument |
 | C2 | no phantom through the documented LB config | **HELD. Non-vacuous as a *failover* test only** — 3 retries measured, all `while connecting`, so the phantom mechanism was never exercised |
 | C3 | flood + probe still non-terminal | **HELD.** 2,656 of 2,665 — of which **2,254 mutex-blocked** (fixture by design), **401 scheduler-starved**, 1 `Running` |
-| D | ~0.5 req/s, no backoff, no give-up | **SPLIT: magnitude REFUTED, shape HELD.** **8.567 req/s** steady state — 17x the prediction, because an agent runs **17** claim loops, not 1. **Folded into `FINDINGS.md:450`/`:458`/`:463` in place; not filed as an entry** (`:463` added at the W6 checkpoint — this row omitted it while `:938` and `FINDINGS.md:2824` both name all three) |
+| D | ~0.5 req/s, no backoff, no give-up | **SPLIT: magnitude REFUTED, shape HELD.** **8.567 req/s** steady state — 17x the prediction, because an agent runs **17** claim loops, not 1. **Folded into `FINDINGS.md:450`/`:458`/`:463` in place; not filed as an entry** (`:463` added at the W6 checkpoint — this row omitted it while `:949` and `FINDINGS.md:2824` both name all three) |
 | E | audit retention defaults to 90, not 0 (AMENDMENT 1) | **HELD**, and the survey found **no operator-facing doc that contradicts the code**. Part E files nothing |
 
 ---
