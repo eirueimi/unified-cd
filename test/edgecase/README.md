@@ -530,9 +530,9 @@ docker compose $COMPOSE_FILES up -d --build
 | Harness | What it does | The capture that proves it |
 |---|---|---|
 | `w6-synth-agent.sh` | curl-driven synthetic agent: `enroll` / `register` / `heartbeat` / `trigger` / `claim` / `own` / `run-once` / `lines` / `push-bulk` / `finish` / `token` / `forget`. Agent id, label, job and server are all parameters | `w6-1/step1-synth-agent.txt` — enroll → register(204) → `own edge-w6-probe` → run reads back `Running`, 5 lines pushed through the real bulk route and read back through the admin API → `finish` → `Succeeded` |
-| `bin/loadgen` | N genuinely concurrent in-flight requests at ONE named controller; per-request start/end to CSV; `maxInFlight` swept from those timestamps | `w6-1/step2-loadgen.txt` — `-c 20 -mode burst` → `maxInFlight=20`, and the CSV shows all 20 sharing one start timestamp; the `-insecure-serial` control over the same 20 requests → `maxInFlight=1`, each start equal to the previous end |
-| `bin/ssehold` | S SSE streams held for a measured window against ONE controller; per-stream status, connect latency, event counts, alive-at-end | `w6-1/step3-4-sse-pg.txt` — 6 streams on `:18083` held 35 s, `aliveAtEnd=6 diedEarly=0`, 30 events each; and the PG sampler in the same window shows exactly 6 `listen` connections on `controller3` and none on the other two |
-| `w6-pgsample.sh` | `pg_stat_activity` on a grid, per replica and per **derived** pool, with a peak summary | same capture — the `listen` count tracked the stream count exactly, and `w6-1/unplanned-pg-saturation.txt` shows the same instrument reading the saturated case |
+| `bin/loadgen` | N genuinely concurrent in-flight requests at ONE named controller; per-request start/end to CSV; `maxInFlight` swept from those timestamps | `w6-1/step2-loadgen.txt` — `-c 20 -mode burst` → `maxInFlight=20`, and the CSV shows all 20 sharing one start timestamp; the `-insecure-serial` control over the same 20 requests → `maxInFlight=1`, each start equal to the previous end. Both guards are proven by `loadgen/main_test.go` (`go test -buildvcs=false ./test/edgecase/tools/w6/loadgen/`), which is mutation-checked: disabling the over-report comparison makes `TestWarnsOnOverReport` fail with the pre-fix silent output |
+| `bin/ssehold` | S SSE streams held for a measured window against ONE controller; per-stream status, connect latency, event counts, alive-at-end | `w6-1/step3-4-sse-pg.txt` — 6 streams on `:18083` held 35 s, `aliveAtEnd=6 diedEarly=0`, 30 events each. **The targeting is proven by a delta, not by a snapshot**: `controller3` has **no `listen` row at all in sample 1** and exactly **6 from sample 2 onward**, when the streams opened. `controller1` carries a **flat `listen` peak=8 across every sample including sample 1** — stale listen connections an earlier run left behind, which the pools never released; that is the same "the pools only grow" mechanism the `W6-infra` entry describes, showing up as free corroboration. So: 6 new `listen` connections, all on the targeted replica, none on the other two |
+| `w6-pgsample.sh` | `pg_stat_activity` on a grid, per replica and per **derived** pool, with a peak summary; `-p` also probes `/readyz` and `/healthz` on the same grid | same capture — the `listen` **delta** tracked the stream count exactly, and `w6-1/unplanned-pg-saturation.txt` shows the same instrument reading the saturated case. The `-p` health probe post-dates that capture and is proven off-rig: against a live throwaway port and a dead one it returns real codes and `000` respectively, and its summary was exercised on saturated-and-200, saturated-and-not-200 and never-saturated inputs |
 | `w6-reqshape.sh` | per-request shape recorder off nginx's `logfault` access log, folded into buckets; plus `counter` and `contrast` verbs | `w6-1/step5-reqshape.txt` — 60 bulk requests resolved individually inside a 75 ms window (median gap 1 ms) that a 2 s grid would report as one number; `w6-1/step5-reqshape-b.txt` — a real agent's 15 auto-flush ticks at a measured 2.000 s median spacing; `w6-1/step5-reqshape-c.txt` — `contrast` and the combined-format guard |
 | `w6-idleload.sh` + `w6-idleanalyze.py` | arms Postgres statement logging, captures an untouched window, always reverts, and reports q/s in total, per replica and per statement class | `w6-1/step8-idlebaseline.txt` (arm, revert and read-backs) and `w6-1/step8-idle-report.txt` (the numbers below) |
 | `w6-build.sh` | builds `loadgen` and `ssehold` into a gitignored `bin/` | — |
@@ -554,11 +554,23 @@ per-script.
 `tools/bulk-submit.sh` produces *depth* and no *rate* — it is a serial loop, and
 a generator that was secretly serial would not fail, it would quietly produce a
 smaller number. So `loadgen` sweeps the 2N start/end events and reports
-`maxInFlight`, and warns when `maxInFlight < -c`. Ties are broken **end-first**:
+`maxInFlight`. Ties are broken **end-first**:
 Go's clock on Windows is coarse enough that a request's end and the next one's
 start share a timestamp, and breaking ties start-first made the serial control
 report `maxInFlight=2` — an instrument inventing overlap that provably did not
 exist.
+
+**It warns in BOTH directions, and the second guard is the one that matters.**
+An under-report (`maxInFlight < -c`) means the rig serialised you. An
+**over-report** (`maxInFlight > -c`) is *impossible* for a bounded worker pool —
+a worker cannot start request k+1 before request k returned — so it is never a
+product fact and always an instrument fault. Only the under-report was guarded
+originally, and the consequence is the reason this paragraph exists: the
+pre-tie-break build printed `maxInFlight=19` for `-c 8`, said nothing, and that
+19 reached the `W6-infra` entry in `FINDINGS.md` and survived until review.
+Recomputing the archived `w6-1/step2-sustained8.csv` gives **8 exactly** on both
+the millisecond and the microsecond columns. **When an instrument's own number
+is the evidence, guard both tails.**
 
 **Aim rate-bearing harnesses at a controller, never at the LB, and that needs
 `compose/ctrlports.override.yaml`** (18081/18082/18083 → controller1/2/3). The
@@ -567,7 +579,12 @@ upstream `keepalive`, leaves `worker_connections` at 512, and can turn one
 client request into three upstream requests via `proxy_next_upstream_tries 3`.
 Through the LB you measure the rig. Confirmed the three ports are three distinct
 processes (`w6-1/step-ctrlports-verify.txt`): each replica owns its own registry
-(`internal/metrics/metrics.go:34`) and their `/metrics` outputs diverge at once.
+(`internal/metrics/metrics.go:34`), and the evidence is the line
+`metrics_families=128 / 112 / 113` with `http_requests_total_series=8 / 7 / 7` —
+three ports, three different registry contents, on the same request.
+**The capture's "three distinct registries" section below that line is empty**
+(three blank lines: the per-port self-count command produced nothing), so cite
+the `metrics_families` line and not that section.
 
 **The request-shape recorder: why the access log and not the counter.** W1-6
 derived its request numbers from `unifiedcd_agent_auth_events_total`, which
@@ -608,7 +625,25 @@ text** and is honest about how far that goes: `listen` (only
 life) and `lock` (only `AcquireAdvisoryLock` runs `pg_try_advisory_lock`) are
 sound; **api and background are not separable** and are reported together as
 `query`. The `listen` class was confirmed by effect — 6 SSE streams produced
-exactly 6 `listen` rows on the replica they were opened against.
+exactly **6 new** `listen` rows on the replica they were opened against, absent
+in the sample before they opened. Read that as a **delta**: `controller1` was
+already carrying a flat `listen` peak=8 from an earlier run's connections that
+were never released, so an absolute count over-reads.
+
+**`-p` puts `/readyz` on the same grid, and it exists because of a specific
+failure.** The `W6-infra` entry reports that `/readyz` was 200 while Postgres
+refused every connection — but the backend count and the health status were
+taken by two different commands about three minutes apart, so **no in-window
+`/readyz` sample exists anywhere in the W6-1 archive** and what the health
+surface does *during* saturation is still unmeasured. With
+`-p 18081,18082,18083` the probe runs inside the same loop iteration as the
+`pg_stat_activity` query, codes land in `<OUT>.health.csv` (separate file: an
+HTTP status in the `count` column would print `peak=200` in the peak table), a
+refused probe is recorded as `000` rather than dropped, and the closing summary
+answers the question directly — of the samples at or above
+`max_connections - 3`, how many still read 200. **Any wave asserting something
+about the health surface under load should use it rather than a snapshot taken
+afterwards.**
 
 **`compose/maxconcurrent.override.yaml` — and the caveat that travels with it.**
 The rig runs exactly 2 concurrent real runs (2 agents × `MaxConcurrent` default
@@ -629,19 +664,29 @@ stdout pipe, not all N.
 #### The idle floor (measure every W6 number net of this)
 
 Measured on the **plain `test/ha` rig**, no overlays, three controllers, two
-agents, **zero jobs and zero runs**, 300 s untouched
-(`w6-1/step8-idle-report.txt`, `w6-1/step8-idle-connections.txt`):
+agents, **zero jobs and zero runs**. **Two different windows, and the table says
+which:** the statement rates come from the 300 s untouched capture at
+**04:16:20-04:21:21** (`w6-1/step8-idle-report.txt`), the connection count from a
+separate **33 s** sample at **04:25** on the same rig
+(`w6-1/step8-idle-connections.txt`). They are not one measurement.
 
-| Quantity | Idle value |
-|---|---|
-| Total query rate | **21633 statements / 300 s = 72.11 q/s** across the stack |
-| Per replica | 24.10 / 23.68 / 24.32 q/s (controller1/2/3) |
-| Postgres backends | **73-74 of `max_connections` 100** — about **26 free slots at rest** |
-| Largest single consumer | `ClaimNextRun` (the agent claim long-poll), 10574 = **35.25 q/s**, i.e. **49% of the whole idle floor**, from just two agents |
-| Git resolver `ListPendingRuns` | 1508 per replica = **5.027 q/s per replica**, 15.08 q/s total |
-| Scheduler's own `ListPendingRuns` | 1508 on **controller1 only** (the lock holder) = 5.027 q/s |
-| `pg_try_advisory_lock` | 3181 = 10.60 q/s, split **55 / 1563 / 1563** — the leader retries far less because it already holds the key |
-| `DeleteStaleAgents` | 15 in 300 s = 1/min per replica |
+| Quantity | Idle value | Window |
+|---|---|---|
+| Total query rate | **21633 statements / 300 s = 72.11 q/s** across the stack | 300 s (04:16-04:21) |
+| Per replica | 24.10 / 23.68 / 24.32 q/s (controller1/2/3) | 300 s |
+| Postgres backends | **73-74 of `max_connections` 100** — about **26 free slots at rest** | **33 s (04:25), 7 samples** |
+| Largest single consumer | `ClaimNextRun` (the agent claim long-poll), 10574 = **35.25 q/s**, i.e. **49% of the whole idle floor**, from just two agents | 300 s |
+| Git resolver `ListPendingRuns` | 1508 per replica = **5.027 q/s per replica**, 15.08 q/s total (`internal/store/postgres.go:2064-2067` ← `internal/controller/scheduler.go:291`, inside `resolveGitPendingRuns`) | 300 s |
+| Scheduler's `TransitionPendingToQueued` | 1508 on **controller1 only** (the lock holder) = 5.027 q/s. **Not `ListPendingRuns`** — it is `internal/store/postgres.go:437-440`, called at `internal/controller/scheduler.go:58`. The two rows are different statements against the same table; naming both `ListPendingRuns` made one call look both leader-gated and not | 300 s |
+| `pg_try_advisory_lock` | 3181 = 10.60 q/s, split **55 / 1563 / 1563** — the leader retries far less because it already holds the key | 300 s |
+| `DeleteStaleAgents` | 15 in 300 s = 0.05 q/s across the stack. **"1/min per replica" is an ASSUMPTION, not a measurement** — the analyser prints no per-replica split for this class (it is outside the top 8), so the ÷3 is unverified | 300 s |
+
+**The denominator is nominal.** Every `/s` above divides by **300 s** while the
+analyser's own printed window is **04:16:20.006 .. 04:21:21.487 = 301.5 s** — it
+extends past the nominal end to swallow the `ALTER SYSTEM RESET` revert
+statements. The rates are therefore **~0.5% high**: 72.11 q/s becomes 71.76 q/s
+on the true window. Below the noise for every use here, and stated so nobody
+re-derives it and thinks they have found a discrepancy.
 
 **`FINDINGS.md:563`'s 5.006 q/s per replica for the git resolver still holds** —
 5.027 measured, 0.4% apart, five waves later. What that entry did **not** say,
@@ -649,9 +694,17 @@ and what dominates the floor, is the claim long-poll: at 35.25 q/s it is **7×**
 the git resolver. Two cautions on re-use: 300 s is too short to sample the
 10-minute `oidc_states` cleanup (it does not appear at all), and the **73-74
 connection floor is a settled-state figure, not a startup one** — a freshly
-restarted controller set read **19** total backends and climbed to the seventies
-over roughly ten idle minutes. The pools grow and do not shrink (see the W6-infra
-entry in `FINDINGS.md`).
+restarted controller set read **19** total backends. **"...and climbed to the
+seventies over roughly ten idle minutes" is an INFERENCE across two different
+stack instances, not a measured curve, and should be read as one:** the 19 is
+the stack restarted at 04:03:31 (`w6-1/unplanned-pg-saturation.txt`), the 73-74
+is a stack **torn down and re-`up`ed at ~04:12:16** (`w6-1/step7-maxconcurrent.txt`)
+and sampled at 04:25, and **no intermediate sample exists** — the shape of the
+climb, and whether it is even monotonic, is unmeasured. That the pools only grow
+is code-read (`newPostgresPool` sets no `MaxConnIdleTime` or `MaxConnLifetime`),
+not traced. See the W6-infra entry in `FINDINGS.md`. A wave that needs the curve
+should take it with `w6-pgsample.sh -i 10 -d 900` from a cold start; it is cheap
+and nobody has done it.
 
 ## Workload fixtures
 
