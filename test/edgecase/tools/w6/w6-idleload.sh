@@ -20,9 +20,16 @@
 #     issues each on its own connection and then reads the settings back in a
 #     FRESH session, because a session that predates the reload keeps the old
 #     values and would report success either way.
-#   * IT ALWAYS REVERTS. `ALTER SYSTEM RESET` for both settings, a reload, and
-#     a fresh-session read-back, on a trap so it happens even on interrupt.
-#     `log_statement='all'` left on will fill the container's log driver.
+#   * IT REVERTS ON A TRAP, BUT THE REVERT IS NOT UNCONDITIONAL — it needs a
+#     Postgres connection. `ALTER SYSTEM RESET` for both settings, a reload and
+#     a fresh-session read-back run on a trap so they happen even on interrupt,
+#     BUT if the window you measured exhausted `max_connections` the revert's
+#     own `psql` is refused, the script exits non-zero and LEAVES
+#     `log_statement='all'` ARMED on the running cluster. W6-3 hit exactly this
+#     (exit 2, `FATAL: sorry, too many clients already`) and had to revert by
+#     hand. Until that is fixed: after any saturating arm, verify the settings
+#     are back before starting the next one. `log_statement='all'` left on will
+#     fill the container's log driver. See the W6-3 note in `README.md`.
 #
 # Usage:
 #   w6-idleload.sh [-d SECONDS] [-o OUTDIR] [-l LABEL]

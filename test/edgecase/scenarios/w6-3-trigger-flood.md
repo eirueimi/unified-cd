@@ -335,24 +335,35 @@ third of the expected finding; the survey result is reported either way.**
 **The answers, up front.** Nothing on the run-creation path is rate limited, and
 the price is not the flood — it is what the flood leaves behind. One
 **developer**-role PAT, 16 workers, **2.964 s**: 5,000 requests at **1,687
-req/s**, **zero 429**, 2,241 permanent runs and 2,624 permanent audit rows
-created, all three controllers' pools pinned at Postgres's `max_connections`,
-and **55.18% of the flood's own requests rejected under three different status
-codes, two of which are untrue**. `/readyz` read **200 in 87 of 87** in-window
-replica-readings throughout. Three minutes after the client disconnected the
-stack was still refusing connections, and for the **95 seconds** of flat
-post-flood observation it ran at **1,071.6 statements/s — 14.9x the published
-71.8 q/s idle floor — of which 93.3% was futile**: the scheduler re-attempting
-50 known-blocked runs five times a second forever.
+req/s**, **zero 429**, 2,241 permanent runs and **2,624 audit inserts inside the
+110 s capture window** (a window figure, not a table figure — the table read
+2,655 rows at the C1 census and 3,057 at teardown), all three controllers' pools
+pinned at Postgres's `max_connections`, and **55.18% of the flood's own requests
+rejected under three different status codes, two of which are untrue**. `/readyz`
+read **200 in 87 of 87** in-window replica-readings **and `/healthz` likewise in
+87 of 87 — 174 readings across the two endpoints**. Three minutes after the
+client disconnected the stack was still refusing connections — **the last
+unattended reading, not waited out; the operator restarted rather than waiting,
+so the unassisted recovery time is unmeasured** — and for the **95 seconds** of
+flat post-flood observation it ran at **1,071.6 statements/s — 14.9x the
+published 71.8 q/s idle floor — of which 93.3% was futile**: the scheduler
+re-attempting 50 known-blocked runs five times a second forever.
 
 **I1 held on both clauses this scenario could newly test.** 9 distinct terminal
-runs against 9 counted terminal transitions — **no double terminal write**. Four
-independent counts of the flood's accepted runs agree exactly at **2,241**, and
-the LB arm produced **400 rows for 400 requests** while **three of those requests
-provably traversed two upstreams** — **no phantom runs**. The third clause,
-"reaches ... a terminal state", is contradicted for **2,656 of 2,665** accepted
-runs, but the mechanism is `scheduler.go:58` and `FINDINGS.md:1399` forbids
-re-filing it; it is cited, not counted.
+runs against 9 counted terminal transitions — **no double terminal write**.
+**Three** independent counts of the flood's accepted runs agree exactly at
+**2,241**, and the LB arm produced **400 rows for 400 requests** while **three of
+those requests provably traversed two upstreams — a genuine *failover*, but not a
+test of the phantom mechanism**: all three retries were `while connecting to
+upstream`, the body never sent, which is the retry class that cannot phantom.
+**The phantom limb is closed by an nginx default, not by measurement.** The third
+clause, "reaches ... a terminal state", is contradicted for **2,656 of 2,665**
+accepted runs — but that number is two different things and must be split:
+**2,254 are `edge-mutex-hog` runs blocked because the mutex is held, i.e. the
+fixture working as designed**, while **401 (400 `edge-w6-probe` plus the Part B
+probe) are scheduler-starved by the 50-row ceiling**, plus the 1 run actually
+`Running` and holding the mutex. Only the 401 belong to `scheduler.go:58`, and
+`FINDINGS.md:1399` forbids re-filing it; it is cited, not counted.
 
 ### Deviations from the runbook, stated before any number is read
 
@@ -383,13 +394,13 @@ re-filing it; it is cited, not counted.
 | A(a) | **zero 429** | **HELD.** 0 of 5,000. No admission limiter exists on this path |
 | A(b) | all accepted, no 5xx | **REFUTED.** 2,241 accepted (44.82%); 549 5xx (10.98%); plus 1,985 401 (39.70%) and 225 404 (4.50%) |
 | A(c) | ~4 synchronous + 1 asynchronous statement per accepted run | **HELD.** 12,302 attributable statements / 2,241 accepted runs = **5.49** |
-| A(d) | no saturation at 16 in flight; `/readyz` 200 | **SPLIT: saturation REFUTED, `/readyz` HELD.** Saturated from sample 3 of 29; `/readyz` 200 in 87 of 87 replica-readings, 81 of them at/near the client-backend budget |
+| A(d) | no saturation at 16 in flight; `/readyz` 200 | **SPLIT: saturation REFUTED, `/readyz` HELD.** Saturated from sample 3 of 29; `/readyz` 200 in 87 of 87 replica-readings **and `/healthz` in 87 of 87** (174 across the two endpoints), 81 of the 87 at/near the client-backend budget |
 | A(e) | permanent rows survive the flood | **HELD.** `runs` 3,056 kB, `audit_logs` 3,057 rows / 688 kB, and a **one-row** `mutex_holders` bloated to **776 kB** |
 | B | the unrelated probe does not reach a terminal state in the window | **HELD.** `Pending` at **975.5 s** against a **0.807 s** median baseline |
-| C1 | four independent counts all equal | **HELD.** 2,241 / 2,241 / 2,241 / 2,241 |
-| C2 | no phantom through the documented LB config | **HELD, and non-vacuously** — 3 retries measured |
-| C3 | flood + probe still non-terminal | **HELD.** 2,656 of 2,665 |
-| D | ~0.5 req/s, no backoff, no give-up | **SPLIT: magnitude REFUTED, shape HELD.** **8.567 req/s** steady state — 17x the prediction, because an agent runs **17** claim loops, not 1 |
+| C1 | four independent counts all equal | **HELD, but they are three, not four.** 2,241 / 2,241 / 2,241; the fourth column is a `job_name` filter on the third, i.e. a subset refinement, not an instrument |
+| C2 | no phantom through the documented LB config | **HELD. Non-vacuous as a *failover* test only** — 3 retries measured, all `while connecting`, so the phantom mechanism was never exercised |
+| C3 | flood + probe still non-terminal | **HELD.** 2,656 of 2,665 — of which **2,254 mutex-blocked** (fixture by design), **401 scheduler-starved**, 1 `Running` |
+| D | ~0.5 req/s, no backoff, no give-up | **SPLIT: magnitude REFUTED, shape HELD.** **8.567 req/s** steady state — 17x the prediction, because an agent runs **17** claim loops, not 1. **Folded into `FINDINGS.md:450`/`:458` in place; not filed as an entry** |
 | E | audit retention defaults to 90, not 0 (AMENDMENT 1) | **HELD**, and the survey found **no operator-facing doc that contradicts the code**. Part E files nothing |
 
 ---
@@ -469,13 +480,26 @@ not decaying**, with the client disconnected 100 seconds earlier. That is
 which is `scheduler.go:58`'s `limit = 50` times the scheduler's 5 ticks/s
 (`RunScheduler`'s 200 ms default, `scheduler.go:24-26`). See Part B.
 
+**Where the 93.3% comes from, with both of its terms taken from the same
+window.** In steady state the four churn classes (`begin`, the `FOR UPDATE`
+select, the `mutex_holders` insert, `rollback`) each run at the same **250.0/s**
+as `mutexIns`, so **1,000.0/s of 1,071.6/s = 93.3%**. Both terms are
+steady-state. The **110 s totals are a different window and give a different
+number**, and the two must not be mixed: 26,578 / 26,577 / 26,577 / 26,577 =
+**241.6/s each = 966.4/s** against the whole-window **1,149.88 q/s = 84.0%**,
+lower only because that window also contains the 2.964 s flood, during which the
+backlog had not yet reached the 50-row ceiling. `4 x 241.6` is **not** ~1,000.
+
 ### What the absence costs, and what bounds it
 
 **What a single low-privilege client can cost.** `requireMinRole("developer")`
 (`server.go:359, :370`) is the floor for `POST /api/v1/runs`. A developer PAT —
 the credential handed to anyone who may trigger a build — bought, in **2.964
-seconds**: 2,241 permanent `runs` rows and 2,624 permanent `audit_logs` rows
-whose deletion is opt-in and off by default (Part E); Postgres pinned at
+seconds**: 2,241 permanent `runs` rows and **2,624 `audit_logs` inserts inside
+the 110 s capture window** — a *window* count, not a table count, and not solely
+flood traffic: `audit_rows` read **2,655** at the C1 census (`c1-census.txt`) and
+**3,057** at teardown (`final-census.txt`). Deletion of those rows is opt-in and
+off by default for runs and logs, 90 days for audit (Part E); Postgres pinned at
 `max_connections` for **at least 3 min 17 s** (still refusing at 09:18:30, the
 last unattended reading before the operator intervened; **not waited out**, and
 consistent with W6-1's pgxpool `MaxConnIdleTime=30m` default); and a permanent
@@ -493,8 +517,13 @@ is 100 connections; on the repository's own `docker-compose.yaml:30`
 `docs/operations.md:173` documents that number for operators.
 
 **What did NOT break, and it matters.** `/readyz` and `/healthz` read **200 on
-every replica at every one of the 29 sample instants** — 81 of the 87
-replica-readings taken at or above `max_connections - 3`. This is the pairing
+every replica at every one of the 29 sample instants**. **The count is per
+endpoint and is stated that way deliberately**: 29 instants x 3 ports = **87
+replica-readings for `/readyz` and 87 for `/healthz`, 174 in total**, and
+`a-pgsample.txt` records both on every row — folding the two into a single 87
+would be the port-readings-as-samples conflation a sibling scenario was corrected
+for this wave. 81 of the 87 instants-by-port were taken at or above
+`max_connections - 3`. This is the pairing
 `FINDINGS.md:2517` could not make, taken **in-window** by `w6-pgsample.sh -p`,
 and it confirms W6-1's result rather than extending it. **An operator watching
 the documented health surface (`docs/operations.md:154`) sees nothing.**
@@ -568,7 +597,12 @@ mutex holder rotated during the observation — run `a54a54a8` on `agent2` at
 reached `Succeeded` by teardown. Each holder occupies the mutex for its `sleep
 600`, so the backlog drains at one run per 600 s: **2,254 remaining runs is
 ~15.7 days (derived from the fixture's own sleep, not measured)**, during which
-every newer run of every other job is invisible to the scheduler. **The 400
+every newer run of every other job is invisible to the scheduler. **That figure
+is a property of this fixture and carries no weight in the finding's severity
+band**: a one-second job drains the same backlog in ~40 minutes while producing
+the identical 250.0 futile inserts/s throughout. The fixture-independent
+quantity — 250.0/s for as long as more than 50 blocked runs exist — is what the
+`major` band rests on, and the FINDINGS entry says so. **The 400
 `edge-w6-probe` runs Part C2 created are also all `Pending`** — the starvation is
 global, not scoped to the blocked job.
 
@@ -583,14 +617,23 @@ number `:1398` lacks: **>= 1,209x**, on a stack with a free agent.
 
 ## Part C — I1 under the flood
 
-### C1 — accounting reconciliation. Four counts, one number
+### C1 — accounting reconciliation. Three counts, one number
 
-| Count | Source | Value |
-|---|---|---|
-| 2xx responses | `loadgen` per-request CSV | **2,241** |
-| `unifiedcd_runs_created_total{trigger="api"}` delta | sum over 3 replica registries (23 -> 2,264) | **2,241** |
-| `runs` rows in `[09:15:10.000, 09:15:13.100]` | `psql` | **2,241** |
-| of those, `job_name='edge-mutex-hog'` | `psql` | **2,241** |
+**The runbook predicted "four independent counts". It is three, and the
+correction matters because "four instruments agreeing" is a stronger sentence
+than the evidence supports.**
+
+| Count | Source | Independent? | Value |
+|---|---|---|---|
+| 2xx responses | `loadgen` per-request CSV (client-side) | yes | **2,241** |
+| `unifiedcd_runs_created_total{trigger="api"}` delta | sum over 3 replica registries (23 -> 2,264) | yes | **2,241** |
+| `runs` rows in `[09:15:10.000, 09:15:13.100]` | `psql` | yes | **2,241** |
+| of those, `job_name='edge-mutex-hog'` | the **same** `psql` query with a `job_name` filter added | **no — a subset refinement** | **2,241** |
+
+**Three genuinely independent instruments agree exactly**, which is still a good
+result. The fourth row is not a fourth instrument; what it does establish is a
+different and worth-having fact — **no foreign rows landed in the window**, since
+the filtered and unfiltered counts are equal.
 
 `total_runs = 2264`, `distinct_ids = 2264` — **no duplicate ids, no extra rows,
 no lost accept.** The same reconciliation was repeated after a controller restart
@@ -609,9 +652,13 @@ access-log rows inside loadgen's window: 400
 ustatus distribution:  397 x "ustatus=200"   3 x "ustatus=504, 200"
 ```
 
-**`rows == requests_sent` exactly.** And the arm is **not vacuous**: three
+**`rows == requests_sent` exactly.** And the arm is **non-vacuous as a *failover*
+test — that qualifier is load-bearing and is stated before the numbers**: three
 requests carry two upstream statuses, i.e. nginx really did pass them to a second
-controller, and each still produced exactly one run.
+controller, and each still produced exactly one run. **The phantom mechanism
+itself was never exercised**, because all three retries were `while connecting to
+upstream` (see below), the class of retry that cannot duplicate. **The phantom
+limb remains closed by an nginx default, not by measurement.**
 
 ```
 1785662794.300 ... 200 ustatus=504, 200 rt=2.005 urt=2.001, 0.003 "POST /api/v1/runs HTTP/1.1"
@@ -652,12 +699,36 @@ accepted_total=2665   non_terminal=2656   distinct_terminal=9
 probe_status=Pending age_s=975.5
 ```
 
+**The 2,656 is two populations and is split here rather than in prose only**
+(`c3-census.txt`):
+
+| Non-terminal population | Count | Why it is not terminal |
+|---|---|---|
+| `Pending` `edge-mutex-hog` | **2,254** | the mutex is held — **the fixture working as designed**, not the 50-row ceiling |
+| `Pending` `edge-w6-probe` (C2) + `edge-unrelated-probe` (Part B) | **401** | **scheduler-starved** by `scheduler.go:58` — never examined |
+| `Running` `edge-mutex-hog` | **1** | executing, holding the mutex |
+
+**Only the 401 are attributable to `scheduler.go:58`.** An earlier version of
+this runbook's summary and prediction table attributed all 2,656 to it.
+
 **9 distinct terminal runs against 9 counted terminal transitions** — 7 before the
-09:18:55 restart (`runs_finished_total` summed 1+2+2+2) and 2 after (1+0+1).
-`unifiedcd_runs_finished_total` increments **only** on a successful CAS
+09:18:55 restart and 2 after (1+0+1). **The 1+2+2+2 split, which the earlier text
+left unexplained:** the pre-restart sum is one `runs_finished_total{status="Failed"}`
+on `controller1` **plus** one `{status="Succeeded"}` on each of `controller1`,
+`controller2` and `controller3` (`snap-T1-metrics.txt`) — four series, not four
+replicas. `unifiedcd_runs_finished_total` increments **only** on a successful CAS
 (`internal/metrics/store.go:38-44`), so equality is a direct double-write
 detector and it reads clean. **I1's "exactly one terminal state" clause HOLDS by
 measurement, not by code-read.**
+
+**Two bounds on that check, stated because they are real.** (i) `snap-T1-metrics.txt`
+was taken at **09:18:25**, **30 s before** the 09:18:55 restart that reset the
+registries, so a terminal transition inside that gap would go uncounted. (ii)
+`controller2` was SIGKILLed during C2 and its post-restart registry was lost
+outright. **Both biases push the *counted* total downward — away from masking a
+double write — so the I1 conclusion survives them**; a gap that could have hidden
+a *surplus* transition would not, and that is why these are bounds rather than a
+retraction.
 
 **2,656 of 2,665 API-accepted runs had reached no terminal state when this
 session ended its own window.** The phrasing is deliberate: this session chose
@@ -668,7 +739,19 @@ re-filed, and not counted toward this scenario's tally.**
 
 ---
 
-## Part D — the free load generator, and `FINDINGS.md:495`'s number is right for the wrong reason
+## Part D — the free load generator: `FINDINGS.md:450`'s floor, measured and refined from 16 loops to 17
+
+**Read the correction banner before the numbers.** This part originally filed a
+fifth FINDINGS entry claiming that `FINDINGS.md:495` *"derives 8.3 req/s from the
+`LogPusher`'s re-flush floor"* and that its own claim-loop arithmetic therefore
+"coincided" with it. **Both halves were wrong, and the entry was withdrawn at
+review.** `:495`'s phrase *"once nothing is left to re-flush"* says **when** the
+floor obtains, not **what produces** it; the campaign's canonical ~8.3 req/s has
+always been the claim-loop arithmetic, spelled out at `FINDINGS.md:458` since
+W1-6. Part D therefore **refines an existing finding rather than making a new
+one**, and everything below has been folded into `FINDINGS.md:450`/`:458`/`:463`
+in place. What is genuinely new is small: the loop count is **17, not 16**, and
+the arithmetic closes to four figures.
 
 Both windows are 60 s / 180 s of foreground wall clock, measured off the nginx
 access log filtered to `agent2`'s IP and cross-checked against the controllers'
@@ -681,9 +764,29 @@ own counters.
 | rate | **0.633 req/s** | **8.13 req/s** mean, **8.567 req/s** over the last 30 s |
 | amplification | — | **13.5x** |
 
-**Cross-instrument agreement**: the nginx count of 1,440 401s equals the sum of
-`unifiedcd_http_requests_total{code="401",route=".../claim"}` across the three
-replicas (481 + 481 + 478 = **1,440**).
+**The cross-instrument comparison, restated — the earlier "two independent
+instruments, same number" framing compared two different populations and is
+withdrawn.** nginx's **1,440** total 401s are **not** all on the claim route:
+`d-run.txt`'s path distribution is **1,445 claim + 12 heartbeat = 1,457**, and
+all **17** non-401s are on claim (`d-200s.txt`: every one `.../claim`, each
+`rt=30.02`). So nginx's **claim-route** 401 count is `1,445 - 17 = **1,428**`,
+plus **12 heartbeat 401s** (`grep heartbeat d-fault-nginx.log` -> 12 rows, all
+401) = 1,440 across all routes. The controllers' own
+`unifiedcd_http_requests_total{code="401",route=".../claim"}` sums to
+**1,440** (481 + 481 + 478). **1,428 != 1,440**: the apparent agreement was
+between nginx's *all-route* total and the controllers' *claim-route* counter, and
+it is off by exactly the heartbeat count. The two figures are **not** a clean
+cross-check of one population, the 12-request residual is **unexplained under the
+route labels as captured** (the metrics scrape in `d-run.txt` was grepped to
+`claim`, so no heartbeat-route series was captured to settle it), and no
+conclusion in this part depends on the equality.
+
+**The counter deltas are absolute sums, and that is valid here for a stated
+reason.** The pre-revoke scrape in `d-run.txt` emits **no**
+`{code="401",route=".../claim"}` series and **no** `reason="invalid"` series at
+all — Prometheus omits label sets it has never seen — so the baseline genuinely
+**is** zero and absolute equals delta. This is recorded rather than assumed
+because "absolute sum presented as a delta" is otherwise an error.
 
 **The mechanism, and it is 17 loops rather than 1.** AMENDMENT 5 predicted
 ~0.5 req/s from a single claim slot. An agent actually runs **1 normal claim loop
@@ -692,17 +795,31 @@ plus a detached pool that defaults to 16** (`internal/agent/agent.go:310-321`:
 confirms — `slot` 0-15 with `"detached":true` and `slot` 0 with
 `"detached":false`. So:
 
-- **credentialled**: 17 loops x one request per **30 s** long-poll = 0.567 req/s
-  (measured 0.633);
+- **credentialled**: 17 loops x one request per **30 s** long-poll = **17/30 =
+  0.567 req/s**, which is **34 claim `200`s in 60.056 s — exactly what was
+  measured.** The observed 0.633 req/s is 38 requests, and the residual 4 are the
+  **heartbeats** (`d-run.txt`: `34 200` + `4 204`). An earlier version of this
+  runbook printed "17/30 = 0.567 (measured 0.633)" and left the 12% gap
+  unexplained; its own path distribution closes it.
 - **de-credentialled**: the 401 returns in `rt=0.001`, the long-poll no longer
   holds, and each loop falls to the error path's **fixed
-  `time.After(2 * time.Second)`** (`agent.go:416-422`) = 17 / 2 = **8.5 req/s**
-  (measured 8.567 over the last 30 s).
+  `time.After(2 * time.Second)`** (`agent.go:416-422`). The full arithmetic,
+  including the heartbeat term `FINDINGS.md:458` already carried:
+  **`17/2 + 12/180 = 8.5 + 0.0667 = 8.5667 req/s` against a measured 8.567** over
+  the window's last 30 s — four figures. The **cancel-poll term of `:458` is
+  absent** here: an idle agent holds no run whose cancellation it could poll.
 
-**So `FINDINGS.md:495`'s ~8.3 req/s is numerically confirmed and mechanistically
-wrong.** `:495`'s figure is the `LogPusher`'s re-flush floor for an agent
-executing a step; this agent was idle and had no pending batches. The two
-arithmetics land in the same place by coincidence.
+**So `FINDINGS.md:450`'s floor is confirmed, refined and now measured rather than
+derived — and it was always the claim-loop floor.** The **only** correction Part
+D makes to the existing entry is the loop count: `:458` counted the detached pool
+(`d = 16`) and omitted the non-detached loop (`agent.go:218`,
+`n := a.MaxConcurrent; if n <= 0 { n = 1 }`), so the correct figure is **17**.
+Everything else — the 2 s cadence, the heartbeat term, the absence of backoff,
+the contrast with `retryUntilSuccess`'s 4xx abandonment — `:450`, `:458` and
+`:461` already carried, and Part D re-derived them without noticing. **That
+failure is the dedup rule failing in its documented way**: this part grepped the
+doc text and `:495`'s forward lead, and never grepped for the *finding* at
+`:450`. The withdrawal stub at the end of `FINDINGS.md` records it.
 
 **Nothing backs it off, and the direction of the drift proves it.** First 30 s =
 **5.733 req/s**, last 30 s = **8.567 req/s** — the rate **rises**, because the 17
@@ -766,7 +883,8 @@ non-zero default (90 days), and it is the smallest of the three.
 
 **`w6-idleload.sh`'s revert fails exactly when its own window saturates
 Postgres — the promise "always reverts" is conditional and was not.** The tool
-header and `README.md` both say it "always reverts"; here it exited **2** with:
+header and `README.md` **both said** it "always reverts"; here it exited **2**
+with:
 
 ```
 == revert ==
@@ -785,9 +903,12 @@ only the cluster state was left dirty. Reverted manually (`a-recovery.txt`), and
 note that the revert needs **one `ALTER SYSTEM` per `psql -c`**: three statements
 in one `-c` fail with `ALTER SYSTEM cannot run inside a transaction block`, which
 the tool's own revert path would also hit. **No product code, `manifests/`,
-`test/ha/` or `workloads/` file was changed by this scenario, and the harness is
-recorded rather than patched — fixing it is a W6 harness task, not this
-scenario's.**
+`test/ha/` or `workloads/` file was changed by this scenario. The revert bug
+itself is recorded rather than fixed — fixing it is a W6 harness task, not this
+scenario's — but the falsehood in the tool's own header was corrected at review:
+`w6-idleload.sh`'s "IT ALWAYS REVERTS" block now states the exhaustion exception
+and points at the `README.md` note, so the next wave does not read the promise
+without the caveat two files away.**
 
 **A second, smaller one**, already noted in C2: both `w6-idleload.sh` and
 `w6-pgsample.sh` resolve container IP -> service name **once at startup**. A
@@ -798,8 +919,10 @@ one. Any per-replica attribution taken across a restart should be re-derived.
 
 ## Findings filed
 
-Five entries, **all observations, no violations**: 3 major, 2 minor. Every one
-was grepped against `FINDINGS.md` for the finding itself before filing.
+**Four entries, all observations, no violations: 3 major, 1 minor.** An earlier
+version of this section said five, in **3 major, 2 minor**; the fifth was
+withdrawn at review as a duplicate and the tally corrected here and in the
+predictions table above.
 
 | # | Title | Severity |
 |---|---|---|
@@ -807,7 +930,17 @@ was grepped against `FINDINGS.md` for the finding itself before filing.
 | 2 | no rate limit of any kind on run creation; the price of the absence | major (observation) |
 | 3 | the scheduler re-attempts unqueueable `Pending` runs 5x/s forever with no backoff | major (observation) |
 | 4 | the documented `proxy_next_upstream` list is inert for POST, and the docs do not say so | minor (observation) |
-| 5 | a de-credentialled idle agent is a permanent 8.567 req/s source with no backoff | minor (observation) |
+
+**Withdrawn at review — entry 5, "a de-credentialled idle agent is a permanent
+8.567 req/s source with no backoff".** It duplicated `FINDINGS.md:450`, whose
+`:458` already carried the claim-loop decomposition and whose `:461` already
+carried the no-escalation contrast, and its central claim about `:495` rested on
+a misreading. Part D's measurements were folded into `:450`/`:458`/`:463` in
+place; a stub at the end of `FINDINGS.md` records the withdrawal and why. **The
+lesson is the binding rule this section's own sentence claimed to have followed:
+grep `FINDINGS.md` for the *finding*, not for the doc text and not for a
+forward-lead bullet in a carry-forward section.** The four surviving entries were
+re-checked against it at review.
 
 **Not filed, deliberately:** the 401-on-a-valid-token mechanism
 (`FINDINGS.md:2517`); the 50-row scheduler ceiling and the starvation it causes
