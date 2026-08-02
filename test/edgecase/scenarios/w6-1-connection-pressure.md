@@ -14,10 +14,16 @@ labelled with the rig it was taken on.
 
 **The answers, up front.** The first breaking point is **Postgres's
 `max_connections`**, reached through the **api** pool rather than the listen
-pool, and the variable that drives it is **concurrency, not rate**: 8 workers at
-20 req/s do not saturate, while **60 concurrent agent claim long-polls at three
-requests per second** do — every one of them answered `200`. Rate is a real but
-far more expensive second route (8 workers at 2,451 req/s also saturates). When
+pool. **Concurrency at a latency-bearing endpoint is by far the cheaper route to
+it**: 8 workers at 20 req/s do not saturate, while **60 concurrent agent claim
+long-polls at three requests per second** do — every one of them answered `200`.
+Rate is a real second route and costs ~820× the requests (8 workers at
+2,451 req/s also saturates). **What is NOT claimed, after review: that
+concurrency alone is the driver.** The cheap arm changes endpoint as well as
+concurrency, the one within-endpoint comparison is confounded by burst width and
+by a contaminated floor, and the clean single-variable isolation was not run —
+see Part B, which states this at length and names the arms that would settle it.
+When
 it happens, **nothing reports it**: `/readyz` reads 200 in 143 of 144 saturated
 in-window replica-readings (47 of 48 sample instants), the controllers log
 nothing, and the first visible symptom is
@@ -311,7 +317,10 @@ scale like SSE streams or like ordinary API clients.
 
 ## RESULTS
 
-Raw evidence: `edgecase-evidence/w6/w6-1s/` (54 files). Rig: `test/ha` +
+Raw evidence: `edgecase-evidence/w6/w6-1s/` — **54 files at top level plus a
+`void/` subtree of 46, 100 in total** (recounted at review, after the orphan
+driver was moved into `void/` and two files were added; see I4 and M5 below).
+Rig: `test/ha` +
 `compose/ctrlports.override.yaml`, `max_connections=100`,
 `superuser_reserved_connections=3`, so the **client-backend budget is 97**. Every
 saturation claim below is made against **client backends** (`datname IS NOT
@@ -357,14 +366,50 @@ correct and documented in its own comment; the harness was wrong.
 two captures and hid it by buffering.** A `nohup driver.sh &` launched from the
 agent's shell **outlived the tool call by ~6 minutes**, and its own output file
 showed only the first arm because stdout was block-buffered — so it looked dead.
-It was in fact running a **200-worker max-rate arm** at 08:07 while a "zero-load
-control" and a three-controller restart were taken on the same rig. That control
-appeared to show a stack going from 23 to ≥97 client backends **in 12 s with no
-load**, which would have been a spectacular and completely false finding; the
-orphan's own `B-B4-*` files, timestamped inside that window
+It was in fact running a **200-worker max-rate arm** at 08:07:44 while a
+"zero-load control" and a three-controller restart were taken on the same rig.
+That control appeared to show a stack going from 23 to ≥97 client backends **in
+12 s with no load**, which would have been a spectacular and completely false
+finding; the orphan's own `B-B4-*` files, timestamped inside that window
 (`void/void-B4-orphan/`), are what identified it. **Every arm below was re-run in
 the foreground.** Same lesson as the two capture leaks the README records:
 *the killed thing was not the thing holding the resource.*
+
+**Two archival corrections to that paragraph, made at review.**
+
+- **The orphan driver's own output was still sitting in the live archive**, under
+  `B-results.txt` — the most inviting filename in the directory — while only its
+  `B-B4-*` pg files had been moved. It runs B2/B3/B1/B4 from 08:01:14 to
+  08:08:05, i.e. it **is** the contaminating window, and it carries four
+  superseded arms whose numbers differ from the published ones (B3 floor 76 and
+  100 after with **91 of the 100 on one replica**; an `11 of 12` readyz line for
+  B1; a `readyz 000=1` triple discussed nowhere). Leaving it there contradicts
+  this scenario's own stated corollary that any window-overlapping capture is
+  void. It is now at **`void/void-B-orphan-driver/`** together with the driver
+  itself (`B-driver.sh`) and a `NOTE.txt` that enumerates the superseded numbers
+  and explains the `000` readings — `curl`'s no-response code, seen
+  simultaneously on all three ports, i.e. a probe that lost its turn on a laptop
+  running a second driver's 200-worker arm, not three replicas failing together.
+  **No number in that file is published anywhere and none may be.**
+- **The "23 → ≥97 in 12 s with no load" figure traces to no capture.** It was
+  read live from the v1 zero-load control, and that control was re-run: the
+  archived `B0-control.txt` is explicitly headed "B0 CONTROL **v2**" and v1 was
+  overwritten. So the figure is **observed-live, uncaptured**, and it is labelled
+  that way here rather than quietly carried — the same treatment
+  `FINDINGS.md:2536` gives its own uncaptured `ssehold` observations. It is used
+  only to describe what the contamination looked like, never as a measurement.
+
+**M5 — the B-arm commands, which were recorded nowhere.** E-60's full command is
+in its FINDINGS Repro line; B1-B4's were not in this runbook, in `B-B*.txt` or in
+`B-results.txt` — only the flag string survived, without the URL or the headers.
+The driver that produced the published arms is now archived as
+**`B-arm.sh`** in the live evidence directory. From it, every B arm is
+`tools/w6/bin/loadgen -url "http://localhost:18081/api/v1/runs?jobName=edge-tick"
+-H "Authorization: Bearer ha-admin-token" -c <N> -mode sustained -duration <D>
+[-delay <d>] -label <name> -out B-<name>-req.csv -error-bodies
+B-<name>-errbodies.txt`, paired with `w6-pgsample.sh -i 2 -d <D+10> -p
+18081,18082,18083` started 3 s ahead of it. `ha-admin-token` is `test/ha`'s
+static fixture token, already published at `FINDINGS.md:2517`.
 
 **Window-boundedness, as the brief required it to be stated.** No arm here uses
 `docker compose logs -f` or any background capture. `w6-pgsample.sh` and
@@ -413,42 +458,119 @@ Two things the arm adds beyond the number:
 - **Postgres was pinned hard enough to refuse `psql` on the unix socket**, which
   is a stronger reading than any count.
 
-**Connections are not released promptly, and the cumulative sweep shows it.** In
-the earlier laddered sweep (`void/A2-partial-sweep/`) 20 streams took client
-backends from 73 to **93** — exactly +20 — and the count stayed at 93 after the
-streams closed, through three further arms. That is the non-prompt release
+**Connections are not released promptly — and this one number comes out of a
+VOIDED capture, so what is relied on is stated exactly.** In the earlier laddered
+sweep (`void/A2-partial-sweep/A2-sweep.txt`) client backends went 73 → 83 at
+S=10 → **93** at S=20 — exactly +20 for 20 streams — and **stayed at 93 for
+about three minutes after those 20 streams closed** (the `db_backends=93` series
+runs unbroken to sample 60 at 07:47:24).
+
+**What that capture was voided for, and why the plateau nonetheless stands.** The
+sweep is void because its later arms ran against a run the harness's own
+`heartbeat` verb had already failed: at S=30/45/70 the run reads `Failed` and
+`ssehold` reports `aliveAtEnd=0 diedEarly=30/45/70` with walls of
+**911 ms / 1.365 s / 2.124 s**. **Those three arms held no stream at all**, so
+the earlier phrasing here — "stayed at 93 through three further arms" — reads as
+three further *loaded* arms holding the count up, and that is not what happened.
+The plateau is real and is the opposite reading: **the count did not fall back
+after the load stopped**, across three minutes in which nothing was holding a
+stream. The part of the voided capture relied on is the S=10/S=20 ladder and the
+post-load `db_backends` series; the S=30/45/70 arms are relied on for **nothing**
+except establishing that they held nothing. That is the non-prompt release
 `FINDINGS.md:2527` describes, seen as a plateau rather than as a code read.
 
 ---
 
-## Part B — rate versus concurrency. **Concurrency drives it, and it does so at 3 requests per second**
+## Part B — rate versus concurrency. **Concurrency at a latency-bearing endpoint is by far the cheaper route; the clean single-variable isolation was NOT run**
 
-This is the scenario's chartered contribution and the answer is not a hedge.
-Five arms, one endpoint per family, one replica, each from a **recreated and
-settled** stack (`B0-control.txt` establishes the floor: a stack brought up from
+This is the scenario's chartered contribution, and the conclusion below is
+**weaker than the one first published here**. What it said was "concurrency
+drives it, and it is not close". A review of the matrix against its own metric
+showed that the decisive comparison changes two variables at once and that the
+argument silently switches metrics half-way through. The evidence is unchanged;
+the reading of it is corrected, and the arms that would settle it are named as
+outstanding.
+
+Five arms, one replica. **Correcting this section's own sentence:** they were
+**not** "each from a recreated and settled stack". The reset between arms is
+`docker compose restart controller1 controller2 controller3` plus a 70 s settle
+(`B-arm.sh`), which is a restart and not a recreate; and **B3 got no reset at
+all**. `B0-control.txt` is the one genuine recreate: a stack brought up from
 `down -v` settles from 59 to **68** client backends over ~7 minutes and stays
-there, `/readyz` 200 throughout, no sample near the budget).
+there, `/readyz` 200 throughout, no sample near the budget.
 
-| Arm | workers | requests / span | **avg rate** | meanInFlight | client backends | saturated? | 401 |
-|---|---:|---:|---:|---:|---|---|---:|
-| **B2** | 8 | 1200 / 60.0 s | **20 /s** | 0.03 | 68 → 78 | **NO** | **0** of 1200 |
-| **B1** | 8 | 19623 / 8.005 s | **2451 /s** | 7.99 | 67 → 100 | **YES** | 6242 (31.8 %) |
-| **B3** | 200 | 1200 / 60.0 s | **20 /s** | 0.69 | 80 → 100 | **YES** | 96 |
-| **B4** | 200 | 15912 / 8.117 s | **1960 /s** | 198.35 | 65 → 100 | **YES** | 4803 |
-| **E-60** | 60 long-polls | 180 / 60.3 s | **3 /s** | 59.89 | 67 → 100 | **YES** | **0** — every request 200 |
+| Arm | endpoint | workers | requests / span | **avg rate** | **meanInFlight** | **maxInFlight** | TCP→5432 floor → after | in-window `db_backends` | saturated? | 401 |
+|---|---|---:|---:|---:|---:|---:|---|---|---|---:|
+| **B2** | fast GET | 8 | 1200 / 60.0 s | **20 /s** | **0.03** | 8 | 68 → 77 | 72 → **78**, all 17 instants read | **NO** | **0** of 1200 |
+| **B1** | fast GET | 8 | 19623 / 8.005 s | **2451 /s** | **7.99** | 8 | 67 → 100 | `unavailable` × 5 | **YES** | 6242 (31.8 %) |
+| **B3** | fast GET | 200 | 1200 / 60.0 s | **20 /s** | **0.69** | 200 | **80** → 100 | `unavailable` × 19 | **YES** | 96 |
+| **B4** | fast GET | 200 | 15912 / 8.117 s | **1960 /s** | **198.35** | 200 | 65 → 100 | `unavailable` × 5 | **YES** | 4803 |
+| **E-60** | claim long-poll | 60 | 180 / 60.3 s | **3 /s** | **59.89** | 60 | 67 → 99 | **100** on 13 of 14, 1 `unavailable` | **YES** | **0** — every request 200 |
 
-`B-B{1,2,3,4}.txt`, `E-60.txt`, per-second histograms in `B-histograms.txt`.
+**Units in that table, which the previous version's single "client backends"
+column mixed.** The floor→after column is `TOTAL_ESTABLISHED_TO_5432` read from
+`/proc/net/tcp` inside the Postgres container — **it counts the two agents' and
+`psql`'s connections too, so it is not a controller figure**. The `db_backends`
+column is `pg_stat_activity` filtered to `datname IS NOT NULL`, which is the
+right quantity against the 97-slot budget, and for B1/B3/B4 **the entire
+in-window series is `unavailable`** — Postgres refused the sampler, which is the
+strongest saturation reading available but is not a number. The two columns are
+never added or compared. `B-B{1,2,3,4}.txt`, `E-60.txt`, per-second histograms in
+`B-histograms.txt`, commands in `B-arm.sh`.
 
-**The answer.** Neither variable is "the" driver on its own; what saturates
-Postgres is the number of **api-pool connections checked out at the same
-instant**, and **concurrency and rate are two independent routes to it — with
-concurrency by far the cheaper.**
+**B3 is confounded by carry-over and it is the arm nearest the budget.** B2 ended
+at 77 established; nine seconds later B3 started from a floor of **80**, against
+B1's 67, B2's 68 and B4's 65. B3 therefore ran on B2's leftover stack, **17
+connections from the 97-slot budget**, and reached 100. Its saturation cannot be
+separated from its floor, and every use of B3 below carries that.
 
-- **The concurrency route is decisive and is the headline.** **E-60** held 60
-  in-flight requests at **3 requests per second** and pinned Postgres at 100 for
-  the entire window. That is **eight times LESS rate than the arm that did not
-  saturate at all** (B2, 20 /s), and **850 times less** than `FINDINGS.md:2517`'s
-  trigger. Concurrency alone, at a rate no system could call load.
+**What the matrix actually supports.**
+
+- **What saturates Postgres is the number of api-pool connections checked out at
+  the same instant**, and rate and concurrency are two routes to it. That much is
+  unchanged and is what the five arms jointly show.
+- **The concurrency route is far cheaper — but the comparison that shows it
+  changes TWO variables.** E-60 held 60 requests genuinely in flight at a
+  measured **2.98 /s** and pinned Postgres for the whole window; B2 held 8
+  workers at 20 /s and did not saturate. **E-60 changes concurrency *and*
+  endpoint**: `POST …/claim?timeout=20s` is a 20-second long-poll, against B2's
+  `GET /api/v1/runs?jobName=edge-tick` at ~2 ms. So the decisive comparison is
+  **cross-endpoint**, and it is stated here as a confound rather than only as
+  E-60 "carrying the conclusion".
+- **The within-endpoint isolation is B3 — the arm this runbook itself
+  discounts.** B2 and B3 share the fast GET and the same 20 /s average and differ
+  only in worker count; B3 saturates. But B3's 20 /s is an *average*: `-delay`
+  releases 200 workers together, so the histogram shows **200 requests inside one
+  second every ten seconds**. B2-vs-B3 is therefore about **burst width**, not
+  worker count as such — and, per the paragraph above, it is also the arm with a
+  contaminated floor. **The clean single-variable comparison was not run.**
+- **And on the table's own concurrency metric the matrix reads against the
+  thesis.** The column that was published was `meanInFlight`, and **B3 saturates
+  at meanInFlight = 0.69 — lower than B1's 7.99, and B1 needed 2451 /s to get
+  there.** A threshold that sits between B2's 0.03 and B3's 0.69 cannot be the
+  causal variable: 0.69 mean in flight cannot hold 100 connections. The argument
+  as first written **switched silently to `maxInFlight`** (8 vs 200) to make the
+  ordering work. Both columns are now printed so the reader can see it.
+- **Why the fast-GET arms cannot settle it, and this is structural rather than a
+  tooling failure.** In-flight = rate × latency, so at a ~2 ms endpoint high
+  concurrency is unreachable without high rate: rate and mean concurrency move
+  together by construction. **High concurrency at low rate requires a
+  latency-bearing endpoint**, which is precisely why the concurrency corner had
+  to change endpoint. The confound is designed in.
+
+**Therefore, stated at the strength the evidence supports: concurrency at a
+latency-bearing endpoint is by far the cheaper route to `max_connections` — 60
+long-polls at ~3 /s pin the server where 8 workers at 20 /s do not — but the
+single-variable isolation of concurrency was not run, and no ordering of the
+five arms by either in-flight metric supports a stronger claim.**
+
+**The outstanding measurement that would settle it**, recorded rather than
+implied: a **dose-response on one endpoint** — E-20, E-40, E-60 against the same
+claim long-poll, varying only concurrency, from the same recreated floor. Three
+points on one curve at one endpoint would separate concurrency from endpoint and
+give the threshold a shape. It was not run: another scenario held the rig when
+this correction was made.
+
 - **The rate route is real and independent.** **B1** reproduced `:2517` almost
   exactly from a clean floor — 8 workers, `maxInFlight=8`, **2451 req/s**,
   **31.8 % 401** against `:2517`'s ~32 % — with only 8 in-flight handlers, which
@@ -461,17 +583,18 @@ concurrency by far the cheaper.**
 - **`FINDINGS.md:2535`'s own caution is CONFIRMED, not overturned.** It says *"Do
   not read this entry as '8 concurrent requests at any rate will do this.'"*
   **B2 is that experiment and it does not saturate**: 8 workers, 20 req/s, 60 s,
-  **1200 of 1200 requests 200, zero 401s**, +10 backends. The entry was right to
+  **1200 of 1200 requests 200, zero 401s**, +9 established. The entry was right to
   call its trigger a rate.
 
-**Two limits on the B3 arm, stated rather than glossed.** Its 20 /s is an
-*average*: `-delay` releases 200 workers together, so the histogram shows **200
-requests inside one second every ten seconds**, not a smooth arrival. So B3 is
-"same average rate, 200-wide bursts", and the honest reading of B2-vs-B3 is
-about **burst width**, not about worker count as such. **E-60 is the arm that
-carries the concurrency conclusion**, because its 60 requests are genuinely
-in-flight for their whole 20 s and its rate is a *measured* 3 /s with no burst
-structure at all.
+**The rate ratio, shown as a division and with both endpoints named** — because
+this runbook said "850 times less" while `README.md` said "~800×" for what reads
+as the same claim, and neither was labelled derived. **One figure is used from
+here on, and it is the within-session one:** B1's **2451 /s** (19623 ÷ 8.005 s,
+`GET /api/v1/runs?jobName=edge-tick`) ÷ E-60's **2.98 /s** (180 ÷ 60.348 s,
+`POST /api/v1/agents/{id}/claim?timeout=20s`) = **~820×**, derived, and
+**cross-endpoint**. The separate comparison against `FINDINGS.md:2517`'s
+2554 /s trigger gives ~856× and is *cross-session as well as cross-endpoint*;
+it is mentioned once and not carried.
 
 **And the thing `-delay` cannot do, which is why the runbook's Amendment 1
 mattered.** `:2535` proposed settling this with "`-c 8` with a per-worker delay,
@@ -532,23 +655,55 @@ but it is a code-read plus an absence, not a measurement. On that reading it is 
 symptom of *load on that replica*, not of Postgres exhaustion, and it did not
 recur in B4 which had 25× the concurrency on the same replica.
 
-### C2 — background jobs do NOT starve first, and that is worse than if they did
+### C2 — **no ERROR line was observed**, and that is a weaker statement than the one first published here
 
-Predicted: the background pool (32) starves before the api pool (128). Measured,
-**it does not starve at all while the pool is warm**. Across the 12 minutes
-covering B1 and E-60 — two fully saturated arms — the three controllers logged
-**zero `"level":"ERROR"` lines** (`C-bgstarve.txt`; the same command shows 604
-log lines in the window, so the grep is live). The only starvation seen anywhere
-in this scenario is in Part D, on a controller that had **just restarted** and
-therefore had to open new connections: `log archiver error`, `stuck-run reaper
-list error`, `queued-run reaper lock`, `appsource reconciler` — all naming
-`too many clients already` (`D3-after.txt`).
+Predicted: the background pool (32) starves before the api pool (128).
 
-**So the rule is: a warm pool hides the exhaustion completely.** A pool that
-already holds its connections keeps serving from them; only a component that
-needs a *new* connection ever sees the fault. Combined with C1 that means a
-saturated cluster produces **200 on `/readyz`, 200 on `/healthz`, and silence in
-the controller log**.
+**What is claimed: across the window `C-bgstarve.txt` covers, the three
+controllers emitted zero `"level":"ERROR"` lines.** **What was claimed before
+review, and is withdrawn: "background jobs did not starve."** The capture cannot
+carry that, for a reason that is arithmetic rather than presentational, and the
+full list of what it lacks is archived beside it as
+`C-bgstarve-LIMITS.txt`. The four points, briefly:
+
+- **The two numbers are from different windows.** The file reads `total lines
+  last 4m: 604` and `ERROR lines last 12m: 0`. This runbook and `FINDINGS.md`
+  both said "the same command"; it is `--since 4m` against `--since 12m`, so the
+  604-line liveness control does **not** bound the window the zero was taken
+  over.
+- **The window endpoints are not in the capture.** No capture timestamp, no
+  command text, no service scope and no log-level configuration were recorded, so
+  neither `--since` can be shown to cover any particular arm. A 4-minute window
+  ending at capture time covers E-60 (08:37) but not B1 (08:32).
+- **The error-class section is empty with no positive control.**
+- **And the substantive one: zero errors is consistent with zero attempts.**
+  B1's window is **8 s** (08:32:06.009 .. 08:32:14.015). The log archiver ticks
+  at **60 s** and the stuck-run reaper at 30 s — both read off `D3-after.txt`,
+  where controller1 boots at 07:55:52 and logs its first `log archiver error` at
+  07:56:52, with reaper errors 30 s apart. **An 8-second window is shorter than
+  the archiver's period, so B1 can contain zero archiver executions, and a job
+  that never ran cannot log an error.** E-60's 60 s spans at most one tick.
+
+**Outstanding measurement, and it needs the rig:** an in-window count of
+background-job *executions*, successful ones included, so the zero can be read
+against a non-zero denominator. It was not taken — another scenario held the rig
+when this correction was made — and until it is, this limb says only that
+nothing was logged.
+
+**What does survive, and it is the part the section's conclusion rests on.** The
+only starvation seen anywhere in this scenario is in Part D, on a controller that
+had **just restarted** and therefore had to open new connections: `log archiver
+error`, `stuck-run reaper list error`, `queued-run reaper lock`, `appsource
+reconciler` — all naming `too many clients already`, all with timestamps and a
+command in `D3-after.txt`. That is a **positive** observation on a capture that
+bounds itself, and it does not depend on `C-bgstarve.txt` at all.
+
+**So the rule is: a warm pool hides the exhaustion from anything that does not
+need a new connection.** A pool that already holds its connections keeps serving
+from them; only a component that needs a *new* connection ever sees the fault —
+which is exactly what Part D's restarted controller demonstrates positively.
+Combined with C1 that means a saturated cluster produces **200 on `/readyz`, 200
+on `/healthz`, and no ERROR line in what was sampled of the controller log**.
 
 ### C3 — the open SSE question, SETTLED
 
@@ -625,11 +780,18 @@ this is not a re-file, it is a scope note on it**, and it means the remedy
 `:2534` calls "the obvious operator response with a documented failure mode" is
 in fact safe in *this particular* state.
 
-**I5 is MET on the bound the spec actually names.** The spec's text is *"leader
-re-election ≤ seconds"*. Measured: `controller1` logged `received shutdown
-signal, draining...` at **07:55:50.644**, and `controller2` logged
-`scheduler became leader` at **07:55:50.733** — **89 ms**, under load, with
-Postgres refusing new connections. No violation.
+**I5's re-election bound is met at 89 ms; the other bounds were not exercised.**
+The spec's text (`:52`) names three things — leader re-election ≤ seconds, the
+stuck-run reap ≤ `staleAfter` 90 s + interval 30 s, **and** "the bounds in
+`docs/high-availability.md`". Only the first was measured: `controller1` logged
+`received shutdown signal, draining...` at **07:55:50.644**, and `controller2`
+logged `scheduler became leader` at **07:55:50.733** — **89 ms**, under load,
+with Postgres refusing new connections. **"I5 is MET" was asserted on that one
+bound and is corrected here**: the stuck-run reap was never timed (Part D's only
+reaper evidence is *error* lines from a restarted controller, which is the
+opposite of a reap completing), and `docs/high-availability.md`'s bounds were
+not enumerated, so the class behind "MET" is unverified. **No violation is
+claimed and none is available** — an unexercised bound is not a missed one.
 
 **The finding is what the restart did NOT fix.** With the connections read from
 `/proc/net/tcp` inside the Postgres container — the only way to read them at all
@@ -644,8 +806,17 @@ while `psql` is refused (`D4-conn-owners.txt`, 07:59:11):
 
 **The saturation is owned by ONE replica — the one that served the SSE fan-out —
 and restarting a different replica moved the total not at all.** controller1
-released ~300 pooled slots and the total stayed pinned at 100, because the
-survivors expanded into them within the sampling interval. A rolling restart, or
+released ~300 pooled slots and the total was still pinned at 100 at the next
+reading. **The "why" is INFERRED and nothing measures it:** the restart was at
+07:55:50 (`D2-restart.txt`) and the next connection reading is at 07:59:11
+(`D4-conn-owners.txt`) — **a 3 min 21 s gap with no connection sample in it**,
+because `D2-restart.txt` polls `/readyz` and container state only. "The survivors
+expanded into the freed slots faster than the sampling interval" is therefore a
+mechanism offered to explain two endpoints, not something observed happening;
+what is *measured* is that the total was 100 before and 100 after. **The
+attribution itself is solid and is not affected:** 61/22/17 = 100 read from
+`/proc/net/tcp` with an explicit IP→service map, corroborated by `D5-recovery.txt`
+where restarting the owning replica drops the total to 43. A rolling restart, or
 an operator restarting "the controller" they happen to be looking at, has a
 **one-in-three** chance of touching the replica that matters. Restarting the
 right one cleared it immediately: 100 → **43 established within 11 s**, `psql`
@@ -673,7 +844,7 @@ question was what N concurrent long-polls cost.
 requests=180 wall=1m0.348s  maxInFlight=60  meanInFlight=59.89
 status   200=180 errors=0
 client backends: 67 -> 100, held at 100 for the whole window
-/readyz 200 in 42 of 42 saturated samples
+/readyz 200 in 42 of 42 saturated replica-readings (14 instants x 3 replicas)
 ```
 
 **180 requests. Three per second. Every one of them returned 200. Postgres
@@ -700,11 +871,22 @@ mean "unified-cd supports 59 agents". `test/ha` runs stock
 `max_connections=100`; the repository's own `docker-compose.yaml:30` starts
 Postgres with **`max_connections=1000`** and `docs/operations.md:173` tells
 operators so, and on that configuration 3 × 304 = 912 fits. The transferable
-statement is the **shape**: *concurrent long-polls consume api-pool connections
-in proportion to their number, the pool does not give them back promptly, and
-the ceiling that is hit is the database's, not the pool's — so the fleet size a
-deployment tolerates is set by `max_connections` against
-`replicas × 304`, and nothing in the product warns when that budget is spent.*
+statement is the **shape**: *concurrent long-polls consume api-pool connections,
+the pool does not give them back promptly, and the ceiling that is hit is the
+database's, not the pool's — so the fleet size a deployment tolerates is set by
+`max_connections` against `replicas × 304`, and nothing in the product warns when
+that budget is spent.*
+
+**"In proportion to their number" is withdrawn: it was a proportionality claim
+from one point, and that point is not proportional.** Measured on this arm, on
+one instrument on both sides: established TCP to 5432 went **67 → 99**, i.e.
+**60 concurrent long-polls added ~32 connections, not ~60**. **The scaling law is
+not measured**, and it cannot be read off this arm in either direction, because
+the observation is **right-censored**: the in-window `db_backends` series sits at
+**100**, the server's own ceiling, on 13 of its 14 instants. Demand above the
+ceiling cannot appear in the reading. So "+32" is a floor on what 60 long-polls
+wanted, not a coefficient. The dose-response arms named in Part B (E-20, E-40,
+E-60 from a common floor) are what would give it a shape.
 **One laptop cannot produce the number, only the relationship. The number an
 operator needs is arithmetic on their own `max_connections`, and it should be
 computed, not extrapolated from here.**

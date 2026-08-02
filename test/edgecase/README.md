@@ -921,22 +921,45 @@ the foreground, one per invocation.
   stream is **closed**, not dead. 200, complete backfill (14-18 events), then the
   server ends the body. An `EventSource` reconnects into the same refusal rather
   than hanging.
-- **Rate versus concurrency (`FINDINGS.md:2535`'s open question): concurrency
-  wins, and it is not close.** Same rig, same replica, same session — 8 workers
-  at **20 req/s** did **not** saturate (1,200/1,200 `200`, zero 401s); **60
-  concurrent claim long-polls at 3 req/s DID**, with every request answered 200.
-  Rate is an independent second route (8 workers at 2,451 req/s saturates, 31.8 %
-  401 — `:2517` reproduced from a clean floor), but it takes ~800× the rate.
-  `:2535`'s own caution — *"Do not read this entry as '8 concurrent requests at
-  any rate will do this'"* — is **confirmed**.
+- **Rate versus concurrency (`FINDINGS.md:2535`'s open question): concurrency at
+  a latency-bearing endpoint is by far the cheaper route — and the clean
+  single-variable isolation was NOT run.** Same rig, same replica, same
+  session — 8 workers at **20 req/s** did **not** saturate (1,200/1,200 `200`,
+  zero 401s); **60 concurrent claim long-polls at ~3 req/s DID**, with every
+  request answered 200. Rate is an independent second route (8 workers at
+  2,451 req/s saturates, 31.8 % 401 — `:2517` reproduced from a clean floor) and
+  costs **~820× the requests**: 2451 /s ÷ 2.98 /s, derived, and **across two
+  different endpoints** (`GET /api/v1/runs?jobName=` at ~2 ms versus a 20 s claim
+  long-poll). *(This README said ~800× and the runbook said 850× for what read as
+  one claim; both are now the single division above.)*
+  **"Concurrency wins and it is not close" was over-sold and is downgraded.** The
+  cheap arm changes concurrency **and** endpoint; the only within-endpoint
+  comparison (B2 vs B3, same 20 /s average) differs in burst width and ran from a
+  contaminated floor; and on the published `meanInFlight` column **B3 saturates
+  at 0.69, below B1's 7.99**, so the matrix does not order by that metric and the
+  original argument silently switched to `maxInFlight`. Structurally, in-flight =
+  rate × latency, so at a ~2 ms endpoint concurrency and rate cannot be varied
+  independently at all. **Outstanding: a dose-response on one endpoint (E-20,
+  E-40, E-60 from a common floor).** `:2535`'s own caution — *"Do not read this
+  entry as '8 concurrent requests at any rate will do this'"* — is still
+  **confirmed** by B2.
 - **`/readyz` is 200 in 143 of 144 saturated in-window replica-readings — 47 of
   48 sample instants.** One health row is one port at one instant, so a
   three-replica grid yields three rows per instant; the published `144 of 145`
   was wrong twice (bad total, and "samples" for what were replica-readings) and
-  is corrected in `FINDINGS.md`, the runbook and `w6-pgsample.sh`. A warm pool
-  makes saturation **completely silent server-side**: zero controller `ERROR`
-  lines across two fully saturated arms. Background jobs only starve when they
-  need a *new* connection, i.e. after a restart.
+  is corrected in `FINDINGS.md`, the runbook and `w6-pgsample.sh`.
+- **A warm pool hides the exhaustion from anything that does not need a new
+  connection.** **No controller `ERROR` line was observed** in the window
+  `w6-1s/C-bgstarve.txt` covers — but that capture does not support the stronger
+  "background jobs did not starve" it was first published with, and it is
+  downgraded: its liveness control used a **different `--since`**, its window
+  endpoints, command, service scope and log level were never recorded, and **B1's
+  arm is 8 s against a 60 s archiver tick, so zero errors there is consistent
+  with zero attempts**. See `w6-1s/C-bgstarve-LIMITS.txt`. **Outstanding: an
+  in-window count of background-job executions.** What *is* positively measured
+  is the converse: a controller that had just restarted, and so had to open new
+  connections, logs `too many clients already` from the archiver, both reapers
+  and the appsource reconciler (`w6-1s/D3-after.txt`).
 - **A settled, recreated stack idles at 68 client backends** (59 at `up`, 68 by
   ~7 minutes, flat thereafter, `/readyz` 200 throughout) — the measured version
   of the curve this README says "is cheap and nobody has done it". Note it is
