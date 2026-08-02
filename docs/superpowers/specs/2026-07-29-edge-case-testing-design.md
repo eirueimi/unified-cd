@@ -112,9 +112,9 @@ trimmed at the checkpoint after each wave if yield is low.
 | W4-2 | Pod-reuse RBAC: verify the known missing `update`/`patch` verbs finding — is reuse still silently degraded to delete-every-run? | I5 |
 | W4-3 | `podStartTimeout` behavior (fixed in PR #51): pod stuck Pending → bounded failure, pooled-pod not-ready handling | I5 |
 
-kind wiring: k8s-agent runs in kind; the controller stays on the compose
-stack, reachable from kind via host networking — only the enrollment URL
-changes, avoiding a second controller deployment.
+kind wiring: ~~k8s-agent runs in kind; the controller stays on the compose stack, reachable from kind via host networking — only the enrollment URL changes, avoiding a second controller deployment.~~
+**CORRECTED AFTER EXECUTION (W4, 2026-08-01) — "only the enrollment URL changes" is FALSE on four counts, each verified before the wave began and restated with its `file:line` at `docs/superpowers/plans/2026-08-01-edge-case-campaign-w4.md:13-17`:** no static token exists for the k8s agent (PR #75 removed it, `enrollmentPolicy` is mandatory); enrollment is **bidirectional** — the controller must reach into the cluster for `TokenReviews().Create` and `Pods().Get`, so it needs a kubeconfig and RBAC; the compose controllers load **no config file**, so the verifier map is empty and enrollment fails closed with 503; and HTTPS is enforced agent-side unless `allowInsecureHTTP` or a loopback host.
+**What it actually cost, and what survives it, is recorded at `test/edgecase/FINDINGS.md` §"Checkpoint: W4 complete" and in `test/edgecase/scenarios/w4-0-enrollment-spike.md`. The controller did stay on the compose stack — that half is right — but enrollment itself is unconditionally broken (W4-0), so every W4 scenario ran behind an enrollment interposer.**
 
 ### W5 — Mixed-version rolling upgrade (lowest priority, only if time permits)
 

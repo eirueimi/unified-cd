@@ -1,0 +1,1 @@
+{"yaml": "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-w4-poolkey-b\nspec:\n  agentSelector:\n    - kind:kubernetes\n  podTemplate:\n    reuse: true\n    spec:\n      containers:\n        - name: job\n          image: busybox:1.36\n  steps:\n    - name: identity\n      run: echo \"W4-POOLKEY-B-HOSTNAME=$(hostname)\"\n"}

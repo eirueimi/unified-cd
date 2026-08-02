@@ -1,0 +1,36 @@
+# W4-0 enrollment spike: the workload identity the k8s agent enrolls as.
+#
+# The controller's kubernetesEnrollmentVerifier
+# (internal/controller/agent_enrollment_kubernetes.go:60-104) requires a
+# projected ServiceAccount token that is BOUND TO A LIVE POD: it re-reads the
+# pod via Pods(ns).Get and compares UID, namespace, name and
+# spec.serviceAccountName against the token's kubernetes.io claims. So the
+# spike needs a real Pod whose serviceAccountName is the enrolling SA, even
+# when the agent process itself runs on the host rather than in that Pod.
+#
+# busybox:1.36 is used because it is already present in the node's containerd
+# image store, so the Pod starts without a registry pull.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: w4-spike-agent
+  namespace: ci
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: w4-spike-agent-pod
+  namespace: ci
+  labels:
+    app: w4-spike-agent
+spec:
+  serviceAccountName: w4-spike-agent
+  # No API access is needed from inside this Pod: it exists only to be the
+  # bound object of the enrollment token and to be re-read by the controller.
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+    - name: hold
+      image: busybox:1.36
+      imagePullPolicy: IfNotPresent
+      command: ["sh", "-c", "sleep 86400"]

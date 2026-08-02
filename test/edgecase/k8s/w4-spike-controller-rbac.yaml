@@ -1,0 +1,41 @@
+# W4-0 enrollment spike: the identity the CONTROLLER uses to reach into the
+# cluster.
+#
+# Enrollment is bidirectional. Besides the agent presenting a token, the
+# controller itself makes two live Kubernetes API calls per enrollment
+# (internal/controller/agent_enrollment_kubernetes.go):
+#   :70  AuthenticationV1().TokenReviews().Create  -> create tokenreviews
+#   :93  CoreV1().Pods(ns).Get                     -> get pods
+# So the controller needs cluster credentials. Rather than handing it the
+# admin kubeconfig, this grants exactly those two verbs — which also documents
+# the minimum RBAC a real deployment would need.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: w4-spike-controller
+  namespace: unified-cd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: w4-spike-controller-enrollment
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: w4-spike-controller-enrollment
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: w4-spike-controller-enrollment
+subjects:
+  - kind: ServiceAccount
+    name: w4-spike-controller
+    namespace: unified-cd

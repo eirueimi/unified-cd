@@ -307,6 +307,156 @@ silently off before. **Consequences you must plan for:**
   override `oneway`'s `nginx.conf` while inheriting its `blocklist` volume. It
   *does* stack with `s3proxy.override.yaml` (different service).
 
+### The W4 Kubernetes rig, and the enrollment bypass it rests on
+
+**W4 is complete — see `FINDINGS.md` §"Checkpoint: W4 complete" for the wave's
+tally, its two false premises, the RBAC blind spot, and what survives the rig.**
+Five directories of raw captures are archived at
+`<project parent>/edgecase-evidence/w4/`; **their names follow the TASK, not the
+scenario** — `w4-2/` is the **rig**, `w4-2b/` is scenario W4-2, and `w4-1/` holds
+both W4-0's spike and W4-1 — so read that archive's own README trap table before
+resolving a `w4-*` citation.
+
+**Read `scenarios/w4-rig.md` before running any W4 scenario.** Summary, because
+this one caveat qualifies every W4 finding:
+
+> Kubernetes agent enrollment is **unconditionally broken** — the verifier reads
+> the ServiceAccount UID from a TokenReview extra key the API server never
+> populates, so every k8s enrollment is 403 (W4-0), and PR #75 removed the
+> static-token alternative. W4 therefore runs behind an **enrollment
+> interposer**: `tools/w4/enrollproxy` forwards everything except
+> `POST /api/v1/agents/enroll`, which it answers with a **real
+> controller-issued** `uca_` obtained through the product's ordinary
+> `"enrollment"` method. **No W4 finding speaks to the enrollment path** beyond
+> what `scenarios/w4-0-enrollment-spike.md` records. Everything downstream of
+> authentication is the unmodified product path.
+
+The bypass is sound because **nothing on the request path compares
+`enrollment_method`** — `agent_auth.go:38-100` checks only the token, its kind,
+status, expiry and hash, and `GetAgentCredentialForAuth`
+(`postgres_agent_auth.go:272-276`) does not even select the column. It is
+**compared** in exactly two places, both credential issuance
+(`postgres_agent_auth.go:193`, `:526`); it is *selected* by the identity
+getters and surfaced read-only by the enrollment API and CLI, but never used to
+gate a request. Verified live across register / heartbeat / claim / log-bulk /
+finish / refresh (`w4-rig.md` §Step 2).
+
+Bring up / tear down:
+
+```bash
+docker compose -f test/ha/docker-compose.ha.yaml \
+               -f test/edgecase/compose/k8senroll.override.yaml up -d --build
+test/edgecase/tools/w4/w4-up.sh          # mints a credential, starts proxy + agent
+test/edgecase/tools/w4/w4-down.sh        # SIGTERM both, print their final output
+docker compose -f test/ha/docker-compose.ha.yaml \
+               -f test/edgecase/compose/k8senroll.override.yaml down -v
+```
+
+The `k8senroll` overlay is optional for the rig itself — it exists so the
+"same request, 403 direct / 200 through the interposer" control can be taken.
+The agent runs **on the host** (route decision and its cost, `w4-rig.md`
+§Step 1). **W4-2 ran its RBAC-denial arm host-side** — a token-scoped kubeconfig
+for the `w4-2-reuse-denied` ServiceAccount is enough to deny a verb, and that
+arm produced the wave's headline violation (`FINDINGS.md:2393`). What still
+needs an in-cluster Deployment is narrower: **running an agent whose identity is
+the shipped `manifests/base/k8s-agent/` Role**, which no wave has done
+(`FINDINGS.md` checkpoint §(c)(i)). *(Corrected at the branch review — this
+paragraph previously asserted that the denial arm "needs an in-cluster
+Deployment", which is a false technical requirement and was already false when
+written.)*
+
+- `tools/w4/w4-k8s-inject.sh` — the first k8s fault tooling here. `inject.sh`'s
+  verbs are useless for it: they take compose **service names** and hardcode
+  `unified-cd-ha_default` / `unified-cd-ha-$svc-1`.
+
+  | Command | Effect |
+  |---|---|
+  | `pods` | list this agent's run Pods (`app=unified-cd-agent`) |
+  | `delete-pod <runId\|latest>` | delete by the `unified-cd/runId` label, not by the truncated pod name |
+  | `annotations [pod]` | read `unified-cd/pool-status`, `pool-key`, `pool-run-id`, `pool-template` |
+  | `block reset` / `unblock` | **one-way agent→controller partition, one agent wide.** Measured: 40 s armed → the run stayed `Queued`, no pod, 56 blocked requests, while `agent1`/`agent2` kept heartbeating; cleared → claimed and `Succeeded` in 6 s |
+  | `block <status>` | controller-shaped rejection. Measured: `block 503` → `http_code=503` at the probe while the direct `:18080` control stayed 200 |
+  | `block hang` | accept and never answer. Measured (`w4-2-fixes/f5-hang.txt`): probe consumes its full deadline (`curl_exit=28`), agent sees `context deadline exceeded`, run `Queued` 40 s with no pod. **Recovery is slow** — `unblock` does not sever hanging requests, so the agent waits out its own client timeout (~24 × 2 s samples, vs `reset`'s 6 s). Do not use it where the window must close sharply |
+  | `show` / `probe` | arm state, and one request through the proxy |
+
+  **`block` asserts its own arm.** It probes through the interposer and exits
+  non-zero unless the probe failed in the shape the mode promises; `unblock`
+  requires a 200 back. Verified in all three modes and against a negative
+  control (an interposer started without `-block-file` ignores the arm file —
+  the verb now fails instead of printing "ARMED"). Before this, `probe_proxy`
+  ended in a no-op `if … then : fi`: dead code shaped like a verification.
+
+  **`block` shipped inert once and only an effect measurement caught it** — the
+  W3-1 `s3-slow` lesson, repeated. Every state check passed while the agent
+  claimed and ran a job 17 s into the armed window, because its 30 s claim long
+  poll had entered the handler *before* the arm. Fixed by severing live
+  connections on the arm transition (`ConnState` + `BLOCK-ARM severed N`);
+  re-measured before being believed.
+
+  **Why not `nginx-block`:** it denies an agent's source IP resolved via
+  `docker inspect` on a compose container. A host-run agent has none, and its
+  traffic shares the Docker-host address with every `curl` the scenario makes,
+  so an IP deny would cut the instrument too. **Why not "SIGKILL all three
+  controllers":** that also stops the reapers, archiver and scheduler, which
+  W4-1 needs running while the agent is isolated.
+
+- `tools/w4/w4-mint-credential.sh` / `w4-up.sh` / `w4-down.sh` — credential mint
+  (product enrollment path), rig up, rig down. `w4-down.sh` reports the
+  interposer's intercept count, per log file. **Read `0` correctly: it means no
+  enrollment was intercepted while these logs were being written, NOT that the
+  bypass was not in effect.** The agent enrolls once at startup and then not
+  again for ~40-45 min, so a short session legitimately reports 0; the
+  supporting evidence is the `INTERCEPT` line at the agent's own startup. It is
+  unsupported only if no log in the directory carries one. `w4-up.sh` **rotates**
+  `enrollproxy.log` rather than truncating it, so a proxy restarted under a
+  running agent does not destroy that line — truncation is what produced the
+  misleading `0 enrollment exchange(s)` in `w4-2/step8-teardown.txt`.
+
+**What a later wave inherits from this rig, stated once so it is not
+re-derived.** Reusable as-is, all committed: the kind wiring (there is **no kind
+CLI and none is needed** — Docker Desktop's Kubernetes *is* kind, node
+`desktop-control-plane` on a Docker bridge literally named `kind`, and `ci` +
+`unified-cd` both already exist); the controller-side config file and its
+least-privilege RBAC (`compose/controller-k8senroll.yaml`,
+`compose/k8senroll.override.yaml`, `k8s/w4-spike-controller-rbac.yaml` — exactly
+`create tokenreviews` + `get pods`, which is also the minimum a real deployment
+needs) and its kubeconfig **generator** (`k8s/make-spike-kubeconfig.sh`; the
+kubeconfig itself is gitignored credential material and is regenerated, never
+archived); the two-way network bridge (`docker network connect` onto the `kind`
+network **in addition to** `default` — naming any network replaces implicit
+default membership and would cut the controllers off from postgres/garage/nginx,
+and **no `insecure-skip-tls-verify` is required** because the node cert's SANs
+cover the name the kubeconfig uses); the enrollment interposer
+(`tools/w4/enrollproxy`, 427 lines, stdlib only); the k8s fault verbs
+(`tools/w4/w4-k8s-inject.sh`, the table above); and **seven** fixtures
+(`workloads/w4-tick`, `w4-pending`, `w4-reuse`, `w4-longpod`,
+`w4-pending-reuse`, `w4-poolkey-b`, `w4-poolkey-c` — each with both a `.yaml` and
+a `.payload.json`, both validated through `tools/w3/fixcheck`) plus **five**
+agent configs under `k8s/` (`w4-agent-config.yaml`, the W4-0
+`.template.yaml`, and W4-2's `-pooldefault`/`-poolevict`/`-restricted`; the
+count read "four" until the branch review — the template was omitted), the `w4-2-reuse-denied` Role and its restricted-kubeconfig
+generator (`k8s/make-w4-2-restricted-kubeconfig.sh`, which reads the server URL
+out of the developer's own kubeconfig — Docker Desktop publishes the apiserver on
+a **dynamic** host port, so a hardcoded one would break on the next restart).
+
+**Three bring-up gotchas that cost time once each and will cost it again.**
+(i) **The three bring-up commands are ordered and skipping one fails silently**:
+the overlay bind-mounts `compose/kubeconfig-k8senroll.yaml`, and if it does not
+exist Docker creates a **directory** at that path, **all three controllers
+exit(1)** on `is a directory`, and the empty directory persists to poison the
+next `up` until it is `rmdir`ed. That looks like the bootstrap-PAT race and is
+not — the race kills **one** replica, this kills three. If you do not need the
+403 control, use the plain `test/ha` compose file, which is what W4-1, W4-2 and
+W4-3 all did. (ii) **The bootstrap-PAT race is a race, not a certainty** — 3 up /
+2 down across the wave's five cold bring-ups (`FINDINGS.md:2270`). Verify all
+three are `Up`; do not assume failure either. (iii) **The primary container must
+be named `job`** — a `podTemplate` supplying its own `containers:` without one
+parses, validates, schedules and builds a Pod, then cannot execute a step
+(`FINDINGS.md:2220`). Also carried forward: labels come from the **enrollment
+token**, not the agent config; a `podTemplate` does **not** imply the `pod`
+capability; and under `reuse` a Pod's name and `unified-cd/runId` label name the
+**first** run forever (`FINDINGS.md:2246`).
+
 - `tools/w3/fixcheck` — parses YAML fixtures through the real `dsl.Parse`
   (`KnownFields(true)` + `Job.Validate`) and prints what the controller would
   see, offline. Run it on both the `.yaml` **and** the YAML re-extracted from
@@ -386,6 +536,20 @@ its inferred capability is `pod` (see the table).
 | `secret-user.payload.json` | `edge-secret-user` | the **secrets** fixture (W3-3): step `env` references `{{ .Secrets.EDGE_KEK_PROBE }}`, which is what makes the claim response carry a non-empty `SecretsNeeded` and the agent take the `FetchSecrets` path (`internal/agent/orchestrator.go:161`). Prints only the secret's **length** (`secret-len=<n>`), never its value. `secret-user.yaml` is the same job in plain YAML. **The secret must be registered first** — `POST /api/v1/secrets/` (trailing slash required) with `{"name":..., "value":...}`, `204` on success |
 | `w36-probe.payload.json` | `edge-w36-probe` | the **unclaimable** fixture (W3-6): `agentSelector: [kind:w36probe]` matches neither `agent1` nor `agent2`, so a run of it sits Queued until a curl-driven **synthetic agent** claims it. Its one step never executes — the run is terminalised through `POST /api/v1/agents/{id}/runs/{runId}/finish` — so the fixture exists to give an instrument a run it exclusively owns |
 | `w35-probe.payload.json` | `edge-w35-probe` | the same shape for W3-5, with its own selector `kind:w35probe` so the two scenarios' instruments cannot collide. Used to put a genuinely `Succeeded` run in front of the **real** archiver and then push log lines at it after the seal (`scenarios/w3-5-seal-vs-flush.md` Part A/C) |
+| `w4-tick.payload.json` | `edge-w4-tick` | the W4 **baseline** fixture: `agentSelector: [kind:kubernetes]`, one `echo` plus `hostname`. Trigger→`Succeeded` in **4 s**, pod gone within 6 s |
+| `w4-pending.payload.json` | `edge-w4-pending` | a **copy** of `podcap-job` with the selector moved to `kind:kubernetes`, keeping the pod-level `nodeSelector: disktype: ssd` that no node satisfies, so the pod sticks `Pending` — W4-3's trigger. Deliberately renamed to `edge-w4-pending`: reusing `metadata.name: edge-podcap-job` would **overwrite the job row** and break W2-4 Part D's premise, which copying the file alone does not prevent |
+| `w4-pending-reuse.payload.json` | `edge-w4-pending-reuse` | `w4-pending` plus `podTemplate.reuse: true` — the **pooled-pod not-ready** fixture (W4-3 Part B). Sends the claim down `pool.ClaimPod` and then wedges the pod `Pending`, so the arm can show that the pooled branch shares the **same** `podStartTimeout` (measured 30.193 s vs the fresh branch’s 30.198 s) and differs only in cleanup: a never-ready pooled pod is **deleted**, never released to the pool with `pool-status = idle`. Verified post-terminal by pod list and by pool annotation |
+| `w4-reuse.payload.json` | `edge-w4-reuse` | the **`podTemplate.reuse`** fixture — nothing else in the repo exercises it. Prints `hostname` and reads/writes a `/workspace` marker, so reuse is observable two ways. Verified: three runs, one pod, marker carried across all three |
+| `w4-longpod.payload.json` | `edge-w4-longpod` | 120 s of 1 Hz self-indexing ticks in a pod — the fixture for anything that must act on a run **while** its pod is alive (pod deletion, partition, podStartTimeout) |
+
+**W4 fixture traps, both measured:** (1) `dsl.RequiredCaps` returns `pod` only
+when `PodTemplateNeedsKubernetes` is true — a bare `containers:` list yields
+**`container`**, so three of the four W4 fixtures are capability-schedulable on
+the Linux agents and are kept off them *only by the label*. (2) The primary
+container **must be named `job`** (`dsl.PrimaryContainerName`); a podTemplate
+whose containers do not include one parses, validates and builds a Pod, then
+fails every step with `container job is not valid for pod`.
+`podcap-job.payload.json` has that shape and has never been executed.
 
 ### Fractional `timeoutMinutes` — verified, do not re-derive
 

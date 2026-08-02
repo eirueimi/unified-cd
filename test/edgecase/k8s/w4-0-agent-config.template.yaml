@@ -1,0 +1,62 @@
+# W4-0 enrollment spike: the HOST-RUN k8s agent config used in step 4 of
+# scenarios/w4-0-enrollment-spike.md.
+#
+# This is the file that actually produced the 403, with its two host-specific
+# absolute paths replaced by <placeholders>. Nothing here is credential
+# material: the token file is referenced by path, never inlined.
+#
+# Usage:
+#   cp test/edgecase/k8s/w4-0-agent-config.template.yaml agent-config.yaml
+#   # fill the two <...> placeholders below
+#   go build -buildvcs=false -o k8s-agent.exe ./cmd/k8s-agent
+#   ./k8s-agent.exe --config agent-config.yaml --log-level debug
+#
+# Expected result at HEAD: the agent logs
+#   {"level":"ERROR","msg":"bootstrap agent credentials",
+#    "error":"kubernetes enrollment request failed"}
+# and exits 1, while the controller logs a 403 on POST /api/v1/agents/enroll.
+# That is the finding, not a rig fault — see FINDINGS.md W4-0 entry 1.
+
+# The rig's published nginx port. `allowInsecureHTTP` below is belt-and-braces:
+# isLoopbackHost (internal/k8sagent/config.go:236-248) already exempts
+# localhost, but setting it explicitly means repointing `server:` at a
+# non-loopback address does not silently start failing config validation.
+server: http://localhost:18080
+allowInsecureHTTP: true
+
+# MANDATORY (internal/k8sagent/config.go:190-192). Must name the policy row
+# seeded by bootstrapKubernetesEnrollmentPolicies from
+# test/edgecase/compose/controller-k8senroll.yaml.
+enrollmentPolicy: w4-spike-policy
+
+# PLACEHOLDER 1 — path to a file containing the pod-bound projected token, i.e.
+# the output of:
+#   kubectl create token w4-spike-agent -n ci \
+#     --audience=unified-cd-agent-enrollment \
+#     --bound-object-kind Pod --bound-object-name w4-spike-agent-pod \
+#     --duration=2h > <that file>
+# The agent reads this file and sends its contents as the enrollment Bearer.
+# Keep it outside the repo: it is live credential material and must never be
+# committed.
+serviceAccountTokenFile: <ABSOLUTE PATH TO THE MINTED SA TOKEN FILE>
+
+# PLACEHOLDER 2 — kubeconfig for the AGENT's own cluster access (pod creation
+# for runs). It is unrelated to enrollment: the controller does its own
+# TokenReview/Pod read with the separate kubeconfig that
+# make-spike-kubeconfig.sh generates. In the spike this pointed at the
+# developer's ordinary ~/.kube/config, whose current context is
+# `docker-desktop`. Enrollment fails before this is ever used.
+kubeconfig: <ABSOLUTE PATH TO ~/.kube/config>
+
+namespace: ci
+
+# Both labels are within the seeded policy's allowedLabels ({kind:linux,
+# w4:spike}), so the handler's label-authorization check at
+# internal/controller/api_agent_enrollment.go:363 would pass — it is simply
+# never reached, being downstream of the rejection at
+# agent_enrollment_kubernetes.go:86.
+labels:
+  - kind:linux
+  - w4:spike
+
+maxConcurrent: 1

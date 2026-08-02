@@ -1,0 +1,58 @@
+# W4-2 (reuse swallow): the RESTRICTED identity the Kubernetes agent runs under
+# in Part B.
+#
+# This is `manifests/base/k8s-agent/rbac.yaml:7-13` MINUS `update` and `patch`,
+# and nothing else. That is the exact shape of the pre-PR-#50 Role — the gap
+# the shipped manifests' own comment says pod reuse needs closed:
+#
+#   "update/patch are required by pod reuse (podTemplate.reuse): the pool marks
+#    a finished pod idle by updating its annotations ... Without update, that
+#    call is forbidden and the pool falls back to deleting the pod every run —
+#    reuse silently never happens."
+#
+# W4-2 measures whether "silently" is the right word.
+#
+# Scope notes:
+#   - No PVC verbs are needed by the pool path, but `create`/`delete` on
+#     persistentvolumeclaims are kept so this Role differs from the shipped one
+#     in EXACTLY the two verbs under test. internal/k8sagent/ makes no PVC API
+#     calls at all (podbuilder.go:435,453 only put PVC *references* into the
+#     PodSpec, which the kubelet materialises), so this is belt-and-braces.
+#   - The RoleBinding subject is a ServiceAccount in `ci` rather than in
+#     `unified-cd`, because the W4 rig runs the agent as a HOST process holding
+#     this SA's token through a kubeconfig, not as an in-cluster Pod. The
+#     authorisation decision the API server makes is identical either way.
+#   - This grants nothing outside namespace `ci`.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: w4-2-reuse-denied
+  namespace: ci
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: w4-2-reuse-denied
+  namespace: ci
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log"]
+    # DELIBERATELY missing "update" and "patch". This is the whole experiment.
+    verbs: ["create", "get", "list", "delete", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: w4-2-reuse-denied
+  namespace: ci
+subjects:
+  - kind: ServiceAccount
+    name: w4-2-reuse-denied
+    namespace: ci
+roleRef:
+  kind: Role
+  name: w4-2-reuse-denied
+  apiGroup: rbac.authorization.k8s.io

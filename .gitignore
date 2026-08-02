@@ -15,3 +15,23 @@ web/dist/
 internal/controller/web/
 .superpowers
 unified-cd
+# W4-0 enrollment spike: generated kubeconfig for the compose controllers.
+# Carries a live ServiceAccount bearer token — must never be committed.
+# Regenerate with test/edgecase/k8s/make-spike-kubeconfig.sh.
+test/edgecase/compose/kubeconfig-k8senroll.yaml
+# W4 rig: the agent access/refresh credential the enrollment interposer serves.
+# Live `uca_`/`ucr_` material — must never be committed.
+# Regenerate with test/edgecase/tools/w4/w4-mint-credential.sh.
+test/edgecase/tools/w4/w4-agent-credentials.json
+test/edgecase/tools/w4/.w4creds.tmp
+# W4 rig: the dummy file that stands in for a projected ServiceAccount token.
+# Not credential material (the interposer never reads it), but it is generated.
+test/edgecase/tools/w4/w4-sa-token
+# W4 rig: built binaries and the runtime log/pid dir.
+test/edgecase/tools/w4/bin/
+/.w4run/
+# W4-2: the restricted (pods update/patch denied) kubeconfig the reuse-swallow
+# scenario runs the agent under. Carries a live ServiceAccount bearer token —
+# must never be committed.
+# Regenerate with test/edgecase/k8s/make-w4-2-restricted-kubeconfig.sh.
+test/edgecase/k8s/.w4-2-restricted.kubeconfig

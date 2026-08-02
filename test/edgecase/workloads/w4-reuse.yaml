@@ -1,0 +1,25 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w4-reuse
+spec:
+  agentSelector:
+    - kind:kubernetes
+  podTemplate:
+    reuse: true
+    spec:
+      containers:
+        - name: job
+          image: alpine:3.20
+  steps:
+    - name: identity
+      run: echo "W4-REUSE-HOSTNAME=$(hostname)"
+    - name: marker
+      run: |
+        if [ -f /workspace/w4-reuse-marker ]; then
+          echo "W4-REUSE-MARKER=HIT planted=$(cat /workspace/w4-reuse-marker)"
+        else
+          echo "W4-REUSE-MARKER=MISS"
+        fi
+        date -u +%Y-%m-%dT%H:%M:%SZ > /workspace/w4-reuse-marker
+        echo "W4-REUSE-MARKER-PLANTED=$(cat /workspace/w4-reuse-marker)"

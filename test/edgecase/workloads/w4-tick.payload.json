@@ -1,0 +1,1 @@
+{"yaml": "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-w4-tick\nspec:\n  agentSelector:\n    - kind:kubernetes\n  podTemplate:\n    spec:\n      containers:\n        - name: job\n          image: alpine:3.20\n  steps:\n    - name: probe\n      run: |\n        echo \"w4-tick-ran\"\n        echo \"W4-POD-HOSTNAME=$(hostname)\"\n"}
