@@ -133,6 +133,20 @@ probe_health() {
 dc() { MSYS_NO_PATHCONV=1 docker compose ${COMPOSE_FILES} "$@"; }
 psql_() { dc exec -T postgres psql -U "${PGUSER_}" -d "${PGDB_}" -At -F',' -c "$1" | tr -d '\r'; }
 
+# THE SAMPLER USED TO DIE OF THE THING IT MEASURES. `set -euo pipefail` plus a
+# bare `rows=$(psql_ ...)` means that the first `FATAL: sorry, too many clients
+# already` ends the script — so a capture aimed at Postgres exhaustion stopped
+# at the sample BEFORE the exhaustion and produced nothing about it. Measured in
+# W6-1: a 130 s grid returned 2 samples and exited when 40 SSE streams pinned
+# `max_connections`, and the `-p` health series — the entire reason `-p` was
+# added — stopped with it. `psql_ok` keeps the loop alive, records the count as
+# `unavailable`, and lets the health probe (plain curl, unaffected by Postgres)
+# carry on. A sampler that cannot outlive the fault is not an instrument.
+psql_ok() {
+  local v
+  if v=$(psql_ "$1" 2>/dev/null); then printf '%s' "${v}"; else printf 'unavailable'; fi
+}
+
 # --- resolve container IPs to service names once, so client_addr is readable ---
 declare -A IPNAME
 while IFS=$'\t' read -r name ip; do
@@ -142,8 +156,22 @@ done < <(dc ps -q | while read -r cid; do
   MSYS_NO_PATHCONV=1 docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}	{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${cid}"
 done)
 
-maxconn=$(psql_ "select current_setting('max_connections')")
-reserved=$(psql_ "select current_setting('superuser_reserved_connections')")
+# The preamble reads these ONCE, and it is the second place the sampler used to
+# die of the thing it measures: a run started while Postgres is ALREADY at
+# `max_connections` never reached its own loop, so the state that most needs a
+# health series was the one state in which none could be taken. Env overrides
+# (`PG_MAXCONN_`/`PG_RESERVED_`) let a capture be started INTO an existing
+# saturation with the two settings supplied from a healthier moment.
+maxconn=$(psql_ok "select current_setting('max_connections')")
+reserved=$(psql_ok "select current_setting('superuser_reserved_connections')")
+[ "${maxconn}" = "unavailable" ] && maxconn="${PG_MAXCONN_:-unavailable}"
+[ "${reserved}" = "unavailable" ] && reserved="${PG_RESERVED_:-3}"
+if [ "${maxconn}" = "unavailable" ]; then
+  echo "w6-pgsample: WARNING Postgres refused this script's own connection at startup." >&2
+  echo "w6-pgsample:   That is itself the saturation signal. Sampling continues; backend" >&2
+  echo "w6-pgsample:   counts will read 'unavailable' until it clears. Set PG_MAXCONN_ to" >&2
+  echo "w6-pgsample:   get the budget comparison in the closing summary." >&2
+fi
 echo "w6-pgsample: max_connections=${maxconn} superuser_reserved=${reserved} interval=${interval}s duration=${duration}s label=${label:-none}"
 echo "w6-pgsample: known clients: $(for k in "${!IPNAME[@]}"; do printf '%s=%s ' "${IPNAME[$k]}" "$k"; done)"
 
@@ -190,9 +218,10 @@ while :; do
   [ "${elapsed}" -ge "${duration}" ] && break
   i=$(( i + 1 ))
   ts=$(date -u +%FT%T.%3NZ)
-  rows=$(psql_ "${Q}")
-  tot=$(psql_ "${TOT}")
-  dbtot=$(psql_ "${DBTOT}")
+  rows=$(psql_ok "${Q}")
+  tot=$(psql_ok "${TOT}")
+  dbtot=$(psql_ok "${DBTOT}")
+  [ "${rows}" = "unavailable" ] && rows=""
   # Probed in the SAME iteration as the counts above, which is the whole point:
   # a health code and a backend count from two different commands minutes apart
   # is what left the W6-infra entry unable to say anything about the health
@@ -238,8 +267,17 @@ if [ -n "${out}" ]; then
 import csv, sys, collections
 peak = collections.defaultdict(int)
 tot = []
+# `unavailable` rows are samples in which Postgres refused this script's own
+# connection. They are COUNTED and reported, never parsed as a number and never
+# dropped: a window in which the sampler could not connect is the window the
+# reader most needs told about, and silently averaging over the samples that
+# happened to succeed would understate the peak.
+unavail = 0
 with open(sys.argv[1]) as f:
     for r in csv.DictReader(f):
+        if not r["count"].lstrip("-").isdigit():
+            unavail += 1
+            continue
         if r["service"] == "TOTAL":
             tot.append(int(r["count"]))
             continue
@@ -249,14 +287,19 @@ for k in sorted(peak):
     print("  %-14s %-8s %-22s peak=%d" % (k[0], k[1], k[2], peak[k]))
 if tot:
     print("  TOTAL backends: min=%d max=%d mean=%.1f over %d samples" % (min(tot), max(tot), sum(tot)/len(tot), len(tot)))
+if unavail:
+    print("  UNAVAILABLE: %d sample rows in which Postgres refused this sampler's own"
+          " connection ('too many clients already'). That is a saturation reading, not a gap."
+          % unavail)
 PY
 fi
 
 if [ -n "${health_out}" ]; then
   echo "--- /readyz on the same grid (in-window; this is the pairing W6-infra could not make) ---"
-  python - "${health_out}" <<'PY'
+  python - "${health_out}" "${reserved}" <<'PY'
 import csv, sys, collections
 rows = list(csv.DictReader(open(sys.argv[1])))
+reserved = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 3
 if not rows:
     print("  no health samples")
     raise SystemExit
@@ -276,18 +319,33 @@ for port in sorted(per):
 # server was at or near its connection ceiling? Answered per sample, not by
 # eye, and stated in BOTH directions so a passing readyz is as visible as a
 # failing one.
-sat = [r for r in rows
-       if r["max_connections"].isdigit() and r["total_backends"].isdigit()
-       and int(r["total_backends"]) >= int(r["max_connections"]) - 3]
+#
+# IT COMPARES CLIENT BACKENDS, NOT `total_backends`. `pg_stat_activity` includes
+# Postgres's own background workers, which carry a NULL `datname` and consume no
+# `max_connections` slot, so a `total_backends` test over-reads saturation — the
+# caveat `README.md` records, and this summary was on the wrong side of it:
+# W6-1's 40-stream sweep printed "AT/NEAR max_connections in 156 of 180 samples"
+# from `total_backends=98` while client backends were 93 of a 97-slot budget.
+# The honest comparison is db_backends against max_connections - reserved.
+# `unavailable` is the STRONGEST saturation reading there is — psql itself was
+# refused — so it counts as saturated rather than being skipped.
+def saturated(r):
+    d = r["db_backends"]
+    if d == "unavailable":
+        return True
+    return (r["max_connections"].isdigit() and d.isdigit()
+            and int(d) >= int(r["max_connections"]) - reserved)
+sat = [r for r in rows if saturated(r)]
 if sat:
     ok = sum(1 for r in sat if r["readyz"] == "200")
-    print("  AT/NEAR max_connections (>= max-3) in %d of %d samples:" % (len(sat), len(rows)))
+    print("  AT/NEAR the client-backend budget (max_connections - superuser_reserved=%d)"
+          " in %d of %d samples:" % (reserved, len(sat), len(rows)))
     # ASCII only in this print: the console encoding on the machine this was
     # built on is cp932, and an em dash here raised UnicodeEncodeError and
     # killed the summary after the per-port table.
     print("    readyz still 200 in %d of those %d - the health surface %s the degradation."
           % (ok, len(sat), "did NOT report" if ok else "reported"))
 else:
-    print("  no sample reached max_connections-3; this window says nothing about the saturated case.")
+    print("  no sample reached the client-backend budget; this window says nothing about the saturated case.")
 PY
 fi

@@ -846,6 +846,101 @@ i.e. **96 client backends of 100** with `superuser_reserved_connections = 3`,
 one free non-superuser slot rather than none. Split by `datname` before claiming
 exhaustion.
 
+#### Three more instrument corrections from W6-1 — and one rule that now covers all five
+
+**1. `w6-pgsample.sh` could not survive the saturation it exists to measure.**
+`set -euo pipefail` plus a bare `rows=$(psql_ …)` meant the first
+`FATAL: sorry, too many clients already` ended the script. A 130 s grid over a
+40-stream arm returned **2 samples**, both from *before* the exhaustion, and the
+`-p` health series stopped with it — the option added specifically so a scenario
+could read `/readyz` **inside** the load window could not survive the load
+window. A second copy of the defect sat in the preamble's `max_connections`
+read, so a capture *started into* an existing saturation never reached its own
+loop. Fixed: `psql_ok` records `unavailable` and keeps sampling,
+`PG_MAXCONN_`/`PG_RESERVED_` let a capture be started into saturation, and the
+peak analyser counts `unavailable` rows rather than choking on them. **Verified
+by effect** (`w6-1s/harnessfix-pgsample.txt`): 5 of 5 samples `unavailable`,
+health probed on every one, `UNAVAILABLE: 5 sample rows` in the summary.
+
+**2. The same tool's own saturation test was on the wrong side of the caveat
+this README already records.** Its closing summary compared `total_backends` —
+which includes Postgres background workers — against `max_connections - 3`, and
+printed *"AT/NEAR max_connections in 156 of 180 samples"* for a window whose
+**client** backends were 93 of a 97-slot budget. It now compares `db_backends`
+against `max_connections - superuser_reserved` and treats `unavailable` as
+saturated. **Documenting a caveat does not fix the code that has it.**
+
+**3. `w6-synth-agent.sh heartbeat` terminalised the agent's own runs, and cost
+two whole captures.** The verb sent `-d '{}'`. `handleAgentHeartbeat` gates
+reconcile on **body presence**, not on the decoded slice
+(`internal/controller/api_agent.go:88-91`), so `{}` reports an **empty** active
+set — the "the agent restarted and forgot its runs" signal — and every
+reconcilable run of that identity is failed as orphaned. A 25 s keepalive loop
+killed the long-lived probe run it existed to protect, **4 s into the first
+arm**, twice. The verb now takes run ids: `heartbeat <runId>...`. **Always pass
+every run the identity still owns.** The product behaviour is correct and its
+own comment documents it; the harness was wrong.
+
+**`loadgen` gains `-delay`, and the reason it exists is a correction.**
+`FINDINGS.md:2535` proposes settling its own open rate-vs-concurrency question
+with "`-c 8` with a per-worker delay, so 8 in flight at ~50 req/s". **That
+experiment cannot be run, by arithmetic rather than tooling.** In-flight = rate ×
+latency, so 8 in flight at 50 req/s needs 160 ms of server latency and the
+endpoint answers in ~2 ms; the same 8 workers paced to 50 req/s hold **~0.15**
+in flight. Measured: `-c 8 -delay 400ms` gives `meanInFlight=0.03`. **In-flight
+is an OUTCOME; the only controls a client has are worker count and pacing.** So
+`-delay` isolates *rate* at a fixed worker count, and the complementary
+"concurrency at ~zero rate" corner needs a **latency-bearing** endpoint —
+`ssehold`, or the agent claim long-poll. A paced GET cannot do it. The flag
+suppresses the under-report guard (a paced run is *meant* to sit below `-c`) and
+prints a `PACED:` line instead; the **over-report** guard is untouched.
+
+**The rule that now covers all five instrument defects this wave.** W6-2a: a
+capture that would not stop. W6-2b: the same defect in a second tool, plus an arm
+whose verification consumed it. W6-1: a sampler that stops when the fault starts,
+and a driver that does **not** stop when its session does — a `nohup driver.sh &`
+outlived its call by ~6 minutes and, because its stdout was block-buffered, its
+log showed only the first of four arms while it silently ran a 200-worker
+max-rate arm underneath a "zero-load control" taken on the same rig. That control
+appeared to show a stack going 23 → ≥97 backends in 12 s with no load, which
+would have been a spectacular false finding. **An instrument's failure mode and
+its subject's failure mode must not be the same event, and "the process looks
+finished" is never evidence that it is.** Corollary, learned the expensive way:
+**any capture whose window overlaps another arm's window is void** — run arms in
+the foreground, one per invocation.
+
+#### What W6-1 settled — cite these rather than re-deriving them
+
+- **The SSE ceiling on this rig is 24 concurrent streams, not ~100.** One arm,
+  40 streams, one replica, from a 59-backend floor:
+  `aliveAtEnd=24 diedEarly=16 non200=0`. And a subscriber is **not** one
+  connection: 24 survivors consumed a 38-slot budget, because each also spends
+  api-pool connections per NOTIFY wake.
+- **The open "200 with backfill then a silently dead stream" question
+  (`FINDINGS.md:2537`) is ANSWERED, and the phrasing needed correcting:** the
+  stream is **closed**, not dead. 200, complete backfill (14-18 events), then the
+  server ends the body. An `EventSource` reconnects into the same refusal rather
+  than hanging.
+- **Rate versus concurrency (`FINDINGS.md:2535`'s open question): concurrency
+  wins, and it is not close.** Same rig, same replica, same session — 8 workers
+  at **20 req/s** did **not** saturate (1,200/1,200 `200`, zero 401s); **60
+  concurrent claim long-polls at 3 req/s DID**, with every request answered 200.
+  Rate is an independent second route (8 workers at 2,451 req/s saturates, 31.8 %
+  401 — `:2517` reproduced from a clean floor), but it takes ~800× the rate.
+  `:2535`'s own caution — *"Do not read this entry as '8 concurrent requests at
+  any rate will do this'"* — is **confirmed**.
+- **`/readyz` is 200 in 144 of 145 saturated in-window samples**, and a warm pool
+  makes saturation **completely silent server-side**: zero controller `ERROR`
+  lines across two fully saturated arms. Background jobs only starve when they
+  need a *new* connection, i.e. after a restart.
+- **A settled, recreated stack idles at 68 client backends** (59 at `up`, 68 by
+  ~7 minutes, flat thereafter, `/readyz` 200 throughout) — the measured version
+  of the curve this README says "is cheap and nobody has done it". Note it is
+  **client** backends; the 73-74 figure elsewhere is `total`.
+- **`docker compose down -v` / `up` re-assigns container IPs**, so per-replica
+  attributions are comparable only *within* one stack instance. Totals are
+  comparable across recreates; splits are not.
+
 #### The log write path, measured (W6-2a) — do not re-derive
 
 `scenarios/w6-2a-log-write-amplification.md` carries the full derivation. The

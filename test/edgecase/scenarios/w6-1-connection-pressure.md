@@ -12,6 +12,16 @@ exhaustion presents on the surfaces an operator is told to watch** — and those
 transfer. The absolute numbers do not. Where a number appears below it is
 labelled with the rig it was taken on.
 
+**The answers, up front.** The first breaking point is **Postgres's
+`max_connections`**, reached through the **api** pool rather than the listen
+pool, and the variable that drives it is **concurrency, not rate**: 8 workers at
+20 req/s do not saturate, while **60 concurrent agent claim long-polls at three
+requests per second** do — every one of them answered `200`. Rate is a real but
+far more expensive second route (8 workers at 2,451 req/s also saturates). When
+it happens, **nothing reports it**: `/readyz` reads 200 in 144 of 145 saturated
+in-window samples, the controllers log nothing, and the first visible symptom is
+401s on a valid admin token. **No sizing number appears below; see the charter.**
+
 **Invariants attacked:** I5 and I7.
 
 - **I5** (`docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:52`),
@@ -300,4 +310,414 @@ scale like SSE streams or like ordinary API clients.
 
 ## RESULTS
 
-*(filled in below after execution)*
+Raw evidence: `edgecase-evidence/w6/w6-1s/` (54 files). Rig: `test/ha` +
+`compose/ctrlports.override.yaml`, `max_connections=100`,
+`superuser_reserved_connections=3`, so the **client-backend budget is 97**. Every
+saturation claim below is made against **client backends** (`datname IS NOT
+NULL`) or against the strongest reading of all — `psql` itself refused.
+
+### Three instrument defects found, and the third is the one that invalidated captures
+
+**1. `w6-pgsample.sh` died of the thing it measures.** `set -euo pipefail` plus a
+bare `rows=$(psql_ …)`: the first `FATAL: sorry, too many clients already` ended
+the script. Part A's 40-stream arm asked for a 130 s grid and got **2 samples**
+(`void/A2-partial-sweep/`, and `A3-pg.txt`), both from *before* the exhaustion —
+and the `-p` health series, the entire reason `-p` exists, stopped with it. A
+second copy of the same defect sat in the preamble, so a capture *started* into
+an existing saturation never reached its own loop at all. Fixed with `psql_ok`
+(records `unavailable`, keeps sampling) plus `PG_MAXCONN_`/`PG_RESERVED_`
+overrides. **Verified by effect**: `harnessfix-pgsample.txt` — 5 of 5 samples
+`unavailable`, health probed on every one, and the closing summary reporting
+`UNAVAILABLE: 5 sample rows`. *A sampler that cannot outlive the fault is not an
+instrument.*
+
+**2. The same tool's saturation test was on the wrong side of its own README
+caveat.** Its summary compared `total_backends` — which includes Postgres's
+background workers — against `max_connections - 3`. It printed *"AT/NEAR
+max_connections in 156 of 180 samples"* for a window whose client backends were
+**93 of a 97-slot budget**, i.e. not saturated at all
+(`void/A2-partial-sweep/A2-sweep.txt`). Now compares `db_backends` against
+`max_connections - superuser_reserved`, and treats `unavailable` as saturated.
+
+**3. `w6-synth-agent.sh heartbeat` terminalises the agent's own runs, and it cost
+two whole captures.** The verb sent `-d '{}'`. `handleAgentHeartbeat` gates
+reconcile on **body presence**, not on the decoded slice — verbatim,
+`internal/controller/api_agent.go:88-91`: *"gated on BODY PRESENCE
+(r.ContentLength != 0), not on the decoded slice being non-nil"* — so `{}` is
+`ContentLength=2` and reports an **empty** active set, which is exactly the
+"the agent restarted and forgot its runs" signal. A 25 s keepalive loop failed
+the run it existed to protect, **4 s into the first arm**, and the arm then
+measured an already-terminal run and reported `diedEarly=20/30/45/70` that had
+nothing to do with connection pressure (`void/void-heartbeat-kill/`,
+`void/void-run-failed-2/`). The verb now takes run ids. The product behaviour is
+correct and documented in its own comment; the harness was wrong.
+
+**And one driver defect of the campaign's recurring family, which contaminated
+two captures and hid it by buffering.** A `nohup driver.sh &` launched from the
+agent's shell **outlived the tool call by ~6 minutes**, and its own output file
+showed only the first arm because stdout was block-buffered — so it looked dead.
+It was in fact running a **200-worker max-rate arm** at 08:07 while a "zero-load
+control" and a three-controller restart were taken on the same rig. That control
+appeared to show a stack going from 23 to ≥97 client backends **in 12 s with no
+load**, which would have been a spectacular and completely false finding; the
+orphan's own `B-B4-*` files, timestamped inside that window
+(`void/void-B4-orphan/`), are what identified it. **Every arm below was re-run in
+the foreground.** Same lesson as the two capture leaks the README records:
+*the killed thing was not the thing holding the resource.*
+
+**Window-boundedness, as the brief required it to be stated.** No arm here uses
+`docker compose logs -f` or any background capture. `w6-pgsample.sh` and
+`loadgen` are each bounded by their own `-d` / `-duration` and exit on their own;
+the check applied to every capture is that its row count matches its nominal
+grid — e.g. `B0-control-pg.csv` reports `25 samples over 420s` at `-i 15`
+(420/15 = 28 nominal, 25 actual: the shortfall is the `psql` round-trip inside
+each iteration, which stretches the grid, and the printed timestamps show it —
+17.2 s spacing, not 15 s). **Rates below therefore divide by the capture's own
+printed span, never by the nominal one.**
+
+---
+
+## Part A — the ceiling, measured. Predicted ~24-26 streams; measured **24**
+
+`A1-ceiling.txt`: `max_connections=100`, `superuser_reserved_connections=3`,
+zero pool-cap overrides in `test/ha/docker-compose.ha.yaml`
+(`grep -c 'MaxConns\|POOL'` = **0**), so the caps are the code defaults
+`postgres.go:46-53` — api 128, background 32, lock 16, listen 128 = **304 per
+replica, 912 across three, against 97 usable slots**.
+
+**The single decisive arm** (`A3.txt`): from a freshly restarted stack settled to
+**59** client backends, **40 concurrent SSE streams** on one live `Running` run,
+opened against **one** replica, 250 ms stagger, 60 s hold:
+
+```
+requested=40 opened=40 hold=1m0s wall=1m0.001s
+aliveAtEnd=24 diedEarly=16 non200=0 totalEvents=1880
+status   200=40
+```
+
+**24 survive; the 25th onward do not.** The prediction from the arithmetic
+(97 − 73 ≈ 24 free slots at the README's resting floor) was **~24-26**, and the
+measurement is **24**. The wave plan's assumption of ~100 is wrong by a factor of
+four in the direction `FINDINGS.md:2535` already suspected, and this is the
+measurement behind that suspicion rather than another restatement of it.
+
+Two things the arm adds beyond the number:
+
+- **It is not one connection per stream.** 24 surviving streams consumed the
+  whole 38-slot free budget, because each subscriber also spends **API-pool**
+  connections per NOTIFY wake — the mechanism W6-2a filed at `FINDINGS.md:2539`
+  — and the fixture emits one line per second, so 24 viewers cost 48 API queries
+  per second on top of 24 `listen` backends. **The listen pool is not the whole
+  cost of a subscriber and sizing from `ListenMaxConns` alone will under-count.**
+- **Postgres was pinned hard enough to refuse `psql` on the unix socket**, which
+  is a stronger reading than any count.
+
+**Connections are not released promptly, and the cumulative sweep shows it.** In
+the earlier laddered sweep (`void/A2-partial-sweep/`) 20 streams took client
+backends from 73 to **93** — exactly +20 — and the count stayed at 93 after the
+streams closed, through three further arms. That is the non-prompt release
+`FINDINGS.md:2527` describes, seen as a plateau rather than as a code read.
+
+---
+
+## Part B — rate versus concurrency. **Concurrency drives it, and it does so at 3 requests per second**
+
+This is the scenario's chartered contribution and the answer is not a hedge.
+Five arms, one endpoint per family, one replica, each from a **recreated and
+settled** stack (`B0-control.txt` establishes the floor: a stack brought up from
+`down -v` settles from 59 to **68** client backends over ~7 minutes and stays
+there, `/readyz` 200 throughout, no sample near the budget).
+
+| Arm | workers | requests / span | **avg rate** | meanInFlight | client backends | saturated? | 401 |
+|---|---:|---:|---:|---:|---|---|---:|
+| **B2** | 8 | 1200 / 60.0 s | **20 /s** | 0.03 | 68 → 78 | **NO** | **0** of 1200 |
+| **B1** | 8 | 19623 / 8.005 s | **2451 /s** | 7.99 | 67 → 100 | **YES** | 6242 (31.8 %) |
+| **B3** | 200 | 1200 / 60.0 s | **20 /s** | 0.69 | 80 → 100 | **YES** | 96 |
+| **B4** | 200 | 15912 / 8.117 s | **1960 /s** | 198.35 | 65 → 100 | **YES** | 4803 |
+| **E-60** | 60 long-polls | 180 / 60.3 s | **3 /s** | 59.89 | 67 → 100 | **YES** | **0** — every request 200 |
+
+`B-B{1,2,3,4}.txt`, `E-60.txt`, per-second histograms in `B-histograms.txt`.
+
+**The answer.** Neither variable is "the" driver on its own; what saturates
+Postgres is the number of **api-pool connections checked out at the same
+instant**, and **concurrency and rate are two independent routes to it — with
+concurrency by far the cheaper.**
+
+- **The concurrency route is decisive and is the headline.** **E-60** held 60
+  in-flight requests at **3 requests per second** and pinned Postgres at 100 for
+  the entire window. That is **eight times LESS rate than the arm that did not
+  saturate at all** (B2, 20 /s), and **850 times less** than `FINDINGS.md:2517`'s
+  trigger. Concurrency alone, at a rate no system could call load.
+- **The rate route is real and independent.** **B1** reproduced `:2517` almost
+  exactly from a clean floor — 8 workers, `maxInFlight=8`, **2451 req/s**,
+  **31.8 % 401** against `:2517`'s ~32 % — with only 8 in-flight handlers, which
+  cannot themselves hold more than ~8 api-pool connections. So something that
+  **outlives the request** must be filling the pool, and the only candidate in
+  the code is still the per-request undeadlined
+  `go func(){ TouchPAT(context.Background()) }()` at `auth.go:79`. **Not proven
+  here either** — no capture reads that goroutine — but the B1/B2 pair rules out
+  the alternative that 8 concurrent handlers are enough on their own.
+- **`FINDINGS.md:2535`'s own caution is CONFIRMED, not overturned.** It says *"Do
+  not read this entry as '8 concurrent requests at any rate will do this.'"*
+  **B2 is that experiment and it does not saturate**: 8 workers, 20 req/s, 60 s,
+  **1200 of 1200 requests 200, zero 401s**, +10 backends. The entry was right to
+  call its trigger a rate.
+
+**Two limits on the B3 arm, stated rather than glossed.** Its 20 /s is an
+*average*: `-delay` releases 200 workers together, so the histogram shows **200
+requests inside one second every ten seconds**, not a smooth arrival. So B3 is
+"same average rate, 200-wide bursts", and the honest reading of B2-vs-B3 is
+about **burst width**, not about worker count as such. **E-60 is the arm that
+carries the concurrency conclusion**, because its 60 requests are genuinely
+in-flight for their whole 20 s and its rate is a *measured* 3 /s with no burst
+structure at all.
+
+**And the thing `-delay` cannot do, which is why the runbook's Amendment 1
+mattered.** `:2535` proposed settling this with "`-c 8` with a per-worker delay,
+so 8 in flight at ~50 req/s". Measured: `-c 8 -delay 400ms` gives
+`meanInFlight=0.03`, not 8 — in-flight is rate × latency and the endpoint answers
+in ~2 ms. **Holding N in flight at a low rate requires a latency-bearing
+endpoint**, which is why the concurrency corner had to be the claim long-poll
+and the SSE stream rather than a paced GET. Anyone re-running this should not
+expect `-delay` to hold concurrency.
+
+**Cross-arm caveat.** The IP→service mapping is re-assigned by each `down -v` /
+`up` (`B-B4-maxrate-200w-pg.txt` resolves `172.20.0.7` to controller3 where an
+earlier capture resolved it to controller2), so **only totals are comparable
+across recreates**; per-replica splits are comparable only within one stack
+instance.
+
+---
+
+## Part C — what breaks first: **nothing that an operator can see**
+
+### C1 — the health surface. In-window, at last, and it does not move
+
+`FINDINGS.md:2525` could only say `/readyz` was 200 at one point ~3 minutes
+*after* a load window. Every arm above carries `/readyz` and `/healthz` read
+**inside the same loop iteration** as the backend count. Across the saturated
+arms:
+
+| Arm | saturated samples | `/readyz` still 200 |
+|---|---:|---:|
+| E-60 | 42 of 42 | **42** |
+| B4 | 15 of 15 | **15** |
+| B3 | 57 of 57 | **57** |
+| B1 | 15 of 15 | **14** (one 503, on the loaded replica) |
+| post-A3 standalone | 15 of 15 | **15** |
+
+**144 of 145 saturated in-window samples read 200.** The single 503 is on
+port 18081 during B1 — the replica taking 2451 req/s — and is the api-pool
+`Acquire` losing its 3 s race, exactly as Amendment 2 predicted; it is a
+symptom of *load on that replica*, not of Postgres exhaustion, and it did not
+recur in B4 which had 25× the concurrency on the same replica.
+
+### C2 — background jobs do NOT starve first, and that is worse than if they did
+
+Predicted: the background pool (32) starves before the api pool (128). Measured,
+**it does not starve at all while the pool is warm**. Across the 12 minutes
+covering B1 and E-60 — two fully saturated arms — the three controllers logged
+**zero `"level":"ERROR"` lines** (`C-bgstarve.txt`; the same command shows 604
+log lines in the window, so the grep is live). The only starvation seen anywhere
+in this scenario is in Part D, on a controller that had **just restarted** and
+therefore had to open new connections: `log archiver error`, `stuck-run reaper
+list error`, `queued-run reaper lock`, `appsource reconciler` — all naming
+`too many clients already` (`D3-after.txt`).
+
+**So the rule is: a warm pool hides the exhaustion completely.** A pool that
+already holds its connections keeps serving from them; only a component that
+needs a *new* connection ever sees the fault. Combined with C1 that means a
+saturated cluster produces **200 on `/readyz`, 200 on `/healthz`, and silence in
+the controller log**.
+
+### C3 — the open SSE question, SETTLED
+
+`FINDINGS.md:2537` handed this scenario, verbatim, *"The '200 with backfill and
+then a silently dead stream' question is therefore still OPEN"*. It is now
+answered, and the uncaptured guess it was left with is **half right**.
+
+From `A3.txt` / `A3-sse40.csv`, the 16 streams past the cap:
+
+```
+#   status connect_ms  firstEvent_ms  events  alive   note
+25  200    0.5         0.5            14      false   server closed the stream
+…
+39  200    1.8         1.8            18      false   server closed the stream
+```
+
+- **The 200 is real, and so is the backfill.** Every one of the 16 got `200` and
+  **14-18 log events** — a complete, correct view of the run as it stood.
+- **The stream is not silently *dead*; it is silently *closed*.** The server ends
+  the response body. A client sees EOF, not a hang. That distinction matters for
+  a re-runner: the failure is indistinguishable from a normal end-of-stream, and
+  an EventSource will simply reconnect — into the same refusal.
+- **Nothing anywhere says why.** Status 200, no `error` event, no `truncated`
+  event, and — per C2 — **no controller log line**. The client's only evidence
+  that it is not watching a live run is that no further events arrive.
+
+Mechanism, and it is exactly the code read: the headers and the whole backfill
+are written at `sse.go:55-103`, *before* `:118` reaches
+`_ = s.store.ListenForNotify(...)`, whose first act is
+`p.listenPool.Acquire(ctx)` (`postgres.go:1665-1667`). The acquire fails, the
+error is discarded by the `_ =`, `handleRunEvents` returns, and the response
+ends. **The `_ =` is the whole finding**: one assignment converts "the database
+is full" into "your log ended".
+
+`FINDINGS.md:2536` asked for this to be checked against the archive rather than
+recalled; the archived numbers are now `aliveAtEnd=24 diedEarly=16 non200=0` in
+`A3.txt` and the per-stream table in `A3-sse40.csv`.
+
+### C4 — the 401 mechanism, corroborated rather than re-filed
+
+`:2530` labels the 401 explanation **INFERRED**, because no capture reads the
+failing `err`. This scenario cannot read it either, but it gets much closer:
+inside a single second of B1, the **same client with the same valid PAT** gets
+both
+
+```
+08:32:06.182 seq=94  code=500 body="failed to connect to `user=unified database=unified`: … FATAL: sorry, too many clients already (SQLSTATE 53300)"
+08:32:06.189 seq=122 code=401 body="unauthorized"
+```
+
+(`B-B1-maxrate-8w-errbodies.txt`; B3 and B4 reproduce it.) The 500 is the same
+condition surfacing through a handler that propagates its error; the 401 is the
+same condition surfacing through `ServerAuth`, which cannot tell a DB error from
+an unknown token (`auth.go:77-79`). **Still not the failing `err` itself, so the
+label stays "inferred" — but the two responses are now co-captured in the same
+second from the same token, which is as close as a black-box capture gets.**
+
+---
+
+## Part D — recovery: the prediction was WRONG, and the reason is the finding
+
+**Predicted:** a controller restarted while Postgres is at `max_connections`
+fails `store init`, exits(1), and — with no `restart:` policy — stays down.
+
+**Measured:** it comes straight back. `D2-restart.txt` — restart issued
+07:55:50.323 with Postgres refusing every connection; the container was `Up` and
+`/readyz` 200 by 07:55:53, and `RestartCount=0`, `ExitCode=0` (`D3-after.txt`).
+**The mechanism is that stopping the process is what frees the connections it
+then needs**: a controller holding ~300 pooled connections releases all of them
+on SIGTERM, and its replacement opens into the space it just vacated.
+`FINDINGS.md:43`'s crash-loop needs Postgres to be unreachable for a reason that
+is *not* this controller's own pool — a `pgbouncer` boot race, say. **Cite `:43`;
+this is not a re-file, it is a scope note on it**, and it means the remedy
+`:2534` calls "the obvious operator response with a documented failure mode" is
+in fact safe in *this particular* state.
+
+**I5 is MET on the bound the spec actually names.** The spec's text is *"leader
+re-election ≤ seconds"*. Measured: `controller1` logged `received shutdown
+signal, draining...` at **07:55:50.644**, and `controller2` logged
+`scheduler became leader` at **07:55:50.733** — **89 ms**, under load, with
+Postgres refusing new connections. No violation.
+
+**The finding is what the restart did NOT fix.** With the connections read from
+`/proc/net/tcp` inside the Postgres container — the only way to read them at all
+while `psql` is refused (`D4-conn-owners.txt`, 07:59:11):
+
+```
+   61  controller3
+   22  controller2
+   17  controller1   (just restarted)
+   TOTAL_ESTABLISHED_TO_5432: 100
+```
+
+**The saturation is owned by ONE replica — the one that served the SSE fan-out —
+and restarting a different replica moved the total not at all.** controller1
+released ~300 pooled slots and the total stayed pinned at 100, because the
+survivors expanded into them within the sampling interval. A rolling restart, or
+an operator restarting "the controller" they happen to be looking at, has a
+**one-in-three** chance of touching the replica that matters. Restarting the
+right one cleared it immediately: 100 → **43 established within 11 s**, `psql`
+answering again at 58 backends (`D5-recovery.txt`).
+
+**How long it lasted, stated at the strength of the capture.** Postgres first
+refused at **07:49:50** and was still refusing at **07:59:29** when the owning
+replica was restarted — **≥ 9 min 39 s of continuous saturation with no
+self-recovery**, ended by operator action. **No upper bound is established: that
+window was ended deliberately.** pgxpool's `MaxConnIdleTime` of 30 m is a code
+read, not a measurement, and nothing here says the cluster would have recovered
+at 30 m or ever. **Do not read "never" into this.**
+
+---
+
+## Part E — the claim long-poll, and it is the cheapest trigger in the campaign
+
+`ClaimNextRun` is already 49 % of the idle floor from **two** agents. The
+question was what N concurrent long-polls cost.
+
+`E-60.txt`: one enrolled synthetic agent identity, **60 concurrent
+`POST /api/v1/agents/{id}/claim?timeout=20s`** against one replica for 60 s.
+
+```
+requests=180 wall=1m0.348s  maxInFlight=60  meanInFlight=59.89
+status   200=180 errors=0
+client backends: 67 -> 100, held at 100 for the whole window
+/readyz 200 in 42 of 42 saturated samples
+```
+
+**180 requests. Three per second. Every one of them returned 200. Postgres
+pinned at `max_connections` for the entire minute.**
+
+The mechanism is in the handler and is not a bug in itself:
+`handleAgentClaim` (`internal/controller/api_agent.go:127-155`) is a **1 Hz
+polling loop inside the request** — `claimPollInterval = 1 * time.Second`,
+`maxClaimTimeout = 60 * time.Second` — plus one `UpsertAgentOnClaim` per request
+at `:150`. So an in-flight long-poll is not one connection held; it is one
+connection **re-acquired every second**, and 60 of them keep the api pool
+permanently busy. The pool grows to serve them and, per `:2527`, does not shrink
+promptly.
+
+**Why this is the scenario's most operationally important number.** Sixty agents
+long-polling for work is not load, not abuse and not a misconfiguration — it is
+sixty agents doing the one thing agents exist to do, at a rate of three requests
+per second across the whole fleet. On this rig that is enough to pin the
+database, and **no surface reports it**: the agents all get 200, `/readyz` is
+200, and the controllers log nothing.
+
+**What this does NOT license, and the charter's whole point.** It does **not**
+mean "unified-cd supports 59 agents". `test/ha` runs stock
+`max_connections=100`; the repository's own `docker-compose.yaml:30` starts
+Postgres with **`max_connections=1000`** and `docs/operations.md:173` tells
+operators so, and on that configuration 3 × 304 = 912 fits. The transferable
+statement is the **shape**: *concurrent long-polls consume api-pool connections
+in proportion to their number, the pool does not give them back promptly, and
+the ceiling that is hit is the database's, not the pool's — so the fleet size a
+deployment tolerates is set by `max_connections` against
+`replicas × 304`, and nothing in the product warns when that budget is spent.*
+**One laptop cannot produce the number, only the relationship. The number an
+operator needs is arithmetic on their own `max_connections`, and it should be
+computed, not extrapolated from here.**
+
+---
+
+## Findings filed
+
+1. **`docs/high-availability.md:289` and `docs/operations.md:154` promise a
+   readiness surface that rotates a DB-broken replica out; measured in-window,
+   `/readyz` reads 200 in 144 of 145 saturated samples across four independent
+   arms while Postgres refuses every new connection — and the controllers log
+   nothing.** This is the settled version of the question `FINDINGS.md:2532`
+   deliberately left open and handed here.
+2. **Observation: sixty concurrent agent claim long-polls — three requests per
+   second, every one answered 200 — pin Postgres at `max_connections`**, because
+   the claim handler polls the database once a second inside the request; the
+   API surface, the health surface and the controller log are all clean
+   throughout.
+3. **Observation: an SSE subscriber past the connection ceiling receives 200 and
+   a complete backfill and then has its stream closed by the server, with no
+   error event, no status event and no server-side log line** — settles
+   `FINDINGS.md:2537`.
+4. **Observation: connection exhaustion is owned by a single replica, and
+   restarting any other replica returns its connections to the pool of the ones
+   still holding them**, so the natural operator remedy — and a rolling restart —
+   fixes nothing unless it happens to hit the right replica.
+5. **Campaign asset — observation: `w6-pgsample.sh` could not survive the
+   saturation it was built to measure**, and its own summary compared
+   background-worker-inflated totals against the wrong budget; plus
+   `w6-synth-agent.sh heartbeat` failed the runs it was called to protect.
+
+Not filed, deliberately: the 24-stream ceiling and the ~2450 req/s rate trigger
+(both are `FINDINGS.md:2517` measured properly — **cited, not re-filed**); I5
+(met at 89 ms); the crash-loop at `FINDINGS.md:43` (**cited**, and given a scope
+note rather than a new entry).

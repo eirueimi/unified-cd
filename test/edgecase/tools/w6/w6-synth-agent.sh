@@ -36,7 +36,10 @@
 # Usage:
 #   w6-synth-agent.sh enroll                       mint uce_ -> uca_/ucr_
 #   w6-synth-agent.sh register [caps]              optional; default native,container
-#   w6-synth-agent.sh heartbeat
+#   w6-synth-agent.sh heartbeat [runId...]  ALWAYS pass every run this identity
+#                                           still owns — a heartbeat that omits
+#                                           one FAILS it as orphaned (see the
+#                                           verb body)
 #   w6-synth-agent.sh trigger <job>                -> run id on stdout
 #   w6-synth-agent.sh claim [timeout]              -> claimed run id on stdout ("" if none)
 #   w6-synth-agent.sh finish <runId> [status]      default Succeeded
@@ -130,9 +133,25 @@ register)
   ;;
 
 heartbeat)
+  # A HEARTBEAT WITH NO RUN IDS KILLS THIS AGENT'S OWN RUNS. Measured in W6-1:
+  # a 25 s keepalive loop calling `heartbeat` with the old `-d '{}'` body
+  # terminalised the very run the scenario was holding open, 4 s into the first
+  # arm, and the arm then measured an already-terminal run without saying so.
+  # `handleAgentHeartbeat` gates reconcile on BODY PRESENCE, not on the decoded
+  # slice (`internal/controller/api_agent.go:88-101`, comment verbatim: "gated
+  # on BODY PRESENCE (r.ContentLength != 0), not on the decoded slice being
+  # non-nil"), so `{}` is ContentLength=2 and reports an EMPTY active set —
+  # which is exactly the "the agent restarted and forgot its runs" signal, and
+  # every reconcilable run of this agent is failed as orphaned.
+  # So: pass every run this identity still owns, on every beat.
   need_cred
+  ids=""
+  for rid in "$@"; do
+    [ -n "${ids}" ] && ids="${ids},"
+    ids="${ids}\"${rid}\""
+  done
   agt -o /dev/null -w 'heartbeat http_code=%{http_code}\n' -X POST -H 'Content-Type: application/json' \
-    -d '{}' "${server}/api/v1/agents/${agent_id}/heartbeat"
+    -d "{\"activeRunIds\":[${ids}]}" "${server}/api/v1/agents/${agent_id}/heartbeat"
   ;;
 
 trigger)
