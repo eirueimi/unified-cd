@@ -534,7 +534,7 @@ docker compose $COMPOSE_FILES up -d --build
 | `bin/ssehold` | S SSE streams held for a measured window against ONE controller; per-stream status, connect latency, event counts, alive-at-end | `w6-1/step3-4-sse-pg.txt` — 6 streams on `:18083` held 35 s, `aliveAtEnd=6 diedEarly=0`, 30 events each. **The targeting is proven by a delta, not by a snapshot**: `controller3` has **no `listen` row at all in sample 1** and exactly **6 from sample 2 onward**, when the streams opened. `controller1` carries a **flat `listen` peak=8 across every sample including sample 1** — stale listen connections an earlier run left behind, which the pool had not released across this capture's window; that is the same **non-prompt-release** mechanism the `W6-infra` entry describes — **not** "the pools only grow", which is a mechanism claim corrected below (pgxpool applies 30 m idle / 1 h lifetime defaults the product leaves unset) — showing up as free corroboration. So: 6 new `listen` connections, all on the targeted replica, none on the other two |
 | `w6-pgsample.sh` | `pg_stat_activity` on a grid, per replica and per **derived** pool, with a peak summary; `-p` also probes `/readyz` and `/healthz` on the same grid | same capture — the `listen` **delta** tracked the stream count exactly, and `w6-1/unplanned-pg-saturation.txt` shows the same instrument reading the saturated case. The `-p` health probe post-dates that capture and is proven off-rig: against a live throwaway port and a dead one it returns real codes and `000` respectively, and its summary was exercised on saturated-and-200, saturated-and-not-200 and never-saturated inputs |
 | `w6-reqshape.sh` | per-request shape recorder off nginx's `logfault` access log, folded into buckets; plus `counter` and `contrast` verbs | `w6-1/step5-reqshape.txt` — 60 bulk requests resolved individually inside a 75 ms window (median gap 1 ms) that a 2 s grid would report as one number; `w6-1/step5-reqshape-b.txt` — a real agent's 15 auto-flush ticks at a measured 2.000 s median spacing; `w6-1/step5-reqshape-c.txt` — `contrast` and the combined-format guard |
-| `w6-idleload.sh` + `w6-idleanalyze.py` | arms Postgres statement logging, captures a **bounded** window, always reverts, and reports q/s in total, per replica and per statement class. Despite the name it is a **generic window recorder** — W6-2a drove four loaded arms through it | `w6-1/step8-idlebaseline.txt` (arm, revert and read-backs) and `w6-1/step8-idle-report.txt` (the numbers below); **and `w6-2a/harnessfix/verify.txt` for the capture-leak fix — see the warning below** |
+| `w6-idleload.sh` + `w6-idleanalyze.py` | arms Postgres statement logging, captures a **bounded** window, reverts *unless the window it measured exhausted `max_connections` — see the third correction below, W6-3 left it armed*, and reports q/s in total, per replica and per statement class. Despite the name it is a **generic window recorder** — W6-2a drove four loaded arms through it | `w6-1/step8-idlebaseline.txt` (arm, revert and read-backs) and `w6-1/step8-idle-report.txt` (the numbers below); **and `w6-2a/harnessfix/verify.txt` for the capture-leak fix — see the warning below** |
 | `w6-2b-fault.sh` + `compose/nginx-w62b.conf` + `compose/w62b.override.yaml` | **W6-2b's fault**, URI-scoped to the agent log-bulk endpoint, in three arms no earlier tool provides: `outage` (dead upstream, instant 502, **nothing reaches a controller**), `flap` (per-`$request_id` `split_clients`, half the requests fail), `hang` (**the black hole** — a sink that accepts TCP and never answers). Plus `clear`, `probe`, `hangprobe` | `w6-2b/arm1/` — `outage` gave **11,326** 502s in a 300 s window against a predicted 11,325, in 151 flush passes of sizes 1, 1, 2, …, 150; `w6-2b/arm3/` — `flap` measured at **47.0 %** failure (135 of 287) and **287** requests over the same 300 s, a 39.5x difference from the same fault duration; `w6-2b/arm4/` — `hang` produced **`status=499 rt=60.000`** three times, i.e. the agent's own 60 s client timeout ending a request nginx never answered. **Read the two warnings below before reusing any of it** |
 | `workloads/w6-chatty.yaml` | the first fixture in the tree that can reach the 1 MiB pending cap: **wide** lines (default 1 KiB) so ~1,024 lines fill it, plus a per-line heartbeat appended to a `/data` bind that **does not pass through the `LogPusher`** | `w6-2b/arm2b/` — 1.33 MiB emitted under outage produced a drop of exactly **263** lines and a marker reading exactly 263; `w6-2b/arm4/heartbeat.log` — the heartbeat's **176.3 s gap** against a 0.205 s median cadence is what proves the step itself stalled, measured off the logging path |
 | `w6-build.sh` | builds `loadgen` and `ssehold` into a gitignored `bin/` | — |
@@ -800,6 +800,30 @@ does not test it: backends went 69 → 74 → 75 → 76 → 84 → 90 → 95 →
 ~45 minutes of continuous use, with no 30-minute idle period anywhere in it.
 
 #### Two instrument corrections from W6-2a — read these before trusting either tool
+
+**W6-3 adds a third, and it is about the OTHER end of the tool.** The table above
+says `w6-idleload.sh` "always reverts". **It does not, and the exception is the
+case the tool is most likely to be pointed at.** W6-3's flood arm saturated
+Postgres inside the tool's own window, so the revert step could not get a
+connection and the tool exited **2** with
+`psql: ... FATAL: sorry, too many clients already`, **leaving `log_statement=all`
+and the modified `log_line_prefix` armed on the running cluster** — where every
+later arm would have been recorded at full volume. The capture itself was intact
+(40.6 MB, 361,895 lines, `-window.txt` sidecar present), so **no number moves**;
+only the cluster was left dirty. Two operational notes for whoever fixes it:
+the revert needs **one `ALTER SYSTEM` per `psql -c`** (three in one `-c` fails
+with `ALTER SYSTEM cannot run inside a transaction block`, which the tool's own
+revert path would also hit), and reverting requires a connection that saturation
+denies — so the fix is a retry-until-free revert, or a `superuser_reserved`
+connection, not a louder error. This is the same family as the W6-1 lesson below
+and its exact inverse: there an instrument stopped when the fault started; here
+an instrument's **teardown** could not run because the condition under test held
+the resource. Recorded, not patched — fixing it is a harness task.
+**A fourth, smaller one from the same session:** both `w6-idleload.sh` and
+`w6-pgsample.sh` resolve the container-IP -> service-name map **once at
+startup**, and a container restart silently invalidates it. W6-3 restarted the
+controllers mid-scenario and the IPs rotated. Any per-replica attribution taken
+across a restart must be re-derived.
 
 **1. `w6-idleload.sh` used to leak its own capture, and it is fixed.** The
 capture step was `dc logs -f ... > "${raw}" &` followed by `kill "${lpid}"`, and
