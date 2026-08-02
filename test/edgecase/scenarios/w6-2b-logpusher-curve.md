@@ -386,7 +386,9 @@ below for why that sentence had to be earned.
 defect Task 2 found in `w6-idleload.sh` and fixed *there*, still live in the
 instrument this scenario's headline rests on. Measured before fixing
 (`w6-2b/harness/`): `follow -d 5` printed `captured 34 lines`; eight seconds and
-twenty unrelated requests later the same file held **56**. `dc` is a shell
+twenty unrelated requests later the same file held **56**, and it never
+stopped — the same file was **44,151,788 bytes** when it was archived at the
+end of the session, having absorbed every arm of this scenario. `dc` is a shell
 function, so the backgrounded `$!` is the subshell and the docker-compose plugin
 holding the pipe survives the kill. Replaced with a `window` verb that sleeps
 and then pulls exactly `[T0,T1]` with `--since/--until`, no background process
