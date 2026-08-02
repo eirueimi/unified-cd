@@ -750,6 +750,7 @@ down, so a W3 entry's `w3-4/partB-dup.txt` resolves to
 |---|---|
 | `w3/w3-1/` … `w3/w3-6/` | one directory per W3 scenario |
 | `w3/w3-infra/` | the three `W3-infra` entries plus the Task 3 rig build-out (Garage, the S3 interposer, the 413, the sidecar and artifact-format probes, W3-4's archive re-run) |
+| `w6/w6-1/` | W6 Task 1, the harness build-out: one capture per harness verification, the 300 s idle-load statement log (12 MB, the wave's largest single file) and the connection-saturation captures behind the `W6-infra` entry. **Read its `NOTES.txt` first** — it flags one superseded analysis file that is kept as evidence of an analyser bug and whose numbers must not be used |
 
 W3 totals ~4.9 MB across those seven directories, all verified byte-identical
 against the session scratchpad with `diff -r` at the wave checkpoint. Two things to
