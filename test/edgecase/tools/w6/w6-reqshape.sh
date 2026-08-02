@@ -52,8 +52,30 @@
 # 1 s-granular curve — the campaign has shipped two inert instruments that
 # passed all their own state checks, and a blunt curve is worse than no curve.
 #
+# ================= WHY `follow -d` IS DEPRECATED (W6-2b) ===================
+# `follow -d` backgrounded `dc logs -f ... > out &` and killed `$!`. `dc` is a
+# SHELL FUNCTION, so `$!` is the subshell; the process actually holding the
+# pipe is the docker-compose CLI PLUGIN two levels down, and it survives the
+# kill and keeps writing. This is the SAME defect Task 2 found and fixed in
+# w6-idleload.sh (`FINDINGS.md` W6-2a entry 5) — it was fixed there and left
+# here, and W6-2b measured it live: `follow -d 5` reported "captured 34 lines",
+# and eight seconds and twenty unrelated requests later the same file held
+# **56**. A request-count curve read off a file that is still growing is not a
+# measurement of anything.
+#
+# `window` is the replacement and has no background process at all: it sleeps,
+# then pulls the interval with `docker compose logs --since T --until T`, and
+# writes the interval it used to a `-window.txt` sidecar so an old capture can
+# bound its own re-analysis. `follow -d` now refuses to run and points here;
+# bare `follow` (which returns the PID for a caller that manages its own
+# lifecycle) still exists but warns, because the PID it prints is the wrong
+# process to kill.
+#
 # Usage:
-#   w6-reqshape.sh follow  -o RAW.log [-d SECONDS]        capture nginx's access log for a window
+#   w6-reqshape.sh window  -o RAW.log -d SECONDS [-S SERVICE]
+#                                                          BOUNDED capture: sleep D, then pull
+#                                                          exactly [T0,T1]. Use this.
+#   w6-reqshape.sh follow  -o RAW.log [-d SECONDS]        DEPRECATED (-d refuses; see above)
 #   w6-reqshape.sh shape   -f RAW.log [-u URI_SUBSTRING] [-b BUCKET_S] [-o OUT.csv]
 #   w6-reqshape.sh counter [-r 18081,18082,18083] [-u ROUTE_SUBSTRING]
 #                                                          one snapshot of unifiedcd_http_requests_total
@@ -77,25 +99,41 @@ usage() { sed -n '/^# Usage:/,/^set -euo/p' "$0" >&2; exit 2; }
 
 case "${cmd}" in
 
+window)
+  out=""; dur=""; svc="nginx"
+  while getopts "o:d:S:" o; do case "$o" in o) out="$OPTARG";; d) dur="$OPTARG";; S) svc="$OPTARG";; *) usage;; esac; done
+  [ -n "${out}" ] && [ -n "${dur}" ] || usage
+  # Bounded on BOTH ends and with no background process, so the file cannot
+  # keep growing after this returns. `--since`/`--until` take RFC3339; docker's
+  # resolution there is one second, so T0 is taken one second early to avoid
+  # clipping the leading edge and the sidecar records the interval actually
+  # requested (never infer the window from the file's own first/last row —
+  # that is the span-vs-histogram error).
+  t0=$(date -u -d '1 second ago' +%FT%TZ 2>/dev/null || date -u +%FT%TZ)
+  echo "reqshape: window opens ${t0}, ${dur}s, service=${svc} -> ${out}"
+  sleep "${dur}"
+  t1=$(date -u +%FT%TZ)
+  dc logs --no-log-prefix --since "${t0}" --until "${t1}" "${svc}" > "${out}" 2>&1
+  printf 'service=%s\nsince=%s\nuntil=%s\nnominal_seconds=%s\n' "${svc}" "${t0}" "${t1}" "${dur}" \
+    > "${out%.log}-window.txt"
+  echo "reqshape: captured $(wc -l < "${out}") lines for ${t0} .. ${t1} (sidecar ${out%.log}-window.txt)"
+  ;;
+
 follow)
   out=""; dur=""
   while getopts "o:d:" o; do case "$o" in o) out="$OPTARG";; d) dur="$OPTARG";; *) usage;; esac; done
   [ -n "${out}" ] || usage
-  # --no-log-prefix so the line starts with $msec and `shape` can validate the
-  # format; --since 0s so we get only what happens from now on.
   if [ -n "${dur}" ]; then
-    dc logs -f --no-log-prefix --since 0s nginx > "${out}" 2>&1 &
-    pid=$!
-    echo "reqshape: following nginx access log -> ${out} (pid ${pid}, ${dur}s)"
-    sleep "${dur}"
-    kill "${pid}" 2>/dev/null || true
-    wait "${pid}" 2>/dev/null || true
-    echo "reqshape: captured $(wc -l < "${out}") lines"
-  else
-    echo "reqshape: following nginx access log -> ${out}; stop with the printed PID" >&2
-    dc logs -f --no-log-prefix --since 0s nginx > "${out}" 2>&1 &
-    echo $!
+    echo "reqshape: 'follow -d' is REFUSED. It could not stop its own capture: it killed the" >&2
+    echo "  subshell while the docker-compose plugin kept the pipe, so the file went on" >&2
+    echo "  growing after the run reported a line count. Measured live in W6-2b: 34 lines at" >&2
+    echo "  'captured', 56 eight seconds later. Use:  w6-reqshape.sh window -o ${out} -d ${dur}" >&2
+    exit 5
   fi
+  echo "reqshape: WARNING — the printed PID is the subshell, NOT the docker-compose plugin" >&2
+  echo "  that holds the pipe; killing it does not stop the capture. Prefer 'window'." >&2
+  dc logs -f --no-log-prefix --since 0s nginx > "${out}" 2>&1 &
+  echo $!
   ;;
 
 shape)
