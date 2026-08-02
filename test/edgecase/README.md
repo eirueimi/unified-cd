@@ -535,6 +535,8 @@ docker compose $COMPOSE_FILES up -d --build
 | `w6-pgsample.sh` | `pg_stat_activity` on a grid, per replica and per **derived** pool, with a peak summary; `-p` also probes `/readyz` and `/healthz` on the same grid | same capture — the `listen` **delta** tracked the stream count exactly, and `w6-1/unplanned-pg-saturation.txt` shows the same instrument reading the saturated case. The `-p` health probe post-dates that capture and is proven off-rig: against a live throwaway port and a dead one it returns real codes and `000` respectively, and its summary was exercised on saturated-and-200, saturated-and-not-200 and never-saturated inputs |
 | `w6-reqshape.sh` | per-request shape recorder off nginx's `logfault` access log, folded into buckets; plus `counter` and `contrast` verbs | `w6-1/step5-reqshape.txt` — 60 bulk requests resolved individually inside a 75 ms window (median gap 1 ms) that a 2 s grid would report as one number; `w6-1/step5-reqshape-b.txt` — a real agent's 15 auto-flush ticks at a measured 2.000 s median spacing; `w6-1/step5-reqshape-c.txt` — `contrast` and the combined-format guard |
 | `w6-idleload.sh` + `w6-idleanalyze.py` | arms Postgres statement logging, captures a **bounded** window, always reverts, and reports q/s in total, per replica and per statement class. Despite the name it is a **generic window recorder** — W6-2a drove four loaded arms through it | `w6-1/step8-idlebaseline.txt` (arm, revert and read-backs) and `w6-1/step8-idle-report.txt` (the numbers below); **and `w6-2a/harnessfix/verify.txt` for the capture-leak fix — see the warning below** |
+| `w6-2b-fault.sh` + `compose/nginx-w62b.conf` + `compose/w62b.override.yaml` | **W6-2b's fault**, URI-scoped to the agent log-bulk endpoint, in three arms no earlier tool provides: `outage` (dead upstream, instant 502, **nothing reaches a controller**), `flap` (per-`$request_id` `split_clients`, half the requests fail), `hang` (**the black hole** — a sink that accepts TCP and never answers). Plus `clear`, `probe`, `hangprobe` | `w6-2b/arm1/` — `outage` gave **11,326** 502s in a 300 s window against a predicted 11,325, in 151 flush passes of sizes 1, 1, 2, …, 150; `w6-2b/arm3/` — `flap` measured at **47.0 %** failure (135 of 287) and **287** requests over the same 300 s, a 39.5x difference from the same fault duration; `w6-2b/arm4/` — `hang` produced **`status=499 rt=60.000`** three times, i.e. the agent's own 60 s client timeout ending a request nginx never answered. **Read the two warnings below before reusing any of it** |
+| `workloads/w6-chatty.yaml` | the first fixture in the tree that can reach the 1 MiB pending cap: **wide** lines (default 1 KiB) so ~1,024 lines fill it, plus a per-line heartbeat appended to a `/data` bind that **does not pass through the `LogPusher`** | `w6-2b/arm2b/` — 1.33 MiB emitted under outage produced a drop of exactly **263** lines and a marker reading exactly 263; `w6-2b/arm4/heartbeat.log` — the heartbeat's **176.3 s gap** against a 0.205 s median cadence is what proves the step itself stalled, measured off the logging path |
 | `w6-build.sh` | builds `loadgen` and `ssehold` into a gitignored `bin/` | — |
 
 **`w6-synth-agent.sh` is the promotion the README asked for.** `w3-5/synth.sh`
@@ -660,6 +662,45 @@ across 2 agent processes", not "N agents"**: they share one process's CPU, one
 HTTP client and one workspace filesystem. The one place it cuts the other way is
 `p.mu`, which is per `LogPusher` per step — a stalled flush stalls one step's
 stdout pipe, not all N.
+
+**`w6-reqshape.sh follow -d` is GONE, and the reason generalises.** It had the
+identical unstoppable-capture defect Task 2 fixed in `w6-idleload.sh` — `dc` is
+a shell function, so the killed `$!` is the subshell and the docker-compose
+plugin keeps the pipe. Measured in W6-2b before fixing: `follow -d 5` printed
+`captured 34 lines`, and eight seconds later the same file held **56**. Use
+**`window -o RAW.log -d SECONDS`**, which sleeps and then pulls exactly
+`[T0,T1]` with `--since/--until`, with no background process and a
+`-window.txt` sidecar so an old capture can bound its own re-analysis.
+`follow -d` now exits 5 and names the replacement. Verified live: two
+consecutive 12 s windows against a 1 Hz probe are disjoint (`06:05:57.426`
+against `06:05:58.512`) and window 1 was byte-identical before and after window
+2 ran. **Any W6 number taken with `follow -d` before 2026-08-02 should be
+re-derived from a bounded window.**
+
+**A verification that is not idempotent can consume the thing it verifies —
+re-probe at the point of use.** W6-2b's `hang` arm passed `hangprobe` at setup
+(`curl` exit 28, a real hang) and **fast-failed with a 502 in 2.5 ms** forty
+minutes later when a scenario actually armed it. The sink was
+`while true; do tail -f /dev/null | nc -l -p 8080 >/dev/null; done`: plain
+`nc -l` is single-shot and the `tail -f` never exits, so the loop never
+iterates — **the sink served exactly one connection in its life and the
+verification probe was the customer.** The black-hole arm had silently degraded
+into the outage arm, and only the in-line re-probe caught it (`w6-2b/arm4-void/`
+keeps the void run; its numbers are used for nothing). Fixed to
+`nc -lk -p 8080 -e sleep 3600`, which has no per-connection state to exhaust.
+This sharpens the campaign's standing rule rather than replacing it: "an arm is
+verified when some capture measures its effect" was satisfied here and was still
+not enough.
+
+**One nginx-config trap worth knowing before writing another fault into
+`compose/`.** `nginx-logfault.conf` sets `proxy_connect_timeout 2s` **inside**
+the bulk location, so a runtime include cannot set its own without nginx failing
+`-t` on a duplicate directive — which rules out every connect-level arm.
+`nginx-w62b.conf` moves it out to the include for exactly that reason, and both
+files say so in their headers. `nginx-w62b.conf` is a **derivative**, not a
+replacement: it keeps the `logfault` log_format byte-for-byte (so
+`w6-reqshape.sh shape` does not exit 4) and leaves `nginx-logfault.conf`
+untouched so W3-4 stays reproducible.
 
 #### The idle floor (measure every W6 number net of this)
 
