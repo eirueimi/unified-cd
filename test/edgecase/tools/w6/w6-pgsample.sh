@@ -39,17 +39,46 @@
 # and this script resolves those IPs to compose service names at startup, so
 # per-replica counts are measured rather than inferred.
 #
+# -p SAMPLES /readyz ON THE SAME GRID, AND WHY THAT IS A SEPARATE FEATURE.
+# The W6-infra observation (`FINDINGS.md:2517`) reports that `/readyz` was 200
+# on all three replicas while Postgres was refusing every new connection — but
+# the only reading behind that sentence was taken ~3 MINUTES AFTER the load
+# window, because backend count and health status were sampled by two different
+# ad-hoc commands at two different times. There is no in-window `/readyz`
+# sample in the whole W6-1 archive, so what the health surface does DURING
+# saturation is still unmeasured. `-p` closes that: the health probe runs
+# inside the same loop iteration as the `pg_stat_activity` query, so every
+# backend count carries the `/readyz` and `/healthz` codes read beside it and
+# the pairing is a measurement rather than a juxtaposition of two captures.
+#
+# It needs `compose/ctrlports.override.yaml` (the direct controller ports); the
+# probe deliberately does NOT go through the LB, for the same reason nothing
+# else rate-bearing here does. `curl` gets `--max-time 2` so a hung controller
+# cannot silently stretch the grid, and a probe that fails or times out is
+# recorded as code `000` — never dropped, because "the controller stopped
+# answering" is exactly the signal this option exists to catch.
+#
 # Usage:
 #   w6-pgsample.sh [-i INTERVAL_S] [-d DURATION_S] [-o OUT.csv] [-r RAW.txt] [-l LABEL]
+#                  [-p PORTS]
+#     -p  comma-separated host ports to probe /readyz and /healthz on each
+#         sample, e.g. -p 18081,18082,18083. Written to <OUT>.health.csv when
+#         -o is given, and echoed on every console line.
 # Env:
 #   COMPOSE_FILES  compose args (default: -f docker-compose.ha.yaml). Run from test/ha/.
 #   PGUSER_        psql user (default unified)
 #   PGDB_          database  (default unified)
+#   HEALTH_HOST    host for -p probes (default localhost)
 #
 # Example (60 s at 1 Hz while an SSE fan-out is held open):
 #   cd test/ha
 #   export COMPOSE_FILES="-f docker-compose.ha.yaml -f ../edgecase/compose/ctrlports.override.yaml"
 #   ../edgecase/tools/w6/w6-pgsample.sh -i 1 -d 60 -o /path/pg.csv -l sse-10
+#
+# Example (connection pressure WITH the health surface, which is what W6-S1
+# wants and what W6 Task 1 could not produce):
+#   ../edgecase/tools/w6/w6-pgsample.sh -i 1 -d 60 -o /path/pg.csv \
+#     -p 18081,18082,18083 -l saturation
 #
 # GIT BASH: MSYS_NO_PATHCONV=1 is set PER DOCKER CALL, never exported. The SQL
 # below contains `client_addr::text`, which MSYS would otherwise try to convert
@@ -62,13 +91,15 @@ duration=60
 out=""
 raw=""
 label=""
-while getopts "i:d:o:r:l:h" opt; do
+ports=""
+while getopts "i:d:o:r:l:p:h" opt; do
   case "${opt}" in
     i) interval="${OPTARG}" ;;
     d) duration="${OPTARG}" ;;
     o) out="${OPTARG}" ;;
     r) raw="${OPTARG}" ;;
     l) label="${OPTARG}" ;;
+    p) ports="${OPTARG}" ;;
     *) sed -n '/^# Usage:/,/^set -euo/p' "$0" >&2; exit 2 ;;
   esac
 done
@@ -76,6 +107,29 @@ done
 COMPOSE_FILES="${COMPOSE_FILES:--f docker-compose.ha.yaml}"
 PGUSER_="${PGUSER_:-unified}"
 PGDB_="${PGDB_:-unified}"
+HEALTH_HOST="${HEALTH_HOST:-localhost}"
+health_out=""
+IFS=',' read -r -a PORTS <<< "${ports}"
+if [ -n "${ports}" ]; then
+  command -v curl >/dev/null 2>&1 || { echo "w6-pgsample: -p needs curl on PATH" >&2; exit 2; }
+  echo "w6-pgsample: health probe on ${HEALTH_HOST}:{${ports}} — /readyz and /healthz, same grid as the backend count"
+fi
+
+# probe_health echoes "PORT:readyz=CODE,healthz=CODE ..." for every -p port.
+# A failed or timed-out request yields 000 rather than an empty field, so a
+# controller that stops answering is a value in the series, not a gap in it.
+probe_health() {
+  local p code_r code_h
+  for p in "${PORTS[@]}"; do
+    [ -n "${p}" ] || continue
+    # `|| true`, NOT `|| echo 000`: on a refused connection curl exits nonzero
+    # but has ALREADY printed 000, so the fallback concatenated and the field
+    # came out as `000000`. Measured, not reasoned — see the README row.
+    code_r=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://${HEALTH_HOST}:${p}/readyz" 2>/dev/null || true)
+    code_h=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://${HEALTH_HOST}:${p}/healthz" 2>/dev/null || true)
+    printf '%s:readyz=%s,healthz=%s ' "${p}" "${code_r:-000}" "${code_h:-000}"
+  done
+}
 dc() { MSYS_NO_PATHCONV=1 docker compose ${COMPOSE_FILES} "$@"; }
 psql_() { dc exec -T postgres psql -U "${PGUSER_}" -d "${PGDB_}" -At -F',' -c "$1" | tr -d '\r'; }
 
@@ -118,6 +172,13 @@ DBTOT="select count(*) from pg_stat_activity where datname = '${PGDB_}';"
 
 if [ -n "${out}" ]; then
   printf 'sample,ts_utc,elapsed_s,label,client_addr,service,application_name,pool_derived,state,count\n' > "${out}"
+  # A SEPARATE file, deliberately: the health codes share the grid but not the
+  # schema, and folding an HTTP status into the `count` column would poison the
+  # peak table at the bottom of this script with "peak=200".
+  if [ -n "${ports}" ]; then
+    health_out="${out}.health.csv"
+    printf 'sample,ts_utc,elapsed_s,label,port,readyz,healthz,total_backends,db_backends,max_connections\n' > "${health_out}"
+  fi
 fi
 [ -n "${raw}" ] && : > "${raw}"
 
@@ -132,10 +193,24 @@ while :; do
   rows=$(psql_ "${Q}")
   tot=$(psql_ "${TOT}")
   dbtot=$(psql_ "${DBTOT}")
+  # Probed in the SAME iteration as the counts above, which is the whole point:
+  # a health code and a backend count from two different commands minutes apart
+  # is what left the W6-infra entry unable to say anything about the health
+  # surface in-window.
+  health=""
+  [ -n "${ports}" ] && health=$(probe_health)
   if [ -n "${raw}" ]; then
-    { echo "== sample ${i} ${ts} elapsed=${elapsed}s total_backends=${tot} db_backends=${dbtot}"; printf '%s\n' "${rows}"; } >> "${raw}"
+    { echo "== sample ${i} ${ts} elapsed=${elapsed}s total_backends=${tot} db_backends=${dbtot}${health:+ health: ${health}}"; printf '%s\n' "${rows}"; } >> "${raw}"
   fi
-  printf '%s sample=%-4d total_backends=%-4s db_backends=%-4s of max_connections=%s\n' "${ts}" "${i}" "${tot}" "${dbtot}" "${maxconn}"
+  printf '%s sample=%-4d total_backends=%-4s db_backends=%-4s of max_connections=%s%s\n' "${ts}" "${i}" "${tot}" "${dbtot}" "${maxconn}" "${health:+  ${health}}"
+  if [ -n "${health_out}" ]; then
+    for hp in ${health}; do
+      port="${hp%%:*}"; rest="${hp#*:}"
+      rz="${rest%%,*}"; rz="${rz#readyz=}"
+      hz="${rest#*,}"; hz="${hz#healthz=}"
+      printf '%d,%s,%d,%s,%s,%s,%s,%s,%s,%s\n' "${i}" "${ts}" "${elapsed}" "${label}" "${port}" "${rz}" "${hz}" "${tot}" "${dbtot}" "${maxconn}" >> "${health_out}"
+    done
+  fi
   if [ -n "${out}" ]; then
     # `client_addr` is NULL (empty in -At output) for connections over the unix
     # socket — i.e. psql inside the container, including this script's own.
@@ -174,5 +249,45 @@ for k in sorted(peak):
     print("  %-14s %-8s %-22s peak=%d" % (k[0], k[1], k[2], peak[k]))
 if tot:
     print("  TOTAL backends: min=%d max=%d mean=%.1f over %d samples" % (min(tot), max(tot), sum(tot)/len(tot), len(tot)))
+PY
+fi
+
+if [ -n "${health_out}" ]; then
+  echo "--- /readyz on the same grid (in-window; this is the pairing W6-infra could not make) ---"
+  python - "${health_out}" <<'PY'
+import csv, sys, collections
+rows = list(csv.DictReader(open(sys.argv[1])))
+if not rows:
+    print("  no health samples")
+    raise SystemExit
+per = collections.defaultdict(list)
+for r in rows:
+    per[r["port"]].append(r)
+for port in sorted(per):
+    rs = per[port]
+    codes = collections.Counter(r["readyz"] for r in rs)
+    hcodes = collections.Counter(r["healthz"] for r in rs)
+    print("  port %s  readyz %s   healthz %s   over %d samples" % (
+        port,
+        " ".join("%s=%d" % kv for kv in sorted(codes.items())),
+        " ".join("%s=%d" % kv for kv in sorted(hcodes.items())),
+        len(rs)))
+# The specific question: did the health surface report anything while the
+# server was at or near its connection ceiling? Answered per sample, not by
+# eye, and stated in BOTH directions so a passing readyz is as visible as a
+# failing one.
+sat = [r for r in rows
+       if r["max_connections"].isdigit() and r["total_backends"].isdigit()
+       and int(r["total_backends"]) >= int(r["max_connections"]) - 3]
+if sat:
+    ok = sum(1 for r in sat if r["readyz"] == "200")
+    print("  AT/NEAR max_connections (>= max-3) in %d of %d samples:" % (len(sat), len(rows)))
+    # ASCII only in this print: the console encoding on the machine this was
+    # built on is cp932, and an em dash here raised UnicodeEncodeError and
+    # killed the summary after the per-port table.
+    print("    readyz still 200 in %d of those %d - the health surface %s the degradation."
+          % (ok, len(sat), "did NOT report" if ok else "reported"))
+else:
+    print("  no sample reached max_connections-3; this window says nothing about the saturated case.")
 PY
 fi
