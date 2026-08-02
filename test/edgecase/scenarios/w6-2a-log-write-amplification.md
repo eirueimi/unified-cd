@@ -126,10 +126,19 @@ Harnesses, all from Task 1 and used as-is:
   Despite the name it is a **generic** window recorder: it arms
   `log_statement='all'` and `log_line_prefix='%m [%p] host=%h '` with one
   `ALTER SYSTEM` per `psql -c`, verifies both in a **fresh** session, captures
-  for `-d` seconds, **always reverts on a trap**, and hands the raw log to a
+  for `-d` seconds, ~~**always reverts on a trap**~~, and hands the raw log to a
   separable analyser. Its "leave the stack alone" instruction is what makes the
   idle arm an idle arm; the four loaded arms deliberately do the opposite and
   say so.
+  **CORRECTED AT THE W6 CHECKPOINT — the struck clause is false, and it is
+  false in exactly the case this tool is most often pointed at.** The revert
+  runs on a trap but needs a Postgres connection, so a window that exhausted
+  `max_connections` leaves `log_statement='all'` armed on the running cluster
+  and the script exits 2. W6-3 hit it (`w6-3-trigger-flood.md:884-911`); the
+  tool header (`tools/w6/w6-idleload.sh:23-32`) and `README.md:804-821` were
+  corrected at W6-3's review and **this line was missed** — it was the last
+  surviving copy of the falsehood. The bug itself is still unfixed: after any
+  saturating arm, verify the settings are back before starting the next one.
 - `tools/w6/bin/ssehold` — S SSE streams against one named controller, with
   per-stream alive-at-end. Built by `w6-build.sh` (never `go run`).
 - `tools/w6/w6-pgsample.sh` — `pg_stat_activity` on a grid, per replica and per

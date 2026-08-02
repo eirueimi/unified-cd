@@ -504,6 +504,17 @@ error, all executed or code-read at HEAD:**
 
 ### The W6 harnesses (scale / abuse)
 
+**W6 is complete — see `FINDINGS.md` §"Checkpoint: W6 complete" for the wave's
+tally (3 violations / 13 observations / 3 asset defects), the **disk-spill
+recommendation** the campaign has gated since W1 (§(a): *do not implement it as
+specified; four cheaper changes first, in a strict order*), and the two-regime
+result that turned one chartered scenario into two tasks (§(b)).** All five
+directories of raw captures are archived under
+`<project parent>/edgecase-evidence/w6/`. **Read §(c) before reusing any tool
+below and §(d) before quoting any number from this wave** — the rig runs exactly
+two concurrent real runs, and its `max_connections=100` is *not* what the
+repository's own `docker-compose.yaml:30` ships.
+
 W6 is instrument work first: every W6 scenario was blocked on measurement tools
 that did not exist. They live in `tools/w6/` and are listed below **with the
 capture that proves each one works** — the campaign has shipped two arms inert
@@ -919,7 +930,16 @@ is an OUTCOME; the only controls a client has are worker count and pacing.** So
 suppresses the under-report guard (a paced run is *meant* to sit below `-c`) and
 prints a `PACED:` line instead; the **over-report** guard is untouched.
 
-**The rule that now covers all five instrument defects this wave.** W6-2a: a
+**The rule that now covers all SIX stop-class instrument defects this wave — the
+count was five until the checkpoint found the sixth, in a tool nobody had
+suspected.** The sixth is `w6-2a/C/mem-during.txt`, a **`docker stats`** follower
+rather than a `docker compose logs` one, so it sat outside both tools the wave
+fixed; it was **still writing at checkpoint time, hours after its session and
+after both fixes had landed**, and was killed there. Nothing published moves — the
+archived copy is the bounded 3,908-line window `FINDINGS.md:2600` cites, and the
+appended lines belong to a later stack instance. **The defect is therefore not
+"`dc` is a shell function"; it is any `-f`/`--follow` capture without a
+`-window.txt` sidecar.** W6-2a: a
 capture that would not stop. W6-2b: the same defect in a second tool, plus an arm
 whose verification consumed it. W6-1: a sampler that stops when the fault starts,
 and a driver that does **not** stop when its session does — a `nohup driver.sh &`
@@ -1123,6 +1143,8 @@ down, so a W3 entry's `w3-4/partB-dup.txt` resolves to
 | `w3/w3-1/` … `w3/w3-6/` | one directory per W3 scenario |
 | `w3/w3-infra/` | the three `W3-infra` entries plus the Task 3 rig build-out (Garage, the S3 interposer, the 413, the sidecar and artifact-format probes, W3-4's archive re-run) |
 | `w6/w6-1/` | W6 Task 1, the harness build-out: one capture per harness verification, the 300 s idle-load statement log (12 MB, the wave's largest single file) and the connection-saturation captures behind the `W6-infra` entry. **Read its `NOTES.txt` first** — it flags one superseded analysis file that is kept as evidence of an analyser bug and whose numbers must not be used |
+| `w6/w6-1s/` | scenario **W6-1** (connection pressure). **The `w6-1/` vs `w6-1s/` split is deliberate and is not a naming trap**: `w6-1/` is Task 1's harness verification and backs the `W6-infra` entry, `w6-1s/` is the scenario. Eight citations distinguish them. Its `void/` subtree holds the seven voided/contaminated captures the `W6-1 (campaign asset)` entry enumerates, each with a `NOTE.txt` |
+| `w6/w6-2a/` `w6/w6-2b/` `w6/w6-3/` | scenarios W6-2a, W6-2b and W6-3. **`w6-2b/` and `w6-3/` were originally archived at the evidence root's top level and were moved under `w6/` at the W6 checkpoint**, which cost exactly one citation edit (`FINDINGS.md:458`) because every other W6 citation is a bare relative name. Every statement log and nginx access log in these three is stored `.gz`; each reproduces its cited uncompressed name and line count under `gunzip -c` |
 
 W3 totals ~4.9 MB across those seven directories, all verified byte-identical
 against the session scratchpad with `diff -r` at the wave checkpoint. Two things to
@@ -1137,6 +1159,19 @@ and copy the wave's directory into the evidence root at the wave checkpoint.
 **Sweep the whole wave for `uca_`/`uce_` before copying** — W3-5 left a full agent
 credential in a dotfile, W3-1 found it, and W3-6 then repeated the mistake in three
 files that nobody caught until the checkpoint swept everything.
+
+**W6 adds two archival rules, both paid for at its checkpoint.** **(i) Decide the
+per-wave parent directory at the FIRST capture.** W6 archived three directories
+under `w6/` and two at the root, and the split was invisible from either side; it
+was cheap to reconcile only because the rooted-citation count was one. W4's trap
+cost 38 and had to be documented instead. **(ii) A `-f`/`--follow` capture is not
+finished when its command returns, and this is not confined to `docker compose
+logs`.** The W6 checkpoint found a `docker stats` follower from `w6-2a`'s Part C
+**still writing, hours after the session ended and after two other tools had been
+fixed for the same defect** — the archived copy is the bounded window the entry
+cites and the scratchpad copy had grown 19x. Nothing published moved, but the
+archive was right by accident of when it was copied. **Copy from a window-bounded
+capture, or verify the file's size is stable before archiving it.**
 
 ## Running a compose scenario
 

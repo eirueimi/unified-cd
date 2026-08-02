@@ -46,9 +46,20 @@ against the file for this runbook, because three W4 runbooks got them wrong.
 - **`FINDINGS.md:515` / `:563`.** Ten of eleven "leader-elected" background jobs
   are per-tick mutexes running 2.15-2.40x per nominal interval on three
   replicas. A load multiplier on every measurement here.
-- **W6-1's settled result.** Concurrency drives saturation decisively: 8 workers
-  at 20 req/s did not saturate; 60 concurrent claim long-polls at 3 req/s did.
-  Rate is a genuine but ~800x more expensive second route. **`/readyz` does not
+- **W6-1's settled result.** ~~Concurrency drives saturation decisively~~: 8
+  workers at 20 req/s did not saturate; 60 concurrent claim long-polls at
+  3 req/s did. Rate is a genuine but ~~~800x~~ more expensive second route.
+  **CORRECTED AT THE W6 CHECKPOINT, and both struck figures were superseded by
+  W6-1's own review before this paragraph was written.** (i) The strong form was
+  **withdrawn** at `FINDINGS.md:2707` — the decisive comparison changes endpoint
+  as well as concurrency, and the one within-endpoint arm is confounded by
+  carry-over — so the supported statement is *"concurrency at a latency-bearing
+  endpoint is by far the cheaper route to `max_connections`; the clean
+  single-variable isolation was not run"*. (ii) The settled ratio is **~820x**
+  (2451/s ÷ 2.98/s, derived) and it is **cross-endpoint**
+  (`w6-1-connection-pressure.md:589-594`, `README.md:955-958`); ~800x is the
+  retired README figure. Nothing measured in this scenario rests on either.
+  **`/readyz` does not
   degrade** — **200 in 143 of 144 saturated in-window replica-readings, 47 of 48
   sample instants** (`FINDINGS.md:2680`/`:2686`, as corrected at W6-1's review;
   the pre-review "144 of 145 samples" figure was wrong on both the count and the
@@ -400,7 +411,7 @@ probe) are scheduler-starved by the 50-row ceiling**, plus the 1 run actually
 | C1 | four independent counts all equal | **HELD, but they are three, not four.** 2,241 / 2,241 / 2,241; the fourth column is a `job_name` filter on the third, i.e. a subset refinement, not an instrument |
 | C2 | no phantom through the documented LB config | **HELD. Non-vacuous as a *failover* test only** — 3 retries measured, all `while connecting`, so the phantom mechanism was never exercised |
 | C3 | flood + probe still non-terminal | **HELD.** 2,656 of 2,665 — of which **2,254 mutex-blocked** (fixture by design), **401 scheduler-starved**, 1 `Running` |
-| D | ~0.5 req/s, no backoff, no give-up | **SPLIT: magnitude REFUTED, shape HELD.** **8.567 req/s** steady state — 17x the prediction, because an agent runs **17** claim loops, not 1. **Folded into `FINDINGS.md:450`/`:458` in place; not filed as an entry** |
+| D | ~0.5 req/s, no backoff, no give-up | **SPLIT: magnitude REFUTED, shape HELD.** **8.567 req/s** steady state — 17x the prediction, because an agent runs **17** claim loops, not 1. **Folded into `FINDINGS.md:450`/`:458`/`:463` in place; not filed as an entry** (`:463` added at the W6 checkpoint — this row omitted it while `:938` and `FINDINGS.md:2824` both name all three) |
 | E | audit retention defaults to 90, not 0 (AMENDMENT 1) | **HELD**, and the survey found **no operator-facing doc that contradicts the code**. Part E files nothing |
 
 ---
