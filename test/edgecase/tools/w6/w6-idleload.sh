@@ -107,76 +107,11 @@ echo "   window ${t0} .. ${t1}; raw -> ${raw} ($(wc -l < "${raw}") lines)"
 revert
 
 echo "== analysis =="
-python - "${raw}" "${mapfile}" "${dur}" "${label}" <<'PY' | tee "${rep}"
-import re, sys, collections
-raw, mapfile, dur, label = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
-
-ip2svc = {}
-for line in open(mapfile):
-    p = line.split()
-    if len(p) == 2:
-        ip2svc[p[1]] = p[0]
-
-# %m [%p] host=%h  LOG:  statement: <sql>
-LINE = re.compile(r'^(?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ \S+) \[(?P<pid>\d+)\] host=(?P<host>\S*)\s+LOG:\s+statement:\s+(?P<sql>.*)$')
-
-per_host = collections.Counter()
-per_stmt = collections.Counter()
-per_host_stmt = collections.Counter()
-first = last = None
-n = 0
-buf_sql = None
-buf_key = None
-
-def norm(sql):
-    s = ' '.join(sql.split())
-    s = re.sub(r"'[^']*'", "'?'", s)
-    s = re.sub(r'\$\d+', '$?', s)
-    return s[:90]
-
-for line in open(raw, errors='replace'):
-    line = line.rstrip('\r\n')
-    m = LINE.match(line)
-    if not m:
-        continue
-    n += 1
-    ts = m.group('ts')
-    if first is None:
-        first = ts
-    last = ts
-    host = m.group('host') or '(local)'
-    svc = ip2svc.get(host, host)
-    key = norm(m.group('sql'))
-    per_host[svc] += 1
-    per_stmt[key] += 1
-    per_host_stmt[(svc, key)] += 1
-
-print("w6-idleload report  label=%s" % label)
-print("  window          %s .. %s   (nominal %.0f s)" % (first, last, dur))
-print("  statements      %d   => %.2f queries/s across the stack" % (n, n / dur))
-print()
-print("  --- per replica ---")
-for svc, c in per_host.most_common():
-    print("  %-14s %7d   %6.2f q/s" % (svc, c, c / dur))
-print()
-print("  --- per statement class (top 20) ---")
-for k, c in per_stmt.most_common(20):
-    print("  %7d  %6.2f/s  %s" % (c, c / dur, k))
-print()
-print("  --- ListPendingRuns (the git resolver's only statement; FINDINGS.md:563 measured 5.006 q/s per replica) ---")
-hit = [(k, c) for k, c in per_stmt.items() if k.startswith('SELECT id, spec, created_at FROM runs')]
-if not hit:
-    print("  (no match — check the statement text against internal/controller/scheduler.go)")
-for k, c in hit:
-    print("  total %d  %.3f q/s across the stack" % (c, c / dur))
-    for svc in sorted(per_host):
-        cc = per_host_stmt.get((svc, k), 0)
-        if cc:
-            print("    %-14s %6d  %.3f q/s" % (svc, cc, cc / dur))
-print()
-print("  --- advisory-lock traffic (the per-tick 'leader election', FINDINGS.md:515) ---")
-adv = [(k, c) for k, c in per_stmt.items() if 'advisory' in k]
-for k, c in sorted(adv, key=lambda x: -x[1]):
-    print("  %7d  %6.2f/s  %s" % (c, c / dur, k))
-PY
-echo "== done: report -> ${rep} =="
+# The analyser lives in its own file so it can be re-run against an ALREADY
+# CAPTURED log; the first version of it under-counted by 28x and re-capturing
+# would have cost another untouched five minutes of stack time.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHONIOENCODING=utf-8 python "${here}/w6-idleanalyze.py" "${raw}" "${mapfile}" "${dur}" "${label}" | tee "${rep}"
+cp "${mapfile}" "${outdir}/w6-idleload-${label}-ipmap.txt"
+echo "== done: report -> ${rep}; re-analyse with:"
+echo "   python test/edgecase/tools/w6/w6-idleanalyze.py ${raw} ${outdir}/w6-idleload-${label}-ipmap.txt ${dur} ${label}"
