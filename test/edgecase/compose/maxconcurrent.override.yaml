@@ -1,0 +1,94 @@
+# W6 overlay: raise the host agents' `--max-concurrent` so the rig can execute
+# more than two runs at once.
+#
+# WHY AN OVERLAY, AND WHY IT HAS TO REPLACE `command:`.
+# The rig executes exactly TWO concurrent real runs: two agents times
+# `MaxConcurrent`, whose effective default is 1 (`internal/agent/agent.go:218-221`
+# — `n := a.MaxConcurrent; if n <= 0 { n = 1 }`), and
+# `test/ha/docker-compose.ha.yaml:199-209` / `:223-233` pass no
+# `--max-concurrent`. W3's `mixedkek` set the precedent that a rig change lives
+# in `test/edgecase/compose/`, never as an edit to `test/ha/`.
+#
+# **There is no environment variable for this.** `internal/config/agent.go:147-186`
+# enumerates every env var the agent reads, and `MaxConcurrent` is not among
+# them — `UNIFIED_AGENT_MAX_DETACHED` exists for the SEPARATE detached pool
+# (`agent.go:182`) and is easy to mistake for it. `MaxConcurrent` comes only
+# from the `--max-concurrent` flag (`cmd/unified-cd-agent/main.go:75`, `:192`)
+# or a config file's `maxConcurrent` key (`config/agent.go:96`, `:226`). An
+# overlay that only set an environment variable would therefore be **silently
+# inert** — it would come up clean, pass every state check, and still run two
+# runs at a time. Compose replaces a `command:` sequence wholesale rather than
+# merging it, which is exactly what is wanted here: the list below IS the
+# agent's full command line and can be read as such.
+#
+# ============ READ THIS BEFORE QUOTING ANY NUMBER TAKEN UNDER IT ============
+# **Raising `--max-concurrent` changes what is being measured.** N runs on one
+# agent process are NOT N independent agents:
+#
+#   * they share ONE agent process's CPU, memory and Go scheduler, so a
+#     throughput ceiling found here may be the container's, not the product's;
+#   * they share ONE HTTP client and its connection pool
+#     (`internal/agent/client.go`), so per-run request latency is coupled;
+#   * each run still gets its OWN `LogPusher` and therefore its own `p.mu`
+#     (`internal/agent/runner.go:230`) — the mutex is per pusher, per step, so
+#     a stalled flush stalls ONE step's stdout pipe, not all N. That is the one
+#     place where "not N independent agents" cuts in the product's favour, and
+#     it should not be quietly generalised in either direction;
+#   * they share one workspace root — `agent.go:227-231` creates
+#     `working0..workingN-1`, one per slot, so runs do not collide on disk, but
+#     they do share the filesystem and the `minFreeDisk` check;
+#   * the container has no CPU or memory limit in this compose file, so the
+#     host's own load is in every number.
+#
+# **This caveat travels with every measurement taken under this overlay.** A
+# scenario that reports "N concurrent runs" under this file must say "N runs
+# across 2 agent processes", not "N agents".
+#
+#   cd test/ha
+#   export COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/maxconcurrent.override.yaml"
+#   W6_MAX_CONCURRENT=4 docker compose $COMPOSE_FILES up -d --build
+#
+# Default is 4 per agent (8 runs across the rig). Set `W6_MAX_CONCURRENT` to
+# change it; compose substitutes it at `config` time, so
+# `docker compose $COMPOSE_FILES config | grep max-concurrent` shows the value
+# that will actually be used and is the cheapest way to confirm the overlay took.
+#
+# VERIFY BY EFFECT, not by `config`: the agent logs one line per workspace slot
+# at startup, and `docker compose logs agent1 | grep -c 'workspace'` (or a run
+# of N-way concurrent triggers that all reach `Running`) is the check. A stack
+# where this overlay was forgotten still runs — it just runs two at a time.
+#
+# STACKING: touches only agent1/agent2, so it composes with every
+# nginx-replacing overlay and with `ctrlports.override.yaml`. It does NOT stack
+# with `dupagent.override.yaml`'s `agent1b`, which carries its own `command:`
+# and would keep `--max-concurrent` at the default.
+services:
+  agent1:
+    command:
+      - "--server"
+      - "http://nginx:8080"
+      - "--id"
+      - "agent1"
+      - "--credential-file"
+      - "/var/lib/unified-cd-agent/agent1/credentials.json"
+      - "--enrollment-token-file"
+      - "/var/lib/unified-cd-agent/agent1/enrollment.token"
+      - "--labels"
+      - "kind:linux"
+      - "--max-concurrent"
+      - "${W6_MAX_CONCURRENT:-4}"
+  agent2:
+    command:
+      - "--server"
+      - "http://nginx:8080"
+      - "--id"
+      - "agent2"
+      - "--credential-file"
+      - "/var/lib/unified-cd-agent/agent2/credentials.json"
+      - "--enrollment-token-file"
+      - "/var/lib/unified-cd-agent/agent2/enrollment.token"
+      - "--labels"
+      - "kind:linux"
+      - "--max-concurrent"
+      - "${W6_MAX_CONCURRENT:-4}"

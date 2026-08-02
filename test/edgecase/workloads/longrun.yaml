@@ -1,0 +1,27 @@
+# The MISSING SOURCE for `longrun.payload.json`.
+#
+# W6 Task 1 Step 6 was told to "first verify whether longrun.yaml exists or
+# only longrun.payload.json". It did not exist: every other fixture that has a
+# `.yaml` got one when it was added, and `edge-longrun` predates that habit
+# (it was one of the two W0 fixtures, alongside `tick`). This file is
+# reconstructed from `longrun.payload.json`'s embedded YAML and is byte-identical
+# to it below the comment block — `python -c "import json;print(json.load(...)['yaml'])"`
+# round-trips to exactly the `apiVersion:` block that follows.
+#
+# NOTE FOR W6-S2b: this fixture is ALREADY a slow trickle — 300 lines at
+# 1 line/s over ~300 s. That was not obvious from its name and the wave plan
+# assumed `tick` (30 lines / 30 s) was the longest thing available. Use
+# `w6-trickle.yaml` when the emitter has to outlive 300 s or the rate has to
+# change; use this one when a 5-minute default is what is wanted and a
+# parameter-free fixture is preferable.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-longrun
+spec:
+  native: true
+  agentSelector:
+    - kind:linux
+  steps:
+    - name: tick
+      run: for i in $(seq 1 300); do echo "tick $i"; sleep 1; done

@@ -1,0 +1,64 @@
+# W6 fixture: the SLOW-TRICKLE emitter for the LogPusher's quadratic regime.
+#
+# WHY A NEW FIXTURE. `tick` is 30 lines over 30 s — under a total log-bulk
+# outage that is ~15 auto-flush ticks, far too short for a triangular
+# request-count curve to be distinguishable from noise. `longrun` is already a
+# 1 line/s trickle but is fixed at 300 s and takes no parameters. W6-S2b Arm 1
+# needs a low-rate, LONG-LIVED emitter whose rate and duration are both knobs,
+# because the arm's whole content is the SHAPE of the curve over an outage
+# window the scenario chooses.
+#
+# WHY THE RATE MATTERS, AND WHY THIS SIDE OF THE 4 KiB THRESHOLD.
+# `LogPusher.Write` flushes synchronously when the buffer crosses `flushBytes`
+# = 4 KiB (`internal/agent/runner.go:249`), and `StartAutoFlush` flushes every
+# `logPusherAutoFlushEvery` = 2 s (`runner.go:211`). A trickle of one ~40-byte
+# line per second never reaches 4 KiB between ticks, so EVERY flush is a
+# timer flush and each one appends exactly one small pending batch while the
+# fault is armed. That is the sparse regime: pending grows by one batch per
+# tick, `flushLocked` issues one `AppendLogBulk` per pending batch per tick
+# (`runner.go:358-366`), so tick k costs k requests and the cumulative cost is
+# triangular. It is also the regime that NEVER drops: the 1 MiB pending cap
+# (`runner.go:256`) counts line text only (`pendingSizeBytes`, `:438-446`), so
+# at ~20-40 bytes per batch the ceiling is tens of thousands of batches — many
+# hours. Do not use this fixture to look for the drop marker; that needs a
+# chatty fixture (`logburst`) and is a different arm.
+#
+# The line payload is self-indexing and carries a nanosecond host timestamp, so
+# a lost, duplicated or reordered line is measurable from the line itself
+# without joining against anything.
+#
+# PARAMS
+#   lines        total lines to emit (default 600)
+#   interval_s   seconds between lines (default 1) — `sleep` in the agent image
+#                is BusyBox ash's builtin, which accepts fractional values, so
+#                0.5 works if a scenario wants 2 lines/s.
+# Defaults give 600 lines over ~600 s = 10 minutes at 1 line/s, the upper end
+# of the range W6-S2b Arm 1 asks for. There is no step timeout in this repo's
+# defaults that a 10-minute step trips.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w6-trickle
+spec:
+  native: true
+  params:
+    inputs:
+      - name: lines
+        type: string
+        default: "600"
+      - name: interval_s
+        type: string
+        default: "1"
+  agentSelector:
+    - kind:linux
+  steps:
+    - name: trickle
+      run: |
+        echo "trickle-begin lines={{ .Params.lines }} interval_s={{ .Params.interval_s }} $(date -u +%FT%T.%NZ)"
+        i=1
+        while [ "$i" -le {{ .Params.lines }} ]; do
+          echo "trickle $i $(date -u +%FT%T.%NZ)"
+          i=$((i + 1))
+          sleep {{ .Params.interval_s }}
+        done
+        echo "trickle-end $(date -u +%FT%T.%NZ)"

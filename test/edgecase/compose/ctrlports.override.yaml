@@ -1,0 +1,57 @@
+# W6 overlay: publish each controller's own HTTP port on the host, so a
+# harness can address ONE named replica instead of the load balancer.
+#
+# WHY THIS EXISTS. `test/ha/docker-compose.ha.yaml` publishes only
+# `18080:8080` on the `nginx` service; the three controllers have no `ports:`
+# at all, so from the host there is no way to reach `controller2` specifically.
+# Every W6 rate-bearing harness needs that, because measuring through the LB
+# measures the LB:
+#
+#   * `test/ha/nginx.conf:1` is a bare `events {}`, leaving `worker_connections`
+#     at nginx's compiled-in default of 512 per worker;
+#   * the `upstream controllers` block (`nginx.conf:3-9`) carries no
+#     `keepalive` directive, so nginx opens a FRESH TCP connection to a
+#     controller for every proxied request and closes it afterwards — at any
+#     real rate the host and the nginx container accumulate TIME_WAIT sockets
+#     and the ceiling that is hit first is the rig's, not the product's;
+#   * `proxy_next_upstream ... http_502 http_503 http_504` with
+#     `proxy_next_upstream_tries 3` means one client request can become three
+#     upstream requests, so a request count taken at the client does not equal
+#     the request count the product served.
+#
+# Publishing the controller ports does NOT change controller configuration:
+# the container already listens on 8080 for the LB, and this only maps that
+# same listener onto a host port. Nothing in the compose file is edited —
+# `test/ha/` is off limits (AGENTS.md / campaign rule), and `controller2` and
+# `controller3` are YAML aliases (`*ctrl`) of `controller1`'s anchor, so a
+# per-replica difference cannot be expressed inside `test/ha/` anyway.
+#
+# STACKING. This overlay touches only the three controller services, so it
+# stacks with every nginx-replacing overlay (`logfault`, `bigbody`,
+# `steplink`, `oneway`, `s3proxy`) and with `maxconcurrent.override.yaml`.
+#
+#   cd test/ha
+#   export COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/ctrlports.override.yaml"
+#   docker compose $COMPOSE_FILES up -d --build
+#
+# VERIFY IT TOOK (an unarmed overlay is the campaign's recurring failure):
+#   curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18081/healthz
+#   curl -s http://localhost:1808{1,2,3}/metrics | grep -c '^unifiedcd_'
+# and confirm the three ports answer as three DIFFERENT processes — the
+# `unifiedcd_http_requests_total` totals diverge immediately, because each
+# replica owns its own registry (`internal/metrics/metrics.go:34`,
+# "never the global default").
+#
+# `/metrics` and `/healthz` need no auth (`internal/controller/server.go:299`,
+# `:308`); everything else on these ports takes the same tokens as the LB.
+services:
+  controller1:
+    ports:
+      - "18081:8080"
+  controller2:
+    ports:
+      - "18082:8080"
+  controller3:
+    ports:
+      - "18083:8080"
