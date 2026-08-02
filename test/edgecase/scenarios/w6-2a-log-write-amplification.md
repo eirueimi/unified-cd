@@ -185,7 +185,10 @@ Also predicted, and to be checked rather than assumed:
 ### The connection-budget hazard, inherited and watched
 
 Task 1 measured **73-74 of Postgres's 100 backends in use at rest** and found
-that **8 concurrent requests pin the server at `max_connections`**, with
+that **~2,554 req/s held at 8 in flight pins the server at `max_connections`**
+— the trigger is the **rate**, not the concurrency bound, and
+`FINDINGS.md:2535` says explicitly "do not read this entry as '8 concurrent
+requests at any rate will do this'" — with
 `/readyz` still 200 and a valid admin PAT returning 401 — filed as the
 `W6-infra` observation at `FINDINGS.md:2517`. **That entry is cited, not
 re-filed.** The S=10 arm adds 10 `listen` connections plus up to 10 concurrent
@@ -264,14 +267,24 @@ zero. Any "at max_connections" claim from that line must be checked against the
 configuration — one replaces nginx's log format, the other publishes ports that
 already existed inside the network).
 
-| Quantity | Task 1 (300 s, plain rig) | This scenario (150 s) |
+**Both columns divide by their TRUE window, not their nominal one.** The nominal
+150 s window actually spans `04:46:10.038 .. 04:48:42.077` = **152.04 s**
+(`w6-2a/floor/breakdown.txt`; `w6-2a/floor/persec.txt` independently reports
+`seconds observed=152`), and Task 1's nominal 300 s spans **301.5 s**. Dividing
+by the nominal figure inflates every rate by ~1 %, and both columns below were
+originally reported that way — 72.99 and 72.11. Corrected, they agree more
+closely, not less.
+
+| Quantity | Task 1 (300 s nominal / **301.5 s** true) | This scenario (150 s nominal / **152.04 s** true) |
 |---|---|---|
-| Total | 72.11 q/s | **72.99 q/s** (10,948 / 150 s) |
-| Per replica | 24.10 / 23.68 / 24.32 | **24.47 / 24.31 / 24.18** |
+| Total | 72.11 q/s nominal → **71.76 q/s** true | 72.99 q/s nominal → **72.01 q/s** true (10,948 / 152.04 s) |
+| Per replica | 24.10 / 23.68 / 24.32 (nominal) | **24.15 / 23.99 / 23.86** true (3,671 / 3,647 / 3,627 statements) |
 | Postgres backends | 73–74 at rest | 69 at window open, 74 at close |
 | Log-path statements | — | **0**, all classes (the floor is a floor) |
 
-**1.2 % apart, one day and one wave later.** Per-second on `controller3` the
+**0.4 % apart on the true windows, one day and one wave later** (the
+divide-by-nominal figures were 1.2 % apart, so the correction *strengthens* the
+agreement). Per-second on `controller3` the
 floor is **median 22, max 61** statements/s (`w6-2a/floor/persec.txt`) — the
 comparison Part B's peak is measured against.
 
@@ -327,8 +340,8 @@ never the LB. Every stream in every arm returned **200**, `diedEarly=0`,
 |--:|--:|--:|--:|--:|--:|--:|
 | 0 | 4,004 | 0 | 0 | 4,036 | 15,251 / 150 s | 0 |
 | 1 | 8,008 | **2,002** | 2,002 | 8,042 | 19,142 / 150 s | 1 |
-| 5 | 24,024 | **10,010** | 10,010 | 24,070 | 41,732 / 240 s | 5 |
-| 10 | 44,044 | **20,020** | 20,020 | 44,105 | 61,969 / 240 s | 10 |
+| 5 | 24,024 | **10,010** | 10,010 | 24,070 | 41,726 / 240 s | 5 |
+| 10 | 44,044 | **20,020** | 20,020 | 44,105 | 61,939 / 240 s | 10 |
 
 **The fan-out term is exact, not approximate: `2002 × S` to the statement in
 every arm**, with the paired `GetRun` matching it on the same replica
@@ -396,8 +409,14 @@ floor  69 -> 74      A-s0  74 -> 75      B-s1  76 -> 84
 B-s5   84 -> 88 (subscribe) -> 90        B-s10 90 -> 95 (subscribe) -> 95
 ```
 
-**Monotone, never released, across a session in which the stack was never
-restarted** — the pgxpool behaviour `FINDINGS.md:2517` establishes. The
+**Monotone and not released within this ~45-minute session**, in which the stack
+was never restarted. **Stated at exactly that strength, and deliberately not as
+"never released":** the window was ended by this scenario, it contained no
+30-minute idle period, and the mechanism is the pgxpool one corrected further
+down — connections are reclaimed on a 30 m idle / 1 h lifetime horizon that this
+session never reached, so the series is consistent with the correction and does
+not test it. What drives saturation is non-release **promptly**, which is what
+`FINDINGS.md:2517` records. The
 10 SSE streams added exactly 10 `listen` backends on `controller3` and the
 client-backend total reached **96 of 100** with 3 superuser-reserved, i.e.
 **one free non-superuser slot**.
@@ -410,8 +429,11 @@ each controller directly **200**; **zero 401s**
 they were not a symptom — `GET /api/v1/runs` answers
 `jobName query parameter is required`. **Cite `FINDINGS.md:2517`; nothing here
 re-files it or contradicts it.** The difference is shape: Task 1's trigger was
-8 *concurrent* requests, and this is one run's serial write path plus ten
-long-lived readers.
+**~2,554 req/s held at 8 in flight** — a *rate*, which `FINDINGS.md:2535` is
+explicit about — and this is one run's serial write path plus ten long-lived
+readers. No arm here came anywhere near that rate (the busiest second measured
+11,085 statements/s at Postgres, from a handful of requests), which is why
+non-reproduction here is expected rather than informative.
 
 ---
 
@@ -438,9 +460,22 @@ amplification.
 All five landed: `SELECT sum(length(line))` on the probe run returns
 **347,078,656** bytes across 5 rows — 1+2+8+64+256 MiB, stored.
 
-**The 256 MiB request moved `controller1`'s RSS from 421.1 MiB to 1.545 GiB —
-a ~1.12 GiB spike, ≈4.4× the body**, and it fell back to 421 MiB afterwards
-(`w6-2a/C/bigbody-256m.txt`). Nothing in `manifests/` sets a memory limit on the
+**The 256 MiB request moved `controller1`'s container memory from 421.1 MiB to
+1.545 GiB — a ~1.12 GiB rise, ≈4.4× the body — and it did NOT come back down
+inside the sampled window.** The metric is `docker stats` MemUsage, i.e. the
+cgroup's `memory.current − inactive_file`; it includes kernel and socket memory
+and is **not** process RSS, and an earlier version of this section called it RSS.
+The multiplier is unaffected — it is arithmetic over two archived readings.
+`w6-2a/C/bigbody-256m.txt`'s own `=== controller1 memory AFTER ===` reads
+**1.541 GiB**, and `w6-2a/C/mem-during.txt` (3,908 lines) runs
+421.1 MiB → 458.9 MiB → 807.3 MiB → 1.545 GiB → **1.541/1.54 GiB across 108
+consecutive samples**, with `421.1MiB` appearing **exactly twice in the whole
+file, both before the request**. **"It fell back to 421 MiB afterwards" is
+retracted**: that reading came from the capture's `peak seen in the sampled
+stream` block, which is a **deduplicated, non-chronological** listing, so its
+421.1 MiB is the *pre*-request value. Retained rather than transient is the
+stronger fact and it is what the filed entry's severity leg (2) now rests on.
+Nothing in `manifests/` sets a memory limit on the
 controller container (`grep -rn memory manifests/` returns **2** hits, neither a
 container limit).
 
@@ -466,7 +501,12 @@ Confirmed in the same window's statement log (`w6-2a/C2b/breakdown.txt`):
 **35,100 `INSERT INTO logs` + 35,100 `SELECT pg_notify` = 70,200 = 2N exactly**,
 `G = 2`, and `append_insert controller3 n=7500 pids=1` spanning
 `05:18:34.284 – 05:18:43.757` — **one HTTP request holding one Postgres backend
-for 9.473 s and issuing 15,000 statements on it**.
+per statement class for 9.473 s, across 15,000 statements**. The breakdown
+prints `append_insert … pids=1` and `append_notify … pids=1` as **two separate
+counts** and never prints the pid, so "one shared backend for all 15,000" is
+inference, not measurement; it is almost certainly the same connection (insert
+and `pg_notify` are consecutive calls inside one `AppendLog`) and printing the
+pid is the one-line analyser change that would settle it.
 
 **The per-line rate is flat at ~812 lines/s — 1.23 ms/line, 0.62 ms/statement —
 on both paths**, so nginx contributes nothing to the cost. The 1 MiB cap does
@@ -571,19 +611,24 @@ ts=05:24:27.662 pid=4560 host=controller3 chan="log_appended:dab6e159-…"   <- 
 ts=05:24:39.477 pid=4560 host=controller3 chan="log_appended:54e9b7f6-…"   <- run B's stream
 ```
 
+*(Two substitutions in that block, both disclosed: run ids elided at the `…`,
+and `host=` rewritten from the capture's `172.20.0.5` to the service name it
+maps to — `w6-2a/D/w6-idleload-D2-ipmap.txt` reads `controller3 172.20.0.5`.
+Nothing else is altered.)*
+
 **The same backend, pid 4560**, twelve seconds and one closed stream apart. Then
 50 lines were appended to **run A only**:
 
 ```
 ts=05:24:45.930 pid=146 run=runB afterSeq=0 limit=10000
-…  50 records, 05:24:45.930 – 05:24:45.992
+…  50 records, 05:24:45.930 – 05:24:45.993   (49 on pid 146 to .992; the 50th at .993 on pid 142)
 ts=05:24:51.506 pid=141 run=runB afterSeq=0     limit=10000   <- the control begins
 ts=05:24:51.507 pid=141 run=runB afterSeq=43164 limit=10000
 …  10 records with advancing afterSeq
 ```
 
 **Run B's subscriber issued 50 `TailLogs` and 50 `GetRun` for a run it is not
-subscribed to**, all at `afterSeq=0`, returning nothing, inside 62 ms — and
+subscribed to**, all at `afterSeq=0`, returning nothing, inside **63 ms** — and
 `ssehold` records **`firstEvent_ms = 12049.9`** for that stream, i.e. its client
 received **zero** events until the control push 6 s later. The control proves
 the stream was live: 10 lines to run B produced 10 wakes with advancing
@@ -619,10 +664,31 @@ happens at longer horizons: that window was ended deliberately.)*
 | # | `FINDINGS.md` | Kind | Severity | Subject |
 |---|---|---|---|---|
 | 1 | `:2539` | violation (documented contract) | minor (docs gap) | `docs/operations.md:162` promises SSE listeners cannot consume API capacity; every wake spends two API-pool connections |
-| 2 | `:2562` | observation | major | a released listen-pool connection keeps its `LISTEN`s, so a subscriber is woken by runs it never subscribed to |
+| 2 | `:2562` | observation | minor | a released listen-pool connection keeps its `LISTEN`s, so a subscriber is woken by runs it never subscribed to |
 | 3 | `:2584` | observation | major | nothing bounds a log-bulk request on the direct path, and the bound that exists caps bytes while the cost scales with line count |
 | 4 | `:2614` | observation | minor | an SSE stream whose run terminates mid-stream is never closed by the server |
 | 5 | `:2622` | observation (campaign asset) | minor | `w6-idleload.sh` did not stop its own capture; three finished captures kept growing |
+
+**Entry 2 was first filed `major` and is now `minor`, re-argued at review from
+the band's own text rather than by analogy.** `FINDINGS.md:6-8` defines major as
+"incorrect visible behavior, unbounded recovery"; the stale-`LISTEN` waste
+satisfies **neither** limb — nothing visible is incorrect (zero rows, zero
+events, every line still delivered) and the recovery is bounded by pgxpool's
+30 m / 1 h defaults, a bound the entry states itself. Invisibility **aggravates**
+the finding — it is why nobody can budget for the term or find it afterwards —
+but that is an argument about diagnosability, which is the minor band's own
+subject. It now sits alongside entries 1 and 4, which are the same class of
+invisible cost and are already minor.
+
+**A scoping limit on `FINDINGS.md:2517` that two of the severity arguments here
+leaned on, discovered at review and now stated in all three entries.** `:2517`'s
+"the shipped pool sizing over-commits this Postgres by roughly 9×" is true of
+the **test rig** and does not generalize: `test/ha` runs stock
+`max_connections=100`, but the repository's own `docker-compose.yaml:30` starts
+Postgres with `max_connections=1000` and `docs/operations.md:173` tells operators
+so — 3 × 304 = 912 < 1000. Entries 2 and 4 both reached for "the API pool
+saturates first" / "the resource is scarce"; both now say which deployment that
+is true of. Nothing measured changes; the blast radius does.
 
 Three things this scenario **cited rather than re-filed**, per the standing rule:
 `FINDINGS.md:1521` (W3-4, the same loop's duplication under retry),

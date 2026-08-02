@@ -531,7 +531,7 @@ docker compose $COMPOSE_FILES up -d --build
 |---|---|---|
 | `w6-synth-agent.sh` | curl-driven synthetic agent: `enroll` / `register` / `heartbeat` / `trigger` / `claim` / `own` / `run-once` / `lines` / `push-bulk` / `finish` / `token` / `forget`. Agent id, label, job and server are all parameters | `w6-1/step1-synth-agent.txt` — enroll → register(204) → `own edge-w6-probe` → run reads back `Running`, 5 lines pushed through the real bulk route and read back through the admin API → `finish` → `Succeeded` |
 | `bin/loadgen` | N genuinely concurrent in-flight requests at ONE named controller; per-request start/end to CSV; `maxInFlight` swept from those timestamps | `w6-1/step2-loadgen.txt` — `-c 20 -mode burst` → `maxInFlight=20`, and the CSV shows all 20 sharing one start timestamp; the `-insecure-serial` control over the same 20 requests → `maxInFlight=1`, each start equal to the previous end. Both guards are proven by `loadgen/main_test.go` (`go test -buildvcs=false ./test/edgecase/tools/w6/loadgen/`), which is mutation-checked: disabling the over-report comparison makes `TestWarnsOnOverReport` fail with the pre-fix silent output |
-| `bin/ssehold` | S SSE streams held for a measured window against ONE controller; per-stream status, connect latency, event counts, alive-at-end | `w6-1/step3-4-sse-pg.txt` — 6 streams on `:18083` held 35 s, `aliveAtEnd=6 diedEarly=0`, 30 events each. **The targeting is proven by a delta, not by a snapshot**: `controller3` has **no `listen` row at all in sample 1** and exactly **6 from sample 2 onward**, when the streams opened. `controller1` carries a **flat `listen` peak=8 across every sample including sample 1** — stale listen connections an earlier run left behind, which the pools never released; that is the same "the pools only grow" mechanism the `W6-infra` entry describes, showing up as free corroboration. So: 6 new `listen` connections, all on the targeted replica, none on the other two |
+| `bin/ssehold` | S SSE streams held for a measured window against ONE controller; per-stream status, connect latency, event counts, alive-at-end | `w6-1/step3-4-sse-pg.txt` — 6 streams on `:18083` held 35 s, `aliveAtEnd=6 diedEarly=0`, 30 events each. **The targeting is proven by a delta, not by a snapshot**: `controller3` has **no `listen` row at all in sample 1** and exactly **6 from sample 2 onward**, when the streams opened. `controller1` carries a **flat `listen` peak=8 across every sample including sample 1** — stale listen connections an earlier run left behind, which the pool had not released across this capture's window; that is the same **non-prompt-release** mechanism the `W6-infra` entry describes — **not** "the pools only grow", which is a mechanism claim corrected below (pgxpool applies 30 m idle / 1 h lifetime defaults the product leaves unset) — showing up as free corroboration. So: 6 new `listen` connections, all on the targeted replica, none on the other two |
 | `w6-pgsample.sh` | `pg_stat_activity` on a grid, per replica and per **derived** pool, with a peak summary; `-p` also probes `/readyz` and `/healthz` on the same grid | same capture — the `listen` **delta** tracked the stream count exactly, and `w6-1/unplanned-pg-saturation.txt` shows the same instrument reading the saturated case. The `-p` health probe post-dates that capture and is proven off-rig: against a live throwaway port and a dead one it returns real codes and `000` respectively, and its summary was exercised on saturated-and-200, saturated-and-not-200 and never-saturated inputs |
 | `w6-reqshape.sh` | per-request shape recorder off nginx's `logfault` access log, folded into buckets; plus `counter` and `contrast` verbs | `w6-1/step5-reqshape.txt` — 60 bulk requests resolved individually inside a 75 ms window (median gap 1 ms) that a 2 s grid would report as one number; `w6-1/step5-reqshape-b.txt` — a real agent's 15 auto-flush ticks at a measured 2.000 s median spacing; `w6-1/step5-reqshape-c.txt` — `contrast` and the combined-format guard |
 | `w6-idleload.sh` + `w6-idleanalyze.py` | arms Postgres statement logging, captures a **bounded** window, always reverts, and reports q/s in total, per replica and per statement class. Despite the name it is a **generic window recorder** — W6-2a drove four loaded arms through it | `w6-1/step8-idlebaseline.txt` (arm, revert and read-backs) and `w6-1/step8-idle-report.txt` (the numbers below); **and `w6-2a/harnessfix/verify.txt` for the capture-leak fix — see the warning below** |
@@ -628,7 +628,7 @@ sound; **api and background are not separable** and are reported together as
 exactly **6 new** `listen` rows on the replica they were opened against, absent
 in the sample before they opened. Read that as a **delta**: `controller1` was
 already carrying a flat `listen` peak=8 from an earlier run's connections that
-were never released, so an absolute count over-reads.
+had not been released across that window, so an absolute count over-reads.
 
 **`-p` puts `/readyz` on the same grid, and it exists because of a specific
 failure.** The `W6-infra` entry reports that `/readyz` was 200 while Postgres
@@ -700,15 +700,23 @@ stack instances, not a measured curve, and should be read as one:** the 19 is
 the stack restarted at 04:03:31 (`w6-1/unplanned-pg-saturation.txt`), the 73-74
 is a stack **torn down and re-`up`ed at ~04:12:16** (`w6-1/step7-maxconcurrent.txt`)
 and sampled at 04:25, and **no intermediate sample exists** — the shape of the
-climb, and whether it is even monotonic, is unmeasured. That the pools only grow
-is code-read (`newPostgresPool` sets no `MaxConnIdleTime` or `MaxConnLifetime`),
-not traced. See the W6-infra entry in `FINDINGS.md`. A wave that needs the curve
+climb, and whether it is even monotonic, is unmeasured. **"The pools only grow"
+was the mechanism first written here and it is wrong as stated — see the
+correction two paragraphs below**: `newPostgresPool` sets no `MaxConnIdleTime`
+or `MaxConnLifetime`, but pgxpool supplies defaults when they are unset. What is
+code-read is non-release **promptly**, not unbounded accumulation, and neither is
+traced. See the W6-infra entry in `FINDINGS.md`. A wave that needs the curve
 should take it with `w6-pgsample.sh -i 10 -d 900` from a cold start; it is cheap
 and nobody has done it.
 
-**Re-confirmed by W6-2a one day later: 72.99 q/s over 150 s (24.47 / 24.31 /
-24.18 per replica), 1.2 % from the figure above** — and two things that arm adds
-rather than re-derives. The floor's **per-second** shape on one replica is
+**Re-confirmed by W6-2a one day later: 72.01 q/s (24.15 / 23.99 / 23.86 per
+replica), 0.4 % from the corrected 71.76 above** — both on their true windows.
+W6-2a's nominal 150 s window in fact spans `04:46:10.038 .. 04:48:42.077` =
+**152.04 s** (`w6-2a/floor/breakdown.txt`, corroborated by
+`w6-2a/floor/persec.txt`'s `seconds observed=152`), so its first-reported
+divide-by-nominal figure of 72.99 q/s was ~1 % high, exactly as this section's
+own denominator caution predicts. **Correcting both sides tightens the agreement
+from 1.2 % to 0.4 %** — and two things that arm adds rather than re-derives. The floor's **per-second** shape on one replica is
 **median 22, max 61** statements/s (`w6-2a/floor/persec.txt`), which is the
 number a peak is meaningful against; and that arm's own class breakdown carries
 **zero** log-path statements, so the subtraction of the floor from a loaded arm
@@ -745,6 +753,23 @@ disjoint, non-empty — and window 1's file was byte-identical before and after
 window 2 ran. **Any capture taken before this fix must be analysed with an
 explicit window**; W6-2a's `breakdown.py`, archived beside its evidence, is the
 model.
+
+**How far back the leak reaches — settled by re-running the analyser, so the
+warning does not hang unresolved over the campaign's most-cited number.** The
+only pre-fix capture that any published figure rests on is Task 1's 300 s
+idle-floor arm, and **it is not inflated at all**. Task 1 ran exactly **one**
+`idleload` arm, last in its session, so no later arm could append to it. The
+archived raw *is* a superset of what was analysed live — **215,052 lines against
+the 214,315 that `w6-1/step8-idlebaseline.txt:16` reports** — but the 737 extra
+lines are a shutdown tail (`postgres-1 exited with code 0`) and contain **4**
+`statement:` lines, all inside the window. **Re-running
+`w6-idleanalyze.py w6-1/w6-idleload-idle-statements.log w6-1/ipmap.txt 300 idle`
+on the archived file reproduces the report exactly: same window
+`04:16:20.006 .. 04:21:21.487`, `statements 21633`, and the same per-replica
+7296 / 7230 / 7104.** Zero drift, not the 2.4× the `floor` capture suffered. And
+every W6-2a number is window-bounded by `breakdown.py` by construction. So the
+rule above is a standing precaution for future re-analysis, **not** an open
+question about any figure this README publishes.
 
 **2. `w6-pgsample.sh`'s `TOTAL backends ... of max_connections=100` line reads
 as saturation and is not.** `pg_stat_activity` includes Postgres's own
