@@ -98,9 +98,18 @@ non-substantive hits are, exhaustively: seven `S3-compatible`
 `troubleshooting.md:276`), two DSL-semantics uses of "incompatible with holding
 one isolated environment" (`jobs.md:1260`, `resources.md:195`), one bare
 cross-link (`getting-started.md:455`), one checklist item
-(`high-availability.md:553`), and one `N-1`-shaped false positive absorbed by
-the same lines. **The count is reported rather than the survey truncated**, per
-the standing rule.
+(`high-availability.md:553`), and one **table-of-contents line**,
+`high-availability.md:13` (`- [Rolling Deploys and Graceful Shutdown](#…)`).
+**That last item is a correction: an earlier version of this list ended with
+"one `N-1`-shaped false positive absorbed by the same lines", and there is no
+`N-1` hit in `docs-compat-survey.txt` at all** — the regex alternation includes
+`N-1` but nothing in `docs/` matches it. The phantom accounted for the 14th slot
+that `high-availability.md:13` actually occupies. **7 + 2 + 2 + 1 + 1 + 1 = 14,
+and 27 − 14 = 13, which reconciles against the substantive list in §"Step 2 —
+the contract, and its 12 neighbours".** In a task whose deliverable is
+enumerations, "exhaustively" has to be earned by an enumeration that adds up.
+**The count is reported rather than the survey truncated**, per the standing
+rule.
 
 ### CORRECTION 4 (mechanism) — the `verifySchema` race needs a **stricter** precondition than "a mixed-version boot", and the failure it produces is **already documented, with a remedy the rig cannot deliver**
 
@@ -176,6 +185,18 @@ counting `.up.sql` entries in the embedded FS and requiring
 `len(schemaSentinels)` to equal it — so **the denominator is enforced by the
 product's own suite, not only by this sweep.** Every up file was then read in
 full and swept with one regex (`migration-sweep.txt` header carries it verbatim).
+
+**The denominator is the POST-SQUASH set, and this is said because
+`docs/operations.md:191` speaks of "migration history".**
+`internal/store/migrations/001_init.up.sql:1-4` is itself the squash of a
+*former* 001-017 (commit `79c1074`, "squash migrations 001-017 into a single
+consolidated init", 2026-07-04, whose own header records that it is a breaking
+change for databases created by the old numbered migrations). So every "of the
+17" in this runbook means **of the 17 currently embedded**; the pre-squash
+history is not in the tree and was not swept. **It does not weaken anything** —
+an unswept history can only add backward-incompatible operations to the true
+total, never remove one from this count — but the scope of the claim is stated
+rather than left to be assumed.
 
 **Definition used throughout.** An operation is **backward-incompatible** if a
 controller binary whose embedded migration set stops at some version < *n* can
@@ -259,9 +280,19 @@ table; see CORRECTION 2.** These reject writes an older binary makes
 
 | Constraint | Statement | What it now rejects |
 |---|---|---|
-| `step_reports_pkey (run_id, step_index, variant)` | `005:3` (and `005:7` for `step_outputs`) | an older binary's `ON CONFLICT (run_id, step_index)` has no matching unique index → `42P10` |
+| `step_reports_pkey (run_id, step_index, variant)` | `005:3` (and `005:7` for `step_outputs`) | an older binary's `ON CONFLICT (run_id, step_index)` would have no matching unique index → `42P10`. **INFERRED — see the note below the table** |
 | `secrets_name_key UNIQUE (name)` | `016:18` | two secrets sharing a name across scopes — which `001_init.up.sql`'s `UNIQUE (name, scope, scope_ref)` permitted |
 | `access_token_ttl_seconds BETWEEN 300 AND 14400` | `014:37-38` | TTLs between 4h and 24h, which `013:64`'s `CHECK` allowed |
+
+**Row 1 is INFERRED and is labelled so, because it cannot be checked against any
+tag.** No tag predates 005 (`v0.0.1` already embeds 001-007), so there is no
+released binary whose `step_reports` upsert can be inspected, and nothing in this
+audit shows any binary ever wrote `ON CONFLICT (run_id, step_index)`. It is the
+shape of the class, not evidence for it. **The evidenced instance is
+`v0.3.0:internal/store/postgres.go:1541`** — a real `ON CONFLICT (name, scope,
+scope_ref)` in a real released binary, invalidated by `016:15`/`:18`. Rows 2 and
+3 plus that site carry the class on their own; row 1 is retained only as the
+illustration.
 
 **Reachability caveat, stated because it bounds two of the classes.** `v0.0.1`
 — the earliest tag — already embeds migrations **001-007**
@@ -353,10 +384,14 @@ invariant's own text or a statement in `docs/*.md`; **not** an inline comment
 inside a function body and **not** an unexported helper's doc comment):
 
 - `schemaSentinels` is an **unexported package-level variable** and the text is
-  its doc comment. Under the rule as written, that is **explicitly not a
-  contract**. Filing it as a violation would be filing against a source the
-  campaign has already decided does not carry contracts, and W6 re-banded four
-  entries for looser reasoning than that.
+  its doc comment, so it fails `:479`'s **inclusion** limb outright: a contract
+  limb must be *"an exported API field, a schema column, or a statement in
+  `docs/`"*, and a comment on an unexported var is **none of the three**. **That
+  is the ground used, and it is deliberately not the exclusion limb** — `:479`
+  also excludes "an unexported helper's own doc comment", but `schemaSentinels`
+  is a **var**, not a helper, so the exclusion would be reached by analogy where
+  the inclusion is an exact fit. Same verdict, no stretch; and W6 re-banded four
+  entries for reasoning looser than an analogy.
 - It is also not an *independent* observation, because **its subject is the same
   fact as the violation's**: the rule exists precisely because migrations in
   this repository drop things. It is corroboration of intent — the codebase
@@ -379,7 +414,7 @@ first entry), with the enumeration that shows the hazard is latent.
 2. `migrate.go:265-283` (golang-migrate **v4.19.1**) — `Up()` opens with
    `m.lock()` (`:266`) and every exit is through `m.unlockErr(...)` (`:283`).
    **The lock covers `Up()` and nothing after it.**
-3. `database/postgres/postgres.go:234-247` — `Lock()` is
+3. `database/postgres/postgres.go:233-248` — `Lock()` is
    `SELECT pg_advisory_lock($1)` (`:241`) with the id from
    `GenerateAdvisoryLockId(DatabaseName, migrationsSchemaName,
    migrationsTableName)` (`:235`) — the same three inputs on every replica, so
@@ -399,7 +434,15 @@ first entry), with the enumeration that shows the hazard is latent.
 
 `migrate.go:738` — `m.databaseDrv.SetVersion(migr.TargetVersion, true)`,
 immediately before running each migration, cleared at `:750`. A replica with
-nothing to apply never reaches `:738`. **So the interleaving requires the
+nothing to apply never reaches `:738`. **`:738` is the only `SetVersion(…, true)`
+in the package**: `grep -n SetVersion migrate.go` returns exactly three sites —
+`:374` (inside `Force`, passing `false`), `:738` (`true`) and `:750` (the
+clear). **And the corollary is sharper than "the lock is scoped to `Up()`":
+`Up()` re-reads `dirty` itself at `migrate.go:270-277`, INSIDE the lock, and
+returns `ErrDirty` before applying anything — so `verifySchema` at
+`internal/store/postgres.go:142` is the ONLY unlocked `dirty` read in the
+process.** The library serialises its own read of the flag correctly; the
+product's read is the one that is not. **So the interleaving requires the
 replica that acquires the lock second to hold a strictly larger migration set**
 (CORRECTION 4a). Concretely: replica **A** (older binary, set ends at 16)
 finishes `Up()` and unlocks → replica **B** (newer, set ends at 17) acquires and
@@ -468,7 +511,7 @@ collide, and they do not error.
 has repeatedly found that unified-cd's HA safety comes from Postgres primitives
 rather than from application logic (W0-1's advisory-lock leader election is the
 counter-example where a *pooler* broke exactly that assumption,
-`FINDINGS.md:156`), and this is the same primitive used correctly. **The
+`FINDINGS.md:22`), and this is the same primitive used correctly. **The
 corollary that makes it non-trivial: it is also why the Step 5 race exists at
 all** — the lock is scoped to `Up()` precisely because `Up()` is the dangerous
 part, and `verifySchema` was appended after it without the scope being widened.
@@ -488,6 +531,12 @@ them**, established by extracting `schemaSentinels` from **every** tag
 | `v0.3.0` | 1-12 | confirms the plan's figure |
 | `v0.4.0` | 1-16 | |
 | HEAD | 1-17 | |
+| `backup/regression-review-pre-rebase` | — | the ninth and last name `git tag` returns; **`internal/store/verify.go` does not exist at that ref either**, so the empty row is genuine |
+
+**The last row is named rather than omitted**, because "every tag" is the
+load-bearing word in this result: `git tag` returns nine names, an earlier
+version of this sweep listed eight, and a silently skipped ref makes the claim
+unverifiable even when — as here — it changes nothing.
 
 **Every list is a strict prefix of the next.** No entry is ever removed,
 renumbered, or repointed at a different object. And the objects themselves
@@ -527,11 +576,20 @@ And it is not the only one. `v030-dropped-column-refs.txt` enumerates v0.3.0's
 | `sessions.refresh_token` | `postgres.go:1769`, `:1771`, `:1783`, `:1800` | every OIDC login, lookup and refresh |
 | `secrets.scope` / `.scope_ref` | `postgres.go:1539`, `:1541`, `:1545`, `:1557`, `:1558`, `:1569`, `:1570`, `:1589` | every secret set/get/list/delete, **including `ON CONFLICT (name, scope, scope_ref)`** at `:1541`, which is Class E as well as Class A |
 
-**So the mixed-version pair the design doc imagined — an N-1 controller serving
-traffic beside an N controller — is not degraded, it is impossible**, and the
-failure is at boot rather than under load. **That is a cleaner answer than a rig
-would have produced**, and it is the concrete instance of the violation filed
-below: `docs/operations.md:191` tells an operator that this configuration works.
+**So the mixed-version pair the design doc imagined is not degraded, it is
+impossible** — and the failure is at boot rather than under load. **But the pair
+that is impossible is N-2 beside N, NOT N-1 beside N, and the distinction is
+load-bearing for the finding's blast radius.** `git ls-tree v0.4.0
+internal/store/migrations/` returns **001-016** (matching the 1-16 sentinel row
+above), and `017_run_detached.up.sql` is purely additive — one
+`ADD COLUMN detached BOOLEAN NOT NULL DEFAULT false` plus a partial index — so
+**a v0.4.0 controller boots and serves against a HEAD schema**. The breakage
+needs an embedded set that stops **below 015**, and the newest release meeting
+that is **v0.3.0, which is N-2** (`git tag` orders the releases `v0.0.1`,
+`v0.0.2`, `v0.0.3`, `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.3.0`, `v0.4.0`). **That is
+a cleaner answer than a rig would have produced**, and it is the concrete
+instance of the violation filed below: `docs/operations.md:191` tells an
+operator that this configuration works.
 
 **Recorded as a decision, with its cost.** Two cold controller images (npm ci +
 vite + Go, no layer sharing, `docker-compose.ha.yaml:79-81` builds from source
@@ -544,7 +602,7 @@ four `git grep`s establish.
 
 | # | `FINDINGS.md` | Kind | Severity | Subject |
 |---|---|---|---|---|
-| 1 | `:2959` | **violation** (`docs/operations.md:191`) | **major** | 5 of 17 migrations are backward-incompatible, so the documented rolling-upgrade guarantee's stated ground is false; carries the unenforced-sentinel-rule limb in Notes |
+| 1 | `:2959` | **violation** (`docs/operations.md:191`) | **major** | 5 of 17 embedded migrations are backward-incompatible, so the documented rolling-upgrade guarantee's stated ground is false and an **N-2** (pre-v0.4.0) controller cannot boot; carries the secret/session-destruction band argument and the unenforced-sentinel-rule limb in Notes |
 | 2 | `:2979` | **observation** | minor (observation) | `verifySchema` runs outside the migration advisory lock; a mixed-version boot can `os.Exit(1)` a replica with no retry and no restart policy |
 | 3 | `:2993` | **observation** | minor (observation) | the three refuted scenarios, recorded as results |
 
@@ -566,6 +624,32 @@ run accounting and no run is involved; I5 (bounded recovery) is the closest and
 recovery *is* bounded — by an operator restart the docs name. **The defect is
 real and the entry is filed at the top of the minor band; what it is not is a
 contradiction of anything published.**
+
+**Entry 1 carries a SECOND subject — the unconditional, undocumented destruction
+of every secret and every session on upgrade — and the decision to keep it
+inside entry 1 rather than split it out is recorded here because it is a
+judgement, not a mechanical step.** The review's complaint was sound: entry 1's
+`Severity` line disposed only of `:6`'s *silent corruption* disjunct while the
+destruction subject inherited its band from the doc-sentence subject without
+ever being argued. **Both disjuncts (and `security`) are now disposed of
+separately at `FINDINGS.md:2961`, in place. The split was weighed and
+declined**, on three grounds. **(1) The destruction has no contract limb of its
+own.** Under `FINDINGS.md:479` a violation needs a *published* promise to
+contradict, and the only published text the destruction contradicts is
+`docs/operations.md:191`'s "additive columns/tables" — entry 1's existing limb.
+A split entry would either file one contract twice or carry no limb at all.
+**(2) Its subject is not independent**: the destruction is the single most
+damaging instance of exactly what the parenthetical denies, and its evidence
+(`015:11`, `015:13`, `016:13`, `016:7-12`, the 1-hit `docs/` survey) is one body
+that would have to be duplicated across two entries. **(3) Internal
+consistency**: §Step 4 above declines to split the sentinel-rule limb on the
+*same* not-an-independent-subject test, and applying that test one way there and
+the other way here inside one entry would be incoherent. **The substantive
+change is therefore in the argument, not the structure — and the previously
+unlabelled inference about operator practice ("secret values live in the
+operator's own source of truth") is now labelled INFERRED and carries no
+weight; the load is taken by `016:9-11`, which states the product's own premise
+verbatim.**
 
 **All three are labelled `NOT EXECUTED (code-read only)` on their `Repro`
 lines**, per `FINDINGS.md:1864`'s precedent.
