@@ -190,24 +190,14 @@ func TestLogPusher_StartAutoFlush_DeadlineUnblocksWriter(t *testing.T) {
 	client := NewClient(srv.URL, "tok")
 	p := NewLogPusher(client, "a1", "run1", 0, "stdout")
 
-	// Shrink the per-flush deadline for the duration of the test.
-	//
-	// The auto-flush goroutine reads logPusherAutoFlushTimeout on every tick
-	// while holding p.mu (runner.go), and StartAutoFlush gives the caller no
-	// way to join that goroutine — cancelling ctx only ASKS it to stop. A
-	// plain `t.Cleanup(func() { logPusherAutoFlushTimeout = prev })` therefore
-	// races a tick that is still in flight, which is a race in the test's own
-	// lifecycle, not in LogPusher. Writing the var under the same mutex the
-	// reader holds orders the restore against every tick, before and after.
-	// The initial write needs no lock: it precedes StartAutoFlush, and
-	// starting a goroutine already orders it against that goroutine's reads.
-	prev := logPusherAutoFlushTimeout
-	logPusherAutoFlushTimeout = 150 * time.Millisecond
-	t.Cleanup(func() {
-		p.mu.Lock()
-		logPusherAutoFlushTimeout = prev
-		p.mu.Unlock()
-	})
+	// Shrink the per-flush deadline on THIS pusher only. Setting the
+	// package-level logPusherAutoFlushTimeout instead (and restoring it from a
+	// t.Cleanup) is a data race that no lock can fix: every other live
+	// pusher's auto-flush goroutine reads that var under its own mutex, so a
+	// writer cannot order itself against those readers. The race detector
+	// caught it against a pusher left running by an unrelated test. Writing
+	// the field before StartAutoFlush is ordered by the goroutine's own start.
+	p.autoFlushTimeout = 150 * time.Millisecond
 
 	_, _ = p.Write([]byte("first line\n"))
 

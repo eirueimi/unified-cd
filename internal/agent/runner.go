@@ -229,7 +229,14 @@ var logPusherWriteFlushTimeout = 5 * time.Second
 // (~9.4s), so a slow-but-working flush is not abandoned; 15s does that while
 // capping the stall at roughly a tenth of the unbounded case. Abandoning a
 // pass costs latency, not lines: the backlog stays in p.pending, in order,
-// and the next tick resumes it. A var so tests can shrink it.
+// and the next tick resumes it.
+//
+// This is the DEFAULT ONLY: NewLogPusher snapshots it into the pusher's own
+// autoFlushTimeout field, and StartAutoFlush reads that field. A test must
+// shrink the field on the pusher it owns, never this var. Mutating it at test
+// time is a data race no lock can fix: the auto-flush goroutine of every OTHER
+// live pusher reads it under ITS OWN mutex, so there is no lock the writer
+// could take that orders the write against those readers.
 var logPusherAutoFlushTimeout = 15 * time.Second
 
 // pendingBatch holds a batch of log requests that failed to send.
@@ -251,6 +258,12 @@ type LogPusher struct {
 	client          *Client
 	flushBytes      int
 	masker          *secrets.Masker
+	// autoFlushTimeout bounds a single auto-flush pass; see
+	// logPusherAutoFlushTimeout, which is its default. Per-pusher rather than
+	// global so a test can shrink it without writing state that other
+	// pushers' auto-flush goroutines are concurrently reading. Set before
+	// StartAutoFlush; the goroutine's read is ordered by its own start.
+	autoFlushTimeout time.Duration
 	// droppedLines counts log lines discarded by appendPendingLocked's
 	// drop-oldest eviction (e.g. during a sustained controller partition).
 	// Surfaced as a synthetic marker line on the next successful flush, then
@@ -266,8 +279,9 @@ func NewLogPusher(client *Client, agentID, runID string, stepIndex int, stream s
 		stepIndex:       stepIndex,
 		agentID:         agentID,
 		client:          client,
-		flushBytes:      4 << 10,
-		maxPendingBytes: 1 << 20, // 1MB
+		flushBytes:       4 << 10,
+		maxPendingBytes:  1 << 20, // 1MB
+		autoFlushTimeout: logPusherAutoFlushTimeout,
 	}
 }
 
@@ -297,7 +311,7 @@ func (p *LogPusher) StartAutoFlush(ctx context.Context, every time.Duration) {
 				// budget, and derives from ctx so step cancellation still
 				// propagates.
 				p.mu.Lock()
-				fctx, cancel := context.WithTimeout(ctx, logPusherAutoFlushTimeout)
+				fctx, cancel := context.WithTimeout(ctx, p.autoFlushTimeout)
 				p.flushCompleteLinesLocked(fctx)
 				cancel()
 				p.mu.Unlock()
