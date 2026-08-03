@@ -16,10 +16,14 @@ versioned down. §"Why only this pair" records why.
 ## The contracts this scenario is measured against
 
 **Lead with the documented statement, not with an invariant** (the W4-1 shape).
-`docs/jobs.md:1305-1330` documents `downloadArtifact.runId` in a dedicated
-section with no version qualification anywhere in it, and closes with:
+`docs/jobs.md:1305-1331` documents `downloadArtifact.runId` in a dedicated
+section with no version qualification anywhere in it, and closes at `:1331`
+with:
 
 > `runId` works on both the standard and Kubernetes agents.
+
+*(Range corrected at review: this said `:1305-1330`, which excluded the very
+bullet the quote comes from. The section's last line is `:1331`.)*
 
 and `docs/jobs.md:1274-1276`:
 
@@ -137,6 +141,18 @@ image `unified-cd-agent:v0.4.0-local`,
 `sha256:bc3b433380e6f844666295f062cfa4cd579f7bc3b53a0654fa3acda457dc936d`,
 40,894,945 bytes. Raw capture: `w5-2/step1-build-v040-agent.txt`.
 
+**Every other number in this section lived only in the table above until
+review** — the digests, the five missing tags, the run id, 1m47s, which legs
+failed, the eight that passed, the image size. All are GHCR / GitHub Actions /
+git queries rather than rig state, so they were **re-taken on 2026-08-03 and
+every one reproduced**: `w5-2/step1-recapture-2026-08-03.txt`. It adds two
+things the table did not have: a **same-tool control** (the identical
+`docker manifest inspect` at `v0.3.0` returns exit 0 and a full OCI index while
+all five `v0.4.0` queries return `manifest unknown` exit 1, so the nulls are not
+an auth or tooling artefact), and a **direct proof that `:latest` is v0.3.0**
+(`agent:latest` and `agent:v0.3.0` return the same index digest
+`sha256:fc6178f2…`), which the entry had been inferring.
+
 **Note the asymmetry with the release failure:** `docker/agent.Dockerfile` at
 v0.4.0 *does* build `./cmd/ucd-sh` into `internal/shim/embedded/` before
 building the agent (`agent.Dockerfile:17-18`), which is exactly the step
@@ -167,8 +183,9 @@ about merging `image:` **onto** an existing `build:`).
 **Labels are the steering mechanism.** Agent labels come from the enrollment
 token, not from `--labels`. `agentold` alone carries `kind:old`; `agent1` and
 `agent2` alone carry `kind:linux`. Every arm below is therefore a **pair of
-otherwise-identical jobs differing in one selector line**, so "old agent vs
-HEAD agent" is a controlled comparison and not a race for the claim.
+jobs differing in the selector line and in `metadata.name` (which two jobs
+cannot share) and in nothing else — two lines**, so "old agent vs HEAD agent"
+is a controlled comparison and not a race for the claim.
 
 Bring-up (from `test/ha`):
 
@@ -341,7 +358,12 @@ finding 1.
 | consumer, HEAD agent | `faecbba3-…` | `agent2` (HEAD) | Succeeded | Succeeded | `W5-ARTIFACT-SOURCE=producer` / `a1b2c3d4e5f60001` |
 
 Both jobs carry the identical `runId: d8eb76f5-acd7-4eac-be49-baa0831e5df7`;
-they differ in **one line** (`agentSelector: kind:old` vs `kind:linux`).
+they differ in **two lines** — `metadata.name` and `agentSelector`
+(`kind:old` vs `kind:linux`). `diff workloads/w5-consumer-old.yaml
+workloads/w5-consumer-head.yaml` returns those two hunks and nothing else.
+*(Corrected at review: this said "one line", counting only the selector. The
+name difference is forced — two jobs cannot share a name — and is inert for the
+result, but the stated fact did not trace.)*
 
 **The wrong artefact is provably the wrong one, not a missing one.** Both
 candidates existed under the name `w5payload` at download time — the consumer
@@ -352,13 +374,45 @@ old agent did not fall back to a leftover file and did not fail to find the
 named run's artefact: it fetched a **different, existing** artefact and
 returned it under the name the job asked for.
 
-**Nothing anywhere signals it.** All five steps report `Succeeded` with
-`exitCode: 0` on both runs; `agentold`'s container log for that run is a single
-`"running"` line with no warning; the controller emits nothing. The only
-difference visible anywhere in the product is the *content of a file in the
-workspace*.
+**The PRODUCT signals nothing of its own — and that is the corrected wording,
+because the stronger form this section first used is false to its own
+captures.** It said "the only difference visible anywhere in the product is the
+content of a file in the workspace." The two runs' **stored logs** differ, and
+the log API is a product surface:
+`partA-edge-w5-consumer-old-logs.json` **seq 17-18** reads
+`W5-ARTIFACT-SOURCE=consumer-self` / `9f8e7d6c5b4a0002`, while
+`partA-edge-w5-consumer-head-logs.json` **seq 31-32** reads
+`W5-ARTIFACT-SOURCE=producer` / `a1b2c3d4e5f60001`. What is true is that the
+divergence is visible only because *the workload* echoed the marker: all five
+steps report `Succeeded` with `exitCode: 0` on both runs; `agentold`'s
+container log for that run is a single `"running"` line with no warning; and
+the controller emits nothing.
 
-Filed as a violation of `docs/jobs.md:1305-1330` — see `FINDINGS.md` §W5-2a.
+**"The controller emits nothing" is a CODE-READ, not a log grep, and the
+capture gap that forced that is stated rather than papered over.** No
+controller log and no audit-table dump were captured during the session, and
+`down -v` destroyed the containers, so the original claim was an *uncaptured
+live observation*. Re-running would give a different run, not the 02:57-02:59
+window, so the negative was re-established from the source instead — which is
+stronger, because it holds for every run:
+`internal/controller/api_artifacts.go` has **zero** `slog`/`log` call sites on
+any path, and `internal/controller/audit.go` matches `artifact` **zero** times
+and `MethodGet` **zero** times, so `classifyAudit` returns `!ok` and no audit
+row is ever written for an artifact download by any principal.
+Capture: `w5-2/partA-controller-silence-coderead-2026-08-03.txt`.
+
+Filed as a violation of `docs/jobs.md:1305-1331` — see `FINDINGS.md`, the first
+`## W5-2` entry (*"a v0.4.0 agent silently ignores `downloadArtifact.runId`"*).
+**Severity `major`, not `critical`:** the band was re-argued at review from
+`FINDINGS.md:6-8`'s own text. `:6`'s "silent corruption" fails on both words —
+nothing the product stores is damaged (the wrong object is intact; the failure
+is *selection*, not corruption), and the divergence is not silent on the log
+surface above. `:7`'s *"incorrect visible behavior"* is the fit. The entry's
+Severity line carries the full argument, the file-wide pre-file check
+`FINDINGS.md:1950` demands, and the reason this entry does **not** join or
+re-open the six-member escalation set.
+*(`§W5-2a` was the cross-reference here and it resolved to nothing — all five
+W5-2 headings are plain `## W5-2 —`. Replaced with the entry's own words.)*
 
 ### Part B — the 401 prediction **HOLDS**; the break is clean.
 
@@ -371,8 +425,19 @@ Parent `9005f151-…`, `claimedBy: agentold`:
 - Parent run **Failed**, 0.5 s after claim. **One** terminal state.
 
 **The child was followed, and there is none.** `SELECT … FROM runs WHERE
-job_name='edge-w5-call-child'` → **0 rows**; `SELECT count(*) FROM step_reports
-WHERE child_run_id IS NOT NULL` → **0**. No orphan, no phantom, no hang.
+job_name='edge-w5-call-child'` → **0 rows**; the count of `step_reports` rows
+carrying a `child_run_id` → **0**. No orphan, no phantom, no hang.
+
+*(Capture traceability, annotated at review.* `partB-db-accounting.txt` records
+the first zero plainly — its third block is `id | job_name | status |
+claimed_by` → `(0 rows)`. It records the **second** zero under a header labelled
+**`run_relations`** and stores **no SQL text**, so the capture does not itself
+show which statement produced it; `SELECT count(*) FROM step_reports WHERE
+child_run_id IS NOT NULL` is *this runbook's* query, not a string in the file.
+The zero is independently corroborated by the capture's first block, which
+enumerates all five job names that have a run and does **not** list
+`edge-w5-call-child` — with no child run, no `child_run_id` can point at one.
+**The fix for a re-run: echo the SQL into the capture alongside its result.**)
 
 **Measured, not inferred: 401, not 403.** The request never reaches
 `requireMinRole("developer")` — `ServerAuth` rejects the `uca_` credential
@@ -430,22 +495,46 @@ v0.4.0 agent has no such loop, so it never asks. **Measured:**
 
 | job | selector | outcome |
 |---|---|---|
-| `edge-w5-detached-old` | `kind:old` | **`Queued` for the whole 317 s window, which I ended.** `updated_at` never moved past 02:59:48.66 — 0.1 s after creation, i.e. **no state transition at all** |
+| `edge-w5-detached-old` | `kind:old` | **`Queued` for the whole 317 s window, which I ended.** `updated_at` **did not move again within the observed window** past 02:59:48.66 — 0.1 s after creation, i.e. **no state transition at all** |
 | `edge-w5-detached-head` | `kind:linux` | `Succeeded`, claimed by `agent1`, within 6 s |
 
 Per the campaign rule, **"never" is not written for a window I ended myself**:
 what is measured is 317 s with zero transitions, against a 6 s control.
+*(The table said "never moved past" — one line above the rule it was invoking.
+Corrected at review.)*
+
+**And the 317 s is not uniformly sampled — say so rather than let "19 samples
+across 317 s" imply coverage it does not have.** `partC-detached-poll.txt`
+holds 18 samples at a ~5.5 s cadence from `02:59:48` to `03:01:20` (92 s), then
+one final sample at `03:05:05` — **225 s unsampled**. What covers the gap is
+the row, not the poll: `updated_at` still read `02:59:48.658615` at the
+`03:05:05` sample, and any transition inside the gap would have advanced it.
 
 **Edge 4 — the enrollment-policy wire lost `Capabilities`** (table above). Not
 reachable by the agent, so it is recorded as part of the enumeration and not as
 a scenario. A v0.4.0 **`unified-cli`** posting `capabilities` to a HEAD
 controller would have the field silently dropped; not measured.
 
-So the enumeration, and how I know it is complete: the agent↔controller wire is
-exactly (a) the shared types in `internal/api/`, (b) the request the agent's
-`Client` builds, and (c) the routes the controller registers. All three were
-diffed in full at both tags, non-test files included; the totals are +8/−6
-lines of API types, +44/−5 lines of client, and +1/−0 routes.
+So the enumeration, and **exactly what it closes — the scope is narrowed at
+review, because as first written it claimed more than it shows.** The
+**syntactic** agent↔controller wire is exactly (a) the shared types in
+`internal/api/`, (b) the requests the agent's `Client` builds, and (c) the
+routes the controller registers. All three were diffed in full at both tags,
+non-test files included; the totals are +8/−6 lines of API types, +44/−5 lines
+of client, and +1/−0 routes. **That closes fields, bodies and paths. It does
+NOT close *semantic* drift**, where the same type on the same route comes to
+mean something different — `partC-diff-stat.txt` shows
+`internal/controller/api_agent.go` at **+184** and `internal/controller/api_runs.go`
+at **+65**, and either could move behaviour with no type or route delta.
+
+**The obvious semantic case was probed rather than assumed, and it is clean:** a
+new step `kind` would be exactly that drift, and
+`git diff v0.4.0..HEAD -- internal/dsl/types.go` is **12 lines adding two
+fields and their comments — `Spec.Detached` and `DownloadArtifactStep.RunID` —
+and nothing else**. No new `kind`, no changed step semantics. So the
+enumeration holds **empirically** on the one probe that was run, and is
+**stated as three syntactic surfaces enumerated plus one semantic probe**, not
+as a proof of completeness.
 
 ### Unplanned finding 1 — every shipped agent reports `version: "dev"`
 
@@ -480,6 +569,37 @@ build only works at HEAD because the real binaries were later checked in
 which predates the entire v0.4.0 auth rewrite, and `README.md:30-33` tells a
 new user to pull exactly those tags.
 
+**Two review corrections, both against this finding's own reasoning.**
+
+**(i) `README.md:36` IS the contradicted promise, and the entry missed it three
+lines below the block it quoted.** Verbatim: *"Images are published to GitHub
+Container Registry on every `v*` tag for `linux/amd64` and `linux/arm64`."* A
+`v*` tag was pushed and no image was published for it, on either platform. The
+first filing asserted the opposite — *"No published text promises that a `v*`
+git tag has a matching image tag"* — while also asserting "nothing here is a
+documentation defect", which between them left the entry with no limb at all.
+So it is a **violation** on the documented-contract limb, not an observation.
+Note the one extension this needs and which `FINDINGS.md` states explicitly:
+`:479` enumerates that limb as "a statement in `docs/`", and `README.md` is not
+under `docs/`; it is read as illustrative of the rule's own stated principle,
+"requires a **published** promise".
+
+**(ii) It is NOT an "asset defect".** `FINDINGS.md:480`'s third bucket is for a
+defect in *the campaign's own assets*, fixed inside this branch, product
+untouched. This is a **product** release-pipeline defect, still true today. It
+was reclassified into the ordinary tallies.
+
+**Every number in this finding is now captured** —
+`w5-2/step1-recapture-2026-08-03.txt`, taken 2026-08-03T03:28-03:30Z. At filing
+the only §Step 1 capture was the local build log and the rest lived in this
+runbook's prose table. These are GHCR/GitHub queries, not rig state, so they
+were re-taken and all reproduced: five `manifest unknown` (exit 1) against a
+`v0.3.0` control at exit 0; `agent:latest` and `agent:v0.3.0` returning the
+**same** index digest `sha256:fc6178f2…`; run `29796662231`
+`02:45:12Z → 02:46:59Z` = 1m47s with the two `k8s-agent` legs `failure`, eight
+`success`, `merge` **`skipped`**; `git ls-tree` at both tags; and the local
+image at **40,894,945** bytes.
+
 ---
 
 ## Corrections to the plan's reconnaissance
@@ -499,8 +619,12 @@ fail. **The pattern held for a seventh wave, and in both directions.**
 **Corrections:**
 
 1. **"HEAD is 79+ commits ahead of v0.4.0" — wrong.** `git rev-list --count
-   v0.4.0..main` is **56**; including this branch's three W5 commits,
-   `v0.4.0..HEAD` is **64**. Neither is 79.
+   v0.4.0..main` is **56**. `v0.4.0..HEAD` was **64** when this was counted
+   (branch head `3d8c58b`), and the 8-commit difference is **this campaign
+   branch's five wave-merge commits (W1-W6) plus its then-three W5 commits** —
+   not three, which is what this line said and which does not add up:
+   56 + 3 ≠ 64. At the branch head this correction was written against
+   (`d2f82ca`, five W5 commits) the same count is **66**. Neither figure is 79.
 2. **"images for v0.0.1-v0.4.0 *should* exist … whether the packages are public
    is not resolvable read-only" — resolved, and half of it is false.** The
    packages **are** public. The v0.4.0 tags **do not exist**, for any of the
@@ -532,9 +656,15 @@ fail. **The pattern held for a seventh wave, and in both directions.**
 ## Teardown, archival and the credential sweep
 
 `docker compose … down -v` ran clean (all volumes and the network removed, no
-`unified-cd-ha` container left). The 38 capture files are archived at
+`unified-cd-ha` container left). The 38 session capture files are archived at
 `<project parent>/edgecase-evidence/w5/w5-2/` and verified with `diff -r`
-(identical). The `../wt-v040` worktree and the `unified-cd-agent:v0.4.0-local`
+(identical). **Two further files were added to that directory at review, after
+teardown, and are labelled as post-session inside themselves** —
+`step1-recapture-2026-08-03.txt` (GHCR / GitHub Actions queries, re-obtainable
+because they are not rig state) and
+`partA-controller-silence-coderead-2026-08-03.txt` (a code read standing in for
+controller logs that `down -v` destroyed and that cannot be re-obtained for the
+measured window). **40 files total.** The `../wt-v040` worktree and the `unified-cd-agent:v0.4.0-local`
 image are left in place — a re-run needs both, and rebuilding costs ~19 s only
 while the base layers stay cached.
 

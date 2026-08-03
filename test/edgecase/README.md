@@ -321,7 +321,10 @@ silently off before. **Consequences you must plan for:**
   **no `:v0.4.0` tag exists for any of the five images**: the v0.4.0 release
   run failed on `k8s-agent` only, and the tag-applying `merge` job is
   `needs: build`, so eight successful legs produced no tag. `:latest` therefore
-  still means **v0.3.0**. See `FINDINGS.md` §W5-2 (asset defect). So:
+  still means **v0.3.0**. See `FINDINGS.md`, the W5-2 **release-pipeline**
+  entry — *reclassified at review from "asset defect" (that bucket is for the
+  campaign's own assets) to a product violation of `README.md:36`, "Images are
+  published … on every `v*` tag"*. So:
 
   ```bash
   git worktree add ../wt-v040 v0.4.0
@@ -335,9 +338,10 @@ silently off before. **Consequences you must plan for:**
 
   **Steering is by label, and it has to be.** Labels come from the *enrollment
   token*: `agentold` alone carries `kind:old`, `agent1`/`agent2` alone carry
-  `kind:linux`. Every W5-2 arm is a pair of jobs differing in one
-  `agentSelector` line, which turns "old agent vs HEAD agent" into a controlled
-  comparison instead of a race for the claim. **Any future version-skew
+  `kind:linux`. Every W5-2 arm is a pair of jobs differing in **the
+  `agentSelector` line and — necessarily, since two jobs cannot share a name —
+  `metadata.name`; two lines, nothing else**, which turns "old agent vs HEAD
+  agent" into a controlled comparison instead of a race for the claim. **Any future version-skew
   scenario should copy that shape.**
 
   **`version:` cannot be used to tell them apart** — `GET /api/v1/agents`
