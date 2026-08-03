@@ -274,11 +274,11 @@ type LogPusher struct {
 // NewLogPusher creates a new LogPusher with the given parameters.
 func NewLogPusher(client *Client, agentID, runID string, stepIndex int, stream string) *LogPusher {
 	return &LogPusher{
-		stream:          stream,
-		runID:           runID,
-		stepIndex:       stepIndex,
-		agentID:         agentID,
-		client:          client,
+		stream:           stream,
+		runID:            runID,
+		stepIndex:        stepIndex,
+		agentID:          agentID,
+		client:           client,
 		flushBytes:       4 << 10,
 		maxPendingBytes:  1 << 20, // 1MB
 		autoFlushTimeout: logPusherAutoFlushTimeout,
