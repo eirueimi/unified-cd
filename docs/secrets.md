@@ -5,6 +5,7 @@ This document covers how to create, use, and manage secrets in unified-cd.
 ## Table of Contents
 
 - [Overview](#overview)
+- [Upgrades that delete every secret](#upgrades-that-delete-every-secret)
 - [Prerequisites](#prerequisites)
 - [Creating and Managing Secrets (CLI)](#creating-and-managing-secrets-cli)
 - [Referencing Secrets in Job YAML](#referencing-secrets-in-job-yaml)
@@ -22,6 +23,51 @@ Secrets are a key-value store saved in the controller's PostgreSQL database **en
 - Reference them in job `env:` or `run:` fields using the `{{ secrets.NAME }}` syntax.
 - Values are sent to the agent in plaintext at runtime, but **log output is automatically masked**.
 - There is no API endpoint to retrieve values — only names and metadata are returned.
+
+---
+
+## Upgrades that delete every secret
+
+> **⚠ Upgrading a controller across database migration `016` deletes every
+> secret you have stored.** Plan for it before you start the upgrade, not after.
+
+`016_drop_secret_scope.up.sql:13` runs `DELETE FROM public.secrets;` — no
+`WHERE` clause, no prompt, no confirmation. It is unconditional. The migration
+removes the `scope`/`scope_ref` columns, and those columns are part of the
+AES-GCM **additional authenticated data** that every secret's ciphertext is
+sealed under (see [Encryption structure](#encryption-structure)). Changing the
+binding makes every existing ciphertext unauthenticatable, so the rows are
+deleted rather than left behind as undecryptable garbage.
+
+The neighbouring migration `015_secrets_v2.up.sql:13` does the same thing to
+`public.sessions` — every user is logged out and must re-authenticate. That one
+is only an inconvenience. The secrets deletion is not.
+
+**A database backup does not recover the values.** Restoring a pre-upgrade dump
+restores the rows, but the new controller cannot decrypt them — the binding they
+were sealed under no longer exists in the schema. unified-cd has never had a way
+to hand a stored value back to you (that is the point of the
+[security model](#security-model)), so the only recovery is to re-run
+`unified-cli secret set` for every secret, taking each value from wherever you
+originally obtained it.
+
+**Before upgrading across `015`/`016`:**
+
+1. Run `unified-cli secret list` and keep the output — after the migration, the
+   names are gone too, so this is your only record of what needs restoring.
+2. Confirm you can still obtain the plaintext of each one from its original
+   source (your password manager, the issuing provider, the cloud console).
+3. After the controller comes up on the new version, re-`secret set` each one
+   and re-run any job that consumes them.
+
+Migration `016`'s own comments (`016_drop_secret_scope.up.sql:7-11`) justify the
+deletion on the grounds that there are "no production secrets to preserve."
+That described the project at the time the migration was written. It says
+nothing about your installation, and it is not a safe assumption if you have
+been running unified-cd for real work.
+
+See also [Operations Guide: Upgrades](operations.md#upgrades) for which released
+versions actually cross this migration.
 
 ---
 
