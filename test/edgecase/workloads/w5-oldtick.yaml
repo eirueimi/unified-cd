@@ -1,0 +1,13 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w5-oldtick
+spec:
+  native: true
+  agentSelector:
+    - kind:old
+  steps:
+    - name: hello
+      run: |
+        echo "W5 baseline: trivial job on the v0.4.0 agent"
+        uname -a

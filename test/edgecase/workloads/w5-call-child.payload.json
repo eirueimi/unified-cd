@@ -1,0 +1,1 @@
+{"yaml": "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-w5-call-child\nspec:\n  native: true\n  agentSelector:\n    - kind:linux\n  steps:\n    - name: emit\n      run: |\n        echo \"W5 CHILD RAN\"\n        sleep 5\n"}
