@@ -274,7 +274,7 @@ route lives inside the `/api/v1` group behind `ServerAuth` +
 (`internal/controller/auth.go:67-112`) — never a `uca_` agent access token.
 HEAD's own client comment states the same conclusion in as many words: *"the
 human POST /api/v1/runs is not reachable with a uca_ credential"*
-(`internal/agent/client.go:234-236`). HEAD posts
+(`internal/agent/client.go:237-238`, corrected from `:234-236`). HEAD posts
 `/api/v1/agents/{agentId}/runs/{runId}/children` instead
 (`client.go:251`), a route registered in `agentRouteIdentityMatrix` at
 `internal/controller/server.go:252` and **absent from v0.4.0's server**.
@@ -609,7 +609,9 @@ execution, with the pattern that `file:line` claims hold and *mechanism* claims
 fail. **The pattern held for a seventh wave, and in both directions.**
 
 **`file:line` claims that held, re-checked at both tags:**
-`internal/api/types.go:357-359` (`RunID`, `omitempty`), v0.4.0's
+`internal/api/types.go:360` (`RunID`, `omitempty`; corrected from `:357-359`,
+which holds the preceding field and the doc comment but not the tagged field),
+v0.4.0's
 `internal/agent/client.go:218` (`POST /api/v1/runs`), HEAD's `client.go:251`
 (the children route), `internal/controller/server.go:355-370`
 (`ServerAuth` + `requireMinRole("developer")`), `v0.4.0:cmd/agent/main.go:66-67`
@@ -694,7 +696,7 @@ been free and its absence was invisible from inside the runbook.
 | # | `FINDINGS.md` | Kind | Severity | Subject |
 |---|---|---|---|---|
 | 1 | `:3004` | **violation** (`docs/jobs.md:1305-1331`) | **major** *(filed critical, re-banded down at review on `:6-8`'s own text)* | a v0.4.0 agent silently ignores `downloadArtifact.runId` and downloads the current run's artefact; all steps and the run `Succeeded`; measured against a HEAD-agent control on the same job text |
-| 2 | `:3026` | **violation** (`docs/jobs.md:734`, `:738`) | minor | a `detached: true` job only a v0.4.0 agent can claim sits `Queued` with no state transition for the 317 s observed, while `:734` promises "Every agent" hosts detached runs and `:738`'s cause list omits "agent older than the controller" |
+| 2 | `:3026` | **violation** (`docs/jobs.md:734-736`, `:737-738`) | minor | a `detached: true` job only a v0.4.0 agent can claim sits `Queued` with no state transition for the 317 s observed, while `:734` promises "Every agent" hosts detached runs and `:738`'s cause list omits "agent older than the controller" |
 | 3 | `:3035` | **observation** | minor (observation) | the moved `call:` child-run endpoint is a clean N-1 break — 401, parent `Failed` in 0.48 s, `after_call` `Skipped`, **zero** child runs and **zero** links; the plan's orphan/hang hypotheses are refuted and what is left is one diagnostic string |
 | 4 | `:3046` | **violation** (`README.md:36`) | **major** *(reclassified at review out of the campaign-asset bucket, which it was never in scope for)* | no `v0.4.0` container image exists for any of the five images — one matrix leg failed and the tag-applying job is `needs: build` — so every `:latest` still resolves to v0.3.0 |
 | 5 | `:3061` | **observation** | minor (observation) | every containerised agent reports `"version": "dev"`, v0.4.0 and HEAD alike, because no Dockerfile passes `-ldflags` |
