@@ -81,8 +81,15 @@ func (v *kubernetesEnrollmentVerifier) Verify(ctx context.Context, token string,
 	if review.Status.User.Username != "system:serviceaccount:"+claims.Namespace+":"+claims.ServiceAccount.Name {
 		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: token review subject", ErrKubernetesEnrollmentRejected)
 	}
-	reviewedUID, hasReviewedUID := review.Status.User.Extra["authentication.kubernetes.io/serviceaccount.uid"]
-	if claims.ServiceAccount.UID == "" || !hasReviewedUID || len(reviewedUID) != 1 || reviewedUID[0] == "" || reviewedUID[0] != claims.ServiceAccount.UID {
+	// The API server returns the authenticated subject's UID in Status.User.UID.
+	// It does NOT publish a "authentication.kubernetes.io/serviceaccount.uid"
+	// entry in Status.User.Extra — the extras a projected ServiceAccount token
+	// carries are credential-id, node-name, node-uid, pod-name and pod-uid.
+	// Binding the token's own serviceaccount.uid claim to the reviewed UID is
+	// what stops a token minted for a deleted-and-recreated ServiceAccount of
+	// the same name from enrolling, so the comparison itself is kept.
+	reviewedUID := review.Status.User.UID
+	if claims.ServiceAccount.UID == "" || reviewedUID == "" || reviewedUID != claims.ServiceAccount.UID {
 		return KubernetesEnrollmentIdentity{}, fmt.Errorf("%w: token review service account UID", ErrKubernetesEnrollmentRejected)
 	}
 	if !contains(constraints.Namespaces, claims.Namespace) || !contains(constraints.ServiceAccounts, claims.ServiceAccount.Name) {
