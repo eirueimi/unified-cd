@@ -187,12 +187,28 @@ func TestLogPusher_StartAutoFlush_DeadlineUnblocksWriter(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
-	prev := logPusherAutoFlushTimeout
-	logPusherAutoFlushTimeout = 150 * time.Millisecond
-	t.Cleanup(func() { logPusherAutoFlushTimeout = prev })
-
 	client := NewClient(srv.URL, "tok")
 	p := NewLogPusher(client, "a1", "run1", 0, "stdout")
+
+	// Shrink the per-flush deadline for the duration of the test.
+	//
+	// The auto-flush goroutine reads logPusherAutoFlushTimeout on every tick
+	// while holding p.mu (runner.go), and StartAutoFlush gives the caller no
+	// way to join that goroutine — cancelling ctx only ASKS it to stop. A
+	// plain `t.Cleanup(func() { logPusherAutoFlushTimeout = prev })` therefore
+	// races a tick that is still in flight, which is a race in the test's own
+	// lifecycle, not in LogPusher. Writing the var under the same mutex the
+	// reader holds orders the restore against every tick, before and after.
+	// The initial write needs no lock: it precedes StartAutoFlush, and
+	// starting a goroutine already orders it against that goroutine's reads.
+	prev := logPusherAutoFlushTimeout
+	logPusherAutoFlushTimeout = 150 * time.Millisecond
+	t.Cleanup(func() {
+		p.mu.Lock()
+		logPusherAutoFlushTimeout = prev
+		p.mu.Unlock()
+	})
+
 	_, _ = p.Write([]byte("first line\n"))
 
 	ctx, cancel := context.WithCancel(context.Background())
