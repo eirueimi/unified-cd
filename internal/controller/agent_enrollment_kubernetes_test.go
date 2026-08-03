@@ -75,14 +75,43 @@ func TestKubernetesEnrollmentVerifier_RejectsAuthenticatedNonServiceAccountAndUI
 	}
 }
 
-func TestKubernetesEnrollmentVerifier_RejectsMissingOrAmbiguousServiceAccountUID(t *testing.T) {
+// TestKubernetesEnrollmentVerifier_AcceptsLiveApiServerTokenReviewShape pins the
+// verifier to the response a real API server sends, independently of the shared
+// reactor helper. It is the regression guard for the defect where the verifier
+// read the ServiceAccount UID from a
+// "authentication.kubernetes.io/serviceaccount.uid" extra that Kubernetes never
+// populates, so every Kubernetes enrollment was rejected 403 unconditionally
+// while the unit suite stayed green.
+func TestKubernetesEnrollmentVerifier_AcceptsLiveApiServerTokenReviewShape(t *testing.T) {
+	client := fake.NewSimpleClientset(boundPod())
+	client.Fake.PrependReactor("create", "tokenreviews", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, &authv1.TokenReview{Status: authv1.TokenReviewStatus{
+			Authenticated: true,
+			Audiences:     []string{KubernetesEnrollmentAudience},
+			User: authv1.UserInfo{
+				Username: "system:serviceaccount:unified-cd:unified-cd-k8s-agent",
+				UID:      "sa-uid",
+				Extra:    serviceAccountTokenExtras(),
+			},
+		}}, nil
+	})
+
+	identity, err := NewKubernetesEnrollmentVerifier("prod", client).Verify(t.Context(), projectedToken("unified-cd", "unified-cd-k8s-agent", "sa-uid", "agent-0", "pod-uid"), kubernetesEnrollmentPolicy())
+	require.NoError(t, err, "a TokenReview shaped like a real API server response must enroll")
+	assert.Equal(t, KubernetesEnrollmentIdentity{Cluster: "prod", Namespace: "unified-cd", ServiceAccount: "unified-cd-k8s-agent", PodName: "agent-0", PodUID: "pod-uid"}, identity)
+}
+
+func TestKubernetesEnrollmentVerifier_RejectsMissingOrMismatchedServiceAccountUID(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
-		reviewedUID authv1.ExtraValue
+		reviewedUID string
+		extra       map[string]authv1.ExtraValue
 	}{
-		{"missing service account UID", nil},
-		{"multiple service account UIDs", authv1.ExtraValue{"sa-uid", "other-uid"}},
-		{"empty service account UID", authv1.ExtraValue{""}},
+		{"missing service account UID", "", serviceAccountTokenExtras()},
+		{"mismatched service account UID", "other-uid", serviceAccountTokenExtras()},
+		// The verifier must not fall back to the extras map: a caller able to
+		// influence extras but not the reviewed subject UID must not enroll.
+		{"UID only in a serviceaccount.uid extra", "", map[string]authv1.ExtraValue{"authentication.kubernetes.io/serviceaccount.uid": {"sa-uid"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := fake.NewSimpleClientset(boundPod())
@@ -92,7 +121,8 @@ func TestKubernetesEnrollmentVerifier_RejectsMissingOrAmbiguousServiceAccountUID
 					Audiences:     []string{KubernetesEnrollmentAudience},
 					User: authv1.UserInfo{
 						Username: "system:serviceaccount:unified-cd:unified-cd-k8s-agent",
-						Extra:    map[string]authv1.ExtraValue{"authentication.kubernetes.io/serviceaccount.uid": tc.reviewedUID},
+						UID:      tc.reviewedUID,
+						Extra:    tc.extra,
 					},
 				}}, nil
 			})
@@ -171,13 +201,31 @@ func kubernetesEnrollmentPolicy() store.AgentEnrollmentPolicy {
 func boundPod() *corev1.Pod {
 	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "agent-0", Namespace: "unified-cd", UID: "pod-uid"}, Spec: corev1.PodSpec{ServiceAccountName: "unified-cd-k8s-agent"}}
 }
+// tokenReviewReactor mirrors what a real API server returns for a projected,
+// pod-bound ServiceAccount token: the subject's UID in UserInfo.UID, plus the
+// extras a live cluster actually publishes. There is deliberately NO
+// "authentication.kubernetes.io/serviceaccount.uid" extra — Kubernetes does not
+// emit one, and a fake that invents it cannot catch a verifier reading the
+// wrong field. Keep this helper faithful to the API server, never to the
+// implementation under test.
 func tokenReviewReactor(authenticated bool, audiences []string, username, serviceAccountUID string) k8stesting.ReactionFunc {
 	return func(action k8stesting.Action) (bool, runtime.Object, error) {
-		extra := map[string]authv1.ExtraValue{}
-		if serviceAccountUID != "" {
-			extra["authentication.kubernetes.io/serviceaccount.uid"] = authv1.ExtraValue{serviceAccountUID}
-		}
-		return true, &authv1.TokenReview{Status: authv1.TokenReviewStatus{Authenticated: authenticated, Audiences: audiences, User: authv1.UserInfo{Username: username, Extra: extra}}}, nil
+		user := authv1.UserInfo{Username: username, UID: serviceAccountUID, Extra: serviceAccountTokenExtras()}
+		return true, &authv1.TokenReview{Status: authv1.TokenReviewStatus{Authenticated: authenticated, Audiences: audiences, User: user}}, nil
+	}
+}
+
+// serviceAccountTokenExtras is the complete extras set observed on a live
+// Kubernetes v1.35.1 TokenReview for a pod-bound projected ServiceAccount
+// token, via both `kubectl create token --bound-object-kind Pod` and a
+// serviceAccountToken projected volume read from inside the pod.
+func serviceAccountTokenExtras() map[string]authv1.ExtraValue {
+	return map[string]authv1.ExtraValue{
+		"authentication.kubernetes.io/credential-id": {"JTI=2f1b7d4a-0a11-4c2e-9f0b-6d7c8e9a0b1c"},
+		"authentication.kubernetes.io/node-name":     {"node-0"},
+		"authentication.kubernetes.io/node-uid":      {"node-uid"},
+		"authentication.kubernetes.io/pod-name":      {"agent-0"},
+		"authentication.kubernetes.io/pod-uid":       {"pod-uid"},
 	}
 }
 func projectedToken(namespace, serviceAccount, serviceAccountUID, podName, podUID string) string {
