@@ -13,8 +13,11 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
   `w7-c-schedule-cliff-idle.md` — because W7 is not a chartered wave: it is the
   three follow-up **arms** `FINDINGS.md:3184` named as unrun and `:3196` made
   follow-up 3, and the letters are the order that sentence lists them in. **Read
-  W7's block in `FINDINGS.md` before quoting the campaign's headline: it is no
-  longer zero criticals.**
+  W7's block in `FINDINGS.md` before quoting the campaign's headline: the file
+  holds SIX criticals, not zero — five re-banded at the `## Calibration
+  settlement` and W7-A, the only one filed `critical` at the moment of
+  measurement. The six criticals and the six-entry escalation set are NOT the
+  same six (`FINDINGS.md:3721`).**
 - `compose/` — overlay files stacked onto `test/ha/docker-compose.ha.yaml`.
 - `workloads/` — job/schedule YAML (and pre-encoded JSON API payloads).
 - Scheduler/timing probes live next to the code they probe (e.g.
