@@ -7,7 +7,14 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 ## Layout
 
 - `FINDINGS.md` — one entry per invariant violation or notable observation.
-- `scenarios/` — one runbook per scenario (`w<wave>-<n>-<slug>.md`).
+- `scenarios/` — one runbook per scenario (`w<wave>-<n>-<slug>.md`). **The three
+  W7 files use a LETTER where every other wave uses a number** —
+  `w7-a-artefact-persistence.md`, `w7-b-secret-destruction-upgrade.md`,
+  `w7-c-schedule-cliff-idle.md` — because W7 is not a chartered wave: it is the
+  three follow-up **arms** `FINDINGS.md:3184` named as unrun and `:3196` made
+  follow-up 3, and the letters are the order that sentence lists them in. **Read
+  W7's block in `FINDINGS.md` before quoting the campaign's headline: it is no
+  longer zero criticals.**
 - `compose/` — overlay files stacked onto `test/ha/docker-compose.ha.yaml`.
 - `workloads/` — job/schedule YAML (and pre-encoded JSON API payloads).
 - Scheduler/timing probes live next to the code they probe (e.g.
