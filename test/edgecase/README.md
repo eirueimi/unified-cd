@@ -307,6 +307,44 @@ silently off before. **Consequences you must plan for:**
   override `oneway`'s `nginx.conf` while inheriting its `blocklist` volume. It
   *does* stack with `s3proxy.override.yaml` (different service).
 
+- `compose/mixedver.override.yaml` — **the mixed-version rig (W5-2).** Adds a
+  THIRD agent service, `agentold`, running the **v0.4.0** agent binary against
+  HEAD controllers, plus a one-shot `agentold-enroll` that mints its enrollment
+  token through the product's ordinary API. Mutates nothing: it follows
+  `dupagent.override.yaml:67-88`'s new-service shape and shares the
+  `agent-credentials` volume. Stacks cleanly with anything (no `nginx` mount).
+
+  **The image is NOT pullable and you must build it — this is a finding, not a
+  convenience.** `.github/workflows/release-docker.yml` pushes per-tag images
+  and the GHCR packages **are public** (`docker pull
+  ghcr.io/eirueimi/unified-cd-agent:v0.3.0` succeeds unauthenticated), but
+  **no `:v0.4.0` tag exists for any of the five images**: the v0.4.0 release
+  run failed on `k8s-agent` only, and the tag-applying `merge` job is
+  `needs: build`, so eight successful legs produced no tag. `:latest` therefore
+  still means **v0.3.0**. See `FINDINGS.md` §W5-2 (asset defect). So:
+
+  ```bash
+  git worktree add ../wt-v040 v0.4.0
+  cd ../wt-v040 && MSYS_NO_PATHCONV=1 docker build \
+    -t unified-cd-agent:v0.4.0-local -f docker/agent.Dockerfile .
+  ```
+
+  and the overlay references that tag with `image:` and **no `build:`** —
+  the context is outside the repo, and Compose resolves a build context
+  relative to the project directory (`test/ha/`).
+
+  **Steering is by label, and it has to be.** Labels come from the *enrollment
+  token*: `agentold` alone carries `kind:old`, `agent1`/`agent2` alone carry
+  `kind:linux`. Every W5-2 arm is a pair of jobs differing in one
+  `agentSelector` line, which turns "old agent vs HEAD agent" into a controlled
+  comparison instead of a race for the claim. **Any future version-skew
+  scenario should copy that shape.**
+
+  **`version:` cannot be used to tell them apart** — `GET /api/v1/agents`
+  returned `"version": "dev"` for the v0.4.0 agent and both HEAD agents alike,
+  because no Dockerfile passes `-ldflags` (`FINDINGS.md` §W5-2). The compose
+  service name is the only handle.
+
 ### The W4 Kubernetes rig, and the enrollment bypass it rests on
 
 **W4 is complete — see `FINDINGS.md` §"Checkpoint: W4 complete" for the wave's

@@ -302,4 +302,248 @@ measurement.
 
 ## Results
 
-*(appended after execution — see the sections below)*
+Executed 2026-08-03, 02:56-03:05 UTC, on the `test/ha` stack plus
+`compose/mixedver.override.yaml`. Raw captures: `w5-2/` in the evidence root.
+
+### Rig notes taken during bring-up
+
+- **The bootstrap-PAT race fired.** `controller1` exited(1) on
+  `create bootstrap pat: ERROR: duplicate key value violates unique constraint
+  "pats_token_hash_key" (SQLSTATE 23505)`; `controller2`/`controller3` came up.
+  This is the known race (`FINDINGS.md:2270`, README §"Three bring-up
+  gotchas" (ii)) and **not** a mixed-version effect — the overlay adds no
+  controller. Recovered with `docker compose … up -d controller1`; all three
+  ran for the rest of the session. Recorded because the README asks for the
+  3-up/2-down tally to be kept: **this bring-up was 2 up / 1 down.**
+- `agentold` logged `cache enabled` and `agent registered` 17 ms apart and
+  needed no retry.
+
+### Step 3 — baseline: **PASS. The gate is open.**
+
+`edge-w5-oldtick` → run `e3f6036a-…`, `claimedBy: agentold`, **Succeeded** in
+~1.1 s (created 02:57:36.49, updated 02:57:37.57), two stdout lines including
+`Linux 85701cb9c37a … x86_64 GNU/Linux`. **A v0.4.0 agent enrolls, registers,
+claims and finishes a run against HEAD controllers with no modification to
+either side.** So the wave's executed half is not blocked, and the plan's
+"drop-in" claim holds.
+
+**And one thing the baseline shows that no code read would have:** the
+list-agents response gives **`"version": "dev"` for all three agents** — the two
+HEAD agents *and* the v0.4.0 one (`step3`/agents capture). See §Unplanned
+finding 1.
+
+### Part A — **CONFIRMED, exactly as predicted, and provably.**
+
+| | run | claimedBy | run status | `fetch_other_run` step | `dl/marker.txt` |
+|---|---|---|---|---|---|
+| producer (control input) | `d8eb76f5-…` | `agent1` (HEAD) | Succeeded | — | published `W5-ARTIFACT-SOURCE=producer` / `a1b2c3d4e5f60001` |
+| consumer, **v0.4.0 agent** | `2c682686-…` | **`agentold`** | **Succeeded** | **Succeeded** | **`W5-ARTIFACT-SOURCE=consumer-self` / `9f8e7d6c5b4a0002`** |
+| consumer, HEAD agent | `faecbba3-…` | `agent2` (HEAD) | Succeeded | Succeeded | `W5-ARTIFACT-SOURCE=producer` / `a1b2c3d4e5f60001` |
+
+Both jobs carry the identical `runId: d8eb76f5-acd7-4eac-be49-baa0831e5df7`;
+they differ in **one line** (`agentSelector: kind:old` vs `kind:linux`).
+
+**The wrong artefact is provably the wrong one, not a missing one.** Both
+candidates existed under the name `w5payload` at download time — the consumer
+run published its own first (step 1, `Succeeded`, `kind: uploadArtifact`) and
+then deleted the local copy (step 2 log: `workspace cleared; only dl/ remains`,
+followed by an `ls -la` showing only `.ucd-mode` and an empty `dl/`). So the
+old agent did not fall back to a leftover file and did not fail to find the
+named run's artefact: it fetched a **different, existing** artefact and
+returned it under the name the job asked for.
+
+**Nothing anywhere signals it.** All five steps report `Succeeded` with
+`exitCode: 0` on both runs; `agentold`'s container log for that run is a single
+`"running"` line with no warning; the controller emits nothing. The only
+difference visible anywhere in the product is the *content of a file in the
+workspace*.
+
+Filed as a violation of `docs/jobs.md:1305-1330` — see `FINDINGS.md` §W5-2a.
+
+### Part B — the 401 prediction **HOLDS**; the break is clean.
+
+Parent `9005f151-…`, `claimedBy: agentold`:
+
+- `prelude` **Succeeded** (`exitCode 0`), one log line.
+- `invoke_child` **Failed**, `kind: call`. `agentold`'s log:
+  `{"level":"ERROR","msg":"call step failed","step":"invoke_child","error":"create child run for job \"edge-w5-call-child\": http 401: response omitted"}`
+- `after_call` **Skipped**.
+- Parent run **Failed**, 0.5 s after claim. **One** terminal state.
+
+**The child was followed, and there is none.** `SELECT … FROM runs WHERE
+job_name='edge-w5-call-child'` → **0 rows**; `SELECT count(*) FROM step_reports
+WHERE child_run_id IS NOT NULL` → **0**. No orphan, no phantom, no hang.
+
+**Measured, not inferred: 401, not 403.** The request never reaches
+`requireMinRole("developer")` — `ServerAuth` rejects the `uca_` credential
+first, because it matches no PAT hash, no OIDC bearer and no session cookie
+(`internal/controller/auth.go:67-112`). The plan's "401/403" is resolved to
+**401**.
+
+**I1 is a null limb and is recorded as one.** *"every API-accepted run reaches
+exactly one terminal state; no phantom runs"* — the parent reached exactly one
+(`Failed`), and no run was created that anything failed to account for. **I3 is
+also null**: no `mutex:`/`concurrency:` was in play in this job at all, so the
+plan's I3 citation has nothing to attach to; recorded rather than stretched.
+
+One diagnosability point survives: **`http 401: response omitted`** is the
+whole message an operator gets. It does not name the URL, does not say the
+route moved, and deliberately drops the body. On a fleet mid-upgrade this is
+the only symptom of "your agent is older than your controller".
+
+### Part C — the enumeration, verified, and it is **not closed at two edges**
+
+Route-surface diff, both tags, normalised so group-relative registrations are
+comparable (`paths-head.txt` / `paths-v040.txt`, 75 vs 74 distinct path
+literals in `internal/controller/server.go`):
+
+```
+ONLY AT HEAD:    /api/v1/agents/{agentId}/runs/{runId}/children
+ONLY AT v0.4.0:  (none)
+```
+
+**Exactly one route added, zero removed.** So a v0.4.0 agent never calls a path
+that has disappeared; every request it makes still resolves. The `call:`
+failure is an **authorization** outcome on a route that still exists, not a
+404. *(A first pass grepping only for absolute `"/api/v1…"` literals reported
+three added routes; two of those — `/runs/active`, `/runs/{id}/outputs` — are
+group-relative at v0.4.0 and the grep missed them. The normalised survey
+above is the one to cite.)*
+
+Wire-type diff:
+
+| file | delta | agent-visible? |
+|---|---|---|
+| `internal/api/types.go` | +3 | **yes** — `DownloadArtifactStep.RunID` only. Edge 1. |
+| `internal/api/agent_auth.go` | +5 −6 | no — `AgentEnrollmentPolicyRequest.Capabilities` and `CreateAgentEnrollmentRequest.Capabilities` removed, `AgentID` now `omitempty`. These are the **admin/CLI** enrollment-policy types; the agent never sends either. |
+| `internal/agent/client.go` | +44 −5 | **yes**, two call sites. Edges 2 and 3. |
+
+**The class is NOT closed at the plan's two edges. There is a third.**
+
+**Edge 3 — detached runs are unclaimable by a v0.4.0 agent.** HEAD's client
+gained `ClaimDetached`, which appends `&kind=detached` to the claim
+(`internal/agent/client.go:184-200`), read by the controller at
+`internal/controller/api_agent.go:131`; the pool defaults to 16 slots
+(`internal/agent/agent.go:315-317`), and migration `017_run_detached` and
+`dsl.Spec.Detached` (`internal/dsl/types.go:47`) both post-date v0.4.0. A
+v0.4.0 agent has no such loop, so it never asks. **Measured:**
+
+| job | selector | outcome |
+|---|---|---|
+| `edge-w5-detached-old` | `kind:old` | **`Queued` for the whole 317 s window, which I ended.** `updated_at` never moved past 02:59:48.66 — 0.1 s after creation, i.e. **no state transition at all** |
+| `edge-w5-detached-head` | `kind:linux` | `Succeeded`, claimed by `agent1`, within 6 s |
+
+Per the campaign rule, **"never" is not written for a window I ended myself**:
+what is measured is 317 s with zero transitions, against a 6 s control.
+
+**Edge 4 — the enrollment-policy wire lost `Capabilities`** (table above). Not
+reachable by the agent, so it is recorded as part of the enumeration and not as
+a scenario. A v0.4.0 **`unified-cli`** posting `capabilities` to a HEAD
+controller would have the field silently dropped; not measured.
+
+So the enumeration, and how I know it is complete: the agent↔controller wire is
+exactly (a) the shared types in `internal/api/`, (b) the request the agent's
+`Client` builds, and (c) the routes the controller registers. All three were
+diffed in full at both tags, non-test files included; the totals are +8/−6
+lines of API types, +44/−5 lines of client, and +1/−0 routes.
+
+### Unplanned finding 1 — every shipped agent reports `version: "dev"`
+
+`GET /api/v1/agents` returned `"version": "dev"` for `agent1`, `agent2` **and**
+`agentold`. `internal/agent/version.go:5` is `var Version = "dev"`, set only by
+`-ldflags`, and **no Dockerfile passes `-ldflags` at all**: `grep -rc ldflags
+docker/` returns `0` for all **seven** Dockerfiles at HEAD and matches nothing
+at v0.4.0. The repository's only `-ldflags` is `Makefile:16`, which targets
+`internal/cli.version` — the CLI, not the agent.
+
+This compounds W5-1's result rather than duplicating it. W5-1 establishes that
+**nothing reads** the version. This establishes that **nothing writes a real
+one either**: a v0.4.0 agent and a HEAD agent are, on every surface the product
+exposes, indistinguishable. An operator cannot answer "which of my agents are
+old?" from the product at all.
+
+### Unplanned finding 2 — the v0.4.0 container release does not exist
+
+Detailed in §Step 1. Summary of what was measured: the packages are **public**
+(v0.3.0 pulls unauthenticated); **all five** v0.4.0 tags are missing; the
+release run failed on `k8s-agent` only; the tag-applying `merge` job is
+`needs: build`. Root cause, pinned: **`internal/shim/embedded/ucd-sh-amd64` is
+not a tracked file at v0.4.0 at all** — `git ls-tree v0.4.0
+internal/shim/embedded/` lists four `.go` files and no binaries — while
+`embed_amd64.go` carries `//go:embed ucd-sh-amd64`. `agent.Dockerfile:17`
+*creates* it before building, so the agent image builds; `k8s-agent.Dockerfile`
+never did. That Dockerfile is **byte-identical at v0.4.0 and HEAD**
+(`git diff v0.4.0..HEAD -- docker/k8s-agent.Dockerfile` is empty) — the
+build only works at HEAD because the real binaries were later checked in
+(`ucd-sh-amd64`, 4,977,841 bytes). Consequence: every
+`ghcr.io/eirueimi/unified-cd-*:latest` still resolves to **v0.3.0** (2026-07-16),
+which predates the entire v0.4.0 auth rewrite, and `README.md:30-33` tells a
+new user to pull exactly those tags.
+
+---
+
+## Corrections to the plan's reconnaissance
+
+Seven consecutive waves have had the plan's "verified code facts" corrected by
+execution, with the pattern that `file:line` claims hold and *mechanism* claims
+fail. **The pattern held for a seventh wave, and in both directions.**
+
+**`file:line` claims that held, re-checked at both tags:**
+`internal/api/types.go:357-359` (`RunID`, `omitempty`), v0.4.0's
+`internal/agent/client.go:218` (`POST /api/v1/runs`), HEAD's `client.go:251`
+(the children route), `internal/controller/server.go:355-370`
+(`ServerAuth` + `requireMinRole("developer")`), `v0.4.0:cmd/agent/main.go:66-67`
+(`--credential-file` / `--enrollment-token-file`),
+`test/ha/docker-compose.ha.yaml:79-81` and `:103-104` (the `&ctrl` anchor).
+
+**Corrections:**
+
+1. **"HEAD is 79+ commits ahead of v0.4.0" — wrong.** `git rev-list --count
+   v0.4.0..main` is **56**; including this branch's three W5 commits,
+   `v0.4.0..HEAD` is **64**. Neither is 79.
+2. **"images for v0.0.1-v0.4.0 *should* exist … whether the packages are public
+   is not resolvable read-only" — resolved, and half of it is false.** The
+   packages **are** public. The v0.4.0 tags **do not exist**, for any of the
+   five images. §Step 1.
+3. **"the GHCR images exist and are publicly pullable" (listed as a hypothesis)
+   — split verdict**: publicly pullable **yes** for v0.0.1-v0.3.0, **no image
+   at all** for v0.4.0.
+4. **"a v0.4.0 agent's `POST /api/v1/runs` gets 401/403" — resolved to 401**,
+   and the parent fails cleanly rather than hanging or orphaning.
+5. **"the v0.4.0→HEAD wire delta is small … two sharp edges" — the count is
+   wrong.** There are **three** agent-visible edges (the third is detached-run
+   claiming, measured) and a fourth on the enrollment-policy wire. The
+   *size* claim (`types.go` +3) is exactly right; the *enumeration* was not.
+6. **The plan's invariant nominations do not survive contact with their own
+   text.** I4 does not cover artefact provenance; I7 does not cover workspace
+   file contents; I3 has nothing to attach to in Part B. Only I1 applies, and
+   it is a null limb. Part A is filed against `docs/*.md` instead.
+
+## What was NOT measured
+
+- Whether any reaper eventually terminalizes the stranded detached run. The
+  observation window is 317 s and I ended it.
+- Whether a v0.4.0 `unified-cli` (as opposed to agent) breaks against a HEAD
+  controller — edge 4 is code-read only.
+- The cost of a cold v0.4.0 agent build. The measured 5.3 s + 11.0 s + 1.7 s is
+  with `golang:1.26-alpine`, `go mod download` and `apk add` all CACHED.
+- Anything about the k8s-agent at v0.4.0: it does not build, which is finding 2.
+
+## Teardown, archival and the credential sweep
+
+`docker compose … down -v` ran clean (all volumes and the network removed, no
+`unified-cd-ha` container left). The 38 capture files are archived at
+`<project parent>/edgecase-evidence/w5/w5-2/` and verified with `diff -r`
+(identical). The `../wt-v040` worktree and the `unified-cd-agent:v0.4.0-local`
+image are left in place — a re-run needs both, and rebuilding costs ~19 s only
+while the base layers stay cached.
+
+**Sweep note for the checkpoint, so the number is not re-derived.** A sweep over
+the **whole** evidence root for `uc[aer]_[A-Za-z0-9_-]{20,}` returns **0**, and
+for `BEGIN … PRIVATE KEY` **0**, matching W6's checkpoint. A *looser*
+JWT-shaped probe (`eyJ[A-Za-z0-9_-]{10,}`, no dot-separator requirement)
+returns **12** hits — **all false positives**: every one is a base64-encoded
+job spec in a `jobs-apply`/`trigger` capture that decodes to
+`{"Steps": [{"If": …`, not a token. The two `client-key-data` hits are
+`edgecase-evidence/README.md`'s own prose describing the sweep. W6's narrower
+"0 JWT-shaped strings" claim stands; this wave adds nothing to scrub.
