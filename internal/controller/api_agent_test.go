@@ -387,7 +387,7 @@ func TestBuildClaimResponse_RejectsDynamicSecretNamesWithFieldContext(t *testing
 // the "stranded Running" bug: when a run's stored spec fails buildClaimResponse
 // (e.g. a pre-migration step-level runsIn:), ClaimNextRun has already flipped
 // the run to Running in the same SQL statement, and the claiming agent is
-// alive and heartbeating — so ListStuckRunIDs' last_seen_at predicate would
+// alive and heartbeating — so ListStuckRuns' last_seen_at predicate would
 // never select it for reaping and it would sit Running forever. The handler
 // must instead fail the run immediately (buildClaimResponse errors are
 // deterministic, so there is nothing to retry), log the reason on the run,

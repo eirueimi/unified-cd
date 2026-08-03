@@ -1740,6 +1740,22 @@ Body: `{"decision": "approved"}` or `{"decision": "rejected", "comment": "reason
   Failed. The approval audit row in `run_approvals` is reconciled separately: a leader-elected
   controller reaper marks any expired `Pending` row as `TimedOut` (with `decidedBy` = `system`)
   within roughly one minute. The reaper only fixes the audit row — it never changes run status.
+- **A gate stops accepting decisions once it can no longer affect the run.** The approve/reject
+  endpoint refuses, with `409`, when
+  - the run has already reached a terminal state (`409 run is already terminal; approvals are no
+    longer accepted`), or
+  - the gate is past its `timeout_at` (`409 approval window has expired; the step already timed
+    out`) — i.e. in the window before the reaper has relabelled the row `TimedOut`.
+
+  Both checks are enforced in the same statement that writes the decision, so a run terminalizing
+  concurrently with a decision cannot slip between them. This is why `run_approvals` can be read as
+  an audit record: a row reading `Approved` by a named principal means the decision was accepted
+  while the gate was genuinely open. It also means a decision can no longer cause the post-gate step
+  to execute on a run the operator has already cancelled.
+
+  The Web UI still renders Approve/Reject on a gate step whose run has since gone terminal (the step
+  row keeps its `WaitingApproval` status); clicking it now returns the `409` above instead of
+  recording a decision.
 
 ---
 

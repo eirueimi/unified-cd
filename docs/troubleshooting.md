@@ -48,6 +48,16 @@ does is already at its concurrency limit. Claiming only happens when an
 agent's label set is a superset of `agentSelector` (AND match) **and** the
 agent has a free concurrency slot.
 
+> **"Forever" is conditional.** A run that no *live* agent's labels can
+> satisfy is auto-failed by the queued-run reaper once it is older than
+> `UNIFIED_QUEUED_RUN_GRACE` (default `5m`, plus up to one 30s sweep), with
+> the reason written to the run's own log — see [Run failed with "no eligible
+> agent available to claim it"](#run-failed-with-no-eligible-agent-available-to-claim-it)
+> below. A run stays `Queued` indefinitely only while some live agent *does*
+> match its labels but cannot run it (capability mismatch, or every slot
+> busy). If the run is still `Queued` well past the grace, the cause is the
+> latter.
+
 **Fix**
 
 Check which agents are connected and what labels they advertise:
@@ -70,6 +80,45 @@ unified-cli agent list
   instead of relabeling agents.
 
 Cancel a run stuck this way with `unified-cli run cancel <run-id>`.
+
+## Run failed with "no eligible agent available to claim it"
+
+**Symptom**
+
+A `Queued` run is failed automatically, and its own log (not just the
+controller log) carries a single line:
+
+```
+run failed: no eligible agent available to claim it (requires agent labels: kind:linux)
+```
+
+with `WARN queued-run reaper: failed unclaimable queued run` on the leader.
+
+**Cause**
+
+The run sat `Queued` longer than `UNIFIED_QUEUED_RUN_GRACE` (default `5m`,
+measured from the run's `created_at`) while no live agent's labels satisfied
+its `agentSelector` — typically a full agent outage. The reaper fails such
+runs rather than leaving them "in progress" forever.
+
+Note the parenthetical names the selector the run *requires*; it is not a
+claim that the selector was the thing that was wrong. When every agent is
+gone, nothing matches, whatever the selector says.
+
+**Fix**
+
+- Bring the agent pool back, then re-trigger the run.
+- If the outage was planned and longer than the grace, raise
+  `UNIFIED_QUEUED_RUN_GRACE` before the next one. The failure lands in
+  `[grace, grace + 30s)` after `created_at`, so size the window against
+  `grace`, and remember the clock starts at run creation — a run that spent
+  the grace blocked on a mutex enters `Queued` with none of it left.
+
+A run that a returning agent claims before the reaper writes is left alone:
+the reaper re-checks each run at the moment it fails it and logs
+`INFO queued-run reaper: run left the Queued state before it could be
+failed; skipping`. Seeing that line means the race was caught, not that
+anything went wrong.
 
 ## Job stays Queued / unschedulable warning
 
@@ -750,12 +799,25 @@ stuck-run reaper: failed orphaned run (agent lost)
 
 **Cause**
 
-The agent that claimed the run stopped sending heartbeats (crashed, was
-killed, or lost network connectivity) and never resumed. The controller's
-orphaned-run reaper detects a `Running` run whose claiming agent's heartbeat
-has gone stale and fails the run rather than leaving it stuck forever. It
-fails (never re-queues) the run, since re-running partially-executed steps
-risks duplicating side effects like deploys.
+The line carries a `reason` field naming which of the two paths fired.
+
+- `reason=agent heartbeat stale` — the agent that claimed the run stopped
+  sending heartbeats (crashed, was killed, or lost network connectivity) and
+  never resumed. This is the common case: investigate agent health.
+- `reason=agent inventory row absent for longer than the staleness window` —
+  the claiming agent has no row in `agents` at all, and did not get one back
+  across the confirmation window. Look for what *removed* the row rather than
+  for a sick agent: `DeleteStaleAgents` (the agent was already dead for five
+  minutes), a `DELETE /api/v1/agents/{id}`, or an agent process deregistering
+  at the end of its drain under an agent ID another process is also using. In
+  that last case the controller will also have logged
+  `WARN agent heartbeat re-created a missing inventory row` for the live
+  process — see [duplicate agent IDs](agents.md).
+
+The controller's orphaned-run reaper detects a `Running` run whose claiming
+agent has gone away by either route and fails the run rather than leaving it
+stuck forever. It fails (never re-queues) the run, since re-running
+partially-executed steps risks duplicating side effects like deploys.
 
 **Fix**
 
@@ -813,6 +875,39 @@ needs to be re-triggered, same as any other orphaned run:
   never participates in this reconcile path; it relies solely on the
   stuck-run reaper above for a lost-claim recovery, which takes longer but
   still eventually fails the run.
+
+## Approve/reject returns 409 `run is already terminal` or `approval window has expired`
+
+**Symptom**
+
+`unified-cli approve <run-id> <step-index>` (or the Approve button in the Web
+UI) fails with one of:
+
+```
+run is already terminal; approvals are no longer accepted
+approval window has expired; the step already timed out
+```
+
+**Cause**
+
+The gate is no longer decidable. Either the run finished, failed, or was
+cancelled while the gate was pending, or the gate passed its
+`timeoutMinutes` deadline (the agent has already failed the step locally; the
+approval reaper relabels the row `TimedOut`/`system` within about a minute).
+
+Both checks are enforced inside the statement that writes the decision, so
+this is not a transient race you can retry past. It is distinct from
+`409 already decided`, which means somebody else decided this gate first.
+
+The Web UI still shows Approve/Reject buttons on a gate step belonging to a
+run that has since gone terminal — the step row keeps its `WaitingApproval`
+status. The buttons are inert: they produce this 409.
+
+**Fix**
+
+Re-trigger the job. The decision cannot be applied retroactively: a recorded
+approval would be a false audit entry, and (when the run was cancelled) could
+otherwise let the post-gate step execute after the cancel.
 
 ## Agent requests fail with 403 `run <id> is claimed by another agent`
 

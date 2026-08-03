@@ -74,12 +74,17 @@ func TestPostgres_MarkExpiredApprovalsTimedOut(t *testing.T) {
 	require.NoError(t, pg.CreatePendingApproval(ctx, futureRun.ID, 0, "gate", "ok?", &future))
 
 	// Run with an already-Approved (expired) approval — must NOT be touched.
+	// Decided while the gate was still open, then backdated: DecideApproval now
+	// refuses a decision on an already-expired gate, so the row cannot be produced
+	// the other way round.
 	approvedRun, err := pg.CreateRun(ctx, "jr", nil, []byte(`{}`), nil, nil, "")
 	require.NoError(t, err)
-	require.NoError(t, pg.CreatePendingApproval(ctx, approvedRun.ID, 0, "gate", "ok?", &past))
+	require.NoError(t, pg.CreatePendingApproval(ctx, approvedRun.ID, 0, "gate", "ok?", &future))
 	changed, err := pg.DecideApproval(ctx, approvedRun.ID, 0, "Approved", "alice", "lgtm")
 	require.NoError(t, err)
 	require.True(t, changed)
+	_, err = pg.pool.Exec(ctx, `UPDATE run_approvals SET timeout_at = $1 WHERE run_id = $2`, past, approvedRun.ID)
+	require.NoError(t, err)
 
 	// Only the expired Pending row should be updated.
 	n, err := pg.MarkExpiredApprovalsTimedOut(ctx)

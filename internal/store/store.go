@@ -204,6 +204,12 @@ type Store interface {
 	ListRunsByJob(ctx context.Context, jobName string, limit int) ([]api.Run, error)
 	ListActiveRuns(ctx context.Context) ([]api.Run, error)
 	TransitionPendingToQueued(ctx context.Context, limit int) (int, error)
+	// TransitionPendingToQueuedFrom is TransitionPendingToQueued over a MOVING
+	// window: it examines up to limit Pending runs after the cursor and returns the
+	// cursor to resume from (nil when the end of the Pending set was reached, i.e.
+	// wrap to the head). Runs blocked on concurrency stay Pending and would
+	// otherwise re-fill a fixed head window forever, starving every run behind it.
+	TransitionPendingToQueuedFrom(ctx context.Context, limit int, after *PendingCursor) (queued int, next *PendingCursor, err error)
 	ClaimNextRun(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error)
 	// ClaimNextRunDetached claims the next queued detached run (see spec.detached);
 	// detached runs are claimed from a budget separate from ClaimNextRun.
@@ -213,6 +219,12 @@ type Store interface {
 	// FinishRun is like MarkRunFinished but reports whether the run actually
 	// transitioned (false when it was already terminal).
 	FinishRun(ctx context.Context, runID string, status api.RunStatus) (updated bool, err error)
+	// FinishRunIfStatus is FinishRun with an extra CAS on the run's current status:
+	// the write lands only if the run is still in expected. For callers acting on a
+	// snapshot taken earlier (the queued-run reaper), where a run that has since been
+	// claimed must not be terminalized. updated=false with a nil error means the run
+	// moved on. The run's concurrency locks are released only when updated is true.
+	FinishRunIfStatus(ctx context.Context, runID string, expected api.RunStatus, status api.RunStatus) (updated bool, err error)
 	// CountRunsByStatus returns the number of non-terminal runs per status.
 	CountRunsByStatus(ctx context.Context) (map[api.RunStatus]int, error)
 	// CountAgentsByLiveness partitions registered agents by heartbeat freshness.
@@ -264,7 +276,12 @@ type Store interface {
 	// merges labels and only overwrites scalar fields when non-empty, so a claim never
 	// clobbers richer data recorded at registration time.
 	UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error
-	TouchAgent(ctx context.Context, agentID string) error
+	// TouchAgent refreshes an agent's last_seen_at from its heartbeat. It UPSERTs:
+	// a heartbeat must be able to recreate a row something else deleted (the row is
+	// not owned by the process that heartbeats it), otherwise a live agent's runs
+	// are reaped as "agent lost". recreated reports that this heartbeat re-inserted
+	// an absent row.
+	TouchAgent(ctx context.Context, agentID string) (recreated bool, err error)
 	DeleteAgent(ctx context.Context, agentID string) error
 	// ListAgents returns all agents ordered by last access descending.
 	ListAgents(ctx context.Context) ([]api.AgentInfo, error)
@@ -291,16 +308,20 @@ type Store interface {
 	SetAgentIdentityEnabled(context.Context, string, bool) error
 	RevokeAgentIdentityCredentials(context.Context, string) error
 	GetAgentIdentity(context.Context, string) (*AgentIdentity, error)
-	// ListStuckRunIDs returns IDs of Running runs whose claiming agent is gone or has
-	// not sent a heartbeat within staleAfter, excluding runs claimed within the grace
+	// ListStuckRuns returns Running runs whose claiming agent is gone or has not
+	// sent a heartbeat within staleAfter, excluding runs claimed within the grace
 	// window (to avoid reaping a just-claimed run before its first heartbeat).
-	ListStuckRunIDs(ctx context.Context, staleAfter, grace time.Duration) ([]string, error)
+	// StuckRunRef.AgentMissing distinguishes "the row is absent" (no evidence of
+	// death — the predicate has no time component for it) from "the heartbeat went
+	// stale" (measured silence); callers must not treat them alike.
+	ListStuckRuns(ctx context.Context, staleAfter, grace time.Duration) ([]StuckRunRef, error)
 	// ListUnclaimableQueuedRuns returns Queued runs older than minAge for which no
 	// live agent (last_seen within staleAfter) has labels satisfying the run's
 	// agentSelector — i.e. runs that can never be claimed because the agent they
 	// need is gone. Used by the queued-run reaper to fail them instead of leaving
-	// them "in progress" forever.
-	ListUnclaimableQueuedRuns(ctx context.Context, minAge, staleAfter time.Duration) ([]QueuedRunRef, error)
+	// them "in progress" forever. limit bounds the batch (<= 0 means unbounded):
+	// the liveness answer goes stale while the caller works through the batch.
+	ListUnclaimableQueuedRuns(ctx context.Context, minAge, staleAfter time.Duration, limit int) ([]QueuedRunRef, error)
 
 	// Concurrency — mutex
 	AcquireMutex(ctx context.Context, mutexName, runID string) (bool, error)
@@ -506,4 +527,24 @@ type ClaimedRun struct {
 type QueuedRunRef struct {
 	ID            string
 	AgentSelector []string
+}
+
+// StuckRunRef identifies a Running run the stuck-run reaper may fail, and WHY it
+// matched. AgentMissing means the claiming agent has no row in agents at all —
+// which is not, on its own, evidence that the agent is dead: the row can be removed
+// by a duplicate-ID sibling's deregistration or an operator DELETE while the agent
+// is healthy and heartbeating, and an absent row carries no timestamp to age. A
+// false AgentMissing means the agent's row exists and its last_seen_at is older
+// than staleAfter, which IS measured silence.
+type StuckRunRef struct {
+	ID           string
+	AgentMissing bool
+}
+
+// PendingCursor is a keyset position in the Pending queue, ordered by
+// (created_at, id). Used by TransitionPendingToQueuedFrom to sweep the whole
+// Pending set across ticks instead of re-examining a fixed head window.
+type PendingCursor struct {
+	CreatedAt time.Time
+	ID        string
 }

@@ -160,7 +160,12 @@ Only **Pending→Queued transitions and schedule fires are paused** while there 
 
 - Already Queued / in-progress Runs continue — agents keep executing, and claiming uses `SKIP LOCKED` across all replicas.
 - API requests are handled by all replicas without interruption.
-- After promotion, the new leader processes any accumulated Pending Runs on the next tick — no runs are lost.
+- After promotion, the new leader processes accumulated Pending Runs starting on the next tick — no runs are lost.
+  Each tick examines a bounded window of 50 Pending runs, and the window **advances** across ticks
+  (200ms apart) until the whole backlog has been swept, so a backlog of N is fully examined within
+  `ceil(N/50)` ticks rather than in one. A backlog wider than one window is reported:
+  `INFO scheduler: Pending backlog exceeds one window; sweeping in steps`, followed by
+  `INFO scheduler: completed a full sweep of the Pending backlog` with the duration.
 
 ### Hard failure mitigation
 
@@ -355,6 +360,21 @@ longer than the queued-run reaper grace — configurable on the controller via
 `UNIFIED_QUEUED_RUN_GRACE` (default `5m`). Raise it if such outages can
 exceed the default in your environment.
 
+The grace is a **floor**, not the deadline: the reaper acts on a 30s sweep, so a run
+is actually failed somewhere in `[grace, grace + 30s)` after it was created. Size a
+maintenance window against the floor. Two further details when planning one:
+
+- the clock runs from the run's `created_at`, not from when it entered `Queued`, so a
+  run that spent the grace legitimately blocked on a mutex arrives in `Queued` already
+  past it and gets no grace of its own.
+- an agent that returns *after* the grace still saves its run whenever it registers
+  before the next sweep, so a run surviving past `grace` is expected, not a bug.
+
+Each run is re-validated at the moment it is failed: a run that a returning agent has
+claimed since the sweep's snapshot is skipped (`INFO queued-run reaper: run left the
+Queued state before it could be failed; skipping`), and nothing — not the terminal
+status, not the reason line, not its concurrency locks — is written for it.
+
 ---
 
 ## Orphaned-Run Recovery
@@ -377,12 +397,26 @@ heartbeat existed, a busy-but-alive agent that wasn't polling for new claims cou
 as dead and deleted. The heartbeat is best-effort: a failed send is logged and retried on the next tick,
 and never crashes the agent.
 
+The heartbeat **upserts**: if the agent's row is absent it is re-inserted, not silently skipped. This
+matters because the row is not owned by the process that heartbeats into it — `DELETE /api/v1/agents/{id}`
+(and the deregistration every agent issues at the end of its drain) removes it unconditionally, so a
+start-before-stop rollout under one agent ID can delete the row a healthy, running process is using.
+Before the upsert, that heartbeat matched zero rows, still answered `204`, and left the agent invisible
+to the stuck-run reaper's inventory check while it was demonstrably alive. When a heartbeat restores a
+missing row the controller logs
+
+```
+WARN agent heartbeat re-created a missing inventory row; the agent is alive but something deleted its agents row agentId=...
+```
+
+which is worth investigating: it means something deleted a live agent's row.
+
 ### 2. Stuck-run reaper
 
 `internal/controller/stuckrun_reaper.go` runs `RunStuckRunReaper`, leader-elected the same way as
 the other background jobs (a dedicated PG advisory lock, `stuckRunReaperLockKey`, distinct from
 the scheduler/approval/cache/log-archiver/AppSource/run-retention/log-trim keys). Every **30s**, the leader calls
-`ListStuckRunIDs(staleAfter=90s, grace=60s)`, which finds `Running` runs where:
+`ListStuckRuns(staleAfter=90s, grace=60s)`, which finds `Running` runs where:
 
 - the claiming agent's `last_seen_at` is older than `staleAfter` (**90s**), **or**
 - the agent row is gone entirely (`LEFT JOIN` — covers `DeleteStaleAgents` having already removed it),
@@ -393,6 +427,23 @@ claimed and before the new agent's first heartbeat lands.
 `staleAfter` (90s) is intentionally well under `DeleteStaleAgents`'s 5-minute threshold, so in the
 common case the reaper acts on a still-present (but stale) agent row; the `LEFT JOIN` handles the
 rarer case where the agent row was already deleted first.
+
+**The two disjuncts are not treated alike, and the difference matters.** A stale `last_seen_at` is
+*measured silence*: the agent had a row, stopped writing to it, and 90s passed. An absent row is not
+evidence of anything — it carries no timestamp, so the query has no time component for it, and a row
+deleted one millisecond ago is indistinguishable from one deleted an hour ago. Since deregistration by
+a duplicate-ID sibling produces exactly that state against a healthy agent, the reaper **confirms** a
+missing row across sweeps: the first sweep that sees one only records the observation and logs
+
+```
+INFO stuck-run reaper: claiming agent has no inventory row; confirming before reaping runId=... confirmAfter=1m30s
+```
+
+and the run is failed only if the row is *still* absent `staleAfter` later. A live agent's next
+heartbeat re-inserts the row (see §1) and clears the observation; a genuinely dead agent never does.
+The stale-heartbeat branch is unaffected and still acts on the first sweep, so ordinary agent-death
+recovery keeps its existing latency. The confirmation state is leader-local and in-memory: a leader
+change only delays such a reap by one confirmation window.
 
 For each stuck run, the reaper calls `store.MarkRunFinished(id, api.RunFailed)` — **not** a bulk
 `UPDATE runs` — because `MarkRunFinished` also releases the run's `mutex_holders` and

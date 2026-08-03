@@ -93,9 +93,21 @@ const heartbeatReconcileGrace = 60 * time.Second
 // skips reconcile for this heartbeat — it never fails the heartbeat itself.
 func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	agentID := chi.URLParam(r, "agentId")
-	if err := s.store.TouchAgent(r.Context(), agentID); err != nil {
+	recreated, err := s.store.TouchAgent(r.Context(), agentID)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if recreated {
+		// The agent is alive and heartbeating but its inventory row had been
+		// removed — a state that used to be entirely invisible (the bare UPDATE
+		// matched zero rows, this handler still answered 204, and the reaper
+		// meanwhile treated the missing row as proof of death). The heartbeat now
+		// restores the row; say so, because the deletion itself is still worth an
+		// operator's attention (a duplicate-ID sibling deregistering, or a manual
+		// DELETE /api/v1/agents/{id} against a live agent).
+		slog.Warn("agent heartbeat re-created a missing inventory row; the agent is alive but something deleted its agents row",
+			"agentId", agentID)
 	}
 
 	if r.ContentLength != 0 {
@@ -176,7 +188,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 			if cerr != nil {
 				// ClaimNextRun already flipped this run to Running in the same SQL
 				// statement, so leaving it as-is here would strand it Running forever:
-				// the claiming agent is alive and heartbeating, so ListStuckRunIDs'
+				// the claiming agent is alive and heartbeating, so ListStuckRuns'
 				// last_seen_at predicate would never select it for reaping. cerr is
 				// deterministic (buildClaimResponse is pure computation over the
 				// already-stored spec bytes — e.g. the pre-migration runsIn guard),
