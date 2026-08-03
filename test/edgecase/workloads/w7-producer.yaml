@@ -1,0 +1,23 @@
+# W7 Arm A producer: publishes the artefact a consumer will name with `runId:`.
+#
+# Same shape and purpose as `w5-producer.yaml`, with its OWN artefact name
+# (`w7payload`) and its own nonce so a W7 capture can never be confused with a
+# re-run of W5-2, and with **no `agentSelector`** — Arm A steers by which agent
+# services are running rather than by label (see `w7-poison.yaml`'s header).
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w7-producer
+spec:
+  native: true
+  steps:
+    - name: make_marker
+      run: |
+        rm -rf out
+        mkdir -p out
+        printf 'W7-ARTIFACT-SOURCE=producer\nW7-NONCE=a1b2c3d4e5f67001\n' > out/marker.txt
+        cat out/marker.txt
+    - name: publish
+      uploadArtifact:
+        name: w7payload
+        path: out

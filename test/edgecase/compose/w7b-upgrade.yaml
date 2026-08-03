@@ -1,0 +1,156 @@
+# W7 Arm B rig: a v0.3.0 deployment carrying a live secret, upgraded to HEAD
+# across migrations 013-017 — i.e. across `015_secrets_v2` and
+# `016_drop_secret_scope`, whose `:13` is an unqualified `DELETE FROM
+# public.secrets`. This executes `FINDINGS.md:2961`'s named-but-unrun
+# measurement (campaign carry-forward 7(i)).
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS A STANDALONE FILE AND NOT AN OVERLAY ON test/ha.
+# ---------------------------------------------------------------------------
+# `FINDINGS.md:2993`/§(a)(3) records that a v0.3.0 controller "cannot use the
+# campaign rig unmodified" because it predates `UNIFIED_CONTROLLER_KEY_FILE`
+# and reads only `UNIFIED_CONTROLLER_KEY` (`v0.3.0:internal/config/
+# controller.go:100`). That is true, and it is not the only obstacle: the HA
+# file's three controllers are `*ctrl` aliases of one `&ctrl` anchor, so an
+# overlay cannot version ONE of them, and this rig wants exactly one controller
+# at a time anyway — an upgrade is a swap, not a mixed fleet.
+#
+# The v0.3.0 CONTROLLER image is PULLED, unlike W5-2's agent: `:3046` records
+# that no `:v0.4.0` tag exists, but the v0.3.0 tags were published normally and
+# `ghcr.io/eirueimi/unified-cd-controller:v0.3.0` pulls unauthenticated. That
+# saves the npm+vite+Go build the W5 checkpoint priced.
+#
+# ---------------------------------------------------------------------------
+# THE KEK IS THE SAME VALUE ON BOTH SIDES, DELIBERATELY.
+# ---------------------------------------------------------------------------
+# v0.3.0 takes it in `UNIFIED_CONTROLLER_KEY`; HEAD takes it in
+# `UNIFIED_CONTROLLER_KEY_FILE`. Passing the same 64 hex characters models an
+# operator who carried their key across the upgrade, which is the most
+# favourable case for the product — so anything lost here is not lost because
+# the key was thrown away. (`test/ha/kek` is CRLF on a Windows checkout, 66
+# bytes; `TrimSpace` reduces it to the same 64 — README §mixedkek.)
+#
+# No object store: with `UNIFIED_S3_*` unset there is no archiver and no
+# artifact upload, neither of which this arm uses, and it avoids the eager
+# `BucketExists` crash-loop the README warns about.
+#
+# ---------------------------------------------------------------------------
+# Usage — PATHS ARE RELATIVE TO THE REPOSITORY ROOT, so pass it explicitly:
+#
+#   docker compose -p edge-armb --project-directory . \
+#     -f test/edgecase/compose/w7b-upgrade.yaml up -d postgres old agentv030
+#   ... set the secret, apply and run the job, then:
+#   docker compose ... stop old agentv030
+#   docker compose ... up -d --build new agentnew-enroll agentnew
+#   docker compose ... down -v
+name: edge-armb
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: unified
+      POSTGRES_PASSWORD: unified
+      POSTGRES_DB: unified
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unified"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # ---- the N-2 side ----
+  old:
+    image: ghcr.io/eirueimi/unified-cd-controller:v0.3.0
+    environment:
+      UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
+      UNIFIED_TOKEN: ha-admin-token
+      UNIFIED_CONTROLLER_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    ports:
+      - "18092:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agentv030:
+    image: ghcr.io/eirueimi/unified-cd-agent:v0.3.0
+    command:
+      - "--server"
+      - "http://old:8080"
+      - "--token"
+      - "ha-admin-token"
+      - "--id"
+      - "agentv030"
+      - "--labels"
+      - "kind:linux"
+    depends_on:
+      - old
+
+  # ---- the HEAD side ----
+  new:
+    build:
+      context: .
+      dockerfile: docker/controller.Dockerfile
+    environment:
+      UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
+      UNIFIED_TOKEN: ha-admin-token
+      UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek
+    volumes:
+      - ./test/ha/kek:/run/secrets/kek:ro
+    ports:
+      - "18093:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agentnew-enroll:
+    build:
+      context: .
+      dockerfile: docker/dev.Dockerfile
+    volumes:
+      - .:/app
+      - armb-agent-credentials:/var/lib/unified-cd-agent
+    environment:
+      UNIFIED_SERVER: http://new:8080
+      UNIFIED_TOKEN: ha-admin-token
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        DIR=/var/lib/unified-cd-agent/agenthead
+        mkdir -p "$$DIR"
+        rm -f "$$DIR/enrollment.token" "$$DIR/credentials.json"
+        for i in $$(seq 1 60); do
+          if go run -buildvcs=false ./cmd/unified-cli agent enrollment create \
+            --agent-id agenthead --label kind:linux \
+            --expires-in 10m --output-file "$$DIR/enrollment.token"; then
+            echo "agentnew-enroll: wrote enrollment token"; exit 0
+          fi
+          echo "agentnew-enroll: controller not ready yet, retrying..."
+          sleep 2
+        done
+        echo "agentnew-enroll: controller never became ready" >&2; exit 1
+    restart: "no"
+
+  agentnew:
+    build:
+      context: .
+      dockerfile: docker/agent.Dockerfile
+    volumes:
+      - armb-agent-credentials:/var/lib/unified-cd-agent
+    command:
+      - "--server"
+      - "http://new:8080"
+      - "--id"
+      - "agenthead"
+      - "--credential-file"
+      - "/var/lib/unified-cd-agent/agenthead/credentials.json"
+      - "--enrollment-token-file"
+      - "/var/lib/unified-cd-agent/agenthead/enrollment.token"
+      - "--labels"
+      - "kind:linux"
+    depends_on:
+      agentnew-enroll:
+        condition: service_completed_successfully
+
+volumes:
+  armb-agent-credentials:

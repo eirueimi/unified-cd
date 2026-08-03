@@ -1,0 +1,108 @@
+# W7 Arm A: does the artefact a v0.4.0 agent substitutes (FINDINGS.md:3004)
+# reach PERSISTENT state? `:3014` names the two routes it did not measure —
+# "an artefact republished from the wrong input, a cache entry saved over it" —
+# and this fixture takes both in one run, plus the propagation question they
+# only make sense together with.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS FIXTURE HAS NO `agentSelector`, AND WHY THAT IS NOT A REGRESSION
+# FROM W5-2's CONTROLLED-PAIR SHAPE.
+# ---------------------------------------------------------------------------
+# W5-2's shape (`README.md` §mixedver) is a PAIR of jobs differing in the
+# selector line, which turns "old agent vs HEAD agent" into a controlled
+# comparison. That shape cannot answer THIS question, because the agent cache
+# key is `caches/<b64url(sha256(jobName))>/<b64url(sha256(key))>.tar.zst`
+# (`cache-user.yaml`'s header, `internal/cache/`): the job NAME is in the key,
+# and two jobs cannot share a name — so a pair of jobs can never collide in the
+# cache and the propagation limb would be unmeasurable by construction.
+#
+# So Arm A uses ONE job and steers by **which agent services are running**:
+#   phase 1  `docker compose stop agent1 agent2`   -> only `agentold` (v0.4.0)
+#   phase 2  `docker compose stop agentold` + start agent1/agent2 -> only HEAD
+# That is a rig control, not a fault injection, and it models the fleet state
+# `docs/operations.md:189-195` prescribes (controller first, then agents, one
+# at a time) more directly than a label split does.
+#
+# ---------------------------------------------------------------------------
+# THE DISCRIMINATION INSTRUMENT IS W5-2's AND IS LOAD-BEARING — DO NOT DROP IT.
+# ---------------------------------------------------------------------------
+# `publish_self` publishes THIS run's own artefact under the SAME name
+# `w7payload` before the download, and `clear_local_copy` removes the local
+# copy. Both candidates therefore exist under one name at download time, each
+# carrying a nonce that names its origin, so the read-out separates "ignored
+# the field" from "nothing was there". Without it the result is a null.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w7-poison
+spec:
+  native: true
+  steps:
+    - name: make_self_marker
+      run: |
+        rm -rf out dl
+        mkdir -p out
+        printf 'W7-ARTIFACT-SOURCE=consumer-self\nW7-NONCE=9f8e7d6c5b4a7002\n' > out/marker.txt
+        cat out/marker.txt
+
+    - name: publish_self
+      uploadArtifact:
+        name: w7payload
+        path: out
+
+    - name: clear_local_copy
+      run: |
+        rm -rf out
+        mkdir -p dl
+        echo "workspace cleared; only dl/ remains"
+        ls -la
+
+    # Restore BEFORE the download, so a hit can only have come from the object
+    # store and never from this run's own download.
+    - name: restore_deps
+      cache:
+        path: deps/
+        key: edge-w7-poison-v1
+        ttlDays: 1
+
+    - name: report_cache
+      run: |
+        if [ -f deps/marker.txt ]; then
+          echo "W7-CACHE=HIT"
+          echo "W7-CACHE-CONTENT-BEGIN"
+          cat deps/marker.txt
+          echo "W7-CACHE-CONTENT-END"
+        else
+          echo "W7-CACHE=MISS"
+        fi
+
+    - name: fetch_other_run
+      downloadArtifact:
+        name: w7payload
+        destDir: dl
+        runId: PRODUCERRUNIDPLACEHOLDER
+
+    # The downloaded artefact becomes the cached dependency — the "cache entry
+    # saved over it" route of `FINDINGS.md:3014`.
+    - name: stage_for_cache
+      run: |
+        mkdir -p deps
+        if [ ! -f deps/marker.txt ]; then
+          cp dl/marker.txt deps/marker.txt
+          echo "W7-CACHE-STAGED=yes"
+        else
+          echo "W7-CACHE-STAGED=no (restored entry kept)"
+        fi
+
+    # The "artefact republished from the wrong input" route of the same line.
+    - name: republish
+      uploadArtifact:
+        name: w7republished
+        path: dl
+
+    - name: show
+      run: |
+        echo "=== W7 downloaded ==="
+        cat dl/marker.txt
+        echo "=== W7 deps (what the deferred cache save will archive) ==="
+        cat deps/marker.txt
