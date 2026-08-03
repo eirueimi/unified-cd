@@ -36,6 +36,12 @@ func TestNoStaleControllerKeyReferences(t *testing.T) {
 		// by that same name (a DROP COLUMN statement cannot omit the name of
 		// the column it drops). Rewriting shipped migrations is unsafe.
 		filepath.Join("internal", "store", "migrations"),
+		// Edge-case campaign findings are a record of what the product used to
+		// do: wave W5 audits 015_secrets_v2 itself and reports that a pre-v0.4.0
+		// controller still reads the dropped column and the removed env var, so
+		// it must name both to be checkable. Same rationale as docs/superpowers
+		// above — these files describe the removal, they do not depend on it.
+		filepath.Join("test", "edgecase"),
 	}
 
 	var offenders []string

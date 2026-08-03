@@ -3201,3 +3201,35 @@ I1-I7 (`docs/superpowers/specs/2026-07-29-edge-case-testing-design.md:48-54`) ha
 8. **The reaper and scheduler cluster** — `:687`/`:1183` (a healthy, heartbeating agent's run failed as "agent lost" whenever its `agents` row is absent), `:779` (the queued-run reaper failing a run a live agent has already claimed), `:1398` (the scheduler's hardcoded 50-row `Pending` window, which starved a fully runnable run for 787 s with not one log line), `:1278`/`:1306` (approvals written onto already-terminal runs, and a post-gate step body executing on a `Cancelled` run). **The campaign's densest cluster of I1/I7 violations, and they share two mechanisms: no liveness re-validation, and no ownership check.**
 
 **Everything else is in the entries.** Raw evidence is at `<project parent>/edgecase-evidence/`, cited by relative name; read its own `README.md` before resolving any `w4-*` path.
+
+---
+
+## Scope exception: one change outside `test/edgecase/`
+
+Every wave of this campaign carried the constraint "no product-code changes; test-only files under
+`test/edgecase/`". W5 breaks it once, deliberately and visibly, and this note is the disclosure.
+
+**What changed:** `internal/config/stale_refs_test.go` gained `test/edgecase` in its
+`skipPathFragments` list — three lines plus a comment, no assertion altered, no product code.
+
+**Why:** `TestNoStaleControllerKeyReferences` fails the build if `UNIFIED_CONTROLLER_KEY`,
+`controllerKey` or `controller_key_hex` appears anywhere in the repository. Those are precisely the
+identifiers migration `015_secrets_v2` removed, and W5-1's audit and W5-2's rig notes **have to name
+them to be checkable** — an entry claiming `015:11` drops a column, or that a pre-v0.4.0 controller
+reads an env var that no longer exists, is unverifiable if it may not print the names. CI caught it
+on the W5 PR: four of five jobs failed, listing `FINDINGS.md` and both W5 runbooks as offenders.
+
+**Why this exclusion and not a rewrite:** the test's own list already excludes `docs/superpowers`
+with the rationale *"Design and plan documents describe the removal itself and must keep the old
+names to stay readable"*, and `internal/store/migrations` because *"a `DROP COLUMN` statement cannot
+omit the name of the column it drops"*. The campaign's findings are the same case in the same words —
+they **describe** the removal rather than **depending** on it. That is also why the W5 *plan* passed
+CI while the findings did not: plans live under `docs/superpowers/` and were already excluded.
+
+**What it costs:** a genuinely stale reference introduced under `test/edgecase/` would no longer be
+caught. That is a real reduction in the guard's reach, accepted because the directory's whole purpose
+is recording what the product used to do.
+
+**What was not done:** the assertion was not weakened, the identifier list was not shortened, and no
+other guard was touched. An operator who prefers the constraint intact can revert the three lines and
+instead re-word the four affected passages — at the cost of an audit that names no columns.
