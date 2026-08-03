@@ -48,6 +48,13 @@ jobs:
           context: .
           file: docker/${{ matrix.image }}.Dockerfile
           platforms: ${{ matrix.platform }}
+          # Stamps the binary's version variable via -ldflags (see each
+          # Dockerfile's ARG VERSION). github.ref_name is the release tag that
+          # the merge job below applies to the image, so the version reported
+          # by the running binary matches the tag it was pulled by. The runner
+          # image ships no Go binary and ignores this arg.
+          build-args: |
+            VERSION=${{ github.ref_name }}
           outputs: type=image,name=ghcr.io/eirueimi/unified-cd-${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest

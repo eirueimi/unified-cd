@@ -23,3 +23,22 @@ func FindFlag(args []string, name string) string {
 	}
 	return ""
 }
+
+// VersionRequested reports whether args contains -version / --version.
+//
+// The controller and agent binaries pre-scan for it before loading their
+// configuration so `--version` answers in an image that has no config file,
+// DSN, or server URL — that is exactly the situation an operator is in when
+// they need to find out which build an image tag actually contains.
+// Everything after a bare "--" is a positional argument, not a flag.
+func VersionRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "-version" || arg == "--version" {
+			return true
+		}
+	}
+	return false
+}

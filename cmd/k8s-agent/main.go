@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,8 +18,20 @@ import (
 )
 
 func main() {
+	// --version answers before config loading so it works in an image with no
+	// config file mounted. The image is distroless (no shell), so this flag is
+	// the only way to read the build out of a running k8s-agent container:
+	// `kubectl exec <pod> -- /k8s-agent --version`.
+	if config.VersionRequested(os.Args[1:]) {
+		fmt.Println(agentlib.Version)
+		return
+	}
+
 	configPath := flag.String("config", os.Getenv("UNIFIED_K8S_CONFIG"), "config file path (env: UNIFIED_K8S_CONFIG)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_K8S_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_K8S_LOG_LEVEL)")
+	// Handled by the pre-scan above; registered so it appears in -h output
+	// and doesn't trip "flag provided but not defined".
+	_ = flag.Bool("version", false, "print the k8s-agent version and exit")
 	flag.Parse()
 
 	level, err := config.ParseLogLevel(*logLevel)

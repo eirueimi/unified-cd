@@ -621,6 +621,29 @@ wholesale** — if a label from a prior registration is absent from the new
 removing a label and restarting the agent actually takes effect, rather than
 labels only ever accumulating.
 
+### Agent version
+
+The `version` an agent registers with is the build version stamped into its
+binary at compile time (`-ldflags -X .../internal/agent.Version`). It is
+stamped by the release binaries (`.goreleaser.yaml`), by `make build`, and by
+the `unified-cd-agent` and `unified-cd-k8s-agent` images (from the `VERSION`
+build arg that the release workflow feeds from the git tag). Any other build
+— including a bare `go build` — reports `dev`.
+
+Read it in `GET /api/v1/agents` (the `version` field, also shown on the
+Agents page of the web UI), or straight from a binary or image with
+`unified-cd-agent --version` / `docker run <agent-image> --version`. The
+controller reports its own version in its first log line and as the
+`unifiedcd_build_info{version}` metric — see
+[Operations: Upgrades](operations.md#upgrades).
+
+**Nothing compares these versions.** The version is reported for humans, so
+an operator can see which part of a fleet is mid-upgrade; it is not a
+compatibility check, and a controller will never refuse an agent for being
+old. Compatibility is decided by capabilities (above), which is why an agent
+reporting no capabilities is treated as capability-agnostic rather than
+rejected.
+
 When an agent claims a run (`POST /api/v1/agents/{id}/claim`), the
 controller also upserts the agent row, but via a separate, non-destructive
 path: it only overwrites hostname/OS/version/env when the claim supplies a

@@ -170,6 +170,13 @@ func bootstrapKubernetesEnrollmentPolicies(ctx context.Context, st enrollmentPol
 }
 
 func main() {
+	// --version answers before anything else so it works in an image with no
+	// config file and no DSN: `docker run <image> --version`.
+	if config.VersionRequested(os.Args[1:]) {
+		fmt.Println(controller.BuildVersion())
+		return
+	}
+
 	// Pre-scan os.Args for -f so we can load the config file before defining
 	// other flags. This gives priority: env vars → config file → CLI flags.
 	configFile := config.FindFlag(os.Args[1:], "f")
@@ -182,6 +189,9 @@ func main() {
 
 	// Register flags with merged (env+file) defaults. Explicit flags override.
 	f := flag.String("f", configFile, "config file path (YAML)")
+	// Handled by the pre-scan above; registered so it appears in -h output
+	// and doesn't trip "flag provided but not defined".
+	_ = flag.Bool("version", false, "print the controller version and exit")
 	dsn := flag.String("dsn", eff.DSN, "postgres DSN (env: UNIFIED_DB_DSN)")
 	addr := flag.String("addr", func() string {
 		if eff.Addr != "" {
@@ -217,6 +227,11 @@ func main() {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
+
+	// First line of every controller log: which build this is. Logged before
+	// the DB connection so a controller that dies during migration still
+	// tells the operator what version it was.
+	slog.Info("unified-cd controller starting", "version", controller.BuildVersion())
 
 	// envIntOr runs during flag registration, before the logger above exists,
 	// so a malformed value's warning is collected then and only logged now.
@@ -266,6 +281,7 @@ func main() {
 	// Metrics: DB-backed gauges + store decorator counting run/step
 	// transitions. staleAfter=90s matches the stuck-run reaper's window.
 	m := metrics.New()
+	m.SetBuildInfo(controller.BuildVersion())
 	m.RegisterDBCollector(pg, 90*time.Second)
 	st := metrics.NewInstrumentedStore(pg, m)
 	backgroundPG := pg.BackgroundStore()

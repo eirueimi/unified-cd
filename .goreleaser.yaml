@@ -33,6 +33,7 @@ builds:
     main: ./cmd/controller
     ldflags:
       - -s -w
+      - -X github.com/eirueimi/unified-cd/internal/controller.Version={{.Version}}
     goos:
       - linux
       - darwin

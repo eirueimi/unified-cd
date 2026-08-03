@@ -4,7 +4,14 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /k8s-agent ./cmd/k8s-agent
+# VERSION stamps internal/agent.Version — the same variable the host agent
+# uses, since the k8s-agent registers through the same client and reports it in
+# GET /api/v1/agents. ucd-sh below carries no version variable, so it is not
+# stamped. .github/workflows/release-docker.yml passes the release tag.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-X github.com/eirueimi/unified-cd/internal/agent.Version=${VERSION}" \
+    -o /k8s-agent ./cmd/k8s-agent
 # /ucd-sh ships alongside the agent binary so the k8s init container (this
 # same image, see docs/superpowers/specs/2026-07-12-step-shell-shim-design.md
 # Component 3) can self-install it into the shared /.ucd emptyDir via

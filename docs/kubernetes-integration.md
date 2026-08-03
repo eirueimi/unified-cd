@@ -504,6 +504,21 @@ into every job and scope Pod and holds long-lived, bucket-scoped S3
 credentials, so a mutable tag would let a registry compromise exfiltrate those
 credentials from every Pod in the fleet.
 
+Pinning by digest closes the registry risk but not skew: the sidecar and the
+k8s-agent talk over a binary exec protocol and must be upgraded in lockstep
+(see [Operations: Upgrades](operations.md#upgrades)), so a digest left behind
+across a k8s-agent upgrade pins the *wrong* sidecar. To confirm a running
+pod's pair actually matches, ask both binaries:
+
+```bash
+kubectl exec <pod> -c unified-artifact -- unified-sidecar version
+kubectl exec <pod> -- /k8s-agent --version
+```
+
+Both print `dev` unless the image was built from a release tag, and nothing
+compares them automatically — this is an operator check, not an enforced
+constraint.
+
 ### S3 credentials (required)
 
 The operator must create a Kubernetes `Secret` in the agent's namespace with the same S3 env vars used by the controller/standard agent:

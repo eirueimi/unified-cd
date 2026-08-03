@@ -72,10 +72,14 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	host, _ := os.Hostname()
 	labels := appendLabelIfMissing(a.cfg.Labels, "kubernetes")
 	if err := a.client.Register(ctx, api.AgentRegisterRequest{
-		AgentID:      a.cfg.AgentID,
-		Hostname:     host,
-		OS:           runtime.GOOS + "/k8s",
-		Labels:       labels,
+		AgentID:  a.cfg.AgentID,
+		Hostname: host,
+		OS:       runtime.GOOS + "/k8s",
+		Labels:   labels,
+		// Same build variable the host agent reports (both binaries are
+		// stamped from the same release tag), so `GET /api/v1/agents` shows a
+		// version for k8s agents too instead of an empty string.
+		Version:      agentlib.Version,
 		Capabilities: k8sAgentCapabilities(),
 	}); err != nil {
 		return err

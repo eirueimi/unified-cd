@@ -344,10 +344,14 @@ silently off before. **Consequences you must plan for:**
   agent" into a controlled comparison instead of a race for the claim. **Any future version-skew
   scenario should copy that shape.**
 
-  **`version:` cannot be used to tell them apart** — `GET /api/v1/agents`
-  returned `"version": "dev"` for the v0.4.0 agent and both HEAD agents alike,
-  because no Dockerfile passes `-ldflags` (`FINDINGS.md` §W5-2). The compose
-  service name is the only handle.
+  **`version:` could not be used to tell them apart when W5-2 ran** — `GET
+  /api/v1/agents` returned `"version": "dev"` for the v0.4.0 agent and both
+  HEAD agents alike, because no Dockerfile passed `-ldflags` (`FINDINGS.md`
+  §W5-2). The compose service name was the only handle. **This has since been
+  fixed**: `docker/*.Dockerfile` take an `ARG VERSION` and stamp it, so a
+  rebuilt rig can steer by `version:` — but only if each arm is built with
+  `--build-arg VERSION=...`; without it the images still (correctly) report
+  `dev`, so keep the service-name handle as the fallback.
 
 ### The W4 Kubernetes rig, and the enrollment bypass it rests on
 

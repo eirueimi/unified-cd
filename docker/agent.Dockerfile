@@ -10,7 +10,14 @@ COPY . .
 # every job container it creates at /.ucd/ucd-sh. The committed
 # ucd-sh-<arch> bytes are already in the build context (COPY . . above), so
 # `go build ./cmd/unified-cd-agent` embeds them directly — no pre-build step.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /agent ./cmd/unified-cd-agent
+# VERSION stamps internal/agent.Version, which the agent reports at
+# registration and GET /api/v1/agents displays. Without it every containerised
+# agent reports "dev" and a mid-upgrade fleet is indistinguishable.
+# .github/workflows/release-docker.yml passes the release tag as a build arg.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-X github.com/eirueimi/unified-cd/internal/agent.Version=${VERSION}" \
+    -o /agent ./cmd/unified-cd-agent
 
 # Stage 2: runtime with a shell (bash) for run: steps and git for uses: templates
 FROM alpine:3.20

@@ -4,7 +4,15 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/unified-sidecar ./cmd/unified-sidecar
+# VERSION stamps main.version, readable via `unified-sidecar version`. The
+# sidecar must be upgraded in lockstep with the k8s-agent (docs/operations.md
+# "Upgrades"), so being able to read its build out of a running pod is the
+# only way to verify that pin. .github/workflows/release-docker.yml passes the
+# release tag as a build arg.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-X main.version=${VERSION}" \
+    -o /out/unified-sidecar ./cmd/unified-sidecar
 
 # Minimal runtime: just the static binary + CA certs. The k8s agent execs the
 # binary via argv (no shell), so no bash/curl/tar/zstd are needed. The
