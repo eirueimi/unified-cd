@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -37,6 +38,14 @@ func orDefault(s, def string) string {
 }
 
 func main() {
+	// --version answers before anything else so it works in an image with no
+	// config file and no controller to register against: the version the
+	// agent reports to the controller is the same string.
+	if config.VersionRequested(os.Args[1:]) {
+		fmt.Println(agent.Version)
+		return
+	}
+
 	// Pre-scan os.Args for -f so we can load the config file before defining
 	// other flags. This gives priority: env vars → config file → CLI flags.
 	configFile := config.FindFlag(os.Args[1:], "f")
@@ -54,6 +63,9 @@ func main() {
 
 	// Register flags with merged (env+file) defaults. Explicit flags override.
 	f := flag.String("f", configFile, "config file path (YAML) (default: unified-agent.yaml if exists)")
+	// Handled by the pre-scan above; registered so it appears in -h output
+	// and doesn't trip "flag provided but not defined".
+	_ = flag.Bool("version", false, "print the agent version and exit")
 	server := flag.String("server", eff.Server, "master base URL")
 	credentialFile := flag.String("credential-file", eff.CredentialFile, "path to persistent VM refresh credentials (env: UNIFIED_AGENT_CREDENTIAL_FILE)")
 	enrollmentTokenFile := flag.String("enrollment-token-file", eff.EnrollmentTokenFile, "path to one-time enrollment token (env: UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE)")

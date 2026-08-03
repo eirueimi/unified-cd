@@ -12,7 +12,13 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /controller ./cmd/controller
+# VERSION stamps internal/controller.Version, reported in the startup log line
+# and as the unifiedcd_build_info{version} gauge on /metrics.
+# .github/workflows/release-docker.yml passes the release tag as a build arg.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-X github.com/eirueimi/unified-cd/internal/controller.Version=${VERSION}" \
+    -o /controller ./cmd/controller
 
 # Stage 3: Runtime image.
 # alpine (not distroless) because the AppSource reconciler shells out to the

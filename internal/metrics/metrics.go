@@ -25,6 +25,7 @@ type Metrics struct {
 	httpDuration    *prometheus.HistogramVec
 	agentAuthEvents *prometheus.CounterVec
 	collectorErrors prometheus.Counter
+	buildInfo       *prometheus.GaugeVec
 }
 
 // New builds a Metrics with its own registry (never the global default, so
@@ -70,11 +71,26 @@ func New() *Metrics {
 			Name: "unifiedcd_scrape_collector_errors_total",
 			Help: "Errors while collecting DB-backed gauges at scrape time.",
 		}),
+		buildInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "unifiedcd_build_info",
+			Help: "Controller build information; always 1, the version is carried in the label.",
+		}, []string{"version"}),
 	}
 	m.reg.MustRegister(m.runsCreated, m.runsFinished, m.stepsCompleted,
 		m.stepDuration, m.webhookEvents, m.httpRequests, m.httpDuration,
-		m.agentAuthEvents, m.collectorErrors)
+		m.agentAuthEvents, m.collectorErrors, m.buildInfo)
 	return m
+}
+
+// SetBuildInfo publishes the controller's build version as the label of a
+// constant-1 gauge (the standard Prometheus build-info idiom). Calling it
+// again replaces the series, so exactly one version is ever exported per
+// process. Nothing consumes this to make a decision — it exists so an
+// operator scraping /metrics can see which controller version is running
+// next to the agent versions in GET /api/v1/agents.
+func (m *Metrics) SetBuildInfo(version string) {
+	m.buildInfo.Reset()
+	m.buildInfo.WithLabelValues(version).Set(1)
 }
 
 // AgentAuthEvent records a credential event using only bounded labels.

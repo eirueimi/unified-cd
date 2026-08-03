@@ -227,6 +227,30 @@ Upgrade order: **controller first, then agents.**
 3. **k8s-agent + sidecar image** — the k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. Pin `sidecarImage` in the k8s-agent config to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
 4. **Default runner/pause image digest pin** — see [Rotating the default runner/pause image digests](#rotating-the-default-runnerpause-image-digests) below. This step is easy to forget because the build succeeds either way; forgetting it just means agents keep pulling the old image forever.
 
+### Checking which version is running
+
+An upgrade is a fleet mid-way between two versions, so every unified-cd
+binary reports the release tag it was built from. Released images are stamped
+from the git tag by `.github/workflows/release-docker.yml`; anything built
+another way (including a plain `go build`) reports `dev`.
+
+| Component | How to read its version |
+| --- | --- |
+| Controller | First line of its log (`"unified-cd controller starting" version=...`), the `unifiedcd_build_info{version}` gauge on `/metrics`, or `docker run <controller-image> --version` |
+| Agent | `version` field in `GET /api/v1/agents` and on the web UI's Agents page, or `unified-cd-agent --version` |
+| k8s-agent | Same `GET /api/v1/agents` field, or `kubectl exec <pod> -- /k8s-agent --version` |
+| Artifact sidecar | `kubectl exec <pod> -c unified-artifact -- unified-sidecar version` — the only way to verify the lockstep pin in step 3 above |
+| CLI | `unified-cd version` |
+| Runner image | No unified-cd binary and therefore no version; identified by its digest pin (see [Rotating the default runner/pause image digests](#rotating-the-default-runnerpause-image-digests)) |
+
+**Nothing enforces these versions.** The controller does not compare its
+version against an agent's and will never refuse an old agent — compatibility
+is decided by capabilities (see [Agents: Capability-based
+routing](agents.md#agent-version)), which is deliberately permissive so a
+rolling upgrade does not strand runs. These values exist so an operator can
+*see* the fleet's state; treat a mismatch as information, not as an error the
+system has already handled.
+
 ---
 
 ### Rotating the default runner/pause image digests
@@ -318,10 +342,17 @@ Key metrics:
 | `unifiedcd_http_requests_total{method,route,code}` | counter | API traffic by chi route pattern |
 | `unifiedcd_http_request_duration_seconds{method,route}` | histogram | HTTP request duration by method and chi route pattern |
 | `unifiedcd_scrape_collector_errors_total` | counter | Errors collecting DB-backed gauges (`unifiedcd_runs_current`, `unifiedcd_agents`) at scrape time |
+| `unifiedcd_build_info{version}` | gauge | Always `1`; the controller's build version is the label. See [Checking which version is running](#checking-which-version-is-running) |
 
 With multiple controller replicas, gauges report identical values on every
 replica (aggregate with `max()`); counters count only events the scraped
 replica processed (aggregate with `sum(rate(...))`).
+
+`unifiedcd_build_info` is the exception to the "gauges report identical
+values on every replica" rule: each replica reports its own build, so during
+a rolling controller upgrade `count(count by (version) (unifiedcd_build_info))`
+is greater than 1. That is the intended signal — an alert on it staying above
+1 catches a rollout that stalled half-finished.
 
 Example queries:
 

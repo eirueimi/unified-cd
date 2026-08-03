@@ -423,6 +423,10 @@ in the tag, or the tag was deleted), the pod can never become Ready.
   `unified-sidecar` binary via `exec`, using a binary protocol; an
   older/mismatched image is incompatible even if it happens to pull
   successfully. Pin `sidecarImage` to the same version as the k8s-agent.
+  Verify the two actually match by asking each binary:
+  `kubectl exec <pod> -c unified-artifact -- unified-sidecar version` and
+  `kubectl exec <pod> -- /k8s-agent --version`. Both print `dev` unless the
+  image was built from a release tag.
 - See [Kubernetes Integration Guide](kubernetes-integration.md) for the full
   sidecar contract and `sidecarS3SecretName` configuration.
 
@@ -928,6 +932,31 @@ run has already been cancelled or completed are not recorded either — this
 includes outputs from `finally:` steps of a cancelled run, since those steps
 execute after cancellation has already marked the run terminal; the request
 gets a 200 `{"alreadyFinalized": true}` response rather than a 403.
+
+## Every agent reports `"version": "dev"`
+
+**Symptom**
+
+`GET /api/v1/agents` (and the web UI's Agents page) shows `"version": "dev"`
+for every agent, so a fleet mid-upgrade looks identical to one that is fully
+upgraded.
+
+**Cause**
+
+the version is stamped into the binary at build time. A binary built any
+other way than a release build — a bare `go build`, or a container image
+built from a Dockerfile without `--build-arg VERSION=...` — reports `dev`,
+which is the honest answer: that binary has no release identity.
+
+**Fix**
+
+use a released image (`ghcr.io/eirueimi/unified-cd-agent:<tag>`), or pass
+`--build-arg VERSION=<tag>` when building the image yourself, or `make build`
+for a local binary (it stamps `git describe`). Confirm with
+`docker run <image> --version` before rolling it out. Note that the
+controller does **not** compare versions and will never reject an old agent
+— see [Operations: Checking which version is
+running](operations.md#checking-which-version-is-running).
 
 ## Run fails with log line `git template resolution failed for more than 1h0m0s`
 

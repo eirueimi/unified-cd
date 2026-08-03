@@ -39,8 +39,15 @@ func run(ctx context.Context, newStore storeProvider, args []string, stderr io.W
 		<-ctx.Done()
 		return 0
 	}
+	// `version` needs no store and no arguments: it is how an operator checks
+	// that a running sidecar container matches its k8s-agent (docs/operations.md
+	// requires the two to be upgraded in lockstep).
+	if isVersionCommand(args) {
+		fmt.Fprintln(os.Stdout, buildVersion())
+		return 0
+	}
 	if len(args) < 2 {
-		fmt.Fprintln(stderr, "usage: unified-sidecar <cache|artifact> <subcommand> [flags]")
+		fmt.Fprintln(stderr, "usage: unified-sidecar <version|idle|cache|artifact> [subcommand] [flags]")
 		return 2
 	}
 	group, sub, rest := args[0], args[1], args[2:]
