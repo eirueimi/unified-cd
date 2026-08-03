@@ -1,0 +1,16 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w5-call-parent-old
+spec:
+  native: true
+  agentSelector:
+    - kind:old
+  steps:
+    - name: prelude
+      run: echo "W5 parent prelude on the v0.4.0 agent"
+    - name: invoke_child
+      call:
+        job: edge-w5-call-child
+    - name: after_call
+      run: echo "W5 parent resumed after the call step"

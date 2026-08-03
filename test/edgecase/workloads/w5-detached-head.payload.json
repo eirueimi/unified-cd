@@ -1,0 +1,1 @@
+{"yaml": "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-w5-detached-head\nspec:\n  native: true\n  detached: true\n  agentSelector:\n    - kind:linux\n  steps:\n    - name: tick\n      run: echo \"W5 detached job claimed\"\n"}

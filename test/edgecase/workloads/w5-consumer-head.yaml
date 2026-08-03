@@ -1,0 +1,36 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w5-consumer-head
+spec:
+  native: true
+  agentSelector:
+    - kind:linux
+  steps:
+    - name: make_self_marker
+      run: |
+        rm -rf out dl
+        mkdir -p out
+        printf 'W5-ARTIFACT-SOURCE=consumer-self\nW5-NONCE=9f8e7d6c5b4a0002\n' > out/marker.txt
+        cat out/marker.txt
+    - name: publish_self
+      uploadArtifact:
+        name: w5payload
+        path: out
+    - name: clear_local_copy
+      run: |
+        rm -rf out
+        mkdir -p dl
+        echo "workspace cleared; only dl/ remains"
+        ls -la
+    - name: fetch_other_run
+      downloadArtifact:
+        name: w5payload
+        destDir: dl
+        runId: PRODUCERRUNIDPLACEHOLDER
+    - name: show
+      run: |
+        echo "=== W5 downloaded tree ==="
+        find dl -type f | sort
+        echo "=== W5 downloaded content ==="
+        find dl -type f -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \;

@@ -1,0 +1,13 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w5-call-child
+spec:
+  native: true
+  agentSelector:
+    - kind:linux
+  steps:
+    - name: emit
+      run: |
+        echo "W5 CHILD RAN"
+        sleep 5

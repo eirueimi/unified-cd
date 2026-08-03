@@ -1,0 +1,1 @@
+{"yaml": "apiVersion: unified-cd/v1\nkind: Job\nmetadata:\n  name: edge-w5-oldtick\nspec:\n  native: true\n  agentSelector:\n    - kind:old\n  steps:\n    - name: hello\n      run: |\n        echo \"W5 baseline: trivial job on the v0.4.0 agent\"\n        uname -a\n"}

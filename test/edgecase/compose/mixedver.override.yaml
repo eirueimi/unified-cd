@@ -1,0 +1,146 @@
+# W5-2 overlay: a THIRD agent service running the **v0.4.0** agent binary
+# against HEAD controllers. Mixed-version rig for scenario W5-2.
+#
+# Follows `dupagent.override.yaml:67-88`'s shape — a brand-new service sharing
+# the `agent-credentials` named volume — and deliberately does NOT mutate
+# `agent1`/`agent2`/`controller3`. `controller1` carries `build:` and
+# `controller2`/`controller3` are `*ctrl` aliases of its `&ctrl` anchor
+# (`docker-compose.ha.yaml:79-81`, `:103-104`), so merging an `image:` onto one
+# of them would build-and-tag rather than switch to a pull. Only the agent side
+# is versioned here; every controller stays at HEAD.
+#
+# ---------------------------------------------------------------------------
+# THE IMAGE IS NOT PULLED, AND THE REASON IS A FINDING — read before running.
+# ---------------------------------------------------------------------------
+# `.github/workflows/release-docker.yml` pushes
+# `ghcr.io/eirueimi/unified-cd-<image>:<tag>` on every `v*` tag, and the
+# packages ARE public (`docker pull ghcr.io/eirueimi/unified-cd-agent:v0.3.0`
+# succeeds unauthenticated). But **there is no `:v0.4.0` tag for any of the
+# five images**: the v0.4.0 release run (GitHub Actions 29796662231, failure,
+# 1m47s) lost both `k8s-agent` legs on
+# `internal/shim/embedded/embed_amd64.go:11:12: pattern ucd-sh-amd64: no
+# matching files found`, and the tag-applying `merge` job is `needs: build`
+# (`release-docker.yml:73`), so **no** image got a v0.4.0 tag even though the
+# `agent`, `controller`, `runner` and `artifact-sidecar` legs all succeeded and
+# pushed by digest. See `scenarios/w5-2-mixed-agent.md` §Step 1.
+#
+# So the image is built by hand from a v0.4.0 worktree, ONCE, before `up`:
+#
+#   git worktree add ../wt-v040 v0.4.0
+#   cd ../wt-v040
+#   MSYS_NO_PATHCONV=1 docker build -t unified-cd-agent:v0.4.0-local \
+#     -f docker/agent.Dockerfile .
+#
+# It is referenced by tag below rather than through a `build:` block because
+# the build context lives OUTSIDE this repository (a sibling worktree), and a
+# Compose build context is resolved relative to the PROJECT directory
+# (`test/ha/`), which would hard-code this machine's worktree layout into a
+# committed file. `image:` on a service that has no `build:` is a plain pull /
+# local-tag lookup and does not hit the anchor trap described above.
+#
+# ---------------------------------------------------------------------------
+# LABELS ARE THE STEERING MECHANISM.
+# ---------------------------------------------------------------------------
+# Agent labels come from the ENROLLMENT TOKEN, not from `--labels`
+# (README §"The W4 Kubernetes rig"). `agentold` is enrolled with `kind:old`,
+# which no other agent in the rig carries, so a job with
+# `agentSelector: [kind:old]` is claimable ONLY by the v0.4.0 agent and a job
+# with `agentSelector: [kind:linux]` ONLY by the two HEAD agents. Every W5-2
+# arm is therefore a pair of otherwise-identical jobs differing in one label,
+# which is what makes "old agent vs HEAD agent" a controlled comparison rather
+# than a race for the claim.
+#
+# `--labels kind:old` is passed to the process as well, for the same reason
+# the base file passes `--labels kind:linux`: the value is echoed in the
+# register request and keeps the container's own view consistent.
+#
+# ---------------------------------------------------------------------------
+# Usage (from test/ha):
+#
+#   COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/mixedver.override.yaml"
+#   docker compose $COMPOSE_FILES up -d --build
+#   docker compose $COMPOSE_FILES down -v      # MANDATORY between scenarios
+#
+# No `profiles:` (unlike `dupagent`): W5-2 wants the old agent up for the whole
+# session and the two fleets side by side from the first claim, so gating it
+# behind a profile would only add a step. Naming the overlay is already opt-in.
+services:
+  # One-shot enrollment for the v0.4.0 agent, mirroring the base file's
+  # `agent-enroll` (`docker-compose.ha.yaml:120-168`) for a single id. It
+  # builds from HEAD's `dev.Dockerfile` because the published agent image does
+  # not bundle `unified-cli` — the enrollment token is minted by a HEAD
+  # controller through the product's ordinary enrollment API, which is exactly
+  # the path a real operator would use to add an old agent to a new fleet.
+  agentold-enroll:
+    build:
+      context: ../..
+      dockerfile: docker/dev.Dockerfile
+    volumes:
+      - ../..:/app
+      - agent-credentials:/var/lib/unified-cd-agent
+    depends_on:
+      - nginx
+    environment:
+      UNIFIED_SERVER: http://nginx:8080
+      UNIFIED_TOKEN: ha-admin-token
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        AGENTID=agentold
+        DIR=/var/lib/unified-cd-agent/$$AGENTID
+        mkdir -p "$$DIR"
+        if [ -f "$$DIR/credentials.json" ]; then
+          echo "agentold-enroll: $$AGENTID already has a credential file, skipping"
+          exit 0
+        fi
+        rm -f "$$DIR/enrollment.token"
+        OK=0
+        for i in $$(seq 1 60); do
+          if go run -buildvcs=false ./cmd/unified-cli agent enrollment create \
+            --agent-id "$$AGENTID" --label kind:old \
+            --expires-in 10m --output-file "$$DIR/enrollment.token"; then
+            OK=1
+            break
+          fi
+          echo "agentold-enroll: controller not ready yet, retrying..."
+          sleep 2
+        done
+        if [ "$$OK" != "1" ]; then
+          echo "agentold-enroll: controller never became ready" >&2
+          exit 1
+        fi
+        echo "agentold-enroll: wrote enrollment token for $$AGENTID"
+    restart: "no"
+
+  agentold:
+    image: unified-cd-agent:v0.4.0-local
+    volumes:
+      - agent-credentials:/var/lib/unified-cd-agent
+      - ../edgecase/sideeffect-data:/data
+    environment:
+      # Same four cache vars as agent1/agent2. All four are required and none
+      # has a default; a missing one disables the cache SILENTLY
+      # (base file's own note, and README §"The object store").
+      UNIFIED_CACHE_ENDPOINT: garage:3900
+      UNIFIED_CACHE_BUCKET: unified-cd-cache
+      UNIFIED_CACHE_KEY: garageadmin
+      UNIFIED_CACHE_SECRET: garageadmin12345
+    command:
+      - "--server"
+      - "http://nginx:8080"
+      - "--id"
+      - "agentold"
+      - "--credential-file"
+      - "/var/lib/unified-cd-agent/agentold/credentials.json"
+      - "--enrollment-token-file"
+      - "/var/lib/unified-cd-agent/agentold/enrollment.token"
+      - "--labels"
+      - "kind:old"
+    depends_on:
+      agentold-enroll:
+        condition: service_completed_successfully
+      garage:
+        condition: service_healthy

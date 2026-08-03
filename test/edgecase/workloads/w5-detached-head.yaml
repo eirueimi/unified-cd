@@ -1,0 +1,12 @@
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w5-detached-head
+spec:
+  native: true
+  detached: true
+  agentSelector:
+    - kind:linux
+  steps:
+    - name: tick
+      run: echo "W5 detached job claimed"
