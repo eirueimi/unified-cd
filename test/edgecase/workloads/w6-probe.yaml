@@ -1,0 +1,26 @@
+# W6 fixture: a job NO REAL AGENT CAN CLAIM — the counterpart to
+# `tools/w6/w6-synth-agent.sh`.
+#
+# `kind:w6synth` matches neither `agent1` nor `agent2` (both `kind:linux`), so
+# a run of this job sits Queued until the synthetic identity claims it. That
+# gives a harness a run whose whole lifecycle it owns: claim held as long as
+# wanted, logs pushed on demand, finish deferred or never. The two real agents
+# are never involved, so nothing the harness does perturbs a concurrently
+# running real measurement.
+#
+# Same shape and same reason as `w35-probe` / `w36-probe`; it has its own
+# selector purely so a W6 instrument cannot collide with a re-run of either W3
+# scenario. The step below never executes — the run is terminalised through
+# POST /api/v1/agents/{id}/runs/{runId}/finish — so its content is deliberately
+# trivial; it exists only because a Job needs at least one step.
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: edge-w6-probe
+spec:
+  native: true
+  agentSelector:
+    - kind:w6synth
+  steps:
+    - name: never_runs
+      run: echo "w6-probe placeholder — this step is never executed"

@@ -502,6 +502,549 @@ error, all executed or code-read at HEAD:**
   wins essentially always. A future sidecar-capable rig should not expect the
   structural shape.
 
+### The W6 harnesses (scale / abuse)
+
+**W6 is complete — see `FINDINGS.md` §"Checkpoint: W6 complete" for the wave's
+tally (3 violations / 14 observations / 3 asset defects), the **disk-spill
+recommendation** the campaign has gated since W1 (§(a): *do not implement it as
+specified; four cheaper changes first, in a strict order*), and the two-regime
+result that turned one chartered scenario into two tasks (§(b)).** All five
+directories of raw captures are archived under
+`<project parent>/edgecase-evidence/w6/`. **Read §(c) before reusing any tool
+below and §(d) before quoting any number from this wave** — the rig runs exactly
+two concurrent real runs, and its `max_connections=100` is *not* what the
+repository's own `docker-compose.yaml:30` ships.
+
+W6 is instrument work first: every W6 scenario was blocked on measurement tools
+that did not exist. They live in `tools/w6/` and are listed below **with the
+capture that proves each one works** — the campaign has shipped two arms inert
+while they passed every one of their own state checks, so "the code is present"
+is never the evidence.
+
+Build the two Go tools first (never `go run`; see `w6-build.sh`):
+
+```bash
+test/edgecase/tools/w6/w6-build.sh      # -> tools/w6/bin/{loadgen,ssehold}, gitignored
+```
+
+Most of them want the **direct controller ports**, and two also want the
+`logfault` access-log format:
+
+```bash
+cd test/ha
+export COMPOSE_FILES="-f docker-compose.ha.yaml \
+  -f ../edgecase/compose/logfault.override.yaml \
+  -f ../edgecase/compose/ctrlports.override.yaml"
+docker compose $COMPOSE_FILES up -d --build
+```
+
+| Harness | What it does | The capture that proves it |
+|---|---|---|
+| `w6-synth-agent.sh` | curl-driven synthetic agent: `enroll` / `register` / `heartbeat` / `trigger` / `claim` / `own` / `run-once` / `lines` / `push-bulk` / `finish` / `token` / `forget`. Agent id, label, job and server are all parameters | `w6-1/step1-synth-agent.txt` — enroll → register(204) → `own edge-w6-probe` → run reads back `Running`, 5 lines pushed through the real bulk route and read back through the admin API → `finish` → `Succeeded` |
+| `bin/loadgen` | N genuinely concurrent in-flight requests at ONE named controller; per-request start/end to CSV; `maxInFlight` swept from those timestamps | `w6-1/step2-loadgen.txt` — `-c 20 -mode burst` → `maxInFlight=20`, and the CSV shows all 20 sharing one start timestamp; the `-insecure-serial` control over the same 20 requests → `maxInFlight=1`, each start equal to the previous end. Both guards are proven by `loadgen/main_test.go` (`go test -buildvcs=false ./test/edgecase/tools/w6/loadgen/`), which is mutation-checked: disabling the over-report comparison makes `TestWarnsOnOverReport` fail with the pre-fix silent output |
+| `bin/ssehold` | S SSE streams held for a measured window against ONE controller; per-stream status, connect latency, event counts, alive-at-end | `w6-1/step3-4-sse-pg.txt` — 6 streams on `:18083` held 35 s, `aliveAtEnd=6 diedEarly=0`, 30 events each. **The targeting is proven by a delta, not by a snapshot**: `controller3` has **no `listen` row at all in sample 1** and exactly **6 from sample 2 onward**, when the streams opened. `controller1` carries a **flat `listen` peak=8 across every sample including sample 1** — stale listen connections an earlier run left behind, which the pool had not released across this capture's window; that is the same **non-prompt-release** mechanism the `W6-infra` entry describes — **not** "the pools only grow", which is a mechanism claim corrected below (pgxpool applies 30 m idle / 1 h lifetime defaults the product leaves unset) — showing up as free corroboration. So: 6 new `listen` connections, all on the targeted replica, none on the other two |
+| `w6-pgsample.sh` | `pg_stat_activity` on a grid, per replica and per **derived** pool, with a peak summary; `-p` also probes `/readyz` and `/healthz` on the same grid | same capture — the `listen` **delta** tracked the stream count exactly, and `w6-1/unplanned-pg-saturation.txt` shows the same instrument reading the saturated case. The `-p` health probe post-dates that capture and is proven off-rig: against a live throwaway port and a dead one it returns real codes and `000` respectively, and its summary was exercised on saturated-and-200, saturated-and-not-200 and never-saturated inputs |
+| `w6-reqshape.sh` | per-request shape recorder off nginx's `logfault` access log, folded into buckets; plus `counter`, `contrast` and `window` verbs. **Read the corrections below before using it: `follow -d` now EXITS 5 and names its replacement, and bare `follow` only warns — a plain `follow` capture is still not window-bounded** | `w6-1/step5-reqshape.txt` — 60 bulk requests resolved individually inside a 75 ms window (median gap 1 ms) that a 2 s grid would report as one number; `w6-1/step5-reqshape-b.txt` — a real agent's 15 auto-flush ticks at a measured 2.000 s median spacing; `w6-1/step5-reqshape-c.txt` — `contrast` and the combined-format guard |
+| `w6-idleload.sh` + `w6-idleanalyze.py` | arms Postgres statement logging, captures a **bounded** window, reverts *unless the window it measured exhausted `max_connections` — see the third correction below, W6-3 left it armed*, and reports q/s in total, per replica and per statement class. Despite the name it is a **generic window recorder** — W6-2a drove four loaded arms through it | `w6-1/step8-idlebaseline.txt` (arm, revert and read-backs) and `w6-1/step8-idle-report.txt` (the numbers below); **and `w6-2a/harnessfix/verify.txt` for the capture-leak fix — see the warning below** |
+| `w6-2b-fault.sh` + `compose/nginx-w62b.conf` + `compose/w62b.override.yaml` | **W6-2b's fault**, URI-scoped to the agent log-bulk endpoint, in three arms no earlier tool provides: `outage` (dead upstream, instant 502, **nothing reaches a controller**), `flap` (per-`$request_id` `split_clients`, half the requests fail), `hang` (**the black hole** — a sink that accepts TCP and never answers). Plus `clear`, `probe`, `hangprobe` | `w6-2b/arm1/` — `outage` gave **11,326** 502s in a 300 s window against a predicted 11,325, in 151 flush passes of sizes 1, 1, 2, …, 150; `w6-2b/arm3/` — `flap` measured at **47.0 %** failure (135 of 287) and **287** requests over the same 300 s, a 39.5x difference from the same fault duration; `w6-2b/arm4/` — `hang` produced **`status=499 rt=60.000`** three times, i.e. the agent's own 60 s client timeout ending a request nginx never answered. **Read the two warnings below before reusing any of it** |
+| `workloads/w6-chatty.yaml` | the first fixture in the tree that can reach the 1 MiB pending cap: **wide** lines (default 1 KiB) so ~1,024 lines fill it, plus a per-line heartbeat appended to a `/data` bind that **does not pass through the `LogPusher`** | `w6-2b/arm2b/` — 1.33 MiB emitted under outage produced a drop of exactly **263** lines and a marker reading exactly 263; `w6-2b/arm4/heartbeat.log` — the heartbeat's **176.3 s gap** against a 0.205 s median cadence is what proves the step itself stalled, measured off the logging path |
+| `w6-build.sh` | builds `loadgen` and `ssehold` into a gitignored `bin/` | — |
+
+**`w6-synth-agent.sh` is the promotion the README asked for.** `w3-5/synth.sh`
+and `w3-6/synth.sh` were the same instrument twice, both session artefacts with
+hardcoded absolute scratchpad paths, and neither was committed; the note above
+("**one promotion is worth a W4 task**") is now discharged. It pairs with
+`workloads/w6-probe`, whose `kind:w6synth` selector no real agent carries.
+**Two traps it now encodes, both hit while building it:** the register route is
+`POST /api/v1/agents/register` — a **collection** route with the id in the body
+(`server.go:493`), not `/agents/{id}/register`, which 404s with no hint; and the
+script deliberately does **not** export `MSYS_NO_PATHCONV=1`, because on Git
+Bash that hands a native `curl.exe` unconverted `/tmp/...` paths and every
+`-o` / `--data-binary @file` fails with exit 23. The rule is per-docker-call, not
+per-script.
+
+**`loadgen` treats "were they actually concurrent?" as a measurement.**
+`tools/bulk-submit.sh` produces *depth* and no *rate* — it is a serial loop, and
+a generator that was secretly serial would not fail, it would quietly produce a
+smaller number. So `loadgen` sweeps the 2N start/end events and reports
+`maxInFlight`. Ties are broken **end-first**:
+Go's clock on Windows is coarse enough that a request's end and the next one's
+start share a timestamp, and breaking ties start-first made the serial control
+report `maxInFlight=2` — an instrument inventing overlap that provably did not
+exist.
+
+**It warns in BOTH directions, and the second guard is the one that matters.**
+An under-report (`maxInFlight < -c`) means the rig serialised you. An
+**over-report** (`maxInFlight > -c`) is *impossible* for a bounded worker pool —
+a worker cannot start request k+1 before request k returned — so it is never a
+product fact and always an instrument fault. Only the under-report was guarded
+originally, and the consequence is the reason this paragraph exists: the
+pre-tie-break build printed `maxInFlight=19` for `-c 8`, said nothing, and that
+19 reached the `W6-infra` entry in `FINDINGS.md` and survived until review.
+Recomputing the archived `w6-1/step2-sustained8.csv` gives **8 exactly** on both
+the millisecond and the microsecond columns. **When an instrument's own number
+is the evidence, guard both tails.**
+
+**Aim rate-bearing harnesses at a controller, never at the LB, and that needs
+`compose/ctrlports.override.yaml`** (18081/18082/18083 → controller1/2/3). The
+base compose publishes only `18080` on nginx, and `test/ha/nginx.conf` has no
+upstream `keepalive`, leaves `worker_connections` at 512, and can turn one
+client request into three upstream requests via `proxy_next_upstream_tries 3`.
+Through the LB you measure the rig. Confirmed the three ports are three distinct
+processes (`w6-1/step-ctrlports-verify.txt`): each replica owns its own registry
+(`internal/metrics/metrics.go:34`), and the evidence is the line
+`metrics_families=128 / 112 / 113` with `http_requests_total_series=8 / 7 / 7` —
+three ports, three different registry contents, on the same request.
+**The capture's "three distinct registries" section below that line is empty**
+(three blank lines: the per-port self-count command produced nothing), so cite
+the `metrics_families` line and not that section.
+
+**The request-shape recorder: why the access log and not the counter.** W1-6
+derived its request numbers from `unifiedcd_agent_auth_events_total`, which
+worked only because every request was *rejected*. Under W6's faults the requests
+succeed, so that counter is useless — and
+`unifiedcd_http_requests_total{route=".../logs/bulk"}` is the wrong instrument
+for three further reasons, all now measured rather than argued:
+
+- **Resolution.** A counter has no timestamp; a 2 s scrape grid yields a delta
+  per cell and can never separate two requests 40 ms apart. The LogPusher's tick
+  IS 2 s (`internal/agent/runner.go:211`), so a 2 s grid has the same period as
+  the quantity being measured. The `logfault` format leads with `$msec`;
+  measured, 60 requests inside 75 ms came out as 60 rows with a **1 ms median
+  gap**.
+- **Blindness.** W6's faults are injected at nginx. `contrast` fires five
+  oversize requests that nginx answers itself with 413: **5 access-log rows, and
+  a counter delta of exactly 6 — which is the six `/metrics` scrapes the verb
+  itself made, and none of the five requests** (`w6-1/step5-reqshape-c.txt`).
+- **Self-perturbation.** Scraping three controllers every 2 s is itself load
+  that lands in the counter being read (`/metrics` goes through
+  `metricsMiddleware`). Reading a log perturbs nothing.
+
+The counter is still the right instrument for "how many did the controller
+*serve*", which is why `counter` is a verb rather than deleted. `shape`
+**exits 4** if the access log is in nginx's stock `combined` format (1 s
+resolution, no `arm=` stamp) rather than silently producing a blunt curve, so it
+requires `compose/logfault.override.yaml`. One limit worth knowing: a **413 is
+logged with `arm=` empty**, because nginx rejects an oversize body before the
+request enters the location that sets `$logfault_arm`.
+
+**The PG sampler cannot give you "by application", and says so.** The plan asked
+for a breakdown by pool/application; `application_name` is **empty for every
+controller connection** — `grep -rn 'application_name\|ApplicationName'
+internal/ cmd/` returns **zero** hits, no DSN sets it, and pgx does not default
+one. Pool attribution is therefore **derived from the retained last-statement
+text** and is honest about how far that goes: `listen` (only
+`ListenForNotify` runs `LISTEN`, and it holds the connection for the stream's
+life) and `lock` (only `AcquireAdvisoryLock` runs `pg_try_advisory_lock`) are
+sound; **api and background are not separable** and are reported together as
+`query`. The `listen` class was confirmed by effect — 6 SSE streams produced
+exactly **6 new** `listen` rows on the replica they were opened against, absent
+in the sample before they opened. Read that as a **delta**: `controller1` was
+already carrying a flat `listen` peak=8 from an earlier run's connections that
+had not been released across that window, so an absolute count over-reads.
+
+**`-p` puts `/readyz` on the same grid, and it exists because of a specific
+failure.** The `W6-infra` entry reports that `/readyz` was 200 while Postgres
+refused every connection — but the backend count and the health status were
+taken by two different commands about three minutes apart, so **no in-window
+`/readyz` sample exists anywhere in the W6-1 archive** and what the health
+surface does *during* saturation is still unmeasured. With
+`-p 18081,18082,18083` the probe runs inside the same loop iteration as the
+`pg_stat_activity` query, codes land in `<OUT>.health.csv` (separate file: an
+HTTP status in the `count` column would print `peak=200` in the peak table), a
+refused probe is recorded as `000` rather than dropped, and the closing summary
+answers the question directly — of the samples at or above
+`max_connections - 3`, how many still read 200. **Any wave asserting something
+about the health surface under load should use it rather than a snapshot taken
+afterwards.**
+
+**`compose/maxconcurrent.override.yaml` — and the caveat that travels with it.**
+The rig runs exactly 2 concurrent real runs (2 agents × `MaxConcurrent` default
+1, `internal/agent/agent.go:218-221`). **There is no environment variable for
+`MaxConcurrent`** — `internal/config/agent.go:147-186` enumerates every env var
+the agent reads and it is not among them; `UNIFIED_AGENT_MAX_DETACHED` exists for
+the *separate* detached pool and is easy to mistake for it. An env-only overlay
+would be **silently inert**, so this one replaces `command:`. Verified by
+effect (`w6-1/step7-maxconcurrent.txt`): with `W6_MAX_CONCURRENT=4`, 10
+triggered `edge-longrun` runs gave **8 simultaneously `Running`** (2 `Queued`)
+where the stock rig gives 2, and each agent container had created
+`working0..working3`. **Every number taken under this overlay must say "N runs
+across 2 agent processes", not "N agents"**: they share one process's CPU, one
+HTTP client and one workspace filesystem. The one place it cuts the other way is
+`p.mu`, which is per `LogPusher` per step — a stalled flush stalls one step's
+stdout pipe, not all N.
+
+**`w6-reqshape.sh follow -d` is GONE, and the reason generalises.** It had the
+identical unstoppable-capture defect Task 2 fixed in `w6-idleload.sh` — `dc` is
+a shell function, so the killed `$!` is the subshell and the docker-compose
+plugin keeps the pipe. Measured in W6-2b before fixing: `follow -d 5` printed
+`captured 34 lines`, and eight seconds later the same file held **56**. Use
+**`window -o RAW.log -d SECONDS`**, which sleeps and then pulls exactly
+`[T0,T1]` with `--since/--until`, with no background process and a
+`-window.txt` sidecar so an old capture can bound its own re-analysis.
+`follow -d` now exits 5 and names the replacement. Verified live: two
+consecutive 12 s windows against a 1 Hz probe are disjoint (`06:05:57.426`
+against `06:05:58.512`) and window 1 was byte-identical before and after window
+2 ran.
+
+**The blast radius, enumerated instead of dated — and it is zero.** The previous
+version of this paragraph said "any W6 number taken with `follow -d` **before
+2026-08-02** should be re-derived", which **protected nothing**: every W6
+capture in the campaign was taken *on* 2026-08-02 and the fix landed the same
+day, so the cutoff excluded the entire exposed set. Replaced with the
+enumeration. `grep -rc reqshape scenarios/` returns **0** for
+`w6-2a-log-write-amplification.md` (W6-2a used `w6-idleload.sh`, fixed
+separately by Task 2 — **untouched by this defect**), **1** for
+`w6-1-connection-pressure.md` and **5** for `w6-2b-logpusher-curve.md`. Of those
+two: **W6-2b's arms are all bounded by `window` sidecars** (`-window.txt` in all
+six evidence dirs), and **W6-1's three `step5-reqshape*.txt` captures are
+self-bounding** — 60 of 60 deliberately fired requests, 15 of 15 ticks, filtered
+by URI, so a longer file cannot change the count. **No published number moves;
+nothing needs re-deriving.** The record is kept because the instrument was wrong,
+not because a result was.
+
+**The leak still exists in bare `follow`, which is warned about rather than
+refused.** Only `follow -d` exits 5 (`w6-reqshape.sh:126-131`); plain `follow`
+prints a WARNING that the PID it echoes is the subshell and not the
+docker-compose plugin (`:133-134`) and then starts the same unstoppable capture.
+That is deliberate — a caller who wants a live stream and tears down the stack
+afterwards is fine — but **a bare `follow` capture is not window-bounded and
+must not be treated as one.** Use `window` for anything a number will be read
+off.
+
+**A verification that is not idempotent can consume the thing it verifies —
+re-probe at the point of use.** W6-2b's `hang` arm passed `hangprobe` at setup
+(`curl` exit 28, a real hang) and **fast-failed with a 502 in 2.5 ms** forty
+minutes later when a scenario actually armed it. The sink was
+`while true; do tail -f /dev/null | nc -l -p 8080 >/dev/null; done`: plain
+`nc -l` is single-shot and the `tail -f` never exits, so the loop never
+iterates — **the sink served exactly one connection in its life and the
+verification probe was the customer.** The black-hole arm had silently degraded
+into the outage arm, and only the in-line re-probe caught it (`w6-2b/arm4-void/`
+keeps the void run; its numbers are used for nothing). Fixed to
+`nc -lk -p 8080 -e sleep 3600`, which has no per-connection state to exhaust.
+This sharpens the campaign's standing rule rather than replacing it: "an arm is
+verified when some capture measures its effect" was satisfied here and was still
+not enough.
+
+**One nginx-config trap worth knowing before writing another fault into
+`compose/`.** `nginx-logfault.conf` sets `proxy_connect_timeout 2s` **inside**
+the bulk location, so a runtime include cannot set its own without nginx failing
+`-t` on a duplicate directive — which rules out every connect-level arm.
+`nginx-w62b.conf` moves it out to the include for exactly that reason, and both
+files say so in their headers. `nginx-w62b.conf` is a **derivative**, not a
+replacement: it keeps the `logfault` log_format byte-for-byte (so
+`w6-reqshape.sh shape` does not exit 4) and leaves `nginx-logfault.conf`
+untouched so W3-4 stays reproducible.
+
+#### The idle floor (measure every W6 number net of this)
+
+Measured on the **plain `test/ha` rig**, no overlays, three controllers, two
+agents, **zero jobs and zero runs**. **Two different windows, and the table says
+which:** the statement rates come from the 300 s untouched capture at
+**04:16:20-04:21:21** (`w6-1/step8-idle-report.txt`), the connection count from a
+separate **33 s** sample at **04:25** on the same rig
+(`w6-1/step8-idle-connections.txt`). They are not one measurement.
+
+| Quantity | Idle value | Window |
+|---|---|---|
+| Total query rate | **21633 statements / 300 s = 72.11 q/s** across the stack | 300 s (04:16-04:21) |
+| Per replica | 24.10 / 23.68 / 24.32 q/s (controller1/2/3) | 300 s |
+| Postgres backends | **73-74 of `max_connections` 100** — about **26 free slots at rest** | **33 s (04:25), 7 samples** |
+| Largest single consumer | `ClaimNextRun` (the agent claim long-poll), 10574 = **35.25 q/s**, i.e. **49% of the whole idle floor**, from just two agents | 300 s |
+| Git resolver `ListPendingRuns` | 1508 per replica = **5.027 q/s per replica**, 15.08 q/s total (`internal/store/postgres.go:2064-2067` ← `internal/controller/scheduler.go:291`, inside `resolveGitPendingRuns`) | 300 s |
+| Scheduler's `TransitionPendingToQueued` | 1508 on **controller1 only** (the lock holder) = 5.027 q/s. **Not `ListPendingRuns`** — it is `internal/store/postgres.go:437-440`, called at `internal/controller/scheduler.go:58`. The two rows are different statements against the same table; naming both `ListPendingRuns` made one call look both leader-gated and not | 300 s |
+| `pg_try_advisory_lock` | 3181 = 10.60 q/s, split **55 / 1563 / 1563** — the leader retries far less because it already holds the key | 300 s |
+| `DeleteStaleAgents` | 15 in 300 s = 0.05 q/s across the stack. **"1/min per replica" is an ASSUMPTION, not a measurement** — the analyser prints no per-replica split for this class (it is outside the top 8), so the ÷3 is unverified | 300 s |
+
+**The denominator is nominal.** Every `/s` above divides by **300 s** while the
+analyser's own printed window is **04:16:20.006 .. 04:21:21.487 = 301.5 s** — it
+extends past the nominal end to swallow the `ALTER SYSTEM RESET` revert
+statements. The rates are therefore **~0.5% high**: 72.11 q/s becomes 71.76 q/s
+on the true window. Below the noise for every use here, and stated so nobody
+re-derives it and thinks they have found a discrepancy.
+
+**`FINDINGS.md:563`'s 5.006 q/s per replica for the git resolver still holds** —
+5.027 measured, 0.4% apart, five waves later. What that entry did **not** say,
+and what dominates the floor, is the claim long-poll: at 35.25 q/s it is **7×**
+the git resolver. Two cautions on re-use: 300 s is too short to sample the
+10-minute `oidc_states` cleanup (it does not appear at all), and the **73-74
+connection floor is a settled-state figure, not a startup one** — a freshly
+restarted controller set read **19** total backends. **"...and climbed to the
+seventies over roughly ten idle minutes" is an INFERENCE across two different
+stack instances, not a measured curve, and should be read as one:** the 19 is
+the stack restarted at 04:03:31 (`w6-1/unplanned-pg-saturation.txt`), the 73-74
+is a stack **torn down and re-`up`ed at ~04:12:16** (`w6-1/step7-maxconcurrent.txt`)
+and sampled at 04:25, and **no intermediate sample exists** — the shape of the
+climb, and whether it is even monotonic, is unmeasured. **"The pools only grow"
+was the mechanism first written here and it is wrong as stated — see the
+correction two paragraphs below**: `newPostgresPool` sets no `MaxConnIdleTime`
+or `MaxConnLifetime`, but pgxpool supplies defaults when they are unset. What is
+code-read is non-release **promptly**, not unbounded accumulation, and neither is
+traced. See the W6-infra entry in `FINDINGS.md`. A wave that needs the curve
+should take it with `w6-pgsample.sh -i 10 -d 900` from a cold start; it is cheap
+and nobody has done it.
+
+**Re-confirmed by W6-2a one day later: 72.01 q/s (24.15 / 23.99 / 23.86 per
+replica), 0.4 % from the corrected 71.76 above** — both on their true windows.
+W6-2a's nominal 150 s window in fact spans `04:46:10.038 .. 04:48:42.077` =
+**152.04 s** (`w6-2a/floor/breakdown.txt`, corroborated by
+`w6-2a/floor/persec.txt`'s `seconds observed=152`), so its first-reported
+divide-by-nominal figure of 72.99 q/s was ~1 % high, exactly as this section's
+own denominator caution predicts. **Correcting both sides tightens the agreement
+from 1.2 % to 0.4 %** — and two things that arm adds rather than re-derives. The floor's **per-second** shape on one replica is
+**median 22, max 61** statements/s (`w6-2a/floor/persec.txt`), which is the
+number a peak is meaningful against; and that arm's own class breakdown carries
+**zero** log-path statements, so the subtraction of the floor from a loaded arm
+is checkable rather than asserted. Its connection samples were 69 at window open
+and 74 at close, consistent with the 73-74 above.
+
+**One correction to "the pools only grow", supplied because it is load-bearing
+and cheap.** `newPostgresPool` (`internal/store/postgres.go:90-103`) indeed sets
+no `MaxConnIdleTime` and no `MaxConnLifetime` — but pgxpool **applies defaults
+when they are unset**: `MaxConnLifetime = 1h` and `MaxConnIdleTime = 30m`
+(pgx **v5.9.2**, `pgxpool/pool.go:22-23`, reached from `ParseConfig` at
+`:417-430`). So the code read does **not** support unbounded accumulation; it
+supports "connections are not returned promptly, and are reclaimed on a 30-minute
+idle / 1-hour lifetime horizon". W6-2a's own session is consistent with that and
+does not test it: backends went 69 → 74 → 75 → 76 → 84 → 90 → 95 → 93 over
+~45 minutes of continuous use, with no 30-minute idle period anywhere in it.
+
+#### Two instrument corrections from W6-2a — read these before trusting either tool
+
+**W6-3 adds a third, and it is about the OTHER end of the tool.** The table above
+says `w6-idleload.sh` "always reverts". **It does not, and the exception is the
+case the tool is most likely to be pointed at.** W6-3's flood arm saturated
+Postgres inside the tool's own window, so the revert step could not get a
+connection and the tool exited **2** with
+`psql: ... FATAL: sorry, too many clients already`, **leaving `log_statement=all`
+and the modified `log_line_prefix` armed on the running cluster** — where every
+later arm would have been recorded at full volume. The capture itself was intact
+(40.6 MB, 361,895 lines, `-window.txt` sidecar present), so **no number moves**;
+only the cluster was left dirty. Two operational notes for whoever fixes it:
+the revert needs **one `ALTER SYSTEM` per `psql -c`** (three in one `-c` fails
+with `ALTER SYSTEM cannot run inside a transaction block`, which the tool's own
+revert path would also hit), and reverting requires a connection that saturation
+denies — so the fix is a retry-until-free revert, or a `superuser_reserved`
+connection, not a louder error. This is the same family as the W6-1 lesson below
+and its exact inverse: there an instrument stopped when the fault started; here
+an instrument's **teardown** could not run because the condition under test held
+the resource. Recorded, not patched — fixing it is a harness task.
+**A fourth, smaller one from the same session:** both `w6-idleload.sh` and
+`w6-pgsample.sh` resolve the container-IP -> service-name map **once at
+startup**, and a container restart silently invalidates it. W6-3 restarted the
+controllers mid-scenario and the IPs rotated. Any per-replica attribution taken
+across a restart must be re-derived.
+
+**1. `w6-idleload.sh` used to leak its own capture, and it is fixed.** The
+capture step was `dc logs -f ... > "${raw}" &` followed by `kill "${lpid}"`, and
+**the kill did not stop the capture**: `dc` is a shell function, so `$!` is the
+subshell, while the process holding the pipe is the `docker-compose` CLI
+**plugin** two levels down. Three arms left three survivors still writing into
+three "finished" files. The `floor` capture read **10948** statements when its
+own analyser ran and **26523** when re-read after the next arm — and the second
+number looks exactly as plausible as the first, which is the whole hazard. The
+step is now a **bounded pull**, `docker compose logs --since T0 --until T1`,
+with no background process to leak, and it writes the window to a
+`-window.txt` sidecar so an already-captured file can bound its own
+re-analysis. Verified live (`w6-2a/harnessfix/verify.txt`): two consecutive
+25 s windows against a 1 Hz probe captured probes **5-20** and **27-42** —
+disjoint, non-empty — and window 1's file was byte-identical before and after
+window 2 ran. **Any capture taken before this fix must be analysed with an
+explicit window**; W6-2a's `breakdown.py`, archived beside its evidence, is the
+model.
+
+**How far back the leak reaches — settled by re-running the analyser, so the
+warning does not hang unresolved over the campaign's most-cited number.** The
+only pre-fix capture that any published figure rests on is Task 1's 300 s
+idle-floor arm, and **it is not inflated at all**. Task 1 ran exactly **one**
+`idleload` arm, last in its session, so no later arm could append to it. The
+archived raw *is* a superset of what was analysed live — **215,052 lines against
+the 214,315 that `w6-1/step8-idlebaseline.txt:16` reports** — but the 737 extra
+lines are a shutdown tail (`postgres-1 exited with code 0`) and contain **4**
+`statement:` lines, all inside the window. **Re-running
+`w6-idleanalyze.py w6-1/w6-idleload-idle-statements.log w6-1/ipmap.txt 300 idle`
+on the archived file reproduces the report exactly: same window
+`04:16:20.006 .. 04:21:21.487`, `statements 21633`, and the same per-replica
+7296 / 7230 / 7104.** Zero drift, not the 2.4× the `floor` capture suffered. And
+every W6-2a number is window-bounded by `breakdown.py` by construction. So the
+rule above is a standing precaution for future re-analysis, **not** an open
+question about any figure this README publishes.
+
+**2. `w6-pgsample.sh`'s `TOTAL backends ... of max_connections=100` line reads
+as saturation and is not.** `pg_stat_activity` includes Postgres's own
+background workers, which carry a NULL `datname` and **do not consume
+`max_connections` slots**. Measured (`w6-2a/post-bs10-connstate.txt`): a line
+reading `total_backends=100 of max_connections=100` decomposed as 95 rows for
+`datname='unified'`, one further `unified` row, and **4 NULL-`datname` rows** —
+i.e. **96 client backends of 100** with `superuser_reserved_connections = 3`,
+one free non-superuser slot rather than none. Split by `datname` before claiming
+exhaustion.
+
+#### Three more instrument corrections from W6-1 — and one rule that now covers all six
+
+**1. `w6-pgsample.sh` could not survive the saturation it exists to measure.**
+`set -euo pipefail` plus a bare `rows=$(psql_ …)` meant the first
+`FATAL: sorry, too many clients already` ended the script. A 130 s grid over a
+40-stream arm returned **2 samples**, both from *before* the exhaustion, and the
+`-p` health series stopped with it — the option added specifically so a scenario
+could read `/readyz` **inside** the load window could not survive the load
+window. A second copy of the defect sat in the preamble's `max_connections`
+read, so a capture *started into* an existing saturation never reached its own
+loop. Fixed: `psql_ok` records `unavailable` and keeps sampling,
+`PG_MAXCONN_`/`PG_RESERVED_` let a capture be started into saturation, and the
+peak analyser counts `unavailable` rows rather than choking on them. **Verified
+by effect** (`w6-1s/harnessfix-pgsample.txt`): 5 of 5 samples `unavailable`,
+health probed on every one, `UNAVAILABLE: 5 sample rows` in the summary.
+
+**2. The same tool's own saturation test was on the wrong side of the caveat
+this README already records.** Its closing summary compared `total_backends` —
+which includes Postgres background workers — against `max_connections - 3`, and
+printed *"AT/NEAR max_connections in 156 of 180 samples"* for a window whose
+**client** backends were 93 of a 97-slot budget. It now compares `db_backends`
+against `max_connections - superuser_reserved` and treats `unavailable` as
+saturated. **Documenting a caveat does not fix the code that has it.**
+
+**3. `w6-synth-agent.sh heartbeat` terminalised the agent's own runs, and cost
+two whole captures.** The verb sent `-d '{}'`. `handleAgentHeartbeat` gates
+reconcile on **body presence**, not on the decoded slice
+(`internal/controller/api_agent.go:88-91`), so `{}` reports an **empty** active
+set — the "the agent restarted and forgot its runs" signal — and every
+reconcilable run of that identity is failed as orphaned. A 25 s keepalive loop
+killed the long-lived probe run it existed to protect, **4 s into the first
+arm**, twice. The verb now takes run ids: `heartbeat <runId>...`. **Always pass
+every run the identity still owns.** The product behaviour is correct and its
+own comment documents it; the harness was wrong.
+
+**`loadgen` gains `-delay`, and the reason it exists is a correction.**
+`FINDINGS.md:2535` proposes settling its own open rate-vs-concurrency question
+with "`-c 8` with a per-worker delay, so 8 in flight at ~50 req/s". **That
+experiment cannot be run, by arithmetic rather than tooling.** In-flight = rate ×
+latency, so 8 in flight at 50 req/s needs 160 ms of server latency and the
+endpoint answers in ~2 ms; the same 8 workers paced to 50 req/s hold **~0.15**
+in flight. Measured: `-c 8 -delay 400ms` gives `meanInFlight=0.03`. **In-flight
+is an OUTCOME; the only controls a client has are worker count and pacing.** So
+`-delay` isolates *rate* at a fixed worker count, and the complementary
+"concurrency at ~zero rate" corner needs a **latency-bearing** endpoint —
+`ssehold`, or the agent claim long-poll. A paced GET cannot do it. The flag
+suppresses the under-report guard (a paced run is *meant* to sit below `-c`) and
+prints a `PACED:` line instead; the **over-report** guard is untouched.
+
+**The rule that now covers all SIX stop-class instrument defects this wave — the
+count was five until the checkpoint found the sixth, in a tool nobody had
+suspected.** The sixth is `w6-2a/C/mem-during.txt`, a **`docker stats`** follower
+rather than a `docker compose logs` one, so it sat outside both tools the wave
+fixed; it was **still writing at checkpoint time, hours after its session and
+after both fixes had landed**, and was killed there. Nothing published moves — the
+archived copy is the bounded 3,908-line window `FINDINGS.md:2600` cites, and the
+appended lines belong to a later stack instance. **The defect is therefore not
+"`dc` is a shell function"; it is any `-f`/`--follow` capture without a
+`-window.txt` sidecar.** W6-2a: a
+capture that would not stop. W6-2b: the same defect in a second tool, plus an arm
+whose verification consumed it. W6-1: a sampler that stops when the fault starts,
+and a driver that does **not** stop when its session does — a `nohup driver.sh &`
+outlived its call by ~6 minutes and, because its stdout was block-buffered, its
+log showed only the first of four arms while it silently ran a 200-worker
+max-rate arm underneath a "zero-load control" taken on the same rig. That control
+appeared to show a stack going 23 → ≥97 backends in 12 s with no load, which
+would have been a spectacular false finding. **An instrument's failure mode and
+its subject's failure mode must not be the same event, and "the process looks
+finished" is never evidence that it is.** Corollary, learned the expensive way:
+**any capture whose window overlaps another arm's window is void** — run arms in
+the foreground, one per invocation.
+
+#### What W6-1 settled — cite these rather than re-deriving them
+
+- **The SSE ceiling on this rig is 24 concurrent streams, not ~100.** One arm,
+  40 streams, one replica, from a 59-backend floor:
+  `aliveAtEnd=24 diedEarly=16 non200=0`. And a subscriber is **not** one
+  connection: 24 survivors consumed a 38-slot budget, because each also spends
+  api-pool connections per NOTIFY wake.
+- **The open "200 with backfill then a silently dead stream" question
+  (`FINDINGS.md:2537`) is ANSWERED, and the phrasing needed correcting:** the
+  stream is **closed**, not dead. 200, complete backfill (14-18 events), then the
+  server ends the body. An `EventSource` reconnects into the same refusal rather
+  than hanging.
+- **Rate versus concurrency (`FINDINGS.md:2535`'s open question): concurrency at
+  a latency-bearing endpoint is by far the cheaper route — and the clean
+  single-variable isolation was NOT run.** Same rig, same replica, same
+  session — 8 workers at **20 req/s** did **not** saturate (1,200/1,200 `200`,
+  zero 401s); **60 concurrent claim long-polls at ~3 req/s DID**, with every
+  request answered 200. Rate is an independent second route (8 workers at
+  2,451 req/s saturates, 31.8 % 401 — `:2517` reproduced from a clean floor) and
+  costs **~820× the requests**: 2451 /s ÷ 2.98 /s, derived, and **across two
+  different endpoints** (`GET /api/v1/runs?jobName=` at ~2 ms versus a 20 s claim
+  long-poll). *(This README said ~800× and the runbook said 850× for what read as
+  one claim; both are now the single division above.)*
+  **"Concurrency wins and it is not close" was over-sold and is downgraded.** The
+  cheap arm changes concurrency **and** endpoint; the only within-endpoint
+  comparison (B2 vs B3, same 20 /s average) differs in burst width and ran from a
+  contaminated floor; and on the published `meanInFlight` column **B3 saturates
+  at 0.69, below B1's 7.99**, so the matrix does not order by that metric and the
+  original argument silently switched to `maxInFlight`. Structurally, in-flight =
+  rate × latency, so at a ~2 ms endpoint concurrency and rate cannot be varied
+  independently at all. **Outstanding: a dose-response on one endpoint (E-20,
+  E-40, E-60 from a common floor).** `:2535`'s own caution — *"Do not read this
+  entry as '8 concurrent requests at any rate will do this'"* — is still
+  **confirmed** by B2.
+- **`/readyz` is 200 in 143 of 144 saturated in-window replica-readings — 47 of
+  48 sample instants.** One health row is one port at one instant, so a
+  three-replica grid yields three rows per instant; the published `144 of 145`
+  was wrong twice (bad total, and "samples" for what were replica-readings) and
+  is corrected in `FINDINGS.md`, the runbook and `w6-pgsample.sh`.
+- **A warm pool hides the exhaustion from anything that does not need a new
+  connection.** **No controller `ERROR` line was observed** in the window
+  `w6-1s/C-bgstarve.txt` covers — but that capture does not support the stronger
+  "background jobs did not starve" it was first published with, and it is
+  downgraded: its liveness control used a **different `--since`**, its window
+  endpoints, command, service scope and log level were never recorded, and **B1's
+  arm is 8 s against a 60 s archiver tick, so zero errors there is consistent
+  with zero attempts**. See `w6-1s/C-bgstarve-LIMITS.txt`. **Outstanding: an
+  in-window count of background-job executions.** What *is* positively measured
+  is the converse: a controller that had just restarted, and so had to open new
+  connections, logs `too many clients already` from the archiver, both reapers
+  and the appsource reconciler (`w6-1s/D3-after.txt`).
+- **A settled, recreated stack idles at 68 client backends** (59 at `up`, 68 by
+  ~7 minutes, flat thereafter, `/readyz` 200 throughout) — the measured version
+  of the curve this README says "is cheap and nobody has done it". Note it is
+  **client** backends; the 73-74 figure elsewhere is `total`.
+- **`docker compose down -v` / `up` re-assigns container IPs**, so per-replica
+  attributions are comparable only *within* one stack instance. Totals are
+  comparable across recreates; splits are not.
+
+#### The log write path, measured (W6-2a) — do not re-derive
+
+`scenarios/w6-2a-log-write-amplification.md` carries the full derivation. The
+numbers a later W6 arm will want:
+
+- **One appended log line costs 2 statements** — `INSERT INTO logs` plus
+  `SELECT pg_notify` (`internal/store/postgres.go:918-937`) — with no
+  transaction and no multi-row insert, so an N-line request is **2N** sequential
+  round trips. Measured exactly, five times: `2N = 4004` for the 2002-line
+  `logburst` fixture, `2N = 70200` for 35,100 lines.
+- **The batch guard is a constant, not a term.** `handleAgentLogBulk` runs
+  `agentRunGuard` once per distinct `runID` and an in-process LRU answers
+  thereafter, so the cost is `2N + G` with **G measured at 2** — one `GetRun` per
+  replica that saw the run for the first time.
+- **Each SSE subscriber multiplies it by 2, and the multiplier lands on the API
+  pool, not the listen pool** (`sse.go:120`/`:138` call `s.store`, which
+  `cmd/controller/main.go:270`/`:339` make the api-pool store). Measured at
+  exactly `2002 × S` for S = 1, 5, 10, alongside exactly S `listen` backends.
+- **A released listen-pool connection keeps its `LISTEN`s** (no `UNLISTEN`
+  anywhere, and pgxpool's `Release` does no reset), so the real multiplier is
+  "streams sitting on connections that carry this run's channel", not S. See the
+  W6-2a entries in `FINDINGS.md`.
+- **Peak: 11,085 statements/s on one replica** from one 2,002-line burst with ten
+  viewers, against that replica's resting median of 22/s — about 504×.
+- **Ingest is ~812 lines/s per request** (1.23 ms/line), identical through the LB
+  and direct to a controller, so the loop is the cost and nginx contributes
+  nothing. A 1 MiB body — the most the reference LB passes — is **7,600 lines,
+  15,200 statements and 9.356 s** on one goroutine and one backend.
+- **`logburst`'s `burst-end` arrives 30 s after the burst**, so a `first..last`
+  span over a run reads as a ~27 s SSE backlog that **is not there**. Read the
+  per-second histogram, never the span — this one survived a first review before
+  the histogram killed it.
+
 ## Workload fixtures
 
 Every `*.payload.json` is the pre-encoded `{"yaml":"..."}` body for
@@ -518,7 +1061,7 @@ its inferred capability is `pod` (see the table).
 | File | Job | Purpose |
 |---|---|---|
 | `tick.payload.json` | `edge-tick` | trivial run |
-| `longrun.payload.json` | `edge-longrun` | long-lived run for reaper timing |
+| `longrun.payload.json` | `edge-longrun` | long-lived run for reaper timing. **It is also already a slow trickle** — `for i in $(seq 1 300); do echo "tick $i"; sleep 1; done`, i.e. 300 lines at 1 line/s over ~300 s — which the W6 plan missed when it assumed `tick` (30 lines / 30 s) was the longest emitter available. `longrun.yaml` did not exist until W6 and was reconstructed from this payload, byte-verified to round-trip |
 | `approval.payload.json` | `edge-approval` | approval gate, 10-minute timeout |
 | `sideeffect.payload.json` | `edge-sideeffect` | mutex `edge-mutex` holder, writes `/data/sideeffect.log`. **Emits ZERO log lines** — its `echo` is redirected to the file, so its `logs` row count is 0. It is a side-effect (I2) fixture, never a log fixture (W3-4) |
 | `mutex-successor.payload.json` | `edge-mutex-successor` | mutex `edge-mutex` successor probe (I3) |
@@ -541,6 +1084,8 @@ its inferred capability is `pod` (see the table).
 | `w4-pending-reuse.payload.json` | `edge-w4-pending-reuse` | `w4-pending` plus `podTemplate.reuse: true` — the **pooled-pod not-ready** fixture (W4-3 Part B). Sends the claim down `pool.ClaimPod` and then wedges the pod `Pending`, so the arm can show that the pooled branch shares the **same** `podStartTimeout` (measured 30.193 s vs the fresh branch’s 30.198 s) and differs only in cleanup: a never-ready pooled pod is **deleted**, never released to the pool with `pool-status = idle`. Verified post-terminal by pod list and by pool annotation |
 | `w4-reuse.payload.json` | `edge-w4-reuse` | the **`podTemplate.reuse`** fixture — nothing else in the repo exercises it. Prints `hostname` and reads/writes a `/workspace` marker, so reuse is observable two ways. Verified: three runs, one pod, marker carried across all three |
 | `w4-longpod.payload.json` | `edge-w4-longpod` | 120 s of 1 Hz self-indexing ticks in a pod — the fixture for anything that must act on a run **while** its pod is alive (pod deletion, partition, podStartTimeout) |
+| `w6-trickle.payload.json` | `edge-w6-trickle` | the **slow-trickle** fixture (W6-S2b Arm 1): params `lines` (default 600) and `interval_s` (default 1), so 10 minutes at 1 line/s out of the box. Deliberately on the sparse side of `LogPusher`'s 4 KiB `flushBytes` threshold, so **every** flush is a 2 s timer flush and pending grows by exactly one batch per tick — the quadratic regime, which by construction **never drops** (the 1 MiB cap counts line text only, so the ceiling is tens of thousands of batches). **Do not use it to look for the drop marker**; that needs the chatty `logburst` and is a different arm |
+| `w6-probe.payload.json` | `edge-w6-probe` | the **unclaimable** fixture for `tools/w6/w6-synth-agent.sh` — `agentSelector: [kind:w6synth]` matches neither `agent1` nor `agent2`, so the synthetic identity owns the run's whole lifecycle. Same shape and reason as `w35-probe` / `w36-probe`, with its own selector so a W6 instrument cannot collide with a re-run of either W3 scenario |
 
 **W4 fixture traps, both measured:** (1) `dsl.RequiredCaps` returns `pod` only
 when `PodTemplateNeedsKubernetes` is true — a bare `containers:` list yields
@@ -597,6 +1142,9 @@ down, so a W3 entry's `w3-4/partB-dup.txt` resolves to
 |---|---|
 | `w3/w3-1/` … `w3/w3-6/` | one directory per W3 scenario |
 | `w3/w3-infra/` | the three `W3-infra` entries plus the Task 3 rig build-out (Garage, the S3 interposer, the 413, the sidecar and artifact-format probes, W3-4's archive re-run) |
+| `w6/w6-1/` | W6 Task 1, the harness build-out: one capture per harness verification, the 300 s idle-load statement log (12 MB, the wave's largest single file) and the connection-saturation captures behind the `W6-infra` entry. **Read its `NOTES.txt` first** — it flags one superseded analysis file that is kept as evidence of an analyser bug and whose numbers must not be used |
+| `w6/w6-1s/` | scenario **W6-1** (connection pressure). **The `w6-1/` vs `w6-1s/` split is deliberate and is not a naming trap**: `w6-1/` is Task 1's harness verification and backs the `W6-infra` entry, `w6-1s/` is the scenario. Eight citations distinguish them. Its `void/` subtree holds the seven voided/contaminated captures the `W6-1 (campaign asset)` entry enumerates, each with a `NOTE.txt` |
+| `w6/w6-2a/` `w6/w6-2b/` `w6/w6-3/` | scenarios W6-2a, W6-2b and W6-3. **`w6-2b/` and `w6-3/` were originally archived at the evidence root's top level and were moved under `w6/` at the W6 checkpoint**, which cost exactly one citation edit (`FINDINGS.md:458`) because every other W6 citation is a bare relative name. Every statement log and nginx access log in these three is stored `.gz`; each reproduces its cited uncompressed name and line count under `gunzip -c` |
 
 W3 totals ~4.9 MB across those seven directories, all verified byte-identical
 against the session scratchpad with `diff -r` at the wave checkpoint. Two things to
@@ -611,6 +1159,19 @@ and copy the wave's directory into the evidence root at the wave checkpoint.
 **Sweep the whole wave for `uca_`/`uce_` before copying** — W3-5 left a full agent
 credential in a dotfile, W3-1 found it, and W3-6 then repeated the mistake in three
 files that nobody caught until the checkpoint swept everything.
+
+**W6 adds two archival rules, both paid for at its checkpoint.** **(i) Decide the
+per-wave parent directory at the FIRST capture.** W6 archived three directories
+under `w6/` and two at the root, and the split was invisible from either side; it
+was cheap to reconcile only because the rooted-citation count was one. W4's trap
+cost 38 and had to be documented instead. **(ii) A `-f`/`--follow` capture is not
+finished when its command returns, and this is not confined to `docker compose
+logs`.** The W6 checkpoint found a `docker stats` follower from `w6-2a`'s Part C
+**still writing, hours after the session ended and after two other tools had been
+fixed for the same defect** — the archived copy is the bounded window the entry
+cites and the scratchpad copy had grown 19x. Nothing published moved, but the
+archive was right by accident of when it was copied. **Copy from a window-bounded
+capture, or verify the file's size is stable before archiving it.**
 
 ## Running a compose scenario
 

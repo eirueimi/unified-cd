@@ -1,0 +1,69 @@
+# W6-2b overlay. Three changes, all rig-side; no product configuration is
+# touched.
+#
+#   1. swaps test/ha/nginx.conf for compose/nginx-w62b.conf and adds the
+#      runtime-writable include volume the fault script writes into. Compose
+#      merges volume entries by TARGET path, so the nginx.conf line replaces
+#      rather than adds — verify with `docker compose $COMPOSE_FILES config`
+#      and by grepping the file inside the container, which the baseline gate
+#      does.
+#   2. adds `logsink`: a container that accepts a TCP connection on 8080 and
+#      never writes to it, which is how Arm 4's black hole is built on a rig
+#      whose agent image has no iptables and no NET_ADMIN. `-lk` is the
+#      persistent-server mode and `-e sleep 3600` hands each accepted socket to
+#      a process that neither reads nor writes it, so the connection hangs. It
+#      reuses nginx:1.27-alpine only because that image is already pulled by
+#      this stack — nothing about it is nginx.
+#
+#      READ THIS BEFORE "SIMPLIFYING" IT. The first version was
+#      `while true; do tail -f /dev/null | nc -l -p 8080 >/dev/null; done`,
+#      and it was WORSE THAN BROKEN: it hung correctly for exactly ONE
+#      connection and fast-failed with ECONNREFUSED for every one after that,
+#      so the black-hole arm silently degraded into the outage arm. Plain
+#      `nc -l` is single-shot, and the `tail -f` that was there to hold stdin
+#      open never exits, so the pipeline never completes and the `while` loop
+#      never iterates. Worse still, the ARM-VERIFICATION PROBE ITSELF was what
+#      consumed the single connection — the arm passed its own check at
+#      06:03:56 and was dead by the time a scenario used it at 06:42:48, where
+#      the per-arm re-probe caught it (`w6-2b/arm4-void/`). `-lk -e` has no
+#      per-connection state to exhaust and the probe is no longer destructive.
+#   3. binds edgecase/sideeffect-data into both agents at /data, the same bind
+#      oneway.override.yaml:11,14 provides. workloads/w6-chatty.yaml writes its
+#      per-line heartbeat there, on a channel that does not pass through the
+#      LogPusher, so a stall of the step's own process is measurable
+#      independently of anything the logging path reports.
+#
+#   cd test/ha
+#   export COMPOSE_FILES="-f docker-compose.ha.yaml \
+#     -f ../edgecase/compose/w62b.override.yaml \
+#     -f ../edgecase/compose/ctrlports.override.yaml"
+#   docker compose $COMPOSE_FILES up -d --build
+services:
+  nginx:
+    volumes:
+      - ../edgecase/compose/nginx-w62b.conf:/etc/nginx/nginx.conf:ro
+      - logfault:/etc/nginx/logfault
+    depends_on:
+      - controller1
+      - controller2
+      - controller3
+      - logsink
+
+  logsink:
+    image: nginx:1.27-alpine
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "nc -lk -p 8080 -e sleep 3600"
+
+  agent1:
+    volumes:
+      - agent-credentials:/var/lib/unified-cd-agent
+      - ../edgecase/sideeffect-data:/data
+
+  agent2:
+    volumes:
+      - agent-credentials:/var/lib/unified-cd-agent
+      - ../edgecase/sideeffect-data:/data
+
+volumes:
+  logfault:

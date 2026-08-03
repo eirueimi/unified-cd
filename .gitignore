@@ -30,6 +30,11 @@ test/edgecase/tools/w4/w4-sa-token
 # W4 rig: built binaries and the runtime log/pid dir.
 test/edgecase/tools/w4/bin/
 /.w4run/
+# W6 harnesses: built binaries, and the state dir holding the synthetic
+# agent's live `uca_`/`ucr_` material. Regenerate with
+# test/edgecase/tools/w6/w6-build.sh and w6-synth-agent.sh enroll.
+test/edgecase/tools/w6/bin/
+/.w6run/
 # W4-2: the restricted (pods update/patch denied) kubeconfig the reuse-swallow
 # scenario runs the agent under. Carries a live ServiceAccount bearer token —
 # must never be committed.
