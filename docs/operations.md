@@ -36,7 +36,7 @@ Back up with `pg_dump` on a regular schedule:
 docker compose exec -T postgres pg_dump -U unified unified > unified-cd-backup.sql
 ```
 
-(Verified in the dev stack: `docker compose exec -T postgres pg_dump --version` reports `pg_dump (PostgreSQL) 16.14`.) Restore into a fresh `unified` database with `psql` before starting the controller — migrations are additive and idempotent (see [Upgrades](#upgrades)), so restoring an older dump and letting the controller migrate forward on next startup is expected to work, **unless the dump predates the migrations-001-017 squash** (see the Upgrades exception below and [Troubleshooting](troubleshooting.md#controller-fails-with-column--does-not-exist-after-upgrading)).
+(Verified in the dev stack: `docker compose exec -T postgres pg_dump --version` reports `pg_dump (PostgreSQL) 16.14`.) Restore into a fresh `unified` database with `psql` before starting the controller — the migration chain is idempotent and replays forward from whatever version the dump is on, so restoring an older dump and letting the controller migrate forward on next startup is expected to work. Two caveats, both covered under [Upgrades](#upgrades): migrations are **not** all additive, so a dump on migration `014` or earlier loses **every secret and every session** when it is migrated forward; and a dump that **predates the migrations-001-017 squash** is not migrated at all (see the Upgrades exception below and [Troubleshooting](troubleshooting.md#controller-fails-with-column--does-not-exist-after-upgrading)).
 
 ### S3 / object store
 
@@ -186,9 +186,41 @@ every replica's pre-opened connections.
 
 ## Upgrades
 
+> **⚠ Upgrading across database migrations `015`/`016` deletes every secret and
+> every login session.** Plan for it before you start, not after.
+>
+> Two migrations destroy data unconditionally, with no `WHERE` clause and no prompt:
+>
+> | Migration | Statement | Effect |
+> |---|---|---|
+> | `015_secrets_v2.up.sql:13` | `DELETE FROM public.sessions;` | **Every login session is cleared.** Refresh tokens were stored in plaintext and are replaced by envelope-encrypted columns; rows in the old format cannot be re-encrypted. Every user must log in again. |
+> | `016_drop_secret_scope.up.sql:13` | `DELETE FROM public.secrets;` | **Every stored secret is deleted.** Dropping `scope`/`scope_ref` changes the AES-GCM additional authenticated data, so *no* existing ciphertext — global rows included — can be authenticated afterwards. |
+>
+> **A PostgreSQL backup does not save you.** Restoring a pre-upgrade dump brings
+> the secret rows back, but the new controller still cannot decrypt them: the
+> binding they were sealed under no longer exists. There is no in-place recovery
+> path. Recovery means running `unified-cli secret set` again for every secret,
+> from your own source of truth — unified-cd has never been able to hand a
+> value back to you (see [Secrets Management Guide](secrets.md#security-model)).
+>
+> **Before starting an upgrade that crosses `015`/`016`, confirm you can still
+> obtain the plaintext of every secret you have set.** Run `unified-cli secret
+> list` to enumerate the names; the values must come from wherever you
+> originally got them.
+>
+> Migration `016`'s own comments (`016_drop_secret_scope.up.sql:7-11`) justify the
+> deletion by asserting there are "no production secrets to preserve." That was a
+> statement about the project at the time the migration was written. It is not a
+> claim about *your* database, and it is not a safe assumption for anyone
+> upgrading an installation that has been in use.
+
 Upgrade order: **controller first, then agents.**
 
-1. **Controller** — database migrations run automatically at startup (`internal/store`, via `golang-migrate` against the embedded migration set). Roll controller replicas one at a time in an HA deployment; the new version's migrations apply once, and old and new controller binaries can both be running against the already-migrated schema during a rolling deploy as long as the migration is backward-compatible (additive columns/tables — this is the norm for unified-cd's migration history).
+1. **Controller** — database migrations run automatically at startup (`internal/store`, via `golang-migrate` against the embedded migration set). Roll controller replicas one at a time in an HA deployment; the new version's migrations apply once.
+
+   **Do not assume a migration is backward-compatible.** unified-cd's migration history is *not* uniformly additive. Of the 17 embedded migrations, **5 are backward-incompatible** — `003`, `005`, `014`, `015`, `016`. Between them they drop **6 columns** and **5 constraints**, set **3 columns** `NOT NULL` and then `DROP DEFAULT`, destroy data in **3 places** (2 of them unqualified `DELETE FROM`), and tighten **4 constraints** that appear in the DDL only as `ADD`s: two widened primary keys (`005`), one new `UNIQUE` (`016`), and one narrowed `CHECK` (`014`). The tightened-constraint and `DROP DEFAULT` cases are the dangerous shape, because an older binary still **starts** cleanly against the migrated schema and only fails later, at write time — an `INSERT` that omits the newly-mandatory column raises a `NOT NULL` violation, and rows that were legal under the old primary key now collide.
+
+   **How far back this bites.** During a rolling deploy the exposure is to a controller **two releases behind (N-2), not N-1.** `v0.4.0` already embeds `001`–`016`, and `017` is purely additive, so a `v0.4.0` controller runs correctly against a schema migrated by the current tree. A `v0.3.0` controller embeds only `001`–`012` and would be running against `014`/`015`/`016`. Migrations `003` and `005` are not reachable from any released binary at all — `v0.0.1` already embeds `001`–`007`. So: **rolling one release forward is safe; running binaries more than one release apart against a shared database is not supported.** Before any upgrade that spans more than one release, take the controllers down rather than rolling them.
 
    **Exception:** a database provisioned before the migrations-001-017 squash (commit `79c1074`) is **not** upgraded correctly by this automatic `migrate up` — the new migration chain's version numbering starts below where such a database already is, so the migration runner treats it as already up to date and silently applies nothing. This leaves newer columns/tables (e.g. `role`, `managed_resources`, `audit_logs`, `sync_status`) missing. See [Troubleshooting: `column "..." does not exist` after upgrading](troubleshooting.md#controller-fails-with-column--does-not-exist-after-upgrading) for the supported fresh-init/manual-bridge paths.
 2. **Agents** — upgrade standard agents after the controller is on the new version.
