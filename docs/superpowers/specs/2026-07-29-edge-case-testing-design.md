@@ -48,7 +48,7 @@ Every scenario names the invariants it attacks. A violation is a finding.
 | I1 | **Run accounting** — every API-accepted run reaches exactly one terminal state; no phantom runs from duplicate fires/webhooks |
 | I2 | **At-most-once side effects** — step side effects execute at most once (detected via an append-only side-effect log on a shared volume, closing the gap `ha_test.go` documents: upserted step reports cannot reveal re-execution) |
 | I3 | **No lock leaks** — mutex/semaphore/concurrency slots are released when the holder reaches a terminal state (verified by a successor run acquiring the lock AND by direct inspection of `mutex_holders` / `named_lock_slots`) |
-| I4 | **Log/artifact integrity** — a Succeeded run's log line count matches what the workload emitted; no duplicates, no reordering; archives stay readable |
+| I4 | **Stored-state integrity and provenance** *(AMENDED post-campaign — the original text is quoted and the amendment argued in §9 at the end of this file; entries filed before the amendment quote the original and are correct as of their filing)* — for each object class the system persists on a run's behalf — **log rows, log archives, artifacts, cache entries, secrets** — (a) what is stored matches what the run wrote: no loss, no duplication, no reordering; (b) it stays readable, and decryptable, for as long as the product still serves it; and (c) the object served for a request is the object that request named. A Succeeded run's log line count matching what the workload emitted is clause (a) applied to log rows |
 | I5 | **Bounded recovery** — after fault injection the system returns to steady state within documented bounds (leader re-election ≤ seconds; stuck-run reap ≤ staleAfter 90s + interval 30s; the bounds in `docs/high-availability.md` are the contract) |
 | I6 | **Zombie containment** — after the controller fails a run, observed agent-side behavior is *measured and documented* (not pass/fail: the architecture has no hard fencing; the operator judges acceptability) |
 | I7 | **State display consistency** — run status, approval status, and audit rows never contradict each other or reality |
@@ -236,3 +236,78 @@ Forms:
 - No production-code changes during Phase 1.
 - After each wave: a short checkpoint summary (scenarios run, findings so
   far, anything invalidating later waves).
+
+## 9. Post-campaign amendment: I4 restated as stored-state integrity
+
+Added 2026-08-03, after the campaign closed and after the calibration
+settlement. **This section changes the invariant set, no product code and no
+evidence.** It is recorded here because §3 is where a future reader meets I4.
+
+**The original text, quoted so the amendment can be checked against it:**
+
+> | I4 | **Log/artifact integrity** — a Succeeded run's log line count matches
+> what the workload emitted; no duplicates, no reordering; archives stay
+> readable |
+
+**Why it was amended.** The campaign's summary records four coverage gaps in
+I1-I7, **three of one kind**: three real defects each had to reach for a
+`docs/` sentence — the documented-contract limb — because no invariant's
+*subject* reached the object that was damaged. No secret-store integrity
+clause (W3-3, `test/edgecase/FINDINGS.md:1620`), no cache-integrity clause
+(W3-1, `:1938`), no artefact-provenance clause (W5-2, `:3004`). I4 reads
+"Log/**artifact** integrity" by its own text, which is exactly why a
+propagating cache corruption and a wrong-artefact download both fell outside
+it. Three of a kind is a fact about the invariant set, not three separate
+observations, so the fix is **one generalised clause and not one clause per
+gap** — a per-gap fix leaves the next object class uncovered by the identical
+argument.
+
+**The fourth gap is a different kind and this clause deliberately does not
+reach it.** W4's `:2383` and `:2401` are about Kubernetes Pods and pool
+entries the product provisions on a run's behalf outside its own storage and
+then does not reclaim. Nothing about them is *stored wrong*; they are simply
+not released. That is a lifecycle gap whose nearest invariant is **I3**, whose
+subject is *locks*. It is open, it is recorded at `FINDINGS.md:2473` with its
+own prescribed amendment (generalise I3's subject to resources the system
+acquires or provisions on a run's behalf), and **stretching this clause to
+cover it would be the exact move `FINDINGS.md:1509` forbids.**
+
+**Why the amended text is checkable — the property the campaign requires is
+that an invariant be contradicted by its own text, not by its spirit
+(`FINDINGS.md:1509`), and a clause loose enough to cover everything decides
+nothing.** Two devices keep it tight:
+
+1. **The subject is a closed enumeration, not "state".** Five object classes,
+   all of them things the product writes and later serves back. It therefore
+   does **not** reach run/step/approval/audit rows (I7's subject), lock rows
+   (I3's), execution counts (I2's), terminality (I1's), the agent's scratch
+   workspace, or any externally-provisioned execution resource. A scenario
+   that wants I4 must name which of the five it damaged.
+2. **The predicate is three testable conjuncts, each with an instrument.**
+   (a) compares stored bytes/rows against what the run wrote — countable;
+   (b) is a read-back — the object is fetched and, for secrets, decrypted;
+   (c) compares the identity in the request against the identity of what came
+   back — both are recorded. Clause (b) is bounded by "for as long as the
+   product still serves it", so an object the operator removed through a
+   documented route is not a breach, only one the product still advertises.
+
+**Worked check, against entries that exist rather than against hypotheticals
+— each is contradicted or not on the amended text alone:**
+
+| Entry | Clause | Contradicted? |
+|---|---|---|
+| W1-2 `FINDINGS.md:179` — 38 log lines dropped at step end, no marker | (a) log rows | yes |
+| W3-4 `:1521` — 2,002 emitted lines stored and served as 8,493, reordered | (a) log rows | yes |
+| W4-1 `:2334` — 21 lines of a Succeeded run lost, contiguous `seq` | (a) log rows | yes |
+| W3-3 `:1620` — secret still listed, permanently undecryptable on all replicas | (b) secrets | yes |
+| W3-1 `:1938` — a good 16 MiB cache entry overwritten with 1.9 MiB of debris | (a) cache entries | yes |
+| W5-2 `:3004` — `downloadArtifact.runId` ignored; another run's artefact served | (c) artifacts | yes |
+| W3-1 `:1986` — cache payload orphaned from its `.meta`: unexpirable, still served | — | **no** — the payload matches what was written, is readable, and the exact key served the object it named. **Reclamation is not integrity.** Stays on the contract limb |
+| W4 `:2383`, `:2401` — unreclaimed Pods and pool entries | — | **no** — not an object class the product persists, and nothing about them is stored wrong. The I3 gap, still open |
+
+**Consequences, executed in the same change as this amendment.** The four
+entries the campaign named were re-classified (`:1938`, `:1620`, `:1986`,
+`:3004`) and **three of the four moved**; the published limb split was
+re-derived rather than taken from the campaign's prediction. Both are recorded
+at `## Invariant amendment` at the end of `test/edgecase/FINDINGS.md`, which is
+the authority on entry dispositions.
