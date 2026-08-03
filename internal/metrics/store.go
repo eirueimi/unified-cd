@@ -43,6 +43,17 @@ func (s *InstrumentedStore) FinishRun(ctx context.Context, runID string, status 
 	return updated, err
 }
 
+// FinishRunIfStatus is instrumented for the same reason FinishRun is: the
+// queued-run reaper terminalizes runs through it, and a reap that lost the race
+// (updated=false) must not be counted as a finished run.
+func (s *InstrumentedStore) FinishRunIfStatus(ctx context.Context, runID string, expected, status api.RunStatus) (bool, error) {
+	updated, err := s.Store.FinishRunIfStatus(ctx, runID, expected, status)
+	if err == nil && updated {
+		s.m.RunFinished(string(status))
+	}
+	return updated, err
+}
+
 // MarkRunFinished routes through FinishRun so a transition is only counted
 // when the run actually left a non-terminal state (the underlying CAS
 // silently ignores finish-after-finish).

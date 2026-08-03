@@ -434,44 +434,102 @@ func (p *Postgres) ListActiveRuns(ctx context.Context) ([]api.Run, error) {
 	return out, rows.Err()
 }
 
+// TransitionPendingToQueued examines the limit oldest Pending runs and queues
+// those whose concurrency constraints allow it. It always starts at the head of
+// the Pending queue; callers that must guarantee every Pending run is eventually
+// examined should use TransitionPendingToQueuedFrom instead.
 func (p *Postgres) TransitionPendingToQueued(ctx context.Context, limit int) (int, error) {
-	// Take a snapshot of Pending runs (no lock)
+	n, _, err := p.TransitionPendingToQueuedFrom(ctx, limit, nil)
+	return n, err
+}
+
+// TransitionPendingToQueuedFrom examines up to limit Pending runs starting after
+// the cursor, and returns the cursor to resume from on the next call.
+//
+// The cursor exists because the window is a FIXED size over an ORDERED set, and a
+// Pending run that cannot be queued STAYS Pending: runs blocked on a held mutex are
+// never written at all (tryQueueRun rolls back and leaves the status untouched), so
+// they sit at the head of created_at order and re-fill the window on every tick,
+// forever. Past the window size, a later run that declares no concurrency at all is
+// then never EXAMINED — not deferred, not queued behind anything, simply never
+// looked at — for as long as the blocked head persists (measured: 252.6s and 787.6s
+// against a 0.185s baseline, with an idle agent long-polling for work throughout).
+//
+// next is non-nil when the batch came back full, i.e. there may be more Pending runs
+// after it; the caller should pass it back to advance past the runs it just examined.
+// A short batch means the end of the Pending set was reached and next is nil, so the
+// caller wraps to the head. Every Pending run is therefore examined within
+// ceil(N/limit) ticks, at unchanged per-tick cost — the fix is that the window
+// MOVES, not that it grew.
+func (p *Postgres) TransitionPendingToQueuedFrom(ctx context.Context, limit int, after *PendingCursor) (queued int, next *PendingCursor, err error) {
+	var cursorTime time.Time
+	var cursorID string
+	if after != nil {
+		cursorTime = after.CreatedAt
+		cursorID = after.ID
+	}
+	// Keyset pagination on (created_at, id) rather than OFFSET: rows leave the
+	// Pending set under the scan, and OFFSET would silently skip their successors.
+	// The tuple comparison also breaks created_at ties deterministically.
 	rows, err := p.pool.Query(ctx,
-		`SELECT id, spec, params FROM runs WHERE status = 'Pending' ORDER BY created_at LIMIT $1`,
-		limit)
+		`SELECT id, spec, params, created_at FROM runs
+		 WHERE status = 'Pending'
+		   AND ($2::timestamptz IS NULL OR (created_at, id) > ($2::timestamptz, $3::uuid))
+		 ORDER BY created_at, id LIMIT $1`,
+		limit, nullableTime(cursorTime), nullableUUID(cursorID))
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	type candidate struct {
-		id     string
-		spec   []byte
-		params []byte
+		id        string
+		spec      []byte
+		params    []byte
+		createdAt time.Time
 	}
 	var candidates []candidate
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.id, &c.spec, &c.params); err != nil {
+		if err := rows.Scan(&c.id, &c.spec, &c.params, &c.createdAt); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, nil, err
 		}
 		candidates = append(candidates, c)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return 0, nil, err
+	}
+
+	if len(candidates) == limit && limit > 0 {
+		last := candidates[len(candidates)-1]
+		next = &PendingCursor{CreatedAt: last.createdAt, ID: last.id}
 	}
 
 	count := 0
 	for _, c := range candidates {
 		queued, err := p.tryQueueRun(ctx, c.id, c.spec, c.params)
 		if err != nil {
-			return count, err
+			return count, next, err
 		}
 		if queued {
 			count++
 		}
 	}
-	return count, nil
+	return count, next, nil
+}
+
+func nullableTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+func nullableUUID(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // systemLogStepIndex is the sentinel value for logs.step_index that represents
@@ -744,6 +802,39 @@ func (p *Postgres) MarkRunFinished(ctx context.Context, runID string, status api
 // so the caller can signal that the finish report was a late/no-op rather than a
 // fresh success. The CAS guard (WHERE status NOT IN terminal set) is unchanged.
 func (p *Postgres) FinishRun(ctx context.Context, runID string, status api.RunStatus) (updated bool, err error) {
+	return p.finishRunFrom(ctx, runID, "", status)
+}
+
+// FinishRunIfStatus is FinishRun with an additional CAS on the run's CURRENT
+// status: the write lands only if the run is still in expected. It exists for
+// callers that decided to terminalize a run from a snapshot taken earlier and must
+// not act on a run that moved since — chiefly the queued-run reaper, whose whole
+// premise ("no live agent can claim this") is falsified the moment an agent claims
+// it. FinishRun's own guard (NOT IN terminal) is too weak for that: it refuses to
+// overwrite a TERMINAL run but happily overwrites a Running one, so a claim that
+// landed milliseconds before the write is invisible to it.
+//
+// Returns updated=false, no error, when the run has moved on — the caller should
+// treat that as "someone else is now responsible for this run", not as a failure.
+func (p *Postgres) FinishRunIfStatus(ctx context.Context, runID string, expected api.RunStatus, status api.RunStatus) (updated bool, err error) {
+	if expected == "" {
+		return false, fmt.Errorf("expected status must not be empty")
+	}
+	return p.finishRunFrom(ctx, runID, expected, status)
+}
+
+// finishRunFrom terminalizes a run and releases its concurrency locks in one
+// transaction. expected, when non-empty, additionally requires the run to still be
+// in that status.
+//
+// The lock releases are GATED on the status CAS having matched a row. They used to
+// be unconditional, which is the more dangerous half of a stale-snapshot write: a
+// caller that failed to terminalize a run — because another writer got there first,
+// or because the run had moved to a status the CAS refuses — still freed that run's
+// mutex and named-lock slot out from under its live holder, letting a successor
+// acquire a mutex the original holder is still executing inside. A caller that did
+// not terminalize the run does not own the run's locks and must not release them.
+func (p *Postgres) finishRunFrom(ctx context.Context, runID string, expected, status api.RunStatus) (updated bool, err error) {
 	switch status {
 	case api.RunSucceeded, api.RunFailed, api.RunCancelled:
 	default:
@@ -758,12 +849,22 @@ func (p *Postgres) FinishRun(ctx context.Context, runID string, status api.RunSt
 
 	tag, err := tx.Exec(ctx,
 		`UPDATE runs SET status = $1, updated_at = NOW()
-WHERE id = $2 AND status NOT IN ('Succeeded', 'Failed', 'Cancelled')`,
-		string(status), runID)
+WHERE id = $2 AND status NOT IN ('Succeeded', 'Failed', 'Cancelled')
+  AND ($3 = '' OR status = $3)`,
+		string(status), runID, string(expected))
 	if err != nil {
 		return false, err
 	}
 	updated = tag.RowsAffected() > 0
+	if !updated {
+		// Nothing was terminalized, so nothing is ours to release. Commit the
+		// (empty) transaction rather than returning an error: "the run moved"
+		// is an ordinary outcome, not a failure.
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
 	// release mutex
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM mutex_holders WHERE run_id = $1`, runID); err != nil {
@@ -1141,9 +1242,35 @@ func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os
 	return err
 }
 
-func (p *Postgres) TouchAgent(ctx context.Context, agentID string) error {
-	_, err := p.pool.Exec(ctx, `UPDATE agents SET last_seen_at = NOW() WHERE id = $1`, agentID)
-	return err
+// TouchAgent refreshes an agent's last_seen_at from its heartbeat. It is an
+// UPSERT, not a bare UPDATE: a heartbeat is the one write a live agent makes
+// unconditionally on its own ticker, so it must be able to RECREATE a row that
+// something else removed, not merely refresh one that happens to still exist.
+//
+// This matters because the agents row is not owned by the process that heartbeats
+// it: DeleteAgent is an unfenced `DELETE FROM agents WHERE id = $1` reachable from
+// any process holding that agent ID's credential (notably a duplicate-ID sibling
+// deregistering at the end of its drain, i.e. any start-before-stop rollout). With
+// the previous bare UPDATE the deletion matched zero rows, returned no error, and
+// the row stayed absent until the next claim poll re-inserted it (~30s) — during
+// which ListStuckRuns saw the row missing and reaped the healthy agent's run.
+//
+// recreated reports that the row was absent and this heartbeat re-inserted it, so
+// the caller can make an otherwise invisible state loud. The re-inserted row is
+// deliberately minimal (empty hostname/os/version, NULL capabilities): the next
+// registration or claim poll fills the real values back in via UpsertAgent /
+// UpsertAgentOnClaim. What matters here is only that liveness is not lost.
+func (p *Postgres) TouchAgent(ctx context.Context, agentID string) (recreated bool, err error) {
+	const q = `
+		INSERT INTO agents(id, hostname, os, labels, version, env, last_seen_at)
+		VALUES ($1, '', '', '{}', '', '{}'::jsonb, NOW())
+		ON CONFLICT (id) DO UPDATE SET last_seen_at = NOW()
+		RETURNING (xmax = 0);
+	`
+	// xmax = 0 is true only for a row this statement INSERTed; a row updated by
+	// the ON CONFLICT clause carries the locking transaction's xid.
+	err = p.pool.QueryRow(ctx, q, agentID).Scan(&recreated)
+	return recreated, err
 }
 
 func (p *Postgres) DeleteAgent(ctx context.Context, agentID string) error {
@@ -1232,12 +1359,23 @@ func (p *Postgres) DeleteStaleAgents(ctx context.Context, olderThan time.Duratio
 	return tag.RowsAffected(), nil
 }
 
-// ListStuckRunIDs returns IDs of Running runs whose claiming agent is gone or has
-// not sent a heartbeat within staleAfter, excluding runs claimed within the grace
-// window (to avoid reaping a just-claimed run before its first heartbeat).
-func (p *Postgres) ListStuckRunIDs(ctx context.Context, staleAfter, grace time.Duration) ([]string, error) {
+// ListStuckRuns returns Running runs whose claiming agent is gone or has not sent
+// a heartbeat within staleAfter, excluding runs claimed within the grace window
+// (to avoid reaping a just-claimed run before its first heartbeat).
+//
+// AgentMissing distinguishes the two disjuncts, and the caller MUST treat them
+// differently. A stale last_seen_at is positive evidence of death: the agent had a
+// row, stopped writing to it, and staleAfter has elapsed — that is a measured
+// silence. An absent row is NOT evidence of anything: it carries no timestamp, so
+// this predicate has no time component for it at all, and a row that vanished one
+// millisecond ago looks exactly like one that vanished an hour ago. Absence is
+// naturally produced by events that say nothing about liveness (a duplicate-ID
+// sibling's deregistration at end of drain, an operator DELETE /agents/{id}), so
+// the stuck-run reaper confirms an AgentMissing observation across sweeps before
+// acting on it — see runStuckRunReaperOnce.
+func (p *Postgres) ListStuckRuns(ctx context.Context, staleAfter, grace time.Duration) ([]StuckRunRef, error) {
 	const q = `
-		SELECT r.id
+		SELECT r.id, (a.id IS NULL) AS agent_missing
 		FROM runs r
 		LEFT JOIN agents a ON r.claimed_by = a.id
 		WHERE r.status = 'Running'
@@ -1250,15 +1388,15 @@ func (p *Postgres) ListStuckRunIDs(ctx context.Context, staleAfter, grace time.D
 		return nil, fmt.Errorf("list stuck runs: %w", err)
 	}
 	defer rows.Close()
-	var ids []string
+	var out []StuckRunRef
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var ref StuckRunRef
+		if err := rows.Scan(&ref.ID, &ref.AgentMissing); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		out = append(out, ref)
 	}
-	return ids, rows.Err()
+	return out, rows.Err()
 }
 
 // ListUnclaimableQueuedRuns returns Queued runs older than minAge that no live
@@ -1272,7 +1410,15 @@ func (p *Postgres) ListStuckRunIDs(ctx context.Context, staleAfter, grace time.D
 // k8s agent is live) is intentionally left Queued rather than auto-failed
 // here — it is surfaced instead via the JobDetail unschedulable banner
 // (see serveJobSchedulability). Do not add a capability clause to this query.
-func (p *Postgres) ListUnclaimableQueuedRuns(ctx context.Context, minAge, staleAfter time.Duration) ([]QueuedRunRef, error) {
+//
+// limit bounds the batch. The liveness answer this query returns is a snapshot,
+// and every run the caller acts on is acted on with an answer that is as stale as
+// the loop is long — so an unbounded batch is an unbounded staleness window (a
+// 161-run backlog measured at 475ms end to end, ~2.93ms per run, against 4ms for a
+// single run). The bound caps that window; FailQueuedRun re-validates per run on
+// top of it. A limit <= 0 is treated as unbounded, for callers that want the whole
+// set (tests).
+func (p *Postgres) ListUnclaimableQueuedRuns(ctx context.Context, minAge, staleAfter time.Duration, limit int) ([]QueuedRunRef, error) {
 	const q = `
 		SELECT r.id, r.agent_selector
 		FROM runs r
@@ -1283,8 +1429,10 @@ func (p *Postgres) ListUnclaimableQueuedRuns(ctx context.Context, minAge, staleA
 		    WHERE a.last_seen_at >= NOW() - make_interval(secs => $2)
 		      AND (r.agent_selector = '{}' OR r.agent_selector <@ a.labels)
 		  )
+		ORDER BY r.created_at
+		LIMIT CASE WHEN $3::int > 0 THEN $3::int ELSE NULL END
 	`
-	rows, err := p.pool.Query(ctx, q, minAge.Seconds(), staleAfter.Seconds())
+	rows, err := p.pool.Query(ctx, q, minAge.Seconds(), staleAfter.Seconds(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list unclaimable queued runs: %w", err)
 	}
@@ -2436,11 +2584,38 @@ func (p *Postgres) CreatePendingApproval(ctx context.Context, runID string, step
 	return err
 }
 
+// DecideApproval records a human decision on a pending approval gate. It is
+// first-writer-wins on the row's own status AND conditional on the gate still
+// being decidable at all:
+//
+//   - the run must not be terminal. run_approvals is an audit record (docs/jobs.md,
+//     docs/audit.md), and without this clause an ordinary `unified-cli approve`
+//     wrote Approved plus a named principal onto runs that had already Failed or
+//     been Cancelled, returned 204, and left an audit_logs row reading as success.
+//     Worse than the false record: when the decision commits inside the agent's 5s
+//     cancel-detection window, WaitForApproval sees Approved before the agent sees
+//     the cancel, so the post-gate step body actually executes on a Cancelled run.
+//   - the gate must not have passed its timeout_at. Past it the agent has already
+//     failed the step locally, so a decision can no longer have any effect on
+//     execution and only falsifies the record. (The approval reaper reconciles such
+//     rows to TimedOut/system within ~1 minute; this closes the window before it.)
+//
+// Both clauses live in the SQL rather than in the handler on purpose: a handler-side
+// GetRun check races the run's own terminalization landing between the read and the
+// UPDATE, which is the exact shape of bug this fixes. The handler classifies the
+// refusal for the HTTP response afterwards, which is safe because the write has
+// already been decided by then.
 func (p *Postgres) DecideApproval(ctx context.Context, runID string, stepIndex int, status, decidedBy, comment string) (bool, error) {
 	const q = `
-		UPDATE run_approvals
+		UPDATE run_approvals a
 		SET status = $3, decided_by = $4, comment = $5, decided_at = now()
-		WHERE run_id = $1 AND step_index = $2 AND status = 'Pending';
+		WHERE a.run_id = $1 AND a.step_index = $2 AND a.status = 'Pending'
+		  AND (a.timeout_at IS NULL OR a.timeout_at > now())
+		  AND EXISTS (
+		    SELECT 1 FROM runs r
+		    WHERE r.id = a.run_id
+		      AND r.status NOT IN ('Succeeded', 'Failed', 'Cancelled')
+		  );
 	`
 	tag, err := p.pool.Exec(ctx, q, runID, stepIndex, status, decidedBy, comment)
 	if err != nil {

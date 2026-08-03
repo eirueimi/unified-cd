@@ -42,12 +42,27 @@ func (s *Server) handleDecideApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !changed {
-		// Either no pending row (404) or already decided (409): disambiguate via GetApproval.
-		if _, err := s.store.GetApproval(r.Context(), runID, stepIndex); err != nil {
+		// The write has already been refused, atomically, by DecideApproval's SQL.
+		// Everything below only CLASSIFIES that refusal for the response — reading
+		// state here cannot reopen the TOCTOU window the SQL guard closed.
+		a, gerr := s.store.GetApproval(r.Context(), runID, stepIndex)
+		if gerr != nil {
 			http.Error(w, "no pending approval", http.StatusNotFound)
 			return
 		}
-		http.Error(w, "already decided", http.StatusConflict)
+		if a.Status != "Pending" {
+			http.Error(w, "already decided", http.StatusConflict)
+			return
+		}
+		// The gate row is still Pending, so the refusal came from one of the two
+		// decidability clauses. Say which: an operator who clicked Approve on a
+		// button the UI still renders needs to know the decision was not merely
+		// lost.
+		if a.TimeoutAt != nil && !a.TimeoutAt.After(time.Now()) {
+			http.Error(w, "approval window has expired; the step already timed out", http.StatusConflict)
+			return
+		}
+		http.Error(w, "run is already terminal; approvals are no longer accepted", http.StatusConflict)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

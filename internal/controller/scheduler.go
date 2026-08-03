@@ -17,6 +17,14 @@ import (
 	"github.com/eirueimi/unified-cd/internal/store"
 )
 
+// pendingWindow is how many Pending runs one scheduler tick examines. It bounds
+// per-tick DB work (each candidate costs a SELECT ... FOR UPDATE), NOT how long a
+// run may wait: the window advances across ticks, so every Pending run is examined
+// within ceil(backlog / pendingWindow) ticks. Before the window moved, this constant
+// was also a hard visibility horizon — a runnable run at backlog position
+// pendingWindow+1 was never examined at all while the head stayed blocked.
+const pendingWindow = 50
+
 // RunScheduler transitions Pending runs to Queued.
 // Only one replica acts as leader at a time via a Postgres advisory lock held on a dedicated connection.
 // The lock is acquired once and kept for the goroutine's lifetime; it is released on ctx cancel or error.
@@ -29,6 +37,9 @@ func RunScheduler(ctx context.Context, st store.Store, tick time.Duration) {
 
 	var release func()              // non-nil when this instance is the leader
 	var lastScheduleCheck time.Time // time of the last schedule check
+	var cursor *store.PendingCursor // position in the Pending sweep; nil = start at the head
+	var sweepStart = time.Now()     // when the current full sweep of Pending began
+	var sweptFull bool              // this sweep needed more than one window
 
 	defer func() {
 		if release != nil {
@@ -55,16 +66,42 @@ func RunScheduler(ctx context.Context, st store.Store, tick time.Duration) {
 				slog.Info("scheduler became leader")
 			}
 
-			n, err := st.TransitionPendingToQueued(ctx, 50)
+			// Sweep the Pending set in pendingWindow-sized steps rather than
+			// re-examining the same head window every tick. A run blocked on a held
+			// mutex is never written at all — tryQueueRun rolls back and leaves it
+			// Pending — so a fixed head window is permanently occupied by blocked
+			// runs, and a fully runnable run past position pendingWindow is never
+			// examined at all for as long as the block lasts.
+			n, next, err := st.TransitionPendingToQueuedFrom(ctx, pendingWindow, cursor)
 			if err != nil {
 				slog.Error("scheduler transition error", "error", err)
 				// Release leadership so another replica can take over.
 				release()
 				release = nil
+				cursor = nil
 				continue
 			}
 			if n > 0 {
 				slog.Info("scheduler enqueued", "count", n)
+			}
+			cursor = next
+			if next != nil {
+				// The window came back full: there are more Pending runs behind it,
+				// and the next tick continues from here instead of restarting at the
+				// head. Report it — the backlog that produces this state was
+				// previously invisible on every surface.
+				if !sweptFull {
+					sweptFull = true
+					slog.Info("scheduler: Pending backlog exceeds one window; sweeping in steps",
+						"window", pendingWindow)
+				}
+			} else if sweptFull {
+				slog.Info("scheduler: completed a full sweep of the Pending backlog",
+					"duration", time.Since(sweepStart).String())
+				sweptFull = false
+				sweepStart = time.Now()
+			} else {
+				sweepStart = time.Now()
 			}
 
 			// Run the schedule check once per minute.

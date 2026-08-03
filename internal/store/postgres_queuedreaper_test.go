@@ -25,7 +25,7 @@ func TestPostgres_ListUnclaimableQueuedRuns(t *testing.T) {
 	require.NoError(t, err)
 
 	collect := func() map[string][]string {
-		refs, err := pg.ListUnclaimableQueuedRuns(ctx, 0, 60*time.Second)
+		refs, err := pg.ListUnclaimableQueuedRuns(ctx, 0, 60*time.Second, 0)
 		require.NoError(t, err)
 		m := map[string][]string{}
 		for _, r := range refs {
