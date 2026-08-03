@@ -7,7 +7,17 @@ Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 ## Layout
 
 - `FINDINGS.md` — one entry per invariant violation or notable observation.
-- `scenarios/` — one runbook per scenario (`w<wave>-<n>-<slug>.md`).
+- `scenarios/` — one runbook per scenario (`w<wave>-<n>-<slug>.md`). **The three
+  W7 files use a LETTER where every other wave uses a number** —
+  `w7-a-artefact-persistence.md`, `w7-b-secret-destruction-upgrade.md`,
+  `w7-c-schedule-cliff-idle.md` — because W7 is not a chartered wave: it is the
+  three follow-up **arms** `FINDINGS.md:3184` named as unrun and `:3196` made
+  follow-up 3, and the letters are the order that sentence lists them in. **Read
+  W7's block in `FINDINGS.md` before quoting the campaign's headline: the file
+  holds SIX criticals, not zero — five re-banded at the `## Calibration
+  settlement` and W7-A, the only one filed `critical` at the moment of
+  measurement. The six criticals and the six-entry escalation set are NOT the
+  same six (`FINDINGS.md:3721`).**
 - `compose/` — overlay files stacked onto `test/ha/docker-compose.ha.yaml`.
 - `workloads/` — job/schedule YAML (and pre-encoded JSON API payloads).
 - Scheduler/timing probes live next to the code they probe (e.g.
@@ -352,6 +362,70 @@ silently off before. **Consequences you must plan for:**
   rebuilt rig can steer by `version:` — but only if each arm is built with
   `--build-arg VERSION=...`; without it the images still (correctly) report
   `dev`, so keep the service-name handle as the fallback.
+
+### Running more than one rig at once (W7)
+
+- `compose/altports.override.yaml` — moves the LB's published host port to
+  `${HA_LB_PORT}`. W7 needed a **3-hour promotion-free window** (Arm C) running
+  undisturbed on one project while two short scenarios came up and went down on
+  others, and `-p <project>` alone is not enough: the base file publishes
+  `18080:8080` and a second copy collides on the host port.
+
+  **`ports:` is a SEQUENCE and Compose merges sequences by APPENDING**, so a
+  plain override publishes *both* ports and collides with exactly what it was
+  meant to avoid. The overlay uses **`!override`** (Compose v2.24+) and its own
+  header tells you to confirm with `docker compose … config`, which must show
+  **one** published port for `nginx`. Nothing inside a stack uses the published
+  port — agents and the enroll one-shot reach `http://nginx:8080` on the
+  project's own network — so shifting it changes nothing an agent sees.
+
+  ```bash
+  HA_LB_PORT=18091 docker compose -p edge-arma \
+    -f docker-compose.ha.yaml \
+    -f ../edgecase/compose/mixedver.override.yaml \
+    -f ../edgecase/compose/altports.override.yaml up -d --build
+  ```
+
+  **Two host-level cautions W7 paid for.** (i) `docker compose down -v` is
+  per-project, so a second project's volumes are a second thing to remember —
+  W7 tore each scenario's project down before starting the next. (ii) Running
+  two full stacks concurrently is a **confound for any timing measurement**, and
+  it must be measured rather than assumed: W7-C reports its drift rate
+  separately for the intervals inside and outside the other arms' windows, and
+  they agree to 0.7 % (`scenarios/w7-c-schedule-cliff-idle.md`).
+
+- `compose/w7b-upgrade.yaml` — **not an overlay: a standalone rig**, for a
+  v0.3.0 deployment upgraded to HEAD across migrations 013-017. It cannot be an
+  overlay for two independent reasons: `controller2`/`controller3` are `*ctrl`
+  aliases of `controller1`'s anchor, so an overlay cannot version one of them;
+  and an upgrade is a **swap**, not a mixed fleet, so the rig wants one
+  controller at a time. Its paths are relative to the **repository root**, so it
+  must be run with `--project-directory` pointing there:
+
+  ```bash
+  docker compose -p edge-armb --project-directory . \
+    -f test/edgecase/compose/w7b-upgrade.yaml up -d postgres old agentv030
+  #  ... work on the v0.3.0 side ...
+  docker compose … stop old agentv030
+  docker compose … up -d --build new agentnew-enroll agentnew
+  docker compose … down -v
+  ```
+
+  **The v0.3.0 images are PULLED and that is the other half of `FINDINGS.md:3046`:**
+  `ghcr.io/eirueimi/unified-cd-controller:v0.3.0` and `…-agent:v0.3.0` are
+  public and resolve unauthenticated — the v0.3.0 tags were published normally,
+  and it is `v0.4.0` that has no images for any of the five. So unlike W5-2's
+  agent, the old side of this rig costs no build at all.
+
+  **`FINDINGS.md:2993` §(a)(3) says a v0.3.0 controller "cannot use the campaign
+  rig unmodified" because it predates `UNIFIED_CONTROLLER_KEY_FILE`. That is
+  true and it is not the obstacle it reads as** — v0.3.0 reads
+  `UNIFIED_CONTROLLER_KEY` (`v0.3.0:internal/config/controller.go:100`) and the
+  value is the same 64 hex characters `test/ha/kek` holds, i.e. one
+  `environment:` line. **The real reason not to reach for a hand-migrated schema
+  instead** (the cheaper-looking route) is that migrating to version 12 by hand
+  gives a schema and no way to *write a secret into it*: the encryption path,
+  the AAD binding and the secrets API all belong to the binary.
 
 ### The W4 Kubernetes rig, and the enrollment bypass it rests on
 
@@ -1104,7 +1178,16 @@ and returns `200` with the schedule JSON. All the *job* fixtures are
 `kind:old` and are claimable only by the v0.4.0 `agentold` service — the blanket
 claim stood here until the W5 checkpoint and was false from the moment W5-2
 landed** (`w5-consumer-old`, `w5-call-parent-old`, `w5-detached-old`,
-`w5-oldtick`); and all are `native: true` **except
+`w5-oldtick`), **and the two W7 fixtures (`w7-producer`, `w7-poison`), which
+carry NO `agentSelector` at all and are therefore claimable by EVERY agent** —
+W7-A steers by which agent service is running instead, because the agent cache
+key contains the job name and a W5-style two-job pair can never collide in the
+cache (see the table and `scenarios/w7-a-artefact-persistence.md`). **Read that
+as the second correction of this same sentence**: the W5 checkpoint's
+inconsistency (vii) was this sentence going stale the moment a wave landed a
+fixture it did not cover, and a selector-less fixture is a sharper trap than a
+differently-labelled one — apply it to an already-running rig and *any* agent
+may claim it. And all fixtures are `native: true` **except
 `podcap-job.payload.json`**, which carries a Kubernetes-only `podTemplate` so
 its inferred capability is `pod` (see the table).
 
@@ -1141,6 +1224,8 @@ its inferred capability is `pod` (see the table).
 | `w5-detached-old.payload.json` / `w5-detached-head.payload.json` | `edge-w5-detached-old` / `-head` | W5-2 Part C: `spec.detached: true`, the same two-line selector split. The `-head` arm is the 6 s control the 317 s `Queued` observation is measured against |
 | `w5-oldtick.payload.json` | `edge-w5-oldtick` | the W5-2 **baseline gate** — a trivial job on `kind:old`, i.e. the v0.4.0 agent enrolls, claims and runs to `Succeeded` against HEAD controllers. Step 3 of the runbook; if it fails the wave's executed half is blocked |
 | `w6-probe.payload.json` | `edge-w6-probe` | the **unclaimable** fixture for `tools/w6/w6-synth-agent.sh` — `agentSelector: [kind:w6synth]` matches neither `agent1` nor `agent2`, so the synthetic identity owns the run's whole lifecycle. Same shape and reason as `w35-probe` / `w36-probe`, with its own selector so a W6 instrument cannot collide with a re-run of either W3 scenario |
+| `w7-producer.payload.json` | `edge-w7-producer` | the W7-A artefact **producer**: publishes `w7payload` whose `marker.txt` carries `W7-ARTIFACT-SOURCE=producer` and its own nonce. Same role as `w5-producer` with a distinct artefact name and nonce, so a W7 capture can never be confused with a re-run of W5-2 |
+| `w7-poison.payload.json` | `edge-w7-poison` | the W7-A **persistence** fixture, and the one that turned `FINDINGS.md:3004` into a `critical`. Nine steps: publish its own `w7payload` (the W5-2 discrimination instrument, kept because dropping it turns the result into a null) → clear the workspace → `cache:` restore of `deps/` under key `edge-w7-poison-v1` → report hit/miss **and the restored content** → `downloadArtifact` with `runId:` → stage what arrived as the cached dependency → **republish it as `w7republished`** → print both trees. It therefore takes BOTH routes `FINDINGS.md:3014` names — "an artefact republished from the wrong input, a cache entry saved over it" — in one run. **It deliberately has NO `agentSelector`, and that is load-bearing rather than sloppy:** the cache key is `caches/<b64url(sha256(jobName))>/<b64url(sha256(key))>.tar.zst`, so the job **name** is in the key, two jobs cannot share a name, and a W5-style controlled pair could never collide in the cache — the propagation limb would be unmeasurable by construction. Steering is by `docker compose stop` of the agent services instead (phase 1 = `agentold` alone, phase 2 = `agent1`/`agent2` alone), which is a rig control rather than an injection and models a controller-first upgrade directly. **Any future scenario that needs one job to run on two different agent versions should copy this, and any scenario that needs a controlled comparison at one version should still copy W5-2's pair** |
 
 **W4 fixture traps, both measured:** (1) `dsl.RequiredCaps` returns `pod` only
 when `PodTemplateNeedsKubernetes` is true — a bare `containers:` list yields
@@ -1202,6 +1287,7 @@ entry's `w5-2/final-run-table.txt` to `edgecase-evidence/w5/w5-2/final-run-table
 | `w6/w6-1s/` | scenario **W6-1** (connection pressure). **The `w6-1/` vs `w6-1s/` split is deliberate and is not a naming trap**: `w6-1/` is Task 1's harness verification and backs the `W6-infra` entry, `w6-1s/` is the scenario. Eight citations distinguish them. Its `void/` subtree holds the seven voided/contaminated captures the `W6-1 (campaign asset)` entry enumerates, each with a `NOTE.txt` |
 | `w5/w5-1/` | the **W5-1 code-read audit**'s five surveys — the destructive-operation sweep over all 17 migrations, the `docs/` compatibility survey, `schemaSentinels` per git tag, v0.3.0's references to the dropped columns, and the `test/ha` `restart:` enumeration. **No rig, no container, no Postgres**: this is the campaign's only directory holding nothing but code surveys, and it was archived at the W5 checkpoint rather than at the task, which is why `FINDINGS.md:2962`'s citations pointed at an absent directory for a day |
 | `w5/w5-2/` | scenario **W5-2** (v0.4.0 agent against HEAD controllers), 40 files. Two of them are post-teardown and say so inside themselves: `step1-recapture-2026-08-03.txt` (GHCR/Actions queries, re-obtainable because they are not rig state) and `partA-controller-silence-coderead-2026-08-03.txt` (a code read standing in for controller logs `down -v` destroyed) |
+| `w7/w7-a/` `w7/w7-b/` `w7/w7-c/` | the three follow-up arms `FINDINGS.md:3184` named as unrun. **W7 sits one level down, like W2-W6**, and its per-wave parent directory was decided at the first capture, per rule (i) below. `w7-a/` also holds the two binary objects the entry's out-of-band reads produced (`cache-entry*.tar.zst`, `w7republished-*.tar.gz`, all under 200 B); `w7-c/` holds the 30-second sampler's `samples.psv`, which is **window-bounded by construction** — the sampler takes a duration argument and writes its own `SAMPLER-END` line — and is the reason W7 needed no `-window.txt` sidecar |
 | `w6/w6-2a/` `w6/w6-2b/` `w6/w6-3/` | scenarios W6-2a, W6-2b and W6-3. **`w6-2b/` and `w6-3/` were originally archived at the evidence root's top level and were moved under `w6/` at the W6 checkpoint**, which cost exactly one citation edit (`FINDINGS.md:458`) because every other W6 citation is a bare relative name. Every statement log and nginx access log in these three is stored `.gz`; each reproduces its cited uncompressed name and line count under `gunzip -c` |
 
 W3 totals ~4.9 MB across those seven directories, all verified byte-identical

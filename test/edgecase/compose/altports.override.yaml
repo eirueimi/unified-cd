@@ -1,0 +1,24 @@
+# Alternate host port for the LB, so more than one copy of the rig can be up at
+# once. Added by the W7 follow-up arms, which needed a 3-hour promotion-free
+# schedule window (Arm C) running undisturbed on one project while two short
+# scenarios (Arms A and B) came up and went down on others.
+#
+# `ports:` is a SEQUENCE and Compose merges sequences by APPENDING, so a plain
+# override here would publish 18080 as well and collide with whatever it was
+# meant to avoid. `!override` replaces the list instead of extending it
+# (Compose v2.24+). Verified by `docker compose ... config`, which must show
+# exactly one published port for `nginx`.
+#
+# Usage (from test/ha), with a distinct project name as well as a distinct port
+# — the base file pins `name: unified-cd-ha`, and `-p` is what overrides it:
+#
+#   HA_LB_PORT=18090 docker compose -p edge-armc \
+#     -f docker-compose.ha.yaml -f ../edgecase/compose/altports.override.yaml up -d
+#
+# Nothing inside the stack uses the published port: agents and the enroll
+# one-shot reach `http://nginx:8080` on the project's own network, so shifting
+# the host port changes nothing an agent sees.
+services:
+  nginx:
+    ports: !override
+      - "${HA_LB_PORT:-18080}:8080"
