@@ -55,6 +55,51 @@ type AgentPodTemplate struct {
 
 // defaultShimImage is the default value of Config.ShimImage: the k8s-agent's
 // own image, which ships /ucd-sh at its root (see docker/k8s-agent.Dockerfile).
+//
+// DELIBERATELY NOT DIGEST-PINNED, unlike defaultPodImage and
+// defaultSidecarImage below. That asymmetry is recorded here because it looks
+// like an oversight and is not — pinning this constant to a digest would be
+// strictly worse than leaving it floating, and a future reader "fixing" the
+// inconsistency would reintroduce the bug this comment exists to prevent.
+//
+// The reason is circularity, and it applies to this constant alone.
+// defaultPodImage and defaultSidecarImage name OTHER images, with release
+// identities independent of this source tree: a digest for them is knowable
+// at the commit that records it, and rotating it is a normal edit. This
+// constant names THIS binary's own image. Its digest is a function of the
+// built image, which contains this constant — so the digest of the image a
+// given commit produces cannot be written into that same commit. A digest
+// pin here could only ever name the PREVIOUS release, which would permanently
+// hard-code the very version skew that docs/operations.md's lockstep
+// requirement forbids, instead of merely risking it.
+//
+// The exposure that pins the two siblings — a mutable tag lets a registry
+// compromise execute code in every pod fleet-wide — DOES apply here, and is
+// arguably sharper: this image's init container installs the ucd-sh binary
+// that every subsequent step in the job container then execs. The exposure is
+// accepted at the default and mitigated by configuration, not by pinning:
+// operators who need it closed should set `shimImage` explicitly to the
+// digest of the k8s-agent image they actually deployed (which they know, and
+// which is by construction the lockstep-correct value). See
+// docs/kubernetes-integration.md's "Shim image" section.
+//
+// Making the field REQUIRED was considered and rejected: it would break every
+// existing deployment on upgrade to force a value that is mechanically
+// derivable from the agent's own image.
+//
+// The resolution that satisfies both lockstep and immutability is a
+// version-derived default (":" + the agent's build version, falling back to
+// ":latest" for dev builds), which needs no digest and so has no circularity.
+// It is blocked on the agent binary carrying a real version at all: no
+// Dockerfile passes -ldflags today, so every containerised agent reports
+// "dev". That is tracked as a separate defect; when it is fixed, this
+// constant should become version-derived.
+//
+// NOTE ON WHAT :latest MEANS TODAY: measured 2026-08-03, this tag resolves
+// byte-identically to :v0.3.0, because the v0.4.0 release run never applied
+// any tag (see the release-docker.yml `verify` job comment). Until the
+// operator re-pushes a release tag, a k8s-agent at HEAD running shipped
+// defaults injects a v0.3.0 shim.
 const defaultShimImage = "ghcr.io/eirueimi/unified-cd-k8s-agent:latest"
 
 // defaultPodImage is the default value of Config.PodImage: the fleet-wide

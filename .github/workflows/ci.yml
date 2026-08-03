@@ -38,6 +38,45 @@ jobs:
         run: |
           go test ./... -race -count=1
 
+  # Build the k8s-agent image on every PR.
+  #
+  # No release Dockerfile was exercised in PR CI, so a commit could break an
+  # image build and only fail 13 days later at `v*` tag time. That is exactly
+  # how v0.4.0 was lost: `cmd/k8s-agent` transitively imports
+  # internal/shim/embedded, whose embed_amd64.go `//go:embed ucd-sh-amd64`
+  # needs a file that was not tracked in git at that tag, so both k8s-agent
+  # legs failed with "pattern ucd-sh-amd64: no matching files found". The
+  # eight other legs passed, the tag-applying `merge` job was skipped, and no
+  # image was published for any of the five images.
+  #
+  # k8s-agent is the cheapest sufficient guard rather than an arbitrary pick:
+  # it is the image that broke, and it is a `go build` of the package graph
+  # that contains the embed. agent.Dockerfile depends on the same committed
+  # ucd-sh-<arch> bytes, so building it too would catch the same class twice
+  # for double the minutes; controller.Dockerfile (npm + vite + Go) is the
+  # expensive one and is deliberately not built here.
+  #
+  # Cost: single-arch, no push, with a layer cache. ~1-2 min, and it runs in
+  # parallel with the four jobs above - all of which are longer (the k8s job
+  # alone starts a kind cluster and allows a 10m test timeout), so this does
+  # not extend wall-clock CI.
+  image-build:
+    name: Image build (k8s-agent)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build the k8s-agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/k8s-agent.Dockerfile
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   k8s:
     name: Kubernetes integration tests
     runs-on: ubuntu-latest

@@ -383,9 +383,12 @@ podImage: alpine:3.19
 # Omit to use InClusterConfig (when running inside the cluster)
 # or ~/.kube/config (when running outside)
 
-# Artifact-transfer sidecar injected into every job/scope Pod
-# (default: ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest)
-sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest
+# Artifact-transfer sidecar injected into every job/scope Pod. The default is
+# digest-pinned — the tag is kept for readability, but the digest is what is
+# pulled. Keep the digest when overriding this; a bare mutable tag would let a
+# registry compromise run code in a sidecar that holds S3 credentials, on every
+# Pod in the fleet.
+sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest@sha256:5e30d747d7ec954a88d84f4f7a8b5ac5c4b69d152555b80e253e7a0938eb14dd
 
 # Name of a Secret carrying UNIFIED_S3_* env for the sidecar. Enables
 # cache/artifact transfers; when unset, cache steps are no-ops (reported
@@ -447,7 +450,7 @@ podTemplates:
 | `labels` | []string | No | — | Agent labels matched against a Job's `agentSelector` |
 | `namespace` | string | No | `default` | Namespace the agent creates job/scope Pods in |
 | `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Fallback job-container image when no `podTemplate` is referenced. Bash-less/sh-less images work (`alpine`, busybox-based) — steps exec via the injected `ucd-sh` shim by default, not a shell the image must provide. Truly empty images (`scratch`, distroless-static) cannot run steps on the k8s agent: env application prepends the `env` binary, which they lack (exit 127). See [Job Reference: Shell (`shell:`)](jobs.md#shell-shell). |
-| `shimImage` | string | No | `ghcr.io/eirueimi/unified-cd-k8s-agent:latest` | Image the prepended `ucd-shim` init container runs to install the `ucd-sh` shim onto the shared `/.ucd` `emptyDir`. Override for air-gapped registries mirroring the k8s-agent image under another name. |
+| `shimImage` | string | No | `ghcr.io/eirueimi/unified-cd-k8s-agent:latest` | Image the prepended `ucd-shim` init container runs to install the `ucd-sh` shim onto the shared `/.ucd` `emptyDir`. Override for air-gapped registries mirroring the k8s-agent image under another name. **Unlike `sidecarImage`/`podImage` the default is a floating tag, not digest-pinned — in production set this to the digest of the k8s-agent image you actually deployed. See [kubernetes-integration.md](kubernetes-integration.md#shim-image-pin-it-in-production).** |
 | `sidecarImage` | string | No | `ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest` | Artifact-transfer sidecar image injected into every job/scope Pod |
 | `sidecarS3SecretName` | string | No | — | Secret carrying `UNIFIED_S3_*` for the sidecar. Without it, cache steps are no-ops (Succeeded) and artifact steps fail |
 | `kubeconfig` | string | No | in-cluster / `~/.kube/config` | Path to a kubeconfig; omit to use `InClusterConfig` (in cluster) or `~/.kube/config` (out of cluster) |

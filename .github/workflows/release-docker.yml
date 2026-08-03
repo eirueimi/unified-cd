@@ -110,3 +110,74 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: docker buildx imagetools inspect "ghcr.io/eirueimi/unified-cd-${{ matrix.image }}:$TAG"
+
+  # Terminal guard: assert that the release actually released.
+  #
+  # `merge` is `needs: build`, so a SINGLE failed build leg skips all five
+  # merge jobs and no tag moves for ANY image — including images whose own
+  # legs built and pushed fine. That is not a hypothetical: the v0.4.0 run
+  # lost only the two k8s-agent legs, the other eight succeeded, all five
+  # merges were skipped, and the release silently did not happen. Nothing
+  # said so loudly enough to be noticed for 13 days, during which `:latest`
+  # still meant v0.3.0.
+  #
+  # The `needs: build` gate itself is deliberate and correct - a failed build
+  # must never move a tag. What was missing is a step that states the outcome
+  # in the run's own terms, and that verifies the promise README.md makes
+  # ("Images are published to GitHub Container Registry on every `v*` tag")
+  # against the registry rather than against job status alone.
+  verify:
+    name: Verify release tags were applied
+    runs-on: ubuntu-latest
+    needs: [build, merge]
+    # Must run even when `build` failed and `merge` was skipped - that is
+    # precisely the case this job exists to report.
+    if: always()
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Assert the merge matrix ran and succeeded
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          MERGE_RESULT: ${{ needs.merge.result }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "build=$BUILD_RESULT merge=$MERGE_RESULT tag=$TAG"
+          if [ "$MERGE_RESULT" != "success" ]; then
+            echo "::error title=Release incomplete::merge was '$MERGE_RESULT' (build was '$BUILD_RESULT'), so NO image tags were applied for $TAG. Every image is affected, including those whose build legs succeeded. ':latest' still points at the previous release. Fix the build failure and re-push the tag."
+            exit 1
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assert every image resolves at the release tag
+        env:
+          TAG: ${{ github.ref_name }}
+        # Belt-and-braces over the job-status check above: confirms the tag is
+        # actually resolvable in the registry for all five images, which is the
+        # promise README.md makes. Catches a merge that reported success but
+        # left a tag unset, which job status alone cannot detect.
+        run: |
+          set -uo pipefail
+          missing=()
+          for image in controller agent k8s-agent runner artifact-sidecar; do
+            ref="ghcr.io/eirueimi/unified-cd-${image}:${TAG}"
+            if docker manifest inspect "$ref" >/dev/null 2>&1; then
+              echo "ok      $ref"
+            else
+              echo "MISSING $ref"
+              missing+=("$ref")
+            fi
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error title=Release tags missing::${#missing[@]} of 5 images have no ${TAG} tag: ${missing[*]}"
+            exit 1
+          fi
+          echo "All 5 images published at ${TAG}."
