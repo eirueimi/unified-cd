@@ -28,16 +28,22 @@ three as **results about the product**, which is what they are.
 
 ## Captures
 
-All four are code surveys, held in the session scratchpad and archived at the W5
-checkpoint under `edgecase-evidence/w5/w5-1/` (the path every citation below and
-in `FINDINGS.md` uses):
+All **five** are code surveys, held in the session scratchpad and archived at
+the W5 checkpoint under `edgecase-evidence/w5/w5-1/` (the path every citation
+below and in `FINDINGS.md` uses). **This list said "four" and tabled four until
+the W5 checkpoint's inconsistency hunt: `ha-restart-enumeration.txt` was cited
+at §Step 5 below and by `FINDINGS.md:2988` and was missing from its own
+enumeration — the exact failure mode this campaign keeps re-earning, that an
+enumeration which does not reconcile against its own citations is the only
+cheap way to catch a missing member.**
 
 | File | What it is |
 |---|---|
 | `migration-sweep.txt` | the destructive-operation regex over **all 17** `*.up.sql`, untruncated, 256 lines |
-| `docs-compat-survey.txt` | the `docs/` compatibility survey with its hit count, untruncated |
+| `docs-compat-survey.txt` | the `docs/` compatibility survey with its hit count, untruncated (27 hits) |
 | `sentinels-per-tag.txt` | `schemaSentinels` extracted from every git tag **and** HEAD |
 | `v030-dropped-column-refs.txt` | v0.3.0's `internal/store` references to columns 015/016 drop |
+| `ha-restart-enumeration.txt` | the `restart:` grep over `test/ha/` (2 hits) **plus** the service enumeration of `docker-compose.ha.yaml` (10 services, 2 volumes) that turns "no `restart:` policy on the controllers" from an assertion into a count — backs `FINDINGS.md:2988` |
 
 ---
 
@@ -46,7 +52,10 @@ in `FINDINGS.md` uses):
 Seven consecutive waves have had a plan's "verified code facts" corrected by
 execution, with the pattern that `file:line` claims hold and *mechanism* claims
 fail. **This task is pure reading, so checking those claims IS the task.** The
-pattern held an eighth time, and in exactly that shape: **every `file:line` in
+pattern held a **seventh** time — the checkpoint series is the authoritative
+counter (`FINDINGS.md:2908` is the sixth, W5 is the seventh); an earlier
+version of this line said "eighth" and disagreed with `w5-2-mixed-agent.md:609`
+for no reason — and in exactly that shape: **every `file:line` in
 the plan resolved to what the plan said was there. Three counts and one
 mechanism did not.**
 

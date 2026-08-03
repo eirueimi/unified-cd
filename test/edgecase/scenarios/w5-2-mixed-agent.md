@@ -677,3 +677,32 @@ job spec in a `jobs-apply`/`trigger` capture that decodes to
 `{"Steps": [{"If": …`, not a token. The two `client-key-data` hits are
 `edgecase-evidence/README.md`'s own prose describing the sweep. W6's narrower
 "0 JWT-shaped strings" claim stands; this wave adds nothing to scrub.
+
+---
+
+## Findings filed
+
+**ADDED AT THE W5 CHECKPOINT, AND ITS ABSENCE WAS THIS WAVE'S WORST
+DOCUMENTATION DEFECT.** `FINDINGS.md:2945` made this table a merge gate for the
+next wave, on the ground that its Severity column is the only mechanical check
+for band drift between a runbook and `FINDINGS.md`. W5-2 is that next wave and
+shipped with no table at all — not even a prose list, and not one
+`FINDINGS.md:NNNN` anchor for any of its five entries. Nothing was wrong when
+reconciled by hand at the checkpoint, which is the point: the gate would have
+been free and its absence was invisible from inside the runbook.
+
+| # | `FINDINGS.md` | Kind | Severity | Subject |
+|---|---|---|---|---|
+| 1 | `:3004` | **violation** (`docs/jobs.md:1305-1331`) | **major** *(filed critical, re-banded down at review on `:6-8`'s own text)* | a v0.4.0 agent silently ignores `downloadArtifact.runId` and downloads the current run's artefact; all steps and the run `Succeeded`; measured against a HEAD-agent control on the same job text |
+| 2 | `:3026` | **violation** (`docs/jobs.md:734`, `:738`) | minor | a `detached: true` job only a v0.4.0 agent can claim sits `Queued` with no state transition for the 317 s observed, while `:734` promises "Every agent" hosts detached runs and `:738`'s cause list omits "agent older than the controller" |
+| 3 | `:3035` | **observation** | minor (observation) | the moved `call:` child-run endpoint is a clean N-1 break — 401, parent `Failed` in 0.48 s, `after_call` `Skipped`, **zero** child runs and **zero** links; the plan's orphan/hang hypotheses are refuted and what is left is one diagnostic string |
+| 4 | `:3046` | **violation** (`README.md:36`) | **major** *(reclassified at review out of the campaign-asset bucket, which it was never in scope for)* | no `v0.4.0` container image exists for any of the five images — one matrix leg failed and the tag-applying job is `needs: build` — so every `:latest` still resolves to v0.3.0 |
+| 5 | `:3061` | **observation** | minor (observation) | every containerised agent reports `"version": "dev"`, v0.4.0 and HEAD alike, because no Dockerfile passes `-ldflags` |
+
+**Tally: 3 violations (2 major, 1 minor) + 2 observations (both minor).** Every
+entry states which side ran which version, per the wave plan's Step 7. **No
+entry cites an invariant**: I4 has no artefact-provenance clause, I7's subject
+is statuses rather than workspace contents, and I1 is satisfied everywhere —
+so all three violations stand on the documented-contract limb, and the I4 gap
+is filed as the campaign's third invariant-set coverage gap of its kind at
+`FINDINGS.md:3006`.

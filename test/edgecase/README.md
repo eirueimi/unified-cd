@@ -1096,7 +1096,11 @@ Every `*.payload.json` is the pre-encoded `{"yaml":"..."}` body for
 dsl.Spec` (verified live during W2-6): the jobs handler unmarshals the body into
 `dsl.Spec`, which has no `cron`/`job` fields. `POST /api/v1/schedules` accepts it
 and returns `200` with the schedule JSON. All the *job* fixtures are
-`agentSelector: [kind:linux]`, and all are `native: true` **except
+`agentSelector: [kind:linux]` **except the four W5 `…-old` fixtures, which carry
+`kind:old` and are claimable only by the v0.4.0 `agentold` service — the blanket
+claim stood here until the W5 checkpoint and was false from the moment W5-2
+landed** (`w5-consumer-old`, `w5-call-parent-old`, `w5-detached-old`,
+`w5-oldtick`); and all are `native: true` **except
 `podcap-job.payload.json`**, which carries a Kubernetes-only `podTemplate` so
 its inferred capability is `pod` (see the table).
 
@@ -1127,6 +1131,11 @@ its inferred capability is `pod` (see the table).
 | `w4-reuse.payload.json` | `edge-w4-reuse` | the **`podTemplate.reuse`** fixture — nothing else in the repo exercises it. Prints `hostname` and reads/writes a `/workspace` marker, so reuse is observable two ways. Verified: three runs, one pod, marker carried across all three |
 | `w4-longpod.payload.json` | `edge-w4-longpod` | 120 s of 1 Hz self-indexing ticks in a pod — the fixture for anything that must act on a run **while** its pod is alive (pod deletion, partition, podStartTimeout) |
 | `w6-trickle.payload.json` | `edge-w6-trickle` | the **slow-trickle** fixture (W6-S2b Arm 1): params `lines` (default 600) and `interval_s` (default 1), so 10 minutes at 1 line/s out of the box. Deliberately on the sparse side of `LogPusher`'s 4 KiB `flushBytes` threshold, so **every** flush is a 2 s timer flush and pending grows by exactly one batch per tick — the quadratic regime, which by construction **never drops** (the 1 MiB cap counts line text only, so the ceiling is tens of thousands of batches). **Do not use it to look for the drop marker**; that needs the chatty `logburst` and is a different arm |
+| `w5-producer.payload.json` | `edge-w5-producer` | the W5-2 artefact **producer**: publishes `w5payload` whose `marker.txt` carries `W5-ARTIFACT-SOURCE=producer` and a distinct nonce. `kind:linux`, so a HEAD agent runs it |
+| `w5-consumer-old.payload.json` / `w5-consumer-head.payload.json` | `edge-w5-consumer-old` / `-head` | the W5-2 Part A **pair**, and the shape any future version-skew scenario should copy: identical byte-for-byte except `metadata.name` and `agentSelector` (`kind:old` vs `kind:linux`). Each publishes its **own** artefact under the **same name** `w5payload` first, clears the workspace, then downloads with `runId:` — so the read-out discriminates *ignored the field* from *nothing was there*, which the naive shape cannot |
+| `w5-call-parent-old.payload.json` / `w5-call-child.payload.json` | `edge-w5-call-parent-old` / `-child` | W5-2 Part B: a `call:` parent pinned to `kind:old`, and a child pinned to `kind:linux` **so that a child, had one been created, would have been claimable and its fate observable** rather than merely pending. Zero were created |
+| `w5-detached-old.payload.json` / `w5-detached-head.payload.json` | `edge-w5-detached-old` / `-head` | W5-2 Part C: `spec.detached: true`, the same two-line selector split. The `-head` arm is the 6 s control the 317 s `Queued` observation is measured against |
+| `w5-oldtick.payload.json` | `edge-w5-oldtick` | the W5-2 **baseline gate** — a trivial job on `kind:old`, i.e. the v0.4.0 agent enrolls, claims and runs to `Succeeded` against HEAD controllers. Step 3 of the runbook; if it fails the wave's executed half is blocked |
 | `w6-probe.payload.json` | `edge-w6-probe` | the **unclaimable** fixture for `tools/w6/w6-synth-agent.sh` — `agentSelector: [kind:w6synth]` matches neither `agent1` nor `agent2`, so the synthetic identity owns the run's whole lifecycle. Same shape and reason as `w35-probe` / `w36-probe`, with its own selector so a W6 instrument cannot collide with a re-run of either W3 scenario |
 
 **W4 fixture traps, both measured:** (1) `dsl.RequiredCaps` returns `pod` only
@@ -1176,9 +1185,10 @@ it is what every numeric claim in `FINDINGS.md` is derived from. See its own
 un-captured observations say so inline.
 
 **Directory layout, and the one resolution wrinkle.** W0 and W1 sit directly under
-the root (`w01/`, `w02/`, `w1/`, `w1-5/`, `w1-6/`). W2 and W3 each sit one level
-down, so a W3 entry's `w3-4/partB-dup.txt` resolves to
-`edgecase-evidence/w3/w3-4/partB-dup.txt`:
+the root (`w01/`, `w02/`, `w1/`, `w1-5/`, `w1-6/`). **W2, W3, W4, W5 and W6 each sit
+one level down** under `w2/`, `w3/`, `w4/`, `w5/` and `w6/`, so a W3 entry's
+`w3-4/partB-dup.txt` resolves to `edgecase-evidence/w3/w3-4/partB-dup.txt` and a W5
+entry's `w5-2/final-run-table.txt` to `edgecase-evidence/w5/w5-2/final-run-table.txt`:
 
 | Dir | Contents |
 |---|---|
@@ -1186,6 +1196,8 @@ down, so a W3 entry's `w3-4/partB-dup.txt` resolves to
 | `w3/w3-infra/` | the three `W3-infra` entries plus the Task 3 rig build-out (Garage, the S3 interposer, the 413, the sidecar and artifact-format probes, W3-4's archive re-run) |
 | `w6/w6-1/` | W6 Task 1, the harness build-out: one capture per harness verification, the 300 s idle-load statement log (12 MB, the wave's largest single file) and the connection-saturation captures behind the `W6-infra` entry. **Read its `NOTES.txt` first** — it flags one superseded analysis file that is kept as evidence of an analyser bug and whose numbers must not be used |
 | `w6/w6-1s/` | scenario **W6-1** (connection pressure). **The `w6-1/` vs `w6-1s/` split is deliberate and is not a naming trap**: `w6-1/` is Task 1's harness verification and backs the `W6-infra` entry, `w6-1s/` is the scenario. Eight citations distinguish them. Its `void/` subtree holds the seven voided/contaminated captures the `W6-1 (campaign asset)` entry enumerates, each with a `NOTE.txt` |
+| `w5/w5-1/` | the **W5-1 code-read audit**'s five surveys — the destructive-operation sweep over all 17 migrations, the `docs/` compatibility survey, `schemaSentinels` per git tag, v0.3.0's references to the dropped columns, and the `test/ha` `restart:` enumeration. **No rig, no container, no Postgres**: this is the campaign's only directory holding nothing but code surveys, and it was archived at the W5 checkpoint rather than at the task, which is why `FINDINGS.md:2962`'s citations pointed at an absent directory for a day |
+| `w5/w5-2/` | scenario **W5-2** (v0.4.0 agent against HEAD controllers), 40 files. Two of them are post-teardown and say so inside themselves: `step1-recapture-2026-08-03.txt` (GHCR/Actions queries, re-obtainable because they are not rig state) and `partA-controller-silence-coderead-2026-08-03.txt` (a code read standing in for controller logs `down -v` destroyed) |
 | `w6/w6-2a/` `w6/w6-2b/` `w6/w6-3/` | scenarios W6-2a, W6-2b and W6-3. **`w6-2b/` and `w6-3/` were originally archived at the evidence root's top level and were moved under `w6/` at the W6 checkpoint**, which cost exactly one citation edit (`FINDINGS.md:458`) because every other W6 citation is a bare relative name. Every statement log and nginx access log in these three is stored `.gz`; each reproduces its cited uncompressed name and line count under `gunzip -c` |
 
 W3 totals ~4.9 MB across those seven directories, all verified byte-identical
