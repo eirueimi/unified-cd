@@ -218,6 +218,20 @@ var logPusherAutoFlushEvery = 2 * time.Second
 // only caps the worst case on the write path. A var so tests can shrink it.
 var logPusherWriteFlushTimeout = 5 * time.Second
 
+// logPusherAutoFlushTimeout bounds a single auto-flush pass. StartAutoFlush
+// holds p.mu for the whole pass, and Write (and therefore the step's own
+// stdout pipe) blocks on that mutex, so an unbounded pass freezes the step
+// itself: against a controller that accepts connections and never answers,
+// each request runs to the HTTP client's 60s timeout and a single pass was
+// measured stalling a step for 176.3s. The value must sit comfortably above a
+// healthy round trip (milliseconds to a few hundred ms) and above the worst
+// single-request controller service time observed for an oversized bulk body
+// (~9.4s), so a slow-but-working flush is not abandoned; 15s does that while
+// capping the stall at roughly a tenth of the unbounded case. Abandoning a
+// pass costs latency, not lines: the backlog stays in p.pending, in order,
+// and the next tick resumes it. A var so tests can shrink it.
+var logPusherAutoFlushTimeout = 15 * time.Second
+
 // pendingBatch holds a batch of log requests that failed to send.
 type pendingBatch struct {
 	reqs []api.LogAppendRequest
@@ -278,8 +292,14 @@ func (p *LogPusher) StartAutoFlush(ctx context.Context, every time.Duration) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				// Bound the pass. The timeout is taken after the lock is
+				// acquired so a slow predecessor does not eat this pass's
+				// budget, and derives from ctx so step cancellation still
+				// propagates.
 				p.mu.Lock()
-				p.flushCompleteLinesLocked(ctx)
+				fctx, cancel := context.WithTimeout(ctx, logPusherAutoFlushTimeout)
+				p.flushCompleteLinesLocked(fctx)
+				cancel()
 				p.mu.Unlock()
 			}
 		}
@@ -294,7 +314,7 @@ func (p *LogPusher) flushCompleteLinesLocked(ctx context.Context) {
 	if i < 0 {
 		// No complete line yet; still retry previously failed batches.
 		if len(p.pending) > 0 {
-			p.flushPendingLocked(ctx)
+			_ = p.flushPendingLocked(ctx)
 		}
 		return
 	}
@@ -304,15 +324,23 @@ func (p *LogPusher) flushCompleteLinesLocked(ctx context.Context) {
 	p.buf.Write(tail)
 }
 
-// flushPendingLocked retries previously failed batches. Caller must hold p.mu.
-func (p *LogPusher) flushPendingLocked(ctx context.Context) {
-	var stillPending []pendingBatch
-	for _, b := range p.pending {
-		if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, b.reqs); err != nil {
-			stillPending = append(stillPending, b)
+// flushPendingLocked retries previously failed batches oldest-first and STOPS
+// AT THE FIRST FAILURE, returning false. Continuing past a failure is what
+// reorders a stored log: a fault that fails only some requests lets a newer
+// batch land while an older one is still queued, and the controller assigns
+// seq on arrival, so the stored order stops matching the emission order
+// permanently and for every reader. Aborting the pass keeps the backlog
+// contiguous and in order at the cost of head-of-line blocking, which is the
+// correct trade for an ordering guarantee. Caller must hold p.mu.
+func (p *LogPusher) flushPendingLocked(ctx context.Context) bool {
+	for len(p.pending) > 0 {
+		if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, p.pending[0].reqs); err != nil {
+			return false
 		}
+		p.pending = p.pending[1:]
 	}
-	p.pending = stillPending
+	p.pending = nil
+	return true
 }
 
 // Write writes bytes into the buffer and flushes if the buffer exceeds the threshold.
@@ -355,17 +383,23 @@ func (p *LogPusher) Flush(ctx context.Context) {
 // flushLocked flushes the buffer via the bulk API while holding the lock.
 // It retries pending batches first, then sends the current buffer.
 // Batches that fail to send are queued in pending and retried on the next flush.
+//
+// The pass aborts at the first failed batch (see flushPendingLocked) and the
+// current buffer is then queued BEHIND the backlog instead of being sent, so
+// nothing ever overtakes an older batch on the wire.
 func (p *LogPusher) flushLocked(ctx context.Context) {
-	// 1. Retry pending batches first
-	var stillPending []pendingBatch
-	for _, b := range p.pending {
-		if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, b.reqs); err != nil {
-			stillPending = append(stillPending, b)
-		}
-	}
-	p.pending = stillPending
+	// 1. Retry pending batches first, oldest-first, stopping at the first
+	//    failure so a later batch cannot overtake an earlier one.
+	drained := p.flushPendingLocked(ctx)
 
-	// 2. Flush the current buffer
+	// 2. Flush the current buffer. Note this runs even when the backlog did
+	//    NOT drain: the buffer is still emptied, just into p.pending rather
+	//    than onto the wire. Returning early here instead — leaving the lines
+	//    in p.buf — would preserve order too, but p.buf is unbounded, while
+	//    p.pending carries the maxPendingBytes cap, drop-oldest eviction and
+	//    the droppedLines accounting. Skipping the drain would therefore trade
+	//    a bounded, accounted 1MB backlog for unbounded agent memory growth
+	//    that lasts as long as the outage, and would silence the drop marker.
 	if p.buf.Len() > 0 {
 		chunk := p.buf.String()
 		p.buf.Reset()
@@ -387,7 +421,11 @@ func (p *LogPusher) flushLocked(ctx context.Context) {
 					Line:      maskedLine,
 				})
 			}
-			if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, reqs); err != nil {
+			if !drained {
+				// A batch older than this one is still queued; sending now
+				// would reorder the stored log.
+				p.appendPendingLocked(pendingBatch{reqs: reqs})
+			} else if err := p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, reqs); err != nil {
 				p.appendPendingLocked(pendingBatch{reqs: reqs})
 			}
 		}
