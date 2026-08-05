@@ -11,6 +11,7 @@ import (
 func NewRoot() *cobra.Command {
 	var configPath string
 	var serverOverride, tokenOverride string
+	var headerOverrides []string
 
 	root := &cobra.Command{
 		Use:     "unified-cli",
@@ -20,10 +21,14 @@ func NewRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&configPath, "config", "", "config file")
 	root.PersistentFlags().StringVar(&serverOverride, "server", "", "override server URL")
 	root.PersistentFlags().StringVar(&tokenOverride, "token", "", "override token")
+	root.PersistentFlags().StringArrayVarP(&headerOverrides, "header", "H", nil,
+		"extra \"Key: Value\" HTTP header sent to the server (repeatable; e.g. an IAP token in Proxy-Authorization)")
 
-	// resolve loads the config file and returns the configuration with env var and
-	// flag overrides applied. Precedence (highest first): flag > env var > config file.
-	resolve := func() (Config, error) {
+	// resolveWith loads the config file and applies env var and flag overrides.
+	// Precedence (highest first): flag > env var > config file. For headers,
+	// entries ACCUMULATE in that order (config, then $UNIFIED_HEADER, then
+	// flags), and later entries win for a repeated key at send time.
+	resolveWith := func(requireServer bool) (Config, error) {
 		path := configPath
 		if path == "" {
 			path = DefaultConfigPath()
@@ -33,10 +38,27 @@ func NewRoot() *cobra.Command {
 			return c, err
 		}
 		c = resolveConfig(c, os.Getenv("UNIFIED_SERVER"), os.Getenv("UNIFIED_TOKEN"), serverOverride, tokenOverride)
-		if c.Server == "" {
+		if h := os.Getenv("UNIFIED_HEADER"); h != "" {
+			c.Headers = append(c.Headers, h)
+		}
+		c.Headers = append(c.Headers, headerOverrides...)
+		if requireServer && c.Server == "" {
 			return c, fmt.Errorf("server URL is not set; use --server flag or set 'server' in config file")
 		}
 		return c, nil
+	}
+	resolve := func() (Config, error) { return resolveWith(true) }
+
+	// Install the extra-header transport once, before any command runs. Done
+	// leniently (no server required — e.g. `login`, `keygen`) and scoped to the
+	// server host inside installHeaderTransport, so a bad header value surfaces
+	// early and headers never leak to other hosts.
+	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		c, err := resolveWith(false)
+		if err != nil {
+			return err
+		}
+		return installHeaderTransport(c)
 	}
 
 	root.AddCommand(newApplyCmd(resolve))

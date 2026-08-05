@@ -13,6 +13,12 @@ import (
 type Config struct {
 	Server string `yaml:"server"`
 	Token  string `yaml:"token"`
+	// Headers are extra HTTP headers ("Key: Value") added to every request to
+	// Server — e.g. an IAP identity token in "Proxy-Authorization" when the
+	// controller sits behind an identity-aware proxy. Applied only to requests
+	// whose host matches Server, so they never leak to the OIDC issuer during
+	// `login`. `--header`/`-H` and $UNIFIED_HEADER add to this list.
+	Headers []string `yaml:"headers,omitempty"`
 }
 
 // LoadConfig reads configuration from a YAML file at the given path.
