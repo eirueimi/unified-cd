@@ -6,7 +6,7 @@ This guide covers what operators need to run unified-cd day to day: where state 
 
 ## State Layout
 
-unified-cd's controller is stateless; all durable state lives in two external stores (see the [README architecture diagram](../README.md#architecture) and `docker-compose.yaml`'s `UNIFIED_DB_DSN`/`UNIFIED_S3_*` env vars):
+unified-cd's controller is stateless; all durable state lives in two external stores (see the [README architecture diagram](https://github.com/eirueimi/unified-cd/blob/main/README.md#architecture) and `docker-compose.yaml`'s `UNIFIED_DB_DSN`/`UNIFIED_S3_*` env vars):
 
 | Store | Contents |
 |---|---|
@@ -36,11 +36,11 @@ Back up with `pg_dump` on a regular schedule:
 docker compose exec -T postgres pg_dump -U unified unified > unified-cd-backup.sql
 ```
 
-(Verified in the dev stack: `docker compose exec -T postgres pg_dump --version` reports `pg_dump (PostgreSQL) 16.14`.) Restore into a fresh `unified` database with `psql` before starting the controller — the migration chain is idempotent and replays forward from whatever version the dump is on, so restoring an older dump and letting the controller migrate forward on next startup is expected to work. Two caveats, both covered under [Upgrades](#upgrades): migrations are **not** all additive, so a dump on migration `014` or earlier loses **every secret and every session** when it is migrated forward; and a dump that **predates the migrations-001-017 squash** is not migrated at all (see the Upgrades exception below and [Troubleshooting](troubleshooting.md#controller-fails-with-column--does-not-exist-after-upgrading)).
+(Verified in the dev stack: `docker compose exec -T postgres pg_dump --version` reports `pg_dump (PostgreSQL) 16.14`.) Restore into a fresh `unified` database with `psql` before starting the controller — the migration chain is idempotent and replays forward from whatever version the dump is on, so restoring an older dump and letting the controller migrate forward on next startup is expected to work. Two caveats, both covered under [Upgrades](#upgrades): migrations are **not** all additive, so a dump on migration `014` or earlier loses **every secret and every session** when it is migrated forward; and a dump that **predates the migrations-001-017 squash** is not migrated at all (see the Upgrades exception below and [Troubleshooting](troubleshooting.md#schema-drift-migration-renumbering)).
 
 ### S3 / object store
 
-Artifacts, cache entries, and log archives live in the configured bucket. Use your S3 provider's bucket versioning and/or cross-region replication for durability — unified-cd itself does not replicate object data. For Garage in production, run distributed mode with `replication_factor >= 2` (see [High Availability Guide](high-availability.md#s3--object-store)).
+Artifacts, cache entries, and log archives live in the configured bucket. Use your S3 provider's bucket versioning and/or cross-region replication for durability — unified-cd itself does not replicate object data. For Garage in production, run distributed mode with `replication_factor >= 2` (see [High Availability Guide](high-availability.md#s3-object-store)).
 
 **Streaming uploads.** Artifact and cache uploads are streamed end-to-end (tar+zstd is produced and sent incrementally) rather than buffered whole in RAM, so the agent's peak memory during an upload is bounded — a compression window plus one object-store multipart part — instead of scaling with the archive size; large artifacts and caches no longer risk OOMing the agent. The agent→controller artifact PUT uses chunked transfer-encoding (no `Content-Length`), so a length-sensitive proxy sitting in front of the controller must be configured to allow chunked request bodies. Trade-off: because the upload body is streamed and not rewindable, a mid-upload network failure fails that upload outright rather than being transparently retried internally — the step's normal retry/`continueOnError` semantics still apply on top of that.
 
@@ -222,7 +222,7 @@ Upgrade order: **controller first, then agents.**
 
    **How far back this bites.** During a rolling deploy the exposure is to a controller **two releases behind (N-2), not N-1.** `v0.4.0` already embeds `001`–`016`, and `017` is purely additive, so a `v0.4.0` controller runs correctly against a schema migrated by the current tree. A `v0.3.0` controller embeds only `001`–`012` and would be running against `014`/`015`/`016`. Migrations `003` and `005` are not reachable from any released binary at all — `v0.0.1` already embeds `001`–`007`. So: **rolling one release forward is safe; running binaries more than one release apart against a shared database is not supported.** Before any upgrade that spans more than one release, take the controllers down rather than rolling them.
 
-   **Exception:** a database provisioned before the migrations-001-017 squash (commit `79c1074`) is **not** upgraded correctly by this automatic `migrate up` — the new migration chain's version numbering starts below where such a database already is, so the migration runner treats it as already up to date and silently applies nothing. This leaves newer columns/tables (e.g. `role`, `managed_resources`, `audit_logs`, `sync_status`) missing. See [Troubleshooting: `column "..." does not exist` after upgrading](troubleshooting.md#controller-fails-with-column--does-not-exist-after-upgrading) for the supported fresh-init/manual-bridge paths.
+   **Exception:** a database provisioned before the migrations-001-017 squash (commit `79c1074`) is **not** upgraded correctly by this automatic `migrate up` — the new migration chain's version numbering starts below where such a database already is, so the migration runner treats it as already up to date and silently applies nothing. This leaves newer columns/tables (e.g. `role`, `managed_resources`, `audit_logs`, `sync_status`) missing. See [Troubleshooting: `column "..." does not exist` after upgrading](troubleshooting.md#schema-drift-migration-renumbering) for the supported fresh-init/manual-bridge paths.
 2. **Agents** — upgrade standard agents after the controller is on the new version.
 3. **k8s-agent + sidecar image** — the k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. Pin `sidecarImage` in the k8s-agent config to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
 4. **Default runner/pause image digest pin** — see [Rotating the default runner/pause image digests](#rotating-the-default-runnerpause-image-digests) below. This step is easy to forget because the build succeeds either way; forgetting it just means agents keep pulling the old image forever.
@@ -373,7 +373,7 @@ histogram_quantile(0.95, sum(rate(unifiedcd_step_duration_seconds_bucket[1h])) b
 ```
 
 Ready-made Prometheus alerting rules for these metrics live in
-[`deployments/observability/prometheus-alerts.yaml`](../deployments/observability/prometheus-alerts.yaml)
+[`deployments/observability/prometheus-alerts.yaml`](https://github.com/eirueimi/unified-cd/blob/main/deployments/observability/prometheus-alerts.yaml)
 (no alive agents, queue backlog, high failure rate, collector errors).
 
 ---

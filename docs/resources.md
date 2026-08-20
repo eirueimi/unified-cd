@@ -217,7 +217,7 @@ JobTemplate lives in a git repository and is fetched at run creation via the
 inlining into the caller's run can honor; any other field is rejected at run
 creation (strict decode). Pointing `uses:` at a `kind: Job` fails with a
 conversion hint. See [Job Reference — uses:](jobs.md) for the full contract
-and [templates/README.md](../templates/README.md) for a ready-made collection.
+and [templates/README.md](https://github.com/eirueimi/unified-cd/blob/main/templates/README.md) for a ready-made collection.
 
 ```yaml
 apiVersion: unified-cd/v1

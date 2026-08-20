@@ -6,11 +6,11 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
 
 - [Job Structure](#job-structure)
 - [Metadata](#metadata)
-- [Parameters (inputs / outputs)](#parameters-inputs--outputs)
+- [Parameters (inputs / outputs)](#parameters-inputs-outputs)
 - [Steps](#steps)
   - [Shell Execution (`run`)](#shell-execution-run)
   - [Shell (`shell:`)](#shell-shell)
-  - [Step Dependencies (`needs`)](#step-dependencies-needs)
+  - [Step Dependencies (`needs`)](#concurrent-steps-parallel)
   - [Conditional Execution (`if`)](#conditional-execution-if)
   - [Environment Variables (`env`)](#environment-variables-env)
   - [Step Outputs](#step-outputs)
@@ -28,8 +28,8 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
   - [Migrating a `kind: Job` template](#migrating-a-kind-job-template)
 - [Job Isolation: `native` and the claim pod](#job-isolation-native-and-the-claim-pod)
   - [Sidecar container logs](#sidecar-container-logs)
-  - [`container:` — targeting a podTemplate container](#container--targeting-a-podtemplate-container)
-  - [`native: true` — host-process jobs](#native-true--host-process-jobs)
+  - [`container:` — targeting a podTemplate container](#container-targeting-a-podtemplate-container)
+  - [`native: true` — host-process jobs](#native-true-host-process-jobs)
 - [Uses-level `runsIn.image` (scope)](#uses-level-runsinimage-scope)
 - [Artifacts](#artifacts)
 - [Cache](#cache)
@@ -259,7 +259,7 @@ actually contains.
 | 1 | `post.shell` | A `post:` hook may declare its own `shell:`; when absent, it **inherits its owning step's effective shell** (not the job default). This exists because inheritance alone breaks down for non-shell interpreters — a `shell: [python3, -c]` step with a shell-script cleanup hook needs `post: {shell: [sh, -c], run: ...}` to be expressible at all. |
 | 2 | A `uses:` template's own declared shell | A template step's own `shell:` survives inlining as-is; a template-level `spec.shell` is stamped onto every inlined step that doesn't already declare one, at expansion time. The caller of the `uses:` step **cannot override either** — the template author chose it because the script needs it. A template that declares neither inherits the caller's job-level default, resolved at claim-build time. |
 | 3 | `spec.shell` (job-level) | Applies to every step in the job that doesn't declare its own `shell:` (or wasn't stamped by a `uses:` template). |
-| 4 (lowest) | System default | `["/.ucd/ucd-sh", "-c"]` for container execution (any job that isn't `native: true`); host `bash -lc` (Git Bash on Windows) for `native: true` steps — unchanged in v1 (see [Non-goals](#native-true--host-process-jobs)). |
+| 4 (lowest) | System default | `["/.ucd/ucd-sh", "-c"]` for container execution (any job that isn't `native: true`); host `bash -lc` (Git Bash on Windows) for `native: true` steps — unchanged in v1 (see [Non-goals](#native-true-host-process-jobs)). |
 
 Two special cases fall outside the table above:
 
@@ -781,7 +781,7 @@ schema](#the-jobtemplate-schema) below). Its steps are inlined at the point of
 `uses`, and a non-scope template's `podTemplate` containers/volumes are merged
 into the caller's pod (see [Pod-shape merge](#pod-shape-merge-containers-and-volumes)).
 
-For private repositories, create a [GitCredential](#gitcredential-resource) resource for the host.
+For private repositories, create a [GitCredential](resources.md#gitcredential) resource for the host.
 
 `uses:` steps are resolved everywhere steps can appear, including inside
 [`finally:`](#finally-block-finally) — a `uses:` step in a `finally:` block is
@@ -1661,7 +1661,7 @@ spec:
 
 Use `container:` in a step to target a specific container (see
 [`container:` — targeting a podTemplate
-container](#container--targeting-a-podtemplate-container)).
+container](#container-targeting-a-podtemplate-container)).
 
 ```yaml
 steps:

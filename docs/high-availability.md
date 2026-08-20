@@ -507,7 +507,7 @@ docker compose up -d --scale controller=3
 
 > The repo-root `docker-compose.yaml` is for development (source build with hot
 > reload) and exposes fixed ports. For a published-image stack see
-> [`deployments/docker/docker-compose.yaml`](../deployments/docker/docker-compose.yaml).
+> [`deployments/docker/docker-compose.yaml`](https://github.com/eirueimi/unified-cd/blob/main/deployments/docker/docker-compose.yaml).
 > For HA, remove the `ports` from the controller service and put a reverse proxy (nginx etc.) in front.
 
 ### Kubernetes (conceptual example)

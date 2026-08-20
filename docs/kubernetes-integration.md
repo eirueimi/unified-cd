@@ -59,7 +59,7 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   agents) via `agentSelector`.
 - **Drain window** — on shutdown (SIGTERM/rollout) the k8s agent stops claiming immediately
   but lets in-flight runs keep going, same as the standard agent's `--drain-timeout`; see
-  [Resilience & concurrency](#resilience--concurrency) below. Any run still in flight when the
+  [Resilience & concurrency](#resilience-concurrency) below. Any run still in flight when the
   Pod is actually killed (drain window elapsed, or the process was force-killed) is recovered
   by the startup reconcile / stuck-run reaper on the next agent start.
 

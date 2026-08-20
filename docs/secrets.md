@@ -451,7 +451,7 @@ UNIFIED_VAULT_AUTH=kubernetes
 UNIFIED_VAULT_AUTH_PARAM=role=unified-cd
 ```
 
-See also [High Availability Guide: Vault / OpenBao](high-availability.md#vault--openbao-when-unified_kms_uri-is-used)
+See also [High Availability Guide: Vault / OpenBao](high-availability.md#vault-openbao-when-unified_kms_uri-is-used)
 for what changes when Vault runs in HA.
 
 ---

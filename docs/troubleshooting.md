@@ -489,7 +489,7 @@ step referencing `out/report.txt` relative to the workspace root instead of
 - Artifact/cache paths must be **workspace-relative**: an absolute `path:`/
   `destDir:` (or one that escapes the workspace via `..`) is now rejected
   outright — see [Step fails with `artifact/cache path ... escapes the
-  workspace`](#step-fails-with-artifactcache-path--escapes-the-workspace). Have
+  workspace`](#step-fails-with-artifactcache-path-escapes-the-workspace). Have
   the producing step write the file inside the workspace instead.
 - See [Job Reference: Artifacts](jobs.md#artifacts) for the full path
   resolution rules.
@@ -647,8 +647,8 @@ agent.
 - Fix the typo in the step's `container:` field, or
 - Remove `container:` from the step to use the primary container instead.
 
-See [Job Reference — `container:`](jobs.md#container--targeting-a-podtemplate-container)
-and [`ValidateContainerReferences`](../internal/dsl/container.go).
+See [Job Reference — `container:`](jobs.md#container-targeting-a-podtemplate-container)
+and [`ValidateContainerReferences`](https://github.com/eirueimi/unified-cd/blob/main/internal/dsl/container.go).
 
 ## `podTemplate` container/volume name rejected as an invalid DNS-1123 label
 

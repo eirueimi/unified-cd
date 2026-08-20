@@ -12,7 +12,7 @@ Both the minimal non-SSO setup and the Dex-based OIDC SSO setup are described.
 
 - [Authentication Model Overview](#authentication-model-overview)
 - [Non-SSO Setup (Static Token)](#non-sso-setup-static-token)
-- [SSO Setup (OIDC / Dex)](#sso-setup-oidc--dex)
+- [SSO Setup (OIDC / Dex)](#sso-setup-oidc-dex)
 - [CLI Configuration Resolution Order](#cli-configuration-resolution-order)
 - [Troubleshooting](#troubleshooting)
 

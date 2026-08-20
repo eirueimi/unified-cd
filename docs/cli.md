@@ -8,7 +8,7 @@ Complete reference for the `unified-cli` command-line tool.
 - [apply](#apply)
 - [jobs](#jobs)
 - [run](#run)
-- [approve / reject](#approve--reject)
+- [approve / reject](#approve-reject)
 - [logs](#logs)
 - [secret](#secret)
 - [gitcredential](#gitcredential)
@@ -361,7 +361,7 @@ Lists the run's approval gates and their state
 [4]   step[4]       Pending
 ```
 
-Use [`approve` / `reject`](#approve--reject) (`unified-cli approve <run-id> <step-index>`)
+Use [`approve` / `reject`](#approve-reject) (`unified-cli approve <run-id> <step-index>`)
 to decide a pending gate.
 
 ### run delete

@@ -1,0 +1,83 @@
+site_name: unified-cd
+site_description: An open-source CI/CD tool (Jenkins alternative) written in Go.
+site_url: https://eirueimi.github.io/unified-cd/
+repo_url: https://github.com/eirueimi/unified-cd
+repo_name: eirueimi/unified-cd
+edit_uri: edit/main/docs/
+copyright: Licensed under the Apache License 2.0
+
+strict: true
+
+exclude_docs: |
+  superpowers/
+  requirements.txt
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - pymdownx.details
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Jobs: jobs.md
+  - Resources: resources.md
+  - Secrets: secrets.md
+  - Agents: agents.md
+  - Kubernetes Integration: kubernetes-integration.md
+  - Authentication: authentication.md
+  - Authorization: authorization.md
+  - High Availability: high-availability.md
+  - Operations: operations.md
+  - Audit Log: audit.md
+  - CLI Reference: cli.md
+  - Configuration Reference: configuration.md
+  - Field Reference: field-reference.md
+  - Migrations: migration-agent-id-scoped-credentials.md
+  - Frontend Development: frontend-development.md
+  - Troubleshooting: troubleshooting.md

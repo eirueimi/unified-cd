@@ -329,7 +329,7 @@ never match anything.
 **If no registered agent can satisfy a job's inferred capability and
 selector**, the run stays `Queued` indefinitely rather than failing — see
 [Job stays Queued / unschedulable
-warning](troubleshooting.md#job-stays-queued--unschedulable-warning) in the
+warning](troubleshooting.md#job-stays-queued-unschedulable-warning) in the
 Troubleshooting guide for how the Web UI surfaces this and how to fix it.
 
 ---
@@ -476,7 +476,7 @@ startup-time hard-fails so a misconfigured agent never silently degrades
 into a confusing per-step failure. **Native steps are unaffected**: a
 `native: true` job's steps still run as plain host processes under host
 `bash -lc` (or an explicit `shell:`), never touching `/.ucd` or the shim —
-see [Job Reference: `native: true`](jobs.md#native-true--host-process-jobs).
+see [Job Reference: `native: true`](jobs.md#native-true-host-process-jobs).
 
 #### Compose development builds
 
