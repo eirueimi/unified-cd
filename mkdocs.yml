@@ -84,7 +84,9 @@ plugins:
 nav:
   - Home: index.md
   - Getting Started:
+      - Installation: getting-started/installation.md
       - Quickstart: getting-started/quickstart.md
+      - Core Concepts: getting-started/concepts.md
   - User Guide:
       - Writing Jobs:
           - Overview: user-guide/writing-jobs/index.md
@@ -121,6 +123,7 @@ nav:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md
       - Field Reference: reference/field-reference.md
+      - JSON Schema and Editor Setup: reference/json-schema.md
   - Troubleshooting:
       - Symptom Index: troubleshooting/index.md
       - Runs and Scheduling: troubleshooting/runs-and-scheduling.md

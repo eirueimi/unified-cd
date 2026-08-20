@@ -454,6 +454,6 @@ The UI lets you:
 | Kubernetes pod-based agents | [Kubernetes Integration Guide](../operator-manual/kubernetes-integration.md) |
 | High availability and rolling deploys | [High Availability Guide](../operator-manual/high-availability.md) |
 | Frontend development | [Frontend Development Guide](../contributing/frontend-development.md) |
-| VS Code YAML completion extension | [VS Code Extension](https://github.com/eirueimi/unified-cd/blob/main/editors/vscode/README.md) |
+| JSON Schema and editor setup | [JSON Schema and Editor Setup](../reference/json-schema.md) |
 | Kubernetes install manifests | [Kubernetes Manifests](https://github.com/eirueimi/unified-cd/blob/main/manifests/README.md) |
 | Field-level schema reference (auto-generated) | [Field Reference](../reference/field-reference.md) |

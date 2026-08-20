@@ -6,7 +6,7 @@ This guide covers what operators need to run unified-cd day to day: where state 
 
 ## State Layout
 
-unified-cd's controller is stateless; all durable state lives in two external stores (see the [README architecture diagram](https://github.com/eirueimi/unified-cd/blob/main/README.md#architecture) and `docker-compose.yaml`'s `UNIFIED_DB_DSN`/`UNIFIED_S3_*` env vars):
+unified-cd's controller is stateless; all durable state lives in two external stores (see the [architecture diagram](../getting-started/concepts.md) and `docker-compose.yaml`'s `UNIFIED_DB_DSN`/`UNIFIED_S3_*` env vars):
 
 | Store | Contents |
 |---|---|
