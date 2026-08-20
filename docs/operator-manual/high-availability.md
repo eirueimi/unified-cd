@@ -334,7 +334,7 @@ Redundant controllers are not enough if PostgreSQL or S3 is a single point of fa
 - **Auto-unseal is a prerequisite for unattended HA** — without it, every node
   restart needs a manual unseal.
 
-See [Secrets Management Guide: Using Vault or OpenBao (Transit)](secrets.md#using-vault-or-openbao-transit)
+See [Secrets Management Guide: Using Vault or OpenBao (Transit)](../user-guide/secrets.md#using-vault-or-openbao-transit)
 for the policy and setup unified-cd itself requires.
 
 ---

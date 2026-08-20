@@ -293,7 +293,7 @@ distroless-static) can host the keep-alive and remain exec-able, but on the
 k8s exec path applies env by prepending the `env` binary, which those
 images lack (the step fails with exit 127). The host agent applies env via
 the container runtime and is unaffected. (See
-[Configuration Reference](configuration.md) for the `podImage`/`podTemplate`
+[Configuration Reference](reference/configuration.md) for the `podImage`/`podTemplate`
 implications.)
 
 **Verified interpreter constraints** — supported vs. not, and what to do
@@ -352,8 +352,8 @@ containers) and holds the `ucd-sh` binary. It is **reserved**: a
 `podTemplate` (or claim-pod container) that mounts something else over
 `/.ucd` is user error and fails loudly the first time the agent execs into
 that container. See [Kubernetes Integration: Step execution
-mechanism](kubernetes-integration.md#step-execution-mechanism) and [Agent
-Labels and Routing](agents.md) for how `/.ucd` is populated on each
+mechanism](operator-manual/kubernetes-integration.md#step-execution-mechanism) and [Agent
+Labels and Routing](operator-manual/agents.md) for how `/.ucd` is populated on each
 backend.
 
 ---
@@ -636,7 +636,7 @@ On the Kubernetes agent, combinations run sequentially within the Pod (the stand
 > **Upgrade note:** matrix support changed the agent claim wire format
 > (`ForeachKey`/`ForeachValue` were replaced by a `MatrixValues` map). There
 > is no backward-compatibility shim — see
-> [docs/agents.md](agents.md#matrix-wire-format-upgrade-note) for the
+> [docs/agents.md](operator-manual/agents.md#matrix-wire-format-upgrade-note) for the
 > upgrade requirement.
 
 ---
@@ -1124,7 +1124,7 @@ same as clicking a step filters to that step.
 - Sidecar logs are secret-masked the same way step logs are.
 - On the k8s-agent, the auto-injected artifact/cache sidecar (see
   [Kubernetes Integration Guide: Artifacts and
-  Cache](kubernetes-integration.md#artifacts-and-cache)) also gets its own
+  Cache](operator-manual/kubernetes-integration.md#artifacts-and-cache)) also gets its own
   entry in the Sidecars group (named `artifact`); its `exec` output used to
   be mixed into the first step's log stream and no longer is.
 
@@ -1185,7 +1185,7 @@ Rules, enforced at apply time:
   agent by capability: the controller infers `requiredCaps: [native]` for it
   at trigger time, and only an agent reporting the `native` capability can
   claim it — see [Capabilities and
-  routing](agents.md#capabilities-and-routing). **You do not need to
+  routing](operator-manual/agents.md#capabilities-and-routing). **You do not need to
   hand-write a k8s-excluding `agentSelector` for this** on a fully-upgraded
   fleet. This capability check is skipped only for a legacy agent that
   reports no capabilities at all (pre-upgrade binary); if such an agent is a
@@ -1396,7 +1396,7 @@ steps:
 The `path`, `key`, and `restoreKeys` strings support template expressions (e.g. `path: {{ .Params.working_dir }}/node_modules`, `key: go-vendor-{{ hashFile "go.sum" }}`). A `path` or `key` that fails to expand (or expands to empty) fails the step on both agents.
 On hit, the cached directory is restored before the step runs. On miss, the directory is saved after the run completes.
 
-Cache is now supported on the k8s agent (previously a silent no-op) with the same `key`/`restoreKeys`/`ttlDays` semantics — see [Kubernetes Integration: Artifacts and Cache](kubernetes-integration.md#artifacts-and-cache) for how transfers work and the required S3 credentials. Restore is best-effort (a miss or error never fails the step); save is deferred until the run's main stages complete.
+Cache is now supported on the k8s agent (previously a silent no-op) with the same `key`/`restoreKeys`/`ttlDays` semantics — see [Kubernetes Integration: Artifacts and Cache](operator-manual/kubernetes-integration.md#artifacts-and-cache) for how transfers work and the required S3 credentials. Restore is best-effort (a miss or error never fails the step); save is deferred until the run's main stages complete.
 
 ### Cache entries are namespaced per job
 
@@ -1510,7 +1510,7 @@ build one network-namespace-joined container per entry. A sidecar's
 `command`/`args` now match standard Kubernetes/OCI semantics on **both**
 backends: `command` overrides the image's `ENTRYPOINT` and `args` overrides
 its `CMD`. See [Kubernetes Integration Guide: Host container command/args
-semantics](kubernetes-integration.md#host-container-commandargs-semantics)
+semantics](operator-manual/kubernetes-integration.md#host-container-commandargs-semantics)
 for the full truth table and the per-runtime support matrix for the
 standard agent's `--entrypoint ""` clear (docker: verified; podman,
 nerdctl, wslc, Apple `container`: unverified). **On both backends**, the
@@ -1592,9 +1592,9 @@ host-runnable (plain `name`/`image`/`env`/`resources.limits` containers,
 `podTemplate` can run on **either** a standard agent or a k8s-agent with no
 hand-written selector required to make that work; a Kubernetes-only
 `podTemplate` is routed to a k8s-agent only. See [Capabilities and
-routing](agents.md#capabilities-and-routing) for the full model.
+routing](operator-manual/agents.md#capabilities-and-routing) for the full model.
 
-See the [Kubernetes Integration Guide](kubernetes-integration.md) for full details.
+See the [Kubernetes Integration Guide](operator-manual/kubernetes-integration.md) for full details.
 
 The example below uses a named agent-side template and an `override` patch,
 both of which always force Kubernetes regardless of `agentSelector` — so its
@@ -1924,7 +1924,7 @@ unified-cli secret set API_KEY_PROD "sk-..."
 unified-cli secret set slack-webhook-url "https://hooks.slack.com/services/..."
 ```
 
-See the [Secrets Management Guide](secrets.md) for the full encryption model.
+See the [Secrets Management Guide](user-guide/secrets.md) for the full encryption model.
 
 ---
 

@@ -2,31 +2,6 @@
 
 Complete reference for the `unified-cli` command-line tool.
 
-## Table of Contents
-
-- [Global Flags](#global-flags)
-- [apply](#apply)
-- [jobs](#jobs)
-- [run](#run)
-- [approve / reject](#approve-reject)
-- [logs](#logs)
-- [secret](#secret)
-- [gitcredential](#gitcredential)
-- [schedule](#schedule)
-- [token](#token)
-- [artifact](#artifact)
-- [export](#export)
-- [appsource](#appsource)
-- [webhook](#webhook)
-- [audit](#audit)
-- [login](#login)
-- [agent](#agent)
-- [Configuration precedence](#configuration-precedence)
-- [Configuration File](#configuration-file)
-- [Resource Kinds Accepted by apply](#resource-kinds-accepted-by-apply)
-
----
-
 ## Global Flags
 
 These flags apply to all subcommands.
@@ -466,7 +441,7 @@ read -s SECRET && echo -n "$SECRET" | unified-cli secret set DB_PASSWORD
 
 **Naming rules:** alphanumerics, underscores, and hyphens; must start with a letter or `_`.
 Hyphenated names (e.g. `slack-webhook-url`) work with both `{{ secrets.NAME }}` and
-`{{ .Secrets.NAME }}` template syntax — see [Secrets Management Guide](secrets.md).
+`{{ .Secrets.NAME }}` template syntax — see [Secrets Management Guide](../user-guide/secrets.md).
 
 ### secret list
 
@@ -527,7 +502,7 @@ unified-cli gitcredential delete github-bot
 
 ## schedule
 
-Manage [Schedules](resources.md#schedule). Create/update a schedule with
+Manage [Schedules](../resources.md#schedule). Create/update a schedule with
 `apply -f` (`kind: Schedule`); the commands below operate on existing ones.
 
 ### schedule list
@@ -685,7 +660,7 @@ unified-cli export -o ./exported/
 
 ## appsource
 
-Manage GitOps [AppSources](resources.md#appsource). Create/update an AppSource
+Manage GitOps [AppSources](../resources.md#appsource). Create/update an AppSource
 with `apply`; the commands below operate on existing ones.
 
 ### appsource sync
@@ -735,7 +710,7 @@ pruned by deletion).
 
 ## webhook
 
-Manage [WebhookReceivers](resources.md#webhookreceiver). Create/update a
+Manage [WebhookReceivers](../resources.md#webhookreceiver). Create/update a
 receiver with `apply -f` (`kind: WebhookReceiver`); the commands below
 operate on existing ones.
 
@@ -820,7 +795,7 @@ to stdout (Dex default: ~24 hours). Re-run `login` when your token expires. If t
 server has no SSO configured, `login` instead prompts for an existing PAT
 (see [`token create`](#token-create)) and stores that instead.
 
-See the [Authentication Guide](authentication.md) for full SSO setup details.
+See the [Authentication Guide](../operator-manual/authentication.md) for full SSO setup details.
 
 ---
 
@@ -829,7 +804,7 @@ See the [Authentication Guide](authentication.md) for full SSO setup details.
 Manage agents: issue enrollment credentials, and list, inspect, and monitor
 registered agents. The agent itself runs as a separate binary
 (`unified-cd-agent`), started directly or as a hand-configured system
-service — see [Agent Identity and Enrollment](agents.md#agent-identity-and-enrollment)
+service — see [Agent Identity and Enrollment](../operator-manual/agents.md#agent-identity-and-enrollment)
 and [Configuration Reference: Agent](configuration.md#agent) for how to run
 it. `--id` is optional; it defaults to the identity bound to a valid enrollment
 token or persisted credential. `--credential-file` always defaults to
@@ -838,7 +813,7 @@ token supplies the effective ID before local discovery. Without a token or
 `--id`, the agent discovers exactly one ID-scoped default credential; if
 multiple exist, select one explicitly with `--id` or `--credential-file`.
 The former shared `$HOME/.unified-cd/credential.json` path is ignored unless
-explicitly selected with `--credential-file`. See [the migration guide](migration-agent-id-scoped-credentials.md)
+explicitly selected with `--credential-file`. See [the migration guide](../operator-manual/migrations/agent-id-scoped-credentials.md)
 for existing installations.
 
 An explicit VM `--agent-id` must use lowercase ASCII letters and digits with
@@ -868,7 +843,7 @@ there is no separate install step. An enrolled agent's labels come from
 agent process's own `--labels` flag is ignored for every agent. Capabilities
 are not set at enrollment: the agent auto-detects and self-reports them
 (`native` always, plus `container` when it can reach a container runtime) on
-every registration — see [Capabilities and routing](agents.md#capabilities-and-routing).
+every registration — see [Capabilities and routing](../operator-manual/agents.md#capabilities-and-routing).
 
 By default (no `--output-file`), `enrollment create` prints the token to
 stdout once and embeds it inline in the suggested run command via

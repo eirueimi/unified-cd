@@ -2,23 +2,6 @@
 
 Complete reference for all environment variables, flags, and config files for the controller, agent, and k8s-agent.
 
-## Table of Contents
-
-- [Controller](#controller)
-  - [Flags](#controller-flags)
-  - [Environment Variables](#controller-environment-variables)
-  - [Config File](#controller-config-file)
-- [Agent](#agent)
-  - [Flags](#agent-flags)
-  - [Environment Variables](#agent-environment-variables)
-  - [Config File](#agent-config-file)
-- [K8s Agent](#k8s-agent)
-  - [Flags](#k8s-agent-flags)
-  - [Config File](#k8s-agent-config-file)
-- [Priority Order](#priority-order)
-
----
-
 ## Controller
 
 ### Controller Flags
@@ -76,11 +59,11 @@ unified-cd-controller [FLAGS]
 | `UNIFIED_OIDC_ISSUER` | No (SSO only) | OIDC issuer URL, e.g. `https://accounts.example.com` or `http://localhost:8080/dex` |
 | `UNIFIED_OIDC_ISSUER_INTERNAL` | No (SSO only) | Internal issuer URL for Docker/container scenarios where the public issuer URL is not reachable inside the container |
 | `UNIFIED_OIDC_EXTERNAL_URL` | No (SSO only) | External base URL for OIDC callbacks, e.g. `https://unified-cd.example.com`. Required when the controller is behind a reverse proxy with a different external URL. |
-| `UNIFIED_INSECURE_COOKIES` | No | When `true`, omits the `Secure` attribute from session cookies. Only for plain-HTTP deployments (see [Authentication](authentication.md)); leave unset (default `false`) whenever TLS is terminated anywhere in front of the controller. |
+| `UNIFIED_INSECURE_COOKIES` | No | When `true`, omits the `Secure` attribute from session cookies. Only for plain-HTTP deployments (see [Authentication](../operator-manual/authentication.md)); leave unset (default `false`) whenever TLS is terminated anywhere in front of the controller. |
 | `UNIFIED_OIDC_CLIENT_ID` | No (SSO only) | OIDC client ID for browser SSO (confidential client) |
 | `UNIFIED_OIDC_CLIENT_SECRET` | No (SSO only) | OIDC client secret |
 | `UNIFIED_OIDC_DEVICE_CLIENT_ID` | No (SSO only) | OIDC public client ID for CLI device flow. Falls back to `UNIFIED_OIDC_CLIENT_ID` if unset. |
-| `UNIFIED_AUDIT_RETENTION_DAYS` | No | Days to keep `audit_logs` rows before a leader-only background task deletes them. Default `90`. `0` = keep forever. See [docs/audit.md](audit.md). |
+| `UNIFIED_AUDIT_RETENTION_DAYS` | No | Days to keep `audit_logs` rows before a leader-only background task deletes them. Default `90`. `0` = keep forever. See [docs/audit.md](../operator-manual/audit.md). |
 | `UNIFIED_RUN_RETENTION_DAYS` | No | Days to keep terminal (Succeeded/Failed/Cancelled) runs. When a run expires, its database records **and** its object-store data (archived logs, artifacts) are deleted. `0` (default) keeps runs forever. Deletion is irreversible — an expired run can no longer be replayed, because `run replay` uses the run's stored spec snapshot. |
 | `UNIFIED_LOG_TRIM_DAYS` | No | Days after a run's logs are archived before its database log rows are deleted (tiered log storage). Reads (WebUI viewer, CLI, SSE) transparently switch to the archived `logs.ndjson` in the object store; the first view of a trimmed run pays one object fetch. `0` (default) never trims. Requires an object store; must be smaller than `--run-retention-days` when both are set (otherwise retention deletes runs before trimming would fire — the controller logs a warning). |
 
@@ -179,7 +162,7 @@ unified-cd-agent [FLAGS]
 ```
 
 `--pause-image` and `--runner-image` configure the standard agent's [claim
-pod](agents.md#job-isolation-on-the-standard-agent-claim-pod), built for
+pod](../operator-manual/agents.md#job-isolation-on-the-standard-agent-claim-pod), built for
 every isolated (non-`native`) job claim. They have no dedicated environment
 variable — set them via flag or the `pauseImage`/`runnerImage` config-file
 keys below.
@@ -265,8 +248,8 @@ owner-readable only and do not put either value in a command line. The
 controller, not this file, is authoritative for labels (fixed at enrollment
 time by an administrator). Capabilities are not configurable at all — the
 agent auto-detects and self-reports them on every registration; see
-[Capabilities and routing](agents.md#capabilities-and-routing). See
-[Migrating to ID-scoped agent credentials](migration-agent-id-scoped-credentials.md)
+[Capabilities and routing](../operator-manual/agents.md#capabilities-and-routing). See
+[Migrating to ID-scoped agent credentials](../operator-manual/migrations/agent-id-scoped-credentials.md)
 for the shared-path migration.
 
 VM IDs used with the default credential path must contain only lowercase ASCII
@@ -293,7 +276,7 @@ neither a disk preflight nor a directory GC applies there.
   anything and never fails the run it would have claimed. `0` (default)
   disables the check. This is an operational lever, not an error condition:
   pair it with disk-usage monitoring/alerting (see [Operations Guide:
-  Monitoring Points](operations.md#monitoring-points)) so an operator notices
+  Monitoring Points](../operator-manual/operations.md#monitoring-points)) so an operator notices
   *why* an agent stopped claiming.
 - **`workspaceRetentionDays`** (days) opt-in-enables a periodic sweep (hourly,
   plus once at startup) that removes per-job workspace directories
@@ -306,7 +289,7 @@ neither a disk preflight nor a directory GC applies there.
   and never removes a directory belonging to a currently-active run (cross-
   checked against that agent process's live in-flight claims). See
   [Operations Guide: Workspace and Claim-Container
-  Hygiene](operations.md#workspace-and-claim-container-hygiene) for when to
+  Hygiene](../operator-manual/operations.md#workspace-and-claim-container-hygiene) for when to
   enable it.
 
 Both knobs follow the same [priority order](#priority-order) as every other
@@ -318,14 +301,14 @@ or `--workspace-retention-days` flag always wins.
 ### Job isolation notes
 
 Every job is isolated by default (see [Job Isolation: `native` and the claim
-pod](jobs.md#job-isolation-native-and-the-claim-pod)); the standard agent
+pod](../jobs.md#job-isolation-native-and-the-claim-pod)); the standard agent
 needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
 
 - **Rootless podman is the recommended runtime on Linux hosts.** It avoids
   root-owned files leaking into the bind-mounted workspace (the container's
   root maps to the agent's own user), sidestepping the EPERM-fallback
   cleanup path entirely — see [Agent Labels and Routing: Workspace
-  lifecycle](agents.md#workspace-lifecycle).
+  lifecycle](../operator-manual/agents.md#workspace-lifecycle).
 - **On macOS/Windows, `--workspace-dir`/`workspaceDir` must live under a
   path your container runtime's file sharing exposes** — e.g. under
   `/Users` for Docker Desktop on macOS. A workspace root outside the
@@ -449,13 +432,13 @@ podTemplates:
 | `agentId` | string | No (runtime only) | - | Populated by the agent after enrollment from verified Kubernetes identity; not a config input. |
 | `labels` | []string | No | — | Agent labels matched against a Job's `agentSelector` |
 | `namespace` | string | No | `default` | Namespace the agent creates job/scope Pods in |
-| `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Fallback job-container image when no `podTemplate` is referenced. Bash-less/sh-less images work (`alpine`, busybox-based) — steps exec via the injected `ucd-sh` shim by default, not a shell the image must provide. Truly empty images (`scratch`, distroless-static) cannot run steps on the k8s agent: env application prepends the `env` binary, which they lack (exit 127). See [Job Reference: Shell (`shell:`)](jobs.md#shell-shell). |
-| `shimImage` | string | No | `ghcr.io/eirueimi/unified-cd-k8s-agent:latest` | Image the prepended `ucd-shim` init container runs to install the `ucd-sh` shim onto the shared `/.ucd` `emptyDir`. Override for air-gapped registries mirroring the k8s-agent image under another name. **Unlike `sidecarImage`/`podImage` the default is a floating tag, not digest-pinned — in production set this to the digest of the k8s-agent image you actually deployed. See [kubernetes-integration.md](kubernetes-integration.md#shim-image-pin-it-in-production).** |
+| `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Fallback job-container image when no `podTemplate` is referenced. Bash-less/sh-less images work (`alpine`, busybox-based) — steps exec via the injected `ucd-sh` shim by default, not a shell the image must provide. Truly empty images (`scratch`, distroless-static) cannot run steps on the k8s agent: env application prepends the `env` binary, which they lack (exit 127). See [Job Reference: Shell (`shell:`)](../jobs.md#shell-shell). |
+| `shimImage` | string | No | `ghcr.io/eirueimi/unified-cd-k8s-agent:latest` | Image the prepended `ucd-shim` init container runs to install the `ucd-sh` shim onto the shared `/.ucd` `emptyDir`. Override for air-gapped registries mirroring the k8s-agent image under another name. **Unlike `sidecarImage`/`podImage` the default is a floating tag, not digest-pinned — in production set this to the digest of the k8s-agent image you actually deployed. See [kubernetes-integration.md](../operator-manual/kubernetes-integration.md#shim-image-pin-it-in-production).** |
 | `sidecarImage` | string | No | `ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest` | Artifact-transfer sidecar image injected into every job/scope Pod |
 | `sidecarS3SecretName` | string | No | — | Secret carrying `UNIFIED_S3_*` for the sidecar. Without it, cache steps are no-ops (Succeeded) and artifact steps fail |
 | `kubeconfig` | string | No | in-cluster / `~/.kube/config` | Path to a kubeconfig; omit to use `InClusterConfig` (in cluster) or `~/.kube/config` (out of cluster) |
 | `maxConcurrent` | int | No | `100` | Max simultaneous job Pods, enforced by a semaphore around the claim loop. `0`/unset → `100`. A **negative** value (e.g. `-1`) → unlimited: no agent-side cap, bounded only by cluster scheduling/quota. A positive value is that exact concurrency bound. |
-| `maxDetachedConcurrent` | int | No | `16` | Max simultaneous detached (`spec.detached`) runs, from a pool separate from `maxConcurrent`. `0`/unset → **16** (detached jobs are claimable out of the box); a **negative** value disables detached hosting on this agent; a positive value is the cap (env: `UNIFIED_K8S_MAX_DETACHED`). See [Detached runs](jobs.md#detached-runs-detached). |
+| `maxDetachedConcurrent` | int | No | `16` | Max simultaneous detached (`spec.detached`) runs, from a pool separate from `maxConcurrent`. `0`/unset → **16** (detached jobs are claimable out of the box); a **negative** value disables detached hosting on this agent; a positive value is the cap (env: `UNIFIED_K8S_MAX_DETACHED`). See [Detached runs](../jobs.md#detached-runs-detached). |
 | `podStartTimeout` | string | No | `5m` | Go duration bounding how long the agent waits for a run Pod to reach `Running` before failing the run. Env override: `UNIFIED_K8S_POD_START_TIMEOUT`. Prevents an unschedulable or `ImagePullBackOff` Pod (which under `RestartPolicy: Never` never transitions to `Failed` on its own) from wedging a run forever. Unset, unparseable, or non-positive values fall back to the default. The wait is also aborted early, without overriding the controller's status, if the run is already terminal at the controller (cancel/reap raced the Pod becoming ready). |
 | `drainTimeout` | string | No | `0` (wait indefinitely) | Go duration bounding the graceful-shutdown drain window. Env override: `UNIFIED_K8S_DRAIN_TIMEOUT`. On SIGTERM/rollout the agent immediately stops claiming new runs but lets in-flight runs keep going — heartbeats keep beating during drain so a draining run isn't reaped as stuck — until either they finish or `drainTimeout` elapses, whichever comes first. `0`/unset waits forever for in-flight runs to finish (no forced cutoff). Parity with the standard agent's `--drain-timeout`. |
 | `poolIdleTimeout` | string | No | `0` (no reuse) | Go duration an idle pooled Pod is kept for reuse before teardown (e.g. `10m`) |
@@ -487,7 +470,7 @@ exactly as declared; only the primary container's injection is
 unconditional. Every container in the Pod also gets `/.ucd` mounted
 read-only, carrying the `ucd-sh` binary installed by a prepended
 `ucd-shim` init container — see [Kubernetes Integration: `/.ucd` shim
-injection](kubernetes-integration.md#ucd-shim-injection).
+injection](../operator-manual/kubernetes-integration.md#ucd-shim-injection).
 
 ---
 

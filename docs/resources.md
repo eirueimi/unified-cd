@@ -449,7 +449,7 @@ it is parsed directly as the `.Payload`. Form-encoded bodies
 (`application/x-www-form-urlencoded`, which GitHub sends as `payload=<json>`)
 fail JSON parsing and return `400`. For GitHub, set the webhook's **Content
 type** to `application/json`; see the [Getting Started webhook
-walkthrough](getting-started.md#configuring-the-webhook-on-github).
+walkthrough](getting-started/quickstart.md#configuring-the-webhook-on-github).
 
 ### Template variables in filters and paramsMapping
 

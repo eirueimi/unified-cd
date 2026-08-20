@@ -39,7 +39,7 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   `podTemplate` container. On k8s it execs into the named container of the job Pod. On
   the standard agent it execs into the corresponding container of the claim pod (see
   [Job Isolation: `native` and the claim
-  pod](jobs.md#job-isolation-native-and-the-claim-pod)); a sidecar's `command`/`args`
+  pod](../jobs.md#job-isolation-native-and-the-claim-pod)); a sidecar's `command`/`args`
   now match standard Kubernetes/OCI ENTRYPOINT/CMD semantics on **both** backends —
   see [Host container command/args
   semantics](#host-container-commandargs-semantics) below for the full truth table
@@ -199,7 +199,7 @@ The install manifests (`manifests/install.yaml`, `manifests/core-install.yaml`, 
 ## Resilience & concurrency
 
 Three config fields (full reference: [Configuration: K8s Agent config
-fields](configuration.md#k8s-agent-config-fields)) bound how the k8s-agent behaves under
+fields](../reference/configuration.md#k8s-agent-config-fields)) bound how the k8s-agent behaves under
 scheduling pressure and during shutdown:
 
 | Field (yaml) | Env override | Default | Behavior |
@@ -209,7 +209,7 @@ scheduling pressure and during shutdown:
 | `maxConcurrent` | — | `100` | Max simultaneous job Pods, enforced by a semaphore around the claim loop. `0`/unset → `100` (raised from the previous default of `5`). A **negative** value (e.g. `-1`) removes the agent-side cap entirely — concurrency is then bounded only by cluster scheduling/quota. A positive value is an exact concurrency bound. |
 
 Env vars, where present, override the config-file value (see [Configuration: Priority
-Order](configuration.md#priority-order) — CLI flags still win over both, but these fields have
+Order](../reference/configuration.md#priority-order) — CLI flags still win over both, but these fields have
 no CLI flag).
 
 ---
@@ -336,7 +336,7 @@ The k8s-agent follows these steps:
    `podTemplate` set on it
 2. Send each step into the Pod via the equivalent of `kubectl exec`, running
    `/.ucd/ucd-sh -c <script>` by default (or the step's effective `shell:`
-   argv — see [Job Reference: Shell (`shell:`)](jobs.md#shell-shell))
+   argv — see [Job Reference: Shell (`shell:`)](../jobs.md#shell-shell))
 3. Report results and logs to the master in real time
 4. After all steps complete, delete the Pod (or return to pool if `reuse: true`)
 
@@ -357,7 +357,7 @@ but fails env-carrying steps with exit 127. A job that relies on real bash
 semantics (login-shell profile sourcing, `wait -n`, `PIPESTATUS`, signal
 traps, ...) opts back in explicitly with `spec.shell: [bash, -lc]` or a
 step-level override — see the [interpreter constraints
-table](jobs.md#the-default-the-ucd-sh-shim) for exactly what the default
+table](../jobs.md#the-default-the-ucd-sh-shim) for exactly what the default
 shim does and doesn't support.
 
 ### `/.ucd` shim injection
@@ -453,7 +453,7 @@ SIGTERM/SIGINT, reaps zombie children while running as PID 1, and needs no
 `BuildPod` validates every `podTemplate` container before the Pod is sent
 to the API server — matching validation the standard agent's claim pod
 also performs (see [Job Reference: podTemplate container parity
-notes](jobs.md#podtemplate-container-parity-notes-host-and-k8s)):
+notes](../jobs.md#podtemplate-container-parity-notes-host-and-k8s)):
 
 - **Every container must have a `name`.** An empty/missing `name` is a
   hard error at pod-build time (`podTemplate container at index N has no
@@ -477,11 +477,11 @@ Cache transfers additionally carry a `--job <qualifiedJobName>` argument (e.g. `
 Object key layout:
 
 - Artifacts: `artifacts/{runID}/{name}.tar.gz`
-- Cache: `caches/<base64url(sha256(qualifiedJobName))>/<base64url(sha256(key))>.tar.zst` (+ matching `.meta` for TTL/owner metadata) — unpadded, URL-safe base64 of each raw SHA-256 digest, not the hex digest itself. The job component namespaces every entry — see [Job Reference: Cache](jobs.md#cache) for the security rationale and what this means for pre-existing cache entries.
+- Cache: `caches/<base64url(sha256(qualifiedJobName))>/<base64url(sha256(key))>.tar.zst` (+ matching `.meta` for TTL/owner metadata) — unpadded, URL-safe base64 of each raw SHA-256 digest, not the hex digest itself. The job component namespaces every entry — see [Job Reference: Cache](../jobs.md#cache) for the security rationale and what this means for pre-existing cache entries.
 
 Job-container steps (`run:` commands) are unaffected — the sidecar runs in its own container and is invisible to the main step execution.
 
-The `unified-artifact` sidecar's own `exec` output (the transfers themselves) is streamed into the run's logs under its own "Sidecars" group entry (named `artifact`) in the run detail UI, the same as any user-declared `podTemplate` sidecar — see [Job Reference: Sidecar container logs](jobs.md#sidecar-container-logs). It no longer ships mixed into the first step's log stream.
+The `unified-artifact` sidecar's own `exec` output (the transfers themselves) is streamed into the run's logs under its own "Sidecars" group entry (named `artifact`) in the run detail UI, the same as any user-declared `podTemplate` sidecar — see [Job Reference: Sidecar container logs](../jobs.md#sidecar-container-logs). It no longer ships mixed into the first step's log stream.
 
 **Cache** is best-effort: a `cache:` step restores at step time if a matching key exists, but a miss or restore error never fails the step. The matching save is deferred until the end of the run (after all stages complete, mirroring the standard agent's cache semantics) and is also best-effort — a save error is logged but never fails the run. **Artifacts are not best-effort** — a failed `uploadArtifact`/`downloadArtifact` transfer fails the step, same as the pre-existing k8s behavior.
 

@@ -138,7 +138,7 @@ This is a stronger, more specific version of the generic ["Run stays Queued
 forever"](#run-stays-queued-forever) symptom above. Every job now has an
 inferred capability requirement — `native`, `container`, or `pod` — derived
 from its spec (see [Capabilities and
-routing](agents.md#capabilities-and-routing)), on top of any hand-written
+routing](operator-manual/agents.md#capabilities-and-routing)), on top of any hand-written
 `agentSelector`. The banner means the controller checked the **current
 agent inventory** via `GET /api/v1/jobs/{name}/schedulability` and found
 that no registered agent satisfies **both**: capabilities ⊇ the job's
@@ -168,7 +168,7 @@ parameterized.
 - Register (or start) an agent that reports the missing capability — a
   standard agent reports `native` (+ `container` with a runtime installed),
   a Kubernetes agent reports `pod` + `container`. See [Capabilities and
-  routing](agents.md#capabilities-and-routing) for the full model.
+  routing](operator-manual/agents.md#capabilities-and-routing) for the full model.
 - Or adjust the job: drop an `agentSelector` label that no connected agent
   carries, or change `native`/`podTemplate` so the job's inferred
   requirement matches an agent you actually have (e.g. remove a
@@ -254,7 +254,7 @@ that also fails, it **WARNs** and proceeds with whatever is left rather than fai
 - Run **rootless podman** on the agent host — the container's root maps to the agent's own user,
   so root-owned leftovers don't occur in the first place.
 - If you see the WARN with rootful docker, manually clean the affected per-job workspace
-  directory with elevated permissions — see [Workspace lifecycle](agents.md#workspace-lifecycle).
+  directory with elevated permissions — see [Workspace lifecycle](operator-manual/agents.md#workspace-lifecycle).
 
 ### Stray `ucd-sh pause` containers on an agent host after an agent crash
 
@@ -271,7 +271,7 @@ This is expected, not a bug. Claim pod containers are long-lived (`/.ucd/ucd-sh 
 `--rm`) and are torn down by the agent itself when a claim finishes; if the agent exits ungracefully
 mid-claim, that teardown never runs. Unlike the k8s-agent, whose orphaned pods are eventually
 reaped by the cluster's own pod garbage collection, **the host agent has no automatic container
-GC** — see [Crash-orphaned claim containers](agents.md#crash-orphaned-claim-containers).
+GC** — see [Crash-orphaned claim containers](operator-manual/agents.md#crash-orphaned-claim-containers).
 
 **Fix**
 
@@ -365,7 +365,7 @@ the raw body on both sides), but that body is not valid JSON, so parsing fails.
   type** to `application/json`, then **Redeliver** from Recent Deliveries.
 - For non-GitHub senders, POST the JSON body directly (do not form-encode it)
   with `Content-Type: application/json`.
-- See the [Getting Started webhook walkthrough](getting-started.md#configuring-the-webhook-on-github).
+- See the [Getting Started webhook walkthrough](getting-started/quickstart.md#configuring-the-webhook-on-github).
 
 ## Webhook returns 400 `missing required param`
 
@@ -427,7 +427,7 @@ in the tag, or the tag was deleted), the pod can never become Ready.
   `kubectl exec <pod> -c unified-artifact -- unified-sidecar version` and
   `kubectl exec <pod> -- /k8s-agent --version`. Both print `dev` unless the
   image was built from a release tag.
-- See [Kubernetes Integration Guide](kubernetes-integration.md) for the full
+- See [Kubernetes Integration Guide](operator-manual/kubernetes-integration.md) for the full
   sidecar contract and `sidecarS3SecretName` configuration.
 
 ## A sidecar failed to start
@@ -816,7 +816,7 @@ The line carries a `reason` field naming which of the two paths fired.
   at the end of its drain under an agent ID another process is also using. In
   that last case the controller will also have logged
   `WARN agent heartbeat re-created a missing inventory row` for the live
-  process — see [duplicate agent IDs](agents.md).
+  process — see [duplicate agent IDs](operator-manual/agents.md).
 
 The controller's orphaned-run reaper detects a `Running` run whose claiming
 agent has gone away by either route and fails the run rather than leaving it
@@ -834,7 +834,7 @@ fixed:
   available.
 - On Kubernetes, the run's `ucd-run-*` pod is garbage-collected separately;
   no manual pod cleanup is required.
-- See [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery)
+- See [High Availability Guide: Orphaned-Run Recovery](operator-manual/high-availability.md#orphaned-run-recovery)
   for the full heartbeat/reaper timing and design.
 
 ## Run marked `Failed` by heartbeat reconcile after a lost claim
@@ -956,7 +956,7 @@ for a local binary (it stamps `git describe`). Confirm with
 `docker run <image> --version` before rolling it out. Note that the
 controller does **not** compare versions and will never reject an old agent
 — see [Operations: Checking which version is
-running](operations.md#checking-which-version-is-running).
+running](operator-manual/operations.md#checking-which-version-is-running).
 
 ## Run fails with log line `git template resolution failed for more than 1h0m0s`
 
@@ -1086,7 +1086,7 @@ replicas with PostgreSQL `max_connections`. The bundled Compose stack uses
 Restore PostgreSQL connectivity first. If the server is at its connection
 limit, reduce per-replica pool maxima or increase `max_connections` with
 memory and replica count included in the capacity calculation documented in
-[Operations: PostgreSQL connection budgeting](operations.md#postgresql-connection-budgeting).
+[Operations: PostgreSQL connection budgeting](operator-manual/operations.md#postgresql-connection-budgeting).
 Do not rely on `/healthz` for traffic routing; use `/readyz`.
 
 ## Controller fails at startup with `schema drift: ... does not exist`
@@ -1232,7 +1232,7 @@ enrollment token takes precedence over local discovery and persists its
 credential under the returned ID. The former shared
 `$HOME/.unified-cd/credential.json` file is not discovered; migrate it or pass
 it explicitly with `--credential-file`. See
-[Migrating to ID-scoped agent credentials](migration-agent-id-scoped-credentials.md).
+[Migrating to ID-scoped agent credentials](operator-manual/migrations/agent-id-scoped-credentials.md).
 
 ### Agent enrollment rejects a non-portable VM agent ID
 

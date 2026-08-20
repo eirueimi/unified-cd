@@ -8,12 +8,12 @@ all durable state lives in PostgreSQL and an S3-compatible object store.
 
 ## Where to start
 
-- **New here?** [Installation](getting-started.md) walks from a running stack to
+- **New here?** [Installation](getting-started/quickstart.md) walks from a running stack to
   your first job.
 - **Writing a job?** [Jobs](jobs.md) is the complete Job YAML reference, and
   [Resources](resources.md) covers every other resource kind.
-- **Running a deployment?** [Configuration](configuration.md),
-  [High Availability](high-availability.md), and [Operations](operations.md)
+- **Running a deployment?** [Configuration](reference/configuration.md),
+  [High Availability](operator-manual/high-availability.md), and [Operations](operator-manual/operations.md)
   cover the operator side.
 - **Something broke?** [Troubleshooting](troubleshooting.md) is indexed by the
   symptom you saw.

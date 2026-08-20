@@ -61,23 +61,46 @@ markdown_extensions:
 
 plugins:
   - search
+  - redirects:
+      redirect_maps:
+        getting-started.md: getting-started/quickstart.md
+        secrets.md: user-guide/secrets.md
+        agents.md: operator-manual/agents.md
+        kubernetes-integration.md: operator-manual/kubernetes-integration.md
+        authentication.md: operator-manual/authentication.md
+        authorization.md: operator-manual/authorization.md
+        high-availability.md: operator-manual/high-availability.md
+        operations.md: operator-manual/operations.md
+        audit.md: operator-manual/audit.md
+        migration-agent-id-scoped-credentials.md: operator-manual/migrations/agent-id-scoped-credentials.md
+        cli.md: reference/cli.md
+        configuration.md: reference/configuration.md
+        field-reference.md: reference/field-reference.md
+        frontend-development.md: contributing/frontend-development.md
 
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
-  - Jobs: jobs.md
-  - Resources: resources.md
-  - Secrets: secrets.md
-  - Agents: agents.md
-  - Kubernetes Integration: kubernetes-integration.md
-  - Authentication: authentication.md
-  - Authorization: authorization.md
-  - High Availability: high-availability.md
-  - Operations: operations.md
-  - Audit Log: audit.md
-  - CLI Reference: cli.md
-  - Configuration Reference: configuration.md
-  - Field Reference: field-reference.md
-  - Migrations: migration-agent-id-scoped-credentials.md
-  - Frontend Development: frontend-development.md
+  - Getting Started:
+      - Quickstart: getting-started/quickstart.md
+  - User Guide:
+      - Writing Jobs: jobs.md
+      - Resources: resources.md
+      - Secrets: user-guide/secrets.md
+  - Operator Manual:
+      - Agents and Routing: operator-manual/agents.md
+      - Kubernetes Integration: operator-manual/kubernetes-integration.md
+      - Authentication: operator-manual/authentication.md
+      - Authorization: operator-manual/authorization.md
+      - High Availability: operator-manual/high-availability.md
+      - Operations and Backup: operator-manual/operations.md
+      - Audit Log: operator-manual/audit.md
+      - Migrations:
+          - ID-Scoped Agent Credentials: operator-manual/migrations/agent-id-scoped-credentials.md
+  - Reference:
+      - CLI Reference: reference/cli.md
+      - Configuration Reference: reference/configuration.md
+      - Field Reference: reference/field-reference.md
   - Troubleshooting: troubleshooting.md
+  - Contributing:
+      - Contributing: contributing/index.md
+      - Frontend Development: contributing/frontend-development.md

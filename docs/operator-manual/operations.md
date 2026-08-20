@@ -16,7 +16,7 @@ unified-cd's controller is stateless; all durable state lives in two external st
 Losing the PostgreSQL database loses run history and every registered resource (jobs, schedules, webhooks, secrets, GitCredentials, AppSources). Agents are **not** lost from an operator's point of view: both the standard agent and the k8s-agent upsert their row on every claim, so once the DB is restored (or a fresh one is stood up) and an agent's process is still running, it reappears in `agent list` on its own. Everything else must be re-applied:
 
 - Re-`apply` job/schedule/webhook/AppSource/GitCredential YAML.
-- Re-`secret set` every secret — secret values are never recoverable from a backup of anything other than the DB itself, and are not retrievable via the API even when present (see [Secrets Management Guide](secrets.md#security-model)).
+- Re-`secret set` every secret — secret values are never recoverable from a backup of anything other than the DB itself, and are not retrievable via the API even when present (see [Secrets Management Guide](../user-guide/secrets.md#security-model)).
 
 ---
 
@@ -36,7 +36,7 @@ Back up with `pg_dump` on a regular schedule:
 docker compose exec -T postgres pg_dump -U unified unified > unified-cd-backup.sql
 ```
 
-(Verified in the dev stack: `docker compose exec -T postgres pg_dump --version` reports `pg_dump (PostgreSQL) 16.14`.) Restore into a fresh `unified` database with `psql` before starting the controller — the migration chain is idempotent and replays forward from whatever version the dump is on, so restoring an older dump and letting the controller migrate forward on next startup is expected to work. Two caveats, both covered under [Upgrades](#upgrades): migrations are **not** all additive, so a dump on migration `014` or earlier loses **every secret and every session** when it is migrated forward; and a dump that **predates the migrations-001-017 squash** is not migrated at all (see the Upgrades exception below and [Troubleshooting](troubleshooting.md#schema-drift-migration-renumbering)).
+(Verified in the dev stack: `docker compose exec -T postgres pg_dump --version` reports `pg_dump (PostgreSQL) 16.14`.) Restore into a fresh `unified` database with `psql` before starting the controller — the migration chain is idempotent and replays forward from whatever version the dump is on, so restoring an older dump and letting the controller migrate forward on next startup is expected to work. Two caveats, both covered under [Upgrades](#upgrades): migrations are **not** all additive, so a dump on migration `014` or earlier loses **every secret and every session** when it is migrated forward; and a dump that **predates the migrations-001-017 squash** is not migrated at all (see the Upgrades exception below and [Troubleshooting](../troubleshooting.md#schema-drift-migration-renumbering)).
 
 ### S3 / object store
 
@@ -54,12 +54,12 @@ Artifacts, cache entries, and log archives live in the configured bucket. Use yo
 
 ### The controller's master key (critical)
 
-This is the master key (KEK) used to encrypt secrets (AES-256-GCM, see [Secrets Management Guide](secrets.md#security-model)). The controller refuses to start unless it is given one, via exactly one of:
+This is the master key (KEK) used to encrypt secrets (AES-256-GCM, see [Secrets Management Guide](../user-guide/secrets.md#security-model)). The controller refuses to start unless it is given one, via exactly one of:
 
 - `UNIFIED_CONTROLLER_KEY_FILE` — path to a file containing 64 hex characters (`unified-cli keygen --out /etc/unified-cd/kek`). The supported way to run in production; a file (not an env var) is used deliberately, since env vars leak into `docker inspect`, process listings, crash dumps, and child processes.
 - `UNIFIED_KMS_URI` — an external KMS. `hashivault://[<mount>/]<key>` wraps the key with
   HashiCorp Vault or OpenBao Transit; see [Secrets Management Guide: Using Vault or OpenBao
-  (Transit)](secrets.md#using-vault-or-openbao-transit).
+  (Transit)](../user-guide/secrets.md#using-vault-or-openbao-transit).
 - `UNIFIED_DEV_MODE=1` — generates an ephemeral in-memory key for local development only. Secrets become unreadable the moment the process restarts.
 
 Back the key file up wherever you manage secrets (vault, KMS, sealed file, offline copy) — **independently** of the DB dump, and **never** in the same place/backup as the PostgreSQL dump it protects:
@@ -75,7 +75,7 @@ Back the key file up wherever you manage secrets (vault, KMS, sealed file, offli
 |---|---|
 | A run is stuck (e.g. no agent can claim it, or it's hung) | `unified-cli run cancel <run-id>` — moves the run to `Cancelled`. Verified live: triggering a `sleep 30` job and running `run cancel <id>` immediately transitioned it to status `Cancelled` in `run list`. |
 | An agent dies mid-run | No action needed. The stuck-run reaper detects the stale heartbeat and fails the run automatically — see [High Availability Guide: Orphaned-Run Recovery](high-availability.md#orphaned-run-recovery) for the full heartbeat/staleness/grace timings. In short: heartbeat every 15s, a run is eligible for reaping once its agent's heartbeat is >90s stale, with a 60s grace window after claim, and the run is marked `Failed` (never re-queued, since re-running partially-executed steps can duplicate side effects). |
-| An agent claimed a run but the claim response was lost (agent process never learned it owns the run) | No action needed — this now self-heals without waiting for the reaper's stale-heartbeat check. Every agent heartbeat carries the set of run IDs it currently considers active; if the controller has a `Running` run assigned to that agent that is absent from the reported set and has sat claimed for more than ~60s (a grace window protecting a claim whose heartbeat simply hasn't landed yet), it fails that run as orphaned on the *next* heartbeat — typically within a few heartbeat intervals, well before the reaper's 90s-stale-heartbeat path would ever trigger. A legacy agent (built before this feature) sends a bodyless heartbeat and is unaffected — no reconcile runs for it, so it falls back to the existing stale-heartbeat reaper. See [Troubleshooting: a run failed by heartbeat reconcile](troubleshooting.md#run-marked-failed-by-heartbeat-reconcile-after-a-lost-claim). |
+| An agent claimed a run but the claim response was lost (agent process never learned it owns the run) | No action needed — this now self-heals without waiting for the reaper's stale-heartbeat check. Every agent heartbeat carries the set of run IDs it currently considers active; if the controller has a `Running` run assigned to that agent that is absent from the reported set and has sat claimed for more than ~60s (a grace window protecting a claim whose heartbeat simply hasn't landed yet), it fails that run as orphaned on the *next* heartbeat — typically within a few heartbeat intervals, well before the reaper's 90s-stale-heartbeat path would ever trigger. A legacy agent (built before this feature) sends a bodyless heartbeat and is unaffected — no reconcile runs for it, so it falls back to the existing stale-heartbeat reaper. See [Troubleshooting: a run failed by heartbeat reconcile](../troubleshooting.md#run-marked-failed-by-heartbeat-reconcile-after-a-lost-claim). |
 | Leftover `ucd-run-*` pods on Kubernetes | No action needed in the common case — the k8s-agent's pod GC sweeps every ~1 minute and deletes pods whose run has reached a terminal state. A manual `kubectl delete pod ucd-run-...` is safe if you want it gone immediately; it will not resurrect or affect the run's recorded status. |
 | PostgreSQL restored from a backup | Start the controller against it; migrations run automatically (see [Upgrades](#upgrades)). Re-apply any resources created after the backup was taken, and confirm the key file at `UNIFIED_CONTROLLER_KEY_FILE` (or the `UNIFIED_KMS_URI` key) matches what was in use when secrets were encrypted — there is no database copy of the key to fall back on. |
 
@@ -104,7 +104,7 @@ Two agent config knobs give operators direct levers over the first item — a
 preflight to stop the bleeding, and an opt-in sweep to reclaim space — without
 requiring an external cron job. Both are host-agent only (the k8s-agent's
 workspaces are pod volumes, reclaimed with the pod). See [Configuration
-Reference: Agent Config File](configuration.md#agent-config-file) for the
+Reference: Agent Config File](../reference/configuration.md#agent-config-file) for the
 full flag/env/yaml forms.
 
 - **`minFreeDisk` (`--min-free-disk` / `UNIFIED_AGENT_MIN_FREE_DISK`) — preflight lever.**
@@ -201,7 +201,7 @@ every replica's pre-opened connections.
 > binding they were sealed under no longer exists. There is no in-place recovery
 > path. Recovery means running `unified-cli secret set` again for every secret,
 > from your own source of truth — unified-cd has never been able to hand a
-> value back to you (see [Secrets Management Guide](secrets.md#security-model)).
+> value back to you (see [Secrets Management Guide](../user-guide/secrets.md#security-model)).
 >
 > **Before starting an upgrade that crosses `015`/`016`, confirm you can still
 > obtain the plaintext of every secret you have set.** Run `unified-cli secret
@@ -222,7 +222,7 @@ Upgrade order: **controller first, then agents.**
 
    **How far back this bites.** During a rolling deploy the exposure is to a controller **two releases behind (N-2), not N-1.** `v0.4.0` already embeds `001`–`016`, and `017` is purely additive, so a `v0.4.0` controller runs correctly against a schema migrated by the current tree. A `v0.3.0` controller embeds only `001`–`012` and would be running against `014`/`015`/`016`. Migrations `003` and `005` are not reachable from any released binary at all — `v0.0.1` already embeds `001`–`007`. So: **rolling one release forward is safe; running binaries more than one release apart against a shared database is not supported.** Before any upgrade that spans more than one release, take the controllers down rather than rolling them.
 
-   **Exception:** a database provisioned before the migrations-001-017 squash (commit `79c1074`) is **not** upgraded correctly by this automatic `migrate up` — the new migration chain's version numbering starts below where such a database already is, so the migration runner treats it as already up to date and silently applies nothing. This leaves newer columns/tables (e.g. `role`, `managed_resources`, `audit_logs`, `sync_status`) missing. See [Troubleshooting: `column "..." does not exist` after upgrading](troubleshooting.md#schema-drift-migration-renumbering) for the supported fresh-init/manual-bridge paths.
+   **Exception:** a database provisioned before the migrations-001-017 squash (commit `79c1074`) is **not** upgraded correctly by this automatic `migrate up` — the new migration chain's version numbering starts below where such a database already is, so the migration runner treats it as already up to date and silently applies nothing. This leaves newer columns/tables (e.g. `role`, `managed_resources`, `audit_logs`, `sync_status`) missing. See [Troubleshooting: `column "..." does not exist` after upgrading](../troubleshooting.md#schema-drift-migration-renumbering) for the supported fresh-init/manual-bridge paths.
 2. **Agents** — upgrade standard agents after the controller is on the new version.
 3. **k8s-agent + sidecar image** — the k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. Pin `sidecarImage` in the k8s-agent config to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
 4. **Default runner/pause image digest pin** — see [Rotating the default runner/pause image digests](#rotating-the-default-runnerpause-image-digests) below. This step is easy to forget because the build succeeds either way; forgetting it just means agents keep pulling the old image forever.
@@ -378,4 +378,4 @@ Ready-made Prometheus alerting rules for these metrics live in
 
 ---
 
-See also: [Secrets Management Guide](secrets.md) · [High Availability Guide](high-availability.md) · [Kubernetes Integration Guide](kubernetes-integration.md) · [Troubleshooting](troubleshooting.md)
+See also: [Secrets Management Guide](../user-guide/secrets.md) · [High Availability Guide](high-availability.md) · [Kubernetes Integration Guide](kubernetes-integration.md) · [Troubleshooting](../troubleshooting.md)
