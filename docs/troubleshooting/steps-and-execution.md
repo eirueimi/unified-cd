@@ -1,0 +1,215 @@
+# Steps and Execution
+
+## Run fails with `dynamic secret name must be resolved from a parameter before execution`
+
+**Symptom**
+
+A run fails before any step starts with:
+
+```
+dynamic secret name must be resolved from a parameter before execution
+```
+
+**Cause**
+
+The job selects a secret name from a runtime value such as `.Steps`, `.Matrix`,
+or `.Foreach`. The controller must know the literal secret names before an
+agent claims the run so it can authorize only those secrets.
+
+**Fix**
+
+Pass a literal secret name through a Job parameter, a JobTemplate default, or
+`uses.with`, then reference it as `{{ index .Secrets .Params.token_secret }}`.
+Do not derive the secret name from a normal step output or another runtime
+value.
+Do not work around the validation by assigning `.Secrets` to a variable or
+passing it through `or`, `and`, `with`, `range`, a pipeline, or a named
+template. Rewrite the job so the secret name is a literal `with:` value that
+feeds the exact `index .Secrets .Params.NAME` form.
+
+## Job isolation
+
+Jobs are isolated by default (see [Job Isolation: `native` and the claim
+pod](../user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod)); most of the failures below are an
+isolation setup gap surfacing as a run failure.
+
+### Run fails immediately: "isolated job requires a container runtime"
+
+**Symptom**
+
+A run fails immediately — no step ever starts — with a **System** log line (`stepIndex -1`):
+
+```
+isolated job requires a container runtime (docker/podman/nerdctl); mark the job native: true or route it via agentSelector
+```
+
+**Cause**
+
+The job is isolated (no `spec.native: true`) and was claimed by a standard agent whose host has
+none of docker, podman, or nerdctl installed. An isolated job needs a container runtime to build
+its claim pod; without one, the agent fails the run immediately instead of silently running the
+steps on the host (`internal/agent/agent.go`).
+
+**Fix**
+
+- Install docker, podman, or nerdctl on the agent host, or
+- Add `spec.native: true` to the job if it's meant to run as host processes, or
+- Route the job to an agent that has a runtime via `agentSelector`.
+
+### Run fails immediately on Kubernetes: "native: true jobs are host-only"
+
+**Symptom**
+
+A run fails immediately with:
+
+```
+native: true jobs are host-only; the k8s agent cannot run them
+```
+
+**Cause**
+
+The job sets `spec.native: true`, but it was claimed by a k8s-agent. `native` opts a job out of
+containerization entirely, and the k8s-agent has no concept of running outside a Pod, so it
+cannot honor that (`internal/k8sagent/agent.go`).
+
+**Fix**
+
+Route `native: true` jobs away from k8s-agents (and toward host agents with the tools the job
+needs) via `agentSelector`.
+
+### Workspace cleaning warnings after a job flips native ↔ isolated
+
+**Symptom**
+
+The agent log shows `workspace clean failed; retrying via cleanup container` and/or `cleanup
+container failed; proceeding with dirty workspace`, often right after a job's `native: true` was
+added or removed.
+
+**Cause**
+
+Each per-job workspace directory carries a `.ucd-mode` marker recording whether the job last ran
+native or isolated; when a job's mode flips, the agent resets the directory before the next claim
+(`internal/agent/workspace.go`). This is also where root-owned leftovers can appear: containers
+created by **rootful docker** write files as root inside the bind-mounted workspace, which the
+agent's own process can't remove. The agent retries via a throwaway root cleanup container; if
+that also fails, it **WARNs** and proceeds with whatever is left rather than failing the run.
+
+**Fix**
+
+- Run **rootless podman** on the agent host — the container's root maps to the agent's own user,
+  so root-owned leftovers don't occur in the first place.
+- If you see the WARN with rootful docker, manually clean the affected per-job workspace
+  directory with elevated permissions — see [Workspace lifecycle](../operator-manual/agents.md#workspace-lifecycle).
+
+### Stray `ucd-sh pause` containers on an agent host after an agent crash
+
+**Symptom**
+
+`docker ps` (or `podman ps`) on an agent host shows pause and/or sidecar containers still running
+`/.ucd/ucd-sh pause` long after the runs that created them finished — typically noticed after the
+agent process was killed, OOM'd, or the host rebooted. (Older agent versions ran `sleep infinity`
+instead — same symptom, different command.)
+
+**Cause**
+
+This is expected, not a bug. Claim pod containers are long-lived (`/.ucd/ucd-sh pause`, not
+`--rm`) and are torn down by the agent itself when a claim finishes; if the agent exits ungracefully
+mid-claim, that teardown never runs. Unlike the k8s-agent, whose orphaned pods are eventually
+reaped by the cluster's own pod garbage collection, **the host agent has no automatic container
+GC** — see [Crash-orphaned claim containers](../operator-manual/agents.md#crash-orphaned-claim-containers).
+
+**Fix**
+
+Treat this as routine hygiene: periodically prune claim-pod-shaped containers on agent hosts
+(e.g. a `docker container prune`-style sweep, or one scoped to containers made from the
+`pauseImage`/`runnerImage`/podTemplate images), rather than assuming a crash cleans up after
+itself.
+
+---
+
+## Conditional step ran when it shouldn't
+
+**Symptom**
+
+A step gated with `if:` runs even though its condition looks false, and the
+agent log contains:
+
+```
+if: condition eval failed, running step
+```
+
+(on the k8s agent, the same line is prefixed: `k8s: if condition eval failed,
+running step` — grep for `if condition eval failed, running step` to match
+both agents)
+
+with a nested compile error, e.g.:
+
+```
+if: expression "{{ eq .Params.x \"y\" }}" compile error: ERROR: <input>:1:17: Syntax error: missing ':' at '"y"'
+```
+
+**Cause**
+
+`if:` expressions are **CEL**, not Go templates — unlike `run:`, `env:`, and
+`outputs:` in the same job, which do use `{{ .Params.X }}`-style Go template
+syntax. Writing an `if:` with `{{ }}` delimiters (or any other expression that
+fails to compile or evaluate) **fails open**: the step still runs, and the
+only trace is a `WARN` line in the agent log — the run itself is not marked
+failed and the CLI/API give no other indication.
+
+**Fix**
+
+- Use valid CEL syntax, with lowercase variables and no `{{ }}` delimiters:
+  ```yaml
+  if: 'params.env == "production"'
+  ```
+  not:
+  ```yaml
+  if: '{{ eq .Params.env "production" }}'   # wrong — Go template, fails open
+  ```
+- After adding or changing a non-trivial `if:`, check the agent log for
+  `if: condition eval failed, running step` to confirm it compiled.
+- See [Job Reference: Conditional Execution (`if`)](../user-guide/writing-jobs/steps.md#conditional-execution-if)
+  for the full CEL variable/function reference — this is especially important
+  to verify for any `if:` gating a production deploy.
+
+## A step's log shows `step panicked: ...`
+
+**Symptom**
+
+A step fails with a log line like:
+
+```
+step panicked: runtime error: invalid memory address or nil pointer dereference
+```
+
+(stream `stderr`), and the run is `Failed` (or, for a `continueOnError: true`
+step, the step itself is `Failed` but the run continues).
+
+**Cause**
+
+Something inside the step's own execution path — the step body, template
+expansion, or the underlying backend exec — panicked instead of returning a
+normal error. The agent recovers the panic at the step boundary, writes the
+panic value and stack into that step's own log (this line), and reports the
+step `Failed`, honoring `continueOnError` exactly like a normal error would.
+Only this run is affected: sibling concurrent runs on the same agent and the
+agent process itself are unaffected — a panic here used to crash the whole
+agent process (taking down every run it was executing), which is why this is
+now caught at the step boundary rather than left to propagate.
+
+**Fix**
+
+Treat it like any other step failure: the panic message and stack trace in
+the step's log point at the failing code path (a job's `run:` script, a
+custom tool, or the like). Fix the underlying bug in whatever the step
+invoked; there is no agent-side workaround needed once the run itself is
+correctly reported `Failed` rather than stuck `Running`.
+
+A rarer variant panics outside the step body itself — e.g. while preparing
+the workspace, before any step started — and surfaces instead as the run
+being failed with an `agent panic: ...` message (no per-step log line, since
+no step ever ran). The cause and fix are the same: something panicked, the
+agent turned it into a normal Failed outcome instead of crashing, and the
+panic text points at the failing code.
+

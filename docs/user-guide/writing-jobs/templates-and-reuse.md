@@ -55,7 +55,7 @@ step and the container, instead of the step failing opaquely at exec time.
 > in agent config, invisible at apply time), still defers this check to
 > resolution/pod-build, since the template's pod-shape merge or the agent's
 > template may supply the reference later. See [Job fails apply with a dangling `container:`
-> reference](../../troubleshooting.md#job-fails-apply-with-a-dangling-container-reference)
+> reference](../../troubleshooting/templates-and-uses.md#job-fails-apply-with-a-dangling-container-reference)
 > in Troubleshooting.
 
 ### The `JobTemplate` schema

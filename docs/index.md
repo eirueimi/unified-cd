@@ -15,7 +15,7 @@ all durable state lives in PostgreSQL and an S3-compatible object store.
 - **Running a deployment?** [Configuration](reference/configuration.md),
   [High Availability](operator-manual/high-availability.md), and [Operations](operator-manual/operations.md)
   cover the operator side.
-- **Something broke?** [Troubleshooting](troubleshooting.md) is indexed by the
+- **Something broke?** [Troubleshooting](troubleshooting/index.md) is indexed by the
   symptom you saw.
 
 ## Key features

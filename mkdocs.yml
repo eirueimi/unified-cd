@@ -78,6 +78,7 @@ plugins:
         field-reference.md: reference/field-reference.md
         frontend-development.md: contributing/frontend-development.md
         jobs.md: user-guide/writing-jobs/index.md
+        troubleshooting.md: troubleshooting/index.md
 
 nav:
   - Home: index.md
@@ -112,7 +113,15 @@ nav:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md
       - Field Reference: reference/field-reference.md
-  - Troubleshooting: troubleshooting.md
+  - Troubleshooting:
+      - Symptom Index: troubleshooting/index.md
+      - Runs and Scheduling: troubleshooting/runs-and-scheduling.md
+      - Steps and Execution: troubleshooting/steps-and-execution.md
+      - Artifacts and Storage: troubleshooting/artifacts-and-storage.md
+      - Templates and uses: troubleshooting/templates-and-uses.md
+      - Webhooks: troubleshooting/webhooks.md
+      - Agents and Enrollment: troubleshooting/agents-and-enrollment.md
+      - Controller and Database: troubleshooting/controller-and-database.md
   - Contributing:
       - Contributing: contributing/index.md
       - Frontend Development: contributing/frontend-development.md

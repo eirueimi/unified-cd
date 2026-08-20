@@ -419,7 +419,7 @@ button to retry. The controller's response codes:
 | `401 signature verification failed` | wrong **Secret**, or signature sent in an unexpected header |
 
 See the [WebhookReceiver reference](../resources.md#webhookreceiver) and
-[Troubleshooting](../troubleshooting.md#webhook-returns-401) for the full field
+[Troubleshooting](../troubleshooting/webhooks.md#webhook-returns-401) for the full field
 and error tables.
 
 ---

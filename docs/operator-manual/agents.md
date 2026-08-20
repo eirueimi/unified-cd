@@ -329,7 +329,7 @@ never match anything.
 **If no registered agent can satisfy a job's inferred capability and
 selector**, the run stays `Queued` indefinitely rather than failing — see
 [Job stays Queued / unschedulable
-warning](../troubleshooting.md#job-stays-queued-unschedulable-warning) in the
+warning](../troubleshooting/runs-and-scheduling.md#job-stays-queued-unschedulable-warning) in the
 Troubleshooting guide for how the Web UI surfaces this and how to fix it.
 
 ---
