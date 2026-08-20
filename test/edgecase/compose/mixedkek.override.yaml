@@ -1,5 +1,5 @@
 # W3-3 overlay: give **controller3 alone** a different local KEK, so the HA
-# stack runs in the state `docs/high-availability.md:204-206` explicitly warns
+# stack runs in the state `docs/operator-manual/high-availability.md:204-206` explicitly warns
 # against ("Every replica must be given the **same** key ... a replica started
 # with a different key cannot read secrets written by another").
 #

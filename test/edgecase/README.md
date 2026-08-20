@@ -4,6 +4,11 @@ Exploratory testing of unified-cd's distributed-systems edge cases.
 Spec: `docs/superpowers/specs/2026-07-29-edge-case-testing-design.md`
 (waves W0-W6, invariants I1-I7, findings workflow).
 
+`docs/*.md` path citations inside `FINDINGS.md` and `scenarios/*.md` are left
+as written and refer to the flat `docs/` layout as it stood before the
+documentation-site reorganization; commit `5f6af00` is the last commit with
+that layout, so resolve any citation against the tree at that commit.
+
 ## Layout
 
 - `FINDINGS.md` — one entry per invariant violation or notable observation.
@@ -614,7 +619,7 @@ error, all executed or code-read at HEAD:**
   **synchronously**, `api_runs.go:374`, while the agent only polls every 5 s) →
   wait for the seal → `heal`. The agent's `p.pending` backlog is then re-offered
   into a sealed run. ~95 s per attempt. This is the cause
-  `docs/troubleshooting.md:865` names verbatim. See Part B.
+  `docs/troubleshooting/runs-and-scheduling.md:227` names verbatim. See Part B.
 - **The sidecar window is NOT "structural, every run"**, contrary to the W3
   plan (`:107-115`). `CloseScopes` follows `FinishRun` by *microseconds to
   milliseconds*, while the archiver can only seal on its next **30 s** tick

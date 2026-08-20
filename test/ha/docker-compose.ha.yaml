@@ -82,7 +82,7 @@ services:
     environment:
       UNIFIED_DB_DSN: postgres://unified:unified@postgres:5432/unified?sslmode=disable
       UNIFIED_TOKEN: ha-admin-token
-      # All replicas must share the same key file; see docs/high-availability.md.
+      # All replicas must share the same key file; see docs/operator-manual/high-availability.md.
       UNIFIED_CONTROLLER_KEY_FILE: /run/secrets/kek
       UNIFIED_S3_ENDPOINT: garage:3900
       UNIFIED_S3_BUCKET: unified-cd-logs

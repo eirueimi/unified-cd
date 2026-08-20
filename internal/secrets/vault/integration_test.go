@@ -166,7 +166,7 @@ func createTransitKey(addr, name string) error {
 	return err
 }
 
-// leastPrivilegePolicyHCL is exactly the capabilities docs/secrets.md
+// leastPrivilegePolicyHCL is exactly the capabilities docs/user-guide/secrets.md
 // documents as required for a Transit-backed controller token: `read` on the
 // key's own metadata (the capability this fix adds), and `update` on
 // encrypt/decrypt. `auth/token/renew-self` is included too since the docs
@@ -225,7 +225,7 @@ func createLeastPrivilegeToken(addr, policyName, mount, key string) (string, err
 // encrypt-only probe on a missing key too, by auto-creating it — the exact
 // silent misconfiguration this fix exists to prevent.
 //
-// This test mints a token scoped to precisely the policy docs/secrets.md
+// This test mints a token scoped to precisely the policy docs/user-guide/secrets.md
 // documents (see leastPrivilegePolicyHCL — update on encrypt/decrypt, read
 // on the key's own metadata, no create) and points a KeyManager at a key
 // name that was never created. Under the old status-code-based

@@ -121,7 +121,7 @@ func New(ctx context.Context, cfg Config) (*KeyManager, error) {
 // denied": Vault ACL-checks an encrypt against a key that does not yet exist
 // as a CreateOperation (the policy framework's existence check runs before
 // Transit's own "key not found" handler), so a token holding only `update`
-// — exactly the least-privilege policy docs/secrets.md documents — is denied
+// — exactly the least-privilege policy docs/user-guide/secrets.md documents — is denied
 // by the ACL layer with 403 before Transit ever gets a chance to report 400.
 // The 400 branch a naive implementation adds for this is therefore
 // unreachable under that policy: a typo'd key name is misreported as
@@ -151,7 +151,7 @@ func (m *KeyManager) startupProbe(ctx context.Context) error {
 // write. Degrading to an encrypt-only probe when `read` is denied would
 // silently resurrect the exact ambiguity — and the auto-vivify hazard —
 // this fix exists to remove, so a 403 here is reported as a policy gap to
-// close rather than tolerated. docs/secrets.md documents `read` on
+// close rather than tolerated. docs/user-guide/secrets.md documents `read` on
 // <mount>/keys/<key> alongside the two Transit operations for this reason.
 func (m *KeyManager) probeKeyExists(ctx context.Context) error {
 	token, err := m.tokens.token(ctx)
@@ -266,7 +266,7 @@ func (m *KeyManager) DecryptKey(ctx context.Context, ciphertext []byte) ([]byte,
 // revoked — re-login, then retry the operation once") — retries exactly once
 // if the call fails with a 403. That covers an operator revoking this
 // controller's token and dropping a replacement into UNIFIED_VAULT_TOKEN_FILE
-// (see docs/secrets.md): without the retry, every operation would keep using
+// (see docs/user-guide/secrets.md): without the retry, every operation would keep using
 // the stale token from tokenManager's cache until the next renewal tick, up
 // to half a lease away, even though the new token is already on disk.
 //

@@ -84,7 +84,7 @@ type ControllerOIDCConfig struct {
 	// allows the device flow to work without exposing secrets to the CLI. Falls back to ClientID when not set.
 	DeviceClientID string `yaml:"deviceClientId"`
 
-	// Role resolution (see docs/authorization.md).
+	// Role resolution (see docs/operator-manual/authorization.md).
 	RolesClaim  string            `yaml:"rolesClaim"`
 	RoleMap     map[string]string `yaml:"roleMap"`
 	UserMap     map[string]string `yaml:"userMap"`

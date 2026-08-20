@@ -2588,8 +2588,8 @@ func (p *Postgres) CreatePendingApproval(ctx context.Context, runID string, step
 // first-writer-wins on the row's own status AND conditional on the gate still
 // being decidable at all:
 //
-//   - the run must not be terminal. run_approvals is an audit record (docs/jobs.md,
-//     docs/audit.md), and without this clause an ordinary `unified-cli approve`
+//   - the run must not be terminal. run_approvals is an audit record (docs/user-guide/writing-jobs/approval-and-finally.md,
+//     docs/operator-manual/audit.md), and without this clause an ordinary `unified-cli approve`
 //     wrote Approved plus a named principal onto runs that had already Failed or
 //     been Cancelled, returned 204, and left an audit_logs row reading as success.
 //     Worse than the false record: when the decision commits inside the agent's 5s

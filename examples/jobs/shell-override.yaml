@@ -7,7 +7,7 @@
 # Reach for it when a step needs real bash semantics the shim's subset does not
 # cover (signal traps, wait -n, PIPESTATUS, ...) or a non-shell interpreter
 # entirely. Priority: step.shell > spec.shell > the ucd-sh default.
-# See docs/jobs.md#shell-shell for the full priority and constraints table.
+# See docs/user-guide/writing-jobs/steps.md#shell-shell for the full priority and constraints table.
 # Usage:
 #   unified-cd apply -f examples/jobs/shell-override.yaml
 #   unified-cd run trigger shell-bash-demo

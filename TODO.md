@@ -9,14 +9,14 @@ Last audited: 2026-07-26 against `1e46459`.
 
 - **Status:** Partial
 - **Impact:** Invalid or non-boolean `if` expressions currently evaluate as true, so gated steps can run unexpectedly, while the variable reference table documents Go-template syntax that the CEL evaluator does not accept.
-- **Evidence:** `docs/jobs.md` lists `{{ .Params.NAME }}` and `{{ .Steps.NAME.Outputs.KEY }}` for conditions, while `internal/agent/orchestrator.go` passes `step.If` to `internal/dsl/condition.go` `EvalCondition`; `internal/dsl/condition_test.go` `TestEvalCondition_InvalidExpr` and `TestEvalCondition_NonBoolResult` require the current fail-open result.
+- **Evidence:** `docs/user-guide/writing-jobs/steps.md` lists `{{ .Params.NAME }}` and `{{ .Steps.NAME.Outputs.KEY }}` for conditions, while `internal/agent/orchestrator.go` passes `step.If` to `internal/dsl/condition.go` `EvalCondition`; `internal/dsl/condition_test.go` `TestEvalCondition_InvalidExpr` and `TestEvalCondition_NonBoolResult` require the current fail-open result.
 - **Done when:** The condition reference consistently documents the accepted CEL syntax, invalid or non-boolean expressions cannot execute the gated step, and regression tests cover parameter references, step-output references, compile errors, evaluation errors, and non-boolean results.
 
 ### 13. Verify that the default Kubernetes sidecar image is anonymously pullable
 
 - **Status:** Needs verification
 - **Impact:** If the digest-pinned default is unavailable without registry credentials, installations that omit `sidecarImage` cannot start the sidecar and Kubernetes jobs remain blocked.
-- **Evidence:** `internal/k8sagent/config.go` `defaultSidecarImage` supplies the digest-pinned default consumed by `manifests/install.yaml`; `internal/k8sagent/config_test.go` `TestDefaultSidecarImageIsDigestPinned` checks only its syntax, while `docs/configuration.md`, `docs/kubernetes-integration.md`, and `docs/troubleshooting.md` still describe a mutable `:latest` default.
+- **Evidence:** `internal/k8sagent/config.go` `defaultSidecarImage` supplies the digest-pinned default consumed by `manifests/install.yaml`; `internal/k8sagent/config_test.go` `TestDefaultSidecarImageIsDigestPinned` checks only its syntax, while `docs/reference/configuration.md`, `docs/operator-manual/kubernetes-integration.md`, and `docs/troubleshooting/index.md` still describe a mutable `:latest` default.
 - **Done when:** A credential-isolated Docker pull of the image derived from `defaultSidecarImage` exits zero within 120 seconds, and a temporary Kubernetes namespace with a ServiceAccount that has no image pull secrets starts that exact image with pull policy `Always` and reaches `Ready` within 120 seconds with no pull waiting reason and an image ID ending in the configured digest; every external Docker and Kubernetes setup, pull, wait, inspection, and namespace-deletion subprocess is bounded, safe-target checks guard cleanup, any cleanup failure fails the experiment and is combined with rather than hidden by any primary failure, and all three documents state the verified digest-derived default.
 
 ### 33c. Prevent AppSource repository credentials from reaching API and UI output
@@ -39,7 +39,7 @@ Last audited: 2026-07-26 against `1e46459`.
 
 - **Status:** Partial
 - **Impact:** After complete controller database loss, existing agents cannot authenticate to claim work until they are re-enrolled, despite operations guidance also promising automatic inventory recovery.
-- **Evidence:** `internal/controller/api_agent.go` `handleAgentClaim` calls `internal/store/postgres.go` `UpsertAgentOnClaim`, but `internal/controller/agent_auth.go` authenticates first through `GetAgentCredentialForAuth`; `internal/controller/api_agent_test.go` `TestAgentAPI_Claim_UpsertsUnregisteredAgent` covers only a missing inventory row, and `docs/operations.md` states conflicting full-loss recovery expectations.
+- **Evidence:** `internal/controller/api_agent.go` `handleAgentClaim` calls `internal/store/postgres.go` `UpsertAgentOnClaim`, but `internal/controller/agent_auth.go` authenticates first through `GetAgentCredentialForAuth`; `internal/controller/api_agent_test.go` `TestAgentAPI_Claim_UpsertsUnregisteredAgent` covers only a missing inventory row, and `docs/operator-manual/operations.md` states conflicting full-loss recovery expectations.
 - **Done when:** The supported full-database-loss workflow has one explicit runtime and documentation contract, and an integration test starting from absent inventory and credential records proves either bounded automatic recovery or the documented re-enrollment requirement before the agent reappears and can claim work.
 
 ### 33d. Prevent late step reports after run finalization
@@ -76,8 +76,8 @@ Last audited: 2026-07-26 against `1e46459`.
 
 - **Status:** Partial
 - **Impact:** A human replay of a run mutates system state without recording who performed it or which source run was replayed, leaving the documented audit trail incomplete.
-- **Evidence:** `internal/controller/server.go` registers `POST /api/v1/runs/{id}/replay`, while `internal/controller/audit.go` `auditActionTable` has no replay classification; `docs/audit.md` claims coverage for state-changing human operations.
-- **Done when:** Replay produces a `run.replay` audit record containing the actor, source run ID, method, path, and result status without request or response secret material; an integration test proves the record, `docs/audit.md` lists the action and route coverage, and the stale generic-fallback comment in `internal/controller/audit.go` matches the explicit allow-list behavior.
+- **Evidence:** `internal/controller/server.go` registers `POST /api/v1/runs/{id}/replay`, while `internal/controller/audit.go` `auditActionTable` has no replay classification; `docs/operator-manual/audit.md` claims coverage for state-changing human operations.
+- **Done when:** Replay produces a `run.replay` audit record containing the actor, source run ID, method, path, and result status without request or response secret material; an integration test proves the record, `docs/operator-manual/audit.md` lists the action and route coverage, and the stale generic-fallback comment in `internal/controller/audit.go` matches the explicit allow-list behavior.
 
 ### 35b. Exercise AppSource migration 003 through first synchronization
 

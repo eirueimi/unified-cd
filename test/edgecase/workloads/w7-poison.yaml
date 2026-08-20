@@ -20,7 +20,7 @@
 #   phase 1  `docker compose stop agent1 agent2`   -> only `agentold` (v0.4.0)
 #   phase 2  `docker compose stop agentold` + start agent1/agent2 -> only HEAD
 # That is a rig control, not a fault injection, and it models the fleet state
-# `docs/operations.md:189-195` prescribes (controller first, then agents, one
+# `docs/operator-manual/operations.md:189-195` prescribes (controller first, then agents, one
 # at a time) more directly than a label split does.
 #
 # ---------------------------------------------------------------------------

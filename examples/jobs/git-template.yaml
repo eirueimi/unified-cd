@@ -6,7 +6,7 @@
 # uses: targets must be `kind: JobTemplate` — a strict schema holding only what
 # inlining can honor (description/params/shell/podTemplate.spec.{containers,volumes}/steps).
 # Pointing uses: at a `kind: Job` fails at run creation with a conversion hint.
-# See templates/README.md and docs/jobs.md.
+# See templates/README.md and docs/user-guide/writing-jobs/templates-and-reuse.md.
 #
 # The steps below fetch a real template (this repository's
 # templates/smoke-check.yaml), so this example actually runs.

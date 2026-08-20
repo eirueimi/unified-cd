@@ -63,7 +63,7 @@ func verifySchema(db *sql.DB) error {
 		return fmt.Errorf(
 			"schema verification: schema_migrations is dirty at version %d - either a previous migration attempt crashed midway "+
 				"or another replica's migration is currently in flight; if this error persists across restarts, repair the schema "+
-				"manually and clear the flag (golang-migrate 'force'), see docs/troubleshooting.md (\"Schema drift\")",
+				"manually and clear the flag (golang-migrate 'force'), see docs/troubleshooting/controller-and-database.md (\"Schema drift\")",
 			version)
 	}
 	for _, s := range schemaSentinels {
@@ -107,7 +107,7 @@ func verifySchema(db *sql.DB) error {
 			return fmt.Errorf(
 				"schema drift: schema_migrations.version=%d claims %s is applied, but %s does not exist; "+
 					"migration files were likely renumbered after this database was migrated - "+
-					"see docs/troubleshooting.md (\"Schema drift\") for recovery",
+					"see docs/troubleshooting/controller-and-database.md (\"Schema drift\") for recovery",
 				version, s.migration, obj)
 		}
 	}

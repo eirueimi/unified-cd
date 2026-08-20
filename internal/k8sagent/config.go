@@ -70,7 +70,7 @@ type AgentPodTemplate struct {
 // built image, which contains this constant — so the digest of the image a
 // given commit produces cannot be written into that same commit. A digest
 // pin here could only ever name the PREVIOUS release, which would permanently
-// hard-code the very version skew that docs/operations.md's lockstep
+// hard-code the very version skew that docs/operator-manual/operations.md's lockstep
 // requirement forbids, instead of merely risking it.
 //
 // The exposure that pins the two siblings — a mutable tag lets a registry
@@ -81,7 +81,7 @@ type AgentPodTemplate struct {
 // operators who need it closed should set `shimImage` explicitly to the
 // digest of the k8s-agent image they actually deployed (which they know, and
 // which is by construction the lockstep-correct value). See
-// docs/kubernetes-integration.md's "Shim image" section.
+// docs/operator-manual/kubernetes-integration.md's "Shim image" section.
 //
 // Making the field REQUIRED was considered and rejected: it would break every
 // existing deployment on upgrade to force a value that is mechanically
@@ -108,7 +108,7 @@ const defaultShimImage = "ghcr.io/eirueimi/unified-cd-k8s-agent:latest"
 // readability, but the digest is what is pulled. A mutable tag would let a
 // registry compromise execute code in that container on every such job
 // across the fleet. Rotate this together with the runner image release —
-// see docs/operations.md#rotating-the-default-runnerpause-image-digests for
+// see docs/operator-manual/operations.md#rotating-the-default-runnerpause-image-digests for
 // the rotation procedure.
 const defaultPodImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3@sha256:d7fa1600cf2ec38b78a8893025db7a09cc70b8ac61ae474ceac48444905a729d"
 
@@ -121,11 +121,11 @@ const defaultPodImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3@sha256:d7fa16
 // let a registry compromise execute code in this sidecar on every k8s-agent
 // pod across the fleet, and that sidecar holds long-lived, bucket-scoped
 // static S3 credentials (injected via SidecarS3SecretName; see
-// cmd/unified-sidecar/main.go and docs/kubernetes-integration.md's threat
+// cmd/unified-sidecar/main.go and docs/operator-manual/kubernetes-integration.md's threat
 // model), making it a credential-exfiltration path, not just a code-exec one.
 // The tag is retained for readability, but the digest is what is pulled.
 // Rotate this together with the sidecar image release — see
-// docs/operations.md#rotating-the-default-runnerpause-image-digests for the
+// docs/operator-manual/operations.md#rotating-the-default-runnerpause-image-digests for the
 // rotation procedure.
 const defaultSidecarImage = "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest@sha256:5e30d747d7ec954a88d84f4f7a8b5ac5c4b69d152555b80e253e7a0938eb14dd"
 

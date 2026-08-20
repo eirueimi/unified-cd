@@ -18,7 +18,7 @@ var Version = ""
 // string.
 //
 // This value is reported, never compared: compatibility between a controller
-// and an agent is decided by capabilities (see docs/agents.md), not by
+// and an agent is decided by capabilities (see docs/operator-manual/agents.md), not by
 // version. The version exists so an operator can *see* the fleet's state
 // mid-upgrade.
 func BuildVersion() string {

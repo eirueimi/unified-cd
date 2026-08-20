@@ -1,7 +1,7 @@
 # Demonstrates: retry: — automatically re-running a failing `run:` step, with
 # a fixed backoff between tries and a per-attempt timeout.
 #
-# Semantics (see docs/jobs.md "Retry" and internal/dsl/types.go RetrySpec):
+# Semantics (see docs/user-guide/writing-jobs/steps.md "Retry" and internal/dsl/types.go RetrySpec):
 #   - retry.attempts is the TOTAL number of tries, including the first one.
 #     attempts: 3 means "try, and if it fails, try up to 2 more times."
 #   - retry.backoff is a fixed Go-duration wait between tries (default: 0,

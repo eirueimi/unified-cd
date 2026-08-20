@@ -13,5 +13,5 @@ package agent
 // else leaves it "dev".
 //
 // This value is reported, never compared: controller/agent compatibility is
-// decided by capabilities (see docs/agents.md), not by version.
+// decided by capabilities (see docs/operator-manual/agents.md), not by version.
 var Version = "dev"

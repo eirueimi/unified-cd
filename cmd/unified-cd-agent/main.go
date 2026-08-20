@@ -20,7 +20,7 @@ import (
 // compromise execute code in the primary container of every isolated job on
 // the fleet (see claimNeedsRunnerImage in internal/agent/claim_pod.go).
 // Rotate these together with the runner image release — see
-// docs/operations.md#rotating-the-default-runnerpause-image-digests for the
+// docs/operator-manual/operations.md#rotating-the-default-runnerpause-image-digests for the
 // rotation procedure.
 const (
 	defaultRunnerImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3@sha256:d7fa1600cf2ec38b78a8893025db7a09cc70b8ac61ae474ceac48444905a729d"

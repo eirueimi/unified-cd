@@ -11,7 +11,7 @@ import "runtime/debug"
 //
 // The sidecar has no wire to the controller, so this version is not reported
 // anywhere automatically — it is readable via `unified-sidecar version`.
-// That matters because docs/operations.md requires the sidecar image and the
+// That matters because docs/operator-manual/operations.md requires the sidecar image and the
 // k8s-agent to be upgraded in lockstep, and until now there was no way to
 // check which sidecar build a pod was actually running.
 var version = ""

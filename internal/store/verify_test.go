@@ -71,7 +71,7 @@ func TestVerifySchemaCleanAndDrifted(t *testing.T) {
 	assert.Contains(t, err.Error(), "schema drift")
 	assert.Contains(t, err.Error(), "007_step_call_link")
 	assert.Contains(t, err.Error(), "step_reports.child_run_id")
-	assert.Contains(t, err.Error(), "docs/troubleshooting.md")
+	assert.Contains(t, err.Error(), "docs/troubleshooting/controller-and-database.md")
 }
 
 // An index-only migration is sentineled by index presence; dropping the

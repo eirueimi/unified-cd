@@ -55,5 +55,5 @@ the standing rule.
 | `w2-8-grid2.awk` | W2-8 | reduce a Postgres log to `run_approvals` REAPER/DECIDE events |
 | `w2-9-partA.sh` | W2-9 | Part A — hog, saturate, probe, poll |
 | `w2-9-partB.sh` | W2-9 | Part B — falsify the threshold by cancelling one at a time |
-| `w2-9-partD.sh` | W2-9 | Part D — post-promotion tick vs `docs/high-availability.md:163`. **Run this first.** |
+| `w2-9-partD.sh` | W2-9 | Part D — post-promotion tick vs `docs/operator-manual/high-availability.md:163`. **Run this first.** |
 | `w2-1-analyze.py` | W2-1 | reduce a `log_statement='all'` capture to per-key advisory-lock events |
