@@ -36,6 +36,12 @@ jobs:
       # --strict makes a broken internal link or anchor fail the PR.
       - name: Build
         run: python -m mkdocs build --strict
+      # mkdocs-redirects writes its stub pages in on_post_build, after
+      # --strict has already validated the source tree, so it cannot see a
+      # redirect_maps entry that renders to the same path as a real page
+      # (which silently clobbers that page). This check closes that gap.
+      - name: Check for redirect/page collisions
+        run: python scripts/check_redirect_collisions.py
       - name: Upload the Pages artifact
         if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3

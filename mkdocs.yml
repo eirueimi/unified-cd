@@ -78,7 +78,6 @@ plugins:
         field-reference.md: reference/field-reference.md
         frontend-development.md: contributing/frontend-development.md
         jobs.md: user-guide/writing-jobs/index.md
-        troubleshooting.md: troubleshooting/index.md
         resources.md: user-guide/resources/index.md
 
 nav:
