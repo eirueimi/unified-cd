@@ -8,16 +8,6 @@ Both the minimal non-SSO setup and the Dex-based OIDC SSO setup are described.
 > The CLI is referred to as `unified-cd` throughout. This is the built binary (`./bin/unified-cd`);
 > source is under `cmd/unified-cli`. During development you can also use `go run ./cmd/unified-cli ...`.
 
-## Table of Contents
-
-- [Authentication Model Overview](#authentication-model-overview)
-- [Non-SSO Setup (Static Token)](#non-sso-setup-static-token)
-- [SSO Setup (OIDC / Dex)](#sso-setup-oidc-dex)
-- [CLI Configuration Resolution Order](#cli-configuration-resolution-order)
-- [Troubleshooting](#troubleshooting)
-
----
-
 ## Authentication Model Overview
 
 The controller management API (`/api/v1/*`) is protected by the `ServerAuth` middleware,

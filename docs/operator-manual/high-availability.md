@@ -2,24 +2,6 @@
 
 This document covers how to run unified-cd controllers in a redundant, single-point-of-failure-free configuration.
 
-## Table of Contents
-
-- [Design Principles](#design-principles)
-- [HA Architecture](#ha-architecture)
-- [Per-Component HA Behavior](#per-component-ha-behavior)
-- [Leader Failover Sequence](#leader-failover-sequence)
-- [Required Configuration](#required-configuration)
-- [Load Balancer and Sessions](#load-balancer-and-sessions)
-- [Rolling Deploys and Graceful Shutdown](#rolling-deploys-and-graceful-shutdown)
-- [External Dependency Redundancy](#external-dependency-redundancy)
-- [Agent Redundancy](#agent-redundancy)
-- [Orphaned-Run Recovery](#orphaned-run-recovery)
-- [Deployment Examples](#deployment-examples)
-- [Failure Scenarios and Behavior](#failure-scenarios-and-behavior)
-- [HA Checklist](#ha-checklist)
-
----
-
 ## Design Principles
 
 The unified-cd controller is designed to be **stateless**.

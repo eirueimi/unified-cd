@@ -15,7 +15,7 @@ spec:
   concurrency: { ... }            # concurrency control
   description: <string>           # optional: human-readable summary of the job
   timeoutMinutes: 60              # job-level timeout in minutes
-  native: false                   # true = host-process job, no containers at all (see below)
+  native: false                   # true = host-process job, no containers at all (see isolation-and-containers.md)
   podTemplate: { ... }            # sidecar containers for an isolated job (both agents honor this)
   steps:
     - name: <string>              # step name (required, unique within job)

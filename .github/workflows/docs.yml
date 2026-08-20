@@ -16,6 +16,10 @@ on:
       - 'mkdocs.yml'
       - 'CONTRIBUTING.md'
       - '.github/workflows/docs.yml'
+  # Path filtering above means the first push to main (before an admin has
+  # enabled Pages) can fail with nothing to re-trigger it except the GitHub
+  # UI's re-run button or a dummy commit. This gives a clean manual re-run.
+  workflow_dispatch:
 
 permissions:
   contents: read

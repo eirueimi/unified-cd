@@ -466,7 +466,7 @@ On the Kubernetes agent, combinations run sequentially within the Pod (the stand
 > **Upgrade note:** matrix support changed the agent claim wire format
 > (`ForeachKey`/`ForeachValue` were replaced by a `MatrixValues` map). There
 > is no backward-compatibility shim — see
-> [docs/agents.md](../../operator-manual/agents.md#matrix-wire-format-upgrade-note) for the
+> [Agent Labels and Routing](../../operator-manual/agents.md#matrix-wire-format-upgrade-note) for the
 > upgrade requirement.
 
 ---

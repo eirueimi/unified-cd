@@ -105,9 +105,10 @@ container fields the standard agent understands.
 
 > **Step-level `runsIn.image`/`runsIn.container` are removed.** A step-level
 > `runsIn:` key is now a parse error with a hint to use `podTemplate` +
-> `container:` (or a `uses:` template — see below). The **uses-level**
+> `container:` (or a `uses:` template — see [Uses-level `runsIn.image`
+> (scope)](templates-and-reuse.md#uses-level-runsinimage-scope)). The **uses-level**
 > `runsIn.image` (a scope spanning an entire inlined template) is unaffected
-> and still works exactly as before — see the next section.
+> and still works exactly as before — see [`native: true`](#native-true-host-process-jobs).
 
 ### `native: true` — host-process jobs
 

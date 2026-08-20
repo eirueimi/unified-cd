@@ -161,21 +161,6 @@ On Windows, use Task Scheduler (or a wrapper such as NSSM or WinSW) to run
 `unified-cd-agent.exe` with the same flags at logon/boot; there is no
 first-party template for it.
 
-## Table of Contents
-
-- [Running the agent as a service](#running-the-agent-as-a-service)
-- [Agent Labels](#agent-labels)
-- [agentSelector](#agentselector)
-- [Capabilities and routing](#capabilities-and-routing)
-- [Windows Agents](#windows-agents)
-- [Kubernetes Agent](#kubernetes-agent)
-- [Job isolation on the standard agent (claim pod)](#job-isolation-on-the-standard-agent-claim-pod)
-- [Workspace lifecycle](#workspace-lifecycle)
-- [Registration and liveness](#registration-and-liveness)
-- [Matrix wire format upgrade note](#matrix-wire-format-upgrade-note)
-
----
-
 ## Agent Labels
 
 Agents announce labels (tags) at startup. The controller uses them for `agentSelector` matching.
@@ -389,7 +374,7 @@ The sections above are host-agent-centric; the k8s-agent participates in the sam
 - It runs job/scope steps as Pods and attaches an artifact sidecar
   (`unified-artifact`) for `uploadArtifact`/`downloadArtifact`/`cache` steps.
 
-See [docs/kubernetes-integration.md](kubernetes-integration.md) for full setup,
+See [Kubernetes Integration Guide](kubernetes-integration.md) for full setup,
 sidecar, and pod-lifecycle details.
 
 ---
@@ -668,7 +653,7 @@ here.
 ## Matrix wire format upgrade note
 
 The release that added `matrix:`/`foreach:` step expansion (see
-[docs/jobs.md: Matrix and Foreach Steps](../user-guide/writing-jobs/steps.md#matrix-and-foreach-steps))
+[Steps](../user-guide/writing-jobs/steps.md#matrix-and-foreach-steps))
 changed the claim wire format: the previous per-claim `ForeachKey` /
 `ForeachValue` string fields were replaced by a `MatrixValues map[string]string`
 field (one entry per matrix dimension; a foreach-sugared step produces a

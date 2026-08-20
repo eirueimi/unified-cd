@@ -6,3 +6,4 @@ The generated JSON Schema for all resource kinds lives at
 | Topic | Document |
 |---|---|
 | VS Code YAML completion extension | [VS Code Extension](https://github.com/eirueimi/unified-cd/blob/main/editors/vscode/README.md) |
+| Generated schema documentation | [Field Reference](field-reference.md) |

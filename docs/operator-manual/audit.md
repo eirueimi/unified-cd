@@ -8,15 +8,6 @@ only covered approve/reject decisions.
 > The CLI is referred to as `unified-cd` throughout. This is the built binary (`./bin/unified-cd`);
 > source is under `cmd/unified-cli`. During development you can also use `go run ./cmd/unified-cli ...`.
 
-## Table of Contents
-
-- [What is recorded](#what-is-recorded)
-- [What is excluded](#what-is-excluded)
-- [Storage](#storage)
-- [API](#api)
-- [CLI](#cli)
-- [Retention](#retention)
-
 ## What is recorded
 
 Every **state-changing** (`POST`, `PUT`, `DELETE`) call to the controller's human-facing API is

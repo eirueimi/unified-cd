@@ -128,7 +128,7 @@ error such as:
 ```
 schema drift: schema_migrations.version=7 claims 007_step_call_link is applied,
 but step_reports.child_run_id does not exist; migration files were likely
-renumbered after this database was migrated - see docs/troubleshooting.md
+renumbered after this database was migrated - see docs/troubleshooting/controller-and-database.md
 ("Schema drift") for recovery
 ```
 
@@ -232,7 +232,7 @@ test -f /sys/fs/cgroup/cgroup.controllers && echo "cgroup v2 active"
 ```
 schema drift: schema_migrations.version=7 claims 007_step_call_link is applied,
 but step_reports.child_run_id does not exist; migration files were likely
-renumbered after this database was migrated - see docs/troubleshooting.md
+renumbered after this database was migrated - see docs/troubleshooting/controller-and-database.md
 ("Schema drift") for recovery
 ```
 

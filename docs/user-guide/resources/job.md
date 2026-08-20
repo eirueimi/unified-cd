@@ -69,7 +69,7 @@ spec:
         with:
           <key>: <value>
       uses:
-        job: git://<host>/<owner>/<repo>/<path>@<ref>   # target must be kind: JobTemplate (see below)
+        job: git://<host>/<owner>/<repo>/<path>@<ref>   # target must be kind: JobTemplate (see job-template.md)
         with:
           <key>: <value>
       cache:
