@@ -116,8 +116,8 @@ unified-cli agent enrollment create --agent-id my-agent --quiet \
 ```
 
 The token can also be given via `--enrollment-token-file` or `UNIFIED_AGENT_ENROLLMENT_TOKEN`.
-See [docs/agents.md](docs/agents.md) for labels/routing and running the agent as a
-systemd/launchd service, and [docs/kubernetes-integration.md](docs/kubernetes-integration.md)
+See [docs/operator-manual/agents.md](docs/operator-manual/agents.md) for labels/routing and running the agent as a
+systemd/launchd service, and [docs/operator-manual/kubernetes-integration.md](docs/operator-manual/kubernetes-integration.md)
 for the Kubernetes agent.
 
 Agent refresh credentials are stored by default at
@@ -127,7 +127,7 @@ restart, exactly one ID-scoped credential is discovered. If several exist,
 start with `--id` or `--credential-file`. The former shared
 `$HOME/.unified-cd/credential.json` location is ignored unless explicitly
 selected. Existing installations should follow the
-[ID-scoped credential migration guide](docs/migration-agent-id-scoped-credentials.md).
+[ID-scoped credential migration guide](docs/operator-manual/migrations/agent-id-scoped-credentials.md).
 Explicit VM agent IDs used with the default path must be portable canonical
 names: lowercase ASCII letters and digits, with internal `.`, `_`, or `-`.
 They must start and end with a letter or digit and cannot be Windows reserved
