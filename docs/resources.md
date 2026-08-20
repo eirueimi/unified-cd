@@ -17,7 +17,7 @@ All resources use `apiVersion: unified-cd/v1` and are applied with `unified-cli 
 
 ## Job
 
-The primary unit of work. See [Job Reference](jobs.md) for the full feature guide.
+The primary unit of work. See [Job Reference](user-guide/writing-jobs/index.md) for the full feature guide.
 
 ```yaml
 apiVersion: unified-cd/v1
@@ -108,7 +108,7 @@ spec:
     - parallel:                   # OR: a group of steps that run concurrently; see jobs.md
         - name: <string>          # ("Concurrent Steps (parallel)")
           run: <shell script>
-  finally:                        # optional — same structure as steps; see jobs.md#finally-block-finally
+  finally:                        # optional — same structure as steps; see user-guide/writing-jobs/approval-and-finally.md#finally-block-finally
     - name: <string>
       run: <shell script>
 ```
@@ -116,14 +116,14 @@ spec:
 ### Job isolation: `native` and `container:`
 
 Every job is isolated by default on both agents — see [Job Isolation:
-`native` and the claim pod](jobs.md#job-isolation-native-and-the-claim-pod)
+`native` and the claim pod](user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod)
 in the Job Reference for the full model (claim pod construction, supported
 runtimes, sidecar behavior). The schema-level surface is small:
 
 | Field | Behavior |
 |---|---|
 | `spec.native` | `true` opts the whole job out of isolation: every step runs as a host process, exactly like pre-isolation behavior. Host-agent only (a k8s-agent fails a `native: true` claim fast). Mutually exclusive with `podTemplate` and any step `container:` (apply-time errors). |
-| `podTemplate` | Sidecar container definitions for an isolated job. Full PodSpec is k8s-agent only; the standard agent reads `spec.containers` (name/image/env/`resources.limits`) to build its claim pod — see [Kubernetes Pod Template (`podTemplate`)](jobs.md#kubernetes-pod-template-podtemplate) in the Job Reference. |
+| `podTemplate` | Sidecar container definitions for an isolated job. Full PodSpec is k8s-agent only; the standard agent reads `spec.containers` (name/image/env/`resources.limits`) to build its claim pod — see [Kubernetes Pod Template (`podTemplate`)](user-guide/writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate) in the Job Reference. |
 | `step.container` | Exec into a named `podTemplate` container instead of the job's primary container. Requires a `podTemplate` defining that container name (checked at apply time for isolated jobs). This is the **canonical** field for targeting a container — the old step-level `runsIn: { image / container }` is **removed**. |
 
 Resource limits for a `podTemplate` container (previously `runsIn.resources`)
@@ -216,7 +216,7 @@ JobTemplate lives in a git repository and is fetched at run creation via the
 `uses:` step's `git://` URI. Its schema deliberately contains only what
 inlining into the caller's run can honor; any other field is rejected at run
 creation (strict decode). Pointing `uses:` at a `kind: Job` fails with a
-conversion hint. See [Job Reference — uses:](jobs.md) for the full contract
+conversion hint. See [Job Reference — uses:](user-guide/writing-jobs/index.md) for the full contract
 and [templates/README.md](https://github.com/eirueimi/unified-cd/blob/main/templates/README.md) for a ready-made collection.
 
 ```yaml
@@ -269,7 +269,7 @@ finally steps up with the full prefix chain applied at each level. A
 scope-mode `uses:` step (`runsIn.image`) rejects a target template that
 declares `finally:` — the scope pod's lifetime ends with the template body,
 so there is nothing left to run the finally steps in. See [Job Reference —
-Template `finally:`](jobs.md#template-finally-splice-into-the-caller) for
+Template `finally:`](user-guide/writing-jobs/templates-and-reuse.md#template-finally-splice-into-the-caller) for
 the full contract, ordering guarantee, and examples.
 
 ---
@@ -485,7 +485,7 @@ webhook receiver "wh": param "ref" is mapped from the request payload but job "b
 
 A literal `paramsMapping` value that never references `.Payload` (e.g.
 `image: myapp`) is author-controlled, not attacker-controlled, and is not
-subject to this requirement. See [Input fields](jobs.md#input-fields) for
+subject to this requirement. See [Input fields](user-guide/writing-jobs/parameters.md#input-fields) for
 `pattern`/`unvalidated`; a reasonable starting pattern for most identifiers
 (branch names, tags, commit SHAs) is `^[A-Za-z0-9._/-]+$`.
 

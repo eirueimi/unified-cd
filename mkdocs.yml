@@ -77,13 +77,25 @@ plugins:
         configuration.md: reference/configuration.md
         field-reference.md: reference/field-reference.md
         frontend-development.md: contributing/frontend-development.md
+        jobs.md: user-guide/writing-jobs/index.md
 
 nav:
   - Home: index.md
   - Getting Started:
       - Quickstart: getting-started/quickstart.md
   - User Guide:
-      - Writing Jobs: jobs.md
+      - Writing Jobs:
+          - Overview: user-guide/writing-jobs/index.md
+          - Job Structure: user-guide/writing-jobs/job-structure.md
+          - Parameters: user-guide/writing-jobs/parameters.md
+          - Steps: user-guide/writing-jobs/steps.md
+          - Expressions and Conditions: user-guide/writing-jobs/expressions.md
+          - Artifacts and Cache: user-guide/writing-jobs/artifacts-and-cache.md
+          - Templates and Reuse: user-guide/writing-jobs/templates-and-reuse.md
+          - Isolation and Containers: user-guide/writing-jobs/isolation-and-containers.md
+          - Concurrency and Agent Selection: user-guide/writing-jobs/concurrency-and-agent-selection.md
+          - Approval and Finally: user-guide/writing-jobs/approval-and-finally.md
+          - Complete Example: user-guide/writing-jobs/complete-example.md
       - Resources: resources.md
       - Secrets: user-guide/secrets.md
   - Operator Manual:

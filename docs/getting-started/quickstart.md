@@ -11,7 +11,7 @@ This guide walks you through installing unified-cd, running your first job, and 
 Separately, jobs are isolated by default: an unmarked job runs its steps inside a container, so
 the **agent host** also needs a container runtime (docker, podman, or nerdctl) to run jobs —
 unless a job opts out with `spec.native: true`. See [Job Isolation: `native` and the claim
-pod](../jobs.md#job-isolation-native-and-the-claim-pod) for the full model. This guide's examples use
+pod](../user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod) for the full model. This guide's examples use
 `native: true` so you can follow along without installing a runtime first — see the callout in
 step 6.
 
@@ -189,10 +189,10 @@ spec:
 > `native: true` runs steps directly on the agent host instead, which is what lets this
 > quickstart work without a container runtime installed. Remove `native: true` (and install
 > docker/podman/nerdctl) to get the default isolated behavior — see [Job Isolation: `native` and
-> the claim pod](../jobs.md#job-isolation-native-and-the-claim-pod).
+> the claim pod](../user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod).
 
 Steps run sequentially in the order listed. To run steps concurrently, group them under a
-`parallel:` block instead (see [Concurrent Steps (`parallel`)](../jobs.md#concurrent-steps-parallel)).
+`parallel:` block instead (see [Concurrent Steps (`parallel`)](../user-guide/writing-jobs/steps.md#concurrent-steps-parallel)).
 
 Apply it, trigger a run, and follow the logs:
 
@@ -445,7 +445,7 @@ The UI lets you:
 
 | Topic | Document |
 |---|---|
-| Complete Job YAML reference (all fields, concurrency, DAG, artifacts, cache) | [Job Reference](../jobs.md) |
+| Complete Job YAML reference (all fields, concurrency, DAG, artifacts, cache) | [Job Reference](../user-guide/writing-jobs/index.md) |
 | CLI commands and flags | [CLI Reference](../reference/cli.md) |
 | Environment variables and startup flags | [Configuration Reference](../reference/configuration.md) |
 | Authentication (human PATs/SSO and per-agent credentials) | [Authentication Guide](../operator-manual/authentication.md) |

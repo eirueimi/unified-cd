@@ -272,6 +272,15 @@ Decrypt X → template expansion + log masking → step execution
 
 ---
 
+## Secrets in Jobs
+
+```bash
+unified-cli secret set API_KEY_PROD "sk-..."
+unified-cli secret set slack-webhook-url "https://hooks.slack.com/services/..."
+```
+
+---
+
 ## Automatic Log Masking
 
 If a secret value appears in log output, the agent automatically replaces it with `***`.

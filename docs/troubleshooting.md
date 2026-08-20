@@ -74,7 +74,7 @@ unified-cli agent list
   already be running `--max-concurrent` jobs; start another agent in the pool
   or wait for a slot to free up.
 - If the job is called via a `call:` step from another run, check for the
-  slot-deadlock case first — see [Calling Other Jobs (`call`)](jobs.md#calling-other-jobs-call).
+  slot-deadlock case first — see [Calling Other Jobs (`call`)](user-guide/writing-jobs/templates-and-reuse.md#calling-other-jobs-call).
   A parent run holding its only agent slot while waiting on a same-pool child
   looks identical to this symptom but requires raising `--max-concurrent`
   instead of relabeling agents.
@@ -185,7 +185,7 @@ parameterized.
 ## Job isolation
 
 Jobs are isolated by default (see [Job Isolation: `native` and the claim
-pod](jobs.md#job-isolation-native-and-the-claim-pod)); most of the failures below are an
+pod](user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod)); most of the failures below are an
 isolation setup gap surfacing as a run failure.
 
 ### Run fails immediately: "isolated job requires a container runtime"
@@ -441,7 +441,7 @@ whether the sidecar's own process ever came up.
 **Cause**
 
 There are no readiness probes for `podTemplate` sidecars (see [Job Isolation:
-`native` and the claim pod](jobs.md#job-isolation-native-and-the-claim-pod)),
+`native` and the claim pod](user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod)),
 so a step can easily run before its sidecar is ready — or the sidecar's
 process may have failed to start at all (bad config, missing env var, crash
 on boot).
@@ -456,7 +456,7 @@ show whether it's still `running` or has `exited N`; a non-zero `N` is the
 container's exit code and points straight at why it never came up. This
 works even after the run finishes and the pod/container is torn down — the
 sidecar's log lines persist in the run's log store. See [Job Reference:
-Sidecar container logs](jobs.md#sidecar-container-logs) for the full
+Sidecar container logs](user-guide/writing-jobs/isolation-and-containers.md#sidecar-container-logs) for the full
 behavior.
 
 ## Artifact step fails `no such file`
@@ -491,7 +491,7 @@ step referencing `out/report.txt` relative to the workspace root instead of
   outright — see [Step fails with `artifact/cache path ... escapes the
   workspace`](#step-fails-with-artifactcache-path-escapes-the-workspace). Have
   the producing step write the file inside the workspace instead.
-- See [Job Reference: Artifacts](jobs.md#artifacts) for the full path
+- See [Job Reference: Artifacts](user-guide/writing-jobs/artifacts-and-cache.md#artifacts) for the full path
   resolution rules.
 
 ## `artifact download` fails
@@ -579,7 +579,7 @@ the target genuinely needs its own pod/agent/run semantics, keep it a
 
 **Symptom**
 
-A `uses:` step with `runsIn.image` set (a [scope](jobs.md#uses-level-runsinimage-scope))
+A `uses:` step with `runsIn.image` set (a [scope](user-guide/writing-jobs/templates-and-reuse.md#uses-level-runsinimage-scope))
 runs a template step that expects a file produced earlier in the outer job —
 `cat`, a build tool, a script — and the file is simply not there (`no such
 file or directory` or equivalent), with no error from the framework itself
@@ -607,7 +607,7 @@ Treat the scope like a separate machine and cross the boundary explicitly:
 - Get outputs back out via `uploadArtifact` (pushes to the run's artifact
   store, retrievable outside the scope) or `outputs:`/stdout.
 
-See [Uses-level `runsIn.image` (scope)](jobs.md#uses-level-runsinimage-scope)
+See [Uses-level `runsIn.image` (scope)](user-guide/writing-jobs/templates-and-reuse.md#uses-level-runsinimage-scope)
 for the full model.
 
 ## Job fails apply with a dangling `container:` reference
@@ -647,7 +647,7 @@ agent.
 - Fix the typo in the step's `container:` field, or
 - Remove `container:` from the step to use the primary container instead.
 
-See [Job Reference — `container:`](jobs.md#container-targeting-a-podtemplate-container)
+See [Job Reference — `container:`](user-guide/writing-jobs/isolation-and-containers.md#container-targeting-a-podtemplate-container)
 and [`ValidateContainerReferences`](https://github.com/eirueimi/unified-cd/blob/main/internal/dsl/container.go).
 
 ## `podTemplate` container/volume name rejected as an invalid DNS-1123 label
@@ -687,7 +687,7 @@ rejected by shape validation before it would even reach that comparison.
 Rename the container/volume to a valid DNS-1123 label, e.g. `my-tools`
 instead of `My_Tools`, `cache-vol` instead of `Cache Vol`. See [Job
 Reference — Kubernetes Pod Template
-(`podTemplate`)](jobs.md#kubernetes-pod-template-podtemplate) for the full
+(`podTemplate`)](user-guide/writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate) for the full
 rule and the reserved-name list.
 
 ## `uses: git://...` job fails to resolve with invalid characters
@@ -746,7 +746,7 @@ failed and the CLI/API give no other indication.
   ```
 - After adding or changing a non-trivial `if:`, check the agent log for
   `if: condition eval failed, running step` to confirm it compiled.
-- See [Job Reference: Conditional Execution (`if`)](jobs.md#conditional-execution-if)
+- See [Job Reference: Conditional Execution (`if`)](user-guide/writing-jobs/steps.md#conditional-execution-if)
   for the full CEL variable/function reference — this is especially important
   to verify for any `if:` gating a production deploy.
 
