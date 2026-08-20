@@ -102,7 +102,7 @@ Reference
   JSON Schema and Editor Setup          reference/json-schema.md
 Troubleshooting
   Symptom Index                         troubleshooting/index.md
-  (8 area pages)                        troubleshooting/*.md
+  (7 area pages)                        troubleshooting/*.md
 Contributing
   Contributing                          contributing/index.md
   Frontend Development                  contributing/frontend-development.md
@@ -137,14 +137,14 @@ and would create two places where the same command is documented.
 The `Secrets in Jobs` section is merged into `user-guide/secrets.md` rather than
 becoming its own page, removing an existing duplication between the two files.
 
-### 5.2 Split: `troubleshooting.md` (1,328 lines, 36 symptom sections)
+### 5.2 Split: `troubleshooting.md` (1,328 lines, 34 symptom sections)
 
-Thirty-six pages would be worse than one. The symptoms are grouped into eight
+Thirty-four pages would be worse than one. The symptoms are grouped into seven
 area pages — Runs and Scheduling, Steps and Execution, Artifacts and Storage,
-Templates and `uses`, Webhooks, Agents and Enrollment, Controller and Database,
-Secrets — each keeping its symptom headings verbatim.
+Templates and `uses`, Webhooks, Agents and Enrollment, and Controller and
+Database — each keeping its symptom headings verbatim.
 
-`troubleshooting/index.md` lists all 36 symptoms, one line each, linked to the
+`troubleshooting/index.md` lists all 34 symptoms, one line each, linked to the
 heading that covers it. This preserves the "search by the error message you
 saw" entry path, which is the page's primary use.
 
