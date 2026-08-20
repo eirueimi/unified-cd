@@ -1968,7 +1968,7 @@ spec:
 // pod build time, see internal/k8sagent/podbuilder.go mergeContainers) but
 // ValidateContainerReferences/validatePodTemplateNames were blind to it,
 // wrongly failing apply for the documented override.containers pattern
-// (docs/user-guide/writing-jobs/index.md).
+// (docs/user-guide/writing-jobs/isolation-and-containers.md).
 func TestJobValidate_ContainerRefs_Override(t *testing.T) {
 	// A uses-free job whose step targets a container defined ONLY in
 	// override.containers (not spec.containers) must pass apply validation.
