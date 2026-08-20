@@ -31,7 +31,7 @@ schema](#the-jobtemplate-schema) below). Its steps are inlined at the point of
 `uses`, and a non-scope template's `podTemplate` containers/volumes are merged
 into the caller's pod (see [Pod-shape merge](#pod-shape-merge-containers-and-volumes)).
 
-For private repositories, create a [GitCredential](../../resources.md#gitcredential) resource for the host.
+For private repositories, create a [GitCredential](../resources/git-credential.md#gitcredential) resource for the host.
 
 `uses:` steps are resolved everywhere steps can appear, including inside
 [`finally:`](approval-and-finally.md#finally-block-finally) — a `uses:` step in a `finally:` block is

@@ -502,7 +502,7 @@ unified-cli gitcredential delete github-bot
 
 ## schedule
 
-Manage [Schedules](../resources.md#schedule). Create/update a schedule with
+Manage [Schedules](../user-guide/resources/schedule.md#schedule). Create/update a schedule with
 `apply -f` (`kind: Schedule`); the commands below operate on existing ones.
 
 ### schedule list
@@ -660,7 +660,7 @@ unified-cli export -o ./exported/
 
 ## appsource
 
-Manage GitOps [AppSources](../resources.md#appsource). Create/update an AppSource
+Manage GitOps [AppSources](../user-guide/resources/app-source.md#appsource). Create/update an AppSource
 with `apply`; the commands below operate on existing ones.
 
 ### appsource sync
@@ -710,7 +710,7 @@ pruned by deletion).
 
 ## webhook
 
-Manage [WebhookReceivers](../resources.md#webhookreceiver). Create/update a
+Manage [WebhookReceivers](../user-guide/resources/webhook-receiver.md#webhookreceiver). Create/update a
 receiver with `apply -f` (`kind: WebhookReceiver`); the commands below
 operate on existing ones.
 

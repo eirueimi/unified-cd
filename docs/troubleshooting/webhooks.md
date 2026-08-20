@@ -55,7 +55,7 @@ verification failed. The message names the specific reason:
   curl -i -X POST http://<controller>/webhook/<name> \
     -H 'Content-Type: application/json' -H "X-Hub-Signature-256: $SIG" -d "$BODY"
   ```
-- See [Resource Reference: WebhookReceiver](../resources.md#webhookreceiver) for
+- See [Resource Reference: WebhookReceiver](../user-guide/resources/webhook-receiver.md#webhookreceiver) for
   the full auth field table and delivery response codes.
 
 ## Webhook returns 400 `invalid JSON payload`
@@ -112,6 +112,6 @@ value resolves for a required input.
   instead of requiring every caller to supply it.
 - Test the mapping by POSTing a representative payload to the receiver and
   confirming the response is `200` with a run, not `400`.
-- See [Resource Reference: WebhookReceiver](../resources.md#webhookreceiver) for
+- See [Resource Reference: WebhookReceiver](../user-guide/resources/webhook-receiver.md#webhookreceiver) for
   the full delivery response table (`200` / `204` / `401` / `400`).
 

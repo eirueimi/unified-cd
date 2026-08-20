@@ -418,7 +418,7 @@ button to retry. The controller's response codes:
 | `400 missing required param` | `paramsMapping` did not produce a required job input |
 | `401 signature verification failed` | wrong **Secret**, or signature sent in an unexpected header |
 
-See the [WebhookReceiver reference](../resources.md#webhookreceiver) and
+See the [WebhookReceiver reference](../user-guide/resources/webhook-receiver.md#webhookreceiver) and
 [Troubleshooting](../troubleshooting/webhooks.md#webhook-returns-401) for the full field
 and error tables.
 

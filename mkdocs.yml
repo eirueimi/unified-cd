@@ -79,6 +79,7 @@ plugins:
         frontend-development.md: contributing/frontend-development.md
         jobs.md: user-guide/writing-jobs/index.md
         troubleshooting.md: troubleshooting/index.md
+        resources.md: user-guide/resources/index.md
 
 nav:
   - Home: index.md
@@ -97,7 +98,14 @@ nav:
           - Concurrency and Agent Selection: user-guide/writing-jobs/concurrency-and-agent-selection.md
           - Approval and Finally: user-guide/writing-jobs/approval-and-finally.md
           - Complete Example: user-guide/writing-jobs/complete-example.md
-      - Resources: resources.md
+      - Resources:
+          - Overview: user-guide/resources/index.md
+          - Job: user-guide/resources/job.md
+          - JobTemplate: user-guide/resources/job-template.md
+          - Schedule: user-guide/resources/schedule.md
+          - WebhookReceiver: user-guide/resources/webhook-receiver.md
+          - GitCredential: user-guide/resources/git-credential.md
+          - AppSource: user-guide/resources/app-source.md
       - Secrets: user-guide/secrets.md
   - Operator Manual:
       - Agents and Routing: operator-manual/agents.md
