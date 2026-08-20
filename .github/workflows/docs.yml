@@ -1,0 +1,63 @@
+name: Docs
+
+# Path-filtered so ordinary Go changes never queue a docs build. CONTRIBUTING.md
+# is included because the site pulls it in with pymdownx.snippets (Task 3).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'CONTRIBUTING.md'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'CONTRIBUTING.md'
+      - '.github/workflows/docs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+      - name: Install MkDocs
+        run: python -m pip install -r docs/requirements.txt
+      # --strict makes a broken internal link or anchor fail the PR.
+      - name: Build
+        run: python -m mkdocs build --strict
+      - name: Upload the Pages artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    # Never cancel an in-flight deployment: a cancelled deploy-pages run can
+    # leave the Pages environment without a current deployment.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
