@@ -317,6 +317,7 @@ func main() {
 	km := resolved.KeyManager
 
 	var obj objectstore.ObjectStore
+	objectStoreState := "none"
 	if *s3Endpoint != "" && *s3Bucket != "" {
 		s3, err := objectstore.NewS3ObjectStore(ctx, objectstore.S3Config{
 			Endpoint:        *s3Endpoint,
@@ -329,9 +330,11 @@ func main() {
 			os.Exit(1)
 		}
 		obj = s3
+		objectStoreState = "s3"
 		slog.Info("using S3-compatible object store", "endpoint", *s3Endpoint, "bucket", *s3Bucket)
 	} else if *dataDir != "" {
 		obj = objectstore.NewLocalObjectStore(*dataDir)
+		objectStoreState = "local"
 		slog.Info("using local object store", "dir", *dataDir)
 	} else {
 		slog.Warn("no object store configured — log archival disabled")
@@ -361,6 +364,7 @@ func main() {
 	}
 
 	// OIDC configuration (config file > env vars)
+	oidcConfigured := false
 	if eff.OIDC != nil && eff.OIDC.Issuer != "" && eff.OIDC.ClientID != "" {
 		srv.SetOIDCConfig(&controller.OIDCConfig{
 			Issuer:         eff.OIDC.Issuer,
@@ -374,6 +378,7 @@ func main() {
 			UserMap:        eff.OIDC.UserMap,
 			DefaultRole:    eff.OIDC.DefaultRole,
 		})
+		oidcConfigured = true
 		slog.Info("OIDC configured", "issuer", eff.OIDC.Issuer, "issuerInternal", eff.OIDC.IssuerInternal, "browserSSO", eff.OIDC.ClientSecret != "")
 		if eff.OIDC.IssuerInternal == "" {
 			slog.Warn("UNIFIED_OIDC_ISSUER_INTERNAL not set: /dex/* proxy is disabled. CLI device flow will fail. Use docker-compose.sso.yml")
@@ -479,6 +484,15 @@ func main() {
 		defer cancel()
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
+
+	logStartupSummary(startupInputs{
+		ObjectStore:  objectStoreState,
+		KeyDesc:      resolved.Description,
+		KeyEphemeral: resolved.Ephemeral,
+		OIDC:         oidcConfigured,
+		WebUI:        *webDir != "" || *uiProxyTarget != "",
+		LogTrimDays:  *logTrimDays,
+	})
 
 	slog.Info("controller listening", "addr", *addr)
 	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

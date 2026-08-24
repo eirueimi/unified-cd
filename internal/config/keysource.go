@@ -53,6 +53,10 @@ type Resolved struct {
 	KeyManager secrets.KeyManager
 	// Description names the key's origin, for the startup log.
 	Description string
+	// Ephemeral is true when the key is generated per-process and lost on
+	// restart, taking every secret encrypted with it. Only development mode
+	// resolves this way; the startup summary warns on it.
+	Ephemeral bool
 	// Warnings are operator-facing messages main.go should emit via slog.Warn.
 	Warnings []string
 
@@ -95,6 +99,7 @@ func (k KeySource) Resolve(ctx context.Context) (Resolved, error) {
 		return Resolved{
 			KeyManager:  km,
 			Description: "ephemeral development key",
+			Ephemeral:   true,
 			Warnings: []string{"UNIFIED_DEV_MODE is set — using an ephemeral encryption key. " +
 				"Secrets stored now cannot be decrypted after a restart. Never use this in production."},
 		}, nil
