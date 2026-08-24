@@ -14,20 +14,24 @@ A complete set of manifests for installing the unified-cd `controller` and `k8s-
 
 ```bash
 # Quick trial (development-only; the bundled manifest explicitly opts into in-cluster HTTP)
-kubectl apply -f manifests/install.yaml
+kubectl apply -k manifests/install
 
 # Production (with external DB and S3)
 # 1. Create the unified-cd-controller and unified-cd-controller-kek Secrets
 #    (see "Creating the controller Secrets" below) — core-install.yaml ships
 #    no Secrets of its own.
-# 2. Replace `https://controller.example.invalid` in manifests/core-install.yaml
-#    with the HTTPS endpoint of your TLS terminator.
-# 3. kubectl apply -f manifests/core-install.yaml
+# 2. Download core-install.yaml from the release
+#    (https://github.com/eirueimi/unified-cd/releases/latest/download/core-install.yaml)
+#    and replace `https://controller.example.invalid` with the HTTPS endpoint
+#    of your TLS terminator.
+# 3. kubectl apply -f core-install.yaml
 
 # Agent only (controller running externally, e.g. Docker Compose on the host)
 # 1. Configure the external controller's in-cluster verifier and enrollment policy.
-# 2. Replace the example-invalid server URL in manifests/agent-only.yaml.
-# 3. kubectl apply -f manifests/agent-only.yaml
+# 2. Download agent-only.yaml from the release
+#    (https://github.com/eirueimi/unified-cd/releases/latest/download/agent-only.yaml)
+#    and replace the example-invalid server URL.
+# 3. kubectl apply -f agent-only.yaml
 ```
 
 ## Creating the controller Secrets
@@ -226,11 +230,11 @@ See `docker-compose.sso.yml` and `dex-config.sso.yaml` in the repo root for a wo
 ## Regenerating manifests
 
 Sources are in `base/` (per-component), `core-install/`, `install/`, and `agent-only/` as kustomize definitions.
-Do not edit `core-install.yaml`, `install.yaml`, or `agent-only.yaml` directly — regenerate them with:
-
-```bash
-make manifests
-```
+Nothing built from them is committed. `make manifests` (or `scripts/build-manifests.sh dist/manifests`
+directly) renders all three bundles into the gitignored `dist/manifests/` for local inspection or testing.
+The release workflow runs the same script with the release tag as the image-tag argument, so the bundles
+published on the GitHub Release pin both first-party images to that tag — that build, not a local one,
+is what operators install from.
 
 ## Related documentation
 

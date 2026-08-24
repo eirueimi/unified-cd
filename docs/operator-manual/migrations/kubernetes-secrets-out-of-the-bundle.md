@@ -57,3 +57,25 @@ secret "unified-cd-controller" not found
 
 Create the Secret and the Pod will start on its next reconcile; no restart of
 the Deployment is needed.
+
+## The bundle URLs also moved
+
+Alongside the Secrets change, the three install bundles are no longer committed
+to the repository — they're built from the `manifests/*` kustomize overlays and
+published as GitHub Release assets, pinned to the images that release published.
+The old `raw.githubusercontent.com` URLs pointed at `main`, so following them
+installed unreleased changes running `:latest` images; the release-asset URLs
+fix both problems.
+
+| Before | After |
+|---|---|
+| `https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/install.yaml` | `https://github.com/eirueimi/unified-cd/releases/download/v0.5.0/install.yaml` (pinned) or `https://github.com/eirueimi/unified-cd/releases/latest/download/install.yaml` (always newest) |
+| `https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/core-install.yaml` | `https://github.com/eirueimi/unified-cd/releases/download/v0.5.0/core-install.yaml` (pinned) or `https://github.com/eirueimi/unified-cd/releases/latest/download/core-install.yaml` (always newest) |
+| `https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/agent-only.yaml` | `https://github.com/eirueimi/unified-cd/releases/download/v0.5.0/agent-only.yaml` (pinned) or `https://github.com/eirueimi/unified-cd/releases/latest/download/agent-only.yaml` (always newest) |
+
+The old URLs are gone, not redirected: nothing is served from `main` at that
+path any more. Automation (scripts, GitOps sources, `curl` in CI) still
+pointing at a `raw.githubusercontent.com/.../manifests/*.yaml` URL will get a
+404 from that request rather than a stale or wrong manifest — update it to one
+of the release-asset URLs above, preferably the pinned form so an upgrade is a
+deliberate version bump rather than whatever `latest` happens to be that day.

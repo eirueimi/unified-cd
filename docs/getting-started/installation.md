@@ -37,10 +37,16 @@ not a current deployment feature.
 
 ```bash
 # Full install (controller + k8s-agent + PostgreSQL)
-kubectl apply -f https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/install.yaml
+# Pinned to a release
+kubectl apply -f https://github.com/eirueimi/unified-cd/releases/download/v0.5.0/install.yaml
+# Or always the newest release
+kubectl apply -f https://github.com/eirueimi/unified-cd/releases/latest/download/install.yaml
 
 # k8s-agent only (connect to existing controller)
-kubectl apply -f https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/agent-only.yaml
+# Pinned to a release
+kubectl apply -f https://github.com/eirueimi/unified-cd/releases/download/v0.5.0/agent-only.yaml
+# Or always the newest release
+kubectl apply -f https://github.com/eirueimi/unified-cd/releases/latest/download/agent-only.yaml
 ```
 
 ## Binaries

@@ -50,7 +50,7 @@ dev:
 	@echo "  make dev-ui   # Svelte HMR on :5173  (proxy /api → :8080)"
 
 manifests:
-	scripts/build-manifests.sh manifests
+	scripts/build-manifests.sh dist/manifests
 
 vscode-build:
 	cd editors/vscode && npm install && npm run build
