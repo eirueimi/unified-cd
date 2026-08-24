@@ -112,6 +112,7 @@ func TestLogStartupSummaryEmitsOneInfoAndOneWarnPerDegradedCapability(t *testing
 	assert.Contains(t, lines[0], `"msg":"startup summary"`)
 	assert.Contains(t, lines[0], `"objectStore":"none"`)
 	assert.Contains(t, lines[0], `"webUI":"served"`)
+	assert.Contains(t, lines[0], `"level":"INFO"`)
 
 	warned := strings.Join(lines[1:], "\n")
 	assert.Contains(t, warned, `"capability":"objectStore"`)
@@ -119,4 +120,7 @@ func TestLogStartupSummaryEmitsOneInfoAndOneWarnPerDegradedCapability(t *testing
 	assert.Contains(t, warned, `"capability":"sso"`)
 	assert.Contains(t, warned, `"capability":"logTrim"`)
 	assert.NotContains(t, warned, `"capability":"webUI"`)
+	for _, line := range lines[1:] {
+		assert.Contains(t, line, `"level":"WARN"`, "every degraded-capability record must be a warning: %s", line)
+	}
 }
