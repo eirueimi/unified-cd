@@ -267,6 +267,17 @@ https://github.com/eirueimi/unified-cd/releases/latest/download/install.yaml
 Local development uses `kubectl apply -k manifests/install`, which replaces
 applying a committed file and loses nothing.
 
+The ordering reasoned about above — bundles after images — is not the only
+ordering this job depends on. `.github/workflows/release.yml` (goreleaser)
+and `.github/workflows/release-docker.yml` both trigger independently off the
+same `v*` tag push, and it is goreleaser that creates the GitHub Release;
+this job only attaches assets to it. On v0.6.0, the first release to exercise
+this job, goreleaser took 5m33s to finish while this workflow reached its
+upload step at 2m48s — comfortably before the Release existed, not a near
+miss — so the upload failed with `release not found`. The `manifests` job
+therefore polls `gh release view` in a bounded loop before attaching assets,
+rather than assuming goreleaser has already run.
+
 ## 8. Migration
 
 For an operator already running from `core-install.yaml` with filled-in
