@@ -19,6 +19,19 @@ spec:
       containers:
         - name: k8s-agent
           image: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
+          # No CPU limit: a CPU limit throttles the container even when the
+          # node is idle, whereas a memory limit is what actually contains a
+          # runaway process. These values are a conservative floor for the
+          # agent process itself, not a capacity estimate — raise them if you
+          # see throttling or OOMKills under your load. They size only this
+          # Deployment's own Pods; the per-job Pods this agent launches are
+          # separate Pods with their own specs and are not covered here.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
           env:
             - name: UNIFIED_K8S_CONFIG
               value: /etc/unified-cd/config.yaml

@@ -29,6 +29,17 @@ spec:
           envFrom:
             - secretRef:
                 name: unified-cd-controller
+          # No CPU limit: a CPU limit throttles the container even when the
+          # node is idle, whereas a memory limit is what actually contains a
+          # runaway process. These values are a conservative floor for a
+          # normal controller workload, not a capacity estimate — raise them
+          # if you see throttling or OOMKills under your load.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
           livenessProbe:
             httpGet:
               path: /healthz

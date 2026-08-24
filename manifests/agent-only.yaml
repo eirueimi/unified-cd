@@ -95,6 +95,12 @@ spec:
           value: /etc/unified-cd/config.yaml
         image: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
         name: k8s-agent
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
         volumeMounts:
         - mountPath: /etc/unified-cd/config.yaml
           name: config
