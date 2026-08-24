@@ -62,6 +62,17 @@ kubectl create secret generic unified-cd-controller-kek -n unified-cd \
 3. Fill the KEK once and never re-apply a different value — every secret
    encrypted under the old key becomes permanently unreadable.
 
+The KEK lives in its own Secret, separate from `unified-cd-controller`, rather
+than as one more key alongside `UNIFIED_TOKEN` and friends. The controller's
+`envFrom` projects *every* key in the `unified-cd-controller` Secret into the
+process environment — that's how `UNIFIED_DB_DSN` etc. reach the container.
+Putting the KEK there would push the encryption key into the environment too,
+visible via `docker inspect`, `/proc/<pid>/environ`, crash dumps, and child
+processes (such as the git subprocess used for `AppSource` resolution). The
+KEK is instead consumed only through the `unified-cd-controller-kek` volume
+mount (`defaultMode: 0400`), which a Secret referenced by `envFrom` cannot
+provide. Keeping the two Secrets separate is deliberate — do not merge them.
+
 `UNIFIED_DB_DSN` is the PostgreSQL connection string; `UNIFIED_TOKEN` is the
 admin static token for human and CLI authentication. `UNIFIED_CONTROLLER_KEY_FILE`
 (pointing at the `unified-cd-controller-kek` mount) is baked into
