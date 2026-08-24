@@ -336,7 +336,7 @@ func TestKubernetesCredentialRenderedProductionManifestsUseHTTPS(t *testing.T) {
 	require.True(t, ok)
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	if _, err := exec.LookPath("kubectl"); err != nil {
-		t.Skip("kubectl not found in PATH; required to render the install bundles from the kustomize overlays")
+		t.Skip("kubectl not on PATH: skipping the rendered-manifest HTTPS assertion here; it still runs on the Linux CI legs")
 	}
 	for _, overlay := range []string{"core-install", "agent-only"} {
 		manifest := renderKustomizeOverlay(t, root, overlay)
