@@ -337,6 +337,12 @@ spec:
             - /garage
             - status
           periodSeconds: 5
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 256Mi
         volumeMounts:
         - mountPath: /data
           name: data
@@ -394,6 +400,12 @@ spec:
             - -U
             - unified
           periodSeconds: 5
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 250m
+            memory: 256Mi
         volumeMounts:
         - mountPath: /var/lib/postgresql/data
           name: data
@@ -443,6 +455,12 @@ spec:
             path: /readyz
             port: 8080
           periodSeconds: 10
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 256Mi
         volumeMounts:
         - mountPath: /etc/unified-cd/controller-config.yaml
           name: controller-config
@@ -489,6 +507,12 @@ spec:
           value: /etc/unified-cd/config.yaml
         image: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
         name: k8s-agent
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
         volumeMounts:
         - mountPath: /etc/unified-cd/config.yaml
           name: config

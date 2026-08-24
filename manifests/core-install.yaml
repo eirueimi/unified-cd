@@ -169,6 +169,14 @@ type: Opaque
 apiVersion: v1
 kind: Secret
 metadata:
+  annotations:
+    unified-cd.io/kek-warning: 'Fill in the kek value below once, from the output
+      of `unified-cli keygen`. Never re-apply this file with a different value: doing
+      so overwrites the key in the cluster, and every secret already encrypted under
+      the old key becomes permanently unreadable — there is no way to recover them.
+      If you keep this manifest under version control, keep the filled-in value out
+      of it (e.g. apply a local, gitignored copy, or manage this Secret out-of-band)
+      rather than committing the real key.'
   name: unified-cd-controller-kek
   namespace: unified-cd
 stringData:
@@ -228,6 +236,12 @@ spec:
             path: /readyz
             port: 8080
           periodSeconds: 10
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 256Mi
         volumeMounts:
         - mountPath: /etc/unified-cd/controller-config.yaml
           name: controller-config
@@ -274,6 +288,12 @@ spec:
           value: /etc/unified-cd/config.yaml
         image: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
         name: k8s-agent
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
         volumeMounts:
         - mountPath: /etc/unified-cd/config.yaml
           name: config

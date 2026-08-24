@@ -25,6 +25,17 @@ spec:
               value: unified
             - name: POSTGRES_DB
               value: unified
+          # No CPU limit: a CPU limit throttles the container even when the
+          # node is idle, whereas a memory limit is what actually contains a
+          # runaway process. These values are a conservative floor for a
+          # normal unified-cd workload, not a capacity estimate — raise them
+          # if you see throttling or OOMKills under your load.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
           ports:
             - containerPort: 5432
           volumeMounts:
