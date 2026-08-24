@@ -50,9 +50,7 @@ dev:
 	@echo "  make dev-ui   # Svelte HMR on :5173  (proxy /api → :8080)"
 
 manifests:
-	kubectl kustomize manifests/core-install > manifests/core-install.yaml
-	kubectl kustomize manifests/install > manifests/install.yaml
-	kubectl kustomize manifests/agent-only > manifests/agent-only.yaml
+	scripts/build-manifests.sh manifests
 
 vscode-build:
 	cd editors/vscode && npm install && npm run build

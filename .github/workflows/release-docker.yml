@@ -188,3 +188,31 @@ jobs:
             exit 1
           fi
           echo "All 5 images published at ${TAG}."
+
+  manifests:
+    name: Publish install bundles
+    # After verify, not merely after merge: the bundles name the images, so
+    # they should not be published until those images are confirmed good.
+    needs: [verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required to attach assets to the release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kustomize
+        run: |
+          curl -sL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+      # The bundles name the images this release just published, so they are
+      # built from the tag rather than from whatever the overlays carry.
+      - name: Build bundles pinned to ${{ github.ref_name }}
+        run: scripts/build-manifests.sh dist/manifests "${{ github.ref_name }}"
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/manifests/core-install.yaml \
+            dist/manifests/install.yaml \
+            dist/manifests/agent-only.yaml \
+            --clobber
