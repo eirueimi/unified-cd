@@ -65,6 +65,12 @@ kubectl create secret generic unified-cd-controller-kek -n unified-cd \
    artifacts are off.
 3. Fill the KEK once and never re-apply a different value — every secret
    encrypted under the old key becomes permanently unreadable.
+4. Back up `./kek` somewhere durable before it's discarded — it is the only
+   copy outside the cluster, and it's what makes every secret the controller
+   stores recoverable if the `unified-cd-controller-kek` Secret is ever lost.
+   Once it's backed up and the Secret is created, delete the local `./kek`
+   file; there's no reason for a second copy to keep sitting in a working
+   directory.
 
 The KEK lives in its own Secret, separate from `unified-cd-controller`, rather
 than as one more key alongside `UNIFIED_TOKEN` and friends. The controller's
@@ -91,9 +97,20 @@ To wrap the controller's key-encryption key with Vault/OpenBao Transit instead o
 key file, set `UNIFIED_KMS_URI` and point the controller at Vault's Kubernetes auth method.
 Because the controller Pod already runs under a ServiceAccount (`unified-cd-controller`),
 no additional token Secret needs to be mounted — the projected ServiceAccount token doubles
-as the credential Vault's Kubernetes auth method verifies. Add these keys to the
-`kubectl create secret` command in place of `UNIFIED_CONTROLLER_KEY_FILE` (so the
-`unified-cd-controller-kek` Secret and its volume mount are not needed at all):
+as the credential Vault's Kubernetes auth method verifies.
+
+`core-install.yaml`'s controller container hardcodes `UNIFIED_CONTROLLER_KEY_FILE=/etc/unified-cd/kek`
+in its `env` and mounts the `unified-cd-controller-kek` Secret regardless of `UNIFIED_KMS_URI`.
+`KeySource.Validate()` rejects having both a key file and a KMS URI configured, so the controller
+exits immediately if both are present. Before applying, edit the downloaded `core-install.yaml`
+to remove:
+
+- the `UNIFIED_CONTROLLER_KEY_FILE` entry from the controller container's `env`
+- the `controller-kek` entry from the controller container's `volumeMounts`
+- the `controller-kek` entry from the Pod's `volumes`
+
+Then add these keys to the `kubectl create secret` command in place of `UNIFIED_CONTROLLER_KEY_FILE`
+(the `unified-cd-controller-kek` Secret itself is then not needed):
 
 ```bash
 kubectl create secret generic unified-cd-controller -n unified-cd \

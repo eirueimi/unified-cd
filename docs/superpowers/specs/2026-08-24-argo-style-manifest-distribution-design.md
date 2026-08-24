@@ -299,8 +299,10 @@ The change is complete when:
 3. `core-install.yaml` as released contains no Secret resource;
    `install.yaml` still contains its development-default Secrets.
 4. Applying the released `core-install.yaml` to a cluster with the two Secrets
-   pre-created brings the controller up; applying it without them leaves the
-   pod in `CreateContainerConfigError` and nothing worse.
+   pre-created brings the controller up; applying it without `unified-cd-controller`
+   leaves the pod in `CreateContainerConfigError`, and applying it without
+   `unified-cd-controller-kek` leaves the pod in `ContainerCreating` with a
+   `MountVolume.SetUp failed` event — nothing worse in either case.
 5. Starting a controller with no object store configured emits both the summary
    record and a warn record naming log archival and artifacts; starting one
    with `logTrimDays > 0` and no object store additionally warns that the

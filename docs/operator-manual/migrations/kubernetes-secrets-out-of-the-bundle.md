@@ -42,6 +42,11 @@ kubectl create secret generic unified-cd-controller-kek -n unified-cd \
   --from-file=kek=./kek
 ```
 
+Back up `./kek` somewhere durable before you discard it — it's the only copy
+outside the cluster, and losing both leaves every secret the controller has
+stored permanently unreadable. Once it's backed up and the Secret above is
+created, delete the local `./kek` file.
+
 See [Kubernetes Install Manifests: Creating the controller Secrets](https://github.com/eirueimi/unified-cd/blob/main/manifests/README.md#creating-the-controller-secrets)
 for why the KEK uses `--from-file` instead of `--from-literal`, and for the
 Vault/OpenBao and SSO variants of this command.
@@ -55,8 +60,19 @@ the controller Pod stays in `CreateContainerConfigError`, with an event reading:
 secret "unified-cd-controller" not found
 ```
 
-Create the Secret and the Pod will start on its next reconcile; no restart of
-the Deployment is needed.
+If `unified-cd-controller-kek` is the one missing instead, the failure looks
+different: the Pod never reaches container creation at all, and sits in
+`ContainerCreating` with an event reading:
+
+```
+MountVolume.SetUp failed for volume "controller-kek" : secret "unified-cd-controller-kek" not found
+```
+
+This is the likelier of the two to be hit in practice, since creating the KEK
+Secret is the one that needs an extra `unified-cli keygen` step beforehand.
+
+Create the missing Secret and the Pod will start on its next reconcile; no
+restart of the Deployment is needed.
 
 ## The bundle URLs also moved
 
@@ -65,13 +81,16 @@ to the repository — they're built from the `manifests/*` kustomize overlays an
 published as GitHub Release assets, pinned to the images that release published.
 The old `raw.githubusercontent.com` URLs pointed at `main`, so following them
 installed unreleased changes running `:latest` images; the release-asset URLs
-fix both problems.
+fix both problems. The bundles are published starting with **v0.6.0**; a
+release before that has no `install.yaml`, `core-install.yaml`, or
+`agent-only.yaml` asset at all, because the release job that builds them
+did not exist yet.
 
 | Before | After |
 |---|---|
-| `https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/install.yaml` | `https://github.com/eirueimi/unified-cd/releases/download/v0.5.0/install.yaml` (pinned) or `https://github.com/eirueimi/unified-cd/releases/latest/download/install.yaml` (always newest) |
-| `https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/core-install.yaml` | `https://github.com/eirueimi/unified-cd/releases/download/v0.5.0/core-install.yaml` (pinned) or `https://github.com/eirueimi/unified-cd/releases/latest/download/core-install.yaml` (always newest) |
-| `https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/agent-only.yaml` | `https://github.com/eirueimi/unified-cd/releases/download/v0.5.0/agent-only.yaml` (pinned) or `https://github.com/eirueimi/unified-cd/releases/latest/download/agent-only.yaml` (always newest) |
+| `https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/install.yaml` | `https://github.com/eirueimi/unified-cd/releases/download/v0.6.0/install.yaml` (pinned) or `https://github.com/eirueimi/unified-cd/releases/latest/download/install.yaml` (always newest) |
+| `https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/core-install.yaml` | `https://github.com/eirueimi/unified-cd/releases/download/v0.6.0/core-install.yaml` (pinned) or `https://github.com/eirueimi/unified-cd/releases/latest/download/core-install.yaml` (always newest) |
+| `https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/agent-only.yaml` | `https://github.com/eirueimi/unified-cd/releases/download/v0.6.0/agent-only.yaml` (pinned) or `https://github.com/eirueimi/unified-cd/releases/latest/download/agent-only.yaml` (always newest) |
 
 The old URLs are gone, not redirected: nothing is served from `main` at that
 path any more. Automation (scripts, GitOps sources, `curl` in CI) still

@@ -24,7 +24,7 @@ func lost(t *testing.T, caps []capabilityState, name string) string {
 func TestSummarizeStartupReportsNothingLostWhenFullyConfigured(t *testing.T) {
 	caps := summarizeStartup(startupInputs{
 		ObjectStore: "s3",
-		KeyDesc:     "key file /etc/unified-cd/kek",
+		KeySource:   "file",
 		OIDC:        true,
 		WebUI:       true,
 		LogTrimDays: 30,
@@ -38,7 +38,7 @@ func TestSummarizeStartupReportsNothingLostWhenFullyConfigured(t *testing.T) {
 func TestSummarizeStartupNamesWhatEachDegradedCapabilityCosts(t *testing.T) {
 	caps := summarizeStartup(startupInputs{
 		ObjectStore:  "none",
-		KeyDesc:      "ephemeral development key",
+		KeySource:    "ephemeral",
 		KeyEphemeral: true,
 		OIDC:         false,
 		WebUI:        false,
@@ -60,7 +60,7 @@ func TestSummarizeStartupNamesWhatEachDegradedCapabilityCosts(t *testing.T) {
 func TestSummarizeStartupFlagsLogTrimAsInertWithoutAnObjectStore(t *testing.T) {
 	caps := summarizeStartup(startupInputs{
 		ObjectStore: "none",
-		KeyDesc:     "key file /etc/unified-cd/kek",
+		KeySource:   "file",
 		OIDC:        true,
 		WebUI:       true,
 		LogTrimDays: 30,
@@ -80,7 +80,7 @@ func TestSummarizeStartupFlagsLogTrimAsInertWithoutAnObjectStore(t *testing.T) {
 func TestSummarizeStartupOmitsLogTrimWhenItWouldActuallyRun(t *testing.T) {
 	caps := summarizeStartup(startupInputs{
 		ObjectStore: "s3",
-		KeyDesc:     "key file /etc/unified-cd/kek",
+		KeySource:   "file",
 		OIDC:        true,
 		WebUI:       true,
 		LogTrimDays: 30,
@@ -99,7 +99,7 @@ func TestLogStartupSummaryEmitsOneInfoAndOneWarnPerDegradedCapability(t *testing
 
 	logStartupSummary(startupInputs{
 		ObjectStore:  "none",
-		KeyDesc:      "ephemeral development key",
+		KeySource:    "ephemeral",
 		KeyEphemeral: true,
 		OIDC:         false,
 		WebUI:        true,

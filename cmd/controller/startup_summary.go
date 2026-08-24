@@ -26,8 +26,12 @@ type startupInputs struct {
 	// ObjectStore is "s3", "local", or "none", matching the selection order in
 	// main (S3, then UNIFIED_DATA_DIR, then nothing).
 	ObjectStore string
-	// KeyDesc is config.Resolved.Description — the key's origin.
-	KeyDesc string
+	// KeySource is "file", "kms", or "ephemeral" — which of config.KeySource's
+	// three sources resolved the encryption key. Derived by the caller from
+	// config.KeySource's own fields plus config.Resolved.Ephemeral, not from
+	// config.Resolved.Description: that field is a free-form, path-carrying
+	// string for the one-time "encryption key loaded" log line, not this enum.
+	KeySource string
 	// KeyEphemeral is config.Resolved.Ephemeral: the key does not survive a
 	// restart, so neither do the secrets encrypted with it.
 	KeyEphemeral bool
@@ -39,7 +43,7 @@ type startupInputs struct {
 func summarizeStartup(in startupInputs) []capabilityState {
 	caps := []capabilityState{
 		{Name: "objectStore", State: in.ObjectStore},
-		{Name: "secretKey", State: in.KeyDesc},
+		{Name: "secretKey", State: in.KeySource},
 		{Name: "sso", State: onOff(in.OIDC, "oidc")},
 		{Name: "webUI", State: onOff(in.WebUI, "served")},
 	}

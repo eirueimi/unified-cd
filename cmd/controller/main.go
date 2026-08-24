@@ -485,9 +485,17 @@ func main() {
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
 
+	keySource := "file"
+	switch {
+	case resolved.Ephemeral:
+		keySource = "ephemeral"
+	case eff.KeySource.KMSURI != "":
+		keySource = "kms"
+	}
+
 	logStartupSummary(startupInputs{
 		ObjectStore:  objectStoreState,
-		KeyDesc:      resolved.Description,
+		KeySource:    keySource,
 		KeyEphemeral: resolved.Ephemeral,
 		OIDC:         oidcConfigured,
 		WebUI:        *webDir != "" || *uiProxyTarget != "",

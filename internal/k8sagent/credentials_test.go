@@ -350,6 +350,9 @@ func TestKubernetesCredentialRenderedProductionManifestsUseHTTPS(t *testing.T) {
 func renderKustomizeOverlay(t *testing.T, root, overlay string) string {
 	t.Helper()
 	out, err := exec.Command("kubectl", "kustomize", filepath.Join(root, "manifests", overlay)).Output()
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		t.Fatalf("kubectl kustomize manifests/%s: %v\nstderr:\n%s", overlay, err, exitErr.Stderr)
+	}
 	require.NoError(t, err, "kubectl kustomize manifests/%s", overlay)
 	return string(out)
 }

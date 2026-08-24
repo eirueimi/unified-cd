@@ -18,20 +18,30 @@ mkdir -p "$out_dir"
 
 overlays=(core-install install agent-only)
 
+# kubectl embeds kustomize for `kubectl kustomize`; every path below needs it.
+command -v kubectl >/dev/null || {
+  echo "kubectl not found; it is required to render the manifests" >&2
+  exit 1
+}
+
 if [ -n "$image_tag" ]; then
-  # kubectl embeds kustomize for `kubectl kustomize` but does not expose
-  # `kustomize edit`, so the standalone CLI is required for this branch.
-  command -v kustomize >/dev/null || {
-    echo "kustomize CLI not found; it is required to pin an image tag" >&2
-    exit 1
-  }
+  # kubectl's embedded kustomize does not expose `kustomize edit`, so instead
+  # of shelling out to the standalone CLI, append the `images:` block it would
+  # have written directly. `kubectl kustomize` honours an `images:` block the
+  # same way the standalone CLI does, so this needs no CLI at all.
   for overlay in "${overlays[@]}"; do
-    (
-      cd "$repo_root/manifests/$overlay"
-      kustomize edit set image \
-        "ghcr.io/eirueimi/unified-cd-controller=ghcr.io/eirueimi/unified-cd-controller:$image_tag" \
-        "ghcr.io/eirueimi/unified-cd-k8s-agent=ghcr.io/eirueimi/unified-cd-k8s-agent:$image_tag"
-    )
+    kfile="$repo_root/manifests/$overlay/kustomization.yaml"
+    if grep -q '^images:' "$kfile"; then
+      echo "$kfile already has an images: block; refusing to append a second one" >&2
+      exit 1
+    fi
+    cat >>"$kfile" <<EOF
+images:
+  - name: ghcr.io/eirueimi/unified-cd-controller
+    newTag: $image_tag
+  - name: ghcr.io/eirueimi/unified-cd-k8s-agent
+    newTag: $image_tag
+EOF
   done
 fi
 
