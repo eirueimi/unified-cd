@@ -153,29 +153,6 @@ metadata:
   namespace: unified-cd
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: unified-cd-controller
-  namespace: unified-cd
-stringData:
-  UNIFIED_DB_DSN: REPLACE_WITH_POSTGRES_DSN
-  UNIFIED_S3_BUCKET: REPLACE_WITH_S3_BUCKET
-  UNIFIED_S3_ENDPOINT: REPLACE_WITH_S3_ENDPOINT
-  UNIFIED_S3_KEY: REPLACE_WITH_S3_ACCESS_KEY
-  UNIFIED_S3_SECRET: REPLACE_WITH_S3_SECRET
-  UNIFIED_TOKEN: REPLACE_WITH_ADMIN_TOKEN
-type: Opaque
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: unified-cd-controller-kek
-  namespace: unified-cd
-stringData:
-  kek: REPLACE_WITH_64_HEX_CHARS_FROM_unified-cli_keygen
-type: Opaque
----
-apiVersion: v1
 kind: Service
 metadata:
   name: unified-cd-controller
