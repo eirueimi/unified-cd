@@ -2,7 +2,7 @@
 # ANOTHER run, specifically a job called via `call:`.
 #
 # On success, a `call:` step exposes the child run's ID to later steps as
-# `{{ .Steps.<call-step-name>.ChildRunID }}` (see docs/jobs.md "call steps"
+# `{{ .Steps.<call-step-name>.ChildRunID }}` (see docs/user-guide/writing-jobs/templates-and-reuse.md "call steps"
 # and "Downloading from another run (runId)"). Passing that expression as
 # downloadArtifact.runId retrieves an artifact the child run uploaded via
 # uploadArtifact, instead of looking in the current run (the default when

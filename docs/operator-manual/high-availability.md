@@ -2,24 +2,6 @@
 
 This document covers how to run unified-cd controllers in a redundant, single-point-of-failure-free configuration.
 
-## Table of Contents
-
-- [Design Principles](#design-principles)
-- [HA Architecture](#ha-architecture)
-- [Per-Component HA Behavior](#per-component-ha-behavior)
-- [Leader Failover Sequence](#leader-failover-sequence)
-- [Required Configuration](#required-configuration)
-- [Load Balancer and Sessions](#load-balancer-and-sessions)
-- [Rolling Deploys and Graceful Shutdown](#rolling-deploys-and-graceful-shutdown)
-- [External Dependency Redundancy](#external-dependency-redundancy)
-- [Agent Redundancy](#agent-redundancy)
-- [Orphaned-Run Recovery](#orphaned-run-recovery)
-- [Deployment Examples](#deployment-examples)
-- [Failure Scenarios and Behavior](#failure-scenarios-and-behavior)
-- [HA Checklist](#ha-checklist)
-
----
-
 ## Design Principles
 
 The unified-cd controller is designed to be **stateless**.
@@ -334,7 +316,7 @@ Redundant controllers are not enough if PostgreSQL or S3 is a single point of fa
 - **Auto-unseal is a prerequisite for unattended HA** — without it, every node
   restart needs a manual unseal.
 
-See [Secrets Management Guide: Using Vault or OpenBao (Transit)](secrets.md#using-vault-or-openbao-transit)
+See [Secrets Management Guide: Using Vault or OpenBao (Transit)](../user-guide/secrets.md#using-vault-or-openbao-transit)
 for the policy and setup unified-cd itself requires.
 
 ---
@@ -507,7 +489,7 @@ docker compose up -d --scale controller=3
 
 > The repo-root `docker-compose.yaml` is for development (source build with hot
 > reload) and exposes fixed ports. For a published-image stack see
-> [`deployments/docker/docker-compose.yaml`](../deployments/docker/docker-compose.yaml).
+> [`deployments/docker/docker-compose.yaml`](https://github.com/eirueimi/unified-cd/blob/main/deployments/docker/docker-compose.yaml).
 > For HA, remove the `ports` from the controller service and put a reverse proxy (nginx etc.) in front.
 
 ### Kubernetes (conceptual example)

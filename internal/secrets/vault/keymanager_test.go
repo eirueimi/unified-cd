@@ -196,7 +196,7 @@ func TestKeyManager_CachesUnwrappedDEKs(t *testing.T) {
 }
 
 // Design §5: "Token expired or revoked — re-login, then retry the operation
-// once." This is the flow docs/secrets.md documents: an operator revokes the
+// once." This is the flow docs/user-guide/secrets.md documents: an operator revokes the
 // controller's token and drops a replacement into UNIFIED_VAULT_TOKEN_FILE.
 // The very next encrypt must succeed via one re-login and one retry, not fail
 // until the next renewal tick (up to half a lease away).

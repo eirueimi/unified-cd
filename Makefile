@@ -1,4 +1,4 @@
-.PHONY: build test test-short ha-test lint clean fmt dev dev-go dev-ui ui-build generate manifests vscode-build vscode-package
+.PHONY: build test test-short ha-test lint clean fmt dev dev-go dev-ui ui-build generate manifests vscode-build vscode-package docs-build docs-serve
 
 GO ?= go
 GOFLAGS ?= -trimpath
@@ -59,3 +59,11 @@ vscode-build:
 
 vscode-package:
 	cd editors/vscode && npm install && npm run package
+
+# Documentation site (MkDocs). Python-only; no Go or web-UI target depends on
+# this. Install once with: python -m pip install -r docs/requirements.txt
+docs-build:
+	python -m mkdocs build --strict
+
+docs-serve:
+	python -m mkdocs serve

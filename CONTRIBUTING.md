@@ -5,7 +5,7 @@ requests are all welcome.
 
 ## License
 
-unified-cd is licensed under the [Apache License, Version 2.0](LICENSE). By
+unified-cd is licensed under the [Apache License, Version 2.0](https://github.com/eirueimi/unified-cd/blob/main/LICENSE). By
 submitting a contribution, you agree that it is provided under the same license
 (Apache-2.0 §5, "inbound = outbound").
 
@@ -57,6 +57,6 @@ for older commits use an interactive rebase.
 
 ## Development
 
-See the "Development" section in the [README](README.md) for build and test
+See the "Development" section in the [README](https://github.com/eirueimi/unified-cd/blob/main/README.md) for build and test
 commands (`make build`, `make test`, `make dev-go`, `make dev-ui`, …). Please run
 the tests before opening a pull request.

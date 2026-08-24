@@ -40,3 +40,6 @@ test/edgecase/tools/w6/bin/
 # must never be committed.
 # Regenerate with test/edgecase/k8s/make-w4-2-restricted-kubeconfig.sh.
 test/edgecase/k8s/.w4-2-restricted.kubeconfig
+
+# MkDocs build output (mkdocs build writes here; the site is published from CI).
+/site/

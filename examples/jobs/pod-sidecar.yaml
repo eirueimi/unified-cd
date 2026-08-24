@@ -24,7 +24,7 @@
 #   sidecar (which has the mysql client) and runs a real query against the
 #   app_test database.
 #
-# See docs/jobs.md#job-isolation-native-and-the-claim-pod for the full model.
+# See docs/user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod for the full model.
 apiVersion: unified-cd/v1
 kind: Job
 metadata:

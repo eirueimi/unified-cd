@@ -401,7 +401,7 @@ func TestTriggerRun_RecordsPrincipal(t *testing.T) {
 
 // TestAPI_TriggerRun_MissingRequiredParam verifies that triggering a job with a
 // declared `required: true` input and no default fails with 400 when the
-// caller omits it, per docs/jobs.md ("the run fails immediately when the
+// caller omits it, per docs/user-guide/writing-jobs/parameters.md ("the run fails immediately when the
 // value is not supplied").
 func TestAPI_TriggerRun_MissingRequiredParam(t *testing.T) {
 	s, pg := newTestServer(t)

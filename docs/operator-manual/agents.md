@@ -31,7 +31,7 @@ arbitrarily. The former shared `$HOME/.unified-cd/credential.json` path is
 ignored by default and is used only when explicitly passed with
 `--credential-file`. A process never removes another ID's credential.
 
-See [Migrating to ID-scoped agent credentials](migration-agent-id-scoped-credentials.md)
+See [Migrating to ID-scoped agent credentials](migrations/agent-id-scoped-credentials.md)
 when upgrading a host that has the former shared credential path.
 
 `unified-cli agent enrollment create` prints the ready-to-run
@@ -161,21 +161,6 @@ On Windows, use Task Scheduler (or a wrapper such as NSSM or WinSW) to run
 `unified-cd-agent.exe` with the same flags at logon/boot; there is no
 first-party template for it.
 
-## Table of Contents
-
-- [Running the agent as a service](#running-the-agent-as-a-service)
-- [Agent Labels](#agent-labels)
-- [agentSelector](#agentselector)
-- [Capabilities and routing](#capabilities-and-routing)
-- [Windows Agents](#windows-agents)
-- [Kubernetes Agent](#kubernetes-agent)
-- [Job isolation on the standard agent (claim pod)](#job-isolation-on-the-standard-agent-claim-pod)
-- [Workspace lifecycle](#workspace-lifecycle)
-- [Registration and liveness](#registration-and-liveness)
-- [Matrix wire format upgrade note](#matrix-wire-format-upgrade-note)
-
----
-
 ## Agent Labels
 
 Agents announce labels (tags) at startup. The controller uses them for `agentSelector` matching.
@@ -291,7 +276,7 @@ works out which capability a run of it needs:
   can't honor (a named agent-side template, an `override` patch, a pod-spec
   field beyond `containers`, or a container field outside what the host
   degrades — see [Kubernetes Pod
-  Template](jobs.md#kubernetes-pod-template-podtemplate)) → `pod`.
+  Template](../user-guide/writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate)) → `pod`.
 - Everything else (the isolated default, or a host-runnable `podTemplate`) →
   `container`.
 
@@ -329,7 +314,7 @@ never match anything.
 **If no registered agent can satisfy a job's inferred capability and
 selector**, the run stays `Queued` indefinitely rather than failing — see
 [Job stays Queued / unschedulable
-warning](troubleshooting.md#job-stays-queued--unschedulable-warning) in the
+warning](../troubleshooting/runs-and-scheduling.md#job-stays-queued-unschedulable-warning) in the
 Troubleshooting guide for how the Web UI surfaces this and how to fix it.
 
 ---
@@ -358,7 +343,7 @@ Every `step.run` receives the `UNIFIED_AGENT_OS` environment variable (Go's `run
 
 > **Isolated jobs and scopes always run in Linux, regardless of host OS.** A
 > step in an isolated job (the default — see [Job Isolation: `native` and the
-> claim pod](jobs.md#job-isolation-native-and-the-claim-pod)) or a `uses:`
+> claim pod](../user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod)) or a `uses:`
 > scope step always executes in a Linux container, so `UNIFIED_AGENT_OS` is
 > `linux` there even when the agent's host is Windows or macOS
 > (`internal/agent/agent_os.go: agentOSForStep`). Only steps in a `native:
@@ -389,7 +374,7 @@ The sections above are host-agent-centric; the k8s-agent participates in the sam
 - It runs job/scope steps as Pods and attaches an artifact sidecar
   (`unified-artifact`) for `uploadArtifact`/`downloadArtifact`/`cache` steps.
 
-See [docs/kubernetes-integration.md](kubernetes-integration.md) for full setup,
+See [Kubernetes Integration Guide](kubernetes-integration.md) for full setup,
 sidecar, and pod-lifecycle details.
 
 ---
@@ -404,7 +389,7 @@ the pause container's netns and sharing the claim's per-job workspace via a
 bind mount. This mirrors the Kubernetes agent's real Pod: `podTemplate`
 sidecars are reachable at `localhost` from a default step, and no host ports
 are ever published, so concurrent claims never collide. See [Job Isolation:
-`native` and the claim pod](jobs.md#job-isolation-native-and-the-claim-pod)
+`native` and the claim pod](../user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod)
 in the Job Reference for the full model and YAML examples.
 
 **Supported container runtimes:** docker, podman, nerdctl. Apple's
@@ -432,7 +417,7 @@ the compose network.
 | `--pause-image` | `pauseImage` | `busybox:1.36` | Image for the pause (netns-holder) container, one per claim. |
 | `--runner-image` | `runnerImage` | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Primary container image injected when the job's `podTemplate` defines none. |
 
-See [Configuration Reference: Agent Flags](configuration.md#agent-flags) for
+See [Configuration Reference: Agent Flags](../reference/configuration.md#agent-flags) for
 the full flag list.
 
 ### Shim installation (`ucd-sh`)
@@ -476,7 +461,7 @@ startup-time hard-fails so a misconfigured agent never silently degrades
 into a confusing per-step failure. **Native steps are unaffected**: a
 `native: true` job's steps still run as plain host processes under host
 `bash -lc` (or an explicit `shell:`), never touching `/.ucd` or the shim —
-see [Job Reference: `native: true`](jobs.md#native-true--host-process-jobs).
+see [Job Reference: `native: true`](../user-guide/writing-jobs/isolation-and-containers.md#native-true-host-process-jobs).
 
 #### Compose development builds
 
@@ -668,7 +653,7 @@ here.
 ## Matrix wire format upgrade note
 
 The release that added `matrix:`/`foreach:` step expansion (see
-[docs/jobs.md: Matrix and Foreach Steps](jobs.md#matrix-and-foreach-steps))
+[Steps](../user-guide/writing-jobs/steps.md#matrix-and-foreach-steps))
 changed the claim wire format: the previous per-claim `ForeachKey` /
 `ForeachValue` string fields were replaced by a `MatrixValues map[string]string`
 field (one entry per matrix dimension; a foreach-sugared step produces a

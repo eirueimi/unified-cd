@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # W2-9 Part D: does the post-promotion tick process "any accumulated Pending Runs"?
-# docs/high-availability.md:163 says it does. Test it with >50 accumulated.
+# docs/operator-manual/high-availability.md:163 says it does. Test it with >50 accumulated.
 set -u
 SCRATCH="${SCRATCH:?run from test/ha with SCRATCH exported, e.g. export SCRATCH=<scratchpad>/w2-9}"
 S="$SCRATCH"
@@ -20,7 +20,7 @@ case "$LEADER" in
   controller1|controller2|controller3) : ;;
   *) echo "ABORT: could not identify the scheduler leader (got '$LEADER'). Set LEADER= explicitly." >&2; exit 1 ;;
 esac
-# The contract at docs/high-availability.md:163 is only contradicted ABOVE the
+# The contract at docs/operator-manual/high-availability.md:163 is only contradicted ABOVE the
 # scheduler.go:58 limit of 50, so a smaller backlog measures nothing.
 PEND=$(psql "SELECT count(*) FROM runs WHERE status='Pending';" | tr -d '\r')
 case "$PEND" in

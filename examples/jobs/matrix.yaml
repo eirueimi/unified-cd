@@ -1,6 +1,6 @@
 # Demonstrates: multi-dimensional matrix step (os x arch), minus one excluded
 # combination, plus output aggregation across combinations.
-# See docs/jobs.md's "Matrix and Foreach Steps" section for the full syntax
+# See docs/user-guide/writing-jobs/steps.md's "Matrix and Foreach Steps" section for the full syntax
 # reference (dimensions, exclude, combination-key normal form, output
 # aggregation, and the matrix-max-combinations cap).
 # Usage:

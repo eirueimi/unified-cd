@@ -40,7 +40,7 @@ func run(ctx context.Context, newStore storeProvider, args []string, stderr io.W
 		return 0
 	}
 	// `version` needs no store and no arguments: it is how an operator checks
-	// that a running sidecar container matches its k8s-agent (docs/operations.md
+	// that a running sidecar container matches its k8s-agent (docs/operator-manual/operations.md
 	// requires the two to be upgraded in lockstep).
 	if isVersionCommand(args) {
 		fmt.Fprintln(os.Stdout, buildVersion())

@@ -23,8 +23,6 @@ revocable credentials.
 
 ## Installation
 
-### Docker (recommended for production)
-
 ```bash
 # Controller
 docker pull ghcr.io/eirueimi/unified-cd-controller:latest
@@ -33,56 +31,7 @@ docker pull ghcr.io/eirueimi/unified-cd-controller:latest
 docker pull ghcr.io/eirueimi/unified-cd-k8s-agent:latest
 ```
 
-Images are published to [GitHub Container Registry](https://github.com/eirueimi/unified-cd/pkgs/container/unified-cd-controller) on every `v*` tag for `linux/amd64` and `linux/arm64`.
-
-A ready-to-run stack using these published images (controller + PostgreSQL + Garage + a Docker agent) lives at [`deployments/docker/docker-compose.yaml`](deployments/docker/docker-compose.yaml). Unlike the repo-root `docker-compose.yaml` (source build with hot reload, for development), this one pulls the release images:
-
-```bash
-cp .env.example .env    # set UNIFIED_TOKEN
-# Generate a persistent secret-encryption key (or skip this and keep the
-# default UNIFIED_DEV_MODE=1 for a throwaway key — secrets won't survive a restart):
-unified-cli keygen --out ./kek
-# In .env set UNIFIED_CONTROLLER_KEY_FILE=/run/secrets/kek, then add this volume
-# mount under the controller service in deployments/docker/docker-compose.yaml:
-#   volumes:
-#     - ./kek:/run/secrets/kek:ro
-docker compose --env-file .env -f deployments/docker/docker-compose.yaml up -d
-```
-
-Pin a release by setting `UNIFIED_CD_VERSION` (e.g. `v0.0.3`) in `.env`.
-
-The repository-root Compose files are development-only and do not define a
-production security boundary. Production controllers require HTTPS. Per-agent
-credential enrollment is implemented; mTLS agent certificates are future work,
-not a current deployment feature.
-
-### Kubernetes
-
-```bash
-# Full install (controller + k8s-agent + PostgreSQL)
-kubectl apply -f https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/install.yaml
-
-# k8s-agent only (connect to existing controller)
-kubectl apply -f https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/agent-only.yaml
-```
-
-### Binaries
-
-Pre-built binaries for Linux, macOS, and Windows (amd64/arm64) are available on the [Releases page](https://github.com/eirueimi/unified-cd/releases):
-
-```bash
-# Example: Linux amd64
-curl -L https://github.com/eirueimi/unified-cd/releases/latest/download/unified-cli_linux_amd64.tar.gz | tar xz
-sudo mv unified-cli /usr/local/bin/
-```
-
-Or install from source with Go:
-
-```bash
-go install github.com/eirueimi/unified-cd/cmd/unified-cd-agent@latest    # → $GOBIN/unified-cd-agent
-go install github.com/eirueimi/unified-cd/cmd/controller@latest  # controller
-go install github.com/eirueimi/unified-cd/cmd/unified-cli@latest # CLI
-```
+See the [Installation guide](https://eirueimi.github.io/unified-cd/getting-started/installation/) for Kubernetes manifests, pre-built binaries, and building from source.
 
 ---
 
@@ -167,8 +116,8 @@ unified-cli agent enrollment create --agent-id my-agent --quiet \
 ```
 
 The token can also be given via `--enrollment-token-file` or `UNIFIED_AGENT_ENROLLMENT_TOKEN`.
-See [docs/agents.md](docs/agents.md) for labels/routing and running the agent as a
-systemd/launchd service, and [docs/kubernetes-integration.md](docs/kubernetes-integration.md)
+See [docs/operator-manual/agents.md](docs/operator-manual/agents.md) for labels/routing and running the agent as a
+systemd/launchd service, and [docs/operator-manual/kubernetes-integration.md](docs/operator-manual/kubernetes-integration.md)
 for the Kubernetes agent.
 
 Agent refresh credentials are stored by default at
@@ -178,7 +127,7 @@ restart, exactly one ID-scoped credential is discovered. If several exist,
 start with `--id` or `--credential-file`. The former shared
 `$HOME/.unified-cd/credential.json` location is ignored unless explicitly
 selected. Existing installations should follow the
-[ID-scoped credential migration guide](docs/migration-agent-id-scoped-credentials.md).
+[ID-scoped credential migration guide](docs/operator-manual/migrations/agent-id-scoped-credentials.md).
 Explicit VM agent IDs used with the default path must be portable canonical
 names: lowercase ASCII letters and digits, with internal `.`, `_`, or `-`.
 They must start and end with a letter or digit and cannot be Windows reserved
@@ -195,60 +144,44 @@ make test-short  # skip integration tests
 
 ## Architecture
 
-```
-CLI / Browser / Webhook
-        │
-        ▼
-┌─────────────────┐     ┌───────────────┐
-│   Controller    │────►│  PostgreSQL   │  jobs, runs, queue, secrets, sessions
-│   (stateless)   │     └───────────────┘
-│   N replicas    │     ┌───────────────┐
-│   behind LB     │────►│  S3 / Garage  │  log archives, artifacts, git template cache
-└────────┬────────┘     └───────────────┘
-         │ HTTP long-poll
-         ▼
-┌────────────────────────────────────────┐
-│  Agents                                │
-│  ┌──────────┐  ┌──────────┐  ┌──────┐ │
-│  │  Linux   │  │  Windows │  │  k8s │ │  execute job steps
-│  └──────────┘  └──────────┘  └──────┘ │
-└────────────────────────────────────────┘
-```
-
 - **Controller** — stateless HTTP server; schedules and dispatches jobs; manages all resources
-- **Agent** — connects to controller via long-polling; executes job steps in a per-job workspace directory. Jobs are isolated by default: each claim runs inside a container ("claim pod": a pause container + `podTemplate` sidecars sharing one network namespace), the same model as the k8s-agent's real Pod. Jobs that need the host itself opt out with `spec.native: true` — see [Job Isolation](docs/jobs.md#job-isolation-native-and-the-claim-pod).
+- **Agent** — connects to controller via long-polling; executes job steps in a per-job workspace directory. Jobs are isolated by default: each claim runs inside a container ("claim pod": a pause container + `podTemplate` sidecars sharing one network namespace), the same model as the k8s-agent's real Pod. Jobs that need the host itself opt out with `spec.native: true` — see [Job Isolation](https://eirueimi.github.io/unified-cd/user-guide/writing-jobs/isolation-and-containers/#job-isolation-native-and-the-claim-pod).
 - **k8s-agent** — Kubernetes-native agent; creates a Pod per job and exec's steps inside it
 - **CLI** — `unified-cli` — apply YAML, trigger runs, stream logs, manage secrets and tokens
+
+See the [Core Concepts guide](https://eirueimi.github.io/unified-cd/getting-started/concepts/) for the full architecture diagram.
 
 ---
 
 ## Documentation
 
+The full documentation is published at **https://eirueimi.github.io/unified-cd/**.
+
 ### Getting Started
-- **[Getting Started Guide](docs/getting-started.md)** — installation, first job, parameters, secrets, schedules, webhooks
+- **[Getting Started Guide](https://eirueimi.github.io/unified-cd/getting-started/quickstart/)** — installation, first job, parameters, secrets, schedules, webhooks
 
 ### Core References
-- **[Job Reference](docs/jobs.md)** — complete Job YAML guide: steps, DAG, conditions, concurrency, artifacts, cache, templates
-- **[Resource Reference](docs/resources.md)** — schema for all resource kinds: Job, Schedule, WebhookReceiver, GitCredential, AppSource
-- **[CLI Reference](docs/cli.md)** — all commands and flags
-- **[Configuration Reference](docs/configuration.md)** — all environment variables and config file options for controller, agent, and k8s-agent
-- **[Field Reference](docs/field-reference.md)** — auto-generated field-level schema reference
+- **[Job Reference](https://eirueimi.github.io/unified-cd/user-guide/writing-jobs/)** — complete Job YAML guide: steps, DAG, conditions, concurrency, artifacts, cache, templates
+- **[Resource Reference](https://eirueimi.github.io/unified-cd/user-guide/resources/)** — schema for all resource kinds: Job, Schedule, WebhookReceiver, GitCredential, AppSource
+- **[CLI Reference](https://eirueimi.github.io/unified-cd/reference/cli/)** — all commands and flags
+- **[Configuration Reference](https://eirueimi.github.io/unified-cd/reference/configuration/)** — all environment variables and config file options for controller, agent, and k8s-agent
+- **[Field Reference](https://eirueimi.github.io/unified-cd/reference/field-reference/)** — auto-generated field-level schema reference
 
 ### Feature Guides
-- **[Authentication Guide](docs/authentication.md)** — static tokens, PATs, OIDC SSO (Dex), CLI login
-- **[Secrets Management Guide](docs/secrets.md)** — create, reference, and encrypt secrets; log masking
-- **[Agent Labels and Routing](docs/agents.md)** — agentSelector, capability-based routing, hostname labels, Windows agents
-- **[Kubernetes Integration Guide](docs/kubernetes-integration.md)** — k8s-agent setup, podTemplate patterns, RBAC
-- **[High Availability Guide](docs/high-availability.md)** — controller redundancy, leader election, rolling deploys
-- **[Operations Guide](docs/operations.md)** — state layout, backup, recovery runbook, monitoring
-- **[Audit Log Guide](docs/audit.md)** — what's recorded/excluded, `GET /api/v1/audit`, `audit list`, retention
-- **[Frontend Development Guide](docs/frontend-development.md)** — Svelte + Vite setup, hot reload, routing
-- **[Troubleshooting](docs/troubleshooting.md)** — symptom-indexed fixes for common failures
-- **[ID-Scoped Agent Credential Migration](docs/migration-agent-id-scoped-credentials.md)** — move legacy shared agent credentials safely
+- **[Authentication Guide](https://eirueimi.github.io/unified-cd/operator-manual/authentication/)** — static tokens, PATs, OIDC SSO (Dex), CLI login
+- **[Secrets Management Guide](https://eirueimi.github.io/unified-cd/user-guide/secrets/)** — create, reference, and encrypt secrets; log masking
+- **[Agent Labels and Routing](https://eirueimi.github.io/unified-cd/operator-manual/agents/)** — agentSelector, capability-based routing, hostname labels, Windows agents
+- **[Kubernetes Integration Guide](https://eirueimi.github.io/unified-cd/operator-manual/kubernetes-integration/)** — k8s-agent setup, podTemplate patterns, RBAC
+- **[High Availability Guide](https://eirueimi.github.io/unified-cd/operator-manual/high-availability/)** — controller redundancy, leader election, rolling deploys
+- **[Operations Guide](https://eirueimi.github.io/unified-cd/operator-manual/operations/)** — state layout, backup, recovery runbook, monitoring
+- **[Audit Log Guide](https://eirueimi.github.io/unified-cd/operator-manual/audit/)** — what's recorded/excluded, `GET /api/v1/audit`, `audit list`, retention
+- **[Frontend Development Guide](https://eirueimi.github.io/unified-cd/contributing/frontend-development/)** — Svelte + Vite setup, hot reload, routing
+- **[Troubleshooting](https://eirueimi.github.io/unified-cd/troubleshooting/)** — symptom-indexed fixes for common failures
+- **[ID-Scoped Agent Credential Migration](https://eirueimi.github.io/unified-cd/operator-manual/migrations/agent-id-scoped-credentials/)** — move legacy shared agent credentials safely
 
 ### Infrastructure
-- **[Kubernetes Manifests](manifests/README.md)** — install manifests for production and evaluation
-- **[VS Code Extension](editors/vscode/README.md)** — YAML completion and validation for unified-cd files
+- **[Kubernetes Manifests](https://github.com/eirueimi/unified-cd/blob/main/manifests/README.md)** — install manifests for production and evaluation
+- **[VS Code Extension](https://github.com/eirueimi/unified-cd/blob/main/editors/vscode/README.md)** — YAML completion and validation for unified-cd files
 
 ---
 

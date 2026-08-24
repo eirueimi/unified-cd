@@ -70,7 +70,7 @@ podStartTimeout: 60s
 
 # THE ONE CHANGE FOR PART D: poolIdleTimeout is ABSENT.
 #
-# That is the PRODUCT DEFAULT. docs/configuration.md:458 glosses that default
+# That is the PRODUCT DEFAULT. docs/reference/configuration.md:444 glosses that default
 # as "(no reuse)". This file exists to measure what the default actually does:
 # PoolIdleTimeoutDuration (config.go:121-131) returns 0, main.go:69-70 then
 # never calls SetIdleTimeout, and StartEviction (pool.go:130-133) returns at

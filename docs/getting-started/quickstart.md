@@ -11,7 +11,7 @@ This guide walks you through installing unified-cd, running your first job, and 
 Separately, jobs are isolated by default: an unmarked job runs its steps inside a container, so
 the **agent host** also needs a container runtime (docker, podman, or nerdctl) to run jobs —
 unless a job opts out with `spec.native: true`. See [Job Isolation: `native` and the claim
-pod](jobs.md#job-isolation-native-and-the-claim-pod) for the full model. This guide's examples use
+pod](../user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod) for the full model. This guide's examples use
 `native: true` so you can follow along without installing a runtime first — see the callout in
 step 6.
 
@@ -87,7 +87,7 @@ The controller runs database migrations on startup. When ready you'll see:
 INFO  server listening  addr=:8080
 ```
 
-**Key configuration options** (see [Configuration Reference](configuration.md) for the full list):
+**Key configuration options** (see [Configuration Reference](../reference/configuration.md) for the full list):
 
 | Environment variable | Description | Required |
 |---|---|---|
@@ -189,10 +189,10 @@ spec:
 > `native: true` runs steps directly on the agent host instead, which is what lets this
 > quickstart work without a container runtime installed. Remove `native: true` (and install
 > docker/podman/nerdctl) to get the default isolated behavior — see [Job Isolation: `native` and
-> the claim pod](jobs.md#job-isolation-native-and-the-claim-pod).
+> the claim pod](../user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod).
 
 Steps run sequentially in the order listed. To run steps concurrently, group them under a
-`parallel:` block instead (see [Concurrent Steps (`parallel`)](jobs.md#concurrent-steps-parallel)).
+`parallel:` block instead (see [Concurrent Steps (`parallel`)](../user-guide/writing-jobs/steps.md#concurrent-steps-parallel)).
 
 Apply it, trigger a run, and follow the logs:
 
@@ -418,8 +418,8 @@ button to retry. The controller's response codes:
 | `400 missing required param` | `paramsMapping` did not produce a required job input |
 | `401 signature verification failed` | wrong **Secret**, or signature sent in an unexpected header |
 
-See the [WebhookReceiver reference](resources.md#webhookreceiver) and
-[Troubleshooting](troubleshooting.md#webhook-returns-401) for the full field
+See the [WebhookReceiver reference](../user-guide/resources/webhook-receiver.md#webhookreceiver) and
+[Troubleshooting](../troubleshooting/webhooks.md#webhook-returns-401) for the full field
 and error tables.
 
 ---
@@ -445,15 +445,15 @@ The UI lets you:
 
 | Topic | Document |
 |---|---|
-| Complete Job YAML reference (all fields, concurrency, DAG, artifacts, cache) | [Job Reference](jobs.md) |
-| CLI commands and flags | [CLI Reference](cli.md) |
-| Environment variables and startup flags | [Configuration Reference](configuration.md) |
-| Authentication (human PATs/SSO and per-agent credentials) | [Authentication Guide](authentication.md) |
-| Agent labels and routing | [Agent Labels and Routing](agents.md) |
-| Secrets management and encryption model | [Secrets Management Guide](secrets.md) |
-| Kubernetes pod-based agents | [Kubernetes Integration Guide](kubernetes-integration.md) |
-| High availability and rolling deploys | [High Availability Guide](high-availability.md) |
-| Frontend development | [Frontend Development Guide](frontend-development.md) |
-| VS Code YAML completion extension | [VS Code Extension](../editors/vscode/README.md) |
-| Kubernetes install manifests | [Kubernetes Manifests](../manifests/README.md) |
-| Field-level schema reference (auto-generated) | [Field Reference](field-reference.md) |
+| Complete Job YAML reference (all fields, concurrency, DAG, artifacts, cache) | [Job Reference](../user-guide/writing-jobs/index.md) |
+| CLI commands and flags | [CLI Reference](../reference/cli.md) |
+| Environment variables and startup flags | [Configuration Reference](../reference/configuration.md) |
+| Authentication (human PATs/SSO and per-agent credentials) | [Authentication Guide](../operator-manual/authentication.md) |
+| Agent labels and routing | [Agent Labels and Routing](../operator-manual/agents.md) |
+| Secrets management and encryption model | [Secrets Management Guide](../user-guide/secrets.md) |
+| Kubernetes pod-based agents | [Kubernetes Integration Guide](../operator-manual/kubernetes-integration.md) |
+| High availability and rolling deploys | [High Availability Guide](../operator-manual/high-availability.md) |
+| Frontend development | [Frontend Development Guide](../contributing/frontend-development.md) |
+| JSON Schema and editor setup | [JSON Schema and Editor Setup](../reference/json-schema.md) |
+| Kubernetes install manifests | [Kubernetes Manifests](https://github.com/eirueimi/unified-cd/blob/main/manifests/README.md) |
+| Field-level schema reference (auto-generated) | [Field Reference](../reference/field-reference.md) |

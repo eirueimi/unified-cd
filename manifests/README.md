@@ -56,9 +56,9 @@ stringData:
 ```
 
 The Vault-side role must be bound to the controller's ServiceAccount and namespace. See
-[Secrets Management Guide: Using Vault or OpenBao (Transit)](../docs/secrets.md#using-vault-or-openbao-transit)
+[Secrets Management Guide: Using Vault or OpenBao (Transit)](../docs/user-guide/secrets.md#using-vault-or-openbao-transit)
 for the Transit key setup and the policy the controller needs, and
-[High Availability Guide: Vault / OpenBao](../docs/high-availability.md#vault--openbao-when-unified_kms_uri-is-used)
+[High Availability Guide: Vault / OpenBao](../docs/operator-manual/high-availability.md#vault--openbao-when-unified_kms_uri-is-used)
 for HA implications. Static-token auth (`UNIFIED_VAULT_AUTH=token` with
 `UNIFIED_VAULT_TOKEN_FILE`) also works on Kubernetes but gives up the
 credential-free advantage of the `kubernetes` method — prefer it only when
@@ -174,5 +174,5 @@ make manifests
 
 ## Related documentation
 
-- [Kubernetes Integration Guide](../docs/kubernetes-integration.md) — k8s-agent podTemplate configuration
-- [High Availability (HA) Guide](../docs/high-availability.md) — controller scale-out and leader election
+- [Kubernetes Integration Guide](../docs/operator-manual/kubernetes-integration.md) — k8s-agent podTemplate configuration
+- [High Availability (HA) Guide](../docs/operator-manual/high-availability.md) — controller scale-out and leader election

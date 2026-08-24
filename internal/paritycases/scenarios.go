@@ -98,7 +98,7 @@ func envReachesScript() Case {
 }
 
 // 3. continue-on-error: a step that fails with `continueOnError: true` must
-// not block later steps, and — per docs/jobs.md ("Continue on Error": "run
+// not block later steps, and — per docs/user-guide/writing-jobs/steps.md ("Continue on Error": "run
 // will continue even if this step fails") and both agents' recordFailure
 // (early-returns on step.ContinueOnError before ever setting the
 // run-failed flag) — the run finishes Succeeded overall, since no

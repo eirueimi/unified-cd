@@ -2,20 +2,11 @@
 
 unified-cd records a persistent audit trail of state-changing API operations: who did what, on
 which resource, when, and with what result. This complements the existing per-run approval
-audit trail (`run_approvals` — see [Job Reference](jobs.md) for the `approval` step type), which
+audit trail (`run_approvals` — see [Job Reference](../user-guide/writing-jobs/index.md) for the `approval` step type), which
 only covered approve/reject decisions.
 
 > The CLI is referred to as `unified-cd` throughout. This is the built binary (`./bin/unified-cd`);
 > source is under `cmd/unified-cli`. During development you can also use `go run ./cmd/unified-cli ...`.
-
-## Table of Contents
-
-- [What is recorded](#what-is-recorded)
-- [What is excluded](#what-is-excluded)
-- [Storage](#storage)
-- [API](#api)
-- [CLI](#cli)
-- [Retention](#retention)
 
 ## What is recorded
 

@@ -11,7 +11,7 @@
 #
 #   NOT FOR PRODUCTION. In production, Vault/OpenBao is operator-provided —
 #   either an existing organisational instance or a deployment made with the
-#   official Helm chart. See docs/high-availability.md.
+#   official Helm chart. See docs/operator-manual/high-availability.md.
 #
 #   openbao-init enables the transit engine and creates the key, then exits.
 #   The controller waits for it so the key exists before the first login.

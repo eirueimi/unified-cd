@@ -56,7 +56,7 @@ by the caller's own credential: an agent whose ID does not match the run's
 `claimed_by` gets `403`, exactly like every other run-write path. Secret
 fetch is fenced the same way for every principal: an agent can only request
 secret names the run's own spec declares, or it gets `403 secret not needed
-by this run` (see [Secrets: Access control](secrets.md#access-control)).
+by this run` (see [Secrets: Access control](../user-guide/secrets.md#access-control)).
 
 ### OIDC role resolution config
 

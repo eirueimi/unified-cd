@@ -2,20 +2,6 @@
 
 This document covers how to create, use, and manage secrets in unified-cd.
 
-## Table of Contents
-
-- [Overview](#overview)
-- [Upgrades that delete every secret](#upgrades-that-delete-every-secret)
-- [Prerequisites](#prerequisites)
-- [Creating and Managing Secrets (CLI)](#creating-and-managing-secrets-cli)
-- [Referencing Secrets in Job YAML](#referencing-secrets-in-job-yaml)
-- [Automatic Log Masking](#automatic-log-masking)
-- [Security Model](#security-model)
-- [Using Vault or OpenBao (Transit)](#using-vault-or-openbao-transit)
-- [Troubleshooting](#troubleshooting)
-
----
-
 ## Overview
 
 Secrets are a key-value store saved in the controller's PostgreSQL database **encrypted with AES-256-GCM**.
@@ -66,7 +52,7 @@ That described the project at the time the migration was written. It says
 nothing about your installation, and it is not a safe assumption if you have
 been running unified-cd for real work.
 
-See also [Operations Guide: Upgrades](operations.md#upgrades) for which released
+See also [Operations Guide: Upgrades](../operator-manual/operations.md#upgrades) for which released
 versions actually cross this migration.
 
 ---
@@ -92,7 +78,7 @@ UNIFIED_CONTROLLER_KEY_FILE=/etc/unified-cd/kek
 ```
 
 In HA setups, every replica must be given the same key file (or the same `UNIFIED_KMS_URI`) —
-see [HA Guide](high-availability.md).
+see [HA Guide](../operator-manual/high-availability.md).
 
 ---
 
@@ -451,7 +437,7 @@ UNIFIED_VAULT_AUTH=kubernetes
 UNIFIED_VAULT_AUTH_PARAM=role=unified-cd
 ```
 
-See also [High Availability Guide: Vault / OpenBao](high-availability.md#vault--openbao-when-unified_kms_uri-is-used)
+See also [High Availability Guide: Vault / OpenBao](../operator-manual/high-availability.md#vault-openbao-when-unified_kms_uri-is-used)
 for what changes when Vault runs in HA.
 
 ---
