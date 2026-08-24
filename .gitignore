@@ -43,3 +43,7 @@ test/edgecase/k8s/.w4-2-restricted.kubeconfig
 
 # MkDocs build output (mkdocs build writes here; the site is published from CI).
 /site/
+
+# Install bundles, built from manifests/*/ by scripts/build-manifests.sh and
+# published as release assets. Nothing generated here is committed.
+/dist/

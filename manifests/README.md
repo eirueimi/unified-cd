@@ -6,7 +6,7 @@ A complete set of manifests for installing the unified-cd `controller` and `k8s-
 
 | File | Contents | Prerequisites |
 |------|----------|---------------|
-| `core-install.yaml` | controller + k8s-agent only | External PostgreSQL and S3-compatible store plus a TLS terminator required. Replace controller Secret values and the invalid k8s-agent HTTPS URL before applying. |
+| `core-install.yaml` | controller + k8s-agent only | External PostgreSQL and S3-compatible store plus a TLS terminator required. Create the controller Secrets before applying, and replace the invalid k8s-agent HTTPS URL. |
 | `install.yaml` | core-install.yaml + in-cluster PostgreSQL and Garage bundled | For evaluation / quick trial. Uses development-default credentials. **Do not use in production.** |
 | `agent-only.yaml` | k8s-agent only | Controller running externally with the matching Kubernetes enrollment policy. Replace its example-invalid `server` URL before applying. |
 
@@ -14,27 +14,80 @@ A complete set of manifests for installing the unified-cd `controller` and `k8s-
 
 ```bash
 # Quick trial (development-only; the bundled manifest explicitly opts into in-cluster HTTP)
-kubectl apply -f manifests/install.yaml
+kubectl apply -k manifests/install
 
 # Production (with external DB and S3)
-# 1. Replace the REPLACE_WITH_... values and `https://controller.example.invalid`
-#    in manifests/core-install.yaml with the HTTPS endpoint of your TLS terminator.
-# 2. kubectl apply -f manifests/core-install.yaml
+# 1. Create the unified-cd-controller and unified-cd-controller-kek Secrets
+#    (see "Creating the controller Secrets" below) — core-install.yaml ships
+#    no Secrets of its own.
+# 2. Download core-install.yaml from the release
+#    (https://github.com/eirueimi/unified-cd/releases/latest/download/core-install.yaml)
+#    and replace `https://controller.example.invalid` with the HTTPS endpoint
+#    of your TLS terminator.
+# 3. kubectl apply -f core-install.yaml
 
 # Agent only (controller running externally, e.g. Docker Compose on the host)
 # 1. Configure the external controller's in-cluster verifier and enrollment policy.
-# 2. Replace the example-invalid server URL in manifests/agent-only.yaml.
-# 3. kubectl apply -f manifests/agent-only.yaml
+# 2. Download agent-only.yaml from the release
+#    (https://github.com/eirueimi/unified-cd/releases/latest/download/agent-only.yaml)
+#    and replace the example-invalid server URL.
+# 3. kubectl apply -f agent-only.yaml
 ```
 
-## Values to edit in core-install.yaml before applying
+## Creating the controller Secrets
 
-In the `unified-cd-controller` Secret (namespace: `unified-cd`), update the following keys:
+`core-install.yaml` ships no Secrets: it references `unified-cd-controller` and
+`unified-cd-controller-kek` by name (via `envFrom` and a volume mount) but does
+not create them. Create both before applying `core-install.yaml`:
 
-- `UNIFIED_DB_DSN` — PostgreSQL connection string
-- `UNIFIED_TOKEN` — Admin static token for human and CLI authentication
-- `UNIFIED_CONTROLLER_KEY_FILE` — path to a mounted Secret holding 64 hex chars, generated with `unified-cli keygen`. The controller refuses to start without it (or `UNIFIED_KMS_URI`, or `UNIFIED_DEV_MODE=1`).
-- `UNIFIED_S3_ENDPOINT` / `UNIFIED_S3_BUCKET` / `UNIFIED_S3_KEY` / `UNIFIED_S3_SECRET` — S3-compatible object store connection info (controller starts without these, but log archival is disabled)
+```bash
+kubectl create namespace unified-cd
+
+kubectl create secret generic unified-cd-controller -n unified-cd \
+  --from-literal=UNIFIED_DB_DSN='postgres://...' \
+  --from-literal=UNIFIED_TOKEN='...' \
+  --from-literal=UNIFIED_S3_ENDPOINT='...' \
+  --from-literal=UNIFIED_S3_BUCKET='...' \
+  --from-literal=UNIFIED_S3_KEY='...' \
+  --from-literal=UNIFIED_S3_SECRET='...'
+
+unified-cli keygen --out ./kek
+kubectl create secret generic unified-cd-controller-kek -n unified-cd \
+  --from-file=kek=./kek
+```
+
+1. The KEK uses `--from-file` deliberately: `keygen --out` already writes a file,
+   and `--from-literal` would put the key into `argv` and the shell history.
+   `--from-env-file` is offered for the other six for the same reason.
+2. Omitting the four `UNIFIED_S3_*` keys does not stop the controller. The pod
+   starts and object storage is simply absent; the log says
+   `no object store configured — log archival disabled`, and log archival and
+   artifacts are off.
+3. Fill the KEK once and never re-apply a different value — every secret
+   encrypted under the old key becomes permanently unreadable.
+4. Back up `./kek` somewhere durable before it's discarded — it is the only
+   copy outside the cluster, and it's what makes every secret the controller
+   stores recoverable if the `unified-cd-controller-kek` Secret is ever lost.
+   Once it's backed up and the Secret is created, delete the local `./kek`
+   file; there's no reason for a second copy to keep sitting in a working
+   directory.
+
+The KEK lives in its own Secret, separate from `unified-cd-controller`, rather
+than as one more key alongside `UNIFIED_TOKEN` and friends. The controller's
+`envFrom` projects *every* key in the `unified-cd-controller` Secret into the
+process environment — that's how `UNIFIED_DB_DSN` etc. reach the container.
+Putting the KEK there would push the encryption key into the environment too,
+visible via `docker inspect`, `/proc/<pid>/environ`, crash dumps, and child
+processes (such as the git subprocess used for `AppSource` resolution). The
+KEK is instead consumed only through the `unified-cd-controller-kek` volume
+mount (`defaultMode: 0400`), which a Secret referenced by `envFrom` cannot
+provide. Keeping the two Secrets separate is deliberate — do not merge them.
+
+`UNIFIED_DB_DSN` is the PostgreSQL connection string; `UNIFIED_TOKEN` is the
+admin static token for human and CLI authentication. `UNIFIED_CONTROLLER_KEY_FILE`
+(pointing at the `unified-cd-controller-kek` mount) is baked into
+`core-install.yaml`'s controller config already — the controller refuses to
+start without it (or `UNIFIED_KMS_URI`, or `UNIFIED_DEV_MODE=1`).
 
 The default k8s-agent Deployment does not receive `UNIFIED_TOKEN` or any shared agent token. It exchanges its projected, audience-bound ServiceAccount token for a short-lived credential.
 
@@ -44,15 +97,33 @@ To wrap the controller's key-encryption key with Vault/OpenBao Transit instead o
 key file, set `UNIFIED_KMS_URI` and point the controller at Vault's Kubernetes auth method.
 Because the controller Pod already runs under a ServiceAccount (`unified-cd-controller`),
 no additional token Secret needs to be mounted — the projected ServiceAccount token doubles
-as the credential Vault's Kubernetes auth method verifies:
+as the credential Vault's Kubernetes auth method verifies.
 
-```yaml
-stringData:
-  # ... existing keys, in place of UNIFIED_CONTROLLER_KEY_FILE ...
-  UNIFIED_KMS_URI: "hashivault://unified-cd-kek"
-  UNIFIED_VAULT_ADDR: "https://vault.example.com:8200"
-  UNIFIED_VAULT_AUTH: "kubernetes"
-  UNIFIED_VAULT_AUTH_PARAM: "role=unified-cd"
+`core-install.yaml`'s controller container hardcodes `UNIFIED_CONTROLLER_KEY_FILE=/etc/unified-cd/kek`
+in its `env` and mounts the `unified-cd-controller-kek` Secret regardless of `UNIFIED_KMS_URI`.
+`KeySource.Validate()` rejects having both a key file and a KMS URI configured, so the controller
+exits immediately if both are present. Before applying, edit the downloaded `core-install.yaml`
+to remove:
+
+- the `UNIFIED_CONTROLLER_KEY_FILE` entry from the controller container's `env`
+- the `controller-kek` entry from the controller container's `volumeMounts`
+- the `controller-kek` entry from the Pod's `volumes`
+
+Then add these keys to the `kubectl create secret` command in place of `UNIFIED_CONTROLLER_KEY_FILE`
+(the `unified-cd-controller-kek` Secret itself is then not needed):
+
+```bash
+kubectl create secret generic unified-cd-controller -n unified-cd \
+  --from-literal=UNIFIED_DB_DSN='postgres://...' \
+  --from-literal=UNIFIED_TOKEN='...' \
+  --from-literal=UNIFIED_S3_ENDPOINT='...' \
+  --from-literal=UNIFIED_S3_BUCKET='...' \
+  --from-literal=UNIFIED_S3_KEY='...' \
+  --from-literal=UNIFIED_S3_SECRET='...' \
+  --from-literal=UNIFIED_KMS_URI='hashivault://unified-cd-kek' \
+  --from-literal=UNIFIED_VAULT_ADDR='https://vault.example.com:8200' \
+  --from-literal=UNIFIED_VAULT_AUTH='kubernetes' \
+  --from-literal=UNIFIED_VAULT_AUTH_PARAM='role=unified-cd'
 ```
 
 The Vault-side role must be bound to the controller's ServiceAccount and namespace. See
@@ -88,7 +159,7 @@ When OIDC is enabled, browser login goes through the identity provider and `UNIF
 
 ### Environment variables
 
-Add these to the `unified-cd-controller` Secret. Only `UNIFIED_OIDC_ISSUER` and `UNIFIED_OIDC_CLIENT_ID` are required to enable SSO; the rest depend on your setup.
+Add these keys to the `kubectl create secret` command for `unified-cd-controller`. Only `UNIFIED_OIDC_ISSUER` and `UNIFIED_OIDC_CLIENT_ID` are required to enable SSO; the rest depend on your setup.
 
 | Variable | Required | Description |
 |---|---|---|
@@ -102,15 +173,20 @@ Add these to the `unified-cd-controller` Secret. Only `UNIFIED_OIDC_ISSUER` and 
 ### Option A: External identity provider (Google, Okta, Auth0, …)
 
 Register a web application with your IDP and obtain a client ID and secret.
-Add only the public-facing variables to the controller Secret — no internal URL is needed:
+Add only the public-facing keys to the `kubectl create secret` command — no internal URL is needed:
 
-```yaml
-stringData:
-  # ... existing keys ...
-  UNIFIED_OIDC_ISSUER: "https://accounts.google.com"
-  UNIFIED_OIDC_CLIENT_ID: "1234567890-abc.apps.googleusercontent.com"
-  UNIFIED_OIDC_CLIENT_SECRET: "GOCSPX-..."
-  UNIFIED_OIDC_DEVICE_CLIENT_ID: "1234567890-cli.apps.googleusercontent.com"
+```bash
+kubectl create secret generic unified-cd-controller -n unified-cd \
+  --from-literal=UNIFIED_DB_DSN='postgres://...' \
+  --from-literal=UNIFIED_TOKEN='...' \
+  --from-literal=UNIFIED_S3_ENDPOINT='...' \
+  --from-literal=UNIFIED_S3_BUCKET='...' \
+  --from-literal=UNIFIED_S3_KEY='...' \
+  --from-literal=UNIFIED_S3_SECRET='...' \
+  --from-literal=UNIFIED_OIDC_ISSUER='https://accounts.google.com' \
+  --from-literal=UNIFIED_OIDC_CLIENT_ID='1234567890-abc.apps.googleusercontent.com' \
+  --from-literal=UNIFIED_OIDC_CLIENT_SECRET='GOCSPX-...' \
+  --from-literal=UNIFIED_OIDC_DEVICE_CLIENT_ID='1234567890-cli.apps.googleusercontent.com'
 ```
 
 Set the redirect URI in your IDP to `https://<your-domain>/api/v1/auth/oidc-callback`.
@@ -120,14 +196,19 @@ Set the redirect URI in your IDP to `https://<your-domain>/api/v1/auth/oidc-call
 Run Dex as a separate Deployment in the `unified-cd` namespace and point the controller at it.
 The controller will reverse-proxy `/dex/*` to Dex so the browser never needs to reach Dex directly.
 
-```yaml
-stringData:
-  # ... existing keys ...
-  UNIFIED_OIDC_ISSUER: "https://<your-domain>/dex"
-  UNIFIED_OIDC_ISSUER_INTERNAL: "http://dex.unified-cd.svc.cluster.local:5556/dex"
-  UNIFIED_OIDC_CLIENT_ID: "unified-cd"
-  UNIFIED_OIDC_CLIENT_SECRET: "your-client-secret"
-  UNIFIED_OIDC_DEVICE_CLIENT_ID: "unified-cd-cli"
+```bash
+kubectl create secret generic unified-cd-controller -n unified-cd \
+  --from-literal=UNIFIED_DB_DSN='postgres://...' \
+  --from-literal=UNIFIED_TOKEN='...' \
+  --from-literal=UNIFIED_S3_ENDPOINT='...' \
+  --from-literal=UNIFIED_S3_BUCKET='...' \
+  --from-literal=UNIFIED_S3_KEY='...' \
+  --from-literal=UNIFIED_S3_SECRET='...' \
+  --from-literal=UNIFIED_OIDC_ISSUER='https://<your-domain>/dex' \
+  --from-literal=UNIFIED_OIDC_ISSUER_INTERNAL='http://dex.unified-cd.svc.cluster.local:5556/dex' \
+  --from-literal=UNIFIED_OIDC_CLIENT_ID='unified-cd' \
+  --from-literal=UNIFIED_OIDC_CLIENT_SECRET='your-client-secret' \
+  --from-literal=UNIFIED_OIDC_DEVICE_CLIENT_ID='unified-cd-cli'
 ```
 
 A minimal Dex `ConfigMap` for this setup:
@@ -166,11 +247,11 @@ See `docker-compose.sso.yml` and `dex-config.sso.yaml` in the repo root for a wo
 ## Regenerating manifests
 
 Sources are in `base/` (per-component), `core-install/`, `install/`, and `agent-only/` as kustomize definitions.
-Do not edit `core-install.yaml`, `install.yaml`, or `agent-only.yaml` directly — regenerate them with:
-
-```bash
-make manifests
-```
+Nothing built from them is committed. `make manifests` (or `scripts/build-manifests.sh dist/manifests`
+directly) renders all three bundles into the gitignored `dist/manifests/` for local inspection or testing.
+The release workflow runs the same script with the release tag as the image-tag argument, so the bundles
+published on the GitHub Release pin both first-party images to that tag — that build, not a local one,
+is what operators install from.
 
 ## Related documentation
 

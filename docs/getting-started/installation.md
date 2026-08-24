@@ -35,12 +35,23 @@ not a current deployment feature.
 
 ## Kubernetes
 
+The install bundles below are published as GitHub Release assets starting
+with **v0.6.0**; earlier releases carry only the Go binary archives, so an
+older release's asset list will not include `install.yaml` or
+`agent-only.yaml`.
+
 ```bash
 # Full install (controller + k8s-agent + PostgreSQL)
-kubectl apply -f https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/install.yaml
+# Pinned to a release
+kubectl apply -f https://github.com/eirueimi/unified-cd/releases/download/v0.6.0/install.yaml
+# Or always the newest release
+kubectl apply -f https://github.com/eirueimi/unified-cd/releases/latest/download/install.yaml
 
 # k8s-agent only (connect to existing controller)
-kubectl apply -f https://raw.githubusercontent.com/eirueimi/unified-cd/main/manifests/agent-only.yaml
+# Pinned to a release
+kubectl apply -f https://github.com/eirueimi/unified-cd/releases/download/v0.6.0/agent-only.yaml
+# Or always the newest release
+kubectl apply -f https://github.com/eirueimi/unified-cd/releases/latest/download/agent-only.yaml
 ```
 
 ## Binaries
@@ -48,8 +59,10 @@ kubectl apply -f https://raw.githubusercontent.com/eirueimi/unified-cd/main/mani
 Pre-built binaries for Linux, macOS, and Windows (amd64/arm64) are available on the [Releases page](https://github.com/eirueimi/unified-cd/releases):
 
 ```bash
-# Example: Linux amd64
-curl -L https://github.com/eirueimi/unified-cd/releases/latest/download/unified-cli_linux_amd64.tar.gz | tar xz
+# Example: Linux amd64, pinned to the latest tagged release. Archive names
+# are versioned (goreleaser's name_template), so update the version below to
+# match whichever release you're installing.
+curl -L https://github.com/eirueimi/unified-cd/releases/download/v0.5.0/unified-cd_0.5.0_linux_amd64.tar.gz | tar xz
 sudo mv unified-cli /usr/local/bin/
 ```
 

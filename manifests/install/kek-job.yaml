@@ -1,7 +1,9 @@
 # Generates the unified-cd-controller-kek Secret at install time so this
 # quick-trial bundle has a persistent, file-backed encryption key instead of
-# UNIFIED_DEV_MODE's ephemeral in-memory one. See kek-secret-patch.yaml for
-# why the base placeholder Secret is dropped instead of shipped.
+# UNIFIED_DEV_MODE's ephemeral in-memory one. No placeholder Secret is shipped
+# for it in this bundle (see secret.yaml, which carries the sibling
+# unified-cd-controller Secret but not this one) — this Job creates the real
+# key directly instead.
 #
 # Idempotency is the whole point: re-running `kubectl apply -f install.yaml`
 # must NOT rotate this key, or every secret already encrypted with it becomes

@@ -42,6 +42,7 @@ func TestKeySource_ReadsKeyFile(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got.KeyManager)
 	assert.Contains(t, got.Description, "key file")
+	assert.False(t, got.Ephemeral, "a key read from a file survives a restart")
 	assert.Empty(t, got.Warnings, "a 0600 key file must not warn")
 }
 
@@ -84,6 +85,7 @@ func TestKeySource_DevModeProducesEphemeralKeyAndWarns(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got.KeyManager)
 	assert.Contains(t, strings.ToLower(got.Description), "ephemeral")
+	assert.True(t, got.Ephemeral, "the development key does not survive a restart")
 	require.Len(t, got.Warnings, 1)
 	assert.Contains(t, got.Warnings[0], "after a restart")
 }

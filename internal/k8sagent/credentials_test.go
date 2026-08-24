@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -324,17 +325,34 @@ func TestKubernetesCredentialEnrollmentPodReadMatchesPolicyNamespace(t *testing.
 	assert.Contains(t, strings.ReplaceAll(string(agentRBAC), "\r\n", "\n"), "name: unified-cd-k8s-agent\n  namespace: ci")
 }
 
+// TestKubernetesCredentialRenderedProductionManifestsUseHTTPS checks the
+// rendered install bundles, not the committed source: the bundles are no
+// longer committed (they're built from the manifests/*/ kustomize overlays
+// by scripts/build-manifests.sh and published as release assets), so this
+// renders each overlay the same way that script does — kubectl kustomize,
+// with no image tag — and asserts against the output.
 func TestKubernetesCredentialRenderedProductionManifestsUseHTTPS(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	for _, name := range []string{"core-install.yaml", "agent-only.yaml"} {
-		manifest, err := os.ReadFile(filepath.Join(root, "manifests", name))
-		require.NoError(t, err)
-		assert.NotContains(t, string(manifest), "server: http://", name)
-		assert.Contains(t, string(manifest), "https://controller.example.invalid", name)
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		t.Skip("kubectl not on PATH: skipping the rendered-manifest HTTPS assertion here; it still runs on the Linux CI legs")
 	}
-	install, err := os.ReadFile(filepath.Join(root, "manifests", "install.yaml"))
-	require.NoError(t, err)
-	assert.Contains(t, string(install), "allowInsecureHTTP: true")
+	for _, overlay := range []string{"core-install", "agent-only"} {
+		manifest := renderKustomizeOverlay(t, root, overlay)
+		assert.NotContains(t, manifest, "server: http://", overlay)
+		assert.Contains(t, manifest, "https://controller.example.invalid", overlay)
+	}
+	install := renderKustomizeOverlay(t, root, "install")
+	assert.Contains(t, install, "allowInsecureHTTP: true")
+}
+
+func renderKustomizeOverlay(t *testing.T, root, overlay string) string {
+	t.Helper()
+	out, err := exec.Command("kubectl", "kustomize", filepath.Join(root, "manifests", overlay)).Output()
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		t.Fatalf("kubectl kustomize manifests/%s: %v\nstderr:\n%s", overlay, err, exitErr.Stderr)
+	}
+	require.NoError(t, err, "kubectl kustomize manifests/%s", overlay)
+	return string(out)
 }
