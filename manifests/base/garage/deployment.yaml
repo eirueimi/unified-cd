@@ -28,6 +28,17 @@ spec:
               value: garageadmin12345
             - name: GARAGE_DEFAULT_BUCKET
               value: unified-cd-logs
+          # No CPU limit: a CPU limit throttles the container even when the
+          # node is idle, whereas a memory limit is what actually contains a
+          # runaway process. These values are a conservative floor for a
+          # normal unified-cd workload, not a capacity estimate — raise them
+          # if you see throttling or OOMKills under your load.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
           ports:
             - containerPort: 3900
               name: api
