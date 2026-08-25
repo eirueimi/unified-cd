@@ -23,6 +23,7 @@ func Cases() []Case {
 		cacheEmptyKeySkips(),
 		matrixStructuralErrorAborts(),
 		isolatedDispatch(),
+		parallelGroupMembersAllSucceed(),
 	}
 }
 
@@ -494,6 +495,43 @@ func isolatedDispatch() Case {
 				{Step: "main", Stream: "stdout", Substring: "from-primary"},
 				{Step: "side", Stream: "stdout", Substring: "from-tools"},
 			},
+		},
+	}
+}
+
+// 14. parallelGroupMembersAllSucceed pins the behaviour that must not diverge
+// once the k8s backend reports Concurrent: every member of a parallel: group
+// runs and reports its own terminal status, on both backends.
+//
+// It deliberately asserts nothing about ORDER or timing. Both backends now
+// run members concurrently, so any assertion about which finished first would
+// be a flaky test wearing a parity check's clothes. Each member writes to a
+// distinct path so the case says nothing about workspace contention either —
+// that is a property of the DSL contract, not of backend parity.
+func parallelGroupMembersAllSucceed() Case {
+	return Case{
+		Name: "parallel-group-members-all-succeed",
+		Claim: func() api.ClaimResponse {
+			return api.ClaimResponse{
+				RunID:   "run-parallel-group-members",
+				JobName: "parallel-group-members",
+				Native:  true,
+				Stages: []api.ClaimStage{
+					{Parallel: []api.ClaimStep{
+						{Index: 0, StageIndex: 0, Name: "alpha", Run: "echo alpha > alpha.txt"},
+						{Index: 1, StageIndex: 0, Name: "beta", Run: "echo beta > beta.txt"},
+						{Index: 2, StageIndex: 0, Name: "gamma", Run: "echo gamma > gamma.txt"},
+					}},
+				},
+			}
+		},
+		Expect: Expectation{
+			StepStatus: map[string]string{
+				"alpha": "Succeeded",
+				"beta":  "Succeeded",
+				"gamma": "Succeeded",
+			},
+			RunFinished: "Succeeded",
 		},
 	}
 }

@@ -135,6 +135,27 @@ func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, scr
 // the sidecar log pump (cancelling all sidecar streams and flushing remainders)
 // so streams end before the pod is deleted/released — RunClaim defers
 // CloseScopes and returns before agent.go's pod-teardown defer fires.
+//
+// It claims each entry out of b.scopes (deletes it from the map) before
+// deleting its pod, rather than just reading name/err under the lock and
+// deleting afterward. That claim is an ownership handoff with an in-flight
+// ensureScopePod/createScopePod for the same key: e.name is written (in
+// createScopePod) before e.err is known, so a CloseScopes racing with an
+// in-flight attempt could otherwise see e.err == nil (its zero value, not yet
+// set) and e.name != "" for a pod that is still waiting on
+// WaitForPodRunning, or has just failed but whose once.Do closure has not yet
+// recorded e.err, and issue its own DeletePod for the same pod
+// createScopePod's own failure branch also deletes. Removing the entry here
+// first means createScopePod's failure branch (which checks whether its key
+// still maps to its own entry before deleting) sees it is already gone and
+// skips its delete.
+//
+// In production this race cannot actually happen: CloseScopes is deferred in
+// the orchestrator and only runs after RunPipeline returns, and runParallel
+// joins its goroutines before returning, so no in-flight ensureScopePod can
+// overlap CloseScopes. That ordering lives in a different package
+// (internal/agent/orchestrator.go) though, so this handoff does not rely on
+// it — it stays correct even if a future refactor there changes it.
 func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	if b.sidecarPump != nil {
 		b.sidecarPump.Stop()
@@ -145,6 +166,7 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	for key, e := range b.scopes {
 		if e.err == nil && e.name != "" {
 			entries[key] = e.name
+			delete(b.scopes, key)
 		}
 	}
 	b.scopesMu.Unlock()
@@ -182,7 +204,11 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 			// Do not cache a failure. A later step needing this scope makes
 			// its own attempt rather than inheriting an error it did not
 			// cause; the callers waiting on THIS attempt still receive err
-			// below, because they hold the entry pointer.
+			// below, because they hold the entry pointer. This delete is
+			// idempotent with createScopePod's own ownership-claiming delete
+			// on its WaitForPodRunning failure branch, and with CloseScopes'
+			// claim (see its doc comment) — whichever of the three removes
+			// the entry first, the rest are no-ops.
 			delete(b.scopes, key)
 		}
 		b.scopesMu.Unlock()
@@ -211,6 +237,7 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 // value wins over the raw, unexpanded step.Env map and a templated env value
 // (e.g. {{ .Params.x }}) ships resolved rather than as the literal template.
 func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env []string, e *scopeEntry) (string, error) {
+	key := scopeKey(step)
 	envMap := imageStepEnv(step)
 	for k, v := range envSliceToMap(env) {
 		envMap[k] = v
@@ -239,8 +266,24 @@ func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env
 		// already recorded above, but ensureScopePod deletes this whole entry
 		// from b.scopes on failure (see the err != nil branch there), so a
 		// CloseScopes that runs after we return would no longer find it
-		// either — we must delete it ourselves here.
-		_ = b.a.pm.DeletePod(context.WithoutCancel(ctx), name)
+		// either — normally we must delete it ourselves here.
+		//
+		// "Normally" because of an ownership check first: a CloseScopes
+		// racing with this attempt (see its doc comment) may have already
+		// claimed this key out of b.scopes and taken responsibility for
+		// deleting the pod. Only delete here if our entry is still the one in
+		// the map; otherwise CloseScopes has it, and a delete here would be
+		// redundant (and could race the fake/API client with CloseScopes' own
+		// delete).
+		b.scopesMu.Lock()
+		owned := b.scopes[key] == e
+		if owned {
+			delete(b.scopes, key)
+		}
+		b.scopesMu.Unlock()
+		if owned {
+			_ = b.a.pm.DeletePod(context.WithoutCancel(ctx), name)
+		}
 		return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready within %s: %w", step.ScopeID, step.ScopeImage, podStartTimeout, err)
 	}
 	return name, nil
@@ -491,10 +534,18 @@ func (b *k8sBackend) StepLogWriters(ctx context.Context, stepIndex int) (stdout,
 }
 
 // ConcurrencyMode reports how the k8s agent runs parallel-group / matrix
-// members: one at a time (its documented behavior — scope-pod map and hook
-// stack are not concurrency-safe).
+// members: concurrently, matching the standard agent.
+//
+// This returned Sequential until scope-pod creation became concurrency-safe.
+// The old comment also blamed the hook stack, which was already wrong: the
+// hook stack and postHooks live in the shared orchestrator
+// (internal/agent/orchestrator.go) and have been guarded by postHooksMu since
+// the standard agent went concurrent. Everything else the backend holds is
+// either written once before the step loop (masker, sidecarPump, via
+// SetMasker) or allocated per call (StepLogWriters), and the pod pool carries
+// its own mutex.
 func (b *k8sBackend) ConcurrencyMode() agentlib.ConcurrencyMode {
-	return agentlib.Sequential
+	return agentlib.Concurrent
 }
 
 var _ agentlib.ExecBackend = (*k8sBackend)(nil)
