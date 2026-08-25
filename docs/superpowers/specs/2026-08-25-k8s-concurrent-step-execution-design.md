@@ -214,3 +214,28 @@ steps concurrently gives that test more reason to exist than it already had.
   backends return `Concurrent` the seam looks redundant, but it is the
   documented place where a future backend declares this, and deleting it is a
   separate decision.
+- **Aligning the host backend's scope-creation timeout semantics.** Fixing the
+  shared-scope timeout defect on Kubernetes left the two backends differing in
+  the opposite direction from the one this branch started with, and that
+  residual divergence is deliberately not closed here.
+
+  On Kubernetes, scope-Pod creation no longer runs under the first caller's
+  step context: it is bounded by `PodStartTimeout` and abandoned when no
+  caller still wants it (`scopeCreateContext`, `internal/k8sagent/backend.go`),
+  so the first caller's `timeout:` does not bound creation while a sibling is
+  still waiting. On the host, `scopeManager.ensure`
+  (`internal/agent/scope.go`) still runs `Create` under the first caller's
+  context while holding the mutex, so that caller's `timeout:` *is* honoured —
+  and because only successes are cached, a second caller simply retries under
+  its own context.
+
+  The **observable outcome for the sibling is the same on both backends** — it
+  gets a working scope and is not failed by another member's deadline — which
+  is why no parity case fails. But no parity case covers it either: what
+  differs is which caller's deadline bounds the creation, and the parity suite
+  asserts on step outcomes, not on that. Closing it means changing the host
+  backend, which every task on this branch was forbidden from doing, and
+  choosing which semantics is canonical (bound creation by the first caller
+  and retry, or bound it by a resource-level budget and share the attempt) is
+  a design decision in its own right. Recorded here so the next person to
+  touch this seam starts from the fact rather than rediscovering it.

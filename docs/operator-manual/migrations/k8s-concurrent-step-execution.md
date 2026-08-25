@@ -70,6 +70,42 @@ redirect it to a per-combination file (`> report-{{ .Matrix.part }}.txt`)
 and upload it as an artifact — which is the same per-combination-path advice
 the shared-workspace section below gives, for a different reason.
 
+## A shared `uses:` scope can delay a step past its own `timeout:`
+
+This one applies only to jobs where two or more concurrent members share a
+`uses:` scope — the same `uses:` on several `matrix:` combinations or several
+`parallel:` members. If no step in your job declares `uses:`, skip it.
+
+**What changes.** Members sharing a scope share one scope Pod, and the first
+of them to ask for it creates it on behalf of all of them. Creating that Pod
+means pulling its image, which can take longer than a member's declared
+`timeout:`. Previously, the first member's `timeout:` bounded that creation —
+which meant a member with a short timeout could abort the pull, delete the
+Pod, and fail its siblings along with itself, even though their own timeouts
+had plenty of room. Now the creation is bounded by the agent's pod-start
+budget instead, so a member whose `timeout:` fires while a sibling is still
+waiting for the shared Pod keeps waiting rather than tearing it down.
+
+**The bound.** The wait is capped by `podStartTimeout`
+(`UNIFIED_K8S_POD_START_TIMEOUT`), the same agent setting that bounds how long
+the run Pod itself may take to start. It defaults to **5 minutes**. So in the
+worst case a step can exceed its declared `timeout:` by up to that value —
+bounded and configurable, never open-ended, and never longer than one image
+pull.
+
+**When it applies.** Only while a shared scope Pod is still being created by a
+sibling. It does not apply to a step that is the only one asking for its scope
+— that step still fails at its own `timeout:`, exactly as before — and it does
+not apply once the Pod exists, since later members reuse it immediately.
+Steps with no `uses:` are unaffected.
+
+**If a step overruns its `timeout:` on Kubernetes and shares a scope**, this is
+the likely reason, and the lever is `podStartTimeout`: lowering it caps the
+overrun (at the cost of failing slow image pulls sooner, for the run Pod too).
+Pre-pulling the scope image onto your nodes removes the wait altogether. The
+alternative — letting one member's timeout kill a Pod its siblings are still
+waiting on — is the behaviour this replaced, and it failed healthy steps.
+
 ## What can break
 
 The DSL's contract has always been that parallel steps share a workspace;
