@@ -39,6 +39,15 @@ func newLogsCmd(resolve func() (Config, error)) *cobra.Command {
 			for {
 				lines, status, err := fetchLogs(ctx, cfg, runID, after)
 				if err != nil {
+					// A request can fail because the context was cancelled while
+					// it was in flight (e.g. the poll loop below observes
+					// ctx.Done() only *between* iterations, so a cancellation
+					// that lands mid-request surfaces here as a network error
+					// instead). Treat that the same as the ctx.Done() case
+					// below: a cancelled follow is a clean stop, not a failure.
+					if ctx.Err() != nil {
+						return nil
+					}
 					return err
 				}
 				for _, l := range lines {
