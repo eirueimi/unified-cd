@@ -218,6 +218,40 @@ jobs:
             echo "::error title=Tag injection failed::dist/manifests/core-install.yaml does not reference ghcr.io/eirueimi/unified-cd-controller:$TAG"
             exit 1
           }
+      # Wait for goreleaser to create the Release before trying to attach to
+      # it. `release.yml` (goreleaser) and this workflow both fire
+      # independently on the same `v*` tag push - nothing here ever waits for
+      # the other workflow to start, let alone finish. goreleaser is the one
+      # that creates the GitHub Release; this job only uploads assets to it.
+      # On v0.6.0 - the first release to exercise this job - goreleaser took
+      # 5m33s, and this workflow reached this step at 2m48s: not a near miss,
+      # a two-and-a-half-minute gap. That run failed with "release not
+      # found", and the fix was a manual re-run of this job. Since the image
+      # pipeline is consistently the faster of the two, that failure was not
+      # a fluke to shrug off - it will recur on every release until this
+      # waits for the release to exist. This step does not call
+      # `gh release create`: creating the release from here would race
+      # goreleaser from the other side and risk clobbering the release notes
+      # and binaries it is responsible for, the same care the `verify` job
+      # above takes with images rather than assuming the merge job's success
+      # implies the tags actually landed. Bounded at 10 minutes so a genuine
+      # goreleaser failure fails this job with a clear reason instead of
+      # hanging until the workflow's own timeout.
+      - name: Wait for the release to exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            gh release view "$TAG" >/dev/null 2>&1 && break
+            sleep 10
+          done
+          gh release view "$TAG" >/dev/null || {
+            echo "::error title=Release not created::release $TAG was not created within 10 minutes; goreleaser (release.yml) may have failed, or has not been pushed the same tag"
+            exit 1
+          }
+
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
