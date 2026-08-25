@@ -95,6 +95,13 @@ type ExecBackend interface {
 	// stdout via io.MultiWriter, so backends return shipping writers only.
 	StepLogWriters(ctx context.Context, stepIndex int) (stdout, stderr io.Writer, finish func(ctx context.Context))
 
+	// ConcurrencyMode reports how RunPipeline must run the members of a
+	// parallel: group or a matrix:/foreach: expansion for this backend —
+	// Concurrent (goroutines) or Sequential (declaration order, one at a
+	// time). Read once per pipeline in RunClaim, so a backend must return a
+	// constant for the life of a claim. Both production backends now report
+	// Concurrent; Sequential exists for a backend whose per-claim state
+	// cannot yet tolerate overlapping steps.
 	ConcurrencyMode() ConcurrencyMode
 }
 

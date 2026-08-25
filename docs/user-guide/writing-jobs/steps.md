@@ -217,9 +217,14 @@ block start together and the block completes once every member has finished (or 
 starts once the whole block completes. A `parallel:` entry cannot also declare `name`,
 `run`, or the other concrete-step fields — it is exclusively a group of `Step`s.
 
-> **On the Kubernetes agent, members of a `parallel:` group run sequentially** inside the
-> Pod (same as matrix/foreach combinations); the completion semantics (block finishes when
-> every member has) are identical, only the wall-clock concurrency differs.
+Members of a `parallel:` group run concurrently on both agents, sharing the
+run's workspace — so members that write the same path can race. A member
+that must not overlap another belongs outside the block, as a plain
+sequential step (steps run in declaration order by default — see above). See
+[Migrating to concurrent Kubernetes step
+execution](../../operator-manual/migrations/k8s-concurrent-step-execution.md)
+if you're upgrading from an agent version where the Kubernetes agent ran
+these one at a time.
 
 ### Conditional Execution (`if`)
 
@@ -461,7 +466,7 @@ its combinations** into a map keyed by combination key:
 
 A `call` step with a matrix launches one child run per combination, and the outputs become an aggregated map.
 
-On the Kubernetes agent, combinations run sequentially within the Pod (the standard agent runs them in parallel).
+Matrix/`foreach:` combinations run concurrently within the Pod on the Kubernetes agent, the same as the standard agent — see the migration note above for jobs upgrading from an agent version where that wasn't the case.
 
 > **Upgrade note:** matrix support changed the agent claim wire format
 > (`ForeachKey`/`ForeachValue` were replaced by a `MatrixValues` map). There

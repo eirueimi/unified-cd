@@ -529,6 +529,13 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 						// Scoped steps never carry a container: exec target (mutually
 						// exclusive at the DSL level), so this case takes precedence over
 						// the container case below.
+						//
+						// extraEnv here, nil from resolveScope's cache/artifact
+						// path: the scope is created once per (ScopeID,
+						// MatrixKey) and keeps the FIRST caller's env, so
+						// concurrent members sharing a ScopeID resolve it by
+						// scheduling. See resolveScope (agent.go) and
+						// k8sBackend.ensureScopePod for why that is tolerated.
 						h, herr := b.EnsureScope(attemptCtx, step, extraEnv)
 						if herr != nil {
 							runErr = herr

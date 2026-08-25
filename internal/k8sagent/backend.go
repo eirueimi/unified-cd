@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -16,13 +18,49 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// scopeEntry is one scope key's in-flight or completed pod creation. The Once
+// makes concurrent callers for the same key share a single attempt instead of
+// each creating a pod — the old check-then-act let two steps both miss the
+// cache, and the loser's pod was orphaned, since CloseScopes only deletes
+// pods that made it into the map.
+//
+// name and err are written inside the Once and read by CloseScopes, which
+// never calls Do and so has no happens-before edge from it. Both accesses are
+// therefore taken under k8sBackend.scopesMu.
+//
+// interest/abandoned are how a creation attempt learns that nobody wants it
+// any more. Every caller that joins the entry increments interest and drops
+// it again when its own context ends or its call returns; when the count
+// reaches zero the abandoned channel is closed, which cancels the in-flight
+// attempt (see scopeCreateContext). This replaces an earlier attempt to infer
+// "the run is over" from the KIND of the winning caller's context error,
+// which was a proxy and a wrong one: a job-level timeoutMinutes
+// (internal/agent/orchestrator.go) reaches every step context as
+// DeadlineExceeded, indistinguishable from one step's private `timeout:`.
+// Counting live callers needs no such inference — a step's own deadline
+// removes exactly one caller, while anything that ends the run (job timeout,
+// controller cancellation, agent shutdown) ends every caller's context and so
+// necessarily drives the count to zero.
+//
+// interest and abandonedClosed are guarded by k8sBackend.scopesMu; abandoned
+// itself is assigned once at construction and only ever closed, so reading
+// the channel needs no lock.
+type scopeEntry struct {
+	once sync.Once
+	name string
+	err  error
+
+	interest        int
+	abandoned       chan struct{}
+	abandonedClosed bool
+}
+
 // k8sBackend is the ExecBackend implementation for the k8s agent. It owns the
 // per-claim pod identity (the pooled/per-run pod's name and workspace mount
-// path), the claim's scope-pod map (lazily created on first uses-scope step,
-// mirroring the doc comment on executeRun's old scopePods map — the k8s agent
-// runs a claim's steps one at a time via agentlib.RunPipeline in Sequential
-// mode, so this map needs no mutex for reads/writes performed from the
-// orchestrate loop itself), and the secret masker used by StepLogWriters.
+// path), the claim's scope-pod entries (lazily created on first uses-scope
+// step; scopesMu guards scopes so concurrent steps sharing a uses-scope can
+// safely race to create it — see scopeEntry), and the secret masker used by
+// StepLogWriters.
 type k8sBackend struct {
 	a       *K8sAgent
 	runID   string
@@ -33,7 +71,25 @@ type k8sBackend struct {
 	jobName   string
 	mountPath string
 
-	scopePods map[string]string
+	scopesMu sync.Mutex
+	scopes   map[string]*scopeEntry
+
+	// scopeCtx/scopeCancel bound scope-pod CREATION to the claim rather than
+	// to whichever step happened to ask for the scope first. See
+	// scopeCreateContext for why creation must not inherit a step's context,
+	// and CloseScopes for where scopeCancel fires.
+	//
+	// context.Background() as the root, exactly like sidecarPump's streams
+	// (SetMasker): both are claim-lifetime work that must outlive per-step
+	// cancellation, and both are ended explicitly by CloseScopes — which
+	// RunClaim defers before anything can early-return
+	// (internal/agent/orchestrator.go), so "claim-scoped" here is a
+	// guarantee, not a hope.
+	scopeCtx    context.Context
+	scopeCancel context.CancelFunc
+	// runCancelWatchOnce guards the claim's run-cancel watch, started lazily
+	// by the first scope-pod creation. See startRunCancelWatch.
+	runCancelWatchOnce sync.Once
 
 	masker *secrets.Masker
 
@@ -55,9 +111,12 @@ type k8sBackend struct {
 // is the claim's qualified job name, passed to the sidecar's cache
 // restore/save subcommands via --job for per-job cache namespacing.
 func newK8sBackend(a *K8sAgent, runID, jobName, podName, mountPath string, sidecarNames []string, claimSince metav1.Time) *k8sBackend {
+	scopeCtx, scopeCancel := context.WithCancel(context.Background())
 	return &k8sBackend{
 		a: a, runID: runID, jobName: jobName, podName: podName, mountPath: mountPath,
-		scopePods:    map[string]string{},
+		scopes:       map[string]*scopeEntry{},
+		scopeCtx:     scopeCtx,
+		scopeCancel:  scopeCancel,
 		sidecarNames: sidecarNames, claimSince: claimSince,
 	}
 }
@@ -119,26 +178,352 @@ func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, scr
 // the sidecar log pump (cancelling all sidecar streams and flushing remainders)
 // so streams end before the pod is deleted/released — RunClaim defers
 // CloseScopes and returns before agent.go's pod-teardown defer fires.
+//
+// It claims each entry out of b.scopes (deletes it from the map) before
+// deleting its pod, rather than just reading name/err under the lock and
+// deleting afterward. That claim is an ownership handoff with an in-flight
+// ensureScopePod/createScopePod for the same key: e.name is written (in
+// createScopePod) before e.err is known, so a CloseScopes racing with an
+// in-flight attempt could otherwise see e.err == nil (its zero value, not yet
+// set) and e.name != "" for a pod that is still waiting on
+// WaitForPodRunning, or has just failed but whose once.Do closure has not yet
+// recorded e.err, and issue its own DeletePod for the same pod
+// createScopePod's own failure branch also deletes.
+//
+// The same "claim by removing under lock, but only the entry you still
+// own" pattern is used at every site that can delete a scopes entry —
+// here, createScopePod's WaitForPodRunning failure branch, and
+// ensureScopePod's once.Do closure on a failed attempt — each checking
+// b.scopes[key] == e before deleting. That symmetry matters: it is not
+// enough for one site to avoid double-deleting a pod CloseScopes already
+// claimed; a site that deletes unconditionally can instead evict a
+// DIFFERENT, live entry that a later caller installed for the same key
+// after this one was removed, which orphans that entry's pod from
+// CloseScopes just as surely as a double-delete wastes an API call.
+//
+// In production this race cannot actually happen: CloseScopes is deferred in
+// the orchestrator and only runs after RunPipeline returns, and runParallel
+// joins its goroutines before returning, so no in-flight ensureScopePod can
+// overlap CloseScopes. That ordering lives in a different package
+// (internal/agent/orchestrator.go) though, so this handoff does not rely on
+// it — it stays correct even if a future refactor there changes it.
 func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	if b.sidecarPump != nil {
 		b.sidecarPump.Stop()
 	}
-	for key, name := range b.scopePods {
+	// End the claim's scope-creation context. Creation is deliberately not
+	// bound to any step's context (see scopeCreateContext), so this is what
+	// stops an in-flight image pull once the claim is over — the same role
+	// sidecarPump.Stop() plays for the sidecar streams above.
+	if b.scopeCancel != nil {
+		b.scopeCancel()
+	}
+
+	b.scopesMu.Lock()
+	entries := make(map[string]string, len(b.scopes))
+	for key, e := range b.scopes {
+		if e.err == nil && e.name != "" {
+			entries[key] = e.name
+			delete(b.scopes, key)
+		}
+	}
+	b.scopesMu.Unlock()
+
+	for key, name := range entries {
 		if err := b.a.pm.DeletePod(context.WithoutCancel(ctx), name); err != nil {
 			slog.Warn("k8s: failed to delete scope pod", "scopeKey", key, "pod", name, "error", err)
 		}
 	}
 }
 
-// ensureScopePod lazily creates (or returns the cached) scope pod for a scoped
-// step, keyed by scopeKey. See executeRun's historical doc comment: this map
-// is only ever touched from orchestrate's single-goroutine, Sequential-mode
-// step loop, so no mutex is needed.
+// ensureScopePod lazily creates (or returns the in-flight/completed) scope
+// pod for a scoped step, keyed by scopeKey. Concurrent callers for the same
+// key share a single scopeEntry and therefore a single sync.Once, so exactly
+// one of them runs createScopePod; the rest block on Do until it finishes and
+// then read the same result. Different keys get different entries and so
+// proceed independently — scopesMu only ever guards the map/entry bookkeeping,
+// never the pod creation itself.
 //
-// The scope pod's Ready wait is bounded by the same configurable knob as the
-// run pod (Config.PodStartTimeout / UNIFIED_K8S_POD_START_TIMEOUT, resolved
-// via Config.PodStartTimeoutDuration — see config.go and agent.go's
-// awaitPodRunning). Under RestartPolicy: Never a pod stuck in
+// ctx is used ONLY to decide whether this caller's departure should abort the
+// shared attempt (see scopeCreateContext); it never bounds the attempt.
+//
+// FIRST-CALLER-WINS ENV. env likewise comes from whichever caller won the
+// Once, and the two callers do not agree on it: the orchestrator's run-step
+// path passes the fully expanded extraEnv (UNIFIED_AGENT_OS,
+// UNIFIED_WORKSPACE and every expanded `env:` value), while resolveScope —
+// used by the cache:/uploadArtifact:/downloadArtifact: branches — passes nil
+// (internal/agent/agent.go). A parallel: block mixing a cache: step and a
+// run: step that share a ScopeID therefore builds the scope Pod with the full
+// env or with only imageStepEnv(step), depending on which goroutine arrives
+// first. The host backend has the identical shape
+// (internal/agent/scope.go's scopeManager.ensure uses whichever caller holds
+// the mutex first), so this is not a k8s-specific defect and it is not
+// something this layer can fix: by the time either caller gets here the
+// scope's env has already been decided by the DSL. What the concurrency flip
+// changed is only the tie-break — declaration order became goroutine
+// scheduling — so the symptom now reads as a flaky job rather than a stable
+// misconfiguration. Tolerated deliberately; fixing it means making the env a
+// property of the scope declaration rather than of the step that first
+// touches it, which is a DSL change, not a backend one.
+func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env []string) (string, error) {
+	key := scopeKey(step)
+
+	b.scopesMu.Lock()
+	e, ok := b.scopes[key]
+	if !ok {
+		e = &scopeEntry{abandoned: make(chan struct{})}
+		b.scopes[key] = e
+	}
+	// Register this caller's interest BEFORE releasing the lock, so there is
+	// no window in which a freshly-installed entry looks abandoned.
+	e.interest++
+	b.scopesMu.Unlock()
+
+	// Hold that interest for as long as this caller both exists and still
+	// wants the scope. The watcher is not a one-shot decision: it runs for
+	// the whole call, and the only two ways out are this caller returning
+	// (stopInterestWatch) or this caller's context ending. Either way the
+	// count drops exactly once, via releaseScopeInterest's sync.Once.
+	stopInterestWatch := b.holdScopeInterest(ctx, e)
+	defer stopInterestWatch()
+
+	e.once.Do(func() {
+		// Arm the authoritative run-cancel signal before the first Pod is
+		// created (route 2 in scopeCreateContext). Once per backend.
+		b.startRunCancelWatch()
+		// The winner of the Once creates the pod for EVERY caller of this
+		// key, so it must not run under its own step's deadline — see
+		// scopeCreateContext.
+		createCtx, stopCreateCtx := b.scopeCreateContext(e)
+		defer stopCreateCtx()
+		name, err := b.createScopePod(createCtx, step, env, e)
+		b.scopesMu.Lock()
+		e.name, e.err = name, err
+		if err != nil {
+			// Do not cache a failure. A later step needing this scope makes
+			// its own attempt rather than inheriting an error it did not
+			// cause; the callers waiting on THIS attempt still receive err
+			// below, because they hold the entry pointer.
+			//
+			// Ownership check, same pattern as createScopePod's failure
+			// branch and CloseScopes' claim: scopesMu is released between
+			// createScopePod's own ownership-claiming delete/DeletePod call
+			// and this lock acquisition, so by the time we get here a later
+			// caller may already have removed this key (createScopePod's
+			// branch, or a racing CloseScopes) and/or installed a brand new
+			// entry for the same key (a later ensureScopePod call, once the
+			// key was free). An unconditional delete(b.scopes, key) would
+			// evict that live successor instead of our own stale entry,
+			// orphaning ITS pod from CloseScopes — the one thing this whole
+			// handoff exists to prevent. Only delete if key still maps to
+			// this entry.
+			if b.scopes[key] == e {
+				delete(b.scopes, key)
+			}
+		}
+		b.scopesMu.Unlock()
+	})
+
+	b.scopesMu.Lock()
+	name, err := e.name, e.err
+	b.scopesMu.Unlock()
+	return name, err
+}
+
+// holdScopeInterest registers that callerCtx still wants entry e's scope, and
+// returns a stop func the caller MUST defer. The interest is dropped exactly
+// once - whichever comes first, the caller returning or its context ending.
+//
+// This is the mechanism that decides when an in-flight creation should be
+// abandoned, and it deliberately measures rather than infers. "Does anyone
+// still want this scope?" is answered by counting callers whose contexts are
+// live; nothing anywhere reads the KIND of a context's error to guess whether
+// the run is over.
+func (b *k8sBackend) holdScopeInterest(callerCtx context.Context, e *scopeEntry) func() {
+	var once sync.Once
+	release := func() { once.Do(func() { b.releaseScopeInterest(e) }) }
+
+	stopped := make(chan struct{})
+	go func() {
+		select {
+		case <-stopped:
+			// The caller returned; its deferred stop drops the interest.
+		case <-callerCtx.Done():
+			// This caller is gone - its step timed out, or the run ended. It
+			// no longer wants the scope, but the OTHER callers on this key
+			// may, so this only decrements; abandoning is what happens when
+			// the count reaches zero.
+			release()
+		}
+	}()
+
+	return func() {
+		close(stopped)
+		release()
+	}
+}
+
+// releaseScopeInterest drops one caller's interest in e and, if that was the
+// last one, closes e.abandoned so the in-flight creation (if any) is
+// cancelled.
+//
+// A caller arriving after abandonment joins an entry whose attempt is already
+// being cancelled and will see that attempt's error. That interleaving needs
+// every earlier caller's context to have ended first, which on a live run
+// means the run itself is ending - and the failure is not cached, so the key
+// is freed for a genuinely later step to retry from scratch.
+func (b *k8sBackend) releaseScopeInterest(e *scopeEntry) {
+	b.scopesMu.Lock()
+	e.interest--
+	abandon := e.interest <= 0 && !e.abandonedClosed
+	if abandon {
+		e.abandonedClosed = true
+	}
+	b.scopesMu.Unlock()
+	if abandon {
+		close(e.abandoned)
+	}
+}
+
+// scopeCreateContext returns the context that bounds ONE scope-pod creation
+// attempt, plus a stop func the caller MUST defer.
+//
+// Why creation cannot simply use the winning caller's context. The winner of
+// scopeEntry.once creates the pod on behalf of every concurrent caller for
+// that key, and the orchestrator hands each step a context carrying that
+// step's own `timeout:` (or, for a retry: step, that attempt's timeout -
+// internal/agent/orchestrator.go). Under Sequential that was harmless: there
+// was only ever one caller. Under Concurrent, a `parallel:` block whose two
+// members share a uses-scope would make the winner's private deadline
+// everyone's deadline - member A with `timeout: 1` aborting a 90-second image
+// pull, deleting the Pod, and handing its own DeadlineExceeded to member B,
+// whose context was healthy and which would have waited the full
+// PodStartTimeout. That is also a host/k8s divergence: the host's
+// scopeManager.ensure (internal/agent/scope.go) caches only successes, so its
+// second caller simply retries under its own context.
+//
+// So creation is rooted at the claim-scoped b.scopeCtx and bounded by
+// Config.PodStartTimeout - the same operator knob that bounds the run Pod's
+// own start wait. context.WithoutCancel of a caller's context would be worse
+// than the bug: it would also survive run cancellation.
+//
+// Three routes abort the attempt, and NONE of them is a predicate on a
+// context's error kind. Every one of them stays armed for the whole attempt;
+// none can retire after a single decision:
+//
+//  1. e.abandoned - closed by releaseScopeInterest when the last caller that
+//     still wanted this scope has gone. This is what catches a job-level
+//     timeoutMinutes (which reaches every step context as DeadlineExceeded,
+//     and so is invisible to any per-error-kind test), and equally a run
+//     cancellation, an agent shutdown, or simply every interested step
+//     failing for its own reasons. abandoned is a latching close, so this
+//     select can neither miss the event nor consume it early.
+//  2. b.scopeCtx - cancelled by startRunCancelWatch the moment the controller
+//     reports the run terminal. That is the authoritative run-cancel signal,
+//     the same one internal/agent's cancel poller and this package's
+//     awaitPodRunning act on, read directly rather than inferred from the
+//     error kind of a step context.
+//  3. b.scopeCtx again - cancelled by CloseScopes at claim end.
+//
+// Accepted trade-off, and it is now narrow: a step whose `timeout:` fires
+// while its SHARED scope Pod is still being created keeps waiting for that
+// creation, up to PodStartTimeout, instead of failing at its own deadline -
+// but ONLY while some sibling still wants the same Pod. A step that is the
+// sole caller drops the interest count to zero and aborts at its own
+// deadline, exactly as it did before this branch. A shared resource's
+// creation cannot be bounded by one sharer's deadline without poisoning the
+// others; PodStartTimeout is the knob that bounds it, and the overrun is
+// documented for operators in
+// docs/operator-manual/migrations/k8s-concurrent-step-execution.md.
+func (b *k8sBackend) scopeCreateContext(e *scopeEntry) (context.Context, func()) {
+	parent := b.scopeCtx
+	if parent == nil {
+		// Defensive: a k8sBackend assembled without newK8sBackend. Falling
+		// back to Background keeps creation unbounded by any step, which is
+		// the property that matters here.
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, b.a.cfg.PodStartTimeoutDuration())
+	stopped := make(chan struct{})
+	go func() {
+		select {
+		case <-stopped:
+		case <-e.abandoned:
+			cancel()
+		}
+	}()
+	return ctx, func() {
+		close(stopped)
+		cancel()
+	}
+}
+
+// startRunCancelWatch starts the claim's run-cancel watch, at most once per
+// backend. It is called from the first scope-pod creation.
+//
+// It polls the controller for the run's authoritative status and cancels
+// b.scopeCtx as soon as that status is terminal - the run was cancelled by an
+// operator, or reaped. This is the real run-cancel event rather than a proxy
+// for it: the same status, read from the same endpoint at the same interval,
+// that internal/agent's own cancel poller (RunClaim) and this package's
+// awaitPodRunning already act on. The watch cannot retire early - it runs
+// until b.scopeCtx is done, which happens only when it cancels b.scopeCtx
+// itself or CloseScopes does so at claim end.
+//
+// It starts on first scope creation rather than in SetMasker, even though
+// SetMasker is where the claim's other background work (the sidecar log pump)
+// is anchored, for one reason: the great majority of claims declare no
+// uses-scope at all, and starting it there would double the controller's
+// cancel-poll traffic for every one of them in order to watch for an event
+// that could never matter. The state it acts on is still claim-scoped and
+// still ended by CloseScopes, exactly like the pump.
+//
+// A nil client (a backend assembled directly in a test) skips the watch;
+// routes 1 and 3 in scopeCreateContext are unaffected.
+func (b *k8sBackend) startRunCancelWatch() {
+	if b.a == nil || b.a.client == nil || b.scopeCtx == nil || b.scopeCancel == nil {
+		return
+	}
+	b.runCancelWatchOnce.Do(func() {
+		// Read the poll interval on this goroutine, not inside the watcher,
+		// so a test mutating agentlib.CancelPollInterval never races the
+		// watcher's read (mirrors awaitPodRunning and RunClaim's poller).
+		pollInterval := agentlib.CancelPollInterval
+		watchCtx := b.scopeCtx
+		go func() {
+			ticker := time.NewTicker(pollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-watchCtx.Done():
+					return
+				case <-ticker.C:
+					run, err := b.a.client.GetRun(watchCtx, b.runID)
+					if err != nil {
+						continue
+					}
+					if isTerminalRunStatus(run.Status) {
+						slog.Info("k8s: run is terminal at the controller; aborting scope pod creation",
+							"runId", b.runID, "status", run.Status)
+						b.scopeCancel()
+						return
+					}
+				}
+			}
+		}()
+	})
+}
+
+// createScopePod creates one scope pod and waits for it to be Running. It is
+// called at most once per scope key, from inside scopeEntry.once, under the
+// claim-scoped context scopeCreateContext builds — NOT under the winning
+// caller's step context.
+//
+// CreatePod and the Ready wait SHARE one budget: the same configurable knob
+// as the run pod (Config.PodStartTimeout / UNIFIED_K8S_POD_START_TIMEOUT,
+// resolved via Config.PodStartTimeoutDuration — see config.go and agent.go's
+// awaitPodRunning), applied once, by scopeCreateContext, over the whole
+// attempt. Under RestartPolicy: Never a pod stuck in
 // Pending/ImagePullBackOff never transitions to Failed, so without this bound
 // the wait would hang until the whole run is cancelled; this gives a bad
 // scope image the same fast, explicit failure the run pod gets.
@@ -148,11 +533,8 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 // over imageStepEnv(step)'s k8s-specific defaults, so the caller's expanded
 // value wins over the raw, unexpanded step.Env map and a templated env value
 // (e.g. {{ .Params.x }}) ships resolved rather than as the literal template.
-func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env []string) (string, error) {
+func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env []string, e *scopeEntry) (string, error) {
 	key := scopeKey(step)
-	if name, ok := b.scopePods[key]; ok {
-		return name, nil
-	}
 	envMap := imageStepEnv(step)
 	for k, v := range envSliceToMap(env) {
 		envMap[k] = v
@@ -161,19 +543,66 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 		SidecarSpec{Image: b.a.cfg.SidecarImage, S3SecretName: b.a.cfg.SidecarS3SecretName}, b.a.cfg.ShimImage)
 	created, err := b.a.pm.CreatePod(ctx, pod)
 	if err != nil {
+		// Residual, deliberately unfixed leak: if the API server actually
+		// created the Pod but the client call still returned an error (a lost
+		// response, or ctx being cancelled at exactly that instant), we return
+		// before e.name is written and nothing in this claim can ever name
+		// that Pod — CloseScopes skips entries with no name. Concurrency makes
+		// it likelier, since N members now issue N CreatePod calls at once and
+		// a cancellation hits all of them together. It is bounded, not
+		// unbounded: buildScopePod labels every scope Pod
+		// app=unified-cd-agent + unified-cd/runId=<runID> (scopepod.go), and
+		// runPodGC sweeps exactly that label set against terminal runs
+		// (podgc.go), so the orphan is reaped on the next GC pass. Closing it
+		// here would mean a name-free List-by-label reconciliation on the
+		// error path, which is more machinery than the GC already provides.
 		return "", fmt.Errorf("uses-scope %q (image %q): create pod: %w", step.ScopeID, step.ScopeImage, err)
 	}
 	name := created.Name
-	podStartTimeout := b.a.cfg.PodStartTimeoutDuration()
-	waitCtx, cancel := context.WithTimeout(ctx, podStartTimeout)
-	defer cancel()
-	if err := b.a.pm.WaitForPodRunning(waitCtx, name); err != nil {
-		// Best-effort cleanup of the pod that never became ready; CloseScopes
-		// also sweeps b.scopePods, but this one never made it into the map.
-		_ = b.a.pm.DeletePod(context.WithoutCancel(ctx), name)
-		return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready within %s: %w", step.ScopeID, step.ScopeImage, podStartTimeout, err)
+	// Record the name as soon as the Pod exists, before waiting for Running,
+	// so CloseScopes can always name what exists. From here until this
+	// function returns, a real Pod is running in the cluster; if we only
+	// wrote e.name on success (as ensureScopePod's caller does at the end),
+	// a CloseScopes racing in while we are still in WaitForPodRunning below
+	// would see an entry with no name and skip it, leaking the Pod.
+	b.scopesMu.Lock()
+	e.name = name
+	b.scopesMu.Unlock()
+	// Do NOT apply PodStartTimeout again here. scopeCreateContext already
+	// bounds this whole attempt by it, so a second WithTimeout would never be
+	// the earlier deadline and would only make the failure message below
+	// claim a budget the wait did not actually have (it had PodStartTimeout
+	// minus however long CreatePod took). waitBudget is read from the
+	// context we were actually given, so the message reports the real one.
+	waitBudget := b.a.cfg.PodStartTimeoutDuration()
+	if deadline, ok := ctx.Deadline(); ok {
+		waitBudget = time.Until(deadline)
 	}
-	b.scopePods[key] = name
+	if err := b.a.pm.WaitForPodRunning(ctx, name); err != nil {
+		// Best-effort cleanup of the pod that never became ready. e.name was
+		// already recorded above, but ensureScopePod deletes this whole entry
+		// from b.scopes on failure (see the err != nil branch there), so a
+		// CloseScopes that runs after we return would no longer find it
+		// either — normally we must delete it ourselves here.
+		//
+		// "Normally" because of an ownership check first: a CloseScopes
+		// racing with this attempt (see its doc comment) may have already
+		// claimed this key out of b.scopes and taken responsibility for
+		// deleting the pod. Only delete here if our entry is still the one in
+		// the map; otherwise CloseScopes has it, and a delete here would be
+		// redundant (and could race the fake/API client with CloseScopes' own
+		// delete).
+		b.scopesMu.Lock()
+		owned := b.scopes[key] == e
+		if owned {
+			delete(b.scopes, key)
+		}
+		b.scopesMu.Unlock()
+		if owned {
+			_ = b.a.pm.DeletePod(context.WithoutCancel(ctx), name)
+		}
+		return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready within %s: %w", step.ScopeID, step.ScopeImage, waitBudget.Round(time.Millisecond), err)
+	}
 	return name, nil
 }
 
@@ -277,6 +706,18 @@ func (b *k8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeH
 // LogPusher on the artifact sidecar's dsl.ArtifactLogIndex (its own identity,
 // not step 0's stream) (mirroring the pre-refactor sidecarExec closure —
 // cache/artifact steps have no per-step log stream of their own).
+//
+// Under concurrent step execution, two cache:/artifact steps running at once
+// each build their own LogPusher over the SAME (runID, dsl.ArtifactLogIndex,
+// "stderr") stream, and the controller assigns seq on arrival
+// (internal/agent/runner.go), so their lines interleave inside the single
+// "Artifacts/Cache" pseudo-step the UI renders
+// (internal/controller/api_runs.go). Nothing is lost or corrupted — the
+// pushers guard their own buffers — it is a readability cost, and only for
+// jobs that run two cache/artifact steps concurrently. Fixing it would mean
+// giving the pseudo-step a per-operation identity, which the logs table has
+// no column for (see the matrix note in
+// docs/operator-manual/migrations/k8s-concurrent-step-execution.md).
 func (b *k8sBackend) sidecarExecArgv(ctx context.Context, targetPod, container string, argv []string) (int, error) {
 	if targetPod == "" {
 		targetPod = b.podName
@@ -291,6 +732,10 @@ func (b *k8sBackend) sidecarExecArgv(ctx context.Context, targetPod, container s
 // sidecarExecArgvCapturingStdout is sidecarExecArgv but returns the sidecar's
 // stdout (still shipping stderr to the log pusher). Used by CacheRestore to read
 // the UCD_CACHE_RESULT marker.
+//
+// Its stderr pusher shares dsl.ArtifactLogIndex with every other cache/artifact
+// operation in the claim, so concurrent steps multiplex onto one stream — see
+// sidecarExecArgv for why that is accepted.
 func (b *k8sBackend) sidecarExecArgvCapturingStdout(ctx context.Context, targetPod, container string, argv []string) (int, string, error) {
 	if targetPod == "" {
 		targetPod = b.podName
@@ -422,11 +867,31 @@ func (b *k8sBackend) StepLogWriters(ctx context.Context, stepIndex int) (stdout,
 }
 
 // ConcurrencyMode reports how the k8s agent runs parallel-group / matrix
-// members: one at a time (its documented behavior — scope-pod map and hook
-// stack are not concurrency-safe).
+// members: concurrently, matching the standard agent.
+//
+// This returned Sequential until scope-pod creation became concurrency-safe.
+// The old comment also blamed the hook stack, which was already wrong: the
+// hook stack and postHooks live in the shared orchestrator
+// (internal/agent/orchestrator.go) and have been guarded by postHooksMu since
+// the standard agent went concurrent. Everything else the backend holds is
+// either written once before the step loop (masker, sidecarPump, via
+// SetMasker) or allocated per call (StepLogWriters), and the pod pool carries
+// its own mutex.
 func (b *k8sBackend) ConcurrencyMode() agentlib.ConcurrencyMode {
-	return agentlib.Sequential
+	return k8sConcurrencyMode
 }
+
+// k8sConcurrencyMode is the single source of truth for the k8s backend's
+// step-concurrency mode. The in-package test doubles return it rather than
+// repeating a literal — fakeK8sBackend (fakebackend_test.go), which every
+// k8sagent orchestrator unit test drives, and parityK8sBackend
+// (parity_k8s_test.go), which drives the k8s half of the parity suite. Both
+// held a hardcoded agentlib.Sequential when this constant went Concurrent,
+// so the flip shipped with no executable coverage anywhere outside a
+// //go:build k8s test. Keeping the doubles pointed at this constant is what
+// makes that impossible to repeat: change it here and every test that speaks
+// for the k8s backend changes with it.
+const k8sConcurrencyMode = agentlib.Concurrent
 
 var _ agentlib.ExecBackend = (*k8sBackend)(nil)
 

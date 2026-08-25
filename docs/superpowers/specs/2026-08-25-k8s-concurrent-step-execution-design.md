@@ -117,7 +117,22 @@ changing the default — was rejected as a larger change that adds DSL surface t
 protect against a contract nobody documented.
 
 A migration guide records it: what changes, which job shapes are at risk, and
-that `needs:` is the existing way to order steps that must not overlap.
+how to order steps that must not overlap.
+
+**Correction (Task 4).** An earlier revision of this section named `needs:` as
+that mechanism. It is not one: `needs:` was removed from the DSL and `apply`
+rejects it outright at any nesting level, with "needs: is no longer supported —
+use parallel: blocks for concurrent execution" (`internal/dsl/parse.go:136-147`).
+The claim was wrong when written and would have sent operators to a keyword that
+fails at apply time.
+
+The DSL's only step-ordering primitive is **declaration order**: steps under
+`steps:` run one at a time in the order listed, and `parallel:` is what opts a
+group into running concurrently. Ordering two writes that must not overlap means
+taking them out of concurrency, not annotating a dependency between them. For
+`matrix:`/`foreach:` there is no equivalent move — the combinations are
+expansions of one step and run as a single concurrent set — so the fix there is
+to give each combination its own path, parameterized by the dimension.
 
 ## 5. Testing
 
@@ -168,6 +183,25 @@ concurrently, verified only by tests that never run steps concurrently against
 a real Pod, would be verified in name. The suite already builds real Pods and
 runs in CI, so the cost is one scenario, not new infrastructure.
 
+**Outcome (Task 3).** `TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration`
+(`internal/k8sagent/agent_integration_test.go`) shipped one of the two. The
+**stderr auto-flush** is exercised for real: the test shrinks
+`stderrAutoFlushInterval` and gives each member's script a runtime floor, so
+the ticker is guaranteed to fire multiple times mid-step, under concurrent
+load, across three independent `StepLogWriters` instances — not just via the
+unconditional final flush every step does at its own end regardless.
+
+The **sidecar log pump** is not exercised, and on inspection that is fine to
+leave as is rather than a gap to close later. `k8sBackend.SetMasker` builds
+the pump once per claim, before the step loop runs at all; each user
+sidecar's `LogPusher` writes under `dsl.SidecarLogIndex`, an index space
+distinct from any step's index. Concurrent parallel members share no
+per-step state with it — the earlier "structurally unaffected by step
+concurrency" guess above holds. A scenario built to reach the pump would need
+a claim-level test with a real sidecar container (and the image-pull
+dependency that brings), not a parallel-group test; nothing about running
+steps concurrently gives that test more reason to exist than it already had.
+
 ## 7. Out of scope
 
 - **Any change to the standard agent.** It is already concurrent; this aligns
@@ -180,3 +214,28 @@ runs in CI, so the cost is one scenario, not new infrastructure.
   backends return `Concurrent` the seam looks redundant, but it is the
   documented place where a future backend declares this, and deleting it is a
   separate decision.
+- **Aligning the host backend's scope-creation timeout semantics.** Fixing the
+  shared-scope timeout defect on Kubernetes left the two backends differing in
+  the opposite direction from the one this branch started with, and that
+  residual divergence is deliberately not closed here.
+
+  On Kubernetes, scope-Pod creation no longer runs under the first caller's
+  step context: it is bounded by `PodStartTimeout` and abandoned when no
+  caller still wants it (`scopeCreateContext`, `internal/k8sagent/backend.go`),
+  so the first caller's `timeout:` does not bound creation while a sibling is
+  still waiting. On the host, `scopeManager.ensure`
+  (`internal/agent/scope.go`) still runs `Create` under the first caller's
+  context while holding the mutex, so that caller's `timeout:` *is* honoured —
+  and because only successes are cached, a second caller simply retries under
+  its own context.
+
+  The **observable outcome for the sibling is the same on both backends** — it
+  gets a working scope and is not failed by another member's deadline — which
+  is why no parity case fails. But no parity case covers it either: what
+  differs is which caller's deadline bounds the creation, and the parity suite
+  asserts on step outcomes, not on that. Closing it means changing the host
+  backend, which every task on this branch was forbidden from doing, and
+  choosing which semantics is canonical (bound creation by the first caller
+  and retry, or bound it by a resource-level budget and share the attempt) is
+  a design decision in its own right. Recorded here so the next person to
+  touch this seam starts from the fact rather than rediscovering it.

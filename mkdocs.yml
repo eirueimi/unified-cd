@@ -125,6 +125,7 @@ nav:
           - ID-Scoped Agent Credentials: operator-manual/migrations/agent-id-scoped-credentials.md
           - Kubernetes Secrets Out of the Bundle: operator-manual/migrations/kubernetes-secrets-out-of-the-bundle.md
           - PodTemplate Sub-Field Routing: operator-manual/migrations/podtemplate-subfield-routing.md
+          - Concurrent Kubernetes Step Execution: operator-manual/migrations/k8s-concurrent-step-execution.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md
