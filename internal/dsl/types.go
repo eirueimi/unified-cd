@@ -56,6 +56,13 @@ type Spec struct {
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
 	// Description is a human-readable summary of the job, shown in the WebUI.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// Vars are plain-text variables shared by every step of this job. They
+	// reach a step twice: as environment variables, and as {{ .Vars.KEY }} in
+	// templates. They are NOT secrets — see kind: Vars.
+	//
+	// BOTH tags are required: the store persists Spec as JSON and reads it
+	// back, so a yaml-only tag round-trips to nothing. See Detached.
+	Vars map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"`
 }
 
 type Params struct {

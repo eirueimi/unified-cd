@@ -215,6 +215,10 @@ func (j *Job) Validate() error {
 		return err
 	}
 
+	if err := ValidateVarKeys(j.Spec.Vars); err != nil {
+		return fmt.Errorf("spec.vars: %w", err)
+	}
+
 	// Plain (uses-free, inline-podTemplate) non-native jobs get
 	// container-reference validation at apply time; uses-bearing specs defer to
 	// the controller's post-resolution check and named-podTemplate specs defer
