@@ -55,6 +55,58 @@ func PodTemplateNeedsKubernetes(pt *PodTemplate) bool {
 				return true
 			}
 		}
+		if containerNeedsKubernetes(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// containerNeedsKubernetes reports whether a container whose every field NAME is
+// host-supported still uses a sub-key the host cannot honor.
+//
+// HostSupportedContainerFields compares field names. Two of those fields have
+// sub-keys that split across the backend boundary:
+//
+//   - resources: the host maps resources.limits but drops resources.requests,
+//     because docker/podman have no request concept.
+//   - env: the host honors a literal value but cannot resolve valueFrom, which
+//     needs a Kubernetes API to dereference.
+//
+// Without this check a container carrying only the unsupported half is
+// classified host-runnable, routes to a standard agent, and is silently
+// degraded there — see the two ignore warnings in
+// internal/agent/claim_pod.go, whose remedy ("route to a Kubernetes agent")
+// is advice at a point where routing has already been decided.
+//
+// Any future addition to HostSupportedContainerFields must state whether the
+// host honors the whole field or only part of it.
+func containerNeedsKubernetes(c map[string]any) bool {
+	if res, ok := c["resources"].(map[string]any); ok {
+		// An empty requests map requests nothing, so it is not a reason to
+		// force kubernetes.
+		if reqs, ok := res["requests"].(map[string]any); ok && len(reqs) > 0 {
+			return true
+		}
+	}
+	env, _ := c["env"].([]any)
+	for _, raw := range env {
+		e, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		// Mirror the host builder's order exactly (claim_pod.go): an entry with
+		// no name is skipped before its value is ever considered, so it is not
+		// a valueFrom the host drops — it is an entry neither backend uses.
+		if name, _ := e["name"].(string); name == "" {
+			continue
+		}
+		// A missing "value" KEY is unresolvable on the host; value: "" is a
+		// literal empty string it honors. claim_pod.go makes the same
+		// distinction with `rawVal, present := e["value"]`.
+		if _, present := e["value"]; !present {
+			return true
+		}
 	}
 	return false
 }

@@ -69,6 +69,15 @@ func parseContainerDef(name string, c map[string]any) (containerDef, error) {
 			rawVal, present := e["value"]
 			if !present {
 				// valueFrom / fieldRef etc. — not resolvable on the host.
+				//
+				// Unreachable for any run created after the routing predicate
+				// (dsl.PodTemplateNeedsKubernetes / containerNeedsKubernetes) started
+				// looking inside env: such a container now requires the "pod"
+				// capability, which a standard agent never advertises
+				// (agentCapabilities in agent.go), so it can never claim this run.
+				// Left in place as defence in depth for a run created before that
+				// change, or for this builder being reached by some other path — do
+				// not delete as dead code.
 				slog.Warn("podTemplate container env without a literal value is ignored on the host agent",
 					"container", name, "env", en)
 				continue
@@ -90,6 +99,14 @@ func parseContainerDef(name string, c map[string]any) (containerDef, error) {
 			def.CPULimit, def.MemLimit = limitStrings(cpu, mem)
 		}
 		if reqs, ok := res["requests"].(map[string]any); ok && len(reqs) > 0 {
+			// Unreachable for any run created after the routing predicate
+			// (dsl.PodTemplateNeedsKubernetes / containerNeedsKubernetes) started
+			// looking inside resources: such a container now requires the "pod"
+			// capability, which a standard agent never advertises
+			// (agentCapabilities in agent.go), so it can never claim this run. Left
+			// in place as defence in depth for a run created before that change, or
+			// for this builder being reached by some other path — do not delete as
+			// dead code.
 			slog.Warn("podTemplate container resources.requests is not supported on the host agent "+
 				"(docker/podman have no request concept) and is ignored; use resources.limits or route to a Kubernetes agent",
 				"container", name)
