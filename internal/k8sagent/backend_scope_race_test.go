@@ -174,3 +174,80 @@ func TestK8sBackend_CloseScopes_DoesNotDoubleDeleteRacingFailedCreate(t *testing
 		assert.Equal(t, pm.createdNm, pm.deleted[0], "the deleted pod must be the one that was created")
 	}
 }
+
+// TestK8sBackend_EnsureScopePod_DoesNotEvictLiveSuccessorOnFailure pins the
+// leak Finding 1 identified: ensureScopePod's once.Do closure used to run an
+// UNCONDITIONAL delete(b.scopes, key) on a failed attempt. createScopePod's
+// own failure branch already removes its own entry (and releases scopesMu)
+// before calling DeletePod, so there is a real window — between that delete
+// and the once.Do closure re-acquiring scopesMu — during which a later
+// caller for the SAME key can see the key is free, install a brand new
+// entry, and succeed. The old unconditional delete would then evict that
+// live, successful entry instead of the stale failed one, and its pod would
+// never be found (and so never deleted) by CloseScopes: a leak, not merely a
+// redundant API call. This is a logic race, not a data race — every access
+// here is already under scopesMu — so -race cannot find it; only a fake that
+// can hold a goroutine open across that specific window can.
+//
+// The fake widens that window deterministically: fakePM.blockFirstDelete
+// parks the first (failing) attempt's DeletePod call open until the test
+// releases it, and fakePM.failWaitCalls makes only that first
+// WaitForPodRunning call fail, so a second attempt started while the first
+// is parked succeeds cleanly and installs a live entry for the same key.
+func TestK8sBackend_EnsureScopePod_DoesNotEvictLiveSuccessorOnFailure(t *testing.T) {
+	pm := &fakePM{
+		waitErr:          assert.AnError,
+		failWaitCalls:    1, // only the first attempt's WaitForPodRunning fails
+		blockFirstDelete: make(chan struct{}),
+		deleteStarted:    make(chan struct{}),
+	}
+	a := &K8sAgent{cfg: Config{Namespace: "default"}, pm: pm}
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
+
+	step := api.ClaimStep{ScopeID: "scope:build", ScopeImage: "golang:1.22"}
+
+	// The first attempt: fails WaitForPodRunning, removes its own entry
+	// (ownership check in createScopePod's failure branch), then parks
+	// inside DeletePod.
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := b.EnsureScope(context.Background(), step, nil)
+		firstDone <- err
+	}()
+	<-pm.deleteStarted // the key is now free; the first attempt is parked
+
+	// The second attempt, for the SAME key, started while the first is still
+	// parked inside DeletePod. WaitForPodRunning is call #2 overall, which
+	// failWaitCalls: 1 lets succeed, so this installs a live entry.
+	type secondResult struct {
+		name string
+		err  error
+	}
+	secondDone := make(chan secondResult, 1)
+	go func() {
+		h, err := b.EnsureScope(context.Background(), step, nil)
+		payload, _ := agentlib.ScopeHandlePayload(h)
+		name, _ := payload.(string)
+		secondDone <- secondResult{name: name, err: err}
+	}()
+
+	second := <-secondDone
+	require.NoError(t, second.err, "the second attempt, for a key the first attempt had already freed, must succeed on its own merits")
+	require.NotEmpty(t, second.name)
+
+	// Now release the first attempt. Its once.Do closure re-acquires
+	// scopesMu and must find the key no longer maps to its own (stale)
+	// entry — the second attempt's live entry is there instead — and must
+	// NOT delete it.
+	close(pm.blockFirstDelete)
+	require.Error(t, <-firstDone, "the first attempt's own WaitForPodRunning failure must still surface to its caller")
+
+	assert.Equal(t, 2, pm.creations(), "both attempts should have created a pod")
+
+	// The decisive assertion: the second attempt's pod must still be
+	// reachable by CloseScopes. Before the fix, the first attempt's closure
+	// evicted the second attempt's entry from b.scopes, so CloseScopes would
+	// never see it and this pod would leak forever.
+	b.CloseScopes(context.Background())
+	assert.Contains(t, pm.deleted, second.name, "the live successor's pod must still be deleted by CloseScopes, not orphaned by the first attempt's failure cleanup")
+}

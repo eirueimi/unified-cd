@@ -145,10 +145,18 @@ func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, scr
 // set) and e.name != "" for a pod that is still waiting on
 // WaitForPodRunning, or has just failed but whose once.Do closure has not yet
 // recorded e.err, and issue its own DeletePod for the same pod
-// createScopePod's own failure branch also deletes. Removing the entry here
-// first means createScopePod's failure branch (which checks whether its key
-// still maps to its own entry before deleting) sees it is already gone and
-// skips its delete.
+// createScopePod's own failure branch also deletes.
+//
+// The same "claim by removing under lock, but only the entry you still
+// own" pattern is used at every site that can delete a scopes entry —
+// here, createScopePod's WaitForPodRunning failure branch, and
+// ensureScopePod's once.Do closure on a failed attempt — each checking
+// b.scopes[key] == e before deleting. That symmetry matters: it is not
+// enough for one site to avoid double-deleting a pod CloseScopes already
+// claimed; a site that deletes unconditionally can instead evict a
+// DIFFERENT, live entry that a later caller installed for the same key
+// after this one was removed, which orphans that entry's pod from
+// CloseScopes just as surely as a double-delete wastes an API call.
 //
 // In production this race cannot actually happen: CloseScopes is deferred in
 // the orchestrator and only runs after RunPipeline returns, and runParallel
@@ -204,12 +212,23 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 			// Do not cache a failure. A later step needing this scope makes
 			// its own attempt rather than inheriting an error it did not
 			// cause; the callers waiting on THIS attempt still receive err
-			// below, because they hold the entry pointer. This delete is
-			// idempotent with createScopePod's own ownership-claiming delete
-			// on its WaitForPodRunning failure branch, and with CloseScopes'
-			// claim (see its doc comment) — whichever of the three removes
-			// the entry first, the rest are no-ops.
-			delete(b.scopes, key)
+			// below, because they hold the entry pointer.
+			//
+			// Ownership check, same pattern as createScopePod's failure
+			// branch and CloseScopes' claim: scopesMu is released between
+			// createScopePod's own ownership-claiming delete/DeletePod call
+			// and this lock acquisition, so by the time we get here a later
+			// caller may already have removed this key (createScopePod's
+			// branch, or a racing CloseScopes) and/or installed a brand new
+			// entry for the same key (a later ensureScopePod call, once the
+			// key was free). An unconditional delete(b.scopes, key) would
+			// evict that live successor instead of our own stale entry,
+			// orphaning ITS pod from CloseScopes — the one thing this whole
+			// handoff exists to prevent. Only delete if key still maps to
+			// this entry.
+			if b.scopes[key] == e {
+				delete(b.scopes, key)
+			}
 		}
 		b.scopesMu.Unlock()
 	})

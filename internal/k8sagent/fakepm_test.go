@@ -38,6 +38,32 @@ type fakePM struct {
 	waitHadDeadline bool
 	waitCtxSeen     bool
 	waitDeadline    time.Time // the actual deadline WaitForPodRunning's ctx carried, when waitHadDeadline is true
+
+	// failWaitCalls, when > 0, limits waitErr to the first failWaitCalls
+	// calls to WaitForPodRunning; later calls succeed (nil) regardless of
+	// waitErr. 0 (the default) preserves the plain "every call returns
+	// waitErr" behavior the other scope-race tests rely on. Used to make one
+	// attempt for a scope key fail while a later attempt for the SAME key
+	// (after the first's entry is gone) succeeds, which is what widens the
+	// logic-race window between a failed attempt's ownership-claiming delete
+	// and its DeletePod call into something a test can land a second,
+	// successful attempt inside of.
+	failWaitCalls int
+
+	deleteCount int
+	// blockFirstDelete, when non-nil, blocks only the FIRST DeletePod call
+	// until it is closed; later calls return immediately. Mirrors
+	// blockFirstWait/waitStarted below, but for DeletePod: it widens the
+	// window between createScopePod's failure branch removing its own entry
+	// from b.scopes and that same goroutine's once.Do closure re-acquiring
+	// scopesMu, so a test can deterministically run a second attempt for the
+	// same key inside that window instead of relying on goroutine scheduling
+	// luck.
+	blockFirstDelete chan struct{}
+	// deleteStarted is closed by that first DeletePod call, so a test can
+	// wait until it is definitely parked before proceeding, the same reason
+	// waitStarted exists for blockFirstWait.
+	deleteStarted chan struct{}
 }
 
 func (f *fakePM) CreatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
@@ -58,9 +84,11 @@ func (f *fakePM) WaitForPodRunning(ctx context.Context, _ string) error {
 	f.waitDeadline = deadline
 	waitErr := f.waitErr
 	f.waitCount++
-	first := f.waitCount == 1
+	callIndex := f.waitCount
+	first := callIndex == 1
 	gate := f.blockFirstWait
 	started := f.waitStarted
+	failLimit := f.failWaitCalls
 	f.mu.Unlock()
 
 	if first {
@@ -75,6 +103,9 @@ func (f *fakePM) WaitForPodRunning(ctx context.Context, _ string) error {
 			}
 		}
 	}
+	if failLimit > 0 && callIndex > failLimit {
+		return nil
+	}
 	return waitErr
 }
 
@@ -84,8 +115,30 @@ func (f *fakePM) creations() int {
 	defer f.mu.Unlock()
 	return f.createCount
 }
-func (f *fakePM) DeletePod(_ context.Context, name string) error {
+func (f *fakePM) DeletePod(ctx context.Context, name string) error {
+	f.mu.Lock()
+	f.deleteCount++
+	first := f.deleteCount == 1
+	gate := f.blockFirstDelete
+	started := f.deleteStarted
+	f.mu.Unlock()
+
+	if first {
+		if started != nil {
+			close(started)
+		}
+		if gate != nil {
+			select {
+			case <-gate:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+
+	f.mu.Lock()
 	f.deleted = append(f.deleted, name)
+	f.mu.Unlock()
 	return nil
 }
 func (f *fakePM) ListPods(_ context.Context, _ string) (*corev1.PodList, error) {

@@ -292,7 +292,14 @@ func isWSLLauncherK8s(path string) bool {
 // are the writers orchestrate hands to RunDefault (its own tee/shipping
 // wiring via ExecBackend.StepLogWriters), so this function just needs to
 // stream the real script's output into them.
-func parityRunScript(t *testing.T, shell string, step api.ClaimStep, expandedRun string, stdout, stderr io.Writer) func(ctx context.Context) (int, error) {
+//
+// workDir sets the command's working directory, mirroring the host driver's
+// workDir := t.TempDir() (parity_host_test.go). Without it, a script writing
+// a bare relative filename (as parallel-group-members-all-succeed's members
+// do — "echo alpha > alpha.txt") would land the file in the test process's
+// cwd, i.e. this package's source directory, rather than somewhere the test
+// owns and go test / t.TempDir() cleans up.
+func parityRunScript(t *testing.T, shell string, step api.ClaimStep, expandedRun string, workDir string, stdout, stderr io.Writer) func(ctx context.Context) (int, error) {
 	t.Helper()
 	return func(ctx context.Context) (int, error) {
 		env := append([]string{}, os.Environ()...)
@@ -302,6 +309,7 @@ func parityRunScript(t *testing.T, shell string, step api.ClaimStep, expandedRun
 		}
 
 		cmd := exec.Command(shell, "-lc", expandedRun)
+		cmd.Dir = workDir
 		cmd.Env = env
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
@@ -353,6 +361,10 @@ type parityK8sBackend struct {
 	runID   string
 	masker  *secrets.Masker
 	shell   string
+	// workDir is a t.TempDir() the driver's real script executions run in
+	// (see parityRunScript), mirroring the host driver's workDir isolation
+	// so a case writing a relative path doesn't litter the source tree.
+	workDir string
 
 	postMu    sync.Mutex
 	postOrder []string
@@ -380,12 +392,12 @@ func (b *parityK8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, s
 		container = "job"
 	}
 	b.recordDispatch(container, script)
-	return parityRunScript(b.t, b.shell, step, script, stdout, stderr)(ctx)
+	return parityRunScript(b.t, b.shell, step, script, b.workDir, stdout, stderr)(ctx)
 }
 
 func (b *parityK8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
 	b.recordDispatch(container, script)
-	return parityRunScript(b.t, b.shell, step, script, stdout, stderr)(ctx)
+	return parityRunScript(b.t, b.shell, step, script, b.workDir, stdout, stderr)(ctx)
 }
 
 func (b *parityK8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, env []string) (agentlib.ScopeHandle, error) {
@@ -393,7 +405,7 @@ func (b *parityK8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, 
 }
 
 func (b *parityK8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, shell, env []string, stdout, stderr io.Writer) (int, error) {
-	return parityRunScript(b.t, b.shell, api.ClaimStep{}, script, stdout, stderr)(ctx)
+	return parityRunScript(b.t, b.shell, api.ClaimStep{}, script, b.workDir, stdout, stderr)(ctx)
 }
 
 func (b *parityK8sBackend) CloseScopes(ctx context.Context) {}
@@ -564,7 +576,11 @@ func runParityK8sCase(t *testing.T, tc paritycases.Case) {
 	// tc.Secrets — see h.secretsToServe above) and installs the masker on the
 	// backend via SetMasker, mirroring the host agent exactly.
 	shell := parityShell(t)
-	backend := &parityK8sBackend{t: t, client: client, agentID: agentID, runID: runID, shell: shell}
+	// workDir mirrors the host driver's workDir := t.TempDir() so a case's
+	// script can write a bare relative filename (see parityRunScript) without
+	// littering this package's source directory.
+	workDir := t.TempDir()
+	backend := &parityK8sBackend{t: t, client: client, agentID: agentID, runID: runID, shell: shell, workDir: workDir}
 
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
