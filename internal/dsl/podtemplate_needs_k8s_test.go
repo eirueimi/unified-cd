@@ -196,6 +196,37 @@ func TestPodTemplateNeedsKubernetes(t *testing.T) {
 			false,
 		},
 		{
+			"resources.limits with an extended resource key forces kubernetes",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"resources": map[string]any{
+						"limits": map[string]any{"cpu": "1", "memory": "2Gi", "nvidia.com/gpu": "1"},
+					}}),
+			}}}),
+			true,
+		},
+		{
+			"resources.claims forces kubernetes",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"resources": map[string]any{
+						"limits": map[string]any{"cpu": "1", "memory": "2Gi"},
+						"claims": []any{map[string]any{"name": "gpu-claim"}},
+					}}),
+			}}}),
+			true,
+		},
+		{
+			"a non-string cpu limit forces kubernetes (host's string assertion silently drops it)",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"resources": map[string]any{
+						"limits": map[string]any{"cpu": 1, "memory": "2Gi"},
+					}}),
+			}}}),
+			true,
+		},
+		{
 			"a second container's requests forces kubernetes",
 			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
 				container(map[string]any{"name": "job", "image": "python:3.12-slim"}),

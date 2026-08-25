@@ -22,6 +22,23 @@ func TestRequiredCaps(t *testing.T) {
 	}}}
 	assert.Equal(t, []string{"pod"}, RequiredCaps(Spec{PodTemplate: k8sPT}))
 
+	// podTemplate carrying resources.requests -> pod (the host has no request
+	// concept and silently drops it; see PodTemplateNeedsKubernetes).
+	requestsPT := &PodTemplate{Spec: map[string]any{"containers": []any{
+		map[string]any{"name": "job", "image": "python:3.12-slim",
+			"resources": map[string]any{"requests": map[string]any{"cpu": "500m"}}},
+	}}}
+	assert.Equal(t, []string{"pod"}, RequiredCaps(Spec{PodTemplate: requestsPT}))
+
+	// podTemplate carrying only literal env and cpu/memory-as-string
+	// resources.limits -> container (both are host-honoured in full).
+	hostRunnablePT := &PodTemplate{Spec: map[string]any{"containers": []any{
+		map[string]any{"name": "job", "image": "python:3.12-slim",
+			"env":       []any{map[string]any{"name": "MODE", "value": "fast"}},
+			"resources": map[string]any{"limits": map[string]any{"cpu": "1", "memory": "2Gi"}}},
+	}}}
+	assert.Equal(t, []string{"container"}, RequiredCaps(Spec{PodTemplate: hostRunnablePT}))
+
 	// native takes precedence even if a podTemplate is somehow present
 	assert.Equal(t, []string{"native"}, RequiredCaps(Spec{Native: true, PodTemplate: hostPT}))
 }

@@ -88,6 +88,38 @@ func containerNeedsKubernetes(c map[string]any) bool {
 		if reqs, ok := res["requests"].(map[string]any); ok && len(reqs) > 0 {
 			return true
 		}
+		// resources itself splits the same way its own sub-keys do: the host
+		// builder (claim_pod.go parseContainerDef) only ever looks at
+		// res["limits"] and res["requests"]. Any other top-level resources
+		// key — "claims" (DRA) chief among them — has no host mapping at
+		// all, so its presence alone means the container needs Kubernetes.
+		for key := range res {
+			if key != "limits" && key != "requests" {
+				return true
+			}
+		}
+		// resources.limits is host-honored only for a strict subset of one
+		// sub-key: the host builder reads exactly res["limits"]["cpu"] and
+		// res["limits"]["memory"], asserts each to a string, and silently
+		// drops everything else in the map — any extended resource
+		// (nvidia.com/gpu, ephemeral-storage, hugepages-*, ...), and a
+		// cpu/memory value that isn't a string (bare `cpu: 1` is valid k8s
+		// Quantity syntax the host's `.(string)` assertion just drops). So
+		// "limits is supported" is true only for cpu/memory spelled as YAML
+		// strings — anything else in limits means the container needs the
+		// part of the spec the host cannot see.
+		if lim, ok := res["limits"].(map[string]any); ok {
+			for key, val := range lim {
+				switch key {
+				case "cpu", "memory":
+					if _, ok := val.(string); !ok {
+						return true
+					}
+				default:
+					return true
+				}
+			}
+		}
 	}
 	env, _ := c["env"].([]any)
 	for _, raw := range env {
