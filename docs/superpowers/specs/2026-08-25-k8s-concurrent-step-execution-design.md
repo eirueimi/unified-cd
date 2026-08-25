@@ -168,6 +168,25 @@ concurrently, verified only by tests that never run steps concurrently against
 a real Pod, would be verified in name. The suite already builds real Pods and
 runs in CI, so the cost is one scenario, not new infrastructure.
 
+**Outcome (Task 3).** `TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration`
+(`internal/k8sagent/agent_integration_test.go`) shipped one of the two. The
+**stderr auto-flush** is exercised for real: the test shrinks
+`stderrAutoFlushInterval` and gives each member's script a runtime floor, so
+the ticker is guaranteed to fire multiple times mid-step, under concurrent
+load, across three independent `StepLogWriters` instances — not just via the
+unconditional final flush every step does at its own end regardless.
+
+The **sidecar log pump** is not exercised, and on inspection that is fine to
+leave as is rather than a gap to close later. `k8sBackend.SetMasker` builds
+the pump once per claim, before the step loop runs at all; each user
+sidecar's `LogPusher` writes under `dsl.SidecarLogIndex`, an index space
+distinct from any step's index. Concurrent parallel members share no
+per-step state with it — the earlier "structurally unaffected by step
+concurrency" guess above holds. A scenario built to reach the pump would need
+a claim-level test with a real sidecar container (and the image-pull
+dependency that brings), not a parallel-group test; nothing about running
+steps concurrently gives that test more reason to exist than it already had.
+
 ## 7. Out of scope
 
 - **Any change to the standard agent.** It is already concurrent; this aligns
