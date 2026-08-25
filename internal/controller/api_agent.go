@@ -728,20 +728,32 @@ func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 		}
 		guarded[req.RunID] = true
 	}
-	dropped := 0
-	var droppedRun string
-	for _, req := range lines {
+	batch := make([]store.LogAppend, len(lines))
+	for i, req := range lines {
 		if req.Timestamp.IsZero() {
 			req.Timestamp = time.Now().UTC()
 		}
-		seq, err := s.store.AppendLog(r.Context(), req.RunID, req.StepIndex, req.Stream, req.Timestamp, req.Line)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		batch[i] = store.LogAppend{
+			RunID:     req.RunID,
+			StepIndex: req.StepIndex,
+			Stream:    req.Stream,
+			Timestamp: req.Timestamp,
+			Line:      req.Line,
 		}
+	}
+	seqs, err := s.store.AppendLogs(r.Context(), batch)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// A zero seq means the line was dropped because its run is sealed. Count
+	// them and warn once, as the per-line loop this replaced did.
+	dropped := 0
+	var droppedRun string
+	for i, seq := range seqs {
 		if seq == 0 {
 			dropped++
-			droppedRun = req.RunID
+			droppedRun = batch[i].RunID
 		}
 	}
 	if dropped > 0 {
