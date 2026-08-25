@@ -104,6 +104,139 @@ func TestPodTemplateNeedsKubernetes(t *testing.T) {
 			}}),
 			true,
 		},
+		{
+			"resources.requests forces kubernetes (host drops it)",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"resources": map[string]any{
+						"requests": map[string]any{"cpu": "500m", "memory": "1Gi"},
+					}}),
+			}}}),
+			true,
+		},
+		{
+			"resources.limits only is host-OK",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"resources": map[string]any{
+						"limits": map[string]any{"cpu": "1", "memory": "2Gi"},
+					}}),
+			}}}),
+			false,
+		},
+		{
+			"resources with both requests and limits forces kubernetes",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"resources": map[string]any{
+						"limits":   map[string]any{"cpu": "1"},
+						"requests": map[string]any{"cpu": "500m"},
+					}}),
+			}}}),
+			true,
+		},
+		{
+			"empty requests map requests nothing and is host-OK",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"resources": map[string]any{"requests": map[string]any{}}}),
+			}}}),
+			false,
+		},
+		{
+			"env without a value key forces kubernetes (host cannot resolve valueFrom)",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"env": []any{map[string]any{
+						"name": "TOKEN",
+						"valueFrom": map[string]any{"secretKeyRef": map[string]any{
+							"name": "api", "key": "token",
+						}},
+					}}}),
+			}}}),
+			true,
+		},
+		{
+			"literal env value is host-OK",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"env": []any{map[string]any{"name": "MODE", "value": "fast"}}}),
+			}}}),
+			false,
+		},
+		{
+			"empty-string env value is a literal the host honors",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"env": []any{map[string]any{"name": "MODE", "value": ""}}}),
+			}}}),
+			false,
+		},
+		{
+			"one valueFrom among literals still forces kubernetes",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"env": []any{
+						map[string]any{"name": "MODE", "value": "fast"},
+						map[string]any{"name": "TOKEN", "valueFrom": map[string]any{
+							"fieldRef": map[string]any{"fieldPath": "metadata.name"},
+						}},
+					}}),
+			}}}),
+			true,
+		},
+		{
+			"nameless env entry is skipped, matching the host builder",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"env": []any{map[string]any{"valueFrom": map[string]any{
+						"fieldRef": map[string]any{"fieldPath": "metadata.name"},
+					}}}}),
+			}}}),
+			false,
+		},
+		{
+			"resources.limits with an extended resource key forces kubernetes",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"resources": map[string]any{
+						"limits": map[string]any{"cpu": "1", "memory": "2Gi", "nvidia.com/gpu": "1"},
+					}}),
+			}}}),
+			true,
+		},
+		{
+			"resources.claims forces kubernetes",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"resources": map[string]any{
+						"limits": map[string]any{"cpu": "1", "memory": "2Gi"},
+						"claims": []any{map[string]any{"name": "gpu-claim"}},
+					}}),
+			}}}),
+			true,
+		},
+		{
+			"a non-string cpu limit forces kubernetes (host's string assertion silently drops it)",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim",
+					"resources": map[string]any{
+						"limits": map[string]any{"cpu": 1, "memory": "2Gi"},
+					}}),
+			}}}),
+			true,
+		},
+		{
+			"a second container's requests forces kubernetes",
+			tmpl(PodTemplate{Spec: map[string]any{"containers": []any{
+				container(map[string]any{"name": "job", "image": "python:3.12-slim"}),
+				container(map[string]any{"name": "cache", "image": "redis:7",
+					"resources": map[string]any{
+						"requests": map[string]any{"memory": "256Mi"},
+					}}),
+			}}}),
+			true,
+		},
 	}
 
 	for _, tc := range cases {

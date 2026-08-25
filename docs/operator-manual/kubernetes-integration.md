@@ -43,17 +43,35 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   now match standard Kubernetes/OCI ENTRYPOINT/CMD semantics on **both** backends —
   see [Host container command/args
   semantics](#host-container-commandargs-semantics) below for the full truth table
-  and per-runtime support matrix. Other host-unsupported `podTemplate` fields (a PVC
-  workspace, extra pod-spec, `volumeMounts`, or non-literal env) are ignored with a
-  WARN rather than applied. Unlike k8s, the standard agent's claim-pod containers
+  and per-runtime support matrix. Other host-unsupported `podTemplate` fields (a named
+  agent-side template, an override patch, extra pod-spec beyond `containers`,
+  `volumeMounts`, and any other container field outside the host-supported set)
+  already require a Kubernetes agent — the run is pinned there, not degraded on the
+  standard agent. A PVC `workspace` is the one exception that still degrades instead
+  of routing: it becomes a per-claim bind mount on the standard agent, by design. An
+  `env` entry that sets `valueFrom` instead of a literal `value` also requires a
+  Kubernetes agent: the standard agent's docker/podman backend has no Kubernetes API
+  to resolve `valueFrom` against, so a container that needs it is pinned to a
+  Kubernetes agent rather than having the value silently dropped. See the [migration
+  guide](migrations/podtemplate-subfield-routing.md) if this changes which runs
+  schedule for you. Unlike k8s, the standard agent's claim-pod containers
   share one network namespace (via the pause container), so — unlike the old MVP
   single-container form this replaces — sidecars **are** reachable at `localhost` from
   every claim-pod container, matching k8s.
 - **Resource `requests`** (`podTemplate.spec.containers[].resources.requests`) — applied
-  only here (docker/podman/nerdctl have no request concept). The standard agent maps
-  `resources.limits` only and logs one WARN when `resources.requests` is present
-  (`podTemplate container resources.requests is not supported on the host agent
-  ... and is ignored; use resources.limits or route to a Kubernetes agent`).
+  only on Kubernetes, because docker/podman/nerdctl have no request concept for the
+  standard agent to map it onto. A `podTemplate` container that sets
+  `resources.requests` now requires a Kubernetes agent: the run is pinned there rather
+  than claimed by a standard agent and quietly run with only `resources.limits`
+  honoured. Use `resources.limits` if the standard agent should remain eligible, or
+  see the [migration guide](migrations/podtemplate-subfield-routing.md). **This only
+  applies to `cpu` and `memory` spelled as YAML strings.** The standard agent's
+  `resources.limits` handling reads exactly those two keys as strings and silently
+  drops everything else — an extended resource (`nvidia.com/gpu`,
+  `ephemeral-storage`, `hugepages-*`, ...), `resources.claims`, or a bare numeric
+  `cpu`/`memory` value (e.g. `cpu: 1`, valid Kubernetes `Quantity` syntax the host's
+  string check just drops). Any of those now requires a Kubernetes agent too, the
+  same as `resources.requests`.
 - **`native: true`** — host-only. A `native: true` job claimed by the k8s-agent fails the
   run immediately with a clear error; route native jobs away from k8s-agents (and to host
   agents) via `agentSelector`.
