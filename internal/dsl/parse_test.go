@@ -1192,12 +1192,26 @@ spec:
 	assert.Equal(t, "teardown", job.Spec.Finally[1].Name)
 }
 
-func TestParse_FinallyRejectsCache(t *testing.T) {
+// TestParse_FinallyAcceptsCache and TestParse_FinallyAcceptsPost are the
+// inverse of the TestParse_FinallyRejectsCache/Post pair they replace. The
+// parser used to reject both because the agent drained its deferred-hook
+// stacks BEFORE the finally pipeline and therefore silently dropped anything
+// a finally step registered. The agent now drains again after finally
+// (drainHooks in internal/agent/orchestrator.go, covered end-to-end by
+// internal/agent/orchestrator_finally_hooks_test.go and the
+// finally-post-hook-runs parity case), so the restriction is gone.
+//
+// It was also never airtight: a `uses:` template inlined into finally: —
+// documented as supported — carries its own steps' post:/cache: straight
+// past this validation, and the resolved spec is not re-validated. Rejecting
+// the hand-written form while the inlined form went through was the worst of
+// both worlds.
+func TestParse_FinallyAcceptsCache(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
-  name: bad-finally-cache
+  name: finally-cache
 spec:
   steps:
     - name: build
@@ -1208,18 +1222,19 @@ spec:
         path: node_modules
         key: npm-abc
 `
-	_, err := Parse(strings.NewReader(input))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "finally")
-	assert.Contains(t, err.Error(), "cache")
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Finally, 1)
+	require.NotNil(t, job.Spec.Finally[0].Cache)
+	assert.Equal(t, "npm-abc", job.Spec.Finally[0].Cache.Key)
 }
 
-func TestParse_FinallyRejectsPost(t *testing.T) {
+func TestParse_FinallyAcceptsPost(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
-  name: bad-finally-post
+  name: finally-post
 spec:
   steps:
     - name: build
@@ -1230,10 +1245,43 @@ spec:
       post:
         run: echo done
 `
-	_, err := Parse(strings.NewReader(input))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "finally")
-	assert.Contains(t, err.Error(), "post")
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Finally, 1)
+	require.NotNil(t, job.Spec.Finally[0].Post)
+	assert.Equal(t, "echo done", job.Spec.Finally[0].Post.Run)
+}
+
+// TestParse_FinallyParallelAcceptsPost pins the same relaxation for the
+// parallel: branch of validateStepEntries, which carried its own copy of the
+// rejection.
+func TestParse_FinallyParallelAcceptsPost(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: finally-parallel-post
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - parallel:
+        - name: cleanup_a
+          run: ./a.sh
+          post:
+            run: echo done-a
+        - name: cleanup_b
+          cache:
+            path: dist
+            key: dist-abc
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Finally, 1)
+	require.Len(t, job.Spec.Finally[0].Parallel, 2)
+	require.NotNil(t, job.Spec.Finally[0].Parallel[0].Post)
+	require.NotNil(t, job.Spec.Finally[0].Parallel[1].Cache)
 }
 
 func TestParse_FinallyPlainRunStillPasses(t *testing.T) {

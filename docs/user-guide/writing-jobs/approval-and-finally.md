@@ -108,8 +108,14 @@ spec:
 - All `finally` steps run to completion; a `finally` step that fails marks the
   run **Failed**.
 - On cancellation, `finally` still runs, but `failure()` is `false`.
-- `cache:` and `post:` are not supported in `finally` steps (they register
-  deferred hooks that run before `finally`; use them in `steps` instead).
+- `cache:` and `post:` **are** supported in `finally` steps. Their deferred
+  hooks (the cache save, the post script) run after the whole `finally` block
+  completes, in their own drain pass — a normal step's `post:` hook still runs
+  before `finally` starts, so it never waits on cleanup. Within each pass,
+  `post:` hooks run last-registered-first.
+- `approval:` is **not** supported in `finally` steps: the cleanup phase has to
+  run unattended after a failure or a cancellation, so it must never block on a
+  human.
 - [`uses:`](templates-and-reuse.md#git-template-inlining-uses) is supported in `finally` steps and
   is resolved the same way as in `steps:` — a common pattern is a `uses:`
   notification/cleanup template that only needs to run on completion.

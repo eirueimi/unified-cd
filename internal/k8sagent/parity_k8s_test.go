@@ -427,8 +427,10 @@ func (b *parityK8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.
 }
 
 // RunPostHook records the post hook's script in invocation order (so
-// post-hooks-lifo can assert LIFO order) and, since none of the 10 parity
-// cases' post hooks depend on their side effects being observed any other
+// post-hooks-lifo and finally-post-hook-runs can assert, via
+// assertK8sPostHookOrder, both THAT each hook ran and in what order) and,
+// since no parity case's post hooks depend on their side effects being
+// observed any other
 // way than the marker-file echoes already captured via log shipping in the
 // step body, does not itself execute the script. stdout/stderr are accepted
 // (the shared ExecBackend interface now requires them, since production
@@ -608,26 +610,45 @@ func runParityK8sCase(t *testing.T, tc paritycases.Case) {
 	}
 
 	if tc.Name == "post-hooks-lifo" {
-		backend.postMu.Lock()
-		order := append([]string(nil), backend.postOrder...)
-		backend.postMu.Unlock()
-		wantOrder := []string{
+		assertK8sPostHookOrder(t, backend, tc.Name, []string{
 			`echo post-2 >> "$POSTHOOK_MARKER_FILE"`,
 			`echo post-1 >> "$POSTHOOK_MARKER_FILE"`,
-		}
-		if len(order) != len(wantOrder) {
-			t.Fatalf("post-hooks-lifo: postExec invocation order = %v, want %v", order, wantOrder)
-		}
-		for i := range wantOrder {
-			if order[i] != wantOrder[i] {
-				t.Errorf("post-hooks-lifo: postExec invocation order = %v, want %v (LIFO: step2's post before step1's)", order, wantOrder)
-				break
-			}
-		}
+		})
+	}
+
+	// finally-post-hook-runs: both post: hooks belong to steps inside
+	// finally:, so RunPostHook is only ever reached from the SECOND hook drain
+	// (the one after the finally pipeline). Before that drain existed the fake
+	// recorded nothing at all — this assertion is the k8s half of the
+	// regression guard.
+	if tc.Name == "finally-post-hook-runs" {
+		assertK8sPostHookOrder(t, backend, tc.Name, paritycases.FinallyPostHookScripts)
 	}
 
 	if !claim.Native {
 		assertK8sIsolatedDispatch(t, backend)
+	}
+}
+
+// assertK8sPostHookOrder asserts the fake backend recorded exactly wantOrder
+// as the sequence of post: hook scripts it was asked to run — LIFO, the
+// last-registered hook first (see drainHooks in
+// internal/agent/orchestrator.go). An empty recording is a hard failure, not
+// a skip: "RunPostHook was never called" is precisely how a silently-dropped
+// hook shows up. Nothing here observes timing.
+func assertK8sPostHookOrder(t *testing.T, b *parityK8sBackend, caseName string, wantOrder []string) {
+	t.Helper()
+	b.postMu.Lock()
+	order := append([]string(nil), b.postOrder...)
+	b.postMu.Unlock()
+	if len(order) != len(wantOrder) {
+		t.Fatalf("%s: postExec invocation order = %v, want %v", caseName, order, wantOrder)
+	}
+	for i := range wantOrder {
+		if order[i] != wantOrder[i] {
+			t.Errorf("%s: postExec invocation order = %v, want %v (LIFO: the last-registered post hook drains first)", caseName, order, wantOrder)
+			break
+		}
 	}
 }
 

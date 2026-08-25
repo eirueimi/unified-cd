@@ -381,6 +381,12 @@ Post hooks run after the main DAG finishes (regardless of success or failure), i
 Use them for cleanup tasks (delete temp files, stop containers, release resources).
 A post hook's stdout/stderr appears in its owning step's run log, after that step's main output (a failing post hook itself does not fail the run — it's only logged).
 
+A step inside [`finally:`](approval-and-finally.md) may declare a `post:` hook too. Those hooks
+drain in their own pass **after** the whole `finally` block completes, so a
+main-DAG step's cleanup never has to wait for `finally` to finish. Reverse
+declaration order applies within each pass. Both passes run even when the run
+failed, timed out, or was cancelled.
+
 ---
 
 ### Matrix and Foreach Steps

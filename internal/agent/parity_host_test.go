@@ -379,18 +379,18 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 	// backed by shellFakeRT, whose Exec still runs the script through the same
 	// local shell so echo output flows into the captured logs.
 
-	// post-hooks-lifo: the host agent's post: hook drain now streams the
-	// script's stdout/stderr into the owning step's shipped log (see
-	// paritycases.postHooksLIFO's doc comment), but this case still observes
-	// LIFO order out-of-band: each post script appends a line to a real file
-	// via $POSTHOOK_MARKER_FILE. RunStep no longer inherits the test process
-	// env (StepEnv builds an explicit allowlist — see stepenv.go), so this is
-	// wired through a.ExposeEnv below rather than relying on inheritance —
-	// one file's append order is a simpler ordering signal than diffing two
-	// log streams. Dedicated coverage of post output reaching the shipped
-	// logs lives in post_hook_logs_test.go.
+	// post-hooks-lifo / finally-post-hook-runs: the host agent's post: hook
+	// drain now streams the script's stdout/stderr into the owning step's
+	// shipped log (see paritycases.postHooksLIFO's doc comment), but these
+	// cases still observe hook invocation and its order out-of-band: each post
+	// script appends a line to a real file via $POSTHOOK_MARKER_FILE. RunStep
+	// no longer inherits the test process env (StepEnv builds an explicit
+	// allowlist — see stepenv.go), so this is wired through a.ExposeEnv below
+	// rather than relying on inheritance — one file's append order is a
+	// simpler ordering signal than diffing two log streams. Dedicated coverage
+	// of post output reaching the shipped logs lives in post_hook_logs_test.go.
 	var markerFile string
-	if tc.Name == "post-hooks-lifo" {
+	if tc.Name == "post-hooks-lifo" || tc.Name == "finally-post-hook-runs" {
 		markerFile = filepath.Join(t.TempDir(), "posthook-order.txt")
 		t.Setenv("POSTHOOK_MARKER_FILE", markerFile)
 		a.ExposeEnv = []string{"POSTHOOK_MARKER_FILE"}
@@ -441,7 +441,16 @@ func runParityHostCase(t *testing.T, tc paritycases.Case) {
 	}
 
 	if tc.Name == "post-hooks-lifo" {
-		assertPostHookLIFOFromMarkerFile(t, markerFile)
+		assertPostHookOrderFromMarkerFile(t, tc.Name, markerFile, []string{"post-2", "post-1"})
+	}
+
+	// finally-post-hook-runs: the two post: hooks belong to steps inside
+	// finally:, so the marker file is written entirely by the SECOND hook
+	// drain (the one after the finally pipeline). Before that drain existed
+	// the file was never created at all — this assertion is the host half of
+	// the regression guard.
+	if tc.Name == "finally-post-hook-runs" {
+		assertPostHookOrderFromMarkerFile(t, tc.Name, markerFile, paritycases.FinallyPostHookMarkers)
 	}
 
 	if !claim.Native {
@@ -483,32 +492,37 @@ func assertIsolatedDispatch(t *testing.T, rt *shellFakeRT) {
 	}
 }
 
-// assertPostHookLIFOFromMarkerFile reads the marker file each post: hook
-// script appended a line to and asserts post-2 was written before post-1
-// (LIFO: step2's post hook, appended to hookStack after step1's, drains
-// first — see internal/agent/agent.go's hookStack `for i := len-1; i >= 0`
-// drain loop).
-func assertPostHookLIFOFromMarkerFile(t *testing.T, markerFile string) {
+// assertPostHookOrderFromMarkerFile reads the marker file each post: hook
+// script appended a line to and asserts the tokens appear exactly in want —
+// LIFO, last-registered hook first (the drain walks the hook stack with
+// `for i := len-1; i >= 0`; see drainHooks in orchestrator.go). Tokens
+// outside want are ignored so a case can share the file with other output.
+//
+// A missing marker file is a hard failure, not a skip: "the file was never
+// created" is precisely how a silently-dropped hook shows up.
+func assertPostHookOrderFromMarkerFile(t *testing.T, caseName, markerFile string, want []string) {
 	t.Helper()
 	data, err := os.ReadFile(markerFile)
 	if err != nil {
-		t.Fatalf("post-hooks-lifo: failed to read marker file %s: %v", markerFile, err)
+		t.Fatalf("%s: failed to read marker file %s (no post: hook ever ran?): %v", caseName, markerFile, err)
 	}
-	lines := strings.Fields(strings.TrimSpace(string(data)))
-	// Each line is like "post-2" / "post-1" per the post script's `echo post-N`.
+	wanted := map[string]bool{}
+	for _, w := range want {
+		wanted[w] = true
+	}
+	// Each line is a single token per the post scripts' `echo <token>`.
 	var order []string
-	for _, l := range lines {
-		if l == "post-1" || l == "post-2" {
+	for _, l := range strings.Fields(strings.TrimSpace(string(data))) {
+		if wanted[l] {
 			order = append(order, l)
 		}
 	}
-	want := []string{"post-2", "post-1"}
 	if len(order) != len(want) {
-		t.Fatalf("post-hooks-lifo: marker file has %v, want exactly %v", order, want)
+		t.Fatalf("%s: marker file has %v, want exactly %v", caseName, order, want)
 	}
 	for i := range want {
 		if order[i] != want[i] {
-			t.Errorf("post-hooks-lifo: marker order = %v, want %v (LIFO: step2's post before step1's)", order, want)
+			t.Errorf("%s: marker order = %v, want %v (LIFO: the last-registered post hook drains first)", caseName, order, want)
 			break
 		}
 	}
