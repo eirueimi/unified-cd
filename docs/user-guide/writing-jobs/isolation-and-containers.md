@@ -211,6 +211,15 @@ standard agent and the k8s-agent:
   `resources.limits` if the standard agent should remain eligible. See the
   [migration
   guide](../../operator-manual/migrations/podtemplate-subfield-routing.md).
+- **`resources.limits` keeps a container host-eligible only for `cpu` and
+  `memory`, spelled as YAML strings.** The standard agent's `resources.limits`
+  handling reads exactly those two keys as strings and silently drops
+  everything else. An extended resource (`nvidia.com/gpu`,
+  `ephemeral-storage`, `hugepages-*`, ...), `resources.claims`, or a bare
+  numeric value (e.g. `cpu: 1` — valid Kubernetes `Quantity` syntax the
+  host's string check just drops) now requires a Kubernetes agent, the same
+  as `resources.requests`. See the [migration
+  guide](../../operator-manual/migrations/podtemplate-subfield-routing.md).
 - **Env `value` must be a string; a non-literal `env` requires Kubernetes.**
   A container `env` entry's `value` must be a YAML string. An unquoted
   number or boolean (e.g. `value: 8080`) is a **hard error at job start on
@@ -259,8 +268,12 @@ standard agent and the k8s-agent:
 **Routing is automatic and capability-based**, not selector-based: the
 controller infers whether a `podTemplate` needs real Kubernetes (a named
 agent-side template, an `override` patch, a pod-spec field beyond
-`containers`, or a container field the host claim pod can't honor) or is
-host-runnable (plain `name`/`image`/`env`/`resources.limits` containers,
+`containers`, a container field the host claim pod can't honor at all, or a
+sub-field of a host-supported field the host only partially honors —
+`resources.requests`; a `resources.limits` key other than `cpu`/`memory` as a
+string, including `resources.claims`; or an `env` entry without a literal
+`value`) or is host-runnable (plain `name`/`image` containers, literal `env`
+values, `resources.limits` restricted to `cpu`/`memory` as strings,
 `workspace.pvc` — which degrades to a host bind mount). A host-runnable
 `podTemplate` can run on **either** a standard agent or a k8s-agent with no
 hand-written selector required to make that work; a Kubernetes-only

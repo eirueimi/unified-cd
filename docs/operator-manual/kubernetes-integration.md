@@ -64,7 +64,14 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   `resources.requests` now requires a Kubernetes agent: the run is pinned there rather
   than claimed by a standard agent and quietly run with only `resources.limits`
   honoured. Use `resources.limits` if the standard agent should remain eligible, or
-  see the [migration guide](migrations/podtemplate-subfield-routing.md).
+  see the [migration guide](migrations/podtemplate-subfield-routing.md). **This only
+  applies to `cpu` and `memory` spelled as YAML strings.** The standard agent's
+  `resources.limits` handling reads exactly those two keys as strings and silently
+  drops everything else — an extended resource (`nvidia.com/gpu`,
+  `ephemeral-storage`, `hugepages-*`, ...), `resources.claims`, or a bare numeric
+  `cpu`/`memory` value (e.g. `cpu: 1`, valid Kubernetes `Quantity` syntax the host's
+  string check just drops). Any of those now requires a Kubernetes agent too, the
+  same as `resources.requests`.
 - **`native: true`** — host-only. A `native: true` job claimed by the k8s-agent fails the
   run immediately with a clear error; route native jobs away from k8s-agents (and to host
   agents) via `agentSelector`.

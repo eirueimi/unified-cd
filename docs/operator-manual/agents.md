@@ -273,10 +273,20 @@ works out which capability a run of it needs:
 
 - `spec.native: true` → `native`.
 - `spec.podTemplate` is set and uses a feature the standard agent's claim pod
-  can't honor (a named agent-side template, an `override` patch, a pod-spec
-  field beyond `containers`, or a container field outside what the host
-  degrades — see [Kubernetes Pod
-  Template](../user-guide/writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate)) → `pod`.
+  can't honor at all — a named agent-side template, an `override` patch, a
+  pod-spec field beyond `containers`, or a container field outside the
+  host-supported set (`volumeMounts`, `securityContext`, `envFrom`, ...) —
+  → `pod`.
+- `spec.podTemplate` is set and a container's field is host-supported by
+  *name* but uses a sub-field the host only partially honors: a
+  `resources.requests` entry; a `resources.limits` key other than `cpu`/
+  `memory` as a string (an extended resource such as `nvidia.com/gpu`,
+  `resources.claims`, or a bare numeric `cpu`/`memory` value); or an `env`
+  entry with no literal `value` (i.e. `valueFrom`) → `pod`. See [Kubernetes
+  Pod
+  Template](../user-guide/writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate)
+  and the [sub-field routing migration
+  guide](migrations/podtemplate-subfield-routing.md).
 - Everything else (the isolated default, or a host-runnable `podTemplate`) →
   `container`.
 
@@ -287,12 +297,17 @@ match — both must pass. In practice this means:
 
 - A `native: true` job is only ever claimed by a standard agent, never by a
   Kubernetes agent (which has no concept of running outside a Pod).
-- A `podTemplate` job that only Kubernetes can satisfy (a PVC-backed
-  workspace, a named template, `override`, etc.) is only claimed by a
-  Kubernetes agent.
+- A `podTemplate` job that only Kubernetes can satisfy (a named template, an
+  `override` patch, `resources.requests`, an unqualified `resources.limits`
+  key, a non-literal `env` entry, etc.) is only claimed by a Kubernetes
+  agent. A PVC-backed `workspace` is **not** one of these — the standard
+  agent degrades it to a per-claim bind mount by design, so it does not by
+  itself force Kubernetes; see [Kubernetes Pod
+  Template](../user-guide/writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate).
 - A `podTemplate` job built entirely from features the standard agent's claim
-  pod already supports (plain `name`/`image`/`env`/`resources.limits`
-  containers) can be claimed by **either** agent type.
+  pod already supports in full (plain `name`/`image` containers, literal
+  `env` values, `resources.limits` restricted to `cpu`/`memory` as strings)
+  can be claimed by **either** agent type.
 
 This is automatic — you don't need to hand-write an `agentSelector` just to
 keep native jobs off Kubernetes or podTemplate jobs off the standard agent

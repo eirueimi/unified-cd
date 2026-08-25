@@ -1,5 +1,12 @@
 # Sub-field Granularity in podTemplate Routing Implementation Plan
 
+> **Correction (post-review):** Global Constraints and Task 2 Step 2 below describe
+> the affected symptom as "Pending" / auto-failed with "no eligible agent available
+> to claim it" — that was later found wrong. See the spec's corrected [section
+> 4](../specs/2026-08-25-podtemplate-subfield-routing-design.md#4-what-an-operator-experiences):
+> the run stays `Queued` indefinitely and is never auto-failed. This plan is a
+> dated record and is left otherwise unchanged.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Route a podTemplate carrying `resources.requests` or a non-literal `env` entry to a Kubernetes agent instead of letting it land on a standard agent that silently drops it.
