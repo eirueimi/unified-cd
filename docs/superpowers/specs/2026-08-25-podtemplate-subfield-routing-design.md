@@ -97,19 +97,21 @@ resources, or without the injected environment variable.
 
 After: the run requires the `pod` capability. Where a Kubernetes agent exists, it
 schedules there and the template is honoured — the outcome the author asked for.
-Where one does not, the run stays Pending and reports
-
-```
-no eligible agent available to claim it
-```
-
-which is the existing, documented symptom
-(`docs/troubleshooting/runs-and-scheduling.md`).
+Where one does not, the run leaves `Pending` for `Queued` as normal and then simply
+stays `Queued`. It is never auto-failed: `ListUnclaimableQueuedRuns`
+(`internal/store/postgres.go:1402-1412`) is label-only by design and
+deliberately omits the capability clause `ClaimNextRun` itself ANDs in, so a
+run that is label-claimable but capability-unschedulable is intentionally left
+`Queued` rather than terminalized by the queued-run reaper
+(`internal/controller/queuedrun_reaper.go:27-37`). The job's page instead shows
+the existing, documented unschedulable banner
+(`docs/troubleshooting/runs-and-scheduling.md`, "Job stays Queued /
+unschedulable warning").
 
 **This is a breaking change**, and the failure is the good kind: a job that was
 silently not getting what it asked for now says so. But it turns a running job
-into a Pending one, which an operator experiences as a regression until they
-read why.
+into a permanently `Queued` one, which an operator experiences as a regression
+until they read why.
 
 ## 5. Migration
 

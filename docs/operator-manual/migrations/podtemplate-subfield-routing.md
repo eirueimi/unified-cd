@@ -15,7 +15,8 @@ value its author asked for.
 
 **After**, such a job requires the `pod` capability and is pinned to a
 Kubernetes agent, where the full template is honoured. Where no Kubernetes
-agent is registered, the run no longer schedules at all — it stays `Pending`.
+agent is registered, the run leaves `Pending` for `Queued` as normal and then
+simply stays `Queued` — nothing later transitions it to any other state.
 
 Both are true at once: the run was silently not getting what it asked for
 before, and it now stops scheduling instead. This is a **breaking change**
@@ -27,20 +28,29 @@ for any affected job in an environment with no Kubernetes agent.
 | A `podTemplate` container with an `env` entry using `valueFrom` (and no other host-unsupported field) was classified host-runnable. | The same container requires the `pod` capability and is pinned to a Kubernetes agent. |
 | On a standard agent, `resources.requests` was dropped with one WARN log; `resources.limits` still applied. | The run never reaches a standard agent, so `resources.limits` and `resources.requests` are both honoured on the Kubernetes agent that claims it. |
 | On a standard agent, an `env` entry's `valueFrom` was dropped with one WARN log; the variable was simply absent from the container's environment. | The run never reaches a standard agent, so `valueFrom` resolves normally on the Kubernetes agent that claims it. |
-| A run using either field scheduled on any agent reporting `container` capability. | A run using either field requires an agent reporting `pod` capability. Where none is registered, the run stays `Pending`. |
+| A run using either field scheduled on any agent reporting `container` capability. | A run using either field requires an agent reporting `pod` capability. Where none is registered, the run simply stays `Queued`. |
 
 ## Who is affected, and how to find out before upgrading
 
 The symptom below appears only *after* a run is stuck — by then you're
-debugging, not planning. Search your job definitions first:
+debugging, not planning. Search your job definitions first. Matching on
+`podTemplate:` and a fixed number of lines after it is not reliable: a
+container commonly lists `name`, `image`, `command`, `args`, and `env` ahead
+of `resources`, which can push the `requests:` key well past a short
+line-count window and produce a clean, wrong "not affected" result on a file
+that *is* affected. Search for the keys themselves instead, and confirm each
+hit sits under a `podTemplate:` container's `resources:` or `env:` block —
+a handful of false positives to dismiss by eye beats a false negative you
+never see:
 
 ```bash
-grep -rn -A5 "podTemplate:" <your job definitions> | grep -E "requests:|valueFrom:"
+grep -rn -E "^[[:space:]]*(requests|valueFrom):" <your job definitions>
 ```
 
-Any match is a job whose podTemplate now requires the `pod` capability where
-it previously did not. Confirm you have a Kubernetes agent registered before
-upgrading, or plan one of the two ways out below.
+Any match worth confirming as under a `podTemplate:` is a job whose podTemplate
+now requires the `pod` capability where it previously did not. Confirm you
+have a Kubernetes agent registered before upgrading, or plan one of the two
+ways out below.
 
 A job whose `podTemplate` already carries `agentSelector` pinning it to a
 Kubernetes agent (e.g. `kind:kubernetes`) is unaffected either way — it was
@@ -48,20 +58,18 @@ already routed there.
 
 ## The symptom
 
-A run that used to schedule on a standard agent stays `Pending` and, once the
-queued-run reaper's grace period elapses, its own log reports:
+A run that used to schedule on a standard agent instead sits `Queued` —
+permanently, not just for a while. The job's page in the Web UI shows a
+warning banner:
 
 ```
-no eligible agent available to claim it
+⚠ This job can't be scheduled right now: no registered agent provides
+capability [pod]. Runs will stay Queued until a matching agent registers.
 ```
 
-This is the existing, documented symptom for "no agent can ever claim this
-run" — see [Runs and Scheduling: Run failed with "no eligible agent available
-to claim it"](../../troubleshooting/runs-and-scheduling.md#run-failed-with-no-eligible-agent-available-to-claim-it)
-for the full cause and timing, and [Job stays Queued / unschedulable
+See [Runs and Scheduling: Job stays Queued / unschedulable
 warning](../../troubleshooting/runs-and-scheduling.md#job-stays-queued-unschedulable-warning)
-for the earlier warning banner the job's page shows once no registered agent
-provides the `pod` capability.
+for the full cause and fix.
 
 ## The two ways out
 
