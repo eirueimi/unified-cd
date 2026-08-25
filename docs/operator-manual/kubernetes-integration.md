@@ -33,8 +33,6 @@ agent (`cmd/unified-cd-agent`); job steps run inside a Pod instead of locally. O
 single shared implementation (`internal/agent`'s `RunClaim`, driven through the `ExecBackend`
 seam) — only the execution backend differs per agent. The remaining intentional differences are:
 
-- **Execution order** — `matrix:`/`foreach:` combinations and `parallel:` groups run
-  **sequentially** inside the Pod (the standard agent runs them in parallel goroutines).
 - **`container:`** — supported on both agents as the canonical way to target a named
   `podTemplate` container. On k8s it execs into the named container of the job Pod. On
   the standard agent it execs into the corresponding container of the claim pod (see
