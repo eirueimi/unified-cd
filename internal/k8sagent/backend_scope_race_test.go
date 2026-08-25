@@ -221,6 +221,169 @@ func TestK8sBackend_EnsureScope_CallerCancellationAbortsCreation(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
+// scopeInterestForTest reports how many callers currently hold an interest in
+// key's scope entry, or -1 if there is no entry. Test-only accessor for the
+// bookkeeping that decides when an in-flight creation is abandoned; it exists
+// so the tests below can synchronise on a caller having genuinely joined the
+// entry instead of sleeping and hoping.
+func (b *k8sBackend) scopeInterestForTest(key string) int {
+	b.scopesMu.Lock()
+	defer b.scopesMu.Unlock()
+	if e, ok := b.scopes[key]; ok {
+		return e.interest
+	}
+	return -1
+}
+
+// TestK8sBackend_EnsureScope_RunCancelAbortsCreationAfterWinnerDeadlinePassed
+// pins the hole the re-review named: an abort path that retires after one
+// decision.
+//
+// The earlier fix watched the WINNING caller's context once and declined to
+// abort when its error was DeadlineExceeded, on the premise that a deadline
+// always meant one step's private `timeout:`. Two things were wrong with
+// that. The watch was a single non-looping select, so it was gone for good
+// after that one decline; and CloseScopes — advertised as the other route —
+// structurally cannot run while RunPipeline is still blocked in the fan-out's
+// wg.Wait() on the goroutine sitting inside once.Do. So a run cancellation
+// arriving AFTER the winner's step deadline had already passed reached
+// nothing at all, and the pull ran on to PodStartTimeout.
+//
+// This test drives exactly that ordering: the winner's deadline expires first
+// (creation must survive it — that is the property the previous fix
+// established and must not lose), and only THEN does the surviving sibling's
+// context end, standing in for the run being cancelled. PodStartTimeout is 5
+// minutes and the fake's pod wait is never released, so if the abort path is
+// not still armed at that point, nothing returns and the test times out
+// rather than passing slowly.
+func TestK8sBackend_EnsureScope_RunCancelAbortsCreationAfterWinnerDeadlinePassed(t *testing.T) {
+	pm := &fakePM{
+		blockFirstWait: make(chan struct{}), // deliberately never closed
+		waitStarted:    make(chan struct{}),
+	}
+	a := &K8sAgent{cfg: Config{Namespace: "default", PodStartTimeout: "5m"}, pm: pm}
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
+
+	step := api.ClaimStep{ScopeID: "scope:build", ScopeImage: "golang:1.22"}
+	key := scopeKey(step)
+
+	// The winner: a member with its own short `timeout:`.
+	winnerCtx, winnerCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer winnerCancel()
+
+	winnerDone := make(chan error, 1)
+	go func() {
+		_, err := b.EnsureScope(winnerCtx, step, nil)
+		winnerDone <- err
+	}()
+
+	// The winner is parked in the pod wait, so it unambiguously owns the Once.
+	<-pm.waitStarted
+
+	// The sibling: a healthy member sharing the same scope, whose context
+	// stands in for a step context under RunClaim's runCtx.
+	siblingCtx, cancelRun := context.WithCancel(context.Background())
+	siblingDone := make(chan error, 1)
+	go func() {
+		_, err := b.EnsureScope(siblingCtx, step, nil)
+		siblingDone <- err
+	}()
+
+	// Both callers must have joined the entry before the winner's deadline
+	// fires, otherwise the ordering this test exists to drive would not hold.
+	require.Eventually(t, func() bool { return b.scopeInterestForTest(key) == 2 },
+		5*time.Second, 5*time.Millisecond, "both callers should have registered interest in the shared scope")
+
+	// The winner's deadline expires. Creation must NOT be abandoned: the
+	// sibling still wants this Pod.
+	<-winnerCtx.Done()
+	require.ErrorIs(t, winnerCtx.Err(), context.DeadlineExceeded)
+	require.Eventually(t, func() bool { return b.scopeInterestForTest(key) == 1 },
+		5*time.Second, 5*time.Millisecond, "the expired winner should have dropped its interest, leaving the sibling's")
+
+	select {
+	case err := <-siblingDone:
+		t.Fatalf("the sibling must not have been released by the winner's deadline, got %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	pm.mu.Lock()
+	stillHeld := len(pm.deleted)
+	pm.mu.Unlock()
+	require.Zero(t, stillHeld, "the winner's deadline must not tear down a Pod the sibling still wants")
+
+	// Now the run is cancelled — strictly AFTER the winner's deadline, which
+	// is the instant the old watchdog had already retired at.
+	cancelRun()
+
+	// Every caller must come back promptly. Without a still-armed abort path
+	// this waits out the 5-minute PodStartTimeout instead.
+	for i, done := range []chan error{siblingDone, winnerDone} {
+		select {
+		case err := <-done:
+			require.Error(t, err, "caller %d must fail rather than hang once the run is cancelled", i)
+		case <-time.After(30 * time.Second):
+			t.Fatalf("caller %d did not return: the run cancel reached no abort path", i)
+		}
+	}
+
+	assert.Equal(t, 1, pm.creations(), "one scope key must still produce exactly one pod")
+	pm.mu.Lock()
+	assert.Len(t, pm.deleted, 1, "the abandoned Pod must be cleaned up")
+	pm.mu.Unlock()
+}
+
+// TestK8sBackend_EnsureScope_JobTimeoutAbortsCreation pins the other half of
+// the same defect. RunClaim applies a job-level timeoutMinutes as a
+// context.WithTimeout ABOVE runCtx (internal/agent/orchestrator.go), and Go
+// propagates an ancestor's deadline error verbatim — so when it fires, every
+// step context reports DeadlineExceeded, exactly like one member's private
+// `timeout:` does. Any abort rule that keys on the error KIND therefore reads
+// a blown job timeout as "one member gave up" and lets the run overrun its own
+// declared timeout by up to PodStartTimeout.
+//
+// Counting live callers has no such blind spot: a job timeout ends EVERY
+// caller's context, so the interest count reaches zero and the attempt is
+// abandoned, while one member's `timeout:` removes only that member.
+func TestK8sBackend_EnsureScope_JobTimeoutAbortsCreation(t *testing.T) {
+	pm := &fakePM{
+		blockFirstWait: make(chan struct{}), // deliberately never closed
+		waitStarted:    make(chan struct{}),
+	}
+	a := &K8sAgent{cfg: Config{Namespace: "default", PodStartTimeout: "5m"}, pm: pm}
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
+
+	step := api.ClaimStep{ScopeID: "scope:build", ScopeImage: "golang:1.22"}
+
+	// The claim's own deadline, as RunClaim would apply it: above everything,
+	// so both members inherit it and both report DeadlineExceeded.
+	jobCtx, jobCancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	defer jobCancel()
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := b.EnsureScope(jobCtx, step, nil)
+		first <- err
+	}()
+	<-pm.waitStarted
+
+	second := make(chan error, 1)
+	go func() {
+		_, err := b.EnsureScope(jobCtx, step, nil)
+		second <- err
+	}()
+
+	for i, done := range []chan error{first, second} {
+		select {
+		case err := <-done:
+			require.Error(t, err, "caller %d must fail when the job timeout fires", i)
+		case <-time.After(30 * time.Second):
+			t.Fatalf("caller %d did not return: the job timeout reached no abort path", i)
+		}
+	}
+
+	assert.Equal(t, 1, pm.creations(), "one scope key must still produce exactly one pod")
+}
+
 // TestK8sBackend_EnsureScope_FailureIsNotCached proves a failed creation does
 // not poison the key for the rest of the claim: the entry is dropped so a
 // later step retries, rather than inheriting an error it did not cause. Scope
