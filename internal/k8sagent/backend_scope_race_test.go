@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -94,6 +95,130 @@ func TestK8sBackend_EnsureScope_DifferentKeysDoNotSerialize(t *testing.T) {
 
 	close(pm.blockFirstWait)
 	<-first
+}
+
+// TestK8sBackend_EnsureScope_ShortDeadlineCallerDoesNotPoisonHealthyCaller
+// pins the fix for the defect concurrent step execution introduced: the
+// winner of scopeEntry.once creates the scope pod for EVERY caller of that
+// key, so if creation ran under the winner's own step context, a member with
+// `timeout: 1` would abort a slow image pull, delete the Pod, and hand its
+// own DeadlineExceeded to a sibling whose context was perfectly healthy.
+// Impossible under Sequential (one caller existed at a time, and a failure is
+// deliberately not cached, so the next caller made its own attempt), and not
+// how the host behaves either — scopeManager.ensure (internal/agent/scope.go)
+// caches only successes, so its second caller retries under its own context.
+//
+// The fake parks the first WaitForPodRunning until released, standing in for
+// a scope image that takes longer to pull than one member's timeout. The
+// short-deadline caller wins the Once (the test waits for pm.waitStarted
+// before starting the healthy one), then its deadline expires while the pull
+// is still in flight. The decisive assertions are on the HEALTHY caller: it
+// must still get a pod, and no pod may have been deleted out from under it.
+//
+// Against the pre-fix code this fails on every assertion at once — the wait
+// returns the expired caller's context error, createScopePod deletes the Pod,
+// and both callers receive that error.
+func TestK8sBackend_EnsureScope_ShortDeadlineCallerDoesNotPoisonHealthyCaller(t *testing.T) {
+	pm := &fakePM{
+		blockFirstWait: make(chan struct{}),
+		waitStarted:    make(chan struct{}),
+	}
+	a := &K8sAgent{cfg: Config{Namespace: "default", PodStartTimeout: "30s"}, pm: pm}
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
+
+	step := api.ClaimStep{ScopeID: "scope:build", ScopeImage: "golang:1.22"}
+
+	// The impatient member: a step-level `timeout:` expressed the way the
+	// orchestrator expresses it, as a deadline on the context it hands
+	// EnsureScope.
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer shortCancel()
+
+	shortDone := make(chan error, 1)
+	go func() {
+		_, err := b.EnsureScope(shortCtx, step, nil)
+		shortDone <- err
+	}()
+
+	// Do not start the healthy caller until the impatient one is definitely
+	// the winner of the Once and parked inside the pod wait; otherwise the
+	// test would race on which member owns the attempt.
+	<-pm.waitStarted
+
+	healthyDone := make(chan struct {
+		name string
+		err  error
+	}, 1)
+	go func() {
+		h, err := b.EnsureScope(context.Background(), step, nil)
+		payload, _ := agentlib.ScopeHandlePayload(h)
+		name, _ := payload.(string)
+		healthyDone <- struct {
+			name string
+			err  error
+		}{name, err}
+	}()
+
+	// Let the impatient caller's deadline actually expire while the pull is
+	// still in flight. This is the exact window the defect lived in.
+	<-shortCtx.Done()
+	require.ErrorIs(t, shortCtx.Err(), context.DeadlineExceeded)
+
+	// Nothing may have been torn down on that caller's behalf: the creation
+	// belongs to the key, not to whoever asked for it first.
+	pm.mu.Lock()
+	deletedSoFar := len(pm.deleted)
+	pm.mu.Unlock()
+	assert.Zero(t, deletedSoFar, "the expired caller's deadline must not delete the shared scope pod")
+
+	// The pull finally completes, after the impatient caller is long gone.
+	close(pm.blockFirstWait)
+
+	healthy := <-healthyDone
+	require.NoError(t, healthy.err, "the healthy caller must not inherit the other member's step timeout")
+	require.NotEmpty(t, healthy.name, "the healthy caller must still get a scope pod")
+
+	require.NoError(t, <-shortDone, "the shared attempt succeeded, so every caller sees the success")
+
+	assert.Equal(t, 1, pm.creations(), "one scope key must still produce exactly one pod")
+	pm.mu.Lock()
+	assert.Empty(t, pm.deleted, "no scope pod may be deleted while a live caller still holds it")
+	pm.mu.Unlock()
+}
+
+// TestK8sBackend_EnsureScope_CallerCancellationAbortsCreation is the other
+// half of the contract above: creation must ignore a caller's DEADLINE (that
+// is one step's private `timeout:`) but must still honour a caller's
+// CANCELLATION, which on a step context propagates from RunClaim's runCtx and
+// therefore means the run itself is over — cancelled at the controller, or the
+// agent shutting down. Without this, a cancelled run would sit waiting on an
+// image pull for the full PodStartTimeout.
+func TestK8sBackend_EnsureScope_CallerCancellationAbortsCreation(t *testing.T) {
+	pm := &fakePM{
+		blockFirstWait: make(chan struct{}),
+		waitStarted:    make(chan struct{}),
+	}
+	a := &K8sAgent{cfg: Config{Namespace: "default", PodStartTimeout: "5m"}, pm: pm}
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
+
+	step := api.ClaimStep{ScopeID: "scope:build", ScopeImage: "golang:1.22"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.EnsureScope(ctx, step, nil)
+		done <- err
+	}()
+
+	<-pm.waitStarted
+	cancel()
+
+	// blockFirstWait is never closed: if cancellation did not reach the
+	// creation context, this would block until the test times out rather than
+	// returning, because PodStartTimeout is 5 minutes.
+	err := <-done
+	require.Error(t, err, "a cancelled run must abort scope pod creation rather than wait out PodStartTimeout")
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 // TestK8sBackend_EnsureScope_FailureIsNotCached proves a failed creation does

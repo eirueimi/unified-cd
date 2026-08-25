@@ -261,8 +261,11 @@ func (f *fakeK8sBackend) StepLogWriters(ctx context.Context, stepIndex int) (std
 	return io.Discard, io.Discard, func(context.Context) {}
 }
 
+// ConcurrencyMode tracks the real backend via k8sConcurrencyMode (backend.go)
+// rather than repeating a literal, so every orchestrator unit test that drives
+// this fake runs matrix/parallel members the way production does.
 func (f *fakeK8sBackend) ConcurrencyMode() agentlib.ConcurrencyMode {
-	return agentlib.Sequential
+	return k8sConcurrencyMode
 }
 
 var _ agentlib.ExecBackend = (*fakeK8sBackend)(nil)

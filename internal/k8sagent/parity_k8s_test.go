@@ -484,7 +484,11 @@ func (b *parityK8sBackend) StepLogWriters(ctx context.Context, stepIndex int) (s
 	return stdoutShip, stderrShip, finish
 }
 
-func (b *parityK8sBackend) ConcurrencyMode() agentlib.ConcurrencyMode { return agentlib.Sequential }
+// ConcurrencyMode tracks the real backend via k8sConcurrencyMode (backend.go)
+// rather than repeating a literal: the parity suite exists to hold both
+// backends to one contract, and it cannot do that if this driver reports a
+// different step-concurrency mode than production does.
+func (b *parityK8sBackend) ConcurrencyMode() agentlib.ConcurrencyMode { return k8sConcurrencyMode }
 
 var _ agentlib.ExecBackend = (*parityK8sBackend)(nil)
 

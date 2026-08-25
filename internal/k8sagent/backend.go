@@ -3,6 +3,7 @@ package k8sagent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -51,6 +52,20 @@ type k8sBackend struct {
 	scopesMu sync.Mutex
 	scopes   map[string]*scopeEntry
 
+	// scopeCtx/scopeCancel bound scope-pod CREATION to the claim rather than
+	// to whichever step happened to ask for the scope first. See
+	// scopeCreateContext for why creation must not inherit a step's context,
+	// and CloseScopes for where scopeCancel fires.
+	//
+	// context.Background() as the root, exactly like sidecarPump's streams
+	// (SetMasker): both are claim-lifetime work that must outlive per-step
+	// cancellation, and both are ended explicitly by CloseScopes — which
+	// RunClaim defers before anything can early-return
+	// (internal/agent/orchestrator.go), so "claim-scoped" here is a
+	// guarantee, not a hope.
+	scopeCtx    context.Context
+	scopeCancel context.CancelFunc
+
 	masker *secrets.Masker
 
 	// sidecarNames/claimSince/sidecarPump drive user-sidecar log streaming.
@@ -71,9 +86,12 @@ type k8sBackend struct {
 // is the claim's qualified job name, passed to the sidecar's cache
 // restore/save subcommands via --job for per-job cache namespacing.
 func newK8sBackend(a *K8sAgent, runID, jobName, podName, mountPath string, sidecarNames []string, claimSince metav1.Time) *k8sBackend {
+	scopeCtx, scopeCancel := context.WithCancel(context.Background())
 	return &k8sBackend{
 		a: a, runID: runID, jobName: jobName, podName: podName, mountPath: mountPath,
 		scopes:       map[string]*scopeEntry{},
+		scopeCtx:     scopeCtx,
+		scopeCancel:  scopeCancel,
 		sidecarNames: sidecarNames, claimSince: claimSince,
 	}
 }
@@ -168,6 +186,13 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	if b.sidecarPump != nil {
 		b.sidecarPump.Stop()
 	}
+	// End the claim's scope-creation context. Creation is deliberately not
+	// bound to any step's context (see scopeCreateContext), so this is what
+	// stops an in-flight image pull once the claim is over — the same role
+	// sidecarPump.Stop() plays for the sidecar streams above.
+	if b.scopeCancel != nil {
+		b.scopeCancel()
+	}
 
 	b.scopesMu.Lock()
 	entries := make(map[string]string, len(b.scopes))
@@ -193,6 +218,28 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 // then read the same result. Different keys get different entries and so
 // proceed independently — scopesMu only ever guards the map/entry bookkeeping,
 // never the pod creation itself.
+//
+// ctx is used ONLY to decide whether this caller's departure should abort the
+// shared attempt (see scopeCreateContext); it never bounds the attempt.
+//
+// FIRST-CALLER-WINS ENV. env likewise comes from whichever caller won the
+// Once, and the two callers do not agree on it: the orchestrator's run-step
+// path passes the fully expanded extraEnv (UNIFIED_AGENT_OS,
+// UNIFIED_WORKSPACE and every expanded `env:` value), while resolveScope —
+// used by the cache:/uploadArtifact:/downloadArtifact: branches — passes nil
+// (internal/agent/agent.go). A parallel: block mixing a cache: step and a
+// run: step that share a ScopeID therefore builds the scope Pod with the full
+// env or with only imageStepEnv(step), depending on which goroutine arrives
+// first. The host backend has the identical shape
+// (internal/agent/scope.go's scopeManager.ensure uses whichever caller holds
+// the mutex first), so this is not a k8s-specific defect and it is not
+// something this layer can fix: by the time either caller gets here the
+// scope's env has already been decided by the DSL. What the concurrency flip
+// changed is only the tie-break — declaration order became goroutine
+// scheduling — so the symptom now reads as a flaky job rather than a stable
+// misconfiguration. Tolerated deliberately; fixing it means making the env a
+// property of the scope declaration rather than of the step that first
+// touches it, which is a DSL change, not a backend one.
 func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env []string) (string, error) {
 	key := scopeKey(step)
 
@@ -205,7 +252,12 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 	b.scopesMu.Unlock()
 
 	e.once.Do(func() {
-		name, err := b.createScopePod(ctx, step, env, e)
+		// The winner of the Once creates the pod for EVERY caller of this
+		// key, so it must not run under its own step's deadline — see
+		// scopeCreateContext.
+		createCtx, stopCreateCtx := b.scopeCreateContext(ctx)
+		defer stopCreateCtx()
+		name, err := b.createScopePod(createCtx, step, env, e)
 		b.scopesMu.Lock()
 		e.name, e.err = name, err
 		if err != nil {
@@ -239,8 +291,76 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 	return name, err
 }
 
+// scopeCreateContext returns the context that bounds ONE scope-pod creation
+// attempt, plus a stop func the caller MUST call when the attempt returns.
+//
+// Why creation cannot simply use the caller's context. The winner of
+// scopeEntry.once creates the pod on behalf of every concurrent caller for
+// that key, and the orchestrator hands each step a context carrying that
+// step's own `timeout:` (or, for a retry: step, that attempt's timeout —
+// internal/agent/orchestrator.go). Under Sequential that was harmless: there
+// was only ever one caller. Under Concurrent, a `parallel:` block whose two
+// members share a uses-scope makes the winner's private deadline everyone's
+// deadline — member A with `timeout: 1` would abort a 90-second image pull,
+// delete the Pod, and hand its own DeadlineExceeded to member B, whose
+// context was healthy and which would have waited the full PodStartTimeout.
+// That is also a host/k8s divergence: the host's scopeManager.ensure
+// (internal/agent/scope.go) caches only successes, so its second caller
+// simply retries under its own context.
+//
+// So creation is rooted at the claim-scoped b.scopeCtx and bounded by
+// Config.PodStartTimeout — the same operator knob that bounds the run Pod's
+// own start wait, and the bound createScopePod already reports in its
+// not-ready error. context.WithoutCancel(callerCtx) alone would be worse than
+// the bug: it would also survive run cancellation.
+//
+// Run cancellation still gets through, by two independent routes:
+//
+//  1. CloseScopes cancels b.scopeCtx at claim end.
+//  2. The watchdog below cancels this attempt as soon as the caller's own
+//     context is CANCELLED rather than merely EXPIRED. A cancel on a step
+//     context propagates from RunClaim's runCtx — the run was cancelled at
+//     the controller, or the agent is shutting down — which is a run-level
+//     fact true for every caller of this key. A DeadlineExceeded is the
+//     opposite: a fact about one step's own `timeout:`, and precisely the
+//     thing that must not travel to the other sharers.
+//
+// Accepted trade-off: a step whose `timeout:` fires while its SHARED scope
+// Pod is still being created keeps waiting for that creation, up to
+// PodStartTimeout, instead of failing at its own deadline. A shared
+// resource's creation cannot be bounded by one sharer's deadline without
+// poisoning the others; PodStartTimeout is the knob that bounds it, and
+// overrunning one step's timeout is strictly better than failing a healthy
+// sibling and deleting the Pod out from under it.
+func (b *k8sBackend) scopeCreateContext(callerCtx context.Context) (context.Context, func()) {
+	parent := b.scopeCtx
+	if parent == nil {
+		// Defensive: a k8sBackend assembled without newK8sBackend. Falling
+		// back to Background keeps creation unbounded by any step, which is
+		// the property that matters here.
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, b.a.cfg.PodStartTimeoutDuration())
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-callerCtx.Done():
+			if !errors.Is(callerCtx.Err(), context.DeadlineExceeded) {
+				cancel()
+			}
+		}
+	}()
+	return ctx, func() {
+		close(done)
+		cancel()
+	}
+}
+
 // createScopePod creates one scope pod and waits for it to be Running. It is
-// called at most once per scope key, from inside scopeEntry.once.
+// called at most once per scope key, from inside scopeEntry.once, under the
+// claim-scoped context scopeCreateContext builds — NOT under the winning
+// caller's step context.
 //
 // The scope pod's Ready wait is bounded by the same configurable knob as the
 // run pod (Config.PodStartTimeout / UNIFIED_K8S_POD_START_TIMEOUT, resolved
@@ -265,6 +385,19 @@ func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env
 		SidecarSpec{Image: b.a.cfg.SidecarImage, S3SecretName: b.a.cfg.SidecarS3SecretName}, b.a.cfg.ShimImage)
 	created, err := b.a.pm.CreatePod(ctx, pod)
 	if err != nil {
+		// Residual, deliberately unfixed leak: if the API server actually
+		// created the Pod but the client call still returned an error (a lost
+		// response, or ctx being cancelled at exactly that instant), we return
+		// before e.name is written and nothing in this claim can ever name
+		// that Pod — CloseScopes skips entries with no name. Concurrency makes
+		// it likelier, since N members now issue N CreatePod calls at once and
+		// a cancellation hits all of them together. It is bounded, not
+		// unbounded: buildScopePod labels every scope Pod
+		// app=unified-cd-agent + unified-cd/runId=<runID> (scopepod.go), and
+		// runPodGC sweeps exactly that label set against terminal runs
+		// (podgc.go), so the orphan is reaped on the next GC pass. Closing it
+		// here would mean a name-free List-by-label reconciliation on the
+		// error path, which is more machinery than the GC already provides.
 		return "", fmt.Errorf("uses-scope %q (image %q): create pod: %w", step.ScopeID, step.ScopeImage, err)
 	}
 	name := created.Name
@@ -408,6 +541,18 @@ func (b *k8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeH
 // LogPusher on the artifact sidecar's dsl.ArtifactLogIndex (its own identity,
 // not step 0's stream) (mirroring the pre-refactor sidecarExec closure —
 // cache/artifact steps have no per-step log stream of their own).
+//
+// Under concurrent step execution, two cache:/artifact steps running at once
+// each build their own LogPusher over the SAME (runID, dsl.ArtifactLogIndex,
+// "stderr") stream, and the controller assigns seq on arrival
+// (internal/agent/runner.go), so their lines interleave inside the single
+// "Artifacts/Cache" pseudo-step the UI renders
+// (internal/controller/api_runs.go). Nothing is lost or corrupted — the
+// pushers guard their own buffers — it is a readability cost, and only for
+// jobs that run two cache/artifact steps concurrently. Fixing it would mean
+// giving the pseudo-step a per-operation identity, which the logs table has
+// no column for (see the matrix note in
+// docs/operator-manual/migrations/k8s-concurrent-step-execution.md).
 func (b *k8sBackend) sidecarExecArgv(ctx context.Context, targetPod, container string, argv []string) (int, error) {
 	if targetPod == "" {
 		targetPod = b.podName
@@ -422,6 +567,10 @@ func (b *k8sBackend) sidecarExecArgv(ctx context.Context, targetPod, container s
 // sidecarExecArgvCapturingStdout is sidecarExecArgv but returns the sidecar's
 // stdout (still shipping stderr to the log pusher). Used by CacheRestore to read
 // the UCD_CACHE_RESULT marker.
+//
+// Its stderr pusher shares dsl.ArtifactLogIndex with every other cache/artifact
+// operation in the claim, so concurrent steps multiplex onto one stream — see
+// sidecarExecArgv for why that is accepted.
 func (b *k8sBackend) sidecarExecArgvCapturingStdout(ctx context.Context, targetPod, container string, argv []string) (int, string, error) {
 	if targetPod == "" {
 		targetPod = b.podName
@@ -564,8 +713,20 @@ func (b *k8sBackend) StepLogWriters(ctx context.Context, stepIndex int) (stdout,
 // SetMasker) or allocated per call (StepLogWriters), and the pod pool carries
 // its own mutex.
 func (b *k8sBackend) ConcurrencyMode() agentlib.ConcurrencyMode {
-	return agentlib.Concurrent
+	return k8sConcurrencyMode
 }
+
+// k8sConcurrencyMode is the single source of truth for the k8s backend's
+// step-concurrency mode. The in-package test doubles return it rather than
+// repeating a literal — fakeK8sBackend (fakebackend_test.go), which every
+// k8sagent orchestrator unit test drives, and parityK8sBackend
+// (parity_k8s_test.go), which drives the k8s half of the parity suite. Both
+// held a hardcoded agentlib.Sequential when this constant went Concurrent,
+// so the flip shipped with no executable coverage anywhere outside a
+// //go:build k8s test. Keeping the doubles pointed at this constant is what
+// makes that impossible to repeat: change it here and every test that speaks
+// for the k8s backend changes with it.
+const k8sConcurrencyMode = agentlib.Concurrent
 
 var _ agentlib.ExecBackend = (*k8sBackend)(nil)
 
