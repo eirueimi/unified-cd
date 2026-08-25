@@ -141,3 +141,162 @@ func TestPostgres_AppendLogs_OrderIsProvenNotAssumed(t *testing.T) {
 		require.Equal(t, seqs[i], got[i].Seq, "seq at position %d", i)
 	}
 }
+
+// TestPostgres_AppendLogs_NULByte_DiffersFromAppendLog pins down what
+// actually happens when one line in a batch contains an embedded NUL byte.
+// PostgreSQL's text type rejects NUL outright (SQLSTATE 22021, "invalid byte
+// sequence for encoding UTF8"), confirmed empirically here rather than
+// assumed.
+//
+// The two methods do NOT behave the same, and that is a real, observed
+// difference rather than a hypothetical one:
+//
+//   - AppendLogs groups a run's lines into one INSERT statement. When any
+//     line in that statement is rejected, the whole statement errors and
+//     NOTHING for that run in that batch lands -- not even the good lines
+//     that sat on either side of the bad one. AppendLogs returns a non-nil
+//     error and a nil seqs slice.
+//   - AppendLog issues one statement per line. The bad line's call returns
+//     an error and (0, err); the good calls before and after it are
+//     independent statements and land normally.
+//
+// This means a poison line costs strictly more under AppendLogs than under
+// the per-line loop it replaces: the whole run's batch is lost, not just the
+// one bad line. That is a real behavioural difference worth having a human
+// rule on (see task report) -- this test only documents it, it does not
+// "fix" it.
+func TestPostgres_AppendLogs_NULByte_DiffersFromAppendLog(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	const bad = "b\x00d" // embedded NUL: PostgreSQL text rejects this
+
+	t.Run("AppendLogs_wholeRunBatchIsLost", func(t *testing.T) {
+		run := newRun(t, pg, "batch-nul")
+		lines := []LogAppend{
+			{RunID: run, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "before"},
+			{RunID: run, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: bad},
+			{RunID: run, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "after"},
+		}
+		seqs, err := pg.AppendLogs(ctx, lines)
+
+		require.Error(t, err, "the run's single INSERT statement must fail")
+		assert.Contains(t, err.Error(), "22021", "expected Postgres's invalid-byte-sequence SQLSTATE")
+		assert.Nil(t, seqs)
+
+		count, _, _, cErr := pg.CountLogs(ctx, run, nil)
+		require.NoError(t, cErr)
+		assert.EqualValues(t, 0, count, "neither the bad line nor the good lines around it land")
+	})
+
+	t.Run("AppendLog_onlyTheBadLineIsLost", func(t *testing.T) {
+		run := newRun(t, pg, "perline-nul")
+
+		seq1, err1 := pg.AppendLog(ctx, run, 0, "stdout", now, "before")
+		require.NoError(t, err1)
+		assert.Positive(t, seq1)
+
+		seq2, err2 := pg.AppendLog(ctx, run, 0, "stdout", now, bad)
+		require.Error(t, err2, "the bad line's own statement must fail")
+		assert.Contains(t, err2.Error(), "22021")
+		assert.Zero(t, seq2)
+
+		seq3, err3 := pg.AppendLog(ctx, run, 0, "stdout", now, "after")
+		require.NoError(t, err3, "a later independent statement is unaffected by the earlier failure")
+		assert.Positive(t, seq3)
+		assert.Less(t, seq1, seq3)
+
+		count, _, _, cErr := pg.CountLogs(ctx, run, nil)
+		require.NoError(t, cErr)
+		assert.EqualValues(t, 2, count, "the two good lines land; only the bad one is dropped")
+	})
+}
+
+// TestPostgres_AppendLogs_ThreeLiveRunsPlusSealed exercises the per-run
+// round-trip fan-out beyond the two-run case: a batch interleaving three
+// distinct live runs and a fourth, sealed run must produce independent,
+// positionally-aligned, ascending seqs for each live run and all zeros for
+// the sealed one. Interleaving (rather than grouping runs contiguously in
+// the input) is what would expose a bug that let one run's grouping bleed
+// into another's.
+//
+// The fan-out itself -- one INSERT and one pg_notify per distinct run -- is
+// structural (one loop iteration per entry in `order` in AppendLogs) rather
+// than directly observable through the Store interface, so it is not
+// asserted by request/round-trip count here. What is asserted is the
+// observable consequence that only correct per-run grouping produces: each
+// run's own seqs strictly ascend in that run's own input order, independent
+// of the other runs and of the sealed run's zeros.
+func TestPostgres_AppendLogs_ThreeLiveRunsPlusSealed(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	runA := newRun(t, pg, "three-a")
+	runB := newRun(t, pg, "three-b")
+	runC := newRun(t, pg, "three-c")
+	sealed := newRun(t, pg, "three-sealed")
+
+	seq, err := pg.AppendLog(ctx, sealed, 0, "stdout", time.Now(), "before seal")
+	require.NoError(t, err)
+	require.NoError(t, pg.CreateLogArchive(ctx, sealed, "runs/"+sealed+"/logs.ndjson", 1, 1, seq))
+
+	now := time.Now().UTC()
+	// Interleave all four runs round-robin so a bug that mixes up which
+	// input positions belong to which run would show up as a misalignment
+	// rather than being masked by contiguous grouping in the input.
+	lines := []LogAppend{
+		{RunID: runA, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "a-1"},
+		{RunID: runB, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "b-1"},
+		{RunID: runC, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "c-1"},
+		{RunID: sealed, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "dropped-1"},
+		{RunID: runA, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "a-2"},
+		{RunID: runB, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "b-2"},
+		{RunID: sealed, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "dropped-2"},
+		{RunID: runC, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "c-2"},
+		{RunID: runA, StepIndex: 0, Stream: "stdout", Timestamp: now, Line: "a-3"},
+	}
+	// Indexes, by run, in input order -- used below to check each run's
+	// seqs ascend in that run's own input order.
+	idxA := []int{0, 4, 8}
+	idxB := []int{1, 5}
+	idxC := []int{2, 7}
+	idxSealed := []int{3, 6}
+
+	seqs, err := pg.AppendLogs(ctx, lines)
+	require.NoError(t, err)
+	require.Len(t, seqs, len(lines))
+
+	for _, i := range idxSealed {
+		assert.Zero(t, seqs[i], "sealed run's line at index %d must be dropped", i)
+	}
+	for _, group := range [][]int{idxA, idxB, idxC} {
+		for j, i := range group {
+			assert.Positive(t, seqs[i], "index %d must get a real seq", i)
+			if j > 0 {
+				assert.Less(t, seqs[group[j-1]], seqs[i],
+					"seqs must ascend in this run's own input order (indexes %d then %d)", group[j-1], i)
+			}
+		}
+	}
+
+	// Each live run stored exactly its own lines, in its own input order --
+	// confirming no cross-run bleed, positionally or in content.
+	gotA, err := pg.TailLogs(ctx, runA, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, gotA, 3)
+	assert.Equal(t, []string{"a-1", "a-2", "a-3"}, []string{gotA[0].Line, gotA[1].Line, gotA[2].Line})
+
+	gotB, err := pg.TailLogs(ctx, runB, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, gotB, 2)
+	assert.Equal(t, []string{"b-1", "b-2"}, []string{gotB[0].Line, gotB[1].Line})
+
+	gotC, err := pg.TailLogs(ctx, runC, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, gotC, 2)
+	assert.Equal(t, []string{"c-1", "c-2"}, []string{gotC[0].Line, gotC[1].Line})
+
+	count, _, _, err := pg.CountLogs(ctx, sealed, nil)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, count, "only the pre-seal line; both dropped-N lines were rejected")
+}
