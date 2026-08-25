@@ -13,7 +13,62 @@ match.
 |---|---|
 | `matrix:`/`foreach:` combinations and `parallel:` group members ran one at a time inside the Kubernetes agent's run Pod. | Combinations and group members run concurrently, exactly as on the standard agent. |
 | A job whose members wrote the same workspace path was accidentally race-free on the Kubernetes agent. | The same job races on both backends. |
+| A matrix step's run log on Kubernetes was N clean consecutive blocks, one per combination. | The N combinations' output interleaves line by line in one stream, with no marker saying which combination emitted which line — the same as the standard agent has always behaved. |
 | `ConcurrencyMode` on the Kubernetes backend reported `Sequential`. | Both backends report `Concurrent`. The field stays on the `ExecBackend` interface as the documented seam for a future backend to declare otherwise — it isn't going away just because both current backends agree. |
+
+## What every matrix and `parallel:` job will notice: the run log interleaves
+
+Read this one even if you are sure no job of yours has a shared-path
+problem. Everything below under "What can break" is about jobs that write
+the same workspace path; **this** section is about every `matrix:`,
+`foreach:` and `parallel:` job on the Kubernetes agent, including the ones
+with no path collision at all.
+
+**What changes.** A matrix step with N combinations used to produce N clean
+consecutive blocks in the run log on Kubernetes: combination 1's output in
+full, then combination 2's, and so on, because the members literally ran one
+after another. Now all N run at once and their lines land in the log in
+whatever order they arrive — combination 1, combination 3, combination 1
+again, combination 2. The same is true of a `parallel:` group's members.
+
+**Nothing is lost.** Every line a step writes is still captured, still
+attributed to the right step, and still timestamped. This is an ordering
+change in one stream, not dropped output.
+
+**Why there is no per-combination marker.** Matrix expansion copies the
+step and sets the combination's values and key, but leaves the step *index*
+alone — every combination keeps the parent step's index. Step results and
+step outputs are recorded per combination (they carry a variant alongside
+the index), but the log store is keyed by run, sequence, step index and
+stream, with no variant column, and neither the Kubernetes nor the standard
+agent's log writers carry one. So there is nothing in a log line that
+distinguishes combination `part=frontend` from `part=backend`.
+
+**This is convergence, not a Kubernetes regression.** The standard agent has
+interleaved matrix and `parallel:` output this way for as long as it has run
+those members concurrently. What ends here is a Kubernetes-only property
+that came from the serialization, not from any promise about logs.
+
+**What to do about it.** There is no setting that restores the blocks, and
+no per-combination log view to switch to. If you need to tell the lines
+apart, print the combination yourself in each line the step emits:
+
+```yaml
+steps:
+  - name: build
+    matrix:
+      part: [frontend, backend]
+    run: |
+      ./build.sh 2>&1 | sed "s/^/[{{ .Matrix.part }}] /"
+```
+
+Prefixing at the source is the only thing that survives the merge, because
+the merge happens after the lines leave the step. The same trick works for
+`parallel:` members using the member's name as a literal prefix. If a
+combination's output is large enough that you would rather read it whole,
+redirect it to a per-combination file (`> report-{{ .Matrix.part }}.txt`)
+and upload it as an artifact — which is the same per-combination-path advice
+the shared-workspace section below gives, for a different reason.
 
 ## What can break
 
@@ -47,8 +102,10 @@ supported`"); do not add it to a job definition expecting it to do anything.
 This is not a run that fails cleanly with a named error. It's a data race
 in the job's own script, so it shows up the way data races always do:
 
-- Output that's truncated, interleaved, or missing lines a member was
-  supposed to append.
+- A file in the workspace that's truncated, interleaved, or missing lines a
+  member was supposed to append. Note this is about the job's own **files** —
+  interleaving in the **run log** is expected now and affects every
+  concurrent job (see above), so it is not by itself a sign of a collision.
 - A step that fails intermittently — passing on some runs and failing on
   others with no change to the job definition.
 - A downstream step reading a file that one matrix combination half-wrote
