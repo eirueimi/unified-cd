@@ -117,7 +117,22 @@ changing the default — was rejected as a larger change that adds DSL surface t
 protect against a contract nobody documented.
 
 A migration guide records it: what changes, which job shapes are at risk, and
-that `needs:` is the existing way to order steps that must not overlap.
+how to order steps that must not overlap.
+
+**Correction (Task 4).** An earlier revision of this section named `needs:` as
+that mechanism. It is not one: `needs:` was removed from the DSL and `apply`
+rejects it outright at any nesting level, with "needs: is no longer supported —
+use parallel: blocks for concurrent execution" (`internal/dsl/parse.go:136-147`).
+The claim was wrong when written and would have sent operators to a keyword that
+fails at apply time.
+
+The DSL's only step-ordering primitive is **declaration order**: steps under
+`steps:` run one at a time in the order listed, and `parallel:` is what opts a
+group into running concurrently. Ordering two writes that must not overlap means
+taking them out of concurrency, not annotating a dependency between them. For
+`matrix:`/`foreach:` there is no equivalent move — the combinations are
+expansions of one step and run as a single concurrent set — so the fix there is
+to give each combination its own path, parameterized by the dimension.
 
 ## 5. Testing
 
