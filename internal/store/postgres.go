@@ -1052,6 +1052,36 @@ func (p *Postgres) AppendLog(ctx context.Context, runID string, stepIndex int, s
 // seq sequence is drawn in, so the ascending seqs pair with that run's lines in
 // input order. postgres_log_batch_test.go proves this by reading the rows back
 // rather than assuming it.
+//
+// ALL-OR-NOTHING PER RUN, BY DESIGN: because a run's lines share one INSERT
+// statement, a statement-level failure — e.g. a line containing a byte
+// Postgres's text type rejects, such as an embedded NUL — loses that run's
+// entire share of the batch, not just the offending line. AppendLog, by
+// contrast, loses only the one line that failed; lines before and after it in
+// its per-line loop are independent statements and are unaffected.
+//
+// This is intentional, not an oversight, and is not "fixed" by falling back
+// to a per-line loop on failure: the agent's own retry queue
+// (LogPusher.flushPendingLocked, internal/agent/runner.go) already resends a
+// failed batch oldest-first and stops at the first failure, to preserve
+// emission order. Walk the two failure modes through that retry loop, not
+// through a single request, to see why they land in the same place: today,
+// per-line, the lines before the poison line land, the request still 500s on
+// the poison line, the agent resends the same batch, those earlier lines land
+// again, duplicating them on every retry, until drop-oldest eviction discards
+// the batch and a "N lines dropped" marker appears. With this all-or-nothing
+// batch, nothing lands, the request 500s, the same resend loop runs for the
+// same duration, and eviction produces the same marker — without the
+// duplicates. The poison line wedges that run's log until eviction either
+// way; that wedge is pre-existing and this change does not worsen it. It is
+// strictly better on the duplicate axis and neutral on the wedge axis.
+// Actually fixing the wedge (where to sanitize, whether to mark an
+// operator-visible altered line, whether AppendLog needs the same treatment)
+// is a separate, tracked decision — do not reintroduce a per-line fallback
+// here to work around it; that would bring back the N round trips this
+// method exists to remove, exactly when the system is already struggling.
+// TestPostgres_AppendLogs_NULByte_DiffersFromAppendLog documents the measured
+// difference this comment describes.
 func (p *Postgres) AppendLogs(ctx context.Context, lines []LogAppend) ([]int64, error) {
 	if len(lines) == 0 {
 		return nil, nil

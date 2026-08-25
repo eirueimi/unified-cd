@@ -142,14 +142,14 @@ func TestPostgres_AppendLogs_OrderIsProvenNotAssumed(t *testing.T) {
 	}
 }
 
-// TestPostgres_AppendLogs_NULByte_DiffersFromAppendLog pins down what
-// actually happens when one line in a batch contains an embedded NUL byte.
-// PostgreSQL's text type rejects NUL outright (SQLSTATE 22021, "invalid byte
-// sequence for encoding UTF8"), confirmed empirically here rather than
-// assumed.
+// TestPostgres_AppendLogs_NULByte_DiffersFromAppendLog pins down, by
+// measurement rather than assumption, the all-or-nothing-per-run property
+// documented on AppendLogs: a line containing an embedded NUL byte makes
+// PostgreSQL reject the whole statement (SQLSTATE 22021, "invalid byte
+// sequence for encoding UTF8"), which costs a run its entire share of the
+// batch instead of just the one bad line.
 //
-// The two methods do NOT behave the same, and that is a real, observed
-// difference rather than a hypothetical one:
+// The two methods differ in exactly the way that comment describes:
 //
 //   - AppendLogs groups a run's lines into one INSERT statement. When any
 //     line in that statement is rejected, the whole statement errors and
@@ -160,11 +160,17 @@ func TestPostgres_AppendLogs_OrderIsProvenNotAssumed(t *testing.T) {
 //     an error and (0, err); the good calls before and after it are
 //     independent statements and land normally.
 //
-// This means a poison line costs strictly more under AppendLogs than under
-// the per-line loop it replaces: the whole run's batch is lost, not just the
-// one bad line. That is a real behavioural difference worth having a human
-// rule on (see task report) -- this test only documents it, it does not
-// "fix" it.
+// This is an accepted, intentional property, not a defect: the agent's
+// retry queue (LogPusher.flushPendingLocked, internal/agent/runner.go)
+// resends a failed batch oldest-first and stops at the first failure either
+// way, so walked through a full retry loop rather than one request, the two
+// methods converge on the same outcome -- the poison line wedges that run's
+// log until drop-oldest eviction, on the same schedule, either way. The only
+// difference is that today's per-line path lands the lines before the
+// poison line on every retry attempt, duplicating them, where the batch path
+// lands none of them and produces no duplicates. AppendLogs is therefore
+// strictly better on the duplicate axis and neutral on the wedge axis; this
+// test exists to keep that measurement honest, not to flag a regression.
 func TestPostgres_AppendLogs_NULByte_DiffersFromAppendLog(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
