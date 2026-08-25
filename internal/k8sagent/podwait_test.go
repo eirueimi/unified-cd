@@ -89,7 +89,7 @@ func TestExecuteRun_MasterTerminalDuringWaitAbandonsWithoutOverride(t *testing.T
 
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
-	pm := &fakePM{waitBlock: block} // blocks until ctx is cancelled by the watcher
+	pm := &fakePM{blockFirstWait: block} // blocks until ctx is cancelled by the watcher
 	a := &K8sAgent{
 		cfg:    Config{AgentID: "k8s-1", Namespace: "ns", PodImage: "img", ShimImage: "shim", PodStartTimeout: "10s"},
 		client: client,

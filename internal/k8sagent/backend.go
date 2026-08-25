@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -16,13 +17,27 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// scopeEntry is one scope key's in-flight or completed pod creation. The Once
+// makes concurrent callers for the same key share a single attempt instead of
+// each creating a pod — the old check-then-act let two steps both miss the
+// cache, and the loser's pod was orphaned, since CloseScopes only deletes
+// pods that made it into the map.
+//
+// name and err are written inside the Once and read by CloseScopes, which
+// never calls Do and so has no happens-before edge from it. Both accesses are
+// therefore taken under k8sBackend.scopesMu.
+type scopeEntry struct {
+	once sync.Once
+	name string
+	err  error
+}
+
 // k8sBackend is the ExecBackend implementation for the k8s agent. It owns the
 // per-claim pod identity (the pooled/per-run pod's name and workspace mount
-// path), the claim's scope-pod map (lazily created on first uses-scope step,
-// mirroring the doc comment on executeRun's old scopePods map — the k8s agent
-// runs a claim's steps one at a time via agentlib.RunPipeline in Sequential
-// mode, so this map needs no mutex for reads/writes performed from the
-// orchestrate loop itself), and the secret masker used by StepLogWriters.
+// path), the claim's scope-pod entries (lazily created on first uses-scope
+// step; scopesMu guards scopes so concurrent steps sharing a uses-scope can
+// safely race to create it — see scopeEntry), and the secret masker used by
+// StepLogWriters.
 type k8sBackend struct {
 	a       *K8sAgent
 	runID   string
@@ -33,7 +48,8 @@ type k8sBackend struct {
 	jobName   string
 	mountPath string
 
-	scopePods map[string]string
+	scopesMu sync.Mutex
+	scopes   map[string]*scopeEntry
 
 	masker *secrets.Masker
 
@@ -57,7 +73,7 @@ type k8sBackend struct {
 func newK8sBackend(a *K8sAgent, runID, jobName, podName, mountPath string, sidecarNames []string, claimSince metav1.Time) *k8sBackend {
 	return &k8sBackend{
 		a: a, runID: runID, jobName: jobName, podName: podName, mountPath: mountPath,
-		scopePods:    map[string]string{},
+		scopes:       map[string]*scopeEntry{},
 		sidecarNames: sidecarNames, claimSince: claimSince,
 	}
 }
@@ -123,17 +139,63 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	if b.sidecarPump != nil {
 		b.sidecarPump.Stop()
 	}
-	for key, name := range b.scopePods {
+
+	b.scopesMu.Lock()
+	entries := make(map[string]string, len(b.scopes))
+	for key, e := range b.scopes {
+		if e.err == nil && e.name != "" {
+			entries[key] = e.name
+		}
+	}
+	b.scopesMu.Unlock()
+
+	for key, name := range entries {
 		if err := b.a.pm.DeletePod(context.WithoutCancel(ctx), name); err != nil {
 			slog.Warn("k8s: failed to delete scope pod", "scopeKey", key, "pod", name, "error", err)
 		}
 	}
 }
 
-// ensureScopePod lazily creates (or returns the cached) scope pod for a scoped
-// step, keyed by scopeKey. See executeRun's historical doc comment: this map
-// is only ever touched from orchestrate's single-goroutine, Sequential-mode
-// step loop, so no mutex is needed.
+// ensureScopePod lazily creates (or returns the in-flight/completed) scope
+// pod for a scoped step, keyed by scopeKey. Concurrent callers for the same
+// key share a single scopeEntry and therefore a single sync.Once, so exactly
+// one of them runs createScopePod; the rest block on Do until it finishes and
+// then read the same result. Different keys get different entries and so
+// proceed independently — scopesMu only ever guards the map/entry bookkeeping,
+// never the pod creation itself.
+func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env []string) (string, error) {
+	key := scopeKey(step)
+
+	b.scopesMu.Lock()
+	e, ok := b.scopes[key]
+	if !ok {
+		e = &scopeEntry{}
+		b.scopes[key] = e
+	}
+	b.scopesMu.Unlock()
+
+	e.once.Do(func() {
+		name, err := b.createScopePod(ctx, step, env)
+		b.scopesMu.Lock()
+		e.name, e.err = name, err
+		if err != nil {
+			// Do not cache a failure. A later step needing this scope makes
+			// its own attempt rather than inheriting an error it did not
+			// cause; the callers waiting on THIS attempt still receive err
+			// below, because they hold the entry pointer.
+			delete(b.scopes, key)
+		}
+		b.scopesMu.Unlock()
+	})
+
+	b.scopesMu.Lock()
+	name, err := e.name, e.err
+	b.scopesMu.Unlock()
+	return name, err
+}
+
+// createScopePod creates one scope pod and waits for it to be Running. It is
+// called at most once per scope key, from inside scopeEntry.once.
 //
 // The scope pod's Ready wait is bounded by the same configurable knob as the
 // run pod (Config.PodStartTimeout / UNIFIED_K8S_POD_START_TIMEOUT, resolved
@@ -148,11 +210,7 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 // over imageStepEnv(step)'s k8s-specific defaults, so the caller's expanded
 // value wins over the raw, unexpanded step.Env map and a templated env value
 // (e.g. {{ .Params.x }}) ships resolved rather than as the literal template.
-func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env []string) (string, error) {
-	key := scopeKey(step)
-	if name, ok := b.scopePods[key]; ok {
-		return name, nil
-	}
+func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env []string) (string, error) {
 	envMap := imageStepEnv(step)
 	for k, v := range envSliceToMap(env) {
 		envMap[k] = v
@@ -169,11 +227,11 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 	defer cancel()
 	if err := b.a.pm.WaitForPodRunning(waitCtx, name); err != nil {
 		// Best-effort cleanup of the pod that never became ready; CloseScopes
-		// also sweeps b.scopePods, but this one never made it into the map.
+		// also sweeps b.scopes, but this one never made it into it (the entry
+		// is deleted on failure by ensureScopePod).
 		_ = b.a.pm.DeletePod(context.WithoutCancel(ctx), name)
 		return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready within %s: %w", step.ScopeID, step.ScopeImage, podStartTimeout, err)
 	}
-	b.scopePods[key] = name
 	return name, nil
 }
 
