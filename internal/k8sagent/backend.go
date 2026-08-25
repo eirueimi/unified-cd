@@ -3,6 +3,7 @@ package k8sagent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,17 +43,66 @@ import (
 // controller cancellation, agent shutdown) ends every caller's context and so
 // necessarily drives the count to zero.
 //
-// interest and abandonedClosed are guarded by k8sBackend.scopesMu; abandoned
-// itself is assigned once at construction and only ever closed, so reading
-// the channel needs no lock.
+// done/claimed exist for the case abandonment leaves behind: interest can
+// reach zero (abandonedClosed) WHILE the winner's once.Do closure is still
+// running — the pod may not even be created yet, or WaitForPodRunning may
+// still be in flight. A caller that arrives in that window must not join
+// this entry (see ensureScopePod's lookup): joining would block in once.Do
+// and inherit whatever result the abandoned attempt eventually produces,
+// which has nothing to do with the newcomer's own (possibly perfectly
+// healthy) context. done says whether that result has been recorded yet
+// (name/err are only meaningful once done is true); a newcomer that finds
+// abandonedClosed && !done installs a fresh entry for the key instead of
+// joining.
+//
+// That newcomer path is also why claimed exists, decoupled from map
+// identity. Every prior version of this cleanup ("claim by removing this
+// entry from b.scopes under lock, but only if you're still the one it maps
+// to" — see CloseScopes and createScopePod) used b.scopes[key] == e as the
+// ownership test for "does anybody else already own deleting this entry's
+// Pod". That test silently assumed the map slot is the entry's only path to
+// eventual cleanup. It stops being true the moment a newcomer installs a
+// fresh entry for an abandoned key: the OLD entry can keep running to
+// completion — including succeeding — long after it has stopped being
+// b.scopes[key], and nothing would ever look it up again to delete its Pod.
+// claimed is an arbitrator independent of the map: whichever of {this entry's
+// own createScopePod failure branch, its own once.Do closure noticing it is
+// no longer the map's current occupant, CloseScopes} first transitions it
+// from false to true (see claimEntry) is the one responsible for that
+// entry's Pod, if it has one. Map identity still decides whether an entry's
+// key should be freed for a future retry; claimed alone decides who deletes
+// the Pod.
+//
+// interest, abandonedClosed, done and claimed are guarded by
+// k8sBackend.scopesMu; abandoned itself is assigned once at construction and
+// only ever closed, so reading the channel needs no lock.
 type scopeEntry struct {
 	once sync.Once
 	name string
 	err  error
+	// done is set true, together with name/err, once the once.Do closure has
+	// recorded this entry's final result. See the struct doc comment.
+	done bool
 
 	interest        int
 	abandoned       chan struct{}
 	abandonedClosed bool
+	// claimed is this entry's Pod-cleanup arbitrator. See claimEntry and the
+	// struct doc comment.
+	claimed bool
+}
+
+// claimEntry marks e as claimed for Pod-cleanup purposes and reports whether
+// THIS call is the one that must act (delete e's Pod, if it has one) —
+// true — or whether some other call already has — false. Must be called
+// with scopesMu held; see the scopeEntry doc comment for why this exists
+// independent of e's map membership.
+func claimEntry(e *scopeEntry) bool {
+	if e.claimed {
+		return false
+	}
+	e.claimed = true
+	return true
 }
 
 // k8sBackend is the ExecBackend implementation for the k8s agent. It owns the
@@ -90,6 +140,16 @@ type k8sBackend struct {
 	// runCancelWatchOnce guards the claim's run-cancel watch, started lazily
 	// by the first scope-pod creation. See startRunCancelWatch.
 	runCancelWatchOnce sync.Once
+	// runCancelWatchWG lets CloseScopes JOIN the watch goroutine after
+	// cancelling it, mirroring RunClaim's own cancel poller
+	// (internal/agent/orchestrator.go: "cancelRun(); pollerWG.Wait()"), which
+	// this watch is explicitly modeled on. It exits on its own once
+	// scopeCtx.Done() fires, so nothing here accumulates without a join —
+	// but not joining means CloseScopes can return, and the claim's context
+	// (agent.go's pod-teardown defer, a test's httptest server) can be torn
+	// down, before the watch goroutine has actually observed scopeCtx.Done()
+	// and stopped touching claim state.
+	runCancelWatchWG sync.WaitGroup
 
 	masker *secrets.Masker
 
@@ -179,7 +239,7 @@ func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, scr
 // so streams end before the pod is deleted/released — RunClaim defers
 // CloseScopes and returns before agent.go's pod-teardown defer fires.
 //
-// It claims each entry out of b.scopes (deletes it from the map) before
+// It claims each entry it finds worth deleting (see claimEntry) before
 // deleting its pod, rather than just reading name/err under the lock and
 // deleting afterward. That claim is an ownership handoff with an in-flight
 // ensureScopePod/createScopePod for the same key: e.name is written (in
@@ -190,23 +250,34 @@ func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, scr
 // recorded e.err, and issue its own DeletePod for the same pod
 // createScopePod's own failure branch also deletes.
 //
-// The same "claim by removing under lock, but only the entry you still
-// own" pattern is used at every site that can delete a scopes entry —
-// here, createScopePod's WaitForPodRunning failure branch, and
-// ensureScopePod's once.Do closure on a failed attempt — each checking
-// b.scopes[key] == e before deleting. That symmetry matters: it is not
-// enough for one site to avoid double-deleting a pod CloseScopes already
-// claimed; a site that deletes unconditionally can instead evict a
-// DIFFERENT, live entry that a later caller installed for the same key
-// after this one was removed, which orphans that entry's pod from
-// CloseScopes just as surely as a double-delete wastes an API call.
+// The same claimEntry arbitration is used at every site that can delete a
+// scopes entry's pod — here, createScopePod's WaitForPodRunning failure
+// branch, and ensureScopePod's once.Do closure when an abandoned-and-replaced
+// entry finishes after all. That symmetry matters: it is not enough for one
+// site to avoid double-deleting a pod CloseScopes already claimed; a site
+// that deletes unconditionally could instead race CloseScopes for the same
+// entry and double-delete, or (before claimEntry existed) evict a DIFFERENT,
+// live entry that a later caller installed for the same key after this one
+// was removed — orphaning that entry's pod from CloseScopes just as surely as
+// a double-delete wastes an API call. claimEntry replaced the map-identity
+// version of this handoff (b.scopes[key] == e) specifically because that
+// version assumed an entry's only path to eventual cleanup was staying
+// b.scopes[key] — untrue once a newcomer can install a fresh entry for an
+// abandoned key while the old one is still finishing (see the scopeEntry doc
+// comment and ensureScopePod's lookup).
 //
-// In production this race cannot actually happen: CloseScopes is deferred in
-// the orchestrator and only runs after RunPipeline returns, and runParallel
-// joins its goroutines before returning, so no in-flight ensureScopePod can
-// overlap CloseScopes. That ordering lives in a different package
-// (internal/agent/orchestrator.go) though, so this handoff does not rely on
-// it — it stays correct even if a future refactor there changes it.
+// This still removes every currently-mapped, not-yet-failed entry from
+// b.scopes unconditionally (independent of who wins claimEntry) so the claim
+// ends with an empty map regardless; claimEntry only decides who physically
+// calls DeletePod.
+//
+// In production the CloseScopes/in-flight-attempt race cannot actually
+// happen: CloseScopes is deferred in the orchestrator and only runs after
+// RunPipeline returns, and runParallel joins its goroutines before returning,
+// so no in-flight ensureScopePod can overlap CloseScopes. That ordering lives
+// in a different package (internal/agent/orchestrator.go) though, so this
+// handoff does not rely on it — it stays correct even if a future refactor
+// there changes it.
 func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	if b.sidecarPump != nil {
 		b.sidecarPump.Stop()
@@ -218,12 +289,19 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	if b.scopeCancel != nil {
 		b.scopeCancel()
 	}
+	// Join the run-cancel watch (if it was ever started) before touching
+	// anything else claim-scoped below — see runCancelWatchWG's doc comment.
+	// A no-op wait if startRunCancelWatch was never called (no uses-scope
+	// step in this claim, or b.a.client == nil).
+	b.runCancelWatchWG.Wait()
 
 	b.scopesMu.Lock()
 	entries := make(map[string]string, len(b.scopes))
 	for key, e := range b.scopes {
 		if e.err == nil && e.name != "" {
-			entries[key] = e.name
+			if claimEntry(e) {
+				entries[key] = e.name
+			}
 			delete(b.scopes, key)
 		}
 	}
@@ -265,11 +343,31 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 // misconfiguration. Tolerated deliberately; fixing it means making the env a
 // property of the scope declaration rather than of the step that first
 // touches it, which is a DSL change, not a backend one.
+//
+// JOINING AN ABANDONED ENTRY. A key's entry can have abandonedClosed true
+// (every earlier caller has left) while its once.Do closure is STILL
+// running — the winner's own context ending is what abandoned it, but the
+// winner's call to createScopePod has not returned yet. A caller that looks
+// up the key in that window must not join: e.once.Do would block until the
+// abandoned attempt finishes and hand back whatever it produces (typically
+// context.Canceled, from scopeCreateContext's route 1) to a caller whose OWN
+// context may be perfectly healthy — see the k8s-scope-abandonment fix. The
+// lookup below detects that window (abandonedClosed && !done) and installs a
+// fresh entry instead, so this caller makes its own attempt. The abandoned
+// entry's eventual result — success or failure — is still cleaned up
+// correctly once it lands, via claimEntry rather than map identity; see the
+// once.Do closure and the scopeEntry doc comment.
 func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env []string) (string, error) {
 	key := scopeKey(step)
 
 	b.scopesMu.Lock()
 	e, ok := b.scopes[key]
+	if ok && e.abandonedClosed && !e.done {
+		// e is being torn down but has not finished — see the doc comment
+		// above. Fall into the same "no live entry" branch below rather than
+		// joining it.
+		ok = false
+	}
 	if !ok {
 		e = &scopeEntry{abandoned: make(chan struct{})}
 		b.scopes[key] = e
@@ -299,6 +397,11 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 		name, err := b.createScopePod(createCtx, step, env, e)
 		b.scopesMu.Lock()
 		e.name, e.err = name, err
+		e.done = true
+		// stillCurrent decides whether e's key should be freed for a future
+		// retry, exactly as before. It does NOT decide who deletes e's Pod on
+		// success — see below and the scopeEntry doc comment.
+		stillCurrent := b.scopes[key] == e
 		if err != nil {
 			// Do not cache a failure. A later step needing this scope makes
 			// its own attempt rather than inheriting an error it did not
@@ -312,16 +415,33 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 			// caller may already have removed this key (createScopePod's
 			// branch, or a racing CloseScopes) and/or installed a brand new
 			// entry for the same key (a later ensureScopePod call, once the
-			// key was free). An unconditional delete(b.scopes, key) would
-			// evict that live successor instead of our own stale entry,
-			// orphaning ITS pod from CloseScopes — the one thing this whole
-			// handoff exists to prevent. Only delete if key still maps to
-			// this entry.
-			if b.scopes[key] == e {
+			// key was free — including the abandoned-entry replacement
+			// above). An unconditional delete(b.scopes, key) would evict that
+			// live successor instead of our own stale entry, orphaning ITS
+			// pod from CloseScopes — the one thing this whole handoff exists
+			// to prevent. Only delete if key still maps to this entry.
+			if stillCurrent {
 				delete(b.scopes, key)
 			}
 		}
+		// e succeeded but is no longer the map's current occupant for its
+		// key: it was replaced (see ensureScopePod's lookup, above) while
+		// still in flight, by a caller that arrived after this entry was
+		// abandoned. Nobody will ever look e up again — CloseScopes only
+		// walks the CURRENT map — so without this, e's Pod would leak
+		// forever. claimEntry (not stillCurrent) decides whether THIS call
+		// gets to delete it, because CloseScopes can be racing the exact same
+		// decision for the exact same e (see the doc comment on claimEntry).
+		var selfDeleteName string
+		if !stillCurrent && err == nil && name != "" && claimEntry(e) {
+			selfDeleteName = name
+		}
 		b.scopesMu.Unlock()
+		if selfDeleteName != "" {
+			if delErr := b.a.pm.DeletePod(context.WithoutCancel(createCtx), selfDeleteName); delErr != nil {
+				slog.Warn("k8s: failed to delete abandoned scope pod", "scopeKey", key, "pod", selfDeleteName, "error", delErr)
+			}
+		}
 	})
 
 	b.scopesMu.Lock()
@@ -490,7 +610,9 @@ func (b *k8sBackend) startRunCancelWatch() {
 		// watcher's read (mirrors awaitPodRunning and RunClaim's poller).
 		pollInterval := agentlib.CancelPollInterval
 		watchCtx := b.scopeCtx
+		b.runCancelWatchWG.Add(1)
 		go func() {
+			defer b.runCancelWatchWG.Done()
 			ticker := time.NewTicker(pollInterval)
 			defer ticker.Stop()
 			for {
@@ -578,30 +700,50 @@ func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env
 	if deadline, ok := ctx.Deadline(); ok {
 		waitBudget = time.Until(deadline)
 	}
+	waitStart := time.Now()
 	if err := b.a.pm.WaitForPodRunning(ctx, name); err != nil {
+		elapsed := time.Since(waitStart)
 		// Best-effort cleanup of the pod that never became ready. e.name was
 		// already recorded above, but ensureScopePod deletes this whole entry
 		// from b.scopes on failure (see the err != nil branch there), so a
 		// CloseScopes that runs after we return would no longer find it
 		// either — normally we must delete it ourselves here.
 		//
-		// "Normally" because of an ownership check first: a CloseScopes
-		// racing with this attempt (see its doc comment) may have already
-		// claimed this key out of b.scopes and taken responsibility for
-		// deleting the pod. Only delete here if our entry is still the one in
-		// the map; otherwise CloseScopes has it, and a delete here would be
-		// redundant (and could race the fake/API client with CloseScopes' own
-		// delete).
+		// Map removal and Pod-delete ownership are separate decisions here,
+		// deliberately. Removing key from b.scopes is still keyed on identity
+		// (stillCurrent): if some other entry has already taken the key —
+		// CloseScopes claimed it, or a newcomer installed a fresh entry after
+		// this one was abandoned (see ensureScopePod's lookup) — there is
+		// nothing of ours left to remove. But whether THIS call deletes the
+		// Pod is decided by claimEntry, not by stillCurrent: a CloseScopes
+		// racing this exact failure (see its doc comment) may have already
+		// claimed this entry and taken responsibility for the Pod even while
+		// stillCurrent is still (momentarily) true, and a delete here would
+		// then double up on CloseScopes' own delete.
 		b.scopesMu.Lock()
-		owned := b.scopes[key] == e
-		if owned {
+		if b.scopes[key] == e {
 			delete(b.scopes, key)
 		}
+		owned := claimEntry(e)
 		b.scopesMu.Unlock()
 		if owned {
 			_ = b.a.pm.DeletePod(context.WithoutCancel(ctx), name)
 		}
-		return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready within %s: %w", step.ScopeID, step.ScopeImage, waitBudget.Round(time.Millisecond), err)
+		// DeadlineExceeded means the attempt genuinely spent its whole
+		// PodStartTimeout budget waiting — reporting that budget is accurate.
+		// Any other error (context.Canceled from an abandoned/run-cancelled/
+		// claim-torn-down attempt, or a real API error) did NOT spend that
+		// budget, frequently by a wide margin: an attempt aborted 0.3s in
+		// must not be reported as "did not become ready within 4m59.999s",
+		// which names a budget it never had a chance to spend and reads as a
+		// slow image pull rather than what actually happened.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready within %s: %w", step.ScopeID, step.ScopeImage, waitBudget.Round(time.Millisecond), err)
+		}
+		if errors.Is(err, context.Canceled) {
+			return "", fmt.Errorf("uses-scope %q (image %q): pod creation abandoned after %s: %w", step.ScopeID, step.ScopeImage, elapsed.Round(time.Millisecond), err)
+		}
+		return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready after %s: %w", step.ScopeID, step.ScopeImage, elapsed.Round(time.Millisecond), err)
 	}
 	return name, nil
 }
