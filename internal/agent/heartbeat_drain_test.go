@@ -75,6 +75,15 @@ func TestAgent_HeartbeatContinuesDuringDrain(t *testing.T) {
 		// Large drain timeout so runCtx (and thus the heartbeat) survives the drain
 		// window the test observes.
 		DrainTimeout: 5 * time.Second,
+		// WorkspaceDir must be set explicitly: Run() resolves an empty
+		// WorkspaceDir to the process's current directory (see
+		// ResolveWorkspaceDir) and unconditionally creates working<slot>
+		// directories under it on startup. Without this, `go test` would
+		// write a working0/ directory into this package's source tree —
+		// the same defect the k8s parity driver had, fixed there by giving
+		// the test command a t.TempDir()-rooted directory to work in (see
+		// internal/k8sagent/parity_k8s_test.go's workDir).
+		WorkspaceDir: t.TempDir(),
 	}
 
 	done := make(chan error, 1)

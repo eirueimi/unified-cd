@@ -88,7 +88,13 @@ func TestAgent_GracefulDrain(t *testing.T) {
 	claimCtx, cancelClaim := context.WithCancel(context.Background())
 	defer cancelClaim()
 
-	a := &Agent{ID: "a1", Client: NewClient(srv.URL, "tok"), MaxConcurrent: 1}
+	// WorkspaceDir must be set explicitly: an empty value resolves to the
+	// process's current directory (ResolveWorkspaceDir) and Run() always
+	// creates working<slot> dirs under it on startup — without this, `go
+	// test` would write a working0/ directory into this package's source
+	// tree. Same fix as the k8s parity driver's t.TempDir()-rooted workDir
+	// (see internal/k8sagent/parity_k8s_test.go).
+	a := &Agent{ID: "a1", Client: NewClient(srv.URL, "tok"), MaxConcurrent: 1, WorkspaceDir: t.TempDir()}
 
 	done := make(chan error, 1)
 	go func() { done <- a.Run(claimCtx) }()
@@ -158,6 +164,10 @@ func TestAgent_DrainTimeout(t *testing.T) {
 		Client:        NewClient(srv.URL, "tok"),
 		MaxConcurrent: 1,
 		DrainTimeout:  200 * time.Millisecond,
+		// See TestAgent_GracefulDrain: WorkspaceDir must be set explicitly
+		// or Run() creates working<slot> dirs in the process's cwd (this
+		// package's source tree).
+		WorkspaceDir: t.TempDir(),
 	}
 
 	done := make(chan error, 1)
@@ -245,7 +255,8 @@ func TestAgent_MaxConcurrent(t *testing.T) {
 		WorkspaceDir:  wsDir,
 	}
 
-	go a.Run(claimCtx) //nolint:errcheck
+	done := make(chan error, 1)
+	go func() { done <- a.Run(claimCtx) }()
 
 	// Wait until both runs are executing concurrently (up to 5s)
 	deadline := time.Now().Add(5 * time.Second)
@@ -260,6 +271,22 @@ func TestAgent_MaxConcurrent(t *testing.T) {
 	// Release the barrier to let the runs complete
 	os.Remove(barrier) //nolint:errcheck
 	cancelClaim()
+
+	// Wait for Run() to actually return before the test does. Run() only
+	// returns once every slot goroutine (both the MaxConcurrent pool and the
+	// default 16-slot detached pool), the heartbeat loop, and the workspace
+	// GC loop (if any) have been joined (see Run's wg.Wait/<-hbDone/<-gcDone
+	// sequence), so this deterministically waits out every goroutine this
+	// test started rather than merely signalling them. Without it, those
+	// goroutines can still be mid-shutdown (e.g. inside retryUntilSuccess)
+	// when this test function returns, racing with a later test's package-
+	// level RetryInitialWait/RetryMaxWait mutation (see retry_test.go) under
+	// -race.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Agent.Run did not return after claim context was cancelled")
+	}
 }
 
 func TestAgent_CleanWorkspace(t *testing.T) {
@@ -315,7 +342,8 @@ func TestAgent_CleanWorkspace(t *testing.T) {
 		CleanWorkspace: true,
 	}
 
-	go a.Run(claimCtx) //nolint:errcheck
+	agentDone := make(chan error, 1)
+	go func() { agentDone <- a.Run(claimCtx) }()
 
 	select {
 	case succeeded := <-runDone:
@@ -324,6 +352,17 @@ func TestAgent_CleanWorkspace(t *testing.T) {
 		t.Fatal("run did not complete")
 	}
 	cancelClaim()
+
+	// Wait for Run() to actually return before the test does — see the same
+	// fix (and rationale) in TestAgent_MaxConcurrent above: a fire-and-forget
+	// `go a.Run(...)` can still be shutting down goroutines (including ones
+	// reading the package-level RetryInitialWait/RetryMaxWait vars) after this
+	// test function returns, racing with a later test's mutation of those vars.
+	select {
+	case <-agentDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Agent.Run did not return after claim context was cancelled")
+	}
 }
 
 // newTimeoutTestMux returns a minimal HTTP multiplexer for timeout tests.
