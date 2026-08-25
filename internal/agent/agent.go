@@ -670,6 +670,19 @@ func resolveScope(ctx context.Context, step api.ClaimStep, backend ExecBackend) 
 	if !isScopedStep(step) {
 		return ScopeHandle{}, nil
 	}
+	// nil env, deliberately, and it is FIRST-CALLER-WINS. The run-step path
+	// (orchestrator.go) calls EnsureScope with the fully expanded extraEnv;
+	// this path has no extraEnv to give — it is built later in the run-step
+	// branch, after the cache:/artifact: branches have already returned — so
+	// the scope gets only the backend's own image defaults. Both backends
+	// create the scope once per (ScopeID, MatrixKey) and keep whichever
+	// caller got there first, so a parallel: block mixing a cache: step and a
+	// run: step on one ScopeID resolves the scope's env by scheduling.
+	// Tolerated: the shape predates concurrent step execution and is
+	// identical on both backends (see scope.go's scopeManager.ensure and
+	// internal/k8sagent/backend.go's ensureScopePod, where the full rationale
+	// lives). What concurrency changed is only the tie-break — declaration
+	// order became goroutine scheduling.
 	return backend.EnsureScope(ctx, step, nil)
 }
 
