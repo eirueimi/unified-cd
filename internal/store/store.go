@@ -175,6 +175,16 @@ type PendingRun struct {
 	CreatedAt time.Time
 }
 
+// LogAppend is one line for the batch append path. The fields mirror
+// AppendLog's parameters exactly.
+type LogAppend struct {
+	RunID     string
+	StepIndex int
+	Stream    string
+	Timestamp time.Time
+	Line      string
+}
+
 type Store interface {
 	UpsertJob(ctx context.Context, name, apiVersion string, spec []byte) (*api.Job, error)
 	GetJob(ctx context.Context, name string) (*api.Job, error)
@@ -245,6 +255,12 @@ type Store interface {
 	// DROPPED because the run's logs are already archived (sealed) — see
 	// the Postgres implementation for rationale.
 	AppendLog(ctx context.Context, runID string, stepIndex int, stream string, ts time.Time, line string) (int64, error)
+	// AppendLogs stores multiple log lines and notifies SSE listeners once
+	// per run that had at least one line written. The returned slice is
+	// parallel to lines: element i is the seq assigned to lines[i], or 0 if
+	// that line was DROPPED because its run is sealed — the same convention
+	// AppendLog uses. Lines for different runs may be mixed freely.
+	AppendLogs(ctx context.Context, lines []LogAppend) ([]int64, error)
 	TailLogs(ctx context.Context, runID string, afterSeq int64, limit int) ([]api.LogLine, error)
 	// TailLogsRecent returns up to the last `limit` log lines for the run, in
 	// ascending seq order (the tail of the log), so a bounded backfill can keep

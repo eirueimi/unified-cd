@@ -1037,6 +1037,104 @@ func (p *Postgres) AppendLog(ctx context.Context, runID string, stepIndex int, s
 	return seq, nil
 }
 
+// AppendLogs stores many log lines with a constant number of round trips per
+// run, instead of AppendLog's two per line. It is the hot path for an agent's
+// bulk log upload; AppendLog remains for the callers that write a single line.
+//
+// The batch is grouped by run because SEALING IS A PROPERTY OF THE RUN, not of
+// the line: run_log_archives does not change within one statement's snapshot,
+// so every line of a run in a batch shares one verdict. That makes the row
+// count returned by each INSERT unambiguous — zero (the run is sealed) or all
+// of them — which is what lets the returned seqs be mapped back to the input
+// positionally without relying on any ordering guarantee across runs.
+//
+// ORDER BY ord fixes the order rows are produced, and therefore the order the
+// seq sequence is drawn in, so the ascending seqs pair with that run's lines in
+// input order. postgres_log_batch_test.go proves this by reading the rows back
+// rather than assuming it.
+func (p *Postgres) AppendLogs(ctx context.Context, lines []LogAppend) ([]int64, error) {
+	if len(lines) == 0 {
+		return nil, nil
+	}
+
+	// Group line positions by run, preserving input order within each run.
+	order := make([]string, 0, 4)
+	byRun := make(map[string][]int, 4)
+	for i, l := range lines {
+		if _, ok := byRun[l.RunID]; !ok {
+			order = append(order, l.RunID)
+		}
+		byRun[l.RunID] = append(byRun[l.RunID], i)
+	}
+
+	const q = `
+		INSERT INTO logs(run_id, step_index, stream, ts, line)
+		SELECT $1::uuid, s.step_index, s.stream, s.ts, s.line
+		FROM unnest($2::int[], $3::text[], $4::timestamptz[], $5::text[])
+			WITH ORDINALITY AS s(step_index, stream, ts, line, ord)
+		WHERE NOT EXISTS (SELECT 1 FROM run_log_archives WHERE run_id = $1::uuid)
+		ORDER BY s.ord
+		RETURNING seq;
+	`
+
+	out := make([]int64, len(lines))
+	for _, runID := range order {
+		idx := byRun[runID]
+		steps := make([]int32, len(idx))
+		streams := make([]string, len(idx))
+		stamps := make([]time.Time, len(idx))
+		texts := make([]string, len(idx))
+		for j, i := range idx {
+			steps[j] = int32(lines[i].StepIndex)
+			streams[j] = lines[i].Stream
+			stamps[j] = lines[i].Timestamp
+			texts[j] = lines[i].Line
+		}
+
+		rows, err := p.pool.Query(ctx, q, runID, steps, streams, stamps, texts)
+		if err != nil {
+			return nil, fmt.Errorf("append logs for run %s: %w", runID, err)
+		}
+		seqs := make([]int64, 0, len(idx))
+		for rows.Next() {
+			var seq int64
+			if err := rows.Scan(&seq); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("append logs for run %s: %w", runID, err)
+			}
+			seqs = append(seqs, seq)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("append logs for run %s: %w", runID, err)
+		}
+
+		// Zero rows means the run is sealed and every one of its lines was
+		// dropped; out[i] is already 0 for those. Any other short count would
+		// mean the per-run invariant above is wrong, so say so loudly rather
+		// than returning a silently misaligned mapping.
+		if len(seqs) == 0 {
+			continue
+		}
+		if len(seqs) != len(idx) {
+			return nil, fmt.Errorf("append logs for run %s: inserted %d of %d lines", runID, len(seqs), len(idx))
+		}
+		for j, i := range idx {
+			out[i] = seqs[j]
+		}
+
+		// One notification per run that had a line written. The payload keeps
+		// AppendLog's shape (the highest seq); no reader parses it — the SSE
+		// handler uses its own lastSeq — but changing a wire format for no
+		// gain is worse than leaving it. The error is discarded deliberately,
+		// exactly as in AppendLog: the lines are written, which is what
+		// matters, and a failed wake-up costs a delayed refresh, not data.
+		_, _ = p.pool.Exec(ctx, "SELECT pg_notify($1, $2)",
+			"log_appended:"+runID, fmt.Sprintf("%d", seqs[len(seqs)-1]))
+	}
+	return out, nil
+}
+
 func (p *Postgres) TailLogs(ctx context.Context, runID string, afterSeq int64, limit int) ([]api.LogLine, error) {
 	const q = `
 		SELECT seq, step_index, stream, ts, line
