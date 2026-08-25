@@ -175,7 +175,7 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 	b.scopesMu.Unlock()
 
 	e.once.Do(func() {
-		name, err := b.createScopePod(ctx, step, env)
+		name, err := b.createScopePod(ctx, step, env, e)
 		b.scopesMu.Lock()
 		e.name, e.err = name, err
 		if err != nil {
@@ -210,7 +210,7 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 // over imageStepEnv(step)'s k8s-specific defaults, so the caller's expanded
 // value wins over the raw, unexpanded step.Env map and a templated env value
 // (e.g. {{ .Params.x }}) ships resolved rather than as the literal template.
-func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env []string) (string, error) {
+func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env []string, e *scopeEntry) (string, error) {
 	envMap := imageStepEnv(step)
 	for k, v := range envSliceToMap(env) {
 		envMap[k] = v
@@ -222,13 +222,24 @@ func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env
 		return "", fmt.Errorf("uses-scope %q (image %q): create pod: %w", step.ScopeID, step.ScopeImage, err)
 	}
 	name := created.Name
+	// Record the name as soon as the Pod exists, before waiting for Running,
+	// so CloseScopes can always name what exists. From here until this
+	// function returns, a real Pod is running in the cluster; if we only
+	// wrote e.name on success (as ensureScopePod's caller does at the end),
+	// a CloseScopes racing in while we are still in WaitForPodRunning below
+	// would see an entry with no name and skip it, leaking the Pod.
+	b.scopesMu.Lock()
+	e.name = name
+	b.scopesMu.Unlock()
 	podStartTimeout := b.a.cfg.PodStartTimeoutDuration()
 	waitCtx, cancel := context.WithTimeout(ctx, podStartTimeout)
 	defer cancel()
 	if err := b.a.pm.WaitForPodRunning(waitCtx, name); err != nil {
-		// Best-effort cleanup of the pod that never became ready; CloseScopes
-		// also sweeps b.scopes, but this one never made it into it (the entry
-		// is deleted on failure by ensureScopePod).
+		// Best-effort cleanup of the pod that never became ready. e.name was
+		// already recorded above, but ensureScopePod deletes this whole entry
+		// from b.scopes on failure (see the err != nil branch there), so a
+		// CloseScopes that runs after we return would no longer find it
+		// either — we must delete it ourselves here.
 		_ = b.a.pm.DeletePod(context.WithoutCancel(ctx), name)
 		return "", fmt.Errorf("uses-scope %q (image %q): pod did not become ready within %s: %w", step.ScopeID, step.ScopeImage, podStartTimeout, err)
 	}
