@@ -270,8 +270,22 @@ steps:
   test presence rather than value, use `"NAME" in vars` — `has(vars.NAME)` is
   always true here and must not be used.
 - `params.MISSING` still raises `no such key`, which is an evaluation error,
-  which fails OPEN (the step runs). Reference only parameters the job
-  declares under `spec.params.inputs`.
+  which fails OPEN (the step runs). Rather than change that — it would turn
+  steps that run today into steps that skip — the typo is caught **at apply
+  time**: if a job declares any params, an `if:` that names a param it does
+  not declare is rejected with `references undeclared param "..."`. The fix
+  is to correct the spelling or declare the param.
+
+    The apply-time check only looks at literal names (`params.FOO`,
+    `params["FOO"]`). A computed key (`params["pre_" + vars.X]`), a dynamic
+    one (`params[vars.X]`), and a presence test (`has(params.FOO)`,
+    `"FOO" in params`) are all left alone — none of them is a typo that can be
+    proved from the manifest. A job that declares **no** params at all is not
+    checked either: undeclared params supplied by `--param`, a webhook
+    `paramsMapping`, a schedule, or a `call:` step's `with:` are passed
+    through to the run, so such a job has no declared interface to check
+    against. Or-lock values (`{NAME}_LOCK_VALUE`, synthesized from
+    `spec.concurrency.orLocks[].name`) count as declared.
 
 The expression must evaluate to a boolean. Use CEL operators and the
 zero-arg status functions (see [Status Functions in `if:`](expressions.md#status-functions-in-if)):
