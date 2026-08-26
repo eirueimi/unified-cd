@@ -191,14 +191,17 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 			// is overlaid inside buildClaimResponse, which already has the
 			// parsed spec, so nothing re-parses it here.
 			globalVars, verr := mergedGlobalVars(r.Context(), s.store)
-			if verr != nil {
+			var corrupt *corruptVarsError
+			if verr != nil && !errors.As(verr, &corrupt) {
+				// A TRANSIENT failure: the store call itself errored, e.g. a
+				// database blip in the milliseconds since the claim.
+				//
 				// ClaimNextRun already flipped this run to Running in the same SQL
 				// statement, so a 500 here would strand it Running forever: the
 				// claiming agent is alive and heartbeating, so ListStuckRuns'
 				// last_seen_at predicate would never select it for reaping. But
-				// unlike a claim-build error this one is not deterministic — a
-				// database blip in the milliseconds since the claim is enough —
-				// and failing a user's run outright over that is too harsh.
+				// failing a user's run outright over a blip is too harsh, and
+				// unlike the two deterministic errors below, retrying CAN succeed.
 				// Requeueing preserves both properties: nothing is stranded, and
 				// the run gets claimed again (it loses nothing by going back; see
 				// RequeueClaimedRun). Only if the requeue ITSELF fails is failing
@@ -216,16 +219,24 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, api.ClaimResponse{})
 				return
 			}
-			resp, cerr := buildClaimResponse(claimed, globalVars)
+			// A corrupt stored manifest falls through to the fail path below
+			// instead: it is deterministic, and requeueing it would stall every
+			// claim in the fleet rather than one run (see corruptVarsError).
+			resp, cerr := api.ClaimResponse{}, verr
+			if cerr == nil {
+				resp, cerr = buildClaimResponse(claimed, globalVars)
+			}
 			if cerr != nil {
 				// ClaimNextRun already flipped this run to Running in the same SQL
 				// statement, so leaving it as-is here would strand it Running forever:
 				// the claiming agent is alive and heartbeating, so ListStuckRuns'
-				// last_seen_at predicate would never select it for reaping. cerr is
-				// deterministic (buildClaimResponse is pure computation over the
-				// already-stored spec bytes — e.g. the pre-migration runsIn guard),
-				// so retrying the claim can never succeed either; fail fast now rather
-				// than treat it as a transient error.
+				// last_seen_at predicate would never select it for reaping. Both
+				// errors that reach here are deterministic — buildClaimResponse is
+				// pure computation over the already-stored spec bytes (e.g. the
+				// pre-migration runsIn guard), and a corrupt vars manifest decodes
+				// the same way on every claim — so retrying can never succeed
+				// either; fail fast, with the reason on the run, rather than treat
+				// it as transient.
 				if _, logErr := s.store.AppendLog(r.Context(), claimed.ID, -1, "stderr", time.Now().UTC(), cerr.Error()); logErr != nil {
 					slog.Error("agent claim: append claim-build failure reason", "runId", claimed.ID, "error", logErr)
 				}
@@ -256,10 +267,45 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// corruptVarsError marks a stored Vars manifest whose spec will not decode.
+// It exists to separate the two failure kinds mergedGlobalVars can hit, which
+// need opposite handling at the claim site.
+//
+// This one is DETERMINISTIC: every later claim reads the same bytes and fails
+// the same way. And mergedGlobalVars reads EVERY manifest on EVERY claim,
+// whichever run is being claimed — so requeueing it would put every claim in
+// the fleet into a silent retry loop where no run ever fails, nothing looks
+// broken, and the whole system stalls. Failing the claiming run instead costs
+// one run and puts the offending manifest's name in that run's own log, where
+// an operator can find it.
+//
+// Reaching this state means bypassing the write paths — handleApplyVars and the
+// AppSource sync both marshal an already-validated dsl.VarsSpec — so it takes a
+// migration, a manual database edit, or a future writer. The classification is
+// explicit rather than assumed because the blast radius is the whole fleet.
+type corruptVarsError struct {
+	name string
+	err  error
+}
+
+func (e *corruptVarsError) Error() string {
+	return fmt.Sprintf("vars manifest %q is stored corrupt and cannot be decoded "+
+		"(fix or delete it — every claim reads it): %v", e.name, e.err)
+}
+
+func (e *corruptVarsError) Unwrap() error { return e.err }
+
 // mergedGlobalVars loads every global Vars manifest and flattens them into one
 // map. ListVars is sorted by name, so two globals that somehow both define a
 // key (the apply-time collision check should have prevented it) resolve
 // deterministically rather than by database order.
+//
+// The two error kinds are distinguishable by design: a store error comes back
+// as-is (transient — the caller requeues), a decode error comes back wrapped in
+// *corruptVarsError (deterministic — the caller fails the run). A corrupt
+// manifest is never skipped: continuing without it would run jobs missing the
+// variables they expect, silently, which is the one outcome this feature avoids
+// everywhere else.
 func mergedGlobalVars(ctx context.Context, st store.Store) (map[string]string, error) {
 	recs, err := st.ListVars(ctx)
 	if err != nil {
@@ -269,7 +315,7 @@ func mergedGlobalVars(ctx context.Context, st store.Store) (map[string]string, e
 	for _, rec := range recs {
 		var spec dsl.VarsSpec
 		if err := json.Unmarshal(rec.Spec, &spec); err != nil {
-			return nil, fmt.Errorf("vars %q: %w", rec.Name, err)
+			return nil, &corruptVarsError{name: rec.Name, err: err}
 		}
 		for k, v := range spec.Vars {
 			merged[k] = v
