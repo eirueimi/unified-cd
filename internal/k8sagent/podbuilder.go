@@ -485,11 +485,15 @@ func toResourceRequirements(rs *dsl.ResourceSpec) corev1.ResourceRequirements {
 			return nil
 		}
 		out := corev1.ResourceList{}
-		if q, err := resource.ParseQuantity(rl.CPU); rl.CPU != "" && err == nil {
-			out[corev1.ResourceCPU] = q
+		if rl.CPU != "" {
+			if q, err := resource.ParseQuantity(rl.CPU); err == nil {
+				out[corev1.ResourceCPU] = q
+			}
 		}
-		if q, err := resource.ParseQuantity(rl.Memory); rl.Memory != "" && err == nil {
-			out[corev1.ResourceMemory] = q
+		if rl.Memory != "" {
+			if q, err := resource.ParseQuantity(rl.Memory); err == nil {
+				out[corev1.ResourceMemory] = q
+			}
 		}
 		if len(out) == 0 {
 			return nil
