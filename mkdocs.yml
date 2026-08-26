@@ -127,6 +127,7 @@ nav:
           - PodTemplate Sub-Field Routing: operator-manual/migrations/podtemplate-subfield-routing.md
           - Concurrent Kubernetes Step Execution: operator-manual/migrations/k8s-concurrent-step-execution.md
           - Uses Template Step Fields: operator-manual/migrations/uses-template-step-fields.md
+          - "Bounded and Failure-Honest finally:": operator-manual/migrations/finally-phase-semantics.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

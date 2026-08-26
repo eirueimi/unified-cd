@@ -25,6 +25,7 @@ func Cases() []Case {
 		isolatedDispatch(),
 		parallelGroupMembersAllSucceed(),
 		finallyPostHookRuns(),
+		finallyOutputPromoted(),
 	}
 }
 
@@ -609,3 +610,51 @@ var FinallyPostHookScripts = []string{
 // FinallyPostHookMarkers are the tokens FinallyPostHookScripts append to
 // $POSTHOOK_MARKER_FILE, in the same LIFO order.
 var FinallyPostHookMarkers = []string{"finally-post-2", "finally-post-1"}
+
+// 16. finally-output-promoted: an output DECLARED by the job
+// (spec.params.outputs, carried as ClaimResponse.JobOutputs) and SET by a
+// `finally:` step must be promoted to the RUN's outputs, not just the step's.
+//
+// RunClaim's job-output promotion loop used to iterate c.Stages only, so a
+// value a teardown step published landed in SetStepOutputs, the run finished
+// Succeeded, and SetRunOutputs never carried it — a parent `call:` step read
+// nothing back. Both agents share that one loop, so the defect and its fix are
+// backend-independent and belong here.
+//
+// Asserted on outcomes only: the promoted run-output value, the two step
+// statuses, and the run status. Nothing about ordering or timing — the
+// ordering (promotion happens after the finally pipeline) was already correct;
+// only the scan set was wrong.
+func finallyOutputPromoted() Case {
+	return Case{
+		Name: "finally-output-promoted",
+		Claim: func() api.ClaimResponse {
+			return api.ClaimResponse{
+				RunID:      "run-finally-output-promoted",
+				JobName:    "finally-output-promoted",
+				Native:     true,
+				JobOutputs: []string{"report_url"},
+				Stages: []api.ClaimStage{
+					{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "build", Run: "echo build-ran"}},
+				},
+				Finally: []api.ClaimStage{
+					{Step: &api.ClaimStep{
+						Index: 1, StageIndex: 0, Name: "publish", Run: "echo publish-ran",
+						// A literal rather than a {{ .Stdout }} template, so
+						// the case asserts promotion and nothing about how
+						// each driver captures stdout.
+						Outputs: map[string]string{"report_url": "https://reports.example/parity"},
+					}},
+				},
+			}
+		},
+		Expect: Expectation{
+			StepStatus: map[string]string{
+				"build":   "Succeeded",
+				"publish": "Succeeded",
+			},
+			RunFinished: "Succeeded",
+			RunOutputs:  map[string]string{"report_url": "https://reports.example/parity"},
+		},
+	}
+}

@@ -350,7 +350,8 @@ steps:
 
 Notes:
 - `retry:` is only valid on a `run:` step; declaring it on any other step type is a validation error at apply time.
-- Any failure of an attempt is retried: a non-zero exit code, an exec/infra error, or that attempt timing out. A run being cancelled is never retried.
+- Any failure of an attempt is retried: a non-zero exit code, an exec/infra error, or that attempt timing out. A run being cancelled stops the retry loop at the current attempt — in the main `steps` DAG. Inside [`finally:`](approval-and-finally.md#finally-block-finally) the step keeps its full attempt budget even on a cancelled run: the cancellation ends the main DAG, not the cleanup phase, so a flaky teardown still gets its retries.
+- `retry:` has no overall time budget of its own, but inside `finally:` the whole cleanup phase is bounded by the agent's `finallyTimeout` (default 10m) — see [How long `finally` may run](approval-and-finally.md#how-long-finally-may-run).
 - `timeoutMinutes` bounds **each attempt**, not the overall retry budget — with `attempts: 3` and `timeoutMinutes: 5`, the step can take up to 15 minutes across all tries.
 - `continueOnError` is evaluated after the retry budget is exhausted — the step only continues past a failure once every attempt has failed.
 - All attempts stream to the same step log, with a separator line (e.g. `── retry 2/3 after 30s … ──`) marking the start of each retry.

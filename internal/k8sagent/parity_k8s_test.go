@@ -37,6 +37,11 @@ type parityK8sHarness struct {
 	outputs         map[string]map[string]string
 	childRunID      map[string]string
 
+	// runOutputs merges every SetRunOutputs body — the job-output promotion a
+	// parent `call:` step actually reads back (see the finally-output-promoted
+	// case). Host twin: parityHostHarness.runOutputs.
+	runOutputs map[string]string
+
 	secretsToServe map[string]string
 	fetchedNames   []string
 
@@ -54,6 +59,7 @@ func newParityK8sHarness() *parityK8sHarness {
 		terminalStatus:  map[string]string{},
 		outputs:         map[string]map[string]string{},
 		childRunID:      map[string]string{},
+		runOutputs:      map[string]string{},
 	}
 }
 
@@ -142,6 +148,13 @@ func newParityK8sServer(t *testing.T, agentID string, h *parityK8sHarness) *http
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/outputs", func(w http.ResponseWriter, r *http.Request) {
+		var req api.SetOutputsRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		h.mu.Lock()
+		for k, v := range req.Outputs {
+			h.runOutputs[k] = v
+		}
+		h.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/finish", func(w http.ResponseWriter, r *http.Request) {
@@ -203,12 +216,17 @@ func (h *parityK8sHarness) observation() paritycases.Observation {
 	for k, v := range h.childRunID {
 		childRunID[k] = v
 	}
+	runOutputs := make(map[string]string, len(h.runOutputs))
+	for k, v := range h.runOutputs {
+		runOutputs[k] = v
+	}
 	return paritycases.Observation{
 		StepStatus:  statuses,
 		RunFinished: h.finishStatus,
 		Logs:        logs,
 		Outputs:     outputs,
 		ChildRunID:  childRunID,
+		RunOutputs:  runOutputs,
 	}
 }
 

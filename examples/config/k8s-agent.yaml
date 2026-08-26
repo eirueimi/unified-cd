@@ -9,6 +9,12 @@ maxConcurrent: 5
 # poolIdleTimeout: how long idle pooled pods are kept before deletion (e.g. "30m", "1h").
 # Omit or set to "" to disable eviction (idle pods live until the agent restarts).
 poolIdleTimeout: ""
+# finallyTimeout: ceiling on each of a run's post-DAG cleanup phases — the
+# spec.finally pipeline, and each post:/cache: hook drain. Those phases keep
+# running after a cancellation (that is what finally: is for), which also means
+# they cannot inherit spec.timeoutMinutes, so this replaces it. Unset,
+# unparseable, or non-positive -> 10m ("unbounded" is not expressible).
+# finallyTimeout: 10m
 # podImage: fallback image when a Job does not specify a podTemplate
 podImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3
 

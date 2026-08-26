@@ -89,6 +89,7 @@ func main() {
 	cleanWorkspace := flag.Bool("clean-workspace", eff.CleanWorkspace, "delete and recreate the workspace before starting a run")
 	workspaceDir := flag.String("workspace-dir", eff.WorkspaceDir, "base directory for run workspaces (default: current directory at agent startup) (env: UNIFIED_AGENT_WORKSPACE_DIR)")
 	drainTimeout := flag.Duration("drain-timeout", eff.DrainTimeout, "maximum drain wait time after SIGTERM (0=wait indefinitely). Applies to running steps; post-hooks such as cache saves always wait for completion to preserve data")
+	finallyTimeout := flag.Duration("finally-timeout", eff.FinallyTimeout, "ceiling on each of a run's post-DAG cleanup phases (the spec.finally pipeline, and each post:/cache: hook drain); 0/unset=default 10m (env: UNIFIED_AGENT_FINALLY_TIMEOUT)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_AGENT_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)")
 	containerRuntime := flag.String("container-runtime", "", "container runtime for runsIn.image steps; empty = auto-detect (docker|podman|nerdctl|wslc). Apple's 'container' is explicit-only (not auto-detected) and cannot run isolated/claim-pod jobs")
 	pauseImage := flag.String("pause-image", orDefault(eff.PauseImage, defaultPauseImage), "image for the claim pod's pause (netns-holder) container")
@@ -212,6 +213,15 @@ func main() {
 	a.ToolsDir = toolsDir
 	a.MinFreeDisk = *minFreeDisk
 	a.WorkspaceRetentionDays = *workspaceRetentionDays
+
+	// The finally/cleanup-phase ceiling lives on the shared orchestration loop
+	// (agent.RunClaim), which both agent binaries call and which has no
+	// per-agent config struct of its own — so it is set here, once, before any
+	// claim starts. A non-positive value is ignored by RunClaim in favour of
+	// agent.DefaultFinallyBudget.
+	if *finallyTimeout > 0 {
+		agent.FinallyBudget = *finallyTimeout
+	}
 
 	if *cacheEndpoint != "" && *cacheKey != "" && *cacheSecret != "" && *cacheBucket != "" {
 		cs, err := objectstore.NewS3ObjectStore(ctx, objectstore.S3Config{

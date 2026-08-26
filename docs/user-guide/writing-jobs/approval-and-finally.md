@@ -108,6 +108,17 @@ spec:
 - All `finally` steps run to completion; a `finally` step that fails marks the
   run **Failed**.
 - On cancellation, `finally` still runs, but `failure()` is `false`.
+- **A `finally` step that fails on a cancelled run still fails the run.** The
+  cancellation ends the main `steps` DAG; it does not excuse cleanup. A
+  `finally` step is reported `Failed` (not `Cancelled`) when it exits non-zero,
+  and the run finishes `Failed` rather than `Cancelled` — so an operator who
+  cancels a deploy and whose rollback then breaks sees the broken rollback
+  instead of a clean cancellation. A `finally` block that cleans up
+  successfully leaves a cancelled run `Cancelled`, as before.
+- **`retry:` keeps its full attempt budget inside `finally`, even on a
+  cancelled run** — for the same reason. (In the main DAG a cancellation still
+  stops the retry loop at the current attempt: cancelling a run means stopping
+  it.)
 - `cache:` and `post:` **are** supported in `finally` steps. Their deferred
   hooks (the cache save, the post script) run after the whole `finally` block
   completes, in their own drain pass — a normal step's `post:` hook still runs
@@ -121,7 +132,56 @@ spec:
   notification/cleanup template that only needs to run on completion.
 - Both the standard and Kubernetes agents detect mid-run cancellation: an
   in-flight step is interrupted, `finally` still runs (with `failure()` false),
-  and the run finishes as `Cancelled`.
+  and the run finishes as `Cancelled` — unless a `finally` step itself fails,
+  in which case the run finishes `Failed` (see above).
+
+### Job outputs from a `finally` step
+
+A `finally` step is an ordinary step, so it can set a value declared in
+[`spec.params.outputs`](parameters.md#output-fields), and that value **is** promoted to the
+run's outputs — which is what a parent [`call:`](templates-and-reuse.md#calling-other-jobs-call) step
+reads back.
+
+```yaml
+spec:
+  params:
+    outputs:
+      - name: report_url
+  steps:
+    - name: test
+      run: ./test.sh
+  finally:
+    - name: publish-report
+      run: ./publish.sh
+      outputs:
+        report_url: "{{ .Stdout }}"
+```
+
+If a main-DAG step and a `finally` step both set the same declared output name,
+**the `finally` value wins**. This is the same "the step that ran last wins"
+rule that already applies between two main-DAG steps, and it is the useful
+direction: a teardown step recording what was actually left in place should
+override a provisional value from the main DAG.
+
+### How long `finally` may run
+
+`finally` deliberately ignores run cancellation — that is the entire point of
+the block. Because of that it also cannot inherit the job-level
+`spec.timeoutMinutes` deadline, so the agent applies its own ceiling instead:
+**`finallyTimeout`, 10 minutes by default**, configurable per agent
+(`--finally-timeout` / `UNIFIED_AGENT_FINALLY_TIMEOUT` on the standard agent,
+`finallyTimeout` / `UNIFIED_K8S_FINALLY_TIMEOUT` on the Kubernetes agent — see
+the [Configuration Reference](../../reference/configuration.md)).
+
+The ceiling applies separately to each cleanup phase: the `finally` pipeline
+itself, and each `post:`/`cache:` hook drain. A step still running when the
+budget expires is interrupted, reported `Failed`, and the run finishes
+`Failed`.
+
+Per-step `timeoutMinutes:` works inside `finally` and is the precise tool —
+set it on any cleanup step that talks to something that can hang (a `call:`
+to a teardown job, a webhook, a cloud API). The budget is only the backstop
+for steps that set nothing.
 
 ---
 

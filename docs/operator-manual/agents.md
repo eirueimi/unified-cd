@@ -524,6 +524,38 @@ possible future work, not implemented today.
 
 ---
 
+## Bounding a run's cleanup phase (`finallyTimeout`)
+
+A job's [`spec.finally`](../user-guide/writing-jobs/approval-and-finally.md#finally-block-finally)
+block, and the `post:`/`cache:` hook drains that follow it, deliberately keep
+running after the run is cancelled — that is what they are for. Ignoring the
+cancellation also means they cannot inherit the job-level `spec.timeoutMinutes`
+deadline, so the agent applies its own ceiling instead:
+
+| Setting | Default | Where |
+|---|---|---|
+| `--finally-timeout` / `UNIFIED_AGENT_FINALLY_TIMEOUT` / `finallyTimeout` | `10m` | standard agent |
+| `finallyTimeout` / `UNIFIED_K8S_FINALLY_TIMEOUT` | `10m` | Kubernetes agent |
+
+Both agents execute the cleanup phase through the same orchestration loop, so
+the behaviour is identical on either backend.
+
+The budget applies **per phase** — the `finally` pipeline itself, and each hook
+drain — not as one shared total across the run. A step still running when the
+budget expires is interrupted, reported `Failed`, and the run finishes
+`Failed`. A non-positive or unparseable value falls back to the 10m default:
+"unbounded" is deliberately not expressible, because an unbounded cleanup phase
+pins the run and the agent's concurrency slot with nothing able to break it —
+the stuck-run reaper keys on **agent** liveness, and the agent keeps
+heartbeating throughout.
+
+Raise it for a fleet whose teardown genuinely takes longer (large cache saves,
+a slow rollback). Prefer per-step `timeoutMinutes:` inside `finally` for
+anything that can hang individually — the fleet-wide budget is the backstop,
+not the primary control.
+
+---
+
 ## Workspace lifecycle
 
 Each concurrency slot owns one slot directory:

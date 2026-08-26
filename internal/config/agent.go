@@ -103,8 +103,18 @@ type AgentConfig struct {
 	CleanWorkspace        bool          `yaml:"cleanWorkspace"`
 	WorkspaceDir          string        `yaml:"workspaceDir"`
 	DrainTimeout          time.Duration `yaml:"drainTimeout"`
-	PauseImage            string        `yaml:"pauseImage"`
-	RunnerImage           string        `yaml:"runnerImage"`
+
+	// FinallyTimeout bounds each of a run's post-DAG cleanup phases: the
+	// `spec.finally` pipeline, and each of the two `post:`/`cache:` hook
+	// drains. Those phases deliberately ignore run cancellation, which also
+	// discards the job-level `spec.timeoutMinutes` deadline — this is the
+	// ceiling that replaces it, so a wedged cleanup step cannot pin the agent
+	// slot forever. Unset or non-positive falls back to
+	// agent.DefaultFinallyBudget (10m). Env: UNIFIED_AGENT_FINALLY_TIMEOUT.
+	FinallyTimeout time.Duration `yaml:"finallyTimeout"`
+
+	PauseImage  string `yaml:"pauseImage"`
+	RunnerImage string `yaml:"runnerImage"`
 
 	// MinFreeDisk is the minimum free space (bytes) required on the
 	// workspace filesystem for the host agent to keep claiming runs. Zero
@@ -184,6 +194,14 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 			eff.MaxDetachedConcurrent = n
 		}
 	}
+	if v := os.Getenv("UNIFIED_AGENT_FINALLY_TIMEOUT"); v != "" {
+		// Unparseable is ignored rather than fatal, matching every other
+		// duration/numeric env override above: the agent falls back to the
+		// built-in 10m ceiling instead of refusing to start.
+		if d, err := time.ParseDuration(v); err == nil {
+			eff.FinallyTimeout = d
+		}
+	}
 
 	if filePath == "" {
 		return eff, nil
@@ -237,6 +255,9 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.DrainTimeout != 0 {
 		eff.DrainTimeout = file.DrainTimeout
+	}
+	if file.FinallyTimeout != 0 {
+		eff.FinallyTimeout = file.FinallyTimeout
 	}
 	if file.PauseImage != "" {
 		eff.PauseImage = file.PauseImage
