@@ -24,6 +24,7 @@ func Cases() []Case {
 		matrixStructuralErrorAborts(),
 		isolatedDispatch(),
 		parallelGroupMembersAllSucceed(),
+		finallyPostHookRuns(),
 	}
 }
 
@@ -535,3 +536,76 @@ func parallelGroupMembersAllSucceed() Case {
 		},
 	}
 }
+
+// 15. finally-post-hook-runs: a step inside `finally:` declares a `post:`
+// hook, and the main DAG has already failed — the situation `finally:` exists
+// for. Both hooks must actually RUN, and in LIFO order within the finally
+// block (cleanup2's post before cleanup1's).
+//
+// Regression guard: RunClaim used to drain the post-hook stack exactly once,
+// between the main DAG and `finally`, and never again. A hook a finally step
+// registered therefore landed on a stack nobody popped and was silently
+// dropped — no step status, no run status, and no log line said so. RunClaim
+// now drains a second time after the finally pipeline (see drainHooks in
+// internal/agent/orchestrator.go). Both agents share that one loop, so this
+// case pins the fix on both backends at once.
+//
+// Observation mechanism, per driver (the same split as post-hooks-lifo, and
+// for the same reason — the k8s driver's parityK8sBackend.RunPostHook is a
+// fake that records invocation order without executing the script, so a
+// hook's own output never reaches the shipped logs for it): the shared
+// Expectation below asserts only step/run OUTCOMES, and each driver
+// additionally asserts that both post hooks were invoked, in LIFO order, via
+// its own recorder (host: the $POSTHOOK_MARKER_FILE append order; k8s: the
+// fake's postOrder). Nothing here asserts on timing or duration.
+func finallyPostHookRuns() Case {
+	return Case{
+		Name: "finally-post-hook-runs",
+		Claim: func() api.ClaimResponse {
+			return api.ClaimResponse{
+				RunID:   "run-finally-post-hook-runs",
+				JobName: "finally-post-hook-runs",
+				Native:  true,
+				Stages: []api.ClaimStage{
+					{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "boom", Run: "exit 1"}},
+				},
+				Finally: []api.ClaimStage{
+					{Step: &api.ClaimStep{
+						Index: 1, StageIndex: 0, Name: "cleanup1", Run: "echo cleanup1-ran",
+						Post: &api.PostStep{Run: "echo finally-post-1 >> \"$POSTHOOK_MARKER_FILE\""},
+					}},
+					{Step: &api.ClaimStep{
+						Index: 2, StageIndex: 1, Name: "cleanup2", Run: "echo cleanup2-ran",
+						Post: &api.PostStep{Run: "echo finally-post-2 >> \"$POSTHOOK_MARKER_FILE\""},
+					}},
+				},
+			}
+		},
+		Expect: Expectation{
+			StepStatus: map[string]string{
+				"boom":     "Failed",
+				"cleanup1": "Succeeded",
+				"cleanup2": "Succeeded",
+			},
+			RunFinished: "Failed",
+			LogMustContain: []LogLine{
+				{Step: "cleanup1", Stream: "stdout", Substring: "cleanup1-ran"},
+				{Step: "cleanup2", Stream: "stdout", Substring: "cleanup2-ran"},
+			},
+		},
+	}
+}
+
+// FinallyPostHookScripts are finally-post-hook-runs' two post: hook scripts
+// in the LIFO order they must be invoked (cleanup2's first). Exported so both
+// drivers assert the same sequence against their own recorder instead of each
+// hard-coding a copy; the host driver matches on the marker token each script
+// echoes, the k8s driver on the whole script string its fake recorded.
+var FinallyPostHookScripts = []string{
+	`echo finally-post-2 >> "$POSTHOOK_MARKER_FILE"`,
+	`echo finally-post-1 >> "$POSTHOOK_MARKER_FILE"`,
+}
+
+// FinallyPostHookMarkers are the tokens FinallyPostHookScripts append to
+// $POSTHOOK_MARKER_FILE, in the same LIFO order.
+var FinallyPostHookMarkers = []string{"finally-post-2", "finally-post-1"}

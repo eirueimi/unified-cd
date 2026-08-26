@@ -300,12 +300,24 @@ func (j *Job) Validate() error {
 // validateStepEntries validates a list of StepEntry (steps or finally),
 // accumulating step names into nameSet for duplicate detection across the
 // whole job. pathPrefix is "spec.steps" or "spec.finally".
-// allowDeferredHooks controls whether cache: and post: are permitted; pass
-// false for finally entries because the agent drains postHooks/hookStack
-// BEFORE running finally, so deferred hooks registered there never execute.
+// allowApproval controls whether approval: is permitted; pass false for
+// finally entries — a manual gate belongs in the main DAG, never in the
+// cleanup phase that has to run unattended after a failure or a cancellation.
+//
+// cache: and post: used to be rejected here for finally entries too, because
+// the agent drained its deferred-hook stacks BEFORE running finally and so
+// silently dropped anything a finally step registered. That was never a real
+// gate — a `uses:` template inlined into finally: (documented as supported)
+// carries its own steps' post:/cache: straight past this check, and the
+// resolved spec is not re-validated (see resolveGitPendingRuns in
+// internal/controller/scheduler.go, which only re-checks container
+// references). The agent now drains a second time after the finally pipeline
+// (drainHooks in internal/agent/orchestrator.go), so both forms execute, and
+// the restriction is gone rather than half-enforced.
+//
 // native mirrors spec.native: when true, no step in this job may set
 // container: (a native job runs host processes only, with no podTemplate).
-func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[string]bool, allowDeferredHooks bool, native bool) error {
+func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[string]bool, allowApproval bool, native bool) error {
 	for i, entry := range entries {
 		if len(entry.Parallel) > 0 {
 			if entry.Name != "" || entry.Run != "" || entry.Call != nil || entry.Uses != nil {
@@ -313,16 +325,8 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 			}
 			for j2, st := range entry.Parallel {
 				subPath := fmt.Sprintf("%s[%d].parallel[%d]", pathPrefix, i, j2)
-				if !allowDeferredHooks {
-					if st.Cache != nil {
-						return fmt.Errorf("%s: cache: is not supported in finally steps", subPath)
-					}
-					if st.Post != nil {
-						return fmt.Errorf("%s: post: is not supported in finally steps", subPath)
-					}
-					if st.Approval != nil {
-						return fmt.Errorf("%s: approval: is not supported in finally steps", subPath)
-					}
+				if !allowApproval && st.Approval != nil {
+					return fmt.Errorf("%s: approval: is not supported in finally steps", subPath)
 				}
 				if st.Uses != nil {
 					return fmt.Errorf("%s: uses: is not supported inside parallel: (a uses template expands to a sequence of steps); move it to a top-level step", subPath)
@@ -362,16 +366,8 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				return fmt.Errorf("%s[%d]: name is required (or use parallel: for a parallel block)", pathPrefix, i)
 			}
 			entryPath := fmt.Sprintf("%s[%d]", pathPrefix, i)
-			if !allowDeferredHooks {
-				if entry.Cache != nil {
-					return fmt.Errorf("%s: cache: is not supported in finally steps", entryPath)
-				}
-				if entry.Post != nil {
-					return fmt.Errorf("%s: post: is not supported in finally steps", entryPath)
-				}
-				if entry.Approval != nil {
-					return fmt.Errorf("%s: approval: is not supported in finally steps", entryPath)
-				}
+			if !allowApproval && entry.Approval != nil {
+				return fmt.Errorf("%s: approval: is not supported in finally steps", entryPath)
 			}
 			if err := validateStepFull(entry.Name, entry.Run, entry.Call, entry.Uses, entry.Cache, entry.Approval, entry.Foreach, entry.Matrix, entryPath, nameSet, entry.UploadArtifact, entry.DownloadArtifact, entry.Outputs); err != nil {
 				return err

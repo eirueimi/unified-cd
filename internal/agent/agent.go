@@ -35,8 +35,9 @@ var heartbeatInterval = DefaultHeartbeatInterval
 // scope carries the owning step's scope handle, if any, so the post script
 // runs inside the same isolated environment the step body ran in rather than
 // on the host workspace. The scope container is still alive when hookStack is
-// drained (see executeRun: hookStack runs before the deferred
-// backend.CloseScopes). container carries the step's RunsIn.Container (empty
+// drained (see RunClaim's drainHooks in orchestrator.go: both drains — the
+// one after the main DAG and the one after `finally` — run before the
+// deferred backend.CloseScopes). container carries the step's RunsIn.Container (empty
 // for a plain/scoped/image step) so a runsIn.container step's post hook is
 // routed into the same named container the step body ran in, mirroring
 // pre-refactor k8s routing; the host backend ignores it (a runsIn.container

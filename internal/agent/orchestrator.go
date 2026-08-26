@@ -56,9 +56,10 @@ var retrySleep = func(ctx context.Context, d time.Duration) error {
 // and k8s agents. It owns: secrets fetch -> masker construction -> installing
 // the masker on b (SetMasker) -> the cancellation poller -> per-step context
 // (timeouts, if:, approval, cache/artifact/call/run dispatch via b) ->
-// RunPipeline for the main DAG (concurrency mode decided by b) -> post-hook
-// LIFO drain -> deferred cache-save drain -> `finally` -> job-output
-// promotion -> FinishRun.
+// RunPipeline for the main DAG (concurrency mode decided by b) -> hook drain
+// (deferred cache saves, then post: hooks LIFO) -> `finally` -> a second hook
+// drain for whatever the finally steps registered -> job-output promotion ->
+// FinishRun.
 //
 // b is the ONLY seam between this orchestration logic and a concrete
 // execution environment (host process vs k8s pod); the loop itself never
@@ -234,10 +235,16 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	// appended below in makeStepRunner) are appended from inside that
 	// concurrently-invoked step runner. postHooksMu guards every append to
 	// either slice so concurrent parallel-group members with a post:/cache:
-	// don't race on the shared backing array. Under Sequential mode (k8s) the
-	// lock is uncontended but still correct. The drain loops below run after
-	// RunPipeline returns (i.e. after all step-runner invocations have
-	// finished), so the drain itself does not need the lock.
+	// don't race on the shared backing array. Both production backends now run
+	// Concurrent (the k8s agent since 07b9d0d), and `finally:` steps go
+	// through the very same runner, so finally-registered hooks are appended
+	// concurrently too.
+	//
+	// drainHooks (below) is called once after the main DAG and again after
+	// `finally`. It detaches both slices under postHooksMu and resets them to
+	// nil in the same critical section, so it is safe to call repeatedly:
+	// each hook is handed to exactly one drain, and the second call sees only
+	// what `finally` added.
 	var postHooksMu sync.Mutex
 	var postHooks []func(context.Context)
 	var hookStack []postHookEntry
@@ -441,7 +448,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			// the isScopedStep run-branch case below. A step's post: hook must
 			// execute inside the same scope container the step body ran in
 			// (not the host workspace), so postHookEntry carries this through
-			// to the hookStack drain in the finally block.
+			// to drainHooks.
 			var stepScope ScopeHandle
 
 			if step.Call != nil {
@@ -681,40 +688,89 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		}
 	}
 
+	// drainHooks runs everything registered on the two hook slices SINCE THE
+	// LAST DRAIN and empties them, so it can be called more than once per
+	// claim without ever re-running a hook.
+	//
+	// Two drains, not one: the main DAG's hooks drain immediately after the
+	// main pipeline (below), and the `finally` pipeline's hooks drain
+	// immediately after finally (further below). A `finally:` step is a
+	// perfectly ordinary step — it may carry `post:` or `cache:` — and before
+	// this second call the hooks it registered were appended to a stack that
+	// nothing ever popped: they were silently dropped, with no step-status,
+	// run-status, or log signal that any cleanup had been skipped.
+	//
+	// Why two drains rather than moving the single drain past finally: a
+	// normal step's `post:` hook is that STEP's cleanup, and must not be made
+	// to wait on the job-level `finally:` block (which may be long-running,
+	// and whose steps may legitimately want to observe the state a main
+	// step's post hook left behind). Keeping drain #1 where it always was
+	// preserves the existing, observable ordering exactly; drain #2 is purely
+	// additive.
+	//
+	// Ordering contract (unchanged for hooks that already ran, see the
+	// `post-hooks-lifo` parity case): within one drain, cache saves run in
+	// registration order and `post:` hooks run LIFO — last registered, first
+	// run. LIFO is a WITHIN-BATCH guarantee: main-DAG hooks all run before
+	// any finally hook, because the finally hooks do not exist yet when the
+	// first batch drains.
+	//
+	// Concurrency: steps register hooks from concurrent goroutines
+	// (runParallel), so the slices are detached under postHooksMu and reset
+	// to nil in the same critical section. Every append is already guarded by
+	// the same mutex, so a hook is handed to exactly one drain. The drains
+	// themselves run on RunClaim's own goroutine, after the pipeline whose
+	// steps registered them has returned.
+	//
+	// Cancellation/failure: hookCtx is context.WithoutCancel(ctx), so both
+	// drains run to completion even when the run was cancelled, timed out, or
+	// already failed — which is exactly when a `finally:` step's cleanup
+	// matters most. A hook that itself fails is logged and does not change
+	// the run's status, identically for main and finally hooks.
+	hookCtx := context.WithoutCancel(ctx)
+	drainHooks := func() {
+		postHooksMu.Lock()
+		saves := postHooks
+		hooks := hookStack
+		postHooks = nil
+		hookStack = nil
+		postHooksMu.Unlock()
+
+		for _, fn := range saves {
+			fn(hookCtx)
+		}
+		for i := len(hooks) - 1; i >= 0; i-- {
+			entry := hooks[i]
+			cmd := entry.post.Run
+			var extraEnv []string
+			for k, v := range entry.post.Env {
+				extraEnv = append(extraEnv, k+"="+v)
+			}
+			// The owning step's scope (if any) is still alive here — both
+			// drains run before the deferred b.CloseScopes (see the `defer`
+			// registered alongside masker installation above).
+			//
+			// Post-hook output is shipped into the OWNING step's log (entry.stepIndex),
+			// the same way a main step's output is: open writers via StepLogWriters
+			// (which applies the masker, same as every other step's writers) and call
+			// finish to flush/stop auto-flush once the hook has run. This is opened
+			// fresh per hook (not reused from the step's own StepLogWriters call,
+			// which already finished when the step itself completed) so post output
+			// gets its own flush lifecycle independent of the step body's.
+			postStdout, postStderr, finishPostLogs := b.StepLogWriters(hookCtx, entry.stepIndex)
+			runErr := b.RunPostHook(hookCtx, entry.scope, entry.container, cmd, entry.shell, extraEnv, postStdout, postStderr)
+			finishPostLogs(hookCtx)
+			if runErr != nil {
+				slog.Warn("post step failed", "step", entry.stepName, "error", runErr)
+			}
+		}
+	}
+
 	mainRunner := makeStepRunner(statusView, true, &anyStepFailed, true)
 	dagErr := RunPipeline(runCtx, c.Stages, getData, c.MatrixMaxCombinations, b.ConcurrencyMode(), mainRunner)
 
 	// post-hooks run regardless of DAG success/failure (cache save should always attempt).
-	// Use WithoutCancel so a cancelled parent context doesn't skip cache saves.
-	hookCtx := context.WithoutCancel(ctx)
-	for _, fn := range postHooks {
-		fn(hookCtx)
-	}
-	for i := len(hookStack) - 1; i >= 0; i-- {
-		entry := hookStack[i]
-		cmd := entry.post.Run
-		var extraEnv []string
-		for k, v := range entry.post.Env {
-			extraEnv = append(extraEnv, k+"="+v)
-		}
-		// The owning step's scope (if any) is still alive here — hookStack is
-		// drained before the deferred b.CloseScopes runs (see the `defer`
-		// registered alongside masker installation above).
-		//
-		// Post-hook output is shipped into the OWNING step's log (entry.stepIndex),
-		// the same way a main step's output is: open writers via StepLogWriters
-		// (which applies the masker, same as every other step's writers) and call
-		// finish to flush/stop auto-flush once the hook has run. This is opened
-		// fresh per hook (not reused from the step's own StepLogWriters call,
-		// which already finished when the step itself completed) so post output
-		// gets its own flush lifecycle independent of the step body's.
-		postStdout, postStderr, finishPostLogs := b.StepLogWriters(hookCtx, entry.stepIndex)
-		runErr := b.RunPostHook(hookCtx, entry.scope, entry.container, cmd, entry.shell, extraEnv, postStdout, postStderr)
-		finishPostLogs(hookCtx)
-		if runErr != nil {
-			slog.Warn("post step failed", "step", entry.stepName, "error", runErr)
-		}
-	}
+	drainHooks()
 
 	// Freeze the main-DAG status for finally if: evaluation.
 	cancelled := cancelledByMaster.Load()
@@ -735,6 +791,14 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			slog.Warn("finally: structural error", "runId", c.RunID, "error", err)
 			finallyFailed.Store(true)
 		}
+		// Second drain: the `post:` hooks and `cache:` saves the finally
+		// steps just registered. Deliberately OUTSIDE the RunPipeline error
+		// check — a structural error in the finally pipeline does not
+		// un-register the hooks its steps already put on the stack, and
+		// dropping them would reintroduce exactly the silent-skip bug this
+		// call fixes. Still before the deferred CloseScopes, so a scoped
+		// finally step's hook still finds its scope container alive.
+		drainHooks()
 	}
 
 	var overallStatus api.RunStatus
