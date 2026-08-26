@@ -1392,6 +1392,30 @@ spec:
 	assert.Contains(t, err.Error(), "approval")
 }
 
+// TestParse_ApprovalRejectedInFinallyParallel pins the same rejection for the
+// parallel: branch of validateStepEntries (internal/dsl/parse.go:329), which
+// carries its own copy of the allowApproval check and — unlike the top-level
+// rejection above — had no test of its own.
+func TestParse_ApprovalRejectedInFinallyParallel(t *testing.T) {
+	y := `apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: bad
+spec:
+  steps:
+    - name: build
+      run: make build
+  finally:
+    - parallel:
+        - name: gate
+          approval:
+            message: x`
+	_, err := Parse(strings.NewReader(y))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finally")
+	assert.Contains(t, err.Error(), "approval")
+}
+
 func TestParse_UsesStep_ArrayWith(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1

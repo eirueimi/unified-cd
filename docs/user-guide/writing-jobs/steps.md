@@ -359,7 +359,7 @@ Notes:
 
 ### Post-step hooks (`post`)
 
-Define cleanup that runs after the main DAG completes, in LIFO order.
+Define cleanup that runs after its own pass completes (the main DAG, or — see below — `finally:`), in LIFO order within that pass.
 
 ```yaml
 steps:
