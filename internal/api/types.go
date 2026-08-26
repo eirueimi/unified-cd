@@ -126,18 +126,24 @@ type ClaimStep struct {
 	Cache      *dsl.CacheStep    `json:"cache,omitempty"`
 	Post       *PostStep         `json:"post,omitempty"`
 	// Needs removed — use parallel: or foreach:
-	ContinueOnError  bool                  `json:"continueOnError,omitempty"`
-	Container        string                `json:"container,omitempty"`
-	ScopeID          string                `json:"scopeID,omitempty"`
-	ScopeImage       string                `json:"scopeImage,omitempty"`
-	TimeoutMinutes   float64               `json:"timeoutMinutes,omitempty"`
-	Retry            *dsl.RetrySpec        `json:"retry,omitempty"`
-	UploadArtifact   *UploadArtifactStep   `json:"uploadArtifact,omitempty"`
-	DownloadArtifact *DownloadArtifactStep `json:"downloadArtifact,omitempty"`
-	Matrix           *ClaimMatrixDef       `json:"matrix,omitempty"`
-	MatrixValues     map[string]string     `json:"matrixValues,omitempty"`
-	MatrixKey        string                `json:"matrixKey,omitempty"`
-	Approval         *ClaimApproval        `json:"approval,omitempty"`
+	ContinueOnError bool   `json:"continueOnError,omitempty"`
+	Container       string `json:"container,omitempty"`
+	ScopeID         string `json:"scopeID,omitempty"`
+	ScopeImage      string `json:"scopeImage,omitempty"`
+	// ScopeResourceLimits carries dsl.StepEntry.ScopeResourceLimits (see its
+	// doc comment) from the controller to the agent — the same trip
+	// ScopeImage makes. Limits only; runsIn.resources.requests is rejected at
+	// apply time (internal/dsl/parse.go's validateResources), so it never
+	// reaches a claim.
+	ScopeResourceLimits *dsl.ResourceList     `json:"scopeResourceLimits,omitempty"`
+	TimeoutMinutes      float64               `json:"timeoutMinutes,omitempty"`
+	Retry               *dsl.RetrySpec        `json:"retry,omitempty"`
+	UploadArtifact      *UploadArtifactStep   `json:"uploadArtifact,omitempty"`
+	DownloadArtifact    *DownloadArtifactStep `json:"downloadArtifact,omitempty"`
+	Matrix              *ClaimMatrixDef       `json:"matrix,omitempty"`
+	MatrixValues        map[string]string     `json:"matrixValues,omitempty"`
+	MatrixKey           string                `json:"matrixKey,omitempty"`
+	Approval            *ClaimApproval        `json:"approval,omitempty"`
 	// Shell is the effective interpreter argv resolved by the controller
 	// (step.shell if set, else spec.shell, else nil). Nil means "the agent
 	// applies the shim default" — the controller never writes the /.ucd

@@ -468,7 +468,13 @@ func buildWorkspaceVolume(wsCfg *dsl.WorkspaceConfig) corev1.Volume {
 
 // toResourceRequirements converts a validated dsl.ResourceSpec to k8s
 // ResourceRequirements. Quantities are already validated at apply time, so a
-// parse error here is treated defensively (the value is skipped).
+// parse error here is treated defensively (the value is skipped). Used by
+// createScopePod (backend.go) to set a uses:-scope pod's "step" container
+// resources from runsIn.resources.limits; Requests is always empty in that
+// caller since runsIn.resources.requests is rejected at apply time (see
+// internal/dsl/parse.go's validateResources), but this function still
+// converts Requests when given one — it is a plain, general-purpose
+// converter, not the enforcement point.
 func toResourceRequirements(rs *dsl.ResourceSpec) corev1.ResourceRequirements {
 	var req corev1.ResourceRequirements
 	if rs == nil {
@@ -479,11 +485,15 @@ func toResourceRequirements(rs *dsl.ResourceSpec) corev1.ResourceRequirements {
 			return nil
 		}
 		out := corev1.ResourceList{}
-		if q, err := resource.ParseQuantity(rl.CPU); rl.CPU != "" && err == nil {
-			out[corev1.ResourceCPU] = q
+		if rl.CPU != "" {
+			if q, err := resource.ParseQuantity(rl.CPU); err == nil {
+				out[corev1.ResourceCPU] = q
+			}
 		}
-		if q, err := resource.ParseQuantity(rl.Memory); rl.Memory != "" && err == nil {
-			out[corev1.ResourceMemory] = q
+		if rl.Memory != "" {
+			if q, err := resource.ParseQuantity(rl.Memory); err == nil {
+				out[corev1.ResourceMemory] = q
+			}
 		}
 		if len(out) == 0 {
 			return nil

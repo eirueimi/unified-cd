@@ -431,19 +431,27 @@ func checkStepExecTarget(container string, runsIn *RunsIn, isUses bool, path, na
 }
 
 // validateResources parses every non-empty cpu/memory quantity, rejecting
-// malformed values at apply time.
+// malformed values at apply time. runsIn.resources.requests is rejected
+// outright: neither execution backend can honor a request on a scope
+// container/pod (the host has no request concept at all, and wiring routing
+// for k8s would be a bigger, separate decision — see docs/user-guide/
+// resources/job.md). podTemplate already supports requests, with capability
+// routing that pins the job to a Kubernetes agent — point the author there
+// instead of silently dropping the field, which is the defect this check
+// exists to prevent.
 func validateResources(rs *ResourceSpec) error {
-	for _, rl := range []*ResourceList{rs.Requests, rs.Limits} {
-		if rl == nil {
+	if rs.Requests != nil {
+		return fmt.Errorf("runsIn.resources.requests is not supported (the host agent has no request concept, and this scope has no pod to route to Kubernetes); use podTemplate.spec.containers[].resources.requests instead, which is honored on a Kubernetes agent")
+	}
+	if rs.Limits == nil {
+		return nil
+	}
+	for field, v := range map[string]string{"cpu": rs.Limits.CPU, "memory": rs.Limits.Memory} {
+		if v == "" {
 			continue
 		}
-		for field, v := range map[string]string{"cpu": rl.CPU, "memory": rl.Memory} {
-			if v == "" {
-				continue
-			}
-			if _, err := resource.ParseQuantity(v); err != nil {
-				return fmt.Errorf("invalid resources %s quantity %q: %w", field, v, err)
-			}
+		if _, err := resource.ParseQuantity(v); err != nil {
+			return fmt.Errorf("invalid resources %s quantity %q: %w", field, v, err)
 		}
 	}
 	return nil

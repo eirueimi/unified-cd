@@ -111,14 +111,21 @@ runtimes, sidecar behavior). The schema-level surface is small:
 | `podTemplate` | Sidecar container definitions for an isolated job. Full PodSpec is k8s-agent only; the standard agent reads `spec.containers` (name/image/env/`resources.limits`) to build its claim pod — see [Kubernetes Pod Template (`podTemplate`)](../writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate) in the Job Reference. |
 | `step.container` | Exec into a named `podTemplate` container instead of the job's primary container. Requires a `podTemplate` defining that container name (checked at apply time for isolated jobs). This is the **canonical** field for targeting a container — the old step-level `runsIn: { image / container }` is **removed**. |
 
-Resource limits for a `podTemplate` container (previously `runsIn.resources`)
-now live directly on the container definition, matching Kubernetes:
-`podTemplate.spec.containers[].resources.limits`. The standard agent applies
-CPU/memory limits from there the same way k8s does.
+Resource limits for a `podTemplate` container live on the container
+definition, matching Kubernetes: `podTemplate.spec.containers[].resources.
+limits`. The standard agent applies CPU/memory limits from there the same way
+k8s does.
 
 The **uses-level** `runsIn.image` (an isolated "scope" spanning an entire
-inlined `uses:` template) is a separate, unaffected code path — see the next
-section.
+inlined `uses:` template) has its own `resources` field — `runsIn.resources`
+— covered in the next section. It is wired to both backends, but it is not a
+separate, unaffected copy of `podTemplate`'s resource handling: until
+2026-08, `runsIn.resources` parsed and validated correctly but was silently
+dropped by both execution backends — a job author setting
+`runsIn.resources.limits.memory` got a clean `apply` and no limit at all. It
+is now wired through; see [Uses-level `runsIn.image`
+resources](#uses-level-runsinimage-resources) below for exactly what it
+supports.
 
 #### Uses-level `runsIn.image` (scope)
 
@@ -131,6 +138,44 @@ section.
 - A `uses` step without `runsIn`: unchanged current inlining behavior
   (inlined steps run in the outer job's environment, isolated or native
   depending on the job).
+
+#### Uses-level `runsIn.image` resources
+
+`runsIn.resources` sets CPU/memory bounds on the scope container/pod, using
+the same Kubernetes quantity strings (`"500m"`, `"1"`, `"256Mi"`, `"1Gi"`) as
+`podTemplate`:
+
+```yaml
+steps:
+  - name: build-in-container
+    uses:
+      job: git://github.com/my-org/ci-templates/jobs/build.yaml@v1
+    runsIn:
+      image: golang:1.22
+      resources:
+        limits:
+          cpu: "1"
+          memory: "512Mi"
+```
+
+**`limits` only — `requests` is rejected at apply time.**
+
+- `runsIn.resources.limits` is honored on **both** backends: the standard
+  agent maps `cpu`/`memory` to the container runtime's `--cpus`/`--memory`
+  (docker/podman), and the Kubernetes agent sets them on the scope pod's
+  `step` container. No `agentSelector`/capability changes are needed to use
+  it — a scope's limits work on whichever agent claims the run.
+- `runsIn.resources.requests` is a **parse error**: `apply` fails immediately,
+  naming the field, rather than accepting it and silently ignoring it. The
+  standard agent's container runtime has no request concept to map it to, and
+  routing it to Kubernetes (the way `podTemplate.spec.containers[].resources.
+  requests` is routed — see [Migrating podTemplate sub-field
+  routing](../../operator-manual/migrations/podtemplate-subfield-routing.md))
+  is a bigger, separate decision this field does not make. If a scope needs a
+  resource *request* (as opposed to a limit), it cannot be expressed via
+  `runsIn.resources` — use `podTemplate` instead, which already supports
+  `requests` and already has the capability routing that pins such a job to a
+  Kubernetes agent.
 
 #### Uses-level scope: artifacts & cache in the isolated environment
 

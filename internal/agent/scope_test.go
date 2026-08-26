@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,9 +26,9 @@ type fakeRT struct {
 	lastExecSpec crt.ExecSpec
 }
 
-func (f *fakeRT) Name() string                                                      { return "fake" }
-func (f *fakeRT) Available() bool                                                   { return true }
-func (f *fakeRT) Pull(context.Context, string) error                                { return nil }
+func (f *fakeRT) Name() string                                                        { return "fake" }
+func (f *fakeRT) Available() bool                                                     { return true }
+func (f *fakeRT) Pull(context.Context, string) error                                  { return nil }
 func (f *fakeRT) Run(context.Context, crt.RunSpec, io.Writer, io.Writer) (int, error) { return 0, nil }
 func (f *fakeRT) Create(_ context.Context, spec crt.CreateSpec) (crt.ContainerHandle, error) {
 	f.created++
@@ -104,6 +105,47 @@ func TestScopeManagerEnsure_MountsToolsDirReadOnly(t *testing.T) {
 	assert.Equal(t, crt.Mount{HostPath: "/host/tools", ContainerPath: "/.ucd", ReadOnly: true}, f.lastCreate.Mounts[0])
 }
 
+// TestScopeManagerEnsure_ResourceLimits is the FIX regression test for the
+// dropped runsIn.resources.limits: step.ScopeResourceLimits (carried by
+// expandUsesStep — internal/gittemplate/inline.go) must reach
+// crt.CreateSpec.CPULimit/MemLimit via the SAME limitStrings conversion
+// claim_pod.go's parseContainerDef uses for a podTemplate container's
+// resources.limits, so a runsIn.image scope and a podTemplate container map
+// cpu/memory identically on the host.
+func TestScopeManagerEnsure_ResourceLimits(t *testing.T) {
+	f := &fakeRT{}
+	m := newScopeManager(f, "")
+	s := api.ClaimStep{
+		ScopeID:    "scope:build",
+		ScopeImage: "img",
+		ScopeResourceLimits: &dsl.ResourceList{
+			CPU:    "500m",
+			Memory: "256Mi",
+		},
+	}
+
+	if _, err := m.ensure(context.Background(), s, nil); err != nil {
+		t.Fatal(err)
+	}
+	assert.Equal(t, "0.5", f.lastCreate.CPULimit)
+	assert.Equal(t, "268435456", f.lastCreate.MemLimit)
+}
+
+// TestScopeManagerEnsure_NoResourceLimits confirms a scope step with no
+// runsIn.resources.limits at all (ScopeResourceLimits is nil) creates the
+// scope container with no limit, exactly as before this field existed.
+func TestScopeManagerEnsure_NoResourceLimits(t *testing.T) {
+	f := &fakeRT{}
+	m := newScopeManager(f, "")
+	s := api.ClaimStep{ScopeID: "scope:build", ScopeImage: "img"}
+
+	if _, err := m.ensure(context.Background(), s, nil); err != nil {
+		t.Fatal(err)
+	}
+	assert.Empty(t, f.lastCreate.CPULimit)
+	assert.Empty(t, f.lastCreate.MemLimit)
+}
+
 func TestScopeManagerKeyIncludesMatrix(t *testing.T) {
 	m := newScopeManager(&fakeRT{}, "")
 	a := m.key(api.ClaimStep{ScopeID: "s", MatrixKey: "linux"})
@@ -127,8 +169,8 @@ type counterRT struct {
 	created map[string]int // keyed by Image, counts Create calls per distinct image
 }
 
-func (c *counterRT) Name() string      { return "counter" }
-func (c *counterRT) Available() bool   { return true }
+func (c *counterRT) Name() string                       { return "counter" }
+func (c *counterRT) Available() bool                    { return true }
 func (c *counterRT) Pull(context.Context, string) error { return nil }
 func (c *counterRT) Run(context.Context, crt.RunSpec, io.Writer, io.Writer) (int, error) {
 	return 0, nil

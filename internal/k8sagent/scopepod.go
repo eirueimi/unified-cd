@@ -36,7 +36,16 @@ func scopeKey(step api.ClaimStep) string { return step.ScopeID + "\x00" + step.M
 // BuildPod's shimImage parameter, so a uses-scope pod gets the same /.ucd
 // shim carrier as the run/pooled pod: a uses-scope step is itself an
 // exec-target container and needs ucd-sh just like every other one.
-func buildScopePod(runID, namespace, scopeID, image string, env map[string]string, sidecar SidecarSpec, shimImage string) *corev1.Pod {
+//
+// resources is set on the "step" container only (the artifact sidecar, when
+// present, is unaffected) — it comes from the uses: step's
+// runsIn.resources.limits via toResourceRequirements(&dsl.ResourceSpec{
+// Limits: step.ScopeResourceLimits}); requests is always empty here, since
+// runsIn.resources.requests is rejected at apply time (internal/dsl/parse.go)
+// and never reaches a claim. A zero-value ResourceRequirements (no
+// resources: declared) is a no-op on the container, matching the pre-wiring
+// behavior.
+func buildScopePod(runID, namespace, scopeID, image string, env map[string]string, sidecar SidecarSpec, shimImage string, resources corev1.ResourceRequirements) *corev1.Pod {
 	suffix := runID
 	if len(suffix) > 16 {
 		suffix = suffix[:16]
@@ -62,6 +71,7 @@ func buildScopePod(runID, namespace, scopeID, image string, env map[string]strin
 		Env:          envVars,
 		WorkingDir:   scopeMountPath,
 		VolumeMounts: []corev1.VolumeMount{scratchMount},
+		Resources:    resources,
 	}}
 
 	if sidecar.Image != "" {
