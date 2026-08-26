@@ -18,18 +18,47 @@
 // changing cmd/ucd-sh or internal/shim, and commit the result. cmd/shimgen
 // builds with -buildvcs=false -trimpath CGO_ENABLED=0.
 //
-// The committed bytes are NOT required to be byte-identical to a fresh
-// rebuild: Go builds are not byte-reproducible across build machines (BuildID
-// and other environment-derived bytes differ even for the same GOOS/GOARCH and
-// Go version), so a byte-exact `git diff` guard is unworkable. Instead,
-// embed_test.go validates the committed files functionally — each is a real,
-// statically-linked linux ELF of the expected architecture, and on a linux
-// host the embedded shim is executed and must behave as ucd-sh. That is all
-// `go install` and the release build need. (Trade-off: a source change to
-// cmd/ucd-sh left un-regenerated is not caught automatically; regenerate and
-// commit when you touch the shim.) Because the bytes are committed, `go build`,
-// `go test`, `go install .../cmd/unified-cd-agent@version`, container builds, and
-// goreleaser all embed the shim with no pre-build step.
+// REGENERATE ON LINUX ONLY. This repo is developed on Windows as well as
+// Linux, and a Windows-hosted build of these same linux/amd64 and
+// linux/arm64 targets was measured to differ substantially from a
+// Linux-hosted one, byte for byte — cross-host Go build reproducibility is
+// not guaranteed even for an identical Go version and identical
+// -trimpath -buildvcs=false flags. Regenerating on Windows (or macOS) will
+// produce bytes CI's freshness check (below) rejects. Use the go.mod-pinned
+// toolchain on Linux, e.g. via Docker from the repo root:
+//
+//	docker run --rm -v "$PWD:/work" -w /work golang:1.26.2 go generate ./internal/shim/embedded/...
+//
+// (match the image tag to go.mod's `go` directive).
+//
+// The committed bytes ARE required to be byte-identical to a fresh rebuild
+// on that canonical environment (Linux, go.mod's pinned Go version, these
+// exact flags) — CI's "Shim binary freshness" job (.github/workflows/ci.yml)
+// enforces this with a byte-exact `git diff` after regenerating. This is
+// narrower than "Go builds are reproducible in general" and was verified
+// empirically for this specific build before relying on it, not assumed:
+// repeated builds on the same host, builds from different absolute source
+// checkout paths, builds with GOROOT relocated to a different path, and
+// builds under both a CPU-count-constrained container and an explicit
+// non-default GOMAXPROCS all produced byte-identical output on Linux with
+// the pinned toolchain — despite the binaries containing full DWARF debug
+// sections, which is where Go's own historical concurrent-compilation
+// nondeterminism (golang/go#38068) would have shown up. Only the host OS
+// (Windows vs Linux) produced a difference, which is why the CI job runs on
+// Linux only and this doc says the same.
+//
+// embed_test.go separately validates the committed files functionally —
+// each is a real, statically-linked linux ELF of the expected architecture,
+// and on a linux host the embedded shim is executed and must behave as
+// ucd-sh. That check runs everywhere (including Windows/macOS `go test`, and
+// CI's own unit-test jobs) and is not replaced by the freshness check above:
+// it catches a corrupted or truncated committed file, which a byte-diff
+// against a regeneration would not distinguish from ordinary drift. Between
+// the two, a source change to cmd/ucd-sh left un-regenerated is now caught
+// by CI (the freshness job), not just left as a silent trap. Because the
+// bytes are committed, `go build`, `go test`, `go install
+// .../cmd/unified-cd-agent@version`, container builds, and goreleaser all
+// embed the shim with no pre-build step.
 package embedded
 
 // Bytes returns the embedded, committed ucd-sh binary for the architecture

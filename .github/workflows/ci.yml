@@ -45,19 +45,19 @@ jobs:
   # so this job is scoped to shimgen only, not `go generate ./...`, to avoid
   # duplicating that check.)
   #
-  # Nothing else in this workflow catches shim drift: unit and integration
-  # jobs run the tests, not the generator. ubuntu-latest is deliberate, not
-  # incidental: `go build` cross-compiling for a fixed GOOS/GOARCH/toolchain
-  # is reproducible byte-for-byte when repeated on the SAME host environment
-  # (verified independently: two from-scratch builds on linux/amd64 with the
-  # exact go.mod-pinned toolchain produced identical output), but that
-  # guarantee does not extend across different host OSes even for an
-  # identical Go version and identical -trimpath -buildvcs=false flags — a
-  # Windows-hosted build of these same linux/amd64 and linux/arm64 targets
-  # was observed to differ substantially from a Linux-hosted one. So this
-  # check must always build on the same host OS the committed bytes are
-  # meant to match (Linux), never across the unit job's OS matrix — a
-  # Windows or macOS run of this job would flag false drift.
+  # See internal/shim/embedded/embed.go's package doc for the full
+  # reproducibility case and the Linux-only regeneration instructions this
+  # job's steps below mirror. Short version: nothing else in this workflow
+  # catches shim drift (unit/integration jobs run tests, not the generator),
+  # and this build IS reproducible on a fixed host — verified empirically,
+  # not assumed, across repeat builds, different absolute checkout paths,
+  # a relocated GOROOT, and both a CPU-constrained container and a
+  # non-default GOMAXPROCS (the axis Go's own historical concurrent-compile
+  # nondeterminism, golang/go#38068, would show up on, despite these
+  # binaries carrying full DWARF sections). Only host OS produced a
+  # difference (Windows vs Linux), which is why ubuntu-latest here is
+  # deliberate and this job must never run across the unit job's OS matrix —
+  # a Windows or macOS run of this job would flag false drift.
   generate:
     name: Shim binary freshness
     runs-on: ubuntu-latest
