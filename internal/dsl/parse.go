@@ -215,6 +215,10 @@ func (j *Job) Validate() error {
 		return err
 	}
 
+	if err := ValidateVarKeys(j.Spec.Vars); err != nil {
+		return fmt.Errorf("spec.vars: %w", err)
+	}
+
 	// Plain (uses-free, inline-podTemplate) non-native jobs get
 	// container-reference validation at apply time; uses-bearing specs defer to
 	// the controller's post-resolution check and named-podTemplate specs defer
@@ -357,6 +361,9 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				if err := validateRetry(st.Name, subPath, st.Retry, st.Run != ""); err != nil {
 					return err
 				}
+				if err := ValidateConditionExpr(st.If); err != nil {
+					return fmt.Errorf("%s (%s): %w", subPath, st.Name, err)
+				}
 				if native && st.Container != "" {
 					return fmt.Errorf("%s (%s): container: requires an isolated job — remove spec.native", subPath, st.Name)
 				}
@@ -394,6 +401,13 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 			}
 			if err := validateRetry(entry.Name, entryPath, entry.Retry, entry.Run != ""); err != nil {
 				return err
+			}
+			// An if: that does not compile fails OPEN on the agent (the step
+			// runs), so catching it here is the only place the author still
+			// has the file open. See ValidateConditionExpr for why this stops
+			// at "does it compile" and cannot reject a working condition.
+			if err := ValidateConditionExpr(entry.If); err != nil {
+				return fmt.Errorf("%s (%s): %w", entryPath, entry.Name, err)
 			}
 			if native && entry.Container != "" {
 				return fmt.Errorf("%s (%s): container: requires an isolated job — remove spec.native", entryPath, entry.Name)

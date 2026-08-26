@@ -291,6 +291,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	sctx := &safeStepCtx{
 		data: dsl.TemplateData{
 			Params: c.Params,
+			Vars:   c.Vars,
 			Steps:  map[string]dsl.StepData{},
 		},
 	}
@@ -442,6 +443,57 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		}})
 	}
 
+	// recordIfDiagnostic puts an if:-condition problem into the RUN's own log
+	// (stepIndex -1, "System" in the UI) — the same mechanism the secret-fetch
+	// failure, recordPhaseTruncated and warnSkippedOutput use.
+	//
+	// Why the run's log and not only slog. The two things that can go wrong
+	// with an if: are both invisible otherwise AND both invert the author's
+	// intent: a condition that fails to compile or evaluate is fail-safe (the
+	// step RUNS), and a condition that reads an undefined vars key gates on an
+	// empty string. Either way the person looking at the run sees a step that
+	// ran when it should not have (or a gate that never matches) with nothing
+	// in the run to explain it — the agent's slog is on another host,
+	// interleaved with every other concurrent run, and is not what they have
+	// open. slog still gets the same message for the operator's benefit.
+	//
+	// Deduplicated on the step's BASE name plus the message, so a 20-copy
+	// matrix step with a broken condition contributes one line and not twenty
+	// (every copy shares step.Name; only DisplayName carries the variant),
+	// while two genuinely different steps that share the same broken
+	// expression each get their own line. The map is written from the
+	// concurrently-invoked step runner (parallel: groups and matrix copies run
+	// as goroutines), hence the mutex.
+	//
+	// Masked for the same reason recordPhaseTruncated is: an if: may reference
+	// secrets.X and the diagnostic quotes the expression back.
+	//
+	// The context is deliberately WithoutCancel: a cancelled run still needs
+	// the record of why its steps did or did not run.
+	var ifDiagMu sync.Mutex
+	seenIfDiag := map[string]bool{}
+	recordIfDiagnostic := func(step api.ClaimStep, msg string) {
+		key := step.Name + "\x00" + msg
+		ifDiagMu.Lock()
+		dup := seenIfDiag[key]
+		seenIfDiag[key] = true
+		ifDiagMu.Unlock()
+		if dup {
+			return
+		}
+		// A CEL compile error is multi-line (it draws a caret under the
+		// offending column); flattened so the run's log gets one line.
+		line := masker.Mask(strings.Join(strings.Fields(
+			fmt.Sprintf("unified-cd: step %q: %s", step.DisplayName(), msg)), " "))
+		_ = client.AppendLogBulk(context.WithoutCancel(ctx), agentID, c.RunID, -1, []api.LogAppendRequest{{
+			RunID:     c.RunID,
+			StepIndex: -1,
+			Stream:    "stderr",
+			Timestamp: time.Now().UTC(),
+			Line:      line,
+		}})
+	}
+
 	// deferred hooks: run after RunPipeline completes (cache save, etc.)
 	//
 	// parallel: steps in the same claim run concurrently as goroutines under
@@ -572,10 +624,20 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			// every step is evaluated — including steps with an empty if: — so that a
 			// normal step auto-skips once a prior step has failed (implicitSuccess). For
 			// finally the status is frozen and implicitSuccess is false. If false, skip.
+			//
+			// sctx.snapshot() carries Params, Vars, Steps and Secrets — the
+			// four variables dsl.conditionVars declares — so a vars-gated
+			// condition sees the same values the step's env and templates do.
 			ifData := sctx.snapshot()
-			ok, err := dsl.EvalCondition(step.If, ifData, statusFn(), implicitSuccess)
+			ok, ifWarnings, err := dsl.EvalCondition(step.If, ifData, statusFn(), implicitSuccess)
 			if err != nil {
 				slog.Warn("if: condition eval failed, running step", "step", step.Name, "error", err)
+				recordIfDiagnostic(step,
+					fmt.Sprintf("%v — the condition could not be evaluated, so the step RAN (fail-safe)", err))
+			}
+			for _, w := range ifWarnings {
+				slog.Warn("if: condition warning", "step", step.Name, "warning", w)
+				recordIfDiagnostic(step, w)
 			}
 			if !ok {
 				retryUntilSuccess(ctx, func(callCtx context.Context) error {
@@ -738,9 +800,14 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					workspaceScope = NewScopeHandle(step.ScopeID)
 				}
 				extraEnv := []string{
-					"UNIFIED_AGENT_OS=" + agentOSForStep(step, b.DefaultAgentOS()),
-					"UNIFIED_WORKSPACE=" + b.WorkspacePath(workspaceScope),
+					EnvAgentOS + "=" + agentOSForStep(step, b.DefaultAgentOS()),
+					EnvWorkspace + "=" + b.WorkspacePath(workspaceScope),
 				}
+				// Vars first, step env second: precedence is expressed as
+				// ordering, because a later duplicate key wins. varsExtraEnv
+				// also drops any var named after an agent credential — see
+				// its doc comment; StepEnv does not filter extraEnv itself.
+				extraEnv = append(extraEnv, varsExtraEnv(c.Vars)...)
 				for k, v := range step.Env {
 					expanded, _ := dsl.ExpandTemplate(v, tplData)
 					extraEnv = append(extraEnv, k+"="+expanded)
@@ -878,6 +945,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					capturedOutputs := map[string]string{}
 					outputCtx := dsl.TemplateData{
 						Params:  tplData.Params,
+						Vars:    tplData.Vars,
 						Steps:   tplData.Steps,
 						Stdout:  capturedStdout,
 						Secrets: tplData.Secrets,
@@ -1371,7 +1439,7 @@ func executeDownloadArtifact(ctx context.Context, client *Client, agentID string
 
 	targetRunID := runID
 	if da.RunID != "" {
-		restricted := dsl.TemplateData{Params: tplData.Params, Steps: tplData.Steps, Matrix: tplData.Matrix, Foreach: tplData.Foreach}
+		restricted := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps, Matrix: tplData.Matrix, Foreach: tplData.Foreach}
 		expanded, err := dsl.ExpandTemplate(da.RunID, restricted)
 		if err != nil {
 			return failStep(fmt.Errorf("runId template: %w", err))

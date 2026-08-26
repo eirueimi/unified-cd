@@ -233,13 +233,13 @@ Steps can be conditionally skipped based on a boolean expression.
 > **`if:` is CEL, not a Go template.** Unlike `run:`, `env:`, and `outputs:`
 > (which use `{{ .Params.X }}`-style Go templates), `if:` expressions are
 > [CEL](https://github.com/google/cel-go) — no `{{ }}` delimiters, and
-> variables are lowercase (`params`, `steps`, `secrets`), not `.Params`/`.Steps`.
-> **If a Go-template-style `if:` (or any expression that fails to compile) is
-> used by mistake, the condition fails OPEN: the step still runs, and the
-> only trace is a warning in the agent log.** A production-only step could
-> silently run on every trigger. Always use valid CEL syntax below, and check
-> agent logs for `if: expression ... compile error` after adding a new
-> condition.
+> variables are lowercase (`params`, `vars`, `steps`, `secrets`), not
+> `.Params`/`.Vars`/`.Steps`. An expression that does not compile is now
+> **rejected at apply time**, so a Go-template-style `if:` fails `apply` with
+> the compile error rather than reaching an agent. If one does fail at run
+> time (a template's `if:` is only resolved then), the condition fails OPEN —
+> the step still runs — and the reason is written into the **run's own log**
+> as a `System` line.
 
 ```yaml
 steps:
@@ -257,8 +257,35 @@ steps:
 | Variable | Type | Description |
 |---|---|---|
 | `params.NAME` | string | Input parameter value |
+| `vars.NAME` | string | Plain-text variable (global `kind: Vars` merged with the job's `spec.vars`) |
 | `steps.STEPNAME.outputs.KEY` | dyn | Output from a previous step (only declared `outputs:`; there is no built-in step-status field) |
 | `secrets.NAME` | string | Resolved secret value |
+
+**Undefined keys.** `vars` and `params` differ here, deliberately:
+
+- `vars.MISSING` reads as the **empty string**, matching `{{ .Vars.MISSING }}`
+  on the template side. A gate on a misspelt variable therefore stays shut
+  (`vars.EVN == "prod"` is false, the step is skipped) instead of running the
+  step, and the run's log gets a `System` line naming the undefined key. To
+  test presence rather than value, use `"NAME" in vars` — `has(vars.NAME)` is
+  always true here and must not be used.
+- `params.MISSING` raises `no such key`, which is an evaluation error, which
+  fails **OPEN** — the step runs. Double-check the spelling of every `params`
+  name in an `if:`, especially one gating a production deploy.
+
+> **Why `params` and `vars` differ here.** The asymmetry is deliberate, not an
+> oversight. Making `params` read as empty would change the meaning of every
+> params-gated condition already in service — steps that run today would start
+> skipping. Rejecting an undeclared `params` name at apply time was considered
+> too, and rejected: a param does **not** have to be declared under
+> `spec.params.inputs` to reach a run. Undeclared params are passed through
+> unchanged from `--param`, a re-triggered run, a webhook `paramsMapping`, a
+> schedule's params, and a `call:` step's `with:` — and
+> `spec.concurrency.orLocks` synthesizes `{NAME}_LOCK_VALUE` keys on top of
+> that — so `run trigger job --param DEPLOY_TARGET=x` gating on
+> `if: params.DEPLOY_TARGET == "x"` is supported and works. A typo and a
+> legitimate pass-through reference are indistinguishable from the manifest
+> alone, so rejecting one would reject the other.
 
 The expression must evaluate to a boolean. Use CEL operators and the
 zero-arg status functions (see [Status Functions in `if:`](expressions.md#status-functions-in-if)):

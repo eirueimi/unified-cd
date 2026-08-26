@@ -764,6 +764,13 @@
         },
         "timeoutMinutes": {
           "type": "number"
+        },
+        "vars": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Plain-text variables shared by every step of this job, delivered as environment variables and as {{ .Vars.KEY }} in templates. NOT secrets — see kind: Vars.",
+          "type": "object"
         }
       },
       "required": [
@@ -991,6 +998,48 @@
       ],
       "type": "object"
     },
+    "Vars": {
+      "additionalProperties": false,
+      "description": "Vars is a global variable manifest: plain-text values shared by every job.\n\nThese are NOT secrets. Values are stored in the clear, returned in the clear,\nand printed in step logs like any other environment variable. A value that\nmust not appear in a log belongs in a Secret.",
+      "properties": {
+        "apiVersion": {
+          "const": "unified-cd/v1",
+          "type": "string"
+        },
+        "kind": {
+          "const": "Vars",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/VarsSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object"
+    },
+    "VarsSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "vars": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "vars"
+      ],
+      "type": "object"
+    },
     "WebhookAuth": {
       "additionalProperties": false,
       "properties": {
@@ -1144,6 +1193,9 @@
     },
     {
       "$ref": "#/definitions/GitCredential"
+    },
+    {
+      "$ref": "#/definitions/Vars"
     }
   ],
   "title": "unified-cd"

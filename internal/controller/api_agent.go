@@ -184,16 +184,79 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if claimed != nil {
-			resp, cerr := buildClaimResponse(claimed)
+			// Merge the global Vars manifests here, after the claim succeeded
+			// (so an idle long-poll does not query them every second) and once
+			// per claimed run — a manifest applied before this point affects
+			// this run, one applied after it does not. The job's own spec.vars
+			// is overlaid inside buildClaimResponse, which already has the
+			// parsed spec, so nothing re-parses it here.
+			globalVars, verr := mergedGlobalVars(r.Context(), s.store)
+			var corrupt *corruptVarsError
+			if verr != nil && !errors.As(verr, &corrupt) {
+				// A TRANSIENT failure: the store call itself errored, e.g. a
+				// database blip in the milliseconds since the claim.
+				//
+				// ClaimNextRun already flipped this run to Running in the same SQL
+				// statement, so a 500 here would strand it Running forever: the
+				// claiming agent is alive and heartbeating, so ListStuckRuns'
+				// last_seen_at predicate would never select it for reaping. But
+				// failing a user's run outright over a blip is too harsh, and
+				// unlike the two deterministic errors below, retrying CAN succeed.
+				// Requeueing preserves both properties: nothing is stranded, and
+				// the run gets claimed again (it loses nothing by going back; see
+				// RequeueClaimedRun). Only if the requeue ITSELF fails is failing
+				// the run the lesser evil, because then nothing else will move it.
+				slog.Error("agent claim: load global vars failed; requeueing run", "runId", claimed.ID, "error", verr)
+				requeued, rqErr := s.store.RequeueClaimedRun(r.Context(), claimed.ID, agentID)
+				if rqErr != nil {
+					slog.Error("agent claim: requeue after vars load failure", "runId", claimed.ID, "error", rqErr)
+					if _, logErr := s.store.AppendLog(r.Context(), claimed.ID, -1, "stderr", time.Now().UTC(), verr.Error()); logErr != nil {
+						slog.Error("agent claim: append vars-load failure reason", "runId", claimed.ID, "error", logErr)
+					}
+					if failErr := failOrphanedRun(r.Context(), s.store, claimed.ID); failErr != nil {
+						slog.Error("agent claim: mark failed after failed requeue", "runId", claimed.ID, "error", failErr)
+					}
+				} else if !requeued {
+					// The CAS matched no row. The BENIGN reading is that the
+					// run left Running in the interim — a cancel is the only
+					// writer that does that here — and then there is nothing
+					// to requeue and nothing to fix.
+					//
+					// Any other reading leaves the run sitting Running with
+					// this agent's id on it and nobody coming back for it:
+					// the agent has been handed an empty claim and will not
+					// execute it, and ListStuckRuns' last_seen_at predicate
+					// never selects a run whose claiming agent is alive and
+					// heartbeating. Discarding this bool made those two cases
+					// indistinguishable AND invisible. Failing the run here
+					// would terminalize the benign case, so this logs rather
+					// than acts — but it logs, so a stranded run has a record
+					// naming it.
+					slog.Warn("agent claim: requeue after vars load failure matched no row; "+
+						"the run either left Running in the interim (e.g. cancelled) or is now stranded Running with no agent executing it",
+						"runId", claimed.ID, "agentId", agentID)
+				}
+				writeJSON(w, http.StatusOK, api.ClaimResponse{})
+				return
+			}
+			// A corrupt stored manifest falls through to the fail path below
+			// instead: it is deterministic, and requeueing it would stall every
+			// claim in the fleet rather than one run (see corruptVarsError).
+			resp, cerr := api.ClaimResponse{}, verr
+			if cerr == nil {
+				resp, cerr = buildClaimResponse(claimed, globalVars)
+			}
 			if cerr != nil {
 				// ClaimNextRun already flipped this run to Running in the same SQL
 				// statement, so leaving it as-is here would strand it Running forever:
 				// the claiming agent is alive and heartbeating, so ListStuckRuns'
-				// last_seen_at predicate would never select it for reaping. cerr is
-				// deterministic (buildClaimResponse is pure computation over the
-				// already-stored spec bytes — e.g. the pre-migration runsIn guard),
-				// so retrying the claim can never succeed either; fail fast now rather
-				// than treat it as a transient error.
+				// last_seen_at predicate would never select it for reaping. Both
+				// errors that reach here are deterministic — buildClaimResponse is
+				// pure computation over the already-stored spec bytes (e.g. the
+				// pre-migration runsIn guard), and a corrupt vars manifest decodes
+				// the same way on every claim — so retrying can never succeed
+				// either; fail fast, with the reason on the run, rather than treat
+				// it as transient.
 				if _, logErr := s.store.AppendLog(r.Context(), claimed.ID, -1, "stderr", time.Now().UTC(), cerr.Error()); logErr != nil {
 					slog.Error("agent claim: append claim-build failure reason", "runId", claimed.ID, "error", logErr)
 				}
@@ -224,9 +287,73 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// corruptVarsError marks a stored Vars manifest whose spec will not decode.
+// It exists to separate the two failure kinds mergedGlobalVars can hit, which
+// need opposite handling at the claim site.
+//
+// This one is DETERMINISTIC: every later claim reads the same bytes and fails
+// the same way. And mergedGlobalVars reads EVERY manifest on EVERY claim,
+// whichever run is being claimed — so requeueing it would put every claim in
+// the fleet into a silent retry loop where no run ever fails, nothing looks
+// broken, and the whole system stalls. Failing the claiming run instead costs
+// one run and puts the offending manifest's name in that run's own log, where
+// an operator can find it.
+//
+// Reaching this state means bypassing the write paths — handleApplyVars and the
+// AppSource sync both marshal an already-validated dsl.VarsSpec — so it takes a
+// migration, a manual database edit, or a future writer. The classification is
+// explicit rather than assumed because the blast radius is the whole fleet.
+type corruptVarsError struct {
+	name string
+	err  error
+}
+
+func (e *corruptVarsError) Error() string {
+	return fmt.Sprintf("vars manifest %q is stored corrupt and cannot be decoded "+
+		"(fix or delete it — every claim reads it): %v", e.name, e.err)
+}
+
+func (e *corruptVarsError) Unwrap() error { return e.err }
+
+// mergedGlobalVars loads every global Vars manifest and flattens them into one
+// map. ListVars is sorted by name, so two globals that somehow both define a
+// key (the apply-time collision check should have prevented it) resolve
+// deterministically rather than by database order.
+//
+// The two error kinds are distinguishable by design: a store error comes back
+// as-is (transient — the caller requeues), a decode error comes back wrapped in
+// *corruptVarsError (deterministic — the caller fails the run). A corrupt
+// manifest is never skipped: continuing without it would run jobs missing the
+// variables they expect, silently, which is the one outcome this feature avoids
+// everywhere else.
+func mergedGlobalVars(ctx context.Context, st store.Store) (map[string]string, error) {
+	recs, err := st.ListVars(ctx)
+	if err != nil {
+		return nil, err
+	}
+	merged := make(map[string]string)
+	for _, rec := range recs {
+		var spec dsl.VarsSpec
+		if err := json.Unmarshal(rec.Spec, &spec); err != nil {
+			return nil, &corruptVarsError{name: rec.Name, err: err}
+		}
+		for k, v := range spec.Vars {
+			merged[k] = v
+		}
+	}
+	return merged, nil
+}
+
 // buildClaimResponse constructs a ClaimResponse from a ClaimedRun.
 // Includes each step's Outputs/Call information and the Job-level output declarations.
-func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
+//
+// globalVars is the already-merged map of every global Vars manifest, built by
+// the caller (mergedGlobalVars) — buildClaimResponse stays a pure function of
+// its inputs, with no store access of its own. The job's own spec.vars is
+// overlaid here, on the spec this function already parses, so that nearest
+// scope wins: a job overriding a global is normal and silent. globalVars is
+// never mutated.
+func buildClaimResponse(c *store.ClaimedRun, globalVars map[string]string) (api.ClaimResponse, error) {
 	var spec dsl.Spec
 	if err := json.Unmarshal(c.Spec, &spec); err != nil {
 		return api.ClaimResponse{}, err
@@ -239,10 +366,22 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 		return api.ClaimResponse{}, err
 	}
 
+	// Merge the globals, then the job's own spec.vars over them: nearest scope
+	// wins. Always a non-nil map, so the agent never has to special-case a
+	// missing one.
+	vars := make(map[string]string, len(globalVars)+len(spec.Vars))
+	for k, v := range globalVars {
+		vars[k] = v
+	}
+	for k, v := range spec.Vars {
+		vars[k] = v
+	}
+
 	resp := api.ClaimResponse{
 		RunID:          c.ID,
 		JobName:        c.JobName,
 		Params:         c.Params,
+		Vars:           vars,
 		TimeoutMinutes: spec.TimeoutMinutes,
 		PodTemplate:    spec.PodTemplate,
 		Native:         spec.Native,

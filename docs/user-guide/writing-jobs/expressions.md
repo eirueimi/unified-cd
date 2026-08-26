@@ -8,9 +8,23 @@ Job YAML values support Go template expressions (`{{ expr }}`).
 
 | Variable | Available in | Description |
 |---|---|---|
-| `{{ .Params.NAME }}` | `run`, `env`, `if`, `agentSelector`, `outputs`, `call.with`, `uses.with`, `cache.key`, `cache.path`, `cache.restoreKeys` | Input parameter value |
-| `{{ .Steps.NAME.Outputs.KEY }}` | `run`, `env`, `if`, `outputs` | Output from a completed step |
+| `{{ .Params.NAME }}` | `run`, `env`, `agentSelector`, `concurrency`, `outputs`, `call.with`, `uses.with`, `cache.key`, `cache.path`, `cache.restoreKeys` | Input parameter value |
+| `{{ .Vars.NAME }}` | `run`, `env`, `outputs`, `call.with`, `cache.key`, `cache.path`, `cache.restoreKeys` | Plain-text variable — a global `kind: Vars` manifest merged with the job's `spec.vars`. See [Variables](../variables.md). |
+| `{{ .Steps.NAME.Outputs.KEY }}` | `run`, `env`, `outputs` | Output from a completed step |
 | `{{ secrets.NAME }}` | `env` values, `run` strings | Decrypted secret value |
+
+> **None of these `{{ }}` forms work in `if:`.** `if:` is
+> [CEL](https://github.com/google/cel-go), not a Go template — the spellings
+> there are `params.NAME`, `vars.NAME`, `steps.NAME.outputs.KEY` and
+> `secrets.NAME`, with no braces and no leading dot. A `{{ }}` expression in an
+> `if:` is rejected at apply time; see
+> [Conditional Execution (`if`)](steps.md#conditional-execution-if).
+
+> **`agentSelector:` and `concurrency:` cannot use `{{ .Vars.NAME }}`.** Both
+> are expanded by the controller when the run is *created*, and variables are
+> merged later, when the run is claimed — so a `.Vars` reference in either field
+> expands to the empty string, silently. Use `{{ .Params.NAME }}` there. See
+> [Variables: where variables do not reach](../variables.md#where-variables-do-not-reach).
 
 > Step status is not exposed as a template variable. To branch on a step's
 > outcome in an `if:` expression, use the CEL functions `failure()`,

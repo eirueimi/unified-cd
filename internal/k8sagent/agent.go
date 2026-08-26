@@ -650,8 +650,8 @@ func imageStepEnv(step api.ClaimStep) map[string]string {
 	for k, v := range step.Env {
 		env[k] = v
 	}
-	env["UNIFIED_AGENT_OS"] = "linux"
-	env["UNIFIED_WORKSPACE"] = scopeMountPath
+	env[agentlib.EnvAgentOS] = "linux"
+	env[agentlib.EnvWorkspace] = scopeMountPath
 	return env
 }
 

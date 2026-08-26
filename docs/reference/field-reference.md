@@ -13,6 +13,7 @@
 - [WebhookReceiver](#webhookreceiver)
 - [AppSource](#appsource)
 - [GitCredential](#gitcredential)
+- [Vars](#vars)
 
 ---
 
@@ -65,6 +66,7 @@ element. See Step.Shell for the full resolution priority. |
 | `steps` | []StepEntry | yes | Steps is the main DAG of steps to execute.
 (failFast was removed — all started steps run to completion.) |
 | `timeoutMinutes` | number | no |  |
+| `vars` | map[string]string | no | Plain-text variables shared by every step of this job, delivered as environment variables and as {{ .Vars.KEY }} in templates. NOT secrets — see kind: Vars. |
 
 ### Concurrency
 
@@ -841,4 +843,33 @@ GitCredentialSpec is the spec section of GitCredential.
 | `host` | string | yes | hostname to use these credentials for (e.g. github.com) |
 | `secretRef` | string | yes | name of the StoredSecret that holds the value |
 | `type` | `token` \| `sshKey` | yes | authentication type |
+
+## Vars
+
+Vars is a global variable manifest: plain-text values shared by every job.
+
+These are NOT secrets. Values are stored in the clear, returned in the clear,
+and printed in step logs like any other environment variable. A value that
+must not appear in a log belongs in a Secret.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `apiVersion` | string | yes |  |
+| `kind` | string | yes |  |
+| `metadata` | Metadata | yes |  |
+| `spec` | VarsSpec | yes |  |
+
+### Metadata
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `annotations` | map[string]string | no |  |
+| `labels` | map[string]string | no |  |
+| `name` | string | yes |  |
+
+### VarsSpec
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `vars` | map[string]string | yes |  |
 

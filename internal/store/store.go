@@ -112,6 +112,12 @@ type WebhookReceiver struct {
 	UpdatedAt time.Time
 }
 
+// VarsRecord is one stored Vars manifest. Spec is the raw JSON of dsl.VarsSpec.
+type VarsRecord struct {
+	Name string
+	Spec []byte
+}
+
 // Schedule represents a cron schedule trigger.
 type Schedule struct {
 	Name        string
@@ -224,6 +230,16 @@ type Store interface {
 	// ClaimNextRunDetached claims the next queued detached run (see spec.detached);
 	// detached runs are claimed from a budget separate from ClaimNextRun.
 	ClaimNextRunDetached(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error)
+	// RequeueClaimedRun undoes a claim: it puts a run the given agent has just
+	// claimed back on the queue, for a caller that claimed successfully but
+	// then hit a transient failure while assembling the response. Without it
+	// such a caller has only two exits, and both are wrong: return an error and
+	// the run stays Running with nobody executing it (a live, heartbeating
+	// agent means ListStuckRuns never reaps it), or fail the run outright over
+	// a blip. requeued is false when the run is no longer Running under this
+	// agent — e.g. it was cancelled in the interim — in which case there is
+	// nothing to requeue and nothing stranded.
+	RequeueClaimedRun(ctx context.Context, runID, agentID string) (requeued bool, err error)
 	MarkRunRunning(ctx context.Context, runID string) error
 	MarkRunFinished(ctx context.Context, runID string, status api.RunStatus) error
 	// FinishRun is like MarkRunFinished but reports whether the run actually
@@ -438,6 +454,17 @@ type Store interface {
 	GetWebhookReceiver(ctx context.Context, name string) (*WebhookReceiver, error)
 	ListWebhookReceivers(ctx context.Context) ([]WebhookReceiver, error)
 	DeleteWebhookReceiver(ctx context.Context, name string) error
+
+	// Vars
+	// UpsertVars stores a Vars manifest by name, replacing any previous
+	// version, and returns the name.
+	UpsertVars(ctx context.Context, name string, specJSON []byte) (string, error)
+	// ListVars returns every Vars manifest, sorted by name so the merge order
+	// in buildClaimResponse is deterministic.
+	ListVars(ctx context.Context) ([]VarsRecord, error)
+	// DeleteVars removes a Vars manifest. Deleting one that does not exist is
+	// not an error - AppSource's delete path must be idempotent.
+	DeleteVars(ctx context.Context, name string) error
 
 	// Secrets
 	UpsertSecret(ctx context.Context, name string, encryptedDEK, ciphertext []byte) (*StoredSecret, error)

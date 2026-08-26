@@ -92,9 +92,14 @@ type AgentRegisterRequest struct {
 }
 
 type ClaimResponse struct {
-	RunID         string            `json:"runId"`
-	JobName       string            `json:"jobName"`
-	Params        map[string]string `json:"params"`
+	RunID   string            `json:"runId"`
+	JobName string            `json:"jobName"`
+	Params  map[string]string `json:"params"`
+	// Vars are the merged plain-text variables for this run: global Vars
+	// manifests overlaid by the job's spec.vars. Merged once here, at claim
+	// assembly, so a manifest change affects runs claimed after it and does
+	// not disturb a run already in flight.
+	Vars          map[string]string `json:"vars,omitempty"`
 	Stages        []ClaimStage      `json:"stages"`
 	Finally       []ClaimStage      `json:"finally,omitempty"`
 	JobOutputs    []string          `json:"jobOutputs"`
@@ -322,6 +327,19 @@ type WebhookReceiverMeta struct {
 	Name      string    `json:"name"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	Spec      []byte    `json:"spec,omitempty"`
+}
+
+// ---- vars ----
+
+// ApplyVarsRequest is the request for registering or updating a Vars manifest YAML.
+type ApplyVarsRequest struct {
+	YAML string `json:"yaml"`
+}
+
+// VarsMeta is the metadata for a Vars manifest (for API responses).
+type VarsMeta struct {
+	Name string            `json:"name"`
+	Vars map[string]string `json:"vars"`
 }
 
 // ---- schedules ----

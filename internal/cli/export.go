@@ -16,11 +16,35 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// reservedExportDirs are the top-level directories export uses for non-Job
-// kinds. A Job whose qualified path starts with one of these would change
-// meaning on re-import through an AppSource, so export fails instead.
-var reservedExportDirs = map[string]bool{
-	"schedules": true, "webhookreceivers": true, "gitcredentials": true, "appsources": true,
+// exportKindDir maps each non-Job kind to the top-level directory export
+// writes it into. It is the SINGLE source for both the write paths below and
+// the reserved-directory guard, so a kind added to export cannot be added
+// without the guard learning about its directory.
+//
+// It is not, and cannot be, derived from the DSL types the schema generators
+// walk: exporting a kind additionally needs a controller list endpoint and a
+// projection from that endpoint's api.*Meta back to a spec, neither of which
+// is knowable from a struct in internal/dsl. What CAN be centralised is this —
+// the directory name, which is the half that silently drifted.
+var exportKindDir = map[string]string{
+	"Schedule":        "schedules",
+	"WebhookReceiver": "webhookreceivers",
+	"GitCredential":   "gitcredentials",
+	"AppSource":       "appsources",
+	"Vars":            "vars",
+}
+
+// isReservedExportDir reports whether seg is one of the top-level directories
+// export uses for non-Job kinds. A Job whose qualified path starts with one of
+// these would change meaning on re-import through an AppSource, so export
+// fails instead. Derived from exportKindDir rather than restated.
+func isReservedExportDir(seg string) bool {
+	for _, dir := range exportKindDir {
+		if dir == seg {
+			return true
+		}
+	}
+	return false
 }
 
 func newExportCmd(resolve func() (Config, error)) *cobra.Command {
@@ -33,8 +57,8 @@ func newExportCmdWithClient(resolve func() (Config, error), httpClient *http.Cli
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "export all resources as a YAML tree consumable by an AppSource",
-		Long: `Export Jobs, Schedules, WebhookReceivers, GitCredentials and AppSources as
-one YAML file per resource. Jobs are placed at their qualified path so the
+		Long: `Export Jobs, Schedules, WebhookReceivers, GitCredentials, Vars and AppSources
+as one YAML file per resource. Jobs are placed at their qualified path so the
 output directory can be committed to Git and used directly as an AppSource
 path. Secret values cannot be exported.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -96,7 +120,7 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 			skipped++
 			continue
 		}
-		if first := strings.SplitN(j.Path, "/", 2)[0]; j.Path != "" && reservedExportDirs[first] {
+		if first := strings.SplitN(j.Path, "/", 2)[0]; j.Path != "" && isReservedExportDir(first) {
 			return fmt.Errorf("job %q: path segment %q collides with a reserved export directory (%s); rename the job path", j.Name, first, first)
 		}
 		spec, err := jobSpecForExport(j.Spec)
@@ -128,7 +152,7 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 			spec["params"] = sc.Params
 		}
 		doc := exportDoc{APIVersion: "unified-cd/v1", Kind: "Schedule", Metadata: exportMetadata{Name: sc.Name}, Spec: spec}
-		if err := writeExportDoc(filepath.Join(outDir, "schedules", sc.Name+".yaml"), doc); err != nil {
+		if err := writeExportDoc(filepath.Join(outDir, exportKindDir["Schedule"], sc.Name+".yaml"), doc); err != nil {
 			return err
 		}
 		exported++
@@ -148,7 +172,7 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 			return fmt.Errorf("webhookreceiver %q: parse spec: %w", wr.Name, err)
 		}
 		doc := exportDoc{APIVersion: "unified-cd/v1", Kind: "WebhookReceiver", Metadata: exportMetadata{Name: wr.Name}, Spec: spec}
-		if err := writeExportDoc(filepath.Join(outDir, "webhookreceivers", wr.Name+".yaml"), doc); err != nil {
+		if err := writeExportDoc(filepath.Join(outDir, exportKindDir["WebhookReceiver"], wr.Name+".yaml"), doc); err != nil {
 			return err
 		}
 		exported++
@@ -165,7 +189,29 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 		}
 		spec := map[string]any{"host": gc.Host, "type": gc.CredType, "secretRef": gc.SecretRef}
 		doc := exportDoc{APIVersion: "unified-cd/v1", Kind: "GitCredential", Metadata: exportMetadata{Name: gc.Name}, Spec: spec}
-		if err := writeExportDoc(filepath.Join(outDir, "gitcredentials", gc.Name+".yaml"), doc); err != nil {
+		if err := writeExportDoc(filepath.Join(outDir, exportKindDir["GitCredential"], gc.Name+".yaml"), doc); err != nil {
+			return err
+		}
+		exported++
+	}
+
+	// Vars: global variable manifests. Plain text by definition, so unlike
+	// secrets there is nothing here that cannot be exported — and leaving them
+	// out silently loses every global variable on the documented
+	// export -> commit -> AppSource migration path, after which jobs run with
+	// empty variables and nothing says why.
+	var vars []api.VarsMeta
+	if err := getJSON(cfg, httpClient, "/api/v1/vars", &vars); err != nil {
+		return fmt.Errorf("list vars: %w", err)
+	}
+	for _, v := range vars {
+		if skip("Vars", v.Name) {
+			skipped++
+			continue
+		}
+		spec := map[string]any{"vars": v.Vars}
+		doc := exportDoc{APIVersion: "unified-cd/v1", Kind: "Vars", Metadata: exportMetadata{Name: v.Name}, Spec: spec}
+		if err := writeExportDoc(filepath.Join(outDir, exportKindDir["Vars"], v.Name+".yaml"), doc); err != nil {
 			return err
 		}
 		exported++
@@ -193,7 +239,7 @@ func runExport(out io.Writer, cfg Config, httpClient *http.Client, outDir string
 			}
 		}
 		doc := exportDoc{APIVersion: "unified-cd/v1", Kind: "AppSource", Metadata: exportMetadata{Name: a.Name}, Spec: spec}
-		if err := writeExportDoc(filepath.Join(outDir, "appsources", a.Name+".yaml"), doc); err != nil {
+		if err := writeExportDoc(filepath.Join(outDir, exportKindDir["AppSource"], a.Name+".yaml"), doc); err != nil {
 			return err
 		}
 		exported++

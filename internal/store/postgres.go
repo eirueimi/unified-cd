@@ -781,6 +781,26 @@ func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels
 	return &cr, nil
 }
 
+// RequeueClaimedRun reverses exactly the three columns claimNextRun's UPDATE
+// wrote (status, claimed_by, claimed_at), so the run goes back to the queue in
+// the state it was picked from. Nothing else is written between the claim and
+// a caller's decision to requeue: the run's concurrency slot was taken at
+// Pending -> Queued and is untouched here, its planned steps were written at
+// creation, and no step has reported, so the run loses nothing by going back.
+//
+// The CAS on status = 'Running' AND claimed_by = the same agent means this can
+// never take a run away from an agent that is already executing it, and never
+// resurrects a run that was cancelled in the interim.
+func (p *Postgres) RequeueClaimedRun(ctx context.Context, runID, agentID string) (bool, error) {
+	ct, err := p.pool.Exec(ctx, `
+		UPDATE runs SET status = 'Queued', claimed_by = NULL, claimed_at = NULL, updated_at = NOW()
+		WHERE id = $1 AND status = 'Running' AND claimed_by = $2`, runID, agentID)
+	if err != nil {
+		return false, fmt.Errorf("requeue claimed run: %w", err)
+	}
+	return ct.RowsAffected() > 0, nil
+}
+
 func (p *Postgres) MarkRunRunning(ctx context.Context, runID string) error {
 	_, err := p.pool.Exec(ctx, `UPDATE runs SET status = 'Running', updated_at = NOW() WHERE id = $1 AND status NOT IN ('Succeeded', 'Failed', 'Cancelled')`, runID)
 	return err
@@ -2156,6 +2176,43 @@ func (p *Postgres) ListWebhookReceivers(ctx context.Context) ([]WebhookReceiver,
 // DeleteWebhookReceiver deletes a WebhookReceiver by name.
 func (p *Postgres) DeleteWebhookReceiver(ctx context.Context, name string) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM webhook_receivers WHERE name = $1`, name)
+	return err
+}
+
+// UpsertVars creates or updates a Vars manifest and returns its name.
+func (p *Postgres) UpsertVars(ctx context.Context, name string, specJSON []byte) (string, error) {
+	const q = `INSERT INTO vars(name, spec) VALUES ($1, $2)
+		ON CONFLICT (name) DO UPDATE SET spec = EXCLUDED.spec, updated_at = NOW()
+		RETURNING name;`
+	var out string
+	err := p.pool.QueryRow(ctx, q, name, specJSON).Scan(&out)
+	if err != nil {
+		return "", fmt.Errorf("upsert vars %q: %w", name, err)
+	}
+	return out, nil
+}
+
+// ListVars returns all Vars manifests ordered by name ascending.
+func (p *Postgres) ListVars(ctx context.Context) ([]VarsRecord, error) {
+	rows, err := p.pool.Query(ctx, `SELECT name, spec FROM vars ORDER BY name;`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VarsRecord
+	for rows.Next() {
+		var v VarsRecord
+		if err := rows.Scan(&v.Name, &v.Spec); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// DeleteVars deletes a Vars manifest by name.
+func (p *Postgres) DeleteVars(ctx context.Context, name string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM vars WHERE name = $1;`, name)
 	return err
 }
 
