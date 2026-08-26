@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"gopkg.in/yaml.v3"
 )
@@ -39,12 +40,22 @@ type Config struct {
 	// separate from MaxConcurrent. 0/unset -> default 16; negative -> off; positive
 	// -> cap. Same convention as the host agent, so detached jobs are claimable
 	// out of the box.
-	MaxDetachedConcurrent int                         `yaml:"maxDetachedConcurrent"`
-	PoolIdleTimeout       string                      `yaml:"poolIdleTimeout,omitempty"`
-	PodStartTimeout       string                      `yaml:"podStartTimeout,omitempty"`
-	DrainTimeout          string                      `yaml:"drainTimeout,omitempty"`
-	PodTemplates          map[string]AgentPodTemplate `yaml:"podTemplates,omitempty"`
-	SidecarS3SecretName   string                      `yaml:"sidecarS3SecretName,omitempty"`
+	MaxDetachedConcurrent int    `yaml:"maxDetachedConcurrent"`
+	PoolIdleTimeout       string `yaml:"poolIdleTimeout,omitempty"`
+	PodStartTimeout       string `yaml:"podStartTimeout,omitempty"`
+	DrainTimeout          string `yaml:"drainTimeout,omitempty"`
+	// FinallyTimeout bounds each of a run's post-DAG cleanup phases: the
+	// `spec.finally` pipeline, and each of the two `post:`/`cache:` hook
+	// drains. Those phases deliberately ignore run cancellation, which also
+	// discards the job-level `spec.timeoutMinutes` deadline — this is the
+	// ceiling that replaces it. Unset, unparseable, or non-positive falls back
+	// to agentlib.DefaultFinallyBudget (10m). Env override:
+	// UNIFIED_K8S_FINALLY_TIMEOUT. The setting is identical on the host agent
+	// (`finallyTimeout` there too) because the phase it bounds is executed by
+	// the SHARED orchestration loop, not by either backend.
+	FinallyTimeout      string                      `yaml:"finallyTimeout,omitempty"`
+	PodTemplates        map[string]AgentPodTemplate `yaml:"podTemplates,omitempty"`
+	SidecarS3SecretName string                      `yaml:"sidecarS3SecretName,omitempty"`
 }
 
 // AgentPodTemplate is a Pod template defined in the agent configuration file.
@@ -195,6 +206,31 @@ func (c *Config) PodStartTimeoutDuration() time.Duration {
 	return d
 }
 
+// FinallyTimeoutDuration parses FinallyTimeout, returning
+// agentlib.DefaultFinallyBudget when unset or non-positive. Non-positive is
+// deliberately not "unbounded": an unbounded cleanup phase is the bug this
+// setting exists to close (see agentlib.DefaultFinallyBudget).
+//
+// An UNPARSEABLE value never reaches this fallback, whatever the parse error
+// branch below suggests: Config.Validate rejects it and cmd/k8s-agent exits 1
+// before any claim runs, so the agent never starts with a silently-defaulted
+// budget. The branch is kept only so this method is safe to call on a Config
+// that was never validated (tests, future callers) — do not document it as
+// "unparseable falls back to 10m", because for the binary it does not.
+// (PodStartTimeoutDuration and DrainTimeoutDuration above are in the same
+// position; this one is called out because a bad `finallyTimeout` is
+// something an operator can hit during a cutover.)
+func (c *Config) FinallyTimeoutDuration() time.Duration {
+	if c.FinallyTimeout == "" {
+		return agentlib.DefaultFinallyBudget
+	}
+	d, err := time.ParseDuration(c.FinallyTimeout)
+	if err != nil || d <= 0 {
+		return agentlib.DefaultFinallyBudget
+	}
+	return d
+}
+
 // DrainTimeoutDuration parses DrainTimeout, returning 0 (wait indefinitely)
 // when unset or unparseable.
 func (c *Config) DrainTimeoutDuration() time.Duration {
@@ -215,6 +251,9 @@ func (c *Config) Validate() error {
 	}
 	if v := os.Getenv("UNIFIED_K8S_DRAIN_TIMEOUT"); v != "" {
 		c.DrainTimeout = v
+	}
+	if v := os.Getenv("UNIFIED_K8S_FINALLY_TIMEOUT"); v != "" {
+		c.FinallyTimeout = v
 	}
 	if v := os.Getenv("UNIFIED_K8S_MAX_DETACHED"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -265,6 +304,11 @@ func (c *Config) Validate() error {
 	if c.DrainTimeout != "" {
 		if _, err := time.ParseDuration(c.DrainTimeout); err != nil {
 			return fmt.Errorf("drainTimeout %q: %w", c.DrainTimeout, err)
+		}
+	}
+	if c.FinallyTimeout != "" {
+		if _, err := time.ParseDuration(c.FinallyTimeout); err != nil {
+			return fmt.Errorf("finallyTimeout %q: %w", c.FinallyTimeout, err)
 		}
 	}
 	return nil

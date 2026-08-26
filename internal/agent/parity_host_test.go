@@ -155,6 +155,11 @@ type parityHostHarness struct {
 	// childRunID captures ChildRunID from a terminal StepReport, by step name.
 	childRunID map[string]string
 
+	// runOutputs merges every SetRunOutputs body — the job-output promotion
+	// a parent `call:` step actually reads back (see the
+	// finally-output-promoted case).
+	runOutputs map[string]string
+
 	secretsToServe map[string]string
 	fetchedNames   []string
 }
@@ -165,6 +170,7 @@ func newParityHostHarness() *parityHostHarness {
 		terminalStatus:  map[string]string{},
 		outputs:         map[string]map[string]string{},
 		childRunID:      map[string]string{},
+		runOutputs:      map[string]string{},
 	}
 }
 
@@ -265,6 +271,13 @@ func newParityHostServer(t *testing.T, agentID string, h *parityHostHarness) *ht
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/outputs", func(w http.ResponseWriter, r *http.Request) {
+		var req api.SetOutputsRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		h.mu.Lock()
+		for k, v := range req.Outputs {
+			h.runOutputs[k] = v
+		}
+		h.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/finish", func(w http.ResponseWriter, r *http.Request) {
@@ -331,12 +344,17 @@ func (h *parityHostHarness) observation() paritycases.Observation {
 	for k, v := range h.childRunID {
 		childRunID[k] = v
 	}
+	runOutputs := make(map[string]string, len(h.runOutputs))
+	for k, v := range h.runOutputs {
+		runOutputs[k] = v
+	}
 	return paritycases.Observation{
 		StepStatus:  statuses,
 		RunFinished: h.finishStatus,
 		Logs:        logs,
 		Outputs:     outputs,
 		ChildRunID:  childRunID,
+		RunOutputs:  runOutputs,
 	}
 }
 

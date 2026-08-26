@@ -51,6 +51,25 @@ var heartbeatInterval = DefaultHeartbeatInterval
 // makeStepRunner in orchestrator.go): post.Shell if the post: hook declared
 // its own, else the owning step's effective ClaimStep.Shell — nil/empty
 // means "apply the shim default" at exec time, same as every step.
+// deferredHook is one entry on RunClaim's cache-save queue: the work itself,
+// plus a short human label naming what it would save.
+//
+// The label exists so a drain truncated by its finallyTimeout budget can say
+// WHICH save was cut off and which never started, rather than only that some
+// save in the phase was. It is the answer to the only question the truncation
+// record is there to answer — a job with three `cache:` steps otherwise leaves
+// the operator unable to tell which cache is now stale. `post:` hooks carry
+// the same information already, on postHookEntry.stepName/stepIndex.
+//
+// It is written to the RUN's log, so it must be safe to put there: it names
+// the owning step and its expanded cache key, and the key is passed through
+// the claim's masker before it ships (see recordPhaseTruncated) because a
+// `cache: key:` may legitimately interpolate {{ .Secrets.X }}.
+type deferredHook struct {
+	label string
+	fn    func(context.Context)
+}
+
 type postHookEntry struct {
 	stepName  string
 	post      api.PostStep

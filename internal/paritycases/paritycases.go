@@ -60,6 +60,16 @@ type Expectation struct {
 	// recorded output value (substring, not exact match, since e.g. captured
 	// stdout may carry a trailing newline the template preserves).
 	Outputs map[string]map[string]string
+
+	// RunOutputs maps a declared JOB output name -> an expected SUBSTRING of
+	// the value promoted to the run (the SetRunOutputs body), as opposed to
+	// Outputs above, which is per-STEP. Substring for the same reason.
+	//
+	// This is what a parent `call:` step actually reads back, so it is the
+	// only outcome that proves job-output promotion end to end — a step
+	// output that lands in SetStepOutputs and then never reaches
+	// SetRunOutputs is invisible to Outputs.
+	RunOutputs map[string]string
 }
 
 // Case is one parity conformance scenario.
@@ -98,6 +108,10 @@ type Observation struct {
 	// ChildRunID maps stepName -> the ChildRunID recorded on that step's
 	// terminal StepReport (only populated for `call:` steps).
 	ChildRunID map[string]string
+	// RunOutputs is the merge of every SetRunOutputs body the fake controller
+	// received (RunClaim sends at most one, but merging keeps the driver
+	// honest if that ever changes).
+	RunOutputs map[string]string
 }
 
 // Assert checks got against want, reporting every mismatch via t.Errorf so a
@@ -159,6 +173,19 @@ func Assert(t *testing.T, want Expectation, got Observation) {
 				t.Errorf("forbidden substring %q found in shipped log line (step=%s stream=%s): %q",
 					forbidden, l.Step, l.Stream, l.Substring)
 			}
+		}
+	}
+
+	// --- Run (job) outputs ---
+	for key, wantSub := range want.RunOutputs {
+		gotVal, ok := got.RunOutputs[key]
+		if !ok {
+			t.Errorf("job output %q: expected the promoted run outputs to contain %q, but the key was never sent to SetRunOutputs (promoted: %v)",
+				key, wantSub, got.RunOutputs)
+			continue
+		}
+		if !strings.Contains(gotVal, wantSub) {
+			t.Errorf("job output %q: want substring %q, got %q", key, wantSub, gotVal)
 		}
 	}
 

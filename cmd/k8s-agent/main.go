@@ -82,6 +82,12 @@ func main() {
 	if d := cfg.PoolIdleTimeoutDuration(); d > 0 {
 		pool.SetIdleTimeout(d)
 	}
+	// The finally/cleanup-phase ceiling lives on the shared orchestration loop
+	// (agentlib.RunClaim), which both agent binaries call and which has no
+	// per-agent config struct of its own — so it is set here, once, before any
+	// claim starts. FinallyTimeoutDuration already applies the 10m fallback.
+	agentlib.FinallyBudget = cfg.FinallyTimeoutDuration()
+
 	ag := k8sagent.NewK8sAgent(cfg, masterClient, pm, exec, pool)
 
 	// First SIGINT/SIGTERM begins a graceful shutdown; a second signal forces an

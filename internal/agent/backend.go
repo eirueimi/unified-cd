@@ -24,6 +24,20 @@ type ExecBackend interface {
 	// orchestrator passes it explicitly since RunInScope, unlike
 	// RunDefault/RunNamedContainer, does not otherwise receive the step.
 	RunInScope(ctx context.Context, h ScopeHandle, script string, shell []string, env []string, stdout, stderr io.Writer) (int, error)
+	// CloseScopes tears down everything the claim opened: scope
+	// containers/Pods, the sidecar log pump, and (on the host backend) the
+	// claim pod. It is called once, from RunClaim's teardown defer.
+	//
+	// CONTRACT ON ctx: it is the teardown phase's OWN budget window — a
+	// context.WithTimeout over context.WithoutCancel(claim ctx), never a
+	// cancelled one (see the defer in RunClaim). Implementations must
+	// THREAD it through every call they make rather than re-stripping it
+	// with context.WithoutCancel: that ceiling is the fourth of the four
+	// documented cleanup windows (see DefaultFinallyBudget), and an
+	// implementation that strips it turns the documented bound back into
+	// "wedges forever on an unresponsive runtime/API server". Blocking
+	// primitives that cannot take a context (a sync.WaitGroup join) must be
+	// raced against ctx.Done() instead.
 	CloseScopes(ctx context.Context)
 
 	CacheRestore(ctx context.Context, scope ScopeHandle, key string, restoreKeys []string, path string) (bool, error)

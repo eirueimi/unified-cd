@@ -22,6 +22,16 @@ labels:
 # podTemplate defines no container of its own.
 # runnerImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3
 
+# finallyTimeout: ceiling on each of a run's post-DAG cleanup phases — each
+# post:/cache: hook drain, the spec.finally pipeline, and scope/claim-pod
+# teardown. Those phases keep running after a cancellation (that is what
+# finally: is for), which also means they cannot inherit spec.timeoutMinutes,
+# so this replaces it. It is per phase, so the worst-case post-DAG time is 4x
+# this value (40m at the default). Unset or non-positive -> 10m. Per-step
+# timeoutMinutes: works inside finally: and is the precise control; this is
+# only the backstop.
+# finallyTimeout: 10m
+
 # Garage cache (all fields required to enable cache; omit section to disable)
 cacheEndpoint: garage:3900
 cacheKey: garageadmin

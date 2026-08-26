@@ -350,7 +350,8 @@ steps:
 
 Notes:
 - `retry:` is only valid on a `run:` step; declaring it on any other step type is a validation error at apply time.
-- Any failure of an attempt is retried: a non-zero exit code, an exec/infra error, or that attempt timing out. A run being cancelled is never retried.
+- Any failure of an attempt is retried: a non-zero exit code, an exec/infra error, or that attempt timing out. A run being cancelled stops the retry loop at the current attempt — in the main `steps` DAG. Inside [`finally:`](approval-and-finally.md#finally-block-finally) the step keeps its full attempt budget even on a cancelled run: the cancellation ends the main DAG, not the cleanup phase, so a flaky teardown still gets its retries.
+- `retry:` has no overall time budget of its own, but inside `finally:` the whole cleanup phase is bounded by the agent's `finallyTimeout` (default 10m) — see [How long `finally` may run](approval-and-finally.md#how-long-finally-may-run).
 - `timeoutMinutes` bounds **each attempt**, not the overall retry budget — with `attempts: 3` and `timeoutMinutes: 5`, the step can take up to 15 minutes across all tries.
 - `continueOnError` is evaluated after the retry budget is exhausted — the step only continues past a failure once every attempt has failed.
 - All attempts stream to the same step log, with a separator line (e.g. `── retry 2/3 after 30s … ──`) marking the start of each retry.
@@ -386,6 +387,23 @@ drain in their own pass **after** the whole `finally` block completes, so a
 main-DAG step's cleanup never has to wait for `finally` to finish. Reverse
 declaration order applies within each pass. Both passes run even when the run
 failed, timed out, or was cancelled.
+
+Each pass is bounded by the agent's `finallyTimeout` (default 10m) — see
+[How long `finally` may run](approval-and-finally.md#how-long-finally-may-run).
+If a pass hits that ceiling, the hook still running is interrupted and anything
+after it in the pass is skipped: a large `cache:` save can be left unfinished.
+That does not fail the run (no post-hook failure does), so the run's log records
+it instead, on the run's own **System** stream:
+
+```
+unified-cd: the post:/cache: hook drain that follows the main steps did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped. Interrupted: the cache: save for step "deps" (key "go-mod-linux-9f3c"). Never started: the post: hook of step "integration".
+```
+
+The `Interrupted:` / `Never started:` tail names exactly which save or hook was
+lost — `Interrupted:` the one the deadline landed on, `Never started:` the ones
+queued behind it, summarised as `(+N more)` past five. If you see that line on a
+run whose cache did not come back on the next run, that is why — raise
+`finallyTimeout` for the fleet, or make the save smaller.
 
 ---
 

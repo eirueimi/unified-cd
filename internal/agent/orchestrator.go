@@ -3,11 +3,13 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"regexp"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +37,139 @@ func isTerminalRunStatus(s api.RunStatus) bool {
 // to own its own unexported cancelPollInterval before this loop was shared —
 // can shorten it instead of waiting through a real 5s tick.
 var CancelPollInterval = 5 * time.Second
+
+// DefaultFinallyBudget is the fallback ceiling on each of RunClaim's
+// post-DAG cleanup phases: the `finally:` pipeline itself, each of the two
+// `post:`/`cache:` hook drains, and the deferred scope/pod teardown
+// (CloseScopes). The rule is "every post-DAG phase that EXECUTES something
+// carries this budget"; the single exception is the controller report
+// (FinishRun/SetRunOutputs), which executes nothing of the job's and is
+// deliberately unbounded — see the finishCtx note in RunClaim for why a
+// ceiling there has nothing to hand off to.
+//
+// Four windows, therefore, in the worst case, each of phaseBudget: drain,
+// `finally:`, drain, teardown — 40 minutes at the default. They are separate
+// windows, not a shared total, because they are separated by the main DAG,
+// which may legitimately run for hours; one window opened before the DAG
+// would already have expired by the time cleanup began.
+//
+// All four are enforced on BOTH backends, which took work on the k8s side:
+// hostBackend.CloseScopes threads its context through rt.Remove already, but
+// k8sBackend.CloseScopes used to re-strip it (see that method) and so kept
+// none of this promise. Do not add a post-DAG phase, on either backend, that
+// executes something without a window — the numbers below are published to
+// operators who size rollout grace periods against them.
+//
+// The Kubernetes agent adds a FIFTH window of the same size: its claim Pod is
+// deleted or returned to the idle pool from runClaim's own defers, after this
+// loop has returned — see k8sagent.K8sAgent.claimPodTeardownContext. The host
+// agent has no equivalent, because hostBackend.CloseScopes tears its claim pod
+// down inside window four.
+//
+// Why a ceiling exists at all. Those phases deliberately run on
+// context.WithoutCancel(ctx) so that cleanup still happens when the run was
+// cancelled or the job-level timeout fired — that is the entire point of
+// `finally:`. But WithoutCancel strips the job-level deadline
+// (spec.timeoutMinutes, applied to ctx at the top of RunClaim) along with the
+// cancellation, and the resulting context's Done() channel is nil: a `select`
+// on it blocks forever. A `call:` step in `finally:` with no per-step
+// timeoutMinutes therefore polled its child run forever (ExecuteCallStep's
+// only wait bound is ctx), and a plain `run:` was unbounded the same way.
+// Nothing else caught it: the parent's cancelDescendantRuns only fires on
+// FinishRun, which cannot be reached until `finally` returns, so a cancelled
+// parent and a never-claimed child deadlocked each other; and the controller's
+// stuck-run reaper keys on AGENT liveness, which stays healthy because the
+// agent keeps heartbeating. The hook drains inherited the same
+// unboundedness — and became reachable for `finally:`-registered hooks only
+// with the two-drain fix, since RunPostHook takes no timeout of its own.
+//
+// The budget is deliberately NOT spec.timeoutMinutes: a six-hour job would get
+// a six-hour finally, which bounds nothing. It is also not a DSL field —
+// per-step `timeoutMinutes:` already works inside `finally:` and remains the
+// precise tool. This is only the backstop for authors who set nothing.
+//
+// 10 minutes: cleanup work (a cache save, an artifact upload, a notification
+// webhook, tearing down test infrastructure) is a seconds-to-minutes job. The
+// closest existing ceiling in this repository, podStartTimeout, is 5m, but
+// that bounds ONE infrastructure wait, whereas this bounds a whole
+// author-written pipeline that may hold several steps and a `call:` into a
+// teardown job — so it is set to twice that. Generous enough that no realistic
+// cleanup trips it; short enough that a wedged phase surfaces within a single
+// on-call attention span instead of pinning the agent's concurrency slot
+// indefinitely.
+const DefaultFinallyBudget = 10 * time.Minute
+
+// FinallyBudget is the effective per-phase ceiling described on
+// DefaultFinallyBudget. It is an exported var (like CancelPollInterval) rather
+// than a parameter because RunClaim is the ONE orchestration loop shared by
+// both agents, and each agent binary owns its own configuration type: the host
+// agent sets it from `finallyTimeout` / UNIFIED_AGENT_FINALLY_TIMEOUT, the k8s
+// agent from `finallyTimeout` / UNIFIED_K8S_FINALLY_TIMEOUT. Tests shrink it
+// so a budget test asserts on the OUTCOME (the phase ended, the run reached a
+// terminal status) without waiting out a real ten-minute deadline.
+//
+// A non-positive value falls back to DefaultFinallyBudget: "no ceiling" is the
+// bug this exists to fix and is deliberately not expressible.
+//
+// The budget is PER PHASE, not a single shared total. Each drain, the
+// `finally` pipeline, and the scope/pod teardown start their own window —
+// four in all, so the worst-case post-DAG time is 4 × this value (40m at the
+// default). They are separate because the phases are separated by the main
+// DAG (which may legitimately run for hours), so one window opened before the
+// DAG would already have expired by the time cleanup began. See
+// DefaultFinallyBudget for the full accounting, including the k8s agent's
+// fifth window.
+var FinallyBudget = DefaultFinallyBudget
+
+// finallyBudget reads FinallyBudget once, on the caller's own goroutine,
+// applying the non-positive fallback. RunClaim calls it exactly once per claim
+// for the same reason it snapshots CancelPollInterval: nothing downstream may
+// touch package-level state from a goroutine that could outlive the claim.
+func finallyBudget() time.Duration {
+	if d := FinallyBudget; d > 0 {
+		return d
+	}
+	return DefaultFinallyBudget
+}
+
+// maxTruncationAttributionNames caps how many SKIPPED items a truncation
+// record enumerates by name before it summarises the rest as a count.
+//
+// The record goes into the run's own log, where it is read by a human, and a
+// job may legitimately register hundreds of hooks (a large matrix, each
+// combination with a `post:`); enumerating all of them would bury the one
+// line that matters — the interrupted item, which is always named — under a
+// wall of text and turn one useful record into a paging problem. Five names
+// plus "(+N more)" keeps the common case (a handful of hooks) fully
+// enumerated and the pathological case one line long. The interrupted item is
+// deliberately outside this cap: there is at most one, and it is the single
+// most important fact in the record.
+const maxTruncationAttributionNames = 5
+
+// truncationAttribution renders what a truncated hook drain cut off and what
+// it never got to. Returns "" when there is nothing to attribute, which is the
+// signal to recordPhaseTruncated to emit its generic sentence unchanged — that
+// happens when the deadline lands between items with none left to run.
+func truncationAttribution(interrupted string, skipped []string) string {
+	var parts []string
+	if interrupted != "" {
+		parts = append(parts, "Interrupted: "+interrupted+".")
+	}
+	if len(skipped) > 0 {
+		named := skipped
+		extra := 0
+		if len(named) > maxTruncationAttributionNames {
+			extra = len(named) - maxTruncationAttributionNames
+			named = named[:maxTruncationAttributionNames]
+		}
+		s := "Never started: " + strings.Join(named, ", ")
+		if extra > 0 {
+			s += fmt.Sprintf(" (+%d more)", extra)
+		}
+		parts = append(parts, s+".")
+	}
+	return strings.Join(parts, " ")
+}
 
 // retrySleep waits d honoring ctx (a var so tests run instantly). Returns
 // ctx.Err() if the wait is cancelled.
@@ -114,6 +249,9 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	//     Cleanup). It would also outlive the httptest server a test closes on
 	//     teardown. Cancel first, then wait.
 	pollInterval := CancelPollInterval
+	// Snapshotted here for the same reason as pollInterval (see above): read
+	// package state once, on RunClaim's own goroutine.
+	phaseBudget := finallyBudget()
 	var pollerWG sync.WaitGroup
 	defer func() {
 		cancelRun()
@@ -200,6 +338,62 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		masker = secrets.NoOpMasker
 	}
 
+	// recordPhaseTruncated reports a post-DAG cleanup phase that hit the
+	// phaseBudget ceiling into the RUN's own logs (stepIndex -1, rendered as
+	// "System" in the UI) — the same mechanism warnSkippedOutput below and the
+	// secret-fetch failure above use.
+	//
+	// Why the run's log, and not only slog. A truncated phase is otherwise
+	// invisible in the one place an operator actually looks. The hook drains
+	// are the sharp case: a `post:`/`cache:` hook has never changed the run's
+	// status whatever it fails on, so a multi-gigabyte cache save cut off at
+	// the budget leaves the run reported Succeeded with the cache silently not
+	// saved. The agent's slog is the wrong place to find that — it is on
+	// another host, interleaved with every other concurrent run, and is not
+	// what the person debugging THIS run has open. Trading "hangs forever" for
+	// "quietly loses the cache" would not have been a fix.
+	//
+	// The context is deliberately neither ctx (which may be cancelled — that
+	// is why these phases exist) nor the phase's own budget context, which is
+	// expired by definition at every call site: the message about a deadline
+	// must not itself be dropped by that deadline. It is unbounded for the
+	// same reason finishCtx is (see the note there); AppendLogBulk is a single
+	// non-retried call, so the exposure is one HTTP request, not a loop.
+	//
+	// attribution, when non-empty, names WHAT was cut off and what never
+	// started (built by drainHooks; see truncationAttribution). Detecting the
+	// truncation is only half the job: "the post:/cache: hook drain that
+	// follows the main steps did not finish" leaves an operator with three
+	// `cache:` steps no way to tell which cache is now stale, which is the one
+	// question this record exists to answer.
+	//
+	// BOTH sinks get the masked text, the run's log and the agent's own slog.
+	// A `cache: key:` may interpolate {{ .Secrets.X }}, so the attribution can
+	// carry a secret; this call site does not otherwise pass through the masker
+	// the way a step's log writers do. Masking one sink and not the other would
+	// put in the process log exactly what was scrubbed from the run log — an
+	// asymmetry nobody reading this would expect, and one that survives into
+	// whatever ships the agent's stdout off the host. (executeCacheStep's save
+	// closure does still slog the raw key; that is a pre-existing sink of the
+	// same class, not a reason to add another.)
+	recordPhaseTruncated := func(phase, attribution string) {
+		line := fmt.Sprintf("unified-cd: %s did not finish: it hit the %s cleanup budget (finallyTimeout) and was stopped. "+
+			"Work still in flight was interrupted and anything not yet started was skipped.", phase, phaseBudget)
+		if attribution != "" {
+			line += " " + attribution
+		}
+		line = masker.Mask(line)
+		slog.Warn("cleanup phase truncated by its finallyTimeout budget",
+			"runId", c.RunID, "phase", phase, "budget", phaseBudget, "attribution", masker.Mask(attribution))
+		_ = client.AppendLogBulk(context.WithoutCancel(ctx), agentID, c.RunID, -1, []api.LogAppendRequest{{
+			RunID:     c.RunID,
+			StepIndex: -1,
+			Stream:    "stderr",
+			Timestamp: time.Now().UTC(),
+			Line:      line,
+		}})
+	}
+
 	// Register scope/pod/pump teardown BEFORE SetMasker starts the host
 	// sidecar pump (SetMasker spawns `docker logs -f` goroutines when
 	// b.pod != nil — see hostBackend.SetMasker). CloseScopes is nil-safe (it
@@ -207,7 +401,28 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	// early is free today; the point is that ANY future early-return between
 	// here and the pump's start can no longer skip teardown and leak the
 	// pump's subprocesses/goroutines.
-	defer b.CloseScopes(context.WithoutCancel(ctx))
+	defer func() {
+		// Bounded, like every other post-DAG phase — see DefaultFinallyBudget
+		// for the one-sentence rule (every phase that EXECUTES something has a
+		// ceiling; only the controller report does not, see finishCtx below).
+		// Scope/pod teardown executes container-runtime and Kubernetes API
+		// calls and can wedge exactly as a cleanup hook can, and it runs on
+		// context.WithoutCancel for the same reason, so it inherited the same
+		// unboundedness.
+		//
+		// Unlike the other phases this one is NOT recorded into the run's log:
+		// it runs after FinishRun has already made the run terminal, and what
+		// leaks when it is cut short (a scope container, a claim pod) is a
+		// property of the agent host, not of the job's result — the operator
+		// who can act on it is reading the agent's log, not the run's.
+		scopeCtx, cancelScopes := context.WithTimeout(context.WithoutCancel(ctx), phaseBudget)
+		defer cancelScopes()
+		b.CloseScopes(scopeCtx)
+		if errors.Is(scopeCtx.Err(), context.DeadlineExceeded) {
+			slog.Warn("scope/pod teardown truncated by its finallyTimeout budget; containers or a claim pod may have leaked",
+				"runId", c.RunID, "budget", phaseBudget)
+		}
+	}()
 
 	// The masker is born here (after secrets are fetched), so it is installed
 	// via SetMasker rather than passed to the backend's constructor.
@@ -246,7 +461,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	// each hook is handed to exactly one drain, and the second call sees only
 	// what `finally` added.
 	var postHooksMu sync.Mutex
-	var postHooks []func(context.Context)
+	var postHooks []deferredHook
 	var hookStack []postHookEntry
 
 	// scopes: one scope-tracking structure for the whole claim, created lazily
@@ -266,15 +481,43 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	//   suppressOnCancel — true for the main DAG (cancellation does not count as a
 	//                      failure), false for finally (a genuine finally failure
 	//                      counts even when the run was cancelled)
+	//
+	// suppressOnCancel is the PHASE DISCRIMINATOR, and every place that asks
+	// "does a master cancellation mask this step's failure?" must consult it
+	// rather than cancelledByMaster alone. Three places do, and all three used
+	// to consult cancelledByMaster globally — which silently defeated
+	// suppressOnCancel=false for `run:`/`call:` finally steps:
+	//
+	//   1. recordFailure          — the flag that drives the run's status.
+	//   2. the reported step status — a "Failed" rewritten to "Cancelled"
+	//      showed an operator a clean cancellation where teardown had actually
+	//      broken, and (because the failure is only recorded under
+	//      `status == "Failed"`) skipped recordFailure entirely. The `cache:`
+	//      and artifact branches call markFailed directly and were never
+	//      affected, which is why the behaviour looked inconsistent from
+	//      outside.
+	//   3. the retry attempt loop  — `break` on cancellation degraded a
+	//      `retry:` on a finally step to a single attempt, and suppressed the
+	//      "step failed to execute" diagnostic, leaving a genuinely broken
+	//      finally step with an empty log.
 	makeStepRunner := func(statusFn func() dsl.RunStatusView, implicitSuccess bool, failedFlag *atomic.Bool, suppressOnCancel bool) func(context.Context, api.ClaimStep) error {
 		return func(stepCtx context.Context, step api.ClaimStep) error {
+			// cancelMasksFailure reports whether a master/user cancellation
+			// should be treated as "this step did not really fail" for THIS
+			// phase. See the phase-discriminator note on makeStepRunner: true
+			// for the main DAG, false for `finally:`, where a non-zero exit is
+			// a genuine cleanup failure regardless of why the run is ending.
+			cancelMasksFailure := func() bool {
+				return suppressOnCancel && cancelledByMaster.Load()
+			}
+
 			// recordFailure records a non-continueOnError failure into failedFlag,
 			// honouring suppressOnCancel (cancellation does not mask finally failures).
 			recordFailure := func() {
 				if step.ContinueOnError {
 					return
 				}
-				if suppressOnCancel && cancelledByMaster.Load() {
+				if cancelMasksFailure() {
 					return
 				}
 				failedFlag.Store(true)
@@ -575,8 +818,13 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					// failure with nothing to debug. Surface the reason on the
 					// step's own stderr stream before flushing. A master
 					// cancellation is expected shutdown, not a diagnosable fault,
-					// so it is excluded.
-					if runErr != nil && !cancelledByMaster.Load() {
+					// so it is excluded — but only for the phase the cancellation
+					// actually terminates. In `finally:` (cancelMasksFailure ==
+					// false) the pipeline runs on a non-cancelling context, so an
+					// exec error there is a genuine, diagnosable fault even though
+					// the run is being cancelled; suppressing it left a broken
+					// cleanup step with a completely empty log.
+					if runErr != nil && !cancelMasksFailure() {
 						fmt.Fprintf(shippedStderr, "unified-cd: step %q failed to execute: %v\n", step.Name, runErr)
 						slog.Warn("step exec error",
 							"run", c.RunID, "step", step.Name, "container", step.Container, "error", runErr)
@@ -589,8 +837,14 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					if runErr == nil && ec == 0 {
 						break // success
 					}
-					if cancelledByMaster.Load() {
-						break // never retry a master/user cancellation
+					if cancelMasksFailure() {
+						// Never retry a master/user cancellation — in the phase
+						// that cancellation ends. A `finally:` step keeps its full
+						// retry budget on a cancelled run: its context is not
+						// cancelled, its failures are genuine, and degrading
+						// `retry:` to one attempt exactly when cleanup matters most
+						// is the opposite of what the author asked for.
+						break
 					}
 					if try < attempts {
 						// Separator on the NEXT attempt's stderr writer so it lands in the log.
@@ -609,7 +863,15 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					// A master/user cancellation (during exec OR during a retry backoff) is a
 					// cancel, not a fault — cancelledByMaster is the authority, not runErr
 					// (with retry, a cancel can land after a non-zero exit with runErr == nil).
-					if cancelledByMaster.Load() {
+					//
+					// PHASE-AWARE (see makeStepRunner's discriminator note): this
+					// rewrite applies only to the phase the cancellation actually
+					// terminates. A `finally:` step that exits non-zero on a
+					// cancelled run failed for its own reasons — its context was
+					// never cancelled — so it stays "Failed", which is also what
+					// makes recordFailure below fire and flip the run to Failed,
+					// as dsl.Spec.Finally documents.
+					if cancelMasksFailure() {
 						status = "Cancelled"
 					}
 				} else {
@@ -730,13 +992,51 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	// themselves run on RunClaim's own goroutine, after the pipeline whose
 	// steps registered them has returned.
 	//
-	// Cancellation/failure: hookCtx is context.WithoutCancel(ctx), so both
-	// drains run to completion even when the run was cancelled, timed out, or
-	// already failed — which is exactly when a `finally:` step's cleanup
-	// matters most. A hook that itself fails is logged and does not change
-	// the run's status, identically for main and finally hooks.
-	hookCtx := context.WithoutCancel(ctx)
-	drainHooks := func() {
+	// Cancellation/failure: hookCtx is built from context.WithoutCancel(ctx),
+	// so both drains run when the run was cancelled, timed out, or already
+	// failed — which is exactly when a `finally:` step's cleanup matters most
+	// — and run to completion unless they hit the budget below. A hook that
+	// itself fails is logged and does not change the run's status, identically
+	// for main and finally hooks.
+	//
+	// Bounded: WithoutCancel drops the job-level deadline along with the
+	// cancellation, leaving a context whose Done() is nil, and RunPostHook
+	// takes no timeout of its own — so a hanging cleanup hook pinned RunClaim
+	// forever. Each drain therefore opens its OWN phaseBudget window (see
+	// DefaultFinallyBudget): the two drains are separated by the whole
+	// `finally` pipeline, and a single shared window would start counting
+	// before the main DAG had even run.
+	//
+	// A drain cut short by that budget does NOT change the run's status — a
+	// hook failure never has, whatever it fails on, and making "failed because
+	// the budget expired" fatal while "failed because the object store was
+	// down" stays benign would be an incoherent rule. It is instead recorded
+	// into the run's own logs by recordPhaseTruncated, which is the whole
+	// point: a truncated cache save must not be silent. phase names the drain
+	// in that record, and truncationAttribution names the individual save or
+	// hook that was cut off plus the ones that never started — naming the
+	// phase alone still leaves "which of my three caches is stale?"
+	// unanswered.
+	drainHooks := func(phase string) {
+		hookCtx, cancelHooks := context.WithTimeout(context.WithoutCancel(ctx), phaseBudget)
+		defer cancelHooks()
+		// interrupted/skipped are what the truncation record is attributed
+		// to. They are written only from this goroutine — the drain runs on
+		// RunClaim's own goroutine, after the pipeline whose steps registered
+		// the hooks has returned (see the Concurrency note above) — so no
+		// lock is needed here even though the slices they describe were
+		// appended concurrently.
+		var interrupted string
+		var skipped []string
+		defer func() {
+			// Checked before the deferred cancelHooks above (defers run LIFO),
+			// so ctx.Err() can only be DeadlineExceeded here — the parent is
+			// WithoutCancel and is never cancelled from anywhere else.
+			if errors.Is(hookCtx.Err(), context.DeadlineExceeded) {
+				recordPhaseTruncated(phase, truncationAttribution(interrupted, skipped))
+			}
+		}()
+
 		postHooksMu.Lock()
 		saves := postHooks
 		hooks := hookStack
@@ -744,8 +1044,46 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		hookStack = nil
 		postHooksMu.Unlock()
 
-		for _, fn := range saves {
-			fn(hookCtx)
+		// runHook executes one queued item and classifies it for the
+		// truncation record: an item the budget had already expired before we
+		// reached is SKIPPED (it never ran at all), and the one item whose
+		// execution the expiry landed inside is INTERRUPTED (it started and
+		// did not get to finish).
+		//
+		// The classification reads hookCtx.Err() around the call rather than
+		// inspecting the item's own error, because neither a cache save nor a
+		// post hook reports one in a form this loop sees: CacheSave's failure
+		// is swallowed into slog inside the closure, and RunPostHook's is
+		// deliberately non-fatal.
+		//
+		// IMPRECISION, both directions: an item at the deadline BOUNDARY may be
+		// labelled interrupted whether it completed or never got going. The
+		// second is the likelier of the two — the Err() check passes, and the
+		// deadline lands in the gap before CacheSave/RunPostHook touches the
+		// context, so the item does nothing at all yet is reported interrupted;
+		// that gap is nanoseconds wide but is entered on every item, whereas
+		// "finished in the last instant" needs the deadline to land inside the
+		// call itself. Either way the item IS named, nothing is dropped, and at
+		// most one item per drain can be mislabelled — only the heading it lands
+		// under is wrong, never the fact that it needs looking at.
+		//
+		// Distinguishing them would mean threading a result out of every hook.
+		// Not worth it: a mislabelled item costs an operator a second look at
+		// one save, where the alternative — today's behaviour, no attribution at
+		// all — costs them the ability to find the truncated save.
+		runHook := func(label string, fn func()) {
+			if hookCtx.Err() != nil {
+				skipped = append(skipped, label)
+				return
+			}
+			fn()
+			if interrupted == "" && hookCtx.Err() != nil {
+				interrupted = label
+			}
+		}
+
+		for _, save := range saves {
+			runHook(save.label, func() { save.fn(hookCtx) })
 		}
 		for i := len(hooks) - 1; i >= 0; i-- {
 			entry := hooks[i]
@@ -765,12 +1103,14 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 			// fresh per hook (not reused from the step's own StepLogWriters call,
 			// which already finished when the step itself completed) so post output
 			// gets its own flush lifecycle independent of the step body's.
-			postStdout, postStderr, finishPostLogs := b.StepLogWriters(hookCtx, entry.stepIndex)
-			runErr := b.RunPostHook(hookCtx, entry.scope, entry.container, cmd, entry.shell, extraEnv, postStdout, postStderr)
-			finishPostLogs(hookCtx)
-			if runErr != nil {
-				slog.Warn("post step failed", "step", entry.stepName, "error", runErr)
-			}
+			runHook(fmt.Sprintf("the post: hook of step %q", entry.stepName), func() {
+				postStdout, postStderr, finishPostLogs := b.StepLogWriters(hookCtx, entry.stepIndex)
+				runErr := b.RunPostHook(hookCtx, entry.scope, entry.container, cmd, entry.shell, extraEnv, postStdout, postStderr)
+				finishPostLogs(hookCtx)
+				if runErr != nil {
+					slog.Warn("post step failed", "step", entry.stepName, "error", runErr)
+				}
+			})
 		}
 	}
 
@@ -778,7 +1118,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	dagErr := RunPipeline(runCtx, c.Stages, getData, c.MatrixMaxCombinations, b.ConcurrencyMode(), mainRunner)
 
 	// post-hooks run regardless of DAG success/failure (cache save should always attempt).
-	drainHooks()
+	drainHooks("the post:/cache: hook drain that follows the main steps")
 
 	// Freeze the main-DAG status for finally if: evaluation.
 	cancelled := cancelledByMaster.Load()
@@ -793,10 +1133,45 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		frozen := dsl.RunStatusView{Failed: mainFailed, Cancelled: cancelled}
 		finallyStatus := func() dsl.RunStatusView { return frozen }
 		finallyRunner := makeStepRunner(finallyStatus, false, &finallyFailed, false)
-		// Use a non-cancelling context so finally runs even when the run was cancelled.
-		finallyCtx := context.WithoutCancel(ctx)
+		// Non-cancelling, but NOT unbounded. Cancellation is deliberately not
+		// inherited — that is why `finally:` exists — while the phase still
+		// carries a deadline of its own, because WithoutCancel also strips the
+		// job-level spec.timeoutMinutes deadline and yields a context whose
+		// Done() is nil. See DefaultFinallyBudget for the full failure mode:
+		// without this, a `call:` (or plain `run:`) finally step with no
+		// per-step timeoutMinutes waited forever, and nothing else could break
+		// the deadlock. Per-step `timeoutMinutes:` still works inside
+		// `finally:` and remains the precise tool; this is the ceiling.
+		finallyCtx, cancelFinally := context.WithTimeout(context.WithoutCancel(ctx), phaseBudget)
+		defer cancelFinally()
 		if err := RunPipeline(finallyCtx, c.Finally, getData, c.MatrixMaxCombinations, b.ConcurrencyMode(), finallyRunner); err != nil {
 			slog.Warn("finally: structural error", "runId", c.RunID, "error", err)
+			finallyFailed.Store(true)
+		}
+		// A truncated `finally:` phase is a PHASE-level fact, recorded and
+		// status-affecting independently of any individual step.
+		//
+		// Independent of the steps because `continueOnError: true` makes
+		// recordFailure return early, so a `finally:` block whose steps all
+		// carry it could be cut off mid-cleanup and still report Succeeded —
+		// the exact silence this whole change exists to remove. Whether a
+		// PARTICULAR step's failure matters is what continueOnError answers;
+		// whether the PHASE finished is not that step's to say.
+		//
+		// Status-affecting, unlike a truncated hook drain above, because this
+		// phase is author-written pipeline work whose failures already flip
+		// the run to Failed (dsl.Spec.Finally's documented contract, and F3's
+		// fix). A pipeline that did not finish did not succeed. The main DAG's
+		// own result is untouched: what changes is only the run's verdict,
+		// which is the honest one — the job's work may have succeeded, but its
+		// cleanup demonstrably did not complete.
+		if errors.Is(finallyCtx.Err(), context.DeadlineExceeded) {
+			// No attribution argument: unlike a hook drain, a truncated
+			// `finally:` pipeline already attributes itself. Its steps are
+			// real steps — each one was reported to the controller, and the
+			// one running at the deadline is reported Failed with its own
+			// log — so the operator can already see which step was cut off.
+			recordPhaseTruncated("the finally: phase", "")
 			finallyFailed.Store(true)
 		}
 		// Second drain: the `post:` hooks and `cache:` saves the finally
@@ -806,7 +1181,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		// dropping them would reintroduce exactly the silent-skip bug this
 		// call fixes. Still before the deferred CloseScopes, so a scoped
 		// finally step's hook still finds its scope container alive.
-		drainHooks()
+		drainHooks("the post:/cache: hook drain that follows finally:")
 	}
 
 	var overallStatus api.RunStatus
@@ -821,6 +1196,35 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 
 	// Use a non-cancelling context so that FinishRun and SetRunOutputs are reliably called
 	// even when ctx has been cancelled due to timeout or other reasons.
+	//
+	// DELIBERATELY UNBOUNDED, and the only post-DAG phase that is. The rule
+	// for the rest is "every phase that EXECUTES something carries
+	// phaseBudget": the `finally:` pipeline, both hook drains, and the
+	// deferred CloseScopes teardown. This phase executes nothing of the job's;
+	// it only makes the controller's view of the run match what already
+	// happened here, through retryUntilSuccess.
+	//
+	// A ceiling here has nothing to hand off to. retryUntilSuccess already
+	// stops on any sub-500 HTTPError, so a controller that has moved on
+	// (4xx — the run reaped, deleted, or already terminal) ends the loop at
+	// once; the only case that spins is a persistent 5xx, e.g. a load balancer
+	// in front of the controller returning 502 through an outage. If the agent
+	// gave up there, the run would stay Running at the controller forever with
+	// nothing to recover it: the stuck-run reaper's predicate is "the agent
+	// row is gone OR its last_seen_at is stale" (store.ListStuckRuns), and an
+	// agent that gave up on FinishRun is still claiming and still
+	// heartbeating, so it is neither. Giving up strands the run permanently;
+	// spinning recovers it the moment the endpoint answers.
+	//
+	// In the outage that would appear to justify a ceiling — the controller
+	// unreachable altogether — the spin costs nothing that is worth having.
+	// The agent's own heartbeats are failing too, so its row DOES go stale and
+	// the reaper does take over; and the concurrency slot the spin pins is
+	// worthless meanwhile, because new claims go through the same controller.
+	//
+	// If this ever does need a ceiling, the missing piece is on the controller
+	// (a reaper predicate that can see a run whose agent is alive but whose
+	// finish never landed), not here.
 	finishCtx := context.WithoutCancel(ctx)
 
 	// If the controller already marked this run terminal out-of-band (e.g. the
@@ -834,20 +1238,51 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		return
 	}
 
-	// Promote declared job outputs (only from steps that actually executed)
+	// Promote declared job outputs (only from steps that actually executed).
+	//
+	// Both phases are scanned. A `finally:` step is an ordinary step — it can
+	// set a declared spec.params.outputs value (SetStepOutputs already lands
+	// for it) — but only c.Stages used to be walked here, so a report URL
+	// published during teardown reached the step's own outputs and then
+	// vanished: SetRunOutputs never carried it and a parent `call:` step read
+	// nothing. The ORDERING was already right (promotion happens after the
+	// finally pipeline); only the scan set was wrong.
+	//
+	// Name collisions (a main step and a finally step both declaring the same
+	// output name) resolve LAST IN DECLARATION ORDER WINS, and c.Finally is
+	// scanned after c.Stages, so the finally value wins. Declaration order,
+	// not execution order: this loop walks the stages and the steps within
+	// each stage exactly as the job wrote them, so for two members of one
+	// PARALLEL group — which race, and whose finishing order is not
+	// reproducible — the winner is still the one written last. Sequential
+	// stages are the case where the two orders coincide.
+	//
+	// That is not a special case invented here: the loop already resolves
+	// collisions between two main-DAG steps that way (a later stage overwrites
+	// an earlier one), and `finally:` is written last, so extending the same
+	// rule keeps one predictable statement — "the value promoted is the one
+	// set by the last step that declares it" — instead of two rules that
+	// disagree at the phase boundary. It is also the useful
+	// direction: a teardown step overriding a provisional value (a rollback
+	// recording the URL actually left live) is a real pattern, whereas a main
+	// step reaching back to overwrite a later cleanup step's value is not.
 	runOutputs := map[string]string{}
 	finalData := sctx.snapshot()
-	for _, outName := range c.JobOutputs {
-		for _, stage := range c.Stages {
-			for _, step := range api.StageSteps(stage) {
-				if sd, ok := finalData.Steps[step.Name]; ok {
-					if val, ok := sd.Outputs[outName]; ok {
-						runOutputs[outName] = dsl.OutputValueString(val)
+	promote := func(stages []api.ClaimStage) {
+		for _, outName := range c.JobOutputs {
+			for _, stage := range stages {
+				for _, step := range api.StageSteps(stage) {
+					if sd, ok := finalData.Steps[step.Name]; ok {
+						if val, ok := sd.Outputs[outName]; ok {
+							runOutputs[outName] = dsl.OutputValueString(val)
+						}
 					}
 				}
 			}
 		}
 	}
+	promote(c.Stages)
+	promote(c.Finally)
 	if len(runOutputs) > 0 {
 		safeRunOutputs := FilterSecretOutputs(runOutputs, masker, func(k string) {
 			warnSkippedOutput(finishCtx, -1, k)
@@ -985,7 +1420,7 @@ func executeCacheStep(
 	runID string,
 	sctx *safeStepCtx,
 	postHooksMu *sync.Mutex,
-	postHooks *[]func(context.Context),
+	postHooks *[]deferredHook,
 	b ExecBackend,
 	scope ScopeHandle,
 ) error {
@@ -1063,20 +1498,23 @@ func executeCacheStep(
 	capturedPath := scopedCachePath
 	capturedKey := key
 	postHooksMu.Lock()
-	*postHooks = append(*postHooks, func(hookCtx context.Context) {
-		// NOTE: on the host backend with a nil CacheStore (cache disabled),
-		// b.CacheSave is a silent no-op that returns nil, so this still logs
-		// "cache saved" even though nothing was saved (hostBackend.CacheSave
-		// logs its own DEBUG-level "cache disabled; save skipped" instead).
-		// Fixing this precisely would require an ExecBackend interface change
-		// (e.g. a bool "did it actually save" return) or a type assertion
-		// across the host/k8s seam — too big a change for what is an
-		// imprecise log line with no functional impact, so it is left as-is.
-		if err := b.CacheSave(hookCtx, scope, capturedKey, capturedPath, ttlDays); err != nil {
-			slog.Warn("cache save failed", "key", capturedKey, "error", err)
-		} else {
-			slog.Info("cache saved", "key", capturedKey)
-		}
+	*postHooks = append(*postHooks, deferredHook{
+		label: fmt.Sprintf("the cache: save for step %q (key %q)", step.DisplayName(), capturedKey),
+		fn: func(hookCtx context.Context) {
+			// NOTE: on the host backend with a nil CacheStore (cache disabled),
+			// b.CacheSave is a silent no-op that returns nil, so this still logs
+			// "cache saved" even though nothing was saved (hostBackend.CacheSave
+			// logs its own DEBUG-level "cache disabled; save skipped" instead).
+			// Fixing this precisely would require an ExecBackend interface change
+			// (e.g. a bool "did it actually save" return) or a type assertion
+			// across the host/k8s seam — too big a change for what is an
+			// imprecise log line with no functional impact, so it is left as-is.
+			if err := b.CacheSave(hookCtx, scope, capturedKey, capturedPath, ttlDays); err != nil {
+				slog.Warn("cache save failed", "key", capturedKey, "error", err)
+			} else {
+				slog.Info("cache saved", "key", capturedKey)
+			}
+		},
 	})
 	postHooksMu.Unlock()
 

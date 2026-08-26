@@ -213,3 +213,104 @@ no step ever ran). The cause and fix are the same: something panicked, the
 agent turned it into a normal Failed outcome instead of crashing, and the
 panic text points at the failing code.
 
+---
+
+## A `finally` step fails with `context deadline exceeded` and the run is `Failed`
+
+**Symptom**
+
+A step inside `spec.finally` is reported `Failed` after roughly ten minutes,
+its log carries a line like
+
+```
+unified-cd: step "cleanup" failed to execute: context deadline exceeded
+```
+
+and the run's **System** stream carries
+
+```
+unified-cd: the finally: phase did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped.
+```
+
+The run finishes `Failed` — including runs a user had cancelled, which
+previously finished `Cancelled`, and including a `finally` block whose steps
+are all `continueOnError: true`, because a phase that did not finish is not a
+step's fact to suppress.
+
+**The same symptom with no step involved.** If the System line names a hook
+drain instead —
+
+```
+unified-cd: the post:/cache: hook drain that follows the main steps did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped. Interrupted: the cache: save for step "deps" (key "go-mod-linux-9f3c"). Never started: the post: hook of step "integration".
+```
+
+— then a `post:`/`cache:` hook was cut off and the run's status is **not**
+affected: a successful job still reports `Succeeded`. That is the case to look
+for when a `cache:` save silently did not land and the next run got a cache
+miss. Post-hook failures have never changed a run's status; the System line is
+the record.
+
+Read the `Interrupted:` / `Never started:` tail to find **which** cache or
+hook: `Interrupted:` names the one item the deadline landed inside (at most
+one), `Never started:` the queued items behind it, summarised as `(+N more)`
+past five so a job with hundreds of hooks still yields one line. Items named
+there are the ones whose side effects did not happen — those caches are stale,
+those hooks did not run.
+
+**Cause**
+
+The cleanup phase now has a ceiling. `finally` deliberately ignores run
+cancellation, and that also discards the job-level `spec.timeoutMinutes`
+deadline, so the agent applies `finallyTimeout` (default **10m**) to each
+cleanup phase instead — each `post:`/`cache:` hook drain, the `finally`
+pipeline, and scope/claim-pod teardown — plus, on the Kubernetes agent, a
+fifth window for the claim Pod's own deletion or return to the idle pool,
+which happens after the shared cleanup loop returns. So a run's worst-case
+post-DAG time is 5 × `finallyTimeout` (50m at the default) on the Kubernetes
+agent and 4 × (40m) on the standard agent; size anything against the larger.
+Before this existed, such a step ran forever: it pinned the run, held
+one of the agent's concurrency slots, and nothing detected it, because the
+stuck-run reaper keys on **agent** liveness and the agent keeps heartbeating.
+The most common way to hit the wall is a `call:` in `finally` with no
+`timeoutMinutes:`, waiting on a child run that will never be claimed.
+
+**Fix**
+
+- Set `timeoutMinutes:` on the cleanup step itself. It works inside `finally`
+  and is the precise control; the fleet-wide budget is only a backstop.
+- If the cleanup genuinely needs longer (a large cache save, a slow rollback),
+  raise the agent's budget: `--finally-timeout` /
+  `UNIFIED_AGENT_FINALLY_TIMEOUT` / `finallyTimeout` on the standard agent,
+  `finallyTimeout` / `UNIFIED_K8S_FINALLY_TIMEOUT` on the Kubernetes agent. A
+  non-positive value does **not** mean "unbounded" — it falls back to the 10m
+  default; an unparseable one is a startup error (except in
+  `UNIFIED_AGENT_FINALLY_TIMEOUT`, which is ignored when it does not parse).
+- If the step is hanging rather than slow, the deadline is telling you the
+  truth: fix what it is waiting on. See
+  [Bounding a run's cleanup phase](../operator-manual/agents.md#bounding-a-runs-cleanup-phase-finallytimeout).
+
+---
+
+## A cancelled run finished `Failed` instead of `Cancelled`
+
+**Symptom**
+
+A user cancelled a run; the run's terminal status is `Failed`, and a step
+inside `spec.finally` is reported `Failed`.
+
+**Cause**
+
+This is correct, and is a deliberate change. A `finally` step that exits
+non-zero failed for its own reasons — its context was never cancelled, since
+the whole point of `finally` is that it runs after a cancellation — so the
+failure is reported as a failure and the run is marked `Failed`. Previously
+the step was relabelled `Cancelled` and the failure was discarded, which
+showed operators a clean cancellation over broken teardown.
+
+**Fix**
+
+Read the failing `finally` step's log and fix the cleanup. If the run should
+have finished `Cancelled`, the cleanup must succeed — a `finally` block whose
+steps all succeed still leaves a cancelled run `Cancelled`. See
+[Approval and Finally](../user-guide/writing-jobs/approval-and-finally.md#finally-block-finally).
+

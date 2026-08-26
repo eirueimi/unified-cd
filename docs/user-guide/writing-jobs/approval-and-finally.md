@@ -105,9 +105,23 @@ spec:
 
 - `finally` uses the same structure as `steps` (stages + `parallel`).
 - A `finally` step with no `if:` always runs.
-- All `finally` steps run to completion; a `finally` step that fails marks the
-  run **Failed**.
+- There is no fail-fast inside `finally`: a `finally` step that fails does not
+  stop the ones after it, and a `finally` step that fails marks the run
+  **Failed**. The block as a whole is not unbounded, though — it runs until it
+  finishes or until the agent's `finallyTimeout` expires, whichever comes
+  first. See [How long `finally` may run](#how-long-finally-may-run).
 - On cancellation, `finally` still runs, but `failure()` is `false`.
+- **A `finally` step that fails on a cancelled run still fails the run.** The
+  cancellation ends the main `steps` DAG; it does not excuse cleanup. A
+  `finally` step is reported `Failed` (not `Cancelled`) when it exits non-zero,
+  and the run finishes `Failed` rather than `Cancelled` — so an operator who
+  cancels a deploy and whose rollback then breaks sees the broken rollback
+  instead of a clean cancellation. A `finally` block that cleans up
+  successfully leaves a cancelled run `Cancelled`, as before.
+- **`retry:` keeps its full attempt budget inside `finally`, even on a
+  cancelled run** — for the same reason. (In the main DAG a cancellation still
+  stops the retry loop at the current attempt: cancelling a run means stopping
+  it.)
 - `cache:` and `post:` **are** supported in `finally` steps. Their deferred
   hooks (the cache save, the post script) run after the whole `finally` block
   completes, in their own drain pass — a normal step's `post:` hook still runs
@@ -121,7 +135,102 @@ spec:
   notification/cleanup template that only needs to run on completion.
 - Both the standard and Kubernetes agents detect mid-run cancellation: an
   in-flight step is interrupted, `finally` still runs (with `failure()` false),
-  and the run finishes as `Cancelled`.
+  and the run finishes as `Cancelled` — unless a `finally` step itself fails,
+  in which case the run finishes `Failed` (see above).
+
+### Job outputs from a `finally` step
+
+A `finally` step is an ordinary step, so it can set a value declared in
+[`spec.params.outputs`](parameters.md#output-fields), and that value **is** promoted to the
+run's outputs — which is what a parent [`call:`](templates-and-reuse.md#calling-other-jobs-call) step
+reads back.
+
+```yaml
+spec:
+  params:
+    outputs:
+      - name: report_url
+  steps:
+    - name: test
+      run: ./test.sh
+  finally:
+    - name: publish-report
+      run: ./publish.sh
+      outputs:
+        report_url: "{{ .Stdout }}"
+```
+
+If a main-DAG step and a `finally` step both set the same declared output name,
+**the `finally` value wins**. This is the same "the last step that declares it
+wins" rule that already applies between two main-DAG steps, and it is the
+useful direction: a teardown step recording what was actually left in place
+should override a provisional value from the main DAG.
+
+"Last" means last in **declaration order** — the order the steps are written in
+the job — not the order they happened to finish. For sequential stages the two
+are the same thing. Inside one `parallel` group they are not: the members race,
+so if two of them declare the same output name the winner is the one written
+last, which is the only answer that is reproducible.
+
+### How long `finally` may run
+
+`finally` deliberately ignores run cancellation — that is the entire point of
+the block. Because of that it also cannot inherit the job-level
+`spec.timeoutMinutes` deadline, so the agent applies its own ceiling instead:
+**`finallyTimeout`, 10 minutes by default**, configurable per agent
+(`--finally-timeout` / `UNIFIED_AGENT_FINALLY_TIMEOUT` on the standard agent,
+`finallyTimeout` / `UNIFIED_K8S_FINALLY_TIMEOUT` on the Kubernetes agent — see
+the [Configuration Reference](../../reference/configuration.md)).
+
+The ceiling applies separately to each cleanup phase, in this order: the
+`post:`/`cache:` hook drain that follows the main `steps` DAG, the `finally`
+pipeline itself, the hook drain that follows `finally`, and scope/claim-pod
+teardown — plus, on the Kubernetes agent only, a fifth phase for the claim
+Pod's own deletion or return to the idle pool, which happens after the shared
+cleanup loop has returned.
+
+It is a per-phase budget and not a shared total, so the worst case a run can
+spend after its DAG finishes is **5 × `finallyTimeout` (50 minutes at the
+default) on the Kubernetes agent, 4 × (40 minutes) on the standard agent**. If
+you are sizing anything against this — a rollout's grace period, a drain
+window, an alert — use the larger number unless you are certain which backend
+the job lands on. A step still running when the budget expires is interrupted
+and reported `Failed`.
+
+**When a phase is cut short, the run says so.** The run's own **System** stream
+gains a line naming the phase and the budget:
+
+```
+unified-cd: the finally: phase did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped.
+```
+
+For a truncated **hook drain**, the line also names what was cut off and what
+never ran — a job with several `cache:` steps would otherwise leave you unable
+to tell which cache is now stale:
+
+```
+unified-cd: the post:/cache: hook drain that follows the main steps did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped. Interrupted: the cache: save for step "deps" (key "go-mod-linux-9f3c"). Never started: the cache: save for step "build-cache" (key "build-9f3c"), the post: hook of step "integration".
+```
+
+Past five never-started entries the rest are summarised as `(+N more)`, so a
+job with hundreds of hooks still produces one line.
+
+What happens to the run's status depends on which phase was truncated:
+
+| Phase truncated | Run status |
+|---|---|
+| the `finally` pipeline | **`Failed`** — the cleanup pipeline did not finish, so the run did not fully succeed. This holds even if every step in the block is `continueOnError: true`: that flag scopes one step's failure, and whether the phase finished is not that step's to suppress. |
+| a `post:`/`cache:` hook drain | unchanged (a successful job still reports `Succeeded`) — a post hook has never changed the run's status, whatever it fails on. The System line above is the record. |
+
+That second row is why the line matters: a large `cache:` save cut off at the
+budget is not saved, and without the System line — and the `Interrupted:` /
+`Never started:` detail on it — nothing about the run would say so, or say
+which save it was.
+
+Per-step `timeoutMinutes:` works inside `finally` and is the precise tool —
+set it on any cleanup step that talks to something that can hang (a `call:`
+to a teardown job, a webhook, a cloud API). The budget is only the backstop
+for steps that set nothing.
 
 ---
 
