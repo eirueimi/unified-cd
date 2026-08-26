@@ -48,9 +48,10 @@ type secretsExec struct {
 	mu         sync.Mutex
 	stdoutLine string
 	stderrLine string
-	// stderrDelay, if set, sleeps before writing the stderr line — used by the
-	// auto-flush test to prove the line reaches the server before ExecStep
-	// (i.e. the step) returns.
+	// stdoutDelay / stderrDelay, if set, sleep after writing the
+	// corresponding line — used by the auto-flush tests to prove a line
+	// reaches the server before ExecStep (i.e. the step) returns.
+	stdoutDelay time.Duration
 	stderrDelay time.Duration
 	scripts     []string
 }
@@ -61,6 +62,12 @@ func (f *secretsExec) ExecStep(_ context.Context, _, _, script string, _ []strin
 	f.mu.Unlock()
 	if f.stdoutLine != "" {
 		_, _ = stdout.Write([]byte(f.stdoutLine + "\n"))
+		if f.stdoutDelay > 0 {
+			// Hold the step "in progress" after writing the marker, so a test
+			// can prove the marker was shipped by auto-flush mid-step rather
+			// than only at step end (when ExecStep finally returns).
+			time.Sleep(f.stdoutDelay)
+		}
 	}
 	if f.stderrLine != "" {
 		_, _ = stderr.Write([]byte(f.stderrLine + "\n"))
@@ -257,9 +264,9 @@ func TestExecuteRun_SecretValueMaskedInStdoutAndStderr(t *testing.T) {
 // is measurably earlier than "now" captured immediately after ExecStep
 // returns — i.e. it was shipped mid-step, not only at step end.
 func TestExecuteRun_StderrFlushesBeforeStepEnds(t *testing.T) {
-	prevInterval := stderrAutoFlushInterval
-	stderrAutoFlushInterval = 200 * time.Millisecond
-	t.Cleanup(func() { stderrAutoFlushInterval = prevInterval })
+	prevInterval := logAutoFlushInterval
+	logAutoFlushInterval = 200 * time.Millisecond
+	t.Cleanup(func() { logAutoFlushInterval = prevInterval })
 
 	const agentID = "k8s-secrets-3"
 	const runID = "run-secrets-3"
@@ -304,6 +311,73 @@ func TestExecuteRun_StderrFlushesBeforeStepEnds(t *testing.T) {
 	gapBeforeStepEnd := stepEnded.Sub(markerTime)
 	assert.Greater(t, gapBeforeStepEnd, time.Second,
 		"expected the stderr marker to reach the server at least 1s before the step ended (proving mid-step auto-flush), gap was %s", gapBeforeStepEnd)
+	assert.Less(t, markerTime.Sub(start), 1*time.Second,
+		"expected the auto-flush to ship the marker shortly after it was written, not only at step end")
+}
+
+// TestExecuteRun_StdoutFlushesBeforeStepEnds is TestExecuteRun_
+// StderrFlushesBeforeStepEnds' stdout twin. It exists because stdout and
+// stderr are no longer symmetric only by assumption: k8sBackend.StepLogWriters
+// used to give stdout a per-line writer with no flush timer of its own (any
+// write reached the server immediately, so no auto-flush test was needed for
+// it), and stderr alone got a LogPusher with StartAutoFlush. Now both streams
+// are LogPushers, and it is only StepLogWriters' two StartAutoFlush calls
+// that make either one ship before step end rather than buffering silently
+// until the step's own finish/Flush. Deleting stdoutPusher.StartAutoFlush(...)
+// (backend.go) leaves every other test in this file green — none of them
+// hold a step open long enough to observe the difference — while a quiet
+// step's stdout would buffer to step end, exactly the live-tail regression
+// this fix pass exists to prevent. This test was confirmed to fail (RED) with
+// that line removed before being written up, mirroring the stderr version's
+// own history.
+func TestExecuteRun_StdoutFlushesBeforeStepEnds(t *testing.T) {
+	prevInterval := logAutoFlushInterval
+	logAutoFlushInterval = 200 * time.Millisecond
+	t.Cleanup(func() { logAutoFlushInterval = prevInterval })
+
+	const agentID = "k8s-secrets-4"
+	const runID = "run-secrets-4"
+
+	h := newSecretsHarness()
+	srv := h.newServer(t, agentID, runID)
+
+	pm := &secretsPM{}
+	ex := &secretsExec{stdoutLine: "mid-step-stdout-marker", stdoutDelay: 1500 * time.Millisecond}
+	agentClient := agentlib.NewClient(srv.URL, "tok")
+
+	cfg := Config{AgentID: agentID, Namespace: "ci", PodImage: "ubuntu:22.04"}
+	a := &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: ex}
+
+	claim := api.ClaimResponse{
+		RunID:   runID,
+		JobName: "stdout-flush-test",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "slow-stdout", Run: "echo slow"}},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	a.executeRun(ctx, claim)
+	stepEnded := time.Now()
+
+	_, lines := h.snapshot()
+	h.mu.Lock()
+	var markerTime time.Time
+	for i, line := range h.logLines {
+		if strings.Contains(line, "mid-step-stdout-marker") {
+			markerTime = h.logLineTimes[i]
+			break
+		}
+	}
+	h.mu.Unlock()
+
+	require.False(t, markerTime.IsZero(), "expected the mid-step-stdout-marker line to be shipped, got lines: %v", lines)
+	gapBeforeStepEnd := stepEnded.Sub(markerTime)
+	assert.Greater(t, gapBeforeStepEnd, time.Second,
+		"expected the stdout marker to reach the server at least 1s before the step ended (proving mid-step auto-flush), gap was %s", gapBeforeStepEnd)
 	assert.Less(t, markerTime.Sub(start), 1*time.Second,
 		"expected the auto-flush to ship the marker shortly after it was written, not only at step end")
 }
