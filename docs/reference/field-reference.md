@@ -40,6 +40,12 @@
 | `agentSelector` | []string | no |  |
 | `concurrency` | Concurrency | no |  |
 | `description` | string | no | Description is a human-readable summary of the job, shown in the WebUI. |
+| `detached` | boolean | no | Detached marks this job's runs as lightweight orchestrators: they do not
+consume an agent's MaxConcurrent budget and are claimed from a separate
+MaxDetachedConcurrent pool, and get an independent per-run workspace on
+host agents. Intended for jobs that mostly issue call: steps and wait.
+Orthogonal to Native — a native host orchestrator may be detached. The
+json tag matters: the store persists the spec as JSON and re-reads this. |
 | `finally` | []StepEntry | no | Finally runs after the main DAG completes, on success, failure, or
 cancellation. Same structure as Steps. A finally step's `if:` defaults to
 always-run; use if: failure()/success() to filter. A finally step that
@@ -47,7 +53,10 @@ fails marks the run Failed (after all finally steps run). |
 | `native` | boolean | no | Native opts the whole job into host-process execution (no claim pod,
 no podTemplate, no container: steps). Host agents only; the default
 (false) is the isolated pod model on both backends. |
-| `params` | Params | yes |  |
+| `params` | Params | no | Params is optional: a job with no declared inputs/outputs omits it
+entirely (the common case — see examples/jobs/*.yaml). Validate does
+not require it, so the generated schema must not either (schemagen
+derives "required" from the absence of omitempty/pointer). |
 | `podTemplate` | PodTemplate | no |  |
 | `shell` | []string | no | Shell overrides the default interpreter argv for every step in this
 job that does not declare its own step-level shell:. Array-only (no
