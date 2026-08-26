@@ -112,9 +112,9 @@ where you are:
 | Template | `{{ .Vars.REGISTRY }}` | The value is needed in a **YAML field that is not a shell script** — a `cache:` key or path, a `call:` step's `with:`, an `outputs:` expression — or where you want the value fixed before the shell ever sees it (no quoting or word-splitting surprises). |
 
 Where `{{ .Vars.KEY }}` is expanded: a step's `run:`, its `env:` values, its
-`outputs:` expressions, a `cache:` step's key and path, and a `call:` step's
-`with:` values. These are all expanded by the agent, per step, against the
-run's variables.
+`outputs:` expressions, a `cache:` step's `key`, `path` and `restoreKeys`, and
+a `call:` step's `with:` values. These are all expanded by the agent, per step,
+against the run's variables.
 
 An **undefined** key in a template expands to the empty string, not an error
 (templates are evaluated with `missingkey=zero`). A misspelt
@@ -131,10 +131,13 @@ of them fails loudly, so read this section before you write one.
 ### `post:` hooks receive no variables
 
 A step's `post:` hook does not get the run's variables. This is not a
-vars-shaped hole — a post hook gets **no context at all**: no
-`UNIFIED_WORKSPACE`, no `UNIFIED_AGENT_OS`, and its `post.env:` values are not
-template-expanded either. Its environment is exactly the literal `post.env:`
-map you wrote and nothing else.
+vars-shaped hole — a post hook gets **none of the job's context**: no
+variables, no `UNIFIED_WORKSPACE`, no `UNIFIED_AGENT_OS`, and its `post.env:`
+values are not template-expanded either, so `{{ .Vars.X }}` there stays
+literal text. What it does still get is what the agent gives every process it
+starts: the operating-system baseline (`PATH`, `HOME`, and the usual per-user
+directories) and whatever the agent operator opted in through `exposeEnv`.
+Everything the *job* contributes stops at the step body.
 
 ```yaml
 - name: build

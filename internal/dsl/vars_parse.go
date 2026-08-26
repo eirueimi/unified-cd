@@ -17,19 +17,33 @@ var varKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // reservedVarNames may never be defined as a variable.
 //
-// The UNIFIED_* names are the agent's own credentials, duplicated from
-// internal/agent/stepenv.go's stepEnvDenied — leaking them lets a job author
-// act as the agent. They are duplicated rather than imported because
-// internal/dsl must not depend on internal/agent. The runtime backstop is
-// internal/agent's varsDenied, which filters a claim's vars against this whole
-// set (via ReservedVarNames) as well as against stepEnvDenied. The test that
-// the two agree lives in internal/agent — the package that can import both,
-// and so compare the real structures instead of a hand-copied list — as
-// TestVarsDenied_AgreesWithApplyTimeValidation.
+// Three groups, refused for two different reasons.
 //
-// PATH and HOME are refused because a global Vars manifest applies to every
-// step of every job: a PATH that shadows the agent's baseline breaks all of
-// them at once, in a way whose cause is not visible in the failure.
+// CREDENTIALS. UNIFIED_CACHE_KEY, UNIFIED_CACHE_SECRET, UNIFIED_TOKEN,
+// UNIFIED_AGENT_CREDENTIAL_FILE and UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE are the
+// agent's own credentials, duplicated from internal/agent/stepenv.go's
+// stepEnvDenied — leaking them lets a job author act as the agent. They are
+// duplicated rather than imported because internal/dsl must not depend on
+// internal/agent.
+//
+// SHADOWING THE STEP'S OWN CONTRACT. PATH and HOME are the shell's baseline;
+// UNIFIED_WORKSPACE and UNIFIED_AGENT_OS are synthesised by the orchestrator
+// into the SAME extraEnv slice the variables are appended to, and appended
+// AFTER them, so the last definition wins. A global Vars manifest applies to
+// every step of every job, so one of these silently redefines the ground every
+// step stands on: a shadowed PATH breaks every step at once, and a shadowed
+// UNIFIED_WORKSPACE has every step succeed while reading and writing the wrong
+// directory — which the docs actively tell authors to build artifact and cache
+// paths from. Neither leaves anything in a log to say what happened. The cost
+// of refusing is that nobody can set them globally, which nobody should want
+// to do.
+//
+// The runtime backstop is internal/agent's varsDenied, which filters a claim's
+// vars against this whole set (via ReservedVarNames), against stepEnvDenied,
+// and against the orchestrator's synthesised names. The test that all three
+// agree lives in internal/agent — the package that can import both, and so
+// compare the real structures instead of a hand-copied list — as
+// TestVarsDenied_AgreesWithApplyTimeValidation.
 //
 // Names here are upper-case; ValidateVarKeys upper-cases before the lookup, so
 // `path` and `Path` are refused too.
@@ -39,6 +53,8 @@ var reservedVarNames = map[string]bool{
 	"UNIFIED_TOKEN":                       true,
 	"UNIFIED_AGENT_CREDENTIAL_FILE":       true,
 	"UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE": true,
+	"UNIFIED_WORKSPACE":                   true,
+	"UNIFIED_AGENT_OS":                    true,
 	"PATH":                                true,
 	"HOME":                                true,
 }

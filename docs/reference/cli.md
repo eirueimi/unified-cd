@@ -637,7 +637,7 @@ unified-cli artifact download run-abc123 cli-art --dest ./out
 ## export
 
 Export all resources (Jobs, Schedules, WebhookReceivers, GitCredentials,
-AppSources) as one YAML file per resource:
+Vars, AppSources) as one YAML file per resource:
 
 ```bash
 unified-cli export -o ./exported/
@@ -647,7 +647,7 @@ unified-cli export -o ./exported/
   so the output directory can be committed to Git and pointed at by an
   AppSource `path` directly — re-importing reproduces the same names.
 - Non-Job kinds go under `schedules/`, `webhookreceivers/`,
-  `gitcredentials/`, `appsources/`.
+  `gitcredentials/`, `vars/`, `appsources/`.
 - `--unmanaged-only` exports only resources not already managed by an
   AppSource (useful for migrating manually-applied resources to Git).
 - `--force` allows writing into a non-empty directory.

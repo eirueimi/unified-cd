@@ -66,12 +66,7 @@ element. See Step.Shell for the full resolution priority. |
 | `steps` | []StepEntry | yes | Steps is the main DAG of steps to execute.
 (failFast was removed — all started steps run to completion.) |
 | `timeoutMinutes` | number | no |  |
-| `vars` | map[string]string | no | Vars are plain-text variables shared by every step of this job. They
-reach a step twice: as environment variables, and as {{ .Vars.KEY }} in
-templates. They are NOT secrets — see kind: Vars.
-
-BOTH tags are required: the store persists Spec as JSON and reads it
-back, so a yaml-only tag round-trips to nothing. See Detached. |
+| `vars` | map[string]string | no | Plain-text variables shared by every step of this job, delivered as environment variables and as {{ .Vars.KEY }} in templates. NOT secrets — see kind: Vars. |
 
 ### Concurrency
 

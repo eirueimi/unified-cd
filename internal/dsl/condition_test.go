@@ -194,6 +194,40 @@ func TestEvalCondition_VarsPresenceTestStaysTruthful(t *testing.T) {
 	assert.Empty(t, warns, "a presence test is not an undefined-key read")
 }
 
+// The other half of the presence-testing trade-off, which was documented in
+// three places and asserted in none: has(vars.X) is ALWAYS TRUE.
+//
+// cel-go routes both a value read and a presence test through Mapper.Find, and
+// defaultingMap.Find never reports "not found" for a string key — that is the
+// whole mechanism that keeps a mistyped gate shut. So has() cannot distinguish
+// a defined key from an undefined one here, and an author who reaches for the
+// spelling CEL documentation teaches gets a condition that is true no matter
+// what. Pinning it means the docs telling people to write `"X" in vars`
+// instead cannot quietly stop being true: if a future change to defaultingMap
+// makes has() honest, this test fails and the docs get revisited, rather than
+// the guidance rotting into superstition.
+func TestEvalCondition_HasVarsIsAlwaysTrue(t *testing.T) {
+	data := TemplateData{Vars: map[string]string{"ENV": "prod"}}
+
+	ok, _, err := EvalCondition(`has(vars.ENV)`, data, RunStatusView{}, false)
+	require.NoError(t, err)
+	assert.True(t, ok, "has() on a defined key is true, as anyone would expect")
+
+	ok, _, err = EvalCondition(`has(vars.NOPE)`, data, RunStatusView{}, false)
+	require.NoError(t, err)
+	assert.True(t, ok,
+		"has(vars.NOPE) is TRUE for an undefined key: cel-go routes has() through the same "+
+			"Find that defaults an undefined key to the empty string. This is why the documented "+
+			"presence test is `\"NOPE\" in vars` — see TestEvalCondition_VarsPresenceTestStaysTruthful.")
+
+	// The contrast, in one place, so the reason for the documented spelling is
+	// visible without cross-referencing: `in` disagrees with has() on exactly
+	// the key that matters.
+	inOK, _, err := EvalCondition(`"NOPE" in vars`, data, RunStatusView{}, false)
+	require.NoError(t, err)
+	assert.False(t, inOK, "`in` is the spelling that answers truthfully")
+}
+
 // params has the SAME shape vars had: an undefined key raises "no such key",
 // which is an eval error, which is fail-safe — the step RUNS. This is a KNOWN
 // ASYMMETRY with vars (which reads an undefined key as empty, keeping the gate

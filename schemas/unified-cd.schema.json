@@ -769,7 +769,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Vars are plain-text variables shared by every step of this job. They\nreach a step twice: as environment variables, and as {{ .Vars.KEY }} in\ntemplates. They are NOT secrets — see kind: Vars.\n\nBOTH tags are required: the store persists Spec as JSON and reads it\nback, so a yaml-only tag round-trips to nothing. See Detached.",
+          "description": "Plain-text variables shared by every step of this job, delivered as environment variables and as {{ .Vars.KEY }} in templates. NOT secrets — see kind: Vars.",
           "type": "object"
         }
       },

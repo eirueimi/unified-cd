@@ -119,6 +119,10 @@ func TestExport_RoundTripAllKindsParse(t *testing.T) {
 			if _, err := dsl.ParseAppSource(bytes.NewReader(b)); err != nil {
 				t.Errorf("%s: exported AppSource must re-parse with strict parser: %v", path, err)
 			}
+		case "Vars":
+			if _, err := dsl.ParseVars(bytes.NewReader(b)); err != nil {
+				t.Errorf("%s: exported Vars must re-parse with strict parser: %v", path, err)
+			}
 		default:
 			t.Errorf("%s: unrecognized kind %q", path, probe.Kind)
 			return nil
@@ -129,7 +133,13 @@ func TestExport_RoundTripAllKindsParse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	for _, kind := range []string{"Job", "Schedule", "WebhookReceiver", "GitCredential", "AppSource"} {
+	// The count check is the half that catches a kind export never EMITS. A
+	// re-parse arm alone cannot: it only ever sees files that were written, so
+	// a kind missing from runExport's list makes the arm dead code rather than
+	// a failure. That is how kind: Vars was dropped — silently, on the
+	// documented export -> commit -> AppSource migration path, leaving every
+	// global variable behind.
+	for _, kind := range []string{"Job", "Schedule", "WebhookReceiver", "GitCredential", "AppSource", "Vars"} {
 		if parsed[kind] == 0 {
 			t.Errorf("expected at least one exported %s file, found none", kind)
 		}

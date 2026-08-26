@@ -130,6 +130,7 @@ nav:
           - Uses Template Step Fields: operator-manual/migrations/uses-template-step-fields.md
           - "Bounded and Failure-Honest finally:": operator-manual/migrations/finally-phase-semantics.md
           - Enforced runsIn.resources: operator-manual/migrations/runsin-resources-enforcement.md
+          - "Apply-Time if: Validation": operator-manual/migrations/apply-time-if-validation.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

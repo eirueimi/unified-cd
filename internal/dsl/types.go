@@ -62,7 +62,15 @@ type Spec struct {
 	//
 	// BOTH tags are required: the store persists Spec as JSON and reads it
 	// back, so a yaml-only tag round-trips to nothing. See Detached.
-	Vars map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"`
+	//
+	// The trailing LINE comment, not this doc comment, is what reaches the
+	// published field reference: cmd/docgen prefers a field's line comment and
+	// renders it verbatim into one markdown table cell (see extractFields in
+	// cmd/schemagen). A multi-paragraph doc comment there puts a BLANK LINE in
+	// the middle of the table, which ends the table for every row after it —
+	// and it publishes maintainer notes like the tag rule above, which mean
+	// nothing to a job author reading the reference.
+	Vars map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"` // Plain-text variables shared by every step of this job, delivered as environment variables and as {{ .Vars.KEY }} in templates. NOT secrets — see kind: Vars.
 }
 
 type Params struct {

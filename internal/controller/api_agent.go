@@ -207,7 +207,8 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 				// RequeueClaimedRun). Only if the requeue ITSELF fails is failing
 				// the run the lesser evil, because then nothing else will move it.
 				slog.Error("agent claim: load global vars failed; requeueing run", "runId", claimed.ID, "error", verr)
-				if _, rqErr := s.store.RequeueClaimedRun(r.Context(), claimed.ID, agentID); rqErr != nil {
+				requeued, rqErr := s.store.RequeueClaimedRun(r.Context(), claimed.ID, agentID)
+				if rqErr != nil {
 					slog.Error("agent claim: requeue after vars load failure", "runId", claimed.ID, "error", rqErr)
 					if _, logErr := s.store.AppendLog(r.Context(), claimed.ID, -1, "stderr", time.Now().UTC(), verr.Error()); logErr != nil {
 						slog.Error("agent claim: append vars-load failure reason", "runId", claimed.ID, "error", logErr)
@@ -215,6 +216,25 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 					if failErr := failOrphanedRun(r.Context(), s.store, claimed.ID); failErr != nil {
 						slog.Error("agent claim: mark failed after failed requeue", "runId", claimed.ID, "error", failErr)
 					}
+				} else if !requeued {
+					// The CAS matched no row. The BENIGN reading is that the
+					// run left Running in the interim — a cancel is the only
+					// writer that does that here — and then there is nothing
+					// to requeue and nothing to fix.
+					//
+					// Any other reading leaves the run sitting Running with
+					// this agent's id on it and nobody coming back for it:
+					// the agent has been handed an empty claim and will not
+					// execute it, and ListStuckRuns' last_seen_at predicate
+					// never selects a run whose claiming agent is alive and
+					// heartbeating. Discarding this bool made those two cases
+					// indistinguishable AND invisible. Failing the run here
+					// would terminalize the benign case, so this logs rather
+					// than acts — but it logs, so a stranded run has a record
+					// naming it.
+					slog.Warn("agent claim: requeue after vars load failure matched no row; "+
+						"the run either left Running in the interim (e.g. cancelled) or is now stranded Running with no agent executing it",
+						"runId", claimed.ID, "agentId", agentID)
 				}
 				writeJSON(w, http.StatusOK, api.ClaimResponse{})
 				return

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -90,6 +91,29 @@ func TestVarsDenied_AgreesWithApplyTimeValidation(t *testing.T) {
 	for name := range stepEnvDenied {
 		assert.Error(t, dsl.ValidateVarKeys(map[string]string{name: "x"}),
 			"%s is dropped at runtime but accepted at apply time", name)
+	}
+
+	// And every name the orchestrator SYNTHESISES must be refused at apply
+	// time and dropped at run time. This leg is the one that was missing: the
+	// reserved list covered the agent's credentials and the shell's baseline
+	// but not UNIFIED_WORKSPACE/UNIFIED_AGENT_OS, which are written into the
+	// same extraEnv slice the variables are appended to — and appended BEFORE
+	// them, so a global Vars manifest naming one won the tie and every step of
+	// every job silently resolved it to the manifest's value.
+	//
+	// This iterates the real SynthesizedStepEnv() rather than a literal pair,
+	// so a THIRD synthesised name added to the orchestrator fails here instead
+	// of repeating the same bug.
+	require.NotEmpty(t, SynthesizedStepEnv())
+	for _, name := range SynthesizedStepEnv() {
+		assert.Error(t, dsl.ValidateVarKeys(map[string]string{name: "x"}),
+			"%s is synthesised into every step's env but accepted as a variable at apply time", name)
+		assert.True(t, varsDenied[name],
+			"%s is synthesised into every step's env but missing from varsDenied", name)
+		assert.Empty(t, varsExtraEnv(map[string]string{name: "x"}),
+			"%s is synthesised into every step's env and a variable must never overwrite it", name)
+		assert.Empty(t, varsExtraEnv(map[string]string{strings.ToLower(name): "x"}),
+			"%s must be refused case-insensitively, as ValidateVarKeys does", strings.ToLower(name))
 	}
 }
 
@@ -224,4 +248,41 @@ func TestOrchestrator_VarsNeverCarryAgentCredentials(t *testing.T) {
 	assert.Contains(t, out, "cache=[]", "UNIFIED_CACHE_KEY must not reach the step environment")
 	assert.NotContains(t, out, "stolen-token-value")
 	assert.NotContains(t, out, "stolen-cache-key")
+}
+
+// A variable must not be able to shadow the environment the orchestrator
+// synthesises for the step itself.
+//
+// UNIFIED_WORKSPACE and UNIFIED_AGENT_OS go into the SAME extraEnv slice the
+// variables are appended to, and go in FIRST — and a later duplicate wins in
+// os/exec. So before these two names were reserved, a single global
+// `kind: Vars` manifest with `UNIFIED_WORKSPACE: /tmp/attacker-scratch` was
+// accepted by apply-time validation and, from the next claim, every step of
+// every job on BOTH backends resolved $UNIFIED_WORKSPACE to that directory.
+// The docs tell authors to build artifact and cache paths from exactly this
+// variable, so the steps keep exiting 0 while reading and writing somewhere
+// else, and nothing appears in any log.
+//
+// This is the end-to-end backstop, for a run created before the reservation
+// existed; TestVarsDenied_AgreesWithApplyTimeValidation is the apply-time half.
+func TestOrchestrator_VarsCannotShadowSynthesizedStepEnv(t *testing.T) {
+	out := runVarsClaim(t, "shadow",
+		map[string]string{
+			"UNIFIED_WORKSPACE": "/tmp/attacker-scratch",
+			"UNIFIED_AGENT_OS":  "plan9",
+			"REGISTRY":          "ghcr.io/myorg",
+		},
+		nil,
+		`echo "ws=[$UNIFIED_WORKSPACE] os=[$UNIFIED_AGENT_OS] registry=[$REGISTRY]"`,
+	)
+
+	assert.Contains(t, out, "registry=[ghcr.io/myorg]", "an ordinary var must still reach the step")
+	assert.NotContains(t, out, "/tmp/attacker-scratch",
+		"a var named UNIFIED_WORKSPACE must not replace the workspace the orchestrator set")
+	assert.NotContains(t, out, "plan9",
+		"a var named UNIFIED_AGENT_OS must not replace the OS the orchestrator reported")
+	assert.Contains(t, out, "os=["+runtime.GOOS+"]",
+		"the orchestrator's own UNIFIED_AGENT_OS must survive")
+	assert.NotContains(t, out, "ws=[]",
+		"the orchestrator's own UNIFIED_WORKSPACE must survive (dropping the var must not drop the real value)")
 }

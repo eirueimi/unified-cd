@@ -104,10 +104,37 @@ func StepEnv(exposeEnv []string, extraEnv []string) []string {
 	return out
 }
 
+// EnvAgentOS and EnvWorkspace are the environment variable names the
+// orchestrator synthesises for every step. They are constants, and every site
+// that writes them uses these — internal/agent/orchestrator.go's extraEnv and
+// internal/k8sagent's imageStepEnv — so SynthesizedStepEnv below really is the
+// set, not a description of it.
+const (
+	EnvAgentOS   = "UNIFIED_AGENT_OS"
+	EnvWorkspace = "UNIFIED_WORKSPACE"
+)
+
+// SynthesizedStepEnv returns the names the orchestrator itself puts into a
+// step's extraEnv. It is the source varsDenied derives from, and the source
+// TestVarsDenied_AgreesWithApplyTimeValidation checks dsl.ReservedVarNames
+// against — so a name added here without being reserved fails a test rather
+// than shipping as a variable that silently overwrites it.
+//
+// Variables are appended to extraEnv AFTER these, and a later duplicate wins,
+// so an unreserved synthesised name is not merely shadowable: it is shadowed
+// by any global Vars manifest that happens to use it, for every step of every
+// job, on both backends.
+func SynthesizedStepEnv() []string {
+	return []string{EnvAgentOS, EnvWorkspace}
+}
+
 // varsDenied is the set varsExtraEnv filters a claim's variables against: the
-// union of stepEnvDenied (the agent's own credentials) and every name
-// apply-time validation refuses (dsl.ReservedVarNames, which also covers PATH
-// and HOME). Keys are upper-cased, and lookups upper-case the candidate.
+// union of stepEnvDenied (the agent's own credentials), every name apply-time
+// validation refuses (dsl.ReservedVarNames, which also covers PATH and HOME),
+// and every name the orchestrator synthesises (SynthesizedStepEnv). The third
+// is folded in by derivation rather than by being listed again here, so a new
+// synthesised name is backstopped the moment it is added.
+// Keys are upper-cased, and lookups upper-case the candidate.
 //
 // It is deliberately a separate set rather than a widening of stepEnvDenied,
 // because the two govern different things. stepEnvDenied also gates ExposeEnv,
@@ -124,6 +151,9 @@ var varsDenied = buildVarsDenied()
 func buildVarsDenied() map[string]bool {
 	denied := dsl.ReservedVarNames()
 	for k := range stepEnvDenied {
+		denied[strings.ToUpper(k)] = true
+	}
+	for _, k := range SynthesizedStepEnv() {
 		denied[strings.ToUpper(k)] = true
 	}
 	return denied

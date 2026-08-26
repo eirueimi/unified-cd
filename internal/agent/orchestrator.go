@@ -800,8 +800,8 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					workspaceScope = NewScopeHandle(step.ScopeID)
 				}
 				extraEnv := []string{
-					"UNIFIED_AGENT_OS=" + agentOSForStep(step, b.DefaultAgentOS()),
-					"UNIFIED_WORKSPACE=" + b.WorkspacePath(workspaceScope),
+					EnvAgentOS + "=" + agentOSForStep(step, b.DefaultAgentOS()),
+					EnvWorkspace + "=" + b.WorkspacePath(workspaceScope),
 				}
 				// Vars first, step env second: precedence is expressed as
 				// ordering, because a later duplicate key wins. varsExtraEnv

@@ -96,6 +96,9 @@ spec:
 			case "/api/v1/gitcredentials":
 				b, _ := json.Marshal([]api.GitCredentialMeta{{Name: "github", Host: "github.com", CredType: "token", SecretRef: "gh-token"}})
 				return http.StatusOK, b
+			case "/api/v1/vars":
+				b, _ := json.Marshal([]api.VarsMeta{{Name: "org-defaults", Vars: map[string]string{"REGISTRY": "ghcr.io/myorg", "GO_VERSION": "1.24"}}})
+				return http.StatusOK, b
 			}
 			return http.StatusNotFound, []byte("not found")
 		},
@@ -121,6 +124,7 @@ func TestExport_WritesAllKinds(t *testing.T) {
 		"team-a/build.yaml", "hello.yaml",
 		"schedules/nightly.yaml", "webhookreceivers/gh.yaml",
 		"gitcredentials/github.yaml", "appsources/src1.yaml",
+		"vars/org-defaults.yaml",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(f))); err != nil {
 			t.Errorf("expected file %s: %v", f, err)
@@ -145,7 +149,17 @@ func TestExport_WritesAllKinds(t *testing.T) {
 			t.Errorf("gitcredential yaml missing %q:\n%s", want, string(gc))
 		}
 	}
-	if !strings.Contains(out.String(), "exported 6 resources (0 skipped as managed); secrets are not exported") {
+	// A Vars manifest is plain text, so unlike a secret it round-trips whole.
+	// It is asserted by CONTENT and not only by existence, because an export
+	// that wrote the file with an empty spec would lose exactly as much as one
+	// that never wrote it at all.
+	vars, _ := os.ReadFile(filepath.Join(dir, "vars", "org-defaults.yaml"))
+	for _, want := range []string{"kind: Vars", "name: org-defaults", "REGISTRY: ghcr.io/myorg", `GO_VERSION: "1.24"`} {
+		if !strings.Contains(string(vars), want) {
+			t.Errorf("vars yaml missing %q:\n%s", want, string(vars))
+		}
+	}
+	if !strings.Contains(out.String(), "exported 7 resources (0 skipped as managed); secrets are not exported") {
 		t.Errorf("unexpected summary: %s", out.String())
 	}
 }
@@ -163,7 +177,7 @@ func TestExport_UnmanagedOnlySkipsManaged(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "hello.yaml")); err != nil {
 		t.Errorf("unmanaged job must be exported: %v", err)
 	}
-	if !strings.Contains(out.String(), "exported 5 resources (1 skipped as managed)") {
+	if !strings.Contains(out.String(), "exported 6 resources (1 skipped as managed)") {
 		t.Errorf("unexpected summary: %s", out.String())
 	}
 }
