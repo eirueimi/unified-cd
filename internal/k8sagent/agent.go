@@ -19,11 +19,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// stderrAutoFlushInterval is how often a step's stderr LogPusher is flushed
-// while the step is still running, so sparse stderr output appears in the
-// WebUI before the step completes (mirrors the host agent's stdout streaming
-// behavior). It is a var (not a const) so tests can shorten it.
-var stderrAutoFlushInterval = 2 * time.Second
+// logAutoFlushInterval is how often a step's stdout/stderr LogPushers (and a
+// user sidecar's log pump) are flushed while still running, so sparse output
+// appears in the WebUI before the step/pump completes (mirrors the host
+// agent's streaming behavior). Named for what it governs now that stdout has
+// its own LogPusher too — it used to be stderr-only, back when stdout shipped
+// synchronously per line and needed no flush timer of its own. It is a var
+// (not a const) so tests can shorten it.
+var logAutoFlushInterval = 2 * time.Second
 
 // podManager and stepExecutor are the narrow slices of *PodManager / *Executor
 // that K8sAgent depends on. Interfaces (satisfied by the concrete types) make

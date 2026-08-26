@@ -1081,8 +1081,8 @@ func (b *k8sBackend) StepLogWriters(ctx context.Context, stepIndex int) (stdout,
 	stdoutPusher.SetMasker(b.masker)
 
 	flushCtx, stopAutoFlush := context.WithCancel(ctx)
-	stderrPusher.StartAutoFlush(flushCtx, stderrAutoFlushInterval)
-	stdoutPusher.StartAutoFlush(flushCtx, stderrAutoFlushInterval)
+	stderrPusher.StartAutoFlush(flushCtx, logAutoFlushInterval)
+	stdoutPusher.StartAutoFlush(flushCtx, logAutoFlushInterval)
 
 	finish = func(finishCtx context.Context) {
 		stopAutoFlush()

@@ -189,7 +189,7 @@ func TestK8sAgent_ExecuteRun_StepFailure_Integration(t *testing.T) {
 
 // concurrentBarrierScriptMinRuntime is a floor every member's script spends
 // running before it can possibly exit, regardless of how fast the barrier
-// resolves. It exists so the test's shrunk stderrAutoFlushInterval (see
+// resolves. It exists so the test's shrunk logAutoFlushInterval (see
 // TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration) is
 // structurally guaranteed to tick at least once *during* the step rather
 // than only firing via the unconditional final Flush that StepLogWriters'
@@ -278,7 +278,7 @@ echo "member-%[1]d-stderr-4" >&2
 // run's terminal status, and that every member's stdout/stderr lines
 // actually arrived at the controller (proving the per-step log writers held
 // up under concurrent load, auto-flush ticks included -- see
-// stderrAutoFlushInterval below). Nothing here asserts ordering or measures
+// logAutoFlushInterval below). Nothing here asserts ordering or measures
 // elapsed time.
 //
 // What this does NOT cover: the sidecar log pump (k8sSidecarPump, started in
@@ -291,7 +291,7 @@ echo "member-%[1]d-stderr-4" >&2
 // already cover. See design doc §6's outcome note for the full reasoning.
 func TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration(t *testing.T) {
 	// The auto-flush ticker (internal/k8sagent/agent.go's
-	// stderrAutoFlushInterval, default 2s) competes with StepLogWriters'
+	// logAutoFlushInterval, default 2s) competes with StepLogWriters'
 	// finish closure, which does an unconditional final Flush at step end.
 	// At the default interval, a fast-resolving barrier could let every
 	// member's script finish in under 2s, so all lines would ship via the
@@ -301,9 +301,9 @@ func TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration(t *testi
 	// concurrentBarrierScriptMinRuntime's floor on each script's runtime,
 	// guarantees the ticker fires multiple times mid-step, under real
 	// concurrent load, before any member can reach its final flush.
-	prevInterval := stderrAutoFlushInterval
-	stderrAutoFlushInterval = 200 * time.Millisecond
-	t.Cleanup(func() { stderrAutoFlushInterval = prevInterval })
+	prevInterval := logAutoFlushInterval
+	logAutoFlushInterval = 200 * time.Millisecond
+	t.Cleanup(func() { logAutoFlushInterval = prevInterval })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
