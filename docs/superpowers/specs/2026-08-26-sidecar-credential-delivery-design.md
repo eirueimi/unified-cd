@@ -158,11 +158,72 @@ deployment. So it cannot be the only path — a static-credential fallback has t
 remain for clusters that cannot do it, which means the setup this design set out
 to simplify stays, as a second supported configuration.
 
+### 5.5 Build the seam first — the shape both 5.2 and 5.4 need
+
+The options above differ in **who supplies** the credential and **how long it
+lives**. They do not differ in what the sidecar does with it. So there is an
+investment that serves all of them, and it is small.
+
+`minio-go` already takes a credentials **provider**, not a key pair:
+
+```go
+Creds: credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, "")
+```
+
+`NewStaticV4` is one provider among many. `minio-go` v7.2.0 — already the
+pinned version — ships `sts_web_identity.go` (IRSA and Workload Identity),
+`file_aws_credentials.go`, `assume_role.go` and `chain.go` alongside it. A
+`*credentials.Credentials` re-fetches from its provider when the provider
+reports the credential expired, and the client re-signs per request.
+
+Today's code hardcodes the one provider that can never refresh.
+
+**`envFrom` is the architectural dead end.** A Secret consumed through `envFrom`
+is snapshotted into the container's environment when the container is created
+and never updates — rewriting the Secret leaves a running Pod holding the old
+value. Short-lived credentials and rotation are therefore not merely unimplemented
+under the current shape; they are impossible. A Secret mounted as a **volume** is
+updated by the kubelet when the Secret changes.
+
+This project already has the pattern and the sidecar is the outlier: the
+controller's KEK is consumed via a `0400` volume mount with `subPath`,
+deliberately not `envFrom`, with the rationale written next to it.
+
+The seam is therefore:
+
+| Configured with | Provider | Who populates it |
+|---|---|---|
+| `UNIFIED_S3_WEB_IDENTITY_TOKEN_FILE` + role | `NewSTSWebIdentity` | kubelet projects the token; STS exchanges it (§5.4) |
+| `UNIFIED_S3_CREDENTIAL_FILE` | a file provider that re-reads | the agent (§5.2), or anything else that can write a file |
+| `UNIFIED_S3_KEY` / `UNIFIED_S3_SECRET` | `NewStaticV4` | the operator (today, unchanged) |
+
+Static credentials stay last in precedence, so **no existing deployment changes
+behaviour**.
+
+Two things fall out that are worth having on their own merits:
+
+- A volume can be `optional: true`. Today's `envFrom` has no such option, so a
+  Secret that is missing or in the wrong namespace makes the kubelet fail the
+  whole Pod with `CreateContainerConfigError` — **every job breaks, not just
+  artifacts**. Behind the seam the sidecar can report "no credentials" cleanly.
+- §9's open question — what happens when a credential expires mid-transfer —
+  gets an answer instead of a workaround. Under a static key pair there is
+  nowhere to put one.
+
+**This is what "build 5.2 in the shape of 5.4" means concretely.** With the seam
+in place, choosing between an agent-projected credential and a cloud-issued one
+is a configuration decision, not a redesign. Without it, either choice is a
+rewrite of the same code, twice.
+
 ## 6. Recommendation
 
-**Do not redesign the credential path yet. Ship the detection work, make the
-setup discoverable, and treat §5.4 as the destination with §5.2 as its fallback
-shape.**
+**Ship the detection work, make the setup discoverable, and build §5.5's seam.
+Do not choose between §5.2 and §5.4 yet.**
+
+§5.5 is the part to build now. It is small, changes no existing deployment's
+behaviour, removes the `CreateContainerConfigError` blast radius on its own, and
+makes the choice between the remaining options a configuration decision rather
+than a second rewrite.
 
 The reasoning:
 
