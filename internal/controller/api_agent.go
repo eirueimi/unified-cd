@@ -537,7 +537,27 @@ func (s *Server) handleAgentStepReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, req.StepName, req.Variant, req.Status, exit, startedAt, endedAt, req.ChildRunID, req.CallJobName); err != nil {
+	// StepName and CallJobName are job-DSL identifiers today, but this
+	// endpoint sits behind the same agent authentication as the log/output
+	// handlers above -- the same trust boundary, not a weaker one -- so they
+	// are sanitized here on that structural basis rather than on the
+	// convention that the reference agent happens to echo DSL values
+	// verbatim. Variant carries step.MatrixKey, built from matrix dimension
+	// values that are only checked for a literal "/" (see EvalMatrix in
+	// internal/dsl/matrix.go); unlike StepName, which is constrained to
+	// stepNameRe (a Go-identifier pattern that structurally excludes NUL and
+	// invalid UTF-8), a matrix dimension sourced from a run param or a prior
+	// step's captured output can carry either. Left unsanitized, a NUL here
+	// doesn't just fail one write: ReportStep is wrapped in
+	// retryUntilSuccess on both the if:-skip and call:-completion paths
+	// (internal/agent/orchestrator.go), which treats a permanent 500 the
+	// same as a transient one and retries forever -- the same wedge shape
+	// this file's log sanitization exists to remove, relocated to step
+	// status. See sanitizeAgentText's doc comment for the full reasoning.
+	stepName, _ := sanitizeAgentText(req.StepName)
+	variant, _ := sanitizeAgentText(req.Variant)
+	callJobName, _ := sanitizeAgentText(req.CallJobName)
+	if err := s.store.UpsertStepReport(r.Context(), req.RunID, req.StepIndex, req.StageIndex, stepName, variant, req.Status, exit, startedAt, endedAt, req.ChildRunID, callJobName); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -27,13 +27,17 @@ import (
 // byte -- so both are handled here, by the same pass.
 //
 // This is the controller's ingestion boundary, not the store: untrusted
-// step output (stdout/stderr lines, captured `outputs:` values) enters the
-// system exactly here, on the agent-authenticated write paths in
-// api_agent.go. The store's other AppendLog/SetStepOutput/SetRunOutput
-// callers (the reaper, the scheduler, the claim-build-failure path, etc.)
-// write controller-generated strings -- Go error messages and static text
-// -- that are never agent-supplied and so can never carry a raw NUL or
-// arbitrary invalid-UTF-8 byte. Sanitizing in the store as well would
+// step output (stdout/stderr lines, captured `outputs:` values, and now
+// StepName/Variant/CallJobName on the step-report path) enters the system
+// exactly here, on the agent-authenticated write paths in api_agent.go.
+// Every string an agent can influence on that boundary passes through this
+// function before it reaches the store -- that is what makes the store's
+// other AppendLog/SetStepOutput/SetRunOutput/UpsertStepReport callers (the
+// reaper, the scheduler, the claim-build-failure path, etc.) safe to leave
+// unsanitized: they write controller-generated strings -- Go error messages
+// and static text -- that never cross this boundary and so never carry a
+// raw NUL or arbitrary invalid-UTF-8 byte, not because of where those
+// strings happen to originate today. Sanitizing in the store as well would
 // duplicate this cost on every one of those calls for no benefit, and would
 // still need this same controller-side fix for the endpoints that decode
 // straight from the agent's JSON body before ever reaching the store.

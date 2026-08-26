@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
@@ -154,4 +155,48 @@ func TestAgentSetStepOutputs_NULByteValue_Lands(t *testing.T) {
 	outputs, err := st.GetStepOutputs(context.Background(), runID, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "b�d", outputs["result"])
+}
+
+// TestAgentStepReport_NULByteInStepNameAndVariant_Lands covers the
+// step-report path: unlike the log line and output value above, StepName,
+// Variant, and CallJobName were originally excluded from sanitization on the
+// grounds that they come from the job DSL rather than captured runtime
+// output. That does not hold structurally: this endpoint sits behind the
+// same agent authentication as the log/output handlers, and Variant in
+// particular carries step.MatrixKey, built from matrix dimension values
+// that internal/dsl/matrix.go's EvalMatrix only rejects for containing "/"
+// -- unlike a step name, which is constrained by stepNameRe to a Go
+// identifier and so can never contain a NUL. Left unsanitized, a NUL here
+// does not just fail a single write: handleAgentStepReport's caller wraps
+// ReportStep in retryUntilSuccess on the if:-skip and call:-completion
+// paths (internal/agent/orchestrator.go), which treats a permanent 500 the
+// same as a transient failure and retries forever -- the same wedge shape
+// this branch exists to remove, relocated from logs to step status.
+func TestAgentStepReport_NULByteInStepNameAndVariant_Lands(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(context.Background(), "j", "unified-cd/v1", []byte(`{}`))
+	run, _ := pg.CreateRun(context.Background(), "j", nil, []byte(`{}`), nil, nil, "")
+	claimRunForTest(t, pg, "a1", run.ID)
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+
+	body, _ := json.Marshal(api.StepReportRequest{
+		RunID:     run.ID,
+		StepIndex: 0,
+		StepName:  "b\x00d",
+		Variant:   "li\x00nux",
+		Status:    "Running",
+		StartedAt: time.Now(),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/steps", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	steps, err := pg.GetRunSteps(context.Background(), run.ID)
+	require.NoError(t, err)
+	require.Len(t, steps, 1, "the step report must land, not fail the write")
+	assert.Equal(t, "b�d", steps[0].Name, "the NUL byte in StepName must be replaced, not fail the whole write")
+	assert.Equal(t, "li�nux", steps[0].Variant, "the NUL byte in Variant must be replaced, not fail the whole write")
 }
