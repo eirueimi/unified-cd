@@ -350,7 +350,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			templateName = c.PodTemplate.Name
 		}
 		pp, err := a.pool.ClaimPod(ctx, c.RunID, templateName, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
-			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName}, a.cfg.ShimImage)
+			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName, S3SecretMode: a.cfg.SidecarS3SecretMode}, a.cfg.ShimImage)
 		if err != nil {
 			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: failed to acquire Pod: %v", err))
 			return
@@ -374,7 +374,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		}()
 	} else {
 		pod, err := BuildPod(c.RunID, a.cfg.Namespace, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
-			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName}, a.cfg.ShimImage)
+			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName, S3SecretMode: a.cfg.SidecarS3SecretMode}, a.cfg.ShimImage)
 		if err != nil {
 			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: failed to build Pod spec: %v", err))
 			return

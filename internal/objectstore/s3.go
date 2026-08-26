@@ -19,6 +19,16 @@ type S3Config struct {
 	SecretAccessKey string
 	UseSSL          bool
 	Region          string
+
+	// Creds, when non-nil, supplies credentials instead of AccessKeyID and
+	// SecretAccessKey. minio-go re-fetches from the provider when it reports
+	// the credential expired and re-signs per request, so a provider that can
+	// refresh makes short-lived credentials work end to end — including across
+	// a transfer that outlives the credential it started with.
+	//
+	// A static key pair is just one provider. It is the only one that can
+	// never refresh, which is why it is the fallback rather than the shape.
+	Creds *credentials.Credentials
 }
 
 // S3ObjectStore implements ObjectStore using an S3-compatible backend (AWS S3, MinIO, etc.).
@@ -29,8 +39,12 @@ type S3ObjectStore struct {
 
 // NewS3ObjectStore creates an S3ObjectStore and ensures the bucket exists.
 func NewS3ObjectStore(ctx context.Context, cfg S3Config) (*S3ObjectStore, error) {
+	creds := cfg.Creds
+	if creds == nil {
+		creds = credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, "")
+	}
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		Creds:  creds,
 		Secure: cfg.UseSSL,
 		Region: cfg.Region,
 	})

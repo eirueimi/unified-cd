@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
@@ -41,28 +42,123 @@ const ucdShimContainerName = dsl.UcdShimContainerName
 // shared volume.
 const ucdShimBinary = "/ucd-sh"
 
+const (
+	// SidecarS3SecretModeEnv is the default: the sidecar's S3 Secret reaches
+	// it via envFrom.secretRef, exactly as before this seam existed. A Secret
+	// consumed this way is snapshotted into the container's environment when
+	// the container is created and never updates — rewriting the Secret
+	// leaves a running Pod holding the old value.
+	SidecarS3SecretModeEnv = "env"
+
+	// SidecarS3SecretModeFile mounts the sidecar's S3 Secret as a volume and
+	// points UNIFIED_S3_CREDENTIAL_FILE at it instead of using envFrom. The
+	// kubelet updates a mounted Secret in place, which is what makes a
+	// rotated or short-lived credential reach a running sidecar at all (see
+	// docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
+	// §5.5). Opt-in only — "env" stays the default so no existing deployment
+	// changes behaviour.
+	SidecarS3SecretModeFile = "file"
+)
+
+// sidecarS3CredentialsVolumeName names the volume/mount used in
+// SidecarS3SecretModeFile. A fixed name is fine: BuildPod and buildScopePod
+// each construct at most one artifact sidecar, so there is never more than
+// one such volume in a given Pod spec to collide with.
+const sidecarS3CredentialsVolumeName = "sidecar-s3-credentials"
+
+// sidecarS3CredentialsSecretKey is the single key SidecarS3SecretModeFile
+// expects inside the named Secret: its value must be the
+// UNIFIED_S3_KEY=...\nUNIFIED_S3_SECRET=...\n text objectstore.NewFileCredentials
+// parses (internal/objectstore/credfile.go). This is a different shape from
+// "env" mode's Secret, which instead carries UNIFIED_S3_KEY and
+// UNIFIED_S3_SECRET as separate top-level keys for envFrom to expand into
+// two env vars — switching modes means re-authoring the Secret, and that
+// trade-off is documented in docs/operator-manual/kubernetes-integration.md
+// rather than left for an operator to discover from a signature failure.
+const sidecarS3CredentialsSecretKey = "credentials"
+
+// sidecarS3CredentialsMountPath is where SidecarS3SecretModeFile mounts the
+// single credentials file, and therefore also the value of the
+// UNIFIED_S3_CREDENTIAL_FILE env var pointed at it. Fixed, not derived from
+// SidecarSpec: there is nothing for an operator to configure here that
+// SidecarS3SecretName doesn't already cover.
+const sidecarS3CredentialsMountPath = "/etc/unified-cd/s3-credentials"
+
 // SidecarSpec configures the injected artifact-transfer sidecar.
 type SidecarSpec struct {
 	Image        string
-	S3SecretName string // Secret providing UNIFIED_S3_* env for the direct-S3 sidecar
+	S3SecretName string // Secret providing S3 credentials for the direct-S3 sidecar
+
+	// S3SecretMode selects how S3SecretName reaches the sidecar — see
+	// SidecarS3SecretModeEnv/SidecarS3SecretModeFile. The zero value behaves
+	// as SidecarS3SecretModeEnv, matching Config.SidecarS3SecretMode's
+	// documented default so a caller that never sets this field (every
+	// caller before this seam existed) sees no change.
+	S3SecretMode string
 }
 
 // buildArtifactSidecarContainer constructs the artifact-transfer sidecar
-// container from a SidecarSpec. Shared by BuildPod (workspace PVC pods) and
-// buildScopePod (isolated scope pods with a private scratch volume) — callers
-// are responsible for attaching whatever volume the sidecar should mount.
-func buildArtifactSidecarContainer(sidecar SidecarSpec) corev1.Container {
+// container from a SidecarSpec, and — only in SidecarS3SecretModeFile — the
+// corev1.Volume it needs mounted alongside it (nil otherwise). Shared by
+// BuildPod (workspace PVC pods) and buildScopePod (isolated scope pods with a
+// private scratch volume); callers are responsible for both attaching
+// whatever OTHER volume the sidecar should mount (e.g. workspace) and adding
+// the returned volume, if non-nil, to their Pod's Volumes.
+func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, *corev1.Volume) {
 	sc := corev1.Container{
 		Name:    artifactSidecarName,
 		Image:   sidecar.Image,
 		Command: []string{"unified-sidecar", "idle"},
 	}
-	if sidecar.S3SecretName != "" {
-		sc.EnvFrom = []corev1.EnvFromSource{
-			{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: sidecar.S3SecretName}}},
-		}
+	if sidecar.S3SecretName == "" {
+		return sc, nil
 	}
-	return sc
+
+	if sidecar.S3SecretMode == SidecarS3SecretModeFile {
+		// Deliberately NOT envFrom in this mode: carrying both would leave
+		// the snapshotted env values as a silent fallback that masks a
+		// broken mount, defeating the entire point of switching to a volume.
+		sc.Env = append(sc.Env, corev1.EnvVar{
+			Name:  "UNIFIED_S3_CREDENTIAL_FILE",
+			Value: sidecarS3CredentialsMountPath,
+		})
+		sc.VolumeMounts = append(sc.VolumeMounts, corev1.VolumeMount{
+			Name:      sidecarS3CredentialsVolumeName,
+			MountPath: sidecarS3CredentialsMountPath,
+			SubPath:   sidecarS3CredentialsSecretKey,
+			ReadOnly:  true,
+		})
+		// 0400 and the deliberate absence of envFrom both mirror the
+		// controller's own KEK mount (manifests/base/controller/deployment.yaml),
+		// the established pattern in this project for a rotatable credential:
+		// a single named key, projected read-only at a fixed subPath.
+		//
+		// Optional: true is new relative to that pattern, and is the other
+		// half of what makes this safe to opt into — without it, a missing or
+		// misnamed Secret makes the kubelet fail the WHOLE Pod with
+		// CreateContainerConfigError (every job breaks, not just artifact
+		// transfer), where the sidecar itself can instead report "no
+		// credentials" cleanly.
+		vol := &corev1.Volume{
+			Name: sidecarS3CredentialsVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: sidecar.S3SecretName,
+					Items: []corev1.KeyToPath{
+						{Key: sidecarS3CredentialsSecretKey, Path: sidecarS3CredentialsSecretKey},
+					},
+					Optional:    ptr.To(true),
+					DefaultMode: ptr.To(int32(0o400)),
+				},
+			},
+		}
+		return sc, vol
+	}
+
+	sc.EnvFrom = []corev1.EnvFromSource{
+		{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: sidecar.S3SecretName}}},
+	}
+	return sc, nil
 }
 
 // BuildPod constructs a Pod object from the agent template and Job template.
@@ -151,7 +247,11 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 		}
 	}
 	if sidecar.Image != "" {
-		podSpec.Containers = append(podSpec.Containers, buildArtifactSidecarContainer(sidecar))
+		sc, vol := buildArtifactSidecarContainer(sidecar)
+		podSpec.Containers = append(podSpec.Containers, sc)
+		if vol != nil {
+			podSpec.Volumes = append(podSpec.Volumes, *vol)
+		}
 	}
 
 	if err := injectWorkspace(podSpec, wsCfg); err != nil {

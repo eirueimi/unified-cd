@@ -300,6 +300,112 @@ func TestBuildPod_SidecarSecretEnvAndIdle(t *testing.T) {
 	}
 }
 
+// findContainer returns a pointer to the named container in pod, or nil.
+// Shared by the SidecarSecret* tests below so each doesn't repeat the same
+// lookup loop.
+func findContainer(pod *corev1.Pod, name string) *corev1.Container {
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == name {
+			return &pod.Spec.Containers[i]
+		}
+	}
+	return nil
+}
+
+// Default is unchanged: envFrom, no volume. Existing deployments must see
+// byte-identical Pod specs.
+func TestBuildPod_SidecarSecretDefaultsToEnvFrom(t *testing.T) {
+	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage)
+	require.NoError(t, err)
+
+	sc := findContainer(pod, artifactSidecarName)
+	require.NotNil(t, sc, "pod must include the artifact sidecar")
+
+	require.Len(t, sc.EnvFrom, 1)
+	require.NotNil(t, sc.EnvFrom[0].SecretRef)
+	assert.Equal(t, "ucd-s3", sc.EnvFrom[0].SecretRef.Name)
+
+	for _, ev := range sc.Env {
+		assert.NotEqual(t, "UNIFIED_S3_CREDENTIAL_FILE", ev.Name,
+			"default (env) mode must not set UNIFIED_S3_CREDENTIAL_FILE")
+	}
+	for _, m := range sc.VolumeMounts {
+		assert.NotEqual(t, sidecarS3CredentialsVolumeName, m.Name,
+			"default (env) mode must not mount a credentials volume")
+	}
+	for _, v := range pod.Spec.Volumes {
+		assert.NotEqual(t, sidecarS3CredentialsVolumeName, v.Name,
+			"default (env) mode must not add a credentials volume to the pod at all")
+	}
+}
+
+// Opted in: a volume, a mount, UNIFIED_S3_CREDENTIAL_FILE pointing at it, and
+// NO envFrom for that Secret — carrying both would leave the snapshotted env
+// values as a silent fallback that masks a broken mount.
+func TestBuildPod_SidecarSecretAsVolume(t *testing.T) {
+	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3", S3SecretMode: SidecarS3SecretModeFile}, testShimImage)
+	require.NoError(t, err)
+
+	sc := findContainer(pod, artifactSidecarName)
+	require.NotNil(t, sc, "pod must include the artifact sidecar")
+
+	assert.Empty(t, sc.EnvFrom, "file mode must not carry envFrom for the Secret: a stale snapshot must not silently mask a broken mount")
+
+	var credEnv *corev1.EnvVar
+	for i := range sc.Env {
+		if sc.Env[i].Name == "UNIFIED_S3_CREDENTIAL_FILE" {
+			credEnv = &sc.Env[i]
+		}
+	}
+	require.NotNil(t, credEnv, "file mode must set UNIFIED_S3_CREDENTIAL_FILE")
+	require.NotEmpty(t, credEnv.Value)
+
+	var mount *corev1.VolumeMount
+	for i := range sc.VolumeMounts {
+		if sc.VolumeMounts[i].Name == sidecarS3CredentialsVolumeName {
+			mount = &sc.VolumeMounts[i]
+		}
+	}
+	require.NotNil(t, mount, "sidecar must mount the credentials volume")
+	assert.True(t, mount.ReadOnly, "the credential mount must be read-only")
+	assert.Equal(t, credEnv.Value, mount.MountPath, "UNIFIED_S3_CREDENTIAL_FILE must point at the mounted path")
+
+	var vol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == sidecarS3CredentialsVolumeName {
+			vol = &pod.Spec.Volumes[i]
+		}
+	}
+	require.NotNil(t, vol, "pod must declare the credentials volume")
+	require.NotNil(t, vol.Secret, "the credentials volume must be a Secret source")
+	assert.Equal(t, "ucd-s3", vol.Secret.SecretName)
+}
+
+// The volume is optional, so a missing or misplaced Secret does not make the
+// kubelet fail the whole Pod with CreateContainerConfigError. That failure
+// breaks every job, not just artifacts, and reports itself as a five-minute
+// timeout with the real cause never surfaced.
+func TestBuildPod_SidecarSecretVolumeIsOptional(t *testing.T) {
+	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3", S3SecretMode: SidecarS3SecretModeFile}, testShimImage)
+	require.NoError(t, err)
+
+	var vol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == sidecarS3CredentialsVolumeName {
+			vol = &pod.Spec.Volumes[i]
+		}
+	}
+	require.NotNil(t, vol)
+	require.NotNil(t, vol.Secret)
+	require.NotNil(t, vol.Secret.Optional, "the Secret volume source must set Optional so a missing/misplaced Secret degrades instead of failing the whole Pod")
+	assert.True(t, *vol.Secret.Optional)
+	require.NotNil(t, vol.Secret.DefaultMode)
+	assert.Equal(t, int32(0o400), *vol.Secret.DefaultMode)
+}
+
 // TestInjectKeepAlive_OnlyJobContainerKeptAlive is the k8s-side regression
 // test for the sidecar-sleep-infinity bug (see sidecar-sleep-fix-brief.md): a
 // podTemplate sidecar (e.g. mysql, redis) with no explicit command must run
