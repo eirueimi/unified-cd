@@ -20,12 +20,19 @@ var varKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // The UNIFIED_* names are the agent's own credentials, duplicated from
 // internal/agent/stepenv.go's stepEnvDenied — leaking them lets a job author
 // act as the agent. They are duplicated rather than imported because
-// internal/dsl must not depend on internal/agent; stepEnvDenied remains the
-// runtime backstop and a test asserts the two lists agree.
+// internal/dsl must not depend on internal/agent. The runtime backstop is
+// internal/agent's varsDenied, which filters a claim's vars against this whole
+// set (via ReservedVarNames) as well as against stepEnvDenied. The test that
+// the two agree lives in internal/agent — the package that can import both,
+// and so compare the real structures instead of a hand-copied list — as
+// TestVarsDenied_AgreesWithApplyTimeValidation.
 //
 // PATH and HOME are refused because a global Vars manifest applies to every
 // step of every job: a PATH that shadows the agent's baseline breaks all of
 // them at once, in a way whose cause is not visible in the failure.
+//
+// Names here are upper-case; ValidateVarKeys upper-cases before the lookup, so
+// `path` and `Path` are refused too.
 var reservedVarNames = map[string]bool{
 	"UNIFIED_CACHE_KEY":                   true,
 	"UNIFIED_CACHE_SECRET":                true,
@@ -34,6 +41,18 @@ var reservedVarNames = map[string]bool{
 	"UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE": true,
 	"PATH":                                true,
 	"HOME":                                true,
+}
+
+// ReservedVarNames returns the variable names apply-time validation refuses,
+// upper-cased. It exists so the agent's runtime backstop can filter against
+// the real set rather than a copy that drifts: a copy is what the two lists
+// already are, and one drifting list is enough.
+func ReservedVarNames() map[string]bool {
+	out := make(map[string]bool, len(reservedVarNames))
+	for k, v := range reservedVarNames {
+		out[k] = v
+	}
+	return out
 }
 
 // ValidateVarKeys checks key syntax and reserved names for one map of
