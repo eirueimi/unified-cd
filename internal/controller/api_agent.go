@@ -190,23 +190,42 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 			// this run, one applied after it does not. The job's own spec.vars
 			// is overlaid inside buildClaimResponse, which already has the
 			// parsed spec, so nothing re-parses it here.
-			globalVars, cerr := mergedGlobalVars(r.Context(), s.store)
-			var resp api.ClaimResponse
-			if cerr == nil {
-				resp, cerr = buildClaimResponse(claimed, globalVars)
+			globalVars, verr := mergedGlobalVars(r.Context(), s.store)
+			if verr != nil {
+				// ClaimNextRun already flipped this run to Running in the same SQL
+				// statement, so a 500 here would strand it Running forever: the
+				// claiming agent is alive and heartbeating, so ListStuckRuns'
+				// last_seen_at predicate would never select it for reaping. But
+				// unlike a claim-build error this one is not deterministic — a
+				// database blip in the milliseconds since the claim is enough —
+				// and failing a user's run outright over that is too harsh.
+				// Requeueing preserves both properties: nothing is stranded, and
+				// the run gets claimed again (it loses nothing by going back; see
+				// RequeueClaimedRun). Only if the requeue ITSELF fails is failing
+				// the run the lesser evil, because then nothing else will move it.
+				slog.Error("agent claim: load global vars failed; requeueing run", "runId", claimed.ID, "error", verr)
+				if _, rqErr := s.store.RequeueClaimedRun(r.Context(), claimed.ID, agentID); rqErr != nil {
+					slog.Error("agent claim: requeue after vars load failure", "runId", claimed.ID, "error", rqErr)
+					if _, logErr := s.store.AppendLog(r.Context(), claimed.ID, -1, "stderr", time.Now().UTC(), verr.Error()); logErr != nil {
+						slog.Error("agent claim: append vars-load failure reason", "runId", claimed.ID, "error", logErr)
+					}
+					if failErr := failOrphanedRun(r.Context(), s.store, claimed.ID); failErr != nil {
+						slog.Error("agent claim: mark failed after failed requeue", "runId", claimed.ID, "error", failErr)
+					}
+				}
+				writeJSON(w, http.StatusOK, api.ClaimResponse{})
+				return
 			}
+			resp, cerr := buildClaimResponse(claimed, globalVars)
 			if cerr != nil {
 				// ClaimNextRun already flipped this run to Running in the same SQL
 				// statement, so leaving it as-is here would strand it Running forever:
 				// the claiming agent is alive and heartbeating, so ListStuckRuns'
-				// last_seen_at predicate would never select it for reaping. A
-				// buildClaimResponse error is deterministic (pure computation over the
-				// already-stored spec bytes — e.g. the pre-migration runsIn guard), so
-				// retrying the claim can never succeed either; fail fast now rather
-				// than treat it as a transient error. A Vars-load error is not
-				// deterministic, but the run is equally stranded either way, and
-				// running the steps without their variables would be worse than
-				// failing loudly, so it takes the same exit.
+				// last_seen_at predicate would never select it for reaping. cerr is
+				// deterministic (buildClaimResponse is pure computation over the
+				// already-stored spec bytes — e.g. the pre-migration runsIn guard),
+				// so retrying the claim can never succeed either; fail fast now rather
+				// than treat it as a transient error.
 				if _, logErr := s.store.AppendLog(r.Context(), claimed.ID, -1, "stderr", time.Now().UTC(), cerr.Error()); logErr != nil {
 					slog.Error("agent claim: append claim-build failure reason", "runId", claimed.ID, "error", logErr)
 				}

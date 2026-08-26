@@ -781,6 +781,26 @@ func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels
 	return &cr, nil
 }
 
+// RequeueClaimedRun reverses exactly the three columns claimNextRun's UPDATE
+// wrote (status, claimed_by, claimed_at), so the run goes back to the queue in
+// the state it was picked from. Nothing else is written between the claim and
+// a caller's decision to requeue: the run's concurrency slot was taken at
+// Pending -> Queued and is untouched here, its planned steps were written at
+// creation, and no step has reported, so the run loses nothing by going back.
+//
+// The CAS on status = 'Running' AND claimed_by = the same agent means this can
+// never take a run away from an agent that is already executing it, and never
+// resurrects a run that was cancelled in the interim.
+func (p *Postgres) RequeueClaimedRun(ctx context.Context, runID, agentID string) (bool, error) {
+	ct, err := p.pool.Exec(ctx, `
+		UPDATE runs SET status = 'Queued', claimed_by = NULL, claimed_at = NULL, updated_at = NOW()
+		WHERE id = $1 AND status = 'Running' AND claimed_by = $2`, runID, agentID)
+	if err != nil {
+		return false, fmt.Errorf("requeue claimed run: %w", err)
+	}
+	return ct.RowsAffected() > 0, nil
+}
+
 func (p *Postgres) MarkRunRunning(ctx context.Context, runID string) error {
 	_, err := p.pool.Exec(ctx, `UPDATE runs SET status = 'Running', updated_at = NOW() WHERE id = $1 AND status NOT IN ('Succeeded', 'Failed', 'Cancelled')`, runID)
 	return err

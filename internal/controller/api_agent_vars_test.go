@@ -112,3 +112,63 @@ func TestAgentAPI_Claim_MergesStoredVars(t *testing.T) {
 		"COLLIDE":  "from-b",
 	}, got.Vars)
 }
+
+// A Vars load that fails AFTER the claim has already flipped the run to
+// Running must neither strand the run (a 500 leaves it Running with nobody
+// executing it, and a live heartbeating agent keeps ListStuckRuns away) nor
+// fail a user's run over a transient problem. It requeues instead.
+//
+// The failure is induced with a stored manifest whose spec is valid JSON but
+// not a valid VarsSpec — the corrupt-row case, which apply-time validation
+// would have refused — because that is the only way to make mergedGlobalVars
+// fail against a real store.
+func TestAgentAPI_Claim_RequeuesRunWhenVarsLoadFails(t *testing.T) {
+	s, pg := newTestServer(t)
+
+	_, err := pg.UpsertVars(t.Context(), "corrupt", []byte(`{"vars":"not-a-map"}`))
+	require.NoError(t, err)
+
+	spec := []byte(`{"steps":[{"name":"s","run":"echo x"}]}`)
+	_, err = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", spec)
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "j", nil, spec, nil, nil, "")
+	require.NoError(t, err)
+	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
+	require.NoError(t, err)
+
+	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=200ms", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got api.ClaimResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Empty(t, got.RunID, "the agent must not be handed a claim assembled without its vars")
+
+	after, err := pg.GetRun(t.Context(), run.ID)
+	require.NoError(t, err)
+	require.NotNil(t, after)
+	assert.Equal(t, api.RunQueued, after.Status,
+		"a transient vars-load failure must requeue the run, not strand it Running or fail it")
+	assert.Empty(t, after.ClaimedBy, "a requeued run must be claimable by any agent again")
+
+	// And it is genuinely claimable again, with everything it needs: repair the
+	// manifest and let the same agent claim it.
+	_, err = pg.UpsertVars(t.Context(), "corrupt", []byte(`{"vars":{"REGISTRY":"ghcr.io/myorg"}}`))
+	require.NoError(t, err)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/agents/a1/claim?timeout=2s", nil)
+	req2.Header.Set("Authorization", "Bearer "+token)
+	rec2 := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusOK, rec2.Code, rec2.Body.String())
+
+	var got2 api.ClaimResponse
+	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &got2))
+	assert.Equal(t, run.ID, got2.RunID, "the requeued run must be claimable again")
+	assert.Equal(t, map[string]string{"REGISTRY": "ghcr.io/myorg"}, got2.Vars)
+	require.Len(t, got2.Stages, 1)
+	require.NotNil(t, got2.Stages[0].Step)
+	assert.Equal(t, "echo x", got2.Stages[0].Step.Run, "the requeued run kept its spec")
+}
