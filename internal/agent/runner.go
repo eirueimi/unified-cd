@@ -269,6 +269,33 @@ type LogPusher struct {
 	// Surfaced as a synthetic marker line on the next successful flush, then
 	// reset to 0. Guarded by mu.
 	droppedLines int
+	// maxLineBytes is the hard ceiling on p.buf before Write forces a flush
+	// even though the buffer holds no newline — overriding the "only
+	// complete lines" discipline that flushCompleteLinesLocked (and, since
+	// this field was added, Write below flushBytes) otherwise enforces.
+	//
+	// Without a ceiling, a step whose output contains one very long line
+	// with no newline (a giant single-line JSON blob, a base64-encoded
+	// upload, a progress indicator that uses \r instead of \n) would make
+	// p.buf grow for as long as that line does — unbounded, and exactly the
+	// failure mode "hold until the newline" would otherwise invite.
+	//
+	// 256KiB (256 << 10) sits two orders of magnitude above flushBytes
+	// (4KiB), comfortably above any legitimate single-line output this
+	// codebase is known to produce, while still being a small, fixed
+	// fraction (1/4) of maxPendingBytes (1MiB) — so if the controller is
+	// unreachable at the moment the ceiling forces a flush, the resulting
+	// batch adds at most a small, bounded multiple to the pending backlog
+	// instead of opening a second, uncapped growth path alongside it.
+	//
+	// Crossing this ceiling is the ONE remaining case where a size-triggered
+	// flush can still split a value across two LogAppendRequests (see
+	// flushForcedLocked): the masking gap this file exists to close narrows
+	// from "any chunk boundary, on every flush" to "one specific byte
+	// offset, and only for a single line that is itself pathologically
+	// long." A struct field (not a package var) so a test can shrink it on
+	// the one pusher it owns, the same way maxPendingBytes already is.
+	maxLineBytes int
 }
 
 // NewLogPusher creates a new LogPusher with the given parameters.
@@ -281,6 +308,7 @@ func NewLogPusher(client *Client, agentID, runID string, stepIndex int, stream s
 		client:           client,
 		flushBytes:       4 << 10,
 		maxPendingBytes:  1 << 20, // 1MB
+		maxLineBytes:     256 << 10,
 		autoFlushTimeout: logPusherAutoFlushTimeout,
 	}
 }
@@ -357,17 +385,94 @@ func (p *LogPusher) flushPendingLocked(ctx context.Context) bool {
 	return true
 }
 
-// Write writes bytes into the buffer and flushes if the buffer exceeds the threshold.
+// Write writes bytes into the buffer and flushes if the buffer exceeds the
+// threshold.
+//
+// Below maxLineBytes, a size-triggered flush ships only COMPLETE lines — the
+// same discipline StartAutoFlush's ticker already applies via
+// flushCompleteLinesLocked (see its doc comment) — so a chunk boundary from
+// the step's stdout/stderr pipe can never land inside a line. That matters
+// because secrets.Masker.Mask matches per LINE (see its doc comment in
+// internal/secrets/masker.go): a chunk boundary that fell inside a value
+// being masked would split that value across two LogAppendRequests, neither
+// fragment would match the masker's pattern on its own, and both would ship
+// unmasked — reconstructable by concatenating the stored log. Real process
+// stdout arrives in pipe-sized chunks with no relation to log line
+// boundaries, so this was not a theoretical gap: flushCompleteLinesLocked
+// already closed it for the auto-flush ticker, but Write's own
+// threshold flush used to run unconditionally the instant p.buf.Len()
+// crossed flushBytes, without regard for whether a newline had been seen.
+// That was the leak this fix closes.
+//
+// Once the buffer grows past maxLineBytes with still no newline to flush up
+// to, Write gives up waiting and force-flushes anyway (flushForcedLocked) —
+// see maxLineBytes's doc comment for why that ceiling exists and for why
+// crossing it is the one remaining case that can still split a value across
+// a flush boundary.
 func (p *LogPusher) Write(b []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	n, _ := p.buf.Write(b)
-	if p.buf.Len() >= p.flushBytes {
+	switch {
+	case p.buf.Len() >= p.maxLineBytes:
 		fctx, cancel := context.WithTimeout(context.Background(), logPusherWriteFlushTimeout)
-		p.flushLocked(fctx)
+		p.flushForcedLocked(fctx)
+		cancel()
+	case p.buf.Len() >= p.flushBytes:
+		fctx, cancel := context.WithTimeout(context.Background(), logPusherWriteFlushTimeout)
+		p.flushCompleteLinesLocked(fctx)
 		cancel()
 	}
 	return n, nil
+}
+
+// flushForcedLocked flushes the buffer via flushLocked even though it may
+// still hold a partial trailing line with no newline — the one case Write
+// allows once p.buf has crossed maxLineBytes (see that field's doc comment
+// for why the ceiling exists). Caller must hold p.mu.
+//
+// If a partial line is indeed about to ship, this also emits a short,
+// best-effort marker naming the fact, so an operator who later finds an
+// unmasked secret fragment in a stored log has a concrete mechanism to look
+// for instead of having to rediscover this ceiling from scratch: a value
+// that straddles the maxLineBytes offset into an otherwise-unbroken line is
+// the only way a per-line masker can still miss it after this fix.
+//
+// The marker is sent directly and only when p.pending is already empty after
+// the forced flush (i.e. the forced content itself was fully delivered), and
+// it is never retried on failure. This is deliberately weaker than the
+// droppedLines marker's guarantee (which retries every subsequent flush
+// until delivered — see flushLocked's step 3): droppedLines tracks actual,
+// permanent data loss and must eventually be reported, whereas a forced
+// split loses no data at all — it only widens, for this one pathologically
+// long line, the same narrow masking gap described above. A missed marker
+// costs discoverability, not log content, so no retry state is worth adding
+// for it.
+func (p *LogPusher) flushForcedLocked(ctx context.Context) {
+	b := p.buf.Bytes()
+	partial := len(b) > 0 && b[len(b)-1] != '\n'
+
+	p.flushLocked(ctx)
+
+	if !partial || len(p.pending) > 0 {
+		return
+	}
+	line := fmt.Sprintf("[unified-cd: a log line exceeded %d bytes without a newline and was flushed early; if a secret value straddles this boundary it may not have been masked]", p.maxLineBytes)
+	if p.masker != nil {
+		// The template above carries no user content, but every other
+		// synthetic line this file emits (the droppedLines marker, and
+		// recordPhaseTruncated's line in orchestrator.go) is masked before
+		// it ships; matching that keeps this call site from being the one
+		// place someone has to reason about separately.
+		line = p.masker.Mask(line)
+	}
+	_ = p.client.AppendLogBulk(ctx, p.agentID, p.runID, p.stepIndex, []api.LogAppendRequest{{
+		RunID:     p.runID,
+		StepIndex: p.stepIndex,
+		Stream:    "stderr",
+		Timestamp: time.Now().UTC(),
+		Line:      line,
+	}})
 }
 
 // Flush sends all remaining buffered logs to the master server.
