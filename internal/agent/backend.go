@@ -87,12 +87,18 @@ type ExecBackend interface {
 	SetMasker(m *secrets.Masker)
 
 	// StepLogWriters returns the SHIPPING writers for one step's output and a
-	// finish func called at step end. Flush/liveness semantics are backend-
-	// specific and intentionally asymmetric: host returns LogPusher for both
-	// streams (with StartAutoFlush bound to ctx); k8s returns its per-line
-	// stdout logLineWriter and a LogPusher (auto-flushed) for stderr. The
-	// {{ .Stdout }} capture buffer is the ORCHESTRATOR's concern — it tees
-	// stdout via io.MultiWriter, so backends return shipping writers only.
+	// finish func called at step end. Both production backends return a
+	// LogPusher (batched, auto-flushed on the same flushCtx, flushed in
+	// finish) for stdout AND stderr — symmetric, not asymmetric. k8s used to
+	// give stdout a per-line writer instead (deleted; this comment used to
+	// call that split "intentional", which is what let it stand uncaught
+	// through a design document that assumed every backend batched both
+	// streams). Do not reintroduce a per-line writer for either stream on
+	// either backend: that reopens the two-DB-round-trips-per-line pattern
+	// batched log ingestion (internal/store's AppendLogs) exists to remove.
+	// The {{ .Stdout }} capture buffer is the ORCHESTRATOR's concern — it
+	// tees stdout via io.MultiWriter, so backends return shipping writers
+	// only.
 	StepLogWriters(ctx context.Context, stepIndex int) (stdout, stderr io.Writer, finish func(ctx context.Context))
 
 	// ConcurrencyMode reports how RunPipeline must run the members of a
