@@ -14,6 +14,7 @@
 
 - **The audience MUST differ from `KubernetesEnrollmentAudience` (`"unified-cd-agent-enrollment"`).** If a job Pod's token were accepted for enrollment, **any job could register itself as an agent**. This is the single detail that makes the design safe or unsafe. It gets its own test, and that test asserts the rejection in **both** directions.
 - **The agent must not gain any new Kubernetes permission.** It adds a volume to a Pod spec it already writes. If any step needs an RBAC change, stop — the design has drifted into §5.2 and the whole reason for choosing §5.6 is gone.
+- **The standard (host) agent must not change behaviour.** No task here touches its code path — it uploads artifacts through the controller and never contacts the store, and its only direct store use is the cache, built from its own flags. The one place a mistake could reach it is Task 2's route registration: the controller serves host agents too, so a middleware misapplied in `server.go` is the single shared surface. Nothing else in this plan is shared.
 - **The data path must not change.** The sidecar talks to the controller once, to get credentials. Artifact and cache bytes continue to go straight to the store.
 - **The existing Secret path keeps working**, unchanged and as the default. This lands alongside it, not instead of it. Flipping the default is a separate decision with its own migration note.
 - **The token is mounted into the sidecar container only**, never the job container — the same container boundary that keeps today's credentials away from user code.
