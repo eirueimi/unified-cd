@@ -11,9 +11,6 @@ import (
 	"strings"
 )
 
-// rootKinds defines display order for the field reference.
-var rootKinds = []string{"Job", "JobTemplate", "Schedule", "WebhookReceiver", "AppSource", "GitCredential"}
-
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "docgen: %v\n", err)
@@ -36,6 +33,18 @@ func run() error {
 		return err
 	}
 	defs, _ := schema["definitions"].(map[string]any)
+
+	// The root kinds, and the order they are documented in, are READ FROM THE
+	// SCHEMA rather than restated here. schemagen already derives them (see
+	// deriveRoots there) and writes one document-level oneOf branch per root,
+	// in display order — so this file carries no list of its own to fall out
+	// of step with it. It fell out of step once: when kind: Vars landed, the
+	// list that used to live here never learned about it and the field
+	// reference silently shipped with no Vars section.
+	rootKinds, err := rootKindsFromSchema(schema)
+	if err != nil {
+		return err
+	}
 
 	var sb strings.Builder
 	sb.WriteString("# unified-cd Field Reference\n\n")
@@ -66,6 +75,31 @@ func run() error {
 
 	out := filepath.Join(root, "docs", "reference", "field-reference.md")
 	return os.WriteFile(out, []byte(sb.String()), 0o644)
+}
+
+// rootKindsFromSchema returns the definition names in the schema's
+// document-level oneOf, in order. An empty or missing oneOf is an error rather
+// than an empty document: it would otherwise render a field reference with a
+// heading and nothing under it, which reads as "this project has no resource
+// kinds" instead of "the generator is broken".
+func rootKindsFromSchema(schema map[string]any) ([]string, error) {
+	oneOf, _ := schema["oneOf"].([]any)
+	kinds := make([]string, 0, len(oneOf))
+	for _, entry := range oneOf {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		ref, ok := m["$ref"].(string)
+		if !ok {
+			continue
+		}
+		kinds = append(kinds, strings.TrimPrefix(ref, "#/definitions/"))
+	}
+	if len(kinds) == 0 {
+		return nil, fmt.Errorf("schema has no document-level oneOf branches: cannot tell which kinds are roots")
+	}
+	return kinds, nil
 }
 
 // writeSection writes a field table for defName and recurses into referenced types.

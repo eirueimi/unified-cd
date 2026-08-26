@@ -1003,9 +1003,11 @@
       "description": "Vars is a global variable manifest: plain-text values shared by every job.\n\nThese are NOT secrets. Values are stored in the clear, returned in the clear,\nand printed in step logs like any other environment variable. A value that\nmust not appear in a log belongs in a Secret.",
       "properties": {
         "apiVersion": {
+          "const": "unified-cd/v1",
           "type": "string"
         },
         "kind": {
+          "const": "Vars",
           "type": "string"
         },
         "metadata": {
@@ -1191,6 +1193,9 @@
     },
     {
       "$ref": "#/definitions/GitCredential"
+    },
+    {
+      "$ref": "#/definitions/Vars"
     }
   ],
   "title": "unified-cd"

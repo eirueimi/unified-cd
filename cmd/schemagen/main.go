@@ -18,20 +18,63 @@ import (
 // SchemaNode is an alias for a JSON Schema object.
 type SchemaNode = map[string]any
 
-// rootEntry maps a Go struct name to its YAML kind value.
-type rootEntry struct {
-	Struct string
-	Kind   string
+// rootDisplayOrder is a COSMETIC ordering hint, not the list of root kinds.
+//
+// The SET of roots is derived (see deriveRoots) precisely so that adding a new
+// top-level kind to internal/dsl cannot silently omit it from the schema. That
+// failure has happened here once already: when kind: Vars landed, this file's
+// hand-maintained list never learned about it, so the document-level oneOf had
+// no Vars branch and every correct Vars manifest was INVALID against the
+// published schema — flagged as an error by the VS Code extension.
+//
+// A derived root not named below is appended in alphabetical order, so the
+// worst a forgotten entry here can cost is where a kind appears in the oneOf
+// and in the generated field reference. Nothing can be dropped.
+var rootDisplayOrder = []string{
+	"Job",
+	"JobTemplate",
+	"Schedule",
+	"WebhookReceiver",
+	"AppSource",
+	"GitCredential",
 }
 
-// roots defines the top-level YAML resource kinds in display order.
-var roots = []rootEntry{
-	{"Job", "Job"},
-	{"JobTemplate", "JobTemplate"},
-	{"Schedule", "Schedule"},
-	{"WebhookReceiver", "WebhookReceiver"},
-	{"AppSource", "AppSource"},
-	{"GitCredential", "GitCredential"},
+// deriveRoots returns the top-level YAML resource kinds: every parsed struct
+// carrying BOTH an `apiVersion` and a `kind` YAML field. Those two fields are
+// what makes a struct a document root — nothing else in internal/dsl declares
+// them, and every kind that does is applied as its own YAML document.
+//
+// The kind VALUE is the struct name. That is not a convention invented here:
+// each kind's Validate() compares Kind against a literal, and all of them
+// (Job, JobTemplate, Schedule, WebhookReceiver, AppSource, GitCredential,
+// Vars) compare against their own struct name.
+func deriveRoots(structs map[string]StructInfo) []string {
+	found := map[string]bool{}
+	for name, info := range structs {
+		var hasAPIVersion, hasKind bool
+		for _, f := range info.Fields {
+			switch f.YAMLName {
+			case "apiVersion":
+				hasAPIVersion = true
+			case "kind":
+				hasKind = true
+			}
+		}
+		if hasAPIVersion && hasKind {
+			found[name] = true
+		}
+	}
+
+	out := make([]string, 0, len(found))
+	for _, name := range rootDisplayOrder {
+		if found[name] {
+			out = append(out, name)
+			delete(found, name)
+		}
+	}
+	// Anything the display list does not mention still ships, alphabetically.
+	out = append(out, sortedKeys(found)...)
+	return out
 }
 
 func main() {
@@ -270,9 +313,13 @@ func buildSchema(structs map[string]StructInfo, typeDescs map[string]string) Sch
 		defs[name] = def
 	}
 
-	// Patch root kinds: pin apiVersion/kind to const values.
-	for _, rk := range roots {
-		raw, ok := defs[rk.Struct]
+	// Patch root kinds: pin apiVersion/kind to const values, and list them in
+	// the document-level oneOf. Both are driven by the same derived list, so a
+	// kind can never appear in one and be missing from the other.
+	roots := deriveRoots(structs)
+	var oneOf []SchemaNode
+	for _, name := range roots {
+		raw, ok := defs[name]
 		if !ok {
 			continue
 		}
@@ -282,16 +329,9 @@ func buildSchema(structs map[string]StructInfo, typeDescs map[string]string) Sch
 			props["apiVersion"] = SchemaNode{"const": "unified-cd/v1", "type": "string"}
 		}
 		if _, ok := props["kind"]; ok {
-			props["kind"] = SchemaNode{"const": rk.Kind, "type": "string"}
+			props["kind"] = SchemaNode{"const": name, "type": "string"}
 		}
-	}
-
-	// Build oneOf for roots that were found.
-	var oneOf []SchemaNode
-	for _, rk := range roots {
-		if _, ok := defs[rk.Struct]; ok {
-			oneOf = append(oneOf, SchemaNode{"$ref": "#/definitions/" + rk.Struct})
-		}
+		oneOf = append(oneOf, SchemaNode{"$ref": "#/definitions/" + name})
 	}
 
 	return SchemaNode{

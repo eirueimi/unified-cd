@@ -13,6 +13,7 @@
 - [WebhookReceiver](#webhookreceiver)
 - [AppSource](#appsource)
 - [GitCredential](#gitcredential)
+- [Vars](#vars)
 
 ---
 
@@ -847,4 +848,33 @@ GitCredentialSpec is the spec section of GitCredential.
 | `host` | string | yes | hostname to use these credentials for (e.g. github.com) |
 | `secretRef` | string | yes | name of the StoredSecret that holds the value |
 | `type` | `token` \| `sshKey` | yes | authentication type |
+
+## Vars
+
+Vars is a global variable manifest: plain-text values shared by every job.
+
+These are NOT secrets. Values are stored in the clear, returned in the clear,
+and printed in step logs like any other environment variable. A value that
+must not appear in a log belongs in a Secret.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `apiVersion` | string | yes |  |
+| `kind` | string | yes |  |
+| `metadata` | Metadata | yes |  |
+| `spec` | VarsSpec | yes |  |
+
+### Metadata
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `annotations` | map[string]string | no |  |
+| `labels` | map[string]string | no |  |
+| `name` | string | yes |  |
+
+### VarsSpec
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `vars` | map[string]string | yes |  |
 
