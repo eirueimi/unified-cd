@@ -210,6 +210,16 @@ Two things fall out that are worth having on their own merits:
   gets an answer instead of a workaround. Under a static key pair there is
   nowhere to put one.
 
+**What the seam does not do.** The operator still creates the Secret, still
+puts it in the job Pod's namespace, and still names it in the agent's config.
+None of that changes. The seam changes how the Secret *reaches* the sidecar, and
+that is what makes a rotated or short-lived credential possible — it is not
+itself a way to stop having a Secret.
+
+Removing the operator's Secret is §5.2 or §5.4, and this section builds neither.
+Anyone reading only this far should come away knowing the setup is unchanged and
+the ceiling has been lifted.
+
 **This is what "build 5.2 in the shape of 5.4" means concretely.** With the seam
 in place, choosing between an agent-projected credential and a cloud-issued one
 is a configuration decision, not a redesign. Without it, either choice is a

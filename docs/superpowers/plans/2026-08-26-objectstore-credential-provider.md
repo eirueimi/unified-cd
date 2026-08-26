@@ -4,6 +4,8 @@
 
 **Goal:** Let the object-store client take a *credentials provider* instead of a fixed key pair, and let the Kubernetes sidecar read its credentials from a file that can be refreshed — so that short-lived or rotated credentials become possible at all.
 
+**What this does NOT do.** The operator still creates the sidecar's Secret, still puts it in the job Pod's namespace, and still names it in the agent's config. This plan changes how that Secret reaches the sidecar, not whether one is needed. Removing it is spec §5.2 (the agent projects a credential the controller supplies) or §5.4 (the cloud issues a short-lived one), and **neither is built here** — §5.2 costs the agent write access to Secrets in the job namespace, §5.4 costs portability, and the spec deliberately leaves that choice open. The seam's whole point is that it is not wasted whichever way that decision goes.
+
 **Architecture:** `minio-go` already accepts a `*credentials.Credentials`, which re-fetches when its provider reports expiry. Today the code hardcodes `credentials.NewStaticV4`, the one provider that can never refresh. This adds an optional provider to `S3Config`, teaches the sidecar to select one, and mounts the sidecar's Secret as a volume so the kubelet can update it. Static environment credentials stay last in precedence, so no existing deployment changes behaviour.
 
 **Tech Stack:** Go, `github.com/minio/minio-go/v7 v7.2.0` (already pinned; ships `static.go`, `file_aws_credentials.go`, `sts_web_identity.go`, `assume_role.go`, `chain.go`), Kubernetes `corev1`.
