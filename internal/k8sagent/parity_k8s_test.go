@@ -296,16 +296,25 @@ func isWSLLauncherK8s(path string) bool {
 	return strings.HasSuffix(normalized, `\system32\bash.exe`)
 }
 
-// parityRunScript runs a step's script for real via the discovered shell,
-// mirroring the UNIFIED_AGENT_OS=linux injection that the shared
-// orchestration loop (agentlib.RunClaim, internal/agent/orchestrator.go)
-// applies via agentOSForStep/b.DefaultAgentOS() before RunDefault (built via
-// k8sBackend) invokes Executor.ExecStep. Honors ctx cancellation via
-// exec.CommandContext, and additionally kills the
-// whole process tree on cancellation (see parityKillTree) since
-// exec.CommandContext alone only signals the direct child (the shell),
-// leaving a backgrounded `sleep` grandchild running — the same class of
-// problem the host agent's killTree/runTreeKilled solves
+// parityRunScript runs a step's script for real via the discovered shell.
+// execEnv is exactly the env slice the caller (RunDefault/RunNamedContainer/
+// RunInScope, below) received from the shared orchestration loop
+// (agentlib.RunClaim, internal/agent/orchestrator.go) — the same extraEnv
+// the real k8sBackend.RunDefault forwards verbatim to Executor.ExecStep
+// (internal/k8sagent/backend.go). That slice already carries
+// UNIFIED_AGENT_OS (via agentOSForStep/b.DefaultAgentOS()), UNIFIED_WORKSPACE,
+// the run's Vars (varsExtraEnv), and the step's own env: (in that
+// precedence order — a later duplicate key wins). This function must forward
+// it as-is rather than reconstructing any piece of it itself: an earlier
+// version of this driver hardcoded "UNIFIED_AGENT_OS=linux" and copied only
+// step.Env, which happened to match every case that existed at the time but
+// silently dropped anything delivered via extraEnv instead of step.Env —
+// e.g. Vars — from ever reaching the script, even though the real backend
+// does forward it. Honors ctx cancellation via exec.CommandContext, and
+// additionally kills the whole process tree on cancellation (see
+// parityKillTree) since exec.CommandContext alone only signals the direct
+// child (the shell), leaving a backgrounded `sleep` grandchild running — the
+// same class of problem the host agent's killTree/runTreeKilled solves
 // (internal/agent/exec_tree.go, exec_unix.go, exec_windows.go). stdout/stderr
 // are the writers orchestrate hands to RunDefault (its own tee/shipping
 // wiring via ExecBackend.StepLogWriters), so this function just needs to
@@ -317,14 +326,11 @@ func isWSLLauncherK8s(path string) bool {
 // do — "echo alpha > alpha.txt") would land the file in the test process's
 // cwd, i.e. this package's source directory, rather than somewhere the test
 // owns and go test / t.TempDir() cleans up.
-func parityRunScript(t *testing.T, shell string, step api.ClaimStep, expandedRun string, workDir string, stdout, stderr io.Writer) func(ctx context.Context) (int, error) {
+func parityRunScript(t *testing.T, shell string, execEnv []string, expandedRun string, workDir string, stdout, stderr io.Writer) func(ctx context.Context) (int, error) {
 	t.Helper()
 	return func(ctx context.Context) (int, error) {
 		env := append([]string{}, os.Environ()...)
-		env = append(env, "UNIFIED_AGENT_OS=linux")
-		for k, v := range step.Env {
-			env = append(env, k+"="+v)
-		}
+		env = append(env, execEnv...)
 
 		cmd := exec.Command(shell, "-lc", expandedRun)
 		cmd.Dir = workDir
@@ -410,12 +416,12 @@ func (b *parityK8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, s
 		container = "job"
 	}
 	b.recordDispatch(container, script)
-	return parityRunScript(b.t, b.shell, step, script, b.workDir, stdout, stderr)(ctx)
+	return parityRunScript(b.t, b.shell, env, script, b.workDir, stdout, stderr)(ctx)
 }
 
 func (b *parityK8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
 	b.recordDispatch(container, script)
-	return parityRunScript(b.t, b.shell, step, script, b.workDir, stdout, stderr)(ctx)
+	return parityRunScript(b.t, b.shell, env, script, b.workDir, stdout, stderr)(ctx)
 }
 
 func (b *parityK8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, env []string) (agentlib.ScopeHandle, error) {
@@ -423,7 +429,7 @@ func (b *parityK8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, 
 }
 
 func (b *parityK8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, shell, env []string, stdout, stderr io.Writer) (int, error) {
-	return parityRunScript(b.t, b.shell, api.ClaimStep{}, script, b.workDir, stdout, stderr)(ctx)
+	return parityRunScript(b.t, b.shell, env, script, b.workDir, stdout, stderr)(ctx)
 }
 
 func (b *parityK8sBackend) CloseScopes(ctx context.Context) {}
