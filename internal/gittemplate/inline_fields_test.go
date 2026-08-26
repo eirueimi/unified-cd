@@ -88,6 +88,11 @@ var stepEntryInlinePolicy = map[string]inlineFieldPolicy{
 	// and dropping the tags would silently strip that isolation.
 	"ScopeID":    fieldPreserved,
 	"ScopeImage": fieldPreserved,
+	// ScopeResourceLimits travels with ScopeID/ScopeImage for the same reason:
+	// a nested scope-mode uses: has already stamped its own steps, and dropping
+	// the limits would silently un-constrain a container the template author
+	// asked to be constrained. Scope mode overwrites all three.
+	"ScopeResourceLimits": fieldPreserved,
 }
 
 // The policy above covers dsl.StepEntry/dsl.Step's own fields, but four of
@@ -164,12 +169,13 @@ func fullyPopulatedTemplateStep() dsl.StepEntry {
 			Dimensions: []dsl.MatrixDimension{{Name: "os", Source: dsl.ForeachSource{Literal: []string{"linux", "darwin"}}}},
 			Exclude:    []map[string]string{{"os": "darwin"}},
 		},
-		ContinueOnError: true,
-		Container:       "builder",
-		ScopeID:         "scope:nested",
-		ScopeImage:      "golang:1.22",
-		TimeoutMinutes:  12.5,
-		Shell:           []string{"bash", "-lc"},
+		ContinueOnError:     true,
+		Container:           "builder",
+		ScopeID:             "scope:nested",
+		ScopeImage:          "golang:1.22",
+		ScopeResourceLimits: &dsl.ResourceList{CPU: "2", Memory: "4Gi"},
+		TimeoutMinutes:      12.5,
+		Shell:               []string{"bash", "-lc"},
 	}
 }
 
@@ -250,7 +256,7 @@ func TestRenameInnerEntryPreservesEveryStepEntryField(t *testing.T) {
 	inV := reflect.ValueOf(inner)
 	checkPolicyCoverage(t, typ, inV, stepEntryInlinePolicy)
 
-	out, err := renameInnerEntry("deploy", map[string]bool{"gate": true}, "always()", false, "", "", "", inner)
+	out, err := renameInnerEntry("deploy", map[string]bool{"gate": true}, "always()", false, "", "", nil, "", inner)
 	require.NoError(t, err)
 	outV := reflect.ValueOf(out)
 
@@ -287,12 +293,12 @@ func TestRenameInnerEntryPreservesEveryStepEntryField(t *testing.T) {
 	// The rejected fields, spelled out: each is an error, not a silent drop.
 	withUses := fullyPopulatedTemplateStep()
 	withUses.Uses = &dsl.UsesStep{Job: "git://example.com/repo//tpl.yaml@v1"}
-	_, err = renameInnerEntry("deploy", map[string]bool{"gate": true}, "", false, "", "", "", withUses)
+	_, err = renameInnerEntry("deploy", map[string]bool{"gate": true}, "", false, "", "", nil, "", withUses)
 	require.Error(t, err, "an unresolved nested uses: must be rejected, not dropped")
 
 	withRunsIn := fullyPopulatedTemplateStep()
 	withRunsIn.RunsIn = &dsl.RunsIn{Image: "golang:1.22"}
-	_, err = renameInnerEntry("deploy", map[string]bool{"gate": true}, "", false, "", "", "", withRunsIn)
+	_, err = renameInnerEntry("deploy", map[string]bool{"gate": true}, "", false, "", "", nil, "", withRunsIn)
 	require.Error(t, err, "step-level runsIn: must be rejected, not dropped")
 }
 
@@ -326,7 +332,7 @@ func TestRenameInnerEntryPreservesEveryParallelStepField(t *testing.T) {
 	inV := reflect.ValueOf(inner)
 	checkPolicyCoverage(t, typ, inV, stepEntryInlinePolicy)
 
-	entry, err := renameInnerEntry("deploy", map[string]bool{"gate": true}, "always()", false, "", "", "",
+	entry, err := renameInnerEntry("deploy", map[string]bool{"gate": true}, "always()", false, "", "", nil, "",
 		dsl.StepEntry{Parallel: []dsl.Step{inner}})
 	require.NoError(t, err)
 	require.Len(t, entry.Parallel, 1)
