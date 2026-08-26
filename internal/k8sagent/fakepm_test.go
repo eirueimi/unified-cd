@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +22,12 @@ type fakePM struct {
 
 	created   *corev1.Pod
 	createdNm string
-	waitErr   error
+	// createdNames is every Pod name CreatePod has ever produced, in order —
+	// unlike createdNm (the latest only), this lets a test check for an
+	// exact, dup-free correspondence with deleted (below) across many
+	// concurrent attempts, e.g. the stress test.
+	createdNames []string
+	waitErr      error
 	// blockFirstWait, when non-nil, blocks only the FIRST WaitForPodRunning
 	// call until it is closed; later calls return immediately. That asymmetry
 	// is what lets a test prove a second scope key does not queue behind the
@@ -49,6 +55,26 @@ type fakePM struct {
 	// and its DeletePod call into something a test can land a second,
 	// successful attempt inside of.
 	failWaitCalls int
+	// ignoreCtxUntilGate, when true, makes the FIRST WaitForPodRunning call
+	// block purely on blockFirstWait, ignoring ctx.Done() entirely, instead
+	// of racing the two (the default select{} below). It exists to mimic the
+	// REAL PodManager.WaitForPodRunning, which only checks ctx.Done() between
+	// its 500ms polls rather than reacting to cancellation instantly
+	// (podmanager.go) — so a test can cancel/abandon the caller while this
+	// call is parked, and keep it parked for as long as it wants (simulating
+	// "still polling, hasn't noticed cancellation yet"), rather than having
+	// it race off the moment cancellation happens. The call's eventual return
+	// value once the gate opens is still governed by waitErr/failWaitCalls
+	// exactly as normal — it does not itself inspect ctx after the gate
+	// opens, so the test controls the outcome directly.
+	ignoreCtxUntilGate bool
+	// waitJitter, when nonzero, makes EVERY WaitForPodRunning call sleep a
+	// random duration in [0, waitJitter) before returning, honoring ctx.Done()
+	// while it does so. It exists for stress tests that want realistic timing
+	// variance across many concurrent attempts sharing a handful of keys —
+	// some callers' short deadlines genuinely racing a creation still in
+	// flight — without hand-choreographing every interleaving via gates.
+	waitJitter time.Duration
 
 	deleteCount int
 	// blockFirstDelete, when non-nil, blocks only the FIRST DeletePod call
@@ -73,6 +99,7 @@ func (f *fakePM) CreatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod, err
 	out := pod.DeepCopy()
 	out.Name = fmt.Sprintf("ucd-img-generated-%d", f.createCount) // simulate server-assigned name from GenerateName
 	f.createdNm = out.Name
+	f.createdNames = append(f.createdNames, out.Name)
 	f.mu.Unlock()
 	return out, nil
 }
@@ -89,6 +116,8 @@ func (f *fakePM) WaitForPodRunning(ctx context.Context, _ string) error {
 	gate := f.blockFirstWait
 	started := f.waitStarted
 	failLimit := f.failWaitCalls
+	ignoreCtx := f.ignoreCtxUntilGate
+	jitter := f.waitJitter
 	f.mu.Unlock()
 
 	if first {
@@ -96,11 +125,22 @@ func (f *fakePM) WaitForPodRunning(ctx context.Context, _ string) error {
 			close(started)
 		}
 		if gate != nil {
-			select {
-			case <-gate:
-			case <-ctx.Done():
-				return ctx.Err()
+			if ignoreCtx {
+				<-gate
+			} else {
+				select {
+				case <-gate:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			}
+		}
+	}
+	if jitter > 0 {
+		select {
+		case <-time.After(time.Duration(rand.Int63n(int64(jitter)))):
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	if failLimit > 0 && callIndex > failLimit {
