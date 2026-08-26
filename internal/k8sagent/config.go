@@ -56,6 +56,19 @@ type Config struct {
 	FinallyTimeout      string                      `yaml:"finallyTimeout,omitempty"`
 	PodTemplates        map[string]AgentPodTemplate `yaml:"podTemplates,omitempty"`
 	SidecarS3SecretName string                      `yaml:"sidecarS3SecretName,omitempty"`
+
+	// SidecarS3SecretMode selects how the Secret named by SidecarS3SecretName
+	// reaches the sidecar.
+	//
+	//   "env"  (default) envFrom.secretRef, as today.
+	//   "file" mounted as a volume, with UNIFIED_S3_CREDENTIAL_FILE pointing at it.
+	//
+	// "file" is what makes a rotated or short-lived credential possible: an
+	// envFrom Secret is snapshotted into the container's environment at creation
+	// and never updates, while a mounted Secret is updated by the kubelet.
+	// It also lets the volume be optional, so a missing Secret degrades instead
+	// of failing the whole Pod. Env: UNIFIED_K8S_SIDECAR_S3_SECRET_MODE.
+	SidecarS3SecretMode string `yaml:"sidecarS3SecretMode,omitempty"`
 }
 
 // AgentPodTemplate is a Pod template defined in the agent configuration file.
@@ -260,6 +273,9 @@ func (c *Config) Validate() error {
 			c.MaxDetachedConcurrent = n
 		}
 	}
+	if v := os.Getenv("UNIFIED_K8S_SIDECAR_S3_SECRET_MODE"); v != "" {
+		c.SidecarS3SecretMode = v
+	}
 	if c.Server == "" {
 		return fmt.Errorf("server is required")
 	}
@@ -285,6 +301,16 @@ func (c *Config) Validate() error {
 	}
 	if c.ShimImage == "" {
 		c.ShimImage = defaultShimImage
+	}
+	if c.SidecarS3SecretMode == "" {
+		c.SidecarS3SecretMode = SidecarS3SecretModeEnv
+	}
+	if c.SidecarS3SecretMode != SidecarS3SecretModeEnv && c.SidecarS3SecretMode != SidecarS3SecretModeFile {
+		// An unrecognised value must fail at startup, not silently fall back
+		// to "env" — a typo that goes unnoticed here would look identical to
+		// "file" mode simply not doing anything, which is a much harder bug
+		// to track down than a refused start.
+		return fmt.Errorf("sidecarS3SecretMode %q: must be %q or %q", c.SidecarS3SecretMode, SidecarS3SecretModeEnv, SidecarS3SecretModeFile)
 	}
 	// maxConcurrent: 0/unset -> default 100; negative -> unlimited (preserved
 	// as a sentinel; the run loop skips its semaphore); positive -> that bound.

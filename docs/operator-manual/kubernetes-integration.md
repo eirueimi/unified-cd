@@ -574,6 +574,37 @@ The Secret is injected into the sidecar container only, via `envFrom`.
 
 The second row is what an operator hits after creating the Secret in the agent's namespace instead of the job namespace. The agent surfaces the kubelet's reason and message in the run's failure (see [Troubleshooting](../troubleshooting/artifacts-and-storage.md#job-pods-never-start-with-createcontainerconfigerror)), so the `secret "…" not found` text appears in the run itself rather than only under `kubectl describe pod`.
 
+### S3 credential delivery mode: `sidecarS3SecretMode`
+
+By default the sidecar's S3 Secret reaches it the way described above: `envFrom.secretRef`, injected once when the container is created. That has a consequence worth naming explicitly — **a Secret consumed via `envFrom` is snapshotted into the container's environment at creation and never updates.** If you rotate the Secret's value, every already-running sidecar keeps using the old one until its Pod is replaced. There is no way to push a refreshed or short-lived credential into a live Pod under this mode; the shape doesn't support it.
+
+`sidecarS3SecretMode: file` is the opt-in alternative that removes that ceiling:
+
+```yaml
+# k8s-agent-config.yaml
+sidecarS3SecretName: unified-cd-s3-creds
+sidecarS3SecretMode: file   # default: env
+```
+
+(Env override: `UNIFIED_K8S_SIDECAR_S3_SECRET_MODE`.)
+
+In `file` mode the same-named Secret is instead mounted as a **volume** into the sidecar container, and the sidecar is told where to find it via `UNIFIED_S3_CREDENTIAL_FILE`, not `envFrom`. A Secret mounted as a volume **is** kept up to date by the kubelet — rewriting it eventually reaches the running Pod. This is the mode a rotated or refreshed credential needs; `env` mode cannot deliver one no matter how the Secret is managed.
+
+**`file` mode expects a differently-shaped Secret than `env` mode.** `envFrom` needs `UNIFIED_S3_KEY` and `UNIFIED_S3_SECRET` as separate top-level Secret keys, one per env var. `file` mode instead expects a single key named `credentials`, whose value is:
+
+```
+UNIFIED_S3_KEY=<your key>
+UNIFIED_S3_SECRET=<your secret>
+```
+
+(the same two variables, just both inside one value). Switching a Secret from one mode to the other means re-authoring it, not just flipping the config field — the sidecar will not find `UNIFIED_S3_KEY`/`UNIFIED_S3_SECRET` as top-level keys of a `file`-mode Secret, or the `credentials` key in an `env`-mode one.
+
+The volume is mounted `optional: true` and `defaultMode: 0400`, mirroring how the controller's own KEK is mounted. `optional: true` matters independently of rotation: unlike `envFrom.secretRef` (which is never optional and makes a missing or misnamed Secret fail the **whole Pod** with `CreateContainerConfigError` — see the table above), a missing Secret under `file` mode simply leaves the mount empty and the sidecar without credentials, degrading the same way as leaving `sidecarS3SecretName` unset entirely (artifact steps fail, cache steps no-op, everything else in the job runs).
+
+**What `file` mode does not do.** It is a delivery mechanism only — it does not by itself produce short-lived or automatically-rotating credentials. Nothing in this project rotates the Secret's value for you; an operator (or an external secret-rotation tool) still has to rewrite it, exactly as today, just with a mode that can actually deliver the new value to a running Pod. Building automatic issuance — an agent-projected credential, or a cloud-issued short-lived one — is future work; see the `2026-08-26-sidecar-credential-delivery-design.md` design spec, §5.5, for the seam this implements and why it was built ahead of that decision.
+
+`env` remains the default: existing deployments that never set `sidecarS3SecretMode` see no change in behaviour.
+
 ### Security note / threat model
 
 Bucket-scoped S3 credentials are mounted into the **sidecar container's** environment only, via the Kubernetes Secret's `envFrom` — the job container never sees them (container-boundary isolation, the same trust boundary Argo Workflows and Tekton use for their artifact sidecars/init-containers). The credentials are long-lived, bucket-scoped static keys, not per-run or per-pod scoped; any workload able to exec into the `unified-artifact` container (or read the Secret directly, if RBAC allows `get`/`list` on Secrets in the namespace) can read/write the whole bucket for as long as the Secret is valid.

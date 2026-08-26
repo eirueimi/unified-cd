@@ -70,9 +70,12 @@ type PodPool struct {
 // Restore relies on to re-adopt pods by their annotated key. If json.Marshal
 // fails (rare, only if the spec contains an unmarshalable value), the fallback
 // hashes only scalar fields (templateName, fallbackImage, shimImage, and
-// sidecar.Image + sidecar.S3SecretName) for determinism; this path loses
-// override/spec distinction but is deterministic and only reached if the spec
-// is unmarshalable (BuildPod would reject it anyway).
+// sidecar.Image + sidecar.S3SecretName + sidecar.S3SecretMode) for
+// determinism; this path loses override/spec distinction but is deterministic
+// and only reached if the spec is unmarshalable (BuildPod would reject it
+// anyway). The primary (json.Marshal) path below needs no equivalent callout
+// for S3SecretMode: Sidecar is marshaled as a whole SidecarSpec value, so a
+// new field on that struct is automatically part of the key.
 func poolKey(templateName string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string) string {
 	type canonicalShape struct {
 		TemplateName  string            `json:"templateName"`
@@ -98,11 +101,17 @@ func poolKey(templateName string, agentTmpls map[string]AgentPodTemplate, jobTmp
 	if err != nil {
 		// A YAML-sourced map[string]any could in principle carry a value
 		// encoding/json rejects. Fall back to hashing scalar fields only:
-		// templateName, fallbackImage, shimImage, and sidecar scalars.
-		// This is deterministic for equal inputs but loses spec/override
-		// distinction (acceptable since this path is only reached if the spec
-		// is unmarshalable, which BuildPod would reject anyway).
-		scalarKey := fmt.Sprintf("%s:%s:%s:%s:%s", templateName, fallbackImage, shimImage, sidecar.Image, sidecar.S3SecretName)
+		// templateName, fallbackImage, shimImage, and sidecar scalars —
+		// including S3SecretMode: a pod built in "env" mode must not be
+		// reused for a claim wanting "file" mode (or vice versa), since the
+		// two carry the credential to the sidecar in incompatible shapes
+		// (envFrom vs. a mounted volume + UNIFIED_S3_CREDENTIAL_FILE) —
+		// getting this wrong means a pooled pod silently serves the wrong
+		// credential shape. This is deterministic for equal inputs but loses
+		// spec/override distinction (acceptable since this path is only
+		// reached if the spec is unmarshalable, which BuildPod would reject
+		// anyway).
+		scalarKey := fmt.Sprintf("%s:%s:%s:%s:%s:%s", templateName, fallbackImage, shimImage, sidecar.Image, sidecar.S3SecretName, sidecar.S3SecretMode)
 		data = []byte(scalarKey)
 	}
 	sum := sha256.Sum256(data)
