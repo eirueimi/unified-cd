@@ -110,9 +110,11 @@ func TestExpandUsesContainerModeApprovalAndCallAllowed(t *testing.T) {
 		{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok to proceed?"}},
 		{Name: "delegate", Call: &dsl.CallStep{Job: "some-job"}},
 	}}
-	if _, _, err := expandUsesStep("build", map[string]string{}, tpl, nil, "builder", ""); err != nil {
+	out, _, err := expandUsesStep("build", map[string]string{}, tpl, nil, "builder", "")
+	if err != nil {
 		t.Fatalf("expand: %v", err)
 	}
+	assertApprovalAndCallSurvive(t, out)
 }
 
 func TestExpandUsesNoRunsInApprovalAndCallAllowed(t *testing.T) {
@@ -121,7 +123,45 @@ func TestExpandUsesNoRunsInApprovalAndCallAllowed(t *testing.T) {
 		{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok to proceed?"}},
 		{Name: "delegate", Call: &dsl.CallStep{Job: "some-job"}},
 	}}
-	if _, _, err := expandUsesStep("build", map[string]string{}, tpl, nil, "", ""); err != nil {
+	out, _, err := expandUsesStep("build", map[string]string{}, tpl, nil, "", "")
+	if err != nil {
 		t.Fatalf("expand: %v", err)
+	}
+	assertApprovalAndCallSurvive(t, out)
+}
+
+// assertApprovalAndCallSurvive checks the expansion actually kept the fields,
+// not merely that it returned no error. "Allowed" used to mean only the latter,
+// which is why the approval gate could be dropped silently: the step came out
+// with no approval and no run:, so the agent executed an empty script and
+// reported success while the human gate simply ceased to exist.
+func assertApprovalAndCallSurvive(t *testing.T, out []dsl.StepEntry) {
+	t.Helper()
+	var gate, delegate *dsl.StepEntry
+	for i := range out {
+		switch out[i].Name {
+		case "build__gate":
+			gate = &out[i]
+		case "build__delegate":
+			delegate = &out[i]
+		}
+	}
+	if gate == nil {
+		t.Fatalf("inlined approval step build__gate missing from expansion: %+v", out)
+	}
+	if gate.Approval == nil {
+		t.Fatalf("step %q lost its approval: %+v", gate.Name, gate)
+	}
+	if gate.Approval.Message != "ok to proceed?" {
+		t.Fatalf("step %q approval message = %q, want %q", gate.Name, gate.Approval.Message, "ok to proceed?")
+	}
+	if gate.Run != "" {
+		t.Fatalf("step %q must stay an approval gate, not degrade into run %q", gate.Name, gate.Run)
+	}
+	if delegate == nil {
+		t.Fatalf("inlined call step build__delegate missing from expansion: %+v", out)
+	}
+	if delegate.Call == nil || delegate.Call.Job != "some-job" {
+		t.Fatalf("step %q lost its call: %+v", delegate.Name, delegate)
 	}
 }
