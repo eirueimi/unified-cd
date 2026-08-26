@@ -304,21 +304,31 @@ func isWSLLauncherK8s(path string) bool {
 // (internal/k8sagent/backend.go). That slice already carries
 // UNIFIED_AGENT_OS (via agentOSForStep/b.DefaultAgentOS()), UNIFIED_WORKSPACE,
 // the run's Vars (varsExtraEnv), and the step's own env: (in that
-// precedence order — a later duplicate key wins). This function must forward
-// it as-is rather than reconstructing any piece of it itself: an earlier
-// version of this driver hardcoded "UNIFIED_AGENT_OS=linux" and copied only
-// step.Env, which happened to match every case that existed at the time but
+// precedence order — a later duplicate key wins). shellArgv is the owning
+// step's effective interpreter argv (api.ClaimStep.Shell for
+// RunDefault/RunNamedContainer, the explicit shell parameter for
+// RunInScope — see agentlib.ExecBackend's doc comment on why RunInScope
+// takes it separately); nil/empty means "apply this driver's own shim
+// default" (shellPath run with -lc), mirroring how the real backend's
+// buildShellCommand falls back to ucdDefaultShell() on nil/empty.
+//
+// Both execEnv and shellArgv must be forwarded exactly as received rather
+// than reconstructed here: an earlier version of this driver hardcoded
+// "UNIFIED_AGENT_OS=linux" and copied only step.Env instead of the full
+// execEnv, which happened to match every case that existed at the time but
 // silently dropped anything delivered via extraEnv instead of step.Env —
-// e.g. Vars — from ever reaching the script, even though the real backend
-// does forward it. Honors ctx cancellation via exec.CommandContext, and
-// additionally kills the whole process tree on cancellation (see
-// parityKillTree) since exec.CommandContext alone only signals the direct
-// child (the shell), leaving a backgrounded `sleep` grandchild running — the
-// same class of problem the host agent's killTree/runTreeKilled solves
-// (internal/agent/exec_tree.go, exec_unix.go, exec_windows.go). stdout/stderr
-// are the writers orchestrate hands to RunDefault (its own tee/shipping
-// wiring via ExecBackend.StepLogWriters), so this function just needs to
-// stream the real script's output into them.
+// e.g. Vars — even though the real backend does forward it. shellArgv had
+// the same shape of gap (accepted, never read) until this fix; no case
+// exercises a non-default step.Shell yet, so the earlier version's silent
+// drop of it was equally latent. Honors ctx cancellation via
+// exec.CommandContext, and additionally kills the whole process tree on
+// cancellation (see parityKillTree) since exec.CommandContext alone only
+// signals the direct child (the shell), leaving a backgrounded `sleep`
+// grandchild running — the same class of problem the host agent's
+// killTree/runTreeKilled solves (internal/agent/exec_tree.go, exec_unix.go,
+// exec_windows.go). stdout/stderr are the writers orchestrate hands to
+// RunDefault (its own tee/shipping wiring via ExecBackend.StepLogWriters),
+// so this function just needs to stream the real script's output into them.
 //
 // workDir sets the command's working directory, mirroring the host driver's
 // workDir := t.TempDir() (parity_host_test.go). Without it, a script writing
@@ -326,13 +336,22 @@ func isWSLLauncherK8s(path string) bool {
 // do — "echo alpha > alpha.txt") would land the file in the test process's
 // cwd, i.e. this package's source directory, rather than somewhere the test
 // owns and go test / t.TempDir() cleans up.
-func parityRunScript(t *testing.T, shell string, execEnv []string, expandedRun string, workDir string, stdout, stderr io.Writer) func(ctx context.Context) (int, error) {
+func parityRunScript(t *testing.T, shellPath string, shellArgv []string, execEnv []string, expandedRun string, workDir string, stdout, stderr io.Writer) func(ctx context.Context) (int, error) {
 	t.Helper()
 	return func(ctx context.Context) (int, error) {
 		env := append([]string{}, os.Environ()...)
 		env = append(env, execEnv...)
 
-		cmd := exec.Command(shell, "-lc", expandedRun)
+		var cmd *exec.Cmd
+		if len(shellArgv) == 0 {
+			cmd = exec.Command(shellPath, "-lc", expandedRun)
+		} else {
+			// Mirrors buildShellCommand (internal/k8sagent/executor.go):
+			// the interpreter argv followed by the script as its final
+			// element, verbatim.
+			argv := append(append([]string{}, shellArgv[1:]...), expandedRun)
+			cmd = exec.Command(shellArgv[0], argv...)
+		}
 		cmd.Dir = workDir
 		cmd.Env = env
 		cmd.Stdout = stdout
@@ -368,13 +387,15 @@ func parityRunScript(t *testing.T, shell string, execEnv []string, expandedRun s
 }
 
 // parityK8sBackend is the real-execution ExecBackend used by
-// TestParity_K8sAgent: RunDefault (the only exec path any of the 10 parity
-// cases exercises) runs the step's script for real via parityRunScript, and
+// TestParity_K8sAgent: RunDefault and RunNamedContainer (the only exec paths
+// any of the 17 parity cases exercises — isolated-dispatch's container: step
+// is the one case that reaches RunNamedContainer; none reaches RunInScope
+// yet) run the step's script for real via parityRunScript, and
 // StepLogWriters ships real output through parityLineShipper (masked),
 // mirroring production's log-shipping shape closely enough for the parity
 // suite's log-content assertions (env-reaches-script, finally marker, secret
 // masking). Cache/artifact/scope methods are minimal recording stubs — none
-// of the 10 cases exercises them. postOrder/postMu record RunPostHook script
+// of the 17 cases exercises them. postOrder/postMu record RunPostHook script
 // invocation order directly (unlike the host driver, this callback IS what
 // runs the script, so LIFO order can be observed with no marker-file
 // workaround).
@@ -416,12 +437,12 @@ func (b *parityK8sBackend) RunDefault(ctx context.Context, step api.ClaimStep, s
 		container = "job"
 	}
 	b.recordDispatch(container, script)
-	return parityRunScript(b.t, b.shell, env, script, b.workDir, stdout, stderr)(ctx)
+	return parityRunScript(b.t, b.shell, step.Shell, env, script, b.workDir, stdout, stderr)(ctx)
 }
 
 func (b *parityK8sBackend) RunNamedContainer(ctx context.Context, step api.ClaimStep, container, script string, env []string, stdout, stderr io.Writer) (int, error) {
 	b.recordDispatch(container, script)
-	return parityRunScript(b.t, b.shell, env, script, b.workDir, stdout, stderr)(ctx)
+	return parityRunScript(b.t, b.shell, step.Shell, env, script, b.workDir, stdout, stderr)(ctx)
 }
 
 func (b *parityK8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, env []string) (agentlib.ScopeHandle, error) {
@@ -429,7 +450,7 @@ func (b *parityK8sBackend) EnsureScope(ctx context.Context, step api.ClaimStep, 
 }
 
 func (b *parityK8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, script string, shell, env []string, stdout, stderr io.Writer) (int, error) {
-	return parityRunScript(b.t, b.shell, env, script, b.workDir, stdout, stderr)(ctx)
+	return parityRunScript(b.t, b.shell, shell, env, script, b.workDir, stdout, stderr)(ctx)
 }
 
 func (b *parityK8sBackend) CloseScopes(ctx context.Context) {}
@@ -468,7 +489,7 @@ func (b *parityK8sBackend) RunPostHook(ctx context.Context, scope agentlib.Scope
 	return nil
 }
 
-// ResolveArtifactPath is a minimal passthrough: none of the 10 parity cases
+// ResolveArtifactPath is a minimal passthrough: none of the 17 parity cases
 // exercises cache/artifact paths, so exact resolution semantics don't matter
 // here (unlike fakeK8sBackend/k8sBackend, which have argv-path assertions).
 func (b *parityK8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p string) (string, error) {
@@ -476,16 +497,16 @@ func (b *parityK8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p str
 }
 
 // ResolveCachePath is a minimal passthrough (see ResolveArtifactPath's doc
-// comment: none of the 10 parity cases exercises cache/artifact paths).
+// comment: none of the 17 parity cases exercises cache/artifact paths).
 func (b *parityK8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) (string, error) {
 	return p, nil
 }
 
-// WorkspacePath mirrors k8sBackend.WorkspacePath's shape; none of the 10
-// parity cases asserts on UNIFIED_WORKSPACE (parityRunScript injects its own
-// fixed env rather than propagating RunDefault's env parameter, mirroring
-// how it already hardcodes UNIFIED_AGENT_OS=linux instead of using it), so
-// exact value fidelity doesn't matter here (see ResolveArtifactPath above).
+// WorkspacePath mirrors k8sBackend.WorkspacePath's shape; none of the 17
+// parity cases asserts on UNIFIED_WORKSPACE's value. parityRunScript does
+// forward it like any other extraEnv entry (it reaches the script), it just
+// isn't checked, so exact value fidelity doesn't matter here (see
+// ResolveArtifactPath above).
 func (b *parityK8sBackend) WorkspacePath(scope agentlib.ScopeHandle) string {
 	if !scope.IsZero() {
 		return scopeMountPath
@@ -576,7 +597,7 @@ func (s *parityLineShipper) ship(line string) {
 // TestParity_K8sAgent drives every paritycases.Case through the k8s agent's
 // real orchestrate loop (a.orchestrate), with stepExec running real scripts
 // (no exec faking) and minimal recording stubs for sidecarExec/postExec/
-// ensureScopePod (none of the 10 cases exercises cache/artifact/scope
+// ensureScopePod (none of the 17 cases exercises cache/artifact/scope
 // behavior).
 func TestParity_K8sAgent(t *testing.T) {
 	for _, tc := range paritycases.Cases() {
