@@ -533,9 +533,17 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					stdoutTee := io.MultiWriter(&stdoutBuf, shippedStdout)
 					switch {
 					case isScopedStep(step):
-						// Scoped steps never carry a container: exec target (mutually
-						// exclusive at the DSL level), so this case takes precedence over
-						// the container case below.
+						// A scope-tagged step's Container is not guaranteed empty: a
+						// template step already scope-tagged by an inner uses:
+						// runsIn.image can be inlined again by an outer, non-scope
+						// uses: whose container-defaulting (gittemplate/inline.go's
+						// `else if ns.Container == ""` branch) stamps its own
+						// container: onto the step regardless of ScopeID, so both
+						// end up set. That is harmless, not a state to guard against:
+						// this case is checked first, so a scope-tagged step always
+						// runs in its scope environment no matter what Container
+						// holds, and dsl.ValidateContainerReferences short-circuits
+						// on a non-empty ScopeID without ever looking at Container.
 						//
 						// extraEnv here, nil from resolveScope's cache/artifact
 						// path: the scope is created once per (ScopeID,

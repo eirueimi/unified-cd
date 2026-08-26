@@ -110,6 +110,19 @@ spec:
   `agentSelector`, `podTemplate.reuse`, etc.) doesn't fit this model — invoke
   it with [`call:`](#calling-other-jobs-call) instead of `uses:`.
 
+A template step is an ordinary step: everything a `Job` step may declare —
+including [`approval:`](approval-and-finally.md#approval-step-approval),
+[`retry:`](steps.md#retry),
+[`matrix:`/`foreach:`](steps.md#matrix-and-foreach-steps), `post:`, `cache:`
+and `shell:` — is honored after inlining, subject only to the same rules the
+caller's own steps obey (no `approval:` in `finally:`, and none of
+`approval:`/`call:`/`container:` under a [`runsIn.image`
+scope](#uses-level-runsinimage-scope)). Older controllers dropped `approval:`,
+`retry:`, `matrix:` and `foreach:` from inlined steps without reporting it —
+if you maintain a template that declares any of them, read [Migrating
+templated `approval:`, `retry:`, `matrix:` and
+`foreach:`](../../operator-manual/migrations/uses-template-step-fields.md).
+
 A fetched template whose `kind` is `Job` (the old target kind) fails run
 creation with:
 

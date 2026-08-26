@@ -204,6 +204,12 @@ func cloneStringMap(values map[string]string) map[string]string {
 // single place this transformation is implemented; expandUsesStep calls it
 // once per body step and once per finally step so the two lists get provably
 // identical treatment.
+//
+// Both branches carry fields by copying the whole struct and then rewriting
+// what must change — never by listing the fields worth keeping. A keep-list
+// silently drops any field added to dsl.StepEntry later; see the concrete-step
+// branch's comment and TestRenameInnerEntryPreservesEveryStepEntryField, which
+// fails if a new field is added without a decision recorded for it.
 func renameInnerEntry(usesName string, innerNames map[string]bool, outerIf string, scopeMode bool, scopeID, scopeImage, outerContainer string, inner dsl.StepEntry) (dsl.StepEntry, error) {
 	if inner.Parallel != nil {
 		// Parallel block: prefix each inner step name and rewrite refs
@@ -271,21 +277,34 @@ func renameInnerEntry(usesName string, innerNames map[string]bool, outerIf strin
 		return dsl.StepEntry{Parallel: rp}, nil
 	}
 
-	// Concrete step
-	ns := dsl.StepEntry{
-		Name:            prefixedName(usesName, inner.Name),
-		Run:             rewriteRefs(inner.Run, usesName, innerNames),
-		If:              combineIf(outerIf, rewriteRefs(inner.If, usesName, innerNames)),
-		Env:             rewriteMap(inner.Env, usesName, innerNames),
-		Outputs:         rewriteMap(inner.Outputs, usesName, innerNames),
-		ContinueOnError: inner.ContinueOnError,
-		Container:       inner.Container,
-		TimeoutMinutes:  inner.TimeoutMinutes,
-		// The step's own shell: survives inlining as-is; a template-level
-		// tplSpec.Shell is stamped onto steps lacking one by stampShell,
-		// after all steps are renamed.
-		Shell: inner.Shell,
-	}
+	// Concrete step.
+	//
+	// Start from a whole-struct copy — exactly as the parallel: branch above
+	// does — and then rewrite only the fields that genuinely need rewriting.
+	// This must never go back to building a fresh literal that enumerates the
+	// fields to keep: such a list silently drops every field added to
+	// dsl.StepEntry afterwards, which is how approval:, retry:, matrix: and
+	// foreach: came to vanish from inlined template steps (an approval gate
+	// declared in a shared template inlined as a step with no action at all,
+	// so the gate disappeared without an error). A copy cannot drift.
+	//
+	// Fields NOT carried verbatim, and why:
+	//   - Name/If/Env/Outputs/Run and the cache/artifact/post sub-structs are
+	//     rewritten below (prefixing, if: combination, ref rewriting).
+	//   - Uses and RunsIn are rejected outright below (both are errors).
+	//   - ScopeID/ScopeImage are overwritten in scope mode; outside scope mode
+	//     they carry through, which is what a nested scope-mode uses inside
+	//     this template needs (the parallel: branch already behaves this way).
+	//   - Parallel is nil by definition in this branch.
+	// The step's own shell: survives inlining as-is; a template-level
+	// tplSpec.Shell is stamped onto steps lacking one by stampShell, after
+	// all steps are renamed.
+	ns := inner
+	ns.Name = prefixedName(usesName, inner.Name)
+	ns.Run = rewriteRefs(inner.Run, usesName, innerNames)
+	ns.If = combineIf(outerIf, rewriteRefs(inner.If, usesName, innerNames))
+	ns.Env = rewriteMap(inner.Env, usesName, innerNames)
+	ns.Outputs = rewriteMap(inner.Outputs, usesName, innerNames)
 	if inner.RunsIn != nil {
 		return dsl.StepEntry{}, fmt.Errorf("template step %q: step-level runsIn: is no longer supported — use container: (see 2026-07-08 job isolation)", inner.Name)
 	}
