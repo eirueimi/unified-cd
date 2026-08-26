@@ -5,12 +5,19 @@ fields declared on a template's own steps were being dropped during that
 inlining — silently, with no error, no warning and no log line: `approval:`,
 `retry:`, `matrix:` and `foreach:`. They are now carried through.
 
-This is **not a breaking change** — nothing you can write today stops working.
-It is here because it changes what an *already-applied* job does at runtime,
-and one of the four fields is a human gate. **If any `kind: JobTemplate` you
-`uses:` declares `approval:` on a step, that gate was not gating.** Read
-[Who is affected](#who-is-affected-and-how-to-find-out) before your next
-production run.
+This is **not a breaking change for these four fields** — nothing you can
+write today stops working because `approval:`/`retry:`/`matrix:`/`foreach:`
+are now honored. It is here because it changes what an *already-applied* job
+does at runtime, and one of the four fields is a human gate. **If any
+`kind: JobTemplate` you `uses:` declares `approval:` on a step, that gate was
+not gating.** Read [Who is affected](#who-is-affected-and-how-to-find-out)
+before your next production run.
+
+A related pair of fields, `ScopeID`/`ScopeImage`, was dropped by the same bug
+and is restored by the same fix — but unlike the four above, **that one case
+actually can break a run that depended on the old behaviour.** It has its own
+section below: [A related fix: nested `runsIn.image` now actually
+isolates](#a-related-fix-nested-runsinimage-now-actually-isolates).
 
 **Before**, the inliner rebuilt each concrete (non-`parallel:`) template step
 from a hand-maintained list of fields to keep. The four fields were added to
@@ -36,20 +43,72 @@ Every other step field (`run:`, `if:`, `env:`, `outputs:`, `cache:`, `post:`,
 `timeoutMinutes:`, `continueOnError:`) was already carried across and is
 unchanged.
 
+## A related fix: nested `runsIn.image` now actually isolates
+
+The same hand-written field list also dropped two fields that aren't
+user-authored: `ScopeID` and `ScopeImage`, which the inliner itself stamps
+onto a template step when *that step's own* `uses:` carries
+[`runsIn.image`](../../user-guide/writing-jobs/templates-and-reuse.md#uses-level-runsinimage-scope)
+(a "scope"). They only come into play for a specific nested shape — a
+template calling another template into an isolated scope — but where that
+shape exists, restoring them **can change a run's outcome**, not just its
+audit trail. Unlike the four fields above, treat this one as a genuine
+compatibility risk to check for, not just a fixed silent failure.
+
+The shape: a caller job has a plain (non-scope) `uses:` on template **T**. One
+of T's own steps has a `uses:` of its own, targeting template **N**, with
+`runsIn: { image: X }` on that inner `uses:` step. N has concrete
+(non-`parallel:`) steps.
+
+- **Before:** inlining T dropped the `ScopeID`/`ScopeImage` that resolving
+  the inner `uses:` had already stamped onto N's steps (the hand-written
+  literal never listed those two fields, on top of never listing the four
+  above). N's steps ran **unscoped** — sharing the caller's own workspace and
+  exec target — and image `X` was never used at all.
+- **After:** `ScopeID`/`ScopeImage` survive the outer inlining, so N's steps
+  run the way the `runsIn: { image: X }` on T's step originally asked: inside
+  their **own isolated scope container**, on image `X`, starting from an
+  empty `/workspace` — not the caller's checkout.
+
+This is a fix in the same direction as the other four: it restores the
+isolation a template author explicitly asked for with `runsIn.image`, and is
+arguably its own silent-isolation-bypass — a `runsIn.image` that silently
+failed to isolate is not so different from an `approval:` that silently
+failed to gate. But it is fair to call it a breaking change in this one
+shape: a step in N that used to read a file the caller had checked out, or
+that wrote a file a later caller step expected to find, ran on the shared
+workspace only because of the bug, and now runs against an empty
+`/workspace` instead. Move data like that through `uploadArtifact:` /
+`downloadArtifact:` (or `cache:`) instead of relying on a shared filesystem.
+
 ## Who is affected, and how to find out
 
 Only jobs whose steps use `uses:` with a `kind: JobTemplate` target are
 involved. Check the templates you reference, not your jobs — the fields are
-declared in the template:
+declared in the template. Grep the pinned ref your job actually resolves
+(see below), not the working tree:
 
 ```bash
-grep -rn -E "(approval|retry|matrix|foreach):" <your template repository>
+git -C <your template repository> grep -n -E "(approval|retry|matrix|foreach):" <pinned-ref>
 ```
 
 A hit on a step **outside** a `parallel:` block is a field that was being
 dropped. Do not anchor the pattern to the start of the line: a flow-style
 step (`- {name: gate, approval: {message: ok?}}`) puts the key after other
 text on the same line, which an anchored pattern misses outright.
+
+**For the `ScopeID`/`ScopeImage` case above**, search the same pinned ref for
+a template step that itself declares `runsIn:`:
+
+```bash
+git -C <your template repository> grep -n -E "runsIn:" <pinned-ref>
+```
+
+A hit means one of that template's own steps calls another template into a
+scope. Check whether any step downstream of it (inside the *called*
+template, N in the description above) ever assumed it could see the outer
+caller's workspace, or a file a caller step wrote — that assumption now
+breaks, because the step runs isolated instead of on the shared workspace.
 
 Remember that `uses:` targets are **pinned** (`@v1.2.3`, `@a1b2c3d4`), so the
 template version your jobs actually resolve is the one at that ref, not
@@ -82,6 +141,12 @@ recorded.
   concurrency and agent load all go up accordingly.
 - **Failures may take longer to surface.** A templated `retry:` now really
   retries before the step fails.
+- **A nested `runsIn.image` now actually isolates.** See [A related fix:
+  nested `runsIn.image` now actually
+  isolates](#a-related-fix-nested-runsinimage-now-actually-isolates) above —
+  in that one specific shape, a step that used to (accidentally) share the
+  caller's workspace now runs against an empty one, and can fail if it
+  depended on that.
 
 Nothing needs to be re-applied or edited: the change is in how a run is
 compiled, so it takes effect for new runs as soon as the controller is

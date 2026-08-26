@@ -90,6 +90,51 @@ var stepEntryInlinePolicy = map[string]inlineFieldPolicy{
 	"ScopeImage": fieldPreserved,
 }
 
+// The policy above covers dsl.StepEntry/dsl.Step's own fields, but four of
+// them (Cache, UploadArtifact, DownloadArtifact, Post) are themselves
+// pointers to sub-structs whose contents renameInnerEntry partially rewrites
+// (`c := *inner.Cache; c.Path = rewriteRefs(...); ns.Cache = &c`). That whole-
+// value copy means a sub-struct field is safe today even though nothing
+// forces it to be: renameInnerEntry never lists CacheStep's or PostStep's
+// fields the way the old top-level literal once listed dsl.StepEntry's. But
+// the top-level policy coverage check above can't see inside those pointers —
+// it only asserts the pointer itself came out non-nil (fieldTransformed) or
+// unchanged (fieldPreserved, which for a pointer field does compare the
+// pointee via reflect.DeepEqual, but only for fields marked fieldPreserved,
+// which none of these four are). A field added to CacheStep tomorrow, if
+// whoever adds it ever also swaps `c := *inner.Cache` for a fresh literal
+// (exactly the mistake this whole branch exists to prevent one level up),
+// would drift undetected by the top-level check alone.
+//
+// So each sub-struct gets its own policy map and the same coverage/carriage
+// checks the top-level type gets, via checkSubStructPreserved below. These
+// are deliberately not merged into stepEntryInlinePolicy: the field names
+// collide (Cache.Path is unrelated to a hypothetical StepEntry.Path), and a
+// per-type map keeps that impossible by construction.
+var cacheStepInlinePolicy = map[string]inlineFieldPolicy{
+	"Path":        fieldTransformed, // ref-rewritten
+	"Key":         fieldTransformed, // ref-rewritten
+	"RestoreKeys": fieldTransformed, // each entry ref-rewritten
+	"TTLDays":     fieldPreserved,
+}
+
+var uploadArtifactStepInlinePolicy = map[string]inlineFieldPolicy{
+	"Name": fieldTransformed, // ref-rewritten
+	"Path": fieldTransformed, // ref-rewritten
+}
+
+var downloadArtifactStepInlinePolicy = map[string]inlineFieldPolicy{
+	"Name":    fieldTransformed, // ref-rewritten
+	"DestDir": fieldTransformed, // ref-rewritten
+	"RunID":   fieldPreserved,   // template-expandable, but not by renameInnerEntry
+}
+
+var postStepInlinePolicy = map[string]inlineFieldPolicy{
+	"Run":   fieldTransformed, // ref-rewritten
+	"Env":   fieldTransformed, // values ref-rewritten
+	"Shell": fieldPreserved,
+}
+
 // fullyPopulatedTemplateStep is a template step with every inlinable field set
 // to a distinctive non-zero value. It is deliberately NOT a valid DSL step (it
 // declares several mutually exclusive actions at once) — renameInnerEntry is a
@@ -128,21 +173,22 @@ func fullyPopulatedTemplateStep() dsl.StepEntry {
 	}
 }
 
-// checkPolicyCoverage asserts every field of typ has a recorded policy, and
-// that the fixture populates exactly the fields the policy expects it to.
-func checkPolicyCoverage(t *testing.T, typ reflect.Type, fixture reflect.Value) {
+// checkPolicyCoverage asserts every field of typ has a recorded policy in
+// policy, and that the fixture populates exactly the fields the policy
+// expects it to.
+func checkPolicyCoverage(t *testing.T, typ reflect.Type, fixture reflect.Value, policy map[string]inlineFieldPolicy) {
 	t.Helper()
 	for i := 0; i < typ.NumField(); i++ {
 		name := typ.Field(i).Name
-		policy, ok := stepEntryInlinePolicy[name]
+		p, ok := policy[name]
 		require.Truef(t, ok,
-			"%s.%s has no recorded uses:-inlining policy: add one to stepEntryInlinePolicy and populate it in "+
-				"fullyPopulatedTemplateStep, so renameInnerEntry cannot silently drop it the way approval:/retry:/"+
-				"matrix:/foreach: were dropped", typ.Name(), name)
-		switch policy {
+			"%s.%s has no recorded uses:-inlining policy: add one to its policy map and populate it in the fixture, "+
+				"so renameInnerEntry cannot silently drop it the way approval:/retry:/matrix:/foreach: were dropped",
+			typ.Name(), name)
+		switch p {
 		case fieldPreserved, fieldTransformed:
 			require.Falsef(t, fixture.Field(i).IsZero(),
-				"fixture leaves %s.%s zero — set it in fullyPopulatedTemplateStep so the preservation check can see it",
+				"fixture leaves %s.%s zero — populate it so the preservation check can see it",
 				typ.Name(), name)
 		default:
 			require.Truef(t, fixture.Field(i).IsZero(),
@@ -150,6 +196,48 @@ func checkPolicyCoverage(t *testing.T, typ reflect.Type, fixture reflect.Value) 
 				typ.Name(), name)
 		}
 	}
+}
+
+// assertFieldsCarried is the generic form of the per-field preserved/
+// transformed assertion loop: for every field with a recorded policy, a
+// fieldPreserved field must come out identical and a fieldTransformed field
+// must come out non-zero. It is used both for dsl.StepEntry/dsl.Step
+// themselves and, via checkSubStructPreserved, for the sub-structs they
+// carry by pointer (CacheStep, PostStep, UploadArtifactStep,
+// DownloadArtifactStep) — the same drift guard applies one level down,
+// because those sub-structs are also carried by whole-value copy
+// (`c := *inner.Cache`) rather than a field-by-field literal, and a future
+// literal rebuild there would drift just as silently as renameInnerEntry's
+// top-level rebuild once did.
+func assertFieldsCarried(t *testing.T, typ reflect.Type, inV, outV reflect.Value, policy map[string]inlineFieldPolicy) {
+	t.Helper()
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		switch policy[name] {
+		case fieldPreserved:
+			assert.Equalf(t, inV.Field(i).Interface(), outV.Field(i).Interface(),
+				"%s.%s must survive uses: inlining unchanged", typ.Name(), name)
+		case fieldTransformed:
+			assert.Falsef(t, outV.Field(i).IsZero(),
+				"%s.%s came out of uses: inlining zero", typ.Name(), name)
+		}
+	}
+}
+
+// checkSubStructPreserved runs the same policy-coverage and field-carriage
+// checks the top-level StepEntry/Step get against one sub-struct pointer
+// pair (e.g. inner.Cache vs. out.Cache). Both pointers must be non-nil —
+// callers only invoke this for fields the top-level policy already asserted
+// are non-zero after inlining.
+func checkSubStructPreserved[T any](t *testing.T, in, out *T, policy map[string]inlineFieldPolicy) {
+	t.Helper()
+	require.NotNilf(t, in, "%T fixture must be non-nil to exercise the sub-struct drift guard", in)
+	require.NotNilf(t, out, "%T came out of inlining nil", in)
+	typ := reflect.TypeOf(*in)
+	inV := reflect.ValueOf(*in)
+	outV := reflect.ValueOf(*out)
+	checkPolicyCoverage(t, typ, inV, policy)
+	assertFieldsCarried(t, typ, inV, outV, policy)
 }
 
 // TestRenameInnerEntryPreservesEveryStepEntryField is the drift guard for the
@@ -160,23 +248,24 @@ func TestRenameInnerEntryPreservesEveryStepEntryField(t *testing.T) {
 	inner := fullyPopulatedTemplateStep()
 	typ := reflect.TypeOf(dsl.StepEntry{})
 	inV := reflect.ValueOf(inner)
-	checkPolicyCoverage(t, typ, inV)
+	checkPolicyCoverage(t, typ, inV, stepEntryInlinePolicy)
 
 	out, err := renameInnerEntry("deploy", map[string]bool{"gate": true}, "always()", false, "", "", "", inner)
 	require.NoError(t, err)
 	outV := reflect.ValueOf(out)
 
-	for i := 0; i < typ.NumField(); i++ {
-		name := typ.Field(i).Name
-		switch stepEntryInlinePolicy[name] {
-		case fieldPreserved:
-			assert.Equalf(t, inV.Field(i).Interface(), outV.Field(i).Interface(),
-				"dsl.StepEntry.%s must survive uses: inlining unchanged", name)
-		case fieldTransformed:
-			assert.Falsef(t, outV.Field(i).IsZero(),
-				"dsl.StepEntry.%s came out of uses: inlining zero", name)
-		}
-	}
+	assertFieldsCarried(t, typ, inV, outV, stepEntryInlinePolicy)
+
+	// Sub-struct drift guard: the four fields carried by whole-value pointer
+	// copy (`c := *inner.Cache`, etc.) get the identical policy-coverage and
+	// field-carriage treatment one level down, so a future field added to
+	// CacheStep/UploadArtifactStep/DownloadArtifactStep/PostStep — or a
+	// future literal rebuild of one of them — can't drift the way the
+	// top-level rebuild once did.
+	checkSubStructPreserved(t, inner.Cache, out.Cache, cacheStepInlinePolicy)
+	checkSubStructPreserved(t, inner.UploadArtifact, out.UploadArtifact, uploadArtifactStepInlinePolicy)
+	checkSubStructPreserved(t, inner.DownloadArtifact, out.DownloadArtifact, downloadArtifactStepInlinePolicy)
+	checkSubStructPreserved(t, inner.Post, out.Post, postStepInlinePolicy)
 
 	// The transformed fields, spelled out: each is rewritten, none is lost.
 	assert.Equal(t, "deploy__gate", out.Name)
@@ -235,25 +324,26 @@ func TestRenameInnerEntryPreservesEveryParallelStepField(t *testing.T) {
 	inner := stepFromEntry(t, fullyPopulatedTemplateStep())
 	typ := reflect.TypeOf(dsl.Step{})
 	inV := reflect.ValueOf(inner)
-	checkPolicyCoverage(t, typ, inV)
+	checkPolicyCoverage(t, typ, inV, stepEntryInlinePolicy)
 
 	entry, err := renameInnerEntry("deploy", map[string]bool{"gate": true}, "always()", false, "", "", "",
 		dsl.StepEntry{Parallel: []dsl.Step{inner}})
 	require.NoError(t, err)
 	require.Len(t, entry.Parallel, 1)
-	outV := reflect.ValueOf(entry.Parallel[0])
+	out := entry.Parallel[0]
+	outV := reflect.ValueOf(out)
 
-	for i := 0; i < typ.NumField(); i++ {
-		name := typ.Field(i).Name
-		switch stepEntryInlinePolicy[name] {
-		case fieldPreserved:
-			assert.Equalf(t, inV.Field(i).Interface(), outV.Field(i).Interface(),
-				"dsl.Step.%s must survive uses: inlining unchanged", name)
-		case fieldTransformed:
-			assert.Falsef(t, outV.Field(i).IsZero(),
-				"dsl.Step.%s came out of uses: inlining zero", name)
-		}
-	}
+	assertFieldsCarried(t, typ, inV, outV, stepEntryInlinePolicy)
+
+	// Same sub-struct drift guard as the concrete-step branch (see
+	// TestRenameInnerEntryPreservesEveryStepEntryField) — the parallel:
+	// branch copies these sub-structs the same way and must not drift
+	// independently of it.
+	checkSubStructPreserved(t, inner.Cache, out.Cache, cacheStepInlinePolicy)
+	checkSubStructPreserved(t, inner.UploadArtifact, out.UploadArtifact, uploadArtifactStepInlinePolicy)
+	checkSubStructPreserved(t, inner.DownloadArtifact, out.DownloadArtifact, downloadArtifactStepInlinePolicy)
+	checkSubStructPreserved(t, inner.Post, out.Post, postStepInlinePolicy)
+
 	assert.Equal(t, "deploy__gate", entry.Parallel[0].Name)
 	assert.Equal(t, "(always()) && (success())", entry.Parallel[0].If)
 }

@@ -45,6 +45,66 @@ func TestExpandUsesNestedRunsInIsError(t *testing.T) {
 	}
 }
 
+// TestExpandUsesNestedScopeSurvivesOuterContainerDefaulting pins the one
+// behaviour change nobody explicitly asked for but that fell out of the
+// whole-struct copy: a template step already scope-tagged by an *inner*
+// uses: runsIn.image (a nested "template calls template into an isolated
+// scope" shape, already resolved by the time it reaches this outer
+// expandUsesStep — nested uses: must be resolved before this function runs)
+// must keep its ScopeID/ScopeImage when the *outer* uses: is itself
+// container-mode, not scope-mode. The reflection fixture in
+// inline_fields_test.go only proves the copy carries ScopeID at all; it
+// never exercises two inlining passes, so it can't see whether the outer
+// pass's container-defaulting (inline.go's `else if ns.Container == ""`)
+// clobbers or otherwise disturbs tags that already came from an inner pass.
+//
+// Before this branch's fix, the concrete-step literal never carried
+// ScopeID/ScopeImage from `inner` at all outside of the (local) scope-mode
+// stamp, so this exact shape silently lost its isolation: the nested
+// template's steps ran unscoped, sharing the caller's own workspace, and the
+// image the inner runsIn.image named was never used.
+func TestExpandUsesNestedScopeSurvivesOuterContainerDefaulting(t *testing.T) {
+	// tpl stands in for a template whose "build" step was itself already
+	// inlined from a nested `uses:` with runsIn.image — i.e. it already
+	// carries ScopeID/ScopeImage and an empty Container, exactly as
+	// renameInnerEntry's own scope-mode branch would have left it.
+	tpl := dsl.Spec{Steps: []dsl.StepEntry{
+		{Name: "build", Run: "./build.sh", ScopeID: "scope:inner", ScopeImage: "golang:1.22"},
+	}}
+
+	// The outer uses: step is container-mode (outerRunsIn nil, outerContainer
+	// "builder"), not scope-mode — this is the branch that stamps
+	// outerContainer onto any inlined step still missing its own container:.
+	out, _, err := expandUsesStep("outer", map[string]string{}, tpl, nil, "builder", "")
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+
+	var build *dsl.StepEntry
+	for i := range out {
+		if out[i].Name == "outer__build" {
+			build = &out[i]
+		}
+	}
+	if build == nil {
+		t.Fatalf("inlined step outer__build missing from expansion: %+v", out)
+	}
+	// The nested scope tags must survive the outer (non-scope) inlining pass
+	// untouched: this is the ScopeID/ScopeImage preservation the whole-struct
+	// copy restores.
+	if build.ScopeID != "scope:inner" || build.ScopeImage != "golang:1.22" {
+		t.Fatalf("nested scope tags did not survive outer inlining: %+v", build)
+	}
+	// The outer pass's container-defaulting still applies independently — it
+	// only looks at Container, never at ScopeID — so the step also picks up
+	// the outer uses:'s container: alongside its (still governing) scope
+	// tags. See orchestrator.go's isScopedStep case for why a step carrying
+	// both is handled correctly at run time.
+	if build.Container != "builder" {
+		t.Fatalf("outer container-defaulting did not apply: %+v", build)
+	}
+}
+
 func TestExpandUsesContainerModeUnchanged(t *testing.T) {
 	// uses-level flat container: is NOT scope mode: keep propagating Container.
 	out, _, err := expandUsesStep("build", map[string]string{}, scopedTemplate(), nil, "builder", "")
