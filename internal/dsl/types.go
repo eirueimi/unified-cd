@@ -21,7 +21,11 @@ type Metadata struct {
 }
 
 type Spec struct {
-	Params        Params       `yaml:"params"`
+	// Params is optional: a job with no declared inputs/outputs omits it
+	// entirely (the common case — see examples/jobs/*.yaml). Validate does
+	// not require it, so the generated schema must not either (schemagen
+	// derives "required" from the absence of omitempty/pointer).
+	Params        Params       `yaml:"params,omitempty"`
 	Concurrency   *Concurrency `yaml:"concurrency,omitempty"`
 	AgentSelector []string     `yaml:"agentSelector,omitempty"`
 	// Steps is the main DAG of steps to execute.

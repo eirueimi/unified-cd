@@ -726,6 +726,10 @@
           "description": "Description is a human-readable summary of the job, shown in the WebUI.",
           "type": "string"
         },
+        "detached": {
+          "description": "Detached marks this job's runs as lightweight orchestrators: they do not\nconsume an agent's MaxConcurrent budget and are claimed from a separate\nMaxDetachedConcurrent pool, and get an independent per-run workspace on\nhost agents. Intended for jobs that mostly issue call: steps and wait.\nOrthogonal to Native — a native host orchestrator may be detached. The\njson tag matters: the store persists the spec as JSON and re-reads this.",
+          "type": "boolean"
+        },
         "finally": {
           "description": "Finally runs after the main DAG completes, on success, failure, or\ncancellation. Same structure as Steps. A finally step's `if:` defaults to\nalways-run; use if: failure()/success() to filter. A finally step that\nfails marks the run Failed (after all finally steps run).",
           "items": {
@@ -738,7 +742,8 @@
           "type": "boolean"
         },
         "params": {
-          "$ref": "#/definitions/Params"
+          "$ref": "#/definitions/Params",
+          "description": "Params is optional: a job with no declared inputs/outputs omits it\nentirely (the common case — see examples/jobs/*.yaml). Validate does\nnot require it, so the generated schema must not either (schemagen\nderives \"required\" from the absence of omitempty/pointer)."
         },
         "podTemplate": {
           "$ref": "#/definitions/PodTemplate"
@@ -762,7 +767,6 @@
         }
       },
       "required": [
-        "params",
         "steps"
       ],
       "type": "object"
