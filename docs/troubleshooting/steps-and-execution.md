@@ -132,30 +132,29 @@ itself.
 **Symptom**
 
 A step gated with `if:` runs even though its condition looks false, and the
-agent log contains:
+**run's own log** contains a `System` line like:
 
 ```
-if: condition eval failed, running step
+unified-cd: step "deploy": if: expression "{{ eq .Params.x \"y\" }}" compile error: ERROR: <input>:1:17: Syntax error: missing ':' at '"y"' — the condition could not be evaluated, so the step RAN (fail-safe)
 ```
 
-(on the k8s agent, the same line is prefixed: `k8s: if condition eval failed,
-running step` — grep for `if condition eval failed, running step` to match
-both agents)
-
-with a nested compile error, e.g.:
-
-```
-if: expression "{{ eq .Params.x \"y\" }}" compile error: ERROR: <input>:1:17: Syntax error: missing ':' at '"y"'
-```
+The agent log carries the same reason as `if: condition eval failed, running
+step` (both agents share the orchestrator, so the line is identical on the
+host and Kubernetes agents).
 
 **Cause**
 
 `if:` expressions are **CEL**, not Go templates — unlike `run:`, `env:`, and
 `outputs:` in the same job, which do use `{{ .Params.X }}`-style Go template
-syntax. Writing an `if:` with `{{ }}` delimiters (or any other expression that
-fails to compile or evaluate) **fails open**: the step still runs, and the
-only trace is a `WARN` line in the agent log — the run itself is not marked
-failed and the CLI/API give no other indication.
+syntax. An expression that fails to compile or evaluate **fails open**: the
+step still runs, and the run is not marked failed.
+
+Most of these are now caught earlier: `unified-cd apply` compiles every `if:`
+against the same environment the agent uses and rejects the job with
+`if: expression "..." does not compile`. A condition can still fail at run
+time when it comes from a `uses:` template (resolved after apply), or when it
+compiles but errors during evaluation — the commonest cause being a
+**`params` key the job does not declare**, which raises `no such key`.
 
 **Fix**
 
@@ -165,10 +164,15 @@ failed and the CLI/API give no other indication.
   ```
   not:
   ```yaml
-  if: '{{ eq .Params.env "production" }}'   # wrong — Go template, fails open
+  if: '{{ eq .Params.env "production" }}'   # wrong — Go template, rejected at apply
   ```
-- After adding or changing a non-trivial `if:`, check the agent log for
-  `if: condition eval failed, running step` to confirm it compiled.
+- Reference only parameters declared in `spec.params.inputs`; an undefined
+  `params.X` errors and fails open. (An undefined `vars.X` does **not** — it
+  reads as the empty string, so the gate stays shut, and the run's log gets a
+  `System` line naming the key.)
+- After a run, check the run's log for `System` lines beginning
+  `unified-cd: step "..."` — that is where a condition that did not mean what
+  it says now reports itself.
 - See [Job Reference: Conditional Execution (`if`)](../user-guide/writing-jobs/steps.md#conditional-execution-if)
   for the full CEL variable/function reference — this is especially important
   to verify for any `if:` gating a production deploy.
