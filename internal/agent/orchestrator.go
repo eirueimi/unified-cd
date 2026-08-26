@@ -1175,6 +1175,14 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 				postStdout, postStderr, finishPostLogs := b.StepLogWriters(hookCtx, entry.stepIndex)
 				runErr := b.RunPostHook(hookCtx, entry.scope, entry.container, cmd, entry.shell, extraEnv, postStdout, postStderr)
 				finishPostLogs(hookCtx)
+				// Intentionally best-effort: a post: hook's exit code is not
+				// even threaded back by ExecBackend.RunPostHook (see its doc
+				// comment), and runErr here — reserved for exec-level
+				// failures like "couldn't spawn" — only gets logged, never
+				// fails the step or run, on either backend. Do not change
+				// this to markFailed/recordFailure; see
+				// docs/user-guide/writing-jobs/steps.md's "Post-step hooks"
+				// section for the user-facing contract this preserves.
 				if runErr != nil {
 					slog.Warn("post step failed", "step", entry.stepName, "error", runErr)
 				}
