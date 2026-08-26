@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,6 +45,52 @@ func TestVarsExtraEnv_Sorted(t *testing.T) {
 func TestVarsExtraEnv_Empty(t *testing.T) {
 	assert.Empty(t, varsExtraEnv(nil))
 	assert.Empty(t, varsExtraEnv(map[string]string{}))
+}
+
+// stepEnvDenied is exact-case and lists neither PATH nor HOME; apply-time
+// validation matches on strings.ToUpper and refuses both. The runtime backstop
+// has to refuse what apply-time refuses, or a run created before that
+// validation existed can carry a global PATH that replaces the step's own on
+// both backends — breaking every step of the job with nothing in the log to
+// say why.
+func TestVarsExtraEnv_DropsPathHomeAndMatchesCaseInsensitively(t *testing.T) {
+	got := varsExtraEnv(map[string]string{
+		"PATH":          "/attacker/bin",
+		"Path":          "/attacker/bin",
+		"home":          "/tmp/elsewhere",
+		"unified_token": "stolen",
+		"REGISTRY":      "ghcr.io/myorg",
+	})
+	require.Equal(t, []string{"REGISTRY=ghcr.io/myorg"}, got)
+}
+
+// The runtime backstop and apply-time validation must refuse the same names.
+// internal/dsl cannot import internal/agent, so this test lives here — the
+// package that can import both, and so compare the real structures. Its
+// predecessor lived in internal/dsl and compared reservedVarNames against a
+// hand-copied literal list, which is exactly the drift it was meant to catch:
+// a name added to stepEnvDenied alone was invisible to it.
+func TestVarsDenied_AgreesWithApplyTimeValidation(t *testing.T) {
+	reserved := dsl.ReservedVarNames()
+	require.NotEmpty(t, reserved)
+
+	// Every name apply-time refuses is dropped at runtime too, in any case.
+	for name := range reserved {
+		assert.True(t, varsDenied[name], "%s is reserved at apply time but missing from varsDenied", name)
+		assert.Empty(t, varsExtraEnv(map[string]string{name: "x"}),
+			"%s is reserved at apply time and must not reach a step", name)
+		lower := strings.ToLower(name)
+		assert.Empty(t, varsExtraEnv(map[string]string{lower: "x"}),
+			"%s is reserved at apply time (ValidateVarKeys upper-cases before the lookup) and must not reach a step", lower)
+	}
+
+	// And every agent credential the runtime drops is refused at apply time,
+	// so an author hears about it when they apply rather than watching the
+	// value silently vanish at run time.
+	for name := range stepEnvDenied {
+		assert.Error(t, dsl.ValidateVarKeys(map[string]string{name: "x"}),
+			"%s is dropped at runtime but accepted at apply time", name)
+	}
 }
 
 // varsTestHarness is a fake controller server serving the endpoints

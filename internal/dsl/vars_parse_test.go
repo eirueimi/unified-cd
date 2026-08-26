@@ -139,20 +139,3 @@ spec:
 	assert.Equal(t, "myapp", back.Vars["APP_NAME"],
 		"spec.vars needs a json tag as well as a yaml tag")
 }
-
-// The UNIFIED_* half of reservedVarNames is a deliberate duplicate of
-// internal/agent/stepenv.go's stepEnvDenied (dsl must not import agent). If
-// that list grows, this one has to grow with it, and this test is what says so.
-func TestReservedVarNames_CoversStepEnvDenied(t *testing.T) {
-	// Keep in sync with internal/agent/stepenv.go's stepEnvDenied.
-	denied := []string{
-		"UNIFIED_CACHE_KEY",
-		"UNIFIED_CACHE_SECRET",
-		"UNIFIED_TOKEN",
-		"UNIFIED_AGENT_CREDENTIAL_FILE",
-		"UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE",
-	}
-	for _, name := range denied {
-		assert.True(t, reservedVarNames[name], "%s must be reserved", name)
-	}
-}

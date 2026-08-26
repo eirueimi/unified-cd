@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
 // stepEnvDenied lists environment variables that must NEVER reach a job step,
@@ -102,11 +104,36 @@ func StepEnv(exposeEnv []string, extraEnv []string) []string {
 	return out
 }
 
+// varsDenied is the set varsExtraEnv filters a claim's variables against: the
+// union of stepEnvDenied (the agent's own credentials) and every name
+// apply-time validation refuses (dsl.ReservedVarNames, which also covers PATH
+// and HOME). Keys are upper-cased, and lookups upper-case the candidate.
+//
+// It is deliberately a separate set rather than a widening of stepEnvDenied,
+// because the two govern different things. stepEnvDenied also gates ExposeEnv,
+// where an operator names a host variable exactly and exact-case matching may
+// be intentional. Variables are the opposite case: their names come from a job
+// author's manifest, ValidateVarKeys refuses them case-insensitively, and a
+// backstop that refuses less than apply-time does is not a backstop. A run
+// created before that validation existed, carrying a global `PATH` — or
+// `path`, which is the same variable on Windows — would otherwise replace the
+// step's PATH on both backends and break every step of the job with nothing in
+// the log to say why.
+var varsDenied = buildVarsDenied()
+
+func buildVarsDenied() map[string]bool {
+	denied := dsl.ReservedVarNames()
+	for k := range stepEnvDenied {
+		denied[strings.ToUpper(k)] = true
+	}
+	return denied
+}
+
 // varsExtraEnv renders a run's variables as KEY=VALUE entries for the
 // orchestrator's extraEnv slice, sorted so a step's environment is stable
 // across runs with the same inputs.
 //
-// It applies stepEnvDenied, which StepEnv deliberately does NOT apply to
+// It applies varsDenied, where StepEnv deliberately applies nothing at all to
 // extraEnv. That exemption is correct for the entries the orchestrator itself
 // synthesises (UNIFIED_AGENT_OS, UNIFIED_WORKSPACE) because the controller
 // controls them. Variables are different: their names and values come from a
@@ -119,7 +146,7 @@ func varsExtraEnv(vars map[string]string) []string {
 	}
 	keys := make([]string, 0, len(vars))
 	for k := range vars {
-		if stepEnvDenied[k] {
+		if varsDenied[strings.ToUpper(k)] {
 			continue
 		}
 		keys = append(keys, k)
