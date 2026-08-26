@@ -13,12 +13,24 @@ import (
 )
 
 // TestSchemaIsUpToDate regenerates the schema in-memory from
-// internal/dsl/*_types.go and compares it byte-for-byte against the
-// committed schemas/unified-cd.schema.json. Without this, a DSL struct
-// change (a field added, an omitempty tag corrected, ...) can land without a
+// internal/dsl/*_types.go and compares its content against the committed
+// schemas/unified-cd.schema.json. Without this, a DSL struct change (a
+// field added, an omitempty tag corrected, ...) can land without a
 // `go generate ./internal/dsl/` pass and ship a stale schema to users'
 // editors — exactly how spec.detached silently went missing from the
 // schema for several commits before this test was added.
+//
+// The comparison normalizes CRLF to LF on both sides before comparing.
+// schemagen always writes '\n'-only bytes, but this repo has no
+// .gitattributes, so a Windows checkout with the common
+// core.autocrlf=true rewrites the committed LF bytes to CRLF on disk at
+// checkout time — that happened on CI's windows-latest runner and failed
+// this test on content that was not actually stale (see PR #153). Line
+// endings are a checkout-filter artifact, not generator output, so they
+// are not part of what "stale" means here; stripping them keeps the
+// assertion meaningful on every platform without imposing a line-ending
+// policy (a new .gitattributes) on this one file, which would make it an
+// outlier against every other checked-in text file in the repo.
 func TestSchemaIsUpToDate(t *testing.T) {
 	root, err := projectRoot()
 	require.NoError(t, err)
@@ -33,7 +45,11 @@ func TestSchemaIsUpToDate(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(root, "schemas", "unified-cd.schema.json"))
 	require.NoError(t, err)
 
-	require.Equal(t, string(want), string(got),
+	normalize := func(b []byte) string {
+		return strings.ReplaceAll(string(b), "\r\n", "\n")
+	}
+
+	require.Equal(t, normalize(want), normalize(got),
 		"schemas/unified-cd.schema.json is stale — run `go generate ./internal/dsl/` and commit the result")
 }
 
