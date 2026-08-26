@@ -149,12 +149,15 @@ host and Kubernetes agents).
 syntax. An expression that fails to compile or evaluate **fails open**: the
 step still runs, and the run is not marked failed.
 
-Most of these are now caught earlier: `unified-cd apply` compiles every `if:`
+Most of these are now caught earlier. `unified-cd apply` compiles every `if:`
 against the same environment the agent uses and rejects the job with
-`if: expression "..." does not compile`. A condition can still fail at run
-time when it comes from a `uses:` template (resolved after apply), or when it
-compiles but errors during evaluation — the commonest cause being a
-**`params` key the job does not declare**, which raises `no such key`.
+`if: expression "..." does not compile`; it also rejects an `if:` naming a
+param the job does not declare (`references undeclared param "evn"`), which is
+the commonest source of a run-time `no such key`. A condition can still fail
+at run time when it comes from a `uses:` template (resolved after apply), when
+the param name is computed rather than literal, or when the job declares no
+params at all and relies on pass-through — apply-time checking cannot see any
+of those.
 
 **Fix**
 

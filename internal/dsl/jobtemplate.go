@@ -67,10 +67,14 @@ func (t *JobTemplate) Validate() error {
 		return fmt.Errorf("spec.shell: %w", err)
 	}
 	nameSet := map[string]bool{}
-	if err := validateStepEntries(t.Spec.Steps, "spec.steps", nameSet, true, false); err != nil {
+	// nil declaredParams: a JobTemplate's params come from the CALLING job's
+	// with:, not from anything visible here, so an if: in a template can only
+	// be compile-checked — the param names it may legitimately reference are
+	// not knowable until it is inlined.
+	if err := validateStepEntries(t.Spec.Steps, "spec.steps", nameSet, true, false, nil); err != nil {
 		return err
 	}
-	if err := validateStepEntries(t.Spec.Finally, "spec.finally", nameSet, false, false); err != nil {
+	if err := validateStepEntries(t.Spec.Finally, "spec.finally", nameSet, false, false, nil); err != nil {
 		return err
 	}
 	if pt := t.Spec.PodTemplate; pt != nil {
