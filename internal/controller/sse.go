@@ -34,6 +34,18 @@ type sseEvent struct {
 // up front over SSE.
 var sseBackfillLimit = 10_000
 
+// sseDrainLimit bounds each TailLogs call the live-notify callback makes, for
+// the same reason sseBackfillLimit bounds the initial backfill: an unbounded
+// read could return an arbitrarily large result. Before batched log
+// ingestion this bound was harmless — one pg_notify per line meant a
+// backlog beyond the cap always had another wake-up coming to drain the
+// rest. A batch can now carry more than this many lines for one run in a
+// single notification, so the callback below loops, redraining immediately
+// whenever a drain returns a full sseDrainLimit rows, instead of waiting for
+// the run's next batch (which may never come, if this was the last one) to
+// deliver the remainder. It is a var (not a const) so tests can shrink it.
+var sseDrainLimit = 10_000
+
 func writeSSE(w http.ResponseWriter, event sseEvent) {
 	b, _ := json.Marshal(event)
 	fmt.Fprintf(w, "data: %s\n\n", b)
@@ -117,23 +129,39 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	channel := "log_appended:" + id
 	_ = s.store.ListenForNotify(r.Context(), channel, func(payload string) {
 		dbCtx := context.Background()
-		newLines, err := s.store.TailLogs(dbCtx, id, lastSeq, 10_000)
-		if err != nil {
-			slog.Warn("SSE tail logs error", "runId", id, "error", err)
-			return
+		// Redrain immediately whenever a pass comes back full: a batch may
+		// have carried more lines for this run than one drain returns, and
+		// this may be its last notification, so there is no guarantee a
+		// later wake-up drains the remainder. Stop as soon as a pass returns
+		// under the limit — that means the backlog is exhausted.
+		for {
+			newLines, err := s.store.TailLogs(dbCtx, id, lastSeq, sseDrainLimit)
+			if err != nil {
+				slog.Warn("SSE tail logs error", "runId", id, "error", err)
+				return
+			}
+			for _, l := range newLines {
+				writeSSE(w, sseEvent{
+					Type:      "log",
+					Seq:       l.Seq,
+					StepIndex: l.StepIndex,
+					Stream:    l.Stream,
+					Line:      l.Line,
+					Timestamp: l.Timestamp.Format(time.RFC3339Nano),
+				})
+				lastSeq = l.Seq
+			}
+			flusher.Flush()
+			// sseDrainLimit <= 0 must still terminate the loop: with the
+			// limit at its production value (10,000) this is just the normal
+			// "pass came back under the cap" exit, but the var is
+			// test-settable, and a non-positive value would otherwise spin
+			// forever — TailLogs(..., 0) returns zero rows every call
+			// (0 < 0 is false), re-querying with no progress and no way out.
+			if len(newLines) < sseDrainLimit || sseDrainLimit <= 0 {
+				break
+			}
 		}
-		for _, l := range newLines {
-			writeSSE(w, sseEvent{
-				Type:      "log",
-				Seq:       l.Seq,
-				StepIndex: l.StepIndex,
-				Stream:    l.Stream,
-				Line:      l.Line,
-				Timestamp: l.Timestamp.Format(time.RFC3339Nano),
-			})
-			lastSeq = l.Seq
-		}
-		flusher.Flush()
 
 		run, err := s.store.GetRun(dbCtx, id)
 		if err == nil && isTerminalStatus(string(run.Status)) {

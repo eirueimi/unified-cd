@@ -8,7 +8,6 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,16 +15,18 @@ import (
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
-	"github.com/eirueimi/unified-cd/internal/secrets"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// stderrAutoFlushInterval is how often a step's stderr LogPusher is flushed
-// while the step is still running, so sparse stderr output appears in the
-// WebUI before the step completes (mirrors the host agent's stdout streaming
-// behavior). It is a var (not a const) so tests can shorten it.
-var stderrAutoFlushInterval = 2 * time.Second
+// logAutoFlushInterval is how often a step's stdout/stderr LogPushers (and a
+// user sidecar's log pump) are flushed while still running, so sparse output
+// appears in the WebUI before the step/pump completes (mirrors the host
+// agent's streaming behavior). Named for what it governs now that stdout has
+// its own LogPusher too — it used to be stderr-only, back when stdout shipped
+// synchronously per line and needed no flush timer of its own. It is a var
+// (not a const) so tests can shorten it.
+var logAutoFlushInterval = 2 * time.Second
 
 // podManager and stepExecutor are the narrow slices of *PodManager / *Executor
 // that K8sAgent depends on. Interfaces (satisfied by the concrete types) make
@@ -457,45 +458,6 @@ func (a *K8sAgent) awaitPodRunning(ctx context.Context, podName, runID string) (
 		return true, fmt.Errorf("run %s reached terminal status before pod %s became ready", runID, podName)
 	}
 	return false, werr
-}
-
-// logLineWriter is a Writer that sends each line of stdout to the master server via AppendLog.
-// A nil masker is a no-op (lines are shipped unmodified).
-type logLineWriter struct {
-	client  *agentlib.Client
-	agentID string
-	runID   string
-	stepIdx int
-	stream  string
-	masker  *secrets.Masker
-	buf     strings.Builder
-}
-
-// Write receives a byte slice and sends lines delimited by newlines to the master.
-func (lw *logLineWriter) Write(p []byte) (int, error) {
-	lw.buf.Write(p)
-	s := lw.buf.String()
-	for {
-		idx := strings.IndexByte(s, '\n')
-		if idx < 0 {
-			break
-		}
-		line := s[:idx]
-		s = s[idx+1:]
-		if lw.masker != nil {
-			line = lw.masker.Mask(line)
-		}
-		_ = lw.client.AppendLog(context.Background(), lw.agentID, api.LogAppendRequest{
-			RunID:     lw.runID,
-			StepIndex: lw.stepIdx,
-			Stream:    lw.stream,
-			Timestamp: time.Now().UTC(),
-			Line:      line,
-		})
-	}
-	lw.buf.Reset()
-	lw.buf.WriteString(s)
-	return len(p), nil
 }
 
 // execContainer returns the pod container a step should exec into. After DSL

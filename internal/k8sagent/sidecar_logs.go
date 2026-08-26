@@ -73,7 +73,7 @@ func (p *k8sSidecarPump) stream(ctx context.Context, ordinal int, name string) {
 	if p.masker != nil {
 		pusher.SetMasker(p.masker)
 	}
-	pusher.StartAutoFlush(ctx, stderrAutoFlushInterval) // reuse the package's cadence (test-shortenable)
+	pusher.StartAutoFlush(ctx, logAutoFlushInterval) // reuse the package's cadence (test-shortenable)
 	// Status reports use a context detached from the stream's cancellation —
 	// see the host pump's identical comment in internal/agent/sidecar_logs.go.
 	flushCtx := context.WithoutCancel(ctx)

@@ -42,7 +42,9 @@ func TestK8sAgent_ExecuteRun_Integration(t *testing.T) {
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// stdout lines from logLineWriter
+	// Registered for parity with every other agent endpoint's test harness,
+	// but neither stream posts here any more: stdout and stderr both ship via
+	// their own LogPusher onto the bulk endpoint below.
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/logs", func(w http.ResponseWriter, r *http.Request) {
 		var req api.LogAppendRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
@@ -52,7 +54,8 @@ func TestK8sAgent_ExecuteRun_Integration(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// stderr bulk from LogPusher.Flush
+	// stdout and stderr bulk from each stream's own LogPusher (auto-flush
+	// timer and finish's final Flush)
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/steps/0/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
 		var reqs []api.LogAppendRequest
 		if err := json.NewDecoder(r.Body).Decode(&reqs); err == nil {
@@ -186,7 +189,7 @@ func TestK8sAgent_ExecuteRun_StepFailure_Integration(t *testing.T) {
 
 // concurrentBarrierScriptMinRuntime is a floor every member's script spends
 // running before it can possibly exit, regardless of how fast the barrier
-// resolves. It exists so the test's shrunk stderrAutoFlushInterval (see
+// resolves. It exists so the test's shrunk logAutoFlushInterval (see
 // TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration) is
 // structurally guaranteed to tick at least once *during* the step rather
 // than only firing via the unconditional final Flush that StepLogWriters'
@@ -275,7 +278,7 @@ echo "member-%[1]d-stderr-4" >&2
 // run's terminal status, and that every member's stdout/stderr lines
 // actually arrived at the controller (proving the per-step log writers held
 // up under concurrent load, auto-flush ticks included -- see
-// stderrAutoFlushInterval below). Nothing here asserts ordering or measures
+// logAutoFlushInterval below). Nothing here asserts ordering or measures
 // elapsed time.
 //
 // What this does NOT cover: the sidecar log pump (k8sSidecarPump, started in
@@ -288,7 +291,7 @@ echo "member-%[1]d-stderr-4" >&2
 // already cover. See design doc §6's outcome note for the full reasoning.
 func TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration(t *testing.T) {
 	// The auto-flush ticker (internal/k8sagent/agent.go's
-	// stderrAutoFlushInterval, default 2s) competes with StepLogWriters'
+	// logAutoFlushInterval, default 2s) competes with StepLogWriters'
 	// finish closure, which does an unconditional final Flush at step end.
 	// At the default interval, a fast-resolving barrier could let every
 	// member's script finish in under 2s, so all lines would ship via the
@@ -298,9 +301,9 @@ func TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration(t *testi
 	// concurrentBarrierScriptMinRuntime's floor on each script's runtime,
 	// guarantees the ticker fires multiple times mid-step, under real
 	// concurrent load, before any member can reach its final flush.
-	prevInterval := stderrAutoFlushInterval
-	stderrAutoFlushInterval = 200 * time.Millisecond
-	t.Cleanup(func() { stderrAutoFlushInterval = prevInterval })
+	prevInterval := logAutoFlushInterval
+	logAutoFlushInterval = 200 * time.Millisecond
+	t.Cleanup(func() { logAutoFlushInterval = prevInterval })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -328,9 +331,9 @@ func TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration(t *testi
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// stdout lines from logLineWriter: one endpoint shared by every step,
-	// distinguished by LogAppendRequest.StepIndex in the body -- three
-	// members' stdout writers post here concurrently.
+	// Registered for parity with every other agent endpoint's test harness,
+	// but neither stream posts here any more (both ship via the bulk endpoint
+	// below).
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/logs", func(w http.ResponseWriter, r *http.Request) {
 		var req api.LogAppendRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
@@ -340,9 +343,9 @@ func TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration(t *testi
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// stderr bulk from each member's own LogPusher (auto-flush timer and
-	// final flush) -- {idx} is a path variable because three members flush to
-	// three different per-step URLs concurrently.
+	// stdout and stderr bulk from each member's own LogPushers (auto-flush
+	// timer and final flush) -- {idx} is a path variable because three
+	// members flush to three different per-step URLs concurrently.
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/steps/{idx}/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
 		idx, _ := strconv.Atoi(r.PathValue("idx"))
 		var reqs []api.LogAppendRequest
