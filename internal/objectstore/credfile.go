@@ -2,6 +2,7 @@ package objectstore
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"strings"
@@ -49,35 +50,43 @@ type fileProvider struct {
 	haveStamp bool
 }
 
-// fileStamp is the cheap signal a mounted Secret changed: the kubelet updates
-// a projected Secret volume by atomically swapping a symlink to a new
-// timestamped directory, which changes the target file's mtime (and usually
-// its size, if the value itself changed length). Neither alone is perfectly
-// reliable — an update landing within the same mtime granularity, or one that
-// happens to keep both mtime and size, would be missed — but together they
-// are the same best-effort signal os.Stat can offer without reading and
-// diffing file content on every call, and are enough for the case this seam
-// exists for: an operator or agent rewriting the credential.
+// fileStamp identifies the exact bytes last read, by their digest.
+//
+// An earlier version used mtime+size, which is the cheap answer and is wrong
+// for this file in particular. A credential rotation replaces one key with
+// another of the SAME length — an S3 access key ID is 20 characters and a
+// secret 40, so size is not merely "usually" unchanged, it is essentially
+// always unchanged. That leaves mtime alone carrying the signal, and mtime is
+// coarse: NTFS and some Linux filesystems quantise it, so a rewrite landing
+// inside one tick is invisible. The failure is silent and lands on the one
+// path this seam exists for — a rotated credential never reaching the client,
+// which is exactly the state the static key pair was replaced to avoid.
+//
+// Hashing costs one read of a file that is a few dozen bytes long, on a code
+// path that was already doing an os.Stat syscall per call. That is the right
+// trade for a detector that cannot miss.
 type fileStamp struct {
-	modTime int64
-	size    int64
+	digest [sha256.Size]byte
+	size   int64
 }
 
+// statStamp reads path and digests it. Named "stat" historically; it now
+// reads, because stat metadata cannot answer the question (see fileStamp).
 func statStamp(path string) (fileStamp, error) {
-	fi, err := os.Stat(path)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return fileStamp{}, err
 	}
-	return fileStamp{modTime: fi.ModTime().UnixNano(), size: fi.Size()}, nil
+	return fileStamp{digest: sha256.Sum256(b), size: int64(len(b))}, nil
 }
 
-// IsExpired reports whether the file's mtime/size differ from the last
+// IsExpired reports whether the file's contents differ from the last
 // successful read, or whether there has not been a successful read yet. A
-// Stat failure (the file was briefly absent during a kubelet update, say) is
-// treated as "not expired yet" so a transient stat error doesn't force every
+// read failure (the file was briefly absent during a kubelet update, say) is
+// treated as "not expired yet" so a transient error doesn't force every
 // signing goroutine to hit Retrieve and surface the same transient error —
-// Retrieve does its own os.Stat/os.Open and will report the real error if the
-// file is still missing when it actually runs.
+// Retrieve does its own open and will report the real error if the file is
+// still missing when it actually runs.
 func (p *fileProvider) IsExpired() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()

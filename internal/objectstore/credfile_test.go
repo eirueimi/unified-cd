@@ -28,21 +28,34 @@ func TestFileCredentials_ReadsTheFile(t *testing.T) {
 // The point of the whole seam: a rewritten file is picked up. Without this,
 // a rotated or refreshed credential never reaches the client and the provider
 // is no better than a static key pair.
+//
+// The replacement values are deliberately the SAME LENGTH as the originals,
+// and the rewrite happens immediately with no sleep. That is not incidental —
+// it is the shape of a real rotation (an S3 access key ID is always 20
+// characters, a secret always 40) and it is the case a size-and-mtime
+// detector gets wrong: same size, and an mtime that a coarse filesystem
+// clock cannot distinguish from the previous write. This test failed on
+// Windows against exactly such a detector, which is why the provider now
+// compares content.
+//
+// Do not "fix" a future failure here by sleeping between the writes. A sleep
+// would only hide a detector that misses same-tick rotations in production,
+// where nothing sleeps on the agent's behalf.
 func TestFileCredentials_PicksUpARewrite(t *testing.T) {
 	dir := t.TempDir()
-	p := writeCredFile(t, dir, "AKIA1", "s3cr3t1")
+	p := writeCredFile(t, dir, "AKIA0000000000000001", "s3cr3t00000000000000000000000000000000001")
 	c := NewFileCredentials(p)
 
 	first, err := c.Get()
 	require.NoError(t, err)
-	require.Equal(t, "AKIA1", first.AccessKeyID)
+	require.Equal(t, "AKIA0000000000000001", first.AccessKeyID)
 
-	writeCredFile(t, dir, "AKIA2", "s3cr3t2")
+	writeCredFile(t, dir, "AKIA0000000000000002", "s3cr3t00000000000000000000000000000000002")
 
 	second, err := c.Get()
 	require.NoError(t, err)
-	assert.Equal(t, "AKIA2", second.AccessKeyID,
-		"a rewritten credential file must be re-read; the kubelet updates a mounted Secret in place")
+	assert.Equal(t, "AKIA0000000000000002", second.AccessKeyID,
+		"a same-length rewrite must be re-read; the kubelet updates a mounted Secret in place and a rotated key is the same length as the one it replaces")
 }
 
 // A missing or unreadable file is an error, not empty credentials. Empty
