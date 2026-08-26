@@ -17,6 +17,7 @@ import (
 // expansion before step execution and output-capture template evaluation.
 type TemplateData struct {
 	Params  map[string]string
+	Vars    map[string]string // plain-text variables; NOT secrets
 	Steps   map[string]StepData
 	Stdout  string            // only set during output-capture template evaluation
 	Secrets map[string]string // resolved secret values (must not be written to logs)

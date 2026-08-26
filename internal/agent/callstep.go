@@ -37,7 +37,9 @@ func ExecuteCallStep(ctx context.Context, client *Client, agentID, runID string,
 	// inputs, and silently forwarding a raw unexpanded template (e.g. a
 	// literal "{{ .RunID }}") hides the mistake until it surfaces in the
 	// child job or an external webhook. Matches the cache-step precedent.
-	callCtx := dsl.TemplateData{Params: tplData.Params, Steps: tplData.Steps}
+	// Vars is included for the same reason Params is: plain, non-secret job
+	// configuration a call param may legitimately reference. Stdout stays out.
+	callCtx := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps}
 	expandedParams := map[string]string{}
 	for k, v := range step.Call.Params {
 		expanded, err := dsl.ExpandTemplate(v, callCtx)
