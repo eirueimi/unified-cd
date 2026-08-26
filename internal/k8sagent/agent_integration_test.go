@@ -42,7 +42,9 @@ func TestK8sAgent_ExecuteRun_Integration(t *testing.T) {
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/steps", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// stdout lines from logLineWriter
+	// Registered for parity with every other agent endpoint's test harness,
+	// but neither stream posts here any more: stdout and stderr both ship via
+	// their own LogPusher onto the bulk endpoint below.
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/logs", func(w http.ResponseWriter, r *http.Request) {
 		var req api.LogAppendRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
@@ -52,7 +54,8 @@ func TestK8sAgent_ExecuteRun_Integration(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// stderr bulk from LogPusher.Flush
+	// stdout and stderr bulk from each stream's own LogPusher (auto-flush
+	// timer and finish's final Flush)
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/steps/0/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
 		var reqs []api.LogAppendRequest
 		if err := json.NewDecoder(r.Body).Decode(&reqs); err == nil {
@@ -328,9 +331,9 @@ func TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration(t *testi
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// stdout lines from logLineWriter: one endpoint shared by every step,
-	// distinguished by LogAppendRequest.StepIndex in the body -- three
-	// members' stdout writers post here concurrently.
+	// Registered for parity with every other agent endpoint's test harness,
+	// but neither stream posts here any more (both ship via the bulk endpoint
+	// below).
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/logs", func(w http.ResponseWriter, r *http.Request) {
 		var req api.LogAppendRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
@@ -340,9 +343,9 @@ func TestK8sAgent_ExecuteRun_ParallelMembersRunConcurrently_Integration(t *testi
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// stderr bulk from each member's own LogPusher (auto-flush timer and
-	// final flush) -- {idx} is a path variable because three members flush to
-	// three different per-step URLs concurrently.
+	// stdout and stderr bulk from each member's own LogPushers (auto-flush
+	// timer and final flush) -- {idx} is a path variable because three
+	// members flush to three different per-step URLs concurrently.
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/steps/{idx}/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
 		idx, _ := strconv.Atoi(r.PathValue("idx"))
 		var reqs []api.LogAppendRequest

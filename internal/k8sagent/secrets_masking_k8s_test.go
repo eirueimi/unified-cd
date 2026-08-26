@@ -107,7 +107,8 @@ func (h *secretsHarness) newServer(t *testing.T, agentID, runID string) *httptes
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// stdout: logLineWriter -> AppendLog (single-line POST)
+	// Wired for realism, but neither stream posts here any more: stdout and
+	// stderr both ship via LogPusher -> AppendLogBulk below.
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/logs", func(w http.ResponseWriter, r *http.Request) {
 		var req api.LogAppendRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
@@ -118,7 +119,7 @@ func (h *secretsHarness) newServer(t *testing.T, agentID, runID string) *httptes
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	// stderr: LogPusher -> AppendLogBulk
+	// stdout and stderr: LogPusher -> AppendLogBulk
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/"+runID+"/steps/0/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
 		var reqs []api.LogAppendRequest
 		if err := json.NewDecoder(r.Body).Decode(&reqs); err == nil {

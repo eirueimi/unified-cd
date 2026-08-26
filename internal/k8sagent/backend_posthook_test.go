@@ -76,11 +76,11 @@ func TestK8sBackend_RunPostHook_StreamsOutputToGivenWriters(t *testing.T) {
 	var stepZeroLines []string
 
 	mux := http.NewServeMux()
-	// stdout: k8sBackend.StepLogWriters' logLineWriter ships one line at a
-	// time via the single-line AppendLog endpoint (see internal/k8sagent/
-	// agent.go's logLineWriter.Write); stderr ships via the bulk endpoint (a
-	// LogPusher, mirroring secrets_masking_k8s_test.go's harness). This test's
-	// post hook only writes to stdout, but both are wired for realism.
+	// Both stdout and stderr ship via their own LogPusher onto the bulk
+	// endpoint below (mirroring secrets_masking_k8s_test.go's harness); the
+	// single-line endpoint is wired too, only so nothing panics if it's ever
+	// hit. This test's post hook only writes to stdout, but both are wired
+	// for realism.
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/logs", func(w http.ResponseWriter, r *http.Request) {
 		var req api.LogAppendRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)

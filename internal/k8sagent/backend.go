@@ -1067,26 +1067,29 @@ func (b *k8sBackend) SetMasker(m *secrets.Masker) {
 	b.sidecarPump.Start(context.Background())
 }
 
-// StepLogWriters returns a per-line logLineWriter for stdout and a
-// LogPusher (auto-flushed for the step's duration) for stderr, mirroring the
-// pre-refactor stepExec closure. finish stops the auto-flush goroutine and
-// does a final Flush of stderr.
+// StepLogWriters returns LogPushers for stdout/stderr, auto-flushed for the
+// step's duration, mirroring the host backend (internal/agent/backend_host.go).
+// stdout used to ship via a per-line logLineWriter, one blocking HTTP request
+// (and Store.AppendLog's two DB round trips) per line — the same pattern
+// batch log ingestion removed from the controller's side but left standing
+// here, since stderr already used a LogPusher. finish stops the auto-flush
+// goroutine and does a final Flush of both streams.
 func (b *k8sBackend) StepLogWriters(ctx context.Context, stepIndex int) (stdout, stderr io.Writer, finish func(ctx context.Context)) {
 	stderrPusher := agentlib.NewLogPusher(b.a.client, b.a.cfg.AgentID, b.runID, stepIndex, "stderr")
 	stderrPusher.SetMasker(b.masker)
-	stdoutWriter := &logLineWriter{
-		client: b.a.client, agentID: b.a.cfg.AgentID, runID: b.runID, stepIdx: stepIndex, stream: "stdout",
-		masker: b.masker,
-	}
+	stdoutPusher := agentlib.NewLogPusher(b.a.client, b.a.cfg.AgentID, b.runID, stepIndex, "stdout")
+	stdoutPusher.SetMasker(b.masker)
 
 	flushCtx, stopAutoFlush := context.WithCancel(ctx)
 	stderrPusher.StartAutoFlush(flushCtx, stderrAutoFlushInterval)
+	stdoutPusher.StartAutoFlush(flushCtx, stderrAutoFlushInterval)
 
 	finish = func(finishCtx context.Context) {
 		stopAutoFlush()
 		stderrPusher.Flush(finishCtx)
+		stdoutPusher.Flush(finishCtx)
 	}
-	return stdoutWriter, stderrPusher, finish
+	return stdoutPusher, stderrPusher, finish
 }
 
 // ConcurrencyMode reports how the k8s agent runs parallel-group / matrix

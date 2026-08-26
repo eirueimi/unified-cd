@@ -495,9 +495,12 @@ func (b *parityK8sBackend) ConcurrencyMode() agentlib.ConcurrencyMode { return k
 var _ agentlib.ExecBackend = (*parityK8sBackend)(nil)
 
 // parityLineShipper is a minimal Writer that masks (if masker != nil) and
-// ships each newline-delimited line to the fake controller via AppendLog.
-// Mirrors k8sagent's unexported logLineWriter (internal/k8sagent/agent.go),
-// which this test package cannot reuse directly since it is unexported.
+// ships each newline-delimited line to the fake controller via AppendLog,
+// one line at a time. This is deliberately simpler than production's
+// LogPusher (used by both real backends' StepLogWriters) — the parity suite
+// exists to hold both orchestration loops to one contract, not to exercise
+// the log-batching mechanism, so per-line-over-AppendLog is a fine stand-in
+// writer here regardless of how the real backends ship logs.
 type parityLineShipper struct {
 	client  *agentlib.Client
 	agentID string
