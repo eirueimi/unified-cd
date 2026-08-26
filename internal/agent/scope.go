@@ -79,7 +79,19 @@ func (m *scopeManager) ensure(ctx context.Context, step api.ClaimStep, env []str
 	// service sidecar, so it must not run the image's default entrypoint.
 	// The /.ucd mount makes the keep-alive binary (and the default step
 	// shell) available without any image requirement.
-	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir, Entrypoint: ucdShPause, Mounts: ucdToolsMount(m.toolsDir)})
+	//
+	// CPULimit/MemLimit come from step.ScopeResourceLimits (runsIn.resources.
+	// limits, carried through expandUsesStep — see dsl.StepEntry.
+	// ScopeResourceLimits) via the SAME limitStrings conversion claim_pod.go's
+	// parseContainerDef uses for a podTemplate container's resources.limits,
+	// so a runsIn.image scope and a podTemplate container map cpu/memory
+	// identically on the host. A nil ScopeResourceLimits yields two empty
+	// strings, i.e. no limit — limitStrings handles that already.
+	var cpuLimit, memLimit string
+	if step.ScopeResourceLimits != nil {
+		cpuLimit, memLimit = limitStrings(step.ScopeResourceLimits.CPU, step.ScopeResourceLimits.Memory)
+	}
+	h, err := m.rt.Create(ctx, crt.CreateSpec{Image: step.ScopeImage, Env: env, WorkDir: scopeWorkDir, Entrypoint: ucdShPause, Mounts: ucdToolsMount(m.toolsDir), CPULimit: cpuLimit, MemLimit: memLimit})
 	if err != nil {
 		return crt.ContainerHandle{}, fmt.Errorf("provision scope %q (image %q): %w", step.ScopeID, step.ScopeImage, err)
 	}

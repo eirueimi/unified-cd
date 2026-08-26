@@ -341,6 +341,12 @@ behavior — scope mode is triggered only by a **uses-level `runsIn.image`**.
 `runsIn.container` on a `uses:` entry is rejected (a parse error); target a
 named container from the template's own steps with `container:` instead.
 
+`runsIn.resources.limits` bounds the scope's CPU/memory on both backends;
+`runsIn.resources.requests` is rejected at apply time (use `podTemplate`
+instead — it already supports `requests`). See [Uses-level `runsIn.image`
+resources](../resources/job.md#uses-level-runsinimage-resources) for the full
+behavior.
+
 Scope mode and the [pod-shape merge](#pod-shape-merge-containers-and-volumes)
 are mutually exclusive: a scoped `uses:` template runs in its own dedicated
 environment, not the caller's pod, so a template `podTemplate` has nowhere to
