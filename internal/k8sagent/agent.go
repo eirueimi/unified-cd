@@ -304,21 +304,31 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// the queue for a capable agent to take. The only choice left is whether to
 	// fail now or fail after wasting the job's work.
 	if a.cfg.SidecarS3SecretName == "" {
-		artifactSteps, cacheSteps := scanTransferSteps(c)
-		if len(artifactSteps) > 0 {
+		scan := scanTransferSteps(c)
+		if len(scan.blocking) > 0 {
 			a.failRun(ctx, c.RunID, fmt.Sprintf(
 				"artifact steps require the unified-artifact sidecar's own S3 credentials, but the k8s-agent's sidecarS3SecretName config field is not set; affected steps: %s. Set sidecarS3SecretName to a Secret carrying UNIFIED_S3_* that exists in the JOB Pod namespace (%q, the agent config's namespace: field) — the controller's S3 configuration does not reach the sidecar.",
-				strings.Join(artifactSteps, ", "), a.cfg.Namespace))
+				strings.Join(scan.blocking, ", "), a.cfg.Namespace))
 			return
 		}
-		if cacheSteps > 0 {
+		if len(scan.conditional) > 0 {
+			// An `if:` guard cannot be evaluated here — it may reference prior
+			// steps' outputs, which do not exist until the run is under way — so
+			// whether these steps run at all is unknowable at claim time. Failing
+			// on a maybe would break jobs whose guard is false in this run and
+			// which would otherwise have succeeded, so this only warns.
+			a.warnRun(ctx, c.RunID, fmt.Sprintf(
+				"this run has artifact step(s) guarded by an if: condition (%s), and the k8s-agent's sidecarS3SecretName config field is not set. If a guard evaluates true the step will fail with \"artifact requires S3 configuration (UNIFIED_S3_*)\"; the agent cannot tell in advance, so the run proceeds. Set sidecarS3SecretName to a Secret carrying UNIFIED_S3_* that exists in the job Pod namespace (%q) to make them work.",
+				strings.Join(scan.conditional, ", "), a.cfg.Namespace))
+		}
+		if scan.cache > 0 {
 			// Cache is deliberately best-effort: an unreachable store must never
 			// fail a run, so this is one loud per-run warning rather than a
 			// failure. Emitted into the run's own log (step -1) as well as the
 			// agent log so the operator sees it where they are already looking.
 			a.warnRun(ctx, c.RunID, fmt.Sprintf(
 				"this run has %d cache step(s), but the k8s-agent's sidecarS3SecretName config field is not set: the unified-artifact sidecar has no S3 credentials, so every cache restore and save will be a no-op and the job pays full build times. Cache stays best-effort (the run will NOT fail); set sidecarS3SecretName to a Secret carrying UNIFIED_S3_* that exists in the job Pod namespace (%q) to enable it.",
-				cacheSteps, a.cfg.Namespace))
+				scan.cache, a.cfg.Namespace))
 		}
 	}
 
@@ -491,26 +501,67 @@ func (a *K8sAgent) warnRun(ctx context.Context, runID, reason string) {
 	}})
 }
 
+// transferScan is what the claim-time preflight learns by walking a claim's
+// steps. The three buckets exist because they warrant three different actions,
+// and lumping them together fails runs that would have succeeded.
+type transferScan struct {
+	// blocking names artifact steps that will run unconditionally AND whose
+	// failure would fail the run. Only these justify failing the claim: for
+	// them, "the sidecar has no credentials" and "this run is doomed" are the
+	// same statement.
+	blocking []string
+	// conditional names artifact steps guarded by an `if:`. Whether they run is
+	// not knowable here, so they only warrant a warning — see the call site.
+	conditional []string
+	// cache counts cache steps, which are best-effort by design and never
+	// justify failing anything.
+	cache int
+}
+
 // scanTransferSteps walks every step of a claim — both `stages` and `finally`,
-// including the members of explicit `parallel:` groups — and reports the
-// display names of steps declaring an artifact transfer plus a count of steps
-// declaring a cache. The two are separated because they have opposite
-// policies: an artifact transfer without sidecar credentials is a hard
-// misconfiguration, a cache without them is a (loudly warned) no-op.
+// including the members of explicit `parallel:` groups — and sorts the ones
+// that need the artifact sidecar's S3 credentials into transferScan's buckets.
+//
+// Two step fields deliberately keep an artifact step OUT of the blocking
+// bucket, because a preflight that ignores them overrides guarantees the job
+// author was given elsewhere:
+//
+//   - continueOnError: true is the explicit "this step failing must not fail
+//     the run" contract, honoured for both a returned error and a panic in
+//     internal/agent/pipeline.go's runOne. A preflight that hard-fails the
+//     claim would silently revoke it — and would do so EARLIER and more
+//     completely than the failure it is protecting against. Skipped entirely.
+//
+//   - A non-empty if: cannot be evaluated at claim time; the expression may
+//     reference prior steps' outputs, which do not exist yet. The step may
+//     never run at all, so failing the claim would break jobs whose guard is
+//     false in this run. Downgraded to a warning.
+//
+// continueOnError wins over if:, since a guard being true still cannot make a
+// continueOnError step fail its run.
 //
 // `call:` steps need no recursion: api.ClaimCallStep carries only a job name
 // and params — the called job becomes a CHILD RUN with its own claim, which
 // runs this same check for itself.
-func scanTransferSteps(c api.ClaimResponse) (artifactSteps []string, cacheSteps int) {
+func scanTransferSteps(c api.ClaimResponse) transferScan {
+	var scan transferScan
 	visit := func(s *api.ClaimStep) {
 		if s == nil {
 			return
 		}
-		if s.UploadArtifact != nil || s.DownloadArtifact != nil {
-			artifactSteps = append(artifactSteps, strconv.Quote(s.DisplayName()))
-		}
 		if s.Cache != nil {
-			cacheSteps++
+			scan.cache++
+		}
+		if s.UploadArtifact == nil && s.DownloadArtifact == nil {
+			return
+		}
+		switch {
+		case s.ContinueOnError:
+			// Its failure is contractually harmless; say nothing.
+		case s.If != "":
+			scan.conditional = append(scan.conditional, strconv.Quote(s.DisplayName()))
+		default:
+			scan.blocking = append(scan.blocking, strconv.Quote(s.DisplayName()))
 		}
 	}
 	for _, stages := range [][]api.ClaimStage{c.Stages, c.Finally} {
@@ -521,7 +572,7 @@ func scanTransferSteps(c api.ClaimResponse) (artifactSteps []string, cacheSteps 
 			}
 		}
 	}
-	return artifactSteps, cacheSteps
+	return scan
 }
 
 // awaitPodRunning waits for podName to reach Running, bounded by

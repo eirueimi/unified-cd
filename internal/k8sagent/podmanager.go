@@ -113,23 +113,36 @@ func (pm *PodManager) WaitForPodRunning(ctx context.Context, podName string) err
 		if err != nil {
 			return fmt.Errorf("failed to get Pod %s: %w", podName, err)
 		}
-		detail, terminal := podStartDiagnostic(pod)
+		detail, terminal, severe := podStartDiagnostic(pod)
 		if detail != "" && detail != lastDetail {
-			slog.Warn("k8s: Pod is not Running yet", "pod", podName, "namespace", pm.namespace, "detail", detail)
+			// Severity matters more than it looks. Every normal Pod start passes
+			// through ContainerCreating/PodInitializing, so logging the whole
+			// diagnostic at Warn would put at least one WARN on EVERY Kubernetes
+			// run — training an operator to skim past the one line this branch
+			// exists to make them read. Benign transitions go to Info; Warn is
+			// reserved for the pull and config failures that need a human.
+			if severe {
+				slog.Warn("k8s: Pod is not Running yet", "pod", podName, "namespace", pm.namespace, "detail", detail)
+			} else {
+				slog.Info("k8s: waiting for Pod to start", "pod", podName, "namespace", pm.namespace, "detail", detail)
+			}
 			lastDetail = detail
 		}
 		switch pod.Status.Phase {
 		case corev1.PodRunning:
 			return nil
 		case corev1.PodFailed, corev1.PodSucceeded:
-			return fmt.Errorf("Pod %s entered unexpected phase %s%s", podName, pod.Status.Phase, detailSuffix(lastDetail))
+			return fmt.Errorf("Pod %s entered unexpected phase %s%s", podName, pod.Status.Phase, detailSuffix(detail))
 		}
 		if terminal {
 			return fmt.Errorf("Pod %s cannot start: %s", podName, detail)
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("waiting for Pod %s to become Running: %w%s", podName, ctx.Err(), detailSuffix(lastDetail))
+			// detail, not lastDetail: report what is true NOW. A diagnostic that
+			// has since cleared is not the reason this wait timed out, and naming
+			// it would send the operator after a problem that already resolved.
+			return fmt.Errorf("waiting for Pod %s to become Running: %w%s", podName, ctx.Err(), detailSuffix(detail))
 		default:
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -158,12 +171,26 @@ var terminalWaitingReasons = map[string]bool{
 	"InvalidImageName": true,
 }
 
+// benignWaitingReasons are the waiting reasons every healthy Pod passes
+// through on its way to Running. They belong in a returned error (by then
+// something has already gone wrong, and knowing the Pod never got past
+// ContainerCreating is the useful part) but must not raise the log level while
+// the Pod is simply still starting.
+var benignWaitingReasons = map[string]bool{
+	"ContainerCreating": true,
+	"PodInitializing":   true,
+}
+
 // podStartDiagnostic summarizes why a not-yet-Running Pod has not started,
 // from the kubelet's container statuses (init containers first — the ucd-shim
 // init container blocks every other container behind it) and, when no
 // container has reported at all, from an unschedulable PodScheduled condition.
+//
 // terminal reports whether any waiting reason is in terminalWaitingReasons.
-func podStartDiagnostic(pod *corev1.Pod) (detail string, terminal bool) {
+// severe reports whether anything seen is worth a human's attention now, i.e.
+// any reason outside benignWaitingReasons — it governs log level only, never
+// what the returned error says.
+func podStartDiagnostic(pod *corev1.Pod) (detail string, terminal, severe bool) {
 	var parts []string
 	collect := func(kind string, statuses []corev1.ContainerStatus) {
 		for _, cs := range statuses {
@@ -178,6 +205,9 @@ func podStartDiagnostic(pod *corev1.Pod) (detail string, terminal bool) {
 			parts = append(parts, part)
 			if terminalWaitingReasons[w.Reason] {
 				terminal = true
+			}
+			if !benignWaitingReasons[w.Reason] {
+				severe = true
 			}
 		}
 	}
@@ -194,10 +224,14 @@ func podStartDiagnostic(pod *corev1.Pod) (detail string, terminal bool) {
 					part += ": " + cond.Message
 				}
 				parts = append(parts, part)
+				// The scheduler actively rejected this Pod (Unschedulable,
+				// SchedulerError); unlike ContainerCreating that is not a phase
+				// every healthy Pod passes through.
+				severe = true
 			}
 		}
 	}
-	return strings.Join(parts, "; "), terminal
+	return strings.Join(parts, "; "), terminal, severe
 }
 
 // detailSuffix renders a podStartDiagnostic detail as a trailing clause, or

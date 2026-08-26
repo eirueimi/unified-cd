@@ -11,12 +11,19 @@ artifact requires S3 configuration (UNIFIED_S3_*): ...
 cache requires S3 configuration (UNIFIED_S3_*): ...
 ```
 
-or the run is failed at claim time, before any pod is created, with:
+or, on the k8s-agent, the run is failed at claim time — before any pod is
+created — with:
 
 ```
 artifact steps require the unified-artifact sidecar's own S3 credentials, but the
 k8s-agent's sidecarS3SecretName config field is not set; affected steps: "publish". ...
 ```
+
+That preflight only fails a run for a transfer step that would definitely have
+run and definitely have failed it. A step carrying `continueOnError: true` is
+ignored (its failure is contractually harmless), and a step guarded by an `if:`
+produces a warning instead of a failure, because the guard may reference a
+prior step's output and cannot be evaluated before the run starts.
 
 This is confusing precisely because **log archiving already works** — S3 is
 obviously configured somewhere.
@@ -71,9 +78,9 @@ step at all. Runs sit for the full `podStartTimeout` (default 5m) and then
 fail. The run's failure message names the container and the kubelet's reason:
 
 ```
-waiting for Pod ucd-run-abc123 to become Running: context deadline exceeded
-(container "unified-artifact" is waiting: CreateContainerConfigError:
-secret "unified-cd-s3-creds" not found)
+k8s: run pod did not become ready: waiting for Pod ucd-run-abc123 to become
+Running: context deadline exceeded (container "unified-artifact" is waiting:
+CreateContainerConfigError: secret "unified-cd-s3-creds" not found)
 ```
 
 **Cause**
@@ -117,9 +124,10 @@ You no longer need `kubectl describe pod` to find that out: the run's own
 failure message carries the kubelet's reason and message, e.g.
 
 ```
-waiting for Pod ucd-run-abc123 to become Running: context deadline exceeded
-(container "unified-artifact" is waiting: ImagePullBackOff: Back-off pulling
-image "ghcr.io/…/unified-cd-artifact-sidecar:latest")
+k8s: run pod did not become ready: waiting for Pod ucd-run-abc123 to become
+Running: context deadline exceeded (container "unified-artifact" is waiting:
+ImagePullBackOff: Back-off pulling image
+"ghcr.io/…/unified-cd-artifact-sidecar:latest")
 ```
 
 The agent also logs the reason as soon as it appears, rather than only when

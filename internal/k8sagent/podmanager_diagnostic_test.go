@@ -106,11 +106,12 @@ func TestPodStartDiagnostic(t *testing.T) {
 				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ErrImagePull", Message: "no such host"}},
 			}},
 		}}
-		detail, terminal := podStartDiagnostic(pod)
+		detail, terminal, severe := podStartDiagnostic(pod)
 		assert.Contains(t, detail, "init container")
 		assert.Contains(t, detail, ucdShimContainerName)
 		assert.Contains(t, detail, "ErrImagePull: no such host")
 		assert.False(t, terminal)
+		assert.True(t, severe, "a failed image pull is worth a human's attention")
 	})
 
 	t.Run("unschedulable Pod has no container statuses", func(t *testing.T) {
@@ -123,10 +124,11 @@ func TestPodStartDiagnostic(t *testing.T) {
 				Message: "0/3 nodes are available: insufficient cpu",
 			}},
 		}}
-		detail, terminal := podStartDiagnostic(pod)
+		detail, terminal, severe := podStartDiagnostic(pod)
 		assert.Contains(t, detail, "Unschedulable")
 		assert.Contains(t, detail, "insufficient cpu")
 		assert.False(t, terminal)
+		assert.True(t, severe, "the scheduler actively rejected this Pod")
 	})
 
 	t.Run("running Pod offers nothing to report", func(t *testing.T) {
@@ -137,9 +139,26 @@ func TestPodStartDiagnostic(t *testing.T) {
 				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
 			}},
 		}}
-		detail, terminal := podStartDiagnostic(pod)
+		detail, terminal, severe := podStartDiagnostic(pod)
 		assert.Empty(t, detail)
 		assert.False(t, terminal)
+		assert.False(t, severe)
+	})
+
+	// The benign cases are the whole reason severity exists: EVERY healthy Pod
+	// passes through them, so if they counted as severe, every single
+	// Kubernetes run would emit a WARN and operators would learn to skim past
+	// the line that actually matters.
+	t.Run("normal startup is not severe", func(t *testing.T) {
+		for _, reason := range []string{"ContainerCreating", "PodInitializing"} {
+			t.Run(reason, func(t *testing.T) {
+				pod := waitingPod("p", primaryContainerName, reason, "")
+				detail, terminal, severe := podStartDiagnostic(pod)
+				assert.Contains(t, detail, reason, "the reason still belongs in the returned error")
+				assert.False(t, terminal)
+				assert.False(t, severe, "a normal startup transition must not raise the log level")
+			})
+		}
 	})
 
 	t.Run("every stuck container is reported, not just the first", func(t *testing.T) {
@@ -150,8 +169,9 @@ func TestPodStartDiagnostic(t *testing.T) {
 				{Name: artifactSidecarName, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CreateContainerConfigError", Message: `secret "s3" not found`}}},
 			},
 		}}
-		detail, _ := podStartDiagnostic(pod)
+		detail, _, severe := podStartDiagnostic(pod)
 		assert.Contains(t, detail, "ContainerCreating")
 		assert.Contains(t, detail, `secret "s3" not found`)
+		assert.True(t, severe, "one benign container must not mask a severe sibling")
 	})
 }

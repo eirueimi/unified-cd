@@ -237,13 +237,142 @@ func TestScanTransferSteps(t *testing.T) {
 		},
 	}
 
-	artifacts, caches := scanTransferSteps(c)
-	assert.Equal(t, []string{`"up"`, `"par-down"`, `"fin-up"`}, artifacts)
-	assert.Equal(t, 2, caches)
+	scan := scanTransferSteps(c)
+	assert.Equal(t, []string{`"up"`, `"par-down"`, `"fin-up"`}, scan.blocking)
+	assert.Empty(t, scan.conditional)
+	assert.Equal(t, 2, scan.cache)
 
-	none, zero := scanTransferSteps(api.ClaimResponse{
+	empty := scanTransferSteps(api.ClaimResponse{
 		Stages: []api.ClaimStage{{Step: &api.ClaimStep{Name: "plain", Run: "make"}}},
 	})
-	assert.Empty(t, none)
-	assert.Zero(t, zero)
+	assert.Empty(t, empty.blocking)
+	assert.Empty(t, empty.conditional)
+	assert.Zero(t, empty.cache)
+}
+
+// TestScanTransferSteps_IfAndContinueOnError pins the two step fields that keep
+// an artifact step out of the fail-fast bucket. Scanning declarations alone
+// hard-fails runs that would have succeeded: a step guarded by a false `if:`
+// never executes, and a `continueOnError: true` step has an explicit
+// "failing must not fail the run" contract (internal/agent/pipeline.go's
+// runOne honours it for both errors and panics) that a preflight must not
+// revoke — least of all earlier and more completely than the failure it is
+// guarding against.
+func TestScanTransferSteps_IfAndContinueOnError(t *testing.T) {
+	scan := scanTransferSteps(api.ClaimResponse{
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Name: "plain-up", UploadArtifact: &api.UploadArtifactStep{Name: "a"}}},
+			{Step: &api.ClaimStep{
+				Name: "guarded-up", If: "{{ .Steps.probe.Outputs.publish }}",
+				UploadArtifact: &api.UploadArtifactStep{Name: "b"},
+			}},
+			{Step: &api.ClaimStep{
+				Name: "lenient-down", ContinueOnError: true,
+				DownloadArtifact: &api.DownloadArtifactStep{Name: "c"},
+			}},
+			{Step: &api.ClaimStep{
+				// continueOnError wins over if: a true guard still cannot make a
+				// continueOnError step fail its run.
+				Name: "guarded-and-lenient", If: "always()", ContinueOnError: true,
+				UploadArtifact: &api.UploadArtifactStep{Name: "d"},
+			}},
+		},
+	})
+
+	assert.Equal(t, []string{`"plain-up"`}, scan.blocking,
+		"only an unguarded, run-failing transfer may fail the claim")
+	assert.Equal(t, []string{`"guarded-up"`}, scan.conditional,
+		"an if: guard cannot be evaluated at claim time, so it downgrades to a warning")
+}
+
+// TestExecuteRun_ContinueOnErrorArtifactDoesNotFailClaim is the regression test
+// for the review's Major finding: the preflight hard-failed a claim whose only
+// artifact step was explicitly marked as unable to fail the run. That inverts
+// the contract — the job author asked for "this may fail harmlessly" and got
+// "your run dies before it starts".
+func TestExecuteRun_ContinueOnErrorArtifactDoesNotFailClaim(t *testing.T) {
+	const agentID = "k8s-artifact-coe"
+	const runID = "run-artifact-coe"
+
+	ctl := newSidecarS3Controller(t, agentID, runID)
+	// waitErr stops executeRun at pod acquisition: this test asserts the claim
+	// was NOT rejected up front, not that a whole claim runs.
+	pm := &fakePM{waitErr: assert.AnError}
+	a := &K8sAgent{
+		cfg:    Config{AgentID: agentID, Namespace: "ci", PodImage: "ubuntu:22.04", ShimImage: "shim", PodStartTimeout: "50ms"},
+		client: agentlib.NewClient(ctl.srv.URL, "tok"),
+		pm:     pm,
+		exec:   &fakeExec{},
+	}
+
+	prevInitial, prevMax := agentlib.RetryInitialWait, agentlib.RetryMaxWait
+	agentlib.RetryInitialWait, agentlib.RetryMaxWait = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { agentlib.RetryInitialWait, agentlib.RetryMaxWait = prevInitial, prevMax })
+
+	claim := api.ClaimResponse{
+		RunID:   runID,
+		JobName: "build",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "build", Run: "make"}},
+			{Step: &api.ClaimStep{
+				Index: 1, StageIndex: 1, Name: "publish-best-effort",
+				ContinueOnError: true,
+				UploadArtifact:  &api.UploadArtifactStep{Name: "app", Path: "bin/app"},
+			}},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	a.executeRun(ctx, claim)
+
+	assert.Positive(t, pm.creations(),
+		"a continueOnError transfer step must NOT fail-fast the claim; the run proceeds to pod acquisition")
+	assert.NotContains(t, ctl.runLogText(), "publish-best-effort",
+		"a step whose failure is contractually harmless should not even be warned about")
+}
+
+// TestExecuteRun_ConditionalArtifactWarnsButDoesNotFailClaim: an `if:` guard may
+// reference prior steps' outputs, so whether the step runs is unknowable at
+// claim time. Failing on a maybe breaks jobs whose guard is false in this run,
+// so the operator gets told and the run proceeds.
+func TestExecuteRun_ConditionalArtifactWarnsButDoesNotFailClaim(t *testing.T) {
+	const agentID = "k8s-artifact-if"
+	const runID = "run-artifact-if"
+
+	ctl := newSidecarS3Controller(t, agentID, runID)
+	pm := &fakePM{waitErr: assert.AnError}
+	a := &K8sAgent{
+		cfg:    Config{AgentID: agentID, Namespace: "ci", PodImage: "ubuntu:22.04", ShimImage: "shim", PodStartTimeout: "50ms"},
+		client: agentlib.NewClient(ctl.srv.URL, "tok"),
+		pm:     pm,
+		exec:   &fakeExec{},
+	}
+
+	prevInitial, prevMax := agentlib.RetryInitialWait, agentlib.RetryMaxWait
+	agentlib.RetryInitialWait, agentlib.RetryMaxWait = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { agentlib.RetryInitialWait, agentlib.RetryMaxWait = prevInitial, prevMax })
+
+	claim := api.ClaimResponse{
+		RunID:   runID,
+		JobName: "build",
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "build", Run: "make"}},
+			{Step: &api.ClaimStep{
+				Index: 1, StageIndex: 1, Name: "publish-on-tag",
+				If:             "{{ .Params.is_tag }}",
+				UploadArtifact: &api.UploadArtifactStep{Name: "app", Path: "bin/app"},
+			}},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	a.executeRun(ctx, claim)
+
+	assert.Positive(t, pm.creations(),
+		"an if:-guarded transfer step must NOT fail-fast the claim; the guard may well be false")
+	msg := ctl.runLogText()
+	assert.Contains(t, msg, "publish-on-tag", "the operator must still be told which step is at risk")
+	assert.Contains(t, msg, "sidecarS3SecretName")
 }

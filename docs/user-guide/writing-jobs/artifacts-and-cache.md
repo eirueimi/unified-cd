@@ -34,7 +34,7 @@ The `path`/`destDir` of an artifact step must be workspace-relative — see [Art
 
 Artifacts work on both the standard and Kubernetes agents; on the k8s-agent, transfers are handled by an auto-injected workspace sidecar (`unified-artifact`) that talks to the object store **directly** — see [Kubernetes Integration: S3 credentials](../../operator-manual/kubernetes-integration.md#s3-credentials-required) for how transfers work and the S3 credentials the sidecar requires.
 
-Those credentials are **required** on the k8s-agent, and are separate from the controller's own S3 configuration: the sidecar needs a `Secret` in the job Pod's namespace, named by the agent's `sidecarS3SecretName`. Without it every artifact step fails with `artifact requires S3 configuration (UNIFIED_S3_*)` — unlike cache, which degrades to a no-op rather than failing. The k8s-agent now detects this when it claims the run and fails immediately instead of mid-job.
+Those credentials are **required** on the k8s-agent, and are separate from the controller's own S3 configuration: the sidecar needs a `Secret` in the job Pod's namespace, named by the agent's `sidecarS3SecretName`. Without it every artifact step fails with `artifact requires S3 configuration (UNIFIED_S3_*)` — unlike cache, which degrades to a no-op rather than failing. The k8s-agent detects this when it claims the run and fails immediately instead of mid-job, so you find out before the job does its work rather than after. A transfer step marked `continueOnError: true` is exempt (its failure cannot fail the run anyway), and one guarded by an `if:` is warned about rather than failed, since whether it runs is not knowable at claim time.
 
 ### Downloading from another run (`runId`)
 
