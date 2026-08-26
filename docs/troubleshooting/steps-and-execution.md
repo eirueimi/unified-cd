@@ -219,23 +219,46 @@ panic text points at the failing code.
 
 **Symptom**
 
-A step inside `spec.finally` (or a `post:` hook that a step registered) is
-reported `Failed` after roughly ten minutes, its log carries a line like
+A step inside `spec.finally` is reported `Failed` after roughly ten minutes,
+its log carries a line like
 
 ```
 unified-cd: step "cleanup" failed to execute: context deadline exceeded
 ```
 
-and the run finishes `Failed` — including runs a user had cancelled, which
-previously finished `Cancelled`.
+and the run's **System** stream carries
+
+```
+unified-cd: the finally: phase did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped.
+```
+
+The run finishes `Failed` — including runs a user had cancelled, which
+previously finished `Cancelled`, and including a `finally` block whose steps
+are all `continueOnError: true`, because a phase that did not finish is not a
+step's fact to suppress.
+
+**The same symptom with no step involved.** If the System line names a hook
+drain instead —
+
+```
+unified-cd: the post:/cache: hook drain that follows the main steps did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. …
+```
+
+— then a `post:`/`cache:` hook was cut off and the run's status is **not**
+affected: a successful job still reports `Succeeded`. That is the case to look
+for when a `cache:` save silently did not land and the next run got a cache
+miss. Post-hook failures have never changed a run's status; the System line is
+the record.
 
 **Cause**
 
 The cleanup phase now has a ceiling. `finally` deliberately ignores run
 cancellation, and that also discards the job-level `spec.timeoutMinutes`
 deadline, so the agent applies `finallyTimeout` (default **10m**) to each
-cleanup phase instead — the `finally` pipeline, and each `post:`/`cache:` hook
-drain. Before this existed, such a step ran forever: it pinned the run, held
+cleanup phase instead — each `post:`/`cache:` hook drain, the `finally`
+pipeline, and scope/claim-pod teardown, four windows in all, so a run's
+worst-case post-DAG time is 4 × `finallyTimeout` (40m at the default).
+Before this existed, such a step ran forever: it pinned the run, held
 one of the agent's concurrency slots, and nothing detected it, because the
 stuck-run reaper keys on **agent** liveness and the agent keeps heartbeating.
 The most common way to hit the wall is a `call:` in `finally` with no
@@ -250,7 +273,8 @@ The most common way to hit the wall is a `call:` in `finally` with no
   `UNIFIED_AGENT_FINALLY_TIMEOUT` / `finallyTimeout` on the standard agent,
   `finallyTimeout` / `UNIFIED_K8S_FINALLY_TIMEOUT` on the Kubernetes agent. A
   non-positive value does **not** mean "unbounded" — it falls back to the 10m
-  default.
+  default; an unparseable one is a startup error (except in
+  `UNIFIED_AGENT_FINALLY_TIMEOUT`, which is ignored when it does not parse).
 - If the step is hanging rather than slow, the deadline is telling you the
   truth: fix what it is waiting on. See
   [Bounding a run's cleanup phase](../operator-manual/agents.md#bounding-a-runs-cleanup-phase-finallytimeout).

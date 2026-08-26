@@ -388,6 +388,20 @@ main-DAG step's cleanup never has to wait for `finally` to finish. Reverse
 declaration order applies within each pass. Both passes run even when the run
 failed, timed out, or was cancelled.
 
+Each pass is bounded by the agent's `finallyTimeout` (default 10m) — see
+[How long `finally` may run](approval-and-finally.md#how-long-finally-may-run).
+If a pass hits that ceiling, the hook still running is interrupted and anything
+after it in the pass is skipped: a large `cache:` save can be left unfinished.
+That does not fail the run (no post-hook failure does), so the run's log records
+it instead, on the run's own **System** stream:
+
+```
+unified-cd: the post:/cache: hook drain that follows the main steps did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped.
+```
+
+If you see that line on a run whose cache did not come back on the next run,
+that is why — raise `finallyTimeout` for the fleet, or make the save smaller.
+
 ---
 
 ### Matrix and Foreach Steps

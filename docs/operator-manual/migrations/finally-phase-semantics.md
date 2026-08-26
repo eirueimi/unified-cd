@@ -19,7 +19,8 @@ applies unchanged.
 | Before | After |
 |---|---|
 | A `finally:` step with no `timeoutMinutes:` could run forever. `call:` was the sharpest case — the child-run poll's only bound is its context, and the cleanup phase had none — but a plain `run:` was unbounded the same way. | Each cleanup phase is bounded by the agent's `finallyTimeout` (default **10m**). A step still running at the deadline is interrupted, reported `Failed`, and the run finishes `Failed`. |
-| A `post:`/`cache:` hook drain had no timeout either (`RunPostHook` takes none), so a hanging cleanup hook pinned the run indefinitely. | The same `finallyTimeout` bounds each of the two drains. |
+| A `post:`/`cache:` hook drain had no timeout either (`RunPostHook` takes none), so a hanging cleanup hook pinned the run indefinitely. | The same `finallyTimeout` bounds each of the two drains, and scope/claim-pod teardown. |
+| — | A phase that hits the budget is recorded on the run itself, on its **System** stream, naming the phase and the budget. A truncated drain does not change the run's status, so that line is the only thing standing between a cut-off `cache:` save and a silently-lost cache. |
 | A `finally:` step that exited non-zero on a **cancelled** run was reported `Cancelled`, and the run finished `Cancelled`. The failure was discarded. | The step is reported `Failed` and the run finishes `Failed` — as `spec.finally`'s documented contract already said. A `finally:` block that succeeds still leaves a cancelled run `Cancelled`. |
 | `retry:` on a `finally:` step degraded to a single attempt on a cancelled run, and a genuine exec error left the step's log empty. | The step keeps its full attempt budget, and the `failed to execute: …` diagnostic is written to its log. (A main-DAG step's retry loop still stops on cancellation.) |
 | An output declared in `spec.params.outputs` and set by a `finally:` step reached that step's outputs and stopped there — `SetRunOutputs` never carried it, so a parent `call:` step read nothing. | The value is promoted to the run's outputs like any other. |
@@ -29,9 +30,31 @@ applies unchanged.
 ## Change 1: `finally:` is no longer unbounded
 
 **What changes.** The cleanup phase now carries a deadline. It is applied per
-phase — the `finally:` pipeline, and each `post:`/`cache:` hook drain — not as
-one shared total for the run, because the phases are separated by the main DAG,
-which may legitimately run for hours.
+phase, not as one shared total for the run, because the phases are separated by
+the main DAG, which may legitimately run for hours.
+
+**The number to plan for.** Four phases carry the budget, in this order:
+
+1. the `post:`/`cache:` hook drain that follows the main `steps` DAG
+2. the `finally:` pipeline
+3. the `post:`/`cache:` hook drain that follows `finally:`
+4. scope/claim-pod teardown
+
+So the worst case a run can spend after its DAG finishes is **four ×
+`finallyTimeout` — 40 minutes at the default**, not 10. If you size a
+rollout's `terminationGracePeriodSeconds`, a node-drain timeout, or an
+alerting threshold against this setting, size it against that number. It is a
+ceiling and not an expectation — reaching it means four separate phases each
+wedged — but it is the bound, and it is the one an operator has to plan for.
+
+The one post-DAG phase deliberately left **unbounded** is the final report to
+the controller (`FinishRun`/`SetRunOutputs`), which retries until it lands. It
+runs no job code; it stops at once on any 4xx (a run the controller already
+reaped or deleted); and if the agent gave up on a persistent 5xx the run would
+stay `Running` at the controller forever, because the stuck-run reaper keys on
+**agent** liveness and an agent that gave up is still heartbeating. In a full
+controller outage the agent's own heartbeats fail too, so it goes stale and the
+reaper does take over.
 
 **Why it did not have one.** `finally:` deliberately ignores run cancellation;
 that is the entire reason it exists. The mechanism for that
@@ -58,8 +81,18 @@ steps that set nothing.
 | standard | `finallyTimeout` | `UNIFIED_AGENT_FINALLY_TIMEOUT` | `--finally-timeout` | `10m` |
 | Kubernetes | `finallyTimeout` | `UNIFIED_K8S_FINALLY_TIMEOUT` | — | `10m` |
 
-A non-positive or unparseable value falls back to `10m`. "Unbounded" is
-deliberately not expressible — it is the defect this closes.
+A **non-positive** value falls back to `10m`. "Unbounded" is deliberately not
+expressible — it is the defect this closes.
+
+An **unparseable** value does *not* fall back — check this before a cutover,
+because it decides whether a typo is silent or loud:
+
+| Where | Unparseable value (e.g. `10 minutes`) |
+|---|---|
+| k8s agent, `finallyTimeout:` in the config file | `Config.Validate` rejects it, the agent logs `invalid config: finallyTimeout "10 minutes": …` and **exits 1**. It never starts on a defaulted budget. |
+| standard agent, `finallyTimeout:` in the config file | YAML decode fails, the agent logs `config file: … cannot unmarshal !!str` and **exits 1**. |
+| standard agent, `--finally-timeout` flag | `flag` rejects it and the agent **exits 2**. |
+| standard agent, `UNIFIED_AGENT_FINALLY_TIMEOUT` | **Ignored**, leaving the 10m default. This is the one place a typo is silent, and it matches every other env duration override on that agent. |
 
 **What you will see when a job hits it.** The step's own log gains
 
@@ -67,8 +100,29 @@ deliberately not expressible — it is the defect this closes.
 unified-cd: step "<name>" failed to execute: context deadline exceeded
 ```
 
-on stream `stderr`, the step is reported `Failed`, and the run finishes
-`Failed`.
+on stream `stderr`, and the step is reported `Failed`. Separately, the run's
+own **System** stream (stepIndex `-1`) gains a line naming the phase and the
+budget:
+
+```
+unified-cd: the finally: phase did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped.
+```
+
+That record is per phase, and what it means for the run's status differs by
+phase:
+
+| Phase truncated | Run status |
+|---|---|
+| the `finally:` pipeline | **`Failed`** — the phase did not finish, so the run did not fully succeed. This holds even when every step in the block is `continueOnError: true`: that flag scopes one step's failure; whether the phase finished is not that step's to suppress. |
+| either `post:`/`cache:` hook drain | **unchanged** — a post hook has never changed a run's status, whatever it fails on, and singling out "failed because the budget expired" while "failed because the object store was down" stayed benign would be an incoherent rule. |
+| scope/claim-pod teardown | **unchanged**, and not recorded on the run: it happens after the run is already terminal, and a leaked container is an agent-host fact. It is logged on the agent as `scope/pod teardown truncated by its finallyTimeout budget`. |
+
+**Watch the middle row.** It is the case where the old promise that post-hooks
+"always wait for completion to preserve data" (the standard agent's
+`--drain-timeout` help text said exactly that; it has been corrected) no longer
+holds: a multi-gigabyte `cache:` save that runs past the budget is cut off, not
+saved, on a run reported `Succeeded`. Nothing else about that run says so. If
+cache correctness matters to your fleet, alert on the System line.
 
 **What to do.**
 
@@ -108,7 +162,9 @@ way, which is why the behaviour looked inconsistent from outside.
 - A cancelled run whose `finally:` block succeeds still finishes `Cancelled`.
 - The main-DAG step interrupted by the cancellation is still reported
   `Cancelled`, not `Failed`.
-- `continueOnError: true` on a `finally:` step still suppresses the failure.
+- `continueOnError: true` on a `finally:` step still suppresses **that step's**
+  failure. It does not suppress a truncated phase: if the budget expires, the
+  run finishes `Failed` however the individual steps are marked (see Change 1).
 
 **What to do.** Nothing, unless a dashboard, alert, or automation treats
 `Cancelled` and `Failed` differently. If it does, expect a new class of
@@ -143,10 +199,16 @@ The job-output promotion loop scanned the main `steps` DAG only, so a value a
 got nothing. Both phases are scanned now.
 
 **Collision rule.** If a main-DAG step and a `finally:` step both set the same
-declared output name, the **`finally:` value wins**. That is the same "the step
-that ran last wins" rule that already applied between two main-DAG steps, and
-it is the useful direction: a teardown step recording what was actually left in
-place should override a provisional value from the main DAG.
+declared output name, the **`finally:` value wins**. That is the same "the last
+step that declares it wins" rule that already applied between two main-DAG
+steps, and it is the useful direction: a teardown step recording what was
+actually left in place should override a provisional value from the main DAG.
+
+"Last" is **declaration order** — the order the steps are written in the job —
+not the order they finished. The promotion loop walks the claim's stages, and
+the steps within each stage, exactly as written. For sequential stages the two
+orders coincide; inside one `parallel` group they do not, and the winner is
+still the step written last, which is the only reproducible answer.
 
 This can only add a value where there was none, or replace a main-DAG value
 that the job author explicitly asked a later step to overwrite.

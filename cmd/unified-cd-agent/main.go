@@ -88,7 +88,7 @@ func main() {
 	maxDetachedConcurrent := flag.Int("max-detached-concurrent", eff.MaxDetachedConcurrent, "max concurrent detached (spec.detached) runs, separate from --max-concurrent; 0/unset=default 16, negative=off (env: UNIFIED_AGENT_MAX_DETACHED)")
 	cleanWorkspace := flag.Bool("clean-workspace", eff.CleanWorkspace, "delete and recreate the workspace before starting a run")
 	workspaceDir := flag.String("workspace-dir", eff.WorkspaceDir, "base directory for run workspaces (default: current directory at agent startup) (env: UNIFIED_AGENT_WORKSPACE_DIR)")
-	drainTimeout := flag.Duration("drain-timeout", eff.DrainTimeout, "maximum drain wait time after SIGTERM (0=wait indefinitely). Applies to running steps; post-hooks such as cache saves always wait for completion to preserve data")
+	drainTimeout := flag.Duration("drain-timeout", eff.DrainTimeout, "maximum drain wait time after SIGTERM (0=wait indefinitely). Applies to running steps; post-hooks such as cache saves are never cut short by THIS timeout, but they are bounded by --finally-timeout (default 10m) like every other post-DAG cleanup phase")
 	finallyTimeout := flag.Duration("finally-timeout", eff.FinallyTimeout, "ceiling on each of a run's post-DAG cleanup phases (the spec.finally pipeline, and each post:/cache: hook drain); 0/unset=default 10m (env: UNIFIED_AGENT_FINALLY_TIMEOUT)")
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_AGENT_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)")
 	containerRuntime := flag.String("container-runtime", "", "container runtime for runsIn.image steps; empty = auto-detect (docker|podman|nerdctl|wslc). Apple's 'container' is explicit-only (not auto-detected) and cannot run isolated/claim-pod jobs")

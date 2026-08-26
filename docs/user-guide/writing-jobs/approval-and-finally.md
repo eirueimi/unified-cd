@@ -105,8 +105,11 @@ spec:
 
 - `finally` uses the same structure as `steps` (stages + `parallel`).
 - A `finally` step with no `if:` always runs.
-- All `finally` steps run to completion; a `finally` step that fails marks the
-  run **Failed**.
+- There is no fail-fast inside `finally`: a `finally` step that fails does not
+  stop the ones after it, and a `finally` step that fails marks the run
+  **Failed**. The block as a whole is not unbounded, though — it runs until it
+  finishes or until the agent's `finallyTimeout` expires, whichever comes
+  first. See [How long `finally` may run](#how-long-finally-may-run).
 - On cancellation, `finally` still runs, but `failure()` is `false`.
 - **A `finally` step that fails on a cancelled run still fails the run.** The
   cancellation ends the main `steps` DAG; it does not excuse cleanup. A
@@ -158,10 +161,16 @@ spec:
 ```
 
 If a main-DAG step and a `finally` step both set the same declared output name,
-**the `finally` value wins**. This is the same "the step that ran last wins"
-rule that already applies between two main-DAG steps, and it is the useful
-direction: a teardown step recording what was actually left in place should
-override a provisional value from the main DAG.
+**the `finally` value wins**. This is the same "the last step that declares it
+wins" rule that already applies between two main-DAG steps, and it is the
+useful direction: a teardown step recording what was actually left in place
+should override a provisional value from the main DAG.
+
+"Last" means last in **declaration order** — the order the steps are written in
+the job — not the order they happened to finish. For sequential stages the two
+are the same thing. Inside one `parallel` group they are not: the members race,
+so if two of them declare the same output name the winner is the one written
+last, which is the only answer that is reproducible.
 
 ### How long `finally` may run
 
@@ -175,8 +184,25 @@ the [Configuration Reference](../../reference/configuration.md)).
 
 The ceiling applies separately to each cleanup phase: the `finally` pipeline
 itself, and each `post:`/`cache:` hook drain. A step still running when the
-budget expires is interrupted, reported `Failed`, and the run finishes
-`Failed`.
+budget expires is interrupted and reported `Failed`.
+
+**When a phase is cut short, the run says so.** The run's own **System** stream
+gains a line naming the phase and the budget:
+
+```
+unified-cd: the finally: phase did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped.
+```
+
+What happens to the run's status depends on which phase was truncated:
+
+| Phase truncated | Run status |
+|---|---|
+| the `finally` pipeline | **`Failed`** — the cleanup pipeline did not finish, so the run did not fully succeed. This holds even if every step in the block is `continueOnError: true`: that flag scopes one step's failure, and whether the phase finished is not that step's to suppress. |
+| a `post:`/`cache:` hook drain | unchanged (a successful job still reports `Succeeded`) — a post hook has never changed the run's status, whatever it fails on. The System line above is the record. |
+
+That second row is why the line matters: a large `cache:` save cut off at the
+budget is not saved, and without the System line nothing about the run would
+say so.
 
 Per-step `timeoutMinutes:` works inside `finally` and is the precise tool —
 set it on any cleanup step that talks to something that can hang (a `call:`

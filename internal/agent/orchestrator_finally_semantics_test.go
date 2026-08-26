@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -137,6 +139,10 @@ type finallySemHarness struct {
 	terminalStatus map[string]string
 	runOutputs     []map[string]string
 	finish         string
+	// systemLines collects every AppendLogBulk line sent to stepIndex -1 —
+	// the run's own "System" stream, which is where a truncated cleanup phase
+	// has to become visible to an operator reading the run.
+	systemLines []string
 
 	finishCh chan string
 }
@@ -169,6 +175,16 @@ func newFinallySemHarness(t *testing.T, agentID, runID string) *finallySemHarnes
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/steps/{idx}/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
+		idx, _ := strconv.Atoi(r.PathValue("idx"))
+		var reqs []api.LogAppendRequest
+		_ = json.NewDecoder(r.Body).Decode(&reqs)
+		if idx == -1 {
+			h.mu.Lock()
+			for _, req := range reqs {
+				h.systemLines = append(h.systemLines, req.Line)
+			}
+			h.mu.Unlock()
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/steps/{idx}/outputs", func(w http.ResponseWriter, r *http.Request) {
@@ -229,6 +245,13 @@ func (h *finallySemHarness) finishStatus() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.finish
+}
+
+// systemLog returns the run's System stream (stepIndex -1) as one string.
+func (h *finallySemHarness) systemLog() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return strings.Join(h.systemLines, "\n")
 }
 
 // promotedRunOutputs merges every SetRunOutputs body the controller received.
@@ -403,6 +426,126 @@ func TestRunClaim_FinallyBudget_EndsAHangingFinallyStep(t *testing.T) {
 		"a finally step killed by the phase budget is a finally failure, so the run must finish Failed, not hang or silently succeed")
 }
 
+// TestRunClaim_FinallyBudget_TruncatedPhaseIsVisibleOnTheRun covers the half
+// of the ceiling that is NOT about ending the hang: what the operator can see
+// afterwards.
+//
+// Every finally step here carries continueOnError: true, which is exactly the
+// arrangement that made a truncated phase invisible. recordFailure returns
+// early for such a step, so before this the budget could cut the cleanup off
+// halfway and the run still finished Succeeded with nothing anywhere in it
+// saying so — the branch would have traded "hangs forever" for "quietly stops
+// cleaning up", which is worse in the one respect that nobody finds out.
+//
+// Two things are asserted, and they are the two an operator has:
+//
+//  1. the run's OWN log (stepIndex -1, "System" in the UI) names the truncated
+//     phase and the budget. The agent's slog does not count: it is on another
+//     host and interleaved with every other concurrent run.
+//  2. the run finishes Failed. A truncated phase is a property of the PHASE,
+//     so it is recorded independently of any step's continueOnError — that
+//     flag answers "does this step's failure matter", not "did the phase
+//     finish".
+//
+// Outcome-based, never elapsed time: the budget is shrunk instead.
+func TestRunClaim_FinallyBudget_TruncatedPhaseIsVisibleOnTheRun(t *testing.T) {
+	const budget = 150 * time.Millisecond
+	shrinkFinallyBudget(t, budget)
+
+	h := newFinallySemHarness(t, "finally-visible-agent", "run-finally-visible")
+
+	b := newFinallySemBackend(func(ctx context.Context, step api.ClaimStep, stdout, stderr io.Writer) (int, error) {
+		if step.Name != "hang" {
+			return 0, nil
+		}
+		select {
+		case <-ctx.Done():
+			return -1, ctx.Err()
+		case <-time.After(30 * time.Second):
+			return -1, fmt.Errorf("step was never released by its context")
+		}
+	})
+
+	claim := api.ClaimResponse{
+		RunID:   h.runID,
+		JobName: "finally-visible",
+		Native:  true,
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "main", Run: "x"}},
+		},
+		Finally: []api.ClaimStage{
+			// continueOnError: the author said "a failure of THIS step does not
+			// matter". They did not say "a cleanup phase that never finished
+			// does not matter", and the two are not the same claim.
+			{Step: &api.ClaimStep{
+				Index: 1, StageIndex: 0, Name: "hang", Run: "sleep-forever",
+				ContinueOnError: true,
+			}},
+		},
+	}
+
+	runClaimWithDeadline(t, h, claim, b)
+
+	sys := h.systemLog()
+	assert.Contains(t, sys, "the finally: phase",
+		"a phase cut short by the cleanup budget must say so in the RUN's own logs, naming the phase: the operator debugging cleanup that did not happen is looking at the run, not at the agent's slog")
+	assert.Contains(t, sys, budget.String(),
+		"the System line must name the budget that fired, so the operator knows which setting to raise (finallyTimeout)")
+	assert.Equal(t, "Failed", h.finishStatus(),
+		"a truncated finally: phase must fail the run even when every step in it is continueOnError: true — continueOnError scopes a STEP's failure, and a phase that did not finish is not a step's fact to suppress")
+}
+
+// TestRunClaim_FinallyBudget_TruncatedHookDrainIsVisibleButDoesNotFailTheRun
+// is the drain half, and the motivating case for the record existing at all:
+// a SIGTERM rollout, the DAG completes, and a multi-gigabyte `cache:` save
+// runs past the budget. The hook's context dies, RunPostHook returns, and the
+// cache is not saved.
+//
+// The run still finishes Succeeded, deliberately: a `post:`/`cache:` hook has
+// never changed the run's status whatever it fails on, and making "failed
+// because the budget expired" fatal while "failed because the object store was
+// down" stayed benign would be an incoherent rule. What must NOT happen is the
+// silence — hence the System line.
+func TestRunClaim_FinallyBudget_TruncatedHookDrainIsVisibleButDoesNotFailTheRun(t *testing.T) {
+	const budget = 150 * time.Millisecond
+	shrinkFinallyBudget(t, budget)
+
+	h := newFinallySemHarness(t, "drain-visible-agent", "run-drain-visible")
+
+	b := newFinallySemBackend(func(ctx context.Context, step api.ClaimStep, stdout, stderr io.Writer) (int, error) {
+		return 0, nil
+	})
+	// Stands in for the slow cache save: it returns only when its context does.
+	b.postHookFn = func(ctx context.Context) {
+		select {
+		case <-ctx.Done():
+		case <-time.After(30 * time.Second):
+		}
+	}
+
+	claim := api.ClaimResponse{
+		RunID:   h.runID,
+		JobName: "drain-visible",
+		Native:  true,
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0, StageIndex: 0, Name: "main", Run: "x",
+				Post: &api.PostStep{Run: "save-a-very-large-cache"},
+			}},
+		},
+	}
+
+	runClaimWithDeadline(t, h, claim, b)
+
+	sys := h.systemLog()
+	assert.Contains(t, sys, "the post:/cache: hook drain that follows the main steps",
+		"a hook drain cut short by the cleanup budget must be recorded in the run's own logs, naming which drain: it changes no status, so the record is the ONLY thing that stops a silently unsaved cache")
+	assert.Contains(t, sys, budget.String(),
+		"the System line must name the budget that fired")
+	assert.Equal(t, "Succeeded", h.finishStatus(),
+		"a truncated hook drain does not fail the run: a post:/cache: hook has never been status-affecting, and truncation must not be the one hook failure that is")
+}
+
 // ---------------------------------------------------------------------------
 // F3 — a failing finally step fails the run even when the run was cancelled
 // ---------------------------------------------------------------------------
@@ -545,12 +688,19 @@ func TestRunClaim_FinallyStepOutputs_PromotedToRunOutputs(t *testing.T) {
 // output name, the FINALLY value wins.
 //
 // This is not a special case invented for finally: the promotion loop already
-// resolved collisions between two main-DAG steps as "last writer wins" (a
-// later stage overwrites an earlier one), and finally runs last. Keeping one
-// rule — "the value promoted is the one set by the step that ran last" —
-// avoids two rules that disagree at the phase boundary, and matches the useful
-// direction: a teardown step recording what was actually left live overrides a
-// provisional value from the main DAG, not the other way round.
+// resolved collisions between two main-DAG steps as "last in declaration order
+// wins" (a later stage overwrites an earlier one), and finally is written last.
+// Keeping one rule — "the value promoted is the one set by the last step that
+// declares it" — avoids two rules that disagree at the phase boundary, and
+// matches the useful direction: a teardown step recording what was actually
+// left live overrides a provisional value from the main DAG, not the other way
+// round.
+//
+// DECLARATION order, not execution order: the loop walks the stages, and the
+// steps within each stage, as written. The two coincide across sequential
+// stages (this test's shape) but not inside a parallel group, whose members
+// race — there the last-written step still wins, which is the only answer that
+// is reproducible.
 func TestRunClaim_JobOutputs_FinallyWinsNameCollision(t *testing.T) {
 	h := newFinallySemHarness(t, "finally-outputs-collision-agent", "run-finally-outputs-collision")
 
@@ -582,7 +732,7 @@ func TestRunClaim_JobOutputs_FinallyWinsNameCollision(t *testing.T) {
 	require.Equal(t, "Succeeded", h.finishStatus())
 	got := h.promotedRunOutputs()
 	assert.Equal(t, "https://reports.example/final", got["report_url"],
-		"on a name collision the finally: step's value wins (last writer, matching how two main-DAG steps already resolve)")
+		"on a name collision the finally: step's value wins (last in declaration order, matching how two main-DAG steps already resolve)")
 }
 
 // ---------------------------------------------------------------------------

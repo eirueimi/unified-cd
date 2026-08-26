@@ -540,14 +540,72 @@ deadline, so the agent applies its own ceiling instead:
 Both agents execute the cleanup phase through the same orchestration loop, so
 the behaviour is identical on either backend.
 
-The budget applies **per phase** — the `finally` pipeline itself, and each hook
-drain — not as one shared total across the run. A step still running when the
-budget expires is interrupted, reported `Failed`, and the run finishes
-`Failed`. A non-positive or unparseable value falls back to the 10m default:
-"unbounded" is deliberately not expressible, because an unbounded cleanup phase
-pins the run and the agent's concurrency slot with nothing able to break it —
-the stuck-run reaper keys on **agent** liveness, and the agent keeps
-heartbeating throughout.
+The budget applies **per phase**, not as one shared total across the run —
+because the phases are separated by the main DAG, which may legitimately run
+for hours, so a single window opened before it would already have expired by
+the time cleanup began.
+
+### The number to plan for
+
+Four phases carry the budget, in this order:
+
+1. the `post:`/`cache:` hook drain that follows the main `steps` DAG
+2. the `finally` pipeline
+3. the `post:`/`cache:` hook drain that follows `finally`
+4. scope/claim-pod teardown
+
+So the worst case a run can spend after its DAG finishes is **four ×
+`finallyTimeout` — 40 minutes at the default**, not 10. Size a rollout's
+`terminationGracePeriodSeconds`, a drain window, or a node-drain timeout
+against that number, not against the setting as displayed.
+
+That is the ceiling, not the expectation: reaching it means four separate
+phases each wedged, and any one of them reaching its own ceiling is already an
+incident. A run that hits nothing spends milliseconds here.
+
+The only post-DAG phase **without** a ceiling is the final report to the
+controller (`FinishRun`/`SetRunOutputs`), which retries until it lands. That is
+deliberate: it runs no job code, it stops immediately on any 4xx (a run the
+controller has already reaped or deleted), and if the agent gave up on a
+persistent 5xx the run would stay `Running` at the controller forever — the
+stuck-run reaper keys on **agent** liveness, and an agent that gave up is still
+heartbeating. During a full controller outage the agent's own heartbeats fail
+too, so it goes stale and the reaper does take over.
+
+### What you see when a phase is truncated
+
+The run's own **System** stream (not just the agent's log) gains a line naming
+the phase and the budget:
+
+```
+unified-cd: the finally: phase did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped.
+```
+
+The run's status depends on which phase it was:
+
+| Phase truncated | Run status | Why |
+|---|---|---|
+| the `finally` pipeline | **`Failed`** | It is author-written pipeline work, and a `finally` step's failure already fails the run. This holds even when every step in the block is `continueOnError: true` — that flag scopes a step's failure; whether the phase finished is not a step's fact to suppress. |
+| either hook drain | unchanged | A `post:`/`cache:` hook has never changed the run's status, whatever it fails on. Making "failed because the budget expired" fatal while "failed because the object store was down" stayed benign would be an incoherent rule. |
+| scope/claim-pod teardown | unchanged | It runs after the run is already terminal. A leaked container is an agent-host problem, so it is logged on the agent (`scope/pod teardown truncated by its finallyTimeout budget`), not on the run. |
+
+The second row is the one to watch: a truncated drain means a `cache:` save
+that did **not** complete, on a run reported `Succeeded`. The System line is
+the only thing that says so — alert on it if cache correctness matters to you.
+
+### Setting it
+
+A non-positive value falls back to the 10m default: "unbounded" is deliberately
+not expressible, because an unbounded cleanup phase pins the run and the
+agent's concurrency slot with nothing able to break it — the stuck-run reaper
+keys on **agent** liveness, and the agent keeps heartbeating throughout.
+
+An **unparseable** value is a startup error, not a fallback: `finallyTimeout:
+"10 minutes"` in either agent's config file, or `--finally-timeout=10minutes`
+on the standard agent, makes the agent exit non-zero at boot. The single
+exception is `UNIFIED_AGENT_FINALLY_TIMEOUT`, which is ignored when it does not
+parse (matching every other env override on the standard agent) and leaves the
+default in place.
 
 Raise it for a fleet whose teardown genuinely takes longer (large cache saves,
 a slow rollback). Prefer per-step `timeoutMinutes:` inside `finally` for

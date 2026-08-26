@@ -207,9 +207,19 @@ func (c *Config) PodStartTimeoutDuration() time.Duration {
 }
 
 // FinallyTimeoutDuration parses FinallyTimeout, returning
-// agentlib.DefaultFinallyBudget when unset, unparseable, or non-positive.
-// Non-positive is deliberately not "unbounded": an unbounded cleanup phase is
-// the bug this setting exists to close (see agentlib.DefaultFinallyBudget).
+// agentlib.DefaultFinallyBudget when unset or non-positive. Non-positive is
+// deliberately not "unbounded": an unbounded cleanup phase is the bug this
+// setting exists to close (see agentlib.DefaultFinallyBudget).
+//
+// An UNPARSEABLE value never reaches this fallback, whatever the parse error
+// branch below suggests: Config.Validate rejects it and cmd/k8s-agent exits 1
+// before any claim runs, so the agent never starts with a silently-defaulted
+// budget. The branch is kept only so this method is safe to call on a Config
+// that was never validated (tests, future callers) — do not document it as
+// "unparseable falls back to 10m", because for the binary it does not.
+// (PodStartTimeoutDuration and DrainTimeoutDuration above are in the same
+// position; this one is called out because a bad `finallyTimeout` is
+// something an operator can hit during a cutover.)
 func (c *Config) FinallyTimeoutDuration() time.Duration {
 	if c.FinallyTimeout == "" {
 		return agentlib.DefaultFinallyBudget
