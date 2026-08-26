@@ -38,6 +38,44 @@ jobs:
         run: |
           go test ./... -race -count=1
 
+  # Guard against the committed shim binaries (internal/shim/embedded/
+  # ucd-sh-amd64, ucd-sh-arm64) drifting from cmd/shimgen, their generator.
+  # (schemas/unified-cd.schema.json and docs/reference/field-reference.md
+  # have their own freshness check — cmd/schemagen's TestSchemaIsUpToDate —
+  # so this job is scoped to shimgen only, not `go generate ./...`, to avoid
+  # duplicating that check.)
+  #
+  # Nothing else in this workflow catches shim drift: unit and integration
+  # jobs run the tests, not the generator. ubuntu-latest is deliberate, not
+  # incidental: `go build` cross-compiling for a fixed GOOS/GOARCH/toolchain
+  # is reproducible byte-for-byte when repeated on the SAME host environment
+  # (verified independently: two from-scratch builds on linux/amd64 with the
+  # exact go.mod-pinned toolchain produced identical output), but that
+  # guarantee does not extend across different host OSes even for an
+  # identical Go version and identical -trimpath -buildvcs=false flags — a
+  # Windows-hosted build of these same linux/amd64 and linux/arm64 targets
+  # was observed to differ substantially from a Linux-hosted one. So this
+  # check must always build on the same host OS the committed bytes are
+  # meant to match (Linux), never across the unit job's OS matrix — a
+  # Windows or macOS run of this job would flag false drift.
+  generate:
+    name: Shim binary freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run go generate for the shim
+        run: go generate ./internal/shim/embedded/...
+      - name: Fail if generation produced a diff
+        run: |
+          if ! git diff --exit-code -- internal/shim/embedded; then
+            echo "::error::cmd/shimgen produced different ucd-sh-<arch> bytes than committed. Run 'go generate ./internal/shim/embedded/...' on Linux with the go.mod-pinned toolchain and commit the result."
+            exit 1
+          fi
+
   # Build the k8s-agent image on every PR.
   #
   # No release Dockerfile was exercised in PR CI, so a commit could break an
