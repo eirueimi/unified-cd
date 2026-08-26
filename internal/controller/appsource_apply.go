@@ -107,6 +107,27 @@ func applyResource(ctx context.Context, st store.Store, kind, dir string, doc []
 			return "", fmt.Errorf("%w: %v", errStoreWrite, err)
 		}
 		return as.Metadata.Name, nil
+	case "Vars":
+		// Deliberately no cross-manifest collision check here — contrast
+		// handleApplyVars in api_vars.go, which runs dsl.CheckVarsCollision.
+		// A Git sync applies many documents in one pass; rejecting the second
+		// of two colliding manifests would leave the sync half-applied, with
+		// an error naming a manifest the operator may never have touched, and
+		// the next reconcile would hit the same error again. The collision
+		// check belongs on the interactive `unified-cli apply` path, where an
+		// author is present to read the error and fix it.
+		v, err := dsl.ParseVars(strings.NewReader(string(doc)))
+		if err != nil {
+			return "", err
+		}
+		specJSON, err := json.Marshal(v.Spec)
+		if err != nil {
+			return "", err
+		}
+		if _, err := st.UpsertVars(ctx, v.Metadata.Name, specJSON); err != nil {
+			return "", fmt.Errorf("%w: %v", errStoreWrite, err)
+		}
+		return v.Metadata.Name, nil
 	default:
 		return "", fmt.Errorf("unsupported kind %q", kind)
 	}
@@ -126,6 +147,8 @@ func deleteResource(ctx context.Context, st store.Store, kind, name string) erro
 		return st.DeleteGitCredential(ctx, name)
 	case "AppSource":
 		return st.DeleteAppSource(ctx, name)
+	case "Vars":
+		return st.DeleteVars(ctx, name)
 	default:
 		return fmt.Errorf("unsupported kind %q", kind)
 	}

@@ -105,6 +105,7 @@ func TestAPI_DeleteManagedResources_Rejected(t *testing.T) {
 		{"WebhookReceiver", "gh", "/api/v1/webhooks/gh"},
 		{"GitCredential", "github", "/api/v1/gitcredentials/github"},
 		{"AppSource", "child", "/api/v1/appsources/child"},
+		{"Vars", "org-defaults", "/api/v1/vars/org-defaults"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.kind, func(t *testing.T) {

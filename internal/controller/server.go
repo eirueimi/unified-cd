@@ -420,6 +420,15 @@ func (s *Server) routes() {
 		r.With(requireMinRole("admin")).Delete("/{name}", s.handleDeleteWebhook)
 	})
 
+	// Vars management (auth required)
+	s.r.Route("/api/v1/vars", func(r chi.Router) {
+		r.Use(ServerAuth(s.store, s))
+		r.Use(auditLogMiddleware(s.store))
+		r.With(requireMinRole("admin")).Post("/", s.handleApplyVars)
+		r.With(requireMinRole("viewer")).Get("/", s.handleListVars)
+		r.With(requireMinRole("admin")).Delete("/{name}", s.handleDeleteVars)
+	})
+
 	// Schedule management (auth required)
 	s.r.Route("/api/v1/schedules", func(r chi.Router) {
 		r.Use(ServerAuth(s.store, s))

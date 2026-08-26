@@ -124,6 +124,9 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 	case "Schedule":
 		endpoint = cfg.Server + "/api/v1/schedules/"
 		bodyBytes, _ = json.Marshal(api.ApplyScheduleRequest{YAML: string(b)})
+	case "Vars":
+		endpoint = cfg.Server + "/api/v1/vars/"
+		bodyBytes, _ = json.Marshal(api.ApplyVarsRequest{YAML: string(b)})
 	default:
 		endpoint = cfg.Server + "/api/v1/jobs"
 		bodyBytes, _ = json.Marshal(api.ApplyJobRequest{YAML: string(b)})
@@ -171,6 +174,12 @@ func applyOneDocument(cmd *cobra.Command, cfg Config, httpClient *http.Client, b
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "schedule applied: %s (cron=%s job=%s)\n", meta.Name, meta.Cron, meta.JobName)
+	case "Vars":
+		var meta api.VarsMeta
+		if err := json.Unmarshal(respBody, &meta); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "vars applied: %s (%d keys)\n", meta.Name, len(meta.Vars))
 	default:
 		var job api.Job
 		if err := json.Unmarshal(respBody, &job); err != nil {
@@ -217,6 +226,12 @@ func applyOneDocumentDryRun(cmd *cobra.Command, kind string, b []byte, docIndex 
 			return fmt.Errorf("document %d: %w", docIndex+1, err)
 		}
 		name = g.Metadata.Name
+	case "Vars":
+		v, err := dsl.ParseVars(bytes.NewReader(b))
+		if err != nil {
+			return fmt.Errorf("document %d: %w", docIndex+1, err)
+		}
+		name = v.Metadata.Name
 	default:
 		j, err := dsl.Parse(bytes.NewReader(b))
 		if err != nil {

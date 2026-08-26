@@ -324,6 +324,19 @@ type WebhookReceiverMeta struct {
 	Spec      []byte    `json:"spec,omitempty"`
 }
 
+// ---- vars ----
+
+// ApplyVarsRequest is the request for registering or updating a Vars manifest YAML.
+type ApplyVarsRequest struct {
+	YAML string `json:"yaml"`
+}
+
+// VarsMeta is the metadata for a Vars manifest (for API responses).
+type VarsMeta struct {
+	Name string            `json:"name"`
+	Vars map[string]string `json:"vars"`
+}
+
 // ---- schedules ----
 
 // ApplyScheduleRequest is the request for registering or updating a Schedule YAML.
