@@ -184,16 +184,29 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if claimed != nil {
-			resp, cerr := buildClaimResponse(claimed)
+			// Merge the global Vars manifests here, after the claim succeeded
+			// (so an idle long-poll does not query them every second) and once
+			// per claimed run — a manifest applied before this point affects
+			// this run, one applied after it does not. The job's own spec.vars
+			// is overlaid inside buildClaimResponse, which already has the
+			// parsed spec, so nothing re-parses it here.
+			globalVars, cerr := mergedGlobalVars(r.Context(), s.store)
+			var resp api.ClaimResponse
+			if cerr == nil {
+				resp, cerr = buildClaimResponse(claimed, globalVars)
+			}
 			if cerr != nil {
 				// ClaimNextRun already flipped this run to Running in the same SQL
 				// statement, so leaving it as-is here would strand it Running forever:
 				// the claiming agent is alive and heartbeating, so ListStuckRuns'
-				// last_seen_at predicate would never select it for reaping. cerr is
-				// deterministic (buildClaimResponse is pure computation over the
-				// already-stored spec bytes — e.g. the pre-migration runsIn guard),
-				// so retrying the claim can never succeed either; fail fast now rather
-				// than treat it as a transient error.
+				// last_seen_at predicate would never select it for reaping. A
+				// buildClaimResponse error is deterministic (pure computation over the
+				// already-stored spec bytes — e.g. the pre-migration runsIn guard), so
+				// retrying the claim can never succeed either; fail fast now rather
+				// than treat it as a transient error. A Vars-load error is not
+				// deterministic, but the run is equally stranded either way, and
+				// running the steps without their variables would be worse than
+				// failing loudly, so it takes the same exit.
 				if _, logErr := s.store.AppendLog(r.Context(), claimed.ID, -1, "stderr", time.Now().UTC(), cerr.Error()); logErr != nil {
 					slog.Error("agent claim: append claim-build failure reason", "runId", claimed.ID, "error", logErr)
 				}
@@ -224,9 +237,38 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// mergedGlobalVars loads every global Vars manifest and flattens them into one
+// map. ListVars is sorted by name, so two globals that somehow both define a
+// key (the apply-time collision check should have prevented it) resolve
+// deterministically rather than by database order.
+func mergedGlobalVars(ctx context.Context, st store.Store) (map[string]string, error) {
+	recs, err := st.ListVars(ctx)
+	if err != nil {
+		return nil, err
+	}
+	merged := make(map[string]string)
+	for _, rec := range recs {
+		var spec dsl.VarsSpec
+		if err := json.Unmarshal(rec.Spec, &spec); err != nil {
+			return nil, fmt.Errorf("vars %q: %w", rec.Name, err)
+		}
+		for k, v := range spec.Vars {
+			merged[k] = v
+		}
+	}
+	return merged, nil
+}
+
 // buildClaimResponse constructs a ClaimResponse from a ClaimedRun.
 // Includes each step's Outputs/Call information and the Job-level output declarations.
-func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
+//
+// globalVars is the already-merged map of every global Vars manifest, built by
+// the caller (mergedGlobalVars) — buildClaimResponse stays a pure function of
+// its inputs, with no store access of its own. The job's own spec.vars is
+// overlaid here, on the spec this function already parses, so that nearest
+// scope wins: a job overriding a global is normal and silent. globalVars is
+// never mutated.
+func buildClaimResponse(c *store.ClaimedRun, globalVars map[string]string) (api.ClaimResponse, error) {
 	var spec dsl.Spec
 	if err := json.Unmarshal(c.Spec, &spec); err != nil {
 		return api.ClaimResponse{}, err
@@ -239,10 +281,22 @@ func buildClaimResponse(c *store.ClaimedRun) (api.ClaimResponse, error) {
 		return api.ClaimResponse{}, err
 	}
 
+	// Merge the globals, then the job's own spec.vars over them: nearest scope
+	// wins. Always a non-nil map, so the agent never has to special-case a
+	// missing one.
+	vars := make(map[string]string, len(globalVars)+len(spec.Vars))
+	for k, v := range globalVars {
+		vars[k] = v
+	}
+	for k, v := range spec.Vars {
+		vars[k] = v
+	}
+
 	resp := api.ClaimResponse{
 		RunID:          c.ID,
 		JobName:        c.JobName,
 		Params:         c.Params,
+		Vars:           vars,
 		TimeoutMinutes: spec.TimeoutMinutes,
 		PodTemplate:    spec.PodTemplate,
 		Native:         spec.Native,

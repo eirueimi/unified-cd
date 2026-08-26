@@ -376,7 +376,7 @@ func TestBuildClaimResponse_RejectsDynamicSecretNamesWithFieldContext(t *testing
 			_, err = buildClaimResponse(&store.ClaimedRun{
 				Run:  api.Run{ID: "dynamic-secret-run", JobName: "dynamic-secret-job"},
 				Spec: specJSON,
-			})
+			}, nil)
 			require.ErrorContains(t, err, tt.context)
 			assert.ErrorContains(t, err, "dynamic secret name must be resolved from a parameter before execution")
 		})
@@ -543,7 +543,7 @@ func TestBuildClaimResponse_ParallelBlock(t *testing.T) {
 		},
 		Spec: specJSON,
 	}
-	resp, err := buildClaimResponse(claimed)
+	resp, err := buildClaimResponse(claimed, nil)
 	require.NoError(t, err)
 	require.Len(t, resp.Stages, 2)
 	assert.Nil(t, resp.Stages[0].Step)
@@ -573,7 +573,7 @@ func TestBuildClaimResponse_CarriesScopeFields(t *testing.T) {
 	resp, err := buildClaimResponse(&store.ClaimedRun{
 		Run:  api.Run{ID: "run1", JobName: "j"},
 		Spec: raw,
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	require.Len(t, resp.Stages, 2)
@@ -595,7 +595,7 @@ func TestBuildClaimResponse_ThreadsNative(t *testing.T) {
 	spec := dsl.Spec{Native: true, Steps: []dsl.StepEntry{{Name: "s", Run: "true"}}}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
 	require.NoError(t, err)
 	assert.True(t, resp.Native)
 }
@@ -611,7 +611,7 @@ func TestBuildClaimResponse_RejectsPreMigrationStepRunsIn(t *testing.T) {
 	}}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b})
+	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "runsIn")
 	assert.Contains(t, err.Error(), "container:")
@@ -628,7 +628,7 @@ func TestBuildClaimResponse_RejectsPreMigrationParallelStepRunsIn(t *testing.T) 
 	}}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b})
+	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "runsIn")
 	assert.Contains(t, err.Error(), "container:")
@@ -645,7 +645,7 @@ func TestBuildClaimResponse_RejectsPreMigrationFinallyStepRunsIn(t *testing.T) {
 	}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b})
+	_, err = buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "legacy-job"}, Spec: b}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "runsIn")
 	assert.Contains(t, err.Error(), "container:")
@@ -660,7 +660,7 @@ func TestBuildClaimResponse_UsesStepRunsInStillBuilds(t *testing.T) {
 	}}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
 	require.NoError(t, err)
 	require.Len(t, resp.Stages, 1)
 }
@@ -672,7 +672,7 @@ func TestBuildClaimResponse_StepContainerThreaded(t *testing.T) {
 	spec := dsl.Spec{Steps: []dsl.StepEntry{{Name: "s", Run: "true", Container: "mysql"}}}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, resp.Stages[0].Step)
 	assert.Equal(t, "mysql", resp.Stages[0].Step.Container)
@@ -694,7 +694,7 @@ func TestBuildClaimResponse_Finally(t *testing.T) {
 	resp, err := buildClaimResponse(&store.ClaimedRun{
 		Run:  api.Run{ID: "run1", JobName: "j"},
 		Spec: raw,
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	require.Len(t, resp.Stages, 1)
@@ -713,7 +713,7 @@ func TestBuildClaimResponse_ApprovalDefaultsTimeout(t *testing.T) {
 		{Name: "gate", Approval: &dsl.ApprovalStep{Message: "ok?"}}, // no timeout
 	}}
 	raw, _ := json.Marshal(spec)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: raw})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: raw}, nil)
 	require.NoError(t, err)
 	require.Len(t, resp.Stages, 1)
 	require.NotNil(t, resp.Stages[0].Step.Approval)
@@ -970,7 +970,7 @@ func TestBuildClaimResponse_ParallelInnerStepMatrixAndForeach(t *testing.T) {
 	resp, err := buildClaimResponse(&store.ClaimedRun{
 		Run:  api.Run{ID: "run1", JobName: "j"},
 		Spec: raw,
-	})
+	}, nil)
 	require.NoError(t, err)
 	require.Len(t, resp.Stages, 1)
 	require.Len(t, resp.Stages[0].Parallel, 3)
@@ -1143,7 +1143,7 @@ func TestBuildClaimResponse_Shell_JobLevelDefaultApplied(t *testing.T) {
 	}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, resp.Stages[0].Step)
 	assert.Equal(t, []string{"bash", "-lc"}, resp.Stages[0].Step.Shell)
@@ -1158,7 +1158,7 @@ func TestBuildClaimResponse_Shell_StepOverrideWins(t *testing.T) {
 	}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, resp.Stages[0].Step)
 	assert.Equal(t, []string{"sh", "-c"}, resp.Stages[0].Step.Shell)
@@ -1172,7 +1172,7 @@ func TestBuildClaimResponse_Shell_NilWhenNeitherDeclared(t *testing.T) {
 	}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, resp.Stages[0].Step)
 	assert.Nil(t, resp.Stages[0].Step.Shell)
@@ -1196,7 +1196,7 @@ func TestBuildClaimResponse_Shell_FinallyAndParallelCovered(t *testing.T) {
 	}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
 	require.NoError(t, err)
 
 	require.Len(t, resp.Stages[0].Parallel, 2)
@@ -1222,7 +1222,7 @@ func TestBuildClaimResponse_Shell_PostCarriedOnlyWhenDeclared(t *testing.T) {
 	}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
 	require.NoError(t, err)
 
 	require.NotNil(t, resp.Stages[0].Step.Post)
@@ -1252,7 +1252,7 @@ func TestBuildClaimResponse_Shell_UsesComposition_TemplateShellWinsOverCaller(t 
 	}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
 	require.NoError(t, err)
 
 	var build *api.ClaimStep
@@ -1283,7 +1283,7 @@ func TestBuildClaimResponse_Shell_UsesComposition_CallerFillsUndeclaredTemplate(
 	}
 	b, err := json.Marshal(spec)
 	require.NoError(t, err)
-	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b})
+	resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
 	require.NoError(t, err)
 
 	var build *api.ClaimStep

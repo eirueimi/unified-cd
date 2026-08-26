@@ -34,8 +34,16 @@ func (s *safeStepCtx) snapshot() dsl.TemplateData {
 	for k, v := range s.data.Secrets {
 		secr[k] = v
 	}
+	// Vars is fixed for the whole run (merged once by the controller at claim
+	// assembly) and nothing ever writes to it here, but it is copied like the
+	// rest so a snapshot never shares a map with the live context.
+	vars := make(map[string]string, len(s.data.Vars))
+	for k, v := range s.data.Vars {
+		vars[k] = v
+	}
 	return dsl.TemplateData{
 		Params:  params,
+		Vars:    vars,
 		Steps:   steps,
 		Secrets: secr,
 	}

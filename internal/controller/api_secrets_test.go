@@ -419,7 +419,7 @@ func TestDynamicSecretNameRejectedByClaimAndFetchAuthorization(t *testing.T) {
 			_, claimErr := buildClaimResponse(&store.ClaimedRun{
 				Run:  api.Run{ID: runID, JobName: "dynamic-secret-job"},
 				Spec: specJSON,
-			})
+			}, nil)
 			require.ErrorContains(t, claimErr, `step "deploy" run`)
 			assert.ErrorContains(t, claimErr, errDynamicSecretNameText)
 
@@ -457,7 +457,7 @@ func TestNonSecretExpressionsDoNotWidenClaimOrFetchAuthorization(t *testing.T) {
 			claim, err := buildClaimResponse(&store.ClaimedRun{
 				Run:  api.Run{ID: runID, JobName: "non-secret-expression-job"},
 				Spec: specJSON,
-			})
+			}, nil)
 			require.NoError(t, err)
 			assert.Empty(t, claim.SecretsNeeded)
 

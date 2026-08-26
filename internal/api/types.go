@@ -92,9 +92,14 @@ type AgentRegisterRequest struct {
 }
 
 type ClaimResponse struct {
-	RunID         string            `json:"runId"`
-	JobName       string            `json:"jobName"`
-	Params        map[string]string `json:"params"`
+	RunID   string            `json:"runId"`
+	JobName string            `json:"jobName"`
+	Params  map[string]string `json:"params"`
+	// Vars are the merged plain-text variables for this run: global Vars
+	// manifests overlaid by the job's spec.vars. Merged once here, at claim
+	// assembly, so a manifest change affects runs claimed after it and does
+	// not disturb a run already in flight.
+	Vars          map[string]string `json:"vars,omitempty"`
 	Stages        []ClaimStage      `json:"stages"`
 	Finally       []ClaimStage      `json:"finally,omitempty"`
 	JobOutputs    []string          `json:"jobOutputs"`

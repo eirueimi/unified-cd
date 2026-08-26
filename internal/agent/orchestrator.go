@@ -291,6 +291,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	sctx := &safeStepCtx{
 		data: dsl.TemplateData{
 			Params: c.Params,
+			Vars:   c.Vars,
 			Steps:  map[string]dsl.StepData{},
 		},
 	}
@@ -741,6 +742,11 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					"UNIFIED_AGENT_OS=" + agentOSForStep(step, b.DefaultAgentOS()),
 					"UNIFIED_WORKSPACE=" + b.WorkspacePath(workspaceScope),
 				}
+				// Vars first, step env second: precedence is expressed as
+				// ordering, because a later duplicate key wins. varsExtraEnv
+				// also drops any var named after an agent credential — see
+				// its doc comment; StepEnv does not filter extraEnv itself.
+				extraEnv = append(extraEnv, varsExtraEnv(c.Vars)...)
 				for k, v := range step.Env {
 					expanded, _ := dsl.ExpandTemplate(v, tplData)
 					extraEnv = append(extraEnv, k+"="+expanded)
@@ -878,6 +884,7 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					capturedOutputs := map[string]string{}
 					outputCtx := dsl.TemplateData{
 						Params:  tplData.Params,
+						Vars:    tplData.Vars,
 						Steps:   tplData.Steps,
 						Stdout:  capturedStdout,
 						Secrets: tplData.Secrets,
@@ -1371,7 +1378,7 @@ func executeDownloadArtifact(ctx context.Context, client *Client, agentID string
 
 	targetRunID := runID
 	if da.RunID != "" {
-		restricted := dsl.TemplateData{Params: tplData.Params, Steps: tplData.Steps, Matrix: tplData.Matrix, Foreach: tplData.Foreach}
+		restricted := dsl.TemplateData{Params: tplData.Params, Vars: tplData.Vars, Steps: tplData.Steps, Matrix: tplData.Matrix, Foreach: tplData.Foreach}
 		expanded, err := dsl.ExpandTemplate(da.RunID, restricted)
 		if err != nil {
 			return failStep(fmt.Errorf("runId template: %w", err))

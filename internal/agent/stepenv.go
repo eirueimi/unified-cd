@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -98,5 +99,35 @@ func StepEnv(exposeEnv []string, extraEnv []string) []string {
 	// extraEnv wins: append last so a duplicate key overrides earlier entries
 	// (os/exec uses the last occurrence).
 	out = append(out, extraEnv...)
+	return out
+}
+
+// varsExtraEnv renders a run's variables as KEY=VALUE entries for the
+// orchestrator's extraEnv slice, sorted so a step's environment is stable
+// across runs with the same inputs.
+//
+// It applies stepEnvDenied, which StepEnv deliberately does NOT apply to
+// extraEnv. That exemption is correct for the entries the orchestrator itself
+// synthesises (UNIFIED_AGENT_OS, UNIFIED_WORKSPACE) because the controller
+// controls them. Variables are different: their names and values come from a
+// manifest a job author writes. Apply-time validation refuses reserved names
+// loudly and early; this is the quiet backstop for a run created before that
+// validation existed.
+func varsExtraEnv(vars map[string]string) []string {
+	if len(vars) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
+		if stepEnvDenied[k] {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k+"="+vars[k])
+	}
 	return out
 }
