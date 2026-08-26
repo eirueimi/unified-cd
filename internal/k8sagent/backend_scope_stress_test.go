@@ -147,8 +147,25 @@ func TestK8sBackend_EnsureScope_StressInterestAndAbandonment(t *testing.T) {
 	// cleanup, or a self-delete by an evicted-but-succeeded attempt — see
 	// claimEntry) or deleted just now by the CloseScopes call above. This
 	// compares the exact (sorted) multiset of created names against deleted
-	// names, not just their counts, so it catches a double-delete of one Pod
-	// masking a leak of another just as surely as a plain leak.
+	// names, not just their counts, so it has real teeth for a LEAK: a name
+	// present in created but absent from deleted fails it immediately.
+	//
+	// It does NOT, despite reading that way, exercise the "no double-deletes"
+	// half of claimEntry's job: every attempt above (both phases) is joined
+	// — wg.Wait()/epWG.Wait() — and the "must still be obtainable" loop above
+	// this comment also runs to completion, before CloseScopes is ever
+	// called. Nothing here is in flight when CloseScopes claims/sweeps, so
+	// the CloseScopes-vs-in-flight-attempt race claimEntry exists to
+	// arbitrate never happens in this test. A double-delete of one Pod
+	// masking a leak of another would still make this assertion fail (the
+	// multiset would gain a duplicate and lose an entry), but only a test
+	// that actually lands a double-delete can prove that side of the
+	// assertion has teeth — confirmed by fault injection: weakening
+	// claimEntry to always claim leaves this assertion green across repeated
+	// runs. TestK8sBackend_EnsureScope_StressCloseScopesRacesInFlightAttempts
+	// (below) and the deterministic
+	// TestK8sBackend_CloseScopes_DoesNotDoubleDeleteRacingFailedCreate are
+	// what actually race CloseScopes against an in-flight attempt.
 	pm.mu.Lock()
 	created := append([]string(nil), pm.createdNames...)
 	deleted := append([]string(nil), pm.deleted...)
@@ -158,4 +175,74 @@ func TestK8sBackend_EnsureScope_StressInterestAndAbandonment(t *testing.T) {
 	t.Logf("stress round created %d pod(s), deleted %d", len(created), len(deleted))
 	assert.Equal(t, created, deleted,
 		"every Pod created during the stress round must be deleted exactly once, by the time CloseScopes has run — no leaks, no double-deletes")
+}
+
+// TestK8sBackend_EnsureScope_StressCloseScopesRacesInFlightAttempts is the
+// coverage the sibling stress test's final assertion reads as providing but
+// does not: CloseScopes there only ever runs after every attempt has fully
+// quiesced, so nothing races it. This test drives CloseScopes concurrently
+// with many still-in-flight ensureScopePod attempts across many keys, using
+// realistic (unchoreographed) timing via fakePM.waitJitter rather than
+// gates, so the exact window claimEntry exists for — CloseScopes claiming an
+// entry the same instant createScopePod's own failure branch (or its
+// once.Do closure's self-delete) is trying to claim it — actually happens,
+// repeatedly, across many runs.
+//
+// Verified to have teeth the same way the reviewer verified the underlying
+// claimEntry arbitration: weakening claimEntry to always claim (so two
+// arbitrators can both believe they own a Pod) reliably fails this test's
+// final assertion with duplicate names in deleted; restoring claimEntry
+// makes it pass again.
+func TestK8sBackend_EnsureScope_StressCloseScopesRacesInFlightAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test; skipped under -short")
+	}
+
+	pm := &fakePM{waitJitter: 5 * time.Millisecond}
+	a := &K8sAgent{cfg: Config{Namespace: "default", PodStartTimeout: "2s"}, pm: pm}
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
+
+	const workers = 60
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(seed int64) {
+			defer wg.Done()
+			r := rand.New(rand.NewSource(seed))
+			// A handful of shared keys, not one-per-worker: with only ~20
+			// keys and 60 workers, most keys see several concurrent callers,
+			// which is what actually exercises createScopePod's failure
+			// branch and the once.Do closure's self-delete (both need a
+			// SHARED entry), not just plain single-caller creation.
+			step := api.ClaimStep{ScopeID: fmt.Sprintf("scope:close-race-%d", seed%20), ScopeImage: "golang:1.22"}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(r.Intn(6))*time.Millisecond)
+			defer cancel()
+			_, _ = b.EnsureScope(ctx, step, nil)
+		}(int64(i) + 1)
+	}
+
+	// Give the workers a moment to actually be in flight — some already past
+	// CreatePod and parked in the jittered WaitForPodRunning — before
+	// CloseScopes claims/cancels/sweeps concurrently with them. This is
+	// deliberately a sleep, not a gate: the point is to land CloseScopes
+	// inside the real, unchoreographed window, the same kind of interleaving
+	// production scheduling could produce, rather than pinning one exact
+	// instant.
+	time.Sleep(2 * time.Millisecond)
+	require.NotPanics(t, func() { b.CloseScopes(context.Background()) })
+
+	wg.Wait()
+
+	// Same exact-multiset check as the sibling stress test, but this time it
+	// is actually covering what its comment describes: every Pod created
+	// while genuinely racing CloseScopes must still be deleted exactly once.
+	pm.mu.Lock()
+	created := append([]string(nil), pm.createdNames...)
+	deleted := append([]string(nil), pm.deleted...)
+	pm.mu.Unlock()
+	sort.Strings(created)
+	sort.Strings(deleted)
+	t.Logf("close-scopes race: created %d pod(s), deleted %d", len(created), len(deleted))
+	assert.Equal(t, created, deleted,
+		"every Pod created while racing CloseScopes against in-flight attempts must be deleted exactly once — no leaks, no double-deletes")
 }

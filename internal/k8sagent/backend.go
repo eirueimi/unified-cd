@@ -69,9 +69,13 @@ import (
 // own createScopePod failure branch, its own once.Do closure noticing it is
 // no longer the map's current occupant, CloseScopes} first transitions it
 // from false to true (see claimEntry) is the one responsible for that
-// entry's Pod, if it has one. Map identity still decides whether an entry's
-// key should be freed for a future retry; claimed alone decides who deletes
-// the Pod.
+// entry's Pod, if it has one, and covers every reachable interleaving of
+// those three. Map identity still decides whether an entry's key should be
+// freed for a future retry; claimed alone decides who deletes the Pod. One
+// narrow, pre-existing window is NOT covered by any of the three — an entry
+// whose Pod is created and reaches Running while CloseScopes sweeps past it
+// mid-install, before createScopePod has recorded its name — and is
+// tolerated rather than closed; see CloseScopes' doc comment for why.
 //
 // interest, abandonedClosed, done and claimed are guarded by
 // k8sBackend.scopesMu; abandoned itself is assigned once at construction and
@@ -150,6 +154,29 @@ type k8sBackend struct {
 	// down, before the watch goroutine has actually observed scopeCtx.Done()
 	// and stopped touching claim state.
 	runCancelWatchWG sync.WaitGroup
+	// runCancelWatchClosing is set under scopesMu by CloseScopes, BEFORE it
+	// calls runCancelWatchWG.Wait(), and checked under the same lock by
+	// startRunCancelWatch before it calls Add. This exists because Add must
+	// happen-before the Wait it is meant to be seen by (textbook
+	// sync.WaitGroup misuse otherwise), and startRunCancelWatch runs from
+	// ensureScopePod's once.Do closure with no lock of its own — so without
+	// this, a CloseScopes overlapping a claim's first scope creation could
+	// have its Wait() observe a zero counter and return immediately, never
+	// joining the watch goroutine.
+	//
+	// Serializing "is CloseScopes already winding down" and the Add behind
+	// scopesMu gives that happens-before edge: either startRunCancelWatch's
+	// critical section (check the flag, Add) completes — and is therefore
+	// visible — before CloseScopes takes the lock to set the flag and then
+	// calls Wait, or CloseScopes's flag is already set when
+	// startRunCancelWatch looks, in which case it skips the Add entirely.
+	// Skipping is harmless: CloseScopes always cancels b.scopeCtx before
+	// setting this flag (see CloseScopes), so a watch started at that point
+	// would have nothing left to do anyway. See startRunCancelWatch and
+	// CloseScopes for the two sides of this handoff — do not move the Add
+	// back into the goroutine-spawning closure without preserving this
+	// ordering.
+	runCancelWatchClosing bool
 
 	masker *secrets.Masker
 
@@ -271,6 +298,32 @@ func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, scr
 // ends with an empty map regardless; claimEntry only decides who physically
 // calls DeletePod.
 //
+// One hole this arbitration does NOT close: the loop below only considers an
+// entry with e.name != "" (e.err == nil is its zero value here, not yet
+// meaningfully "no error"). createScopePod installs the entry (via
+// ensureScopePod's lookup) before it has a name — name is only written once
+// CreatePod returns (see createScopePod) — so a CloseScopes sweep landing in
+// that narrow window sees e.name == "" and skips the entry entirely,
+// claiming nothing. If that same attempt goes on to succeed — CreatePod and
+// WaitForPodRunning both completing despite b.scopeCancel already having
+// fired above — the once.Do closure finds stillCurrent still true (nothing
+// else touched this key: CloseScopes didn't remove it, and no newcomer had
+// reason to replace an entry that wasn't abandoned), so its self-delete
+// branch (guarded by !stillCurrent) does not fire either. The entry and its
+// Pod are left behind, claimed by nobody.
+//
+// This is pre-existing and effectively unreachable in practice, and is
+// tolerated rather than closed. b.scopeCancel() above always runs before
+// this sweep, so by the time the race window matters the attempt's context
+// is already cancelled; WaitForPodRunning observing that cancellation before
+// it observes success is what makes the attempt fail (not succeed) the
+// overwhelming rest of the time, which routes cleanup through
+// createScopePod's own failure branch instead — the same arbitration this
+// comment describes, just reached from a different site. On the rare path
+// where the Pod still leaks, runPodGC's label sweep (podgc.go) is the
+// backstop, exactly as it is for the other documented, deliberately-unfixed
+// leak in createScopePod's CreatePod error branch.
+//
 // In production the CloseScopes/in-flight-attempt race cannot actually
 // happen: CloseScopes is deferred in the orchestrator and only runs after
 // RunPipeline returns, and runParallel joins its goroutines before returning,
@@ -289,6 +342,14 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	if b.scopeCancel != nil {
 		b.scopeCancel()
 	}
+	// Mark the watch as closing, under scopesMu, BEFORE joining it — this is
+	// the other half of the Add/Wait ordering guarantee described on
+	// runCancelWatchClosing. It must happen under the same lock
+	// startRunCancelWatch checks, and it must happen before the Wait call
+	// below, not after.
+	b.scopesMu.Lock()
+	b.runCancelWatchClosing = true
+	b.scopesMu.Unlock()
 	// Join the run-cancel watch (if it was ever started) before touching
 	// anything else claim-scoped below — see runCancelWatchWG's doc comment.
 	// A no-op wait if startRunCancelWatch was never called (no uses-scope
@@ -600,17 +661,33 @@ func (b *k8sBackend) scopeCreateContext(e *scopeEntry) (context.Context, func())
 //
 // A nil client (a backend assembled directly in a test) skips the watch;
 // routes 1 and 3 in scopeCreateContext are unaffected.
+//
+// The Add for runCancelWatchWG happens here under scopesMu, gated on
+// runCancelWatchClosing, rather than unconditionally — see that field's doc
+// comment on k8sBackend for why: it is what keeps this Add from racing
+// CloseScopes' Wait on a zero counter.
 func (b *k8sBackend) startRunCancelWatch() {
 	if b.a == nil || b.a.client == nil || b.scopeCtx == nil || b.scopeCancel == nil {
 		return
 	}
 	b.runCancelWatchOnce.Do(func() {
+		b.scopesMu.Lock()
+		if b.runCancelWatchClosing {
+			// CloseScopes has already begun winding down (and, since it sets
+			// this flag only after cancelling b.scopeCtx, the watch would
+			// have nothing to do even if started). Do not Add — Once still
+			// marks this as done, so no later call starts the watch either.
+			b.scopesMu.Unlock()
+			return
+		}
+		b.runCancelWatchWG.Add(1)
+		b.scopesMu.Unlock()
+
 		// Read the poll interval on this goroutine, not inside the watcher,
 		// so a test mutating agentlib.CancelPollInterval never races the
 		// watcher's read (mirrors awaitPodRunning and RunClaim's poller).
 		pollInterval := agentlib.CancelPollInterval
 		watchCtx := b.scopeCtx
-		b.runCancelWatchWG.Add(1)
 		go func() {
 			defer b.runCancelWatchWG.Done()
 			ticker := time.NewTicker(pollInterval)
@@ -663,6 +740,11 @@ func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env
 	}
 	pod := buildScopePod(b.runID, b.a.cfg.Namespace, step.ScopeID, step.ScopeImage, envMap,
 		SidecarSpec{Image: b.a.cfg.SidecarImage, S3SecretName: b.a.cfg.SidecarS3SecretName}, b.a.cfg.ShimImage)
+	// attemptStart marks the beginning of the whole creation attempt
+	// (CreatePod through WaitForPodRunning), not just the Running-wait below
+	// — see the "pod creation abandoned after %s" message this feeds, which
+	// names the attempt, not one phase of it.
+	attemptStart := time.Now()
 	created, err := b.a.pm.CreatePod(ctx, pod)
 	if err != nil {
 		// Residual, deliberately unfixed leak: if the API server actually
@@ -700,9 +782,8 @@ func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env
 	if deadline, ok := ctx.Deadline(); ok {
 		waitBudget = time.Until(deadline)
 	}
-	waitStart := time.Now()
 	if err := b.a.pm.WaitForPodRunning(ctx, name); err != nil {
-		elapsed := time.Since(waitStart)
+		elapsed := time.Since(attemptStart)
 		// Best-effort cleanup of the pod that never became ready. e.name was
 		// already recorded above, but ensureScopePod deletes this whole entry
 		// from b.scopes on failure (see the err != nil branch there), so a
