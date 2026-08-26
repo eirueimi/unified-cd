@@ -568,7 +568,16 @@ func (s *Server) handleAgentLogAppend(w http.ResponseWriter, r *http.Request) {
 	if respondRunWriteVerdict(w, v, req.RunID) {
 		return
 	}
-	seq, err := s.store.AppendLog(r.Context(), req.RunID, req.StepIndex, req.Stream, req.Timestamp, req.Line)
+	// Sanitize before the line ever reaches the store: a NUL byte or other
+	// invalid UTF-8 in agent-submitted output makes PostgreSQL reject the
+	// INSERT outright (SQLSTATE 22021), which for the bulk sibling of this
+	// endpoint wedges the agent's log delivery until its retry queue evicts
+	// the batch. See sanitizeAgentText's doc comment for the full reasoning.
+	line, sanitized := sanitizeAgentText(req.Line)
+	if sanitized {
+		slog.Warn("sanitized invalid bytes in agent log line", "run", req.RunID)
+	}
+	seq, err := s.store.AppendLog(r.Context(), req.RunID, req.StepIndex, req.Stream, req.Timestamp, line)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -665,6 +674,11 @@ func (s *Server) handleAgentSetStepOutputs(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	for k, v := range req.Outputs {
+		// An output value can carry arbitrary captured command output, so it
+		// is exposed to the same NUL/invalid-UTF8 rejection as a log line
+		// (see sanitizeAgentText). The key comes from the job's own
+		// outputs: declaration, not raw output, so it is left untouched.
+		v, _ := sanitizeAgentText(v)
 		if err := s.store.SetStepOutput(r.Context(), runID, stepIndex, variant, k, v); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -691,6 +705,9 @@ func (s *Server) handleAgentSetRunOutputs(w http.ResponseWriter, r *http.Request
 		return
 	}
 	for k, v := range req.Outputs {
+		// Same reasoning as handleAgentSetStepOutputs: sanitize the
+		// agent-supplied value, not the job-declared key.
+		v, _ := sanitizeAgentText(v)
 		if err := s.store.SetRunOutput(r.Context(), runID, k, v); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -729,17 +746,33 @@ func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 		guarded[req.RunID] = true
 	}
 	batch := make([]store.LogAppend, len(lines))
+	sanitizedCount := 0
 	for i, req := range lines {
 		if req.Timestamp.IsZero() {
 			req.Timestamp = time.Now().UTC()
+		}
+		// Sanitize each line before it reaches the per-run INSERT in
+		// AppendLogs: because that INSERT is one statement per run, a single
+		// NUL byte or invalid UTF-8 sequence anywhere in the batch would fail
+		// the WHOLE run's share of it (not just the offending line), and the
+		// agent's retry queue would then wedge on the same batch forever. A
+		// per-line fallback here would reintroduce the N-round-trips cost the
+		// bulk endpoint exists to remove, so fix the bytes up front instead.
+		// See sanitizeAgentText's doc comment for the full reasoning.
+		line, changed := sanitizeAgentText(req.Line)
+		if changed {
+			sanitizedCount++
 		}
 		batch[i] = store.LogAppend{
 			RunID:     req.RunID,
 			StepIndex: req.StepIndex,
 			Stream:    req.Stream,
 			Timestamp: req.Timestamp,
-			Line:      req.Line,
+			Line:      line,
 		}
+	}
+	if sanitizedCount > 0 {
+		slog.Warn("sanitized invalid bytes in agent log lines", "agent", agentID, "count", sanitizedCount)
 	}
 	seqs, err := s.store.AppendLogs(r.Context(), batch)
 	if err != nil {
