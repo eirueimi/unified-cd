@@ -211,14 +211,26 @@ func TestRetry_FailsThenSucceeds(t *testing.T) {
 
 // TestRetry_PerAttemptTimeoutThenSucceeds proves the per-attempt timeout
 // bounds ONE attempt (not the whole retry budget): attempt 1 would run far
-// longer than the timeout (sleep 30) and is killed ~1.2s in by its own
+// longer than the timeout (sleep 30) and is killed ~9s in by its own
 // timeoutMinutes-derived context, then attempt 2 (a trivial `true`) succeeds
-// and the run ends Succeeded. The whole step therefore completes in a couple
-// of seconds rather than the 30s attempt-1 sleep — if the timeout had been
-// applied to the WHOLE step (the pre-Task-3 behavior) the retry budget would
-// have been capped at ~1.2s and there would have been no room for attempt 2
-// to run at all. The large margin (1.2s timeout vs 30s sleep, asserted step
-// elapsed < 15s) keeps this from being a flaky timing test.
+// and the run ends Succeeded. The whole step therefore completes in well
+// under the 30s attempt-1 sleep — if the timeout had been applied to the
+// WHOLE step (the pre-Task-3 behavior) the retry budget would have been
+// capped at ~9s and there would have been no room for attempt 2 to run at
+// all.
+//
+// The per-attempt timeout (9s) is deliberately not razor-thin against the
+// 30s sleep: on this backend both attempts go through RunStep, which really
+// execs bash on the host per attempt (see retryHarness's doc comment). On
+// Windows that bash is Git Bash, and spawning it (MSYS runtime init) is not
+// free — measured cold-start-to-exit for a trivial `true` ranged ~0.7-1.2s
+// on a quiet dev machine, so a ~1.2s timeout (this test's original value)
+// left `true` racing its own attempt's deadline on a loaded CI box, and
+// attempt 2 could be killed same as attempt 1, failing the test with only 1
+// recorded attempt. 9s gives roughly an order of magnitude of headroom over
+// that measured spawn cost. The elapsed assertion below is loosened to match
+// (< 20s), which still leaves a comfortable factor below the 30s sleep to
+// prove the timeout is per-attempt, not whole-step.
 func TestRetry_PerAttemptTimeoutThenSucceeds(t *testing.T) {
 	stubRetrySleep(t)
 
@@ -231,7 +243,7 @@ func TestRetry_PerAttemptTimeoutThenSucceeds(t *testing.T) {
 
 	workDir := t.TempDir()
 	counter := filepath.Join(workDir, "count.txt")
-	// Attempt 1 (n==1): sleep 30 — far longer than the ~1.2s per-attempt
+	// Attempt 1 (n==1): sleep 30 — far longer than the 9s per-attempt
 	// timeout, so it is reliably killed by attempt 1's context. Attempt 2
 	// (n>=2): `true` — exits 0 immediately, so the step succeeds on retry.
 	script := "n=$(cat '" + counter + "' 2>/dev/null || echo 0); n=$((n+1)); printf '%s' \"$n\" > '" + counter + "';\n" +
@@ -246,9 +258,13 @@ func TestRetry_PerAttemptTimeoutThenSucceeds(t *testing.T) {
 				Index: 0,
 				Name:  "slow-then-fast",
 				Run:   script,
-				// 0.02 min ≈ 1.2s: bounds attempt 1's sleep 30 with a huge
-				// margin, but is per-ATTEMPT — it must not cap the retry budget.
-				TimeoutMinutes: 0.02,
+				// 0.15 min = 9s: bounds attempt 1's sleep 30 with a huge
+				// margin, but is per-ATTEMPT — it must not cap the retry
+				// budget. See the test's doc comment for why this is 9s
+				// rather than a razor-thin value: attempt 2's real work is a
+				// fresh Git Bash process spawn on Windows, which alone can
+				// take ~1s.
+				TimeoutMinutes: 0.15,
 				Retry:          &dsl.RetrySpec{Attempts: 2, Backoff: ""},
 			}},
 		},
@@ -265,7 +281,7 @@ func TestRetry_PerAttemptTimeoutThenSucceeds(t *testing.T) {
 	// Well under the 30s attempt-1 sleep: proves attempt 1 was killed by its
 	// per-attempt timeout AND that timeout did NOT cap the whole retry budget
 	// (the run still reached and succeeded on attempt 2).
-	require.Less(t, elapsed, 15*time.Second, "the whole step must finish well under attempt 1's 30s sleep (per-attempt timeout, not whole-step)")
+	require.Less(t, elapsed, 20*time.Second, "the whole step must finish well under attempt 1's 30s sleep (per-attempt timeout, not whole-step)")
 }
 
 // TestRetry_AllFail: every attempt fails -> Failed, called exactly Attempts times.
@@ -344,40 +360,57 @@ func TestRetry_NoRetryRunsOnce(t *testing.T) {
 
 // TestRetry_CancelNotRetried: a master cancellation arriving while attempt 1
 // is running must stop the loop immediately — the cancellation is never
-// retried, even though more attempts remain. The step body sleeps well
-// beyond the (shortened) cancel-poll interval so it is guaranteed to be
-// killed by the run's context cancellation rather than exiting on its own;
-// cancelledByMaster.Store(true) happens-before the poller cancels the run
-// context (orchestrator.go's poller), so by the time the retry loop
-// evaluates cancelledByMaster.Load() the flag is deterministically set — this
-// is not a timing race for the loop's own branch, only the wall-clock speed
-// of the test depends on scheduling.
+// retried, even though more attempts remain. cancelledByMaster.Store(true)
+// happens-before the poller cancels the run context (orchestrator.go's
+// poller), so by the time the retry loop evaluates
+// cancelledByMaster.Load() the flag is deterministically set — that part is
+// not a timing race.
+//
+// What used to be a timing race: whether attempt 1's script had actually
+// started (and written its counter file) before the fake GetRun endpoint
+// started reporting Cancelled. An earlier version of this test set
+// h.cancelled = true unconditionally before starting the run and relied on
+// CancelPollInterval being comfortably larger than this host's real Git
+// Bash process-spawn latency (RunStep execs a real bash.exe per attempt —
+// see retryHarness's doc comment) — a fixed margin that measured ~400-460ms
+// on a quiet Windows dev box but was observed to fail outright under
+// concurrent CPU load (spawn latency exceeding the margin, so the attempt
+// was cancelled before it ever wrote its counter, and the "exactly 1
+// attempt ran" assertion below saw "0" instead of "1"). That is exactly the
+// class of flake this suite otherwise guards against, just in a second
+// test.
+//
+// The fix removes the margin instead of widening it: h.cancelled flips to
+// true only once a background goroutine observes the counter file has
+// actually been written, i.e. attempt 1 has demonstrably started. The
+// poller can then never observe "cancelled" before that happens, regardless
+// of how slow (or fast) process spawn is on the machine running the test.
+// CancelPollInterval is shortened only for test speed now (it no longer has
+// to outrun anything) — correctness no longer depends on its value.
 func TestRetry_CancelNotRetried(t *testing.T) {
 	stubRetrySleep(t)
 
-	// The poll interval must comfortably exceed this environment's git-bash
-	// process-spawn overhead (observed ~400-460ms for a trivial script on
-	// this Windows host) so the step's first attempt is guaranteed to have
-	// started — and written its counter file — before the poller's first
-	// tick lands the cancellation. 1500ms leaves a large margin over that
-	// while still keeping the test well under the default 5s interval.
 	origPoll := CancelPollInterval
-	CancelPollInterval = 1500 * time.Millisecond
+	CancelPollInterval = 100 * time.Millisecond
 	t.Cleanup(func() { CancelPollInterval = origPoll })
 
 	const agentID = "retry-agent"
 	const runID = "run-retry-cancel"
 
 	h := newRetryHarness()
-	h.cancelled = true // GetRun reports Cancelled from the very first poll
+	// h.cancelled starts false; the goroutine below (started after
+	// a.executeRun begins) flips it once attempt 1 has genuinely started.
 	srv := newRetryServer(t, agentID, h)
 	a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok")}
 
 	workDir := t.TempDir()
 	counter := filepath.Join(workDir, "count.txt")
-	// Sleep far longer than CancelPollInterval so the poller's cancellation
-	// interrupts this attempt rather than it exiting on its own.
-	script := "n=$(cat '" + counter + "' 2>/dev/null || echo 0); n=$((n+1)); printf '%s' \"$n\" > '" + counter + "'; sleep 30"
+	// Sleep far longer than any plausible spawn+poll latency so the
+	// poller's cancellation interrupts this attempt rather than it exiting
+	// on its own. 120s (not 30s) deliberately leaves room for the elapsed
+	// ceiling below to tolerate real OS scheduling delays under heavy
+	// concurrent load — see that assertion's comment.
+	script := "n=$(cat '" + counter + "' 2>/dev/null || echo 0); n=$((n+1)); printf '%s' \"$n\" > '" + counter + "'; sleep 120"
 
 	claim := api.ClaimResponse{
 		Native:  true,
@@ -393,11 +426,44 @@ func TestRetry_CancelNotRetried(t *testing.T) {
 		},
 	}
 
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if data, err := os.ReadFile(counter); err == nil && len(data) > 0 {
+					h.mu.Lock()
+					h.cancelled = true
+					h.mu.Unlock()
+					return
+				}
+			}
+		}
+	}()
+
 	start := time.Now()
 	a.executeRun(context.Background(), claim, workDir)
 	elapsed := time.Since(start)
 
-	require.Less(t, elapsed, 15*time.Second, "executeRun should return promptly once cancelled (sleep 30 interrupted)")
+	// This ceiling exists only to prove the run was actually interrupted
+	// rather than running the full 120s sleep to completion — it is not a
+	// tight bound. In normal conditions the real cost is (spawn attempt 1) +
+	// (one poll tick), both well under a second (see the many single-digit-
+	// second runs typical of this test). But a direct A/B test on this
+	// project's dev machine, run under concurrent CPU load from other
+	// processes, saw one instance take 31s to return despite the
+	// counter/status assertions below still holding (i.e. the interruption
+	// itself, and this test's own goroutines, were delayed by the OS
+	// scheduler, not broken) — so 60s, not something tighter like 25s, is
+	// used here to stay clear of that kind of scheduling noise while still
+	// leaving a comfortable 2x gap under the 120s sleep to catch a genuine
+	// "cancellation stopped working" regression.
+	require.Less(t, elapsed, 60*time.Second, "executeRun should return well before the full 120s sleep once cancelled")
 	assert.Equal(t, "1", readCounter(t, counter), "the cancelled attempt must not be retried")
 	assert.Equal(t, "Cancelled", h.lastStatusFor(0))
 	assert.Equal(t, "Cancelled", h.finishStatus)
