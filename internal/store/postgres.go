@@ -1074,8 +1074,14 @@ func (p *Postgres) AppendLog(ctx context.Context, runID string, stepIndex int, s
 // same duration, and eviction produces the same marker — without the
 // duplicates. The poison line wedges that run's log until eviction either
 // way; that wedge is pre-existing and this change does not worsen it. It is
-// strictly better on the duplicate axis and neutral on the wedge axis.
-// Actually fixing the wedge (where to sanitize, whether to mark an
+// strictly better on the duplicate axis and neutral on the wedge axis — for a
+// single-run batch, which is every batch today (LogPusher and every other
+// caller send one run per call). That analysis does not extend to a batch
+// spanning multiple runs: there, a run earlier in the batch can commit before
+// a later run's poison line fails the call, and the resend loop above
+// duplicates that earlier run's already-committed lines on every retry. See
+// the AppendLogs interface doc (store.go) for that boundary. Actually fixing
+// the wedge (where to sanitize, whether to mark an
 // operator-visible altered line, whether AppendLog needs the same treatment)
 // is a separate, tracked decision — do not reintroduce a per-line fallback
 // here to work around it; that would bring back the N round trips this

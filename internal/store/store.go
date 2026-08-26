@@ -259,7 +259,20 @@ type Store interface {
 	// per run that had at least one line written. The returned slice is
 	// parallel to lines: element i is the seq assigned to lines[i], or 0 if
 	// that line was DROPPED because its run is sealed — the same convention
-	// AppendLog uses. Lines for different runs may be mixed freely.
+	// AppendLog uses. Lines for different runs may be mixed freely in the
+	// input and in a successful return.
+	//
+	// Atomicity is per run, not per call: each run's lines are written and
+	// notified independently, so a batch spanning runs A and B can commit A
+	// in full, durably, with A's notify already fired, and then fail on B.
+	// On error the return is (nil, err) with no partial seqs — there is no
+	// way to tell from the error alone which runs, if any, committed before
+	// the failure. A caller that reacts to an error by retrying the whole
+	// batch (e.g. resending it unchanged) will duplicate every run that had
+	// already committed. Today's only caller sends one run per call, so this
+	// is not reachable in practice, but nothing in this signature prevents a
+	// multi-run batch, and a future multi-run caller must plan for partial,
+	// silent success on error rather than assume all-or-nothing across runs.
 	AppendLogs(ctx context.Context, lines []LogAppend) ([]int64, error)
 	TailLogs(ctx context.Context, runID string, afterSeq int64, limit int) ([]api.LogLine, error)
 	// TailLogsRecent returns up to the last `limit` log lines for the run, in
