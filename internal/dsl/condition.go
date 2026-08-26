@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -224,11 +223,7 @@ func conditionActivation(data TemplateData, undef *undefinedKeys) map[string]any
 // an APPLY on it would break re-applying a job that currently applies fine,
 // which is a bigger blast radius than the check is worth. Run-time keeps the
 // bool check; apply-time stops at "does it compile".
-//
-// declaredParams additionally rejects a LITERAL reference to a param the job
-// does not declare — see validateConditionParamRefs for the rule and its
-// limits. Pass nil to compile only.
-func ValidateConditionExpr(expr string, declaredParams map[string]bool) error {
+func ValidateConditionExpr(expr string) error {
 	if expr == "" {
 		return nil
 	}
@@ -236,77 +231,10 @@ func ValidateConditionExpr(expr string, declaredParams map[string]bool) error {
 	if err != nil {
 		return fmt.Errorf("if: cel env: %w", err)
 	}
-	ast, iss := env.Compile(expr)
-	if iss != nil && iss.Err() != nil {
+	if _, iss := env.Compile(expr); iss != nil && iss.Err() != nil {
 		return fmt.Errorf("if: expression %q does not compile (if: is a CEL expression, not a Go template): %w", expr, iss.Err())
 	}
-	return validateConditionParamRefs(expr, ast, declaredParams)
-}
-
-// validateConditionParamRefs rejects an if: that references a param name the
-// job does not declare — `params.evn` where the job declares `env`.
-//
-// Why this and not vars' empty-string treatment: an undefined params key
-// raises "no such key" at run time, which is an eval error, which is
-// FAIL-OPEN — the step runs. Making params read as empty instead would fix
-// that, but it would also silently redefine every params-gated condition
-// already in service, turning steps that run today into steps that skip.
-// Rejecting at apply changes NO run-time behaviour at all: a job that is
-// already broken stays exactly as it is until someone re-applies it, and the
-// typo surfaces while its author is present.
-//
-// TWO deliberate limits, because the declared set is NOT the complete set of
-// keys a run can carry:
-//
-//  1. Only LITERAL references are checked (see literalParamRefs). A computed
-//     or dynamic key is not a typo anyone can prove at apply time, and neither
-//     is a `has(params.X)` presence test.
-//
-//  2. The rule is skipped entirely for a job that declares NO params at all
-//     (no spec.params.inputs, no orLocks). resolveParams in
-//     internal/controller passes undeclared caller-supplied params through
-//     unchanged, and four sources feed it — CLI --param, a literal webhook
-//     paramsMapping entry, a schedule's params, and a `call:` step's with: —
-//     so a job with no declared interface is by definition driven entirely by
-//     pass-through and every reference in it would be a false positive. A job
-//     that DOES declare an interface is taken at its word. The residual
-//     false-positive case is a job that declares some inputs and is also
-//     handed an extra undeclared one; the fix there is the same one line of
-//     YAML the error message names.
-func validateConditionParamRefs(expr string, ast *cel.Ast, declaredParams map[string]bool) error {
-	if len(declaredParams) == 0 {
-		return nil
-	}
-	var undeclared []string
-	for _, key := range literalParamRefs(ast) {
-		if !declaredParams[key] {
-			undeclared = append(undeclared, key)
-		}
-	}
-	if len(undeclared) == 0 {
-		return nil
-	}
-	return fmt.Errorf("if: expression %q references undeclared param %s — an undefined params key raises "+
-		"\"no such key\" at run time, which fails OPEN and runs the step; correct the spelling or declare it "+
-		"under spec.params.inputs (declared: %s)",
-		expr, quoteJoin(undeclared), quoteJoin(sortedKeys(declaredParams)))
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func quoteJoin(xs []string) string {
-	quoted := make([]string, len(xs))
-	for i, x := range xs {
-		quoted[i] = strconv.Quote(x)
-	}
-	return strings.Join(quoted, ", ")
+	return nil
 }
 
 // EvalCondition evaluates a CEL expression and returns a bool, any warnings

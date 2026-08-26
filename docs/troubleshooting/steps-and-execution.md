@@ -149,15 +149,13 @@ host and Kubernetes agents).
 syntax. An expression that fails to compile or evaluate **fails open**: the
 step still runs, and the run is not marked failed.
 
-Most of these are now caught earlier. `unified-cd apply` compiles every `if:`
-against the same environment the agent uses and rejects the job with
-`if: expression "..." does not compile`; it also rejects an `if:` naming a
-param the job does not declare (`references undeclared param "evn"`), which is
-the commonest source of a run-time `no such key`. A condition can still fail
-at run time when it comes from a `uses:` template (resolved after apply), when
-the param name is computed rather than literal, or when the job declares no
-params at all and relies on pass-through — apply-time checking cannot see any
-of those.
+A *malformed* expression is caught earlier: `unified-cd apply` compiles every
+`if:` against the same environment the agent uses and rejects the job with
+`if: expression "..." does not compile`. What apply cannot catch is an
+expression that compiles and then errors during evaluation — the commonest
+cause being a **misspelt `params` key**, which raises `no such key` — or one
+that only appears at run time because it came from a `uses:` template
+(resolved after apply).
 
 **Fix**
 
@@ -169,10 +167,14 @@ of those.
   ```yaml
   if: '{{ eq .Params.env "production" }}'   # wrong — Go template, rejected at apply
   ```
-- Reference only parameters declared in `spec.params.inputs`; an undefined
-  `params.X` errors and fails open. (An undefined `vars.X` does **not** — it
-  reads as the empty string, so the gate stays shut, and the run's log gets a
-  `System` line naming the key.)
+- Check the spelling of every `params` name by hand. An undefined `params.X`
+  errors and fails open, and nothing validates the name at apply time —
+  a param does not have to be declared under `spec.params.inputs` to reach a
+  run (`--param`, a webhook `paramsMapping`, a schedule, and a `call:` step's
+  `with:` all pass undeclared keys through), so a typo cannot be told apart
+  from a legitimate pass-through reference. An undefined `vars.X` does **not**
+  behave this way — it reads as the empty string, so the gate stays shut, and
+  the run's log gets a `System` line naming the key.
 - After a run, check the run's log for `System` lines beginning
   `unified-cd: step "..."` — that is where a condition that did not mean what
   it says now reports itself.

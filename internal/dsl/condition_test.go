@@ -194,14 +194,34 @@ func TestEvalCondition_VarsPresenceTestStaysTruthful(t *testing.T) {
 	assert.Empty(t, warns, "a presence test is not an undefined-key read")
 }
 
-// params has the SAME shape vars had: an undefined key errors, and the error
-// path is fail-safe, so the step runs. This is deliberately NOT changed —
-// making params read as empty would silently redefine every params-gated
-// condition already in service, turning steps that run today into steps that
-// skip. The typo is caught at APPLY time instead (see
-// TestJobValidate_RejectsUndeclaredParamInIf), which fixes the author's
-// problem while changing nothing about run time. This test pins the run-time
-// half of that decision; it is not an unfixed bug.
+// params has the SAME shape vars had: an undefined key raises "no such key",
+// which is an eval error, which is fail-safe — the step RUNS. This is a KNOWN
+// ASYMMETRY with vars (which reads an undefined key as empty, keeping the gate
+// shut) and it is left in place deliberately. This comment is the only record
+// of that decision in code, so it carries its own reasoning:
+//
+// Two fixes were considered and both rejected.
+//
+//  1. Make params read as empty, like vars. That changes the meaning of every
+//     params-gated condition already in service: a step that runs today would
+//     start skipping, silently, on the next agent upgrade.
+//
+//  2. Reject an if: that names an undeclared param at apply time. This looked
+//     safe — it changes no run-time behaviour at all — but it rests on the
+//     declared set being authoritative, and it is not. See resolveParams in
+//     internal/controller/params.go, whose own doc comment says "Params not
+//     declared as inputs are passed through unchanged"; all five of its caller
+//     paths can introduce one (CLI --param, run re-trigger, webhook
+//     paramsMapping, schedule params, and a call: step's with:), and
+//     spec.concurrency.orLocks synthesizes {NAME}_LOCK_VALUE keys on top of
+//     that. `unified-cd run trigger job --param DEPLOY_TARGET=x` against
+//     `if: params.DEPLOY_TARGET == "x"` is documented, supported, and works —
+//     so a typo and a legitimate pass-through reference are statically
+//     indistinguishable, and rejecting one rejects the other.
+//
+// What IS caught at apply time is a malformed expression (see
+// ValidateConditionExpr) — that check only rejects what would fail to compile
+// at run time anyway.
 func TestEvalCondition_ParamsUndefinedKeyStillFailsOpen(t *testing.T) {
 	data := TemplateData{Params: map[string]string{"env": "staging"}}
 	ok, _, err := EvalCondition(`params.TYPO == "prod"`, data, RunStatusView{}, true)
@@ -256,7 +276,7 @@ func TestValidateConditionExpr(t *testing.T) {
 		`params.env in ["production", "staging"]`,
 	}
 	for _, expr := range valid {
-		assert.NoError(t, ValidateConditionExpr(expr, nil), "expr %q must be accepted", expr)
+		assert.NoError(t, ValidateConditionExpr(expr), "expr %q must be accepted", expr)
 	}
 
 	invalid := []string{
@@ -266,7 +286,7 @@ func TestValidateConditionExpr(t *testing.T) {
 		`params.env == 1`,                   // type mismatch
 	}
 	for _, expr := range invalid {
-		assert.Error(t, ValidateConditionExpr(expr, nil), "expr %q must be rejected", expr)
+		assert.Error(t, ValidateConditionExpr(expr), "expr %q must be rejected", expr)
 	}
 }
 
@@ -275,7 +295,7 @@ func TestValidateConditionExpr(t *testing.T) {
 // stops at "does it compile" precisely so it can never reject something whose
 // shape is only knowable at run time.
 func TestValidateConditionExpr_DoesNotApplyBoolCheck(t *testing.T) {
-	require.NoError(t, ValidateConditionExpr("steps.build.outputs.ok", nil))
+	require.NoError(t, ValidateConditionExpr("steps.build.outputs.ok"))
 }
 
 func TestJobValidate_RejectsMalformedIf(t *testing.T) {
@@ -299,112 +319,6 @@ func TestJobValidate_AcceptsVarsGatedIf(t *testing.T) {
 		Metadata:   Metadata{Name: "j"},
 		Spec: Spec{
 			Steps: []StepEntry{{Name: "s", Run: "echo hi", If: `vars.ENV == "prod"`}},
-		},
-	}
-	require.NoError(t, j.Validate())
-}
-
-// --- undeclared params, caught at apply time --------------------------------
-
-func TestDeclaredParamKeys(t *testing.T) {
-	spec := Spec{
-		Params: Params{Inputs: []Input{{Name: "env"}, {Name: "region"}}},
-		Concurrency: &Concurrency{
-			OrLocks: []OrLock{{Name: "slot", In: ForeachSource{Literal: []string{"a", "b"}}}},
-		},
-	}
-	got := DeclaredParamKeys(spec)
-	assert.Equal(t, map[string]bool{"env": true, "region": true, "SLOT_LOCK_VALUE": true}, got,
-		"an or-lock injects its acquired value as {NAME}_LOCK_VALUE, declared nowhere under params.inputs")
-}
-
-func TestValidateConditionExpr_UndeclaredParam(t *testing.T) {
-	declared := map[string]bool{"env": true}
-
-	err := ValidateConditionExpr(`params.evn == "prod"`, declared)
-	require.Error(t, err, "a misspelt param must be rejected: at run time it errors, and an error runs the step")
-	assert.Contains(t, err.Error(), `"evn"`)
-	assert.Contains(t, err.Error(), "spec.params.inputs")
-
-	require.NoError(t, ValidateConditionExpr(`params.env == "prod"`, declared))
-	require.Error(t, ValidateConditionExpr(`params["evn"] == "prod"`, declared),
-		"the index form is the same reference and must be treated the same")
-	require.NoError(t, ValidateConditionExpr(`params["env"] == "prod"`, declared))
-}
-
-// A key that is not a literal cannot be proved to be a typo, so it is left
-// alone. This is the limit that keeps the check from rejecting a working job.
-func TestValidateConditionExpr_DynamicParamKeyIsNotRejected(t *testing.T) {
-	declared := map[string]bool{"env": true}
-	for _, expr := range []string{
-		`params[vars.WHICH] == "prod"`,          // fully dynamic
-		`params["pre_" + vars.WHICH] == "prod"`, // computed
-		`params[params.env] == "prod"`,          // key from another param
-	} {
-		assert.NoError(t, ValidateConditionExpr(expr, declared), "expr %q must not be rejected", expr)
-	}
-}
-
-// A presence test is how you legitimately ask about a key that may be absent;
-// rejecting it would remove the only safe way to reference an optional param.
-func TestValidateConditionExpr_PresenceTestIsNotRejected(t *testing.T) {
-	declared := map[string]bool{"env": true}
-	assert.NoError(t, ValidateConditionExpr(`has(params.maybe)`, declared))
-	assert.NoError(t, ValidateConditionExpr(`"maybe" in params`, declared))
-}
-
-// A job that declares no param interface at all is driven entirely by
-// pass-through (CLI --param, a literal webhook paramsMapping entry, a
-// schedule's params, a call: with:) — resolveParams passes undeclared keys
-// through unchanged — so there is nothing to check against and every
-// reference would be a false positive.
-func TestValidateConditionExpr_NoDeclaredParamsSkipsTheCheck(t *testing.T) {
-	assert.NoError(t, ValidateConditionExpr(`params.anything == "x"`, nil))
-	assert.NoError(t, ValidateConditionExpr(`params.anything == "x"`, map[string]bool{}))
-}
-
-func TestJobValidate_RejectsUndeclaredParamInIf(t *testing.T) {
-	j := &Job{
-		APIVersion: SupportedAPIVersion,
-		Kind:       "Job",
-		Metadata:   Metadata{Name: "j"},
-		Spec: Spec{
-			Params: Params{Inputs: []Input{{Name: "env", Type: "string"}}},
-			Steps:  []StepEntry{{Name: "s", Run: "echo hi", If: `params.evn == "prod"`}},
-		},
-	}
-	err := j.Validate()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "undeclared param")
-	assert.Contains(t, err.Error(), `"evn"`)
-}
-
-func TestJobValidate_AcceptsDeclaredAndOrLockParamsInIf(t *testing.T) {
-	j := &Job{
-		APIVersion: SupportedAPIVersion,
-		Kind:       "Job",
-		Metadata:   Metadata{Name: "j"},
-		Spec: Spec{
-			Params: Params{Inputs: []Input{{Name: "env", Type: "string"}}},
-			Concurrency: &Concurrency{
-				OrLocks: []OrLock{{Name: "slot", In: ForeachSource{Literal: []string{"a"}}}},
-			},
-			Steps: []StepEntry{
-				{Name: "a", Run: "echo hi", If: `params.env == "prod"`},
-				{Name: "b", Run: "echo hi", If: `params.SLOT_LOCK_VALUE == "a"`},
-			},
-		},
-	}
-	require.NoError(t, j.Validate())
-}
-
-func TestJobValidate_JobWithNoDeclaredParamsIsNotChecked(t *testing.T) {
-	j := &Job{
-		APIVersion: SupportedAPIVersion,
-		Kind:       "Job",
-		Metadata:   Metadata{Name: "j"},
-		Spec: Spec{
-			Steps: []StepEntry{{Name: "s", Run: "echo hi", If: `params.supplied_by_cli == "x"`}},
 		},
 	}
 	require.NoError(t, j.Validate())
