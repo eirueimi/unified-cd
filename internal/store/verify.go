@@ -43,6 +43,7 @@ var schemaSentinels = []sentinel{
 	{15, "015_secrets_v2", "sessions", "refresh_token_dek", ""},
 	{16, "016_drop_secret_scope", "secrets", "", "secrets_name_key"},
 	{17, "017_run_detached", "runs", "detached", ""},
+	{18, "018_vars", "vars", "", ""},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel
