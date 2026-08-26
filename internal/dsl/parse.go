@@ -232,13 +232,10 @@ func (j *Job) Validate() error {
 
 	// Collect step names for duplicate detection across steps and finally.
 	nameSet := map[string]bool{}
-	// The param names an if: may reference by literal name: the declared
-	// inputs plus the or-lock synthesized {NAME}_LOCK_VALUE keys.
-	declaredParams := DeclaredParamKeys(j.Spec)
-	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet, true, j.Spec.Native, declaredParams); err != nil {
+	if err := validateStepEntries(j.Spec.Steps, "spec.steps", nameSet, true, j.Spec.Native); err != nil {
 		return err
 	}
-	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet, false, j.Spec.Native, declaredParams); err != nil {
+	if err := validateStepEntries(j.Spec.Finally, "spec.finally", nameSet, false, j.Spec.Native); err != nil {
 		return err
 	}
 
@@ -324,9 +321,7 @@ func (j *Job) Validate() error {
 //
 // native mirrors spec.native: when true, no step in this job may set
 // container: (a native job runs host processes only, with no podTemplate).
-// declaredParams is the set of param names an if: may reference by literal
-// name (nil disables that check — see validateConditionParamRefs).
-func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[string]bool, allowApproval bool, native bool, declaredParams map[string]bool) error {
+func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[string]bool, allowApproval bool, native bool) error {
 	for i, entry := range entries {
 		if len(entry.Parallel) > 0 {
 			if entry.Name != "" || entry.Run != "" || entry.Call != nil || entry.Uses != nil {
@@ -366,7 +361,7 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 				if err := validateRetry(st.Name, subPath, st.Retry, st.Run != ""); err != nil {
 					return err
 				}
-				if err := ValidateConditionExpr(st.If, declaredParams); err != nil {
+				if err := ValidateConditionExpr(st.If); err != nil {
 					return fmt.Errorf("%s (%s): %w", subPath, st.Name, err)
 				}
 				if native && st.Container != "" {
@@ -411,7 +406,7 @@ func validateStepEntries(entries []StepEntry, pathPrefix string, nameSet map[str
 			// runs), so catching it here is the only place the author still
 			// has the file open. See ValidateConditionExpr for why this stops
 			// at "does it compile" and cannot reject a working condition.
-			if err := ValidateConditionExpr(entry.If, declaredParams); err != nil {
+			if err := ValidateConditionExpr(entry.If); err != nil {
 				return fmt.Errorf("%s (%s): %w", entryPath, entry.Name, err)
 			}
 			if native && entry.Container != "" {

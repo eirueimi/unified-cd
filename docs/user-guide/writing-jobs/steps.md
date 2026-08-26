@@ -269,23 +269,23 @@ steps:
   step, and the run's log gets a `System` line naming the undefined key. To
   test presence rather than value, use `"NAME" in vars` — `has(vars.NAME)` is
   always true here and must not be used.
-- `params.MISSING` still raises `no such key`, which is an evaluation error,
-  which fails OPEN (the step runs). Rather than change that — it would turn
-  steps that run today into steps that skip — the typo is caught **at apply
-  time**: if a job declares any params, an `if:` that names a param it does
-  not declare is rejected with `references undeclared param "..."`. The fix
-  is to correct the spelling or declare the param.
+- `params.MISSING` raises `no such key`, which is an evaluation error, which
+  fails **OPEN** — the step runs. Double-check the spelling of every `params`
+  name in an `if:`, especially one gating a production deploy.
 
-    The apply-time check only looks at literal names (`params.FOO`,
-    `params["FOO"]`). A computed key (`params["pre_" + vars.X]`), a dynamic
-    one (`params[vars.X]`), and a presence test (`has(params.FOO)`,
-    `"FOO" in params`) are all left alone — none of them is a typo that can be
-    proved from the manifest. A job that declares **no** params at all is not
-    checked either: undeclared params supplied by `--param`, a webhook
-    `paramsMapping`, a schedule, or a `call:` step's `with:` are passed
-    through to the run, so such a job has no declared interface to check
-    against. Or-lock values (`{NAME}_LOCK_VALUE`, synthesized from
-    `spec.concurrency.orLocks[].name`) count as declared.
+> **Why `params` and `vars` differ here.** The asymmetry is deliberate, not an
+> oversight. Making `params` read as empty would change the meaning of every
+> params-gated condition already in service — steps that run today would start
+> skipping. Rejecting an undeclared `params` name at apply time was considered
+> too, and rejected: a param does **not** have to be declared under
+> `spec.params.inputs` to reach a run. Undeclared params are passed through
+> unchanged from `--param`, a re-triggered run, a webhook `paramsMapping`, a
+> schedule's params, and a `call:` step's `with:` — and
+> `spec.concurrency.orLocks` synthesizes `{NAME}_LOCK_VALUE` keys on top of
+> that — so `run trigger job --param DEPLOY_TARGET=x` gating on
+> `if: params.DEPLOY_TARGET == "x"` is supported and works. A typo and a
+> legitimate pass-through reference are indistinguishable from the manifest
+> alone, so rejecting one would reject the other.
 
 The expression must evaluate to a boolean. Use CEL operators and the
 zero-arg status functions (see [Status Functions in `if:`](expressions.md#status-functions-in-if)):
