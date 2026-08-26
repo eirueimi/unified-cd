@@ -3,7 +3,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -125,6 +127,56 @@ func TestWaitForRun_FollowFailed_ExitCode1(t *testing.T) {
 	require.ErrorAs(t, err, &ee)
 	assert.Equal(t, 1, ee.Code)
 	assert.Contains(t, out.String(), "oops")
+}
+
+// TestFollowRun_StopsPromptlyOnContextCancel is the followRun analogue of
+// TestLogsFollow_StopsPromptlyOnContextCancel: it drives waitForRun(follow=
+// true) against a server that never reaches a terminal status and whose
+// /logs response is deliberately delayed, so the context is cancelled while
+// a request is in flight. Before the fix, followRun's two HTTP call sites
+// (fetchRunLogsAfter and getRun) returned the raw error unconditionally, so
+// a mid-request cancellation surfaced as an ugly wrapped transport error
+// instead of the same clean ctx.Err() the between-iterations ctx.Done() case
+// already returns. It must also stop promptly rather than waiting out the
+// server's (never-arriving) terminal status.
+func TestFollowRun_StopsPromptlyOnContextCancel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/logs") {
+			// Delay so the cancellation (fired below, 50ms in) lands while
+			// this request is in flight rather than between iterations.
+			time.Sleep(200 * time.Millisecond)
+			fmt.Fprint(w, "[]")
+			return
+		}
+		// GET /api/v1/runs/{id}: always report a non-terminal status.
+		fmt.Fprint(w, `{"id":"r1","status":"Running"}`)
+	}))
+	defer srv.Close()
+
+	cfg := Config{Server: srv.URL, Token: "tok"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- waitForRun(ctx, cfg, srv.Client(), "r1", 0, true, io.Discard, io.Discard)
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, context.Canceled), "want an error wrapping context.Canceled, got: %v", err)
+		// Cancellation is not a timeout: it must not be misreported as the
+		// ExitError(124) that waitForRun reserves for context.DeadlineExceeded.
+		var ee *ExitError
+		assert.False(t, errors.As(err, &ee), "cancellation should not surface as an ExitError, got: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("followRun did not stop promptly after context cancellation")
+	}
 }
 
 func TestExitErrorForStatus(t *testing.T) {

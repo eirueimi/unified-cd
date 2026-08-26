@@ -12,6 +12,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// (isCancellationErr is defined in wait.go, shared by both the `logs -f` and
+// `run --wait --follow` follow loops.)
+
 // newLogsCmd creates a command that displays logs for a run.
 func newLogsCmd(resolve func() (Config, error)) *cobra.Command {
 	var follow, timestamps, showStep bool
@@ -45,7 +48,16 @@ func newLogsCmd(resolve func() (Config, error)) *cobra.Command {
 					// that lands mid-request surfaces here as a network error
 					// instead). Treat that the same as the ctx.Done() case
 					// below: a cancelled follow is a clean stop, not a failure.
-					if ctx.Err() != nil {
+					//
+					// Discriminate on the error itself rather than on whether
+					// ctx happens to be done *right now* — checking ctx.Err()
+					// alone would also swallow an unrelated failure (a
+					// completed non-200 response, a decode error) that merely
+					// races with cancellation. net/http wraps ctx.Err() into
+					// the error it returns when a request is aborted
+					// mid-flight, so errors.Is sees through to it; a genuine
+					// failure is never wrapped this way.
+					if isCancellationErr(err) {
 						return nil
 					}
 					return err

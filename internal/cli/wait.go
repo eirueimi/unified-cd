@@ -58,6 +58,17 @@ func isTerminalRunStatus(status string) bool {
 	return false
 }
 
+// isCancellationErr reports whether err was actually *caused* by context
+// cancellation or a deadline expiring, as opposed to a genuine request
+// failure (a non-200 response, a JSON decode error, ...) that merely happens
+// to race with cancellation. net/http wraps ctx.Err() into the *url.Error it
+// returns when a request is aborted mid-flight, so errors.Is sees through to
+// it; a completed-but-failed request (bad status code, bad body) is never
+// wrapped this way and correctly returns false here.
+func isCancellationErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 // waitForRun blocks until runID reaches a terminal status, then returns nil on
 // Succeeded or an *ExitError (with a distinct code) otherwise. When follow is
 // true it streams the run's step logs to outW/errW while waiting (via the
@@ -141,6 +152,14 @@ func followRun(ctx context.Context, cfg Config, httpClient *http.Client, runID s
 	for {
 		lines, err := fetchRunLogsAfter(ctx, cfg, httpClient, runID, after)
 		if err != nil {
+			// A cancellation landing mid-request surfaces here as a transport
+			// error rather than via the ctx.Done() case below. Treat that the
+			// same as the ctx.Done() case for consistency (same clean ctx.Err()
+			// return either way); a genuine failure (bad status, bad body) that
+			// merely races with cancellation is not swallowed.
+			if isCancellationErr(err) {
+				return "", ctx.Err()
+			}
 			return "", err
 		}
 		for _, l := range lines {
@@ -155,6 +174,9 @@ func followRun(ctx context.Context, cfg Config, httpClient *http.Client, runID s
 		}
 		run, err := getRun(ctx, cfg, httpClient, runID)
 		if err != nil {
+			if isCancellationErr(err) {
+				return "", ctx.Err()
+			}
 			return "", err
 		}
 		if isTerminalRunStatus(string(run.Status)) {
