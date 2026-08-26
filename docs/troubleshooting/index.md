@@ -23,6 +23,8 @@ covers it.
 
 **Artifacts and Storage**
 
+- [Step fails with `requires S3 configuration (UNIFIED_S3_*)`](artifacts-and-storage.md#step-fails-with-requires-s3-configuration-unified_s3_)
+- [Job pods never start with `CreateContainerConfigError` (`secret "…" not found`)](artifacts-and-storage.md#job-pods-never-start-with-createcontainerconfigerror)
 - [k8s pod `ImagePullBackOff` on `unified-artifact`](artifacts-and-storage.md#k8s-pod-imagepullbackoff-on-unified-artifact)
 - [A sidecar failed to start](artifacts-and-storage.md#a-sidecar-failed-to-start)
 - [Artifact step fails `no such file`](artifacts-and-storage.md#artifact-step-fails-no-such-file)

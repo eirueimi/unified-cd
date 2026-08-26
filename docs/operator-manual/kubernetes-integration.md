@@ -538,7 +538,13 @@ constraint.
 
 ### S3 credentials (required)
 
-The operator must create a Kubernetes `Secret` in the agent's namespace with the same S3 env vars used by the controller/standard agent:
+The operator must create a Kubernetes `Secret` **in the namespace the agent's `namespace:` config field points at** — the namespace job Pods are created in, which in the shipped manifests is `ci`, **not** the `unified-cd` namespace the agent Deployment itself runs in.
+
+This distinction is the single most common way this setup fails. The sidecar is a container inside the job Pod, and the agent attaches the Secret to it with a `LocalObjectReference` (`envFrom.secretRef`), which has **no namespace field** — Kubernetes always resolves it in the Pod's own namespace. A Secret sitting in the agent's namespace is invisible to it.
+
+It is also why the controller's S3 credentials are not enough on their own: logs travel agent → controller → S3, so the controller's configuration covers them, but Kubernetes artifact and cache transfers go from the sidecar **straight to S3**, and need their own copy of the credentials in the job namespace.
+
+The Secret carries the same S3 env vars used by the controller/standard agent:
 
 ```
 UNIFIED_S3_ENDPOINT     # required
@@ -553,10 +559,20 @@ Point the agent at it via `sidecarS3SecretName` in the config file:
 
 ```yaml
 # k8s-agent-config.yaml
-sidecarS3SecretName: unified-cd-s3-creds
+namespace: ci                          # job Pods are created here
+sidecarS3SecretName: unified-cd-s3-creds   # ...so this Secret must exist HERE too
 ```
 
-The Secret is injected into the sidecar container only, via `envFrom`. If `sidecarS3SecretName` is unset (or the named Secret doesn't exist), the sidecar has no S3 credentials: artifact steps fail loudly (this is an operator misconfiguration, not a transient error), and cache steps silently no-op (best-effort — a step never fails because the cache is unavailable).
+The Secret is injected into the sidecar container only, via `envFrom`.
+
+**Unset and "named but missing" are not the same failure — do not treat them as interchangeable:**
+
+| `sidecarS3SecretName` | What happens |
+| --- | --- |
+| Unset | The Pod starts normally. The sidecar simply has no S3 credentials, so **artifact steps fail** (the agent now detects this at claim time and fails the run immediately, before creating a Pod, naming the offending steps) and **cache steps no-op** with one loud per-run warning. Everything else in the job runs. |
+| Set, but no such Secret in the **job Pod's** namespace | **Every job breaks, artifact-related or not.** `envFrom.secretRef` is not marked `optional: true`, so the kubelet cannot configure the sidecar container at all and fails the Pod with `CreateContainerConfigError: secret "…" not found`. The Pod never reaches `Running`, so no step of any kind executes. |
+
+The second row is what an operator hits after creating the Secret in the agent's namespace instead of the job namespace. The agent surfaces the kubelet's reason and message in the run's failure (see [Troubleshooting](../troubleshooting/artifacts-and-storage.md#job-pods-never-start-with-createcontainerconfigerror)), so the `secret "…" not found` text appears in the run itself rather than only under `kubectl describe pod`.
 
 ### Security note / threat model
 

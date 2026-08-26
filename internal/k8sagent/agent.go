@@ -8,6 +8,8 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -284,6 +286,42 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		return
 	}
 
+	// Sibling of the native check above, for the OTHER thing this agent
+	// structurally cannot do.
+	//
+	// Artifact bytes do NOT flow agent -> controller -> S3 the way logs do:
+	// they are transferred by the injected `unified-artifact` sidecar talking
+	// to S3 DIRECTLY, with credentials from the Secret named by
+	// cfg.SidecarS3SecretName. The controller's own S3 configuration never
+	// reaches that sidecar. With no secret name configured, every artifact step
+	// exits 1 with "artifact requires S3 configuration (UNIFIED_S3_*)" — but
+	// only once the run reaches that step, i.e. after the job has already done
+	// all of its work. Detect it here, before a Pod is even created.
+	//
+	// This is FAIL-FAST, not route-elsewhere: ClaimNextRun assigns the run to
+	// this agent atomically and RunClaim has no hand-back path, so by the time
+	// executeRun is reached the run is already ours and cannot be returned to
+	// the queue for a capable agent to take. The only choice left is whether to
+	// fail now or fail after wasting the job's work.
+	if a.cfg.SidecarS3SecretName == "" {
+		artifactSteps, cacheSteps := scanTransferSteps(c)
+		if len(artifactSteps) > 0 {
+			a.failRun(ctx, c.RunID, fmt.Sprintf(
+				"artifact steps require the unified-artifact sidecar's own S3 credentials, but the k8s-agent's sidecarS3SecretName config field is not set; affected steps: %s. Set sidecarS3SecretName to a Secret carrying UNIFIED_S3_* that exists in the JOB Pod namespace (%q, the agent config's namespace: field) — the controller's S3 configuration does not reach the sidecar.",
+				strings.Join(artifactSteps, ", "), a.cfg.Namespace))
+			return
+		}
+		if cacheSteps > 0 {
+			// Cache is deliberately best-effort: an unreachable store must never
+			// fail a run, so this is one loud per-run warning rather than a
+			// failure. Emitted into the run's own log (step -1) as well as the
+			// agent log so the operator sees it where they are already looking.
+			a.warnRun(ctx, c.RunID, fmt.Sprintf(
+				"this run has %d cache step(s), but the k8s-agent's sidecarS3SecretName config field is not set: the unified-artifact sidecar has no S3 credentials, so every cache restore and save will be a no-op and the job pays full build times. Cache stays best-effort (the run will NOT fail); set sidecarS3SecretName to a Secret carrying UNIFIED_S3_* that exists in the job Pod namespace (%q) to enable it.",
+				cacheSteps, a.cfg.Namespace))
+		}
+	}
+
 	// Capture the claim's start time up front, before pod acquisition. The
 	// sidecar log pump uses it as GetLogs' SinceTime so a reused pooled pod
 	// (whose sidecar containers are never restarted between runs) replays only
@@ -435,6 +473,55 @@ func (a *K8sAgent) failRun(ctx context.Context, runID, reason string) {
 	agentlib.RetryUntilSuccess(ctx, func(cc context.Context) error {
 		return a.client.FinishRun(cc, a.cfg.AgentID, runID, api.RunFailed)
 	})
+}
+
+// warnRun is failRun's non-fatal twin: it records reason in the agent log and
+// in the run's own log (the same step -1 "run level" stream failRun uses), but
+// leaves the run's status alone. Used for conditions the operator must see but
+// which are not, by design, run-failing — a cache step with no sidecar S3
+// credentials being the motivating case.
+func (a *K8sAgent) warnRun(ctx context.Context, runID, reason string) {
+	slog.Warn(reason, "runId", runID)
+	_ = a.client.AppendLogBulk(ctx, a.cfg.AgentID, runID, -1, []api.LogAppendRequest{{
+		RunID:     runID,
+		StepIndex: -1,
+		Stream:    "stderr",
+		Timestamp: time.Now().UTC(),
+		Line:      reason,
+	}})
+}
+
+// scanTransferSteps walks every step of a claim — both `stages` and `finally`,
+// including the members of explicit `parallel:` groups — and reports the
+// display names of steps declaring an artifact transfer plus a count of steps
+// declaring a cache. The two are separated because they have opposite
+// policies: an artifact transfer without sidecar credentials is a hard
+// misconfiguration, a cache without them is a (loudly warned) no-op.
+//
+// `call:` steps need no recursion: api.ClaimCallStep carries only a job name
+// and params — the called job becomes a CHILD RUN with its own claim, which
+// runs this same check for itself.
+func scanTransferSteps(c api.ClaimResponse) (artifactSteps []string, cacheSteps int) {
+	visit := func(s *api.ClaimStep) {
+		if s == nil {
+			return
+		}
+		if s.UploadArtifact != nil || s.DownloadArtifact != nil {
+			artifactSteps = append(artifactSteps, strconv.Quote(s.DisplayName()))
+		}
+		if s.Cache != nil {
+			cacheSteps++
+		}
+	}
+	for _, stages := range [][]api.ClaimStage{c.Stages, c.Finally} {
+		for _, st := range stages {
+			visit(st.Step)
+			for i := range st.Parallel {
+				visit(&st.Parallel[i])
+			}
+		}
+	}
+	return artifactSteps, cacheSteps
 }
 
 // awaitPodRunning waits for podName to reach Running, bounded by

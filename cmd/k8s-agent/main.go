@@ -57,7 +57,7 @@ func main() {
 		os.Exit(1)
 	}
 	if cfg.SidecarS3SecretName == "" {
-		slog.Warn("sidecarS3SecretName is not set: cache steps will be no-ops (best-effort, reported Succeeded) and artifact upload/download steps will fail; set it to a Secret carrying UNIFIED_S3_* to enable sidecar transfers")
+		slog.Warn("sidecarS3SecretName is not set: cache steps will be no-ops (best-effort, reported Succeeded) and any claim carrying an artifact upload/download step will be failed immediately, before its Pod is created; set it to a Secret carrying UNIFIED_S3_* that exists in the JOB Pod namespace (this agent's namespace: field) to enable sidecar transfers", "jobNamespace", cfg.Namespace)
 	}
 
 	restCfg, err := buildRestConfig(cfg.Kubeconfig)

@@ -1,12 +1,132 @@
 # Artifacts and Storage
 
+## Step fails with `requires S3 configuration (UNIFIED_S3_*)`
+
+**Symptom**
+
+A step fails with one of:
+
+```
+artifact requires S3 configuration (UNIFIED_S3_*): ...
+cache requires S3 configuration (UNIFIED_S3_*): ...
+```
+
+or the run is failed at claim time, before any pod is created, with:
+
+```
+artifact steps require the unified-artifact sidecar's own S3 credentials, but the
+k8s-agent's sidecarS3SecretName config field is not set; affected steps: "publish". ...
+```
+
+This is confusing precisely because **log archiving already works** — S3 is
+obviously configured somewhere.
+
+**Cause**
+
+The controller's S3 configuration does not reach the sidecar, and it is not
+supposed to. Two different paths carry bytes to the same bucket:
+
+- **Logs** go agent → controller → S3. The *controller's* credentials cover them.
+- **Kubernetes artifacts and cache** go from the auto-injected
+  `unified-artifact` sidecar **directly** to S3, with no controller in the
+  path. They need their *own* credentials, in the job Pod.
+
+So a deployment with S3 credentials only in the controller's Secret archives
+logs perfectly and cannot transfer a single artifact.
+
+**Fix**
+
+Create a Secret carrying `UNIFIED_S3_ENDPOINT` / `UNIFIED_S3_BUCKET` /
+`UNIFIED_S3_KEY` / `UNIFIED_S3_SECRET` **in the namespace the k8s-agent's
+`namespace:` config field points at** — the namespace job Pods run in (`ci` in
+the shipped manifests), not the namespace the agent Deployment runs in
+(`unified-cd`) — and name it in the agent config:
+
+```yaml
+# k8s-agent-config.yaml
+namespace: ci                              # job Pods are created here
+sidecarS3SecretName: unified-cd-s3-creds   # ...so the Secret must live here too
+```
+
+Getting the namespace wrong is a *different* failure with a much louder blast
+radius — see [Job pods never start with `CreateContainerConfigError`](#job-pods-never-start-with-createcontainerconfigerror)
+below. See [Kubernetes Integration: S3 credentials](../operator-manual/kubernetes-integration.md#s3-credentials-required)
+for the full contract.
+
+**Note on cache**
+
+Cache steps never fail the run over this — that is deliberate — but they are no
+longer *silent* about it either. A run with cache steps and no
+`sidecarS3SecretName` logs one loud warning at claim time, and a restore the
+sidecar could not perform is logged as "cache not restored", never as
+`cache hit`. If you are chasing a cache that appears to work while build times
+never drop, check the agent log for those lines.
+
+## Job pods never start with `CreateContainerConfigError`
+
+**Symptom**
+
+Every job on the k8s-agent fails — including jobs with no artifact or cache
+step at all. Runs sit for the full `podStartTimeout` (default 5m) and then
+fail. The run's failure message names the container and the kubelet's reason:
+
+```
+waiting for Pod ucd-run-abc123 to become Running: context deadline exceeded
+(container "unified-artifact" is waiting: CreateContainerConfigError:
+secret "unified-cd-s3-creds" not found)
+```
+
+**Cause**
+
+`sidecarS3SecretName` names a Secret that does not exist **in the job Pod's
+namespace**. The agent attaches it to the sidecar with `envFrom.secretRef`,
+which is not marked `optional: true`, so the kubelet cannot configure the
+container and the Pod never reaches `Running` — and since no container in the
+Pod starts, no step of any kind runs.
+
+The usual cause is creating the Secret in the *agent's* namespace
+(`unified-cd` in the shipped manifests) while job Pods run in the namespace the
+agent's `namespace:` field names (`ci`). The reference is a
+`LocalObjectReference` and has no namespace field, so Kubernetes always
+resolves it in the Pod's own namespace; a Secret one namespace over is
+invisible.
+
+Note the asymmetry with the entry above: **unset** `sidecarS3SecretName`
+degrades (artifact steps fail, cache no-ops, everything else runs), while
+**set-but-missing** breaks every job outright.
+
+**Fix**
+
+```bash
+# Which namespace do job pods run in? The agent config's `namespace:` field.
+kubectl -n ci get secret unified-cd-s3-creds
+```
+
+If it is not there, create it there (copying it from the agent's namespace is
+fine), or clear `sidecarS3SecretName` if you do not need sidecar transfers yet.
+
 ## k8s pod `ImagePullBackOff` on `unified-artifact`
 
 **Symptom**
 
-The job's pod is stuck in `ImagePullBackOff` or `ErrImagePull`, and
-`kubectl describe pod` shows the failing container is `unified-artifact` (the
-auto-injected workspace sidecar), not one of the job's own containers.
+The job's pod is stuck in `ImagePullBackOff` or `ErrImagePull`, and the failing
+container is `unified-artifact` (the auto-injected workspace sidecar), not one
+of the job's own containers.
+
+You no longer need `kubectl describe pod` to find that out: the run's own
+failure message carries the kubelet's reason and message, e.g.
+
+```
+waiting for Pod ucd-run-abc123 to become Running: context deadline exceeded
+(container "unified-artifact" is waiting: ImagePullBackOff: Back-off pulling
+image "ghcr.io/…/unified-cd-artifact-sidecar:latest")
+```
+
+The agent also logs the reason as soon as it appears, rather than only when
+`podStartTimeout` expires. It deliberately keeps waiting out the timeout
+anyway: an image pull recovers on its own the moment the image becomes
+pullable, so failing early would turn a transient registry problem into a hard
+run failure.
 
 **Cause**
 
