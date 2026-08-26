@@ -8,7 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func agent(caps, labels []string) api.AgentInfo { return api.AgentInfo{Capabilities: caps, Labels: labels} }
+func agent(caps, labels []string) api.AgentInfo {
+	return api.AgentInfo{Capabilities: caps, Labels: labels}
+}
 
 func TestEvaluateSchedulability(t *testing.T) {
 	host := agent([]string{"native", "container"}, []string{"kind:docker", "hostname:h1"})

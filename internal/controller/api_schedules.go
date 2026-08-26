@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
+	"github.com/go-chi/chi/v5"
 )
 
 // handleApplySchedule accepts a Schedule YAML and creates or updates the cron schedule.

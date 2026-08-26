@@ -201,6 +201,7 @@ func kubernetesEnrollmentPolicy() store.AgentEnrollmentPolicy {
 func boundPod() *corev1.Pod {
 	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "agent-0", Namespace: "unified-cd", UID: "pod-uid"}, Spec: corev1.PodSpec{ServiceAccountName: "unified-cd-k8s-agent"}}
 }
+
 // tokenReviewReactor mirrors what a real API server returns for a projected,
 // pod-bound ServiceAccount token: the subject's UID in UserInfo.UID, plus the
 // extras a live cluster actually publishes. There is deliberately NO

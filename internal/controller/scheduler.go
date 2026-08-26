@@ -12,6 +12,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/cache"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/gittemplate"
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/secrets"
 	"github.com/eirueimi/unified-cd/internal/store"
@@ -265,7 +266,7 @@ func RunCacheCleanup(ctx context.Context, st store.Store, obj objectstore.Object
 			return
 		case <-ticker.C:
 		}
-		observePass("cache_cleanup", func() (int, int, error) { return runCacheCleanupAsLeader(ctx, st, obj) })
+		metrics.ObservePass("cache_cleanup", func() (int, int, error) { return runCacheCleanupAsLeader(ctx, st, obj) })
 	}
 }
 

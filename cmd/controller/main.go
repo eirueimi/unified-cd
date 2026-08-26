@@ -280,17 +280,7 @@ func main() {
 
 	// Metrics: DB-backed gauges + store decorator counting run/step
 	// transitions. staleAfter=90s matches the stuck-run reaper's window.
-	m := metrics.New()
-	m.SetBuildInfo(controller.BuildVersion())
-	m.RegisterDBCollector(pg, 90*time.Second)
-	// Pool saturation. The four pools are separately bounded so background
-	// work cannot starve the API; a bounded pool under pressure queues rather
-	// than erroring, so without these numbers there is no signal at all that
-	// the isolation is being tested.
-	m.RegisterPoolCollector(pg)
-	// Background workers are package-level functions with no recorder of their
-	// own; wire them before any of them is launched below.
-	controller.SetBackgroundMetrics(m)
+	m := metrics.NewForController(controller.BuildVersion(), pg, 90*time.Second)
 	st := metrics.NewInstrumentedStore(pg, m)
 	backgroundPG := pg.BackgroundStore()
 	backgroundSt := metrics.NewInstrumentedStore(backgroundPG, m)

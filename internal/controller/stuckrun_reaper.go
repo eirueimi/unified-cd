@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
 
@@ -37,7 +38,7 @@ func RunStuckRunReaper(ctx context.Context, st store.Store, interval, staleAfter
 			return
 		case <-ticker.C:
 		}
-		observePass("stuck_run_reaper", func() (int, int, error) {
+		metrics.ObservePass("stuck_run_reaper", func() (int, int, error) {
 			return runStuckRunReaperOnce(ctx, st, staleAfter, grace, missingSince)
 		})
 	}
