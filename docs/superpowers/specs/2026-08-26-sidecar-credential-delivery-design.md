@@ -225,10 +225,79 @@ in place, choosing between an agent-projected credential and a cloud-issued one
 is a configuration decision, not a redesign. Without it, either choice is a
 rewrite of the same code, twice.
 
+### 5.6 The controller brokers credentials against a projected token
+
+Added after a constraint that rules out §5.4: **the Kubernetes agent must work
+on bare-metal clusters.** IRSA is EKS and Workload Identity is GKE, so neither
+is available there, and a self-hosted store's STS support is uncertain — MinIO
+offers `AssumeRoleWithWebIdentity`, Garage (which the shipped evaluation bundle
+uses) does not, and confirming that is a prerequisite for anything built on it.
+
+But the mechanism §5.4 wanted is not actually cloud-specific. Kubernetes itself
+projects audience-bound ServiceAccount tokens, and **this project already
+validates them**: `agent_enrollment_kubernetes.go` creates a `TokenReview`
+against the `unified-cd-agent-enrollment` audience and parses the projected
+claims. The controller is already a token verifier; it is simply not one for
+this purpose yet.
+
+So:
+
+1. The agent adds a **projected ServiceAccount token volume** to the job Pod,
+   with its own audience, mounted into the sidecar container only. The agent
+   already writes that Pod spec, so **no RBAC change** — it never touches a
+   Secret.
+2. The sidecar reads the token from the file and asks the controller for store
+   credentials for its run.
+3. The controller does a `TokenReview` against that audience — the call it
+   already makes for enrollment — establishes which Pod is asking, and returns
+   credentials.
+4. The sidecar feeds them into §5.5's provider, which refreshes them.
+
+What this gets:
+
+- **No per-namespace Secret**, which is the operator's actual complaint.
+- **No widening of the agent's RBAC.** §5.2's whole cost disappears: the agent
+  adds a volume to a Pod spec rather than creating a Secret.
+- **No cloud dependency.** Bare metal, EKS and GKE behave the same.
+- **The data path is unchanged.** Bytes still go direct to the store; only
+  credential acquisition passes through the controller. §5.3's throughput
+  objection does not apply, because the direct transfer is exactly what is
+  preserved.
+- **Credentials become per-run and can be short-lived even when the underlying
+  store credential is static**, because the controller decides what to return
+  and for how long.
+- Where a store *does* support STS, the controller can mint a scoped credential
+  instead of passing one through. **§5.4 becomes an implementation detail of the
+  broker rather than a separate architecture** — and the bare-metal path does
+  not have to wait for it.
+
+Costs, and one of them is security-critical:
+
+- The controller becomes a credential broker: a new endpoint, and a new trust
+  decision about what a job Pod's identity entitles it to.
+- The sidecar gains a network dependency on the controller at the start of a
+  transfer. Today it talks only to the store.
+- **The audience must differ from the enrollment audience.** If a job Pod's
+  token were accepted for enrollment, any job could register itself as an agent.
+  This is the detail that makes the design safe or unsafe, and it belongs in the
+  implementation plan as a named requirement rather than an assumption.
+
+Open within this option: what the credential is scoped to. Returning the
+controller's own bucket-wide credential is the simplest broker and leaves the
+blast radius where it is today; scoping to the run's prefix is better and
+depends on store support. That is a decision for the plan, not a blocker for the
+shape.
+
 ## 6. Recommendation
 
-**Ship the detection work, make the setup discoverable, and build §5.5's seam.
-Do not choose between §5.2 and §5.4 yet.**
+**Ship the detection work, make the setup discoverable, build §5.5's seam, and
+target §5.6.**
+
+The bare-metal requirement settles what was open. §5.4 cannot be the destination
+because it does not exist off EKS and GKE, which means §5.2's RBAC cost looked
+unavoidable — until §5.6, which reaches the same place using a token the kubelet
+projects and a `TokenReview` the controller already performs. It removes the
+operator's per-namespace Secret without the agent ever touching one.
 
 §5.5 is the part to build now. It is small, changes no existing deployment's
 behaviour, removes the `CreateContainerConfigError` blast radius on its own, and
@@ -290,10 +359,14 @@ These are cheap, and each removes one step of the operator's trial and error.
 
 ## 9. Open questions
 
-- **Is a second supported configuration acceptable?** §5.4 cannot cover
-  self-hosted stores without STS, so adopting it means maintaining both paths.
-  If that is unacceptable, §5.4 is not the destination and §5.2 becomes the
-  candidate on its own merits — with the RBAC cost paid explicitly.
+- ~~**Is a second supported configuration acceptable?**~~ **Settled:** the
+  Kubernetes agent must run on bare-metal clusters, so §5.4 cannot be the
+  destination. §5.6 replaces it and needs no second path — the same mechanism
+  works on bare metal, EKS and GKE.
+- **Does Garage support `AssumeRoleWithWebIdentity`?** Not required for §5.6 as
+  described, but it decides whether the broker can mint scoped credentials or
+  must pass one through on the shipped evaluation bundle. Verify before planning
+  that part.
 - **Should the controller hold a separate sidecar credential** even under §5.2,
   so the sidecar's blast radius stays smaller than the controller's? That
   restores a two-credential setup, but in one place instead of every namespace.
