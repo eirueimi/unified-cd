@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
 
@@ -50,7 +51,7 @@ func RunQueuedRunReaper(ctx context.Context, st store.Store, interval, minAge, s
 			return
 		case <-ticker.C:
 		}
-		observePass("queued_run_reaper", func() (int, int, error) { return runQueuedRunReaperOnce(ctx, st, minAge, staleAfter) })
+		metrics.ObservePass("queued_run_reaper", func() (int, int, error) { return runQueuedRunReaperOnce(ctx, st, minAge, staleAfter) })
 	}
 }
 

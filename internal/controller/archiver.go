@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
@@ -32,7 +33,7 @@ func RunLogArchiver(ctx context.Context, st store.Store, obj objectstore.ObjectS
 			return
 		case <-ticker.C:
 		}
-		observePass("log_archiver", func() (int, int, error) { return runArchiveAsLeader(ctx, st, obj, bo) })
+		metrics.ObservePass("log_archiver", func() (int, int, error) { return runArchiveAsLeader(ctx, st, obj, bo) })
 	}
 }
 

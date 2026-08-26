@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
@@ -42,7 +43,7 @@ func RunRunRetention(ctx context.Context, st store.Store, obj objectstore.Object
 			return
 		case <-ticker.C:
 		}
-		observePass("run_retention", func() (int, int, error) {
+		metrics.ObservePass("run_retention", func() (int, int, error) {
 			return runRunRetentionOnce(ctx, st, obj, retentionDays, bo)
 		})
 	}

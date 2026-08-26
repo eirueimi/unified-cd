@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -335,4 +336,42 @@ func (m *Metrics) RunTimeToClaim(seconds float64) {
 		return
 	}
 	m.queueWait.Observe(seconds)
+}
+
+// ControllerStore is everything the controller's scrape-time collectors need
+// from its database handle. *store.Postgres satisfies it.
+type ControllerStore interface {
+	Counts
+	PoolStatser
+}
+
+// NewForController builds the controller's Metrics with every collector
+// registered and the background-worker recorder wired.
+//
+// This exists as ONE function because the alternative had already gone wrong:
+// main.go performed five separate registration calls, and
+// TestMetricsEndToEndWiring re-performed a SUBSET of the same five rather than
+// exercising main.go's. Deleting a registration from main.go left that test
+// green, so the test named "end to end wiring" could not fail for the one
+// defect it exists to catch. With a single constructor, main.go and the test
+// call the same code and cannot drift.
+//
+// staleAfter is the agent-liveness window and must match the stuck-run
+// reaper's.
+func NewForController(version string, st ControllerStore, staleAfter time.Duration) *Metrics {
+	m := New()
+	m.SetBuildInfo(version)
+	// DB-backed gauges: run and agent counts, queried at scrape time.
+	m.RegisterDBCollector(st, staleAfter)
+	// Pool saturation. The four pools are separately bounded so background
+	// work cannot starve the API; a bounded pool under pressure queues rather
+	// than erroring, so without these numbers there is no signal at all that
+	// the isolation is being tested.
+	m.RegisterPoolCollector(st)
+	// Background workers hold no recorder of their own. Wiring them here, at
+	// construction, means a controller that has metrics has instrumented
+	// workers — rather than depending on a separate call that main.go could
+	// omit and no test would notice.
+	SetBackgroundRecorder(m)
+	return m
 }

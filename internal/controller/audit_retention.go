@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
 
@@ -33,7 +34,7 @@ func RunAuditRetention(ctx context.Context, st store.Store, interval time.Durati
 			return
 		case <-ticker.C:
 		}
-		observePass("audit_retention", func() (int, int, error) { return runAuditRetentionOnce(ctx, st, retentionDays) })
+		metrics.ObservePass("audit_retention", func() (int, int, error) { return runAuditRetentionOnce(ctx, st, retentionDays) })
 	}
 }
 

@@ -9,9 +9,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/eirueimi/unified-cd/internal/store"
 )
 
 func TestBearerAuth_AcceptsValidToken(t *testing.T) {
@@ -203,4 +203,3 @@ func TestServer_Root_Redirects_To_UI(t *testing.T) {
 	assert.Equal(t, http.StatusFound, rec.Code)
 	assert.Contains(t, rec.Header().Get("Location"), "/ui/")
 }
-

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
 
@@ -33,7 +34,7 @@ func RunApprovalReaper(ctx context.Context, st store.Store, interval time.Durati
 			return
 		case <-ticker.C:
 		}
-		observePass("approval_reaper", func() (int, int, error) { return runApprovalReaperAsLeader(ctx, st) })
+		metrics.ObservePass("approval_reaper", func() (int, int, error) { return runApprovalReaperAsLeader(ctx, st) })
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
 
@@ -36,7 +37,7 @@ func RunAppSourceSyncReaper(ctx context.Context, st store.Store, interval, stale
 			return
 		case <-ticker.C:
 		}
-		observePass("appsource_sync_reaper", func() (int, int, error) { return runAppSourceSyncReaperOnce(ctx, st, staleAfter) })
+		metrics.ObservePass("appsource_sync_reaper", func() (int, int, error) { return runAppSourceSyncReaperOnce(ctx, st, staleAfter) })
 	}
 }
 

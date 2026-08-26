@@ -3,8 +3,8 @@ package controller
 import (
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/go-chi/chi/v5"
 )
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {

@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/go-chi/chi/v5"
 )
 
 // handleApplyAppSource parses an AppSource YAML and saves it to the database.

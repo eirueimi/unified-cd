@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/eirueimi/unified-cd/internal/api"
 )
 
 func TestAPI_UpsertGitCredential(t *testing.T) {

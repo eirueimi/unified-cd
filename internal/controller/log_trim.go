@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/metrics"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	"github.com/eirueimi/unified-cd/internal/store"
 )
@@ -40,7 +41,7 @@ func RunLogTrim(ctx context.Context, st store.Store, obj objectstore.ObjectStore
 			return
 		case <-ticker.C:
 		}
-		observePass("log_trim", func() (int, int, error) { return runLogTrimOnce(ctx, st, obj, trimDays) })
+		metrics.ObservePass("log_trim", func() (int, int, error) { return runLogTrimOnce(ctx, st, obj, trimDays) })
 	}
 }
 
