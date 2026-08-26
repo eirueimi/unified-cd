@@ -26,6 +26,7 @@ func Cases() []Case {
 		parallelGroupMembersAllSucceed(),
 		finallyPostHookRuns(),
 		finallyOutputPromoted(),
+		varsReachStepIdentically(),
 	}
 }
 
@@ -655,6 +656,69 @@ func finallyOutputPromoted() Case {
 			},
 			RunFinished: "Succeeded",
 			RunOutputs:  map[string]string{"report_url": "https://reports.example/parity"},
+		},
+	}
+}
+
+// 17. vars-reach-step-identically: Vars must reach a step identically on both
+// backends. This case is the guard on the design's central property: the
+// merge happens in the shared orchestrator, above the ExecBackend seam, so
+// neither backend knows variables exist. If a future change moves any of it
+// below the seam, this is what fails.
+//
+// api.ClaimResponse.Vars already carries the MERGED result (a global Vars
+// manifest overlaid by the job's spec.vars -- merged once at claim assembly;
+// see ClaimResponse.Vars's doc comment). REGISTRY here is set to the value
+// that merge produces when the job's spec.vars overrides a global manifest
+// entry of the same key, so this claim starts from exactly the map
+// production hands a step; the merge itself (and step env: beating both, the
+// third precedence rung) is covered directly by
+// TestBuildClaimResponse_VarsPrecedence and TestOrchestrator_VarsPrecedence
+// (internal/agent). This case's job is only to prove that map reaches a step
+// identically on both backends, through BOTH delivery routes -- the shell
+// environment and {{ .Vars.KEY }} template expansion -- so a route left
+// unexercised here would leave half the delivery path unguarded.
+//
+// Both values are captured as step outputs (not asserted via exit code or
+// log line alone) so a regression that delivers an empty/garbled value still
+// fails loudly even if the step's own exit code stays 0.
+func varsReachStepIdentically() Case {
+	return Case{
+		Name: "vars-reach-step-identically",
+		Claim: func() api.ClaimResponse {
+			return api.ClaimResponse{
+				RunID:   "run-vars-reach-step-identically",
+				JobName: "vars-reach-step-identically",
+				Native:  true,
+				Vars: map[string]string{
+					// Present only via the (simulated) global manifest.
+					"APP_NAME": "shipper",
+					// The merged value after a job var of the same key
+					// overrides a global manifest default -- the interesting
+					// precedence half, per the merge's own doc comment.
+					"REGISTRY": "ghcr.io/from-job",
+				},
+				Stages: []api.ClaimStage{
+					{Step: &api.ClaimStep{
+						Index: 0, StageIndex: 0, Name: "varsstep",
+						Run: `echo "env=[$APP_NAME] tpl=[{{ .Vars.REGISTRY }}]"`,
+						Outputs: map[string]string{
+							"env": "{{ .Stdout }}",
+							"tpl": "{{ .Stdout }}",
+						},
+					}},
+				},
+			}
+		},
+		Expect: Expectation{
+			StepStatus:  map[string]string{"varsstep": "Succeeded"},
+			RunFinished: "Succeeded",
+			Outputs: map[string]map[string]string{
+				"varsstep": {
+					"env": "env=[shipper]",
+					"tpl": "tpl=[ghcr.io/from-job]",
+				},
+			},
 		},
 	}
 }
