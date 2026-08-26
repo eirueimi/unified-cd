@@ -32,7 +32,9 @@ Artifacts are stored in the S3-compatible object store. Artifact names must be u
 
 The `path`/`destDir` of an artifact step must be workspace-relative — see [Artifact and cache path rules](#artifact-and-cache-path-rules) below.
 
-Artifacts work on both the standard and Kubernetes agents; on the k8s-agent, transfers are handled by an auto-injected workspace sidecar (`unified-artifact`).
+Artifacts work on both the standard and Kubernetes agents; on the k8s-agent, transfers are handled by an auto-injected workspace sidecar (`unified-artifact`) that talks to the object store **directly** — see [Kubernetes Integration: S3 credentials](../../operator-manual/kubernetes-integration.md#s3-credentials-required) for how transfers work and the S3 credentials the sidecar requires.
+
+Those credentials are **required** on the k8s-agent, and are separate from the controller's own S3 configuration: the sidecar needs a `Secret` in the job Pod's namespace, named by the agent's `sidecarS3SecretName`. Without it every artifact step fails with `artifact requires S3 configuration (UNIFIED_S3_*)` — unlike cache, which degrades to a no-op rather than failing. The k8s-agent detects this when it claims the run and fails immediately instead of mid-job, so you find out before the job does its work rather than after. A transfer step marked `continueOnError: true` is exempt (its failure cannot fail the run anyway), and one guarded by an `if:` is warned about rather than failed, since whether it runs is not knowable at claim time.
 
 ### Downloading from another run (`runId`)
 
@@ -129,6 +131,8 @@ The `path`, `key`, and `restoreKeys` strings support template expressions (e.g. 
 On hit, the cached directory is restored before the step runs. On miss, the directory is saved after the run completes.
 
 Cache is now supported on the k8s agent (previously a silent no-op) with the same `key`/`restoreKeys`/`ttlDays` semantics — see [Kubernetes Integration: Artifacts and Cache](../../operator-manual/kubernetes-integration.md#artifacts-and-cache) for how transfers work and the required S3 credentials. Restore is best-effort (a miss or error never fails the step); save is deferred until the run's main stages complete.
+
+Best-effort means the step still succeeds, **not** that a failure is reported as success. A restore the agent could not perform — an unreachable store, or a k8s-agent with no `sidecarS3SecretName` configured — is logged as *not restored*, never as a cache hit, and a save that did not happen is not logged as saved. If a cache is silently doing nothing, the agent log says so.
 
 ### Cache entries are namespaced per job
 

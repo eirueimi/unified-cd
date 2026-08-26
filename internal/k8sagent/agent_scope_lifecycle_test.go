@@ -142,6 +142,12 @@ func TestExecuteRun_ScopedStep_UsesScopePodAndCleansUp(t *testing.T) {
 		Namespace:    "ci",
 		PodImage:     "ubuntu:22.04",
 		SidecarImage: "sidecar:1",
+		// The claim below carries an uploadArtifact step, and executeRun now
+		// fail-fasts such a claim when no sidecar S3 Secret is configured (the
+		// sidecar would exit 1 mid-run with "artifact requires S3
+		// configuration"). This test is about scope-pod lifecycle, so give it a
+		// secret name and let the artifact step reach the (faked) sidecar.
+		SidecarS3SecretName: "s3-creds",
 	}
 	a := &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: ex}
 

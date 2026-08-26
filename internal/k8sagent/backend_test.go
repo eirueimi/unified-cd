@@ -12,19 +12,19 @@ import (
 )
 
 // TestParseCacheResult is a table test for the UCD_CACHE_RESULT stdout-marker
-// parser: a "miss" marker must yield false, a "hit" marker (or any stdout
-// without a "miss" marker, including an empty/older-sidecar stdout) must
-// yield true — preserving the historical lenient best-effort default.
+// parser. The load-bearing rows are the last two: an ABSENT marker is
+// cacheResultUnknown, never cacheResultHit. Defaulting it to a hit is what let
+// a cache the sidecar never contacted report "cache hit" indefinitely.
 func TestParseCacheResult(t *testing.T) {
 	cases := []struct {
 		name   string
 		stdout string
-		want   bool
+		want   cacheResult
 	}{
-		{"hit marker", "UCD_CACHE_RESULT=hit\n", true},
-		{"miss marker", "UCD_CACHE_RESULT=miss\n", false},
-		{"empty stdout (older sidecar / error path)", "", true},
-		{"unrelated stdout, no marker", "some other output\n", true},
+		{"hit marker", "UCD_CACHE_RESULT=hit\n", cacheResultHit},
+		{"miss marker", "UCD_CACHE_RESULT=miss\n", cacheResultMiss},
+		{"empty stdout (error path emits no marker)", "", cacheResultUnknown},
+		{"unrelated stdout, no marker", "some other output\n", cacheResultUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -44,10 +44,14 @@ func TestK8sBackend_CacheRestore_HonorsStdoutMarker(t *testing.T) {
 		name    string
 		stdout  string
 		wantHit bool
+		wantErr bool
 	}{
-		{"hit marker on stdout", "UCD_CACHE_RESULT=hit\n", true},
-		{"miss marker on stdout", "UCD_CACHE_RESULT=miss\n", false},
-		{"no marker (older sidecar) defaults to hit", "", true},
+		{"hit marker on stdout", "UCD_CACHE_RESULT=hit\n", true, false},
+		{"miss marker on stdout", "UCD_CACHE_RESULT=miss\n", false, false},
+		// An exit-0 restore with no marker is the sidecar's swallowed
+		// "cache restore error (ignored)" path: nothing was restored, so it is
+		// reported as unknown-and-not-restored, never as a hit.
+		{"no marker is unknown, not a hit", "", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,13 +60,81 @@ func TestK8sBackend_CacheRestore_HonorsStdoutMarker(t *testing.T) {
 			b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
 
 			hit, err := b.CacheRestore(context.Background(), agentlib.ScopeHandle{}, "k1", nil, "/workspace/cachedir")
-			require.NoError(t, err)
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
 			assert.Equal(t, tc.wantHit, hit)
 			assert.Equal(t, "pod-default", ex.gotPod, "non-scoped restore must target the default pod")
 			assert.Equal(t, artifactSidecarName, ex.gotContainer)
 			assertJobFlagInArgv(t, ex.gotScript, "test-job")
 		})
 	}
+}
+
+// TestK8sBackend_CacheRestore_NonZeroExitIsNotAHit is the regression test for
+// the worst defect in this family: a cache step reporting a HIT for a cache it
+// never contacted.
+//
+// The shape reproduced here is exactly production's. With no
+// sidecarS3SecretName, `unified-sidecar cache restore` exits 1 ("cache requires
+// S3 configuration (UNIFIED_S3_*)") before touching S3 and prints no
+// UCD_CACHE_RESULT marker. Executor.execArgv maps that non-zero exit to
+// (1, nil) — a Go error is NOT produced — so CacheRestore used to discard the
+// exit code entirely (`_ = ec`) and derive hit/miss from the absent marker,
+// which defaulted to hit. Result: `slog.Info("cache hit")` for a completely
+// inert cache, for as long as the misconfiguration lasted.
+//
+// Cache stays best-effort — the orchestrator only warns on this error and the
+// step still succeeds — but it must never be a hit.
+func TestK8sBackend_CacheRestore_NonZeroExitIsNotAHit(t *testing.T) {
+	// exit 1 with NO Go error and NO marker: precisely what execArgv returns
+	// for a sidecar that exited non-zero on its own.
+	ex := &fakeExec{exit: 1, err: nil, stdout: ""}
+	a := &K8sAgent{exec: ex}
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
+
+	hit, err := b.CacheRestore(context.Background(), agentlib.ScopeHandle{}, "k1", nil, "/workspace/cachedir")
+	assert.False(t, hit, "a sidecar that exited non-zero restored nothing; it must never be reported as a cache hit")
+	require.Error(t, err, "the non-zero exit must surface so the orchestrator logs 'not restored' instead of 'cache hit'")
+	assert.Contains(t, err.Error(), "exited 1")
+}
+
+// TestK8sBackend_CacheSave_NonZeroExitIsNotSaved is the save-side twin: a
+// sidecar that exited non-zero saved nothing, and CacheSave returning nil is
+// what made the deferred cache hook log "cache saved".
+func TestK8sBackend_CacheSave_NonZeroExitIsNotSaved(t *testing.T) {
+	ex := &fakeExec{exit: 1, err: nil}
+	a := &K8sAgent{exec: ex}
+	b := newK8sBackend(a, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
+
+	err := b.CacheSave(context.Background(), agentlib.ScopeHandle{}, "k1", "/workspace/cachedir", 7)
+	require.Error(t, err, "a sidecar that exited non-zero saved nothing; it must not be logged as 'cache saved'")
+	assert.Contains(t, err.Error(), "exited 1")
+}
+
+// TestK8sBackend_ArtifactTransfers_HonorExitCode locks in that the artifact
+// paths — unlike cache before this fix — do check the sidecar's exit code, and
+// fail the step rather than silently reporting success. Swept alongside the
+// cache fix so a future refactor cannot regress them into the same shape.
+func TestK8sBackend_ArtifactTransfers_HonorExitCode(t *testing.T) {
+	newBackend := func(ex *fakeExec) *k8sBackend {
+		return newK8sBackend(&K8sAgent{exec: ex}, "run-1", "test-job", "pod-default", "/workspace", nil, metav1.Time{})
+	}
+
+	t.Run("upload", func(t *testing.T) {
+		err := newBackend(&fakeExec{exit: 1}).UploadArtifact(context.Background(), agentlib.ScopeHandle{}, "run-1", "app", "/workspace/bin")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sidecar exited 1")
+		require.NoError(t, newBackend(&fakeExec{exit: 0}).UploadArtifact(context.Background(), agentlib.ScopeHandle{}, "run-1", "app", "/workspace/bin"))
+	})
+	t.Run("download", func(t *testing.T) {
+		err := newBackend(&fakeExec{exit: 1}).DownloadArtifact(context.Background(), agentlib.ScopeHandle{}, "run-1", "app", "/workspace/in")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sidecar exited 1")
+		require.NoError(t, newBackend(&fakeExec{exit: 0}).DownloadArtifact(context.Background(), agentlib.ScopeHandle{}, "run-1", "app", "/workspace/in"))
+	})
 }
 
 // TestK8sBackend_CacheRestore_PropagatesExecError proves a genuine exec

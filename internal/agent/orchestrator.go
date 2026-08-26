@@ -1483,8 +1483,12 @@ func executeCacheStep(
 
 	// Cache stays warn+skip on error (lenient policy): a restore/save problem
 	// should not fail the step, unlike artifact upload/download.
+	// A restore that FAILED is not a hit and not a miss: the backend reports it
+	// as an error and it is logged as "not restored", never as "cache hit". The
+	// step still succeeds (lenient policy above), but the log now says what
+	// actually happened — a cache the step never contacted must not report a hit.
 	if hit, err := b.CacheRestore(ctx, scope, key, restoreKeys, scopedCachePath); err != nil {
-		slog.Warn("cache restore error", "step", step.Name, "error", err)
+		slog.Warn("cache not restored; continuing without a cache (best-effort)", "step", step.Name, "key", key, "error", err)
 	} else if hit {
 		slog.Info("cache hit", "step", step.Name, "key", key)
 	} else {
@@ -1510,7 +1514,7 @@ func executeCacheStep(
 			// across the host/k8s seam — too big a change for what is an
 			// imprecise log line with no functional impact, so it is left as-is.
 			if err := b.CacheSave(hookCtx, scope, capturedKey, capturedPath, ttlDays); err != nil {
-				slog.Warn("cache save failed", "key", capturedKey, "error", err)
+				slog.Warn("cache not saved (best-effort)", "key", capturedKey, "error", err)
 			} else {
 				slog.Info("cache saved", "key", capturedKey)
 			}

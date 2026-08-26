@@ -34,6 +34,19 @@ type storeProvider func(context.Context) (objectstore.ObjectStore, error)
 // failure. If newStore fails (e.g. no S3 configuration in degraded mode),
 // cache/artifact subcommands fail loudly with a clear message and a
 // non-zero exit code.
+//
+// Two gaps in "cache always exits 0" are load-bearing for the caller, because
+// between them they are every way a cache can be inert:
+//
+//   - The newStore failure above happens BEFORE runCache is entered, so a
+//     cache subcommand does exit non-zero when there is no S3 configuration.
+//     This is the common production case (no sidecarS3SecretName), and it is
+//     why k8sBackend.CacheRestore must check the exit code rather than trust
+//     the "always 0" half of this contract.
+//   - `cache restore`'s swallowed-error path exits 0 and emits NO marker.
+//
+// So a caller may see any of: non-zero exit, exit 0 with `hit`, exit 0 with
+// `miss`, or exit 0 with no marker at all. Only the second is a hit.
 func run(ctx context.Context, newStore storeProvider, args []string, stderr io.Writer) int {
 	if len(args) == 1 && args[0] == "idle" {
 		<-ctx.Done()
@@ -92,7 +105,12 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		hit, err := cache.Restore(ctx, store, *job, *path, *key, restoreKeys)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			fmt.Fprintf(stderr, "cache restore error (ignored): %v\n", err)
-			// error path: leave no marker → CacheRestore keeps its lenient default (hit=true)
+			// This path deliberately exits 0 (cache never fails a step) and
+			// emits NO marker. A marker-less exit-0 restore therefore means
+			// "the restore errored and nothing came back" — k8sBackend.
+			// CacheRestore reads the absence as cacheResultUnknown and reports
+			// "not restored", never a hit. Do not add a marker here without
+			// changing that reader: `hit` is false in this branch anyway.
 		} else if hit {
 			fmt.Fprintf(stderr, "cache hit: %s\n", *key)
 			fmt.Fprintln(stdout, "UCD_CACHE_RESULT=hit")

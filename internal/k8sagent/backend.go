@@ -917,8 +917,11 @@ func (b *k8sBackend) resolveSidecarTarget(ctx context.Context, scope agentlib.Sc
 }
 
 // CacheRestore execs the unified-sidecar binary's "cache restore" into the
-// target pod's sidecar. Best-effort: a miss/error is reported back to the
-// caller via (false, err) but callers treat cache as lenient.
+// target pod's sidecar. Best-effort: a miss, a failed restore, or an
+// unreachable store never fails the run — but it is never reported as a HIT
+// either. A non-zero sidecar exit and an absent UCD_CACHE_RESULT marker both
+// come back as (false, err); the orchestrator only warns on that error (see
+// orchestrator.go's cache step), so the run continues without a cache.
 func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandle, key string, restoreKeys []string, path string) (bool, error) {
 	sidecar, targetPod, err := b.resolveSidecarTarget(ctx, scope)
 	if err != nil {
@@ -932,30 +935,77 @@ func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandl
 	if err != nil {
 		return false, err
 	}
-	// exit code stays best-effort (0 on hit/miss/error); the true hit/miss comes
-	// from the sidecar's UCD_CACHE_RESULT stdout marker so the orchestrator logs
-	// an accurate hit/miss (parity with the host's ErrCacheMiss-based bool).
-	_ = ec
-	return parseCacheResult(stdout), nil
+	if ec != 0 {
+		// The sidecar never reached the store at all — the dominant cause is a
+		// missing/unset sidecarS3SecretName, where `unified-sidecar cache
+		// restore` exits 1 with "cache requires S3 configuration (UNIFIED_S3_*)"
+		// before contacting S3. Nothing was restored, so this must NOT be
+		// reported as a hit. Returning an error (rather than a bare `false`)
+		// keeps the distinction between "the store said miss" and "we could not
+		// ask the store" visible in the log; it does not fail the step.
+		return false, fmt.Errorf("cache restore %q: sidecar exited %d without restoring anything (see the unified-artifact sidecar's log for the reason)", key, ec)
+	}
+	// The exit code alone cannot distinguish hit from miss (the sidecar exits 0
+	// for both), so the outcome comes from its UCD_CACHE_RESULT stdout marker.
+	switch parseCacheResult(stdout) {
+	case cacheResultHit:
+		return true, nil
+	case cacheResultMiss:
+		return false, nil
+	default:
+		// Unknown, NEVER "hit". The sidecar emits a marker on every path it
+		// reaches an answer on; the one exit-0 path that emits none is its
+		// swallowed restore error ("cache restore error (ignored)"), i.e.
+		// precisely a case where nothing was restored. (A pre-marker sidecar
+		// image would also land here; agent and sidecar are required to be
+		// upgraded in lockstep — see docs/operator-manual/operations.md.)
+		return false, fmt.Errorf("cache restore %q: sidecar reported no UCD_CACHE_RESULT marker; treating the cache as not restored", key)
+	}
 }
 
+// cacheResult is the tri-state outcome of a sidecar `cache restore`. The third
+// state matters: an ABSENT marker is unknown, not a hit — reporting it as a hit
+// is how a completely inert cache used to log "cache hit" indefinitely.
+type cacheResult int
+
+const (
+	cacheResultUnknown cacheResult = iota
+	cacheResultHit
+	cacheResultMiss
+)
+
 // parseCacheResult reads the UCD_CACHE_RESULT marker from the sidecar's stdout.
-// Absent marker (older sidecar, or the error path that emits none) defaults to a
-// hit, preserving the historical lenient best-effort behavior.
-func parseCacheResult(stdout string) bool {
-	return !strings.Contains(stdout, "UCD_CACHE_RESULT=miss")
+// An absent marker yields cacheResultUnknown; callers must not treat that as a
+// hit.
+func parseCacheResult(stdout string) cacheResult {
+	switch {
+	case strings.Contains(stdout, "UCD_CACHE_RESULT=hit"):
+		return cacheResultHit
+	case strings.Contains(stdout, "UCD_CACHE_RESULT=miss"):
+		return cacheResultMiss
+	default:
+		return cacheResultUnknown
+	}
 }
 
 // CacheSave execs the unified-sidecar binary's "cache save" into the target
-// pod's sidecar.
+// pod's sidecar. Best-effort like CacheRestore — the returned error is only
+// warned on by the deferred cache hook — but a sidecar that exited non-zero
+// saved nothing and must not be logged as "cache saved".
 func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, key, path string, ttlDays int) error {
 	sidecar, targetPod, err := b.resolveSidecarTarget(ctx, scope)
 	if err != nil {
 		return err
 	}
 	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--job", b.jobName}
-	_, err = b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
-	return err
+	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
+	if err != nil {
+		return err
+	}
+	if ec != 0 {
+		return fmt.Errorf("cache save %q: sidecar exited %d without saving anything (see the unified-artifact sidecar's log for the reason)", key, ec)
+	}
+	return nil
 }
 
 // UploadArtifact execs the unified-sidecar binary's "artifact upload" into
