@@ -2159,6 +2159,43 @@ func (p *Postgres) DeleteWebhookReceiver(ctx context.Context, name string) error
 	return err
 }
 
+// UpsertVars creates or updates a Vars manifest and returns its name.
+func (p *Postgres) UpsertVars(ctx context.Context, name string, specJSON []byte) (string, error) {
+	const q = `INSERT INTO vars(name, spec) VALUES ($1, $2)
+		ON CONFLICT (name) DO UPDATE SET spec = EXCLUDED.spec, updated_at = NOW()
+		RETURNING name;`
+	var out string
+	err := p.pool.QueryRow(ctx, q, name, specJSON).Scan(&out)
+	if err != nil {
+		return "", fmt.Errorf("upsert vars %q: %w", name, err)
+	}
+	return out, nil
+}
+
+// ListVars returns all Vars manifests ordered by name ascending.
+func (p *Postgres) ListVars(ctx context.Context) ([]VarsRecord, error) {
+	rows, err := p.pool.Query(ctx, `SELECT name, spec FROM vars ORDER BY name;`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VarsRecord
+	for rows.Next() {
+		var v VarsRecord
+		if err := rows.Scan(&v.Name, &v.Spec); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// DeleteVars deletes a Vars manifest by name.
+func (p *Postgres) DeleteVars(ctx context.Context, name string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM vars WHERE name = $1;`, name)
+	return err
+}
+
 // CreateOIDCState saves an OIDC flow state to the database.
 func (p *Postgres) CreateOIDCState(ctx context.Context, state, redirectTo string, expiresAt time.Time) (*OIDCState, error) {
 	const q = `INSERT INTO oidc_states(state, redirect_to, expires_at)

@@ -112,6 +112,12 @@ type WebhookReceiver struct {
 	UpdatedAt time.Time
 }
 
+// VarsRecord is one stored Vars manifest. Spec is the raw JSON of dsl.VarsSpec.
+type VarsRecord struct {
+	Name string
+	Spec []byte
+}
+
 // Schedule represents a cron schedule trigger.
 type Schedule struct {
 	Name        string
@@ -438,6 +444,17 @@ type Store interface {
 	GetWebhookReceiver(ctx context.Context, name string) (*WebhookReceiver, error)
 	ListWebhookReceivers(ctx context.Context) ([]WebhookReceiver, error)
 	DeleteWebhookReceiver(ctx context.Context, name string) error
+
+	// Vars
+	// UpsertVars stores a Vars manifest by name, replacing any previous
+	// version, and returns the name.
+	UpsertVars(ctx context.Context, name string, specJSON []byte) (string, error)
+	// ListVars returns every Vars manifest, sorted by name so the merge order
+	// in buildClaimResponse is deterministic.
+	ListVars(ctx context.Context) ([]VarsRecord, error)
+	// DeleteVars removes a Vars manifest. Deleting one that does not exist is
+	// not an error - AppSource's delete path must be idempotent.
+	DeleteVars(ctx context.Context, name string) error
 
 	// Secrets
 	UpsertSecret(ctx context.Context, name string, encryptedDEK, ciphertext []byte) (*StoredSecret, error)
