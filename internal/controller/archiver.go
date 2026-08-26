@@ -32,39 +32,52 @@ func RunLogArchiver(ctx context.Context, st store.Store, obj objectstore.ObjectS
 			return
 		case <-ticker.C:
 		}
-		runArchiveAsLeader(ctx, st, obj, bo)
+		observePass("log_archiver", func() (int, int, error) { return runArchiveAsLeader(ctx, st, obj, bo) })
 	}
 }
 
-func runArchiveAsLeader(ctx context.Context, st store.Store, obj objectstore.ObjectStore, bo *failureBackoff) {
+// runArchiveAsLeader returns the archived and failed run counts for metrics.
+// A replica that is not the leader returns zeroes and a nil error: it did no
+// work and nothing went wrong, which is what its own scrape should say.
+func runArchiveAsLeader(ctx context.Context, st store.Store, obj objectstore.ObjectStore, bo *failureBackoff) (int, int, error) {
 	release, err := st.AcquireAdvisoryLock(ctx, logArchiverLockKey)
 	if err != nil {
 		slog.Warn("log archiver lock", "error", err)
-		return
+		return 0, 0, err
 	}
 	if release == nil {
-		return // Another replica is leader.
+		return 0, 0, nil // Another replica is leader.
 	}
 	defer release()
-	if err := archivePendingLogs(ctx, st, obj, bo); err != nil {
+	archived, failed, err := archivePendingLogs(ctx, st, obj, bo)
+	if err != nil {
 		slog.Error("log archiver error", "error", err)
 	}
+	return archived, failed, err
 }
 
-func archivePendingLogs(ctx context.Context, st store.Store, obj objectstore.ObjectStore, bo *failureBackoff) error {
+// archivePendingLogs archives one batch, counting runs it could not archive
+// rather than only logging them. It still returns nil in that case — a single
+// bad run must not abort the batch, and the backoff already stops it from
+// filling every subsequent one — so the failed count is the ONLY signal that
+// distinguishes "archived nothing because there was nothing to do" from
+// "archived nothing because every attempt failed".
+func archivePendingLogs(ctx context.Context, st store.Store, obj objectstore.ObjectStore, bo *failureBackoff) (archived, failed int, err error) {
 	runs, err := st.ListRunsNeedingArchival(ctx, 20, bo.Excluded(time.Now()))
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	for _, run := range runs {
 		if err := archiveRunLogs(ctx, st, obj, run.ID); err != nil {
 			slog.Error("failed to archive Run logs", "runId", run.ID, "error", err)
 			bo.Failure(run.ID, time.Now())
+			failed++
 			continue
 		}
 		bo.Success(run.ID)
+		archived++
 	}
-	return nil
+	return archived, failed, nil
 }
 
 // runLogArchiveKey is the deterministic object-store key for a run's archived

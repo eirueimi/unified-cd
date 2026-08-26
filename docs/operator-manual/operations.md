@@ -343,6 +343,48 @@ Key metrics:
 | `unifiedcd_http_request_duration_seconds{method,route}` | histogram | HTTP request duration by method and chi route pattern |
 | `unifiedcd_scrape_collector_errors_total` | counter | Errors collecting DB-backed gauges (`unifiedcd_runs_current`, `unifiedcd_agents`) at scrape time |
 | `unifiedcd_build_info{version}` | gauge | Always `1`; the controller's build version is the label. See [Checking which version is running](#checking-which-version-is-running) |
+| `unifiedcd_run_time_to_claim_seconds` | histogram | Time from run creation to an agent claiming it. Spans Pending (git template resolution, concurrency gating) as well as Queued — it is the wait a CI user actually experiences, not pure queue time |
+| `unifiedcd_background_task_runs_total{task,outcome}` | counter | Background worker passes, by outcome (`success` / `error`) |
+| `unifiedcd_background_task_duration_seconds{task}` | histogram | Background worker pass duration |
+| `unifiedcd_background_task_items_total{task,result}` | counter | Items a worker acted on, by per-item result (`ok` / `error`) |
+| `unifiedcd_log_lines_ingested_total{result}` | counter | Log lines received from agents (`accepted` / `dropped`; dropped means the run was sealed) |
+| `unifiedcd_log_bytes_ingested_total` | counter | Bytes of log content received, accepted or not |
+| `unifiedcd_db_pool_connections{pool,state}` | gauge | Postgres pool connections by pool (`api`, `background`, `lock`, `listen`) and state (`acquired` / `idle` / `total`) |
+| `unifiedcd_db_pool_max_connections{pool}` | gauge | Configured ceiling per pool |
+| `unifiedcd_db_pool_empty_acquires_total{pool}` | counter | Acquires that found no free connection and had to wait |
+| `unifiedcd_db_pool_canceled_acquires_total{pool}` | counter | Acquires abandoned because the caller's context ended while waiting |
+| `go_*`, `process_*` | various | Standard Go runtime and process collectors (goroutines, heap, GC pause, RSS, CPU, open FDs) |
+
+### Watching the background workers
+
+Nine background workers run on tickers with no caller waiting on them, so a
+worker that fails every pass has nothing else to surface it. `outcome="error"`
+catches a pass that failed outright.
+
+`result="error"` catches the subtler case. Several of these workers iterate a
+batch and deliberately swallow per-item failures so one bad item cannot abort
+the sweep — the log archiver logs a run it could not archive and moves on,
+returning no error. Pass-level outcome therefore reports **success** for a
+worker whose every single item failed, and without the per-item counter a
+dashboard cannot tell "nothing to archive" from "nothing archivable".
+
+Instrumented tasks: `log_archiver`, `log_trim`, `run_retention`,
+`audit_retention`, `cache_cleanup`, `approval_reaper`, `stuck_run_reaper`,
+`queued_run_reaper`, `appsource_sync_reaper`.
+
+Not instrumented: the scheduler, the git resolver, and the AppSource
+reconciler. Their loop bodies carry leader state inline rather than through a
+single pass function, so there is no one place to time. The scheduler is still
+observable indirectly — `unifiedcd_runs_current{status="Pending"}` climbing
+with `unifiedcd_run_time_to_claim_seconds` is the signal that it has stopped.
+
+### Watching the connection pools
+
+The four pools are separately bounded (`api` 128, `background` 32, `lock` 16,
+`listen` 128 by default) so background work cannot starve the API. A **bounded**
+pool under pressure does not error — it queues — so `empty_acquires_total` is
+the only signal that a pool is too small, and the acquired/max ratio is the
+only way to tell whether the isolation the split exists for is holding.
 
 With multiple controller replicas, gauges report identical values on every
 replica (aggregate with `max()`); counters count only events the scraped
@@ -370,6 +412,25 @@ max(unifiedcd_agents{state="alive"}) == 0
 
 # p95 step duration
 histogram_quantile(0.95, sum(rate(unifiedcd_step_duration_seconds_bucket[1h])) by (le))
+
+# A background worker whose items all fail while its passes report success
+sum(rate(unifiedcd_background_task_items_total{result="error"}[15m])) by (task)
+
+# A background worker that has stopped running at all (alert if this drops to 0)
+sum(rate(unifiedcd_background_task_runs_total[15m])) by (task)
+
+# Connection pool saturation, per pool
+max(unifiedcd_db_pool_connections{state="acquired"}) by (pool)
+  / max(unifiedcd_db_pool_max_connections) by (pool)
+
+# Requests waiting on a connection — a bounded pool's only failure signal
+sum(rate(unifiedcd_db_pool_empty_acquires_total[5m])) by (pool)
+
+# p95 wait before a run starts executing
+histogram_quantile(0.95, sum(rate(unifiedcd_run_time_to_claim_seconds_bucket[1h])) by (le))
+
+# Goroutine leak
+max(go_goroutines) by (instance)
 ```
 
 Ready-made Prometheus alerting rules for these metrics live in

@@ -42,28 +42,34 @@ func RunRunRetention(ctx context.Context, st store.Store, obj objectstore.Object
 			return
 		case <-ticker.C:
 		}
-		runRunRetentionOnce(ctx, st, obj, retentionDays, bo)
+		observePass("run_retention", func() (int, int, error) {
+			return runRunRetentionOnce(ctx, st, obj, retentionDays, bo)
+		})
 	}
 }
 
-func runRunRetentionOnce(ctx context.Context, st store.Store, obj objectstore.ObjectStore, retentionDays int, bo *failureBackoff) {
+// runRunRetentionOnce returns (runs deleted, runs whose deletion failed, pass
+// error). Per-run failures are counted because the sweep swallows them to keep
+// going: a pass where every delete failed returns nil and would otherwise be
+// indistinguishable from a pass with nothing to do.
+func runRunRetentionOnce(ctx context.Context, st store.Store, obj objectstore.ObjectStore, retentionDays int, bo *failureBackoff) (int, int, error) {
 	release, err := st.AcquireAdvisoryLock(ctx, runRetentionLockKey)
 	if err != nil {
 		slog.Warn("run retention lock", "error", err)
-		return
+		return 0, 0, err
 	}
 	if release == nil {
-		return // Another replica is leader.
+		return 0, 0, nil // Another replica is leader.
 	}
 	defer release()
 
 	cutoff := time.Now().AddDate(0, 0, -retentionDays)
-	total := 0
+	total, errs := 0, 0
 	for {
 		ids, err := st.ListExpiredRuns(ctx, cutoff, runRetentionBatchSize, bo.Excluded(time.Now()))
 		if err != nil {
 			slog.Error("run retention: list expired runs", "error", err)
-			return
+			return total, errs, err
 		}
 		if len(ids) == 0 {
 			break
@@ -75,11 +81,12 @@ func runRunRetentionOnce(ctx context.Context, st store.Store, obj objectstore.Ob
 				// every remaining run. Not counted as zero progress — we
 				// simply return rather than falling through to the
 				// zero-progress-stops-the-tick check below.
-				return
+				return total + deleted, errs, nil
 			}
 			if err := deleteRunEverywhere(ctx, st, obj, id); err != nil {
 				slog.Warn("run retention: delete failed, will retry next tick", "run", id, "error", err)
 				bo.Failure(id, time.Now())
+				errs++
 				continue
 			}
 			bo.Success(id)
@@ -97,6 +104,7 @@ func runRunRetentionOnce(ctx context.Context, st store.Store, obj objectstore.Ob
 	if total > 0 {
 		slog.Info("run retention: deleted expired runs", "count", total, "olderThan", cutoff)
 	}
+	return total, errs, nil
 }
 
 // deleteRunEverywhere removes a run's object-store data and then its DB row.

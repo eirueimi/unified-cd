@@ -40,28 +40,32 @@ func RunLogTrim(ctx context.Context, st store.Store, obj objectstore.ObjectStore
 			return
 		case <-ticker.C:
 		}
-		runLogTrimOnce(ctx, st, obj, trimDays)
+		observePass("log_trim", func() (int, int, error) { return runLogTrimOnce(ctx, st, obj, trimDays) })
 	}
 }
 
-func runLogTrimOnce(ctx context.Context, st store.Store, obj objectstore.ObjectStore, trimDays int) {
+// runLogTrimOnce returns (runs trimmed, runs it could not trim, pass error).
+// Skipped candidates are counted as failures: a sweep that skips every
+// candidate returns nil and looks identical to one with nothing to trim, while
+// meaning DB log rows are growing without bound.
+func runLogTrimOnce(ctx context.Context, st store.Store, obj objectstore.ObjectStore, trimDays int) (int, int, error) {
 	release, err := st.AcquireAdvisoryLock(ctx, logTrimLockKey)
 	if err != nil {
 		slog.Warn("log trim lock", "error", err)
-		return
+		return 0, 0, err
 	}
 	if release == nil {
-		return // Another replica is leader.
+		return 0, 0, nil // Another replica is leader.
 	}
 	defer release()
 
 	cutoff := time.Now().AddDate(0, 0, -trimDays)
-	totalRuns := 0
+	totalRuns, errs := 0, 0
 	for {
 		ids, err := st.ListTrimCandidates(ctx, cutoff, logTrimBatchSize)
 		if err != nil {
 			slog.Error("log trim: list candidates", "error", err)
-			return
+			return totalRuns, errs, err
 		}
 		if len(ids) == 0 {
 			break
@@ -69,13 +73,14 @@ func runLogTrimOnce(ctx context.Context, st store.Store, obj objectstore.ObjectS
 		progressed := 0
 		for _, id := range ids {
 			if ctx.Err() != nil {
-				return // shutting down; the next leader resumes
+				return totalRuns, errs, nil // shutting down; the next leader resumes
 			}
 			// Trimming is irreversible: never trust the DB record alone,
 			// verify the archive object actually exists first.
 			keys, err := obj.List(ctx, runLogArchiveKey(id))
 			if err != nil {
 				slog.Warn("log trim: verify archive object", "run", id, "error", err)
+				errs++
 				continue
 			}
 			if len(keys) == 0 {
@@ -86,6 +91,7 @@ func runLogTrimOnce(ctx context.Context, st store.Store, obj objectstore.ObjectS
 				slog.Warn("log trim: archive object missing, deleting stale record for re-archival", "run", id)
 				if err := st.DeleteLogArchive(ctx, id); err != nil {
 					slog.Warn("log trim: delete stale archive record", "run", id, "error", err)
+					errs++
 					continue
 				}
 				progressed++ // the candidate left the result set
@@ -115,6 +121,7 @@ func runLogTrimOnce(ctx context.Context, st store.Store, obj objectstore.ObjectS
 						slog.Warn("log trim: legacy archive record without coverage, deleting so the archiver re-archives", "run", id)
 						if dErr := st.DeleteLogArchive(ctx, id); dErr != nil {
 							slog.Warn("log trim: delete legacy archive record", "run", id, "error", dErr)
+							errs++
 							continue
 						}
 						progressed++
@@ -127,6 +134,7 @@ func runLogTrimOnce(ctx context.Context, st store.Store, obj objectstore.ObjectS
 				} else {
 					slog.Warn("log trim: trim failed, will retry next tick", "run", id, "error", err)
 				}
+				errs++
 				continue
 			}
 			progressed++
@@ -143,4 +151,5 @@ func runLogTrimOnce(ctx context.Context, st store.Store, obj objectstore.ObjectS
 	if totalRuns > 0 {
 		slog.Info("log trim: trimmed archived runs' DB log rows", "runs", totalRuns, "olderThan", cutoff)
 	}
+	return totalRuns, errs, nil
 }

@@ -72,3 +72,29 @@ func (s *InstrumentedStore) UpsertStepReport(ctx context.Context, runID string, 
 	}
 	return err
 }
+
+// ClaimNextRun records how long the claimed run waited before an agent took
+// it. A poll that finds nothing to claim returns (nil, nil) and observes
+// nothing — recording a zero there would bury every real wait under a mass of
+// empty polls, and the agents poll continuously.
+func (s *InstrumentedStore) ClaimNextRun(ctx context.Context, agentID string, agentLabels []string) (*store.ClaimedRun, error) {
+	run, err := s.Store.ClaimNextRun(ctx, agentID, agentLabels)
+	s.observeClaim(run, err)
+	return run, err
+}
+
+// ClaimNextRunDetached is instrumented identically: a detached run's wait is
+// the same user-facing number, and claiming it from a separate budget does not
+// make it a different measurement.
+func (s *InstrumentedStore) ClaimNextRunDetached(ctx context.Context, agentID string, agentLabels []string) (*store.ClaimedRun, error) {
+	run, err := s.Store.ClaimNextRunDetached(ctx, agentID, agentLabels)
+	s.observeClaim(run, err)
+	return run, err
+}
+
+func (s *InstrumentedStore) observeClaim(run *store.ClaimedRun, err error) {
+	if err != nil || run == nil || run.CreatedAt.IsZero() {
+		return
+	}
+	s.m.RunTimeToClaim(time.Since(run.CreatedAt).Seconds())
+}

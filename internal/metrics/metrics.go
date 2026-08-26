@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -26,6 +27,13 @@ type Metrics struct {
 	agentAuthEvents *prometheus.CounterVec
 	collectorErrors prometheus.Counter
 	buildInfo       *prometheus.GaugeVec
+
+	bgRuns     *prometheus.CounterVec
+	bgDuration *prometheus.HistogramVec
+	bgItems    *prometheus.CounterVec
+	logLines   *prometheus.CounterVec
+	logBytes   prometheus.Counter
+	queueWait  prometheus.Histogram
 }
 
 // New builds a Metrics with its own registry (never the global default, so
@@ -75,10 +83,66 @@ func New() *Metrics {
 			Name: "unifiedcd_build_info",
 			Help: "Controller build information; always 1, the version is carried in the label.",
 		}, []string{"version"}),
+		bgRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "unifiedcd_background_task_runs_total",
+			Help: "Background worker passes, by task and outcome (success, error).",
+		}, []string{"task", "outcome"}),
+		bgDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "unifiedcd_background_task_duration_seconds",
+			Help: "Background worker pass duration in seconds, by task.",
+			// A pass that outlives its own tick interval is the failure these
+			// buckets exist to show, so they run well past the fastest
+			// interval any worker uses.
+			Buckets: []float64{0.1, 0.5, 1, 5, 15, 60, 300, 900},
+		}, []string{"task"}),
+		bgItems: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "unifiedcd_background_task_items_total",
+			Help: "Items a background worker acted on (runs archived, rows trimmed, runs reaped), by task and per-item result.",
+		}, []string{"task", "result"}),
+		logLines: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "unifiedcd_log_lines_ingested_total",
+			Help: "Log lines received from agents, by result (accepted, dropped).",
+		}, []string{"result"}),
+		logBytes: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "unifiedcd_log_bytes_ingested_total",
+			Help: "Bytes of log line content received from agents, accepted or not.",
+		}),
+		queueWait: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: "unifiedcd_run_time_to_claim_seconds",
+			Help: "Time from run creation to an agent claiming it (spans both Pending and Queued).",
+			// unifiedcd_runs_current{status="queued"} says how many runs are
+			// waiting; this says how long they waited, which is the number a
+			// CI user actually experiences.
+			//
+			// Measured from CreatedAt, so it spans the Pending phase (git
+			// template resolution, concurrency gating) as well as Queued.
+			// There is no queued_at column to measure the narrower window
+			// from, and the wider one is the number a user cares about
+			// anyway; the name says which it is so nobody reads it as pure
+			// queue time.
+			Buckets: []float64{1, 5, 15, 30, 60, 300, 900, 1800, 3600},
+		}),
 	}
 	m.reg.MustRegister(m.runsCreated, m.runsFinished, m.stepsCompleted,
 		m.stepDuration, m.webhookEvents, m.httpRequests, m.httpDuration,
-		m.agentAuthEvents, m.collectorErrors, m.buildInfo)
+		m.agentAuthEvents, m.collectorErrors, m.buildInfo,
+		m.bgRuns, m.bgDuration, m.bgItems, m.logLines, m.logBytes, m.queueWait)
+
+	// The Go and process collectors have to be registered explicitly here.
+	// prometheus.DefaultRegisterer installs them for you; a private registry
+	// starts completely empty, so choosing one above (for the coexistence
+	// property it buys) silently dropped every go_* and process_* series.
+	// Without them a goroutine leak, a memory climb toward an OOMKill, and GC
+	// pressure behind a latency regression are all invisible to a dashboard.
+	//
+	// Registering them on the private registry keeps both properties: two
+	// Metrics instances in one process get their own copies rather than
+	// colliding, which is what a duplicate registration against the global
+	// registry would do.
+	m.reg.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
 	return m
 }
 
@@ -199,4 +263,76 @@ func httpMethodLabel(method string) string {
 	default:
 		return "other"
 	}
+}
+
+// BackgroundTask records one pass of a background worker: how long it took,
+// whether it failed, and how many items it acted on.
+//
+// One family for every worker rather than a family per worker, because the
+// question an operator asks is the same for all of them — "is this still
+// running, and is it keeping up?" — and a shared family means a new worker
+// appears on the dashboard by passing its name here rather than by editing a
+// query. task must be a fixed string, never derived from input: it is a
+// Prometheus label, so an unbounded set of values is a cardinality leak.
+//
+// ok and failed are counted separately because several of these workers
+// iterate a batch and swallow per-item failures to keep going — the archiver
+// logs a run it could not archive and moves to the next one, returning nil.
+// Pass-level outcome alone therefore reports SUCCESS for a worker whose every
+// single item failed, which is precisely the silent breakage an operator needs
+// to see. rate(...{result="error"}) is the query that catches it.
+//
+// A worker that fails is the case this exists for. Every one of these runs on
+// a ticker with no external caller, so a silent failure has nothing else to
+// surface it — the archiver in particular can stop archiving indefinitely
+// while every other signal looks healthy.
+func (m *Metrics) BackgroundTask(task string, ok, failed int, seconds float64, err error) {
+	if m == nil {
+		return
+	}
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	m.bgRuns.WithLabelValues(task, outcome).Inc()
+	m.bgDuration.WithLabelValues(task).Observe(seconds)
+	if ok > 0 {
+		m.bgItems.WithLabelValues(task, "ok").Add(float64(ok))
+	}
+	if failed > 0 {
+		m.bgItems.WithLabelValues(task, "error").Add(float64(failed))
+	}
+}
+
+// LogsIngested records a batch of agent log lines. bytes counts the line
+// content received regardless of whether it was stored, so a run whose logs
+// are being dropped still shows the ingress cost it is imposing.
+func (m *Metrics) LogsIngested(accepted, dropped, bytes int) {
+	if m == nil {
+		return
+	}
+	if accepted > 0 {
+		m.logLines.WithLabelValues("accepted").Add(float64(accepted))
+	}
+	if dropped > 0 {
+		m.logLines.WithLabelValues("dropped").Add(float64(dropped))
+	}
+	if bytes > 0 {
+		m.logBytes.Add(float64(bytes))
+	}
+}
+
+// RunTimeToClaim records how long a run waited between being created and being
+// claimed by an agent.
+// Negative durations (a clock stepping backwards between the two timestamps)
+// are dropped rather than clamped to zero, which would otherwise pile a
+// fictional instant-claim into the first bucket.
+func (m *Metrics) RunTimeToClaim(seconds float64) {
+	if m == nil {
+		return
+	}
+	if seconds < 0 {
+		return
+	}
+	m.queueWait.Observe(seconds)
 }
