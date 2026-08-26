@@ -56,6 +56,21 @@ type ExecBackend interface {
 	// step's writers, so post output is masked and streamed identically) —
 	// RunPostHook must feed the script's actual stdout/stderr into them, not
 	// discard them.
+	//
+	// CONTRACT ON THE RETURN VALUE: post: hooks are best-effort cleanup, by
+	// design, not a step that can fail the run. This method's signature
+	// deliberately has no int exit code alongside the error (unlike
+	// RunDefault/RunNamedContainer/RunInScope) — a non-zero exit is not
+	// reported at all. The error return exists only so the orchestrator's
+	// hookStack drain (orchestrator.go) can log a warning when the hook
+	// failed to execute at all (couldn't spawn, exec stream broke, etc.); it
+	// is never surfaced as a step or run failure, on either backend. This is
+	// intentional and symmetric across the host and Kubernetes backends —
+	// see docs/user-guide/writing-jobs/steps.md's "Post-step hooks" section
+	// and docs/operator-manual/agents.md's cleanup-phase table ("A post:/
+	// cache: hook has never changed the run's status, whatever it fails
+	// on"). Do not "fix" this by threading the exit code through; that would
+	// be a semantics change requiring its own decision, not a bug fix.
 	RunPostHook(ctx context.Context, scope ScopeHandle, container, script string, shell []string, env []string, stdout, stderr io.Writer) error
 
 	// ResolveArtifactPath resolves a cache/artifact step's relative path (as
