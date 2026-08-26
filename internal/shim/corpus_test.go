@@ -308,7 +308,7 @@ func runCorpusScript(t *testing.T, script string, dir string) (exitCode int, err
 // (templates/ migrated to kind: JobTemplate in the uses: JobTemplate change;
 // both kinds feed the same script-extraction walk).
 const (
-	wantFilesWithJobDocs = 53
+	wantFilesWithJobDocs = 54
 	wantTotalScripts     = 91
 
 	// wantSkipped is the number of run: scripts the gate legitimately does

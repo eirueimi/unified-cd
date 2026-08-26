@@ -122,6 +122,10 @@ The two forms are mutually exclusive; Validate enforces this.
 makes the whole template one isolated scope. Steps sharing ScopeID run
 in one environment. Not user-authored. |
 | `scopeImage` | string | no |  |
+| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside
+ScopeImage — see the ScopeImage comment above. Limits only: apply-time
+validation rejects runsIn.resources.requests (no host equivalent), so
+there is nothing else for this to carry. Not user-authored. |
 | `shell` | []string | no | Shell overrides the effective interpreter argv for this step. See
 Step.Shell for the full resolution priority. |
 | `timeoutMinutes` | number | no |  |
@@ -212,6 +216,10 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 makes the whole template one isolated scope. Steps sharing ScopeID run
 in one environment. Not user-authored. |
 | `scopeImage` | string | no |  |
+| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside
+ScopeImage — see the ScopeImage comment above. Limits only: apply-time
+validation rejects runsIn.resources.requests (no host equivalent), so
+there is nothing else for this to carry. Not user-authored. |
 | `shell` | []string | no | Shell overrides the effective interpreter argv for this step. Array
 form only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is
 appended as the final argv element. Resolution priority (most specific
@@ -437,6 +445,10 @@ The two forms are mutually exclusive; Validate enforces this.
 makes the whole template one isolated scope. Steps sharing ScopeID run
 in one environment. Not user-authored. |
 | `scopeImage` | string | no |  |
+| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside
+ScopeImage — see the ScopeImage comment above. Limits only: apply-time
+validation rejects runsIn.resources.requests (no host equivalent), so
+there is nothing else for this to carry. Not user-authored. |
 | `shell` | []string | no | Shell overrides the effective interpreter argv for this step. See
 Step.Shell for the full resolution priority. |
 | `timeoutMinutes` | number | no |  |
@@ -536,6 +548,10 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 makes the whole template one isolated scope. Steps sharing ScopeID run
 in one environment. Not user-authored. |
 | `scopeImage` | string | no |  |
+| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside
+ScopeImage — see the ScopeImage comment above. Limits only: apply-time
+validation rejects runsIn.resources.requests (no host equivalent), so
+there is nothing else for this to carry. Not user-authored. |
 | `shell` | []string | no | Shell overrides the effective interpreter argv for this step. Array
 form only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is
 appended as the final argv element. Resolution priority (most specific

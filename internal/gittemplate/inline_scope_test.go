@@ -35,6 +35,51 @@ func TestExpandUsesScopeTagsSteps(t *testing.T) {
 	}
 }
 
+// TestExpandUsesScopeCarriesResourceLimits is the regression test for the
+// defect this change exists to fix: outerRunsIn.Resources.Limits must
+// survive expandUsesStep onto every scope-tagged step's ScopeResourceLimits,
+// alongside ScopeID/ScopeImage — this is the exact hop where limits: was
+// previously dropped (expandUsesStep carried only .Image into scope mode).
+func TestExpandUsesScopeCarriesResourceLimits(t *testing.T) {
+	limits := &dsl.ResourceList{CPU: "1", Memory: "512Mi"}
+	out, _, err := expandUsesStep("build", map[string]string{}, scopedTemplate(),
+		&dsl.RunsIn{Image: "golang:1.22", Resources: &dsl.ResourceSpec{Limits: limits}}, "", "")
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	var sawScopedStep bool
+	for _, s := range out {
+		if s.Name == inputsStepName("build") || s.Name == "build" {
+			continue // synthetic inputs/capture steps are not scope-tagged
+		}
+		sawScopedStep = true
+		if s.ScopeResourceLimits == nil || *s.ScopeResourceLimits != *limits {
+			t.Fatalf("step %q lost ScopeResourceLimits: got %+v, want %+v", s.Name, s.ScopeResourceLimits, limits)
+		}
+	}
+	if !sawScopedStep {
+		t.Fatal("expected at least one scope-tagged step from scopedTemplate()")
+	}
+}
+
+// TestExpandUsesScopeNoResourcesLeavesLimitsNil confirms a scoped uses: step
+// with no runsIn.resources at all does not synthesize a limit out of thin
+// air.
+func TestExpandUsesScopeNoResourcesLeavesLimitsNil(t *testing.T) {
+	out, _, err := expandUsesStep("build", map[string]string{}, scopedTemplate(), &dsl.RunsIn{Image: "golang:1.22"}, "", "")
+	if err != nil {
+		t.Fatalf("expand: %v", err)
+	}
+	for _, s := range out {
+		if s.Name == inputsStepName("build") || s.Name == "build" {
+			continue
+		}
+		if s.ScopeResourceLimits != nil {
+			t.Fatalf("step %q should have nil ScopeResourceLimits, got %+v", s.Name, s.ScopeResourceLimits)
+		}
+	}
+}
+
 func TestExpandUsesNestedRunsInIsError(t *testing.T) {
 	tpl := dsl.Spec{Steps: []dsl.StepEntry{
 		{Name: "lint", Run: "golangci-lint run", RunsIn: &dsl.RunsIn{Image: "golangci/lint:latest"}},

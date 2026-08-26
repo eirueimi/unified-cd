@@ -6,11 +6,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 func TestBuildScopePodHasScratchAndSidecarNoWorkspacePVC(t *testing.T) {
 	pod := buildScopePod("run123", "ci", "scope:build", "golang:1.22",
-		map[string]string{"K": "V"}, SidecarSpec{Image: "sidecar:1", S3SecretName: "s3"}, testShimImage)
+		map[string]string{"K": "V"}, SidecarSpec{Image: "sidecar:1", S3SecretName: "s3"}, testShimImage, corev1.ResourceRequirements{})
 
 	// scratch volume is emptyDir, mounted by both the step and the sidecar
 	var scratch *string
@@ -51,7 +52,7 @@ func TestBuildScopePodHasScratchAndSidecarNoWorkspacePVC(t *testing.T) {
 // for the gap where uses-scope pods had no /.ucd at all.
 func TestBuildScopePod_UcdShimInitContainer(t *testing.T) {
 	pod := buildScopePod("run123", "ci", "scope:build", "golang:1.22",
-		nil, SidecarSpec{}, "ghcr.io/eirueimi/unified-cd-k8s-agent:latest")
+		nil, SidecarSpec{}, "ghcr.io/eirueimi/unified-cd-k8s-agent:latest", corev1.ResourceRequirements{})
 
 	require.Len(t, pod.Spec.InitContainers, 1)
 	initC := pod.Spec.InitContainers[0]
@@ -79,7 +80,7 @@ func TestBuildScopePod_UcdShimInitContainer(t *testing.T) {
 // can be an exec target.
 func TestBuildScopePod_UcdShimMountOnEveryContainer(t *testing.T) {
 	pod := buildScopePod("run123", "ci", "scope:build", "golang:1.22",
-		nil, SidecarSpec{Image: "sidecar:latest"}, testShimImage)
+		nil, SidecarSpec{Image: "sidecar:latest"}, testShimImage, corev1.ResourceRequirements{})
 
 	require.Len(t, pod.Spec.Containers, 2, "step and the artifact sidecar")
 	for _, c := range pod.Spec.Containers {
@@ -99,8 +100,33 @@ func TestBuildScopePod_UcdShimMountOnEveryContainer(t *testing.T) {
 // must behave identically to the run/pooled pod's "job" container.
 func TestBuildScopePod_KeepAliveArgv(t *testing.T) {
 	pod := buildScopePod("run123", "ci", "scope:build", "golang:1.22",
-		nil, SidecarSpec{}, testShimImage)
+		nil, SidecarSpec{}, testShimImage, corev1.ResourceRequirements{})
 
 	require.Len(t, pod.Spec.Containers, 1)
 	assert.Equal(t, ucdKeepAliveArgv(), pod.Spec.Containers[0].Command)
+}
+
+// TestBuildScopePod_ResourcesOnStepContainerOnly is the FIX 2 regression
+// test: a uses: step's runsIn.resources.limits must reach the scope pod's
+// "step" container (via toResourceRequirements — internal/k8sagent/
+// podbuilder.go, and createScopePod — backend.go), and must NOT be applied to
+// the artifact sidecar, which has its own resource profile.
+func TestBuildScopePod_ResourcesOnStepContainerOnly(t *testing.T) {
+	res := corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
+	pod := buildScopePod("run123", "ci", "scope:build", "golang:1.22",
+		nil, SidecarSpec{Image: "sidecar:latest"}, testShimImage, res)
+
+	require.Len(t, pod.Spec.Containers, 2, "step and the artifact sidecar")
+	for _, c := range pod.Spec.Containers {
+		if c.Name == "step" {
+			assert.Equal(t, res, c.Resources, "step container must carry the scope's resource limits")
+			continue
+		}
+		assert.Empty(t, c.Resources, "sidecar container %q must not inherit the scope's resource limits", c.Name)
+	}
 }

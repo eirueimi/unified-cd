@@ -125,12 +125,17 @@ type StepEntry struct {
 	// Scope tagging: set by inline expansion when a uses-level runsIn.image
 	// makes the whole template one isolated scope. Steps sharing ScopeID run
 	// in one environment. Not user-authored.
-	ScopeID        string      `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
-	ScopeImage     string      `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
-	TimeoutMinutes float64     `yaml:"timeoutMinutes,omitempty"`
-	Retry          *RetrySpec  `yaml:"retry,omitempty" json:"retry,omitempty"`
-	Foreach        *ForeachDef `yaml:"foreach,omitempty"`
-	Matrix         *MatrixDef  `yaml:"matrix,omitempty"`
+	ScopeID    string `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
+	ScopeImage string `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
+	// ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside
+	// ScopeImage — see the ScopeImage comment above. Limits only: apply-time
+	// validation rejects runsIn.resources.requests (no host equivalent), so
+	// there is nothing else for this to carry. Not user-authored.
+	ScopeResourceLimits *ResourceList `yaml:"scopeResourceLimits,omitempty" json:"scopeResourceLimits,omitempty"`
+	TimeoutMinutes      float64       `yaml:"timeoutMinutes,omitempty"`
+	Retry               *RetrySpec    `yaml:"retry,omitempty" json:"retry,omitempty"`
+	Foreach             *ForeachDef   `yaml:"foreach,omitempty"`
+	Matrix              *MatrixDef    `yaml:"matrix,omitempty"`
 	// Shell overrides the effective interpreter argv for this step. See
 	// Step.Shell for the full resolution priority.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
@@ -159,12 +164,17 @@ type Step struct {
 	// Scope tagging: set by inline expansion when a uses-level runsIn.image
 	// makes the whole template one isolated scope. Steps sharing ScopeID run
 	// in one environment. Not user-authored.
-	ScopeID        string      `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
-	ScopeImage     string      `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
-	TimeoutMinutes float64     `yaml:"timeoutMinutes,omitempty"`
-	Retry          *RetrySpec  `yaml:"retry,omitempty" json:"retry,omitempty"`
-	Foreach        *ForeachDef `yaml:"foreach,omitempty"`
-	Matrix         *MatrixDef  `yaml:"matrix,omitempty"`
+	ScopeID    string `yaml:"scopeID,omitempty" json:"scopeID,omitempty"`
+	ScopeImage string `yaml:"scopeImage,omitempty" json:"scopeImage,omitempty"`
+	// ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside
+	// ScopeImage — see the ScopeImage comment above. Limits only: apply-time
+	// validation rejects runsIn.resources.requests (no host equivalent), so
+	// there is nothing else for this to carry. Not user-authored.
+	ScopeResourceLimits *ResourceList `yaml:"scopeResourceLimits,omitempty" json:"scopeResourceLimits,omitempty"`
+	TimeoutMinutes      float64       `yaml:"timeoutMinutes,omitempty"`
+	Retry               *RetrySpec    `yaml:"retry,omitempty" json:"retry,omitempty"`
+	Foreach             *ForeachDef   `yaml:"foreach,omitempty"`
+	Matrix              *MatrixDef    `yaml:"matrix,omitempty"`
 	// Shell overrides the effective interpreter argv for this step. Array
 	// form only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is
 	// appended as the final argv element. Resolution priority (most specific

@@ -832,6 +832,10 @@
         "scopeImage": {
           "type": "string"
         },
+        "scopeResourceLimits": {
+          "$ref": "#/definitions/ResourceList",
+          "description": "ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside\nScopeImage — see the ScopeImage comment above. Limits only: apply-time\nvalidation rejects runsIn.resources.requests (no host equivalent), so\nthere is nothing else for this to carry. Not user-authored."
+        },
         "shell": {
           "description": "Shell overrides the effective interpreter argv for this step. Array\nform only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is\nappended as the final argv element. Resolution priority (most specific\nwins): step.shell \u003e a uses: template's own declared shell \u003e spec.shell\n(job-level) \u003e system default. Steps inside parallel: and finally:\ncount as steps for this purpose.",
           "items": {
@@ -926,6 +930,10 @@
         },
         "scopeImage": {
           "type": "string"
+        },
+        "scopeResourceLimits": {
+          "$ref": "#/definitions/ResourceList",
+          "description": "ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside\nScopeImage — see the ScopeImage comment above. Limits only: apply-time\nvalidation rejects runsIn.resources.requests (no host equivalent), so\nthere is nothing else for this to carry. Not user-authored."
         },
         "shell": {
           "description": "Shell overrides the effective interpreter argv for this step. See\nStep.Shell for the full resolution priority.",

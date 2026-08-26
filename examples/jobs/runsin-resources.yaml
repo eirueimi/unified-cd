@@ -1,0 +1,53 @@
+# Demonstrates: runsIn.image (scope mode) with resources.limits.
+#
+# A uses: step's runsIn.image runs the ENTIRE inlined template in one fresh,
+# isolated environment (a "scope") — one container on the standard agent, one
+# dedicated pod on Kubernetes — instead of the template's steps sharing the
+# outer job's environment. runsIn.resources.limits bounds that scope's
+# CPU/memory, using the same Kubernetes quantity strings (e.g. "500m", "1",
+# "256Mi", "1Gi") as podTemplate. It works on both backends without any
+# agentSelector/capability change: the standard agent maps cpu/memory to the
+# container runtime's --cpus/--memory, and the Kubernetes agent sets them on
+# the scope pod's container.
+#
+# runsIn.resources.requests has no host equivalent (docker/podman have no
+# request concept) and is rejected at apply time rather than silently
+# dropped — if a scope needs a resource *request*, use podTemplate instead,
+# which already supports requests and already routes such a job to a
+# Kubernetes agent. See docs/user-guide/resources/job.md#uses-level-runsinimage-resources.
+#
+# The steps below fetch a real template (this repository's
+# templates/smoke-check.yaml), so this example actually runs — same template
+# examples/jobs/git-template.yaml uses without runsIn, for contrast.
+# Usage:
+#   unified-cli apply -f examples/jobs/runsin-resources.yaml
+#   unified-cli run trigger runsin-resources-demo
+---
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: runsin-resources-demo
+spec:
+  agentSelector:
+    - kind:docker
+  steps:
+    - name: checkHomepage
+      uses:
+        # semver tag → cached in the object store after the first fetch (see
+        # examples/jobs/git-template.yaml for the tag/branch/SHA distinction).
+        job: git://github.com/eirueimi/unified-cd/templates/smoke-check.yaml@v0.3.0
+        with:
+          url: "https://github.com"
+          expect_status: "200"
+          retries: "3"
+          interval_seconds: "2"
+          body_contains: "GitHub"
+      runsIn:
+        # curl is the only tool smoke-check.yaml's poll step needs, so a
+        # small curl-only image is enough — the scope never touches the
+        # outer job's workspace or its runner image.
+        image: curlimages/curl:8.9.1
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "256Mi"

@@ -803,8 +803,13 @@ func (b *k8sBackend) createScopePod(ctx context.Context, step api.ClaimStep, env
 	for k, v := range envSliceToMap(env) {
 		envMap[k] = v
 	}
+	// Only Limits ever reaches a claim (runsIn.resources.requests is rejected
+	// at apply time — internal/dsl/parse.go's validateResources), so
+	// Requests is intentionally left unset here; toResourceRequirements
+	// handles a nil Limits (no resources: declared) as a no-op.
+	resources := toResourceRequirements(&dsl.ResourceSpec{Limits: step.ScopeResourceLimits})
 	pod := buildScopePod(b.runID, b.a.cfg.Namespace, step.ScopeID, step.ScopeImage, envMap,
-		SidecarSpec{Image: b.a.cfg.SidecarImage, S3SecretName: b.a.cfg.SidecarS3SecretName}, b.a.cfg.ShimImage)
+		SidecarSpec{Image: b.a.cfg.SidecarImage, S3SecretName: b.a.cfg.SidecarS3SecretName}, b.a.cfg.ShimImage, resources)
 	// attemptStart marks the beginning of the whole creation attempt
 	// (CreatePod through WaitForPodRunning), not just the Running-wait below
 	// — see the "pod creation abandoned after %s" message this feeds, which

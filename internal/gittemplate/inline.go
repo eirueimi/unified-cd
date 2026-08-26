@@ -210,7 +210,7 @@ func cloneStringMap(values map[string]string) map[string]string {
 // silently drops any field added to dsl.StepEntry later; see the concrete-step
 // branch's comment and TestRenameInnerEntryPreservesEveryStepEntryField, which
 // fails if a new field is added without a decision recorded for it.
-func renameInnerEntry(usesName string, innerNames map[string]bool, outerIf string, scopeMode bool, scopeID, scopeImage, outerContainer string, inner dsl.StepEntry) (dsl.StepEntry, error) {
+func renameInnerEntry(usesName string, innerNames map[string]bool, outerIf string, scopeMode bool, scopeID, scopeImage string, scopeResources *dsl.ResourceList, outerContainer string, inner dsl.StepEntry) (dsl.StepEntry, error) {
 	if inner.Parallel != nil {
 		// Parallel block: prefix each inner step name and rewrite refs
 		rp := make([]dsl.Step, len(inner.Parallel))
@@ -268,6 +268,7 @@ func renameInnerEntry(usesName string, innerNames map[string]bool, outerIf strin
 				}
 				ns.ScopeID = scopeID
 				ns.ScopeImage = scopeImage
+				ns.ScopeResourceLimits = scopeResources
 				ns.RunsIn = nil
 			} else if ns.Container == "" {
 				ns.Container = outerContainer
@@ -314,6 +315,7 @@ func renameInnerEntry(usesName string, innerNames map[string]bool, outerIf strin
 		}
 		ns.ScopeID = scopeID
 		ns.ScopeImage = scopeImage
+		ns.ScopeResourceLimits = scopeResources
 		ns.RunsIn = nil
 	} else if ns.Container == "" {
 		ns.Container = outerContainer
@@ -419,9 +421,17 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 
 	scopeMode := outerRunsIn != nil && outerRunsIn.Image != ""
 	var scopeID, scopeImage string
+	var scopeResources *dsl.ResourceList
 	if scopeMode {
 		scopeID = scopeIDFor(usesName)
 		scopeImage = outerRunsIn.Image
+		// Only Limits ever reaches here: dsl.validateResources rejects
+		// runsIn.resources.requests at apply time (parse.go), before
+		// expandUsesStep runs — see the ScopeResourceLimits doc comment on
+		// dsl.StepEntry/Step.
+		if outerRunsIn.Resources != nil {
+			scopeResources = outerRunsIn.Resources.Limits
+		}
 	}
 
 	// A scope-mode uses (runsIn.image) runs the template in its own scope pod:
@@ -543,7 +553,7 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 
 	renamed := make([]dsl.StepEntry, len(tplSpec.Steps))
 	for idx, inner := range tplSpec.Steps {
-		ns, err := renameInnerEntry(usesName, innerNames, outerIf, scopeMode, scopeID, scopeImage, outerContainer, inner)
+		ns, err := renameInnerEntry(usesName, innerNames, outerIf, scopeMode, scopeID, scopeImage, scopeResources, outerContainer, inner)
 		if err != nil {
 			return nil, podContribution{}, err
 		}
@@ -563,7 +573,7 @@ func expandUsesStep(usesName string, with map[string]string, tplSpec dsl.Spec, o
 	// remain valid since that step runs in the main DAG, before finally.
 	finallyRenamed := make([]dsl.StepEntry, len(tplSpec.Finally))
 	for idx, inner := range tplSpec.Finally {
-		ns, err := renameInnerEntry(usesName, innerNames, outerIf, scopeMode, scopeID, scopeImage, outerContainer, inner)
+		ns, err := renameInnerEntry(usesName, innerNames, outerIf, scopeMode, scopeID, scopeImage, scopeResources, outerContainer, inner)
 		if err != nil {
 			return nil, podContribution{}, err
 		}
