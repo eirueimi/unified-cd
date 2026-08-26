@@ -142,11 +142,24 @@ func TestArchivePendingLogs_PoisonCandidateExcludedNextTick(t *testing.T) {
 	}
 	bo := newFailureBackoff(time.Minute, time.Hour, 10_000)
 
-	require.NoError(t, archivePendingLogs(ctx, st, obj, bo))
+	archived, failed, err := archivePendingLogs(ctx, st, obj, bo)
+	require.NoError(t, err)
 	require.Len(t, st.excludedCalls, 1)
 	assert.Empty(t, st.excludedCalls[0], "first tick excludes nothing")
+	// The batch holds one run that archives and one that does not. The pass
+	// still returns nil, so these counts are the only thing separating "there
+	// was nothing to archive" from "an attempt failed".
+	assert.Equal(t, 1, archived, "the healthy run was archived")
+	assert.Equal(t, 1, failed, "the poison run must be counted, not only logged")
 
-	require.NoError(t, archivePendingLogs(ctx, st, obj, bo))
+	archived, failed, err = archivePendingLogs(ctx, st, obj, bo)
+	require.NoError(t, err)
+	assert.Equal(t, 1, archived, "the healthy run archives again")
+	// Still 1: this fake records the exclusion list but serves it regardless,
+	// so the poison run is handed back and fails again. Production would not
+	// return it — what matters here is that the count tracks what the pass
+	// actually attempted, not what it asked for.
+	assert.Equal(t, 1, failed)
 	require.Len(t, st.excludedCalls, 2)
 	assert.Contains(t, st.excludedCalls[1], "poison", "second tick excludes the poison candidate")
 	assert.NotContains(t, st.excludedCalls[1], "ok", "a succeeding run is not excluded")

@@ -33,26 +33,27 @@ func RunApprovalReaper(ctx context.Context, st store.Store, interval time.Durati
 			return
 		case <-ticker.C:
 		}
-		runApprovalReaperAsLeader(ctx, st)
+		observePass("approval_reaper", func() (int, int, error) { return runApprovalReaperAsLeader(ctx, st) })
 	}
 }
 
-func runApprovalReaperAsLeader(ctx context.Context, st store.Store) {
+func runApprovalReaperAsLeader(ctx context.Context, st store.Store) (int, int, error) {
 	release, err := st.AcquireAdvisoryLock(ctx, approvalReaperLockKey)
 	if err != nil {
 		slog.Warn("approval reaper lock", "error", err)
-		return
+		return 0, 0, err
 	}
 	if release == nil {
-		return // Another replica is leader.
+		return 0, 0, nil // Another replica is leader.
 	}
 	defer release()
 	n, err := st.MarkExpiredApprovalsTimedOut(ctx)
 	if err != nil {
 		slog.Error("approval reaper error", "error", err)
-		return
+		return 0, 0, err
 	}
 	if n > 0 {
 		slog.Info("approval reaper: marked timed-out approvals", "count", n)
 	}
+	return n, 0, nil
 }

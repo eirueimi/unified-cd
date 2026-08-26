@@ -33,18 +33,18 @@ func RunAuditRetention(ctx context.Context, st store.Store, interval time.Durati
 			return
 		case <-ticker.C:
 		}
-		runAuditRetentionOnce(ctx, st, retentionDays)
+		observePass("audit_retention", func() (int, int, error) { return runAuditRetentionOnce(ctx, st, retentionDays) })
 	}
 }
 
-func runAuditRetentionOnce(ctx context.Context, st store.Store, retentionDays int) {
+func runAuditRetentionOnce(ctx context.Context, st store.Store, retentionDays int) (int, int, error) {
 	release, err := st.AcquireAdvisoryLock(ctx, auditRetentionLockKey)
 	if err != nil {
 		slog.Warn("audit retention lock", "error", err)
-		return
+		return 0, 0, err
 	}
 	if release == nil {
-		return // Another replica is leader.
+		return 0, 0, nil // Another replica is leader.
 	}
 	defer release()
 
@@ -52,9 +52,10 @@ func runAuditRetentionOnce(ctx context.Context, st store.Store, retentionDays in
 	n, err := st.DeleteAuditLogsOlderThan(ctx, before)
 	if err != nil {
 		slog.Error("audit retention delete error", "error", err)
-		return
+		return 0, 0, err
 	}
 	if n > 0 {
 		slog.Info("audit retention: deleted expired audit log rows", "count", n, "olderThan", before)
 	}
+	return n, 0, nil
 }

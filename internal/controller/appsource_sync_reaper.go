@@ -36,27 +36,28 @@ func RunAppSourceSyncReaper(ctx context.Context, st store.Store, interval, stale
 			return
 		case <-ticker.C:
 		}
-		runAppSourceSyncReaperOnce(ctx, st, staleAfter)
+		observePass("appsource_sync_reaper", func() (int, int, error) { return runAppSourceSyncReaperOnce(ctx, st, staleAfter) })
 	}
 }
 
-func runAppSourceSyncReaperOnce(ctx context.Context, st store.Store, staleAfter time.Duration) {
+func runAppSourceSyncReaperOnce(ctx context.Context, st store.Store, staleAfter time.Duration) (int, int, error) {
 	release, err := st.AcquireAdvisoryLock(ctx, appSourceSyncReaperLockKey)
 	if err != nil {
 		slog.Warn("appsource sync reaper lock", "error", err)
-		return
+		return 0, 0, err
 	}
 	if release == nil {
-		return // Another replica is leader.
+		return 0, 0, nil // Another replica is leader.
 	}
 	defer release()
 
 	n, err := st.ResetStuckSyncingAppSources(ctx, staleAfter)
 	if err != nil {
 		slog.Error("appsource sync reaper: reset error", "error", err)
-		return
+		return 0, 0, err
 	}
 	if n > 0 {
 		slog.Warn("appsource sync reaper: reset stuck Syncing AppSources", "count", n)
 	}
+	return n, 0, nil
 }

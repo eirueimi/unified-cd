@@ -283,6 +283,14 @@ func main() {
 	m := metrics.New()
 	m.SetBuildInfo(controller.BuildVersion())
 	m.RegisterDBCollector(pg, 90*time.Second)
+	// Pool saturation. The four pools are separately bounded so background
+	// work cannot starve the API; a bounded pool under pressure queues rather
+	// than erroring, so without these numbers there is no signal at all that
+	// the isolation is being tested.
+	m.RegisterPoolCollector(pg)
+	// Background workers are package-level functions with no recorder of their
+	// own; wire them before any of them is launched below.
+	controller.SetBackgroundMetrics(m)
 	st := metrics.NewInstrumentedStore(pg, m)
 	backgroundPG := pg.BackgroundStore()
 	backgroundSt := metrics.NewInstrumentedStore(backgroundPG, m)

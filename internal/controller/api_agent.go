@@ -814,6 +814,18 @@ func (s *Server) handleAgentLogBulk(w http.ResponseWriter, r *http.Request) {
 	if dropped > 0 {
 		slog.Warn("dropping log lines for sealed run", "run", droppedRun, "dropped", dropped)
 	}
+	// Log ingestion is the highest-frequency write path in the system and had
+	// no volume signal at all, so there was no way to size the DB against it,
+	// see the effect of batching, or notice a run whose lines are all being
+	// dropped. Bytes are counted for every line received, accepted or not: a
+	// sealed run still costs the ingress it is spending.
+	if s.metrics != nil {
+		bytes := 0
+		for i := range batch {
+			bytes += len(batch[i].Line)
+		}
+		s.metrics.LogsIngested(len(seqs)-dropped, dropped, bytes)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

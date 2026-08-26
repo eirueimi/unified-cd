@@ -50,27 +50,31 @@ func RunQueuedRunReaper(ctx context.Context, st store.Store, interval, minAge, s
 			return
 		case <-ticker.C:
 		}
-		runQueuedRunReaperOnce(ctx, st, minAge, staleAfter)
+		observePass("queued_run_reaper", func() (int, int, error) { return runQueuedRunReaperOnce(ctx, st, minAge, staleAfter) })
 	}
 }
 
-func runQueuedRunReaperOnce(ctx context.Context, st store.Store, minAge, staleAfter time.Duration) {
+// runQueuedRunReaperOnce returns (runs reaped, per-run errors, pass error).
+// Reaped runs are the "ok" count because reaping IS this worker's work; a
+// rising rate is a fleet problem, not a reaper problem, which is why it is
+// counted rather than treated as a failure.
+func runQueuedRunReaperOnce(ctx context.Context, st store.Store, minAge, staleAfter time.Duration) (int, int, error) {
 	release, err := st.AcquireAdvisoryLock(ctx, queuedRunReaperLockKey)
 	if err != nil {
 		slog.Warn("queued-run reaper lock", "error", err)
-		return
+		return 0, 0, err
 	}
 	if release == nil {
-		return // Another replica is leader.
+		return 0, 0, nil // Another replica is leader.
 	}
 	defer release()
 
 	refs, err := st.ListUnclaimableQueuedRuns(ctx, minAge, staleAfter, queuedRunReaperBatch)
 	if err != nil {
 		slog.Error("queued-run reaper list error", "error", err)
-		return
+		return 0, 0, err
 	}
-	failed, superseded := 0, 0
+	failed, superseded, errs := 0, 0, 0
 	for _, ref := range refs {
 		// Re-validate before writing. The list above is a SNAPSHOT of a liveness
 		// question ("can any live agent claim this?"), and the answer flips the
@@ -88,6 +92,7 @@ func runQueuedRunReaperOnce(ctx context.Context, st store.Store, minAge, staleAf
 		updated, err := st.FinishRunIfStatus(ctx, ref.ID, api.RunQueued, api.RunFailed)
 		if err != nil {
 			slog.Error("queued-run reaper: mark failed", "runId", ref.ID, "error", err)
+			errs++
 			continue
 		}
 		if !updated {
@@ -116,4 +121,5 @@ func runQueuedRunReaperOnce(ctx context.Context, st store.Store, minAge, staleAf
 	if failed > 0 {
 		slog.Info("queued-run reaper: failed unclaimable queued runs", "count", failed, "superseded", superseded)
 	}
+	return failed, errs, nil
 }

@@ -265,26 +265,29 @@ func RunCacheCleanup(ctx context.Context, st store.Store, obj objectstore.Object
 			return
 		case <-ticker.C:
 		}
-		runCacheCleanupAsLeader(ctx, st, obj)
+		observePass("cache_cleanup", func() (int, int, error) { return runCacheCleanupAsLeader(ctx, st, obj) })
 	}
 }
 
-func runCacheCleanupAsLeader(ctx context.Context, st store.Store, obj objectstore.ObjectStore) {
+func runCacheCleanupAsLeader(ctx context.Context, st store.Store, obj objectstore.ObjectStore) (int, int, error) {
 	release, err := st.AcquireAdvisoryLock(ctx, cacheCleanupLockKey)
 	if err != nil {
 		slog.Warn("cache cleanup lock", "error", err)
-		return
+		return 0, 0, err
 	}
 	if release == nil {
-		return // Another replica is leader.
+		return 0, 0, nil // Another replica is leader.
 	}
 	defer release()
 	n, err := cache.DeleteExpired(ctx, obj, time.Now())
 	if err != nil {
 		slog.Warn("cache cleanup error", "error", err)
-	} else if n > 0 {
+		return 0, 0, err
+	}
+	if n > 0 {
 		slog.Info("cache cleanup", "deleted", n)
 	}
+	return n, 0, nil
 }
 
 // RunGitResolver periodically resolves git:// URIs in Pending runs.

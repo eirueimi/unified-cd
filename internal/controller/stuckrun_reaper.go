@@ -37,7 +37,9 @@ func RunStuckRunReaper(ctx context.Context, st store.Store, interval, staleAfter
 			return
 		case <-ticker.C:
 		}
-		runStuckRunReaperOnce(ctx, st, staleAfter, grace, missingSince)
+		observePass("stuck_run_reaper", func() (int, int, error) {
+			return runStuckRunReaperOnce(ctx, st, staleAfter, grace, missingSince)
+		})
 	}
 }
 
@@ -67,21 +69,24 @@ func RunStuckRunReaper(ctx context.Context, st store.Store, interval, staleAfter
 // direction. Note this branch is not the one that handles ordinary agent death —
 // that is the stale-heartbeat branch at staleAfter — it only handles rows that
 // DeleteStaleAgents removed, five minutes after the run was already reaped.
-func runStuckRunReaperOnce(ctx context.Context, st store.Store, staleAfter, grace time.Duration, missingSince map[string]time.Time) {
+// runStuckRunReaperOnce returns (runs reaped, per-run errors, pass error).
+// A rising reap rate means agents are dying; that is a fleet signal, and
+// until now it existed only as a log line.
+func runStuckRunReaperOnce(ctx context.Context, st store.Store, staleAfter, grace time.Duration, missingSince map[string]time.Time) (int, int, error) {
 	release, err := st.AcquireAdvisoryLock(ctx, stuckRunReaperLockKey)
 	if err != nil {
 		slog.Warn("stuck-run reaper lock", "error", err)
-		return
+		return 0, 0, err
 	}
 	if release == nil {
-		return // Another replica is leader.
+		return 0, 0, nil // Another replica is leader.
 	}
 	defer release()
 
 	refs, err := st.ListStuckRuns(ctx, staleAfter, grace)
 	if err != nil {
 		slog.Error("stuck-run reaper list error", "error", err)
-		return
+		return 0, 0, err
 	}
 
 	now := time.Now()
@@ -101,7 +106,7 @@ func runStuckRunReaperOnce(ctx context.Context, st store.Store, staleAfter, grac
 		}
 	}
 
-	failed := 0
+	failed, errs := 0, 0
 	for _, ref := range refs {
 		if ref.AgentMissing {
 			first, seen := missingSince[ref.ID]
@@ -117,6 +122,7 @@ func runStuckRunReaperOnce(ctx context.Context, st store.Store, staleAfter, grac
 		}
 		if err := failOrphanedRun(ctx, st, ref.ID); err != nil {
 			slog.Error("stuck-run reaper: mark failed", "runId", ref.ID, "error", err)
+			errs++
 			continue
 		}
 		delete(missingSince, ref.ID)
@@ -130,6 +136,7 @@ func runStuckRunReaperOnce(ctx context.Context, st store.Store, staleAfter, grac
 	if failed > 0 {
 		slog.Info("stuck-run reaper: failed orphaned runs", "count", failed)
 	}
+	return failed, errs, nil
 }
 
 // failOrphanedRun marks a run Failed and cascade-cancels its call: descendants
