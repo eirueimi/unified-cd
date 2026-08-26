@@ -112,6 +112,7 @@ nav:
           - WebhookReceiver: user-guide/resources/webhook-receiver.md
           - GitCredential: user-guide/resources/git-credential.md
           - AppSource: user-guide/resources/app-source.md
+      - Variables: user-guide/variables.md
       - Secrets: user-guide/secrets.md
   - Operator Manual:
       - Agents and Routing: operator-manual/agents.md

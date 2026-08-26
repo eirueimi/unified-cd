@@ -764,6 +764,13 @@
         },
         "timeoutMinutes": {
           "type": "number"
+        },
+        "vars": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Vars are plain-text variables shared by every step of this job. They\nreach a step twice: as environment variables, and as {{ .Vars.KEY }} in\ntemplates. They are NOT secrets — see kind: Vars.\n\nBOTH tags are required: the store persists Spec as JSON and reads it\nback, so a yaml-only tag round-trips to nothing. See Detached.",
+          "type": "object"
         }
       },
       "required": [
@@ -988,6 +995,46 @@
       },
       "required": [
         "job"
+      ],
+      "type": "object"
+    },
+    "Vars": {
+      "additionalProperties": false,
+      "description": "Vars is a global variable manifest: plain-text values shared by every job.\n\nThese are NOT secrets. Values are stored in the clear, returned in the clear,\nand printed in step logs like any other environment variable. A value that\nmust not appear in a log belongs in a Secret.",
+      "properties": {
+        "apiVersion": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/Metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/VarsSpec"
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "type": "object"
+    },
+    "VarsSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "vars": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "vars"
       ],
       "type": "object"
     },
