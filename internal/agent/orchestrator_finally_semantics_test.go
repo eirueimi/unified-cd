@@ -143,6 +143,11 @@ type finallySemHarness struct {
 	// the run's own "System" stream, which is where a truncated cleanup phase
 	// has to become visible to an operator reading the run.
 	systemLines []string
+	// secrets is what FetchSecrets serves, and therefore what the claim's
+	// masker is built from. Set it before RunClaim; nil (the default) leaves
+	// the masker a no-op, which is what every test here but the masking one
+	// wants.
+	secrets map[string]string
 
 	finishCh chan string
 }
@@ -173,6 +178,15 @@ func newFinallySemHarness(t *testing.T, agentID, runID string) *finallySemHarnes
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/logs", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/secrets/fetch", func(w http.ResponseWriter, r *http.Request) {
+		h.mu.Lock()
+		vals := h.secrets
+		h.mu.Unlock()
+		if vals == nil {
+			vals = map[string]string{}
+		}
+		_ = json.NewEncoder(w).Encode(api.AgentFetchSecretsResponse{Secrets: vals})
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/steps/{idx}/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
 		idx, _ := strconv.Atoi(r.PathValue("idx"))
@@ -908,4 +922,59 @@ func TestTruncationAttribution_BoundsItsOutput(t *testing.T) {
 		"nothing to attribute yields no sentence, leaving the generic record unchanged")
 	assert.Equal(t, `Never started: only-one.`, truncationAttribution("", []string{"only-one"}),
 		"a deadline landing between items has nothing to report as interrupted")
+}
+
+// TestRunClaim_FinallyBudget_TruncationRecordIsMasked pins that the
+// attribution goes through the claim's masker on BOTH sinks.
+//
+// The attribution embeds author-controlled text — a step's name, and a
+// `cache:` step's EXPANDED key, which may legitimately interpolate
+// {{ .Secrets.X }}. Unlike a step's own log writers, recordPhaseTruncated does
+// not otherwise pass through the masker, so without an explicit Mask the
+// record would ship a secret into the run's log; and masking only the run's
+// log would leave the agent's slog carrying exactly what was scrubbed from the
+// run — an asymmetry that survives into whatever ships the agent's stdout off
+// the host.
+//
+// The secret is planted in the step name, which is the part of the label this
+// harness can reach without a cache backend; the mask is applied to the whole
+// composed line, so covering one component covers them all.
+func TestRunClaim_FinallyBudget_TruncationRecordIsMasked(t *testing.T) {
+	const budget = 150 * time.Millisecond
+	const secretValue = "s3cr3t-cache-key-material"
+	shrinkFinallyBudget(t, budget)
+
+	h := newFinallySemHarness(t, "drain-mask-agent", "run-drain-mask")
+	h.secrets = map[string]string{"TOKEN": secretValue}
+
+	b := newFinallySemBackend(func(ctx context.Context, step api.ClaimStep, stdout, stderr io.Writer) (int, error) {
+		return 0, nil
+	})
+	b.postHookFn = func(ctx context.Context) {
+		select {
+		case <-ctx.Done():
+		case <-time.After(30 * time.Second):
+		}
+	}
+
+	claim := api.ClaimResponse{
+		RunID:         h.runID,
+		JobName:       "drain-mask",
+		Native:        true,
+		SecretsNeeded: []string{"TOKEN"},
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{
+				Index: 0, StageIndex: 0, Name: "publish-" + secretValue, Run: "x",
+				Post: &api.PostStep{Run: "cleanup"},
+			}},
+		},
+	}
+
+	runClaimWithDeadline(t, h, claim, b)
+
+	sys := h.systemLog()
+	require.Contains(t, sys, "did not finish", "the truncation record must have been written at all")
+	assert.NotContains(t, sys, secretValue,
+		"the truncation record must be masked: the attribution carries author-controlled text, and a cache: key may interpolate {{ .Secrets.X }}")
+	assert.Contains(t, sys, "***", "the secret must have been replaced, not merely absent")
 }

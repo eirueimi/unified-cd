@@ -365,23 +365,32 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	// truncation is only half the job: "the post:/cache: hook drain that
 	// follows the main steps did not finish" leaves an operator with three
 	// `cache:` steps no way to tell which cache is now stale, which is the one
-	// question this record exists to answer. It is masked before it ships —
-	// a cache key may interpolate {{ .Secrets.X }}, and unlike a step's own
-	// log writers this call site does not otherwise pass through the masker.
+	// question this record exists to answer.
+	//
+	// BOTH sinks get the masked text, the run's log and the agent's own slog.
+	// A `cache: key:` may interpolate {{ .Secrets.X }}, so the attribution can
+	// carry a secret; this call site does not otherwise pass through the masker
+	// the way a step's log writers do. Masking one sink and not the other would
+	// put in the process log exactly what was scrubbed from the run log — an
+	// asymmetry nobody reading this would expect, and one that survives into
+	// whatever ships the agent's stdout off the host. (executeCacheStep's save
+	// closure does still slog the raw key; that is a pre-existing sink of the
+	// same class, not a reason to add another.)
 	recordPhaseTruncated := func(phase, attribution string) {
-		slog.Warn("cleanup phase truncated by its finallyTimeout budget",
-			"runId", c.RunID, "phase", phase, "budget", phaseBudget, "attribution", attribution)
 		line := fmt.Sprintf("unified-cd: %s did not finish: it hit the %s cleanup budget (finallyTimeout) and was stopped. "+
 			"Work still in flight was interrupted and anything not yet started was skipped.", phase, phaseBudget)
 		if attribution != "" {
 			line += " " + attribution
 		}
+		line = masker.Mask(line)
+		slog.Warn("cleanup phase truncated by its finallyTimeout budget",
+			"runId", c.RunID, "phase", phase, "budget", phaseBudget, "attribution", masker.Mask(attribution))
 		_ = client.AppendLogBulk(context.WithoutCancel(ctx), agentID, c.RunID, -1, []api.LogAppendRequest{{
 			RunID:     c.RunID,
 			StepIndex: -1,
 			Stream:    "stderr",
 			Timestamp: time.Now().UTC(),
-			Line:      masker.Mask(line),
+			Line:      line,
 		}})
 	}
 
@@ -1045,13 +1054,23 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 		// inspecting the item's own error, because neither a cache save nor a
 		// post hook reports one in a form this loop sees: CacheSave's failure
 		// is swallowed into slog inside the closure, and RunPostHook's is
-		// deliberately non-fatal. The one imprecise case is an item that
-		// finished in the last instant before the deadline: it is labelled
-		// interrupted when it actually completed. Distinguishing those would
-		// mean threading a result out of every hook, and mislabelling one item
-		// as "interrupted" costs an operator a second look at a save that
-		// turned out fine — where the alternative, today's behaviour, costs
-		// them the ability to find the truncated save at all.
+		// deliberately non-fatal.
+		//
+		// IMPRECISION, both directions: an item at the deadline BOUNDARY may be
+		// labelled interrupted whether it completed or never got going. The
+		// second is the likelier of the two — the Err() check passes, and the
+		// deadline lands in the gap before CacheSave/RunPostHook touches the
+		// context, so the item does nothing at all yet is reported interrupted;
+		// that gap is nanoseconds wide but is entered on every item, whereas
+		// "finished in the last instant" needs the deadline to land inside the
+		// call itself. Either way the item IS named, nothing is dropped, and at
+		// most one item per drain can be mislabelled — only the heading it lands
+		// under is wrong, never the fact that it needs looking at.
+		//
+		// Distinguishing them would mean threading a result out of every hook.
+		// Not worth it: a mislabelled item costs an operator a second look at
+		// one save, where the alternative — today's behaviour, no attribution at
+		// all — costs them the ability to find the truncated save.
 		runHook := func(label string, fn func()) {
 			if hookCtx.Err() != nil {
 				skipped = append(skipped, label)

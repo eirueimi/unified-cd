@@ -263,10 +263,11 @@ The cleanup phase now has a ceiling. `finally` deliberately ignores run
 cancellation, and that also discards the job-level `spec.timeoutMinutes`
 deadline, so the agent applies `finallyTimeout` (default **10m**) to each
 cleanup phase instead — each `post:`/`cache:` hook drain, the `finally`
-pipeline, and scope/claim-pod teardown, four windows in all, so a run's
-worst-case post-DAG time is 4 × `finallyTimeout` (40m at the default; 5 × on
-the Kubernetes agent, which deletes or pools its claim Pod in a fifth window
-after the shared cleanup loop returns).
+pipeline, and scope/claim-pod teardown — plus, on the Kubernetes agent, a
+fifth window for the claim Pod's own deletion or return to the idle pool,
+which happens after the shared cleanup loop returns. So a run's worst-case
+post-DAG time is 5 × `finallyTimeout` (50m at the default) on the Kubernetes
+agent and 4 × (40m) on the standard agent; size anything against the larger.
 Before this existed, such a step ran forever: it pinned the run, held
 one of the agent's concurrency slots, and nothing detected it, because the
 stuck-run reaper keys on **agent** liveness and the agent keeps heartbeating.

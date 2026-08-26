@@ -182,13 +182,20 @@ the block. Because of that it also cannot inherit the job-level
 `finallyTimeout` / `UNIFIED_K8S_FINALLY_TIMEOUT` on the Kubernetes agent — see
 the [Configuration Reference](../../reference/configuration.md)).
 
-The ceiling applies separately to each cleanup phase — four of them, in this
-order: the `post:`/`cache:` hook drain that follows the main `steps` DAG, the
-`finally` pipeline itself, the hook drain that follows `finally`, and
-scope/claim-pod teardown. It is a per-phase budget and not a shared total, so
-the worst case a run can spend after its DAG finishes is **4 × `finallyTimeout`
-(40 minutes at the default)**. A step still running when the budget expires is
-interrupted and reported `Failed`.
+The ceiling applies separately to each cleanup phase, in this order: the
+`post:`/`cache:` hook drain that follows the main `steps` DAG, the `finally`
+pipeline itself, the hook drain that follows `finally`, and scope/claim-pod
+teardown — plus, on the Kubernetes agent only, a fifth phase for the claim
+Pod's own deletion or return to the idle pool, which happens after the shared
+cleanup loop has returned.
+
+It is a per-phase budget and not a shared total, so the worst case a run can
+spend after its DAG finishes is **5 × `finallyTimeout` (50 minutes at the
+default) on the Kubernetes agent, 4 × (40 minutes) on the standard agent**. If
+you are sizing anything against this — a rollout's grace period, a drain
+window, an alert — use the larger number unless you are certain which backend
+the job lands on. A step still running when the budget expires is interrupted
+and reported `Failed`.
 
 **When a phase is cut short, the run says so.** The run's own **System** stream
 gains a line naming the phase and the budget:

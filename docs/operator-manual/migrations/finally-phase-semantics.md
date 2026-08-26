@@ -33,26 +33,33 @@ applies unchanged.
 phase, not as one shared total for the run, because the phases are separated by
 the main DAG, which may legitimately run for hours.
 
-**The number to plan for.** Four phases carry the budget, in this order:
+**The number to plan for: five × `finallyTimeout` — 50 minutes at the
+default**, not 10. If you size a rollout's `terminationGracePeriodSeconds`, a
+node-drain timeout, or an alerting threshold against this setting, size it
+against that number. It is a ceiling and not an expectation — reaching it means
+five separate phases each wedged — but it is the bound, and it is the one an
+operator has to plan for.
+
+Fifty is the **Kubernetes** agent's number, and it is the one to lead with
+because `terminationGracePeriodSeconds` is a Kubernetes-only field: an operator
+who sizes it to 40m and then wedges in the fifth window is SIGKILLed by the
+kubelet ten minutes before the documented ceiling, leaking the claim Pod that
+window exists to clean up. The standard agent's worst case is one window
+smaller, **4 × / 40 minutes** — sizing it to 50m is merely conservative, sizing
+a k8s rollout to 40m is wrong.
+
+The phases, in the order a run enters them:
 
 1. the `post:`/`cache:` hook drain that follows the main `steps` DAG
 2. the `finally:` pipeline
 3. the `post:`/`cache:` hook drain that follows `finally:`
 4. scope/claim-pod teardown
-
-So the worst case a run can spend after its DAG finishes is **four ×
-`finallyTimeout` — 40 minutes at the default**, not 10. If you size a
-rollout's `terminationGracePeriodSeconds`, a node-drain timeout, or an
-alerting threshold against this setting, size it against that number. It is a
-ceiling and not an expectation — reaching it means four separate phases each
-wedged — but it is the bound, and it is the one an operator has to plan for.
-
-**On the Kubernetes agent, make that five.** Phase 4 there covers the claim's
-*scope* Pods; the claim Pod itself is deleted (or returned to the idle pool)
-from a fifth window, after the shared cleanup loop has returned. It carries
-the same `finallyTimeout` ceiling, so size a k8s rollout against **5 ×
-`finallyTimeout`** (50 minutes at the default). The standard agent has no
-equivalent fifth window: it tears its claim pod down inside phase 4.
+5. **Kubernetes agent only** — the claim Pod's own deletion, or its return to
+   the idle pool. Phase 4 there covers the claim's *scope* Pods; the claim Pod
+   itself is released from the k8s agent's claim loop, after the shared cleanup
+   loop has already returned, so it cannot share phase 4's window. It carries
+   the same `finallyTimeout`. The standard agent has no equivalent: it tears
+   its claim pod down inside phase 4.
 
 Every one of these windows is now genuinely enforced on both agents. On the
 Kubernetes agent that took threading the phase's deadline through the Pod

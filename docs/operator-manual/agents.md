@@ -537,8 +537,11 @@ deadline, so the agent applies its own ceiling instead:
 | `--finally-timeout` / `UNIFIED_AGENT_FINALLY_TIMEOUT` / `finallyTimeout` | `10m` | standard agent |
 | `finallyTimeout` / `UNIFIED_K8S_FINALLY_TIMEOUT` | `10m` | Kubernetes agent |
 
-Both agents execute the cleanup phase through the same orchestration loop, so
-the behaviour is identical on either backend.
+Both agents execute the cleanup phases through the same orchestration loop, so
+the *semantics* are identical on either backend. The **arithmetic is not**: the
+Kubernetes agent carries one more window than the standard agent, because it
+releases its claim Pod after that shared loop has returned. See the number to
+plan for below — it differs by backend, and the Kubernetes one is the larger.
 
 The budget applies **per phase**, not as one shared total across the run —
 because the phases are separated by the main DAG, which may legitimately run
@@ -547,21 +550,35 @@ the time cleanup began.
 
 ### The number to plan for
 
-Four phases carry the budget, in this order:
+**Size against five × `finallyTimeout` — 50 minutes at the default**, not 10.
+That is the Kubernetes agent's number, and it is the one to use for a
+`terminationGracePeriodSeconds`, a drain window, a node-drain timeout, or an
+alerting threshold. The standard agent's is one window smaller (40m at the
+default); sizing it to the larger number is always safe, sizing to the smaller
+is not.
+
+The windows, in the order a run enters them:
 
 1. the `post:`/`cache:` hook drain that follows the main `steps` DAG
 2. the `finally` pipeline
 3. the `post:`/`cache:` hook drain that follows `finally`
 4. scope/claim-pod teardown
+5. **Kubernetes agent only** — the claim Pod's own deletion, or its return to
+   the idle pool. It carries the same `finallyTimeout`, but it runs from the
+   k8s agent's claim loop *after* the shared orchestration loop has returned,
+   so it cannot share window 4. The standard agent has no equivalent: it tears
+   its claim pod down inside window 4.
 
-So the worst case a run can spend after its DAG finishes is **four ×
-`finallyTimeout` — 40 minutes at the default**, not 10. Size a rollout's
-`terminationGracePeriodSeconds`, a drain window, or a node-drain timeout
-against that number, not against the setting as displayed.
+**Why the Kubernetes number is the one this page leads with.**
+`terminationGracePeriodSeconds` is a Kubernetes-only field, so the reader most
+likely to act on it is on the agent with five windows. Sizing it to 40m, then
+hitting a wedge in window 5, means the kubelet SIGKILLs the agent ten minutes
+before the documented ceiling — leaking the very claim Pod that window exists
+to clean up. When in doubt, use 50m.
 
-That is the ceiling, not the expectation: reaching it means four separate
-phases each wedged, and any one of them reaching its own ceiling is already an
-incident. A run that hits nothing spends milliseconds here.
+That is the ceiling, not the expectation: reaching it means four or five
+separate phases each wedged, and any one of them reaching its own ceiling is
+already an incident. A run that hits nothing spends milliseconds here.
 
 The only post-DAG phase **without** a ceiling is the final report to the
 controller (`FinishRun`/`SetRunOutputs`), which retries until it lands. That is

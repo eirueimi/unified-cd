@@ -396,11 +396,14 @@ That does not fail the run (no post-hook failure does), so the run's log records
 it instead, on the run's own **System** stream:
 
 ```
-unified-cd: the post:/cache: hook drain that follows the main steps did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped.
+unified-cd: the post:/cache: hook drain that follows the main steps did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped. Interrupted: the cache: save for step "deps" (key "go-mod-linux-9f3c"). Never started: the post: hook of step "integration".
 ```
 
-If you see that line on a run whose cache did not come back on the next run,
-that is why — raise `finallyTimeout` for the fleet, or make the save smaller.
+The `Interrupted:` / `Never started:` tail names exactly which save or hook was
+lost — `Interrupted:` the one the deadline landed on, `Never started:` the ones
+queued behind it, summarised as `(+N more)` past five. If you see that line on a
+run whose cache did not come back on the next run, that is why — raise
+`finallyTimeout` for the fleet, or make the save smaller.
 
 ---
 
