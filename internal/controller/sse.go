@@ -152,7 +152,13 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 				lastSeq = l.Seq
 			}
 			flusher.Flush()
-			if len(newLines) < sseDrainLimit {
+			// sseDrainLimit <= 0 must still terminate the loop: with the
+			// limit at its production value (10,000) this is just the normal
+			// "pass came back under the cap" exit, but the var is
+			// test-settable, and a non-positive value would otherwise spin
+			// forever — TailLogs(..., 0) returns zero rows every call
+			// (0 < 0 is false), re-querying with no progress and no way out.
+			if len(newLines) < sseDrainLimit || sseDrainLimit <= 0 {
 				break
 			}
 		}

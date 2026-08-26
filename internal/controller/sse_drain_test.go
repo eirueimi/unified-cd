@@ -64,15 +64,20 @@ func TestAPI_RunEvents_SSE_LiveDrainDeliversBatchLargerThanCap(t *testing.T) {
 	for i := range want {
 		want[i] = fmt.Sprintf("drain-line-%d", i)
 	}
+	const probeLine = "drain-readiness-probe"
 
 	var mu sync.Mutex
 	seen := map[string]bool{}
+	probeSeen := false
 	done := make(chan struct{})
 	go func() {
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
 			mu.Lock()
+			if strings.Contains(line, probeLine) {
+				probeSeen = true
+			}
 			for _, w := range want {
 				if strings.Contains(line, w) {
 					seen[w] = true
@@ -87,10 +92,32 @@ func TestAPI_RunEvents_SSE_LiveDrainDeliversBatchLargerThanCap(t *testing.T) {
 		}
 	}()
 
-	// Give the server's LISTEN a moment to register before the notify fires:
-	// a NOTIFY sent before a listener is registered on that channel is
-	// simply lost, it is not queued for a late listener.
-	time.Sleep(300 * time.Millisecond)
+	// A NOTIFY sent before the server's LISTEN registers on this run's
+	// channel is simply lost — not queued for a late listener — so a fixed
+	// sleep here would be a guess at how long that registration takes on a
+	// possibly-contended machine. Instead, confirm registration with the
+	// real signal: repeatedly append (and thus re-NOTIFY) a single
+	// throwaway probe line, through the exact live-notify path under test,
+	// until the scanner goroutine above reports having received it. Once it
+	// has, the listener is provably up and the real batch is sent exactly
+	// once.
+	probeDeadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		ready := probeSeen
+		mu.Unlock()
+		if ready {
+			break
+		}
+		if time.Now().After(probeDeadline) {
+			t.Fatal("SSE live-notify path never delivered the readiness probe within 10s; LISTEN may not be registering")
+		}
+		_, perr := pg.AppendLogs(t.Context(), []store.LogAppend{
+			{RunID: run.ID, StepIndex: 0, Stream: "stdout", Timestamp: time.Now().UTC(), Line: probeLine},
+		})
+		require.NoError(t, perr)
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	lines := make([]store.LogAppend, n)
 	now := time.Now().UTC()
@@ -107,7 +134,8 @@ func TestAPI_RunEvents_SSE_LiveDrainDeliversBatchLargerThanCap(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		mu.Lock()
-		t.Fatalf("timed out waiting for all %d lines to arrive over SSE; saw %d: %v", len(want), len(seen), seen)
+		gotN := len(seen)
 		mu.Unlock()
+		t.Fatalf("timed out waiting for all %d lines to arrive over SSE; saw %d", len(want), gotN)
 	}
 }
