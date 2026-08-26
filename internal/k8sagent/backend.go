@@ -153,6 +153,15 @@ type k8sBackend struct {
 	// (agent.go's pod-teardown defer, a test's httptest server) can be torn
 	// down, before the watch goroutine has actually observed scopeCtx.Done()
 	// and stopped touching claim state.
+	//
+	// The join is BEST-EFFORT UNDER A DEADLINE: CloseScopes races it against
+	// its teardown budget and gives up if that expires (see CloseScopes).
+	// Wait takes no context, so a join that could not be abandoned would be
+	// able to pin teardown past a ceiling the operator-facing docs promise.
+	// The guarantee above therefore holds on every ordinary path and is
+	// deliberately dropped at the deadline: what it protects against — a
+	// straggler poll against a torn-down claim — costs a log line, where the
+	// alternative costs the agent a concurrency slot forever.
 	runCancelWatchWG sync.WaitGroup
 	// runCancelWatchClosing is set under scopesMu by CloseScopes, BEFORE it
 	// calls runCancelWatchWG.Wait(), and checked under the same lock by
@@ -266,6 +275,21 @@ func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, scr
 // so streams end before the pod is deleted/released — RunClaim defers
 // CloseScopes and returns before agent.go's pod-teardown defer fires.
 //
+// ctx CARRIES THE TEARDOWN PHASE'S BUDGET — see agentlib.ExecBackend.CloseScopes
+// for the contract, and agentlib.DefaultFinallyBudget for the four windows this
+// is the fourth of. The two sites that would otherwise out-live it, the
+// run-cancel watch join and the per-Pod DELETEs, honour it below; do not
+// reintroduce context.WithoutCancel at either one.
+//
+// The one thing ctx does NOT bound here is sidecarPump.Stop's internal
+// wg.Wait. Its stream goroutines unblock on the pump's own cancellation, but
+// their closing Flush/reportStatus calls deliberately ride
+// context.WithoutCancel so the last lines still ship — so Stop is bounded by
+// the agent Client's 60s per-request HTTP timeout rather than by this window.
+// That is a bounded overrun of seconds, not a wedge, and the host backend's
+// Stop(ctx) has the identical shape: it is a property of the pump, shared by
+// both backends, not a Kubernetes-side gap.
+//
 // It claims each entry it finds worth deleting (see claimEntry) before
 // deleting its pod, rather than just reading name/err under the lock and
 // deleting afterward. That claim is an ownership handoff with an in-flight
@@ -354,7 +378,35 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	// anything else claim-scoped below — see runCancelWatchWG's doc comment.
 	// A no-op wait if startRunCancelWatch was never called (no uses-scope
 	// step in this claim, or b.a.client == nil).
-	b.runCancelWatchWG.Wait()
+	//
+	// The join is raced against ctx, which is the teardown phase's budget
+	// window (see ExecBackend.CloseScopes). sync.WaitGroup.Wait takes no
+	// context and cannot be cancelled, so the join is moved onto a goroutine
+	// and selected against ctx.Done(): without that, this single line could
+	// pin teardown past its ceiling no matter what the caller's deadline
+	// said, which is precisely the "documented bound the code does not keep"
+	// this exists to avoid.
+	//
+	// Giving up on the join weakens — deliberately — the guarantee
+	// runCancelWatchWG's doc comment describes (that CloseScopes does not
+	// return while the watch may still touch claim state). That is the right
+	// trade at the deadline: the watch only reads b.runID and calls
+	// b.scopeCancel, which is idempotent and whose context is already
+	// cancelled above, so a straggler observing a torn-down claim does
+	// nothing worse than log; whereas a teardown that never returns holds the
+	// agent's concurrency slot forever. On the ordinary path the join still
+	// completes and the guarantee is unchanged.
+	watchJoined := make(chan struct{})
+	go func() {
+		b.runCancelWatchWG.Wait()
+		close(watchJoined)
+	}()
+	select {
+	case <-watchJoined:
+	case <-ctx.Done():
+		slog.Warn("k8s: run-cancel watch did not stop within the teardown budget; continuing without joining it",
+			"runId", b.runID, "error", ctx.Err())
+	}
 
 	b.scopesMu.Lock()
 	entries := make(map[string]string, len(b.scopes))
@@ -368,8 +420,21 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	}
 	b.scopesMu.Unlock()
 
+	// ctx, not context.WithoutCancel(ctx). The caller already hands us a
+	// context that survives run cancellation AND carries the teardown budget
+	// (see ExecBackend.CloseScopes); re-stripping it here would drop the
+	// deadline with it and leave these DELETEs unbounded — a Kubernetes API
+	// server that accepts connections but never answers would wedge teardown
+	// forever, since no rest.Config.Timeout is set (and cannot be: the same
+	// rest.Config drives exec streams and follow-mode log reads, which are
+	// legitimately long-lived — see cmd/k8s-agent/main.go's buildRestConfig).
+	//
+	// If the budget expires mid-sweep the remaining DELETEs fail fast and
+	// their Pods leak; runPodGC's label sweep (podgc.go) is the backstop, the
+	// same one that covers the other documented leak paths here, and the
+	// orchestrator records the truncation to the agent log.
 	for key, name := range entries {
-		if err := b.a.pm.DeletePod(context.WithoutCancel(ctx), name); err != nil {
+		if err := b.a.pm.DeletePod(ctx, name); err != nil {
 			slog.Warn("k8s: failed to delete scope pod", "scopeKey", key, "pod", name, "error", err)
 		}
 	}

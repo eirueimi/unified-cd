@@ -831,3 +831,81 @@ func TestRunClaim_MainRetry_OnCancelledRun_StopsImmediately(t *testing.T) {
 		"a master/user cancellation must still stop a MAIN-DAG step's retry loop at the current attempt")
 	assert.Equal(t, string(api.RunCancelled), h.finishStatus())
 }
+
+// TestRunClaim_FinallyBudget_TruncatedDrainNamesWhatItCutOff is the
+// attribution half of the record above. Detecting the truncation was only
+// half the job: "the post:/cache: hook drain that follows the main steps did
+// not finish" tells an operator with three `cache:` steps that one of their
+// caches is now stale, and not which — the exact question the record exists to
+// answer. drainHooks has the owning step's name for every queued item, so the
+// record names the one item the deadline landed inside and the ones behind it
+// that never ran.
+//
+// Drain order is LIFO within a batch (see drainHooks), so with steps a, b, c
+// the drain runs c, b, a. c's hook is the one made to hang.
+func TestRunClaim_FinallyBudget_TruncatedDrainNamesWhatItCutOff(t *testing.T) {
+	const budget = 150 * time.Millisecond
+	shrinkFinallyBudget(t, budget)
+
+	h := newFinallySemHarness(t, "drain-attrib-agent", "run-drain-attrib")
+
+	b := newFinallySemBackend(func(ctx context.Context, step api.ClaimStep, stdout, stderr io.Writer) (int, error) {
+		return 0, nil
+	})
+	// The FIRST hook the drain reaches (step "c", LIFO) hangs until its
+	// context dies; the rest would return at once, but never get the chance.
+	var hookCalls atomic.Int32
+	b.postHookFn = func(ctx context.Context) {
+		if hookCalls.Add(1) != 1 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(30 * time.Second):
+		}
+	}
+
+	claim := api.ClaimResponse{
+		RunID:   h.runID,
+		JobName: "drain-attrib",
+		Native:  true,
+		Stages: []api.ClaimStage{
+			{Step: &api.ClaimStep{Index: 0, StageIndex: 0, Name: "a", Run: "x", Post: &api.PostStep{Run: "cleanup-a"}}},
+			{Step: &api.ClaimStep{Index: 1, StageIndex: 1, Name: "b", Run: "x", Post: &api.PostStep{Run: "cleanup-b"}}},
+			{Step: &api.ClaimStep{Index: 2, StageIndex: 2, Name: "c", Run: "x", Post: &api.PostStep{Run: "cleanup-c"}}},
+		},
+	}
+
+	runClaimWithDeadline(t, h, claim, b)
+
+	sys := h.systemLog()
+	assert.Contains(t, sys, `Interrupted: the post: hook of step "c".`,
+		"the record must name the item the deadline landed inside — naming only the phase leaves 'which of my hooks was cut off?' unanswered, which is the whole reason the record exists")
+	assert.Contains(t, sys, `Never started: the post: hook of step "b", the post: hook of step "a".`,
+		"the record must also name the queued items that never ran at all: their side effects did not happen either, and nothing else reports them")
+	assert.Equal(t, "Succeeded", h.finishStatus(),
+		"attribution changes what the record says, not what the run's status is")
+}
+
+// TestTruncationAttribution_BoundsItsOutput pins the cap. A large matrix can
+// register hundreds of `post:` hooks, and a record that enumerated all of them
+// would bury the one line that matters under a wall of text.
+func TestTruncationAttribution_BoundsItsOutput(t *testing.T) {
+	var many []string
+	for i := 0; i < 200; i++ {
+		many = append(many, fmt.Sprintf("hook-%d", i))
+	}
+	got := truncationAttribution(`the cache: save for step "deps"`, many)
+
+	assert.Contains(t, got, `Interrupted: the cache: save for step "deps".`,
+		"the interrupted item is always named: there is at most one, and it is the most important fact in the record")
+	assert.Contains(t, got, "hook-0, hook-1, hook-2, hook-3, hook-4 (+195 more).",
+		"past the cap the remainder must be summarised as a count, not enumerated")
+	assert.NotContains(t, got, "hook-5,")
+	assert.NotContains(t, got, "\n", "the record must stay one line")
+
+	assert.Empty(t, truncationAttribution("", nil),
+		"nothing to attribute yields no sentence, leaving the generic record unchanged")
+	assert.Equal(t, `Never started: only-one.`, truncationAttribution("", []string{"only-one"}),
+		"a deadline landing between items has nothing to report as interrupted")
+}

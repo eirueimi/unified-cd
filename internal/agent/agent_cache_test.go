@@ -58,7 +58,7 @@ func TestExecuteCacheStep_PathTemplateExpandedOnRestore(t *testing.T) {
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.dir }}", Key: "k-{{ .Params.v }}"})
 
 	var postHooksMu sync.Mutex
-	var postHooks []func(context.Context)
+	var postHooks []deferredHook
 	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", workDir, nil), ScopeHandle{}))
 
 	got, err := os.ReadFile(filepath.Join(dest, "f.txt"))
@@ -80,10 +80,10 @@ func TestExecuteCacheStep_PathTemplateExpandedOnDeferredSave(t *testing.T) {
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.dir }}", Key: "save-key"})
 
 	var postHooksMu sync.Mutex
-	var postHooks []func(context.Context)
+	var postHooks []deferredHook
 	require.NoError(t, executeCacheStep(ctx, a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", workDir, nil), ScopeHandle{}))
 	require.Len(t, postHooks, 1)
-	postHooks[0](ctx)
+	postHooks[0].fn(ctx)
 
 	restored := t.TempDir()
 	hit, err := cache.Restore(ctx, a.CacheStore, "test-job", restored, "save-key", nil)
@@ -100,7 +100,7 @@ func TestExecuteCacheStep_PathTemplateParseErrorFailsStep(t *testing.T) {
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.dir", Key: "k"})
 
 	var postHooksMu sync.Mutex
-	var postHooks []func(context.Context)
+	var postHooks []deferredHook
 	err := executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", "", nil), ScopeHandle{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cache path")
@@ -113,7 +113,7 @@ func TestExecuteCacheStep_EmptyExpandedPathSkipsCache(t *testing.T) {
 	step := cacheClaimStep(&dsl.CacheStep{Path: "{{ .Params.missing }}", Key: "k"})
 
 	var postHooksMu sync.Mutex
-	var postHooks []func(context.Context)
+	var postHooks []deferredHook
 	err := executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", "", nil), ScopeHandle{})
 	require.NoError(t, err, "an empty expanded path is warn+skip, not a step failure")
 	assert.Empty(t, postHooks, "no save should be registered when the path expands to empty")
@@ -125,7 +125,7 @@ func TestExecuteCacheStep_EmptyExpandedKeySkipsCache(t *testing.T) {
 	step := cacheClaimStep(&dsl.CacheStep{Path: "/tmp/some-dir", Key: "{{ .Params.missing }}"})
 
 	var postHooksMu sync.Mutex
-	var postHooks []func(context.Context)
+	var postHooks []deferredHook
 	err := executeCacheStep(context.Background(), a.Client, a.ID, step, "r1", sctx, &postHooksMu, &postHooks, newHostBackend(a, "r1", "test-job", "", nil), ScopeHandle{})
 	require.NoError(t, err, "an empty expanded key is warn+skip, not a step failure")
 	assert.Empty(t, postHooks, "no save should be registered when the key expands to empty")

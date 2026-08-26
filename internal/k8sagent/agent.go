@@ -310,15 +310,17 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		pooledPod = pp
 		podName = pp.PodName
 		defer func() {
+			teardownCtx, cancelTeardown := a.claimPodTeardownContext(ctx)
+			defer cancelTeardown()
 			if !podReady {
 				// The pod never reached Running; do not return a possibly-wedged
 				// pod to the idle pool — delete it so the pool re-creates next time.
-				if err := a.pm.DeletePod(context.Background(), podName); err != nil {
+				if err := a.pm.DeletePod(teardownCtx, podName); err != nil {
 					slog.Warn("k8s: failed to delete not-ready pooled Pod", "pod", podName, "error", err)
 				}
 				return
 			}
-			if err := a.pool.ReleasePod(context.Background(), pooledPod, true); err != nil {
+			if err := a.pool.ReleasePod(teardownCtx, pooledPod, true); err != nil {
 				slog.Warn("k8s: failed to release Pod", "pod", podName, "error", err)
 			}
 		}()
@@ -336,7 +338,9 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		}
 		podName = created.Name
 		defer func() {
-			if err := a.pm.DeletePod(context.Background(), podName); err != nil {
+			teardownCtx, cancelTeardown := a.claimPodTeardownContext(ctx)
+			defer cancelTeardown()
+			if err := a.pm.DeletePod(teardownCtx, podName); err != nil {
 				slog.Warn("k8s: failed to delete Pod", "pod", podName, "error", err)
 			}
 		}()
@@ -387,6 +391,31 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	backend := newK8sBackend(a, c.RunID, c.JobName, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
 
 	agentlib.RunClaim(ctx, a.client, a.cfg.AgentID, c, backend)
+}
+
+// claimPodTeardownContext builds the context for the claim Pod's own teardown
+// (delete, or release back to the idle pool), which runs from runClaim's
+// defers AFTER agentlib.RunClaim — and therefore after RunClaim's own
+// teardown window (b.CloseScopes, which handles the claim's SCOPE Pods) has
+// already closed.
+//
+// context.WithoutCancel, because teardown must happen whether the run was
+// cancelled, timed out, or the agent is draining — the same reason every
+// other post-DAG phase does it. WithTimeout on top of it, because
+// WithoutCancel also strips the deadline: this used to be a bare
+// context.Background(), so a Kubernetes API server that accepts connections
+// and stops answering pinned the claim here forever. No rest.Config.Timeout
+// guards it — the same rest.Config drives exec streams and follow-mode log
+// reads, which are legitimately long-lived (cmd/k8s-agent/main.go), so a
+// client-wide timeout is not available as a fix.
+//
+// It reuses finallyTimeout rather than introducing a knob of its own, so
+// there is exactly one cleanup ceiling for an operator to size. This is the
+// FIFTH such window on the Kubernetes agent (see agentlib.DefaultFinallyBudget
+// for the four the shared loop owns); the host agent has no equivalent,
+// because hostBackend.CloseScopes tears its claim pod down inside window four.
+func (a *K8sAgent) claimPodTeardownContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), a.cfg.FinallyTimeoutDuration())
 }
 
 // failRun fails a claim that could not begin executing (pod build/create/acquire

@@ -241,7 +241,7 @@ step's fact to suppress.
 drain instead —
 
 ```
-unified-cd: the post:/cache: hook drain that follows the main steps did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. …
+unified-cd: the post:/cache: hook drain that follows the main steps did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped. Interrupted: the cache: save for step "deps" (key "go-mod-linux-9f3c"). Never started: the post: hook of step "integration".
 ```
 
 — then a `post:`/`cache:` hook was cut off and the run's status is **not**
@@ -250,6 +250,13 @@ for when a `cache:` save silently did not land and the next run got a cache
 miss. Post-hook failures have never changed a run's status; the System line is
 the record.
 
+Read the `Interrupted:` / `Never started:` tail to find **which** cache or
+hook: `Interrupted:` names the one item the deadline landed inside (at most
+one), `Never started:` the queued items behind it, summarised as `(+N more)`
+past five so a job with hundreds of hooks still yields one line. Items named
+there are the ones whose side effects did not happen — those caches are stale,
+those hooks did not run.
+
 **Cause**
 
 The cleanup phase now has a ceiling. `finally` deliberately ignores run
@@ -257,7 +264,9 @@ cancellation, and that also discards the job-level `spec.timeoutMinutes`
 deadline, so the agent applies `finallyTimeout` (default **10m**) to each
 cleanup phase instead — each `post:`/`cache:` hook drain, the `finally`
 pipeline, and scope/claim-pod teardown, four windows in all, so a run's
-worst-case post-DAG time is 4 × `finallyTimeout` (40m at the default).
+worst-case post-DAG time is 4 × `finallyTimeout` (40m at the default; 5 × on
+the Kubernetes agent, which deletes or pools its claim Pod in a fifth window
+after the shared cleanup loop returns).
 Before this existed, such a step ran forever: it pinned the run, held
 one of the agent's concurrency slots, and nothing detected it, because the
 stuck-run reaper keys on **agent** liveness and the agent keeps heartbeating.

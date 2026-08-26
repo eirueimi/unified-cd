@@ -182,9 +182,13 @@ the block. Because of that it also cannot inherit the job-level
 `finallyTimeout` / `UNIFIED_K8S_FINALLY_TIMEOUT` on the Kubernetes agent — see
 the [Configuration Reference](../../reference/configuration.md)).
 
-The ceiling applies separately to each cleanup phase: the `finally` pipeline
-itself, and each `post:`/`cache:` hook drain. A step still running when the
-budget expires is interrupted and reported `Failed`.
+The ceiling applies separately to each cleanup phase — four of them, in this
+order: the `post:`/`cache:` hook drain that follows the main `steps` DAG, the
+`finally` pipeline itself, the hook drain that follows `finally`, and
+scope/claim-pod teardown. It is a per-phase budget and not a shared total, so
+the worst case a run can spend after its DAG finishes is **4 × `finallyTimeout`
+(40 minutes at the default)**. A step still running when the budget expires is
+interrupted and reported `Failed`.
 
 **When a phase is cut short, the run says so.** The run's own **System** stream
 gains a line naming the phase and the budget:
@@ -192,6 +196,17 @@ gains a line naming the phase and the budget:
 ```
 unified-cd: the finally: phase did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped.
 ```
+
+For a truncated **hook drain**, the line also names what was cut off and what
+never ran — a job with several `cache:` steps would otherwise leave you unable
+to tell which cache is now stale:
+
+```
+unified-cd: the post:/cache: hook drain that follows the main steps did not finish: it hit the 10m cleanup budget (finallyTimeout) and was stopped. Work still in flight was interrupted and anything not yet started was skipped. Interrupted: the cache: save for step "deps" (key "go-mod-linux-9f3c"). Never started: the cache: save for step "build-cache" (key "build-9f3c"), the post: hook of step "integration".
+```
+
+Past five never-started entries the rest are summarised as `(+N more)`, so a
+job with hundreds of hooks still produces one line.
 
 What happens to the run's status depends on which phase was truncated:
 
@@ -201,8 +216,9 @@ What happens to the run's status depends on which phase was truncated:
 | a `post:`/`cache:` hook drain | unchanged (a successful job still reports `Succeeded`) — a post hook has never changed the run's status, whatever it fails on. The System line above is the record. |
 
 That second row is why the line matters: a large `cache:` save cut off at the
-budget is not saved, and without the System line nothing about the run would
-say so.
+budget is not saved, and without the System line — and the `Interrupted:` /
+`Never started:` detail on it — nothing about the run would say so, or say
+which save it was.
 
 Per-step `timeoutMinutes:` works inside `finally` and is the precise tool —
 set it on any cleanup step that talks to something that can hang (a `call:`

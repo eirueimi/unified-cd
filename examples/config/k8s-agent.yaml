@@ -14,9 +14,11 @@ poolIdleTimeout: ""
 # Those phases keep running after a cancellation (that is what finally: is
 # for), which also means they cannot inherit spec.timeoutMinutes, so this
 # replaces it. It is per phase, so the worst-case post-DAG time is 4x this
-# value (40m at the default). Unset or non-positive -> 10m ("unbounded" is not
-# expressible); an unparseable value is rejected at startup and the agent
-# exits 1.
+# value (40m at the default) — and on THIS agent 5x, because the claim Pod is
+# deleted or returned to the idle pool in a fifth window of its own, after the
+# shared cleanup loop has finished. Unset or non-positive -> 10m ("unbounded"
+# is not expressible); an unparseable value is rejected at startup and the
+# agent exits 1.
 # finallyTimeout: 10m
 # podImage: fallback image when a Job does not specify a podTemplate
 podImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3

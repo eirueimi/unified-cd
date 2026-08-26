@@ -20,7 +20,7 @@ applies unchanged.
 |---|---|
 | A `finally:` step with no `timeoutMinutes:` could run forever. `call:` was the sharpest case — the child-run poll's only bound is its context, and the cleanup phase had none — but a plain `run:` was unbounded the same way. | Each cleanup phase is bounded by the agent's `finallyTimeout` (default **10m**). A step still running at the deadline is interrupted, reported `Failed`, and the run finishes `Failed`. |
 | A `post:`/`cache:` hook drain had no timeout either (`RunPostHook` takes none), so a hanging cleanup hook pinned the run indefinitely. | The same `finallyTimeout` bounds each of the two drains, and scope/claim-pod teardown. |
-| — | A phase that hits the budget is recorded on the run itself, on its **System** stream, naming the phase and the budget. A truncated drain does not change the run's status, so that line is the only thing standing between a cut-off `cache:` save and a silently-lost cache. |
+| — | A phase that hits the budget is recorded on the run itself, on its **System** stream, naming the phase and the budget — and, for a hook drain, naming the individual save or hook that was interrupted and the ones that never started (past five, summarised as `(+N more)`). A truncated drain does not change the run's status, so that line is the only thing standing between a cut-off `cache:` save and a silently-lost cache, and the only thing that says *which* cache. |
 | A `finally:` step that exited non-zero on a **cancelled** run was reported `Cancelled`, and the run finished `Cancelled`. The failure was discarded. | The step is reported `Failed` and the run finishes `Failed` — as `spec.finally`'s documented contract already said. A `finally:` block that succeeds still leaves a cancelled run `Cancelled`. |
 | `retry:` on a `finally:` step degraded to a single attempt on a cancelled run, and a genuine exec error left the step's log empty. | The step keeps its full attempt budget, and the `failed to execute: …` diagnostic is written to its log. (A main-DAG step's retry loop still stops on cancellation.) |
 | An output declared in `spec.params.outputs` and set by a `finally:` step reached that step's outputs and stopped there — `SetRunOutputs` never carried it, so a parent `call:` step read nothing. | The value is promoted to the run's outputs like any other. |
@@ -46,6 +46,22 @@ rollout's `terminationGracePeriodSeconds`, a node-drain timeout, or an
 alerting threshold against this setting, size it against that number. It is a
 ceiling and not an expectation — reaching it means four separate phases each
 wedged — but it is the bound, and it is the one an operator has to plan for.
+
+**On the Kubernetes agent, make that five.** Phase 4 there covers the claim's
+*scope* Pods; the claim Pod itself is deleted (or returned to the idle pool)
+from a fifth window, after the shared cleanup loop has returned. It carries
+the same `finallyTimeout` ceiling, so size a k8s rollout against **5 ×
+`finallyTimeout`** (50 minutes at the default). The standard agent has no
+equivalent fifth window: it tears its claim pod down inside phase 4.
+
+Every one of these windows is now genuinely enforced on both agents. On the
+Kubernetes agent that took threading the phase's deadline through the Pod
+deletes and racing the run-cancel-watch join against it — before that, the
+teardown phase re-stripped its own deadline and an API server that accepted
+connections but stopped answering wedged it exactly as if no ceiling existed.
+A client-wide `rest.Config.Timeout` is deliberately **not** used as the guard:
+the same client config drives exec streams and follow-mode log reads, which
+are legitimately long-lived, and a timeout there would cut off running steps.
 
 The one post-DAG phase deliberately left **unbounded** is the final report to
 the controller (`FinishRun`/`SetRunOutputs`), which retries until it lands. It

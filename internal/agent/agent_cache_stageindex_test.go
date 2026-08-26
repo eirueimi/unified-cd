@@ -39,7 +39,7 @@ func TestExecuteCacheStep_ReportsStageIndex(t *testing.T) {
 	sctx := &safeStepCtx{data: dsl.TemplateData{}}
 
 	var postHooksMu sync.Mutex
-	var postHooks []func(context.Context)
+	var postHooks []deferredHook
 	// A non-empty workDir is required: ResolveCachePath now joins "p" against
 	// it under containment (F-PATH-1), and an empty workDir would make the
 	// relative path "p" fail to resolve within its own (root-relative) clean.
