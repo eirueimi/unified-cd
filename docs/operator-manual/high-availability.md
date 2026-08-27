@@ -184,6 +184,15 @@ viewer count.
 Because NOTIFY propagates even when the writing replica differs from the SSE-serving replica,
 **SSE clients can connect to any replica** (no sticky sessions needed).
 
+A NOTIFY is never queued for a session that is not listening, so each replica also
+wakes its viewers unconditionally every 15 seconds as a backstop. Viewers re-read
+from their own last-seen sequence on every wake-up, so a missed notification costs
+latency, never lines. This matters in one operational case: **during a rolling
+upgrade**, a replica still running the previous version publishes only the old
+per-run channel, which upgraded replicas do not listen to. Viewers attached to an
+upgraded replica can therefore see log lines up to one backstop interval late until
+the rollout completes. No action is required, and nothing is lost.
+
 ---
 
 ## Required Configuration
