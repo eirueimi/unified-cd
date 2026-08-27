@@ -256,6 +256,40 @@ func TestControllerAgentAuth_RejectsInvalidKubernetesClusters(t *testing.T) {
 	}
 }
 
+func TestControllerAgentAuth_ParsesKubernetesStoreCredentialPolicies(t *testing.T) {
+	path := writeFile(t, `agentAuth:
+  kubernetesClusters:
+    - name: prod
+      kubeconfig: /secrets/prod-kubeconfig
+  kubernetesStoreCredentialPolicies:
+    - cluster: prod
+      namespaces: [ci]
+      serviceAccounts: [ci-runner]
+`)
+	eff, err := config.ControllerEffective(path)
+	require.NoError(t, err)
+	require.NotNil(t, eff.AgentAuth)
+	require.Len(t, eff.AgentAuth.KubernetesStoreCredentialPolicies, 1)
+	policy := eff.AgentAuth.KubernetesStoreCredentialPolicies[0]
+	assert.Equal(t, "prod", policy.Cluster)
+	assert.Equal(t, []string{"ci"}, policy.Namespaces)
+	assert.Equal(t, []string{"ci-runner"}, policy.ServiceAccounts)
+}
+
+func TestControllerAgentAuth_RejectsInvalidKubernetesStoreCredentialPolicies(t *testing.T) {
+	for _, yaml := range []string{
+		// References a cluster name that isn't declared under kubernetesClusters.
+		"agentAuth:\n  kubernetesStoreCredentialPolicies:\n    - cluster: prod\n      namespaces: [ci]\n      serviceAccounts: [ci-runner]\n",
+		// Declares the cluster but omits namespaces.
+		"agentAuth:\n  kubernetesClusters:\n    - name: prod\n      kubeconfig: /one\n  kubernetesStoreCredentialPolicies:\n    - cluster: prod\n      serviceAccounts: [ci-runner]\n",
+		// Declares the cluster but omits serviceAccounts.
+		"agentAuth:\n  kubernetesClusters:\n    - name: prod\n      kubeconfig: /one\n  kubernetesStoreCredentialPolicies:\n    - cluster: prod\n      namespaces: [ci]\n",
+	} {
+		_, err := config.ControllerEffective(writeFile(t, yaml))
+		require.Error(t, err)
+	}
+}
+
 func TestControllerEffective_FileOverridesEnv(t *testing.T) {
 	t.Setenv("UNIFIED_DB_DSN", "postgres://env")
 	t.Setenv("UNIFIED_TOKEN", "env-token")
