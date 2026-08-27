@@ -92,6 +92,24 @@ func TestVerifySchemaDetectsMissingIndex(t *testing.T) {
 	assert.Contains(t, err.Error(), "runs_job_name_created_idx")
 }
 
+// Dropping the runs.display_name column added by migration 019 on a DB
+// that still claims version 19 must be reported as drift.
+func TestVerifySchemaDetectsMissingDisplayNameColumn(t *testing.T) {
+	pg := NewTestPostgres(t)
+	db := openSQL(t, pg)
+
+	require.NoError(t, verifySchema(db)) // fresh clone is clean
+
+	_, err := db.Exec(`ALTER TABLE runs DROP COLUMN display_name`)
+	require.NoError(t, err)
+
+	err = verifySchema(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schema drift")
+	assert.Contains(t, err.Error(), "019_run_display_name")
+	assert.Contains(t, err.Error(), "runs.display_name")
+}
+
 func TestVerifySchemaReportsDirtyState(t *testing.T) {
 	pg := NewTestPostgres(t)
 	db := openSQL(t, pg)
