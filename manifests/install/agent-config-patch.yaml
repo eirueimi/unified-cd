@@ -15,3 +15,18 @@ data:
     namespace: ci
     maxConcurrent: 5
     podImage: golang:1.24-alpine
+    # This bundle has never shipped a sidecarS3SecretName or the
+    # per-namespace Secret it would need (spec §7 item 4), so without this
+    # the artifact sidecar has no S3 credentials at all and every artifact
+    # step fails — the exact trap
+    # docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
+    # describes. "broker" (§5.6) closes it with no Secret in any job
+    # namespace: the sidecar exchanges a projected ServiceAccount token
+    # (kubernetesStoreCredentialPolicies in controller-config-patch.yaml)
+    # for the controller's own object-store credentials. This is opt-in
+    # everywhere else — the default stays "env" (see
+    # docs/operator-manual/kubernetes-integration.md's "S3 credential
+    # delivery mode" section) — this quick-trial bundle turns it on because
+    # it's the one place demonstrating a working artifact pipeline out of
+    # the box matters more than mirroring a production default.
+    sidecarS3SecretMode: broker

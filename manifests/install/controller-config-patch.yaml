@@ -1,0 +1,48 @@
+# Adds kubernetesStoreCredentialPolicies to the base controller config
+# (manifests/base/controller/config-configmap.yaml) so this bundle's
+# k8s-agent (patched below in agent-config-patch.yaml to
+# sidecarS3SecretMode: broker) can actually get object-store credentials for
+# its job Pods' artifact sidecar — see
+# docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
+# §5.6. Without this, install.yaml demonstrates exactly the trap that design
+# describes: log archiving works (the controller's own UNIFIED_S3_* in
+# secret.yaml), artifacts fail (the sidecar has no credentials at all, and
+# this bundle has never shipped a sidecarS3SecretName or the per-namespace
+# Secret it would need).
+#
+# This is a FULL replacement of controller-config.yaml's content (kustomize
+# patches a ConfigMap's data value as an opaque string, not by merging YAML
+# keys inside it), duplicating the base's kubernetesClusters/
+# kubernetesEnrollmentPolicies rather than only adding the new section — the
+# same shape agent-config-patch.yaml already uses for the k8s-agent
+# ConfigMap in this same bundle, not a new pattern.
+#
+# serviceAccounts: [default] because job Pods in the "ci" namespace run
+# under its default ServiceAccount: nothing in this bundle sets a custom one
+# (see manifests/base/k8s-agent/config-configmap.yaml's namespace: ci, and
+# podbuilder.go, which never sets Pod.Spec.ServiceAccountName unless a
+# podTemplate does). A production deployment with a dedicated job
+# ServiceAccount would name that instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unified-cd-controller-config
+  namespace: unified-cd
+data:
+  controller-config.yaml: |
+    agentAuth:
+      kubernetesClusters:
+        - name: in-cluster
+      kubernetesEnrollmentPolicies:
+        - name: unified-cd-k8s-agents
+          cluster: in-cluster
+          namespaces: [unified-cd]
+          serviceAccounts: [unified-cd-k8s-agent]
+          allowedLabels: [kind:kubernetes]
+          requiredLabels: [kind:kubernetes]
+          accessTokenTTL: 1h
+          enabled: true
+      kubernetesStoreCredentialPolicies:
+        - cluster: in-cluster
+          namespaces: [ci]
+          serviceAccounts: [default]
