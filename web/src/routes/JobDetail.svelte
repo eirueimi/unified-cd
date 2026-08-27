@@ -100,7 +100,7 @@
       <tbody>
         {#each runs as r (r.id)}
           <tr>
-            <td><a href="#/runs/{r.id}">{r.id.slice(0, 8)}…</a></td>
+            <td><a href="#/runs/{r.id}">{r.displayName || r.id.slice(0, 8) + '…'}</a>{#if r.displayName}<div class="meta" title={r.id}>{r.id.slice(0, 8)}…</div>{/if}</td>
             <td><span class={statusBadge(r.status)}>{r.status}</span></td>
             <td class="meta">{r.triggeredBy}</td>
             <td class="meta">{fmtRelative(r.createdAt)}</td>
