@@ -151,4 +151,5 @@ nav:
       - Architecture: contributing/architecture.md
       - Invariants: contributing/invariants.md
       - Background Workers: contributing/background-workers.md
+      - Agent Execution: contributing/agent-execution.md
       - Frontend Development: contributing/frontend-development.md
