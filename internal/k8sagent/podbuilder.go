@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
@@ -58,7 +59,43 @@ const (
 	// §5.5). Opt-in only — "env" stays the default so no existing deployment
 	// changes behaviour.
 	SidecarS3SecretModeFile = "file"
+
+	// SidecarS3SecretModeBroker removes the operator-managed Secret
+	// entirely: the sidecar container gets a projected ServiceAccount token
+	// instead (mounted the same way as any other read-only volume this file
+	// builds — no new agent RBAC, since a projected-token volume is minted
+	// by the kubelet from the Pod spec the agent already writes, not fetched
+	// by the agent from the API server), presents it to the controller's
+	// POST /api/v1/store-credentials, and gets object-store credentials
+	// back. See docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
+	// §5.6. Opt-in like "file" — "env" stays the default.
+	SidecarS3SecretModeBroker = "broker"
 )
+
+// sidecarBrokerTokenVolumeName names the projected ServiceAccount token
+// volume SidecarS3SecretModeBroker adds. A fixed name is fine for the same
+// reason sidecarS3CredentialsVolumeName's is: at most one artifact sidecar
+// per Pod, so at most one such volume to collide with.
+const sidecarBrokerTokenVolumeName = "sidecar-store-credential-token"
+
+// sidecarBrokerTokenMountPath is where the projected token is mounted into
+// the sidecar container ONLY (Global Constraint: never the job container —
+// the same container-boundary isolation that keeps today's Secret-derived
+// credentials away from user code). sidecarBrokerTokenFile names the file
+// within it, matching the "path" the ServiceAccountTokenProjection writes.
+const sidecarBrokerTokenMountPath = "/var/run/secrets/unified-cd-store-credentials"
+const sidecarBrokerTokenFile = "token"
+
+// sidecarBrokerTokenExpirationSeconds bounds how long the kubelet-projected
+// token is valid for. The kubelet keeps the mounted file refreshed well
+// before expiry for as long as the Pod runs (the same mechanism that makes
+// the enrollment token in manifests/base/k8s-agent/deployment.yaml usable
+// for an agent's whole lifetime, not just its first hour), so this is not a
+// ceiling on how long a job can run — it only bounds how long a single
+// projected credential would remain valid if copied out of the Pod. 3600s
+// matches that deployment.yaml's own projected lifetime, for consistency
+// rather than inventing a second convention.
+const sidecarBrokerTokenExpirationSeconds = int64(3600)
 
 // sidecarS3CredentialsVolumeName names the volume/mount used in
 // SidecarS3SecretModeFile. A fixed name is fine: BuildPod and buildScopePod
@@ -90,11 +127,21 @@ type SidecarSpec struct {
 	S3SecretName string // Secret providing S3 credentials for the direct-S3 sidecar
 
 	// S3SecretMode selects how S3SecretName reaches the sidecar — see
-	// SidecarS3SecretModeEnv/SidecarS3SecretModeFile. The zero value behaves
-	// as SidecarS3SecretModeEnv, matching Config.SidecarS3SecretMode's
-	// documented default so a caller that never sets this field (every
-	// caller before this seam existed) sees no change.
+	// SidecarS3SecretModeEnv/SidecarS3SecretModeFile/SidecarS3SecretModeBroker.
+	// The zero value behaves as SidecarS3SecretModeEnv, matching
+	// Config.SidecarS3SecretMode's documented default so a caller that never
+	// sets this field (every caller before this seam existed) sees no
+	// change.
 	S3SecretMode string
+
+	// BrokerURL is the controller base URL the sidecar exchanges its
+	// projected token for store credentials against, used only when
+	// S3SecretMode is SidecarS3SecretModeBroker (S3SecretName plays no role
+	// in that mode — there is no Secret to name). Set from the agent's own
+	// Config.Server: the same controller the agent already enrolls against
+	// and long-polls for claims, so there is nothing new for an operator to
+	// configure beyond opting into the mode.
+	BrokerURL string
 }
 
 // buildArtifactSidecarContainer constructs the artifact-transfer sidecar
@@ -110,6 +157,59 @@ func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, *core
 		Image:   sidecar.Image,
 		Command: []string{"unified-sidecar", "idle"},
 	}
+
+	// Broker mode is checked FIRST and independently of S3SecretName: there
+	// is no Secret in this mode at all, so gating on S3SecretName (as the
+	// env/file branches below do) would silently skip it whenever an
+	// operator opts in without also — incorrectly — setting
+	// sidecarS3SecretName, which this mode makes unnecessary.
+	if sidecar.S3SecretMode == SidecarS3SecretModeBroker {
+		sc.Env = append(sc.Env,
+			corev1.EnvVar{Name: "UNIFIED_S3_BROKER_URL", Value: sidecar.BrokerURL},
+			corev1.EnvVar{Name: "UNIFIED_S3_BROKER_TOKEN_FILE", Value: sidecarBrokerTokenMountPath + "/" + sidecarBrokerTokenFile},
+		)
+		sc.VolumeMounts = append(sc.VolumeMounts, corev1.VolumeMount{
+			Name:      sidecarBrokerTokenVolumeName,
+			MountPath: sidecarBrokerTokenMountPath,
+			ReadOnly:  true,
+		})
+		// A projected ServiceAccountToken volume is minted by the kubelet
+		// directly from this Pod spec at admission time — it needs no
+		// Kubernetes permission the agent doesn't already have to write a
+		// Pod spec at all, unlike a Secret volume (which needs the Secret to
+		// already exist and be readable, though notably still not by the
+		// agent itself: the kubelet reads it, not the agent — see the "file"
+		// branch below). This is the concrete shape of "the agent adds a
+		// volume to a Pod spec it already writes" from the design spec's
+		// §5.6: no RBAC change, because nothing here calls the Kubernetes
+		// API on the agent's behalf.
+		vol := &corev1.Volume{
+			Name: sidecarBrokerTokenVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{
+						{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+							Path: sidecarBrokerTokenFile,
+							// A DIFFERENT audience from the agent's own
+							// enrollment token (manifests/base/k8s-agent/deployment.yaml
+							// uses KubernetesEnrollmentAudience) is the whole
+							// safety property this mode depends on: if a job
+							// Pod's token were accepted for enrollment, any
+							// job could register itself as an agent. See
+							// api.KubernetesStoreCredentialAudience's doc
+							// comment and internal/controller/api_store_credentials_test.go
+							// for the tests asserting the separation in both
+							// directions.
+							Audience:          api.KubernetesStoreCredentialAudience,
+							ExpirationSeconds: ptr.To(sidecarBrokerTokenExpirationSeconds),
+						}},
+					},
+				},
+			},
+		}
+		return sc, vol
+	}
+
 	if sidecar.S3SecretName == "" {
 		return sc, nil
 	}
