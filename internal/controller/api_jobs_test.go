@@ -24,6 +24,14 @@ func newTestServer(t *testing.T) (*Server, store.Store) {
 	_, err := pg.UpsertBootstrapPAT(context.Background(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	s := NewServer(Config{}, pg)
+	// Stops the shared log-notify listener goroutine if an SSE test caused
+	// subscribeLogNotify to start it (most callers of newTestServer never
+	// touch SSE, so this is usually a no-op — see (*Server).Close). Ordered
+	// (via t.Cleanup's LIFO execution) to run BEFORE NewTestPostgres' own
+	// pg.Close() cleanup above: cancelling the listener first means its
+	// reconnect loop never gets a chance to retry ListenForNotify against a
+	// pool that is already closing underneath it.
+	t.Cleanup(s.Close)
 	return s, pg
 }
 

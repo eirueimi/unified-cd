@@ -30,6 +30,7 @@ func newTestServerWithConfig(t *testing.T, cfg Config) (*Server, store.Store) {
 	_, err := pg.UpsertBootstrapPAT(t.Context(), "test-bootstrap", HashToken("secret"))
 	require.NoError(t, err)
 	s := NewServer(cfg, pg)
+	t.Cleanup(s.Close) // see newTestServer's identical cleanup for why (api_jobs_test.go)
 	return s, pg
 }
 

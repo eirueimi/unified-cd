@@ -395,6 +395,13 @@ func main() {
 	}
 
 	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, StoreCredentialS3: storeCredentialS3, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
+	// Stops the shared log-notify listener goroutine (started lazily on the
+	// first SSE viewer — see (*controller.Server).subscribeLogNotify) if it
+	// was ever started. A no-op otherwise. Deferred here rather than left to
+	// process exit so the listenPool connection it may hold is released
+	// deterministically during graceful shutdown, not just implicitly by the
+	// OS reclaiming the process.
+	defer srv.Close()
 	srv.SetMetrics(m)
 	srv.SetKeyManager(km)
 	if obj != nil {
