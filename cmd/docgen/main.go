@@ -34,6 +34,21 @@ func run() error {
 	if err := json.Unmarshal(data, &schema); err != nil {
 		return err
 	}
+
+	content, err := generateDoc(schema)
+	if err != nil {
+		return err
+	}
+
+	out := filepath.Join(root, "docs", "reference", "field-reference.md")
+	return os.WriteFile(out, []byte(content), 0o644)
+}
+
+// generateDoc renders the field-reference Markdown for the given JSON
+// Schema document. It is the pure, in-memory core of docgen — split out
+// from run() so a test can regenerate the document without touching disk
+// and diff it against the committed docs/reference/field-reference.md.
+func generateDoc(schema map[string]any) (string, error) {
 	defs, _ := schema["definitions"].(map[string]any)
 
 	// The root kinds, and the order they are documented in, are READ FROM THE
@@ -48,7 +63,7 @@ func run() error {
 	// of a hand-written kind list of its own.
 	rootKinds, err := schemakinds.RootKinds(schema)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	var sb strings.Builder
@@ -78,8 +93,7 @@ func run() error {
 		writeSection(&sb, kind, def, defs, written)
 	}
 
-	out := filepath.Join(root, "docs", "reference", "field-reference.md")
-	return os.WriteFile(out, []byte(sb.String()), 0o644)
+	return sb.String(), nil
 }
 
 // writeSection writes a field table for defName and recurses into referenced types.
