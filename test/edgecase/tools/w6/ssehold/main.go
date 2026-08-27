@@ -4,14 +4,22 @@
 //
 // WHY IT EXISTS. Nothing in `test/edgecase/tools/` opens or holds an SSE
 // stream, and SSE is the surface W6 cares most about: every appended log line
-// fires a `pg_notify`, every NOTIFY wakes every subscriber for that run
-// (`internal/controller/sse.go:118-143`), and each wake issues a
-// `TailLogs(..., 10_000)` plus a `GetRun`. Subscribers are also the product's
-// only per-connection Postgres consumer — `ListenForNotify`
-// (`internal/store/postgres.go:1665-1677`) holds one `listenPool` connection
-// for the life of the stream, against a pool cap of 128 per controller
-// (`postgres.go:51`) and a stock `max_connections` of 100 on the rig's
-// Postgres.
+// fires a `pg_notify` (both the legacy per-run channel and the global
+// `log_appended` channel — see `notifyLogAppended` in
+// `internal/store/postgres.go`), which wakes every subscriber for that run
+// via the shared `logNotifyHub` (`internal/controller/log_notify.go`), and
+// each wake issues a `TailLogs(..., 10_000)` plus a `GetRun`. Postgres
+// connection cost is no longer per-viewer: since the multiplex-log-notify
+// change, one `listenPool` connection per controller replica — not one per
+// SSE stream — serves every viewer of every run that replica handles (see
+// `runLogNotifyListener`), started lazily on the replica's first SSE viewer
+// and reconnected automatically on drop. Before that change, each concurrent
+// SSE stream held its own `listenPool` connection for its whole lifetime,
+// against a pool cap of 128 per controller (`postgres.go`'s
+// `DefaultPostgresPoolConfig`) and a stock `max_connections` of 100 on the
+// rig's Postgres — this tool remains useful for proving the shared listener
+// survives many concurrent viewers and reconnects cleanly, just not for the
+// original one-connection-per-viewer failure mode, which no longer exists.
 //
 // PER-CONTROLLER TARGETING IS MANDATORY, NOT A CONVENIENCE. `test/edgecase/
 // README.md` records that `nginx -s reload` severs in-flight SSE streams and

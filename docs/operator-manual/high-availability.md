@@ -176,9 +176,22 @@ Concurrency slot (`concurrency`) acquisition uses the same mechanism and is also
 ### Event delivery (SSE)
 
 The log stream at `GET /api/v1/runs/{id}/events` is implemented via PostgreSQL
-**LISTEN/NOTIFY** (`log_appended:{runID}` channel).
+**LISTEN/NOTIFY** on a single global `log_appended` channel. Each replica holds
+exactly **one** `LISTEN` connection (started on that replica's first SSE viewer,
+not one per viewer), fanning wake-ups out in-process to whichever viewers it is
+serving — so size the listen pool against **replica count**, not concurrent
+viewer count.
 Because NOTIFY propagates even when the writing replica differs from the SSE-serving replica,
 **SSE clients can connect to any replica** (no sticky sessions needed).
+
+A NOTIFY is never queued for a session that is not listening, so each replica also
+wakes its viewers unconditionally every 15 seconds as a backstop. Viewers re-read
+from their own last-seen sequence on every wake-up, so a missed notification costs
+latency, never lines. This matters in one operational case: **during a rolling
+upgrade**, a replica still running the previous version publishes only the old
+per-run channel, which upgraded replicas do not listen to. Viewers attached to an
+upgraded replica can therefore see log lines up to one backstop interval late until
+the rollout completes. No action is required, and nothing is lost.
 
 ---
 

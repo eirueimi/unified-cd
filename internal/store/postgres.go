@@ -1100,8 +1100,67 @@ func (p *Postgres) AppendLog(ctx context.Context, runID string, stepIndex int, s
 	}
 	// notify listeners of the new log entry (skipped for dropped lines, so
 	// SSE clients stay consistent with what readers can see)
-	_, _ = p.pool.Exec(ctx, "SELECT pg_notify($1, $2)", "log_appended:"+runID, fmt.Sprintf("%d", seq))
+	p.notifyLogAppended(ctx, runID, seq)
 	return seq, nil
+}
+
+// notifyLogAppended fires BOTH the legacy per-run NOTIFY channel
+// ("log_appended:{runID}", one channel per run — still what (*Postgres).
+// ListenForNotify's every direct caller expects, and still exercised by
+// postgres_pool_test.go's listen-pool isolation check) and the new global
+// LogAppendedChannel a controller replica's shared listener (internal/
+// controller's runLogNotifyListener) actually LISTENs on. Both pg_notify
+// calls ride in ONE Exec/round trip (a single SELECT selecting both), not
+// two — this runs on AppendLog's and AppendLogs' hot path, and the whole
+// point of this change is to stop paying a per-viewer tax here, not to
+// replace it with a second per-append round trip forever.
+//
+// Why BOTH, and why not just for a transition window: NOTIFY/LISTEN is
+// pure Postgres server state, shared by every controller replica against
+// the same database, and a rolling upgrade runs old and new binaries
+// side by side for the whole rollout — with no coordination between them
+// about which is "done". An old replica's SSE viewers are still LISTENing
+// on the per-run channel; a new replica's viewers are only LISTENing on
+// the global one. Which replica happens to serve a given AppendLog/
+// AppendLogs call is independent of which replica is serving any
+// particular viewer's SSE connection (any API-pool replica can take the
+// write; the LB picks whichever). If this only published the new
+// channel, a viewer connected to an old replica would go dark for every
+// write an already-upgraded replica happened to handle. Publishing both
+// closes that direction.
+//
+// It closes ONLY that direction, and the symmetry is worth stating
+// plainly because it is easy to assume: the mirror case — a write
+// handled by an OLD replica, watched by a viewer on a NEW replica — is
+// NOT fixed here and cannot be, because the code that would have to
+// publish the global channel lives in the old binary that is still
+// running. A new replica's shared listener sees nothing for that write.
+// internal/controller's runLogNotifyListener covers that window with a
+// periodic publishAll sweep (see logNotifySweepInterval) instead of with
+// NOTIFY, which bounds the staleness to one sweep interval for the
+// minutes a rollout lasts rather than eliminating it.
+//
+// There is no plan to remove the per-run publish afterward either: it is
+// what ListenForNotify's own direct callers (present or future, e.g.
+// postgres_pool_test.go) rely on, and it costs one cheap in-database
+// NOTIFY inside a round trip already being made, not a connection.
+//
+// Payload formats deliberately do NOT change for the legacy channel: it
+// keeps carrying the seq exactly as before (a decimal string), because an
+// old controller binary is the only thing that ever reads it and this
+// change does not touch that binary. The new global channel's payload is
+// the bare runID — nothing else. Neither an old nor a new controller ever
+// parses the OTHER format: they differ by channel name, not just payload
+// shape, and a replica only LISTENs on the channel its own version knows
+// about, so there is no format-collision window to reason about, only an
+// availability one (handled above by publishing to both). The SSE
+// consumer itself has never parsed either payload anyway (see
+// internal/controller/sse.go: it always redrains from its own lastSeq,
+// treating any wake-up as "go check"), so the global channel's payload
+// only needs to answer "which run", not "which seq".
+func (p *Postgres) notifyLogAppended(ctx context.Context, runID string, seq int64) {
+	_, _ = p.pool.Exec(ctx, "SELECT pg_notify($1, $2), pg_notify($3, $4)",
+		"log_appended:"+runID, fmt.Sprintf("%d", seq), LogAppendedChannel, runID)
 }
 
 // AppendLogs stores many log lines with a constant number of round trips per
@@ -1226,14 +1285,14 @@ func (p *Postgres) AppendLogs(ctx context.Context, lines []LogAppend) ([]int64, 
 			out[i] = seqs[j]
 		}
 
-		// One notification per run that had a line written. The payload keeps
-		// AppendLog's shape (the highest seq); no reader parses it — the SSE
-		// handler uses its own lastSeq — but changing a wire format for no
-		// gain is worse than leaving it. The error is discarded deliberately,
-		// exactly as in AppendLog: the lines are written, which is what
-		// matters, and a failed wake-up costs a delayed refresh, not data.
-		_, _ = p.pool.Exec(ctx, "SELECT pg_notify($1, $2)",
-			"log_appended:"+runID, fmt.Sprintf("%d", seqs[len(seqs)-1]))
+		// One notification per run that had a line written, on both the
+		// legacy per-run channel and the new global one — see
+		// notifyLogAppended's doc comment for why both, unconditionally,
+		// forever. The payload keeps AppendLog's shape (the highest seq) on
+		// the legacy channel; no reader parses it — the SSE handler uses its
+		// own lastSeq — but changing a wire format for no gain is worse than
+		// leaving it.
+		p.notifyLogAppended(ctx, runID, seqs[len(seqs)-1])
 	}
 	return out, nil
 }
@@ -2024,6 +2083,17 @@ func (p *Postgres) DeleteLogArchive(ctx context.Context, runID string) error {
 // apart from "the request ended" and respond to each differently, instead of
 // pattern-matching an error string. Match it with errors.Is.
 var ErrListenPoolExhausted = errors.New("store: listen pool exhausted")
+
+// LogAppendedChannel is the single global Postgres NOTIFY channel a
+// controller replica's shared log-notify listener (internal/controller's
+// runLogNotifyListener) LISTENs on — one connection, one channel, for
+// every run that replica happens to be serving SSE for, replacing the
+// former one-connection-per-viewer "log_appended:{runID}" channel
+// (still published alongside this one; see notifyLogAppended). Its
+// payload is the bare runID: see notifyLogAppended's doc comment for why
+// that is sufficient and why the two channels' payload formats are
+// independent, not a shared wire contract.
+const LogAppendedChannel = "log_appended"
 
 func (p *Postgres) ListenForNotify(ctx context.Context, channel string, callback func(payload string)) error {
 	acquireCtx, cancel := context.WithTimeout(ctx, listenAcquireTimeout)

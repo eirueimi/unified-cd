@@ -110,11 +110,29 @@ type Server struct {
 	oidcVerifyOnce   sync.Once
 	oidcProviderV    *oidc.Provider
 	oidcProviderVErr error
+
+	// logNotify fans out live "this run's logs changed" wake-ups to SSE
+	// viewers in-process (see log_notify.go); logNotifyOnce starts the ONE
+	// shared Postgres LISTEN connection that feeds it on the first SSE
+	// viewer this Server ever serves, not in NewServer and not at process
+	// startup — see subscribeLogNotify for why lazy start specifically.
+	// logNotifyCtx/logNotifyCancel bound that goroutine's lifetime; Close
+	// cancels it.
+	logNotify       *logNotifyHub
+	logNotifyOnce   sync.Once
+	logNotifyCtx    context.Context
+	logNotifyCancel context.CancelFunc
 }
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
 	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
+	// logNotify itself is cheap to construct (an empty map + a mutex); it is
+	// the listener goroutine that is expensive (a listenPool connection),
+	// and that stays unstarted until subscribeLogNotify's first call — see
+	// its doc comment for why eager start here would be wrong.
+	s.logNotify = newLogNotifyHub()
+	s.logNotifyCtx, s.logNotifyCancel = context.WithCancel(context.Background())
 	if cfg.WebDir == "" && cfg.UIProxyTarget != "" {
 		if target, err := url.Parse(cfg.UIProxyTarget); err == nil {
 			s.uiProxy = &httputil.ReverseProxy{
@@ -141,6 +159,42 @@ func NewServer(cfg Config, st store.Store) *Server {
 func (s *Server) SetShuttingDown() {
 	if s.shuttingDown.CompareAndSwap(false, true) {
 		close(s.claimDrainCh)
+	}
+}
+
+// subscribeLogNotify registers the caller's interest in runID's live log
+// wake-ups, starting the shared listener goroutine (runLogNotifyListener)
+// on the very first call across every run and every request this Server
+// ever handles — not in NewServer, and not at process startup.
+//
+// Lazy start matters for two independent reasons: (1) most of this
+// package's NewServer(...) call sites are in tests that pass a nil store
+// or a fake that does not implement real Postgres NOTIFY — starting the
+// listener eagerly would call ListenForNotify on every one of them,
+// immediately, for no reason those tests care about. (2) a controller
+// replica that never serves an SSE request should not spend a listenPool
+// connection it will never use. A Server that DOES serve SSE pays the
+// cost exactly once, on its first viewer, no matter how many viewers or
+// runs follow.
+func (s *Server) subscribeLogNotify(runID string) (<-chan struct{}, func()) {
+	s.logNotifyOnce.Do(func() {
+		go runLogNotifyListener(s.logNotifyCtx, s.store, s.logNotify)
+	})
+	return s.logNotify.subscribe(runID)
+}
+
+// Close releases resources Server owns outright — currently just the
+// shared log-notify listener goroutine started lazily by
+// subscribeLogNotify. Safe to call even if no SSE viewer ever connected
+// (logNotifyOnce never fired, so there is nothing to stop) and safe to
+// call more than once: context.CancelFunc is documented idempotent.
+//
+// Also safe on a Server built by struct literal rather than NewServer —
+// several tests in this package do exactly that (see hardening_test.go),
+// and a Close on one of those should be a no-op, not a nil-func panic.
+func (s *Server) Close() {
+	if s.logNotifyCancel != nil {
+		s.logNotifyCancel()
 	}
 }
 

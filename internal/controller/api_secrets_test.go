@@ -36,6 +36,7 @@ func newTestServerWithKM(t *testing.T) (*Server, store.Store) {
 	km := testKeyManager(t)
 	s := NewServer(Config{}, pg)
 	s.SetKeyManager(km)
+	t.Cleanup(s.Close) // see newTestServer's identical cleanup for why (api_jobs_test.go)
 	return s, pg
 }
 

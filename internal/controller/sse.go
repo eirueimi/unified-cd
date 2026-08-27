@@ -3,28 +3,28 @@ package controller
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 )
 
+// sseEvent no longer carries an "error" type: the only producer of one was
+// handleRunEvents' own store.ErrListenPoolExhausted branch, back when this
+// handler called ListenForNotify itself (PR #166). Listen-pool exhaustion is
+// now a replica-wide condition handled — and logged — by the single shared
+// listener in log_notify.go, which retries instead of tearing a viewer's
+// stream down, so there is nothing left for a per-viewer error event to say.
 type sseEvent struct {
-	Type      string `json:"type"` // "log", "status", "truncated", or "error"
+	Type      string `json:"type"` // "log", "status", or "truncated"
 	Seq       int64  `json:"seq,omitempty"`
 	StepIndex int    `json:"stepIndex"` // must not use omitempty: index 0 (first step) is a valid value
 	Stream    string `json:"stream,omitempty"`
 	Line      string `json:"line,omitempty"`
 	Timestamp string `json:"timestamp,omitempty"`
 	Status    string `json:"status,omitempty"`
-	// Message carries operator/user-facing text for Type "error" — currently
-	// the only event type that needs free text rather than a fixed enum
-	// field like Status.
-	Message string `json:"message,omitempty"`
 }
 
 // sseBackfillLimit bounds how many existing log lines are replayed when a client
@@ -58,7 +58,12 @@ func writeSSE(w http.ResponseWriter, event sseEvent) {
 }
 
 // handleRunEvents streams Run logs and status changes as Server-Sent Events.
-// Uses Postgres LISTEN "log_appended:{runID}", so it works across multiple replicas.
+// Wake-ups ride a single shared Postgres LISTEN "log_appended" connection
+// per controller replica, fanned out in-process to whichever viewers care
+// (see log_notify.go) — not one LISTEN per viewer as before. It still works
+// across multiple replicas for the same reason it always did: every
+// replica runs its own listener, and NOTIFY reaches every session
+// currently listening on the channel, not just one.
 func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
@@ -128,12 +133,30 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Listen for new log lines via Postgres NOTIFY.
-	// DB calls inside the callback use context.Background() so they continue even
+	// Wake up whenever this run's logs change, via the shared logNotifyHub
+	// fed by ONE Postgres LISTEN connection per controller replica (see
+	// internal/controller/log_notify.go) instead of this handler holding
+	// its own listenPool connection for the life of the stream, as every
+	// other concurrent viewer of any run used to.
+	//
+	// unsubscribe is deferred immediately, before any code below that could
+	// return early, so a subscriber is removed from the hub on every exit
+	// path from here on — including a panic — never just the happy path.
+	//
+	// DB calls inside the loop use context.Background() so they continue even
 	// after the HTTP request context is cancelled (client disconnect) — this prevents
-	// cancelled-context errors from being silently swallowed inside the callback.
-	channel := "log_appended:" + id
-	err = s.store.ListenForNotify(r.Context(), channel, func(payload string) {
+	// cancelled-context errors from being silently swallowed before the loop
+	// observes r.Context().Done() below and returns.
+	wake, unsubscribe := s.subscribeLogNotify(id)
+	defer unsubscribe()
+outer:
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-wake:
+		}
+
 		dbCtx := context.Background()
 		// Redrain immediately whenever a pass comes back full: a batch may
 		// have carried more lines for this run than one drain returns, and
@@ -144,7 +167,14 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 			newLines, err := s.store.TailLogs(dbCtx, id, lastSeq, sseDrainLimit)
 			if err != nil {
 				slog.Warn("SSE tail logs error", "runId", id, "error", err)
-				return
+				// Matches the pre-hub behavior exactly: a drain error skips
+				// the rest of THIS wake-up (including the terminal-status
+				// check below) but does not end the stream — go back to
+				// waiting for the next wake-up, the same way returning from
+				// ListenForNotify's callback used to just let its loop wait
+				// for the next notification instead of unwinding the whole
+				// handler.
+				continue outer
 			}
 			for _, l := range newLines {
 				writeSSE(w, sseEvent{
@@ -174,22 +204,6 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 			writeSSE(w, sseEvent{Type: "status", Status: string(run.Status)})
 			flusher.Flush()
 		}
-	})
-	if errors.Is(err, store.ErrListenPoolExhausted) {
-		// A real 503 is not available here: every path into this branch has
-		// already gone through the unconditional flusher.Flush() above
-		// (right after the backfill-replay loop, whether or not there was
-		// anything to backfill) — response headers and the 200 status are
-		// always already on the wire by the time ListenForNotify can return
-		// this error. Checked, not assumed: there is no path from handler
-		// entry to here that skips that Flush(). The next best thing:
-		// surface the failure over the stream itself (an "error" event —
-		// existing frontends already ignore unrecognised SSE types safely)
-		// and close, plus a slog line an operator can act on.
-		slog.Error("SSE stream: listen pool exhausted, closing without live updates",
-			"runId", id, "channel", channel, "error", err)
-		writeSSE(w, sseEvent{Type: "error", Message: "log stream unavailable: connection pool exhausted, please retry"})
-		flusher.Flush()
 	}
 }
 
