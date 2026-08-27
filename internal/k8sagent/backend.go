@@ -71,11 +71,16 @@ import (
 // from false to true (see claimEntry) is the one responsible for that
 // entry's Pod, if it has one, and covers every reachable interleaving of
 // those three. Map identity still decides whether an entry's key should be
-// freed for a future retry; claimed alone decides who deletes the Pod. One
-// narrow, pre-existing window is NOT covered by any of the three — an entry
-// whose Pod is created and reaches Running while CloseScopes sweeps past it
-// mid-install, before createScopePod has recorded its name — and is
-// tolerated rather than closed; see CloseScopes' doc comment for why.
+// freed for a future retry; claimed alone decides who deletes the Pod.
+//
+// A fourth entry can also still be mid-install — CreatePod not yet returned,
+// so it has no name yet — when CloseScopes sweeps past it; that window used
+// to be a documented, tolerated gap (nothing to claim, nothing to name), but
+// is now closed the same way the newcomer case above is: CloseScopes evicts
+// such an entry from the map without claiming it (see CloseScopes), so if it
+// goes on to succeed anyway, its own once.Do closure finds itself no longer
+// the map's current occupant and self-deletes through the existing
+// newcomer-eviction path below — one mechanism, two ways to trigger it.
 //
 // interest, abandonedClosed, done and claimed are guarded by
 // k8sBackend.scopesMu; abandoned itself is assigned once at construction and
@@ -322,39 +327,40 @@ func (b *k8sBackend) RunInScope(ctx context.Context, h agentlib.ScopeHandle, scr
 // ends with an empty map regardless; claimEntry only decides who physically
 // calls DeletePod.
 //
-// One hole this arbitration does NOT close: the loop below only considers an
-// entry with e.name != "" (e.err == nil is its zero value here, not yet
-// meaningfully "no error"). createScopePod installs the entry (via
-// ensureScopePod's lookup) before it has a name — name is only written once
-// CreatePod returns (see createScopePod) — so a CloseScopes sweep landing in
-// that narrow window sees e.name == "" and skips the entry entirely,
-// claiming nothing. If that same attempt goes on to succeed — CreatePod and
-// WaitForPodRunning both completing despite b.scopeCancel already having
-// fired above — the once.Do closure finds stillCurrent still true (nothing
-// else touched this key: CloseScopes didn't remove it, and no newcomer had
-// reason to replace an entry that wasn't abandoned), so its self-delete
-// branch (guarded by !stillCurrent) does not fire either. The entry and its
-// Pod are left behind, claimed by nobody.
+// An entry can still be mid-install when this sweep runs — createScopePod
+// installs it (via ensureScopePod's lookup) before it has a name, since name
+// is only written once CreatePod returns (see createScopePod) — so the loop
+// below cannot claim its Pod: there is no name yet to put in entries. This
+// USED to mean skipping the entry outright, leaving it in b.scopes for the
+// once.Do closure to find stillCurrent still true and take no action either
+// (nothing else had touched the key), so a same-instant success — CreatePod
+// and WaitForPodRunning both completing despite b.scopeCancel already having
+// fired above — leaked the entry and its Pod, claimed by nobody. That was a
+// real, if narrow, gap: TestK8sBackend_EnsureScope_StressCloseScopesRacesInFlightAttempts
+// hits it under real (unchoreographed) timing on a loaded machine, not just
+// in theory, which is what CI's "created 43, deleted 42" failure was.
 //
-// This is pre-existing and effectively unreachable in practice, and is
-// tolerated rather than closed. b.scopeCancel() above always runs before
-// this sweep, so by the time the race window matters the attempt's context
-// is already cancelled; WaitForPodRunning observing that cancellation before
-// it observes success is what makes the attempt fail (not succeed) the
-// overwhelming rest of the time, which routes cleanup through
-// createScopePod's own failure branch instead — the same arbitration this
-// comment describes, just reached from a different site. On the rare path
-// where the Pod still leaks, runPodGC's label sweep (podgc.go) is the
-// backstop, exactly as it is for the other documented, deliberately-unfixed
-// leak in createScopePod's CreatePod error branch.
+// It is closed the same way the OTHER hole this arbitration exists for is
+// closed — the newcomer-replaces-an-abandoned-entry case the scopeEntry doc
+// comment describes: the loop below now evicts a mid-install entry from
+// b.scopes too, without claiming it (there is nothing to claim yet). If that
+// attempt goes on to fail, createScopePod's own failure branch cleans up as
+// it always has (claimEntry there is still the first and only claimant). If
+// it goes on to succeed, the once.Do closure computes stillCurrent as false —
+// this sweep already evicted it — and falls into the EXISTING
+// !stillCurrent-and-claimEntry self-delete branch below, the exact one the
+// newcomer case already relies on. No new arbitration site, no new field:
+// eviction alone is enough to hand ownership to the closure that already
+// knows what to do with it.
 //
-// In production the CloseScopes/in-flight-attempt race cannot actually
-// happen: CloseScopes is deferred in the orchestrator and only runs after
+// In production this race cannot actually happen regardless of the above:
+// CloseScopes is deferred in the orchestrator and only runs after
 // RunPipeline returns, and runParallel joins its goroutines before returning,
 // so no in-flight ensureScopePod can overlap CloseScopes. That ordering lives
 // in a different package (internal/agent/orchestrator.go) though, so this
 // handoff does not rely on it — it stays correct even if a future refactor
-// there changes it.
+// there changes it, and it is what the stress test above deliberately
+// violates in order to exercise this arbitration at all.
 func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	if b.sidecarPump != nil {
 		b.sidecarPump.Stop()
@@ -411,12 +417,32 @@ func (b *k8sBackend) CloseScopes(ctx context.Context) {
 	b.scopesMu.Lock()
 	entries := make(map[string]string, len(b.scopes))
 	for key, e := range b.scopes {
-		if e.err == nil && e.name != "" {
+		if e.err != nil {
+			// Defensive, not a race window: the once.Do closure records
+			// e.err and (when stillCurrent) removes itself from b.scopes
+			// inside ONE uninterrupted critical section (see ensureScopePod)
+			// — it never releases scopesMu in between. A failed entry that
+			// WAS stillCurrent is therefore already gone from the map by the
+			// time any later lock-holder, including this sweep, could look;
+			// one that was NOT stillCurrent never occupied this key here to
+			// begin with. e.err != nil should be unreachable in this loop;
+			// skip it rather than assume that invariant if it somehow isn't.
+			continue
+		}
+		if e.name != "" {
 			if claimEntry(e) {
 				entries[key] = e.name
 			}
-			delete(b.scopes, key)
 		}
+		// Evict e from b.scopes regardless of whether it already has a name.
+		// A named entry is claimed above (or already was, by someone else) and
+		// is on its way out via entries. A not-yet-named entry — CreatePod
+		// hasn't returned, so there is nothing here to claim — is evicted
+		// anyway: that eviction IS this sweep's claim on it, just deferred.
+		// See the doc comment above for why handing it to the existing
+		// !stillCurrent self-delete branch this way, rather than adding a
+		// second claimEntry call site, is enough to close that window.
+		delete(b.scopes, key)
 	}
 	b.scopesMu.Unlock()
 
@@ -551,12 +577,16 @@ func (b *k8sBackend) ensureScopePod(ctx context.Context, step api.ClaimStep, env
 			}
 		}
 		// e succeeded but is no longer the map's current occupant for its
-		// key: it was replaced (see ensureScopePod's lookup, above) while
-		// still in flight, by a caller that arrived after this entry was
-		// abandoned. Nobody will ever look e up again — CloseScopes only
-		// walks the CURRENT map — so without this, e's Pod would leak
-		// forever. claimEntry (not stillCurrent) decides whether THIS call
-		// gets to delete it, because CloseScopes can be racing the exact same
+		// key. Two distinct reasons land here: it was replaced (see
+		// ensureScopePod's lookup, above) while still in flight, by a caller
+		// that arrived after this entry was abandoned; or CloseScopes' own
+		// sweep evicted it while it was still mid-install (no name yet to
+		// claim) and the attempt went on to succeed anyway (see CloseScopes'
+		// doc comment). Either way nobody will ever look e up again —
+		// CloseScopes only walks the CURRENT map, and it has already run in
+		// the second case — so without this, e's Pod would leak forever.
+		// claimEntry (not stillCurrent) decides whether THIS call gets to
+		// delete it, because CloseScopes can be racing the exact same
 		// decision for the exact same e (see the doc comment on claimEntry).
 		var selfDeleteName string
 		if !stillCurrent && err == nil && name != "" && claimEntry(e) {

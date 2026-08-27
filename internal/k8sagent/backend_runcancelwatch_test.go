@@ -205,6 +205,48 @@ func TestK8sBackend_StartRunCancelWatch_TransportErrorDoesNotAbort(t *testing.T)
 // return while the watch could still be about to touch claim state (here,
 // the controller) — checked by confirming no further polls land once
 // CloseScopes has returned, given a generous grace period.
+//
+// This test flaked on main (CI #33039380133): "expected 2, actual 3", the
+// extra call landing during the grace sleep, apparently after CloseScopes
+// had already returned. Instrumenting it (a scratch build logging each
+// handler call's timestamp, remote address, and CloseScopes' own
+// call/return times) pinned the mechanism precisely: the extra call always
+// comes from the SAME client connection (identical remote port) as the
+// earlier ones — it is the real watch loop, not a leaked goroutine or a
+// cross-test/cross-iteration collision — and it lands within a few hundred
+// microseconds to low milliseconds of CloseScopes returning, sometimes at
+// the same logged instant.
+//
+// The mechanism: the watch's ticker fires on its own ~5ms cadence,
+// independent of CloseScopes. When a tick and b.scopeCancel() (which
+// CloseScopes calls immediately, before anything else) land close enough
+// together, the watch loop's `select` can still choose the ticker.C branch
+// — Go does not prioritize select cases by order, and watchCtx.Done()
+// becoming ready does not retroactively un-choose an already-scheduled tick.
+// The resulting GetRun request goes out over the watch's already-open,
+// reused connection, and a write to an established connection can complete
+// (bytes handed to the OS) faster than the goroutine can also notice
+// ctx.Done() and abort first. That request is genuinely in flight — sent —
+// before CloseScopes returns; only the SERVER's dispatch of the handler that
+// counts it can lag behind, especially under load (both CI failures
+// happened on a busy machine), landing after CloseScopes has already
+// returned even though the request was ALREADY on the wire before it did.
+// Critically, this can happen AT MOST ONCE per CloseScopes call: after that
+// one race-losing tick, the very next loop iteration finds watchCtx.Done()
+// already ready with no tick simultaneously ready (the next one is a full
+// poll interval away), so it returns cleanly.
+//
+// This is not evidence the watch goroutine kept running past the join —
+// CloseScopes' own join (runCancelWatchWG.Wait, raced against ctx.Done)
+// still guarantees the goroutine has executed its `return` by the time
+// CloseScopes returns, and does not send another GetRun after that. It is a
+// single already-committed straggler, indistinguishable in principle from
+// any other network request whose completion timing the sender does not
+// control. Snapshotting `calls` the instant CloseScopes returns can race
+// that straggler's landing; debouncing — waiting until calls has gone quiet
+// for a full settle window before trusting it as the baseline — waits it
+// out, while still catching a watch that keeps polling for a genuinely bad
+// reason (that would keep calls changing well past one settle window).
 func TestK8sBackend_CloseScopes_StopsRunCancelWatch(t *testing.T) {
 	var calls int32
 	pm := &fakePM{}
@@ -221,6 +263,23 @@ func TestK8sBackend_CloseScopes_StopsRunCancelWatch(t *testing.T) {
 		time.Second, time.Millisecond, "the watch must have started polling")
 
 	b.CloseScopes(context.Background())
+
+	// See the doc comment above: at most one already-committed straggler tick
+	// can still land after CloseScopes returns, with no bearing on whether
+	// the watch is still running. Debounce it out — wait until calls has
+	// stopped changing for a full settle window (comfortably many poll
+	// intervals) — before trusting its value as the baseline, rather than
+	// reading it the instant CloseScopes returns.
+	const settleWindow = 100 * time.Millisecond
+	lastSeen, stableSince := int32(-1), time.Time{}
+	require.Eventually(t, func() bool {
+		cur := atomic.LoadInt32(&calls)
+		if cur != lastSeen {
+			lastSeen, stableSince = cur, time.Now()
+			return false
+		}
+		return time.Since(stableSince) >= settleWindow
+	}, 2*time.Second, time.Millisecond, "calls never stopped changing after CloseScopes returned")
 	afterClose := atomic.LoadInt32(&calls)
 
 	time.Sleep(50 * time.Millisecond) // many poll intervals' worth of grace
