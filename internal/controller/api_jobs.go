@@ -250,6 +250,7 @@ func specMeta(specJSON []byte) (inputs []api.InputDef, description string) {
 			Required:    in.Required,
 			Default:     in.Default,
 			Description: in.Description,
+			Choices:     in.Choices,
 		}
 	}
 	return inputs, description

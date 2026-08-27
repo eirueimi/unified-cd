@@ -163,6 +163,73 @@ func TestResolveParams_ErrorDoesNotEchoRejectedValue(t *testing.T) {
 	assert.NotContains(t, err.Error(), secretPayload)
 }
 
+func TestResolveParams_Choices_ValueInChoices_Unchanged(t *testing.T) {
+	inputs := []dsl.Input{{Name: "env", Type: "string", Choices: []string{"staging", "prod"}}}
+	got, err := resolveParams(inputs, map[string]string{"env": "prod"})
+	require.NoError(t, err)
+	assert.Equal(t, "prod", got["env"])
+}
+
+func TestResolveParams_Choices_ValueNotInChoices_ErrorsNamingAllowedValues(t *testing.T) {
+	inputs := []dsl.Input{{Name: "env", Type: "string", Choices: []string{"staging", "prod"}}}
+	_, err := resolveParams(inputs, map[string]string{"env": "dev"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "env")
+	assert.Contains(t, err.Error(), "staging")
+	assert.Contains(t, err.Error(), "prod")
+}
+
+func TestResolveParams_Choices_SuppliedValueNotInChoices_RejectedEvenWithDefault(t *testing.T) {
+	// Supplied wins over default, same as today — but the supplied value must
+	// still be validated against choices.
+	inputs := []dsl.Input{{Name: "env", Type: "string", Default: "staging", Choices: []string{"staging", "prod"}}}
+	_, err := resolveParams(inputs, map[string]string{"env": "dev"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "staging")
+	assert.Contains(t, err.Error(), "prod")
+}
+
+func TestResolveParams_Choices_DefaultFilledIn_PassesValidation(t *testing.T) {
+	// Parse-time already guarantees default is a member of choices; this
+	// proves it end-to-end through resolveParams.
+	inputs := []dsl.Input{{Name: "env", Type: "string", Default: "staging", Choices: []string{"staging", "prod"}}}
+	got, err := resolveParams(inputs, map[string]string{})
+	require.NoError(t, err)
+	assert.Equal(t, "staging", got["env"])
+}
+
+func TestResolveParams_Choices_OmittedOptional_NoErrorNoValueInjected(t *testing.T) {
+	// Not required, no default: an omitted choices param resolves with no
+	// error and no value is injected into the map.
+	inputs := []dsl.Input{{Name: "env", Type: "string", Choices: []string{"staging", "prod"}}}
+	got, err := resolveParams(inputs, map[string]string{})
+	require.NoError(t, err)
+	_, present := got["env"]
+	assert.False(t, present, "no value should be injected for an omitted optional choices param")
+}
+
+func TestResolveParams_Choices_ExplicitEmptyString_OptionalNoDefault_KeptEmptyNoError(t *testing.T) {
+	// The Web UI's <select> represents "no selection" as "". This codebase
+	// already treats "" as "unset" for defaulting purposes (see
+	// TestResolveParams_ExplicitEmptyValue_NoDefault_KeptEmpty). Choices must
+	// skip validation for "" the same way, even though "" IS present in the
+	// map (ok == true) — unlike the Pattern loop, which still checks "".
+	inputs := []dsl.Input{{Name: "env", Type: "string", Choices: []string{"staging", "prod"}}}
+	got, err := resolveParams(inputs, map[string]string{"env": ""})
+	require.NoError(t, err)
+	assert.Equal(t, "", got["env"])
+}
+
+func TestResolveParams_Choices_RequiredNoValue_ErrorsViaMissingRequiredPath(t *testing.T) {
+	// A required choices param with no supplied value and no default is
+	// caught by the existing missing-required check, before the choices loop
+	// ever runs — not a new "not one of" error.
+	inputs := []dsl.Input{{Name: "env", Type: "string", Required: true, Choices: []string{"staging", "prod"}}}
+	_, err := resolveParams(inputs, map[string]string{})
+	require.Error(t, err)
+	assert.Equal(t, "missing required param: env", err.Error())
+}
+
 func TestValidateWebhookPayloadMappedParams_RejectsUndeclaredInput(t *testing.T) {
 	mapping := map[string]string{"ref": `{{ index .Payload "ref" }}`}
 	err := validateWebhookPayloadMappedParams("wh", mapping, nil, "build")
@@ -243,4 +310,22 @@ func TestValidateWebhookPayloadMappedParams_IgnoresLiteralMapping(t *testing.T) 
 	// to this check even if the job declares no pattern for it.
 	mapping := map[string]string{"image": "myapp"}
 	require.NoError(t, validateWebhookPayloadMappedParams("wh", mapping, nil, "build"))
+}
+
+func TestValidateWebhookPayloadMappedParams_AllowsDeclaredChoices(t *testing.T) {
+	// A choices: allow-list, with no pattern:, satisfies the gate on its own:
+	// it is a strict allow-list, strictly stronger than any pattern: regex.
+	mapping := map[string]string{"env": `{{ .Payload.env }}`}
+	inputs := []dsl.Input{{Name: "env", Type: "string", Choices: []string{"staging", "prod"}}}
+	require.NoError(t, validateWebhookPayloadMappedParams("wh", mapping, inputs, "build"))
+}
+
+func TestValidateWebhookPayloadMappedParams_ErrorMentionsChoicesAsAnOption(t *testing.T) {
+	// When none of pattern/unvalidated/choices is declared, the error message
+	// must mention choices: as a way to satisfy the gate.
+	mapping := map[string]string{"env": `{{ .Payload.env }}`}
+	inputs := []dsl.Input{{Name: "env", Type: "string"}}
+	err := validateWebhookPayloadMappedParams("wh", mapping, inputs, "build")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "choices:")
 }
