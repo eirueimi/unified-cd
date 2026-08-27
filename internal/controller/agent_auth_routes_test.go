@@ -23,7 +23,7 @@ func TestAgentRouteIdentityMatrixRejectsImpersonation(t *testing.T) {
 
 	_, err := st.UpsertJob(t.Context(), "route-matrix", "unified-cd/v1", []byte(`{"steps":[]}`))
 	require.NoError(t, err)
-	run, err := st.CreateRun(t.Context(), "route-matrix", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	run, err := st.CreateRun(t.Context(), "route-matrix", nil, []byte(`{"steps":[]}`), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)

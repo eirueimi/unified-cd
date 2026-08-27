@@ -16,7 +16,7 @@ func newRun(t *testing.T, pg *Postgres, job string) string {
 	ctx := context.Background()
 	_, err := pg.UpsertJob(ctx, job, "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, job, nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, job, nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	return run.ID
 }

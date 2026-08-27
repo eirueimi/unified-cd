@@ -28,7 +28,7 @@ func seedParityRun(t *testing.T, pg store.Store, obj objectstore.ObjectStore) st
 	ctx := context.Background()
 	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	seed := []struct {
 		step   int

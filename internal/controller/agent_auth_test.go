@@ -159,7 +159,7 @@ func TestAgentClaim_UsesAuthorizedPrincipalLabels(t *testing.T) {
 	token := issueAgentAccessForTest(t, st, "agent-a", []string{"pool:default"}, []string{"native"})
 	_, err := st.UpsertJob(t.Context(), "principal-labels", "unified-cd/v1", []byte(`{"steps":[]}`))
 	require.NoError(t, err)
-	_, err = st.CreateRun(t.Context(), "principal-labels", nil, []byte(`{"steps":[]}`), []string{"pool:default"}, nil, "")
+	_, err = st.CreateRun(t.Context(), "principal-labels", nil, []byte(`{"steps":[]}`), []string{"pool:default"}, nil, "", "")
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)

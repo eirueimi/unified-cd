@@ -131,7 +131,7 @@ func TestArtifactRoundTrip(t *testing.T) {
 	// nil-store bypass that no longer exists.
 	_, err := pg.UpsertJob(ctx, "artifact-roundtrip-job", "unified-cd/v1", []byte(`{"steps":[]}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "artifact-roundtrip-job", nil, []byte(`{"steps":[]}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "artifact-roundtrip-job", nil, []byte(`{"steps":[]}`), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 1)
 	require.NoError(t, err)

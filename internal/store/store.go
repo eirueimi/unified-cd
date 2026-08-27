@@ -201,7 +201,7 @@ type Store interface {
 	// treated as an orphan: run history is repointed to newName and the orphan is
 	// deleted. Idempotent: a missing oldName is a no-op.
 	RenameJob(ctx context.Context, oldName, newName string) error
-	CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string) (*api.Run, error)
+	CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string, displayName string) (*api.Run, error)
 	// ListChildRunIDs returns the IDs of runs directly spawned by parentRunID via
 	// call: steps (recorded as child_run_id on the parent's step reports), so a
 	// cancellation of the parent can cascade to its children.

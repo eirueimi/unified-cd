@@ -224,7 +224,8 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 					continue
 				}
 			}
-			_, err := st.CreateRun(ctx, sc.JobName, params, runSpec, agentSelector, requiredCaps, "schedule:"+sc.Name)
+			// TODO(Task 4): interpolate spec.DisplayName
+			_, err := st.CreateRun(ctx, sc.JobName, params, runSpec, agentSelector, requiredCaps, "schedule:"+sc.Name, "")
 			if err != nil {
 				slog.Warn("checkAndFireSchedules: failed to create Run", "schedule", sc.Name, "error", err)
 				continue // Do not update last_fired_at — allow retry on the next tick.

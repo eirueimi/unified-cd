@@ -66,7 +66,7 @@ func claimRunForAgentLogBulkTest(t *testing.T, st store.Store, agentID string) s
 	ctx := context.Background()
 	_, err := st.UpsertJob(ctx, "j-bulk", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := st.CreateRun(ctx, "j-bulk", nil, []byte(`{}`), nil, nil, "")
+	run, err := st.CreateRun(ctx, "j-bulk", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

@@ -144,7 +144,7 @@ func TestListRunsByAgent(t *testing.T) {
 	if _, err := st.UpsertJob(ctx, "test-job", "v1", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	run, err := st.CreateRun(ctx, "test-job", nil, []byte(`{}`), nil, nil, "api")
+	run, err := st.CreateRun(ctx, "test-job", nil, []byte(`{}`), nil, nil, "api", "")
 	if err != nil {
 		t.Fatal(err)
 	}

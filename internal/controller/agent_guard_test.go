@@ -137,7 +137,7 @@ func mustCreateClaimedRun(t *testing.T, srv *Server, agentID string) string {
 	jobName := "guard-fixture-" + agentID + "-" + fmt.Sprint(time.Now().UnixNano())
 	_, err := st.UpsertJob(t.Context(), jobName, "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := st.CreateRun(t.Context(), jobName, nil, []byte(`{}`), nil, nil, "")
+	run, err := st.CreateRun(t.Context(), jobName, nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	claimRunForTest(t, st, agentID, run.ID)
 	return run.ID

@@ -18,7 +18,7 @@ func mustCreateRun(t *testing.T, p *Postgres, jobName string) string {
 	_, err := p.UpsertJob(ctx, jobName, "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
 
-	run, err := p.CreateRun(ctx, jobName, nil, []byte(`{}`), nil, nil, "")
+	run, err := p.CreateRun(ctx, jobName, nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	return run.ID
 }

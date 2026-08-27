@@ -127,7 +127,7 @@ func TestAPI_GetRunSteps_ArtifactEntrySurvivesTrim(t *testing.T) {
 
 	specJSON := []byte(`{"steps":[{"name":"a","run":"echo a"}]}`)
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", specJSON)
-	run, err := pg.CreateRun(ctx, "j", nil, specJSON, nil, nil, "api")
+	run, err := pg.CreateRun(ctx, "j", nil, specJSON, nil, nil, "api", "")
 	require.NoError(t, err)
 	_, err = pg.AppendLog(ctx, run.ID, dsl.ArtifactLogIndex, "stderr", time.Now(), "pushing artifact foo")
 	require.NoError(t, err)

@@ -80,7 +80,8 @@ func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams
 	// "container" and is left to route by the author's agentSelector, so it
 	// can run on a standard agent too.
 	requiredCaps := dsl.RequiredCaps(spec)
-	run, err := s.store.CreateRun(ctx, job.Name, params, runSpec, agentSelector, requiredCaps, triggeredBy)
+	// TODO(Task 4): interpolate spec.DisplayName
+	run, err := s.store.CreateRun(ctx, job.Name, params, runSpec, agentSelector, requiredCaps, triggeredBy, "")
 	if err != nil {
 		return nil, http.StatusInternalServerError, "create run: " + err.Error()
 	}
@@ -156,7 +157,8 @@ func (s *Server) handleReplayRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requiredCaps := dsl.RequiredCaps(spec)
-	run, err := s.store.CreateRun(r.Context(), orig.JobName, params, runSpec, agentSelector, requiredCaps, "replay:"+id)
+	// TODO(Task 4): interpolate spec.DisplayName
+	run, err := s.store.CreateRun(r.Context(), orig.JobName, params, runSpec, agentSelector, requiredCaps, "replay:"+id, "")
 	if err != nil {
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
 		return

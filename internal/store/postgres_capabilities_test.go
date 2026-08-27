@@ -21,7 +21,7 @@ func TestClaimNextRun_CapabilityMatch(t *testing.T) {
 
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	// a run that needs native must be claimable only by host-1
-	nativeRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{"native"}, "test")
+	nativeRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{"native"}, "test", "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -47,7 +47,7 @@ func TestClaimNextRun_LegacyAgentSkipsCapCheck(t *testing.T) {
 	// legacy agent: capabilities NULL (passed as nil)
 	require.NoError(t, pg.UpsertAgent(ctx, "legacy-1", "l1", "linux", "", []string{}, nil, nil))
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	_, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{"native"}, "test")
+	_, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{"native"}, "test", "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

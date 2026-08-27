@@ -109,7 +109,7 @@ func TestAgentAPI_FetchSecrets(t *testing.T) {
 	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.MY_SECRET }}"}]}`)
 	_, err := pg.UpsertJob(t.Context(), "secret-fetch", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "secret-fetch", nil, specJSON, nil, nil, "")
+	run, err := pg.CreateRun(t.Context(), "secret-fetch", nil, specJSON, nil, nil, "", "")
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "a1", run.ID)
 
@@ -139,13 +139,13 @@ func TestAgentAPI_FetchSecrets_RequiresOwningRunForBearerAgent(t *testing.T) {
 	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.MY_SECRET }}"}]}`)
 	_, err := pg.UpsertJob(t.Context(), "secret-fetch-guard", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
-	owned, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "")
+	owned, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "", "")
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-a", owned.ID)
-	other, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "")
+	other, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "", "")
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-b", other.ID)
-	unclaimed, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "")
+	unclaimed, err := pg.CreateRun(t.Context(), "secret-fetch-guard", nil, specJSON, nil, nil, "", "")
 	require.NoError(t, err)
 
 	token := issueAgentAccessForTest(t, pg, "agent-a", nil, nil)
@@ -188,7 +188,7 @@ func TestAPI_FetchSecrets_MissingSecretIsAnError(t *testing.T) {
 	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.NO_SUCH_SECRET }}"}]}`)
 	_, err := pg.UpsertJob(t.Context(), "fetch-missing-secret", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "fetch-missing-secret", nil, specJSON, nil, nil, "")
+	run, err := pg.CreateRun(t.Context(), "fetch-missing-secret", nil, specJSON, nil, nil, "", "")
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "agent-1", nil, nil)
@@ -218,7 +218,7 @@ func TestAPI_FetchSecrets_ReturnsExistingSecret(t *testing.T) {
 	specJSON := []byte(`{"steps":[{"name":"s","run":"echo {{ secrets.PRESENT }}"}]}`)
 	_, err := pg.UpsertJob(t.Context(), "fetch-existing-secret", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "fetch-existing-secret", nil, specJSON, nil, nil, "")
+	run, err := pg.CreateRun(t.Context(), "fetch-existing-secret", nil, specJSON, nil, nil, "", "")
 	require.NoError(t, err)
 	claimRunForTest(t, pg, "agent-1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "agent-1", nil, nil)
@@ -301,7 +301,7 @@ func newSecretsFetchFixture(t *testing.T, specYAML string) (srv *Server, agentID
 	const jobName = "secrets-fetch-fixture"
 	_, err = pg.UpsertJob(t.Context(), jobName, "unified-cd/v1", specJSON)
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), jobName, nil, specJSON, nil, nil, "")
+	run, err := pg.CreateRun(t.Context(), jobName, nil, specJSON, nil, nil, "", "")
 	require.NoError(t, err)
 
 	agentID = "fixture-agent"

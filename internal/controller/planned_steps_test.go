@@ -131,7 +131,7 @@ func TestAPI_GetRunSteps_MergesPlanned(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"a","run":"echo a"},{"name":"b","cache":{"path":"p","key":"k"}}]}`)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", specJSON)
-	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "api")
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "api", "")
 	require.NoError(t, err)
 
 	// Only step 0 ("a") has been reported so far.
@@ -171,7 +171,7 @@ func TestAPI_GetRunSteps_OverlaysSidecarStatus(t *testing.T) {
 		`{"name":"job","image":"golang"},` +
 		`{"name":"mysql","image":"mysql:8"}]}}}`)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", specJSON)
-	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "api")
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "api", "")
 	require.NoError(t, err)
 
 	// Persist the sidecar's exited status so the handler overlay has something
@@ -217,7 +217,7 @@ func TestAPI_GetRunSteps_ArtifactEntryWhenLogsPresent(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"a","run":"echo a"}]}`)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", specJSON)
-	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "api")
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "api", "")
 	require.NoError(t, err)
 
 	_, err = pg.AppendLog(t.Context(), run.ID, dsl.ArtifactLogIndex, "stderr", time.Now(), "pushing artifact foo")
@@ -253,7 +253,7 @@ func TestAPI_GetRunSteps_NoArtifactEntryWithoutLogs(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"a","run":"echo a"}]}`)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", specJSON)
-	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "api")
+	run, err := pg.CreateRun(t.Context(), "j", nil, specJSON, nil, nil, "api", "")
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+run.ID+"/steps", nil)

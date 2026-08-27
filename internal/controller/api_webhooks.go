@@ -279,7 +279,8 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	requiredCaps := dsl.RequiredCaps(jobSpec)
 
 	// Create the Run.
-	run, err := s.store.CreateRun(r.Context(), job.Name, params, runSpec, agentSelector, requiredCaps, "webhook:"+name)
+	// TODO(Task 4): interpolate spec.DisplayName
+	run, err := s.store.CreateRun(r.Context(), job.Name, params, runSpec, agentSelector, requiredCaps, "webhook:"+name, "")
 	if err != nil {
 		s.countWebhookEvent(name, "error")
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
