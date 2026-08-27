@@ -186,6 +186,7 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 			}
 			var requiredCaps []string
 			var agentSelector []string
+			var displayName string
 			runSpec := job.Spec
 			if serr == nil {
 				requiredCaps = dsl.RequiredCaps(jobSpec)
@@ -218,14 +219,23 @@ func checkAndFireSchedules(ctx context.Context, st store.Store, now time.Time) {
 						"schedule", sc.Name, "element", bad)
 					continue // Do not update last_fired_at — warn again next tick.
 				}
+				// Deterministic template error, same treatment as the
+				// agentSelector expansion failure just above: retrying
+				// without a job fix won't help, so skip this tick rather
+				// than fire with a broken displayName template.
+				var dnErr error
+				displayName, dnErr = expandRunDisplayName(jobSpec.DisplayName, params)
+				if dnErr != nil {
+					slog.Warn("checkAndFireSchedules: displayName expansion failed", "schedule", sc.Name, "error", dnErr)
+					continue // Do not update last_fired_at — allow retry on the next tick.
+				}
 				runSpec, err = prepareRunSpec(job.Spec, params)
 				if err != nil {
 					slog.Warn("checkAndFireSchedules: secret name resolution failed", "schedule", sc.Name, "error", err)
 					continue
 				}
 			}
-			// TODO(Task 4): interpolate spec.DisplayName
-			_, err := st.CreateRun(ctx, sc.JobName, params, runSpec, agentSelector, requiredCaps, "schedule:"+sc.Name, "")
+			_, err := st.CreateRun(ctx, sc.JobName, params, runSpec, agentSelector, requiredCaps, "schedule:"+sc.Name, displayName)
 			if err != nil {
 				slog.Warn("checkAndFireSchedules: failed to create Run", "schedule", sc.Name, "error", err)
 				continue // Do not update last_fired_at — allow retry on the next tick.

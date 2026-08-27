@@ -60,6 +60,61 @@ func TestAPI_TriggerRun_ExpandsAgentSelectorParams(t *testing.T) {
 	require.NotNil(t, claimed2, "agent with the expanded label must claim the run")
 }
 
+// TestAPI_TriggerRun_InterpolatesDisplayName verifies that spec.displayName
+// is expanded with the trigger-time params and stored on the created run.
+func TestAPI_TriggerRun_InterpolatesDisplayName(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "hello", "unified-cd/v1",
+		[]byte(`{"displayName":"deploy {{ .Params.env }}","steps":[{"name":"s","run":"echo x"}]}`))
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "hello", Params: map[string]string{"env": "prod"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var run api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &run))
+	assert.Equal(t, "deploy prod", run.DisplayName)
+}
+
+// TestAPI_TriggerRun_MalformedDisplayNameRejectsWithoutCreatingRun verifies
+// that a job with a malformed displayName template fails run creation with
+// a 400, the same as a malformed agentSelector template does, rather than
+// creating a run with a broken/empty display name.
+func TestAPI_TriggerRun_MalformedDisplayNameRejectsWithoutCreatingRun(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "bad-display-name", "unified-cd/v1",
+		[]byte(`{"displayName":"deploy {{ .Params.env","steps":[{"name":"s","run":"echo x"}]}`))
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "bad-display-name", Params: map[string]string{"env": "prod"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "displayName")
+	runs, err := pg.ListRunsByJob(t.Context(), "bad-display-name", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
+// TestAPI_TriggerRun_NoDisplayNameLeavesItEmpty verifies that a job without
+// a declared displayName produces a run whose DisplayName is empty, the
+// common case (most jobs won't declare displayName:).
+func TestAPI_TriggerRun_NoDisplayNameLeavesItEmpty(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "no-display-name", "unified-cd/v1",
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "no-display-name"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var run api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &run))
+	assert.Empty(t, run.DisplayName)
+}
+
 func TestAPI_TriggerRunStoresResolvedSecretNameParameter(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, err := pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", []byte(`{

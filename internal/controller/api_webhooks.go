@@ -264,6 +264,12 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agentSelector: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	displayName, err := expandRunDisplayName(jobSpec.DisplayName, params)
+	if err != nil {
+		s.countWebhookEvent(name, "error")
+		http.Error(w, "displayName: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	runSpec, err := prepareRunSpec(job.Spec, params)
 	if err != nil {
 		s.countWebhookEvent(name, "error")
@@ -279,8 +285,7 @@ func (s *Server) handleWebhookIngress(w http.ResponseWriter, r *http.Request) {
 	requiredCaps := dsl.RequiredCaps(jobSpec)
 
 	// Create the Run.
-	// TODO(Task 4): interpolate spec.DisplayName
-	run, err := s.store.CreateRun(r.Context(), job.Name, params, runSpec, agentSelector, requiredCaps, "webhook:"+name, "")
+	run, err := s.store.CreateRun(r.Context(), job.Name, params, runSpec, agentSelector, requiredCaps, "webhook:"+name, displayName)
 	if err != nil {
 		s.countWebhookEvent(name, "error")
 		http.Error(w, "create run: "+err.Error(), http.StatusInternalServerError)
