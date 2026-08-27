@@ -216,7 +216,7 @@ func (p *Postgres) ListJobs(ctx context.Context) ([]api.Job, error) {
 	}
 	return out, rows.Err()
 }
-func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string) (*api.Run, error) {
+func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string, displayName string) (*api.Run, error) {
 	if params == nil {
 		params = map[string]string{}
 	}
@@ -243,15 +243,16 @@ func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[str
 		}
 	}
 	const q = `
-		INSERT INTO runs(job_name, params, spec, agent_selector, required_caps, triggered_by, detached)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, job_name, status, params, created_at, updated_at, triggered_by;
+		INSERT INTO runs(job_name, params, spec, agent_selector, required_caps, triggered_by, detached, display_name)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''))
+		RETURNING id, job_name, status, params, created_at, updated_at, triggered_by, display_name;
 	`
 	var r api.Run
 	var paramsOut []byte
 	var status string
-	err = p.pool.QueryRow(ctx, q, jobName, paramsJSON, spec, agentSelector, requiredCaps, triggeredBy, detached).
-		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy)
+	var displayNameOut *string
+	err = p.pool.QueryRow(ctx, q, jobName, paramsJSON, spec, agentSelector, requiredCaps, triggeredBy, detached, displayName).
+		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &displayNameOut)
 	if err != nil {
 		return nil, fmt.Errorf("create run: %w", err)
 	}
@@ -259,6 +260,9 @@ func (p *Postgres) CreateRun(ctx context.Context, jobName string, params map[str
 	_ = json.Unmarshal(paramsOut, &r.Params)
 	if r.Params == nil {
 		r.Params = map[string]string{}
+	}
+	if displayNameOut != nil {
+		r.DisplayName = *displayNameOut
 	}
 	return &r, nil
 }
@@ -342,13 +346,14 @@ var ErrRunNotFound = errors.New("run not found")
 var ErrArchiveIncomplete = errors.New("archive does not cover all of the run's logs")
 
 func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
-	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by, claimed_by FROM runs WHERE id = $1`
+	const q = `SELECT id, job_name, status, params, created_at, updated_at, triggered_by, claimed_by, display_name FROM runs WHERE id = $1`
 	var r api.Run
 	var paramsOut []byte
 	var status string
 	var claimedBy *string
+	var displayName *string
 	err := p.pool.QueryRow(ctx, q, id).
-		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &claimedBy)
+		Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &claimedBy, &displayName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, id)
 	}
@@ -358,6 +363,9 @@ func (p *Postgres) GetRun(ctx context.Context, id string) (*api.Run, error) {
 	r.Status = api.RunStatus(status)
 	if claimedBy != nil {
 		r.ClaimedBy = *claimedBy
+	}
+	if displayName != nil {
+		r.DisplayName = *displayName
 	}
 	_ = json.Unmarshal(paramsOut, &r.Params)
 	if r.Params == nil {
@@ -378,7 +386,7 @@ func (p *Postgres) GetRunSpec(ctx context.Context, id string) ([]byte, error) {
 
 func (p *Postgres) ListRunsByJob(ctx context.Context, jobName string, limit int) ([]api.Run, error) {
 	const q = `
-		SELECT id, job_name, status, params, created_at, updated_at, triggered_by
+		SELECT id, job_name, status, params, created_at, updated_at, triggered_by, display_name
 		FROM runs WHERE job_name = $1
 		ORDER BY created_at DESC LIMIT $2;
 	`
@@ -392,13 +400,17 @@ func (p *Postgres) ListRunsByJob(ctx context.Context, jobName string, limit int)
 		var r api.Run
 		var status string
 		var paramsOut []byte
-		if err := rows.Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy); err != nil {
+		var displayName *string
+		if err := rows.Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &displayName); err != nil {
 			return nil, err
 		}
 		r.Status = api.RunStatus(status)
 		_ = json.Unmarshal(paramsOut, &r.Params)
 		if r.Params == nil {
 			r.Params = map[string]string{}
+		}
+		if displayName != nil {
+			r.DisplayName = *displayName
 		}
 		out = append(out, r)
 	}
@@ -407,7 +419,7 @@ func (p *Postgres) ListRunsByJob(ctx context.Context, jobName string, limit int)
 
 func (p *Postgres) ListActiveRuns(ctx context.Context) ([]api.Run, error) {
 	const q = `
-		SELECT id, job_name, status, params, created_at, updated_at, triggered_by
+		SELECT id, job_name, status, params, created_at, updated_at, triggered_by, display_name
 		FROM runs WHERE status IN ('Pending', 'Queued', 'Running')
 		ORDER BY created_at DESC;
 	`
@@ -421,13 +433,17 @@ func (p *Postgres) ListActiveRuns(ctx context.Context) ([]api.Run, error) {
 		var r api.Run
 		var status string
 		var paramsOut []byte
-		if err := rows.Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy); err != nil {
+		var displayName *string
+		if err := rows.Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &displayName); err != nil {
 			return nil, err
 		}
 		r.Status = api.RunStatus(status)
 		_ = json.Unmarshal(paramsOut, &r.Params)
 		if r.Params == nil {
 			r.Params = map[string]string{}
+		}
+		if displayName != nil {
+			r.DisplayName = *displayName
 		}
 		out = append(out, r)
 	}
@@ -1476,7 +1492,7 @@ func (p *Postgres) GetAgent(ctx context.Context, id string) (*api.AgentInfo, err
 
 func (p *Postgres) ListRunsByAgent(ctx context.Context, agentID string, limit int) ([]api.Run, error) {
 	const q = `
-		SELECT id, job_name, status, params, created_at, updated_at, triggered_by
+		SELECT id, job_name, status, params, created_at, updated_at, triggered_by, display_name
 		FROM runs WHERE claimed_by = $1
 		ORDER BY created_at DESC LIMIT $2;
 	`
@@ -1490,13 +1506,17 @@ func (p *Postgres) ListRunsByAgent(ctx context.Context, agentID string, limit in
 		var r api.Run
 		var status string
 		var paramsOut []byte
-		if err := rows.Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy); err != nil {
+		var displayName *string
+		if err := rows.Scan(&r.ID, &r.JobName, &status, &paramsOut, &r.CreatedAt, &r.UpdatedAt, &r.TriggeredBy, &displayName); err != nil {
 			return nil, err
 		}
 		r.Status = api.RunStatus(status)
 		_ = json.Unmarshal(paramsOut, &r.Params)
 		if r.Params == nil {
 			r.Params = map[string]string{}
+		}
+		if displayName != nil {
+			r.DisplayName = *displayName
 		}
 		out = append(out, r)
 	}
@@ -1758,6 +1778,8 @@ func (p *Postgres) AcquireSchedulerLock(ctx context.Context) (release func(), er
 }
 
 func (p *Postgres) ListRunsNeedingArchival(ctx context.Context, limit int, excluded []string) ([]api.Run, error) {
+	// Deliberately omits triggered_by (and display_name): this is an internal
+	// archival-housekeeping projection, not a UI-facing api.Run projection.
 	const q = `
 		SELECT id, job_name, status, params, created_at, updated_at
 		FROM runs

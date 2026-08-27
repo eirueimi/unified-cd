@@ -65,7 +65,7 @@ func TestRunLogArchiver_OnlyOneLeaderArchives(t *testing.T) {
 
 	// Create a completed Run.
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	_ = pg.MarkRunRunning(t.Context(), run.ID)
 	_ = pg.MarkRunFinished(t.Context(), run.ID, api.RunSucceeded)
 

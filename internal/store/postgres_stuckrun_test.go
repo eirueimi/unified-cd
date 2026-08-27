@@ -17,22 +17,22 @@ func TestListStuckRuns(t *testing.T) {
 	require.NoError(t, err)
 
 	// stuckRun: claimed long ago by an agent that hasn't been seen in a while.
-	stuckRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
+	stuckRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	stuckRunID := stuckRun.ID
 
 	// freshRun: claimed long ago, but the claiming agent has a fresh heartbeat.
-	freshRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
+	freshRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	freshRunID := freshRun.ID
 
 	// recentRun: claimed just now by a stale agent -- still within the grace window.
-	recentRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
+	recentRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	recentRunID := recentRun.ID
 
 	// pendingRun: never claimed, still Pending.
-	pendingRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
+	pendingRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	pendingRunID := pendingRun.ID
 
@@ -88,7 +88,7 @@ func TestListStuckRuns_MissingAgentCountsAsLost(t *testing.T) {
 	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
 
-	orphanRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
+	orphanRun, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	orphanRunID := orphanRun.ID
 
@@ -145,7 +145,7 @@ func TestListStuckRuns_HeartbeatAfterRowDeletionClearsTheOrphanMatch(t *testing.
 
 	_, err := pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 
 	require.NoError(t, pg.UpsertAgent(ctx, "agent1", "host", "linux", "dev", nil, nil, nil))

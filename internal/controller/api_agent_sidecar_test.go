@@ -19,7 +19,7 @@ import (
 func TestAgentAPI_SidecarStatus(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 
@@ -48,7 +48,7 @@ func TestAgentAPI_SidecarStatus(t *testing.T) {
 func TestAgentAPI_SidecarStatus_UpsertsOnExit(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 

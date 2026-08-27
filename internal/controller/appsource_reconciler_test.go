@@ -374,7 +374,7 @@ func TestReconciler_LegacyBareJobNameNotPrunedOnUpgrade(t *testing.T) {
 	require.NoError(t, err)
 	// A run recorded against the BARE legacy name; it must be repointed to the
 	// qualified name so run history survives the re-key (bug #25 follow-up).
-	legacyRun, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "")
+	legacyRun, err := pg.CreateRun(ctx, "build", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	require.NoError(t, pg.UpdateAppSourceSyncState(ctx, "my-src", "old-sha", time.Now().Add(-10*time.Minute),
 		[]store.ResourceRef{{Kind: "Job", Name: "build"}}))

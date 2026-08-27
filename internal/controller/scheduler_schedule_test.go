@@ -35,9 +35,12 @@ type mockScheduleFireStore struct {
 	// tests can assert the job's agentSelector (expanded with schedule
 	// params) is propagated instead of nil.
 	createdAgentSelectors [][]string
-	updated               map[string]time.Time
-	createErr             error
-	jobs                  map[string]*api.Job // optional; GetJob returns "not found" when absent
+	// createdDisplayNames parallels created — the displayName string
+	// checkAndFireSchedules passed to CreateRun for each fired schedule.
+	createdDisplayNames []string
+	updated             map[string]time.Time
+	createErr           error
+	jobs                map[string]*api.Job // optional; GetJob returns "not found" when absent
 }
 
 func assertStoredScheduleSpec(t *testing.T, want, got []byte) {
@@ -64,15 +67,16 @@ func (m *mockScheduleFireStore) GetJob(_ context.Context, name string) (*api.Job
 	return nil, fmt.Errorf("job not found: %s", name)
 }
 
-func (m *mockScheduleFireStore) CreateRun(_ context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string) (*api.Run, error) {
+func (m *mockScheduleFireStore) CreateRun(_ context.Context, jobName string, params map[string]string, spec []byte, agentSelector []string, requiredCaps []string, triggeredBy string, displayName string) (*api.Run, error) {
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
-	r := &api.Run{JobName: jobName, TriggeredBy: triggeredBy}
+	r := &api.Run{JobName: jobName, TriggeredBy: triggeredBy, DisplayName: displayName}
 	m.created = append(m.created, r)
 	m.createdRequiredCaps = append(m.createdRequiredCaps, requiredCaps)
 	m.createdSpecs = append(m.createdSpecs, spec)
 	m.createdAgentSelectors = append(m.createdAgentSelectors, agentSelector)
+	m.createdDisplayNames = append(m.createdDisplayNames, displayName)
 	return r, nil
 }
 
@@ -386,6 +390,24 @@ func TestCheckAndFireSchedules_PropagatesAgentSelector(t *testing.T) {
 		require.Len(t, m.createdAgentSelectors, 1)
 		assert.Equal(t, []string{"pool:build", "kind:linux"}, m.createdAgentSelectors[0])
 		require.NotNil(t, m.updated["daily"])
+	})
+
+	t.Run("displayName is expanded with schedule params", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		jobSpec := []byte(`{"displayName":"deploy {{ .Params.env }}",` +
+			`"params":{"inputs":[{"name":"env","type":"string","default":"prod"}]},` +
+			`"steps":[{"name":"s","run":"echo hi"}]}`)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"build": {Name: "build", Spec: jobSpec},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		require.Equal(t, []string{"deploy prod"}, m.createdDisplayNames)
 	})
 
 	t.Run("templated selector is expanded with schedule params", func(t *testing.T) {

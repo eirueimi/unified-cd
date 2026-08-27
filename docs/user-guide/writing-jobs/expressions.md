@@ -8,7 +8,7 @@ Job YAML values support Go template expressions (`{{ expr }}`).
 
 | Variable | Available in | Description |
 |---|---|---|
-| `{{ .Params.NAME }}` | `run`, `env`, `agentSelector`, `concurrency`, `outputs`, `call.with`, `uses.with`, `cache.key`, `cache.path`, `cache.restoreKeys` | Input parameter value |
+| `{{ .Params.NAME }}` | `run`, `env`, `agentSelector`, `concurrency`, `outputs`, `displayName`, `call.with`, `uses.with`, `cache.key`, `cache.path`, `cache.restoreKeys` | Input parameter value |
 | `{{ .Vars.NAME }}` | `run`, `env`, `outputs`, `call.with`, `cache.key`, `cache.path`, `cache.restoreKeys` | Plain-text variable — a global `kind: Vars` manifest merged with the job's `spec.vars`. See [Variables](../variables.md). |
 | `{{ .Steps.NAME.Outputs.KEY }}` | `run`, `env`, `outputs` | Output from a completed step |
 | `{{ secrets.NAME }}` | `env` values, `run` strings | Decrypted secret value |

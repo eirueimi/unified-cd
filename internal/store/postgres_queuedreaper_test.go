@@ -17,9 +17,9 @@ func TestPostgres_ListUnclaimableQueuedRuns(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	unityRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{"unity"}, nil, "")
+	unityRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{"unity"}, nil, "", "")
 	require.NoError(t, err)
-	anyRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	anyRun, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

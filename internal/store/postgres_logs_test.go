@@ -15,7 +15,7 @@ func TestPostgres_TailLogsRecent(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	now := time.Now().UTC()
 	for _, ln := range []string{"a", "b", "c", "d", "e"} {
 		_, err := pg.AppendLog(ctx, run.ID, 0, "stdout", now, ln)
@@ -42,7 +42,7 @@ func TestPostgres_AppendAndTailLogs(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 
 	now := time.Now().UTC()
 	seq1, err := pg.AppendLog(ctx, run.ID, 0, "stdout", now, "hello")
@@ -68,7 +68,7 @@ func TestPostgres_UpsertStepReport(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 
 	require.NoError(t, pg.UpsertStepReport(ctx, run.ID, 0, 0, "step-one", "", "Running", nil, nil, nil, "", ""))
 	ec := 0
@@ -80,7 +80,7 @@ func TestPostgres_MarkRunStepsInterrupted(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 
 	ec := 0
 	end := time.Now().UTC()
@@ -115,7 +115,7 @@ func TestPostgres_UpsertStepReport_StageIndex(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 
 	exitCode := 0
 	now := time.Now().UTC()
@@ -133,7 +133,7 @@ func TestStepReports_MatrixVariantsDoNotClobber(t *testing.T) {
 	ctx := context.Background()
 
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 
 	ec := 0
 	now := time.Now().UTC()

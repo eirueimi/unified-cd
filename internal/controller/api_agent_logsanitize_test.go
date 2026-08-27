@@ -175,7 +175,7 @@ func TestAgentSetStepOutputs_NULByteValue_Lands(t *testing.T) {
 func TestAgentStepReport_NULByteInStepNameAndVariant_Lands(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(context.Background(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(context.Background(), "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(context.Background(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	claimRunForTest(t, pg, "a1", run.ID)
 	token := issueAgentAccessForTest(t, pg, "a1", nil, nil)
 

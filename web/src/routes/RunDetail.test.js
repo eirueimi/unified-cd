@@ -233,6 +233,52 @@ describe('RunDetail — single SSE/events connection per run (TODO #10)', () => 
   });
 });
 
+// run-display-name feature: RunDetail's field grid shows a run's displayName
+// (interpolated at run-creation time from the job's `displayName:` DSL field)
+// as a "Name" row when present, and renders nothing extra when absent.
+describe('RunDetail — display name (run-display-name feature)', () => {
+  it("renders the display name near the run header when present", async () => {
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return emptyEventsResponse();
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({
+        id: 'run-5', status: 'Succeeded', jobName: 'job-a', triggeredBy: 'x',
+        createdAt: null, params: {}, displayName: 'deploy prod',
+      });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-5' } } });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('deploy prod');
+    });
+  });
+
+  it('renders nothing extra when displayName is absent', async () => {
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/events')) return emptyEventsResponse();
+      if (u.includes('/steps')) return jsonResponse([]);
+      if (u.includes('/approvals')) return jsonResponse([]);
+      return jsonResponse({
+        id: 'run-6', status: 'Succeeded', jobName: 'job-a', triggeredBy: 'x',
+        createdAt: null, params: {},
+      });
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(RunDetail, { props: { params: { id: 'run-6' } } });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('job-a');
+    });
+    expect(container.querySelector('.run-display-name')).toBeFalsy();
+  });
+});
+
 // Task 4: call step <-> child run link. Forward link on a step that has
 // childRunId/callJobName, and a reverse "Called by" breadcrumb when the run
 // itself was invoked by a `call` step in another run (run.calledBy).

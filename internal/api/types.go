@@ -58,7 +58,13 @@ type Run struct {
 	UpdatedAt   time.Time         `json:"updatedAt"`
 	TriggeredBy string            `json:"triggeredBy"`
 	ClaimedBy   string            `json:"claimedBy,omitempty"` // Claiming agent's ID; empty until claimed.
-	CalledBy    *CalledBy         `json:"calledBy,omitempty"`
+	// DisplayName is the run's interpolated, sanitized, length-capped
+	// display name (see internal/controller/run_display_name.go). Empty
+	// for every run whose job has no spec.displayName -- which is every
+	// run created before this field existed -- so the WebUI falls back to
+	// showing the truncated run ID in that case, unchanged from today.
+	DisplayName string    `json:"displayName,omitempty"`
+	CalledBy    *CalledBy `json:"calledBy,omitempty"`
 }
 
 // CalledBy identifies the call step (and its run) that launched this run.

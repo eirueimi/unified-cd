@@ -33,7 +33,7 @@ func TestFinishRunIfStatus_RefusesWhenTheRunHasMovedOn(t *testing.T) {
 
 	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -68,7 +68,7 @@ func TestFinishRunIfStatus_TerminalizesWhenTheStatusStillMatches(t *testing.T) {
 
 	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -91,7 +91,7 @@ func TestFinishRunIfStatus_DoesNotReleaseLocksItDidNotWin(t *testing.T) {
 
 	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(mutexJobSpec))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(mutexJobSpec), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(mutexJobSpec), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestFinishRun_LateFinishDoesNotReleaseAnotherWritersLocks(t *testing.T) {
 
 	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(mutexJobSpec))
 	require.NoError(t, err)
-	first, err := pg.CreateRun(ctx, "j", nil, []byte(mutexJobSpec), nil, nil, "")
+	first, err := pg.CreateRun(ctx, "j", nil, []byte(mutexJobSpec), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
@@ -130,7 +130,7 @@ func TestFinishRun_LateFinishDoesNotReleaseAnotherWritersLocks(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, updated)
 
-	second, err := pg.CreateRun(ctx, "j", nil, []byte(mutexJobSpec), nil, nil, "")
+	second, err := pg.CreateRun(ctx, "j", nil, []byte(mutexJobSpec), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)

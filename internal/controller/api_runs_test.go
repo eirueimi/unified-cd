@@ -60,6 +60,61 @@ func TestAPI_TriggerRun_ExpandsAgentSelectorParams(t *testing.T) {
 	require.NotNil(t, claimed2, "agent with the expanded label must claim the run")
 }
 
+// TestAPI_TriggerRun_InterpolatesDisplayName verifies that spec.displayName
+// is expanded with the trigger-time params and stored on the created run.
+func TestAPI_TriggerRun_InterpolatesDisplayName(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "hello", "unified-cd/v1",
+		[]byte(`{"displayName":"deploy {{ .Params.env }}","steps":[{"name":"s","run":"echo x"}]}`))
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "hello", Params: map[string]string{"env": "prod"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var run api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &run))
+	assert.Equal(t, "deploy prod", run.DisplayName)
+}
+
+// TestAPI_TriggerRun_MalformedDisplayNameRejectsWithoutCreatingRun verifies
+// that a job with a malformed displayName template fails run creation with
+// a 400, the same as a malformed agentSelector template does, rather than
+// creating a run with a broken/empty display name.
+func TestAPI_TriggerRun_MalformedDisplayNameRejectsWithoutCreatingRun(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "bad-display-name", "unified-cd/v1",
+		[]byte(`{"displayName":"deploy {{ .Params.env","steps":[{"name":"s","run":"echo x"}]}`))
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "bad-display-name", Params: map[string]string{"env": "prod"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "displayName")
+	runs, err := pg.ListRunsByJob(t.Context(), "bad-display-name", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
+// TestAPI_TriggerRun_NoDisplayNameLeavesItEmpty verifies that a job without
+// a declared displayName produces a run whose DisplayName is empty, the
+// common case (most jobs won't declare displayName:).
+func TestAPI_TriggerRun_NoDisplayNameLeavesItEmpty(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, _ = pg.UpsertJob(t.Context(), "no-display-name", "unified-cd/v1",
+		[]byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
+	body, _ := json.Marshal(api.TriggerRunRequest{JobName: "no-display-name"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var run api.Run
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &run))
+	assert.Empty(t, run.DisplayName)
+}
+
 func TestAPI_TriggerRunStoresResolvedSecretNameParameter(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, err := pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", []byte(`{
@@ -125,7 +180,7 @@ func TestAPI_TriggerRun_UnknownJob(t *testing.T) {
 func TestAPI_GetRun(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID, nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -154,7 +209,7 @@ func TestAPI_GetRun_NotFound(t *testing.T) {
 func TestAPI_GetRunOutputs_Empty(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	r, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID+"/outputs", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -171,8 +226,8 @@ func TestAPI_GetRunOutputs_Empty(t *testing.T) {
 func TestAPI_ListRunsByJob(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "myjob", "unified-cd/v1", []byte(`{"steps":[{"name":"s","run":"echo x"}]}`))
-	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api")
-	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api")
+	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api", "")
+	_, _ = pg.CreateRun(t.Context(), "myjob", nil, []byte(`{}`), nil, nil, "api", "")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs?jobName=myjob", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -186,7 +241,7 @@ func TestAPI_ListRunsByJob(t *testing.T) {
 func TestAPI_CancelRun(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil)
 	require.NoError(t, pg.MarkRunRunning(t.Context(), run.ID))
@@ -202,7 +257,7 @@ func TestAPI_CancelRun(t *testing.T) {
 func TestAPI_RunEvents_SSE_ReceivesExistingLogs(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 
 	now := time.Now().UTC()
 	_, _ = pg.AppendLog(t.Context(), run.ID, 0, "stdout", now, "hello SSE")
@@ -237,7 +292,7 @@ func TestAPI_RunEvents_SSE_BackfillTruncatesToTail(t *testing.T) {
 
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	now := time.Now().UTC()
 	for _, ln := range []string{"line-1", "line-2", "line-3", "line-4", "line-5"} {
 		_, _ = pg.AppendLog(t.Context(), run.ID, 0, "stdout", now, ln)
@@ -266,7 +321,7 @@ func TestAPI_GetRunYAML(t *testing.T) {
 	s, pg := newTestServer(t)
 	specJSON := []byte(`{"steps":[{"name":"deploy","run":"echo deploy"}]}`)
 	_, _ = pg.UpsertJob(t.Context(), "deploy", "unified-cd/v1", specJSON)
-	r, _ := pg.CreateRun(t.Context(), "deploy", map[string]string{"env": "prod"}, specJSON, nil, nil, "api")
+	r, _ := pg.CreateRun(t.Context(), "deploy", map[string]string{"env": "prod"}, specJSON, nil, nil, "api", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID+"/yaml", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -295,7 +350,7 @@ func TestAPI_GetRunYAML_BadSpec(t *testing.T) {
 	s, pg := newTestServer(t)
 	badSpecJSON := []byte(`{"steps":"broken"}`)
 	_, _ = pg.UpsertJob(t.Context(), "broken-run", "unified-cd/v1", badSpecJSON)
-	r, _ := pg.CreateRun(t.Context(), "broken-run", nil, badSpecJSON, nil, nil, "api")
+	r, _ := pg.CreateRun(t.Context(), "broken-run", nil, badSpecJSON, nil, nil, "api", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/"+r.ID+"/yaml", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -310,7 +365,7 @@ func TestAPI_GetRunYAML_BadSpec(t *testing.T) {
 func TestAPI_DeleteRun_TerminalState(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunSucceeded))
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/runs/"+run.ID, nil)
@@ -326,7 +381,7 @@ func TestAPI_DeleteRun_TerminalState(t *testing.T) {
 func TestAPI_DeleteRun_RejectsNonTerminalState(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	// CreateRun creates the Run in Pending state (not a terminal state).
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/runs/"+run.ID, nil)
@@ -355,9 +410,9 @@ func TestAPI_DeleteRun_NotFound(t *testing.T) {
 func TestAPI_CancelRun_CascadesToChildRuns(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
-	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
-	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
-	grandchild, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	parent, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	child, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	grandchild, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	// Link parent→child→grandchild via call: step reports (child_run_id).
 	require.NoError(t, pg.UpsertStepReport(t.Context(), parent.ID, 0, 0, "call-child", "", "Running", nil, nil, nil, child.ID, "j"))
 	require.NoError(t, pg.UpsertStepReport(t.Context(), child.ID, 0, 0, "call-grandchild", "", "Running", nil, nil, nil, grandchild.ID, "j"))
@@ -495,7 +550,7 @@ func TestAPI_DeleteRun_RemovesObjectStoreData(t *testing.T) {
 
 	_, err := st.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, err := st.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	require.NoError(t, st.MarkRunFinished(ctx, run.ID, api.RunSucceeded))
 

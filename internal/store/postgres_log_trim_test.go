@@ -14,7 +14,7 @@ func TestPostgres_LogArchive_TrimmedAt(t *testing.T) {
 	ctx := context.Background()
 	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	require.NoError(t, pg.CreateLogArchive(ctx, run.ID, "runs/"+run.ID+"/logs.ndjson", 2, 0, 0))
 
@@ -40,7 +40,7 @@ func TestPostgres_TrimRunLogs(t *testing.T) {
 	require.NoError(t, err)
 
 	// archived: has logs and an archive record -> trimmable.
-	archived, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	archived, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	var lastSeq int64
 	for i := 0; i < 3; i++ {
@@ -53,7 +53,7 @@ func TestPostgres_TrimRunLogs(t *testing.T) {
 	require.NoError(t, pg.CreateLogArchive(ctx, archived.ID, "runs/"+archived.ID+"/logs.ndjson", 10, 3, lastSeq))
 
 	// unarchived: has logs but NO archive record -> must never be trimmed.
-	unarchived, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	unarchived, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = pg.AppendLog(ctx, unarchived.ID, 0, "stdout", time.Now(), "keep me")
 	require.NoError(t, err)
@@ -95,7 +95,7 @@ func TestPostgres_TrimRunLogs_IncompleteArchive(t *testing.T) {
 	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
 
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	var lastSeq int64
 	for i := 0; i < 3; i++ {
@@ -120,7 +120,7 @@ func TestPostgres_TrimRunLogs_IncompleteArchive(t *testing.T) {
 
 	// A stale max_seq (line_count matches but a lower-seq gap slipped in)
 	// must also block the trim.
-	run2, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run2, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	var seq2 int64
 	for i := 0; i < 2; i++ {
@@ -144,7 +144,7 @@ func TestPostgres_ListTrimCandidates(t *testing.T) {
 
 	mkArchived := func(age string, trimmed bool) string {
 		t.Helper()
-		run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+		run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 		require.NoError(t, err)
 		require.NoError(t, pg.CreateLogArchive(ctx, run.ID, "runs/"+run.ID+"/logs.ndjson", 1, 0, 0))
 		if age != "" {
@@ -196,7 +196,7 @@ func TestPostgres_ListTrimCandidates_CoverageFiltering(t *testing.T) {
 	}
 
 	// under-covered: archive claims 1 line, but 3 live rows exist -> excluded.
-	underCovered, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	underCovered, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	var firstSeq int64
 	for i := 0; i < 3; i++ {
@@ -210,7 +210,7 @@ func TestPostgres_ListTrimCandidates_CoverageFiltering(t *testing.T) {
 	age(underCovered.ID)
 
 	// legacy zero-coverage with live rows -> included (healing candidate).
-	legacy, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	legacy, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	for i := 0; i < 3; i++ {
 		_, err := pg.AppendLog(ctx, legacy.ID, 0, "stdout", time.Now(), "line")
@@ -220,7 +220,7 @@ func TestPostgres_ListTrimCandidates_CoverageFiltering(t *testing.T) {
 	age(legacy.ID)
 
 	// fully covered -> included.
-	covered, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	covered, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	var lastSeq int64
 	for i := 0; i < 3; i++ {
@@ -242,7 +242,7 @@ func TestPostgres_DeleteLogArchive(t *testing.T) {
 	ctx := context.Background()
 	_, err := pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	require.NoError(t, pg.CreateLogArchive(ctx, run.ID, "runs/"+run.ID+"/logs.ndjson", 1, 0, 0))
 

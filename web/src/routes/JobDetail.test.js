@@ -151,3 +151,57 @@ describe('JobDetail — description display (Task 2)', () => {
     expect(container.querySelector('[role="alert"]')).toBeFalsy();
   });
 });
+
+// run-display-name feature: JobDetail's run list shows a run's displayName
+// (interpolated at run-creation time from the job's `displayName:` DSL field)
+// as the primary link text in place of the truncated run ID when present, and
+// renders byte-for-byte identically to today (`{r.id.slice(0, 8)}…`) when
+// absent.
+describe('JobDetail — run display name (run-display-name feature)', () => {
+  it('shows the display name instead of the truncated run ID when present', async () => {
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/schedulability')) return jsonResponse({ satisfiable: true });
+      if (u.includes('/runs')) return jsonResponse([{
+        id: 'abcdef1234567890',
+        status: 'Succeeded',
+        triggeredBy: 'api',
+        createdAt: new Date().toISOString(),
+        params: {},
+        displayName: 'deploy prod',
+      }]);
+      if (u.includes('/api/v1/jobs/')) return jsonResponse({ name: 'deploy', description: '' });
+      return jsonResponse({});
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(JobDetail, { props: { params: { name: 'deploy' } } });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('deploy prod');
+    });
+  });
+
+  it('falls back to the truncated run ID when displayName is absent, unchanged from today', async () => {
+    const fetchMock = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes('/schedulability')) return jsonResponse({ satisfiable: true });
+      if (u.includes('/runs')) return jsonResponse([{
+        id: 'abcdef1234567890',
+        status: 'Succeeded',
+        triggeredBy: 'api',
+        createdAt: new Date().toISOString(),
+        params: {},
+      }]);
+      if (u.includes('/api/v1/jobs/')) return jsonResponse({ name: 'deploy', description: '' });
+      return jsonResponse({});
+    });
+    global.fetch = fetchMock;
+
+    const { container } = render(JobDetail, { props: { params: { name: 'deploy' } } });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain('abcdef12…');
+    });
+  });
+});

@@ -13,7 +13,7 @@ func TestPostgres_Approvals_CreateDecide(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 
 	require.NoError(t, pg.CreatePendingApproval(ctx, run.ID, 1, "gate", "ok?", nil))
@@ -47,7 +47,7 @@ func TestPostgres_Approvals_ListEmpty(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 	_, _ = pg.UpsertJob(ctx, "j2", "unified-cd/v1", []byte(`{}`))
-	run, err := pg.CreateRun(ctx, "j2", nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(ctx, "j2", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 
 	list, err := pg.ListRunApprovals(ctx, run.ID)
@@ -62,13 +62,13 @@ func TestPostgres_MarkExpiredApprovalsTimedOut(t *testing.T) {
 	_, _ = pg.UpsertJob(ctx, "jr", "unified-cd/v1", []byte(`{}`))
 
 	// Run with an EXPIRED Pending approval (timeout_at in the past).
-	expiredRun, err := pg.CreateRun(ctx, "jr", nil, []byte(`{}`), nil, nil, "")
+	expiredRun, err := pg.CreateRun(ctx, "jr", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	past := time.Now().Add(-time.Hour)
 	require.NoError(t, pg.CreatePendingApproval(ctx, expiredRun.ID, 0, "gate", "ok?", &past))
 
 	// Run with a FUTURE Pending approval — must NOT be touched.
-	futureRun, err := pg.CreateRun(ctx, "jr", nil, []byte(`{}`), nil, nil, "")
+	futureRun, err := pg.CreateRun(ctx, "jr", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	future := time.Now().Add(time.Hour)
 	require.NoError(t, pg.CreatePendingApproval(ctx, futureRun.ID, 0, "gate", "ok?", &future))
@@ -77,7 +77,7 @@ func TestPostgres_MarkExpiredApprovalsTimedOut(t *testing.T) {
 	// Decided while the gate was still open, then backdated: DecideApproval now
 	// refuses a decision on an already-expired gate, so the row cannot be produced
 	// the other way round.
-	approvedRun, err := pg.CreateRun(ctx, "jr", nil, []byte(`{}`), nil, nil, "")
+	approvedRun, err := pg.CreateRun(ctx, "jr", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	require.NoError(t, pg.CreatePendingApproval(ctx, approvedRun.ID, 0, "gate", "ok?", &future))
 	changed, err := pg.DecideApproval(ctx, approvedRun.ID, 0, "Approved", "alice", "lgtm")

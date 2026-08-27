@@ -47,6 +47,7 @@ MaxDetachedConcurrent pool, and get an independent per-run workspace on
 host agents. Intended for jobs that mostly issue call: steps and wait.
 Orthogonal to Native — a native host orchestrator may be detached. The
 json tag matters: the store persists the spec as JSON and re-reads this. |
+| `displayName` | string | no | A human-readable label for this job's runs, e.g. "deploy {{ .Params.env }} @ {{ .Params.ref }}" -- interpolated with the run's params at creation, shown in the WebUI in place of the truncated run ID. |
 | `finally` | []StepEntry | no | Finally runs after the main DAG completes, on success, failure, or
 cancellation. Same structure as Steps. A finally step's `if:` defaults to
 always-run; use if: failure()/success() to filter. A finally step that

@@ -44,6 +44,7 @@ var schemaSentinels = []sentinel{
 	{16, "016_drop_secret_scope", "secrets", "", "secrets_name_key"},
 	{17, "017_run_detached", "runs", "detached", ""},
 	{18, "018_vars", "vars", "", ""},
+	{19, "019_run_display_name", "runs", "display_name", ""},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

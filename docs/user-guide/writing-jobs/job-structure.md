@@ -89,3 +89,16 @@ spec:
 
 ---
 
+## Run Display Name
+
+```yaml
+spec:
+  displayName: "deploy {{ .Params.env }} @ {{ .Params.ref }}"
+```
+
+`spec.displayName` *(optional, string, templated)* — a human-readable label for this job's runs, shown in the WebUI run list and run detail page in place of the run's truncated ID. Interpolated with the run's own resolved params at run-creation time (see [Expressions and Conditions](expressions.md)).
+
+A run whose job has no `displayName:` falls back to the truncated run ID, exactly as every run rendered before this field existed. Referencing a param that wasn't declared/passed expands to an empty string rather than failing (consistent with `{{ .Params.NAME }}` everywhere else); a malformed template (bad syntax) fails the run trigger with an error instead of creating a run with a broken label. The interpolated value is capped at 200 characters (longer values are truncated with a trailing `…`) and is not searchable/filterable in this release.
+
+---
+

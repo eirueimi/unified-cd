@@ -23,7 +23,7 @@ func TestPostgres_ListExpiredRuns(t *testing.T) {
 	// A terminal run's updated_at never changes again, so it is the finish time.
 	mkRun := func(status api.RunStatus, age string) string {
 		t.Helper()
-		run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "")
+		run, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 		require.NoError(t, err)
 		if status != "" {
 			require.NoError(t, pg.MarkRunFinished(ctx, run.ID, status))

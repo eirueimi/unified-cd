@@ -39,7 +39,7 @@ func TestAPI_RunEvents_SSE_LiveDrainDeliversBatchLargerThanCap(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	require.NoError(t, err)
-	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "")
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)

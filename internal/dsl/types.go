@@ -56,6 +56,29 @@ type Spec struct {
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
 	// Description is a human-readable summary of the job, shown in the WebUI.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// DisplayName is optional: a run whose job has no declared displayName
+	// falls back to the WebUI's existing behavior of showing the run's
+	// truncated ID -- today's rendering for every run that already exists,
+	// so leaving this unset changes nothing.
+	//
+	// When set, it is interpolated with the run's own resolved params at
+	// run-creation time via the same ExpandTemplate path as agentSelector
+	// (see ExpandAgentSelector): missingkey=zero means an undeclared
+	// {{ .Params.X }} expands to "" rather than failing -- matching PR
+	// #162's if: behavior, not a third one -- while a malformed template
+	// (bad syntax, unknown function) fails run creation with 400, exactly
+	// like agentSelector's own template errors do.
+	//
+	// The interpolated result is then NUL/invalid-UTF-8-sanitized
+	// (sanitizeAgentText) and length-capped (maxDisplayNameLength) in
+	// internal/controller before it is stored, because params can be
+	// mapped from webhook payloads and are therefore untrusted text -- see
+	// internal/controller/run_display_name.go. That happens at the
+	// controller's ingestion boundary, not here and not in the store.
+	//
+	// BOTH tags are required: the store persists Spec as JSON and reads it
+	// back, so a yaml-only tag round-trips to nothing. See Detached/Vars.
+	DisplayName string `yaml:"displayName,omitempty" json:"displayName,omitempty"` // A human-readable label for this job's runs, e.g. "deploy {{ .Params.env }} @ {{ .Params.ref }}" -- interpolated with the run's params at creation, shown in the WebUI in place of the truncated run ID.
 	// Vars are plain-text variables shared by every step of this job. They
 	// reach a step twice: as environment variables, and as {{ .Vars.KEY }} in
 	// templates. They are NOT secrets — see kind: Vars.
