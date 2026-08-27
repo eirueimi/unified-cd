@@ -121,25 +121,29 @@ values are interpolated directly into step shell text (`sh -lc`), an
 unconstrained payload-mapped param is a command-injection vector.
 
 For this reason, any `paramsMapping` entry whose template reads `.Payload`
-must target a job input that declares either `pattern:` (a regular
-expression the resolved value must match) or `unvalidated: true` (an
-explicit, greppable opt-out for values that are genuinely free-form and never
-reach a shell). This is enforced live, at webhook-ingress time, against the
-target job's *current* spec — not at receiver-apply time — because the job
-may not exist yet when the receiver is applied, or may be edited
+must target a job input that declares `pattern:` (a regular expression the
+resolved value must match), `choices:` (a fixed allow-list of values), or
+`unvalidated: true` (an explicit, greppable opt-out for values that are
+genuinely free-form and never reach a shell). `choices:` satisfies this gate
+on its own, with no `pattern:` needed: it's a strict enumeration of exact
+allowed values, strictly stronger than any regex could enforce, since a
+regex only constrains a value's syntax while choices constrains its
+membership outright. This is enforced live, at webhook-ingress time, against
+the target job's *current* spec — not at receiver-apply time — because the
+job may not exist yet when the receiver is applied, or may be edited
 independently afterward. A receiver whose mapping fails this check is
 rejected with `400` and no Run is created; the error names the receiver, the
 param, and the job:
 
 ```
-webhook receiver "wh": param "ref" is mapped from the request payload but job "build" declares no pattern for it (add pattern: to the input, or unvalidated: true to accept it explicitly)
+webhook receiver "wh": param "ref" is mapped from the request payload but job "build" declares no pattern for it (add pattern: to the input, choices: to restrict it to a fixed set of values, or unvalidated: true to accept it explicitly)
 ```
 
 A literal `paramsMapping` value that never references `.Payload` (e.g.
 `image: myapp`) is author-controlled, not attacker-controlled, and is not
 subject to this requirement. See [Input fields](../writing-jobs/parameters.md#input-fields) for
-`pattern`/`unvalidated`; a reasonable starting pattern for most identifiers
-(branch names, tags, commit SHAs) is `^[A-Za-z0-9._/-]+$`.
+`pattern`/`choices`/`unvalidated`; a reasonable starting pattern for most
+identifiers (branch names, tags, commit SHAs) is `^[A-Za-z0-9._/-]+$`.
 
 ### Examples
 
