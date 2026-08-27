@@ -39,8 +39,8 @@ has.
   job deadline applied to ctx        (spec.timeoutMinutes)
       |
       v
-  cancellation poller started        (watches for an operator cancel)
-      |
+  cancellation poller started        (watches for an operator cancel, or the
+      |                               controller reaping the run out-of-band)
       v
   teardown defer REGISTERED  <-------- registered early, runs LAST
       |
@@ -60,7 +60,7 @@ has.
   hook drain #2                      hooks registered by finally: steps
       |
       v
-  FinishRun / SetRunOutputs          the controller report
+  SetRunOutputs / FinishRun          the controller report
       |
       v
   [deferred] CloseScopes             scope containers/Pods, sidecar pump
@@ -70,8 +70,11 @@ Two orderings in that picture are easy to get backwards and both matter.
 
 **The teardown defer is registered early and therefore runs last.** It sits
 before the masker is installed, so that any early return between there and the
-pump's start still tears down. Because Go runs defers LIFO and this one is
-registered first, `CloseScopes` executes *after* `FinishRun`, not before.
+pump's start still tears down. It runs from a `defer`, so — independent of
+where it sits relative to `RunClaim`'s other defers — it can only execute
+after the function body has finished, and that body's last acts are
+`SetRunOutputs` and `FinishRun`. So `CloseScopes` executes *after* `FinishRun`,
+not before.
 
 **`finally:` is a second, separate `RunPipeline` call.** Anything wired only
 into the main path is accepted by the parser and silently does nothing in
@@ -150,9 +153,17 @@ properties are what you must preserve.
 ## Cancellation
 
 An operator cancel reaches the agent through a poller started near the top of
-`RunClaim`, which sets a flag and cancels the run context. The flag is what
-distinguishes "cancelled" from "failed" — a step killed by cancellation must
-not be retried, and `retry:` checks it.
+`RunClaim`, which sets `cancelledByMaster` and cancels the run context via
+`cancelRun`. The flag is what distinguishes "cancelled" from "failed" — a step
+killed by cancellation must not be retried, and the retry loop's
+`cancelMasksFailure` check consults it before allowing another attempt.
+
+The same poller also watches for the controller having marked the run
+terminal out-of-band (e.g. the stuck-run reaper). That case sets a different
+flag, `reapedByMaster`, and still cancels the run context, but `RunClaim`
+takes a different exit at the end: it skips `SetRunOutputs`/`FinishRun`
+entirely rather than reporting its own status, because the controller's
+verdict is already authoritative.
 
 `finally:` still runs, on a context derived with `context.WithoutCancel`. That
 is the entire point of the phase, and it is also the source of a trap:
@@ -177,5 +188,7 @@ change once passed while doing nothing.
 2. `DefaultFinallyBudget`'s comment — the best single explanation of why
    cleanup is shaped the way it is.
 3. `backend.go` — the `ExecBackend` interface and its contracts.
-4. `pipeline.go` — how stages, matrix and foreach expand into attempts.
+4. `pipeline.go` — how stages expand into per-combination step copies via
+   `ExpandMatrixStep` (`foreach:` compiles down to a single-dimension matrix
+   before the agent ever sees it).
 5. `runner.go` — `LogPusher`, and the ordering guarantee.
