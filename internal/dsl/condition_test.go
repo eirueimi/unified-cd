@@ -228,40 +228,125 @@ func TestEvalCondition_HasVarsIsAlwaysTrue(t *testing.T) {
 	assert.False(t, inOK, "`in` is the spelling that answers truthfully")
 }
 
-// params has the SAME shape vars had: an undefined key raises "no such key",
-// which is an eval error, which is fail-safe — the step RUNS. This is a KNOWN
-// ASYMMETRY with vars (which reads an undefined key as empty, keeping the gate
-// shut) and it is left in place deliberately. This comment is the only record
-// of that decision in code, so it carries its own reasoning:
+// params USED TO have a different shape than vars here: an undefined key
+// raised "no such key", which is an eval error, which is fail-safe — the step
+// RAN. That asymmetry is gone; params now defaults an undefined key to the
+// empty string exactly like vars does. This comment is the record of why the
+// asymmetry existed for one release and what finally closed it, because the
+// reasoning does not show up anywhere else once the code stops matching it.
 //
-// Two fixes were considered and both rejected.
+// Two fixes were considered when vars was added. Both were rejected THEN:
 //
-//  1. Make params read as empty, like vars. That changes the meaning of every
-//     params-gated condition already in service: a step that runs today would
-//     start skipping, silently, on the next agent upgrade.
+//  1. Make params read as empty, like vars. Rejected at the time only because
+//     it was a bigger change than "add vars" should carry as a side effect —
+//     not because it was wrong. This is that fix, landing separately. See
+//     docs/operator-manual/migrations/params-undefined-key-is-empty.md for
+//     the full compatibility note: it IS a behaviour change for any if: that
+//     references a params key which is never actually set, and that class of
+//     condition now evaluates differently (usually: the step now skips
+//     instead of running).
 //
-//  2. Reject an if: that names an undeclared param at apply time. This looked
-//     safe — it changes no run-time behaviour at all — but it rests on the
-//     declared set being authoritative, and it is not. See resolveParams in
-//     internal/controller/params.go, whose own doc comment says "Params not
-//     declared as inputs are passed through unchanged"; all five of its caller
-//     paths can introduce one (CLI --param, run re-trigger, webhook
-//     paramsMapping, schedule params, and a call: step's with:), and
-//     spec.concurrency.orLocks synthesizes {NAME}_LOCK_VALUE keys on top of
-//     that. `unified-cd run trigger job --param DEPLOY_TARGET=x` against
-//     `if: params.DEPLOY_TARGET == "x"` is documented, supported, and works —
-//     so a typo and a legitimate pass-through reference are statically
-//     indistinguishable, and rejecting one rejects the other.
+//  2. Reject an if: that names an undeclared param at apply time. This is
+//     the one that stays rejected, permanently, not just "for now" — it
+//     rests on the declared set being authoritative, and it is not. See
+//     resolveParams in internal/controller/params.go, whose own doc comment
+//     says "Params not declared as inputs are passed through unchanged"; all
+//     five of its caller paths can introduce one (CLI --param, run
+//     re-trigger, webhook paramsMapping, schedule params, and a call: step's
+//     with:), and spec.concurrency.orLocks synthesizes {NAME}_LOCK_VALUE keys
+//     on top of that. `unified-cd run trigger job --param DEPLOY_TARGET=x`
+//     against `if: params.DEPLOY_TARGET == "x"` is documented, supported, and
+//     works — so a typo and a legitimate pass-through reference are
+//     statically indistinguishable, and rejecting one rejects the other. The
+//     runtime lever below has no such problem: it changes nothing about
+//     which params reach a run, only what an undefined one evaluates to.
 //
 // What IS caught at apply time is a malformed expression (see
 // ValidateConditionExpr) — that check only rejects what would fail to compile
 // at run time anyway.
-func TestEvalCondition_ParamsUndefinedKeyStillFailsOpen(t *testing.T) {
+func TestEvalCondition_ParamsUndefinedKeyIsEmptyAndWarns(t *testing.T) {
 	data := TemplateData{Params: map[string]string{"env": "staging"}}
-	ok, _, err := EvalCondition(`params.TYPO == "prod"`, data, RunStatusView{}, true)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no such key")
-	assert.True(t, ok, "params keeps CEL's no-such-key error, which is fail-open")
+	ok, warns, err := EvalCondition(`params.TYPO == "prod"`, data, RunStatusView{}, true)
+	require.NoError(t, err, "an undefined params key must not error — an error is fail-open")
+	assert.False(t, ok, "an undefined key must not run the step (a misspelt deploy gate must stay CLOSED)")
+	require.Len(t, warns, 1)
+	assert.Contains(t, warns[0], "params.TYPO")
+	assert.Contains(t, warns[0], "undefined")
+}
+
+// The regression that matters most: a DEFINED params key must keep behaving
+// exactly as it always has. This fix only changes what happens when the key
+// is ABSENT; it must not touch the comparison for a key that is present,
+// including the case where the value happens to be the empty string (which
+// must not be confused with "undefined" — no warning here).
+func TestEvalCondition_ParamsDefinedKeyUnaffected(t *testing.T) {
+	cases := []struct {
+		name   string
+		params map[string]string
+		want   bool
+	}{
+		{"matches", map[string]string{"env": "production"}, true},
+		{"does_not_match", map[string]string{"env": "staging"}, false},
+		{"defined_but_empty", map[string]string{"env": ""}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, warns, err := EvalCondition(`params.env == "production"`, TemplateData{Params: tc.params}, RunStatusView{}, true)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, ok)
+			assert.Empty(t, warns, "a defined key, even an empty-string one, is not an undefined-key warning")
+		})
+	}
+}
+
+func TestEvalCondition_ParamsIndexFormAlsoDefaults(t *testing.T) {
+	ok, warns, err := EvalCondition(`params["NOPE"] == "x"`, TemplateData{}, RunStatusView{}, false)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	require.Len(t, warns, 1)
+	assert.Contains(t, warns[0], "params.NOPE")
+}
+
+func TestEvalCondition_ParamsPresenceTestStaysTruthful(t *testing.T) {
+	data := TemplateData{Params: map[string]string{"env": "prod"}}
+
+	ok, warns, err := EvalCondition(`"env" in params`, data, RunStatusView{}, false)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Empty(t, warns)
+
+	ok, warns, err = EvalCondition(`"NOPE" in params`, data, RunStatusView{}, false)
+	require.NoError(t, err)
+	assert.False(t, ok, "in: must report an undefined key as absent, not as empty-string-present")
+	assert.Empty(t, warns, "a presence test is not an undefined-key read")
+}
+
+// --- secrets binding ---------------------------------------------------------
+//
+// secrets has the identical map(string, string) shape params and vars have,
+// and had the identical trap: a plain Go map gets CEL's default "no such key"
+// semantics, which is an eval error, which is fail-safe. Unlike params there
+// is no pass-through ambiguity — secrets in TemplateData.Secrets are exactly
+// what the agent fetched for this run — so an undefined secrets key in an
+// if: is unambiguously a typo or a name that was never wired up anywhere.
+// Found while auditing conditionVars for this same trap; fixed the same way.
+
+func TestEvalCondition_SecretsUndefinedKeyIsEmptyAndWarns(t *testing.T) {
+	data := TemplateData{Secrets: map[string]string{"TOKEN": "abc123"}}
+	ok, warns, err := EvalCondition(`secrets.TYPO != ""`, data, RunStatusView{}, true)
+	require.NoError(t, err, "an undefined secrets key must not error — an error is fail-open")
+	assert.False(t, ok, "an undefined key must not run the step")
+	require.Len(t, warns, 1)
+	assert.Contains(t, warns[0], "secrets.TYPO")
+	assert.Contains(t, warns[0], "undefined")
+}
+
+func TestEvalCondition_SecretsDefinedKeyUnaffected(t *testing.T) {
+	data := TemplateData{Secrets: map[string]string{"TOKEN": "abc123"}}
+	ok, warns, err := EvalCondition(`secrets.TOKEN == "abc123"`, data, RunStatusView{}, true)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Empty(t, warns)
 }
 
 // --- declaration/activation drift guard -------------------------------------

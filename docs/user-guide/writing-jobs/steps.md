@@ -261,23 +261,33 @@ steps:
 | `steps.STEPNAME.outputs.KEY` | dyn | Output from a previous step (only declared `outputs:`; there is no built-in step-status field) |
 | `secrets.NAME` | string | Resolved secret value |
 
-**Undefined keys.** `vars` and `params` differ here, deliberately:
+**Undefined keys.** `params`, `vars` and `secrets` all read an undefined key
+as the **empty string**, matching `{{ .Params.MISSING }}` / `{{ .Vars.MISSING }}`
+on the template side (Go's `missingkey=zero` already makes those expand to
+empty). A gate on a misspelt name therefore stays shut
+(`params.EVN == "prod"` is false, the step is skipped) instead of running the
+step, and the run's log gets a `System` line naming the undefined key. To test
+presence rather than value, use `"NAME" in params` (or `vars`/`secrets`) —
+`has(params.NAME)` is always true here and must not be used.
 
-- `vars.MISSING` reads as the **empty string**, matching `{{ .Vars.MISSING }}`
-  on the template side. A gate on a misspelt variable therefore stays shut
-  (`vars.EVN == "prod"` is false, the step is skipped) instead of running the
-  step, and the run's log gets a `System` line naming the undefined key. To
-  test presence rather than value, use `"NAME" in vars` — `has(vars.NAME)` is
-  always true here and must not be used.
-- `params.MISSING` raises `no such key`, which is an evaluation error, which
-  fails **OPEN** — the step runs. Double-check the spelling of every `params`
-  name in an `if:`, especially one gating a production deploy.
+`steps` is the one exception: `steps.MISSING.outputs.KEY` still raises
+`no such key`, which is an evaluation error, which fails **OPEN** — the step
+runs. Referencing a step name in an `if:` is either right or a typo; if you
+see a step run when its `steps.` condition looks like it should have skipped
+it, check the step name first.
 
-> **Why `params` and `vars` differ here.** The asymmetry is deliberate, not an
-> oversight. Making `params` read as empty would change the meaning of every
-> params-gated condition already in service — steps that run today would start
-> skipping. Rejecting an undeclared `params` name at apply time was considered
-> too, and rejected: a param does **not** have to be declared under
+> **Why `params` used to differ from `vars` here, and does not anymore.**
+> `params` kept CEL's default map semantics for one release after `vars`
+> shipped, deliberately: changing what every existing `params`-gated
+> condition meant was not a change to make as a side effect of adding an
+> unrelated variable. It has since been fixed the same way `vars` was — see
+> the [undefined-`params`-key migration
+> note](../../operator-manual/migrations/params-undefined-key-is-empty.md) if
+> you are upgrading through that change, because it **does** alter the result
+> of any `if:` that names a `params` key which is never actually set.
+>
+> Rejecting an undeclared `params` name at *apply* time was considered too,
+> and stays rejected: a param does **not** have to be declared under
 > `spec.params.inputs` to reach a run. Undeclared params are passed through
 > unchanged from `--param`, a re-triggered run, a webhook `paramsMapping`, a
 > schedule's params, and a `call:` step's `with:` — and
@@ -285,7 +295,9 @@ steps:
 > that — so `run trigger job --param DEPLOY_TARGET=x` gating on
 > `if: params.DEPLOY_TARGET == "x"` is supported and works. A typo and a
 > legitimate pass-through reference are indistinguishable from the manifest
-> alone, so rejecting one would reject the other.
+> alone, so rejecting one would reject the other. The empty-string default
+> above has no such problem: it changes nothing about which params reach a
+> run, only what an undefined one evaluates to in `if:`.
 
 The expression must evaluate to a boolean. Use CEL operators and the
 zero-arg status functions (see [Status Functions in `if:`](expressions.md#status-functions-in-if)):

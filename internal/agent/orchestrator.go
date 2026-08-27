@@ -450,12 +450,13 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 	// Why the run's log and not only slog. The two things that can go wrong
 	// with an if: are both invisible otherwise AND both invert the author's
 	// intent: a condition that fails to compile or evaluate is fail-safe (the
-	// step RUNS), and a condition that reads an undefined vars key gates on an
-	// empty string. Either way the person looking at the run sees a step that
-	// ran when it should not have (or a gate that never matches) with nothing
-	// in the run to explain it — the agent's slog is on another host,
-	// interleaved with every other concurrent run, and is not what they have
-	// open. slog still gets the same message for the operator's benefit.
+	// step RUNS), and a condition that reads an undefined params, vars, or
+	// secrets key gates on an empty string. Either way the person looking at
+	// the run sees a step that ran when it should not have (or a gate that
+	// never matches) with nothing in the run to explain it — the agent's slog
+	// is on another host, interleaved with every other concurrent run, and is
+	// not what they have open. slog still gets the same message for the
+	// operator's benefit.
 	//
 	// Deduplicated on the step's BASE name plus the message, so a 20-copy
 	// matrix step with a broken condition contributes one line and not twenty

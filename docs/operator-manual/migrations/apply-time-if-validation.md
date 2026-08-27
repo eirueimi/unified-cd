@@ -58,10 +58,14 @@ spec.steps[0] (deploy): if: expression "matrix.os == \"linux\"" does not compile
 ```
 
 What is **not** rejected: an expression that compiles but errors during
-evaluation. The commonest is a `params` key the job does not declare, which
-raises `no such key` at run time and still fails open. See
+evaluation. The one case left in `conditionVars` that can still do this is a
+`steps.NAME` reference that names a step the job does not have — `params`,
+`vars` and `secrets` no longer raise here; an undefined key on any of those
+three reads as the empty string instead (see
+[the params-undefined-key migration
+note](params-undefined-key-is-empty.md)). See
 [Steps: Conditional Execution](../../user-guide/writing-jobs/steps.md#conditional-execution-if)
-for why `params` behaves differently from `vars` here.
+for the full undefined-key table.
 
 ## What happens to a Git-managed job
 

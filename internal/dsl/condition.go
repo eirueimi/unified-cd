@@ -52,13 +52,40 @@ var conditionVars = []conditionVar{
 	{
 		name: "params",
 		typ:  cel.MapType(cel.StringType, cel.StringType),
-		// NOTE: params keeps CEL's default map semantics, so `params.TYPO`
-		// raises "no such key" and EvalCondition's fail-safe runs the step.
-		// That is the same always-runs trap `vars` had; it is left alone here
-		// deliberately (changing the meaning of every existing params-gated
-		// condition is not a change to make as a side effect of adding vars)
-		// and is reported separately.
-		value: func(d TemplateData, _ *undefinedKeys) any { return orEmptyStrings(d.Params) },
+		// params USED TO keep CEL's default map semantics, so `params.TYPO`
+		// raised "no such key" and EvalCondition's fail-safe ran the step —
+		// the worst direction for a deploy gate to fail in: a typo'd
+		// `if: params.DEPLOY == "yes"` deployed on every run instead of none.
+		// That was the same always-runs trap `vars` had, and it was left
+		// alone when vars was added deliberately: changing the meaning of
+		// every existing params-gated condition is not a change to make as a
+		// side effect of adding an unrelated variable. This is that change,
+		// landing on its own; see
+		// docs/operator-manual/migrations/params-undefined-key-is-empty.md
+		// for the compatibility note.
+		//
+		// A second idea — reject an if: that names an undeclared param at
+		// APPLY time instead — was investigated and stays withdrawn: see
+		// resolveParams in internal/controller/params.go, whose own doc
+		// comment says undeclared params are passed through by design, and
+		// five separate caller paths (CLI --param, run re-trigger, webhook
+		// paramsMapping, schedule params, a call: step's with:, plus
+		// spec.concurrency.orLocks synthesizing {NAME}_LOCK_VALUE) can
+		// introduce one — so a typo and a legitimate pass-through reference
+		// are statically indistinguishable and rejecting one rejects the
+		// other. The runtime lever below has no such problem: it changes
+		// nothing about which params reach a run, only what an UNDEFINED one
+		// evaluates to in if:, and it matches what the same variable already
+		// does on the template side — missingkey=zero makes
+		// `{{ .Params.TYPO }}` expand to "" in run:/env:/outputs: today, so
+		// if: was the one place params.TYPO disagreed with itself.
+		value: func(d TemplateData, undef *undefinedKeys) any {
+			return defaultingMap{
+				Mapper:  types.NewStringStringMap(types.DefaultTypeAdapter, orEmptyStrings(d.Params)),
+				varName: "params",
+				undef:   undef,
+			}
+		},
 	},
 	{
 		name: "vars",
@@ -77,14 +104,62 @@ var conditionVars = []conditionVar{
 		},
 	},
 	{
-		name:  "steps",
-		typ:   cel.MapType(cel.StringType, cel.DynType),
+		name: "steps",
+		typ:  cel.MapType(cel.StringType, cel.DynType),
+		// steps ALSO still has CEL's default map semantics today —
+		// `steps.nope.outputs.ok` raises "no such key" and fails open,
+		// exactly like params and secrets did. Checked while auditing this
+		// table for the params fix (see the params entry above) and left
+		// unfixed here, deliberately, for two reasons rather than one
+		// oversight:
+		//
+		//  1. The values are not strings, so defaultingMap does not
+		//     transplant. It defaults a missing key to types.String(""),
+		//     which is a valid MEMBER of map(string, string) — the shape
+		//     params, vars and secrets all have. steps is
+		//     map(string, dyn): the value one level down is StepData-shaped
+		//     (accessed as `.outputs.KEY`), so defaulting a missing step to
+		//     "" would not close the trap, only relocate it —
+		//     `steps.nope.outputs.ok` would still error, now on "outputs is
+		//     not a field on string" instead of "no such key", still
+		//     fail-safe. Actually closing it needs a differently-shaped
+		//     default (an empty StepData) and its own design pass, not a
+		//     copy-paste of this fix.
+		//  2. The ambiguity that justifies defaulting params to empty does
+		//     not exist for steps: an if: that names a step is either one
+		//     the job actually declares — in which case it is populated once
+		//     that step completes — or a typo. There is no equivalent of
+		//     params' five external pass-through paths where an undeclared
+		//     reference is a legitimate, supported thing to write.
+		//
+		// See docs/operator-manual/migrations/params-undefined-key-is-empty.md
+		// for the record of this decision alongside the params/secrets fix.
 		value: func(d TemplateData, _ *undefinedKeys) any { return stepsActivation(d.Steps) },
 	},
 	{
-		name:  "secrets",
-		typ:   cel.MapType(cel.StringType, cel.StringType),
-		value: func(d TemplateData, _ *undefinedKeys) any { return orEmptyStrings(d.Secrets) },
+		name: "secrets",
+		typ:  cel.MapType(cel.StringType, cel.StringType),
+		// secrets had the identical trap params did: same map(string, string)
+		// shape, same CEL default "no such key" semantics on a plain Go map,
+		// same fail-safe-runs-the-step outcome. Found while auditing this
+		// table for other entries with the params trap (see the params entry
+		// above) and fixed the same way, in the same change, rather than
+		// left for a second pass — there is no reason to ship it half-done
+		// once found.
+		//
+		// Unlike params there is no pass-through ambiguity to weigh here:
+		// TemplateData.Secrets holds exactly the secrets the agent resolved
+		// for this run (see orchestrator.go's SecretsNeeded handling), so an
+		// undefined secrets key in an if: is unambiguously a typo or a name
+		// nothing in the job ever wired up — never a legitimate dynamic
+		// reference the way an undeclared params key can be.
+		value: func(d TemplateData, undef *undefinedKeys) any {
+			return defaultingMap{
+				Mapper:  types.NewStringStringMap(types.DefaultTypeAdapter, orEmptyStrings(d.Secrets)),
+				varName: "secrets",
+				undef:   undef,
+			}
+		},
 	},
 }
 
@@ -133,17 +208,24 @@ func (u *undefinedKeys) sorted() []string {
 
 // defaultingMap is a CEL map whose UNDEFINED keys read as the empty string
 // instead of raising "no such key", recording each one on the way through.
+// Backs every map(string, string) entry in conditionVars — params, vars and
+// secrets — which is every entry EXCEPT steps (see the NOTE on the steps
+// entry in conditionVars for why its map(string, dyn) shape does not fit
+// this same mechanism).
 //
 // Why: CEL raises an error for a missing map key, EvalCondition's error path
-// is fail-safe ("run the step"), so `vars.TYPO == "prod"` would run a step its
-// author meant to gate — invisibly, and with the author's intent inverted.
-// Empty-on-missing keeps the gate shut and matches the template side, where
-// `{{ .Vars.TYPO }}` expands to empty.
+// is fail-safe ("run the step"), so e.g. `vars.TYPO == "prod"` would run a
+// step its author meant to gate — invisibly, and with the author's intent
+// inverted. Empty-on-missing keeps the gate shut and matches the template
+// side, where missingkey=zero already makes `{{ .Vars.TYPO }}` (and
+// `.Params.TYPO`) expand to empty — so this makes if: agree with run:/env:/
+// outputs: on the SAME variable instead of disagreeing with itself.
 //
-// Presence testing: `"X" in vars` still answers truthfully — the `in` operator
-// goes through Contains, which is inherited from the real map. `has(vars.X)`
-// does NOT: CEL routes both a value read and a presence test through Find, so
-// a Find that always succeeds makes has() always true. Use `"X" in vars`.
+// Presence testing: `"X" in vars` (and `"X" in params`, `"X" in secrets`)
+// still answers truthfully — the `in` operator goes through Contains, which
+// is inherited from the real map. `has(vars.X)` does NOT: CEL routes both a
+// value read and a presence test through Find, so a Find that always
+// succeeds makes has() always true. Use `"X" in <name>` instead.
 type defaultingMap struct {
 	traits.Mapper
 	varName string
@@ -258,11 +340,13 @@ func ValidateConditionExpr(expr string) error {
 // treated as success(). When false (used for finally), an empty expr means
 // always-run and a non-status expr is evaluated literally.
 //
-// An UNDEFINED vars key reads as the empty string rather than erroring (see
-// defaultingMap) and is reported in warnings. warnings are never a reason to
-// change the result — the caller's job is to make them visible, and the agent
-// puts them in the RUN's own log, because a condition that quietly did not
-// mean what it says is invisible in the agent's process log.
+// An UNDEFINED params, vars, or secrets key reads as the empty string rather
+// than erroring (see defaultingMap) and is reported in warnings. steps is the
+// one exception — it keeps CEL's default "no such key" error, see the NOTE on
+// the steps entry in conditionVars. warnings are never a reason to change the
+// result — the caller's job is to make them visible, and the agent puts them
+// in the RUN's own log, because a condition that quietly did not mean what it
+// says is invisible in the agent's process log.
 //
 // On compile or evaluation error it returns (true, nil, err) (fail-safe = run
 // the step).
@@ -302,9 +386,14 @@ func EvalCondition(expr string, data TemplateData, status RunStatusView, implici
 
 	var warnings []string
 	if missing := undef.sorted(); len(missing) > 0 {
+		// missing entries are prefixed by the caller ("params.TYPO",
+		// "vars.TYPO", "secrets.TYPO"), so one message has to cover all
+		// three sources rather than naming just one.
 		warnings = append(warnings, fmt.Sprintf(
 			"if: expression %q referenced undefined %s — an undefined key reads as the empty string, "+
-				"so the condition was evaluated as though it were \"\" (check the spelling, or define it in a kind: Vars manifest or the job's spec.vars)",
+				"so the condition was evaluated as though it were \"\" (check the spelling; params come from "+
+				"the run's parameters, vars from a kind: Vars manifest or the job's spec.vars, and secrets "+
+				"from the job's declared secret references)",
 			expr, strings.Join(missing, ", ")))
 	}
 
