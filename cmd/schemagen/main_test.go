@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/dslschema"
 	"github.com/stretchr/testify/require"
 	"github.com/xeipuuv/gojsonschema"
 	"gopkg.in/yaml.v3"
@@ -35,9 +36,9 @@ func TestSchemaIsUpToDate(t *testing.T) {
 	root, err := projectRoot()
 	require.NoError(t, err)
 
-	structs, typeDescs, err := parseDSL(filepath.Join(root, "internal", "dsl"))
+	structs, typeDescs, err := dslschema.ParseDSL(filepath.Join(root, "internal", "dsl"))
 	require.NoError(t, err)
-	schema := buildSchema(structs, typeDescs)
+	schema := dslschema.BuildSchema(structs, typeDescs)
 	want, err := json.MarshalIndent(schema, "", "  ")
 	require.NoError(t, err)
 	want = append(want, '\n')
