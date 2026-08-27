@@ -1,8 +1,15 @@
 package controller
 
 import (
+	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eirueimi/unified-cd/internal/store"
+	"github.com/stretchr/testify/require"
 )
 
 // TestLogNotifyHub_PublishDoesNotCrossRuns proves a subscriber on run A is
@@ -207,4 +214,159 @@ func TestLogNotifyHub_PublishAllWakesEverySubscriberOfEveryRun(t *testing.T) {
 			t.Fatalf("%s subscriber was not woken by publishAll", name)
 		}
 	}
+}
+
+// TestLogNotifyHub_ConcurrentPublishAndUnsubscribe is the registry's race
+// test, and it is written to be meaningful only under -race: the hub is
+// touched by the single listener goroutine (publish/publishAll) and by
+// every request goroutine (subscribe/unsubscribe) at once, which is the
+// exact shape this whole file has to get right. It also pins the specific
+// requirement that a publish landing while a subscriber is being removed
+// concurrently must still not block — the send is non-blocking on a
+// channel that is never closed, so a publish that races removal at worst
+// wakes a subscriber nobody is reading any more, which is a no-op, not a
+// panic and not a stall.
+func TestLogNotifyHub_ConcurrentPublishAndUnsubscribe(t *testing.T) {
+	h := newLogNotifyHub()
+
+	const (
+		runs       = 8
+		goroutines = 16
+		iterations = 200
+	)
+	stop := make(chan struct{})
+	var publishers, subscribers sync.WaitGroup
+
+	// Two "listener goroutines" hammering the fan-out side until told to
+	// stop.
+	for i := 0; i < 2; i++ {
+		publishers.Add(1)
+		go func() {
+			defer publishers.Done()
+			for n := 0; ; n++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				h.publish(fmt.Sprintf("run-%d", n%runs))
+				h.publishAll()
+			}
+		}()
+	}
+
+	// Many "request goroutines" subscribing, draining and unsubscribing a
+	// fixed number of times — including subscribers that never drain at
+	// all, so publish keeps meeting full buffers.
+	for g := 0; g < goroutines; g++ {
+		subscribers.Add(1)
+		go func(g int) {
+			defer subscribers.Done()
+			for i := 0; i < iterations; i++ {
+				runID := fmt.Sprintf("run-%d", (g+i)%runs)
+				ch, unsub := h.subscribe(runID)
+				if i%2 == 0 {
+					select {
+					case <-ch:
+					default:
+					}
+				}
+				unsub()
+				unsub() // idempotence, exercised concurrently on purpose
+			}
+		}(g)
+	}
+
+	subscribers.Wait()
+	close(stop)
+	publishers.Wait()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	require.Empty(t, h.subs,
+		"every subscriber unsubscribed, so the registry must be completely empty — a leftover run key is the slow leak this design has to avoid")
+}
+
+// blockingListenStore stands in for a real store whose LISTEN connection is
+// healthy and simply never delivers anything: ListenForNotify blocks until
+// its context ends, exactly as (*store.Postgres).ListenForNotify does while
+// waiting on WaitForNotification. Only ListenForNotify is ever called on it,
+// so the embedded nil store.Store is never dereferenced.
+type blockingListenStore struct {
+	store.Store
+	calls atomic.Int64
+}
+
+func (b *blockingListenStore) ListenForNotify(ctx context.Context, _ string, _ func(payload string)) error {
+	b.calls.Add(1)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestRunLogNotifyListener_SweepWakesSubscribersWithoutAnyNotification is
+// the test for the safety net, and therefore for the rolling-upgrade gap
+// the dual pg_notify does NOT close: a write handled by an old replica
+// publishes only the per-run channel, so a viewer on a new replica gets no
+// NOTIFY at all even though this replica's LISTEN connection is perfectly
+// healthy. The store here never delivers a notification, and the
+// subscriber must still be woken, repeatedly, purely by the periodic
+// publishAll sweep.
+func TestRunLogNotifyListener_SweepWakesSubscribersWithoutAnyNotification(t *testing.T) {
+	restore := logNotifySweepInterval
+	logNotifySweepInterval = 20 * time.Millisecond
+	t.Cleanup(func() { logNotifySweepInterval = restore })
+
+	hub := newLogNotifyHub()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go runLogNotifyListener(ctx, &blockingListenStore{}, hub)
+
+	ch, unsub := hub.subscribe("run-A")
+	t.Cleanup(unsub)
+
+	// Two wake-ups, not one: the first could be the connect-time
+	// publishAll, which would leave the sweep itself untested.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("subscriber wake-up %d never arrived; the periodic publishAll sweep is not running", i+1)
+		}
+	}
+}
+
+// exhaustedThenBlockingStore fails its first ListenForNotify with the
+// listen-pool-exhaustion sentinel (the failure mode PR #166's bounded
+// Acquire exists to turn from a silent hang into an error), then behaves.
+type exhaustedThenBlockingStore struct {
+	store.Store
+	calls atomic.Int64
+}
+
+func (e *exhaustedThenBlockingStore) ListenForNotify(ctx context.Context, channel string, _ func(payload string)) error {
+	if e.calls.Add(1) == 1 {
+		return fmt.Errorf("acquire listen pool connection for channel %q: %w", channel, store.ErrListenPoolExhausted)
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestRunLogNotifyListener_RetriesAfterListenPoolExhaustion replaces the
+// coverage sse_listen_exhausted_test.go used to provide, at the layer that
+// now owns the acquire. Exhaustion must not kill this replica's only
+// listener: it is retried on the reconnect backoff, so live updates come
+// back on their own once a listenPool connection frees up, rather than
+// leaving the replica permanently deaf.
+func TestRunLogNotifyListener_RetriesAfterListenPoolExhaustion(t *testing.T) {
+	restore := logNotifyReconnectDelay
+	logNotifyReconnectDelay = 20 * time.Millisecond
+	t.Cleanup(func() { logNotifyReconnectDelay = restore })
+
+	st := &exhaustedThenBlockingStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go runLogNotifyListener(ctx, st, newLogNotifyHub())
+
+	require.Eventually(t, func() bool { return st.calls.Load() >= 2 }, 5*time.Second, 10*time.Millisecond,
+		"listener gave up after ErrListenPoolExhausted instead of retrying — the replica would stay deaf to log wake-ups forever")
 }

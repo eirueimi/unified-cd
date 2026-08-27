@@ -30,6 +30,28 @@ type logNotifySub struct {
 	ch chan struct{}
 }
 
+// logNotifySweepInterval is how often the shared listener wakes every
+// subscriber unconditionally, as a backstop for notifications that were
+// never delivered rather than merely delayed. See publishAll's doc comment
+// for the three ways that happens; the interval is a trade between how long
+// a viewer can sit on a missed wake-up and a per-viewer no-op DB read every
+// tick. 15s is well under the point where a human reading a log tail would
+// call the stream stuck, and at the per-replica viewer counts this design
+// exists to support it is a rounding error against the query volume the
+// wake-ups themselves generate.
+//
+// It and logNotifyReconnectDelay below are vars, not consts, only so tests
+// can shrink them — nothing in production reassigns either.
+var logNotifySweepInterval = 15 * time.Second
+
+// logNotifyReconnectDelay is the backoff between reconnect attempts in
+// runLogNotifyListener. Backoff, not a tight retry loop: ListenForNotify's
+// Acquire competes for the same listenPool as every other replica
+// reconnecting after a shared outage (e.g. a Postgres restart), and a tight
+// loop across every replica at once would just be its own minor thundering
+// herd.
+var logNotifyReconnectDelay = 2 * time.Second
+
 // logNotifyHub fans out "this run's logs changed" wake-ups, delivered over
 // ONE shared Postgres LISTEN connection (see runLogNotifyListener), to the
 // in-process SSE viewers watching that run. Before this existed, every
@@ -115,14 +137,36 @@ func (h *logNotifyHub) publish(runID string) {
 // everyone, unconditionally, we don't know what we missed" an acceptable
 // hammer here.
 //
-// This is called once per (re)connect attempt in runLogNotifyListener, not
-// on a standing timer: the only window where a NOTIFY can be truly lost is
-// while the single shared LISTEN session is down, and a (re)connect
-// attempt is exactly what brackets that window. A wall-clock ticker would
-// additionally poll during the (much longer) time the connection is
-// healthy, where nothing is lost and nothing needs catching up — paying a
-// continuous per-viewer DB-read tax for a risk that provably does not
-// exist in that stretch.
+// It is called from two places in runLogNotifyListener, and needs both:
+//
+//   - Once per (re)connect attempt, which brackets the window in which
+//     this replica had no LISTEN session at all.
+//   - On a slow standing ticker (logNotifySweepInterval), because the
+//     (re)connect call alone does NOT close every gap:
+//     1. The store exposes no "the LISTEN is now established" signal —
+//     ListenForNotify blocks until it fails — so the reconnect-time
+//     publishAll necessarily runs BEFORE the Acquire + LISTEN round
+//     trip rather than after it, leaving that round trip uncovered.
+//     2. A viewer that subscribes between the backfill read in
+//     handleRunEvents and its own registration here, or before this
+//     replica's very first LISTEN is up, was not in the registry when
+//     the reconnect-time publishAll ran.
+//     3. During a rolling upgrade a NOTIFY can be lost even though this
+//     replica's connection is perfectly healthy: an old (pre-multiplex)
+//     replica handling the write publishes only the per-run channel,
+//     which nothing on a new replica listens to. See notifyLogAppended
+//     in internal/store/postgres.go — the dual publish fixes the
+//     new-writer/old-viewer direction, and only that direction. The
+//     other direction cannot be fixed in a new binary, because the
+//     binary that has to change is the old one.
+//
+// The ticker's cost is one TailLogs (an indexed read that normally returns
+// zero rows) plus one GetRun per connected viewer per interval — not per
+// run, not per replica-wide subscriber count squared — which is why an
+// interval short enough to be unnoticeable is affordable. It also gives a
+// viewer of a run that reaches a terminal state without a further log
+// append a bounded time to see its "status" event, instead of waiting on a
+// wake-up that may never come.
 func (h *logNotifyHub) publishAll() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -156,32 +200,48 @@ func (h *logNotifyHub) publishAll() {
 // Rolling-upgrade note: this listens ONLY on the new global channel. An
 // old (pre-multiplex) controller replica mid-rollout still LISTENs on its
 // own per-run "log_appended:{runID}" channel and neither knows nor cares
-// that this channel exists — see the dual pg_notify in
-// internal/store/postgres.go's AppendLog/AppendLogs for why both channel
-// forms are populated for the duration of a rollout, so that neither an
-// old nor a new replica's viewers go dark depending on which version
-// happens to serve the write that would have woken them.
+// that this channel exists. The dual pg_notify in internal/store/
+// postgres.go's notifyLogAppended covers ONE of the two directions that
+// creates — a write handled by a NEW replica still wakes an OLD replica's
+// viewers, because the new binary publishes both channel forms. The
+// opposite direction is not fixable from here: a write handled by an OLD
+// replica publishes only the per-run channel, and no amount of new code
+// makes an already-running old binary emit the global one. Viewers on a
+// new replica are covered for that window by the periodic publishAll
+// sweep below, not by NOTIFY.
 func runLogNotifyListener(ctx context.Context, st store.Store, hub *logNotifyHub) {
-	// Backoff, not a tight retry loop: ListenForNotify's Acquire competes
-	// for the same listenPool as every other replica reconnecting after a
-	// shared outage (e.g. a Postgres restart), and a tight loop across
-	// every replica at once would just be its own minor thundering herd.
-	const reconnectDelay = 2 * time.Second
+	// Safety net for every way a NOTIFY can go missing that a reconnect
+	// does not bracket — see publishAll's doc comment for the enumeration.
+	// Runs for as long as ctx does, independently of the reconnect loop
+	// below, so it keeps sweeping while that loop is backing off.
+	go func() {
+		t := time.NewTicker(logNotifySweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				hub.publishAll()
+			}
+		}
+	}()
+
 	first := true
 	for {
 		if !first {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(reconnectDelay):
+			case <-time.After(logNotifyReconnectDelay):
 			}
 		}
 		first = false
 
-		// See publishAll's doc comment: this brackets the gap a reconnect
-		// leaves, by construction, whether this is the very first connect
-		// (nothing to catch up on, so a harmless no-op) or a reconnect
-		// after a drop (where it is the entire point).
+		// See publishAll's doc comment: this brackets most of the gap a
+		// reconnect leaves — everything except the Acquire + LISTEN round
+		// trip that follows, which the periodic sweep above covers because
+		// nothing here can observe when that round trip completes.
 		hub.publishAll()
 
 		err := st.ListenForNotify(ctx, store.LogAppendedChannel, func(payload string) {
@@ -212,7 +272,7 @@ func runLogNotifyListener(ctx context.Context, st store.Store, hub *logNotifyHub
 			// backoff as any other connection loss rather than surfaced to
 			// one arbitrary viewer.
 			slog.Error("log-notify listener could not acquire a listen-pool connection; live log updates are stalled on this replica until it can",
-				"error", err, "retryIn", reconnectDelay)
+				"error", err, "retryIn", logNotifyReconnectDelay)
 			continue
 		}
 		slog.Warn("log-notify listener lost its connection; reconnecting", "error", err)

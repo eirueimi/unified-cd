@@ -188,8 +188,14 @@ func (s *Server) subscribeLogNotify(runID string) (<-chan struct{}, func()) {
 // subscribeLogNotify. Safe to call even if no SSE viewer ever connected
 // (logNotifyOnce never fired, so there is nothing to stop) and safe to
 // call more than once: context.CancelFunc is documented idempotent.
+//
+// Also safe on a Server built by struct literal rather than NewServer —
+// several tests in this package do exactly that (see hardening_test.go),
+// and a Close on one of those should be a no-op, not a nil-func panic.
 func (s *Server) Close() {
-	s.logNotifyCancel()
+	if s.logNotifyCancel != nil {
+		s.logNotifyCancel()
+	}
 }
 
 // SetObjectStore sets the object store used for log archiving. Archive endpoints return 501 when nil.

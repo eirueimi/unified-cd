@@ -1126,15 +1126,24 @@ func (p *Postgres) AppendLog(ctx context.Context, runID string, stepIndex int, s
 // particular viewer's SSE connection (any API-pool replica can take the
 // write; the LB picks whichever). If this only published the new
 // channel, a viewer connected to an old replica would go dark for every
-// write an already-upgraded replica happened to handle; if it only kept
-// the old channel, a viewer connected to a new replica would go dark for
-// every write an old replica handled. Publishing both, unconditionally,
-// is what makes "some replicas are old, some are new, for the next few
-// minutes" invisible to every viewer regardless of which replica wrote
-// or which replica is streaming to it. There is no plan to remove the
-// per-run publish afterward either: it is what ListenForNotify's own
-// direct callers (present or future, e.g. postgres_pool_test.go) rely
-// on, and it costs one cheap in-database NOTIFY, not a connection.
+// write an already-upgraded replica happened to handle. Publishing both
+// closes that direction.
+//
+// It closes ONLY that direction, and the symmetry is worth stating
+// plainly because it is easy to assume: the mirror case — a write
+// handled by an OLD replica, watched by a viewer on a NEW replica — is
+// NOT fixed here and cannot be, because the code that would have to
+// publish the global channel lives in the old binary that is still
+// running. A new replica's shared listener sees nothing for that write.
+// internal/controller's runLogNotifyListener covers that window with a
+// periodic publishAll sweep (see logNotifySweepInterval) instead of with
+// NOTIFY, which bounds the staleness to one sweep interval for the
+// minutes a rollout lasts rather than eliminating it.
+//
+// There is no plan to remove the per-run publish afterward either: it is
+// what ListenForNotify's own direct callers (present or future, e.g.
+// postgres_pool_test.go) rely on, and it costs one cheap in-database
+// NOTIFY inside a round trip already being made, not a connection.
 //
 // Payload formats deliberately do NOT change for the legacy channel: it
 // keeps carrying the seq exactly as before (a decimal string), because an
