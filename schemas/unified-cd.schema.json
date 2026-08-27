@@ -255,6 +255,13 @@
     "Input": {
       "additionalProperties": false,
       "properties": {
+        "choices": {
+          "description": "Fixed allow-list of values for this input (string or int type only), rendered by the Web UI as a \u003cselect\u003e. Mutually exclusive with pattern:. If set, default: must be one of these choices.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "default": {},
         "description": {
           "type": "string"

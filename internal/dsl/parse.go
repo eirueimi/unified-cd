@@ -253,6 +253,33 @@ func (j *Job) Validate() error {
 		if !validTypes[p.Type] {
 			return fmt.Errorf("spec.params.inputs[%d].type %q is invalid (want string|bool|int|array)", i, p.Type)
 		}
+		if p.Choices != nil {
+			if p.Type == "bool" {
+				return fmt.Errorf("spec.params.inputs[%d].choices is set but type is \"bool\": a bool already has exactly two values, so choices is meaningless here", i)
+			}
+			if p.Type == "array" {
+				return fmt.Errorf("spec.params.inputs[%d].choices is set but type is \"array\": choices on a multi-value array is ambiguous (per-element or whole-array?) and cannot be rendered as a plain <select>; use pattern: instead", i)
+			}
+			if p.Pattern != "" {
+				return fmt.Errorf("spec.params.inputs[%d]: choices and pattern are mutually exclusive (choices is already a strict allow-list, stronger than any regex)", i)
+			}
+			if len(p.Choices) == 0 {
+				return fmt.Errorf("spec.params.inputs[%d].choices is declared but empty: a whitelist with no entries can never be satisfied", i)
+			}
+			seenChoices := map[string]bool{}
+			for _, c := range p.Choices {
+				if seenChoices[c] {
+					return fmt.Errorf("spec.params.inputs[%d].choices: duplicate value %q", i, c)
+				}
+				seenChoices[c] = true
+			}
+			if p.Default != nil {
+				defaultStr := fmt.Sprintf("%v", p.Default)
+				if !seenChoices[defaultStr] {
+					return fmt.Errorf("spec.params.inputs[%d].default %q is not one of choices %v", i, defaultStr, p.Choices)
+				}
+			}
+		}
 	}
 	for i, o := range j.Spec.Params.Outputs {
 		if o.Name == "" {

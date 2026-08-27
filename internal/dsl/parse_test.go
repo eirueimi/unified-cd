@@ -169,6 +169,191 @@ spec:
 	assert.True(t, job.Spec.Params.Inputs[0].Required)
 }
 
+func TestParse_InputChoices_StringValid(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: with-choices
+spec:
+  params:
+    inputs:
+      - name: env
+        type: string
+        choices: [dev, stg, prod]
+        default: dev
+  steps:
+    - name: s
+      run: echo hello
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Params.Inputs, 1)
+	assert.Equal(t, []string{"dev", "stg", "prod"}, job.Spec.Params.Inputs[0].Choices)
+	assert.Equal(t, "dev", job.Spec.Params.Inputs[0].Default)
+}
+
+func TestParse_InputChoices_IntValid(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: with-int-choices
+spec:
+  params:
+    inputs:
+      - name: replicas
+        type: int
+        choices: [1, 3, 5]
+        default: 3
+  steps:
+    - name: s
+      run: echo hello
+`
+	job, err := Parse(strings.NewReader(input))
+	require.NoError(t, err)
+	require.Len(t, job.Spec.Params.Inputs, 1)
+	assert.Equal(t, []string{"1", "3", "5"}, job.Spec.Params.Inputs[0].Choices)
+}
+
+func TestParse_RejectsChoicesOnBool(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  params:
+    inputs:
+      - name: dry_run
+        type: bool
+        choices: ["true", "false"]
+  steps:
+    - name: s
+      run: echo hello
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec.params.inputs[0].choices")
+	assert.Contains(t, err.Error(), "bool")
+}
+
+func TestParse_RejectsChoicesOnArray(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  params:
+    inputs:
+      - name: envs
+        type: array
+        choices: [dev, stg, prod]
+  steps:
+    - name: s
+      run: echo hello
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec.params.inputs[0].choices")
+	assert.Contains(t, err.Error(), "array")
+	assert.Contains(t, err.Error(), "pattern")
+}
+
+func TestParse_RejectsChoicesWithPattern(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  params:
+    inputs:
+      - name: env
+        type: string
+        choices: [dev, stg, prod]
+        pattern: ^[a-z]+$
+  steps:
+    - name: s
+      run: echo hello
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec.params.inputs[0]")
+	assert.Contains(t, err.Error(), "choices")
+	assert.Contains(t, err.Error(), "pattern")
+}
+
+func TestParse_RejectsEmptyChoices(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  params:
+    inputs:
+      - name: env
+        type: string
+        choices: []
+  steps:
+    - name: s
+      run: echo hello
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec.params.inputs[0].choices")
+}
+
+func TestParse_RejectsDuplicateChoices(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  params:
+    inputs:
+      - name: env
+        type: string
+        choices: [dev, stg, dev]
+  steps:
+    - name: s
+      run: echo hello
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec.params.inputs[0].choices")
+	assert.Contains(t, err.Error(), `"dev"`)
+}
+
+func TestParse_RejectsDefaultNotInChoices(t *testing.T) {
+	input := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  params:
+    inputs:
+      - name: env
+        type: string
+        choices: [dev, stg, prod]
+        default: qa
+  steps:
+    - name: s
+      run: echo hello
+`
+	_, err := Parse(strings.NewReader(input))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec.params.inputs[0].default")
+	assert.Contains(t, err.Error(), `"qa"`)
+	assert.Contains(t, err.Error(), "dev")
+	assert.Contains(t, err.Error(), "stg")
+	assert.Contains(t, err.Error(), "prod")
+}
+
 func TestParse_StepOutputs(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1
