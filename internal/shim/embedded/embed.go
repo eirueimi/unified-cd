@@ -55,13 +55,25 @@
 // (below): it validates the committed files functionally — each is a real,
 // statically-linked linux ELF of the expected architecture, and on a linux
 // host the embedded shim is executed and must behave as ucd-sh. That is all
-// `go install` and the release build need. Trade-off: a source change to
-// cmd/ucd-sh left un-regenerated is not caught automatically; regenerate
-// and commit when you touch the shim. (A platform-independent freshness
-// signal that does not depend on build reproducibility — e.g. committing a
-// hash of cmd/ucd-sh's source alongside the binary and having CI check it
-// against the current source — was proposed in review but not built; see
-// PR #157.) Because the bytes are committed, `go build`, `go test`,
+// `go install` and the release build need.
+//
+// What that functional check cannot catch on its own is a source edit to
+// cmd/ucd-sh or internal/shim that nobody regenerated for — the binaries
+// would stay valid, well-formed, behaving linux ELFs; they just wouldn't
+// contain the new source anymore. freshness_test.go's
+// TestShimSourceMatchesRecordedHash closes that gap with the
+// platform-independent freshness signal floated in review on PR #157 but
+// not built there: internal/shim/srchash.Compute hashes the shim's actual
+// SOURCE (every file `go list -deps` says is compiled into cmd/ucd-sh's
+// dependency graph under this module, plus the resolved version of every
+// third-party dependency in that graph — see srchash's package doc).
+// cmd/shimgen writes the result to ucd-sh-source.sha256 on every
+// `go generate`, and the test recomputes the same hash from the current
+// source tree and fails if it disagrees with what's recorded. Because it
+// never touches the compiled bytes, it sidesteps both problems above by
+// construction: it passes identically regardless of core.filemode, and it
+// does not care that a rebuild's bytes differ from what's committed.
+// Because the bytes are committed, `go build`, `go test`,
 // `go install .../cmd/unified-cd-agent@version`, container builds, and
 // goreleaser all embed the shim with no pre-build step.
 package embedded
