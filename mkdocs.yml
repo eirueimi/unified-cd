@@ -151,6 +151,7 @@ nav:
       - Architecture: contributing/architecture.md
       - Invariants: contributing/invariants.md
       - DSL Evaluation: contributing/dsl-evaluation.md
+      - Auth Implementation: contributing/auth-implementation.md
       - Background Workers: contributing/background-workers.md
       - Agent Execution: contributing/agent-execution.md
       - Frontend Development: contributing/frontend-development.md
