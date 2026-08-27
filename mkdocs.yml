@@ -148,4 +148,6 @@ nav:
       - Controller and Database: troubleshooting/controller-and-database.md
   - Contributing:
       - Contributing: contributing/index.md
+      - Architecture: contributing/architecture.md
+      - Invariants: contributing/invariants.md
       - Frontend Development: contributing/frontend-development.md
