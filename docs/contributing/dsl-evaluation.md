@@ -80,13 +80,19 @@ what determines what data is available.
 **Controller, at run creation:**
 
 - `resolveParams` fills declared inputs from supplied values and `default:`.
-- `ExpandAgentSelector` and `ExpandConcurrency` interpolate params, so routing
-  and concurrency keys can be computed per run.
+- `ExpandAgentSelector` interpolates params, so routing can be computed per
+  run.
 - `spec.displayName` is interpolated once.
 
 **Controller, while Pending:**
 
-- `uses:` git templates are fetched and inlined into the run's stored spec.
+- `uses:` git templates are fetched and inlined into the run's stored spec,
+  by `RunGitResolver`.
+- `ExpandConcurrency` interpolates params into the concurrency mutex/pool/
+  orLock names — not at creation, but later, when `RunScheduler` dequeues the
+  run (`tryQueueRun`, transitioning it from Pending to Queued). A concurrency
+  key that depends on a param is therefore not resolved until the run is
+  about to be queued, not when it is created.
 
 **Agent, per step:**
 
