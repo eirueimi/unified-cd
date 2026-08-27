@@ -7,7 +7,7 @@ A complete set of manifests for installing the unified-cd `controller` and `k8s-
 | File | Contents | Prerequisites |
 |------|----------|---------------|
 | `core-install.yaml` | controller + k8s-agent only | External PostgreSQL and S3-compatible store plus a TLS terminator required. Create the controller Secrets before applying, and replace the invalid k8s-agent HTTPS URL. |
-| `install.yaml` | core-install.yaml + in-cluster PostgreSQL and Garage bundled | For evaluation / quick trial. Uses development-default credentials. **Do not use in production.** |
+| `install.yaml` | core-install.yaml + in-cluster PostgreSQL and Garage bundled | For evaluation / quick trial. Uses development-default credentials. Artifacts and logs both work out of the box (see "About install.yaml" below). **Do not use in production.** |
 | `agent-only.yaml` | k8s-agent only | Controller running externally with the matching Kubernetes enrollment policy. Replace its example-invalid `server` URL before applying. |
 
 ## Applying
@@ -151,6 +151,19 @@ Kubernetes has no equivalent of docker-compose `depends_on: condition: service_h
 The `controller` will restart a few times waiting for PostgreSQL and Garage to become ready — this is expected.
 Garage uses `--default-bucket` to auto-create the bucket and access key on container startup,
 so no separate init Job (like the old `minio-init`) is needed.
+
+Artifacts work out of the box in this bundle: the k8s-agent is configured with
+`sidecarS3SecretMode: broker` (see `agent-config-patch.yaml` and
+`controller-config-patch.yaml`), so the artifact sidecar gets its S3
+credentials from the controller's [store-credential
+broker](../docs/operator-manual/kubernetes-integration.md#s3-credential-delivery-mode-sidecars3secretmode)
+instead of a Secret this bundle has never shipped. `core-install.yaml` is
+unaffected — it still defaults to `sidecarS3SecretMode: env`, the
+operator-created-Secret path, so a production deployment's default behaviour
+does not silently change underneath it. Broker mode returns the
+controller's own object-store credential unscoped (not per-run, not
+short-lived) — see the kubernetes-integration.md section linked above for
+what that does and does not mean for a production install.
 
 ## SSO / OIDC
 

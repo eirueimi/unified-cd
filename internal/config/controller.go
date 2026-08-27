@@ -15,10 +15,35 @@ import (
 type ControllerAgentAuthConfig struct {
 	KubernetesClusters           []ControllerKubernetesClusterConfig          `yaml:"kubernetesClusters"`
 	KubernetesEnrollmentPolicies []ControllerKubernetesEnrollmentPolicyConfig `yaml:"kubernetesEnrollmentPolicies"`
+
+	// KubernetesStoreCredentialPolicies declares which namespaces and
+	// ServiceAccounts, per cluster, may exchange a projected ServiceAccount
+	// token for object-store credentials (the §5.6 broker,
+	// docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md).
+	// Deliberately its own list rather than a reuse of
+	// KubernetesEnrollmentPolicies: that list authorizes the AGENT's own
+	// identity (e.g. namespace "unified-cd", ServiceAccount "k8s-agent" in
+	// the shipped manifests), while this one authorizes JOB POD identities
+	// (e.g. namespace "ci") — a different namespace by design, and
+	// deliberately so (see kubernetes-integration.md's "S3 credentials"
+	// section on operators tripping over exactly that distinction for the
+	// Secret path this broker replaces). See
+	// internal/controller/api_store_credentials.go's StoreCredentialCluster
+	// doc comment for the full reasoning.
+	KubernetesStoreCredentialPolicies []ControllerKubernetesStoreCredentialPolicyConfig `yaml:"kubernetesStoreCredentialPolicies"`
 }
 type ControllerKubernetesClusterConfig struct {
 	Name       string `yaml:"name"`
 	Kubeconfig string `yaml:"kubeconfig"`
+}
+
+// ControllerKubernetesStoreCredentialPolicyConfig declares one cluster's
+// namespace/ServiceAccount allowlist for the store-credential broker. See
+// ControllerAgentAuthConfig.KubernetesStoreCredentialPolicies.
+type ControllerKubernetesStoreCredentialPolicyConfig struct {
+	Cluster         string   `yaml:"cluster"`
+	Namespaces      []string `yaml:"namespaces"`
+	ServiceAccounts []string `yaml:"serviceAccounts"`
 }
 
 // ControllerKubernetesEnrollmentPolicyConfig declares one bounded workload
@@ -277,6 +302,7 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 		// Cluster credentials remain YAML-only.
 		eff.AgentAuth.KubernetesClusters = append([]ControllerKubernetesClusterConfig(nil), file.AgentAuth.KubernetesClusters...)
 		eff.AgentAuth.KubernetesEnrollmentPolicies = append([]ControllerKubernetesEnrollmentPolicyConfig(nil), file.AgentAuth.KubernetesEnrollmentPolicies...)
+		eff.AgentAuth.KubernetesStoreCredentialPolicies = append([]ControllerKubernetesStoreCredentialPolicyConfig(nil), file.AgentAuth.KubernetesStoreCredentialPolicies...)
 	}
 	if err := validateControllerAgentAuth(eff.AgentAuth); err != nil {
 		return nil, err
@@ -314,6 +340,14 @@ func validateControllerAgentAuth(cfg *ControllerAgentAuthConfig) error {
 		}
 		if _, err := policy.StorePolicy(); err != nil {
 			return err
+		}
+	}
+	for _, policy := range cfg.KubernetesStoreCredentialPolicies {
+		if _, ok := seen[policy.Cluster]; !ok {
+			return fmt.Errorf("agentAuth kubernetes store credential policy references an unknown cluster")
+		}
+		if len(policy.Namespaces) == 0 || len(policy.ServiceAccounts) == 0 {
+			return fmt.Errorf("agentAuth kubernetes store credential policy requires namespaces and serviceAccounts")
 		}
 	}
 	return nil

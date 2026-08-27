@@ -315,19 +315,31 @@ func main() {
 	km := resolved.KeyManager
 
 	var obj objectstore.ObjectStore
+	// storeCredentialS3, when non-nil, is what the §5.6 broker
+	// (POST /api/v1/store-credentials) hands to a job Pod's sidecar: the
+	// controller's OWN raw S3 config, not the constructed ObjectStore below
+	// (which only exposes Put/Get/Delete/List, not the key material a
+	// sidecar needs to build its own minio client). Built from the exact
+	// same flags as obj so the two can never disagree about which store is
+	// configured; nil exactly when obj's S3 branch below does not run, which
+	// is what lets the broker report a clear "no object store configured"
+	// error instead of an empty credential.
+	var storeCredentialS3 *objectstore.S3Config
 	objectStoreState := "none"
 	if *s3Endpoint != "" && *s3Bucket != "" {
-		s3, err := objectstore.NewS3ObjectStore(ctx, objectstore.S3Config{
+		cfg := objectstore.S3Config{
 			Endpoint:        *s3Endpoint,
 			Bucket:          *s3Bucket,
 			AccessKeyID:     *s3Key,
 			SecretAccessKey: *s3Secret,
-		})
+		}
+		s3, err := objectstore.NewS3ObjectStore(ctx, cfg)
 		if err != nil {
 			slog.Error("s3 object store init", "error", err)
 			os.Exit(1)
 		}
 		obj = s3
+		storeCredentialS3 = &cfg
 		objectStoreState = "s3"
 		slog.Info("using S3-compatible object store", "endpoint", *s3Endpoint, "bucket", *s3Bucket)
 	} else if *dataDir != "" {
@@ -339,6 +351,15 @@ func main() {
 	}
 
 	verifiers := make(map[string]controller.KubernetesEnrollmentVerifier, len(eff.AgentAuth.KubernetesClusters))
+	// clusterClients is keyed the same as verifiers (by cluster name) and
+	// reuses the SAME kubernetes.Interface built below for each cluster —
+	// one TokenReview-capable client per cluster serves both the enrollment
+	// verifier above and the store-credential broker below, which differ
+	// only in which audience they ask the API server to confirm. Building a
+	// second client per cluster would be a duplicate, unnecessary
+	// kubeconfig/rest.Config resolution for a client that behaves
+	// identically to the one already made.
+	clusterClients := make(map[string]kubernetes.Interface, len(eff.AgentAuth.KubernetesClusters))
 	for _, cluster := range eff.AgentAuth.KubernetesClusters {
 		kubeConfig, err := buildKubernetesEnrollmentConfig(cluster.Kubeconfig)
 		if err != nil {
@@ -352,8 +373,28 @@ func main() {
 			os.Exit(1)
 		}
 		verifiers[cluster.Name] = controller.NewKubernetesEnrollmentVerifier(cluster.Name, client)
+		clusterClients[cluster.Name] = client
 	}
-	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
+
+	// storeCredentialClusters is the §5.6 broker's namespace/ServiceAccount
+	// allowlist, one entry per configured
+	// agentAuth.kubernetesStoreCredentialPolicies policy — see
+	// ControllerAgentAuthConfig.KubernetesStoreCredentialPolicies and
+	// controller.StoreCredentialCluster for why this is a separate list from
+	// the enrollment policies above rather than a reuse of them.
+	// validateControllerAgentAuth already rejected any policy referencing an
+	// unknown cluster name, so the clusterClients lookup below cannot miss.
+	var storeCredentialClusters []controller.StoreCredentialCluster
+	if eff.AgentAuth != nil {
+		for _, policy := range eff.AgentAuth.KubernetesStoreCredentialPolicies {
+			storeCredentialClusters = append(storeCredentialClusters, controller.StoreCredentialCluster{
+				Cluster: policy.Cluster, Client: clusterClients[policy.Cluster],
+				Namespaces: policy.Namespaces, ServiceAccounts: policy.ServiceAccounts,
+			})
+		}
+	}
+
+	srv := controller.NewServer(controller.Config{Token: *token, KubernetesEnrollmentVerifiers: verifiers, StoreCredentialClusters: storeCredentialClusters, StoreCredentialS3: storeCredentialS3, ListenAddr: *addr, WebDir: *webDir, UIProxyTarget: *uiProxyTarget, MatrixMaxCombinations: *matrixMax, WebhookMaxBodyBytes: int64(*webhookMaxBodyBytes), StderrPlain: *stderrPlain, InsecureCookies: *insecureCookies}, st)
 	srv.SetMetrics(m)
 	srv.SetKeyManager(km)
 	if obj != nil {

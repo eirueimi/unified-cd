@@ -8,3 +8,4 @@ resources:
   - secret.yaml
 patches:
   - path: agent-config-patch.yaml
+  - path: controller-config-patch.yaml

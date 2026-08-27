@@ -47,6 +47,24 @@ type Config struct {
 	// deployments (LAN access, Safari-based local dev).
 	InsecureCookies               bool
 	KubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
+
+	// StoreCredentialClusters lists the Kubernetes clusters (and, per
+	// cluster, which namespaces/ServiceAccounts) trusted to broker
+	// object-store credentials to job Pod sidecars — see
+	// api_store_credentials.go for why this is server configuration rather
+	// than a database-backed policy like KubernetesEnrollmentVerifiers'
+	// namespace/ServiceAccount constraints are. nil/empty disables the
+	// broker entirely: POST /api/v1/store-credentials then always reports
+	// "kubernetes identity unavailable", the same failure shape enrollment
+	// uses when no verifier is configured for a requested cluster.
+	StoreCredentialClusters []StoreCredentialCluster
+
+	// StoreCredentialS3 is the credential the broker hands out — the
+	// controller's OWN object-store configuration, passed through
+	// unscoped. nil means the controller has no object store configured,
+	// which the broker reports as a clear, named error rather than an
+	// empty credential the sidecar would only fail to sign with later.
+	StoreCredentialS3 *objectstore.S3Config
 }
 
 // OIDCConfig holds the OIDC provider configuration.
@@ -84,6 +102,8 @@ type Server struct {
 	enrollmentLimiter             *enrollmentLimiter
 	credentialTouches             *credentialTouchLimiter
 	kubernetesEnrollmentVerifiers map[string]KubernetesEnrollmentVerifier
+	storeCredentialClusters       []StoreCredentialCluster
+	storeCredentialS3             *objectstore.S3Config
 
 	// Cached provider for OIDC Bearer token verification (lazily initialized).
 	// Used to verify id_tokens obtained via the CLI device flow for API authentication.
@@ -94,7 +114,7 @@ type Server struct {
 
 // NewServer creates a new server from the given config and store and sets up routing.
 func NewServer(cfg Config, st store.Store) *Server {
-	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers}
+	s := &Server{cfg: cfg, store: st, r: chi.NewRouter(), claimDrainCh: make(chan struct{}), claimedBy: newClaimedByCache(claimedByCacheCap), enrollmentLimiter: newEnrollmentLimiter(nil), credentialTouches: newCredentialTouchLimiter(nil), kubernetesEnrollmentVerifiers: cfg.KubernetesEnrollmentVerifiers, storeCredentialClusters: cfg.StoreCredentialClusters, storeCredentialS3: cfg.StoreCredentialS3}
 	if cfg.WebDir == "" && cfg.UIProxyTarget != "" {
 		if target, err := url.Parse(cfg.UIProxyTarget); err == nil {
 			s.uiProxy = &httputil.ReverseProxy{
@@ -506,6 +526,18 @@ func (s *Server) routes() {
 		r.With(s.agentOrServerAuth).Get("/{name}", s.handleArtifactDownload)
 		r.With(s.agentOrServerAuth).Get("/", s.handleArtifactList)
 	})
+
+	// store-credentials is deliberately OUTSIDE ServerAuth/agentAuth/the
+	// /api/v1/agents group above, for the same reason /enroll is: the
+	// projected ServiceAccount token IN THE REQUEST BODY is the credential,
+	// checked by handleStoreCredentials itself via a TokenReview. Neither an
+	// agent bearer token nor a human session cookie is an appropriate gate
+	// here — a job Pod's sidecar has neither. Applying agentOrServerAuth (or
+	// any of this file's other middleware) would require the sidecar to
+	// already hold one of THOSE credentials before it could ask for this
+	// one, which defeats the point: this endpoint exists so a Pod that holds
+	// nothing but its own projected token can still get store credentials.
+	s.r.Post("/api/v1/store-credentials", s.handleStoreCredentials)
 
 	s.registerAgentIdentityRoutes()
 

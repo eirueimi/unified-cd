@@ -501,3 +501,71 @@ type AppSourceMeta struct {
 	SyncPolicy       *AppSourceSyncPolicy `json:"syncPolicy,omitempty"`
 	ManagedResources []ResourceRef        `json:"managedResources,omitempty"`
 }
+
+// ---- store credential broker (kubernetes sidecar) ----
+
+// KubernetesStoreCredentialAudience is the projected ServiceAccount token
+// audience a job Pod's sidecar presents to fetch object-store credentials
+// from the controller (see docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
+// §5.6).
+//
+// This lives in internal/api, not internal/controller (where the sibling
+// KubernetesEnrollmentAudience lives), because — unlike enrollment, whose
+// audience only ever appears on the controller side of a TokenReview, with
+// the agent's own token volume declared in static YAML
+// (manifests/base/k8s-agent/deployment.yaml) — this audience is minted at
+// runtime by Go code on BOTH sides: internal/k8sagent's podbuilder.go writes
+// it into a projected volume it constructs per job Pod, and
+// internal/controller verifies it in a TokenReview. Both packages already
+// import internal/api (k8sagent for AgentEnrollRequest/AgentTokenResponse),
+// so this is the shared home with no new layering, rather than either side
+// depending on the other.
+//
+// Deliberately a different literal from KubernetesEnrollmentAudience: if a
+// job Pod's token were accepted for enrollment, any job could register
+// itself as an agent, and if an agent's enrollment token were accepted here,
+// any enrolled agent's own bootstrap credential (not the per-job broker
+// token) would buy store credentials too. See kubernetes_token_test.go and
+// api_store_credentials_test.go for the tests asserting the separation in
+// both directions.
+const KubernetesStoreCredentialAudience = "unified-cd-store-credentials"
+
+// StoreCredentialsRequest is presented by the unified-artifact sidecar to
+// exchange its projected ServiceAccount token for object-store credentials.
+type StoreCredentialsRequest struct {
+	Token string `json:"token"`
+
+	// RunID names the run the requesting Pod is executing. It is accepted
+	// but NOT enforced today: the controller returns its own credential
+	// unscoped (see the handler's passthrough comment), so every caller
+	// receives the identical value regardless of RunID, and binding the
+	// request to a specific run would buy no isolation yet. It becomes
+	// necessary once the controller can mint a credential scoped to a run's
+	// object-store prefix — at that point the agent must tell the
+	// controller which Pod runs which run, and this field is already the
+	// place that value travels. Accepting it now, unused, means that future
+	// change is a change of what the controller DOES with the field, not a
+	// wire-format change every already-deployed sidecar would need to catch
+	// up to.
+	RunID string `json:"runId,omitempty"`
+}
+
+// StoreCredentialsResponse carries what the sidecar needs to build a client.
+//
+// ExpiresAt is present even when the credential is static and does not
+// expire — it is the zero Time then. The field exists now so that a future
+// scoped or STS-minted credential is a change of what the controller
+// returns rather than a change of shape, and the sidecar's refresh logic
+// (internal/objectstore's credentials.Provider seam, §5.5) does not have to
+// be added later: a provider that reads ExpiresAt already knows how to
+// refresh, it is only ever given a zero value today.
+type StoreCredentialsResponse struct {
+	Endpoint  string    `json:"endpoint"`
+	Bucket    string    `json:"bucket"`
+	Region    string    `json:"region,omitempty"`
+	UseSSL    bool      `json:"useSsl"`
+	AccessKey string    `json:"accessKey"`
+	SecretKey string    `json:"secretKey"`
+	Token     string    `json:"sessionToken,omitempty"`
+	ExpiresAt time.Time `json:"expiresAt,omitempty"`
+}

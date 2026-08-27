@@ -538,6 +538,11 @@ constraint.
 
 ### S3 credentials (required)
 
+This section describes the default (`sidecarS3SecretMode: env`, and `file`,
+its rotation-capable sibling). A third mode, `broker`, needs **no Secret at
+all** — see "`sidecarS3SecretMode: broker`" below if you would rather not
+manage one.
+
 The operator must create a Kubernetes `Secret` **in the namespace the agent's `namespace:` config field points at** — the namespace job Pods are created in, which in the shipped manifests is `ci`, **not** the `unified-cd` namespace the agent Deployment itself runs in.
 
 This distinction is the single most common way this setup fails. The sidecar is a container inside the job Pod, and the agent attaches the Secret to it with a `LocalObjectReference` (`envFrom.secretRef`), which has **no namespace field** — Kubernetes always resolves it in the Pod's own namespace. A Secret sitting in the agent's namespace is invisible to it.
@@ -605,11 +610,80 @@ The volume is mounted `optional: true` and `defaultMode: 0400`, mirroring how th
 
 `env` remains the default: existing deployments that never set `sidecarS3SecretMode` see no change in behaviour.
 
+### `sidecarS3SecretMode: broker` — no operator-created Secret at all
+
+`env` and `file` both still require the operator to create an S3 Secret in
+every job namespace, keep it in step with the controller's own credentials,
+and — the trap §3 of the design spec below is written about — get it into
+the **job Pod's** namespace, not the agent's. `broker` removes that Secret
+entirely:
+
+```yaml
+# k8s-agent-config.yaml
+namespace: ci
+sidecarS3SecretMode: broker   # default: env — no sidecarS3SecretName needed
+```
+
+(Env override: `UNIFIED_K8S_SIDECAR_S3_SECRET_MODE=broker`.)
+
+In this mode the agent adds a **projected ServiceAccount token volume** to
+the job Pod — a Kubernetes primitive the kubelet mints directly from the
+Pod spec, needing no RBAC beyond what writing that Pod spec already
+requires — mounted into the sidecar container only, with its own audience
+(`unified-cd-store-credentials`, distinct from the agent's own enrollment
+audience). The sidecar presents that token to the controller's
+`POST /api/v1/store-credentials`, which verifies it with a `TokenReview`
+(the same mechanism used for Kubernetes agent enrollment, against a
+different audience so neither kind of token can be used as the other) and,
+if the Pod's namespace and ServiceAccount are on the controller's
+`agentAuth.kubernetesStoreCredentialPolicies` allowlist for that cluster,
+returns object-store credentials.
+
+**What this does and does not change:**
+
+- **No Secret in any job namespace.** The operator's per-namespace Secret,
+  and the trap of creating it in the wrong one, both disappear.
+- **No new agent RBAC.** The agent adds a volume to a Pod spec it already
+  writes; it still never touches a Secret and still cannot read or write
+  one.
+- **The credential returned today is the controller's own, passed through
+  unscoped — not per-run, not short-lived.** Every Pod authorized by the
+  allowlist gets the identical credential the controller itself uses, for
+  as long as the controller's own credential is valid. This is a real,
+  deliberate limitation, not an oversight: scoping the credential to a run's
+  object-store prefix needs STS support (`AssumeRoleWithWebIdentity`) that
+  is not available on every store this project supports — notably Garage,
+  which the bundled evaluation manifests use, and whose support for it is
+  unconfirmed. Passthrough works everywhere. The response shape already
+  carries an expiry and a session token, so a future scoped or short-lived
+  credential is a change of what the controller returns, not a wire-format
+  change every sidecar has to catch up to — but that work has not landed
+  yet. Do not treat `broker` mode as least-privilege per run: today it is
+  the same bucket-wide blast radius as `env`/`file`, delivered without a
+  Secret.
+- **The data path is unchanged.** Artifact and cache bytes still go
+  straight from the sidecar to the object store; only the one-time
+  credential fetch at the start of a transfer passes through the
+  controller.
+
+The controller needs `agentAuth.kubernetesStoreCredentialPolicies` configured
+for the same cluster the k8s-agent enrolls against, naming the job Pod's
+namespace(s) and ServiceAccount(s) — a separate list from
+`kubernetesEnrollmentPolicies`, because the two authorize different
+identities: the agent's own (e.g. `unified-cd`/`unified-cd-k8s-agent`) versus
+the job Pod's (e.g. `ci`/whatever ServiceAccount runs your jobs, `default`
+if none is set). See `manifests/install/controller-config-patch.yaml` for a
+worked example — the bundled `install.yaml` evaluation manifests use this
+mode by default (`core-install.yaml` still defaults to `env`).
+
+See `docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md`
+§5.6 for the full design and the reasoning behind passthrough-only for now.
+
 ### Security note / threat model
 
-Bucket-scoped S3 credentials are mounted into the **sidecar container's** environment only, via the Kubernetes Secret's `envFrom` — the job container never sees them (container-boundary isolation, the same trust boundary Argo Workflows and Tekton use for their artifact sidecars/init-containers). The credentials are long-lived, bucket-scoped static keys, not per-run or per-pod scoped; any workload able to exec into the `unified-artifact` container (or read the Secret directly, if RBAC allows `get`/`list` on Secrets in the namespace) can read/write the whole bucket for as long as the Secret is valid.
+Bucket-scoped S3 credentials reach the sidecar one of three ways (`env`, `file`, or `broker`; see above), but in every mode they land in the **sidecar container's** environment or a mount only — the job container never sees them (container-boundary isolation, the same trust boundary Argo Workflows and Tekton use for their artifact sidecars/init-containers). Under all three modes the credential is today the SAME long-lived, bucket-scoped one: any workload able to exec into the `unified-artifact` container (or, under `env`/`file`, read the Secret directly if RBAC allows `get`/`list` on Secrets in the namespace) can read/write the whole bucket for as long as that credential is valid.
 
-This is comparable to how most CI systems hand artifact/cache sidecars static bucket credentials, but it is **not** least-privilege per run. A planned hardening is to move to short-lived, per-pod credentials via IAM Roles for Service Accounts (IRSA) on EKS or an equivalent Workload Identity / STS-assumed-role mechanism on other clouds, so the sidecar authenticates via a projected service-account token instead of a static Secret. Until then, restrict RBAC `get`/`list`/`watch` on Secrets and `pods/exec` in the agent's namespace to trusted operators.
+This is comparable to how most CI systems hand artifact/cache sidecars static bucket credentials, but it is **not** least-privilege per run, under any of the three modes. `broker` (§5.6 above) removes the per-namespace Secret and is the mechanism a future short-lived or per-pod-scoped credential would be built on — bare-metal, EKS and GKE alike, unlike IAM Roles for Service Accounts (IRSA, EKS-only) or Workload Identity (GKE-only) — but it does not deliver that scoping today; see the `broker` section above for exactly what it does and does not change. Until a scoped credential ships, restrict RBAC `get`/`list`/`watch` on Secrets and `pods/exec` in the agent's namespace to trusted operators under `env`/`file`, and restrict `agentAuth.kubernetesStoreCredentialPolicies` to only the namespaces/ServiceAccounts that actually run jobs under `broker`.
 
 ---
 

@@ -305,12 +305,12 @@ func (c *Config) Validate() error {
 	if c.SidecarS3SecretMode == "" {
 		c.SidecarS3SecretMode = SidecarS3SecretModeEnv
 	}
-	if c.SidecarS3SecretMode != SidecarS3SecretModeEnv && c.SidecarS3SecretMode != SidecarS3SecretModeFile {
+	if c.SidecarS3SecretMode != SidecarS3SecretModeEnv && c.SidecarS3SecretMode != SidecarS3SecretModeFile && c.SidecarS3SecretMode != SidecarS3SecretModeBroker {
 		// An unrecognised value must fail at startup, not silently fall back
 		// to "env" — a typo that goes unnoticed here would look identical to
-		// "file" mode simply not doing anything, which is a much harder bug
-		// to track down than a refused start.
-		return fmt.Errorf("sidecarS3SecretMode %q: must be %q or %q", c.SidecarS3SecretMode, SidecarS3SecretModeEnv, SidecarS3SecretModeFile)
+		// "file"/"broker" mode simply not doing anything, which is a much
+		// harder bug to track down than a refused start.
+		return fmt.Errorf("sidecarS3SecretMode %q: must be %q, %q, or %q", c.SidecarS3SecretMode, SidecarS3SecretModeEnv, SidecarS3SecretModeFile, SidecarS3SecretModeBroker)
 	}
 	// maxConcurrent: 0/unset -> default 100; negative -> unlimited (preserved
 	// as a sentinel; the run loop skips its semaphore); positive -> that bound.

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
@@ -404,6 +405,100 @@ func TestBuildPod_SidecarSecretVolumeIsOptional(t *testing.T) {
 	assert.True(t, *vol.Secret.Optional)
 	require.NotNil(t, vol.Secret.DefaultMode)
 	assert.Equal(t, int32(0o400), *vol.Secret.DefaultMode)
+}
+
+// The token is mounted into the sidecar container ONLY. The job container
+// runs user code; a store credential reachable from it defeats the container
+// boundary that protects today's Secret.
+func TestBuildPod_BrokerTokenIsSidecarOnly(t *testing.T) {
+	jobTmpl := &dsl.PodTemplate{Spec: map[string]any{
+		"containers": []any{
+			map[string]any{"name": "job", "image": "golang:1.24-alpine"},
+		},
+	}}
+	pod, err := BuildPod("run1", "ns", nil, jobTmpl, "job-image:latest",
+		SidecarSpec{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage)
+	require.NoError(t, err)
+
+	sc := findContainer(pod, artifactSidecarName)
+	require.NotNil(t, sc, "pod must include the artifact sidecar")
+	job := findContainer(pod, "job")
+	require.NotNil(t, job)
+
+	var mount *corev1.VolumeMount
+	for i := range sc.VolumeMounts {
+		if sc.VolumeMounts[i].Name == sidecarBrokerTokenVolumeName {
+			mount = &sc.VolumeMounts[i]
+		}
+	}
+	require.NotNil(t, mount, "the sidecar container must mount the broker token volume")
+	assert.True(t, mount.ReadOnly, "the broker token mount must be read-only")
+
+	for _, m := range job.VolumeMounts {
+		assert.NotEqual(t, sidecarBrokerTokenVolumeName, m.Name, "the job container must never mount the broker token volume")
+	}
+
+	var brokerURLEnv, tokenFileEnv *corev1.EnvVar
+	for i := range sc.Env {
+		switch sc.Env[i].Name {
+		case "UNIFIED_S3_BROKER_URL":
+			brokerURLEnv = &sc.Env[i]
+		case "UNIFIED_S3_BROKER_TOKEN_FILE":
+			tokenFileEnv = &sc.Env[i]
+		}
+	}
+	require.NotNil(t, brokerURLEnv, "the sidecar must be told the controller URL")
+	assert.Equal(t, "https://controller.example", brokerURLEnv.Value)
+	require.NotNil(t, tokenFileEnv, "the sidecar must be told where the token was mounted")
+	assert.Equal(t, mount.MountPath+"/"+sidecarBrokerTokenFile, tokenFileEnv.Value)
+	for _, ev := range job.Env {
+		assert.NotEqual(t, "UNIFIED_S3_BROKER_URL", ev.Name, "the job container must never see the broker URL")
+		assert.NotEqual(t, "UNIFIED_S3_BROKER_TOKEN_FILE", ev.Name, "the job container must never see the broker token path")
+	}
+}
+
+// The audience on the projected volume must be the store-credential one. A
+// volume minted with the enrollment audience would hand every job a token
+// that can register an agent.
+func TestBuildPod_BrokerTokenUsesTheStoreAudience(t *testing.T) {
+	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
+		SidecarSpec{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage)
+	require.NoError(t, err)
+
+	var vol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == sidecarBrokerTokenVolumeName {
+			vol = &pod.Spec.Volumes[i]
+		}
+	}
+	require.NotNil(t, vol, "pod must declare the broker token volume")
+	require.NotNil(t, vol.Projected, "the broker token volume must be a projected source")
+	require.Len(t, vol.Projected.Sources, 1)
+	sat := vol.Projected.Sources[0].ServiceAccountToken
+	require.NotNil(t, sat, "the projected source must be a ServiceAccountToken")
+	assert.Equal(t, api.KubernetesStoreCredentialAudience, sat.Audience)
+	assert.NotEqual(t, "unified-cd-agent-enrollment", sat.Audience, "must never reuse the enrollment audience — that would let any job Pod's token enroll an agent")
+	require.NotNil(t, sat.ExpirationSeconds)
+}
+
+// Default off: an existing deployment's Pod spec is byte-identical.
+func TestBuildPod_BrokerTokenAbsentByDefault(t *testing.T) {
+	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
+		SidecarSpec{Image: "sidecar:latest"}, testShimImage)
+	require.NoError(t, err)
+
+	sc := findContainer(pod, artifactSidecarName)
+	require.NotNil(t, sc)
+	for _, m := range sc.VolumeMounts {
+		assert.NotEqual(t, sidecarBrokerTokenVolumeName, m.Name, "default mode must not mount a broker token volume")
+	}
+	for _, v := range pod.Spec.Volumes {
+		assert.NotEqual(t, sidecarBrokerTokenVolumeName, v.Name, "default mode must not add a broker token volume to the pod at all")
+	}
+	for _, ev := range sc.Env {
+		assert.NotEqual(t, "UNIFIED_S3_BROKER_URL", ev.Name)
+		assert.NotEqual(t, "UNIFIED_S3_BROKER_TOKEN_FILE", ev.Name)
+	}
 }
 
 // TestInjectKeepAlive_OnlyJobContainerKeptAlive is the k8s-side regression
