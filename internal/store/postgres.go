@@ -1109,10 +1109,11 @@ func (p *Postgres) AppendLog(ctx context.Context, runID string, stepIndex int, s
 // ListenForNotify's every direct caller expects, and still exercised by
 // postgres_pool_test.go's listen-pool isolation check) and the new global
 // LogAppendedChannel a controller replica's shared listener (internal/
-// controller's runLogNotifyListener) actually LISTENs on. Two Exec calls
-// instead of one, on every append, forever, is not free — but it is the
-// only thing that makes this deployable as a plain rolling upgrade rather
-// than a flag-day cutover.
+// controller's runLogNotifyListener) actually LISTENs on. Both pg_notify
+// calls ride in ONE Exec/round trip (a single SELECT selecting both), not
+// two — this runs on AppendLog's and AppendLogs' hot path, and the whole
+// point of this change is to stop paying a per-viewer tax here, not to
+// replace it with a second per-append round trip forever.
 //
 // Why BOTH, and why not just for a transition window: NOTIFY/LISTEN is
 // pure Postgres server state, shared by every controller replica against
@@ -1149,8 +1150,8 @@ func (p *Postgres) AppendLog(ctx context.Context, runID string, stepIndex int, s
 // treating any wake-up as "go check"), so the global channel's payload
 // only needs to answer "which run", not "which seq".
 func (p *Postgres) notifyLogAppended(ctx context.Context, runID string, seq int64) {
-	_, _ = p.pool.Exec(ctx, "SELECT pg_notify($1, $2)", "log_appended:"+runID, fmt.Sprintf("%d", seq))
-	_, _ = p.pool.Exec(ctx, "SELECT pg_notify($1, $2)", LogAppendedChannel, runID)
+	_, _ = p.pool.Exec(ctx, "SELECT pg_notify($1, $2), pg_notify($3, $4)",
+		"log_appended:"+runID, fmt.Sprintf("%d", seq), LogAppendedChannel, runID)
 }
 
 // AppendLogs stores many log lines with a constant number of round trips per
