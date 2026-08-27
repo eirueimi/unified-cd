@@ -83,13 +83,77 @@ func resolveParams(inputs []dsl.Input, supplied map[string]string) (map[string]s
 		}
 	}
 
+	// A param declared with `choices:` must have its resolved value be one of
+	// the listed choices. dsl.parse already guarantees (by the time an Input
+	// reaches here) that Choices, if non-empty, only appears on a string/int
+	// input, is never combined with Pattern, has no duplicates, and that
+	// Default (if set) is itself a member — so this loop only ever has to
+	// reject a value the CALLER supplied.
+	//
+	// Unlike the Pattern loop above, an explicitly empty resolved value ("")
+	// is skipped here even though it IS present in the map (ok == true). This
+	// is deliberate and choices-specific: the Web UI's <select> naturally
+	// represents "no selection" as an empty string, and this package already
+	// treats an empty string as "unset" for defaulting purposes (see this
+	// function's doc comment, and TestResolveParams_ExplicitEmptyValue_NoDefault_KeptEmpty
+	// in params_test.go — an optional param with no default and an explicit
+	// "" is kept as "" without error). If Choices behaved like Pattern here,
+	// that same optional/no-default/unselected case would be rejected as "not
+	// an allowed value", which is wrong: the param is genuinely unset, not
+	// invalid. (A `required: true` choices param with no value never reaches
+	// this loop with an empty string in the first place — the missing-required
+	// check above already turned it into an error, or a default already filled
+	// it in.) The Pattern loop's own behavior is intentionally left alone: a
+	// pattern is a syntax constraint an empty string can still violate, and
+	// changing that here would be an unrelated, wider behavior change.
+	for _, in := range inputs {
+		if len(in.Choices) == 0 {
+			continue
+		}
+		value, ok := resolved[in.Name]
+		if !ok || value == "" {
+			continue
+		}
+		allowed := false
+		for _, c := range in.Choices {
+			if value == c {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			// Do not echo the rejected value, for the same reason as the
+			// Pattern check above: it may carry an injection payload into
+			// operator-read logs. Naming the ALLOWED values (not the rejected
+			// one) is the whole point of choices: it tells the caller what IS
+			// valid without repeating back anything attacker-controlled.
+			return nil, fmt.Errorf("param %q must be one of: %s", in.Name, strings.Join(in.Choices, ", "))
+		}
+	}
+
 	return resolved, nil
 }
 
 // validateWebhookPayloadMappedParams enforces that every webhook paramsMapping
 // entry that evaluates as a Go template — i.e. contains a "{{" action — is
-// declared by the TARGET JOB's params.inputs with either a pattern: or an
-// explicit unvalidated: true opt-out.
+// declared by the TARGET JOB's params.inputs with a pattern:, a choices:
+// allow-list, or an explicit unvalidated: true opt-out.
+//
+// choices: satisfies this gate on its own, with no pattern: required,
+// because it is strictly stronger than any pattern: regex: a regex only
+// shapes the SYNTAX of a value (which characters may appear, in which
+// order), while choices enumerates the value's exact allowed MEMBERS. A
+// pattern can be satisfied by infinitely many strings — including, if the
+// author is not careful, ones that still carry shell metacharacters a
+// slightly-too-permissive regex let through. A choices: value, by contrast,
+// can only ever be one of a small, fixed, author-chosen set of literal
+// strings; there is no way for an attacker-controlled webhook payload to
+// smuggle an injection payload through it, because whichever member it
+// picks IS the entire value — there is no room for it to also carry
+// anything else. So choices: gives the exact same guarantee this gate
+// exists to enforce ("the resolved value can't carry an injection payload
+// into a step's shell text"), by a strictly tighter mechanism than pattern:
+// already provides.
 //
 // Why here, and why not at receiver-parse time: a valid HMAC/token signature
 // on a webhook only proves who sent the request, not that its content is
@@ -148,11 +212,11 @@ func validateWebhookPayloadMappedParams(receiverName string, mapping map[string]
 			continue
 		}
 		in, declared := byName[param]
-		if declared && (in.Pattern != "" || in.Unvalidated) {
+		if declared && (in.Pattern != "" || in.Unvalidated || len(in.Choices) > 0) {
 			continue
 		}
 		return fmt.Errorf(
-			"webhook receiver %q: param %q is mapped from the request payload but job %q declares no pattern for it (add pattern: to the input, or unvalidated: true to accept it explicitly)",
+			"webhook receiver %q: param %q is mapped from the request payload but job %q declares no pattern for it (add pattern: to the input, choices: to restrict it to a fixed set of values, or unvalidated: true to accept it explicitly)",
 			receiverName, param, jobName)
 	}
 	return nil

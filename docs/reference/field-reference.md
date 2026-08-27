@@ -332,6 +332,7 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `choices` | []string | no | Fixed allow-list of values for this input (string or int type only), rendered by the Web UI as a <select>. Mutually exclusive with pattern:. If set, default: must be one of these choices. |
 | `default` | any | no |  |
 | `description` | string | no |  |
 | `name` | string | yes |  |
@@ -664,6 +665,7 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `choices` | []string | no | Fixed allow-list of values for this input (string or int type only), rendered by the Web UI as a <select>. Mutually exclusive with pattern:. If set, default: must be one of these choices. |
 | `default` | any | no |  |
 | `description` | string | no |  |
 | `name` | string | yes |  |

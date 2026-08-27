@@ -96,7 +96,18 @@
           {#if inp.description}<div class="form-hint">
               {inp.description}
             </div>{/if}
-          {#if inp.type === "string"}
+          {#if inp.choices?.length}
+            <select
+              class="token-input"
+              style="width:100%"
+              bind:value={formParams[inp.name]}
+            >
+              <option value="">-- select --</option>
+              {#each inp.choices as choice}
+                <option value={choice}>{choice}</option>
+              {/each}
+            </select>
+          {:else if inp.type === "string"}
             <input
               type="text"
               class="token-input"

@@ -94,6 +94,42 @@ type Input struct {
 	// payload-mapped params. Use only when the value is genuinely free-form and
 	// never reaches a shell.
 	Unvalidated bool `yaml:"unvalidated,omitempty"`
+	// Choices is a Jenkins-style fixed dropdown of allowed values: instead of a
+	// free-text box that gives the user no idea what's valid, the Web UI can
+	// render a <select> populated from this list. It is a strict allow-list —
+	// strictly stronger than any pattern: regex could enforce, since a regex can
+	// only shape the value's syntax, not enumerate its exact members — so
+	// choices alone (with no pattern:) satisfies the same webhook
+	// payload-mapping security gate that otherwise requires pattern: or
+	// unvalidated: true (see validateWebhookPayloadMappedParams in
+	// internal/controller/params.go): an attacker-controlled value constrained
+	// to a fixed set of author-chosen strings can't carry an injection payload
+	// regardless of which member it picks.
+	//
+	// Only string and int inputs may declare choices. bool is rejected: a bool
+	// already has exactly two values, so a choice list on it is meaningless.
+	// array is rejected: array already means multi-value, and it's ambiguous
+	// whether choices would constrain each element or the array as a whole —
+	// that's a materially different (multi-select) feature the UI cannot render
+	// as today's plain <select>, so it's rejected clearly at parse time rather
+	// than silently accepted with unclear semantics.
+	//
+	// choices and pattern are mutually exclusive: choices is already strictly
+	// stronger than any regex, so there is no pair of the two that can't
+	// contradict each other while also being more precise than choices alone —
+	// combining them is never meaningful.
+	//
+	// If default is set, it must be one of the listed choices. Unlike Pattern
+	// above (whose "defaults are checked too" claim only actually holds at
+	// RUN-TIME, in resolveParams), this is enforced at PARSE time here — a
+	// stricter, earlier guarantee that a bad default can never reach a run.
+	//
+	// The trailing LINE comment, not this doc comment, is what reaches the
+	// published field reference (see extractFields in cmd/schemagen, and the
+	// identical note on Spec.Vars above) — a multi-paragraph doc comment like
+	// this one puts blank lines in the middle of the generated markdown table
+	// and breaks every row after it.
+	Choices []string `yaml:"choices,omitempty"` // Fixed allow-list of values for this input (string or int type only), rendered by the Web UI as a <select>. Mutually exclusive with pattern:. If set, default: must be one of these choices.
 }
 
 type Output struct {

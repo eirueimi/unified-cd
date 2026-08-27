@@ -13,11 +13,12 @@ type ApplyJobRequest struct {
 
 // InputDef represents an input parameter definition for a job.
 type InputDef struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"` // "string" | "bool" | "int"
-	Required    bool   `json:"required,omitempty"`
-	Default     any    `json:"default,omitempty"`
-	Description string `json:"description,omitempty"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type"` // "string" | "bool" | "int"
+	Required    bool     `json:"required,omitempty"`
+	Default     any      `json:"default,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Choices     []string `json:"choices,omitempty"`
 }
 
 type Job struct {
