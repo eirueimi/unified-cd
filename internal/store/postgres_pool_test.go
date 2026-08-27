@@ -76,6 +76,45 @@ func TestPostgresClose_ClosesEveryOwnedPool(t *testing.T) {
 	require.Error(t, pg.listenPool.Ping(t.Context()))
 }
 
+func TestListenForNotify_PoolExhausted_ReturnsSentinelInsteadOfBlocking(t *testing.T) {
+	pg := newIsolatedPoolTestPostgres(t) // ListenMaxConns: 1
+
+	// Saturate the listen pool's single connection with a long-lived listen.
+	holderCtx, cancelHolder := context.WithCancel(t.Context())
+	t.Cleanup(cancelHolder)
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- pg.ListenForNotify(holderCtx, "listen_pool_exhaustion_holder", func(string) {})
+	}()
+	require.Eventually(t, func() bool {
+		return pg.listenPool.Stat().AcquiredConns() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	// The pool has zero free connections now. A second ListenForNotify call
+	// must not block for the caller's ctx lifetime — it must return
+	// ErrListenPoolExhausted on its own, within listenAcquireTimeout. Give
+	// the call a ctx that outlives listenAcquireTimeout by a wide margin (so
+	// a regression to the OLD "block on ctx alone" behavior would return
+	// early for the wrong reason if ctx were the thing bounding it) and
+	// separately bound the TEST itself with a select/timeout, so a
+	// regression makes this test fail fast instead of hanging the suite
+	// forever.
+	callerCtx, cancelCaller := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancelCaller()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- pg.ListenForNotify(callerCtx, "listen_pool_exhaustion_probe", func(string) {})
+	}()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, ErrListenPoolExhausted)
+	case <-time.After(listenAcquireTimeout + 5*time.Second):
+		t.Fatal("ListenForNotify blocked past listenAcquireTimeout+slack instead of returning ErrListenPoolExhausted")
+	}
+}
+
 func newIsolatedPoolTestPostgres(t *testing.T) *Postgres {
 	t.Helper()
 

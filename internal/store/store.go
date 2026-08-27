@@ -433,7 +433,8 @@ type Store interface {
 	ListExpiredRuns(ctx context.Context, cutoff time.Time, limit int, excluded []string) ([]string, error)
 
 	// ListenForNotify subscribes to a Postgres channel and calls the callback for each notification.
-	// Blocks until ctx is cancelled.
+	// Blocks until ctx is cancelled, or returns ErrListenPoolExhausted if no listen-pool connection
+	// becomes available within the internal acquire timeout.
 	ListenForNotify(ctx context.Context, channel string, callback func(payload string)) error
 
 	// PAT

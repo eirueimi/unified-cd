@@ -3,22 +3,28 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/eirueimi/unified-cd/internal/store"
 	"github.com/go-chi/chi/v5"
 )
 
 type sseEvent struct {
-	Type      string `json:"type"` // "log", "status", or "truncated"
+	Type      string `json:"type"` // "log", "status", "truncated", or "error"
 	Seq       int64  `json:"seq,omitempty"`
 	StepIndex int    `json:"stepIndex"` // must not use omitempty: index 0 (first step) is a valid value
 	Stream    string `json:"stream,omitempty"`
 	Line      string `json:"line,omitempty"`
 	Timestamp string `json:"timestamp,omitempty"`
 	Status    string `json:"status,omitempty"`
+	// Message carries operator/user-facing text for Type "error" — currently
+	// the only event type that needs free text rather than a fixed enum
+	// field like Status.
+	Message string `json:"message,omitempty"`
 }
 
 // sseBackfillLimit bounds how many existing log lines are replayed when a client
@@ -127,7 +133,7 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	// after the HTTP request context is cancelled (client disconnect) — this prevents
 	// cancelled-context errors from being silently swallowed inside the callback.
 	channel := "log_appended:" + id
-	_ = s.store.ListenForNotify(r.Context(), channel, func(payload string) {
+	err = s.store.ListenForNotify(r.Context(), channel, func(payload string) {
 		dbCtx := context.Background()
 		// Redrain immediately whenever a pass comes back full: a batch may
 		// have carried more lines for this run than one drain returns, and
@@ -169,6 +175,22 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	})
+	if errors.Is(err, store.ErrListenPoolExhausted) {
+		// A real 503 is not available here: every path into this branch has
+		// already gone through the unconditional flusher.Flush() above
+		// (right after the backfill-replay loop, whether or not there was
+		// anything to backfill) — response headers and the 200 status are
+		// always already on the wire by the time ListenForNotify can return
+		// this error. Checked, not assumed: there is no path from handler
+		// entry to here that skips that Flush(). The next best thing:
+		// surface the failure over the stream itself (an "error" event —
+		// existing frontends already ignore unrecognised SSE types safely)
+		// and close, plus a slog line an operator can act on.
+		slog.Error("SSE stream: listen pool exhausted, closing without live updates",
+			"runId", id, "channel", channel, "error", err)
+		writeSSE(w, sseEvent{Type: "error", Message: "log stream unavailable: connection pool exhausted, please retry"})
+		flusher.Flush()
+	}
 }
 
 func isTerminalStatus(status string) bool {
