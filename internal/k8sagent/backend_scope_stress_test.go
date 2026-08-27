@@ -193,6 +193,18 @@ func TestK8sBackend_EnsureScope_StressInterestAndAbandonment(t *testing.T) {
 // arbitrators can both believe they own a Pod) reliably fails this test's
 // final assertion with duplicate names in deleted; restoring claimEntry
 // makes it pass again.
+//
+// This test also caught the narrow, then-still-open leak CI hit on main (a
+// "created 43, deleted 42" failure): CloseScopes' sweep used to
+// skip an entry outright if it was still mid-install (no name yet), leaving
+// it owned by nobody if that attempt went on to succeed anyway despite
+// b.scopeCancel already having fired. CloseScopes now evicts such an entry
+// from b.scopes instead of skipping it, which is enough to route that case
+// through the SAME !stillCurrent self-delete branch the newcomer-replaces-
+// an-abandoned-entry case already used — see CloseScopes' doc comment. This
+// test is what continues to hold that closed: it is the only one that
+// actually lands CloseScopes concurrently with a mid-install (not-yet-named)
+// attempt under real timing, rather than a choreographed one.
 func TestK8sBackend_EnsureScope_StressCloseScopesRacesInFlightAttempts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test; skipped under -short")
