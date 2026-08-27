@@ -41,10 +41,13 @@ DAG, once for `finally:`. **Anything implemented or validated only on the main
 path is accepted by the parser and silently ignored in `finally:`** — no step
 status, no run status, no log line.
 
-*What broke:* an audit found five separate features that did nothing in
-`finally:` — a hook drain, `retry:` degrading to one attempt on a cancelled
-run, a failing step reporting `Cancelled` instead of `Failed`, outputs never
-promoted to run outputs, and the phase having no time ceiling at all.
+*What broke:* a `finally:` step's `post:`/`cache:` hooks silently never
+drained — fixed first, on its own. The audit that followed, looking for more
+of the same class of bug, found four more separate features that did nothing
+in `finally:`: `retry:` degrading to one attempt on a cancelled run, a
+failing step reporting `Cancelled` instead of `Failed`, outputs never
+promoted to run outputs, and the phase having no time ceiling at all. Five
+instances of the same failure mode in total.
 
 **When you add a step-level feature, check it on both paths.**
 
@@ -178,8 +181,10 @@ registration. But a private registry starts **empty**.
 *What broke:* the Go and process collectors are auto-registered only on the
 default registry. Choosing a private one silently cost every `go_*` and
 `process_*` series, so a goroutine leak, a memory climb toward an OOMKill, and
-GC pressure behind a latency regression were all invisible. `NewForController`
-now registers them explicitly.
+GC pressure behind a latency regression were all invisible. `metrics.New()`
+now registers them explicitly on the private registry — every constructor,
+including `NewForController`, goes through it, so there is nowhere else to
+forget them.
 
 ### A pass-level "success" can hide every item failing
 
@@ -196,7 +201,7 @@ that distinguishes "nothing to archive" from "nothing archivable".
 
 ## Structure and generation
 
-### Hand-maintained lists drift — nine times so far
+### Hand-maintained lists drift — eight times so far
 
 The most repeated defect in this codebase: a list someone must remember to
 update, and a new field or kind that silently falls off it.

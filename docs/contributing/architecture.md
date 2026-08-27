@@ -69,16 +69,23 @@ a real value of `api.RunStatus` (`internal/api/types.go`).
 
 3. **Queued** — eligible for claiming. An agent polls; `ClaimNextRun` hands it
    the run atomically. Selection matches agent labels and capabilities. A run
-   no agent can claim is eventually failed by `RunQueuedRunReaper`, with a log
-   line saying why.
+   whose `agentSelector` no live agent's labels satisfy is eventually failed
+   by `RunQueuedRunReaper`, with a log line saying why. That check is
+   label-only by design: a run that is label-claimable but
+   capability-unschedulable (e.g. a native job when only a Kubernetes agent is
+   live) is deliberately left Queued rather than auto-failed, and surfaced
+   instead via the JobDetail unschedulable banner.
 
 4. **Running** — the agent executes the step DAG and streams logs back, while
    heartbeating. If it stops heartbeating, `RunStuckRunReaper` fails the
    orphaned run.
 
 5. **Terminal** — after the main DAG the agent runs the `finally:` pipeline,
-   drains `post:` and `cache:` hooks, and tears down scopes. Only then does it
-   report the final status.
+   drains `post:` and `cache:` hooks (once after the main steps, again after
+   `finally:`), and reports the final status. Scope teardown (`CloseScopes`)
+   is a deferred cleanup that runs after that report, not before it — it is
+   registered as the first `defer` in `RunClaim`, so it fires last, as
+   `RunClaim` itself returns.
 
 Afterwards, background workers archive the run's logs to the object store, trim
 the database rows, and eventually delete expired runs entirely.
@@ -193,9 +200,9 @@ wrong; regenerate instead.
 
 | Artifact | Generated from | Guard |
 |---|---|---|
-| `schemas/unified-cd.schema.json` | `internal/dsl` structs, via `cmd/schemagen` | `TestSchemaIsUpToDate` |
-| `docs/reference/field-reference.md` | the same, via `cmd/docgen` | the same run |
-| `internal/shim/embedded/ucd-sh-*` | `cmd/ucd-sh`, via `cmd/shimgen` | a source-hash check |
+| `schemas/unified-cd.schema.json` | `internal/dsl` structs, via `cmd/schemagen` | `TestSchemaIsUpToDate` regenerates it in memory and diffs against the committed file |
+| `docs/reference/field-reference.md` | the generated schema, via `cmd/docgen` | **none.** No test compares it against fresh `docgen` output; it only stays current if whoever changes the schema also reruns `go generate` and commits the result |
+| `internal/shim/embedded/ucd-sh-*` | `cmd/ucd-sh`, via `cmd/shimgen` | `TestShimSourceMatchesRecordedHash`, a source-hash check |
 | `web/dist` | the Svelte app | the build |
 
 Regenerate the schema and field reference with:
