@@ -51,3 +51,17 @@ func TestExpandRunDisplayName_ShortStringNotTruncated(t *testing.T) {
 	require.Equal(t, "deploy prod", got)
 	require.False(t, strings.HasSuffix(got, "…"))
 }
+
+func TestExpandRunDisplayName_ExactlyAtCapNotTruncated(t *testing.T) {
+	exact := strings.Repeat("x", maxDisplayNameLength)
+	got, err := expandRunDisplayName("{{ .Params.exact }}", map[string]string{"exact": exact})
+	require.NoError(t, err)
+	require.Equal(t, exact, got)
+	require.False(t, strings.HasSuffix(got, "…"))
+}
+
+func TestExpandRunDisplayName_AllWhitespaceExpansionIsNoDisplayName(t *testing.T) {
+	got, err := expandRunDisplayName("{{ .Params.a }} {{ .Params.b }}", map[string]string{})
+	require.NoError(t, err)
+	require.Equal(t, "", got)
+}

@@ -392,6 +392,24 @@ func TestCheckAndFireSchedules_PropagatesAgentSelector(t *testing.T) {
 		require.NotNil(t, m.updated["daily"])
 	})
 
+	t.Run("displayName is expanded with schedule params", func(t *testing.T) {
+		lastFired := testNow.Add(-25 * time.Hour)
+		jobSpec := []byte(`{"displayName":"deploy {{ .Params.env }}",` +
+			`"params":{"inputs":[{"name":"env","type":"string","default":"prod"}]},` +
+			`"steps":[{"name":"s","run":"echo hi"}]}`)
+		m := &mockScheduleFireStore{
+			schedules: []store.Schedule{
+				{Name: "daily", Cron: "0 10 * * *", JobName: "build", LastFiredAt: &lastFired},
+			},
+			jobs: map[string]*api.Job{
+				"build": {Name: "build", Spec: jobSpec},
+			},
+		}
+		checkAndFireSchedules(context.Background(), m, testNow)
+
+		require.Equal(t, []string{"deploy prod"}, m.createdDisplayNames)
+	})
+
 	t.Run("templated selector is expanded with schedule params", func(t *testing.T) {
 		lastFired := testNow.Add(-25 * time.Hour)
 		jobSpec := []byte(`{"agentSelector":["pool:{{ .Params.pool }}"],` +

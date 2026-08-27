@@ -1149,16 +1149,16 @@
       </div>
     {/if}
     <div class="card grid-2" style="margin-bottom:1rem">
-      <div>
-        <div class="meta">Status</div>
-        <span class={statusBadge(run.status)}>{run.status}</span>
-      </div>
       {#if run.displayName}
         <div class="run-display-name" style="grid-column:1/-1">
           <div class="meta">Name</div>
           <div>{run.displayName}</div>
         </div>
       {/if}
+      <div>
+        <div class="meta">Status</div>
+        <span class={statusBadge(run.status)}>{run.status}</span>
+      </div>
       <div>
         <div class="meta">Triggered by</div>
         <div>{run.triggeredBy}</div>
