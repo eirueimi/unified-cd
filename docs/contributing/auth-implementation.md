@@ -78,8 +78,9 @@ An agent does not start with a credential; it proves an identity the platform
 already vouches for and receives one.
 
 On Kubernetes, that proof is a **projected ServiceAccount token**, which the
-controller validates with a `TokenReview` against the API server —
-`agent_enrollment_kubernetes.go`. The verification does five things, and every
+controller validates with a `TokenReview` against the API server, in the
+shared `VerifyProjectedToken` (`kubernetes_token.go`) called from
+`agent_enrollment_kubernetes.go`. The verification does six things, and every
 one is load-bearing:
 
 1. The review must report `Authenticated` **and** echo the expected audience —
@@ -88,10 +89,15 @@ one is load-bearing:
 3. The reviewed subject must match those claims.
 4. The ServiceAccount **UID** must match, so a token minted for a
    deleted-and-recreated ServiceAccount of the same name is rejected.
-5. The enrollment policy's namespace and ServiceAccount constraints apply.
+5. The Pod named in the claims is fetched live from the API server and
+   compared field-by-field (UID, namespace, name, ServiceAccount) against the
+   claims, so a token minted for a deleted-and-recreated **Pod** of the same
+   name is rejected too — the UID check above catches a recycled
+   ServiceAccount, this one catches a recycled Pod.
+6. The enrollment policy's namespace and ServiceAccount constraints apply.
 
-Items 1–4 are about the token and are shared with the store-credential broker;
-item 5 is enrollment policy and is not.
+Items 1–5 live in `VerifyProjectedToken` and are shared with the
+store-credential broker; item 6 is enrollment policy and is not.
 
 !!! danger "The audiences must stay different"
     Enrollment verifies audience `unified-cd-agent-enrollment`. The
