@@ -150,4 +150,5 @@ nav:
       - Contributing: contributing/index.md
       - Architecture: contributing/architecture.md
       - Invariants: contributing/invariants.md
+      - Background Workers: contributing/background-workers.md
       - Frontend Development: contributing/frontend-development.md
