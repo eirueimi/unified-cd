@@ -52,6 +52,37 @@ func DefaultPostgresPoolConfig() PostgresPoolConfig {
 	}
 }
 
+// listenAcquireTimeout bounds how long ListenForNotify waits to acquire a
+// listenPool connection, independently of the caller's context. Without this,
+// Acquire(ctx) blocks on ctx alone — and for the SSE handler, ctx lives as
+// long as the viewer's browser tab stays open. Past ListenMaxConns concurrent
+// viewers of the SAME run's SSE endpoint, the (N+1)th connects, gets a 200,
+// and then simply never receives another byte: nothing ever fails, so
+// nothing ever surfaces an error — the acquire just sits "in progress" until
+// the viewer gives up. This bound is deliberately about the pool having ANY
+// free connection, not about getting useful work done once one is acquired:
+// failure to acquire within a few seconds means the pool is saturated, not
+// merely busy, and the caller deserves an answer instead of an indefinite
+// wait. 5s matches the timeout AcquireAdvisoryLock already uses for its
+// unlock path below — long enough to ride out a burst of concurrent
+// reconnects competing for the same pool, short enough that genuine
+// exhaustion fails within one request's worth of patience.
+//
+// pgxpool has no separate "max acquire wait" config to reach for instead:
+// unlike database/sql-style pools, pgxpool.Config carries no MaxConnWaitTime
+// field, and Pool.Acquire(ctx) delegates straight to puddle/v2's
+// Pool.Acquire(ctx), which purely watches ctx.Done(). A wrapping
+// context.WithTimeout is therefore the only lever here, not a workaround for
+// a better one.
+//
+// This does not need a new metric: puddle's Acquire increments
+// canceledAcquireCount from a bare <-ctx.Done() case with no distinction
+// between context.Canceled and context.DeadlineExceeded, so a timeout here
+// is already counted by the existing
+// unifiedcd_db_pool_canceled_acquires_total{pool="listen"} (see
+// internal/metrics/pool_collector.go, PR #151).
+const listenAcquireTimeout = 5 * time.Second
+
 func NewPostgres(ctx context.Context, dsn string) (*Postgres, error) {
 	return NewPostgresWithPoolConfig(ctx, dsn, DefaultPostgresPoolConfig())
 }
@@ -1986,9 +2017,35 @@ func (p *Postgres) DeleteLogArchive(ctx context.Context, runID string) error {
 	return err
 }
 
+// ErrListenPoolExhausted is returned by ListenForNotify when no listenPool
+// connection became available within listenAcquireTimeout. It is distinct
+// from an ordinary context-cancellation error (the caller's ctx ending first,
+// e.g. an SSE viewer disconnecting) so callers can tell "the pool is full"
+// apart from "the request ended" and respond to each differently, instead of
+// pattern-matching an error string. Match it with errors.Is.
+var ErrListenPoolExhausted = errors.New("store: listen pool exhausted")
+
 func (p *Postgres) ListenForNotify(ctx context.Context, channel string, callback func(payload string)) error {
-	conn, err := p.listenPool.Acquire(ctx)
+	acquireCtx, cancel := context.WithTimeout(ctx, listenAcquireTimeout)
+	defer cancel()
+	conn, err := p.listenPool.Acquire(acquireCtx)
 	if err != nil {
+		// Distinguish "our own bound fired" from "the caller's ctx ended
+		// first" (an ordinary client disconnect racing the acquire — not
+		// exhaustion, and should keep returning the ordinary context error)
+		// by checking the ORIGINAL ctx, not acquireCtx: acquireCtx.Err() is
+		// set in both cases, but ctx.Err() is only set when the caller's own
+		// context is what actually ended.
+		if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+			stat := p.listenPool.Stat()
+			slog.Error("listen pool exhausted: no connection acquired within timeout; raise listenMaxConns or reduce concurrent listeners",
+				"pool", "listen",
+				"maxConns", stat.MaxConns(),
+				"acquiredConns", stat.AcquiredConns(),
+				"timeout", listenAcquireTimeout,
+				"channel", channel)
+			return fmt.Errorf("acquire listen pool connection for channel %q: %w", channel, ErrListenPoolExhausted)
+		}
 		return err
 	}
 	defer conn.Release()
