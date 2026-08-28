@@ -288,6 +288,17 @@ blast radius where it is today; scoping to the run's prefix is better and
 depends on store support. That is a decision for the plan, not a blocker for the
 shape.
 
+**Settled (see §9): Garage has no STS**, and this project's shared-bucket
+architecture (§2) means a Garage key is bucket-scoped, not prefix-scoped, so
+even a per-run Garage key would still read and write every other run's data —
+no tighter than the passthrough credential above. Scoping therefore is not a
+"mint a narrower static key" problem on the store this project ships an
+evaluation bundle against; see §9 for what is. The Pod↔run binding this
+document's implementation plan builds is unaffected by which answer scoping
+eventually lands on — it is what any of them needs first (the controller
+cannot hand out anything scoped to a run without already knowing which Pod is
+allowed to ask for it).
+
 ## 6. Recommendation
 
 **Ship the detection work, make the setup discoverable, build §5.5's seam, and
@@ -363,10 +374,25 @@ These are cheap, and each removes one step of the operator's trial and error.
   Kubernetes agent must run on bare-metal clusters, so §5.4 cannot be the
   destination. §5.6 replaces it and needs no second path — the same mechanism
   works on bare metal, EKS and GKE.
-- **Does Garage support `AssumeRoleWithWebIdentity`?** Not required for §5.6 as
-  described, but it decides whether the broker can mint scoped credentials or
-  must pass one through on the shipped evaluation bundle. Verify before planning
-  that part.
+- ~~**Does Garage support `AssumeRoleWithWebIdentity`?**~~ **Settled: no.**
+  `AssumeRole`/`AssumeRoleWithWebIdentity` do not exist in `dxflrs/garage:v2.3.0`
+  (the version this repo pins) — confirmed against Garage's S3-compatibility
+  documentation and its Admin API OpenAPI spec. Garage does support expiring
+  per-key credentials, but its permission unit is a **bucket**, never a
+  prefix, and §2 puts every run's artifacts and the controller's log archives
+  in one shared bucket by design — so a Garage key minted "for a run" would
+  still read and write every other run's data, and every other run's log
+  archives. It would cost the complexity of per-run key issuance and buy
+  nothing over the passthrough credential §5.6 already returns.
+  Consequence: on the shipped evaluation bundle, the broker cannot mint a
+  narrower STS-issued credential per run — that path is closed, not merely
+  unverified. **Presigned URLs are the uniform alternative**: they scope to
+  an individual object key (not a bucket) and work identically across
+  Garage, MinIO and AWS, so they do not depend on any store's STS support at
+  all. That is a separate, later design question — this document's Pod↔run
+  binding (§5.6, built in the accompanying implementation plan) is its
+  prerequisite either way, since a presigned URL scoped to a run still
+  requires the controller to know which Pod is allowed to ask for one.
 - **Should the controller hold a separate sidecar credential** even under §5.2,
   so the sidecar's blast radius stays smaller than the controller's? That
   restores a two-credential setup, but in one place instead of every namespace.

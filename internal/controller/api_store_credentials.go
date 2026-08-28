@@ -105,10 +105,14 @@ func (s *Server) handleStoreCredentials(w http.ResponseWriter, r *http.Request) 
 
 	// Return the controller's OWN credential as-is. Do not scope it.
 	//
-	//   - Scoping to a run's object-store prefix needs STS support that is
-	//     not universal — the shipped evaluation bundle uses Garage, whose
-	//     AssumeRoleWithWebIdentity support is unconfirmed (spec §9).
-	//     Passthrough works on every store this project supports today.
+	//   - Garage (the shipped evaluation bundle's store) has no STS at all —
+	//     confirmed against its S3-compatibility doc and Admin API OpenAPI
+	//     spec (spec §9) — and its per-key credentials are bucket-scoped,
+	//     never prefix-scoped, so even a per-run Garage key would still read
+	//     and write every other run's data under this project's shared-bucket
+	//     architecture (spec §2). There is no "mint a narrower key" option on
+	//     that store to reach for here. Passthrough works on every store this
+	//     project supports today.
 	//   - Passthrough leaves the blast radius exactly where it is today
 	//     (every job's sidecar already effectively shared one bucket-scoped
 	//     credential, via the operator-managed Secret this broker
