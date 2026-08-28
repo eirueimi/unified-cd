@@ -29,6 +29,7 @@ type brokerStub struct {
 	status    int
 	calls     int
 	lastToken string
+	lastRunID string
 }
 
 func (b *brokerStub) handler(t *testing.T) http.HandlerFunc {
@@ -37,6 +38,7 @@ func (b *brokerStub) handler(t *testing.T) http.HandlerFunc {
 		var req api.StoreCredentialsRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		b.lastToken = req.Token
+		b.lastRunID = req.RunID
 		if b.status != 0 && b.status != http.StatusOK {
 			http.Error(w, "rejected", b.status)
 			return
@@ -55,7 +57,7 @@ func TestBrokerConfig_FetchesEndpointBucketAndCredential(t *testing.T) {
 	defer srv.Close()
 	tokenFile := writeTokenFile(t, t.TempDir(), "the-projected-token")
 
-	cfg, err := BrokerConfig(t.Context(), srv.URL, tokenFile)
+	cfg, err := BrokerConfig(t.Context(), srv.URL, tokenFile, "")
 	require.NoError(t, err)
 	assert.Equal(t, "s3.example.internal:9000", cfg.Endpoint)
 	assert.Equal(t, "artifacts", cfg.Bucket)
@@ -71,19 +73,44 @@ func TestBrokerConfig_FetchesEndpointBucketAndCredential(t *testing.T) {
 	assert.Equal(t, 1, stub.calls, "the initial BrokerConfig fetch must not be repeated by the first Get()")
 }
 
+// TestBrokerConfig_ForwardsRunID pins the fix for PR #159's known gap
+// (RunID always sent empty): BrokerConfig's runID parameter must reach the
+// controller on both the initial fetch AND a later refetch after expiry —
+// it does not change across the sidecar process's lifetime the way the
+// token does, so every fetch must carry it, not just the first.
+func TestBrokerConfig_ForwardsRunID(t *testing.T) {
+	stub := &brokerStub{response: api.StoreCredentialsResponse{
+		Endpoint: "s3:9000", Bucket: "b", AccessKey: "AKID1", SecretKey: "secret1",
+		ExpiresAt: time.Now().Add(-time.Second), // forces a refetch on the next Get()
+	}}
+	srv := httptest.NewServer(stub.handler(t))
+	defer srv.Close()
+	tokenFile := writeTokenFile(t, t.TempDir(), "tok")
+
+	cfg, err := BrokerConfig(t.Context(), srv.URL, tokenFile, "run-abc")
+	require.NoError(t, err)
+	assert.Equal(t, "run-abc", stub.lastRunID, "the initial fetch must carry runID")
+
+	stub.response.ExpiresAt = time.Now().Add(-time.Second)
+	_, err = cfg.Creds.Get()
+	require.NoError(t, err)
+	assert.Equal(t, "run-abc", stub.lastRunID, "a refetch after expiry must still carry runID")
+	assert.Equal(t, 2, stub.calls)
+}
+
 func TestBrokerConfig_ErrorsWhenTheControllerRejects(t *testing.T) {
 	stub := &brokerStub{status: http.StatusForbidden}
 	srv := httptest.NewServer(stub.handler(t))
 	defer srv.Close()
 	tokenFile := writeTokenFile(t, t.TempDir(), "bad-token")
 
-	_, err := BrokerConfig(t.Context(), srv.URL, tokenFile)
+	_, err := BrokerConfig(t.Context(), srv.URL, tokenFile, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), srv.URL, "the error must name the controller, not just say credentials failed")
 }
 
 func TestBrokerConfig_ErrorsWhenTheTokenFileIsMissing(t *testing.T) {
-	_, err := BrokerConfig(t.Context(), "http://controller.example", filepath.Join(t.TempDir(), "does-not-exist"))
+	_, err := BrokerConfig(t.Context(), "http://controller.example", filepath.Join(t.TempDir(), "does-not-exist"), "")
 	require.Error(t, err)
 }
 
@@ -99,7 +126,7 @@ func TestBrokerCredentials_ZeroExpiryDoesNotRefetch(t *testing.T) {
 	defer srv.Close()
 	tokenFile := writeTokenFile(t, t.TempDir(), "tok")
 
-	cfg, err := BrokerConfig(t.Context(), srv.URL, tokenFile)
+	cfg, err := BrokerConfig(t.Context(), srv.URL, tokenFile, "")
 	require.NoError(t, err)
 	for i := 0; i < 3; i++ {
 		_, err := cfg.Creds.Get()
@@ -121,7 +148,7 @@ func TestBrokerCredentials_RefreshesAfterExpiry(t *testing.T) {
 	defer srv.Close()
 	tokenFile := writeTokenFile(t, t.TempDir(), "tok")
 
-	cfg, err := BrokerConfig(t.Context(), srv.URL, tokenFile)
+	cfg, err := BrokerConfig(t.Context(), srv.URL, tokenFile, "")
 	require.NoError(t, err)
 
 	stub.response.AccessKey = "AKID-NEW"
@@ -147,7 +174,7 @@ func TestBrokerCredentials_RereadsTheTokenFileOnEachFetch(t *testing.T) {
 	dir := t.TempDir()
 	tokenFile := writeTokenFile(t, dir, "token-v1")
 
-	cfg, err := BrokerConfig(t.Context(), srv.URL, tokenFile)
+	cfg, err := BrokerConfig(t.Context(), srv.URL, tokenFile, "")
 	require.NoError(t, err)
 	assert.Equal(t, "token-v1", stub.lastToken)
 
