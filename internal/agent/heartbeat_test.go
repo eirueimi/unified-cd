@@ -29,7 +29,7 @@ func TestStartHeartbeat_DoneChannelJoinsGoroutine(t *testing.T) {
 
 	c := NewClient(srv.URL, "t")
 	ctx, cancel := context.WithCancel(context.Background())
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return nil })
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return nil }, nil)
 
 	time.Sleep(80 * time.Millisecond) // a few beats
 	cancel()
@@ -65,7 +65,7 @@ func TestStartHeartbeat_TicksUntilCtxDone(t *testing.T) {
 
 	c := NewClient(srv.URL, "t")
 	ctx, cancel := context.WithCancel(context.Background())
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return nil })
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return nil }, nil)
 	time.Sleep(120 * time.Millisecond)
 	if got := atomic.LoadInt32(&hits); got < 3 {
 		t.Fatalf("expected several heartbeats, got %d", got)
@@ -101,7 +101,7 @@ func TestStartHeartbeat_SendsActiveRunIDsFromProvider(t *testing.T) {
 	c := NewClient(srv.URL, "t")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return []string{"run-1", "run-2"} })
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return []string{"run-1", "run-2"} }, nil)
 	defer func() { cancel(); <-done }()
 
 	deadline := time.After(2 * time.Second)
@@ -114,6 +114,44 @@ func TestStartHeartbeat_SendsActiveRunIDsFromProvider(t *testing.T) {
 		select {
 		case <-deadline:
 			t.Fatal("heartbeat never carried the provider's active run IDs")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// TestStartHeartbeat_SendsPodBindingsFromProvider is the Kubernetes-agent
+// counterpart of TestStartHeartbeat_SendsActiveRunIDsFromProvider: each beat
+// also calls the podBindings provider and forwards its result unchanged, so
+// the controller learns which Pod executes which run (see
+// api.HeartbeatRequest.PodBindings and
+// internal/controller/api_store_credentials.go's run-binding enforcement).
+func TestStartHeartbeat_SendsPodBindingsFromProvider(t *testing.T) {
+	var lastBody atomic.Value // api.HeartbeatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got api.HeartbeatRequest
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		lastBody.Store(got)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "t")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bindings := map[string]api.PodBinding{"run-1": {PodName: "ucd-run-1", PodUID: "uid-1"}}
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return []string{"run-1"} }, func() map[string]api.PodBinding { return bindings })
+	defer func() { cancel(); <-done }()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if v, ok := lastBody.Load().(api.HeartbeatRequest); ok {
+			if b, ok := v.PodBindings["run-1"]; ok && b.PodName == "ucd-run-1" && b.PodUID == "uid-1" {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("heartbeat never carried the provider's pod bindings")
 		case <-time.After(5 * time.Millisecond):
 		}
 	}

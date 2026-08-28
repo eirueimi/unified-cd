@@ -291,7 +291,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// runLoop's signature doesn't need to branch on WorkspaceRetentionDays.
 	activeWorkDirs := NewRunSet()
 
-	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot)
+	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot, nil)
 
 	// gcDone is closed once workspaceGCLoop has fully stopped, so Run can join
 	// it (like hbDone) and guarantee no sweep outlives Run. nil when the GC is
