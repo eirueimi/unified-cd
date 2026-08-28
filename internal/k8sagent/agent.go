@@ -55,6 +55,14 @@ type K8sAgent struct {
 	// dispatch executes one claimed run. Defaults to executeRun; overridable in
 	// tests to exercise the claim loop's drain/concurrency without a pod backend.
 	dispatch func(ctx context.Context, c api.ClaimResponse)
+
+	// podBindings tracks, for every run this process currently has in
+	// flight, the Pod (name + UID) executing it — see podbindings.go. A
+	// struct field (not a Run()-local, unlike activeRuns) because
+	// executeRun, which learns the Pod's identity, and k8sClaimLoop, which
+	// owns the claim's lifecycle, are different methods that both need it;
+	// Run() only ever reads it (via Snapshot, for the heartbeat).
+	podBindings *podBindingSet
 }
 
 // k8sAgentCapabilities reports what the k8s agent can execute: it always
@@ -63,7 +71,7 @@ func k8sAgentCapabilities() []string { return []string{dsl.CapPod, dsl.CapContai
 
 // NewK8sAgent creates a new K8sAgent.
 func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec *Executor, pool *PodPool) *K8sAgent {
-	a := &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool}
+	a := &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool, podBindings: newPodBindingSet()}
 	a.dispatch = a.executeRun
 	return a
 }
@@ -142,7 +150,7 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	// Heartbeat bound to runCtx (not ctx): a drain must not stop heartbeats, or
 	// the stuck-run reaper would fail a healthy draining run after staleAfter.
 	// Joined before Run returns so no beat outlives Run.
-	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval, activeRuns.Snapshot)
+	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval, activeRuns.Snapshot, a.podBindings.Snapshot)
 	go a.runPodGC(runCtx, time.Minute)
 
 	// Concurrency gates: MaxConcurrent for normal runs; a SEPARATE
@@ -265,6 +273,13 @@ func (a *K8sAgent) k8sClaimLoop(ctx, runCtx context.Context, labels []string, se
 			// active for its whole execution (defers run LIFO regardless of outcome).
 			activeRuns.Add(c.RunID)
 			defer activeRuns.Remove(c.RunID)
+			// a.podBindings' entry for c.RunID (added inside executeRun, once
+			// its Pod is known) must not outlive the claim either — a stale
+			// binding for a run this process no longer owns would otherwise
+			// linger in every heartbeat until the next Add overwrites it, and
+			// under LIFO this runs BEFORE activeRuns.Remove above, so both are
+			// gone from the very same heartbeat cycle.
+			defer a.podBindings.Remove(c.RunID)
 			a.dispatch(runCtx, c)
 		}(resp)
 	}
@@ -357,6 +372,16 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		}
 		pooledPod = pp
 		podName = pp.PodName
+		// Record the run/Pod binding as soon as the Pod is known — CreatePod
+		// (inside pool.ClaimPod, above) already returned, so pp.PodUID is the
+		// real API-server UID, not a placeholder. Deliberately BEFORE
+		// awaitPodRunning below: the store-credentials broker only needs to
+		// know which Pod is allowed to ask, not whether it has started yet,
+		// and reporting early shrinks the window (bounded by the heartbeat
+		// interval regardless — see api.HeartbeatRequest.PodBindings) during
+		// which Config.RequireRunBinding's permissive fallback is the only
+		// thing letting this Pod's sidecar through.
+		a.podBindings.Add(c.RunID, api.PodBinding{PodName: pp.PodName, PodUID: pp.PodUID})
 		defer func() {
 			teardownCtx, cancelTeardown := a.claimPodTeardownContext(ctx)
 			defer cancelTeardown()
@@ -385,6 +410,9 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			return
 		}
 		podName = created.Name
+		// See the pooled branch's identical call above for why this happens
+		// here rather than after awaitPodRunning.
+		a.podBindings.Add(c.RunID, api.PodBinding{PodName: created.Name, PodUID: string(created.UID)})
 		defer func() {
 			teardownCtx, cancelTeardown := a.claimPodTeardownContext(ctx)
 			defer cancelTeardown()

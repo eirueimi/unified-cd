@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/eirueimi/unified-cd/internal/api"
 )
 
 // DefaultHeartbeatInterval is how often an agent refreshes its liveness.
@@ -27,7 +29,12 @@ const heartbeatTimeout = 10 * time.Second
 // to client.Heartbeat unchanged so the controller can see which runs are
 // still alive here. A nil provider (defensive; every production caller
 // supplies one) is treated as "no data" and sends a bodyless legacy beat.
-func StartHeartbeat(ctx context.Context, client *Client, agentID string, interval time.Duration, activeRunIDs func() []string) <-chan struct{} {
+//
+// podBindings is likewise called once per beat and forwarded unchanged as
+// api.HeartbeatRequest.PodBindings; it exists for the Kubernetes agent (see
+// api.HeartbeatRequest.PodBindings' doc comment) and every host-agent caller
+// passes nil, which simply sends no bindings.
+func StartHeartbeat(ctx context.Context, client *Client, agentID string, interval time.Duration, activeRunIDs func() []string, podBindings func() map[string]api.PodBinding) <-chan struct{} {
 	if interval <= 0 {
 		interval = DefaultHeartbeatInterval
 	}
@@ -46,7 +53,11 @@ func StartHeartbeat(ctx context.Context, client *Client, agentID string, interva
 				if activeRunIDs != nil {
 					ids = activeRunIDs()
 				}
-				err := client.Heartbeat(hbCtx, agentID, ids)
+				var bindings map[string]api.PodBinding
+				if podBindings != nil {
+					bindings = podBindings()
+				}
+				err := client.Heartbeat(hbCtx, agentID, ids, bindings)
 				cancel()
 				if err != nil && ctx.Err() == nil {
 					slog.Warn("agent heartbeat failed", "agentId", agentID, "error", err)

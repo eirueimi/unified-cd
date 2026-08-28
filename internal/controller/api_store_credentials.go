@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -89,6 +91,12 @@ func (s *Server) handleStoreCredentials(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if rejected, reason := s.runBindingRejects(r.Context(), req.RunID, identity); rejected {
+		s.auditAgentCredential(r, "store-credentials.fetch", identity.PodUID, http.StatusForbidden)
+		http.Error(w, "store credentials rejected: "+reason, http.StatusForbidden)
+		return
+	}
+
 	if s.storeCredentialS3 == nil {
 		s.auditAgentCredential(r, "store-credentials.fetch", identity.PodUID, http.StatusServiceUnavailable)
 		http.Error(w, "store credentials unavailable: the controller has no object store configured (set UNIFIED_S3_ENDPOINT and UNIFIED_S3_BUCKET)", http.StatusServiceUnavailable)
@@ -97,10 +105,14 @@ func (s *Server) handleStoreCredentials(w http.ResponseWriter, r *http.Request) 
 
 	// Return the controller's OWN credential as-is. Do not scope it.
 	//
-	//   - Scoping to a run's object-store prefix needs STS support that is
-	//     not universal — the shipped evaluation bundle uses Garage, whose
-	//     AssumeRoleWithWebIdentity support is unconfirmed (spec §9).
-	//     Passthrough works on every store this project supports today.
+	//   - Garage (the shipped evaluation bundle's store) has no STS at all —
+	//     confirmed against its S3-compatibility doc and Admin API OpenAPI
+	//     spec (spec §9) — and its per-key credentials are bucket-scoped,
+	//     never prefix-scoped, so even a per-run Garage key would still read
+	//     and write every other run's data under this project's shared-bucket
+	//     architecture (spec §2). There is no "mint a narrower key" option on
+	//     that store to reach for here. Passthrough works on every store this
+	//     project supports today.
 	//   - Passthrough leaves the blast radius exactly where it is today
 	//     (every job's sidecar already effectively shared one bucket-scoped
 	//     credential, via the operator-managed Secret this broker
@@ -112,14 +124,16 @@ func (s *Server) handleStoreCredentials(w http.ResponseWriter, r *http.Request) 
 	//     RETURNS here, not a change of what any sidecar PARSES — this
 	//     handler is the only place that changes when that happens.
 	//
-	// identity.PodUID is not enforced against req.RunID here: the token
-	// proves the Pod's namespace/ServiceAccount/UID, not which run it is
-	// executing, and with a passthrough credential every caller gets the
-	// identical value regardless — binding the request to a specific run
-	// would buy no isolation yet. It becomes necessary once a credential
-	// CAN be scoped per run, at which point the agent has to tell the
-	// controller which Pod runs which run and this handler starts checking
-	// it. See api.StoreCredentialsRequest.RunID's doc comment.
+	// identity.PodUID WAS already checked against req.RunID above, by
+	// runBindingRejects — but the credential returned below is still the
+	// controller's own, unscoped one: the token proves the Pod's
+	// namespace/ServiceAccount/UID, and the binding check above proves it is
+	// the Pod executing RunID, but with a PASSTHROUGH credential every
+	// caller gets the identical value regardless, so there is nothing here
+	// for the binding to scope YET. The check is still worth doing now
+	// (it narrows a stolen/misdirected token to the one run it was minted
+	// for) and is the prerequisite for the day a credential CAN be scoped
+	// per run — see api.StoreCredentialsRequest.RunID's doc comment.
 	writeJSON(w, http.StatusOK, api.StoreCredentialsResponse{
 		Endpoint:  s.storeCredentialS3.Endpoint,
 		Bucket:    s.storeCredentialS3.Bucket,
@@ -168,4 +182,54 @@ func (s *Server) verifyStoreCredentialToken(r *http.Request, token string) (Boun
 // ErrKubernetesEnrollmentUnavailable (503) and everything else (403/other).
 func isKubernetesIdentityUnavailable(err error) bool {
 	return errors.Is(err, ErrKubernetesEnrollmentUnavailable)
+}
+
+// runBindingRejects reports whether a store-credentials request naming
+// runID, from a Pod whose identity has ALREADY been verified by TokenReview
+// (identity), must be refused for binding reasons — i.e. because runID
+// names a run some OTHER Pod is executing.
+//
+// There are three cases, and only one of them is unconditional:
+//
+//  1. runID == "": nothing to check identity against (an old sidecar built
+//     before RunID was threaded through cmd/unified-sidecar/run.go, or any
+//     other caller that simply omits it). Cannot enforce — falls to
+//     RequireRunBinding.
+//  2. No binding is recorded for runID yet (store.GetRunPodBinding's
+//     ok == false, or s.store itself is nil in a narrow unit test): the
+//     same "cannot enforce" bucket as (1) — a k8s agent heartbeats this
+//     binding on its own interval (HeartbeatRequest.PodBindings), so a
+//     freshly-created Pod's sidecar can legitimately ask before its first
+//     heartbeat has landed, and a pre-this-feature k8s agent binary never
+//     reports one at all. Falls to RequireRunBinding.
+//  3. A binding IS recorded and names a DIFFERENT Pod (by PodUID — see
+//     api.PodBinding's doc comment): this is not missing information, it
+//     is a contradiction of it, and is refused UNCONDITIONALLY — the one
+//     case RequireRunBinding does not gate, because permissiveness is only
+//     ever about not knowing, never about a known mismatch.
+//
+// See Config.RequireRunBinding for why (1) and (2) default to "allow".
+func (s *Server) runBindingRejects(ctx context.Context, runID string, identity BoundPodIdentity) (rejected bool, reason string) {
+	if runID == "" {
+		return s.cfg.RequireRunBinding, "no run id was presented"
+	}
+	if s.store == nil {
+		return s.cfg.RequireRunBinding, "no run/pod binding store is configured"
+	}
+	binding, ok, err := s.store.GetRunPodBinding(ctx, runID)
+	if err != nil {
+		// A transient store failure is "unknown", not "reject regardless of
+		// RequireRunBinding": unlike case 3 above, there is no CONTRADICTION
+		// here, only an inability to look one up, so it belongs in the same
+		// bucket as never having heard of the run at all.
+		slog.Warn("store-credentials: run/pod binding lookup failed; treating as unknown", "runId", runID, "error", err)
+		return s.cfg.RequireRunBinding, "run/pod binding lookup failed"
+	}
+	if !ok {
+		return s.cfg.RequireRunBinding, "no pod is bound to this run yet"
+	}
+	if binding.PodUID != identity.PodUID {
+		return true, "the presented pod is not the one bound to this run"
+	}
+	return false, ""
 }

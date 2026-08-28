@@ -10,6 +10,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // fakePM and fakeExec are the shared k8sagent test fixtures (a fake podManager
@@ -98,6 +99,11 @@ func (f *fakePM) CreatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod, err
 	f.createCount++
 	out := pod.DeepCopy()
 	out.Name = fmt.Sprintf("ucd-img-generated-%d", f.createCount) // simulate server-assigned name from GenerateName
+	// A real API server assigns UID at the same time as Name; simulate it here
+	// too so callers that track the run/Pod binding (K8sAgent.podBindings,
+	// PodPool.PodUID) have something realistic to record and tests can assert
+	// on it, rather than every fakePM-created Pod carrying an empty UID.
+	out.UID = types.UID(fmt.Sprintf("fake-uid-%d", f.createCount))
 	f.createdNm = out.Name
 	f.createdNames = append(f.createdNames, out.Name)
 	f.mu.Unlock()

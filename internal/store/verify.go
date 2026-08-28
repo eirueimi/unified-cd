@@ -45,6 +45,7 @@ var schemaSentinels = []sentinel{
 	{17, "017_run_detached", "runs", "detached", ""},
 	{18, "018_vars", "vars", "", ""},
 	{19, "019_run_display_name", "runs", "display_name", ""},
+	{20, "020_run_pod_bindings", "run_pod_bindings", "", ""},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel

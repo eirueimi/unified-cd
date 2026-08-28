@@ -957,7 +957,7 @@ func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandl
 	if err != nil {
 		return false, err
 	}
-	argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", path, "--job", b.jobName}
+	argv := []string{"unified-sidecar", "cache", "restore", "--key", key, "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
 	for _, rk := range restoreKeys {
 		argv = append(argv, "--restore-key", rk)
 	}
@@ -1027,7 +1027,7 @@ func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, 
 	if err != nil {
 		return err
 	}
-	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--job", b.jobName}
+	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
 	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return err
@@ -1040,12 +1040,19 @@ func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, 
 
 // UploadArtifact execs the unified-sidecar binary's "artifact upload" into
 // the target pod's sidecar.
+//
+// --run is runID (the artifact's OWN target run — uploads are always to the
+// claim's own run today, but the parameter exists for symmetry with
+// DownloadArtifact); --broker-run-id is always b.runID, the Pod this backend
+// actually IS, regardless of what runID names — see run.go's
+// extractBrokerRunID doc comment on cmd/unified-sidecar's side for why the
+// two must never be conflated.
 func (b *k8sBackend) UploadArtifact(ctx context.Context, scope agentlib.ScopeHandle, runID, name, path string) error {
 	sidecar, targetPod, err := b.resolveSidecarTarget(ctx, scope)
 	if err != nil {
 		return err
 	}
-	argv := []string{"unified-sidecar", "artifact", "upload", "--run", runID, "--name", name, "--path", path}
+	argv := []string{"unified-sidecar", "artifact", "upload", "--run", runID, "--name", name, "--path", path, "--broker-run-id", b.runID}
 	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return err
@@ -1058,12 +1065,21 @@ func (b *k8sBackend) UploadArtifact(ctx context.Context, scope agentlib.ScopeHan
 
 // DownloadArtifact execs the unified-sidecar binary's "artifact download"
 // into the target pod's sidecar.
+//
+// --run is runID, which a call: step's downloadArtifact CAN point at a
+// DIFFERENT run than the one this Pod is executing (a deliberate
+// cross-run read — see TestOrchestrate_DownloadArtifactRunIDOverridesSidecarRun).
+// --broker-run-id is always b.runID regardless: it identifies this Pod to
+// the store-credentials broker, which has nothing to do with which run's
+// artifact bytes are being read. Sending runID there instead would make the
+// broker reject a legitimate cross-run download as a binding mismatch (see
+// objectstore.BrokerConfig's doc comment).
 func (b *k8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeHandle, runID, name, destDir string) error {
 	sidecar, targetPod, err := b.resolveSidecarTarget(ctx, scope)
 	if err != nil {
 		return err
 	}
-	argv := []string{"unified-sidecar", "artifact", "download", "--run", runID, "--name", name, "--dest", destDir}
+	argv := []string{"unified-sidecar", "artifact", "download", "--run", runID, "--name", name, "--dest", destDir, "--broker-run-id", b.runID}
 	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return err

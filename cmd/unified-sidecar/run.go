@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/cache"
@@ -23,7 +24,62 @@ func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 // artifact subcommands. It is invoked only when a subcommand actually needs
 // the store — "idle" never calls it, so the sidecar can stay resident even
 // when no S3 configuration is present (degraded mode).
-type storeProvider func(context.Context) (objectstore.ObjectStore, error)
+//
+// runID is the Pod's own executing run — extracted from the raw args by
+// extractBrokerRunID BEFORE any subcommand-specific flag.FlagSet parses
+// them (see run's doc comment for why that ordering is exactly the point).
+// A provider that ignores runID (every branch except the broker) is
+// unaffected; see s3ConfigFromEnv in main.go.
+type storeProvider func(ctx context.Context, runID string) (objectstore.ObjectStore, error)
+
+// extractBrokerRunID scans a subcommand's raw args for --broker-run-id
+// (accepting "--broker-run-id VALUE", "--broker-run-id=VALUE", and their
+// single-dash spellings), independent of the subcommand's own
+// flag.FlagSet — which is parsed later, deeper in runCache/runArtifact, by
+// which point the store (and therefore any store-credentials broker
+// request) has already been built. That ordering is why this exists as a
+// raw pre-scan rather than a value read off the subcommand's FlagSet: run()
+// must know the Pod's run BEFORE calling newStore, and the FlagSet that
+// would otherwise parse it does not exist until after that call.
+//
+// Deliberately its OWN flag, not artifact upload/download's existing --run:
+// that flag names which run's ARTIFACT to read or write, which a call: step
+// can point at a DIFFERENT run than the one this Pod is executing (see
+// api.DownloadArtifactStep) — reusing it here would send the broker the
+// wrong run and have it reject a legitimate cross-run download as a
+// binding mismatch (see objectstore.BrokerConfig's doc comment). cache
+// subcommands have no existing --run concept at all to conflict with, but
+// the same dedicated flag is used there too, for one consistent story
+// across every subcommand.
+//
+// This is a raw, best-effort scan, not validation: every subcommand's own
+// flag.FlagSet — parsed afterward, inside runCache/runArtifact — is what
+// actually enforces correct usage of the flags it consumes; --broker-run-id
+// itself is declared (but unused) in each of their FlagSets purely so
+// Parse does not reject it as unrecognized. A missing or malformed value
+// here only means the broker's StoreCredentialsRequest.RunID goes out
+// empty, which degrades to the "unknown binding" case on the controller
+// side (see api.StoreCredentialsRequest.RunID's doc comment) rather than a
+// hard failure.
+func extractBrokerRunID(args []string) string {
+	const flagName = "broker-run-id"
+	for i, a := range args {
+		switch {
+		case a == "--"+flagName || a == "-"+flagName:
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return ""
+		default:
+			for _, prefix := range []string{"--" + flagName + "=", "-" + flagName + "="} {
+				if v, ok := strings.CutPrefix(a, prefix); ok {
+					return v
+				}
+			}
+		}
+	}
+	return ""
+}
 
 // run dispatches the sidecar subcommands. The store is obtained lazily via
 // newStore, only for cache/artifact subcommands; "idle" ignores it entirely.
@@ -66,14 +122,14 @@ func run(ctx context.Context, newStore storeProvider, args []string, stderr io.W
 	group, sub, rest := args[0], args[1], args[2:]
 	switch group {
 	case "cache":
-		store, err := newStore(ctx)
+		store, err := newStore(ctx, extractBrokerRunID(rest))
 		if err != nil {
 			fmt.Fprintf(stderr, "cache requires S3 configuration (UNIFIED_S3_*): %v\n", err)
 			return 1
 		}
 		return runCache(ctx, store, sub, rest, os.Stdout, stderr)
 	case "artifact":
-		store, err := newStore(ctx)
+		store, err := newStore(ctx, extractBrokerRunID(rest))
 		if err != nil {
 			fmt.Fprintf(stderr, "artifact requires S3 configuration (UNIFIED_S3_*): %v\n", err)
 			return 1
@@ -95,6 +151,10 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		job := fs.String("job", "", "qualified job name owning this cache entry")
 		var restoreKeys stringSlice
 		fs.Var(&restoreKeys, "restore-key", "fallback restore key prefix (repeatable)")
+		// Declared so Parse accepts it; the value itself is already consumed
+		// by run()'s extractBrokerRunID pre-scan, before this FlagSet ever
+		// runs — see storeProvider's and extractBrokerRunID's doc comments.
+		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
@@ -126,6 +186,7 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		path := fs.String("path", "", "source path")
 		job := fs.String("job", "", "qualified job name owning this cache entry")
 		ttlDays := fs.Int("ttl-days", 30, "TTL in days")
+		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
@@ -150,9 +211,16 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 	case "upload":
 		fs := flag.NewFlagSet("artifact upload", flag.ContinueOnError)
 		fs.SetOutput(stderr)
+		// --run is the artifact's OWN target run (the object-store key,
+		// artifacts/{run}/{name}.tar.gz) — deliberately NOT the same value
+		// as --broker-run-id, which may differ for a cross-run call (see
+		// extractBrokerRunID's doc comment). Declared here so Parse accepts
+		// it; --broker-run-id's value was already consumed before this
+		// FlagSet ever ran.
 		runID := fs.String("run", "", "run ID")
 		name := fs.String("name", "", "artifact name")
 		path := fs.String("path", "", "source path")
+		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
@@ -164,9 +232,13 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 	case "download":
 		fs := flag.NewFlagSet("artifact download", flag.ContinueOnError)
 		fs.SetOutput(stderr)
+		// See the "upload" case above: --run here names the artifact's
+		// SOURCE run, which a cross-run call: download deliberately points
+		// at a run other than the one this Pod executes.
 		runID := fs.String("run", "", "run ID")
 		name := fs.String("name", "", "artifact name")
 		dest := fs.String("dest", ".", "destination directory")
+		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}

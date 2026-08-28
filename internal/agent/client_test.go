@@ -67,7 +67,7 @@ func TestClientReadsTokenForEveryRequest(t *testing.T) {
 	}), srv.Client())
 
 	require.NoError(t, c.Register(t.Context(), api.AgentRegisterRequest{AgentID: "a"}))
-	require.NoError(t, c.Heartbeat(t.Context(), "a", []string{}))
+	require.NoError(t, c.Heartbeat(t.Context(), "a", []string{}, nil))
 	assert.Equal(t, []string{"Bearer access-1", "Bearer access-2"}, tokens)
 }
 
@@ -94,7 +94,7 @@ func TestClient_Heartbeat_NonEmptyActiveRuns(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	require.NoError(t, c.Heartbeat(t.Context(), "a1", []string{"r1"}))
+	require.NoError(t, c.Heartbeat(t.Context(), "a1", []string{"r1"}, nil))
 
 	var got api.HeartbeatRequest
 	require.NoError(t, json.Unmarshal(gotBody, &got))
@@ -113,7 +113,7 @@ func TestClient_Heartbeat_EmptyActiveRuns_SendsBody(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	require.NoError(t, c.Heartbeat(t.Context(), "a1", []string{}))
+	require.NoError(t, c.Heartbeat(t.Context(), "a1", []string{}, nil))
 
 	// A live agent always sends a JSON body, even for zero active runs, so the
 	// controller can tell it apart from a legacy agent that sends none. With no
@@ -141,7 +141,7 @@ func TestClient_Heartbeat_NilActiveRuns_SendsNoBody(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	require.NoError(t, c.Heartbeat(t.Context(), "a1", nil))
+	require.NoError(t, c.Heartbeat(t.Context(), "a1", nil, nil))
 
 	assert.Equal(t, int64(0), contentLength)
 	assert.Zero(t, bodyLen)

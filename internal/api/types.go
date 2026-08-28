@@ -86,6 +86,45 @@ type CalledBy struct {
 // ContentLength.
 type HeartbeatRequest struct {
 	ActiveRunIDs []string `json:"activeRunIds"`
+
+	// PodBindings maps a runID (one of the IDs in ActiveRunIDs) to the
+	// Kubernetes Pod actually executing it. Only a Kubernetes agent ever
+	// populates this — a host agent has no Kubernetes Pod backing a run at
+	// all, so it always leaves this nil/omitted, and the controller must
+	// treat that absence as "unknown", never as "not this Pod" (see
+	// internal/controller/api_store_credentials.go's RequireRunBinding).
+	//
+	// This is deliberately piggybacked on the heartbeat the k8s agent
+	// already sends every DefaultHeartbeatInterval, rather than a new
+	// endpoint: the controller needs to learn "which Pod runs which run" to
+	// enforce api.StoreCredentialsRequest.RunID against a verified Pod
+	// identity (see PodBinding's doc comment and
+	// docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
+	// §5.6), and the agent already reports its active-run set on exactly
+	// this cadence — reusing it costs one map, not a second round trip.
+	// The consequence is a bounded startup window (up to one heartbeat
+	// interval after Pod creation) during which the controller does not
+	// yet know a run's binding; RequireRunBinding's default is chosen with
+	// that window in mind.
+	PodBindings map[string]PodBinding `json:"podBindings,omitempty"`
+}
+
+// PodBinding names the Kubernetes Pod a heartbeating Kubernetes agent
+// reports is executing one of its active runs (see
+// HeartbeatRequest.PodBindings).
+//
+// PodUID, not PodName, is what internal/controller/api_store_credentials.go
+// compares against a token-verified caller: a Pod name can be reused (a new
+// Pod created under the same generated/templated name once the old one is
+// deleted), whereas a Pod UID is assigned once by the Kubernetes API server
+// and never reused — the same reasoning kubernetes_token.go already applies
+// when it binds a projected token to a Pod's UID rather than its name.
+// PodName travels alongside it purely so a rejection's audit log/error can
+// name the Pod for an operator; it is never itself compared for
+// authorization.
+type PodBinding struct {
+	PodName string `json:"podName"`
+	PodUID  string `json:"podUid"`
 }
 
 type AgentRegisterRequest struct {
@@ -542,18 +581,28 @@ const KubernetesStoreCredentialAudience = "unified-cd-store-credentials"
 type StoreCredentialsRequest struct {
 	Token string `json:"token"`
 
-	// RunID names the run the requesting Pod is executing. It is accepted
-	// but NOT enforced today: the controller returns its own credential
-	// unscoped (see the handler's passthrough comment), so every caller
-	// receives the identical value regardless of RunID, and binding the
-	// request to a specific run would buy no isolation yet. It becomes
-	// necessary once the controller can mint a credential scoped to a run's
-	// object-store prefix — at that point the agent must tell the
-	// controller which Pod runs which run, and this field is already the
-	// place that value travels. Accepting it now, unused, means that future
-	// change is a change of what the controller DOES with the field, not a
-	// wire-format change every already-deployed sidecar would need to catch
-	// up to.
+	// RunID names the run the requesting Pod is executing. It IS enforced:
+	// the controller checks it against HeartbeatRequest.PodBindings (see
+	// PodBinding's doc comment) and refuses a Pod that names a run some
+	// OTHER Pod is bound to (internal/controller/api_store_credentials.go).
+	//
+	// This still buys no ISOLATION today — every caller receives the
+	// identical passthrough credential regardless of RunID (see the
+	// handler's passthrough comment) — but it is no longer a no-op: it is
+	// the prerequisite the credential-scoping options in
+	// docs/superpowers/specs/2026-08-26-sidecar-credential-delivery-design.md
+	// §5.6 need (the controller cannot hand out a credential scoped to a
+	// run's key without first knowing which Pod is allowed to ask for it),
+	// and it is worth having on its own: it narrows a stolen/misdirected
+	// token to the one run it was minted for, rather than any run in the
+	// broker's configured namespaces.
+	//
+	// An empty RunID (an old sidecar built before this field was threaded
+	// through, or one that legitimately has none to report) cannot be
+	// checked against anything and is treated as "unknown" — the same
+	// permissive-by-default bucket as a RunID with no reported binding yet
+	// — not as an automatic pass or an automatic reject; see
+	// RequireRunBinding.
 	RunID string `json:"runId,omitempty"`
 }
 

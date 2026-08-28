@@ -38,6 +38,15 @@ type PooledPod struct {
 	PoolKey         string
 	ResourceVersion string
 	IdleSince       time.Time // when this pod last became idle
+	// PodUID is the Pod's Kubernetes UID, assigned once by the API server at
+	// creation and stable for the Pod's whole lifetime — including across
+	// reuse: a pooled Pod handed to a second, unrelated claim keeps the SAME
+	// underlying Pod object, so its UID never changes even though PoolKey
+	// and ResourceVersion get updated. Callers use it (via K8sAgent's
+	// run/Pod binding — see podbindings.go) to tell the controller which
+	// Pod executes a run, which is why it must be the real API-server UID
+	// and not derived or reconstructed.
+	PodUID string
 }
 
 // PodPool pools and reuses Pods keyed by the hash of their effective pod
@@ -243,6 +252,7 @@ func (p *PodPool) createPoolPod(ctx context.Context, runID, key string, agentTmp
 		PodName:         created.Name,
 		PoolKey:         key,
 		ResourceVersion: created.ResourceVersion,
+		PodUID:          string(created.UID),
 	}, nil
 }
 
@@ -274,6 +284,7 @@ func (p *PodPool) ReleasePod(ctx context.Context, pp *PooledPod, reuse bool) err
 		PoolKey:         pp.PoolKey,
 		ResourceVersion: updated.ResourceVersion,
 		IdleSince:       time.Now(),
+		PodUID:          pp.PodUID,
 	})
 	return nil
 }
@@ -329,6 +340,7 @@ func (p *PodPool) Restore(ctx context.Context, masterClient masterRunGetter) err
 				PoolKey:         key,
 				ResourceVersion: pod.ResourceVersion,
 				IdleSince:       time.Now(),
+				PodUID:          string(pod.UID),
 			})
 			slog.Info("pool: restored idle pod", "pod", pod.Name, "poolKey", key, "template", tmpl)
 
@@ -349,6 +361,7 @@ func (p *PodPool) Restore(ctx context.Context, masterClient masterRunGetter) err
 							PoolKey:         key,
 							ResourceVersion: updated.ResourceVersion,
 							IdleSince:       time.Now(),
+							PodUID:          string(pod.UID),
 						})
 						slog.Info("pool: restored in-use pod as idle (run finished)", "pod", pod.Name, "run", runID, "poolKey", key, "template", tmpl)
 						continue

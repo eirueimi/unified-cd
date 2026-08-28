@@ -137,6 +137,11 @@ type ControllerConfig struct {
 	AgentAuth   *ControllerAgentAuthConfig `yaml:"agentAuth"`
 	// InsecureCookies disables the Secure attribute on session cookies (env: UNIFIED_INSECURE_COOKIES).
 	InsecureCookies bool `yaml:"insecureCookies"`
+	// StoreCredentialRequireRunBinding controls the §5.6 broker's behavior
+	// when it cannot check a request's RunID against a known run/Pod
+	// binding (see controller.Config.RequireRunBinding's doc comment for
+	// the full reasoning). Default false (env: UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING).
+	StoreCredentialRequireRunBinding bool `yaml:"storeCredentialRequireRunBinding"`
 }
 
 // envBool parses a boolean environment variable (strconv.ParseBool semantics);
@@ -194,11 +199,12 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 			VaultToken:     os.Getenv("VAULT_TOKEN"),
 			VaultTokenFile: os.Getenv("UNIFIED_VAULT_TOKEN_FILE"),
 		},
-		WebDir:          os.Getenv("UNIFIED_WEB_DIR"),
-		UIProxyTarget:   os.Getenv("UNIFIED_UI_PROXY_TARGET"),
-		StderrPlain:     envBool("UNIFIED_LOG_STDERR_PLAIN"),
-		InsecureCookies: envBool("UNIFIED_INSECURE_COOKIES"),
-		AgentAuth:       &ControllerAgentAuthConfig{},
+		WebDir:                           os.Getenv("UNIFIED_WEB_DIR"),
+		UIProxyTarget:                    os.Getenv("UNIFIED_UI_PROXY_TARGET"),
+		StderrPlain:                      envBool("UNIFIED_LOG_STDERR_PLAIN"),
+		InsecureCookies:                  envBool("UNIFIED_INSECURE_COOKIES"),
+		StoreCredentialRequireRunBinding: envBool("UNIFIED_STORE_CREDENTIAL_REQUIRE_RUN_BINDING"),
+		AgentAuth:                        &ControllerAgentAuthConfig{},
 	}
 	// OIDC from env vars
 	oidcIssuer := os.Getenv("UNIFIED_OIDC_ISSUER")
@@ -262,6 +268,9 @@ func ControllerEffective(filePath string) (*ControllerConfig, error) {
 	}
 	if file.InsecureCookies {
 		eff.InsecureCookies = true
+	}
+	if file.StoreCredentialRequireRunBinding {
+		eff.StoreCredentialRequireRunBinding = true
 	}
 	if file.OIDC != nil {
 		if eff.OIDC == nil {

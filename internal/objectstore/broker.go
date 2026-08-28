@@ -30,6 +30,20 @@ const brokerRequestTimeout = 30 * time.Second
 // gets back the endpoint/bucket to talk to plus a credential to sign
 // requests with.
 //
+// runID names the run THIS Pod is executing — not, when the caller is an
+// artifact download, necessarily the run whose artifact is being fetched
+// (a call: step can download an artifact from a DIFFERENT run; see
+// api.DownloadArtifactStep). Conflating the two would send the wrong value
+// to api.StoreCredentialsRequest.RunID and have the broker reject a
+// perfectly legitimate cross-run download as a binding mismatch (see
+// internal/controller/api_store_credentials.go's runBindingRejects) — so
+// every caller of BrokerConfig must pass the Pod's own run, and cmd/unified-sidecar's
+// callers do so via a flag dedicated to exactly that (see run.go's
+// extractBrokerRunID), never via a subcommand's own --run. Empty is
+// accepted: it degrades to the "unknown binding" case on the controller
+// side (see api.StoreCredentialsRequest.RunID's doc comment), the same as
+// it did before this parameter existed.
+//
 // Endpoint/Bucket/Region/UseSSL are resolved SYNCHRONOUSLY, by one fetch
 // here, rather than deferred into the returned credentials.Provider the way
 // NewFileCredentials defers its own re-reads: NewS3ObjectStore needs the
@@ -38,10 +52,11 @@ const brokerRequestTimeout = 30 * time.Second
 // point to learn them at. The access key/secret/session token DO refresh
 // through the provider seam on every future signing pass whose credential
 // has expired — see brokerProvider.IsExpired.
-func BrokerConfig(ctx context.Context, brokerURL, tokenFile string) (S3Config, error) {
+func BrokerConfig(ctx context.Context, brokerURL, tokenFile, runID string) (S3Config, error) {
 	p := &brokerProvider{
 		brokerURL: strings.TrimRight(brokerURL, "/"),
 		tokenFile: tokenFile,
+		runID:     runID,
 		http:      &http.Client{Timeout: brokerRequestTimeout},
 	}
 	resp, err := p.fetch(ctx)
@@ -70,7 +85,12 @@ func BrokerConfig(ctx context.Context, brokerURL, tokenFile string) (S3Config, e
 type brokerProvider struct {
 	brokerURL string
 	tokenFile string
-	http      *http.Client
+	// runID is the Pod's own executing run (see BrokerConfig's doc comment),
+	// sent unchanged as api.StoreCredentialsRequest.RunID on every fetch —
+	// including a re-fetch after expiry, since it does not change over the
+	// sidecar process's lifetime the way the token itself can be rotated.
+	runID string
+	http  *http.Client
 
 	// mu guards the fields below, for the same reason fileProvider's does:
 	// minio-go can call a Provider from whichever goroutine is signing a
@@ -175,7 +195,7 @@ func (p *brokerProvider) fetch(ctx context.Context) (api.StoreCredentialsRespons
 
 	reqCtx, cancel := context.WithTimeout(ctx, brokerRequestTimeout)
 	defer cancel()
-	body, err := json.Marshal(api.StoreCredentialsRequest{Token: token})
+	body, err := json.Marshal(api.StoreCredentialsRequest{Token: token, RunID: p.runID})
 	if err != nil {
 		return api.StoreCredentialsResponse{}, fmt.Errorf("encode store credentials request: %w", err)
 	}

@@ -170,10 +170,17 @@ func (c *Client) Deregister(ctx context.Context, agentID string) error {
 //     body — even for zero active runs — so the controller can distinguish
 //     "live agent, zero active runs" (a reconcile candidate) from "legacy
 //     agent, no body" (skip, unknown).
-func (c *Client) Heartbeat(ctx context.Context, agentID string, activeRunIDs []string) error {
+//
+// podBindings is forwarded unchanged as api.HeartbeatRequest.PodBindings.
+// It is nil for every host-agent call (there is no Kubernetes Pod to
+// report) and only ever populated by the Kubernetes agent — see
+// PodBindings' doc comment for why this rides the existing heartbeat call
+// rather than a new endpoint. Ignored (never sent) when activeRunIDs is
+// nil, since a bodyless beat cannot carry it either.
+func (c *Client) Heartbeat(ctx context.Context, agentID string, activeRunIDs []string, podBindings map[string]api.PodBinding) error {
 	var body any
 	if activeRunIDs != nil {
-		body = api.HeartbeatRequest{ActiveRunIDs: activeRunIDs}
+		body = api.HeartbeatRequest{ActiveRunIDs: activeRunIDs, PodBindings: podBindings}
 	}
 	_, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/heartbeat", body, nil)
 	return err

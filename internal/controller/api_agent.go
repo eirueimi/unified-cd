@@ -128,6 +128,22 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+
+			// PodBindings is only ever non-empty from a Kubernetes agent (see
+			// its doc comment); a host agent's heartbeat always has a nil map
+			// here, so this loop is a no-op for it — same shape as
+			// req.ActiveRunIDs being empty above. Recorded best-effort: a
+			// failed upsert must not fail the heartbeat itself (the agent
+			// would otherwise be marked stale over a store hiccup), and the
+			// NEXT heartbeat re-asserts the same binding, so a single dropped
+			// write self-heals within one more interval. See
+			// internal/controller/api_store_credentials.go's
+			// runBindingRejects for the reader side.
+			for runID, binding := range req.PodBindings {
+				if err := s.store.UpsertRunPodBinding(r.Context(), runID, binding.PodName, binding.PodUID); err != nil {
+					slog.Warn("heartbeat: failed to record run/pod binding", "runId", runID, "pod", binding.PodName, "error", err)
+				}
+			}
 		}
 	}
 

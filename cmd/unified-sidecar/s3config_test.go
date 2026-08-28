@@ -24,6 +24,7 @@ func TestS3ConfigFromEnv_BrokerWinsOverFileAndStatic(t *testing.T) {
 		var req api.StoreCredentialsRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		assert.Equal(t, "the-projected-token", req.Token)
+		assert.Equal(t, "run-broker-test", req.RunID, "s3ConfigFromEnv's runID parameter must reach the broker request")
 		w.Header().Set("Content-Type", "application/json")
 		require.NoError(t, json.NewEncoder(w).Encode(api.StoreCredentialsResponse{
 			Endpoint: "broker-endpoint:9000", Bucket: "broker-bucket", AccessKey: "AKID-BROKER", SecretKey: "secret-broker",
@@ -45,7 +46,7 @@ func TestS3ConfigFromEnv_BrokerWinsOverFileAndStatic(t *testing.T) {
 	t.Setenv("UNIFIED_S3_SECRET", "secret-static")
 	t.Setenv("UNIFIED_S3_CREDENTIAL_FILE", credFile)
 
-	cfg, err := s3ConfigFromEnv(t.Context())
+	cfg, err := s3ConfigFromEnv(t.Context(), "run-broker-test")
 	require.NoError(t, err)
 	assert.Equal(t, "broker-endpoint:9000", cfg.Endpoint, "the broker's endpoint must win, not the static UNIFIED_S3_ENDPOINT")
 	assert.Equal(t, "broker-bucket", cfg.Bucket)
@@ -64,7 +65,7 @@ func TestS3ConfigFromEnv_FallsThroughToStaticWhenBrokerUnset(t *testing.T) {
 	t.Setenv("UNIFIED_S3_KEY", "AKIA-STATIC")
 	t.Setenv("UNIFIED_S3_SECRET", "secret-static")
 
-	cfg, err := s3ConfigFromEnv(t.Context())
+	cfg, err := s3ConfigFromEnv(t.Context(), "")
 	require.NoError(t, err)
 	assert.Equal(t, "static-endpoint:9000", cfg.Endpoint)
 	assert.Nil(t, cfg.Creds, "no broker or credential file configured; Creds must stay nil so NewS3ObjectStore falls back to the static pair")
@@ -81,7 +82,7 @@ func TestS3ConfigFromEnv_RejectsPartialBrokerConfig(t *testing.T) {
 	t.Setenv("UNIFIED_S3_KEY", "AKIA-STATIC")
 	t.Setenv("UNIFIED_S3_SECRET", "secret-static")
 
-	_, err := s3ConfigFromEnv(t.Context())
+	_, err := s3ConfigFromEnv(t.Context(), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), envBrokerTokenFile)
 }
@@ -99,7 +100,7 @@ func TestS3ConfigFromEnv_BrokerFailureNamesControllerAndReason(t *testing.T) {
 	t.Setenv(envBrokerURL, srv.URL)
 	t.Setenv(envBrokerTokenFile, tokenFile)
 
-	_, err := s3ConfigFromEnv(t.Context())
+	_, err := s3ConfigFromEnv(t.Context(), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), srv.URL, "must name the controller")
 	assert.Contains(t, err.Error(), "403", "must name the reason")

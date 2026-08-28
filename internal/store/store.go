@@ -314,6 +314,25 @@ type Store interface {
 	// GetSidecarStatuses returns every reported sidecar status for a run,
 	// ordered by idx.
 	GetSidecarStatuses(ctx context.Context, runID string) ([]api.SidecarStatusRequest, error)
+	// UpsertRunPodBinding records that podName/podUID is the Kubernetes Pod
+	// currently executing runID, as reported by a Kubernetes agent's
+	// heartbeat (api.HeartbeatRequest.PodBindings). This is what the
+	// store-credentials broker (internal/controller/api_store_credentials.go)
+	// checks a requesting Pod's verified identity against before handing out
+	// object-store credentials for a run. ON CONFLICT overwrites both
+	// columns, so a run reclaimed by a different Pod (after an agent
+	// restart, or a stuck-run reconcile) simply replaces the stale binding —
+	// there is no history to keep, and keeping one would only let a
+	// long-dead Pod's identity linger as "the" binding for a run it no
+	// longer executes.
+	UpsertRunPodBinding(ctx context.Context, runID, podName, podUID string) error
+	// GetRunPodBinding returns the Pod currently bound to runID, and ok=false
+	// when no Kubernetes agent has ever reported one for it — a host-agent
+	// run (which has no Kubernetes Pod at all), a run claimed before this
+	// field existed, or simply a run whose first heartbeat has not landed
+	// yet. The store-credentials broker treats ok=false as "unknown", not as
+	// "rejected" — see its RequireRunBinding config knob.
+	GetRunPodBinding(ctx context.Context, runID string) (binding RunPodBinding, ok bool, err error)
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
 	// os/version/env wholesale (a registration is the authoritative identity).
 	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, env map[string]string) error
@@ -577,6 +596,14 @@ type Session struct {
 type ClaimedRun struct {
 	api.Run
 	Spec []byte
+}
+
+// RunPodBinding is the Kubernetes Pod (by name and UID) a run's row in
+// run_pod_bindings currently names as its executor. See
+// Store.UpsertRunPodBinding / Store.GetRunPodBinding.
+type RunPodBinding struct {
+	PodName string
+	PodUID  string
 }
 
 // QueuedRunRef identifies a Queued run and the agent labels it requires, so the
