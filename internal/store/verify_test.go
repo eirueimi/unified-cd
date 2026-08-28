@@ -92,6 +92,26 @@ func TestVerifySchemaDetectsMissingIndex(t *testing.T) {
 	assert.Contains(t, err.Error(), "runs_job_name_created_idx")
 }
 
+// A drop-only migration (021) is sentineled by the dropped index's absence;
+// recreating logs_run_idx on a DB that still claims version 21 must be
+// reported as drift, the mirror image of TestVerifySchemaDetectsMissingIndex.
+func TestVerifySchemaDetectsRecreatedDroppedIndex(t *testing.T) {
+	pg := NewTestPostgres(t)
+	db := openSQL(t, pg)
+
+	require.NoError(t, verifySchema(db)) // fresh clone is clean
+
+	_, err := db.Exec(`CREATE INDEX logs_run_idx ON public.logs USING btree (run_id, seq)`)
+	require.NoError(t, err)
+
+	err = verifySchema(db)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schema drift")
+	assert.Contains(t, err.Error(), "021_drop_redundant_logs_index")
+	assert.Contains(t, err.Error(), "logs_run_idx")
+	assert.Contains(t, err.Error(), "still exists")
+}
+
 // Dropping the runs.display_name column added by migration 019 on a DB
 // that still claims version 19 must be reported as drift.
 func TestVerifySchemaDetectsMissingDisplayNameColumn(t *testing.T) {
