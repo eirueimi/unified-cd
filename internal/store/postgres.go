@@ -1076,6 +1076,34 @@ func (p *Postgres) GetSidecarStatuses(ctx context.Context, runID string) ([]api.
 	return out, rows.Err()
 }
 
+// UpsertRunPodBinding records which Pod (name + UID) is executing runID,
+// keyed by runID alone. ON CONFLICT overwrites pod_name/pod_uid/updated_at
+// so the row always reflects the most recently reported Pod — see the
+// migration's (020_run_pod_bindings) comment for why no history is kept.
+func (p *Postgres) UpsertRunPodBinding(ctx context.Context, runID, podName, podUID string) error {
+	const q = `INSERT INTO run_pod_bindings (run_id, pod_name, pod_uid, updated_at)
+	           VALUES ($1,$2,$3, now())
+	           ON CONFLICT (run_id) DO UPDATE SET pod_name=$2, pod_uid=$3, updated_at=now()`
+	_, err := p.pool.Exec(ctx, q, runID, podName, podUID)
+	return err
+}
+
+// GetRunPodBinding returns the Pod bound to runID, or ok=false if no row
+// exists yet (see the interface doc comment on Store.GetRunPodBinding for
+// what that means to callers).
+func (p *Postgres) GetRunPodBinding(ctx context.Context, runID string) (RunPodBinding, bool, error) {
+	const q = `SELECT pod_name, pod_uid FROM run_pod_bindings WHERE run_id=$1`
+	var b RunPodBinding
+	err := p.pool.QueryRow(ctx, q, runID).Scan(&b.PodName, &b.PodUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RunPodBinding{}, false, nil
+		}
+		return RunPodBinding{}, false, err
+	}
+	return b, true, nil
+}
+
 // AppendLog stores one log line and notifies SSE listeners. Once the run's
 // logs are archived (a run_log_archives record exists) the run is SEALED:
 // the line is silently dropped and AppendLog returns (0, nil) — lines
