@@ -38,9 +38,9 @@ func emptyStore(t *testing.T) objectstore.ObjectStore {
 }
 
 // localProvider returns a store provider backed by a LocalObjectStore rooted at dir.
-func localProvider(dir string) func(context.Context) (objectstore.ObjectStore, error) {
+func localProvider(dir string) func(context.Context, string) (objectstore.ObjectStore, error) {
 	store := objectstore.NewLocalObjectStore(dir)
-	return func(context.Context) (objectstore.ObjectStore, error) {
+	return func(context.Context, string) (objectstore.ObjectStore, error) {
 		return store, nil
 	}
 }
@@ -48,8 +48,68 @@ func localProvider(dir string) func(context.Context) (objectstore.ObjectStore, e
 // erroringProvider returns a store provider that always fails. Used to prove
 // that "idle" never invokes the provider, and that cache/artifact subcommands
 // fail loudly when it does.
-func erroringProvider(ctx context.Context) (objectstore.ObjectStore, error) {
+func erroringProvider(ctx context.Context, runID string) (objectstore.ObjectStore, error) {
 	return nil, errors.New("boom: no S3 config")
+}
+
+// TestExtractBrokerRunID covers every accepted spelling of --broker-run-id,
+// that it is unaffected by other flags around it, and that it degrades to ""
+// (never an error/panic) when absent or trailing with no value.
+func TestExtractBrokerRunID(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"space form", []string{"--key", "k", "--broker-run-id", "run-1", "--path", "/x"}, "run-1"},
+		{"equals form", []string{"--key", "k", "--broker-run-id=run-2", "--path", "/x"}, "run-2"},
+		{"single-dash space form", []string{"-broker-run-id", "run-3"}, "run-3"},
+		{"single-dash equals form", []string{"-broker-run-id=run-4"}, "run-4"},
+		{"absent", []string{"--key", "k", "--path", "/x"}, ""},
+		{"empty args", []string{}, ""},
+		{"trailing with no value", []string{"--key", "k", "--broker-run-id"}, ""},
+		{"first flag", []string{"--broker-run-id", "run-5", "--key", "k"}, "run-5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractBrokerRunID(tc.args); got != tc.want {
+				t.Fatalf("extractBrokerRunID(%v) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRun_ThreadsBrokerRunIDToStoreProvider verifies run()'s dispatcher
+// extracts --broker-run-id from the subcommand's own args and passes it to
+// newStore BEFORE the subcommand's own FlagSet (which also declares, but
+// ignores, the same flag) ever parses them — for both cache and artifact
+// subcommands, since cache had no run-ID concept at all before this change.
+func TestRun_ThreadsBrokerRunIDToStoreProvider(t *testing.T) {
+	var gotRunID string
+	prov := func(_ context.Context, runID string) (objectstore.ObjectStore, error) {
+		gotRunID = runID
+		return objectstore.NewLocalObjectStore(t.TempDir()), nil
+	}
+
+	gotRunID = ""
+	code := run(context.Background(), prov,
+		[]string{"cache", "restore", "--key", "k1", "--path", t.TempDir(), "--job", "j", "--broker-run-id", "run-cache"},
+		io.Discard)
+	if code != 0 {
+		t.Fatalf("cache restore exit=%d", code)
+	}
+	if gotRunID != "run-cache" {
+		t.Fatalf("cache restore: newStore got runID=%q, want %q", gotRunID, "run-cache")
+	}
+
+	gotRunID = ""
+	code = run(context.Background(), prov,
+		[]string{"artifact", "download", "--run", "artifact-source-run", "--name", "nope", "--dest", t.TempDir(), "--broker-run-id", "run-artifact"},
+		io.Discard)
+	_ = code // this download is expected to fail (no such artifact); only gotRunID matters here
+	if gotRunID != "run-artifact" {
+		t.Fatalf("artifact download: newStore got runID=%q, want %q (must NOT be the artifact's own --run=%q)", gotRunID, "run-artifact", "artifact-source-run")
+	}
 }
 
 func TestRunCache_RestoreEmitsHitMarkerToStdout(t *testing.T) {
@@ -187,7 +247,7 @@ func TestRun_Idle_BlocksUntilCtxCancel(t *testing.T) {
 func TestRun_Idle_NeverInvokesProvider_DegradedMode(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	called := false
-	prov := func(context.Context) (objectstore.ObjectStore, error) {
+	prov := func(context.Context, string) (objectstore.ObjectStore, error) {
 		called = true
 		return nil, errors.New("should never be called")
 	}

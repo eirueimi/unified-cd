@@ -35,12 +35,16 @@ const (
 // next mode" situation — silently falling back to file/static credentials
 // when an operator meant to opt into the broker would serve the WRONG
 // credential shape without any error at all.
-func s3ConfigFromEnv(ctx context.Context) (objectstore.S3Config, error) {
+//
+// runID is passed straight through to objectstore.BrokerConfig and ignored
+// by every other branch (file/static credentials carry no notion of "which
+// run" — see run.go's extractBrokerRunID for where it comes from).
+func s3ConfigFromEnv(ctx context.Context, runID string) (objectstore.S3Config, error) {
 	brokerURL := os.Getenv(envBrokerURL)
 	tokenFile := os.Getenv(envBrokerTokenFile)
 	switch {
 	case brokerURL != "" && tokenFile != "":
-		return objectstore.BrokerConfig(ctx, brokerURL, tokenFile)
+		return objectstore.BrokerConfig(ctx, brokerURL, tokenFile, runID)
 	case brokerURL != "" || tokenFile != "":
 		return objectstore.S3Config{}, fmt.Errorf("%s and %s must both be set to use the store-credential broker (got %s=%q, %s=%q)", envBrokerURL, envBrokerTokenFile, envBrokerURL, brokerURL, envBrokerTokenFile, tokenFile)
 	default:
@@ -54,9 +58,11 @@ func main() {
 	// Build the S3 store lazily: idle (degraded mode, no S3 EnvFrom) must
 	// stay resident even when S3 configuration is absent. Only cache/artifact
 	// subcommands actually need the store, so they invoke this provider
-	// themselves and fail loudly if it errors.
-	prov := func(ctx context.Context) (objectstore.ObjectStore, error) {
-		cfg, err := s3ConfigFromEnv(ctx)
+	// themselves and fail loudly if it errors. runID (see run.go's
+	// extractBrokerRunID) is the Pod's own executing run, threaded through to
+	// the broker path only.
+	prov := func(ctx context.Context, runID string) (objectstore.ObjectStore, error) {
+		cfg, err := s3ConfigFromEnv(ctx, runID)
 		if err != nil {
 			return nil, err
 		}
