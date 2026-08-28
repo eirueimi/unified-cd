@@ -1,0 +1,25 @@
+-- logs_run_idx duplicates the composite btree Postgres already builds to
+-- back logs_pkey: both are `USING btree (run_id, seq)` on the same plain,
+-- non-partitioned table (001_init.up.sql:88-96 has no PARTITION BY, and a
+-- live database confirms it: pg_indexes shows
+--   logs_pkey:     CREATE UNIQUE INDEX logs_pkey     ON public.logs USING btree (run_id, seq)
+--   logs_run_idx:  CREATE INDEX        logs_run_idx  ON public.logs USING btree (run_id, seq)
+-- The planner can never prefer the non-unique logs_run_idx over the unique
+-- index backing the primary key for any predicate on (run_id) or
+-- (run_id, seq) - which is every query logs sees (TailLogs,
+-- ListTrimCandidates, TrimRunLogs, AppendLogs; internal/store/postgres.go).
+-- logs is the highest-write-volume table in the system - every step's
+-- stdout/stderr line lands here - so every INSERT has been maintaining a
+-- second index for no query benefit, at real WAL and disk cost.
+--
+-- Plain (non-CONCURRENT) DROP INDEX because golang-migrate wraps each
+-- migration file in a transaction (see 008_run_indexes.up.sql,
+-- 011_runs_terminal_updated_idx.up.sql) and DROP INDEX CONCURRENTLY cannot
+-- run inside one. A plain drop takes a brief ACCESS EXCLUSIVE lock on
+-- logs while it unlinks the index, but the operation itself is just a
+-- catalog update - no table rewrite, no long scan - so the exclusive
+-- window is short even under load.
+--
+-- IF EXISTS keeps this idempotent against a database where someone already
+-- dropped the index by hand.
+DROP INDEX IF EXISTS public.logs_run_idx;

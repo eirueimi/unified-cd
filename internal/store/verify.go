@@ -6,16 +6,18 @@ import (
 	"fmt"
 )
 
-// sentinel names one schema object a migration creates. verifySchema probes
-// it to confirm the migration's effects actually exist, catching databases
+// sentinel names one schema object a migration creates, or - for a migration
+// whose effect is a removal - one it destroys. verifySchema probes it to
+// confirm the migration's effects actually happened, catching databases
 // whose schema_migrations.version matched an older file numbering (branch
 // renumbering) and silently skipped the current file's contents.
 type sentinel struct {
-	version   int
-	migration string
-	table     string
-	column    string // probe a column of table (when index is empty)
-	index     string // probe an index on table; takes precedence over column
+	version     int
+	migration   string
+	table       string
+	column      string // probe a column of table exists (checked when index and indexAbsent are both empty)
+	index       string // probe an index on table exists; takes precedence over column
+	indexAbsent string // probe an index on table does NOT exist (the migration's effect was to drop it); takes precedence over index and column
 }
 
 // schemaSentinels must contain exactly one entry per migrations/*.up.sql,
@@ -24,28 +26,31 @@ type sentinel struct {
 //
 // A later migration must never drop or rename a sentinel object; if one
 // must, the sentinel entry has to be changed in the same commit, or older
-// binaries verifying a newer database will report false drift.
+// binaries verifying a newer database will report false drift. Symmetrically,
+// a later migration must never recreate an object an indexAbsent sentinel
+// asserts is gone, for the same reason.
 var schemaSentinels = []sentinel{
-	{1, "001_init", "runs", "", ""},
-	{2, "002_add_role", "pats", "role", ""},
-	{3, "003_appsource_managed_resources", "app_sources", "managed_resources", ""},
-	{4, "004_audit_logs", "audit_logs", "", ""},
-	{5, "005_matrix_variant", "step_reports", "variant", ""},
-	{6, "006_appsource_sync_status", "app_sources", "sync_status", ""},
-	{7, "007_step_call_link", "step_reports", "child_run_id", ""},
-	{8, "008_run_indexes", "runs", "", "runs_job_name_created_idx"},
-	{9, "009_agent_capabilities", "agents", "capabilities", ""},
-	{10, "010_sidecar_status", "sidecar_status", "", ""},
-	{11, "011_runs_terminal_updated_idx", "runs", "", "runs_terminal_updated_idx"},
-	{12, "012_run_log_archives_trimmed_at", "run_log_archives", "line_count", ""},
-	{13, "013_agent_identity_auth", "agent_credentials", "token_hash", ""},
-	{14, "014_agent_enrollment_policies", "agent_enrollment_policies", "", ""},
-	{15, "015_secrets_v2", "sessions", "refresh_token_dek", ""},
-	{16, "016_drop_secret_scope", "secrets", "", "secrets_name_key"},
-	{17, "017_run_detached", "runs", "detached", ""},
-	{18, "018_vars", "vars", "", ""},
-	{19, "019_run_display_name", "runs", "display_name", ""},
-	{20, "020_run_pod_bindings", "run_pod_bindings", "", ""},
+	{version: 1, migration: "001_init", table: "runs"},
+	{version: 2, migration: "002_add_role", table: "pats", column: "role"},
+	{version: 3, migration: "003_appsource_managed_resources", table: "app_sources", column: "managed_resources"},
+	{version: 4, migration: "004_audit_logs", table: "audit_logs"},
+	{version: 5, migration: "005_matrix_variant", table: "step_reports", column: "variant"},
+	{version: 6, migration: "006_appsource_sync_status", table: "app_sources", column: "sync_status"},
+	{version: 7, migration: "007_step_call_link", table: "step_reports", column: "child_run_id"},
+	{version: 8, migration: "008_run_indexes", table: "runs", index: "runs_job_name_created_idx"},
+	{version: 9, migration: "009_agent_capabilities", table: "agents", column: "capabilities"},
+	{version: 10, migration: "010_sidecar_status", table: "sidecar_status"},
+	{version: 11, migration: "011_runs_terminal_updated_idx", table: "runs", index: "runs_terminal_updated_idx"},
+	{version: 12, migration: "012_run_log_archives_trimmed_at", table: "run_log_archives", column: "line_count"},
+	{version: 13, migration: "013_agent_identity_auth", table: "agent_credentials", column: "token_hash"},
+	{version: 14, migration: "014_agent_enrollment_policies", table: "agent_enrollment_policies"},
+	{version: 15, migration: "015_secrets_v2", table: "sessions", column: "refresh_token_dek"},
+	{version: 16, migration: "016_drop_secret_scope", table: "secrets", index: "secrets_name_key"},
+	{version: 17, migration: "017_run_detached", table: "runs", column: "detached"},
+	{version: 18, migration: "018_vars", table: "vars"},
+	{version: 19, migration: "019_run_display_name", table: "runs", column: "display_name"},
+	{version: 20, migration: "020_run_pod_bindings", table: "run_pod_bindings"},
+	{version: 21, migration: "021_drop_redundant_logs_index", table: "logs", indexAbsent: "logs_run_idx"},
 }
 
 // verifySchema cross-checks schema_migrations.version against the sentinel
@@ -78,28 +83,40 @@ func verifySchema(db *sql.DB) error {
 		// that schema deliberately - using current_schema() would
 		// false-positive under a custom search_path (e.g. "app, public")
 		// and brick startup fleet-wide.
-		var exists bool
+		var ok bool
 		switch {
+		case s.indexAbsent != "":
+			err = db.QueryRow(
+				`SELECT NOT EXISTS (SELECT 1 FROM pg_indexes
+				 WHERE schemaname = 'public' AND tablename = $1 AND indexname = $2)`,
+				s.table, s.indexAbsent).Scan(&ok)
 		case s.index != "":
 			err = db.QueryRow(
 				`SELECT EXISTS (SELECT 1 FROM pg_indexes
 				 WHERE schemaname = 'public' AND tablename = $1 AND indexname = $2)`,
-				s.table, s.index).Scan(&exists)
+				s.table, s.index).Scan(&ok)
 		case s.column != "":
 			err = db.QueryRow(
 				`SELECT EXISTS (SELECT 1 FROM information_schema.columns
 				 WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2)`,
-				s.table, s.column).Scan(&exists)
+				s.table, s.column).Scan(&ok)
 		default:
 			err = db.QueryRow(
 				`SELECT EXISTS (SELECT 1 FROM information_schema.tables
 				 WHERE table_schema = 'public' AND table_name = $1)`,
-				s.table).Scan(&exists)
+				s.table).Scan(&ok)
 		}
 		if err != nil {
 			return fmt.Errorf("schema verification probe for %s: %w", s.migration, err)
 		}
-		if !exists {
+		if !ok {
+			if s.indexAbsent != "" {
+				return fmt.Errorf(
+					"schema drift: schema_migrations.version=%d claims %s is applied, but index %s still exists; "+
+						"migration files were likely renumbered after this database was migrated - "+
+						"see docs/troubleshooting/controller-and-database.md (\"Schema drift\") for recovery",
+					version, s.migration, s.indexAbsent)
+			}
 			obj := s.table
 			switch {
 			case s.index != "":
