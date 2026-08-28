@@ -891,6 +891,77 @@ func TestAgentHeartbeat_BodylessSkipsReconcile(t *testing.T) {
 	assert.Equal(t, api.RunRunning, got.Status, "bodyless heartbeat must skip reconcile entirely")
 }
 
+// TestAgentHeartbeat_RecordsPodBindings verifies the write side of the
+// run/Pod binding feature: a heartbeat body carrying PodBindings (as only a
+// Kubernetes agent ever sends — see HeartbeatRequest.PodBindings) lands in
+// run_pod_bindings, retrievable via GetRunPodBinding. The read side
+// (enforcement) is covered separately in api_store_credentials_test.go.
+func TestAgentHeartbeat_RecordsPodBindings(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "agent-hb-pod", run.ID)
+
+	body, err := json.Marshal(api.HeartbeatRequest{
+		ActiveRunIDs: []string{run.ID},
+		PodBindings:  map[string]api.PodBinding{run.ID: {PodName: "ucd-run-xyz", PodUID: "pod-uid-xyz"}},
+	})
+	require.NoError(t, err)
+	token := issueAgentAccessForTest(t, pg, "agent-hb-pod", nil, nil)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-pod/heartbeat", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	s.Router().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+
+	binding, ok, err := pg.GetRunPodBinding(t.Context(), run.ID)
+	require.NoError(t, err)
+	require.True(t, ok, "heartbeat must have recorded a binding for run.ID")
+	assert.Equal(t, "ucd-run-xyz", binding.PodName)
+	assert.Equal(t, "pod-uid-xyz", binding.PodUID)
+}
+
+// TestAgentHeartbeat_PodBindingsOverwritesOnReclaim verifies a second
+// heartbeat reporting a DIFFERENT Pod for the same run replaces the earlier
+// binding rather than erroring or keeping the stale one — the shape a
+// stuck-run reconcile or an agent restart produces (see the migration's
+// comment on why no history is kept).
+func TestAgentHeartbeat_PodBindingsOverwritesOnReclaim(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "", "")
+	require.NoError(t, err)
+	claimRunForTest(t, pg, "agent-hb-reclaim", run.ID)
+	token := issueAgentAccessForTest(t, pg, "agent-hb-reclaim", nil, nil)
+
+	beat := func(podName, podUID string) {
+		body, err := json.Marshal(api.HeartbeatRequest{
+			ActiveRunIDs: []string{run.ID},
+			PodBindings:  map[string]api.PodBinding{run.ID: {PodName: podName, PodUID: podUID}},
+		})
+		require.NoError(t, err)
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent-hb-reclaim/heartbeat", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		s.Router().ServeHTTP(rr, req)
+		require.Equal(t, http.StatusNoContent, rr.Code, rr.Body.String())
+	}
+
+	beat("ucd-run-first", "pod-uid-first")
+	beat("ucd-run-second", "pod-uid-second")
+
+	binding, ok, err := pg.GetRunPodBinding(t.Context(), run.ID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "ucd-run-second", binding.PodName)
+	assert.Equal(t, "pod-uid-second", binding.PodUID)
+}
+
 func TestBuildClaimStep_MatrixAndForeachNormalization(t *testing.T) {
 	// matrix is converted directly into a dimension list
 	entry := dsl.StepEntry{

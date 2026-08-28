@@ -65,6 +65,44 @@ type Config struct {
 	// which the broker reports as a clear, named error rather than an
 	// empty credential the sidecar would only fail to sign with later.
 	StoreCredentialS3 *objectstore.S3Config
+
+	// RequireRunBinding decides what handleStoreCredentials does when it
+	// cannot check a request's RunID against a known run/Pod binding —
+	// either because RunID is empty, or because no k8s agent heartbeat has
+	// reported one for it yet (see api.HeartbeatRequest.PodBindings).
+	//
+	// false (the default) ALLOWS the request in that case, logging that
+	// enforcement was skipped. This is the only setting that is safe to
+	// roll out onto a fleet gradually: during a rolling upgrade some job
+	// Pods' sidecars will still ask before the k8s agent that created them
+	// has sent its first heartbeat carrying the binding (up to
+	// DefaultHeartbeatInterval after Pod creation, see
+	// HeartbeatRequest.PodBindings), and an older k8s agent binary never
+	// reports a binding at all. Either would otherwise have its FIRST
+	// artifact/cache step of every run fail, fleet-wide, the moment this
+	// shipped — not a narrow edge case but the common path.
+	//
+	// true REJECTS the request instead. This is strictly stronger — a Pod
+	// with no reported binding gets nothing rather than a passthrough
+	// credential — and is the right setting once every agent in a fleet is
+	// known to report bindings (no host agents asking this endpoint at
+	// all, no in-flight rolling upgrade). It does not need to be, and is
+	// not, the default: this project ships one binary fleet-wide with no
+	// staged rollout mechanism, so defaulting to true would brick the
+	// upgrade that introduces it.
+	//
+	// Neither setting is the end state. A mismatched binding (the Pod
+	// asking is verified but is NOT the one bound to the named run) is
+	// ALWAYS rejected regardless of this flag — that is a contradiction,
+	// not an absence of information, and permissiveness only ever concerns
+	// the latter. This flag exists because passthrough credentials cannot
+	// be scoped to a run today (see the handler's passthrough comment), so
+	// an unbound request costs nothing to allow; it is a temporary state,
+	// not a design destination — the day the controller can mint a
+	// run-scoped credential, an unbound request must be rejected
+	// unconditionally, or scoping buys no isolation from a Pod that simply
+	// never reports a binding.
+	RequireRunBinding bool
 }
 
 // OIDCConfig holds the OIDC provider configuration.
