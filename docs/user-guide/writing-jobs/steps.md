@@ -421,6 +421,8 @@ Post hooks run after the main DAG finishes (regardless of success or failure), i
 Use them for cleanup tasks (delete temp files, stop containers, release resources).
 A post hook's stdout/stderr appears in its owning step's run log, after that step's main output (a failing post hook itself does not fail the run — it's only logged).
 
+A post hook runs with the workspace as its working directory but gets **none of the job's context**: no `UNIFIED_WORKSPACE`, no `UNIFIED_VOLUME_<ALIAS>` for a [named volume](volumes.md) the job mounts, and no variables (see [`post:` hooks receive no variables](../variables.md#post-hooks-receive-no-variables)). A hook that saves something to a volume must use the volume's `mountPath` directly: the relative path works because the hook starts in the workspace.
+
 A step inside [`finally:`](approval-and-finally.md) may declare a `post:` hook too. Those hooks
 drain in their own pass **after** the whole `finally` block completes, so a
 main-DAG step's cleanup never has to wait for `finally` to finish. Reverse
