@@ -601,6 +601,7 @@ git add internal/agent/stepenv.go internal/agent/orchestrator.go internal/k8sage
 - Create: `internal/k8sagent/volumes_test.go`
 - Modify: `internal/k8sagent/podbuilder.go` (`buildWorkspaceVolume` ~627, the mount loop ~584-624)
 - Modify: `internal/k8sagent/agent.go` (startup ~99, claim ~356)
+- Inject `UNIFIED_VOLUME_<ALIAS>` on the Kubernetes side too, through `dsl.VolumeEnvName` and never inline. Without it a job's `$UNIFIED_VOLUME_GO_CACHE` is empty on Kubernetes while it works on a host agent — the one divergence this project exists to prevent. **Not** in `imageStepEnv`: that seeds scope-pod creation env, and scope pods mount no volume, so the variables belong on `k8sBackend.VolumePaths` instead. (An earlier draft of this plan said `imageStepEnv`; the Task 9 implementer was right to refuse it.)
 
 **Interfaces:**
 - Consumes: `config.VolumeConfig` (Task 5), `Spec.Volumes` (Task 1).
@@ -649,7 +650,59 @@ git add internal/k8sagent/ && git commit -m "feat(k8s-agent): provision and moun
 
 ---
 
-### Task 10: Remove `workspace.pvc`, and make docs, examples, and templates agree
+### Task 10: Resolve artifact and cache paths through the volume mount table
+
+**Files:**
+- Modify: `internal/agent/backend_host.go` (`ResolveArtifactPath`, `ResolveCachePath`)
+- Modify: `internal/agent/volumes_mount.go` (`checkNotInVolumeMount` — the loud refusal this task replaces)
+- Test: `internal/agent/volumes_mount_test.go`, `internal/agent/orchestrator_*_test.go`
+
+**Interfaces:**
+- Consumes: the mount table and `volumePaths` (Task 6), `VolumePaths(scope)` (Task 8).
+- Produces: nothing new; it changes a refusal into a resolution.
+
+**Why this task exists.** Task 6 made a host-side artifact or cache path that falls inside a volume's mount point **fail the run**, because such a path resolves against the host `workDir` where a container-only mount point is an empty directory — so `artifacts:` would archive nothing while the run went green. A loud refusal was the right call against silent data loss. But Task 9 then showed that on Kubernetes the same paths **work**, because the sidecar mounts every volume. So the same YAML now succeeds on k8s and fails on a host agent, which is exactly the divergence this whole project exists to remove, and the host is the side that is wrong.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestResolveArtifactPath_InsideAVolumeMountResolvesToTheVolume(t *testing.T)
+    // a volume at mountPath "cache", an artifact path "cache/out.tar":
+    // resolves to <volumeHostPath>/out.tar, not <workDir>/cache/out.tar
+func TestResolveCachePath_InsideAVolumeMountResolvesToTheVolume(t *testing.T)
+func TestResolveArtifactPath_AtAVolumeMountRootResolvesToTheVolume(t *testing.T)
+func TestResolveArtifactPath_OutsideEveryVolumeIsUnchanged(t *testing.T)
+func TestResolveArtifactPath_StillRefusesAnEscape(t *testing.T)
+    // the ContainWithinOS guard is untouched for paths that climb out
+func TestExecuteRun_UploadsAnArtifactFromInsideAVolume(t *testing.T)
+    // end to end: the file really is archived, where Task 6 failed the run
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./internal/agent/ -run 'ResolveArtifactPath|ResolveCachePath|ArtifactFromInsideAVolume' -v`
+Expected: FAIL — today the run is refused.
+
+- [ ] **Step 3: Resolve through the mount table**
+
+In the host backend, after the existing workspace containment check, map a path that falls inside a volume's mount point to that volume's host directory. Longest-prefix wins, since Task 1 permits a volume at `"."` alongside one at a sub-path. Keep `ContainWithinOS` for the escape check: this task widens where a *legal* path may point, not what counts as legal.
+
+Then remove `checkNotInVolumeMount`'s refusal and the three call sites' error paths, leaving the scoped-step exemption as it is — a scope container mounts neither the workspace nor any volume, so nothing changes there.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `go test ./internal/agent/ -run 'Resolve|Artifact|Cache' -v`
+Expected: PASS, including the tests Task 6 added for the old refusal, which must now be deleted rather than inverted — say so in the report.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/agent/ && git commit -m "fix(agent): resolve artifact and cache paths inside a volume mount"
+```
+
+---
+
+### Task 11: Remove `workspace.pvc`, and make docs, examples, and templates agree
 
 **Files:**
 - Modify: `internal/dsl/types.go:544-553` (delete `WorkspacePVC`, the `PVC` field)
