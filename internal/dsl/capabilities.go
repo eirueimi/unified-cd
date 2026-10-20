@@ -31,3 +31,20 @@ func RequiredCaps(spec Spec) []string {
 		return []string{CapContainer}
 	}
 }
+
+// RequiredVolumes returns the candidate volume names each of a job's volumes
+// needs, one set per entry in declaration order. A run needs one free volume
+// from every set. It is a second dimension beside RequiredCaps, not a
+// capability string. The spec must already be expanded (ExpandVolumes); it
+// returns nil when the job declares no volumes. The result shares no memory
+// with spec.
+func RequiredVolumes(spec Spec) [][]string {
+	if len(spec.Volumes) == 0 {
+		return nil
+	}
+	out := make([][]string, len(spec.Volumes))
+	for i, v := range spec.Volumes {
+		out[i] = append([]string(nil), v.Name...)
+	}
+	return out
+}
