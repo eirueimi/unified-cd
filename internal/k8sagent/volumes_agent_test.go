@@ -404,7 +404,7 @@ func TestExecuteRun_CleanWorkspaceWipesAVolumeAtTheRoot(t *testing.T) {
 		wipe := ss[0]
 		assert.True(t, cleared(ss[:1]), "the root volume is still wiped: %v", ss)
 		assert.Contains(t, wipe, `'/workspace/.ucd-cache/go') ;;`, "the nested mount point is skipped")
-		assert.Contains(t, wipe, `'/workspace/.ucd-cache') ucd_wipe "$e" ;;`, "its parent is descended into, not removed")
+		assert.Contains(t, wipe, `'/workspace/.ucd-cache') ucd_wipe "$1/$e";`, "its parent is descended into, not removed")
 		assert.NotContains(t, wipe, `'/workspace'/*`, "the root is never globbed straight into a removal")
 		assert.NotContains(t, wipe, "rm -rf '/workspace", "no removal names a path directly")
 	})

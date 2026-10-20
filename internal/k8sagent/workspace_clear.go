@@ -29,8 +29,16 @@ func shQuote(s string) string {
 // It is a shell function built on rm alone, because rm is the one tool the
 // original one-liner already required of the job image; a find(1) with -prune
 // would add a second. The paths are matched as literal strings (quoted case
-// patterns), never as globs. With no nested volume the script is the original
-// one-liner.
+// patterns), never as globs, and the only globs are literal ones in the script,
+// applied after a cd, so that a mount path holding *, ? or [ cannot change what
+// is enumerated. With no nested volume the script is the original one-liner.
+//
+// It assumes a Linux pod. The interpreter that runs it (ucd-sh, mvdan.cc/sh)
+// joins glob results with filepath.Separator, so on a Windows container the
+// separator would be a backslash, no case pattern here would match, and the
+// clean would empty every nested volume. mountPath is forced POSIX and the
+// workspace mount is /workspace, which keeps Windows pods out; do not relax
+// either without rewriting this script.
 func clearWorkspaceScript(root string, vols []agentlib.MountedVolume) string {
 	root = path.Clean(root)
 	q := shQuote(root)
@@ -65,14 +73,24 @@ func clearWorkspaceScript(root string, vols []agentlib.MountedVolume) string {
 	var b strings.Builder
 	b.WriteString("ucd_rc=0\n")
 	b.WriteString("ucd_wipe() {\n")
-	b.WriteString("  for e in \"$1\"/* \"$1\"/.[!.]* \"$1\"/..?*; do\n")
+	// The glob patterns are literals in the script, so no expansion carries a
+	// job-authored directory name: ucd-sh pattern-escapes a quoted glob base and
+	// then fails to find it when the name holds *, ? or [. $1 is always an
+	// absolute path, so it is only ever concatenated for case-matching and for
+	// the recursive call, and the loop works on bare names relative to the
+	// directory it has cd'd into. The cd is repeated after each recursion
+	// because the callee leaves the working directory in its own subdirectory;
+	// if that cd fails the loop's remaining relative names are meaningless, so
+	// the function gives up with ucd_rc set.
+	b.WriteString("  cd \"$1\" || { ucd_rc=1; return; }\n")
+	b.WriteString("  for e in * .[!.]* ..?*; do\n")
 	b.WriteString("    if [ ! -e \"$e\" ] && [ ! -L \"$e\" ]; then continue; fi\n")
-	b.WriteString("    case \"$e\" in\n")
+	b.WriteString("    case \"$1/$e\" in\n")
 	fmt.Fprintf(&b, "      %s) ;;\n", list(mounts))
 	if len(ancestors) > 0 {
-		fmt.Fprintf(&b, "      %s) ucd_wipe \"$e\" ;;\n", list(ancestors))
+		fmt.Fprintf(&b, "      %s) ucd_wipe \"$1/$e\"; cd \"$1\" || { ucd_rc=1; return; } ;;\n", list(ancestors))
 	}
-	b.WriteString("      *) rm -rf \"$e\" || ucd_rc=1 ;;\n")
+	b.WriteString("      *) rm -rf \"$1/$e\" || ucd_rc=1 ;;\n")
 	b.WriteString("    esac\n")
 	b.WriteString("  done\n")
 	b.WriteString("}\n")
