@@ -71,9 +71,15 @@ type K8sAgent struct {
 	// every pod this agent creates.
 	kube kubernetes.Interface
 	// volMu serialises choosing a free volume and creating the pod that mounts
-	// it (see createClaimPod), so two claims in this process cannot both take a
-	// volume that was free a moment ago.
+	// it (see createClaimPod) within this process. Exclusion against another
+	// replica is the PVC lock's job (volumes_lock.go), not this mutex's.
 	volMu sync.Mutex
+	// drain is Run's claim context: it is cancelled when the agent starts
+	// draining. A run still waiting for a volume gives up then (createClaimPod),
+	// where a run that already holds its volumes is left to finish. Set once by
+	// Run before any claim loop starts; nil (never drains) when executeRun is
+	// called directly.
+	drain context.Context
 }
 
 // k8sAgentCapabilities reports what the k8s agent can execute: it always
@@ -96,6 +102,7 @@ func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec 
 func (a *K8sAgent) Run(ctx context.Context) error {
 	host, _ := os.Hostname()
 	labels := appendLabelIfMissing(a.cfg.Labels, "kubernetes")
+	a.drain = ctx
 
 	// Provision the volumes' claims BEFORE advertising them: an agent that
 	// registered a volume it could not back would be handed jobs that need it.
@@ -462,6 +469,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		created := claimed.pod
 		volumePaths, rootVolume = claimed.volumePaths, claimed.rootVolume
 		podName = created.Name
+		releaseVolumes := claimed.release
 		// See the pooled branch's identical call above for why this happens
 		// here rather than after awaitPodRunning.
 		a.podBindings.Add(c.RunID, api.PodBinding{PodName: created.Name, PodUID: string(created.UID)})
@@ -470,6 +478,12 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			defer cancelTeardown()
 			if err := a.pm.DeletePod(teardownCtx, podName); err != nil {
 				slog.Warn("k8s: failed to delete Pod", "pod", podName, "error", err)
+			}
+			// After the delete is issued, never before: the pod's label keeps
+			// the volume busy while it terminates, and only then may another
+			// run take the lock.
+			if releaseVolumes != nil {
+				releaseVolumes(teardownCtx)
 			}
 		}()
 	}

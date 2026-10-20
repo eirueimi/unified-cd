@@ -703,7 +703,10 @@ rules:
     verbs: ["create", "get", "list", "delete", "watch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["create", "delete"]
+    # Only needed when the agent config declares `volumes`: the agent reads and
+    # creates its PVCs, and takes/releases an exclusive volume by updating the
+    # claim's `unified-cd/volume-held-by` annotation.
+    verbs: ["create", "get", "list", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

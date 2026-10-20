@@ -83,6 +83,12 @@ func newVolFixture(t *testing.T, vols []config.VolumeConfig) *volFixture {
 		client: agentlib.NewClient(srv.URL, "tok"),
 		pm:     volPM{NewPodManager(f.cs, testVolNS, "ubuntu:22.04")},
 		exec:   f.ex,
+		kube:   f.cs,
+	}
+	// The claims exist before a run mounts or locks one, as after a real startup.
+	installPVCCompareAndSwap(f.cs)
+	if len(vols) > 0 {
+		require.NoError(t, EnsurePVCs(context.Background(), f.cs, testVolNS, "agent1", vols))
 	}
 
 	old := agentlib.CancelPollInterval

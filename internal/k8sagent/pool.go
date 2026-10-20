@@ -296,6 +296,13 @@ type masterRunGetter interface {
 
 // Restore scans existing Pods in Kubernetes at agent startup and restores the pool state.
 // If masterClient is nil, all in-use Pods are deleted.
+//
+// It adopts POOLED pods only; a per-run claim pod (no pool-status annotation) is
+// skipped on purpose. That is not an omission for named volumes: a pooled pod can
+// never mount a volume (spec.volumes with podTemplate.reuse is refused), and the
+// volumes a claim pod holds are not state to adopt, because volume occupancy is
+// re-read from the pods' labels and the PVC locks on every claim (volumes.go,
+// volumes_lock.go) rather than kept in this process.
 func (p *PodPool) Restore(ctx context.Context, masterClient masterRunGetter) error {
 	pods, err := p.client.CoreV1().Pods(p.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app=unified-cd-agent",

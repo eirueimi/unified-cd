@@ -27,11 +27,13 @@ import (
 //
 // A volume is an ordinary PersistentVolumeClaim named <agentName>-<volume>,
 // created at startup and never deleted by this agent. A claim pod that mounts
-// one is labelled with it, and that label is the ONLY record of who holds a
-// volume: occupancy is read back from the live pods, never from process
-// memory. Replicas of one Deployment share a config and so share claims, and a
-// restarted agent's pods outlive it, so a table kept in a process would be
-// wrong in exactly the situations (a rollout, a crash) where exclusion matters.
+// one is labelled with it, and that label is what says a volume is in use right
+// now: occupancy is read back from the live pods, never from process memory.
+// Taking an exclusive volume is separately made atomic against other replicas
+// by a lock annotation on the PVC (volumes_lock.go). Replicas of one Deployment
+// share a config and so share claims, and a restarted agent's pods outlive it,
+// so a table kept in a process would be wrong in exactly the situations (a
+// rollout, a crash) where exclusion matters.
 const (
 	// volumeLabelPrefix starts the key of the label a claim pod carries for
 	// each volume it mounts: volume.unified-cd/<claim name>: <volume name>. The
@@ -375,6 +377,10 @@ type claimPodResult struct {
 	// rootVolume is true when a volume is mounted at the workspace root, which
 	// makes the workspace that volume.
 	rootVolume bool
+	// release clears the run's volume locks; nil when the claim took none. The
+	// caller runs it once the pod's deletion has been issued: the pod label
+	// keeps the volume busy while the pod is still terminating.
+	release func(context.Context)
 }
 
 // declaredVolumes indexes the configured volumes by name.
@@ -428,14 +434,18 @@ func (a *K8sAgent) claimRequest(ctx context.Context) api.ClaimRequest {
 // it first chooses a free volume for each entry, waiting while the volumes it
 // needs are held by another pod, and creates the pod with them mounted.
 //
-// Choosing and creating happen under one lock, so two claims in this process
-// cannot both pick a volume that is free and then both create a pod for it. The
-// lock cannot reach a second replica; that window is one pod creation wide, and
-// the pod the other replica created is visible to the next check, which is why
-// occupancy comes from the cluster.
+// Exclusion is atomic against another replica, not just this process: an
+// exclusive volume is taken by an optimistic update of its PVC (volumes_lock.go)
+// before the pod is created, so two replicas that both saw it free cannot both
+// get it. volMu additionally serialises choosing within this process, which
+// keeps its own claims from needlessly colliding on that update.
 //
-// A run that has to wait holds nothing, and the wait ends, without an error to
-// report, when the controller says the run is finished.
+// A run that has to wait holds nothing. The wait ends, without an error to
+// report, when the controller says the run is finished, and it ends with a
+// failure when the agent starts draining (a.drain): a drain lets running work
+// finish, but this run has not started, and waiting out a holder (a Unity build
+// runs for tens of minutes) would hold its slot and stall the rollout. Nothing
+// proceeds unmounted.
 func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (claimPodResult, error) {
 	sidecar := SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName, S3SecretMode: a.cfg.SidecarS3SecretMode, BrokerURL: a.cfg.Server}
 	if len(c.Volumes) == 0 {
@@ -458,6 +468,15 @@ func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (cla
 		}
 	}
 
+	// waitCtx ends with the run context (shutdown, drain timeout) or with the
+	// drain itself, whichever comes first.
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if a.drain != nil {
+		stop := context.AfterFunc(a.drain, cancel)
+		defer stop()
+	}
+
 	announced := false
 	for {
 		res, created, err := a.tryCreateWithVolumes(ctx, c, sidecar, sets, declared)
@@ -466,14 +485,17 @@ func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (cla
 		}
 		if !announced {
 			announced = true
-			a.warnRun(ctx, c.RunID, fmt.Sprintf("waiting for volumes %q, which another run is using", sets))
+			a.warnRun(waitCtx, c.RunID, fmt.Sprintf("waiting for volumes %q, which another run is using", sets))
 		}
 		select {
-		case <-ctx.Done():
-			return claimPodResult{}, fmt.Errorf("k8s: gave up waiting for volumes %q: %w", sets, ctx.Err())
+		case <-waitCtx.Done():
+			if ctx.Err() == nil && a.drain != nil && a.drain.Err() != nil {
+				return claimPodResult{}, fmt.Errorf("k8s: run abandoned: the agent is draining and the run was still waiting for its volumes %q", sets)
+			}
+			return claimPodResult{}, fmt.Errorf("k8s: gave up waiting for volumes %q: %w", sets, waitCtx.Err())
 		case <-time.After(agentlib.CancelPollInterval):
 		}
-		if run, err := a.client.GetRun(ctx, c.RunID); err == nil && isTerminalRunStatus(run.Status) {
+		if run, err := a.client.GetRun(waitCtx, c.RunID); err == nil && isTerminalRunStatus(run.Status) {
 			return claimPodResult{}, errRunTerminalWhileWaiting
 		}
 	}
@@ -490,11 +512,40 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 		slog.Warn("k8s: could not read volume occupancy; treating the run as waiting", "runId", c.RunID, "error", err)
 		return claimPodResult{}, false, nil
 	}
-	free := func(n string) bool { return declared[n].Mode == agentlib.VolumeModeShared || !held[n] }
-	chosen, ok := agentlib.ChooseVolumes(sets, free)
-	if !ok {
-		return claimPodResult{}, false, nil
+	// A volume another replica won the lock on is set aside and the choice
+	// made again, so a candidate list falls through to its next free entry
+	// instead of waiting a whole poll interval for the same loser.
+	contended := map[string]bool{}
+	var chosen []string
+	var release func(context.Context)
+	for {
+		free := func(n string) bool {
+			return !contended[n] && (declared[n].Mode == agentlib.VolumeModeShared || !held[n])
+		}
+		var ok bool
+		chosen, ok = agentlib.ChooseVolumes(sets, free)
+		if !ok {
+			return claimPodResult{}, false, nil
+		}
+		var lost string
+		release, lost, err = a.lockExclusive(ctx, chosen, c.RunID)
+		if err != nil {
+			slog.Warn("k8s: could not lock the run's volumes; treating the run as waiting", "runId", c.RunID, "error", err)
+			return claimPodResult{}, false, nil
+		}
+		if lost == "" {
+			break
+		}
+		contended[lost] = true
 	}
+	// From here the run holds its volumes; give them back unless a pod now
+	// exists that will do it when the run ends.
+	defer func() {
+		if !created {
+			release(context.WithoutCancel(ctx))
+		}
+	}()
+
 	narrowed := make([]dsl.VolumeMount, len(c.Volumes))
 	for i, v := range c.Volumes {
 		narrowed[i] = v
@@ -505,7 +556,11 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 		return claimPodResult{}, false, fmt.Errorf("k8s: %w", err)
 	}
 	res, err = a.buildAndCreate(ctx, c, sidecar, vols, paths)
-	return res, err == nil, err
+	if err != nil {
+		return claimPodResult{}, false, err
+	}
+	res.release = release
+	return res, true, nil
 }
 
 // buildAndCreate builds the claim pod with vols mounted and creates it.
