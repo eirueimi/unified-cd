@@ -181,9 +181,9 @@ no single agent that provides capability [native] and matches labels [macos] dec
 
 **Cause**
 
-A volume is declared in an *agent's* own config, never in the job, and the controller holds no
-volume state, so applying a job that names a volume nobody declares is not an error: the run is
-queued and simply never claimed. Routing is an AND of ORs. For every `spec.volumes` entry the
+A volume is declared in an *agent's* own config, never in the job, and the controller records
+only the names agents advertise (no definitions, no occupancy), so applying a job that names a
+volume nobody declares is not an error: the run is queued and simply never claimed. Routing is an AND of ORs. For every `spec.volumes` entry the
 agent must declare at least one candidate name, and one agent must satisfy every entry, because a
 run is claimed by exactly one agent.
 

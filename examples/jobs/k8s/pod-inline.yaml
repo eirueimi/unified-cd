@@ -20,7 +20,7 @@ spec:
       containers:
         - name: job
           image: python:3.12-slim
-          # command omitted → agent injects ["sleep", "infinity"] automatically
+          # command omitted → agent injects ["/.ucd/ucd-sh", "pause"] automatically
   steps:
     - name: setup
       run: |

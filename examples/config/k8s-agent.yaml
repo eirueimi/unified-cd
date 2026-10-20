@@ -52,7 +52,7 @@ podTemplates:
       containers:
         - name: job
           image: golang:1.24-alpine
-          # command omitted → agent injects ["sleep", "infinity"] automatically
+          # command omitted → agent injects ["/.ucd/ucd-sh", "pause"] automatically
           # workspace volumeMount is injected by the agent — no need to specify it
         - name: docker
           image: docker:24-dind

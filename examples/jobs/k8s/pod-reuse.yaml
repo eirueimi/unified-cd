@@ -35,9 +35,12 @@ spec:
         # This demo has no source checkout, so the key is static.
         key: incremental-build-modules-v1
 
-    # A real job checks out its sources first (for example with the checkout template in
-    # templates/); the workspace starts empty.
+    # The workspace starts empty, so this demo creates a tiny module to build. A real job
+    # checks out its sources first (for example with the checkout template in templates/).
     - name: build
       run: |
         export GOMODCACHE="$UNIFIED_WORKSPACE/.gomodcache"
-        cd /workspace && go build ./...
+        cd /workspace
+        go mod init example.com/demo
+        printf 'package main\n\nfunc main() { println("hello") }\n' > main.go
+        go build ./...

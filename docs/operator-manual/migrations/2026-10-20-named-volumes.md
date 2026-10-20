@@ -24,8 +24,18 @@ then the sections for the ones that apply to you.
 | 7 | `spec.cleanWorkspace` did not exist; a `native: true` job could not set `podTemplate.cleanWorkspace`. | `spec.cleanWorkspace` is new. It wipes a volume mounted at `"."`. `podTemplate.cleanWorkspace` still works and the two are ORed. |
 | 8 | (Kubernetes) The agent's Role needed `create` and `delete` on `persistentvolumeclaims`, which it never used. | With `volumes` configured, the Role needs `get`, `list`, `create` and `update`. See [Kubernetes agents](#kubernetes-agents). |
 
-Nothing here changes the controller's database schema. No job YAML that does not use
-`workspace.pvc` fails to apply because of this release.
+**Database and upgrade order.** This release adds one migration, `022_agent_volumes`, which is
+purely additive: it adds `agents.volumes` (the volume names each agent advertises) and
+`runs.required_volumes` (each run's candidate lists, written once when the run is queued), both
+`NOT NULL` with defaults. It runs automatically at controller startup, like every migration, and an
+older controller binary keeps working against the migrated schema (it just cannot route volume jobs).
+The controller therefore stores the names agents advertise and the candidate lists runs need, but
+holds **no volume definitions and no occupancy state**: what a volume is (mode, size, location) lives
+in the agent's config, and who is holding it right now lives with the agent. **Upgrade the controller
+first, then the agents**, so that the volumes an upgraded agent advertises at registration have a
+column to be stored in; an agent upgraded first would register against a schema without
+`agents.volumes`. No job YAML that does not use `workspace.pvc` fails to apply because of this
+release.
 
 ---
 

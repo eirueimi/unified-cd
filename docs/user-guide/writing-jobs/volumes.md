@@ -249,7 +249,8 @@ To archive a volume deliberately, name the volume's own mount path.
 
 ## Scheduling and diagnosing a run that does not start
 
-The controller holds no volume state, so an unknown volume name is **not** an apply-time error. The
+The controller records which volume names each agent advertises, but holds no volume definitions and
+no occupancy state (those live in the agent), so an unknown volume name is **not** an apply-time error. The
 run is queued and stays `Queued`, and the job page shows an unschedulable banner naming the
 volume. Routing is an AND of ORs: for every `spec.volumes` entry, the agent must declare at least
 one of its candidates, and the whole set must be declared by **one** agent, because a run is
@@ -277,4 +278,6 @@ with a free copy; there is no affinity for the agent that ran the job last. In s
 copy stays warm, but a job that relies on the *same* data being there must be pinned to one agent
 with `agentSelector`, or the volume name must be declared by exactly one agent.
 
-A volume is never shared across agents, and the controller never stores anything about volumes.
+A volume is never shared across agents. The controller stores only the names each agent advertises
+and each run's candidate lists; it holds no volume definitions (mode, size, location are the agent's
+config) and no occupancy state (which run holds a volume is tracked by the agent).

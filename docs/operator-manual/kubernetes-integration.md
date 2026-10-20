@@ -842,7 +842,7 @@ This is comparable to how most CI systems hand artifact/cache sidecars static bu
 ## RBAC example
 
 Minimum permissions required for k8s-agent to operate. `manifests/base/k8s-agent/rbac.yaml` ships
-a Role that is a superset of this one (it adds `update` and `patch` on Pods, which `podTemplate.reuse`
+a Role that is a superset of this one (it keeps a `delete` verb on PVCs from before named volumes, which the agent does not use, and adds `update` and `patch` on Pods, which `podTemplate.reuse`
 needs to mark a finished Pod idle; without them reuse silently never happens).
 
 **When you add `volumes` to an agent, roll the Role first and the agent image second.** The agent
@@ -866,8 +866,8 @@ rules:
     resources: ["persistentvolumeclaims"]
     # Only needed when the agent config declares `volumes`: the agent reads and
     # creates its PVCs, and takes/releases an exclusive volume by updating the
-    # claim's `unified-cd/volume-held-by` annotation.
-    verbs: ["create", "get", "list", "update", "delete"]
+    # claim's `unified-cd/volume-held-by` annotation. It never deletes a PVC.
+    verbs: ["create", "get", "list", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
