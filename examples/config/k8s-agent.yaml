@@ -21,6 +21,15 @@ poolIdleTimeout: ""
 # -> 10m ("unbounded" is not expressible); an unparseable value is rejected at
 # startup and the agent exits 1.
 # finallyTimeout: 10m
+# Agent-owned named volumes (spec.volumes in a Job). Each becomes a PVC named
+# <agentName>-<volume>, created at startup and never deleted by the agent.
+# agentName must stay the same across restarts; it is not the enrolled agent ID.
+# agentName: ci-main
+# volumes:
+#   - name: go-cache
+#     mode: exclusive          # exclusive -> ReadWriteOnce; shared -> ReadWriteMany
+#     size: 20Gi               # required on Kubernetes
+#     # storageClassName: gp3  # omit to use the cluster default
 # podImage: fallback image when a Job does not specify a podTemplate
 podImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3
 

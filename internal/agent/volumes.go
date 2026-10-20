@@ -449,6 +449,21 @@ func (m *VolumeManager) assignLocked(runID string, declared [][]string, pathKeys
 		_, mine := m.holders[n][runID]
 		return mine || m.vols[n].mode == VolumeModeShared || len(m.holders[n]) == 0
 	}
+	return ChooseVolumes(declared, free)
+}
+
+// ChooseVolumes decides which volume each entry of declared (each entry lists
+// its candidate names, all of which the agent declares) a run takes right now,
+// given free, which says whether a volume may be taken. It reports false when
+// the run has to wait. It changes nothing.
+//
+// The host agent and the Kubernetes agent both call it, with different notions
+// of "free" (an in-process holder table, and the live pods that mount the
+// volume), so a job's candidate list resolves the same way on either: entries
+// get distinct volumes whenever the candidates allow it, a run waits rather than
+// alias two entries onto one volume that could have been two, and one name
+// written twice is the legal "one volume mounted at two paths" case.
+func ChooseVolumes(declared [][]string, free func(string) bool) ([]string, bool) {
 	if a := assignDistinct(declared, free, false); a != nil {
 		return a, true
 	}

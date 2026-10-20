@@ -236,7 +236,7 @@ func (p *PodPool) ClaimPod(ctx context.Context, runID, templateName string, agen
 // restart. BuildPod already sets annoPoolStatus/annoPoolTemplate on reuse
 // pods; only annoPoolKey is added here.
 func (p *PodPool) createPoolPod(ctx context.Context, runID, key string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string) (*PooledPod, error) {
-	pod, err := BuildPod(runID, p.namespace, agentTmpls, jobTmpl, fallbackImage, sidecar, shimImage)
+	pod, err := BuildPod(runID, p.namespace, agentTmpls, jobTmpl, fallbackImage, sidecar, shimImage, nil)
 	if err != nil {
 		return nil, err
 	}

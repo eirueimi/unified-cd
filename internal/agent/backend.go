@@ -103,9 +103,9 @@ type ExecBackend interface {
 	// VolumePaths returns the absolute path a step in this scope sees each
 	// mounted volume at, keyed by the volume's alias (not its resolved name).
 	// The orchestrator exposes them as UNIFIED_VOLUME_<ALIAS>. It is empty for
-	// a job with no volumes, for every k8s claim (volumes are a host-agent
-	// feature), and for a scoped step, whose scope container has no volume
-	// mounted: a path there would name something the step cannot reach.
+	// a job with no volumes, and for a scoped step, whose scope container has
+	// no volume mounted on either backend: a path there would name something
+	// the step cannot reach.
 	VolumePaths(scope ScopeHandle) map[string]string
 
 	// DefaultAgentOS reports the OS a non-scoped, non-container: step

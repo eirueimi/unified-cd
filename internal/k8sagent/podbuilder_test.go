@@ -17,7 +17,7 @@ import (
 const testShimImage = "ghcr.io/eirueimi/unified-cd-k8s-agent:test"
 
 func TestBuildPod_Fallback(t *testing.T) {
-	pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
+	pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage, nil)
 	require.NoError(t, err)
 	require.Len(t, pod.Spec.Containers, 1)
 	assert.Equal(t, "job", pod.Spec.Containers[0].Name)
@@ -52,7 +52,7 @@ func TestBuildPod_TemplateRef(t *testing.T) {
 	}
 	jobTmpl := &dsl.PodTemplate{Name: "golang"}
 
-	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "golang:1.24-alpine", pod.Spec.Containers[0].Image)
 }
@@ -76,7 +76,7 @@ func TestBuildPod_Override(t *testing.T) {
 		},
 	}
 
-	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
 	require.NoError(t, err)
 	assert.Len(t, pod.Spec.Containers, 2)
 	names := []string{pod.Spec.Containers[0].Name, pod.Spec.Containers[1].Name}
@@ -93,7 +93,7 @@ func TestBuildPod_InlineSpec(t *testing.T) {
 		},
 	}
 
-	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "python:3.12-slim", pod.Spec.Containers[0].Image)
 }
@@ -111,7 +111,7 @@ func TestBuildPod_UnnamedContainerErrors(t *testing.T) {
 		},
 	}
 
-	_, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	_, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no name")
 }
@@ -127,7 +127,7 @@ func TestBuildPod_WorkspacePVC(t *testing.T) {
 			},
 		},
 	}
-	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
+	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage, nil)
 	require.NoError(t, err)
 	require.Len(t, pod.Spec.Volumes, 2)
 	require.NotNil(t, pod.Spec.Volumes[0].PersistentVolumeClaim)
@@ -136,7 +136,7 @@ func TestBuildPod_WorkspacePVC(t *testing.T) {
 
 func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 	t.Run("defaults to /workspace", func(t *testing.T) {
-		pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
+		pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage, nil)
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 1)
 		assert.Equal(t, "/workspace", pod.Spec.Containers[0].WorkingDir)
@@ -153,7 +153,7 @@ func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 				},
 			},
 		}
-		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
+		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage, nil)
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 1)
 		assert.Equal(t, "/custom-ws", pod.Spec.Containers[0].WorkingDir)
@@ -180,7 +180,7 @@ func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 				},
 			},
 		}
-		_, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
+		_, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "workingDir")
 		assert.Contains(t, err.Error(), "job")
@@ -201,7 +201,7 @@ func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 				},
 			},
 		}
-		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
+		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage, nil)
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 1)
 		assert.Equal(t, "/workspace", pod.Spec.Containers[0].WorkingDir)
@@ -223,7 +223,7 @@ func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {
 				},
 			},
 		}
-		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage)
+		pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage, nil)
 		require.NoError(t, err)
 		require.Len(t, pod.Spec.Containers, 2)
 		for _, c := range pod.Spec.Containers {
@@ -250,7 +250,7 @@ func TestInjectWorkspace_AllContainers(t *testing.T) {
 
 func TestBuildPod_InjectsArtifactSidecar(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage)
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage, nil)
 	require.NoError(t, err)
 
 	var sidecar *corev1.Container
@@ -280,7 +280,7 @@ func TestBuildPod_InjectsArtifactSidecar(t *testing.T) {
 
 func TestBuildPod_SidecarSecretEnvAndIdle(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage)
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func findContainer(pod *corev1.Pod, name string) *corev1.Container {
 // byte-identical Pod specs.
 func TestBuildPod_SidecarSecretDefaultsToEnvFrom(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage)
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3"}, testShimImage, nil)
 	require.NoError(t, err)
 
 	sc := findContainer(pod, artifactSidecarName)
@@ -346,7 +346,7 @@ func TestBuildPod_SidecarSecretDefaultsToEnvFrom(t *testing.T) {
 // values as a silent fallback that masks a broken mount.
 func TestBuildPod_SidecarSecretAsVolume(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3", S3SecretMode: SidecarS3SecretModeFile}, testShimImage)
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3", S3SecretMode: SidecarS3SecretModeFile}, testShimImage, nil)
 	require.NoError(t, err)
 
 	sc := findContainer(pod, artifactSidecarName)
@@ -390,7 +390,7 @@ func TestBuildPod_SidecarSecretAsVolume(t *testing.T) {
 // timeout with the real cause never surfaced.
 func TestBuildPod_SidecarSecretVolumeIsOptional(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3", S3SecretMode: SidecarS3SecretModeFile}, testShimImage)
+		SidecarSpec{Image: "sidecar:latest", S3SecretName: "ucd-s3", S3SecretMode: SidecarS3SecretModeFile}, testShimImage, nil)
 	require.NoError(t, err)
 
 	var vol *corev1.Volume
@@ -417,7 +417,7 @@ func TestBuildPod_BrokerTokenIsSidecarOnly(t *testing.T) {
 		},
 	}}
 	pod, err := BuildPod("run1", "ns", nil, jobTmpl, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage)
+		SidecarSpec{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage, nil)
 	require.NoError(t, err)
 
 	sc := findContainer(pod, artifactSidecarName)
@@ -462,7 +462,7 @@ func TestBuildPod_BrokerTokenIsSidecarOnly(t *testing.T) {
 // that can register an agent.
 func TestBuildPod_BrokerTokenUsesTheStoreAudience(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage)
+		SidecarSpec{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "https://controller.example"}, testShimImage, nil)
 	require.NoError(t, err)
 
 	var vol *corev1.Volume
@@ -484,7 +484,7 @@ func TestBuildPod_BrokerTokenUsesTheStoreAudience(t *testing.T) {
 // Default off: an existing deployment's Pod spec is byte-identical.
 func TestBuildPod_BrokerTokenAbsentByDefault(t *testing.T) {
 	pod, err := BuildPod("run1", "ns", nil, nil, "job-image:latest",
-		SidecarSpec{Image: "sidecar:latest"}, testShimImage)
+		SidecarSpec{Image: "sidecar:latest"}, testShimImage, nil)
 	require.NoError(t, err)
 
 	sc := findContainer(pod, artifactSidecarName)
@@ -519,7 +519,7 @@ func TestInjectKeepAlive_OnlyJobContainerKeptAlive(t *testing.T) {
 		},
 	}}
 
-	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
 	require.NoError(t, err)
 
 	var job, mysql *corev1.Container
@@ -563,7 +563,7 @@ func TestInjectKeepAlive_JobForcesPauseOverExplicitArgs(t *testing.T) {
 // prepended with the exact image/command the spec requires, and that it
 // mounts the ucd-tools volume at /.ucd.
 func TestBuildPod_UcdShimInitContainer(t *testing.T) {
-	pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{}, "ghcr.io/eirueimi/unified-cd-k8s-agent:latest")
+	pod, err := BuildPod("run-abc123", "test-ns", nil, nil, "golang:1.24-alpine", SidecarSpec{}, "ghcr.io/eirueimi/unified-cd-k8s-agent:latest", nil)
 	require.NoError(t, err)
 
 	require.Len(t, pod.Spec.InitContainers, 1)
@@ -600,7 +600,7 @@ func TestBuildPod_UcdShimMountOnEveryContainer(t *testing.T) {
 		},
 	}}
 	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest",
-		SidecarSpec{Image: "sidecar:latest"}, testShimImage)
+		SidecarSpec{Image: "sidecar:latest"}, testShimImage, nil)
 	require.NoError(t, err)
 
 	require.Len(t, pod.Spec.Containers, 4, "job, mysql, redis, and the artifact sidecar")
@@ -629,7 +629,7 @@ func TestBuildPod_UcdShimInitContainerIsFirst(t *testing.T) {
 			map[string]any{"name": "warmup", "image": "busybox:1.36", "command": []any{"echo", "warm"}},
 		},
 	}}
-	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
 	require.NoError(t, err)
 
 	require.Len(t, pod.Spec.InitContainers, 2, "ucd-shim plus the podTemplate's own initContainer")
@@ -658,7 +658,7 @@ func TestBuildPod_InlineReuseAnnotatedAtCreation(t *testing.T) {
 		},
 	}
 
-	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
 	require.NoError(t, err)
 	assert.Equal(t, poolStatusInUse, pod.Annotations[annoPoolStatus])
 	assert.Equal(t, "", pod.Annotations[annoPoolTemplate])
@@ -677,7 +677,7 @@ func TestBuildPod_InlineNonReuseNotAnnotated(t *testing.T) {
 		},
 	}
 
-	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage)
+	pod, err := BuildPod("run-abc123", "test-ns", nil, jobTmpl, "fallback:latest", SidecarSpec{}, testShimImage, nil)
 	require.NoError(t, err)
 	assert.NotContains(t, pod.Annotations, annoPoolStatus)
 }

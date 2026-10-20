@@ -264,7 +264,11 @@ func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, *core
 // BuildPod constructs a Pod object from the agent template and Job template.
 // shimImage is the image the prepended ucd-shim init container runs (see
 // injectUcdShim) — normally cfg.ShimImage (the k8s-agent's own image).
-func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string) (*corev1.Pod, error) {
+//
+// vols are the agent-owned named volumes the pod mounts (see volumes.go); nil
+// for a pod that mounts none, which is every pooled pod. The pod is labelled
+// with each volume it holds, and that label is what BusyVolumes reads.
+func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string, vols []PodVolume) (*corev1.Pod, error) {
 	suffix := runID
 	if len(suffix) > 16 {
 		suffix = suffix[:16]
@@ -356,6 +360,11 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 
 	if err := injectWorkspace(podSpec, wsCfg); err != nil {
 		return nil, err
+	}
+	// After the workspace: a volume nested inside it has to be mounted second.
+	injectVolumes(podSpec, workspaceMountOf(wsCfg), vols)
+	for _, v := range vols {
+		labels[volumeLabelPrefix+v.ClaimName] = v.Name
 	}
 	injectUcdShim(podSpec, shimImage)
 
@@ -576,10 +585,7 @@ func volumesFromMaps(ms []map[string]any) ([]corev1.Volume, error) {
 // UNIFIED_WORKSPACE use the mount path). Other containers (sidecars) keep the
 // existing preserve-if-set / default-if-empty behavior.
 func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) error {
-	mountPath := "/workspace"
-	if wsCfg != nil && wsCfg.MountPath != "" {
-		mountPath = wsCfg.MountPath
-	}
+	mountPath := workspaceMountOf(wsCfg)
 
 	wsVol := buildWorkspaceVolume(wsCfg)
 
@@ -622,6 +628,15 @@ func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) error 
 		}
 	}
 	return nil
+}
+
+// workspaceMountOf is the container path of the workspace a pod built from
+// wsCfg mounts: wsCfg.MountPath, else /workspace.
+func workspaceMountOf(wsCfg *dsl.WorkspaceConfig) string {
+	if wsCfg != nil && wsCfg.MountPath != "" {
+		return wsCfg.MountPath
+	}
+	return "/workspace"
 }
 
 func buildWorkspaceVolume(wsCfg *dsl.WorkspaceConfig) corev1.Volume {

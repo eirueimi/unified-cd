@@ -129,6 +129,10 @@ type k8sBackend struct {
 	// entries stay namespaced per job (mirrors hostBackend.jobName).
 	jobName   string
 	mountPath string
+	// volumePaths maps each mounted volume's alias to the path a step in the
+	// default pod sees it at; nil when the claim mounts none. Set once, before
+	// the backend is handed to RunClaim, and read-only after.
+	volumePaths map[string]string
 
 	scopesMu sync.Mutex
 	scopes   map[string]*scopeEntry
@@ -1157,10 +1161,19 @@ func (b *k8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) (str
 	return b.ResolveArtifactPath(scope, p)
 }
 
-// VolumePaths is always nil: agent-owned named volumes are a host-agent
-// feature, and a job that declares spec.volumes is routed only to an agent
-// that advertises the volume, which this agent never does.
-func (b *k8sBackend) VolumePaths(scope agentlib.ScopeHandle) map[string]string { return nil }
+// VolumePaths reports where each mounted volume is for a step in this scope, for
+// UNIFIED_VOLUME_<ALIAS>. A scoped step runs in its own scope pod, which mounts
+// no volume, so it gets none: a path there would name something the step cannot
+// reach. Same rule as the host backend.
+//
+// This, and not imageStepEnv, is what puts the variable in a step's
+// environment: imageStepEnv only seeds a scope pod's creation env.
+func (b *k8sBackend) VolumePaths(scope agentlib.ScopeHandle) map[string]string {
+	if !scope.IsZero() {
+		return nil
+	}
+	return b.volumePaths
+}
 
 // WorkspacePath reports the cwd workspace root a step sees on this backend,
 // for UNIFIED_WORKSPACE: the scope pod's fixed working directory when scope

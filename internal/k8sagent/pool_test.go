@@ -186,7 +186,7 @@ func TestPodPool_Restore_IdlePod(t *testing.T) {
 	// Manually create an idle Pod annotated with the pool key a matching
 	// claim will compute.
 	key := poolKey("golang", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
-	pod, _ := BuildPod("run-existing", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
+	pod, _ := BuildPod("run-existing", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage, nil)
 	pod.Annotations = map[string]string{
 		annoPoolTemplate: "golang",
 		annoPoolKey:      key,
@@ -219,7 +219,7 @@ func TestPodPool_Restore_UnnamedTemplateReadopted(t *testing.T) {
 	jobTmpl := inlineTemplate("golang:1.24-alpine")
 	key := poolKey("", nil, jobTmpl, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
 
-	idlePod, _ := BuildPod("run-idle-unnamed", "default", nil, jobTmpl, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
+	idlePod, _ := BuildPod("run-idle-unnamed", "default", nil, jobTmpl, "golang:1.24-alpine", SidecarSpec{}, testShimImage, nil)
 	idlePod.Name = "ucd-run-idle-unnamed"
 	idlePod.Annotations = map[string]string{
 		annoPoolTemplate: "", // unnamed template — key comes from the hash
@@ -262,7 +262,7 @@ func TestPodPool_Restore_MissingPoolKeyDeleted(t *testing.T) {
 	pool := NewPodPool(fakeClient, "default", pm)
 
 	// Idle pool pod without a pool-key annotation (pre-pool-key build).
-	idlePod, _ := BuildPod("run-idle-old", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
+	idlePod, _ := BuildPod("run-idle-old", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage, nil)
 	idlePod.Name = "ucd-run-idle-old"
 	idlePod.Annotations = map[string]string{
 		annoPoolTemplate: "golang",
@@ -272,7 +272,7 @@ func TestPodPool_Restore_MissingPoolKeyDeleted(t *testing.T) {
 	require.NoError(t, err)
 
 	// In-use pool pod without a pool-key annotation.
-	inUsePod, _ := BuildPod("run-inuse-old", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage)
+	inUsePod, _ := BuildPod("run-inuse-old", "default", nil, nil, "golang:1.24-alpine", SidecarSpec{}, testShimImage, nil)
 	inUsePod.Name = "ucd-run-inuse-old"
 	inUsePod.Annotations = map[string]string{
 		annoPoolTemplate: "",
@@ -317,7 +317,7 @@ func TestPodPool_ClaimPod_DeleteOnUpdateConflict(t *testing.T) {
 
 	// Seed the pool with an idle pod
 	key := poolKey("", nil, inlineTemplate("golang:1.24-alpine"), "golang:1.24-alpine", SidecarSpec{}, testShimImage)
-	idlePod, _ := BuildPod("run-idle", "default", nil, inlineTemplate("golang:1.24-alpine"), "golang:1.24-alpine", SidecarSpec{}, testShimImage)
+	idlePod, _ := BuildPod("run-idle", "default", nil, inlineTemplate("golang:1.24-alpine"), "golang:1.24-alpine", SidecarSpec{}, testShimImage, nil)
 	idlePod.Name = "ucd-run-idle"
 	idlePod.Annotations = map[string]string{
 		annoPoolKey:      key,
