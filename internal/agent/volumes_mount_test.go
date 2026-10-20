@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -348,80 +347,6 @@ func TestClaimPod_MountsNamedVolumesOnEveryWorkspaceContainer(t *testing.T) {
 		require.Equal(t, m.PathOf("go-cache"), spec.Mounts[1].HostPath)
 		require.Equal(t, "/workspace/.ucd-cache/go", spec.Mounts[1].ContainerPath)
 		require.Equal(t, "/.ucd", spec.Mounts[2].ContainerPath)
-	}
-}
-
-// On an isolated run a volume is bind-mounted into the container only. The
-// host directory at its mount path is an empty mountpoint, and artifact and
-// cache steps read and write the host side, so a path inside a mount would
-// archive nothing and save nothing while the run goes green. It must fail loudly.
-func TestHostBackend_IsolatedPathInsideVolumeMountIsRejected(t *testing.T) {
-	refs := []volumeMountRef{{Volume: "go-cache", MountPath: ".ucd-cache/go"}}
-	pod := newClaimPodManager(&podFakeRT{}, "/w", "/workspace", "p", "r", "")
-	isolated := newHostBackend(&Agent{}, "r1", "job", t.TempDir(), pod)
-	isolated.volumeRefs = refs
-
-	resolvers := map[string]func(ScopeHandle, string) (string, error){
-		"artifact": isolated.ResolveArtifactPath,
-		"cache":    isolated.ResolveCachePath,
-	}
-	for kind, resolve := range resolvers {
-		for _, p := range []string{".ucd-cache/go", ".ucd-cache/go/obj", "./.ucd-cache/go/../go/x", ".ucd-cache/go/"} {
-			_, err := resolve(ScopeHandle{}, p)
-			require.Error(t, err, "%s path %q", kind, p)
-			require.Contains(t, err.Error(), p, "the error names the path")
-			require.Contains(t, err.Error(), `"go-cache"`, "the error names the volume")
-			require.Contains(t, err.Error(), ".ucd-cache/go", "the error names the mount path")
-		}
-		// Outside the mount, an ancestor of it, a near miss, and the default.
-		for _, p := range []string{"other/out", ".ucd-cache", ".ucd-cache/gopher", ""} {
-			_, err := resolve(ScopeHandle{}, p)
-			require.NoError(t, err, "%s path %q", kind, p)
-		}
-		// A scoped step works in its own container, not on the host mountpoint.
-		_, err := resolve(ScopeHandle{opaque: 1}, ".ucd-cache/go/x")
-		require.NoError(t, err)
-	}
-
-	// A native run reaches the volume through a link on the host: no problem.
-	native := newHostBackend(&Agent{}, "r1", "job", t.TempDir(), nil)
-	native.volumeRefs = refs
-	_, err := native.ResolveArtifactPath(ScopeHandle{}, ".ucd-cache/go/obj")
-	require.NoError(t, err)
-}
-
-func TestExecuteRun_Isolated_ArtifactAndCachePathsInsideAVolumeMountFailTheRun(t *testing.T) {
-	steps := map[string]*api.ClaimStep{
-		"upload-artifact": {Index: 0, Name: "up", UploadArtifact: &api.UploadArtifactStep{Name: "out", Path: ".ucd-cache/go/out"}},
-		"cache":           {Index: 0, Name: "c", Cache: &dsl.CacheStep{Path: ".ucd-cache/go", Key: "k"}},
-	}
-	for kind, step := range steps {
-		t.Run(kind, func(t *testing.T) {
-			const agentID = "iso-vol-agent"
-			h := newIsolatedHarness()
-			srv := newIsolatedServer(t, agentID, h)
-			m, _ := newTestVolumes(t, exclusive("go-cache"))
-			f := &podFakeRT{}
-			a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok"), PauseImage: "pause:img", RunnerImage: "runner:img", Volumes: m}
-			a.runtimeOnce.Do(func() {})
-			a.resolvedRuntime = f
-
-			var buf bytes.Buffer
-			defer captureSlog(&buf)()
-			a.executeRun(context.Background(), api.ClaimResponse{
-				RunID: "run-iso-vol", JobName: "j", PodTemplate: mysqlTemplate(),
-				Volumes: []dsl.VolumeMount{vmount("go-cache", "gc", ".ucd-cache/go")},
-				Stages:  []api.ClaimStage{{Step: step}},
-			}, t.TempDir())
-
-			h.mu.Lock()
-			defer h.mu.Unlock()
-			require.Equal(t, "Failed", h.finishStatus, "a green run would read as having saved the files")
-			out := buf.String()
-			require.Contains(t, out, ".ucd-cache/go")
-			require.Contains(t, out, "go-cache")
-			require.Contains(t, out, "bind-mounted")
-		})
 	}
 }
 

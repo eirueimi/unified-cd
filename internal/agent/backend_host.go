@@ -69,7 +69,8 @@ type hostBackend struct {
 	// volumeRefs are the volumes an ISOLATED claim bind-mounts at a path inside
 	// the workspace (relativeVolumeMounts); empty for a native claim. The host
 	// directory at such a path is an empty mountpoint, so artifact and cache
-	// paths inside one are refused (checkNotInVolumeMount).
+	// paths inside one are resolved to the volume's own host directory
+	// (resolveInVolumeMount).
 	volumeRefs []volumeMountRef
 }
 
@@ -300,7 +301,9 @@ func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, r
 // ResolveArtifactPath resolves p against the host workDir (non-scoped) or the
 // scope container's fixed working directory (scoped), mirroring the
 // pre-refactor resolveWorkspacePath/resolveScopePath pair. An absolute or
-// escaping p is rejected (see ContainWithinOS/ContainWithinSlash).
+// escaping p is rejected (see ContainWithinOS/ContainWithinSlash). On an
+// isolated claim, a non-scoped p inside a volume's mount path resolves to that
+// volume's host directory, so the step reads what the container wrote there.
 func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, error) {
 	if !scope.IsZero() {
 		return resolveScopePath(p)
@@ -310,9 +313,9 @@ func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, 
 		return "", err
 	}
 	if b.pod != nil {
-		if err := checkNotInVolumeMount(b.workDir, resolved, p, b.volumeRefs); err != nil {
-			return "", err
-		}
+		// The host directory at a volume's mount path is an empty
+		// mountpoint; the files are in the volume itself.
+		resolved = resolveInVolumeMount(b.workDir, resolved, b.volumeRefs)
 	}
 	return resolved, nil
 }

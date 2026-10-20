@@ -643,6 +643,7 @@ func (a *Agent) reserveClaimVolumes(claimCtx, runCtx context.Context, c *api.Cla
 type volumeMountRef struct {
 	Volume    string
 	MountPath string // cleaned, slash-separated, relative to the workspace
+	HostPath  string // the volume's host directory: what the container sees at MountPath
 }
 
 // relativeVolumeMounts lists the volumes mounted at a non-root path inside the
@@ -656,33 +657,46 @@ func relativeVolumeMounts(mounts []dsl.VolumeMount, m *VolumeManager) ([]volumeM
 	var refs []volumeMountRef
 	for _, s := range specs {
 		if !s.root && !s.abs {
-			refs = append(refs, volumeMountRef{Volume: s.name, MountPath: s.mp})
+			refs = append(refs, volumeMountRef{Volume: s.name, MountPath: s.mp, HostPath: s.volPath})
 		}
 	}
 	return refs, nil
 }
 
-// checkNotInVolumeMount refuses a host-side artifact or cache path (resolved,
-// from the step's path p) that lies inside a volume bind-mounted into the
-// container. Artifact and cache steps read and write the HOST side; there the
-// mount path is an empty directory, so the step would archive nothing, or save
-// nothing, and the run would still go green. Failing is the safe answer: reading
-// the volume's own host directory instead is possible but is not done yet.
-func checkNotInVolumeMount(workDir, resolved, p string, refs []volumeMountRef) error {
+// resolveInVolumeMount maps a host-side artifact or cache path (resolved, which
+// ContainWithinOS has already confined to workDir) that lies inside a volume
+// bind-mounted into the container onto that volume's own host directory.
+// Artifact and cache steps read and write the HOST side, where the mount path
+// is an empty directory; the files are in the volume, which is what the
+// container sees there and what a Kubernetes sidecar reads.
+//
+// When a path is inside more than one mount (a volume at a sub-path and another
+// nested under it), the deepest wins, as it does inside the container. A path
+// inside none is returned unchanged.
+func resolveInVolumeMount(workDir, resolved string, refs []volumeMountRef) string {
 	if len(refs) == 0 {
-		return nil
+		return resolved
 	}
 	rel, err := filepath.Rel(workDir, resolved)
 	if err != nil {
-		return nil
+		return resolved
 	}
 	rel = path.Clean(filepath.ToSlash(rel))
-	for _, r := range refs {
-		if rel == r.MountPath || strings.HasPrefix(rel, r.MountPath+"/") {
-			return fmt.Errorf("artifact/cache path %q is inside volume %q, which is bind-mounted into the container at %q: an isolated run can only reach a volume from inside its container, so this step would archive or save an empty directory; run the job native, or archive from a step that copies the files out of the mount first", p, r.Volume, r.MountPath)
+	var best *volumeMountRef
+	for i := range refs {
+		r := &refs[i]
+		if rel != r.MountPath && !strings.HasPrefix(rel, r.MountPath+"/") {
+			continue
+		}
+		if best == nil || len(r.MountPath) > len(best.MountPath) {
+			best = r
 		}
 	}
-	return nil
+	if best == nil {
+		return resolved
+	}
+	rest := strings.TrimPrefix(strings.TrimPrefix(rel, best.MountPath), "/")
+	return filepath.Join(best.HostPath, filepath.FromSlash(rest))
 }
 
 // isolatedVolumeMounts maps mounts onto the container backend. rootHost is the
