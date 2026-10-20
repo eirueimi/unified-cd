@@ -8,22 +8,23 @@ import (
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 )
 
-// mountedVolumes lists the volumes mounted at a relative path inside the
-// workspace, located as the artifact sidecar sees them. The workspace root and
-// an absolute container path are left out for the same reason the host agent
-// leaves them out: neither is a directory inside the workspace to be archived
-// by an ancestor path (see agentlib.MountedVolume).
+// mountedVolumes lists the volumes mounted below the workspace root, located
+// where they land in the container as the artifact sidecar sees them. How the
+// mount path was written does not matter: "cache" and "/src/cache" are one
+// place under a workspace at /src. The workspace root is the workspace itself;
+// a volume that lands outside the workspace is listed too, and is simply never
+// below an archived path (agentlib.VolumesBelow).
 func mountedVolumes(workspace string, vols []PodVolume) []agentlib.MountedVolume {
 	var out []agentlib.MountedVolume
 	for _, v := range vols {
-		if v.MountPath == "." || path.IsAbs(v.MountPath) {
+		loc := path.Clean(v.MountPath)
+		switch {
+		case v.MountPath == ".":
 			continue
+		case !path.IsAbs(loc):
+			loc = path.Join(workspace, loc)
 		}
-		out = append(out, agentlib.MountedVolume{
-			Volume:    v.Name,
-			MountPath: v.MountPath,
-			Location:  path.Join(workspace, v.MountPath),
-		})
+		out = append(out, agentlib.MountedVolume{Volume: v.Name, MountPath: v.MountPath, Location: loc})
 	}
 	return out
 }

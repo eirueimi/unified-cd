@@ -219,7 +219,7 @@ func (b *hostBackend) CacheRestore(ctx context.Context, scope ScopeHandle, key s
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		hit, err := cache.Restore(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys)
+		hit, err := cache.RestoreExcluding(ctx, b.a.CacheStore, b.jobName, path, key, restoreKeys, b.excludeVolumes(ctx, "cache restore", path))
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			return false, err
 		}
@@ -256,7 +256,7 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return cache.SaveExcluding(ctx, b.a.CacheStore, b.jobName, path, key, ttlDays, b.excludeVolumes(ctx, "cache", path))
+		return cache.SaveExcluding(ctx, b.a.CacheStore, b.jobName, path, key, ttlDays, b.excludeVolumes(ctx, "cache save", path))
 	}
 	hostPath, cleanup, err := sm.copyOutToTemp(ctx, h, path)
 	if err != nil {
@@ -330,7 +330,7 @@ func (b *hostBackend) mountedVolumes() []MountedVolume {
 		others := make([]volumeMountRef, 0, len(b.volumeRefs)-1)
 		others = append(others, b.volumeRefs[:i]...)
 		others = append(others, b.volumeRefs[i+1:]...)
-		at := filepath.Join(b.workDir, filepath.FromSlash(r.MountPath))
+		at := filepath.Join(b.workDir, filepath.FromSlash(r.Rel))
 		vols = append(vols, MountedVolume{Volume: r.Volume, MountPath: r.MountPath, Location: resolveInVolumeMount(b.workDir, at, others)})
 	}
 	return vols
@@ -342,7 +342,7 @@ func (b *hostBackend) mountedVolumes() []MountedVolume {
 func (b *hostBackend) shownPath(resolved string) string {
 	for _, r := range b.volumeRefs {
 		if rel, err := filepath.Rel(r.HostPath, resolved); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return path.Clean(path.Join(r.MountPath, filepath.ToSlash(rel)))
+			return path.Clean(path.Join(r.Rel, filepath.ToSlash(rel)))
 		}
 	}
 	if rel, err := filepath.Rel(b.workDir, resolved); err == nil {

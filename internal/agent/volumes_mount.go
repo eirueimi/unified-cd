@@ -642,23 +642,37 @@ func (a *Agent) reserveClaimVolumes(claimCtx, runCtx context.Context, c *api.Cla
 // the workspace.
 type volumeMountRef struct {
 	Volume    string
-	MountPath string // cleaned, slash-separated, relative to the workspace
+	MountPath string // the mount path as declared, cleaned and slash-separated
+	Rel       string // where it lands, relative to the workspace (equal to MountPath when that is relative)
 	HostPath  string // the volume's host directory: what the container sees at MountPath
 }
 
 // relativeVolumeMounts lists the volumes mounted at a non-root path inside the
-// workspace. A root volume is the host workspace itself and an absolute path is
-// a container path outside it, so neither can hide files from a host-side read.
-func relativeVolumeMounts(mounts []dsl.VolumeMount, m *VolumeManager) ([]volumeMountRef, error) {
+// workspace. A root volume is the host workspace itself, so it cannot hide files
+// from a host-side read. An absolute mount path is a directory of the workspace
+// when it lands inside containerRoot, the container's workspace path ("" for a
+// native claim, whose absolute paths are host paths outside the workspace): it
+// is then the same case as the relative path to the same place, and is listed
+// with that path as Rel. Any other absolute path is outside the workspace.
+func relativeVolumeMounts(mounts []dsl.VolumeMount, m *VolumeManager, containerRoot string) ([]volumeMountRef, error) {
 	specs, err := planMounts(mounts, m)
 	if err != nil {
 		return nil, err
 	}
 	var refs []volumeMountRef
 	for _, s := range specs {
-		if !s.root && !s.abs {
-			refs = append(refs, volumeMountRef{Volume: s.name, MountPath: s.mp, HostPath: s.volPath})
+		rel := s.mp
+		switch {
+		case s.root:
+			continue
+		case s.abs:
+			root := path.Clean(containerRoot)
+			if containerRoot == "" || !strings.HasPrefix(s.mp, strings.TrimSuffix(root, "/")+"/") {
+				continue
+			}
+			rel = strings.TrimPrefix(s.mp, strings.TrimSuffix(root, "/")+"/")
 		}
+		refs = append(refs, volumeMountRef{Volume: s.name, MountPath: s.mp, Rel: rel, HostPath: s.volPath})
 	}
 	return refs, nil
 }
@@ -685,17 +699,17 @@ func resolveInVolumeMount(workDir, resolved string, refs []volumeMountRef) strin
 	var best *volumeMountRef
 	for i := range refs {
 		r := &refs[i]
-		if rel != r.MountPath && !strings.HasPrefix(rel, r.MountPath+"/") {
+		if rel != r.Rel && !strings.HasPrefix(rel, r.Rel+"/") {
 			continue
 		}
-		if best == nil || len(r.MountPath) > len(best.MountPath) {
+		if best == nil || len(r.Rel) > len(best.Rel) {
 			best = r
 		}
 	}
 	if best == nil {
 		return resolved
 	}
-	rest := strings.TrimPrefix(strings.TrimPrefix(rel, best.MountPath), "/")
+	rest := strings.TrimPrefix(strings.TrimPrefix(rel, best.Rel), "/")
 	return filepath.Join(best.HostPath, filepath.FromSlash(rest))
 }
 

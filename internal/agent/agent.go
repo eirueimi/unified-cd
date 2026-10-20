@@ -696,7 +696,11 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	// The volumes mounted below the workspace root, for resolving artifact and
 	// cache paths: a native run reaches them through links, an isolated one
 	// through bind mounts, and both leave the workspace path itself empty.
-	refs, err := relativeVolumeMounts(c.Volumes, a.Volumes)
+	containerRoot := hostNamedMountPath(c.PodTemplate)
+	if c.Native {
+		containerRoot = ""
+	}
+	refs, err := relativeVolumeMounts(c.Volumes, a.Volumes, containerRoot)
 	if err != nil {
 		failClaim("volume mount failed", err)
 		return

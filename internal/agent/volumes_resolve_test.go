@@ -14,7 +14,7 @@ import (
 // claim path calls, so the tests exercise the real mount table.
 func isolatedBackendWithVolumes(t *testing.T, m *VolumeManager, mounts ...dsl.VolumeMount) (*hostBackend, string) {
 	t.Helper()
-	refs, err := relativeVolumeMounts(mounts, m)
+	refs, err := relativeVolumeMounts(mounts, m, "/workspace")
 	require.NoError(t, err)
 	workDir := t.TempDir()
 	pod := newClaimPodManager(&podFakeRT{}, workDir, "/workspace", "p", "r", "")
@@ -116,12 +116,42 @@ func TestResolveArtifactPath_OutsideEveryVolumeIsUnchanged(t *testing.T) {
 	require.Equal(t, filepath.Join(native.workDir, ".ucd-cache", "go", "obj"), got)
 }
 
+// An absolute mount path that lands inside the container workspace is the same
+// case as the relative path to the same place, whichever way it is written, and
+// whichever directory the podTemplate made the workspace.
+func TestRelativeVolumeMounts_AbsoluteInsideTheWorkspaceIsTheSameCase(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("a"), exclusive("b"), exclusive("c"))
+	mounts := []dsl.VolumeMount{vmount("a", "a", "cache"), vmount("b", "b", "/src/cache2"), vmount("c", "c", "/elsewhere/cache")}
+
+	refs, err := relativeVolumeMounts(mounts, m, "/src")
+	require.NoError(t, err)
+	got := map[string][2]string{}
+	for _, r := range refs {
+		got[r.Volume] = [2]string{r.MountPath, r.Rel}
+	}
+	require.Equal(t, map[string][2]string{
+		"a": {"cache", "cache"},
+		"b": {"/src/cache2", "cache2"}, // declared as written, located by where it lands
+	}, got, "a mount outside the workspace is not one of its directories")
+
+	// Under the default workspace the same absolute path is not inside it.
+	refs, err = relativeVolumeMounts(mounts, m, "/workspace")
+	require.NoError(t, err)
+	require.Len(t, refs, 1)
+
+	// And it resolves like the relative spelling does.
+	b, _ := isolatedBackendWithVolumes(t, m, vmount("b", "b", "/workspace/vendor"))
+	got2, err := b.ResolveArtifactPath(ScopeHandle{}, "vendor/x")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(m.PathOf("b"), "x"), got2)
+}
+
 // A native run reaches a volume through a link in the workspace. An archiver
 // does not follow a link it is pointed at (it would archive the link), so the
 // path to the mount point itself must name the volume's directory too.
 func TestResolveArtifactPath_NativeMountPointResolvesToTheVolume(t *testing.T) {
 	m, _ := newTestVolumes(t, exclusive("go-cache"))
-	refs, err := relativeVolumeMounts([]dsl.VolumeMount{vmount("go-cache", "gc", ".ucd-cache/go")}, m)
+	refs, err := relativeVolumeMounts([]dsl.VolumeMount{vmount("go-cache", "gc", ".ucd-cache/go")}, m, "")
 	require.NoError(t, err)
 	native := newHostBackend(&Agent{}, "r1", "job", t.TempDir(), nil)
 	native.volumeRefs = refs

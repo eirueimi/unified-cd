@@ -968,6 +968,9 @@ func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandl
 	for _, rk := range restoreKeys {
 		argv = append(argv, "--restore-key", rk)
 	}
+	if scope.IsZero() {
+		argv = append(argv, b.excludeVolumes(ctx, "cache restore", path)...)
+	}
 	ec, stdout, err := b.sidecarExecArgvCapturingStdout(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return false, err
@@ -1036,7 +1039,7 @@ func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, 
 	}
 	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
 	if scope.IsZero() {
-		argv = append(argv, b.excludeVolumes(ctx, "cache", path)...)
+		argv = append(argv, b.excludeVolumes(ctx, "cache save", path)...)
 	}
 	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	if err != nil {

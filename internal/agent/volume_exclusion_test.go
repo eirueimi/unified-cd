@@ -4,14 +4,16 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-// exclusionGolden is testdata/volume_exclusion_golden.json: the one statement of
-// the rule that the host agent and the Kubernetes agent are both held to.
-type exclusionGolden struct {
+// exclusionScenario is one entry of testdata/volume_exclusion_golden.json: the
+// one statement of the rule that the host agent and the Kubernetes agent are
+// both held to.
+type exclusionScenario struct {
 	Mounts []struct {
 		Name      string `json:"name"`
 		MountPath string `json:"mountPath"`
@@ -20,18 +22,30 @@ type exclusionGolden struct {
 	WorkspaceFiles []string            `json:"workspaceFiles"`
 	VolumeFiles    []string            `json:"volumeFiles"`
 	Entries        []string            `json:"entries"`
-	Notices     map[string][]string `json:"notices"`
-	Excluded    []string            `json:"excluded"`
+	Notices        map[string][]string `json:"notices"`
+	Excluded       []string            `json:"excluded"`
 }
 
-// loadExclusionGolden reads the shared golden file.
-func loadExclusionGolden(t *testing.T) exclusionGolden {
+// exclusionScenarios reads the shared golden file.
+func exclusionScenarios(t *testing.T) map[string]exclusionScenario {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "volume_exclusion_golden.json"))
 	require.NoError(t, err)
-	var g exclusionGolden
+	var g struct {
+		Scenarios map[string]exclusionScenario `json:"scenarios"`
+	}
 	require.NoError(t, json.Unmarshal(b, &g))
-	return g
+	return g.Scenarios
+}
+
+// scenarioNames returns the scenario names in a stable order.
+func scenarioNames(t *testing.T) []string {
+	var names []string
+	for n := range exclusionScenarios(t) {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func TestVolumesBelow(t *testing.T) {

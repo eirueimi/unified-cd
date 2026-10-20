@@ -15,16 +15,18 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/eirueimi/unified-cd/internal/api"
 	"github.com/eirueimi/unified-cd/internal/artifact"
 	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 )
 
-// exclusionGolden is the host agent's testdata/volume_exclusion_golden.json,
-// read from its package: the one statement of the rule that both agents are held
-// to, so neither can drift from the other without a test failing.
-type exclusionGolden struct {
+// exclusionScenario is an entry of the host agent's
+// testdata/volume_exclusion_golden.json, read from its package: the one
+// statement of the rule that both agents are held to, so neither can drift from
+// the other without a test failing.
+type exclusionScenario struct {
 	Mounts []struct {
 		Name      string `json:"name"`
 		MountPath string `json:"mountPath"`
@@ -37,13 +39,24 @@ type exclusionGolden struct {
 	Excluded       []string            `json:"excluded"`
 }
 
-func loadExclusionGolden(t *testing.T) exclusionGolden {
+func exclusionScenarios(t *testing.T) map[string]exclusionScenario {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("..", "agent", "testdata", "volume_exclusion_golden.json"))
 	require.NoError(t, err)
-	var g exclusionGolden
+	var g struct {
+		Scenarios map[string]exclusionScenario `json:"scenarios"`
+	}
 	require.NoError(t, json.Unmarshal(b, &g))
-	return g
+	return g.Scenarios
+}
+
+func scenarioNames(t *testing.T) []string {
+	var names []string
+	for n := range exclusionScenarios(t) {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // argvExec records every argv exec'd into a container (the sidecar's commands),
@@ -106,7 +119,7 @@ func (f *volFixture) exclusionNotices() []string {
 	return out
 }
 
-func runWithGolden(t *testing.T, g exclusionGolden, step *api.ClaimStep) (*volFixture, *argvExec) {
+func runWithGolden(t *testing.T, g exclusionScenario, step *api.ClaimStep) (*volFixture, *argvExec) {
 	t.Helper()
 	var cfgs []config.VolumeConfig
 	var mounts []dsl.VolumeMount
@@ -130,31 +143,36 @@ func runWithGolden(t *testing.T, g exclusionGolden, step *api.ClaimStep) (*volFi
 
 // The Kubernetes agent leaves a volume out of an archive of its ancestor and
 // says so, in the same words as the host agent (TestExecuteRun_ArchiveOfAnAncestor
-// ExcludesTheVolumeAndSaysSo, from the same golden file).
+// ExcludesTheVolumeAndSaysSo, from the same golden file). A cache step restores
+// before it saves, and both leave the volumes out.
 func TestExecuteRun_ArchiveOfAnAncestorExcludesTheVolumeAndSaysSo(t *testing.T) {
-	g := loadExclusionGolden(t)
+	for _, scenario := range scenarioNames(t) {
+		g := exclusionScenarios(t)[scenario]
+		t.Run(scenario+"/artifact", func(t *testing.T) {
+			f, rec := runWithGolden(t, g, &api.ClaimStep{Index: 0, Name: "up", UploadArtifact: &api.UploadArtifactStep{Name: "out", Path: g.ArchivePath}})
+			argv := rec.sidecarArgv("artifact", "upload")
+			require.NotNil(t, argv, "the sidecar was asked to upload")
+			require.Equal(t, g.Notices["artifact"], f.exclusionNotices())
+			require.Equal(t, rebase(g.Excluded), flagValues(argv, "--exclude"), "every volume's mount point is passed to the sidecar to leave out")
+		})
 
-	t.Run("artifact", func(t *testing.T) {
-		f, rec := runWithGolden(t, g, &api.ClaimStep{Index: 0, Name: "up", UploadArtifact: &api.UploadArtifactStep{Name: "out", Path: g.ArchivePath}})
-		argv := rec.sidecarArgv("artifact", "upload")
-		require.NotNil(t, argv, "the sidecar was asked to upload")
-		require.Equal(t, g.Notices["artifact"], f.exclusionNotices())
-		require.Equal(t, rebase(g.Excluded), flagValues(argv, "--exclude"), "every volume's mount point is passed to the sidecar to leave out")
-	})
-
-	t.Run("cache", func(t *testing.T) {
-		f, rec := runWithGolden(t, g, &api.ClaimStep{Index: 0, Name: "c", Cache: &dsl.CacheStep{Path: g.ArchivePath, Key: "k"}})
-		argv := rec.sidecarArgv("cache", "save")
-		require.NotNil(t, argv, "the sidecar was asked to save")
-		require.Equal(t, g.Notices["cache"], f.exclusionNotices())
-		require.Equal(t, rebase(g.Excluded), flagValues(argv, "--exclude"))
-	})
+		t.Run(scenario+"/cache", func(t *testing.T) {
+			f, rec := runWithGolden(t, g, &api.ClaimStep{Index: 0, Name: "c", Cache: &dsl.CacheStep{Path: g.ArchivePath, Key: "k"}})
+			save := rec.sidecarArgv("cache", "save")
+			restore := rec.sidecarArgv("cache", "restore")
+			require.NotNil(t, save, "the sidecar was asked to save")
+			require.NotNil(t, restore, "and to restore")
+			require.Equal(t, append(append([]string(nil), g.Notices["cacheRestore"]...), g.Notices["cacheSave"]...), f.exclusionNotices())
+			require.Equal(t, rebase(g.Excluded), flagValues(save, "--exclude"))
+			require.Equal(t, rebase(g.Excluded), flagValues(restore, "--exclude"), "restore leaves the volumes alone exactly as save does")
+		})
+	}
 }
 
 // A path inside a volume, or an archive that holds no mount point, passes no
 // exclusion and announces nothing: only an ancestor of a mount point does.
 func TestExecuteRun_ArchiveNotAboveAVolumeExcludesNothing(t *testing.T) {
-	g := loadExclusionGolden(t)
+	g := exclusionScenarios(t)["relative"]
 	for _, p := range []string{".ucd-cache/go", ".ucd-cache/go/obj", "src"} {
 		f, rec := runWithGolden(t, g, &api.ClaimStep{Index: 0, Name: "up", UploadArtifact: &api.UploadArtifactStep{Name: "out", Path: p}})
 		argv := rec.sidecarArgv("artifact", "upload")
@@ -162,6 +180,30 @@ func TestExecuteRun_ArchiveNotAboveAVolumeExcludesNothing(t *testing.T) {
 		require.Empty(t, flagValues(argv, "--exclude"), p)
 		require.Empty(t, f.exclusionNotices(), p)
 	}
+}
+
+// The mount path's spelling does not matter: what counts is where the volume
+// lands. A volume at /src/cache under a workspace at /src is the volume at
+// "cache", and one outside the workspace is not a directory of it.
+func TestMountedVolumes_LocatedByWhereTheyLand(t *testing.T) {
+	vols := []PodVolume{
+		{Name: "rel", MountPath: "cache"},
+		{Name: "abs", MountPath: "/src/cache2"},
+		{Name: "root", MountPath: "."},
+		{Name: "outside", MountPath: "/root/.cache"},
+	}
+	got := map[string]string{}
+	for _, v := range mountedVolumes("/src", vols) {
+		got[v.Volume] = v.Location
+	}
+	require.Equal(t, map[string]string{"rel": "/src/cache", "abs": "/src/cache2", "outside": "/root/.cache"}, got)
+
+	// An archive of the workspace excludes the two inside it, and not the third.
+	var below []string
+	for _, v := range agentlib.VolumesBelow("/src", mountedVolumes("/src", vols)) {
+		below = append(below, v.Volume)
+	}
+	require.Equal(t, []string{"rel", "abs"}, below)
 }
 
 // rebase places workspace-relative paths in the pod's workspace.
@@ -178,39 +220,43 @@ func rebase(rel []string) []string {
 // sees it, archives it with the exclusions the agent passes to the sidecar, and
 // requires exactly the entries the host agent's archive has (the golden's).
 func TestArchiveOfAnAncestor_HostAndKubernetesProduceTheSameEntries(t *testing.T) {
-	g := loadExclusionGolden(t)
-	_, rec := runWithGolden(t, g, &api.ClaimStep{Index: 0, Name: "up", UploadArtifact: &api.UploadArtifactStep{Name: "out", Path: g.ArchivePath}})
-	argv := rec.sidecarArgv("artifact", "upload")
-	require.NotNil(t, argv)
+	for _, scenario := range scenarioNames(t) {
+		g := exclusionScenarios(t)[scenario]
+		t.Run(scenario, func(t *testing.T) {
+			_, rec := runWithGolden(t, g, &api.ClaimStep{Index: 0, Name: "up", UploadArtifact: &api.UploadArtifactStep{Name: "out", Path: g.ArchivePath}})
+			argv := rec.sidecarArgv("artifact", "upload")
+			require.NotNil(t, argv)
 
-	// The container's workspace, with each volume's files at its mount path.
-	ws := t.TempDir()
-	for _, f := range g.WorkspaceFiles {
-		writeFile(t, filepath.Join(ws, filepath.FromSlash(f)))
-	}
-	for _, mt := range g.Mounts {
-		for _, f := range g.VolumeFiles {
-			writeFile(t, filepath.Join(ws, filepath.FromSlash(mt.MountPath), filepath.FromSlash(f)))
-		}
-	}
-	var exclude []string
-	for _, e := range flagValues(argv, "--exclude") {
-		exclude = append(exclude, filepath.Join(ws, filepath.FromSlash(strings.TrimPrefix(e, "/workspace/"))))
-	}
+			// The container's workspace, with each volume's files at its mount path.
+			ws := t.TempDir()
+			for _, f := range g.WorkspaceFiles {
+				writeFile(t, filepath.Join(ws, filepath.FromSlash(f)))
+			}
+			for _, mt := range g.Mounts {
+				for _, f := range g.VolumeFiles {
+					writeFile(t, filepath.Join(ws, filepath.FromSlash(strings.TrimPrefix(mt.MountPath, "/workspace/")), filepath.FromSlash(f)))
+				}
+			}
+			var exclude []string
+			for _, e := range flagValues(argv, "--exclude") {
+				exclude = append(exclude, filepath.Join(ws, filepath.FromSlash(strings.TrimPrefix(e, "/workspace/"))))
+			}
 
-	rc := artifact.StreamTarZstdExcluding(ws, exclude)
-	defer rc.Close()
-	dest := t.TempDir()
-	require.NoError(t, artifact.ExtractTarZstd(rc, dest))
-	var got []string
-	require.NoError(t, filepath.WalkDir(dest, func(p string, d fs.DirEntry, err error) error {
-		if rel, _ := filepath.Rel(dest, p); err == nil && rel != "." {
-			got = append(got, filepath.ToSlash(rel))
-		}
-		return err
-	}))
-	sort.Strings(got)
-	require.Equal(t, g.Entries, got)
+			rc := artifact.StreamTarZstdExcluding(ws, exclude)
+			defer rc.Close()
+			dest := t.TempDir()
+			require.NoError(t, artifact.ExtractTarZstd(rc, dest))
+			var got []string
+			require.NoError(t, filepath.WalkDir(dest, func(p string, d fs.DirEntry, err error) error {
+				if rel, _ := filepath.Rel(dest, p); err == nil && rel != "." {
+					got = append(got, filepath.ToSlash(rel))
+				}
+				return err
+			}))
+			sort.Strings(got)
+			require.Equal(t, g.Entries, got)
+		})
+	}
 }
 
 func writeFile(t *testing.T, p string) {

@@ -1,22 +1,57 @@
 {
-  "description": "An archive of the workspace root, for a job mounting two volumes below it. Both agents are checked against this one file: internal/agent (host, isolated and native) and internal/k8sagent. Edit it only when the rule deliberately changes, and both sides must keep passing.",
-  "mounts": [
-    {"name": "go-cache", "mountPath": ".ucd-cache/go"},
-    {"name": "tools", "mountPath": "tools"}
-  ],
-  "archivePath": ".",
-  "workspaceFiles": ["keep.txt", "src/main.go"],
-  "volumeFiles": ["big.bin", "deep/obj.o"],
-  "entries": [".ucd-cache", "keep.txt", "src", "src/main.go"],
-  "notices": {
-    "artifact": [
-      "artifact path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
-      "artifact path \".\" excludes volume \"tools\" mounted at \"tools\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
-    ],
-    "cache": [
-      "cache path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
-      "cache path \".\" excludes volume \"tools\" mounted at \"tools\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
-    ]
-  },
-  "excluded": [".ucd-cache/go", "tools"]
+  "description": "How a cache or artifact of the workspace root treats the volumes mounted below it. Both agents are checked against this one file: internal/agent (host, isolated and native) and internal/k8sagent. Edit it only when the rule deliberately changes, and both sides must keep passing. The workspace is /workspace.",
+  "scenarios": {
+    "relative": {
+      "description": "two volumes at relative mount paths",
+      "mounts": [
+        {"name": "go-cache", "mountPath": ".ucd-cache/go"},
+        {"name": "tools", "mountPath": "tools"}
+      ],
+      "archivePath": ".",
+      "workspaceFiles": ["keep.txt", "src/main.go"],
+      "volumeFiles": ["big.bin", "deep/obj.o"],
+      "entries": [".ucd-cache", "keep.txt", "src", "src/main.go"],
+      "notices": {
+        "artifact": [
+          "artifact path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
+          "artifact path \".\" excludes volume \"tools\" mounted at \"tools\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+        ],
+        "cacheSave": [
+          "cache save path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
+          "cache save path \".\" excludes volume \"tools\" mounted at \"tools\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+        ],
+        "cacheRestore": [
+          "cache restore path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
+          "cache restore path \".\" excludes volume \"tools\" mounted at \"tools\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+        ]
+      },
+      "excluded": [".ucd-cache/go", "tools"]
+    },
+    "absolute": {
+      "description": "one relative mount and one absolute mount path that lands inside the workspace: the spelling of the mount path makes no difference. Isolated and Kubernetes only: a native claim cannot mount inside its workspace by an absolute path.",
+      "mounts": [
+        {"name": "go-cache", "mountPath": ".ucd-cache/go"},
+        {"name": "vendor", "mountPath": "/workspace/vendor"}
+      ],
+      "archivePath": ".",
+      "workspaceFiles": ["keep.txt", "src/main.go"],
+      "volumeFiles": ["big.bin", "deep/obj.o"],
+      "entries": [".ucd-cache", "keep.txt", "src", "src/main.go"],
+      "notices": {
+        "artifact": [
+          "artifact path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
+          "artifact path \".\" excludes volume \"vendor\" mounted at \"/workspace/vendor\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+        ],
+        "cacheSave": [
+          "cache save path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
+          "cache save path \".\" excludes volume \"vendor\" mounted at \"/workspace/vendor\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+        ],
+        "cacheRestore": [
+          "cache restore path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
+          "cache restore path \".\" excludes volume \"vendor\" mounted at \"/workspace/vendor\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+        ]
+      },
+      "excluded": [".ucd-cache/go", "vendor"]
+    }
+  }
 }

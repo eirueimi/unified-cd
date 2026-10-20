@@ -42,7 +42,17 @@ func TestRun_ExcludeLeavesPathsOutOfTheArchive(t *testing.T) {
 		t.Fatalf("cache restore exit=%d", code)
 	}
 
-	for name, dest := range map[string]string{"artifact": artifactDest, "cache": cacheDest} {
+	// A restore leaves the excluded paths alone too, even from an archive that
+	// holds them (this one was saved without the exclusions).
+	if code := run(ctx, prov, []string{"cache", "save", "--key", "old", "--ttl-days", "7", "--path", src, "--job", "j"}, io.Discard); code != 0 {
+		t.Fatalf("cache save exit=%d", code)
+	}
+	restoreDest := t.TempDir()
+	if code := run(ctx, prov, append([]string{"cache", "restore", "--key", "old", "--path", restoreDest, "--job", "j"}, "--exclude", filepath.Join(restoreDest, "vol1"), "--exclude", filepath.Join(restoreDest, "vol2")), io.Discard); code != 0 {
+		t.Fatalf("cache restore exit=%d", code)
+	}
+
+	for name, dest := range map[string]string{"artifact": artifactDest, "cache": cacheDest, "restore": restoreDest} {
 		if _, err := os.Stat(filepath.Join(dest, "keep.txt")); err != nil {
 			t.Errorf("%s: keep.txt is missing: %v", name, err)
 		}
