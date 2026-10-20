@@ -44,7 +44,12 @@ spec:
       run: |
         export GOCACHE="$UNIFIED_VOLUME_GO_CACHE/build"
         export GOMODCACHE="$UNIFIED_VOLUME_GO_CACHE/mod"
-        go env GOCACHE GOMODCACHE
+        mkdir -p "$GOCACHE" "$GOMODCACHE"
+        # The workspace is empty every run, but the volume is not: this counter goes up.
+        n=$(cat "$UNIFIED_VOLUME_GO_CACHE/runs" 2>/dev/null || echo 0)
+        echo $((n + 1)) > "$UNIFIED_VOLUME_GO_CACHE/runs"
+        echo "this is run $((n + 1)) on this copy of go-cache; GOCACHE=$GOCACHE"
+        # go build ./...    # a real job builds here, with a Go toolchain in the job container
 ---
 # Demonstrates: a native job whose whole workspace persists on an exclusive volume
 #
