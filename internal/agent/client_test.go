@@ -153,9 +153,38 @@ func TestClient_Claim_Empty(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	resp, err := c.Claim(t.Context(), "a", "1s", nil)
+	resp, err := c.Claim(t.Context(), "a", "1s", nil, nil)
 	require.NoError(t, err)
 	assert.Empty(t, resp.RunID)
+}
+
+func TestClient_Claim_SendsBusyVolumesInTheBody(t *testing.T) {
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		bodies = append(bodies, b)
+		_ = json.NewEncoder(w).Encode(api.ClaimResponse{})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "t")
+
+	_, err := c.Claim(t.Context(), "a", "1s", nil, []string{"unity", "/go/cache"})
+	require.NoError(t, err)
+	_, err = c.Claim(t.Context(), "a", "1s", nil, []string{})
+	require.NoError(t, err)
+	_, err = c.Claim(t.Context(), "a", "1s", nil, nil)
+	require.NoError(t, err)
+	_, err = c.ClaimDetached(t.Context(), "a", "1s", nil)
+	require.NoError(t, err)
+
+	require.Len(t, bodies, 4)
+	var req api.ClaimRequest
+	require.NoError(t, json.Unmarshal(bodies[0], &req))
+	assert.Equal(t, []string{"unity", "/go/cache"}, req.BusyVolumes)
+	assert.Empty(t, bodies[1], "nothing busy: no body, the same request an agent without volumes has always sent")
+	assert.Empty(t, bodies[2])
+	assert.Empty(t, bodies[3], "a detached claim is not gated on volumes and sends no body")
 }
 
 func TestClient_ClaimDetached_SendsKind(t *testing.T) {
@@ -171,7 +200,7 @@ func TestClient_ClaimDetached_SendsKind(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, gotQuery, "kind=detached", "detached claim must send kind=detached")
 
-	_, err = c.Claim(t.Context(), "a", "1s", nil)
+	_, err = c.Claim(t.Context(), "a", "1s", nil, nil)
 	require.NoError(t, err)
 	assert.NotContains(t, gotQuery, "kind=detached", "a normal claim must not send kind=detached")
 }

@@ -60,6 +60,11 @@ type hostBackend struct {
 
 	masker      *secrets.Masker
 	sidecarPump *sidecarLogPump
+
+	// volumePaths maps each mounted volume's alias to the path a step sees it
+	// at: a host path for a native claim, a container path for an isolated one
+	// (mountVolumes / isolatedVolumeMounts). Empty when the job mounts none.
+	volumePaths map[string]string
 }
 
 // newHostBackend constructs the ExecBackend for one claim's executeRun call.

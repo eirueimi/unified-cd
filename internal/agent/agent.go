@@ -207,6 +207,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		Version:      Version,
 		Env:          collectEnv(a.ExposeEnv),
 		Capabilities: agentCapabilities(runtimeAvailable),
+		// The controller routes runs on this list and keeps no volume state
+		// of its own, so it is whatever the operator declared.
+		Volumes: a.Volumes.Names(),
 	}
 	var registerErr error
 	retryUntilSuccess(ctx, func(ctx context.Context) error {
@@ -255,6 +258,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
 			return fmt.Errorf("create workspace %s: %w", dir, mkErr)
 		}
+	}
+
+	// Every volume is free at this point: the agent has lost all the runs it
+	// was executing, and the controller's lost-claim reconcile (above) has
+	// failed them. Remove the links they left, before any claim can mount one.
+	if err := sweepStaleVolumeLinks(a.Volumes); err != nil {
+		slog.Warn("could not remove all stale volume links", "error", err)
 	}
 
 	// runCtx: continues even after claimCtx is cancelled. If DrainTimeout is set,
@@ -437,7 +447,10 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 		if detached {
 			resp, err = a.Client.ClaimDetached(claimCtx, a.ID, "30s", a.Labels)
 		} else {
-			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels)
+			// Tell the controller what this agent is holding, so it does not
+			// hand out a run that needs it. Only an optimisation: the
+			// reservation below is what enforces exclusion.
+			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels, a.Volumes.Busy())
 		}
 		if err != nil {
 			slog.Error("claim", "error", err, "slot", slot, "detached", detached)
@@ -499,8 +512,28 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			if resp.Native {
 				mode = "native"
 			}
+			// Hold the run's volumes before touching the workspace. The
+			// controller's busy filter only makes this rarely wait; if another
+			// run on this agent holds one, wait here (the run is already claimed
+			// and there is no way to hand it back) until it frees or the agent
+			// drains. Released once, after the run and its unmounts are done.
+			if len(resp.Volumes) > 0 {
+				release, err := a.reserveClaimVolumes(claimCtx, runCtx, &resp)
+				if err != nil {
+					a.failRun(runCtx, resp.RunID, err.Error())
+					return
+				}
+				defer release()
+			}
 			clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
-			if err := prepareWorkspaceFn(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
+			if workspaceVolumeDir(resp.Volumes, a.Volumes) != "" {
+				// The workspace is a volume (executeRun runs in its directory),
+				// so there is no per-run directory to prepare, and nothing here
+				// may reset or delete it.
+				if clean {
+					slog.Warn("cleanWorkspace is not applied to a workspace backed by a volume", "runId", resp.RunID)
+				}
+			} else if err := prepareWorkspaceFn(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
 				// The claim is ours but its workspace could not be prepared, so the
 				// run can never start. Fail it on the controller (retried until it
 				// lands) rather than leaving it Running until the stuck-run reaper
@@ -616,6 +649,26 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		a.failRun(ctx, c.RunID, fmt.Sprintf("%s: %v", msg, err))
 	}
 
+	// A volume at the workspace root IS the workspace: the run works in the
+	// volume's directory rather than the per-run one. Every other mount is
+	// made relative to wherever that is.
+	if root := workspaceVolumeDir(c.Volumes, a.Volumes); root != "" {
+		workDir = root
+	}
+	// Native volume mounts are links, made here and removed when the run ends.
+	// An isolated run's host side is just its mountpoint directories; the
+	// bind mounts themselves are added to the claim pod below.
+	volumePaths, unmount, err := mountVolumes(workDir, c.Volumes, a.Volumes, c.Native)
+	if err != nil {
+		failClaim("volume mount failed", err)
+		return
+	}
+	defer func() {
+		if err := unmount(); err != nil {
+			slog.Error("could not remove volume links", "runId", c.RunID, "error", err)
+		}
+	}()
+
 	var pod *claimPodManager
 	if !c.Native {
 		rt, err := a.containerRuntime()
@@ -640,6 +693,17 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			return
 		}
 		pod = newClaimPodManager(rt, workDir, hostNamedMountPath(c.PodTemplate), a.PauseImage, a.RunnerImage, a.ToolsDir)
+		if len(c.Volumes) > 0 {
+			// workDir is already the root volume's directory if there is one,
+			// so only the other volumes are added as mounts.
+			_, extra, resolved, verr := isolatedVolumeMounts(hostNamedMountPath(c.PodTemplate), c.Volumes, a.Volumes)
+			if verr != nil {
+				failClaim("volume mount failed", verr)
+				return
+			}
+			pod.volumeMounts = extra
+			volumePaths = resolved
+		}
 		if err := pod.Start(ctx, c.PodTemplate); err != nil {
 			pod.CloseAll(context.WithoutCancel(ctx))
 			failClaim("claim pod construction failed", err)
@@ -647,6 +711,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		}
 	}
 	backend := newHostBackend(a, c.RunID, c.JobName, workDir, pod)
+	backend.volumePaths = volumePaths
 	runClaimFn(ctx, a.Client, a.ID, c, backend)
 }
 

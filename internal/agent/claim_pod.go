@@ -274,6 +274,11 @@ type claimPodManager struct {
 	// real agent (via cmd/unified-cd-agent's InstallShim wiring) always sets it.
 	toolsDir string
 
+	// volumeMounts are the named volumes bind-mounted into every container
+	// beside the workspace (isolatedVolumeMounts). A volume at the workspace
+	// root is not among them: it replaces the workspace mount's host path.
+	volumeMounts []crt.Mount
+
 	mu    sync.Mutex
 	pause crt.ContainerHandle
 	open  map[string]crt.ContainerHandle // container name → handle
@@ -359,7 +364,8 @@ func (m *claimPodManager) Start(ctx context.Context, pt *dsl.PodTemplate) error 
 		if def.Name == primaryContainerName {
 			entrypoint, cargs = ucdShPause, nil
 		}
-		mounts := append([]crt.Mount{{HostPath: m.workDir, ContainerPath: m.mountPath}}, ucdToolsMount(m.toolsDir)...)
+		mounts := append([]crt.Mount{{HostPath: m.workDir, ContainerPath: m.mountPath}}, m.volumeMounts...)
+		mounts = append(mounts, ucdToolsMount(m.toolsDir)...)
 		h, err := m.rt.Create(ctx, crt.CreateSpec{
 			Image:            def.Image,
 			Env:              def.Env,

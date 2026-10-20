@@ -186,18 +186,32 @@ func (c *Client) Heartbeat(ctx context.Context, agentID string, activeRunIDs []s
 	return err
 }
 
-// Claim requests an executable Run for the agent. labels is the list of agent labels.
-func (c *Client) Claim(ctx context.Context, agentID, timeout string, labels []string) (api.ClaimResponse, error) {
-	return c.claim(ctx, agentID, timeout, labels, false)
+// Claim requests an executable Run for the agent. labels is the list of agent
+// labels. busyVolumes is what the agent is holding right now (see
+// api.ClaimRequest.BusyVolumes); the controller will not hand it a run that
+// needs one of them. nil means nothing is busy.
+//
+// The body is sent only when something is busy. An absent body already means
+// "nothing busy", and omitting it keeps the common idle claim byte-identical to
+// what a controller (or a test server) that has never heard of volumes expects:
+// a server that long-polls on the request context and never reads a body does
+// not notice a client disconnect until the body is consumed.
+func (c *Client) Claim(ctx context.Context, agentID, timeout string, labels, busyVolumes []string) (api.ClaimResponse, error) {
+	var req *api.ClaimRequest
+	if len(busyVolumes) > 0 {
+		req = &api.ClaimRequest{BusyVolumes: busyVolumes}
+	}
+	return c.claim(ctx, agentID, timeout, labels, req, false)
 }
 
 // ClaimDetached long-polls the claim endpoint for a detached run (kind=detached),
-// drawn from the controller's detached pool rather than the normal one.
+// drawn from the controller's detached pool rather than the normal one. It
+// sends no body: a detached job cannot use volumes, so there is nothing to gate.
 func (c *Client) ClaimDetached(ctx context.Context, agentID, timeout string, labels []string) (api.ClaimResponse, error) {
-	return c.claim(ctx, agentID, timeout, labels, true)
+	return c.claim(ctx, agentID, timeout, labels, nil, true)
 }
 
-func (c *Client) claim(ctx context.Context, agentID, timeout string, labels []string, detached bool) (api.ClaimResponse, error) {
+func (c *Client) claim(ctx context.Context, agentID, timeout string, labels []string, req *api.ClaimRequest, detached bool) (api.ClaimResponse, error) {
 	path := fmt.Sprintf("/api/v1/agents/%s/claim?timeout=%s", agentID, timeout)
 	if len(labels) > 0 {
 		path += "&labels=" + strings.Join(labels, ",")
@@ -205,8 +219,14 @@ func (c *Client) claim(ctx context.Context, agentID, timeout string, labels []st
 	if detached {
 		path += "&kind=detached"
 	}
+	// A nil *ClaimRequest must reach do as a nil interface (no body), not as a
+	// non-nil interface holding a nil pointer, which would marshal to "null".
+	var body any
+	if req != nil {
+		body = req
+	}
 	var out api.ClaimResponse
-	_, err := c.do(ctx, http.MethodPost, path, nil, &out)
+	_, err := c.do(ctx, http.MethodPost, path, body, &out)
 	return out, err
 }
 
