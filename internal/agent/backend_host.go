@@ -65,6 +65,12 @@ type hostBackend struct {
 	// at: a host path for a native claim, a container path for an isolated one
 	// (mountVolumes / isolatedVolumeMounts). Empty when the job mounts none.
 	volumePaths map[string]string
+
+	// volumeRefs are the volumes an ISOLATED claim bind-mounts at a path inside
+	// the workspace (relativeVolumeMounts); empty for a native claim. The host
+	// directory at such a path is an empty mountpoint, so artifact and cache
+	// paths inside one are refused (checkNotInVolumeMount).
+	volumeRefs []volumeMountRef
 }
 
 // newHostBackend constructs the ExecBackend for one claim's executeRun call.
@@ -299,7 +305,16 @@ func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, 
 	if !scope.IsZero() {
 		return resolveScopePath(p)
 	}
-	return resolveWorkspacePath(b.workDir, p)
+	resolved, err := resolveWorkspacePath(b.workDir, p)
+	if err != nil {
+		return "", err
+	}
+	if b.pod != nil {
+		if err := checkNotInVolumeMount(b.workDir, resolved, p, b.volumeRefs); err != nil {
+			return "", err
+		}
+	}
+	return resolved, nil
 }
 
 // ResolveCachePath is identical to ResolveArtifactPath: a non-scoped cache

@@ -180,6 +180,7 @@ func newGCTestServer(agentID string) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/agents/register", registerHandler)
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{}`)) //nolint:errcheck // empty claim response: no RunID
 	})

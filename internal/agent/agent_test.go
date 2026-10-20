@@ -55,6 +55,7 @@ func TestAgent_GracefulDrain(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/a1/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++
@@ -138,6 +139,7 @@ func TestAgent_DrainTimeout(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/a2/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++
@@ -206,6 +208,7 @@ func TestAgent_MaxConcurrent(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/a3/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++
@@ -308,6 +311,7 @@ func TestAgent_CleanWorkspace(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/a4/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++
@@ -744,6 +748,7 @@ func TestAgent_RunLoop_PreparePanicIsRecoveredAndFailsRun(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/a5/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++

@@ -21,6 +21,7 @@ func TestAgent_ClaimsDetachedOutsideMaxConcurrent(t *testing.T) {
 	var sawDetached, sawNormal atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/agents/{id}/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		if strings.Contains(r.URL.RawQuery, "kind=detached") {
 			sawDetached.Store(true)
 		} else {
@@ -56,6 +57,7 @@ func TestAgent_DetachedPoolOffWhenNegative(t *testing.T) {
 	var sawDetached atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/agents/{id}/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		if strings.Contains(r.URL.RawQuery, "kind=detached") {
 			sawDetached.Store(true)
 		}

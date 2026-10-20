@@ -2,6 +2,7 @@ package k8sagent
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -31,7 +32,8 @@ func claimController(t *testing.T, agentID string, total *atomic.Int32) *httptes
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/reconcile", func(w http.ResponseWriter, _ *http.Request) {
 		orchestrateWriteJSON(w, map[string]int{"failedRuns": 0})
 	})
-	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/claim", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		if total.Add(-1) >= 0 {
 			orchestrateWriteJSON(w, api.ClaimResponse{RunID: "r"})
 			return
@@ -139,4 +141,12 @@ func TestRun_SemaphoreBoundsConcurrency(t *testing.T) {
 	if max.Load() == 0 {
 		t.Fatal("expected some dispatches to run")
 	}
+}
+
+// drainRequestBody consumes a request body. A test server whose claim handler
+// long-polls on r.Context() must call it first: net/http only notices that a
+// client disconnected (and cancels the request context) once the body has been
+// read, and the agent client always sends one with a claim.
+func drainRequestBody(r *http.Request) {
+	_, _ = io.Copy(io.Discard, r.Body)
 }

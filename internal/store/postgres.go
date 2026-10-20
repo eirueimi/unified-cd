@@ -1584,29 +1584,39 @@ func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, versi
 // supplied a non-empty value, and merges (rather than replaces) labels. This lets a
 // claim refresh last_seen_at/labels without clobbering richer data recorded at full
 // registration time (e.g. the register-only hostname:<h> label). See TODO #12/#23.
-func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error {
+//
+// volumes is the agent's full advertised list. It is written when non-empty, so a
+// row this claim has to recreate (the database was reset under a running agent)
+// routes volume jobs again instead of looking as if no agent declares the volume.
+// An empty list is "not supplied", never "none": a claim cannot wipe what
+// registration recorded. Dropping a volume is a registration, which replaces.
+func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, volumes []string, env map[string]string) error {
 	if labels == nil {
 		labels = []string{}
 	}
 	if env == nil {
 		env = map[string]string{}
 	}
+	if volumes == nil {
+		volumes = []string{}
+	}
 	envJSON, err := json.Marshal(env)
 	if err != nil {
 		return err
 	}
 	const q = `
-		INSERT INTO agents(id, hostname, os, labels, version, env, last_seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		INSERT INTO agents(id, hostname, os, labels, version, env, volumes, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		ON CONFLICT (id) DO UPDATE
 		  SET hostname     = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
 		      os           = COALESCE(NULLIF(EXCLUDED.os, ''), agents.os),
 		      labels       = (SELECT ARRAY(SELECT DISTINCT unnest(agents.labels || EXCLUDED.labels))),
 		      version      = COALESCE(NULLIF(EXCLUDED.version, ''), agents.version),
 		      env          = CASE WHEN EXCLUDED.env = '{}'::jsonb THEN agents.env ELSE EXCLUDED.env END,
+		      volumes      = CASE WHEN cardinality(EXCLUDED.volumes) > 0 THEN EXCLUDED.volumes ELSE agents.volumes END,
 		      last_seen_at = NOW();
 	`
-	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON)
+	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON, volumes)
 	return err
 }
 

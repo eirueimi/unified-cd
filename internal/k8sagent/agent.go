@@ -231,8 +231,8 @@ func (a *K8sAgent) k8sClaimLoop(ctx, runCtx context.Context, labels []string, se
 		if detached {
 			resp, err = a.client.ClaimDetached(ctx, a.cfg.AgentID, "30s", labels)
 		} else {
-			// nil: this agent does not report busy volumes.
-			resp, err = a.client.Claim(ctx, a.cfg.AgentID, "30s", labels, nil)
+			// Empty request: this agent declares no host volumes and reports none busy.
+			resp, err = a.client.Claim(ctx, a.cfg.AgentID, "30s", labels, api.ClaimRequest{})
 		}
 		if err != nil {
 			if sem != nil {

@@ -188,7 +188,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	// UI Agents page), even if it was never explicitly registered or the controller
 	// DB was reset out from under a still-running agent. This is best-effort: a
 	// failure here must not fail the claim itself.
-	if err := s.store.UpsertAgentOnClaim(r.Context(), agentID, "", "", "", agentLabels, nil); err != nil {
+	if err := s.store.UpsertAgentOnClaim(r.Context(), agentID, "", "", "", agentLabels, claimReq.Volumes, nil); err != nil {
 		slog.Warn("agent claim: failed to upsert agent registration", "agentId", agentID, "error", err)
 	}
 

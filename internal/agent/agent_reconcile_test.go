@@ -44,6 +44,7 @@ func TestRun_ReconcilesOrphanedRunsBeforeClaiming(t *testing.T) {
 		w.Write([]byte(`{"failedRuns":2}`)) //nolint:errcheck
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		record("claim")
 		claimOnce.Do(func() { close(claimed) })
 		w.WriteHeader(http.StatusNoContent) // nothing to claim

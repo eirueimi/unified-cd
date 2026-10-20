@@ -30,6 +30,7 @@ func TestRun_DetachedClaimUsesSeparatePool(t *testing.T) {
 		orchestrateWriteJSON(w, map[string]int{"failedRuns": 0})
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		if strings.Contains(r.URL.RawQuery, "kind=detached") {
 			sawDetached.Store(true)
 		} else {
@@ -67,6 +68,7 @@ func TestRun_DetachedOffWhenNegative(t *testing.T) {
 		orchestrateWriteJSON(w, map[string]int{"failedRuns": 0})
 	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		if strings.Contains(r.URL.RawQuery, "kind=detached") {
 			sawDetached.Store(true)
 		}

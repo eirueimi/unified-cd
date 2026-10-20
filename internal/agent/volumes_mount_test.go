@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -348,6 +349,80 @@ func TestClaimPod_MountsNamedVolumesOnEveryWorkspaceContainer(t *testing.T) {
 	}
 }
 
+// On an isolated run a volume is bind-mounted into the container only. The
+// host directory at its mount path is an empty mountpoint, and artifact and
+// cache steps read and write the host side, so a path inside a mount would
+// archive nothing and save nothing while the run goes green. It must fail loudly.
+func TestHostBackend_IsolatedPathInsideVolumeMountIsRejected(t *testing.T) {
+	refs := []volumeMountRef{{Volume: "go-cache", MountPath: ".ucd-cache/go"}}
+	pod := newClaimPodManager(&podFakeRT{}, "/w", "/workspace", "p", "r", "")
+	isolated := newHostBackend(&Agent{}, "r1", "job", t.TempDir(), pod)
+	isolated.volumeRefs = refs
+
+	resolvers := map[string]func(ScopeHandle, string) (string, error){
+		"artifact": isolated.ResolveArtifactPath,
+		"cache":    isolated.ResolveCachePath,
+	}
+	for kind, resolve := range resolvers {
+		for _, p := range []string{".ucd-cache/go", ".ucd-cache/go/obj", "./.ucd-cache/go/../go/x", ".ucd-cache/go/"} {
+			_, err := resolve(ScopeHandle{}, p)
+			require.Error(t, err, "%s path %q", kind, p)
+			require.Contains(t, err.Error(), p, "the error names the path")
+			require.Contains(t, err.Error(), `"go-cache"`, "the error names the volume")
+			require.Contains(t, err.Error(), ".ucd-cache/go", "the error names the mount path")
+		}
+		// Outside the mount, an ancestor of it, a near miss, and the default.
+		for _, p := range []string{"other/out", ".ucd-cache", ".ucd-cache/gopher", ""} {
+			_, err := resolve(ScopeHandle{}, p)
+			require.NoError(t, err, "%s path %q", kind, p)
+		}
+		// A scoped step works in its own container, not on the host mountpoint.
+		_, err := resolve(ScopeHandle{opaque: 1}, ".ucd-cache/go/x")
+		require.NoError(t, err)
+	}
+
+	// A native run reaches the volume through a link on the host: no problem.
+	native := newHostBackend(&Agent{}, "r1", "job", t.TempDir(), nil)
+	native.volumeRefs = refs
+	_, err := native.ResolveArtifactPath(ScopeHandle{}, ".ucd-cache/go/obj")
+	require.NoError(t, err)
+}
+
+func TestExecuteRun_Isolated_ArtifactAndCachePathsInsideAVolumeMountFailTheRun(t *testing.T) {
+	steps := map[string]*api.ClaimStep{
+		"upload-artifact": {Index: 0, Name: "up", UploadArtifact: &api.UploadArtifactStep{Name: "out", Path: ".ucd-cache/go/out"}},
+		"cache":           {Index: 0, Name: "c", Cache: &dsl.CacheStep{Path: ".ucd-cache/go", Key: "k"}},
+	}
+	for kind, step := range steps {
+		t.Run(kind, func(t *testing.T) {
+			const agentID = "iso-vol-agent"
+			h := newIsolatedHarness()
+			srv := newIsolatedServer(t, agentID, h)
+			m, _ := newTestVolumes(t, exclusive("go-cache"))
+			f := &podFakeRT{}
+			a := &Agent{ID: agentID, Client: NewClient(srv.URL, "tok"), PauseImage: "pause:img", RunnerImage: "runner:img", Volumes: m}
+			a.runtimeOnce.Do(func() {})
+			a.resolvedRuntime = f
+
+			var buf bytes.Buffer
+			defer captureSlog(&buf)()
+			a.executeRun(context.Background(), api.ClaimResponse{
+				RunID: "run-iso-vol", JobName: "j", PodTemplate: mysqlTemplate(),
+				Volumes: []dsl.VolumeMount{vmount("go-cache", "gc", ".ucd-cache/go")},
+				Stages:  []api.ClaimStage{{Step: step}},
+			}, t.TempDir())
+
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			require.Equal(t, "Failed", h.finishStatus, "a green run would read as having saved the files")
+			out := buf.String()
+			require.Contains(t, out, ".ucd-cache/go")
+			require.Contains(t, out, "go-cache")
+			require.Contains(t, out, "bind-mounted")
+		})
+	}
+}
+
 // --- reservation ---
 
 func TestReserveRunVolumes_PicksFreeCandidateAndNamesIt(t *testing.T) {
@@ -541,6 +616,8 @@ type volumeLoopServer struct {
 	served atomic.Int32
 	// registered is the last registration request the agent sent.
 	registered api.AgentRegisterRequest
+	// runStatus overrides what GET /runs/{id} reports (default Running).
+	runStatus map[string]api.RunStatus
 }
 
 func newVolumeLoopServer(t *testing.T, claimN func(n int, stepSeen <-chan string) *api.ClaimResponse) *volumeLoopServer {
@@ -580,6 +657,16 @@ func newVolumeLoopServer(t *testing.T, claimN func(n int, stepSeen <-chan string
 		if resp.RunID != "" {
 			s.served.Add(1)
 		}
+	})
+	mux.HandleFunc("GET /api/v1/runs/{run}", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		st, ok := s.runStatus[r.PathValue("run")]
+		s.mu.Unlock()
+		if !ok {
+			st = api.RunRunning
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(api.Run{ID: r.PathValue("run"), Status: st})
 	})
 	mux.HandleFunc("POST /api/v1/agents/v1/steps", func(w http.ResponseWriter, r *http.Request) {
 		var body api.StepReportRequest
@@ -761,6 +848,65 @@ func TestRunLoop_VolumeWaitIsAbandonedOnDrain(t *testing.T) {
 		t.Fatal("Run did not return after the drain")
 	}
 	require.Empty(t, a.Volumes.Busy())
+}
+
+// A user cancelling a run that is waiting for a volume ends the wait too. The
+// run is already terminal on the controller, so the agent must not report a
+// result for it (that would race the cancel), and the slot is free again.
+func TestRunLoop_VolumeWaitEndsWhenTheRunIsCancelled(t *testing.T) {
+	prev := CancelPollInterval
+	CancelPollInterval = 30 * time.Millisecond
+	defer func() { CancelPollInterval = prev }()
+
+	barrier := filepath.Join(t.TempDir(), "barrier")
+	require.NoError(t, os.WriteFile(barrier, []byte("hold"), 0o644))
+	mount := vmount("unity", "", ".ucd-cache/lib")
+
+	srv := newVolumeLoopServer(t, func(n int, stepSeen <-chan string) *api.ClaimResponse {
+		switch n {
+		case 0:
+			return volumeClaim("run-1", "while [ -f "+filepath.ToSlash(barrier)+" ]; do sleep 0.01; done", mount)
+		case 1:
+			select {
+			case <-stepSeen:
+			case <-time.After(20 * time.Second):
+			}
+			return volumeClaim("run-2", "echo never", mount)
+		}
+		return nil
+	})
+	a, _ := volumeAgent(t, srv, 2, "unity")
+	claimCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- a.Run(claimCtx) }()
+
+	require.Eventually(t, func() bool { return srv.served.Load() >= 2 }, 20*time.Second, 10*time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+	srv.mu.Lock()
+	claimsBefore := len(srv.claimBody)
+	srv.runStatus = map[string]api.RunStatus{"run-2": api.RunCancelled}
+	srv.mu.Unlock()
+
+	// The waiting slot gives up and goes back to claiming while run-1 still holds the volume.
+	require.Eventually(t, func() bool {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		return len(srv.claimBody) > claimsBefore
+	}, 20*time.Second, 10*time.Millisecond, "the cancelled run must stop waiting")
+	require.FileExists(t, barrier)
+	require.Equal(t, []string{"unity"}, a.Volumes.Busy())
+	require.Equal(t, 0, srv.stepCount("run-2"))
+	srv.mu.Lock()
+	for _, f := range srv.finishes {
+		require.NotEqual(t, "run-2", f.runID, "a run the controller already finished is not finished again")
+	}
+	srv.mu.Unlock()
+
+	require.NoError(t, os.Remove(barrier))
+	waitFinish(t, srv, "run-1")
+	cancel()
+	<-done
 }
 
 func TestRunLoop_ClaimReportsBusyVolumes(t *testing.T) {

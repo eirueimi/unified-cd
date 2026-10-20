@@ -105,6 +105,39 @@ func TestAgentAPI_Claim_HonoursBusyVolumesFromTheBody(t *testing.T) {
 	assert.Equal(t, ".", got.Volumes[0].MountPath)
 }
 
+// A claim can recreate an agent row the database lost. When the claim carries
+// the agent's volumes the recreated row must route volume jobs, otherwise the
+// run sits Queued under a "no agent declares the volume" reason that is false.
+func TestAgentAPI_Claim_RecreatedAgentRowCarriesItsVolumes(t *testing.T) {
+	s, pg := newTestServer(t)
+	_, err := pg.UpsertJob(t.Context(), "vj", "unified-cd/v1", []byte(volumeJobSpec))
+	require.NoError(t, err)
+	run, err := pg.CreateRun(t.Context(), "vj", map[string]string{"LIB": "unity"}, []byte(volumeJobSpec), nil, nil, "", "")
+	require.NoError(t, err)
+	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
+	require.NoError(t, err)
+
+	// The agent never registered: this claim creates its row.
+	token := issueAgentAccessForTest(t, pg, "va", nil, nil)
+	body, _ := json.Marshal(api.ClaimRequest{Volumes: []string{"unity"}})
+	rec := claimAs(t, s, token, "va", body)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var got api.ClaimResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	assert.Equal(t, run.ID, got.RunID, "a row recreated by a claim must route the volume job to it")
+
+	info, err := pg.GetAgent(t.Context(), "va")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"unity"}, info.Volumes)
+
+	// A later claim that does not supply the list leaves it alone.
+	rec = claimAs(t, s, token, "va", []byte(`{}`))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	info, err = pg.GetAgent(t.Context(), "va")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"unity"}, info.Volumes)
+}
+
 func TestAgentAPI_Claim_AcceptsAnEmptyJSONBody(t *testing.T) {
 	s, pg := newTestServer(t)
 	_, err := pg.UpsertJob(t.Context(), "plain", "unified-cd/v1", []byte(`{"native":true,"steps":[{"name":"s","run":"echo x"}]}`))

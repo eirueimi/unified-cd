@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -448,9 +449,13 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			resp, err = a.Client.ClaimDetached(claimCtx, a.ID, "30s", a.Labels)
 		} else {
 			// Tell the controller what this agent is holding, so it does not
-			// hand out a run that needs it. Only an optimisation: the
-			// reservation below is what enforces exclusion.
-			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels, a.Volumes.Busy())
+			// hand out a run that needs it (only an optimisation: the
+			// reservation below is what enforces exclusion), and what it
+			// declares, so a row the claim recreates still routes volume jobs.
+			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels, api.ClaimRequest{
+				BusyVolumes: a.Volumes.Busy(),
+				Volumes:     a.Volumes.Names(),
+			})
 		}
 		if err != nil {
 			slog.Error("claim", "error", err, "slot", slot, "detached", detached)
@@ -519,6 +524,12 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			// drains. Released once, after the run and its unmounts are done.
 			if len(resp.Volumes) > 0 {
 				release, err := a.reserveClaimVolumes(claimCtx, runCtx, &resp)
+				if errors.Is(err, errRunTerminal) {
+					// Cancelled (or reaped) while waiting: already final on the
+					// controller, so there is no result to report.
+					slog.Info("run ended while waiting for its volumes", "runId", resp.RunID)
+					return
+				}
 				if err != nil {
 					a.failRun(runCtx, resp.RunID, err.Error())
 					return
@@ -670,6 +681,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}()
 
 	var pod *claimPodManager
+	var refs []volumeMountRef
 	if !c.Native {
 		rt, err := a.containerRuntime()
 		if err != nil {
@@ -703,6 +715,11 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			}
 			pod.volumeMounts = extra
 			volumePaths = resolved
+			refs, verr = relativeVolumeMounts(c.Volumes, a.Volumes)
+			if verr != nil {
+				failClaim("volume mount failed", verr)
+				return
+			}
 		}
 		if err := pod.Start(ctx, c.PodTemplate); err != nil {
 			pod.CloseAll(context.WithoutCancel(ctx))
@@ -712,6 +729,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	}
 	backend := newHostBackend(a, c.RunID, c.JobName, workDir, pod)
 	backend.volumePaths = volumePaths
+	backend.volumeRefs = refs
 	runClaimFn(ctx, a.Client, a.ID, c, backend)
 }
 

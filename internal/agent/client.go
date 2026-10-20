@@ -187,21 +187,15 @@ func (c *Client) Heartbeat(ctx context.Context, agentID string, activeRunIDs []s
 }
 
 // Claim requests an executable Run for the agent. labels is the list of agent
-// labels. busyVolumes is what the agent is holding right now (see
-// api.ClaimRequest.BusyVolumes); the controller will not hand it a run that
-// needs one of them. nil means nothing is busy.
+// labels. req says what the agent is holding (BusyVolumes: the controller will
+// not hand it a run that needs one of them) and what it declares (Volumes: so a
+// row the claim has to recreate keeps routing volume jobs); see api.ClaimRequest.
 //
-// The body is sent only when something is busy. An absent body already means
-// "nothing busy", and omitting it keeps the common idle claim byte-identical to
-// what a controller (or a test server) that has never heard of volumes expects:
-// a server that long-polls on the request context and never reads a body does
-// not notice a client disconnect until the body is consumed.
-func (c *Client) Claim(ctx context.Context, agentID, timeout string, labels, busyVolumes []string) (api.ClaimResponse, error) {
-	var req *api.ClaimRequest
-	if len(busyVolumes) > 0 {
-		req = &api.ClaimRequest{BusyVolumes: busyVolumes}
-	}
-	return c.claim(ctx, agentID, timeout, labels, req, false)
+// The body is always sent, empty or not, so an idle claim and a busy one are the
+// same request shape. A server that long-polls on the request context must read
+// the body: net/http does not notice a client that disconnects until it has.
+func (c *Client) Claim(ctx context.Context, agentID, timeout string, labels []string, req api.ClaimRequest) (api.ClaimResponse, error) {
+	return c.claim(ctx, agentID, timeout, labels, &req, false)
 }
 
 // ClaimDetached long-polls the claim endpoint for a detached run (kind=detached),

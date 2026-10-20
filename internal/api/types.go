@@ -151,6 +151,11 @@ type ClaimRequest struct {
 	// own reservation is what actually enforces exclusion. Absolute paths match
 	// no volume name and are ignored by the controller.
 	BusyVolumes []string `json:"busyVolumes,omitempty"`
+	// Volumes is every volume the agent declares, as it advertised at
+	// registration. A claim can recreate an agent row the database lost; this
+	// lets the recreated row route volume jobs again. Empty (or absent) means
+	// "not supplied" and never clears the recorded volumes.
+	Volumes []string `json:"volumes,omitempty"`
 }
 
 type ClaimResponse struct {

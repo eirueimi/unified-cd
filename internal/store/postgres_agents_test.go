@@ -80,7 +80,7 @@ func TestUpsertAgentOnClaim_MergesLabelsAndDoesNotClobber(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"kind:linux", "hostname:host1"}, nil, nil, nil))
-	require.NoError(t, st.UpsertAgentOnClaim(ctx, "agent-1", "", "", "", []string{"kind:linux"}, nil))
+	require.NoError(t, st.UpsertAgentOnClaim(ctx, "agent-1", "", "", "", []string{"kind:linux"}, nil, nil))
 
 	a, err := st.GetAgent(ctx, "agent-1")
 	require.NoError(t, err)
@@ -161,6 +161,34 @@ func TestListRunsByAgent(t *testing.T) {
 	if len(runs) != 1 {
 		t.Errorf("want 1 run, got %d", len(runs))
 	}
+}
+
+// A claim can recreate an agent row (the database was reset under a running
+// agent). The claim carries the agent's full volume list so the recreated row
+// routes volume jobs again, but a claim that carries none must never wipe what
+// registration recorded.
+func TestUpsertAgentOnClaim_VolumesAreWrittenWhenSuppliedAndNeverWiped(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	// A claim recreating a missing row records the volumes it supplies.
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, []string{"unity", "go-cache"}, nil))
+	got, err := pg.GetAgent(ctx, "a")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"unity", "go-cache"}, got.Volumes)
+
+	// A claim that supplies none leaves them alone.
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, nil, nil))
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, []string{}, nil))
+	got, err = pg.GetAgent(ctx, "a")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"unity", "go-cache"}, got.Volumes, "an empty claim-time list must not wipe the registered volumes")
+
+	// A claim that supplies a list replaces it: the claim carries the full set.
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, []string{"unity"}, nil))
+	got, err = pg.GetAgent(ctx, "a")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"unity"}, got.Volumes)
 }
 
 // The controller judges whether a run is schedulable by comparing the volumes

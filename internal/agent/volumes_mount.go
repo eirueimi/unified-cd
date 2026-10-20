@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -556,6 +557,11 @@ func reserveRunVolumes(ctx context.Context, m *VolumeManager, runID string, moun
 	return chosen, release, nil
 }
 
+// errRunTerminal is returned by reserveClaimVolumes when, while the run waited,
+// the controller reported it terminal (cancelled by a user, or failed by the
+// reaper). There is nothing left to report for such a run.
+var errRunTerminal = errors.New("the controller reports the run finished while it waited for its volumes")
+
 // reserveClaimVolumes holds every volume the claim mounts, waiting while another
 // run on this agent holds one, and narrows c.Volumes to the volumes chosen. The
 // returned func measures each volume's usage (advisory) and releases the lot; it
@@ -566,12 +572,23 @@ func reserveRunVolumes(ctx context.Context, m *VolumeManager, runID string, moun
 // but this run has not started, and waiting out a holder (a Unity build runs for
 // tens of minutes) would hold a slot and stall the drain. Nothing proceeds
 // unmounted.
+//
+// The wait also ends, with errRunTerminal, when the controller reports the run
+// terminal. RunClaim's own cancel poller does not exist yet at this point (the
+// run context carries agent-level cancellation only), so a user cancelling a
+// run that is waiting would otherwise leave it holding its slot until the
+// holder finished. The poll starts only if the run actually has to wait.
 func (a *Agent) reserveClaimVolumes(claimCtx, runCtx context.Context, c *api.ClaimResponse) (func(), error) {
 	waitCtx, cancel := context.WithCancel(runCtx)
+	var pollers sync.WaitGroup
+	defer pollers.Wait() // registered first, so it runs after cancel
 	defer cancel()
 	stop := context.AfterFunc(claimCtx, cancel)
 	defer stop()
 
+	pollInterval := CancelPollInterval
+	var terminal atomic.Bool
+	var pollOnce sync.Once
 	onWait := func(what string) {
 		msg := fmt.Sprintf("waiting for %s, which another run on this agent is using", what)
 		slog.Info(msg, "runId", c.RunID)
@@ -581,9 +598,36 @@ func (a *Agent) reserveClaimVolumes(claimCtx, runCtx context.Context, c *api.Cla
 		_ = a.Client.AppendLogBulk(waitCtx, a.ID, c.RunID, -1, []api.LogAppendRequest{{
 			RunID: c.RunID, StepIndex: -1, Stream: "stderr", Timestamp: time.Now().UTC(), Line: msg,
 		}})
+		pollOnce.Do(func() {
+			pollers.Add(1)
+			go func() {
+				defer pollers.Done()
+				ticker := time.NewTicker(pollInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-waitCtx.Done():
+						return
+					case <-ticker.C:
+						run, err := a.Client.GetRun(waitCtx, c.RunID)
+						if err != nil {
+							continue
+						}
+						if isTerminalRunStatus(run.Status) {
+							terminal.Store(true)
+							cancel()
+							return
+						}
+					}
+				}
+			}()
+		})
 	}
 	chosen, release, err := reserveRunVolumes(waitCtx, a.Volumes, c.RunID, c.Volumes, c.Native, onWait)
 	if err != nil {
+		if terminal.Load() {
+			return nil, errRunTerminal
+		}
 		if claimCtx.Err() != nil {
 			return nil, fmt.Errorf("run abandoned: the agent is draining and the run was still waiting for its volumes: %w", err)
 		}
@@ -603,6 +647,53 @@ func (a *Agent) reserveClaimVolumes(claimCtx, runCtx context.Context, c *api.Cla
 }
 
 // --- isolated runs ---
+
+// volumeMountRef names a volume an isolated run bind-mounts at a path inside
+// the workspace.
+type volumeMountRef struct {
+	Volume    string
+	MountPath string // cleaned, slash-separated, relative to the workspace
+}
+
+// relativeVolumeMounts lists the volumes mounted at a non-root path inside the
+// workspace. A root volume is the host workspace itself and an absolute path is
+// a container path outside it, so neither can hide files from a host-side read.
+func relativeVolumeMounts(mounts []dsl.VolumeMount, m *VolumeManager) ([]volumeMountRef, error) {
+	specs, err := planMounts(mounts, m)
+	if err != nil {
+		return nil, err
+	}
+	var refs []volumeMountRef
+	for _, s := range specs {
+		if !s.root && !s.abs {
+			refs = append(refs, volumeMountRef{Volume: s.name, MountPath: s.mp})
+		}
+	}
+	return refs, nil
+}
+
+// checkNotInVolumeMount refuses a host-side artifact or cache path (resolved,
+// from the step's path p) that lies inside a volume bind-mounted into the
+// container. Artifact and cache steps read and write the HOST side; there the
+// mount path is an empty directory, so the step would archive nothing, or save
+// nothing, and the run would still go green. Failing is the safe answer: reading
+// the volume's own host directory instead is possible but is not done yet.
+func checkNotInVolumeMount(workDir, resolved, p string, refs []volumeMountRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	rel, err := filepath.Rel(workDir, resolved)
+	if err != nil {
+		return nil
+	}
+	rel = path.Clean(filepath.ToSlash(rel))
+	for _, r := range refs {
+		if rel == r.MountPath || strings.HasPrefix(rel, r.MountPath+"/") {
+			return fmt.Errorf("artifact/cache path %q is inside volume %q, which is bind-mounted into the container at %q: an isolated run can only reach a volume from inside its container, so this step would archive or save an empty directory; run the job native, or archive from a step that copies the files out of the mount first", p, r.Volume, r.MountPath)
+		}
+	}
+	return nil
+}
 
 // isolatedVolumeMounts maps mounts onto the container backend. rootHost is the
 // host directory of the volume mounted at the workspace root ("" if none): the

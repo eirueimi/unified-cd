@@ -338,8 +338,10 @@ type Store interface {
 	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, env map[string]string) error
 	// UpsertAgentOnClaim is the CLAIM path: a lightweight, non-destructive upsert that
 	// merges labels and only overwrites scalar fields when non-empty, so a claim never
-	// clobbers richer data recorded at registration time.
-	UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error
+	// clobbers richer data recorded at registration time. A non-empty volumes list is
+	// written (so a row a claim recreates keeps routing volume jobs); an empty one
+	// leaves the recorded volumes untouched.
+	UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, volumes []string, env map[string]string) error
 	// TouchAgent refreshes an agent's last_seen_at from its heartbeat. It UPSERTs:
 	// a heartbeat must be able to recreate a row something else deleted (the row is
 	// not owned by the process that heartbeats it), otherwise a live agent's runs
