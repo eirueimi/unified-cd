@@ -370,15 +370,26 @@ func TestExecuteRun_HoldsTheVolumeLockForTheRunAndReleasesItAfter(t *testing.T) 
 
 // onCreatePM runs hook once, just before the first CreatePod: the moment a
 // stalled create lets the world move on.
+//
+// after, if set, runs once the first CreatePod has committed and before it
+// returns to the caller: the moment between "the pod exists" and "the agent
+// finds out".
 type onCreatePM struct {
 	podManager
-	once sync.Once
-	hook func()
+	once, afterOnce sync.Once
+	hook            func()
+	after           func()
 }
 
 func (p *onCreatePM) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
-	p.once.Do(p.hook)
-	return p.podManager.CreatePod(ctx, pod)
+	if p.hook != nil {
+		p.once.Do(p.hook)
+	}
+	made, err := p.podManager.CreatePod(ctx, pod)
+	if p.after != nil {
+		p.afterOnce.Do(p.after)
+	}
+	return made, err
 }
 
 // TestVolumeLock_LockStolenDuringACreateIsNotKeptByThePod is the lock-to-pod
@@ -430,32 +441,185 @@ func TestVolumeLock_LockStolenDuringACreateIsNotKeptByThePod(t *testing.T) {
 	}
 }
 
-type stallingCreatePM struct{ podManager }
-
-func (stallingCreatePM) CreatePod(ctx context.Context, _ *corev1.Pod) (*corev1.Pod, error) {
-	<-ctx.Done()
-	return nil, ctx.Err()
-}
-
-// TestVolumeLock_CreatePodIsBoundedWellUnderTheGrace: a create that never
-// returns must be cut off long before the lock could be judged stale, and must
-// give the lock back.
-func TestVolumeLock_CreatePodIsBoundedWellUnderTheGrace(t *testing.T) {
-	prev := volumeLockGrace
-	volumeLockGrace = 400 * time.Millisecond
-	t.Cleanup(func() { volumeLockGrace = prev })
-
+// TestVolumeLock_ConfirmationIsACompareAndSwapThatInvalidatesARivalsPendingWrite
+// is the clock-skew case a read cannot close. Replica B read the claim while A
+// held the lock, judged A's run to have no pod (A's create had not committed) and
+// is about to write the takeover with the resourceVersion it read. A bare Get by
+// A after its create would leave that resourceVersion alone and B's write would
+// still succeed; A's confirmation is an Update, which bumps it, so B's pending
+// write is a Conflict.
+func TestVolumeLock_ConfirmationIsACompareAndSwapThatInvalidatesARivalsPendingWrite(t *testing.T) {
 	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
 	ctl := newControllerStub(t)
-	a := lockReplica(cs, ctl.srv.URL, stallingCreatePM{volPM{NewPodManager(cs, testVolNS, "img")}},
-		[]config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	pm := &onCreatePM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}}
+	var bsView *corev1.PersistentVolumeClaim
+	// After A's pod commits and before A hears about it, B reads the claim and
+	// is thereby holding the resourceVersion A's lock write produced.
+	pm.after = func() {
+		p, err := cs.CoreV1().PersistentVolumeClaims(testVolNS).Get(context.Background(), "agent1-unity-main", metav1.GetOptions{})
+		require.NoError(t, err)
+		bsView = p
+	}
+	a := lockReplica(cs, ctl.srv.URL, pm, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+
+	res, err := a.createClaimPod(context.Background(), claimFor("run-a", mount("unity-main", "", ".")))
+	require.NoError(t, err)
+	require.NotNil(t, res.pod, "run-a confirmed its lock and keeps its pod")
+	require.NotNil(t, bsView)
+
+	// B's write, issued only now, against the resourceVersion it read earlier.
+	bsView.Annotations[annoVolumeHeldBy] = "run-b"
+	_, err = cs.CoreV1().PersistentVolumeClaims(testVolNS).Update(context.Background(), bsView, metav1.UpdateOptions{})
+	require.Error(t, err, "B's takeover must not succeed after A confirmed")
+	assert.True(t, apierrors.IsConflict(err), "got %v", err)
+	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+}
+
+// If the rival's write lands between A's read and A's confirming write, A's
+// Update conflicts, A reads again, sees the rival and gives its pod up.
+func TestVolumeLock_ConfirmationConflictReReadsAndLosesToTheWinner(t *testing.T) {
+	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
+	var updates atomic.Int32
+	cs.PrependReactor("update", "persistentvolumeclaims", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		// Update 1 is A taking the lock; update 2 is A confirming it.
+		if updates.Add(1) != 2 {
+			return false, nil, nil
+		}
+		obj := a.(k8stesting.UpdateAction).GetObject().(*corev1.PersistentVolumeClaim)
+		cur, err := cs.Tracker().Get(pvcResource, obj.Namespace, obj.Name)
+		require.NoError(t, err)
+		won := cur.(*corev1.PersistentVolumeClaim).DeepCopy()
+		won.Annotations[annoVolumeHeldBy] = "run-b"
+		n, _ := strconv.Atoi(won.ResourceVersion)
+		won.ResourceVersion = strconv.Itoa(n + 1)
+		require.NoError(t, cs.Tracker().Update(pvcResource, won, obj.Namespace))
+		return true, nil, apierrors.NewConflict(pvcResource.GroupResource(), obj.Name, errors.New("modified"))
+	})
+	ctl := newControllerStub(t)
+	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res, err := a.createClaimPod(ctx, claimFor("run-a", mount("unity-main", "", ".")))
+	require.Error(t, err, "run-a keeps waiting for a volume run-b holds, until its context ends")
+	assert.Nil(t, res.pod)
+	pods, perr := cs.CoreV1().Pods(testVolNS).List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, perr)
+	assert.Empty(t, pods.Items, "the loser's pod is deleted")
+	assert.Equal(t, "run-b", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+}
+
+type stallOnceCreatePM struct {
+	podManager
+	once sync.Once
+	n    atomic.Int32
+}
+
+func (p *stallOnceCreatePM) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	p.n.Add(1)
+	stall := false
+	p.once.Do(func() { stall = true })
+	if stall {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return p.podManager.CreatePod(ctx, pod)
+}
+
+// TestVolumeLock_ACreateThatTimesOutIsRetriedNotFatal: the create is cut off well
+// under the grace, but a slow cluster must cost the run time and not the run.
+func TestVolumeLock_ACreateThatTimesOutIsRetriedNotFatal(t *testing.T) {
+	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
+	ctl := newControllerStub(t)
+	pm := &stallOnceCreatePM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}}
+	a := lockReplica(cs, ctl.srv.URL, pm, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	a.lockGraceOverride = 400 * time.Millisecond // so the create deadline is 100ms
 
 	start := time.Now()
-	_, err := a.createClaimPod(context.Background(), claimFor("run-a", mount("unity-main", "", ".")))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create Pod")
-	assert.Less(t, time.Since(start), volumeLockGrace, "the create is abandoned before the lock could be taken over")
-	assert.Empty(t, pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "a timed-out create releases the lock")
+	res, err := a.createClaimPod(context.Background(), claimFor("run-a", mount("unity-main", "", ".")))
+	require.NoError(t, err, "a timed-out create is retried")
+	require.NotNil(t, res.pod)
+	assert.Equal(t, int32(2), pm.n.Load())
+	assert.Less(t, time.Since(start), 5*time.Second)
+	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "the retry holds the lock again")
+}
+
+type alreadyExistsOncePM struct {
+	podManager
+	once sync.Once
+}
+
+func (p *alreadyExistsOncePM) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	fail := false
+	p.once.Do(func() { fail = true })
+	if fail {
+		return nil, apierrors.NewAlreadyExists(corev1.Resource("pods"), pod.Name)
+	}
+	return p.podManager.CreatePod(ctx, pod)
+}
+
+// The pod name is derived from the run ID, so a retry after an earlier attempt
+// whose pod landed finds its own pod there. That pod is removed and the create is
+// tried again.
+func TestVolumeLock_AlreadyExistsFromAnEarlierAttemptIsRetried(t *testing.T) {
+	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
+	ctl := newControllerStub(t)
+	leftover, err := BuildPod("run-a", testVolNS, nil, nil, "img", SidecarSpec{}, testShimImage, nil)
+	require.NoError(t, err)
+	_, err = cs.CoreV1().Pods(testVolNS).Create(context.Background(), leftover, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	a := lockReplica(cs, ctl.srv.URL, &alreadyExistsOncePM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}},
+		[]config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+	res, err := a.createClaimPod(context.Background(), claimFor("run-a", mount("unity-main", "", ".")))
+	require.NoError(t, err)
+	require.NotNil(t, res.pod)
+	pods, err := cs.CoreV1().Pods(testVolNS).List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, pods.Items, 1)
+	assert.NotEmpty(t, pods.Items[0].Spec.Volumes, "the surviving pod is the new one, with the volume mounted")
+}
+
+// removeOwnPod matches on the run label as well as the name: the name comes from
+// a truncated run ID and must never be the only evidence a pod is ours.
+func TestRemoveOwnPod_NeverDeletesAnotherRunsPod(t *testing.T) {
+	cs := lockCluster(t)
+	ctl := newControllerStub(t)
+	other := claimPod("ucd-run-shared-prefix", "agent1", corev1.PodRunning)
+	other.Labels[labelRunID] = "some-other-run"
+	_, err := cs.CoreV1().Pods(testVolNS).Create(context.Background(), other, metav1.CreateOptions{})
+	require.NoError(t, err)
+	a := lockReplica(cs, ctl.srv.URL, volPM{NewPodManager(cs, testVolNS, "img")}, nil)
+
+	a.removeOwnPod(context.Background(), "run-a", "ucd-run-shared-prefix")
+	_, err = cs.CoreV1().Pods(testVolNS).Get(context.Background(), "ucd-run-shared-prefix", metav1.GetOptions{})
+	require.NoError(t, err, "a pod labelled for another run survives")
+
+	a.removeOwnPod(context.Background(), "some-other-run", "ucd-run-shared-prefix")
+	_, err = cs.CoreV1().Pods(testVolNS).Get(context.Background(), "ucd-run-shared-prefix", metav1.GetOptions{})
+	assert.True(t, apierrors.IsNotFound(err), "its own run's pod is removed")
+}
+
+func TestExecuteRun_RejectsTwoVolumesAtOneMountPath(t *testing.T) {
+	f := newVolFixture(t, []config.VolumeConfig{vcfg("a-cache", "exclusive", "1Gi"), vcfg("b-cache", "exclusive", "1Gi")})
+	f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{
+		mount("a-cache", "", ".cache"), mount("b-cache", "", "./.cache/"),
+	}))
+	assert.Equal(t, api.RunFailed, f.waitFinish(t))
+	assert.Contains(t, f.logText(), "also used by spec.volumes[0]")
+	assert.Empty(t, f.createdPods(t))
+}
+
+func TestVolumeLock_ConfirmLockWithoutAClient(t *testing.T) {
+	a := &K8sAgent{cfg: Config{AgentName: "agent1", Namespace: testVolNS,
+		Volumes: []config.VolumeConfig{vcfg("go-cache", "shared", "1Gi"), vcfg("unity-main", "exclusive", "1Gi")}}}
+
+	lost, err := a.confirmLock(context.Background(), []string{"go-cache"}, "run-a")
+	require.NoError(t, err, "an all-shared claim locked nothing, so there is nothing to confirm and no client is needed")
+	assert.Empty(t, lost)
+
+	_, err = a.confirmLock(context.Background(), []string{"unity-main"}, "run-a")
+	require.ErrorIs(t, err, errNoKubeClient, "an exclusive volume with no client is an error, not a nil dereference")
 }
 
 type failCreatePM struct{ podManager }

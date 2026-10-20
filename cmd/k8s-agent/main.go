@@ -65,7 +65,7 @@ func main() {
 		slog.Error("k8s rest config", "error", err)
 		os.Exit(1)
 	}
-	applyClientRateLimits(restCfg)
+	applyClientRateLimits(restCfg, cfg.MaxConcurrent)
 	k8sClient, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
 		slog.Error("k8s client", "error", err)
@@ -114,36 +114,41 @@ func main() {
 	}
 }
 
-// The client-side rate limit for the agent's Kubernetes clientset. client-go
-// defaults to 5 QPS with a burst of 10 when these are unset, and ONE limiter is
-// shared by every call the agent makes: each pod create, delete and status poll,
-// every PVC read and update, and the request that opens each step's exec
-// stream, for up to maxConcurrent (default 100) runs at once. At the defaults a
-// busy agent queues its own calls for seconds to minutes, which shows up as
-// pods that take a minute to appear and, worse, as a volume lock that is held
-// by a run whose pod creation is still waiting its turn.
-//
-// 50 sustained is sized against the steady background load of a full agent:
-// every run waiting on a held volume lists pods every CancelPollInterval (5s),
-// so 100 waiting runs are about 20 QPS, with the rest left for step exec,
-// pod start polling and teardown. The burst of 100 equals the default
-// maxConcurrent, so a whole fleet of runs can start in one go without queueing.
-// Both sit well inside what an API server's own priority and fairness will
-// admit from a single service account.
-const (
-	clientQPS   = 50
-	clientBurst = 100
-)
+// defaultMaxConcurrent is what Config.Validate gives an unset maxConcurrent, and
+// what the rate limit is sized for when maxConcurrent is negative (unlimited),
+// where there is no bound to size against.
+const defaultMaxConcurrent = 100
 
-// applyClientRateLimits raises the client-side limits to clientQPS/clientBurst
-// unless the kubeconfig already set its own.
-func applyClientRateLimits(c *rest.Config) {
-	if c.QPS == 0 {
-		c.QPS = clientQPS
+// clientRateLimits returns the client-side QPS and burst for the agent's
+// Kubernetes clientset, sized for maxConcurrent runs.
+//
+// client-go defaults to 5 QPS and a burst of 10, and ONE limiter is shared by
+// every call made through the clientset. The dominant consumer is not what one
+// would guess: PodManager.WaitForPodRunning polls Pods().Get every 500 ms for
+// the whole of each pod's start, which is 2 QPS per starting run, so a fleet of
+// maxConcurrent runs starting together asks for 2*maxConcurrent QPS (200 at the
+// default). Behind it come the waiting-run pod lists (one per run per 5 s, about
+// maxConcurrent/5) and the create, delete and PVC lock calls, for which a flat
+// 20 QPS is left. A token bucket queues without bound under over-demand, so
+// at the defaults those polls make a pod create wait behind them for minutes.
+//
+// Step exec is NOT a consumer: remotecommand.NewSPDYExecutor builds its own
+// round tripper and never touches this limiter. The burst is one second of the
+// sustained rate.
+func clientRateLimits(maxConcurrent int) (qps float32, burst int) {
+	if maxConcurrent <= 0 {
+		maxConcurrent = defaultMaxConcurrent
 	}
-	if c.Burst == 0 {
-		c.Burst = clientBurst
-	}
+	n := 2*maxConcurrent + maxConcurrent/5 + 20
+	return float32(n), n
+}
+
+// applyClientRateLimits sets the clientset's rate limit for maxConcurrent runs.
+// It overwrites unconditionally: neither rest.InClusterConfig nor the
+// clientcmd loaders set QPS or Burst, so there is no operator-chosen value to
+// preserve.
+func applyClientRateLimits(c *rest.Config, maxConcurrent int) {
+	c.QPS, c.Burst = clientRateLimits(maxConcurrent)
 }
 
 func buildRestConfig(kubeconfig string) (*rest.Config, error) {

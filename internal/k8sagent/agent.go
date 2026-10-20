@@ -80,6 +80,8 @@ type K8sAgent struct {
 	// Run before any claim loop starts; nil (never drains) when executeRun is
 	// called directly.
 	drain context.Context
+	// lockGraceOverride replaces defaultVolumeLockGrace when positive. Tests only.
+	lockGraceOverride time.Duration
 }
 
 // k8sAgentCapabilities reports what the k8s agent can execute: it always

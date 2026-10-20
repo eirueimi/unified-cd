@@ -297,6 +297,24 @@ func cleanVolumeMountPath(i int, v dsl.VolumeMount, workspace string) (string, e
 	return mp, nil
 }
 
+// uniqueMountPath is cleanVolumeMountPath plus a check that no earlier entry
+// (recorded in seen) has the same cleaned path. Two mounts at one path reach the
+// API server as "Duplicate value" and fail the pod with no hint which entries
+// collided. Apply-time validation (dsl.ValidateVolumes) is the primary gate for
+// this and rejects it with the same intent; this is the defence for a claim that
+// got past it, and it also sees the cleaned form of the paths.
+func uniqueMountPath(seen map[string]int, i int, v dsl.VolumeMount, workspace string) (string, error) {
+	mp, err := cleanVolumeMountPath(i, v, workspace)
+	if err != nil {
+		return "", err
+	}
+	if j, dup := seen[mp]; dup {
+		return "", fmt.Errorf("spec.volumes[%d]: mountPath %q is also used by spec.volumes[%d]; two volumes cannot share a mount path", i, v.MountPath, j)
+	}
+	seen[mp] = i
+	return mp, nil
+}
+
 // planPodVolumes turns a claim's volume mounts, each already narrowed to the
 // one volume chosen, into the pod's volumes and into the path a step sees each
 // alias at (the UNIFIED_VOLUME_<ALIAS> values). workspace is the container
@@ -304,6 +322,7 @@ func cleanVolumeMountPath(i int, v dsl.VolumeMount, workspace string) (string, e
 func planPodVolumes(agentName string, declared map[string]config.VolumeConfig, mounts []dsl.VolumeMount, workspace string) ([]PodVolume, map[string]string, error) {
 	vols := make([]PodVolume, 0, len(mounts))
 	paths := make(map[string]string, len(mounts))
+	seenPaths := make(map[string]int, len(mounts))
 	for i, v := range mounts {
 		if len(v.Name) != 1 {
 			return nil, nil, fmt.Errorf("spec.volumes[%d] names %d candidate volumes; exactly one must be chosen before mounting", i, len(v.Name))
@@ -317,7 +336,7 @@ func planPodVolumes(agentName string, declared map[string]config.VolumeConfig, m
 		if alias == "" {
 			return nil, nil, fmt.Errorf("spec.volumes[%d]: volume %q has no alias", i, name)
 		}
-		mp, err := cleanVolumeMountPath(i, v, workspace)
+		mp, err := uniqueMountPath(seenPaths, i, v, workspace)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -464,8 +483,9 @@ func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (cla
 
 	declared := a.declaredVolumes()
 	sets := make([][]string, len(c.Volumes))
+	seenPaths := map[string]int{}
 	for i, v := range c.Volumes {
-		if _, err := cleanVolumeMountPath(i, v, a.workspaceMount(c.PodTemplate)); err != nil {
+		if _, err := uniqueMountPath(seenPaths, i, v, a.workspaceMount(c.PodTemplate)); err != nil {
 			return claimPodResult{}, fmt.Errorf("k8s: %w", err)
 		}
 		for _, n := range v.Name {
@@ -566,23 +586,31 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 		return claimPodResult{}, false, fmt.Errorf("k8s: %w", err)
 	}
 	// Bounded well under the lock's grace period. The lock is only honoured for
-	// volumeLockGrace while its run has no pod, so a create that stalls past it
-	// (client-side throttling is the usual cause) would let another replica take
-	// the lock over and create its own pod. A create that times out is a failed
-	// create: the deferred release above gives the lock back.
-	createCtx, cancelCreate := context.WithTimeout(ctx, volumeLockGrace/4)
+	// the grace while its run has no pod, so a create that stalls past it would
+	// let another replica take the lock over and create its own pod.
+	createCtx, cancelCreate := context.WithTimeout(ctx, a.lockGrace()/4)
 	res, err = a.buildAndCreate(createCtx, c, sidecar, vols, paths)
 	cancelCreate()
 	if err != nil {
+		// A slow cluster should cost a run time, not the run. A create that ran
+		// out of its own deadline (not the run's), or that found the previous
+		// attempt's pod still terminating (the name is deterministic, and
+		// buildAndCreate has just asked for it to be deleted), is retried: the
+		// deferred release gives the lock back and the run goes on waiting.
+		timedOut := errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil
+		if timedOut || apierrors.IsAlreadyExists(err) {
+			slog.Warn("k8s: creating the run's pod did not complete; releasing its volume locks and retrying",
+				"runId", c.RunID, "timedOut", timedOut, "error", err)
+			return claimPodResult{}, false, nil
+		}
 		return claimPodResult{}, false, err
 	}
 
-	// The lock is checked again now that the pod exists. Nothing renews it while
-	// the create is in flight, and replicas' clocks can disagree about its age,
-	// so another replica may have judged it stale and taken it over meanwhile. If
-	// the lock no longer names this run, this pod must not stay: two pods would
-	// mount one exclusive volume. Delete it and go back to waiting.
-	lost, err := a.lostLock(ctx, chosen, c.RunID)
+	// The lock is confirmed again now that the pod exists (confirmLock explains
+	// why that has to be a compare-and-swap rather than a read). If it no longer
+	// names this run, this pod must not stay: two pods would mount one exclusive
+	// volume. Delete it and go back to waiting.
+	lost, err := a.confirmLock(ctx, chosen, c.RunID)
 	if err != nil || lost != "" {
 		slog.Warn("k8s: lost the lock on a volume while creating the pod; removing the pod and waiting",
 			"runId", c.RunID, "volume", lost, "error", err)
@@ -614,9 +642,7 @@ func (a *K8sAgent) buildAndCreate(ctx context.Context, c api.ClaimResponse, side
 			// that is about to be given back, so remove it if it exists.
 			delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
-			if derr := a.pm.DeletePod(delCtx, pod.Name); derr != nil && !apierrors.IsNotFound(derr) {
-				slog.Debug("k8s: no pod to remove after a failed create (expected)", "pod", pod.Name, "error", derr)
-			}
+			a.removeOwnPod(delCtx, c.RunID, pod.Name)
 		}
 		return claimPodResult{}, fmt.Errorf("k8s: failed to create Pod: %w", err)
 	}
@@ -627,6 +653,30 @@ func (a *K8sAgent) buildAndCreate(ctx context.Context, c api.ClaimResponse, side
 		}
 	}
 	return res, nil
+}
+
+// removeOwnPod deletes the pod called name if, and only if, it belongs to run
+// runID (carries its run label). The name is derived from a truncated run ID, so
+// a name match alone is not proof the pod is this run's, and a pod that is not
+// must never be deleted from here. Absence is the normal case (the create did not
+// land) and is silent; a pod that is there and cannot be removed may still mount
+// the run's volumes, which is worth a warning.
+func (a *K8sAgent) removeOwnPod(ctx context.Context, runID, name string) {
+	pods, err := a.pm.ListPods(ctx, labelRunID+"="+runID)
+	if err != nil {
+		slog.Warn("k8s: could not look for a pod left by a failed create; it may still mount the run's volumes until the pod GC removes it",
+			"pod", name, "error", err)
+		return
+	}
+	for i := range pods.Items {
+		if pods.Items[i].Name != name {
+			continue
+		}
+		if err := a.pm.DeletePod(ctx, name); err != nil && !apierrors.IsNotFound(err) {
+			slog.Warn("k8s: could not remove a pod left by a failed create; it may still mount the run's volumes until the pod GC removes it",
+				"pod", name, "error", err)
+		}
+	}
 }
 
 // workspaceMount is the container path of a claim's workspace, resolved the way
