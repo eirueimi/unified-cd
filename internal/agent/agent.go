@@ -104,9 +104,9 @@ type Agent struct {
 	// WorkspaceRetentionDays is the age (in days) after which an inactive
 	// per-job workspace directory (working<slot>/<job>) becomes eligible
 	// for removal by the opt-in workspace GC (see workspace_gc.go). Zero
-	// (the default) disables the GC — persistent workspaces are a feature
-	// (inter-run cache), so sweeping them across jobs must be an explicit
-	// opt-in. Host-only.
+	// (the default) disables the GC. A workspace is emptied before and after
+	// every run, so this only reclaims what an agent crash left behind; it is
+	// an explicit opt-in. Host-only.
 	WorkspaceRetentionDays int
 
 	// Volumes owns the agent's declared named volumes (the `volumes` list of
@@ -537,17 +537,23 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				defer release()
 			}
 			clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
-			if workspaceVolumeDir(resp.Volumes, a.Volumes) != "" {
-				// The workspace is a volume (executeRun runs in its directory),
-				// so there is no per-run directory to prepare, and nothing here
-				// may reset or delete it.
-				if clean {
-					// The job asked for a clean workspace and is not getting
-					// one. Say so in the run's own log, where its author looks;
-					// the agent's process log is not that place.
-					a.warnInRunLog(runCtx, resp.RunID, "cleanWorkspace is requested but not applied: this run's workspace is a volume, and the agent does not wipe a volume before a run. The workspace may contain files from earlier runs.")
-				}
-			} else if err := prepareWorkspaceFn(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
+			// A volume at the workspace root IS the workspace (executeRun runs
+			// in its directory), and is the one thing that persists between
+			// runs. Its mode marker lives under wsBase, outside the volume, and
+			// nothing resets it unless clean is set. Any other workspace is
+			// ephemeral: emptied before the run, and swept again after it.
+			prepDir := workDir
+			var vol *volumeWorkspace
+			if volDir := workspaceVolumeDir(resp.Volumes, a.Volumes); volDir != "" {
+				name := workspaceVolumeName(resp.Volumes)
+				vol = &volumeWorkspace{Name: name, ModeMarker: volumeModeMarker(wsBase, name)}
+				prepDir = volDir
+			}
+			// Registered before prepareWorkspace so a half-prepared workspace is
+			// swept too; runs after executeRun and its unmounts, and before the
+			// active-set entries and the volume reservation are released.
+			defer finishWorkspace(runCtx, workDir, vol, a.containerRuntime, a.ToolsDir)
+			if err := prepareWorkspaceFn(runCtx, prepDir, mode, vol, clean, a.containerRuntime, a.ToolsDir); err != nil {
 				// The claim is ours but its workspace could not be prepared, so the
 				// run can never start. Fail it on the controller (retried until it
 				// lands) rather than leaving it Running until the stuck-run reaper

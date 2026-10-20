@@ -100,9 +100,18 @@ func planMounts(mounts []dsl.VolumeMount, m *VolumeManager) ([]mountSpec, error)
 // works in that directory itself: the workspace is the volume, so nothing is
 // linked and nothing needs replacing.
 func workspaceVolumeDir(mounts []dsl.VolumeMount, m *VolumeManager) string {
+	if name := workspaceVolumeName(mounts); name != "" {
+		return m.PathOf(name)
+	}
+	return ""
+}
+
+// workspaceVolumeName is the name of the volume mounted at the workspace root
+// ("."), or "" when there is none.
+func workspaceVolumeName(mounts []dsl.VolumeMount) string {
 	for _, v := range mounts {
 		if len(v.Name) == 1 && path.Clean(filepath.ToSlash(v.MountPath)) == "." {
-			return m.PathOf(v.Name[0])
+			return v.Name[0]
 		}
 	}
 	return ""

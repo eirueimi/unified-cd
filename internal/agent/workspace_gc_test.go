@@ -210,7 +210,7 @@ func runAgentBriefly(t *testing.T, a *Agent, settle time.Duration) {
 // TestAgent_WorkspaceGC_DefaultDisabled is the default-disabled regression:
 // with WorkspaceRetentionDays left at its zero value, a badly aged workspace
 // dir must survive Run's startup sweep (because there is no sweep) —
-// persistent workspaces are a feature until an operator explicitly opts in.
+// a workspace dir the agent left behind is kept until an operator explicitly opts in.
 func TestAgent_WorkspaceGC_DefaultDisabled(t *testing.T) {
 	srv := newGCTestServer("a-gc-disabled")
 	defer srv.Close()

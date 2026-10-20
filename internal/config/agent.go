@@ -124,8 +124,9 @@ type AgentConfig struct {
 	// WorkspaceRetentionDays is the age (in days) after which an inactive
 	// per-job workspace directory (working<slot>/<job>) becomes eligible
 	// for removal by the opt-in workspace GC. Zero (the default) disables
-	// the GC entirely — persistent workspaces are a feature (inter-run
-	// cache), so sweeping them must be an explicit opt-in. Host-only.
+	// the GC entirely. A workspace is emptied before and after every run, so
+	// the GC only reclaims what an agent crash left behind; it is an explicit
+	// opt-in. Host-only.
 	WorkspaceRetentionDays int `yaml:"workspaceRetentionDays"`
 
 	// Volumes declares the agent-owned named volumes this agent advertises and

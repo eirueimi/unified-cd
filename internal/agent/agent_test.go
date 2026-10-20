@@ -726,14 +726,14 @@ func TestAgent_RunLoop_PreparePanicIsRecoveredAndFailsRun(t *testing.T) {
 	orig := prepareWorkspaceFn
 	defer func() { prepareWorkspaceFn = orig }()
 	var prepareCalls atomic.Int32
-	prepareWorkspaceFn = func(ctx context.Context, workDir, mode string, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
+	prepareWorkspaceFn = func(ctx context.Context, workDir, mode string, vol *volumeWorkspace, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
 		if prepareCalls.Add(1) == 1 {
 			// Only the FIRST claim's prepare panics. The second claim must
 			// reach a real (successful) prepareWorkspace call, which is only
 			// possible if the slot's claim loop survived the first panic.
 			panic("boom in prepareWorkspace")
 		}
-		return orig(ctx, workDir, mode, clean, rtFn, toolsDir)
+		return orig(ctx, workDir, mode, vol, clean, rtFn, toolsDir)
 	}
 
 	wsDir := t.TempDir()

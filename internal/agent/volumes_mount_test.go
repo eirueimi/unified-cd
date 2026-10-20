@@ -1183,34 +1183,112 @@ func TestRunLoop_VolumeWaitEndsWhenTheRunIsCancelled(t *testing.T) {
 	<-done
 }
 
-// A job that asked for a clean workspace and got a volume instead must be told
-// in the run's own log: the agent's process log is not where its author looks.
-func TestRunLoop_CleanWorkspaceOnAVolumeWorkspaceIsReportedInTheRunLog(t *testing.T) {
+// runVolumeClaims runs the agent until every claim in claims has finished and
+// returns the finish status of each, by run ID.
+func runVolumeClaims(t *testing.T, a *Agent, srv *volumeLoopServer, claims ...string) map[string]string {
+	t.Helper()
+	claimCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- a.Run(claimCtx) }()
+	got := map[string]string{}
+	for _, id := range claims {
+		got[id] = waitFinish(t, srv, id).status
+	}
+	cancel()
+	<-done
+	return got
+}
+
+// cleanWorkspace used to be refused for a volume with a warning in the run's
+// log. It is the explicit way to empty one now, so it is applied.
+func TestRunLoop_CleanWorkspaceWipesAVolumeWorkspace(t *testing.T) {
 	srv := newVolumeLoopServer(t, func(n int, _ <-chan string) *api.ClaimResponse {
 		if n == 0 {
-			return volumeClaim("run-1", "echo hi", vmount("unity", "", "."))
+			return volumeClaim("run-1", "test ! -e old.txt", vmount("unity", "", "."))
 		}
 		return nil
 	})
 	a, _ := volumeAgent(t, srv, 1, "unity")
 	a.CleanWorkspace = true
-	claimCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- a.Run(claimCtx) }()
-	require.Equal(t, "Succeeded", waitFinish(t, srv, "run-1").status)
-	cancel()
-	<-done
+	vdir := a.Volumes.PathOf("unity")
+	require.NoError(t, os.WriteFile(filepath.Join(vdir, "old.txt"), []byte("x"), 0o644))
 
+	require.Equal(t, "Succeeded", runVolumeClaims(t, a, srv, "run-1")["run-1"])
+	require.NoFileExists(t, filepath.Join(vdir, "old.txt"))
+}
+
+// Without cleanWorkspace the volume is the job's persistence: nothing in it is
+// touched, before or after the run, and the agent's mode marker stays outside.
+func TestRunLoop_VolumeWorkspaceIsKeptAndItsMarkerIsOutsideIt(t *testing.T) {
+	srv := newVolumeLoopServer(t, func(n int, _ <-chan string) *api.ClaimResponse {
+		if n == 0 {
+			return volumeClaim("run-1", "test -e old.txt && echo new > new.txt", vmount("unity", "", "."))
+		}
+		return nil
+	})
+	a, ws := volumeAgent(t, srv, 1, "unity")
+	vdir := a.Volumes.PathOf("unity")
+	require.NoError(t, os.WriteFile(filepath.Join(vdir, "old.txt"), []byte("x"), 0o644))
+
+	require.Equal(t, "Succeeded", runVolumeClaims(t, a, srv, "run-1")["run-1"])
+	require.FileExists(t, filepath.Join(vdir, "old.txt"))
+	require.FileExists(t, filepath.Join(vdir, "new.txt"), "the run's own output stays in the volume afterwards")
+	entries, err := os.ReadDir(vdir)
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "no mode marker or other agent file in the volume")
+	b, err := os.ReadFile(volumeModeMarker(ws, "unity"))
+	require.NoError(t, err)
+	require.Equal(t, "native", string(b))
+}
+
+// The mode-flip reset would delete the volume. The run fails, naming the
+// volume and both modes, and the data is untouched.
+func TestRunLoop_VolumeWorkspaceModeFlipFailsTheRunAndKeepsTheData(t *testing.T) {
+	srv := newVolumeLoopServer(t, func(n int, _ <-chan string) *api.ClaimResponse {
+		if n == 0 {
+			return volumeClaim("run-1", "echo should-not-run", vmount("unity", "", "."))
+		}
+		return nil
+	})
+	a, ws := volumeAgent(t, srv, 1, "unity")
+	vdir := a.Volumes.PathOf("unity")
+	require.NoError(t, os.WriteFile(filepath.Join(vdir, "old.txt"), []byte("x"), 0o644))
+	marker := volumeModeMarker(ws, "unity")
+	require.NoError(t, os.MkdirAll(filepath.Dir(marker), 0o755))
+	require.NoError(t, os.WriteFile(marker, []byte("isolated"), 0o644))
+
+	require.Equal(t, "Failed", runVolumeClaims(t, a, srv, "run-1")["run-1"])
+	require.FileExists(t, filepath.Join(vdir, "old.txt"))
+	require.Equal(t, 0, srv.stepCount("run-1"), "the run must not start")
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	var found bool
+	var msg string
 	for _, l := range srv.logs {
-		if l.RunID == "run-1" && l.StepIndex == -1 && strings.Contains(l.Line, "cleanWorkspace") && strings.Contains(l.Line, "not applied") {
-			found = true
+		if l.RunID == "run-1" && strings.Contains(l.Line, "unity") {
+			msg = l.Line
 		}
 	}
-	require.True(t, found, "the run's System log must say the requested clean was not performed; got %+v", srv.logs)
+	require.Contains(t, msg, "isolated")
+	require.Contains(t, msg, "native")
+}
+
+// An undeclared workspace is ephemeral: emptied before the run (so a leftover
+// from a crashed one cannot leak in) and swept after it (so it holds no disk).
+func TestRunLoop_DefaultWorkspaceIsEphemeral(t *testing.T) {
+	srv := newVolumeLoopServer(t, func(n int, _ <-chan string) *api.ClaimResponse {
+		if n == 0 {
+			return volumeClaim("run-1", "test ! -e stale.txt && echo out > out.txt")
+		}
+		return nil
+	})
+	a, ws := volumeAgent(t, srv, 1)
+	stale := filepath.Join(claimWorkDir(ws, 0, "test"), "stale.txt")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, []byte("x"), 0o644))
+
+	require.Equal(t, "Succeeded", runVolumeClaims(t, a, srv, "run-1")["run-1"])
+	require.NoDirExists(t, claimWorkDir(ws, 0, "test"), "the run's workspace is gone once it ends")
 }
 
 func TestRunLoop_ClaimReportsBusyVolumes(t *testing.T) {

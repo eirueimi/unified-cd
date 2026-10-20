@@ -151,14 +151,14 @@ unified-cd-agent [FLAGS]
   --cache-bucket          string    Cache storage bucket name
   --max-concurrent        int       Max simultaneous runs (default: 1)
   --max-detached-concurrent int     Max simultaneous detached (spec.detached) runs, from a pool separate from --max-concurrent; 0/unset=default 16, negative=off (env: UNIFIED_AGENT_MAX_DETACHED)
-  --clean-workspace       bool      Wipe workspace before each run
+  --clean-workspace       bool      Also wipe a volume that serves as the workspace (mounted at ".") before each run; an ordinary workspace is always emptied
   --workspace-dir         string    Base directory for run workspaces (default: current directory at agent startup; env: UNIFIED_AGENT_WORKSPACE_DIR)
   --drain-timeout         duration  Max wait after SIGTERM before forced shutdown (0 = wait forever)
   --finally-timeout       duration  Ceiling on each of a run's post-DAG cleanup phases (the spec.finally pipeline, and each post:/cache: hook drain); 0/unset = default 10m (env: UNIFIED_AGENT_FINALLY_TIMEOUT)
   --pause-image           string    Image for the claim pod's pause (netns-holder) container (default: busybox:1.36)
   --runner-image          string    Default primary container image for isolated jobs without a podTemplate job container (default: ghcr.io/eirueimi/unified-cd-runner:v0.0.3)
   --min-free-disk         uint64    Minimum free space in bytes on the workspace filesystem required to keep claiming runs; 0 disables the check (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)
-  --workspace-retention-days int    Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; persistent workspaces are a feature) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)
+  --workspace-retention-days int    Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; workspaces are already emptied around every run, so this only reclaims what an agent crash left behind) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)
   --log-level             string    Log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)
 ```
 

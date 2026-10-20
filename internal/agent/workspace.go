@@ -12,12 +12,6 @@ import (
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 )
 
-// modeMarkerFile records which execution mode (native|isolated) last used a
-// per-job workspace directory. A mismatch on the next claim (the job
-// definition flipped native↔isolated) forces a directory reset so root-owned
-// leftovers from a previous isolated run can never break a native run.
-const modeMarkerFile = ".ucd-mode"
-
 // sanitizeJobName makes a job name safe as a single path segment. Job names
 // are already restricted by DSL validation; this is a defensive escape.
 func sanitizeJobName(name string) string {
@@ -65,8 +59,8 @@ func isWindowsReservedName(name string) bool {
 
 // claimWorkDir is the per-claim workspace directory: slot level (fixed,
 // bounded — the claim-loop concurrency dimension) then job level (so two
-// jobs never share a directory and carry-over is always "this job's own
-// previous state"). See the 2026-07-08 job-isolation design.
+// jobs never share a directory). The directory is ephemeral: see
+// prepareWorkspace. See the 2026-07-08 job-isolation design.
 func claimWorkDir(wsBase string, slot int, jobName string) string {
 	return filepath.Join(wsBase, fmt.Sprintf("working%d", slot), sanitizeJobName(jobName))
 }
@@ -80,38 +74,136 @@ func detachedWorkDir(wsBase, runID string) string {
 	return filepath.Join(wsBase, "detached", sanitizeJobName(runID))
 }
 
+// removeAll is os.RemoveAll; a variable only so a test can inject the failure a
+// real removal produces when a rootful container left root-owned files.
+var removeAll = os.RemoveAll
+
+// volumeModesDir is the agent's own record, under the workspace base, of which
+// execution mode last used each volume that serves as a run's workspace. It is
+// kept outside the volumes so nothing the agent writes appears in a volume's
+// contents, and it is dot-prefixed so it can never collide with a volume
+// (a volume path under a dot-prefixed entry is rejected) or a job workspace.
+const volumeModesDir = ".ucd-volume-modes"
+
+// volumeWorkspace identifies the volume that is a run's workspace (a volume
+// mounted at "."). A nil *volumeWorkspace means the run uses the ordinary
+// per-job directory, which is ephemeral.
+type volumeWorkspace struct {
+	// Name is the volume's name, for messages.
+	Name string
+	// ModeMarker is the file holding the mode that last used the volume.
+	ModeMarker string
+}
+
+// volumeModeMarker is where the mode marker of volume name lives.
+func volumeModeMarker(wsBase, name string) string {
+	return filepath.Join(wsBase, volumeModesDir, name)
+}
+
 // prepareWorkspace readies workDir for a claim running in mode
-// ("native"|"isolated"): resets the directory when cleaning is requested OR
-// the recorded mode flipped, falling back to a root cleanup container when a
-// plain RemoveAll hits permission errors (root-owned files written by
-// rootful-docker containers), then ensures the directory exists and records
-// the mode marker. toolsDir is threaded through to containerCleanup so the
-// cleanup container carries the same /.ucd mount as every other container
-// this agent creates (see claim_pod.go's ucdToolsMount); empty means no
-// shim mount.
-func prepareWorkspace(ctx context.Context, workDir, mode string, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
-	prev, _ := os.ReadFile(filepath.Join(workDir, modeMarkerFile))
-	flipped := len(prev) > 0 && string(prev) != mode
-	if clean || flipped {
-		if flipped && !clean {
-			slog.Info("workspace mode changed; resetting directory", "dir", workDir, "from", string(prev), "to", mode)
+// ("native"|"isolated").
+//
+// An ordinary workspace is ephemeral: it is removed and recreated empty before
+// every run whatever clean says, so a run starts empty even if the agent died
+// mid-run last time, and the result never depends on which agent type ran the
+// job. A removal that fails on permission errors (root-owned files a rootful
+// container left behind) is retried through a root cleanup container, and a
+// workspace that cannot be emptied fails the run, because a run must not start
+// on another run's files.
+//
+// A workspace that is a volume (vol != nil) is the job's persistence, so it is
+// never touched unless clean is true. Its mode marker is kept outside the
+// volume (vol.ModeMarker), and a native/isolated flip FAILS the run instead of
+// resetting the directory: that reset exists so root-owned leftovers of a
+// rootful container cannot break a native run, but on a volume it would delete
+// everything in it. clean=true is the explicit way past that, and wipes the
+// volume's contents (not the directory, which may be a mount point) with the
+// same cleanup-container fallback.
+//
+// toolsDir is threaded through to containerCleanup so the cleanup container
+// carries the same /.ucd mount as every other container this agent creates
+// (see claim_pod.go's ucdToolsMount); empty means no shim mount.
+func prepareWorkspace(ctx context.Context, workDir, mode string, vol *volumeWorkspace, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
+	if vol == nil {
+		if err := wipeDir(ctx, workDir, false, rtFn, toolsDir); err != nil {
+			return fmt.Errorf("clean workspace %s: %w", workDir, err)
 		}
-		if err := os.RemoveAll(workDir); err != nil {
-			slog.Warn("workspace clean failed; retrying via cleanup container", "dir", workDir, "error", err)
-			if cerr := containerCleanup(ctx, workDir, rtFn, toolsDir); cerr != nil {
-				slog.Warn("cleanup container failed; proceeding with dirty workspace", "dir", workDir, "error", cerr)
-			} else if err := os.RemoveAll(workDir); err != nil {
-				slog.Warn("workspace clean still failing after cleanup container", "dir", workDir, "error", err)
-			}
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			return fmt.Errorf("create workspace %s: %w", workDir, err)
+		}
+		return nil
+	}
+
+	prev, _ := os.ReadFile(vol.ModeMarker)
+	if len(prev) > 0 && string(prev) != mode {
+		if !clean {
+			return fmt.Errorf("volume %q was last used by a %s run and this run is %s: the agent will not reset a volume itself, because that would delete its contents. Keep the job's native setting unchanged, or set podTemplate.cleanWorkspace (or start the agent with --clean-workspace) to wipe the volume once and continue", vol.Name, string(prev), mode)
+		}
+		slog.Info("volume mode changed; wiping it because cleanWorkspace is set", "volume", vol.Name, "from", string(prev), "to", mode)
+	}
+	if clean {
+		if err := wipeDir(ctx, workDir, true, rtFn, toolsDir); err != nil {
+			return fmt.Errorf("clean volume %q: %w", vol.Name, err)
 		}
 	}
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return fmt.Errorf("create workspace %s: %w", workDir, err)
 	}
-	if err := os.WriteFile(filepath.Join(workDir, modeMarkerFile), []byte(mode), 0o644); err != nil {
-		slog.Warn("write workspace mode marker failed", "dir", workDir, "error", err)
+	if err := os.MkdirAll(filepath.Dir(vol.ModeMarker), 0o755); err != nil {
+		slog.Warn("create volume mode marker directory failed", "volume", vol.Name, "error", err)
+	} else if err := os.WriteFile(vol.ModeMarker, []byte(mode), 0o644); err != nil {
+		slog.Warn("write volume mode marker failed", "volume", vol.Name, "error", err)
 	}
 	return nil
+}
+
+// finishWorkspace sweeps an ordinary workspace once its run has ended, so the
+// run's output does not hold disk until that job's next run. It is best-effort:
+// the guarantee of an empty start is prepareWorkspace's, so a failure here is a
+// warning and changes nothing about the run. A volume-backed workspace is never
+// swept, whatever clean was.
+func finishWorkspace(ctx context.Context, workDir string, vol *volumeWorkspace, rtFn func() (crt.ContainerRuntime, error), toolsDir string) {
+	if vol != nil {
+		return
+	}
+	if err := wipeDir(ctx, workDir, false, rtFn, toolsDir); err != nil {
+		slog.Warn("workspace sweep after the run failed; the next run cleans it before starting", "dir", workDir, "error", err)
+	}
+}
+
+// wipeDir deletes dir (or, with contentsOnly, everything in it but not dir
+// itself), retrying through a root cleanup container when a plain removal
+// fails. A missing dir is not an error. Links inside dir are removed, never
+// followed.
+func wipeDir(ctx context.Context, dir string, contentsOnly bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
+	remove := func() error {
+		if !contentsOnly {
+			return removeAll(dir)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		var first error
+		for _, e := range entries {
+			if err := removeAll(filepath.Join(dir, e.Name())); err != nil && first == nil {
+				first = err
+			}
+		}
+		return first
+	}
+	err := remove()
+	if err == nil {
+		return nil
+	}
+	slog.Warn("workspace clean failed; retrying via cleanup container", "dir", dir, "error", err)
+	if cerr := containerCleanup(ctx, dir, rtFn, toolsDir); cerr != nil {
+		return fmt.Errorf("%w (cleanup container: %v)", err, cerr)
+	}
+	return remove()
 }
 
 // containerCleanup deletes workDir's contents as root via a throwaway
