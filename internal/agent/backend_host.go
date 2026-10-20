@@ -286,7 +286,7 @@ func (b *hostBackend) UploadArtifact(ctx context.Context, scope ScopeHandle, run
 func (b *hostBackend) DownloadArtifact(ctx context.Context, scope ScopeHandle, runID, name, destDir string) error {
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return b.a.Client.DownloadArtifact(ctx, runID, name, destDir)
+		return b.a.Client.DownloadArtifactExcluding(ctx, runID, name, destDir, b.excludeVolumes(ctx, "artifact download", destDir))
 	}
 	tmp, err := os.MkdirTemp("", "ucd-scope-download-")
 	if err != nil {

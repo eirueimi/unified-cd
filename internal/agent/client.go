@@ -401,6 +401,12 @@ func (c *Client) UploadArtifactExcluding(ctx context.Context, runID, name, path 
 // DownloadArtifact downloads an artifact from the master server and extracts it into destDir.
 // Fetches the stream from GET /api/v1/runs/{runID}/artifacts/{name} and extracts it.
 func (c *Client) DownloadArtifact(ctx context.Context, runID, name, destDir string) error {
+	return c.DownloadArtifactExcluding(ctx, runID, name, destDir, nil)
+}
+
+// DownloadArtifactExcluding is DownloadArtifact that extracts nothing at or
+// below the paths in exclude: the mount points of the volumes under destDir.
+func (c *Client) DownloadArtifactExcluding(ctx context.Context, runID, name, destDir string, exclude []string) error {
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -422,5 +428,5 @@ func (c *Client) DownloadArtifact(ctx context.Context, runID, name, destDir stri
 	if destDir == "" {
 		destDir = "."
 	}
-	return artifact.ExtractTarZstd(resp.Body, destDir)
+	return artifact.ExtractTarZstdExcluding(resp.Body, destDir, exclude)
 }

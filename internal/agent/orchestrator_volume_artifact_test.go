@@ -221,10 +221,13 @@ type cacheHarness struct {
 	logs    []string
 }
 
-func newCacheHarness(t *testing.T, g exclusionScenario) *cacheHarness {
+func newCacheHarness(t *testing.T, g exclusionScenario, routes ...func(*http.ServeMux)) *cacheHarness {
 	t.Helper()
 	h := &cacheHarness{}
 	mux := http.NewServeMux()
+	for _, route := range routes {
+		route(mux)
+	}
 	mux.HandleFunc("POST /api/v1/agents/a1/runs/r1/steps/{idx}/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
 		var reqs []api.LogAppendRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqs))
@@ -347,4 +350,74 @@ func TestHostBackend_CacheRestoreOfAnAncestorLeavesTheVolumesAlone(t *testing.T)
 			require.Equal(t, g.Notices["cacheRestore"], h.announced())
 		})
 	}
+}
+
+// Downloading an artifact into an ancestor of a volume must not write into the
+// volume either. An artifact packed before the directory became a volume's mount
+// point holds files there: extracting them would put them in the volume on
+// Kubernetes, through the link into the volume on a native host, and into an
+// empty mountpoint (so nowhere, to be swept at the end of the run) on an
+// isolated host. The Kubernetes agent is held to the same golden notices.
+func TestHostBackend_DownloadArtifactIntoAnAncestorLeavesTheVolumesAlone(t *testing.T) {
+	for _, scenario := range scenarioNames(t) {
+		g := exclusionScenarios(t)[scenario]
+		t.Run(scenario, func(t *testing.T) {
+			// The artifact as an older run packed it: relative to the archived
+			// directory, with files where the volumes now are.
+			prefix := ""
+			if g.ArchivePath != "." {
+				prefix = g.ArchivePath + "/"
+			}
+			old := t.TempDir()
+			for _, f := range g.WorkspaceFiles {
+				if rel, ok := strings.CutPrefix(f, prefix); ok {
+					writeFiles(t, old, rel)
+				}
+			}
+			for _, mt := range g.Mounts {
+				mp := strings.TrimPrefix(mt.MountPath, "/workspace/")
+				if rel, ok := strings.CutPrefix(mp, prefix); ok {
+					writeFiles(t, filepath.Join(old, filepath.FromSlash(rel)), "old.bin")
+				}
+			}
+			packed, err := io.ReadAll(artifact.StreamTarZstdExcluding(old, nil))
+			require.NoError(t, err)
+
+			h := newCacheHarness(t, g, func(mux *http.ServeMux) {
+				mux.HandleFunc("GET /api/v1/runs/{run}/artifacts/{name}", func(w http.ResponseWriter, r *http.Request) {
+					_, _ = w.Write(packed)
+				})
+			})
+			for _, mt := range g.Mounts {
+				writeFiles(t, h.m.PathOf(mt.Name), g.VolumeFiles...)
+			}
+			resolved, err := h.b.ResolveArtifactPath(ScopeHandle{}, g.ArchivePath)
+			require.NoError(t, err)
+			require.NoError(t, h.b.DownloadArtifact(context.Background(), ScopeHandle{}, "r1", "out", resolved))
+
+			require.Equal(t, g.Entries, listEntries(t, resolved), "the artifact is extracted without what lay under the volumes")
+			for _, mt := range g.Mounts {
+				require.NotContains(t, listEntries(t, h.m.PathOf(mt.Name)), "old.bin", "volume %q", mt.Name)
+			}
+			require.Equal(t, g.Notices["download"], h.announced())
+		})
+	}
+}
+
+// Naming a volume's own path as the destination extracts into the volume, which
+// is how a job fills one on purpose.
+func TestHostBackend_DownloadArtifactIntoAVolumeFillsIt(t *testing.T) {
+	g := exclusionScenarios(t)["relative"]
+	old := t.TempDir()
+	writeFiles(t, old, "seed.bin")
+	packed, err := io.ReadAll(artifact.StreamTarZstdExcluding(old, nil))
+	require.NoError(t, err)
+	h := newCacheHarness(t, g, func(mux *http.ServeMux) {
+		mux.HandleFunc("GET /api/v1/runs/{run}/artifacts/{name}", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(packed) })
+	})
+	resolved, err := h.b.ResolveArtifactPath(ScopeHandle{}, ".ucd-cache/go")
+	require.NoError(t, err)
+	require.NoError(t, h.b.DownloadArtifact(context.Background(), ScopeHandle{}, "r1", "out", resolved))
+	require.Equal(t, []string{"seed.bin"}, listEntries(t, h.m.PathOf("go-cache")))
+	require.Empty(t, h.announced())
 }

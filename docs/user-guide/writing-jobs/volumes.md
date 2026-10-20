@@ -245,6 +245,19 @@ artifact path "." excludes volume "go-cache" mounted at ".ucd-cache/go": the con
 itself is omitted too; a parent directory that existed only to hold it stays as an empty directory.
 To archive a volume deliberately, name the volume's own mount path.
 
+The rule holds in the other direction as well. **`downloadArtifact` and `cache:` restore never
+extract into a volume through an ancestor path.** An artifact or cache entry packed before a
+directory became a volume's mount point still holds files there; extracting them would write into
+the volume on Kubernetes, through the mount link into the volume on a native host, and into a
+directory the container cannot see (swept when the run ends) on an isolated host. Instead they are
+skipped on every agent, and the run log says so:
+
+```
+artifact download path "." excludes volume "go-cache" mounted at ".ucd-cache/go": files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it
+```
+
+To fill a volume from an artifact on purpose, make the volume's own mount path the `destDir`.
+
 ---
 
 ## Scheduling and diagnosing a run that does not start

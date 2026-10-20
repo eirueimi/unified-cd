@@ -681,7 +681,8 @@ constraint.
 
 **What skew costs now.** When a job archives an *ancestor* of a named volume's mount point (`path:
 .`, say), the agent passes the sidecar one `--exclude <path>` per volume, so the volume's contents
-stay out of the archive; the flag exists on `artifact upload`, `cache save` and `cache restore`. The
+stay out of the archive (or, for a download, are not extracted into); the flag exists on
+`artifact upload`, `artifact download`, `cache save` and `cache restore`. The
 agent adds it **only** in that case, so an older sidecar image that does not know the flag works
 for every other job and exits 2 (`flag provided but not defined: -exclude`) for this one: the
 artifact upload fails, and the cache reads as "not restored". Roll the sidecar image and the

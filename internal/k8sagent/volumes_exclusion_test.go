@@ -169,6 +169,37 @@ func TestExecuteRun_ArchiveOfAnAncestorExcludesTheVolumeAndSaysSo(t *testing.T) 
 	}
 }
 
+// Downloading an artifact into an ancestor of a volume leaves the volume alone
+// and says so, in the host agent's words (TestHostBackend_DownloadArtifactInto
+// AnAncestorLeavesTheVolumesAlone, from the same golden file). The pod mounts the
+// volume at that path, so an artifact packed before it became a volume would
+// otherwise be extracted straight into it.
+func TestExecuteRun_DownloadArtifactIntoAnAncestorExcludesTheVolumeAndSaysSo(t *testing.T) {
+	for _, scenario := range scenarioNames(t) {
+		g := exclusionScenarios(t)[scenario]
+		t.Run(scenario, func(t *testing.T) {
+			f, rec := runWithGolden(t, g, &api.ClaimStep{Index: 0, Name: "dl", DownloadArtifact: &api.DownloadArtifactStep{Name: "out", DestDir: g.ArchivePath}})
+			argv := rec.sidecarArgv("artifact", "download")
+			require.NotNil(t, argv, "the sidecar was asked to download")
+			require.Equal(t, g.Notices["download"], f.exclusionNotices())
+			require.Equal(t, rebase(g.Excluded), flagValues(argv, "--exclude"), "every volume's mount point is passed to the sidecar to leave alone")
+		})
+	}
+}
+
+// Naming a volume's own path as the destination extracts into it: nothing is
+// below it, so nothing is excluded.
+func TestExecuteRun_DownloadArtifactIntoAVolumeExcludesNothing(t *testing.T) {
+	g := exclusionScenarios(t)["relative"]
+	for _, p := range []string{".ucd-cache/go", ".ucd-cache/go/obj", "src"} {
+		f, rec := runWithGolden(t, g, &api.ClaimStep{Index: 0, Name: "dl", DownloadArtifact: &api.DownloadArtifactStep{Name: "out", DestDir: p}})
+		argv := rec.sidecarArgv("artifact", "download")
+		require.NotNil(t, argv, p)
+		require.Empty(t, flagValues(argv, "--exclude"), p)
+		require.Empty(t, f.exclusionNotices(), p)
+	}
+}
+
 // A path inside a volume, or an archive that holds no mount point, passes no
 // exclusion and announces nothing: only an ancestor of a mount point does.
 func TestExecuteRun_ArchiveNotAboveAVolumeExcludesNothing(t *testing.T) {

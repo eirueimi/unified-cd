@@ -46,10 +46,14 @@ func VolumesBelow(archivePath string, vols []MountedVolume) []MountedVolume {
 }
 
 // VolumeExclusionNotice is the run-log line for one volume left out of an
-// archive. kind is "artifact" or "cache"; shown is the archived path as the job
-// would write it (relative to the workspace), so the line reads the same on
-// every agent.
+// archive, or left alone by an extraction. kind is "artifact", "artifact
+// download" or "cache ..."; shown is the archived path as the job would write it
+// (relative to the workspace), so the line reads the same on every agent.
 func VolumeExclusionNotice(kind, shown string, v MountedVolume) string {
+	if kind == "artifact download" {
+		return fmt.Sprintf("%s path %q excludes volume %q mounted at %q: files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it",
+			kind, shown, v.Volume, v.MountPath)
+	}
 	return fmt.Sprintf("%s path %q excludes volume %q mounted at %q: the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
 		kind, shown, v.Volume, v.MountPath)
 }

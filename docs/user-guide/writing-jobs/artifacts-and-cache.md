@@ -152,7 +152,7 @@ The `path` of an `uploadArtifact`/`downloadArtifact`/`cache` step must be **rela
 artifact path "." excludes volume "go-cache" mounted at ".ucd-cache/go": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it
 ```
 
-(`cache path ...` for a cache step; one line per volume.) A volume can hold tens of gigabytes, so it is never swept into the archive of its parent. Name the volume's own mount path to archive it deliberately. On the Kubernetes agent this uses a repeatable `--exclude` flag on the `unified-artifact` sidecar, so the sidecar image and the agent must be upgraded together (see [Operations: Upgrades](../../operator-manual/operations.md#upgrades)).
+(`cache path ...` for a cache step; one line per volume.) A volume can hold tens of gigabytes, so it is never swept into the archive of its parent. Name the volume's own mount path to archive it deliberately. The same holds for extraction: a `downloadArtifact` with an ancestor `destDir` (or a cache restore of an ancestor path) skips any archived file that lies inside a volume, instead of writing it into the volume, and announces it (`artifact download path "." excludes volume ...: files of the artifact that lie inside a volume are not extracted into it`); make the volume's own mount path the `destDir` to extract into it deliberately. On the Kubernetes agent this uses a repeatable `--exclude` flag on the `unified-artifact` sidecar, so the sidecar image and the agent must be upgraded together (see [Operations: Upgrades](../../operator-manual/operations.md#upgrades)).
 
 ---
 

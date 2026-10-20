@@ -1096,6 +1096,9 @@ func (b *k8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeH
 		return err
 	}
 	argv := []string{"unified-sidecar", "artifact", "download", "--run", runID, "--name", name, "--dest", destDir, "--broker-run-id", b.runID}
+	if scope.IsZero() {
+		argv = append(argv, b.excludeVolumes(ctx, "artifact download", destDir)...)
+	}
 	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return err

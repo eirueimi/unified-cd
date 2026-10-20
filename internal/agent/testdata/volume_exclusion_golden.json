@@ -1,5 +1,5 @@
 {
-  "description": "How a cache or artifact of a directory treats the volumes mounted below it. Both agents are checked against this one file: internal/agent (host, isolated and native) and internal/k8sagent. Edit it only when the rule deliberately changes, and both sides must keep passing. The workspace is /workspace.",
+  "description": "How a cache or artifact of a directory (saving it, restoring it, or downloading an artifact into it) treats the volumes mounted below it. Both agents are checked against this one file: internal/agent (host, isolated and native) and internal/k8sagent. Edit it only when the rule deliberately changes, and both sides must keep passing. The workspace is /workspace.",
   "scenarios": {
     "relative": {
       "description": "two volumes at relative mount paths",
@@ -40,6 +40,10 @@
         "cacheRestore": [
           "cache restore path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
           "cache restore path \".\" excludes volume \"tools\" mounted at \"tools\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+        ],
+        "download": [
+          "artifact download path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it",
+          "artifact download path \".\" excludes volume \"tools\" mounted at \"tools\": files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it"
         ]
       },
       "excluded": [
@@ -86,6 +90,10 @@
         "cacheRestore": [
           "cache restore path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
           "cache restore path \".\" excludes volume \"vendor\" mounted at \"/workspace/vendor\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+        ],
+        "download": [
+          "artifact download path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it",
+          "artifact download path \".\" excludes volume \"vendor\" mounted at \"/workspace/vendor\": files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it"
         ]
       },
       "excluded": [
@@ -131,6 +139,10 @@
         "cacheRestore": [
           "cache restore path \".\" excludes volume \"outer\" mounted at \"dir\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
           "cache restore path \".\" excludes volume \"inner\" mounted at \"dir/inner\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+        ],
+        "download": [
+          "artifact download path \".\" excludes volume \"outer\" mounted at \"dir\": files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it",
+          "artifact download path \".\" excludes volume \"inner\" mounted at \"dir/inner\": files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it"
         ]
       },
       "excluded": [
@@ -181,6 +193,10 @@
         "cacheRestore": [
           "cache restore path \"dir\" excludes volume \"go-cache\" mounted at \"dir/cache\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
           "cache restore path \"dir\" excludes volume \"inner\" mounted at \"dir/cache/inner\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+        ],
+        "download": [
+          "artifact download path \"dir\" excludes volume \"go-cache\" mounted at \"dir/cache\": files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it",
+          "artifact download path \"dir\" excludes volume \"inner\" mounted at \"dir/cache/inner\": files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it"
         ]
       },
       "excluded": [

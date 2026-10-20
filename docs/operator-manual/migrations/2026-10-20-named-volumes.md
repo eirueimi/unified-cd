@@ -232,7 +232,7 @@ cluster.
    provisions new, empty PVCs and leaves the old ones behind. The enrolled agent ID cannot serve,
    since it contains colons and changes on every restart.
 3. **The sidecar and the agent, together.** A new k8s-agent passes `--exclude` to the
-   `unified-artifact` sidecar, but only when a job archives an ancestor of a volume's mount point.
+   `unified-artifact` sidecar, but only when a job archives (or downloads an artifact into) an ancestor of a volume's mount point.
    A sidecar image that predates the flag exits 2 on it, so that artifact upload fails and that
    cache reads as "not restored". Both are set in the agent's config (`sidecarImage`); if you
    override it, bump it to the build that ships with the agent. See [Rotating the default

@@ -63,3 +63,42 @@ func TestRun_ExcludeLeavesPathsOutOfTheArchive(t *testing.T) {
 		}
 	}
 }
+
+// An artifact packed before a directory became a volume's mount point holds
+// files there. The agent passes --exclude for every volume below the
+// destination so that downloading it leaves the volumes alone, and a sidecar
+// that ignored or rejected the flag would extract into them.
+func TestRun_ArtifactDownloadExcludeLeavesPathsAlone(t *testing.T) {
+	src := t.TempDir()
+	for _, f := range []string{"keep.txt", "vol1/big.bin", "vol2/deep/big.bin", "vol3/other.txt"} {
+		p := filepath.Join(src, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(f), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prov := localProvider(t.TempDir())
+	ctx := context.Background()
+	if code := run(ctx, prov, []string{"artifact", "upload", "--run", "r1", "--name", "a", "--path", src}, io.Discard); code != 0 {
+		t.Fatalf("artifact upload exit=%d", code)
+	}
+
+	dest := t.TempDir()
+	args := []string{"artifact", "download", "--run", "r1", "--name", "a", "--dest", dest,
+		"--exclude", filepath.Join(dest, "vol1"), "--exclude", filepath.Join(dest, "vol2")}
+	if code := run(ctx, prov, args, io.Discard); code != 0 {
+		t.Fatalf("artifact download exit=%d", code)
+	}
+	for _, kept := range []string{"keep.txt", filepath.Join("vol3", "other.txt")} {
+		if _, err := os.Stat(filepath.Join(dest, kept)); err != nil {
+			t.Errorf("%s is missing: %v", kept, err)
+		}
+	}
+	for _, gone := range []string{"vol1", "vol2"} {
+		if _, err := os.Stat(filepath.Join(dest, gone)); !os.IsNotExist(err) {
+			t.Errorf("%s was extracted into (stat err=%v)", gone, err)
+		}
+	}
+}

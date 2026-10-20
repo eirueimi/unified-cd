@@ -167,6 +167,12 @@ func UploadExcluding(ctx context.Context, store objectstore.ObjectStore, runID, 
 
 // Download fetches artifacts/{runID}/{name}.tar.gz and extracts it into dest.
 func Download(ctx context.Context, store objectstore.ObjectStore, runID, name, dest string) error {
+	return DownloadExcluding(ctx, store, runID, name, dest, nil)
+}
+
+// DownloadExcluding is Download that extracts nothing at or below the paths in
+// exclude (see ExtractTarZstdExcluding).
+func DownloadExcluding(ctx context.Context, store objectstore.ObjectStore, runID, name, dest string, exclude []string) error {
 	key, err := ArtifactKey(runID, name)
 	if err != nil {
 		return fmt.Errorf("download artifact: %w", err)
@@ -179,5 +185,5 @@ func Download(ctx context.Context, store objectstore.ObjectStore, runID, name, d
 	if dest == "" {
 		dest = "."
 	}
-	return ExtractTarZstd(rc, dest)
+	return ExtractTarZstdExcluding(rc, dest, exclude)
 }

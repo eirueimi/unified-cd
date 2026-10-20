@@ -244,11 +244,13 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 		runID := fs.String("run", "", "run ID")
 		name := fs.String("name", "", "artifact name")
 		dest := fs.String("dest", ".", "destination directory")
+		var exclude stringSlice
+		fs.Var(&exclude, "exclude", "path to leave alone, with everything below it: no archived entry is extracted there (repeatable)")
 		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		if err := artifact.Download(ctx, store, *runID, *name, *dest); err != nil {
+		if err := artifact.DownloadExcluding(ctx, store, *runID, *name, *dest, exclude); err != nil {
 			fmt.Fprintf(stderr, "artifact download failed: %v\n", err)
 			return 1
 		}

@@ -17,6 +17,16 @@ import (
 // ExtractTarZstd extracts a tar+zstd stream into dest.
 // Includes path checks to prevent path-traversal attacks.
 func ExtractTarZstd(r io.Reader, dest string) error {
+	return ExtractTarZstdExcluding(r, dest, nil)
+}
+
+// ExtractTarZstdExcluding is ExtractTarZstd that skips every entry at or below
+// one of the paths in exclude, which is how a volume's mount point is kept out
+// of an extraction: an archive written before a directory became a volume's
+// mount point still holds files there, and extracting them would write into the
+// volume (or, where the mount point is shadowed, into a directory the job
+// cannot see). A skipped entry is skipped whatever its type.
+func ExtractTarZstdExcluding(r io.Reader, dest string, exclude []string) error {
 	dec, err := zstd.NewReader(r)
 	if err != nil {
 		return fmt.Errorf("zstd reader: %w", err)
@@ -32,6 +42,14 @@ func ExtractTarZstd(r io.Reader, dest string) error {
 		return fmt.Errorf("resolve dest %q: %w", dest, err)
 	}
 	cleanDest := absDest + string(filepath.Separator)
+	var skip []string
+	for _, e := range exclude {
+		abs, err := filepath.Abs(e)
+		if err != nil {
+			return fmt.Errorf("resolve excluded path %q: %w", e, err)
+		}
+		skip = append(skip, abs)
+	}
 	tr := tar.NewReader(dec)
 	for {
 		hdr, err := tr.Next()
@@ -44,6 +62,9 @@ func ExtractTarZstd(r io.Reader, dest string) error {
 		target := filepath.Join(absDest, filepath.FromSlash(hdr.Name))
 		if !strings.HasPrefix(target+string(filepath.Separator), cleanDest) {
 			return fmt.Errorf("invalid path %q in artifact archive", hdr.Name)
+		}
+		if isUnderAny(target, skip) {
+			continue
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
@@ -73,6 +94,16 @@ func ExtractTarZstd(r io.Reader, dest string) error {
 		}
 	}
 	return nil
+}
+
+// isUnderAny reports whether p is one of paths or lies below one of them.
+func isUnderAny(p string, paths []string) bool {
+	for _, e := range paths {
+		if p == e || strings.HasPrefix(p, e+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // typeflagName renders a tar.Typeflag for error messages.
