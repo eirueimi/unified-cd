@@ -308,10 +308,20 @@ func uniqueMountPath(seen map[string]int, i int, v dsl.VolumeMount, workspace st
 	if err != nil {
 		return "", err
 	}
-	if j, dup := seen[mp]; dup {
-		return "", fmt.Errorf("spec.volumes[%d]: mountPath %q is also used by spec.volumes[%d]; two volumes cannot share a mount path", i, v.MountPath, j)
+	// Keyed by the container path the mount lands at, not by the path as
+	// written: ".cache" and "/workspace/.cache" are different strings and the
+	// same directory, and only the agent knows where the workspace is.
+	where := mp
+	switch {
+	case mp == ".":
+		where = path.Clean(workspace)
+	case !path.IsAbs(mp):
+		where = path.Join(workspace, mp)
 	}
-	seen[mp] = i
+	if j, dup := seen[where]; dup {
+		return "", fmt.Errorf("spec.volumes[%d]: mountPath %q is also used by spec.volumes[%d] (both mount at %s in the container); two volumes cannot share a mount path", i, v.MountPath, j, where)
+	}
+	seen[where] = i
 	return mp, nil
 }
 
@@ -397,6 +407,41 @@ func injectVolumes(podSpec *corev1.PodSpec, workspaceMount string, vols []PodVol
 // reported the run finished (cancelled by a user, or failed by the reaper)
 // while it waited for a volume. There is nothing left to report for such a run.
 var errRunTerminalWhileWaiting = errors.New("the controller reports the run finished while it waited for its volumes")
+
+// maxCreateAttempts is how many creates of a volume-bearing run's pod may fail to
+// land, one after another, before the run is failed. A create that times out or
+// finds its previous attempt's pod still terminating is a slow cluster, and a
+// slow cluster should cost a run time, not the run: failing on the first would
+// turn one slow response during a fleet start into a failed build. But retrying
+// without limit is worse than either, because a cause that does not clear
+// (persistent timeouts, a name taken by a pod this agent will not delete) would
+// hold the run and its concurrency slot indefinitely, with only the job's own
+// timeoutMinutes, if it sets one, to end it. Five attempts rides out a bad
+// minute (each timed-out one costs a quarter of the lock grace plus a poll
+// interval) and still fails within a few minutes with the true reason.
+const maxCreateAttempts = 5
+
+// createRetryError says that the run's pod did not get created but the attempt is
+// worth repeating (see tryCreateWithVolumes). It is not returned past
+// createClaimPod.
+type createRetryError struct {
+	cause    error
+	timedOut bool
+	timeout  time.Duration
+}
+
+func (e *createRetryError) Error() string {
+	return "creating the pod did not complete: " + e.cause.Error()
+}
+func (e *createRetryError) Unwrap() error { return e.cause }
+
+// reason is the part of the message a user can act on.
+func (e *createRetryError) reason() string {
+	if e.timedOut {
+		return fmt.Sprintf("the request to create it timed out after %s", e.timeout)
+	}
+	return "a pod with its name still exists from an earlier attempt, which has been asked to go away"
+}
 
 // claimPodResult is what createClaimPod hands back.
 type claimPodResult struct {
@@ -508,12 +553,24 @@ func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (cla
 	}
 
 	announced := false
+	failedCreates := 0
 	for {
 		res, created, err := a.tryCreateWithVolumes(ctx, c, sidecar, sets, declared)
-		if err != nil || created {
+		var retry *createRetryError
+		if errors.As(err, &retry) {
+			// The volumes were free and this run held them; it is the pod
+			// that did not land. Say so, not "another run is using", and give
+			// up after maxCreateAttempts so a cause that does not clear
+			// cannot hold the run, and its slot, under a wrong explanation.
+			failedCreates++
+			if failedCreates >= maxCreateAttempts {
+				return claimPodResult{}, fmt.Errorf("k8s: creating the run's pod did not complete %d times in a row; giving up. Last attempt: %w", failedCreates, retry.cause)
+			}
+			a.warnRun(waitCtx, c.RunID, fmt.Sprintf("creating the run's pod did not complete (attempt %d of %d: %s); its volume locks were released and it will try again",
+				failedCreates, maxCreateAttempts, retry.reason()))
+		} else if err != nil || created {
 			return res, err
-		}
-		if !announced {
+		} else if !announced {
 			announced = true
 			a.warnRun(waitCtx, c.RunID, fmt.Sprintf("waiting for volumes %q, which another run is using", sets))
 		}
@@ -601,7 +658,7 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 		if timedOut || apierrors.IsAlreadyExists(err) {
 			slog.Warn("k8s: creating the run's pod did not complete; releasing its volume locks and retrying",
 				"runId", c.RunID, "timedOut", timedOut, "error", err)
-			return claimPodResult{}, false, nil
+			return claimPodResult{}, false, &createRetryError{cause: err, timedOut: timedOut, timeout: a.lockGrace() / 4}
 		}
 		return claimPodResult{}, false, err
 	}

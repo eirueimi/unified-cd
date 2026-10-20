@@ -542,6 +542,50 @@ func TestVolumeLock_ACreateThatTimesOutIsRetriedNotFatal(t *testing.T) {
 	assert.Equal(t, int32(2), pm.n.Load())
 	assert.Less(t, time.Since(start), 5*time.Second)
 	assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "the retry holds the lock again")
+
+	// The run log says what happened, not that another run holds the volume.
+	log := ctl.logText("run-a")
+	assert.Contains(t, log, "creating the run's pod did not complete")
+	assert.Contains(t, log, "timed out")
+	assert.NotContains(t, log, "another run is using")
+}
+
+type alwaysAlreadyExistsPM struct {
+	podManager
+	n atomic.Int32
+}
+
+func (p *alwaysAlreadyExistsPM) CreatePod(_ context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	p.n.Add(1)
+	return nil, apierrors.NewAlreadyExists(corev1.Resource("pods"), pod.Name)
+}
+
+// TestVolumeLock_APodCreateThatNeverLandsFailsTheRunWithTheTrueReason: a cause
+// that does not clear (here a name taken by a pod this agent will not delete,
+// because it is not this run's) must end the run after maxCreateAttempts with an
+// honest message, not hold it under "waiting for volumes" until the job's own
+// timeout, if it has one.
+func TestVolumeLock_APodCreateThatNeverLandsFailsTheRunWithTheTrueReason(t *testing.T) {
+	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
+	ctl := newControllerStub(t)
+	pm := &alwaysAlreadyExistsPM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}}
+	a := lockReplica(cs, ctl.srv.URL, pm, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := a.createClaimPod(ctx, claimFor("run-a", mount("unity-main", "", ".")))
+	require.Error(t, err)
+	assert.Nil(t, res.pod)
+	assert.Contains(t, err.Error(), "did not complete 5 times in a row")
+	assert.Contains(t, err.Error(), "already exists", "the last cause is carried")
+	assert.Equal(t, int32(maxCreateAttempts), pm.n.Load(), "exactly maxCreateAttempts creates were tried")
+	assert.Empty(t, pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "a failed run holds no lock")
+
+	log := ctl.logText("run-a")
+	assert.Contains(t, log, "attempt 1 of 5")
+	assert.Contains(t, log, "attempt 4 of 5")
+	assert.Contains(t, log, "still exists from an earlier attempt")
+	assert.NotContains(t, log, "another run is using", "the volume was never busy")
 }
 
 type alreadyExistsOncePM struct {
@@ -608,6 +652,40 @@ func TestExecuteRun_RejectsTwoVolumesAtOneMountPath(t *testing.T) {
 	assert.Equal(t, api.RunFailed, f.waitFinish(t))
 	assert.Contains(t, f.logText(), "also used by spec.volumes[0]")
 	assert.Empty(t, f.createdPods(t))
+}
+
+// Two mount paths that are different strings can still be one container path: a
+// relative path lands under the workspace, and an absolute one may name that same
+// directory. Only the agent knows where the workspace is, so only it can see this.
+func TestUniqueMountPath_ComparesTheContainerPathNotTheSpelling(t *testing.T) {
+	cases := []struct {
+		name      string
+		workspace string
+		a, b      string
+		dup       bool
+	}{
+		{"relative and the absolute path it resolves to", "/workspace", ".cache", "/workspace/.cache", true},
+		{"in the other order", "/workspace", "/workspace/.cache", ".cache", true},
+		{"under a workspace an agent template moved", "/src", ".cache", "/src/.cache", true},
+		{"relative path that only looks like the absolute one", "/src", ".cache", "/workspace/.cache", false},
+		{"different directories", "/workspace", ".cache", ".other", false},
+		{"unnormalised spellings", "/workspace", "a/../.cache", "./.cache/", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			seen := map[string]int{}
+			_, err := uniqueMountPath(seen, 0, mount("x", "", tc.a), tc.workspace)
+			require.NoError(t, err)
+			_, err = uniqueMountPath(seen, 1, mount("y", "", tc.b), tc.workspace)
+			if tc.dup {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "also used by spec.volumes[0]")
+				assert.Contains(t, err.Error(), "in the container")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestVolumeLock_ConfirmLockWithoutAClient(t *testing.T) {
