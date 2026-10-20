@@ -46,9 +46,7 @@ Input classes the spec implies but that no task's happy path exercises. Each has
 - Consumes: nothing from earlier tasks.
 - Produces:
   - `type VolumeMount struct { Name StringOrSlice; As string; MountPath string }` with yaml tags `name`, `as`, `mountPath`.
-  - `Spec.Volumes []VolumeMount` (yaml `volumes,omitempty`).
-  - `WorkspaceConfig.Volume StringOrSlice` (yaml `volume,omitempty`).
-  - `func NormalizeVolumes(spec Spec) ([]VolumeMount, error)` — folds `workspace.volume` into a `VolumeMount` with `MountPath: "."` and returns the full list.
+  - `Spec.Volumes []VolumeMount` (yaml `volumes,omitempty`). There is no `spec.workspace.volume` shorthand and no `NormalizeVolumes`: `WorkspaceConfig` lives only under `spec.podTemplate.workspace`, which `native: true` forbids, so `mountPath: "."` is the only spelling. Later tasks read `spec.Volumes` directly.
   - `func ValidateVolumes(spec Spec) error`.
   - `func VolumeAlias(v VolumeMount) string` — `v.As`, or the single literal name.
 
@@ -78,20 +76,16 @@ func TestValidateVolumes(t *testing.T) {
     //   volumes with podTemplate.reuse: true          -> "not supported with podTemplate.reuse"
 }
 
-func TestNormalizeVolumes_WorkspaceVolumeSugar(t *testing.T) {
-    // spec.workspace.volume: unity-main yields one VolumeMount{Name:"unity-main", MountPath:"."}
-    // workspace.volume and an explicit "." entry together is an error
-}
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./internal/dsl/ -run 'Volumes' -v`
-Expected: FAIL, undefined `ValidateVolumes` / `NormalizeVolumes`.
+Expected: FAIL, undefined `ValidateVolumes`.
 
 - [ ] **Step 3: Add the types and implement the validator**
 
-Add `Volumes` to `Spec` and `Volume` to `WorkspaceConfig` in `internal/dsl/types.go`. Implement `NormalizeVolumes`, `ValidateVolumes`, and `VolumeAlias` in `internal/dsl/volumes.go`.
+Add `Volumes` to `Spec` in `internal/dsl/types.go`. Implement `ValidateVolumes` and `VolumeAlias` in `internal/dsl/volumes.go`.
 
 Containment for a relative `mountPath` reuses the existing guard (`ContainWithinSlash`, `internal/agent/pathguard.go`) semantics — reject `..` escapes — but volumes are NOT routed through that function, because it also rejects absolute paths, which §4.6 of the spec allows. Write the containment check in `volumes.go` and say in a comment why it is separate.
 
@@ -123,7 +117,7 @@ git commit -m "feat(dsl): add spec.volumes with validation"
 - Create: `internal/dsl/volumes_expand_test.go`
 
 **Interfaces:**
-- Consumes: `VolumeMount`, `NormalizeVolumes` (Task 1).
+- Consumes: `VolumeMount`, `Spec.Volumes` (Task 1).
 - Produces:
   - `func ExpandVolumes(vs []VolumeMount, params map[string]string) ([]VolumeMount, error)` — expands every candidate in `Name`, same error-wrapping style as `ExpandConcurrency`.
   - `func RequiredVolumes(spec Spec) [][]string` — one candidate set per entry, in declaration order, from an already-expanded spec. Empty slice when the job declares none.
@@ -140,7 +134,6 @@ func TestExpandVolumes(t *testing.T) {
 func TestRequiredVolumes(t *testing.T) {
     // one entry, single name  -> [["unity-main"]]
     // one entry, three names  -> [["go-cache-1","go-cache-2","go-cache-3"]]
-    // workspace.volume sugar is included
     // no volumes -> empty
 }
 ```
@@ -156,13 +149,15 @@ Expected: FAIL.
 
 Leave `RequiredCaps` unchanged — volumes are a second, separate dimension, not a capability string.
 
-- [ ] **Step 4: Call `ExpandVolumes` where `ExpandConcurrency` is called**
+- [ ] **Step 4: Locate, but do not yet wire, the call site**
 
-Find the `tryQueueRun` path in `internal/store/postgres.go` and the run-creation path that already calls `ExpandConcurrency`, and expand volumes in the same place with the same params. The expanded result is what Task 3 persists.
+This task ships the two functions and their tests only. The call site that expands volumes and persists the result needs `runs.required_volumes`, which Task 3's migration creates — wiring it here would write to a column that does not exist yet.
+
+Find the place that already calls `ExpandConcurrency` with a run's params (the `tryQueueRun` path in `internal/store/postgres.go`) and record the file and line in your report, so Task 3 can wire it without searching. Change nothing there.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `go test ./internal/dsl/ ./internal/store/ -run 'Volume|Concurrency' -v`
+Run: `go test ./internal/dsl/ -run 'Volume|Concurrency' -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -216,7 +211,11 @@ Expected: FAIL (columns and parameters do not exist).
 
 `agents.volumes text[] NOT NULL DEFAULT '{}'` and `runs.required_volumes jsonb NOT NULL DEFAULT '[]'`. The down migration drops both.
 
-- [ ] **Step 4: Extend `UpsertAgent` and `ClaimNextRun`**
+- [ ] **Step 4: Wire the queue-time expansion**
+
+Task 2 left this deliberately unwired because the column did not exist. At the `ExpandConcurrency` call site Task 2's report names, call `dsl.ExpandVolumes` with the same params and persist `dsl.RequiredVolumes` of the expanded spec into `runs.required_volumes`.
+
+- [ ] **Step 5: Extend `UpsertAgent` and `ClaimNextRun`**
 
 `UpsertAgent` stores `volumes` the way it stores `labels` (a `text[]`), not the way it stores `capabilities` (nullable for legacy agents) — an agent that declares none sends an empty array.
 
@@ -234,12 +233,12 @@ AND NOT EXISTS (
 
 Put a comment above it pointing at the schedulability query (~line 1697), which is deliberately label-only and must NOT gain this clause either, for the reason stated there.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `go test ./internal/store/ -run 'Claim' -v`
 Expected: PASS, existing claim tests included.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add internal/store/migrations/022_agent_volumes.*.sql internal/store/postgres.go internal/store/volumes_claim_test.go
@@ -324,6 +323,14 @@ func TestVolumeManager_CreatesDirectories(t *testing.T)
 func TestVolumeManager_DefaultPath(t *testing.T)      // <base>/volumes/<name>
 func TestVolumeManager_RejectsUnknownMode(t *testing.T)
 func TestVolumeManager_RejectsDuplicateName(t *testing.T)
+func TestVolumeManager_RejectsPathUnderAWorkingDir(t *testing.T)
+    // a resolved path that is, or sits under, "<base>/working<N>" is refused:
+    // gcWorkspaces globs wsBase/working* and would delete it
+func TestGcWorkspaces_CannotReachAVolume(t *testing.T)
+    // in internal/agent/workspace_gc_test.go: a volume at <base>/volumes/x,
+    // older than the retention, survives the sweep
+func TestVolumeManager_UsageMeasurementToleratesPermissionErrors(t *testing.T)
+    // a root-owned subtree an isolated run left behind: warn, do not fail
 func TestVolumeManager_SharedAllowsConcurrentReserve(t *testing.T)
 func TestVolumeManager_ExclusiveBlocksSecondReserve(t *testing.T)
 func TestVolumeManager_ReservePicksFreeCandidate(t *testing.T) // [a,b], a busy -> b
@@ -362,11 +369,12 @@ git commit -m "feat(agent): declare volumes in the agent config"
 - Modify: `internal/agent/agent.go` (`runLoop` ~404-500, registration/heartbeat)
 - Modify: `internal/agent/client.go` (`claim` ~200-211 — add a request body)
 - Modify: `internal/api` (the `ClaimRequest` type carrying `busyVolumes`)
+- Modify: the controller's claim HTTP handler — reads `busyVolumes` from the body and passes it to `ClaimNextRun`, which Task 3 left unwired
 - Create: `internal/agent/volumes_mount.go`
 - Create: `internal/agent/volumes_mount_test.go`
 
 **Interfaces:**
-- Consumes: `VolumeManager` (Task 5), `ClaimNextRun(..., busyVolumes)` (Task 3), `NormalizeVolumes` (Task 1).
+- Consumes: `VolumeManager` (Task 5), `ClaimNextRun(..., busyVolumes)` (Task 3), `Spec.Volumes` (Task 1).
 - Produces:
   - `func mountVolumes(workDir string, mounts []dsl.VolumeMount, m *VolumeManager, native bool) (resolved map[string]string, cleanup func() error, err error)` — `resolved` maps alias to absolute path, for Task 8.
   - `func sweepStaleVolumeLinks(m *VolumeManager) error` — called at startup.
@@ -403,9 +411,13 @@ Native uses symlinks for every mount path, relative or absolute. Isolated passes
 
 A link this agent created is identified by its target resolving inside the volume root; nothing else is ever removed.
 
+Re-check here what apply time could not. Task 1's "absolute `mountPath` is inside the workspace" rule was evaluated against the *container* workspace root, because a host agent's workspace path is not knowable at apply time. On a native run, re-check the absolute path against the actual workspace directory and fail the run if it falls inside.
+
 On Windows, `os.Symlink` needs privilege. Fall back to a directory junction, and if neither works, fail the run at mount time with an error that names the limitation.
 
 - [ ] **Step 4: Advertise volumes and report busy ones**
+
+Both halves of the wire format land in this task so they cannot drift: the agent client sends the body, and the controller's claim handler reads it and passes it to `ClaimNextRun` (Task 3 changed the store function and deliberately left the handler alone).
 
 Registration sends `m.Names()`. The claim request gains a body carrying `m.Busy()` — today `claim` posts a nil body (`internal/agent/client.go:209`), so this is the first one. After a successful claim, `runLoop` calls `m.Reserve(...)` for each entry, and `m.ReservePath(...)` for each absolute mount path on a native run; a lost race waits for release rather than returning the run, because no endpoint exists to return it (spec §4.7). Call `sweepStaleVolumeLinks` once during startup, before the first claim loop starts; every volume is free at that point because the agent has lost all its runs (spec §7).
 
@@ -439,6 +451,12 @@ git add internal/agent/ internal/api/ && git commit -m "feat(agent): mount named
 ```go
 func TestPrepareWorkspace_CleansByDefault(t *testing.T)
     // a file left by a previous run is gone, with clean=false
+func TestFinishWorkspace_SweepsAfterTheRun(t *testing.T)
+    // the run's own output is gone once the run ends, so disk is not held
+    // between runs of the same job
+func TestFinishWorkspace_SweepFailureIsNotFatal(t *testing.T)
+    // the sweep cannot remove the tree: warn, the run's status is unchanged
+func TestFinishWorkspace_LeavesAVolumeBackedWorkspaceAlone(t *testing.T)
 func TestPrepareWorkspace_VolumeBackedIsNotCleaned(t *testing.T)
     // volumeBacked=true, clean=false: the previous run's file survives
 func TestPrepareWorkspace_VolumeBackedModeFlipFailsAndKeepsData(t *testing.T)
@@ -447,6 +465,9 @@ func TestPrepareWorkspace_VolumeBackedModeFlipFailsAndKeepsData(t *testing.T)
 func TestPrepareWorkspace_VolumeBackedMarkerIsNotWrittenIntoTheVolume(t *testing.T)
 func TestPrepareWorkspace_CleanWorkspaceWipesAVolume(t *testing.T)
     // clean=true, volumeBacked=true: contents are gone (the documented escape hatch)
+func TestPrepareWorkspace_CleanWorkspaceFallsBackToTheCleanupContainer(t *testing.T)
+    // a root-owned tree an isolated run left in the volume: plain RemoveAll
+    // fails, containerCleanup runs, the wipe succeeds
 ```
 
 The third is the 200GB-deletion path the design calls out; it must fail, not wipe.
@@ -458,7 +479,9 @@ Expected: FAIL.
 
 - [ ] **Step 3: Make cleaning unconditional and protect volumes**
 
-For a workspace with no volume at `"."`, clean before every run regardless of `clean`. For a volume-backed workspace, never clean unless `clean` is explicitly true, keep `.ucd-mode` in the agent's own state directory keyed by volume name, and return an error on a mode flip instead of calling `RemoveAll`.
+For a workspace with no volume at `"."`, clean before every run regardless of `clean`, and add `finishWorkspace` to sweep it again once the run ends so disk is not held between runs of the same job. The after-run sweep is best-effort: log a warning and leave the run's status alone if it fails, because the before-run clean is what guarantees a clean start.
+
+For a volume-backed workspace, never clean before or after unless `clean` is explicitly true, keep `.ucd-mode` in the agent's own state directory keyed by volume name, and return an error on a mode flip instead of calling `RemoveAll`. When `clean` IS true, reuse the existing `containerCleanup` fallback — an isolated run on a rootful runtime leaves root-owned files that plain `RemoveAll` cannot touch.
 
 - [ ] **Step 4: Match the behaviour on reused k8s pods**
 
@@ -538,7 +561,7 @@ git add internal/agent/stepenv.go internal/agent/orchestrator.go internal/k8sage
 - Modify: `internal/k8sagent/agent.go` (startup ~99, claim ~356)
 
 **Interfaces:**
-- Consumes: `config.VolumeConfig` (Task 5), `NormalizeVolumes` (Task 1).
+- Consumes: `config.VolumeConfig` (Task 5), `Spec.Volumes` (Task 1).
 - Produces:
   - `func EnsurePVCs(ctx, client, agentName string, cfgs []config.VolumeConfig) error` — creates one ordinary PVC per volume, named `<agentName>-<volume>`, RWO for `exclusive` and RWX for `shared`, `storageClassName` left nil when unset.
   - `func BusyVolumes(ctx, client, agentName, namespace string) ([]string, error)` — derived from live claim pods labelled with the volume they hold.

@@ -83,11 +83,16 @@ discarded afterwards — on host agents and k8s-agents, for `native: true` and
 `native: false` alike. This matches today's k8s `emptyDir` semantics and makes
 the host agent's slot lottery disappear.
 
-Host agents clean the workspace **before** the run, not after: a cleanup after
-the run is lost if the agent dies, and the next run would have to verify
-emptiness regardless. `prepareWorkspace` (`internal/agent/workspace.go:92`)
-already implements before-run cleaning and the root-owned-leftover fallback;
-this change makes that path unconditional rather than opt-in.
+Host agents clean the workspace **both before and after** the run. The
+before-run clean is the guarantee: a run always starts empty, even if the agent
+died mid-run last time. The after-run clean is disk reclamation, and it is
+best-effort — a failure is a warning, not a failed run, because the guarantee
+does not depend on it. Before-run alone would hold the previous run's output
+until that job's next run, which is not what `emptyDir` does and is the whole
+point of calling this ephemeral. `prepareWorkspace`
+(`internal/agent/workspace.go:92`) already implements before-run cleaning and
+the root-owned-leftover fallback; this change makes that path unconditional
+rather than opt-in and adds the after-run sweep.
 
 This is a breaking change to host-agent behaviour. unified-cd has no users yet,
 so no compatibility shim is provided. A migration guide is still required
@@ -151,6 +156,23 @@ volumes:
 agent measures usage and warns on overrun but does not enforce it, because
 per-directory quotas are not portable without root.
 
+**No volume is ever swept by the workspace GC.** `gcWorkspaces`
+(`internal/agent/workspace_gc.go:46`) globs `wsBase/working*` only, so the
+default volume path is already outside its reach — but by the spelling of a
+glob, not by intent. The volume manager therefore refuses any resolved `path`
+that is, or sits under, a `working*` directory, and a test pins that the
+retention sweep cannot reach a volume. A volume deleted because it went unused
+for `workspaceRetentionDays` would destroy exactly the data the operator
+declared in order to keep.
+
+**On a host agent, an isolated run's volume contents end up owned by root**
+when the container runtime is rootful. Three consequences: `cleanWorkspace` on
+such a volume must fall back to the throwaway-container cleanup that
+`containerCleanup` (`internal/agent/workspace.go`) already provides for the
+workspace; the advisory usage measurement must tolerate permission errors and
+warn rather than fail the run; and an operator reclaiming the directory by hand
+needs root. The last one belongs in the operations documentation.
+
 k8s-agent:
 
 ```yaml
@@ -184,8 +206,12 @@ spec:
       mountPath: .ucd-cache/go
 ```
 
-`spec.workspace.volume: unity-main` is sugar for a single entry with
-`mountPath: "."`.
+There is no `spec.workspace.volume` shorthand. `WorkspaceConfig` is reachable
+only under `spec.podTemplate.workspace`, and `spec.native: true` is
+incompatible with `spec.podTemplate` (`internal/dsl/parse.go:206`), so a
+shorthand there could never serve a native job — which is the case that needs
+it most. `mountPath: "."` is the only spelling, and it reads the same on every
+agent type.
 
 `name` may be a list of candidates. The agent picks a free one:
 
@@ -422,7 +448,8 @@ should be revisited by the builder only with a reason.
    last is not preferred. In steady state every copy stays warm, so the lottery
    only hurts when copies outnumber the workload — and affinity would require
    the controller to hold volume state, which §4.2 rules out.
-3. **Host agents clean before the run** (§4.1).
+3. **Host agents clean before AND after the run**; the after-run sweep is
+   best-effort (§4.1).
 4. **`cleanWorkspace` wipes volume contents** (§4.10).
 5. **Host-agent `size` is advisory** (§4.3).
 6. **Absolute mount paths need no operator opt-in** (§4.6).
@@ -470,8 +497,9 @@ volumes:
 ```yaml
 spec:
   native: true
-  workspace:
-    volume: unity-main     # checkout and Library/ both persist; pull, not clone
+  volumes:
+    - name: unity-main
+      mountPath: "."       # checkout and Library/ both persist; pull, not clone
 ```
 
 Go, ephemeral workspace, shared cache:
