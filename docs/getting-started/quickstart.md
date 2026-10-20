@@ -191,6 +191,12 @@ spec:
 > docker/podman/nerdctl) to get the default isolated behavior — see [Job Isolation: `native` and
 > the claim pod](../user-guide/writing-jobs/isolation-and-containers.md#job-isolation-native-and-the-claim-pod).
 
+> **The workspace is not kept between runs.** Each run starts in an empty workspace directory and
+> the agent discards it afterwards, so a second `hello` run cannot see files the first one wrote.
+> That is the same on every agent. When a job has data worth keeping (a large checkout, a build
+> cache), the agent's own config declares a named *volume* and the job mounts it with
+> `spec.volumes`; see [Volumes](../user-guide/writing-jobs/volumes.md).
+
 Steps run sequentially in the order listed. To run steps concurrently, group them under a
 `parallel:` block instead (see [Concurrent Steps (`parallel`)](../user-guide/writing-jobs/steps.md#concurrent-steps-parallel)).
 
@@ -451,6 +457,7 @@ The UI lets you:
 | Authentication (human PATs/SSO and per-agent credentials) | [Authentication Guide](../operator-manual/authentication.md) |
 | Agent labels and routing | [Agent Labels and Routing](../operator-manual/agents.md) |
 | Secrets management and encryption model | [Secrets Management Guide](../user-guide/secrets.md) |
+| Keeping data between runs (named volumes) | [Volumes](../user-guide/writing-jobs/volumes.md) |
 | Kubernetes pod-based agents | [Kubernetes Integration Guide](../operator-manual/kubernetes-integration.md) |
 | High availability and rolling deploys | [High Availability Guide](../operator-manual/high-availability.md) |
 | Frontend development | [Frontend Development Guide](../contributing/frontend-development.md) |

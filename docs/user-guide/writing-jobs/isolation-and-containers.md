@@ -184,9 +184,7 @@ actual workload in `steps:`, not on the `job` container's `command`/`args`
 `command`/`args` as described in the table above. Other unsupported
 PodSpec fields (`volumeMounts`/`securityContext` and any other container
 field outside the host-supported set) already require a Kubernetes agent —
-the run is pinned there rather than degraded on the standard agent. A PVC
-workspace is the one exception that still degrades instead of routing: it
-becomes a per-claim bind mount on the standard agent, by design. An `env`
+the run is pinned there rather than degraded on the standard agent. An `env`
 entry without a literal `value` (i.e. `valueFrom`) also now requires a
 Kubernetes agent rather than being silently dropped — see [Kubernetes
 Integration Guide: the remaining intentional
@@ -273,8 +271,8 @@ sub-field of a host-supported field the host only partially honors —
 `resources.requests`; a `resources.limits` key other than `cpu`/`memory` as a
 string, including `resources.claims`; or an `env` entry without a literal
 `value`) or is host-runnable (plain `name`/`image` containers, literal `env`
-values, `resources.limits` restricted to `cpu`/`memory` as strings,
-`workspace.pvc` — which degrades to a host bind mount). A host-runnable
+values, `resources.limits` restricted to `cpu`/`memory` as strings, a
+`workspace.mountPath`). A host-runnable
 `podTemplate` can run on **either** a standard agent or a k8s-agent with no
 hand-written selector required to make that work; a Kubernetes-only
 `podTemplate` is routed to a k8s-agent only. See [Capabilities and
@@ -296,18 +294,14 @@ spec:
 
     # Or define inline:
     workspace:
-      mountPath: /workspace
-      pvc:
-        storageClassName: standard
-        storageRequest: 10Gi
-        accessMode: ReadWriteOnce
+      mountPath: /workspace   # an emptyDir: empty at the start of every run
     spec:
       containers:
         - name: job
           image: golang:1.24-alpine
 
-    reuse: false              # keep the pod alive after run; reuse for next run
-    cleanWorkspace: false     # wipe /workspace before each run
+    reuse: false              # keep the pod alive after the run for the next run (the workspace is still emptied)
+    cleanWorkspace: false     # wipe a volume mounted at "." before the run (an ordinary workspace is always emptied)
     override:                 # merge additional containers/volumes into base spec
       containers:
         - name: trivy
@@ -335,15 +329,25 @@ spec:
 |---|---|---|
 | `name` | string | Name of a template defined in the k8s-agent config file |
 | `spec` | map | Inline Kubernetes PodSpec (used when `name` is empty) |
-| `workspace.mountPath` | string | Path inside the pod where workspace is mounted |
-| `workspace.pvc.claimName` | string | Existing PVC to mount |
-| `workspace.pvc.storageClassName` | string | StorageClass for ephemeral PVC creation |
-| `workspace.pvc.storageRequest` | string | Storage size (e.g. `10Gi`) |
-| `workspace.pvc.accessMode` | string | `ReadWriteOnce`, `ReadOnlyMany`, or `ReadWriteMany` |
-| `reuse` | bool | Return pod to a pool after run and reuse it for subsequent runs |
-| `cleanWorkspace` | bool | Delete `/workspace` contents before each run (default: false) |
+| `workspace.mountPath` | string | Path inside the pod where the (ephemeral) workspace is mounted |
+| `reuse` | bool | Return the pod to a pool after the run and reuse it for subsequent runs. This only saves Pod start-up: the workspace of a reused pod is emptied before every run, and the run fails (the pod is deleted) if that is impossible. Not allowed together with `spec.volumes` |
+| `cleanWorkspace` | bool | Empty a [volume](volumes.md) mounted at the workspace root (`mountPath: "."`) before the run. Equivalent to `spec.cleanWorkspace`; the two are ORed. An ordinary workspace is always emptied, so this changes nothing without such a volume |
 | `override.containers` | []map | Additional containers to merge into the pod spec |
 | `override.volumes` | []map | Additional volumes to merge into the pod spec |
+
+The workspace is **always ephemeral**. The `pvc` block that an earlier release accepted under `workspace`
+(a persistent claim or a per-Pod ephemeral one) has been removed, and a job that
+still carries it is rejected at apply time; persistence now comes from a [named
+volume](volumes.md). See the [migration
+guide](../../operator-manual/migrations/2026-10-20-named-volumes.md).
+
+> **`workspace.mountPath` alone does nothing on a Kubernetes agent.** The Kubernetes agent reads
+> `podTemplate.workspace` only from a template it actually builds the Pod from: a named agent
+> template (`name`), or an inline `podTemplate` that carries a `spec`. A `podTemplate` that sets
+> *only* `workspace.mountPath`, with neither, has that mount path silently ignored there (the
+> standard agent honors it, so the same job can behave differently on the two). Give the
+> `podTemplate` a `name` or a `spec` whenever you set a mount path. Apply-time validation would be
+> better and is a known follow-up.
 
 Use `container:` in a step to target a specific container (see
 [`container:` — targeting a podTemplate

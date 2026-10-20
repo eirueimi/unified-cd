@@ -1,7 +1,8 @@
 # Examples
 
 Runnable, self-contained examples for unified-cd. Each file applies cleanly on its own and its
-trigger works without applying any other file first.
+trigger works without applying any other file first (`jobs/volumes.yaml` also needs volumes
+declared in an agent's config; see Notes).
 
 ## Layout
 
@@ -39,6 +40,11 @@ path-namespaced via `annotations.path: team-a`. The canonical parameterized buil
 - Several examples run steps in the default runner container (isolated). Add `native: true` to a
   job to run its steps directly on the agent host instead (needed for `native-build.yaml`, which
   targets a host toolchain).
+- A job's workspace is empty at the start of every run and discarded at the end, on host agents
+  and k8s-agents alike. `jobs/volumes.yaml` shows the only way to keep files between runs: a
+  named volume declared in the agent's own config and mounted with `spec.volumes`. It runs only
+  on an agent that declares those volumes (`config/agent.yaml` and `config/k8s-agent.yaml` show
+  how); with none, the run stays Queued.
 - `call:` examples (`call-job.yaml`) hold an agent slot while waiting on the jobs they call, so a
   single-agent fleet must allow ≥2 concurrent runs (`--max-concurrent 2`) or provide a second
   agent — otherwise the child runs stay Queued and the parent waits. `agent-routing.yaml` pins its

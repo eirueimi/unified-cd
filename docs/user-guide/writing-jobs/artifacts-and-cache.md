@@ -146,5 +146,13 @@ This is a storage layout change — every cache entry saved before this change i
 
 The `path` of an `uploadArtifact`/`downloadArtifact`/`cache` step must be **relative** to the run workspace. Relative paths behave identically across native, isolated, and Kubernetes execution. Absolute paths and paths that escape the workspace (via `..`) are rejected — the step fails with `artifact/cache path ... escapes the workspace`. Inside a step, `$UNIFIED_WORKSPACE` names the current workspace root (the step's working directory), so scripts can build workspace-relative paths portably.
 
+**Volumes.** A path *inside* a [named volume](volumes.md)'s mount path works as written (`path: .ucd-cache/go/build` archives the volume's real contents), on every agent. A path that is an *ancestor* of a volume's mount point (`.`, or `.ucd-cache` for a volume at `.ucd-cache/go`) archives everything around the volume but **excludes the volume's contents**, on both agent types, and says so in the run log:
+
+```
+artifact path "." excludes volume "go-cache" mounted at ".ucd-cache/go": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it
+```
+
+(`cache path ...` for a cache step; one line per volume.) A volume can hold tens of gigabytes, so it is never swept into the archive of its parent. Name the volume's own mount path to archive it deliberately. On the Kubernetes agent this uses a repeatable `--exclude` flag on the `unified-artifact` sidecar, so the sidecar image and the agent must be upgraded together (see [Operations: Upgrades](../../operator-manual/operations.md#upgrades)).
+
 ---
 

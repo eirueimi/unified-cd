@@ -224,15 +224,25 @@ cacheSecret: garageadmin12345
 cacheBucket: unified-cd-cache
 
 maxConcurrent: 4
-cleanWorkspace: false
+cleanWorkspace: false          # no longer has any effect (see --clean-workspace above); accepted so existing configs start
 workspaceDir: /data/unified-cd/workspace
 drainTimeout: 60s
 finallyTimeout: 10m            # ceiling on each post-DAG cleanup phase (spec.finally, and each post:/cache: drain); default shown
 pauseImage: busybox:1.36                              # claim pod pause container (default shown)
 runnerImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3 # default primary container (default shown)
 minFreeDisk: 5368709120        # 5Gi; below this free space on workspaceDir's filesystem, stop claiming (0 = disabled, default)
-workspaceRetentionDays: 0      # >0 opts in to the periodic per-job workspace GC (0 = disabled, default)
+workspaceRetentionDays: 0      # >0 opts in to the periodic GC of workspace directories an agent crash left behind (0 = disabled, default)
 logLevel: info
+
+# Agent-owned named volumes (file-only: no flag or environment variable). The only thing
+# that survives between runs; see "Agent volumes" below.
+volumes:
+  - name: unity-main
+    mode: exclusive
+    path: /var/lib/unified-cd/volumes/unity-main   # optional
+    size: 200Gi                                    # advisory
+  - name: go-cache
+    mode: shared
 ```
 
 VM agents authenticate only via enrollment; there is no `token` config field.
@@ -271,7 +281,7 @@ Start with config file:
 ```
 
 `minFreeDisk` and `workspaceRetentionDays` are **host agent only** — the
-k8s-agent's job workspaces are ephemeral pod volumes, not host disk, so
+k8s-agent's job workspaces are ephemeral pod `emptyDir`s, not host disk, so
 neither a disk preflight nor a directory GC applies there.
 
 - **`minFreeDisk`** (bytes) is a pre-claim disk check on the workspace
@@ -285,9 +295,9 @@ neither a disk preflight nor a directory GC applies there.
 - **`workspaceRetentionDays`** (days) opt-in-enables a periodic sweep (hourly,
   plus once at startup) that removes per-job workspace directories
   (`workspaceDir/working<slot>/<job>`) whose mtime is older than the
-  retention window. `0` (default) disables the GC entirely — persistent
-  per-job workspaces are a feature (they act as an inter-run cache), so
-  reclaiming them must be an explicit opt-in. The sweep never removes
+  retention window. `0` (default) disables the GC entirely. A workspace is
+  emptied before and after every run, so this only reclaims what an agent
+  crash left behind, and reclaiming it is an explicit opt-in. The sweep never removes
   `workspaceDir` itself, never removes a `working<slot>` directory itself,
   never touches a dot-prefixed sibling (e.g. the `.ucd-tools` shim directory),
   and never removes a directory belonging to a currently-active run (cross-
@@ -301,6 +311,26 @@ agent setting — flag > config file > environment variable — since the
 resolved config-file/env value is used as the flag's own default (see
 `internal/config/agent.go`'s `AgentEffective`); an explicit `--min-free-disk`
 or `--workspace-retention-days` flag always wins.
+
+### Agent volumes
+
+`volumes` declares the agent-owned [named volumes](../user-guide/writing-jobs/volumes.md) this
+agent advertises and jobs mount with `spec.volumes`. It is **file-only**: unlike every scalar
+setting above it has no command-line flag and no environment variable, because a list of structured
+entries has no sensible flag or environment spelling. Each entry:
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `name` | string | Yes | — | What jobs call the volume. One path segment (`.`, `..` and names containing `/` or `\` are rejected); matched exactly. A job whose volume name has characters outside letters, digits, `-` and `_` must give it a clean `as:` alias. |
+| `mode` | string | Yes | — | `exclusive`: at most one run on this agent holds it at a time (a second run waits). `shared`: any number of runs may hold it; unified-cd makes no write-safety guarantee. A `shared` volume cannot be mounted at the workspace root. |
+| `path` | string | No | `<workspaceDir>/volumes/<name>` | Absolute host directory backing the volume, created at startup. It may not be, contain or sit under a `working*` directory of the workspace directory, its `detached` directory, or a dot-prefixed entry of it. Two volumes' paths may not overlap. |
+| `size` | string | No | — | Advisory capacity (`200Gi`). The agent warns when a volume exceeds it after a run and never enforces it. |
+| `storageClassName` | string | No | — | Kubernetes only; ignored by a host agent. |
+
+The agent refuses to start on an invalid entry (`volume "<name>": ...`). Dropping a volume from the
+list stops it being advertised and deletes nothing. See [Agent Labels and Routing: Named
+volumes](../operator-manual/agents.md#named-volumes) and [Operations: Named-Volume
+Hygiene](../operator-manual/operations.md#named-volume-hygiene).
 
 ### Job isolation notes
 
@@ -389,6 +419,16 @@ poolIdleTimeout: 10m
 
 # Log level is a flag/env, not a config-file field: --log-level / UNIFIED_K8S_LOG_LEVEL
 
+# Agent-owned named volumes (jobs mount them with spec.volumes). Each becomes a PVC named
+# <agentName>-<volume>. agentName is required when volumes is set and must never change while
+# the volumes hold data.
+agentName: ci-main
+volumes:
+  - name: go-cache
+    mode: exclusive          # ReadWriteOnce; "shared" needs a StorageClass that supports ReadWriteMany
+    size: 20Gi               # required on Kubernetes
+    # storageClassName: gp3  # omit to use the cluster default
+
 # Named pod templates referenced in Job YAML via podTemplate.name
 podTemplates:
 
@@ -404,10 +444,6 @@ podTemplates:
   node:
     workspace:
       mountPath: /workspace
-      pvc:
-        storageClassName: standard
-        storageRequest: 5Gi
-        accessMode: ReadWriteOnce
     spec:
       containers:
         - name: job
@@ -462,11 +498,20 @@ The default agent Deployment projects a ServiceAccount token with audience `unif
 | Field | Type | Description |
 |---|---|---|
 | `workspace.mountPath` | string | Mount path inside the pod (default: `/workspace`) |
-| `workspace.pvc.claimName` | string | Existing PVC to mount (for persistent caches) |
-| `workspace.pvc.storageClassName` | string | StorageClass for ephemeral PVC creation |
-| `workspace.pvc.storageRequest` | string | Storage size, e.g. `5Gi` |
-| `workspace.pvc.accessMode` | string | `ReadWriteOnce`, `ReadOnlyMany`, or `ReadWriteMany` |
 | `spec` | map | Kubernetes PodSpec (containers, volumes, etc.) |
+
+The workspace is always an `emptyDir`: empty when the run starts, discarded with the Pod. The
+former `pvc` block under `workspace` (a persistent claim, or a per-Pod ephemeral one) has
+been **removed**; an agent config that still carries it does not start. Persistence now comes from
+the agent's [`volumes`](#k8s-agent-config-fields) mounted by a job's `spec.volumes`. See the
+[migration guide](../operator-manual/migrations/2026-10-20-named-volumes.md).
+
+On the Kubernetes agent a job's `podTemplate.workspace` takes effect only when the `podTemplate`
+also names a template (`name`) or carries a `spec`. A `podTemplate` that sets *only*
+`workspace.mountPath`, with neither, has that mount path **silently ignored**: the workspace stays at
+`/workspace`. (The standard agent does honor a lone `workspace.mountPath`, so the same job can behave
+differently on the two; always give the `podTemplate` a `name` or a `spec` when you set a mount
+path. Apply-time validation would be better and is a known follow-up.)
 
 The primary `job` container always receives `["/.ucd/ucd-sh", "pause"]` as
 its keep-alive command (previously `["sleep", "infinity"]`), unconditionally

@@ -19,7 +19,7 @@ unified-cd-master
   ┌─────────────────────────┐                                     │
   │  container: job         │← steps executed via exec            │
   │  container: sidecar … │← switching to another container ok  │
-  │  volume: /workspace     │← emptyDir or PVC                    │
+  │  volume: /workspace     │← emptyDir (+ PVCs for named volumes)│
   └─────────────────────────┘                                     │
                                                                   │
   PodPool (when reuse: true)                                      │
@@ -45,8 +45,7 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   agent-side template, an override patch, extra pod-spec beyond `containers`,
   `volumeMounts`, and any other container field outside the host-supported set)
   already require a Kubernetes agent — the run is pinned there, not degraded on the
-  standard agent. A PVC `workspace` is the one exception that still degrades instead
-  of routing: it becomes a per-claim bind mount on the standard agent, by design. An
+  standard agent. An
   `env` entry that sets `valueFrom` instead of a literal `value` also requires a
   Kubernetes agent: the standard agent's docker/podman backend has no Kubernetes API
   to resolve `valueFrom` against, so a container that needs it is pinned to a
@@ -168,6 +167,14 @@ podImage: golang:1.24-alpine
 #                       or ~/.kube/config if running outside
 # kubeconfig: /path/to/kubeconfig
 
+# Agent-owned named volumes jobs mount with spec.volumes (see "Named volumes" below).
+# agentName is required when volumes is set and must never change while they hold data.
+# agentName: ci-main
+# volumes:
+#   - name: go-cache
+#     mode: exclusive
+#     size: 20Gi
+
 # Templates registered with this agent (referenced by name in Job YAML)
 podTemplates:
   golang:
@@ -229,6 +236,15 @@ Env vars, where present, override the config-file value (see [Configuration: Pri
 Order](../reference/configuration.md#priority-order) — CLI flags still win over both, but these fields have
 no CLI flag).
 
+**API-server load.** The agent sets its Kubernetes client's rate limit itself, from `maxConcurrent`:
+`2 × maxConcurrent + maxConcurrent/5 + 20` queries per second, with the same figure as the burst
+(240 at the default of 100; the same figure applies when `maxConcurrent` is negative, sized as the
+default). It is not configurable, and it replaces any QPS or burst a kubeconfig carried. The default
+client limit of 5 QPS is shared by every call and would make a Pod create wait minutes behind the
+agent's own start-up polling (about 2 QPS per starting run). Step `exec` streams are not counted
+against it. The practical consequence is that a fleet of this agent can send up to that rate to the
+API server, so size `maxConcurrent` against your API server's capacity.
+
 ---
 
 ## podTemplate in Job YAML
@@ -268,12 +284,7 @@ spec:
     - kind:kubernetes
   podTemplate:
     workspace:
-      mountPath: /workspace
-      # specifying storageClassName causes an ephemeral PVC to be created automatically
-      pvc:
-        storageClassName: standard
-        storageRequest: 5Gi
-        accessMode: ReadWriteOnce
+      mountPath: /workspace   # an emptyDir: empty at the start of every run, gone with the Pod
     spec:
       containers:
         - name: job
@@ -305,29 +316,33 @@ spec:
       run: trivy rootfs /workspace/app --exit-code 1
 ```
 
-### Pattern 4: Pod reuse (build cache)
+### Pattern 4: Pod reuse (faster start)
 
-With `reuse: true`, the Pod is returned to a pool after the run and reused by the next run.
-Build caches can accumulate in `/workspace`.
+With `reuse: true`, the Pod is returned to a pool after the run and reused by the next run, so that
+run skips scheduling and image pulls. **It does not carry the workspace over**: the agent empties
+the workspace of a reused Pod, dot-files included, before every run. If it cannot, the run fails
+(`k8s: could not clear the reused Pod's workspace: ...`) and the Pod is deleted rather than returned
+to the pool. Earlier releases kept `/workspace` between runs of a reused Pod, and
+`podTemplate.cleanWorkspace: false` was how you asked for that; it no longer has any effect on an
+ordinary workspace.
 
 ```yaml
 spec:
   podTemplate:
     name: golang
     reuse: true
-    cleanWorkspace: false   # default; set true to wipe /workspace before each run
-    workspace:
-      pvc:
-        claimName: go-build-cache   # use an existing PVC for persistence
   steps:
-    - name: download-deps
-      run: |
-        if [ ! -d /workspace/vendor ]; then
-          go mod vendor
-        fi
+    - name: restore-modules
+      cache:
+        path: .gomodcache
+        key: go-mod-{{ hashFile "go.sum" }}
     - name: build
-      run: go build ./...
+      run: GOMODCACHE="$UNIFIED_WORKSPACE/.gomodcache" go build ./...
 ```
+
+For data that must survive between runs use `cache:` (cheap to move) or a [named
+volume](#named-volumes) (expensive to move). A job that mounts a volume cannot also set
+`reuse: true`; apply rejects the combination.
 
 ---
 
@@ -335,11 +350,139 @@ spec:
 
 | Configuration | Behavior |
 |---------------|----------|
-| `workspace` not set | `emptyDir` (temporary, deleted when the Pod is deleted) |
-| `pvc.storageClassName` set | An ephemeral PVC is created and deleted automatically |
-| `pvc.claimName` set | An existing PVC is mounted (combine with `reuse: true` for persistent cache) |
+| `workspace` not set, or only `mountPath` set | `emptyDir` (empty when the run starts, deleted when the Pod is deleted) |
+| `spec.volumes` names a volume at `mountPath: "."` | That volume's PVC *is* the workspace and persists between runs |
+| `spec.volumes` names a volume at any other path | The workspace stays an `emptyDir`; the PVC appears at that path |
 
 All containers in the Pod mount the same path (`mountPath`), so files are shared between containers.
+
+The workspace is **always ephemeral** unless a named volume replaces it, on this agent and on the
+standard agent alike. The `pvc` block that an earlier release accepted under `workspace` (a persistent claim or a
+per-Pod ephemeral one) has been removed; a job or agent config that still carries it is rejected. See the [migration
+guide](migrations/2026-10-20-named-volumes.md).
+
+> **A `podTemplate.workspace.mountPath` on its own is silently ignored on this agent.** The
+> `workspace` block is read only from a template the Pod is actually built from: a named agent
+> template, or an inline `podTemplate` that carries a `spec`. A job whose `podTemplate` sets *only*
+> `workspace.mountPath`, with neither `name` nor `spec`, keeps `/workspace`. (The standard agent
+> honors it, so the same job can behave differently.) Give the `podTemplate` a `name` or a `spec`
+> whenever you set a mount path. Apply-time validation would be better and is a known follow-up.
+
+---
+
+## Named volumes
+
+A k8s-agent's Pod workspace is an `emptyDir`: it is empty when the run starts and dies with the
+Pod. The only thing that survives between runs is a **named volume**, which the agent owns as a
+PVC and a job mounts by name with `spec.volumes`. The job-author view is [Volumes: Keeping Data
+Between Runs](../user-guide/writing-jobs/volumes.md); the host-agent equivalent is [Named
+volumes](agents.md#named-volumes). This section is the Kubernetes specifics.
+
+```yaml
+# k8s-agent-config.yaml
+agentName: ci-main            # required when `volumes` is set
+volumes:
+  - name: unity-main          # a DNS label
+    mode: exclusive           # ReadWriteOnce
+    size: 200Gi               # required on Kubernetes
+    storageClassName: gp3     # optional; unset means the cluster default
+  - name: go-cache
+    mode: shared              # ReadWriteMany: needs an RWX StorageClass
+    size: 50Gi
+```
+
+**`agentName`.** The PVCs are named `<agentName>-<volume>` (`ci-main-unity-main`). It is a separate
+field, not the agent ID, because the enrolled ID is `k8s:<cluster>:<namespace>:<pod UID>`: it
+contains colons a claim name cannot, and it changes on every restart, so a prefix derived from it
+would provision a fresh, empty PVC on each restart and leave the last one behind. Replicas of one
+Deployment share a config and so share one set of PVCs. Two k8s-agents in one namespace need two
+different `agentName`s. **Never change `agentName` while the volumes hold data**: the new name
+provisions new, empty PVCs and leaves the old ones behind, still holding your data and still
+costing money.
+
+**Volume names must be DNS labels.** Lower-case letters, digits and `-`, and `<agentName>-<volume>`
+must be at most 63 characters. A name that is legal on a host agent (which accepts almost any
+single path segment) can therefore be illegal here, and the agent refuses to start with an error
+naming the volume. A job that mounts such a volume on both agent types should use lower-case
+DNS-label names throughout.
+
+**PVC lifecycle.**
+
+- The agent creates a missing PVC at startup with the configured `size`, the access mode implied
+  by `mode`, and the `storageClassName` **only if you set one**; left unset, the PVC requests the
+  cluster's default StorageClass rather than the empty class that means "no StorageClass".
+- It **never resizes or deletes** one. If an existing PVC's size or access mode differs from the
+  config it logs a warning and leaves the PVC alone; expand it through your StorageClass, or delete
+  and recreate it yourself.
+- A volume dropped from the config stops being advertised and its PVC stays, logged as an orphan.
+  Removing a line from a config file must not destroy tens of gigabytes.
+
+**Exclusion across replicas.** `mode: exclusive` is not left to the `ReadWriteOnce` access mode,
+which is a *node*-level constraint and says nothing about two Pods on one node. Instead the agent
+takes a lock on the PVC itself: a run writes its ID to the PVC's `unified-cd/volume-held-by`
+annotation before its Pod is created and clears it when the Pod has been deleted. Occupancy is read
+from the live Pods that mount each PVC, so it is correct across replicas and across an agent
+restart. A run that finds its volume held waits, holding its concurrency slot, with
+`waiting for volumes [[...]], which another run is using` in its log.
+
+> **A crashed holder blocks its exclusive volume for up to about three minutes.** A lock whose run
+> has no live Pod is taken over only after the two-minute grace that protects a lock whose Pod is
+> still being created, plus the Pod garbage-collection cadence. It clears itself. See [A volume
+> stays held after its run
+> crashed](../troubleshooting/steps-and-execution.md#a-volume-stays-held-after-its-run-crashed).
+
+**`mode: shared`** requests `ReadWriteMany`, which binds only on a StorageClass that supports RWX.
+In practice that means a network filesystem (NFS, CephFS, EFS, Azure Files, Longhorn), which is slow
+for many-small-file workloads such as a Go module cache or a Unity `Library/`. Where RWX is not
+available, or is too slow, declare several `exclusive` volumes instead and let jobs list them as
+candidates (`name: [go-cache-1, go-cache-2, go-cache-3]` with `as:`): the agent picks a free one
+and you get the same parallelism without RWX. A `shared` volume cannot be mounted at the workspace
+root. If RWX is unavailable the PVC stays `Pending` and a run fails after `podStartTimeout`; see
+[A shared volume never binds](../troubleshooting/steps-and-execution.md#a-shared-volume-never-binds-rwx-unavailable).
+
+**A freshly provisioned PVC is usually root-owned**, so a container that runs as a non-root user
+cannot write to it. Give the job's Pod a `securityContext.fsGroup` that matches the container's
+group, in its `podTemplate`:
+
+```yaml
+podTemplate:
+  spec:
+    securityContext:
+      fsGroup: 1000
+    containers:
+      - name: job
+        image: my-builder:latest
+        securityContext:
+          runAsUser: 1000
+```
+
+(`securityContext` is Kubernetes-only, so such a job is pinned to a Kubernetes agent.)
+
+**Mounting.** A volume is mounted at its `mountPath` in **every** container of the Pod, including
+the `unified-artifact` sidecar, so artifact and cache paths inside a volume work and an archive of
+an ancestor path excludes the volume (see [Artifacts and Cache](#artifacts-and-cache)). A scoped
+(`runsIn.image`) step runs in its own container that mounts none. `podTemplate.reuse: true` cannot
+be combined with `spec.volumes`: a pooled Pod keeps the volumes it was created with, and apply
+rejects the combination.
+
+**Creating the Pod is bounded.** For a volume-bearing run the agent gives each Pod create at most a
+quarter of the two-minute lock grace (30 seconds). A create that times out, or that finds the
+previous attempt's Pod still terminating, releases the run's locks and is retried; after **five**
+failed attempts in a row the run fails with `k8s: creating the run's pod did not complete 5 times in
+a row; giving up. Last attempt: ...`. Each retry is logged on the run as `creating the run's pod did
+not complete (attempt N of 5: ...); its volume locks were released and it will try again`. A cluster
+that is merely slow costs a run time; one that never answers does not hold the run and its slot
+forever.
+
+**Roll the Role before the image.** With `volumes` configured the agent reads, lists, creates and
+updates PVCs at startup and when it takes a lock. The Role needs `get`, `list`, `create` and
+`update` on `persistentvolumeclaims`; the Role shipped before named volumes had only `create` and
+`delete`, so a new agent against an old Role fails at startup with a `forbidden` error. See [RBAC
+example](#rbac-example). It never deletes a volume's PVC itself.
+
+A run still waiting for its volumes when the agent starts draining is failed with `k8s: run
+abandoned: the agent is draining and the run was still waiting for its volumes ...` instead of
+holding up the drain.
 
 ---
 
@@ -536,6 +679,15 @@ Both print `dev` unless the image was built from a release tag, and nothing
 compares them automatically — this is an operator check, not an enforced
 constraint.
 
+**What skew costs now.** When a job archives an *ancestor* of a named volume's mount point (`path:
+.`, say), the agent passes the sidecar one `--exclude <path>` per volume, so the volume's contents
+stay out of the archive; the flag exists on `artifact upload`, `cache save` and `cache restore`. The
+agent adds it **only** in that case, so an older sidecar image that does not know the flag works
+for every other job and exits 2 (`flag provided but not defined: -exclude`) for this one: the
+artifact upload fails, and the cache reads as "not restored". Roll the sidecar image and the
+agent together. See [the troubleshooting
+entry](../troubleshooting/artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude).
+
 ### S3 credentials (required)
 
 This section describes the default (`sidecarS3SecretMode: env`, and `file`,
@@ -689,7 +841,16 @@ This is comparable to how most CI systems hand artifact/cache sidecars static bu
 
 ## RBAC example
 
-Minimum permissions required for k8s-agent to operate:
+Minimum permissions required for k8s-agent to operate. `manifests/base/k8s-agent/rbac.yaml` ships
+a Role that is a superset of this one (it adds `update` and `patch` on Pods, which `podTemplate.reuse`
+needs to mark a finished Pod idle; without them reuse silently never happens).
+
+**When you add `volumes` to an agent, roll the Role first and the agent image second.** The agent
+reads, lists and creates its PVCs at startup and updates them to take and release an exclusive
+volume's lock. The Role that shipped before named volumes granted only `create` and `delete` on
+`persistentvolumeclaims`, so an agent started against it fails immediately with a `forbidden`
+error on `get`. The agent never deletes a volume's PVC itself. The `persistentvolumeclaims` rule
+below is needed only when the agent config declares `volumes`.
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1

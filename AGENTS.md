@@ -98,10 +98,15 @@ When writing paths in plans, specs, or documentation, use generic placeholders i
 ## Development
 
 ```bash
-docker compose -f docker-compose.dev.yaml up -d   # start PostgreSQL
-make build                                         # build all binaries
-make test                                          # full test suite (requires Docker)
-make test-short                                    # skip integration tests
-make dev-go                                        # hot-reload controller (requires air)
-make dev-ui                                        # Vite dev server for the UI
+docker compose up -d postgres   # PostgreSQL for running the controller by hand (docker-compose.yaml)
+make build                      # build all binaries
+make test                       # full test suite (requires Docker)
+make test-short                 # skip integration tests
+make dev-go                     # hot-reload controller (requires air)
+make dev-ui                     # Vite dev server for the UI
 ```
+
+The tests do **not** need the compose stack: the store's integration tests call `NewTestPostgres`
+(`internal/store/testutil.go`), which starts its own PostgreSQL container, so a running Docker
+daemon is the only requirement. `docker compose up -d postgres` is only for running the controller
+yourself against a database.

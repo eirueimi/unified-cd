@@ -77,29 +77,46 @@ cannot honor that (`internal/k8sagent/agent.go`).
 Route `native: true` jobs away from k8s-agents (and toward host agents with the tools the job
 needs) via `agentSelector`.
 
-### Workspace cleaning warnings after a job flips native ↔ isolated
+### Run fails with `prepare workspace failed: clean workspace ...`
 
 **Symptom**
 
-The agent log shows `workspace clean failed; retrying via cleanup container` and/or `cleanup
-container failed; proceeding with dirty workspace`, often right after a job's `native: true` was
-added or removed.
+A run fails before its first step, and the run's own log (and the agent log) carries:
+
+```
+prepare workspace failed: clean workspace /data/ws/working0/my-job: ... (cleanup container: ...)
+```
+
+with a preceding agent-log WARN `workspace clean failed; retrying via cleanup container`. On the
+Kubernetes agent, a run on a **reused** Pod (`podTemplate.reuse: true`) fails with:
+
+```
+k8s: could not clear the reused Pod's workspace: ...
+```
 
 **Cause**
 
-Each per-job workspace directory carries a `.ucd-mode` marker recording whether the job last ran
-native or isolated; when a job's mode flips, the agent resets the directory before the next claim
-(`internal/agent/workspace.go`). This is also where root-owned leftovers can appear: containers
-created by **rootful docker** write files as root inside the bind-mounted workspace, which the
-agent's own process can't remove. The agent retries via a throwaway root cleanup container; if
-that also fails, it **WARNs** and proceeds with whatever is left rather than failing the run.
+Every ordinary workspace is emptied before every run, so a run never starts on another run's
+files. When emptying fails the run fails too: it used to warn and proceed on the dirty directory.
+The usual cause is **root-owned files** that a rootful docker container wrote into the
+bind-mounted workspace, which the (usually non-root) agent process cannot remove. The agent retries
+through a throwaway root cleanup container (a `busybox` container with the directory mounted), and
+the run fails only if that also fails (no container runtime reachable, the image cannot be pulled,
+the directory is on a filesystem the container cannot see). A reused Kubernetes Pod whose
+workspace cannot be cleared is deleted rather than returned to the pool.
+
+(The `.ucd-mode` marker file that earlier agents kept in every workspace, and the reset of the
+directory when a job flipped between `native` and isolated, no longer exist for ordinary
+workspaces. A volume used as the workspace is different: see [Run fails: volume was last used by
+a native/isolated run](#run-fails-volume-was-last-used-by-a-nativeisolated-run).)
 
 **Fix**
 
-- Run **rootless podman** on the agent host — the container's root maps to the agent's own user,
-  so root-owned leftovers don't occur in the first place.
-- If you see the WARN with rootful docker, manually clean the affected per-job workspace
-  directory with elevated permissions — see [Workspace lifecycle](../operator-manual/agents.md#workspace-lifecycle).
+- Run **rootless podman** on the agent host: the container's root maps to the agent's own user, so
+  root-owned leftovers don't occur in the first place.
+- With rootful docker, delete the affected `working<N>/<job>` directory by hand with elevated
+  permissions and re-trigger the run, and make sure the agent host can pull `busybox` or has it
+  cached. See [Workspace lifecycle](../operator-manual/agents.md#workspace-lifecycle).
 
 ### Stray `ucd-sh pause` containers on an agent host after an agent crash
 
@@ -126,6 +143,222 @@ Treat this as routine hygiene: periodically prune claim-pod-shaped containers on
 itself.
 
 ---
+
+## A run waits for a volume another run holds
+
+**Symptom**
+
+A run that mounts a [named volume](../user-guide/writing-jobs/volumes.md) is claimed but runs no
+steps. Its own log (the run-level "System" stream) has one line, and the agent holds the run in a
+concurrency slot until it ends:
+
+```
+waiting for volumes ["unity-main"] and paths [], which another run on this agent is using
+```
+
+On a Kubernetes agent the line is:
+
+```
+waiting for volumes [["unity-main"]], which another run is using
+```
+
+**Cause**
+
+An `exclusive` volume is held by one run at a time, and a native job's absolute `mountPath` is held
+agent-wide, whatever the volume's mode. The controller avoids handing an agent a run for a volume it
+reports busy, but it cannot be exact, so a claimed run can still wait: it holds a slot, and nothing
+is wrong. It starts when the holder ends. Cancelling the waiting run frees its slot; so does the
+agent draining, which fails the waiting run with `run abandoned: the agent is draining and the run
+was still waiting for its volumes`.
+
+**Fix**
+
+- Wait, or add copies: declare several volumes and list them as candidates in the job
+  (`name: [go-cache-1, go-cache-2]` with `as:`), so concurrent runs each get a free one.
+- If the volume is only a cache, declare it `shared`.
+- A native run with an **absolute** `mountPath` waits for the path even when copies are free:
+  candidate lists help a native run only for relative mount paths.
+
+## A volume stays held after its run crashed
+
+**Symptom**
+
+On a Kubernetes agent, runs that mount an `exclusive` volume log `waiting for volumes [[...]], which
+another run is using` for a few minutes after the run that held it crashed or its Pod was deleted,
+and then proceed on their own. The PVC carries the annotation `unified-cd/volume-held-by: <run id>`.
+
+**Cause**
+
+The holder's run ID is recorded on the PVC before its Pod is created and cleared once the Pod has
+been deleted. A holder that dies without clearing it blocks the volume until the lock is judged
+stale: the lock is taken over once its run has **no live Pod**, which takes the two-minute grace
+that protects a lock whose Pod is still being created plus the Pod garbage-collection cadence.
+**Expect up to about three minutes.**
+
+**Fix**
+
+Nothing: it clears itself. Do not remove the annotation by hand while a Pod of that run still
+exists. The takeover is logged as `k8s: taking over a volume lock whose run has no live pod`.
+
+## Run fails: volume was last used by a native/isolated run
+
+**Symptom**
+
+A run that uses a volume as its workspace (`mountPath: "."`) on a host agent fails with:
+
+```
+prepare workspace failed: volume "unity-main" was last used by a native run and this run is isolated: the agent will not reset a volume itself, because that would delete its contents. To keep the data, run the job as native again. To wipe the volume once and continue as isolated, set spec.cleanWorkspace: true on the job. The agent records the mode in <wsBase>/.ucd-volume-modes/unity-main; deleting that file also lets the run proceed without wiping
+```
+
+**Cause**
+
+The agent records, in its own state directory and never inside the volume, whether each
+workspace volume was last used by a `native` or an isolated run. Ordinary workspaces are simply
+recreated; a volume is never reset by the agent because that would delete up to tens of
+gigabytes. So a mode flip fails the run and names the three ways out.
+
+**Fix**
+
+- Run the job in the mode the volume was last used in (undo the `spec.native` change), or
+- set `spec.cleanWorkspace: true` for **one** run to wipe the volume and continue in the new mode,
+  then remove it (leaving it set wipes the volume on every run), or
+- delete the marker file named in the message, to adopt the volume as it is. Do this when you know
+  the contents are compatible with the new mode; a rootful container leaves root-owned files that
+  break a later native run.
+
+## Run fails: `already exists and was not created by this agent as a volume link`
+
+**Symptom**
+
+A `native: true` run fails before its first step:
+
+```
+volume mount failed: /home/ci/.cache/go already exists and was not created by this agent as a volume link, so it will not be replaced; remove or rename it, or choose a different mountPath
+```
+
+**Cause**
+
+On a native run a volume is realised as a symlink, and an *absolute* `mountPath` is a symlink at
+that host path. unified-cd never moves or deletes what it did not create, so if a real file or
+directory sits there (for example the toolchain's own cache directory from before you mounted a
+volume there) the run fails instead of replacing it. A stale link of the agent's own is
+replaced silently; this message means the path holds something else.
+
+**Fix**
+
+Remove or rename the existing path on the agent host, or mount the volume at a different
+`mountPath` (a relative one lives inside the workspace and cannot collide with anything).
+
+## Run fails: `cannot link ... on Windows`
+
+**Symptom**
+
+A `native: true` run on a Windows agent fails:
+
+```
+volume mount failed: cannot link <link> to <target> on Windows: creating a symlink failed (...; it needs administrator rights or Developer Mode) and so did creating a directory junction (...; it needs an NTFS volume and a path without cmd.exe metacharacters)
+```
+
+**Cause**
+
+A native volume mount is a symlink. On Windows, creating one needs administrator rights or
+Developer Mode; the agent falls back to a directory junction, which needs an NTFS volume and a
+path with no `cmd.exe` metacharacters (such as `&`, `^`, `%`). Both failed.
+
+**Fix**
+
+Enable Developer Mode (or run the agent with the symlink privilege), or put the volume's `path`
+and the workspace on an NTFS volume and rename any directory containing a metacharacter. The error
+carries both underlying causes; read them.
+
+## Run fails: volume is shared and cannot be mounted at the workspace root
+
+**Symptom**
+
+```
+spec.volumes[0]: volume "go-cache" is shared and cannot be mounted at the workspace root (mountPath "."): several runs would work in one checkout with no exclusion. Declare it exclusive in the agent config, or mount it at a subdirectory
+```
+
+(prefixed `volume mount failed: ` on a host agent, `k8s: ` on the Kubernetes agent).
+
+**Cause**
+
+`mode` lives in the agent's config, so apply cannot know it; the same job YAML is valid against an
+agent that declares the volume `exclusive`. Several runs sharing one working tree would overwrite
+each other.
+
+**Fix**
+
+Declare the volume `exclusive` in the agent's config and restart the agent, or mount it at a
+subdirectory (`mountPath: .ucd-cache/go`), or route the job to an agent that declares it
+exclusive.
+
+## A shared volume never binds (RWX unavailable)
+
+**Symptom**
+
+On a Kubernetes agent, a run that mounts a `mode: shared` volume fails after the pod start
+timeout (default 5 minutes):
+
+```
+k8s: run pod did not become ready: waiting for Pod ucd-run-... to become Running: context deadline exceeded ...
+```
+
+and the volume's PVC (`<agentName>-<volume>`) is stuck `Pending`.
+
+**Cause**
+
+`mode: shared` requests a `ReadWriteMany` PVC, which only binds on a StorageClass that supports
+RWX: in practice a network filesystem (NFS, CephFS, EFS, Azure Files, Longhorn). The agent creates
+the PVC at startup regardless; the cluster cannot bind it, so every Pod that mounts it stays
+`Pending`.
+
+**Fix**
+
+- `kubectl -n <ns> describe pvc <agentName>-<volume>` shows the provisioner's reason.
+- Set `storageClassName` on the volume to an RWX-capable class. The agent **does not change an
+  existing PVC** (it logs a mismatch warning): delete the Pending PVC, then restart the agent so it
+  is recreated.
+- Or declare several `exclusive` volumes and list them as candidates in the job; the agent picks a
+  free one. That gives the same parallelism without RWX, and a local-disk StorageClass is faster
+  than a network filesystem for a Go module cache or a Unity `Library/`.
+
+## Permission denied writing to a volume on Kubernetes
+
+**Symptom**
+
+On a Kubernetes agent, a step whose container runs as a non-root user fails writing into a mounted
+volume, while the same job works on a host agent:
+
+```
+mkdir: cannot create directory '/workspace/.ucd-cache/go/build': Permission denied
+```
+
+**Cause**
+
+A freshly provisioned PVC is usually owned by root, and many storage provisioners do not change
+that. A container that runs as a non-root user cannot write to it. (On a host agent the volume is a
+directory the agent user created, so it does not arise.)
+
+**Fix**
+
+Set `securityContext.fsGroup` in the job's `podTemplate.spec` (or the agent's named template) to the
+container user's group, so Kubernetes makes the volume group-writable when it mounts it:
+
+```yaml
+podTemplate:
+  spec:
+    securityContext:
+      fsGroup: 1000
+    containers:
+      - name: job
+        image: my-builder:latest
+        securityContext:
+          runAsUser: 1000
+```
+
+`securityContext` is a Kubernetes-only field, so a job that sets it is pinned to a Kubernetes
+agent.
 
 ## Conditional step ran when it shouldn't
 

@@ -70,7 +70,7 @@ misses outright. This project's own docs use exactly that flow style (see
 `valueFrom: { secretKeyRef: ... }` in the [HA
 guide](../high-availability.md)), so treat it as something your job authors
 plausibly do too. The unanchored pattern does not pick up `storageRequest:`
-(`workspace.pvc.storageRequest` is a different field, and the substring
+(`storageRequest:` is a different key, and the substring
 doesn't match — `requests:` needs the trailing `s`), so it stays clean
 against this repo's own `examples/` and `docs/`.
 

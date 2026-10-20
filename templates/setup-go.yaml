@@ -7,15 +7,22 @@
 # ($HOME/.config/go/env). That only carries over to subsequent jobs on a
 # `native: true` job — a native job's $HOME is the agent host's own user
 # environment, shared across runs. In an isolated job (the default), the
-# primary container's $HOME is fresh per run; only the per-job workspace
-# directory persists across runs of the same job, which is why the cache
-# steps below key off `working_dir` rather than relying on `go env -w`
-# to survive between runs.
+# primary container's $HOME is fresh per run, and so is the workspace: it is
+# empty at the start of every run and discarded at the end, on every agent.
+# That is why the cache steps below restore the caches into `working_dir`
+# from the cache store on every run, rather than relying on `go env -w` or on
+# files surviving between runs.
 #
 # cache: since a cache step can only specify a single path, this is split
 # into two cache steps, one for GOMODCACHE and one for GOCACHE.
 # Because path expands template expressions, it can point directly at the
 # cache directories under working_dir (created by configure_go_env).
+#
+# Tarring a very large cache through the cache store on every run can cost
+# more than it saves. In that case mount an agent-owned named volume
+# (spec.volumes in the calling job) and point GOCACHE/GOMODCACHE at
+# $UNIFIED_VOLUME_<ALIAS> instead of using this template; see
+# docs/user-guide/writing-jobs/volumes.md.
 #
 # When referencing as a git:// template:
 #   job: git://github.com/your-org/ci-templates/setup-go.yaml@v1

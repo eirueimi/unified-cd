@@ -300,10 +300,12 @@ match — both must pass. In practice this means:
 - A `podTemplate` job that only Kubernetes can satisfy (a named template, an
   `override` patch, `resources.requests`, an unqualified `resources.limits`
   key, a non-literal `env` entry, etc.) is only claimed by a Kubernetes
-  agent. A PVC-backed `workspace` is **not** one of these — the standard
-  agent degrades it to a per-claim bind mount by design, so it does not by
-  itself force Kubernetes; see [Kubernetes Pod
+  agent. `podTemplate.workspace.mountPath` and `reuse` are **not** among
+  them — the standard agent honors the mount path and treats `reuse` as a
+  hint, so neither forces Kubernetes; see [Kubernetes Pod
   Template](../user-guide/writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate).
+  (The `pvc` block under `workspace` that an earlier release also accepted has been removed;
+  persistence is now a [named volume](#named-volumes).)
 - A `podTemplate` job built entirely from features the standard agent's claim
   pod already supports in full (plain `name`/`image` containers, literal
   `env` values, `resources.limits` restricted to `cpu`/`memory` as strings)
@@ -312,6 +314,18 @@ match — both must pass. In practice this means:
 This is automatic — you don't need to hand-write an `agentSelector` just to
 keep native jobs off Kubernetes or podTemplate jobs off the standard agent
 the way earlier releases required.
+
+**Volumes add a further condition.** A job that mounts [named
+volumes](#named-volumes) (`spec.volumes`) is claimed only by an agent that
+declares at least one candidate name for every entry, in addition to the
+capability and label checks. That is not a capability string: the agent
+advertises its volume names separately, as the `volumes` field of its
+registration, which the controller matches against each run's
+(template-expanded) volume names when the run is queued. Unlike capabilities
+there is no legacy "report nothing, match anything" case: an agent that
+declares no volumes covers none. A job naming a volume no suitable agent
+declares stays `Queued` (see [Job stays Queued: no agent declares
+volume](../troubleshooting/runs-and-scheduling.md#job-stays-queued-no-agent-declares-volume)).
 
 **Legacy agents** (an agent binary from before capability routing, or a
 freshly-registered agent that reports no `capabilities` at all) are treated
@@ -633,6 +647,14 @@ not the primary control.
 
 ## Workspace lifecycle
 
+A job's workspace is **ephemeral**: it is empty when a run starts and is removed when the run ends,
+for `native: true` and isolated jobs alike, and the Kubernetes agent behaves the same way (a Pod's
+workspace is an `emptyDir`, and a reused Pod's is emptied before every run). The only thing that
+survives from one run to the next is a [named volume](#named-volumes) a job mounts. See
+[Volumes](../user-guide/writing-jobs/volumes.md) for the job-author view and the [migration
+guide](migrations/2026-10-20-named-volumes.md) if you are coming from an earlier release, where a
+host agent kept `working<N>/<job>` between runs.
+
 Each concurrency slot owns one slot directory:
 `<workspace-dir>/working<N>`. When no override is supplied, `workspace-dir`
 is the agent's startup working directory; override it with `--workspace-dir`,
@@ -648,73 +670,146 @@ The default also places `.ucd-tools` and, for detached runs, `detached`
 directly beneath the startup directory; cleanup never removes that base
 directory or unrelated direct children.
 
-`N` ranges from `0` to `--max-concurrent - 1`; each slot's claim loop always
-uses the same `working<N>/<job>` directory for every run of that job, so
-concurrent slots never share a directory, and — because the subdirectory is
-per-job — two different jobs sharing a slot over time never mix files either
-(this also closes the pre-isolation cross-job file mixing within a slot).
+`N` ranges from `0` to `--max-concurrent - 1`; each slot's claim loop uses
+`working<N>/<job>`, so concurrent slots never share a directory, and two
+different jobs sharing a slot over time never mix files either. A directory
+is a *place to work*, not a place to keep things: which slot a run lands in
+says nothing about what it will find there.
 
-**Workspaces are reused (carry over) across runs of the same job.** This is
-the default and is unchanged by job isolation: files from a job's previous
-run remain in its per-job directory unless cleaned. Two knobs control
-cleaning, and they OR together (either one triggers a clean at claim start):
+**The agent cleans the workspace on both sides of every run.**
 
-- **Agent-level `--clean-workspace`** (`UNIFIED_AGENT_WORKSPACE_DIR` sibling
-  flag) — wipes every job's directory on every claim, agent-wide.
-- **Job-level `podTemplate.cleanWorkspace: true`** — wipes only that job's
-  directory, on every claim of that job, on **both** agents (the host agent
-  now honors the same per-job knob the k8s-agent pool already did).
+- **Before the run** it removes the directory and recreates it empty. This is the guarantee: a run
+  starts empty even if the agent died mid-run last time. If the directory cannot be emptied the
+  **run fails** (`prepare workspace failed: clean workspace ...`) instead of starting on another
+  run's files; earlier releases warned and proceeded.
+- **After the run** it sweeps the directory again, so a run's output does not hold disk until that
+  job's next run. This half is best-effort: a failure is a warning in the agent log
+  (`workspace sweep after the run failed; the next run cleans it before starting`) and changes
+  nothing about the run, because the before-run clean is the guarantee.
 
-If your jobs write credentials or other secrets to disk and you don't use
-either cleaning knob, delete them in a `finally:` step — otherwise later runs
-of the same job (or, without per-job isolation this no longer applies across
-*different* jobs) can still read files left in a stale carry-over directory.
+Because of that, a job that writes credentials or other secrets to disk no longer exposes them to
+the next run of the same job: the next run starts on an empty directory. A **volume** is the
+exception, and does persist whatever is written to it; treat a volume's contents as long-lived.
 
-> **Security note:** because workspaces persist by default, secrets written
-> to disk by one Run of a job are readable by a later Run of **that same
-> job** claimed into the same slot, unless cleaning is enabled. Per-job
-> directories mean this no longer crosses job boundaries.
+Two knobs concern cleaning, and neither is needed for an ordinary workspace:
 
-**Mode marker (`.ucd-mode`).** Each per-job directory carries a
-`.ucd-mode` file recording whether the job last ran `native` or isolated. If
-a job's definition flips modes between runs (e.g. `native: true` added or
-removed), the directory is reset before the next claim — this closes the one
-remaining root-ownership leftover hole described below.
+- **Agent-level `--clean-workspace` (and the `cleanWorkspace:` config key) does nothing.** Every
+  ordinary workspace is already cleaned unconditionally, and the flag never wipes a volume. It is
+  kept only so existing agent configs and unit files still start; remove it when convenient.
+- **Job-level `spec.cleanWorkspace: true` / `podTemplate.cleanWorkspace: true`** wipe a *volume*
+  that serves as the job's workspace (a volume mounted at `"."`). They are the only deliberate way
+  unified-cd empties a volume. They change nothing for a job with no volume at the workspace root.
+  The two spellings are ORed; `spec.cleanWorkspace` exists because a `native: true` job cannot set
+  `podTemplate`. See [Wiping a volume](../user-guide/writing-jobs/volumes.md#wiping-a-volume-cleanworkspace).
+
+**Mode marker.** Ordinary workspaces no longer carry a `.ucd-mode` marker file, and a job that flips
+between `native` and isolated simply gets a fresh directory like any other run. A workspace that
+*is* a volume keeps its marker **outside** the volume, in `<workspace-dir>/.ucd-volume-modes/<volume>`,
+so nothing the agent writes appears in the volume's contents. A flip on such a volume **fails the
+run** rather than resetting the directory, because a reset would delete the volume.
 
 **Root-owned files (Linux, rootful docker).** Containers created by rootful
 docker write as root inside the bind-mounted workspace; the agent process
 (usually non-root) can then fail to clean or overwrite those files
-(`EPERM`). When a plain `os.RemoveAll` clean fails this way, the agent falls
-back to a throwaway root cleanup container (`<runtime> run --rm -v
-<workDir>:/w busybox rm -rf /w/. ...`) before recreating the directory; if
-that also fails, it WARNs and proceeds with whatever is left (the previous,
-pre-isolation behavior). **Recommended fix: run rootless podman.** With
-rootless podman, the container's root maps to the agent's own user, so this
-class of problem does not occur in the first place — it is the first-choice
-deployment for Linux hosts running isolated jobs.
+(`EPERM`). When a plain removal fails this way, the agent falls back to a
+throwaway root cleanup container (a `busybox` container with the directory
+mounted) before recreating the directory. If that also fails, **the run
+fails**. **Recommended fix: run rootless podman.** With rootless podman, the
+container's root maps to the agent's own user, so this class of problem does
+not occur in the first place — it is the first-choice deployment for Linux
+hosts running isolated jobs. The same applies to a volume wiped with
+`cleanWorkspace`, and a volume's contents are owned by root when a rootful
+runtime wrote them, which an operator reclaiming the directory by hand will
+need root for.
 
-**Disk usage is an operator responsibility.** Per-job directories accumulate
-under each `working<N>/` over time (one subdirectory per distinct job name
-ever run in that slot); there is no automatic workspace GC. Include
-`wsBase` in your normal disk-usage monitoring/cleanup.
+**Disk usage.** Ordinary workspaces no longer accumulate: each is removed after its run. What can
+be left behind is a directory from a run whose agent crashed before the sweep; the opt-in
+[`workspaceRetentionDays`](operations.md#workspace-and-claim-container-hygiene) GC reclaims those.
+The thing to monitor now is each [named volume](#named-volumes)'s directory, which grows without
+bound and is never swept.
 
 **macOS/Windows file-sharing requirement.** For isolated jobs, `wsBase` (the
 `--workspace-dir` root) must live under a path the container runtime's file
 sharing exposes to containers — e.g. under `/Users` for Docker Desktop on
 macOS, or an equivalent shared drive on Windows. A `wsBase` outside the
-runtime's shared paths will fail to bind-mount into the claim pod.
-
-`--clean-workspace` removes and recreates a job's directory at claim time
-(right before a Run starts executing in that slot), not at agent startup —
-so the very first Run of a job after the agent starts still runs against
-whatever was left in the directory from before, unless it was cleaned by a
-previous claim.
+runtime's shared paths will fail to bind-mount into the claim pod. A volume's `path` is bind-mounted
+into the claim pod as well, so the same rule applies to it.
 
 Every `run:` step also receives `UNIFIED_AGENT_OS` (Go's `runtime.GOOS` on
 the host for a `native: true` job, but `linux` for an isolated job or a
 `uses:` scope regardless of host OS) in its environment, in addition to the
 workspace directory as its cwd — see [UNIFIED_AGENT_OS environment
 variable](#unified_agent_os-environment-variable) above.
+
+---
+
+## Named volumes
+
+A **named volume** is persistent storage that an *agent* owns and a job mounts by name. It is the
+only way data survives between runs, and the operator controls it: the job says only which volume
+and where it appears, never how large it is or where it lives. The job-author view is in
+[Volumes: Keeping Data Between Runs](../user-guide/writing-jobs/volumes.md); this section is the
+operator's side for the **standard (host) agent**. For the Kubernetes agent see [Named volumes on
+Kubernetes](kubernetes-integration.md#named-volumes).
+
+Declare volumes in the agent's **config file**. The list is file-only: it has no command-line flag
+and no environment variable.
+
+```yaml
+# unified-agent.yaml
+volumes:
+  - name: unity-main
+    mode: exclusive
+    path: /var/lib/unified-cd/volumes/unity-main   # optional
+    size: 200Gi                                    # advisory
+  - name: go-cache
+    mode: shared
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | Yes | What jobs call it. One path segment: `.`, `..` and names containing `/` or `\` are rejected. Names are matched exactly. |
+| `mode` | Yes | `exclusive`: at most one run on this agent holds the volume at a time. `shared`: any number of runs may hold it, with **no** write-safety guarantee from unified-cd. |
+| `path` | No | Absolute host directory backing the volume. Defaults to `<workspaceDir>/volumes/<name>`. Created at startup if absent. |
+| `size` | No | Advisory capacity such as `200Gi`. After each run the agent measures the volume and warns when it exceeds this; it **never enforces** it, because per-directory quotas are not portable across operating systems without root. |
+| `storageClassName` | — | Kubernetes only; ignored on a host agent. |
+
+The agent refuses to start (`volume "<name>": ...`) on a bad entry: a missing or unknown `mode`, a
+duplicate `name`, a relative `path`, a non-positive `size`, or two volumes whose paths overlap.
+**A `path` may not be, contain or sit under** the workspace directory's `working*` entries (which
+the workspace GC sweeps), the `detached` directory, or any dot-prefixed entry of the workspace
+directory (agent tooling). That is enforced rather than left to the spelling of the GC's glob: a
+volume deleted for going unused past `workspaceRetentionDays` would destroy exactly the data
+declared in order to keep it. The workspace GC never touches a volume.
+
+**How routing works.** The agent advertises its volume names at registration (the `volumes` field
+of `GET /api/v1/agents`). A run that mounts volumes is routed only to an agent that declares at
+least one candidate for *every* entry. A volume that is declared but busy does not block routing:
+the run is claimed and waits for it, holding a concurrency slot (the controller's busy filter makes
+this rare, not impossible). When several agents declare the same name they hold **independent
+copies**; a run goes to any agent with a free one, and nothing prefers the agent that ran the job
+last.
+
+**Things to know.**
+
+- **Removing a volume from the config deletes nothing.** The agent stops advertising it and the
+  directory stays on disk. Removing a line from a config file must not destroy tens of gigabytes.
+- **Restart recovery.** A host agent treats every volume as free at startup (it lost the runs that
+  held them; the controller's lost-claim reconcile handles those runs) and sweeps any volume links a
+  crashed native run left behind.
+- **Native jobs reach a volume through a symlink** (a directory junction on Windows when a symlink
+  is not permitted), created before the run and removed after it. An absolute mount path is
+  therefore an agent-wide exclusive resource: two native runs cannot point the same host path at two
+  volumes. See [Mount paths](../user-guide/writing-jobs/volumes.md#mount-paths).
+- **Draining.** A run still waiting for a volume when the agent starts draining is failed with
+  `run abandoned: the agent is draining and the run was still waiting for its volumes`; a drain does
+  not wait out a holder that may run for tens of minutes.
+- **Usage warnings.** `volume usage exceeds its advisory size; the size is not enforced` is the
+  over-`size` warning. `volume usage could not be measured completely: some entries could not be
+  read, so the figure is a lower bound` means root-owned files (from a rootful runtime) hid part of
+  the tree.
+- **Hygiene is yours.** Nothing sweeps a volume. See [Operations: Named-Volume
+  Hygiene](operations.md#named-volume-hygiene).
 
 ---
 
@@ -759,6 +854,16 @@ a claim refresh `last_seen_at` and pick up newly-observed labels without
 clobbering richer data recorded at full registration time (e.g. the
 register-only `hostname:<h>` label — see [Automatic hostname
 label](#automatic-hostname-label)).
+
+The declared **volumes** follow a fifth rule of their own. Registration
+replaces the recorded list wholesale, so dropping a volume from the config
+and restarting the agent stops it being advertised. A claim writes the list
+**when it supplies one** and leaves the recorded list alone when it does not:
+an empty list on a claim means "not supplied", never "none", so a claim can
+never wipe what registration recorded. The reason the claim carries the list
+at all is that it can recreate an agent row the database lost (for example
+after a reset under a running agent), and a recreated row that forgot the
+volumes would stop routing volume jobs to an agent that still declares them.
 
 Independent of claim activity, the agent runs a background heartbeat loop
 that calls `POST /api/v1/agents/{id}/heartbeat` every 15s

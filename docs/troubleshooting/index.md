@@ -8,6 +8,7 @@ covers it.
 - [Run stays `Queued` forever](runs-and-scheduling.md#run-stays-queued-forever)
 - [Run failed with "no eligible agent available to claim it"](runs-and-scheduling.md#run-failed-with-no-eligible-agent-available-to-claim-it)
 - [Job stays Queued / unschedulable warning](runs-and-scheduling.md#job-stays-queued-unschedulable-warning)
+- [Job stays Queued: no agent declares volume](runs-and-scheduling.md#job-stays-queued-no-agent-declares-volume)
 - [Run marked `Failed` with "agent lost"](runs-and-scheduling.md#run-marked-failed-with-agent-lost)
 - [Run marked `Failed` by heartbeat reconcile after a lost claim](runs-and-scheduling.md#run-marked-failed-by-heartbeat-reconcile-after-a-lost-claim)
 - [Approve/reject returns 409 `run is already terminal` or `approval window has expired`](runs-and-scheduling.md#approvereject-returns-409-run-is-already-terminal-or-approval-window-has-expired)
@@ -20,6 +21,15 @@ covers it.
 - [A step's log shows `step panicked: ...`](steps-and-execution.md#a-steps-log-shows-step-panicked)
 - [A `finally` step fails with `context deadline exceeded` and the run is `Failed`](steps-and-execution.md#a-finally-step-fails-with-context-deadline-exceeded-and-the-run-is-failed)
 - [A cancelled run finished `Failed` instead of `Cancelled`](steps-and-execution.md#a-cancelled-run-finished-failed-instead-of-cancelled)
+- [Run fails with `prepare workspace failed: clean workspace ...`](steps-and-execution.md#run-fails-with-prepare-workspace-failed-clean-workspace)
+- [A run waits for a volume another run holds](steps-and-execution.md#a-run-waits-for-a-volume-another-run-holds)
+- [A volume stays held after its run crashed](steps-and-execution.md#a-volume-stays-held-after-its-run-crashed)
+- [Run fails: volume was last used by a native/isolated run](steps-and-execution.md#run-fails-volume-was-last-used-by-a-nativeisolated-run)
+- [Run fails: `already exists and was not created by this agent as a volume link`](steps-and-execution.md#run-fails-already-exists-and-was-not-created-by-this-agent-as-a-volume-link)
+- [Run fails: `cannot link ... on Windows`](steps-and-execution.md#run-fails-cannot-link-on-windows)
+- [Run fails: volume is shared and cannot be mounted at the workspace root](steps-and-execution.md#run-fails-volume-is-shared-and-cannot-be-mounted-at-the-workspace-root)
+- [A shared volume never binds (RWX unavailable)](steps-and-execution.md#a-shared-volume-never-binds-rwx-unavailable)
+- [Permission denied writing to a volume on Kubernetes](steps-and-execution.md#permission-denied-writing-to-a-volume-on-kubernetes)
 
 **Artifacts and Storage**
 
@@ -30,6 +40,8 @@ covers it.
 - [Artifact step fails `no such file`](artifacts-and-storage.md#artifact-step-fails-no-such-file)
 - [`artifact download` fails](artifacts-and-storage.md#artifact-download-fails)
 - [Step fails with `artifact/cache path ... escapes the workspace`](artifacts-and-storage.md#step-fails-with-artifactcache-path-escapes-the-workspace)
+- [An artifact or cache path leaves a volume's contents out](artifacts-and-storage.md#an-artifact-or-cache-path-leaves-a-volumes-contents-out)
+- [Artifact upload fails or a cache is never restored: `flag provided but not defined: -exclude`](artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude)
 
 **Templates and `uses`**
 
@@ -51,6 +63,8 @@ covers it.
 - [Agent requests fail with 403 `run <id> is claimed by another agent`](agents-and-enrollment.md#agent-requests-fail-with-403-run-id-is-claimed-by-another-agent)
 - [Every agent reports `"version": "dev"`](agents-and-enrollment.md#every-agent-reports-version-dev)
 - [Agent enrollment and credentials](agents-and-enrollment.md#agent-enrollment-and-credentials)
+- [An agent fails at startup with a `volume ...` configuration error](agents-and-enrollment.md#an-agent-fails-at-startup-with-a-volume-configuration-error)
+- [A Kubernetes agent fails at startup with `workspace.pvc was removed`](agents-and-enrollment.md#a-kubernetes-agent-fails-at-startup-with-workspacepvc-was-removed)
 
 **Controller and Database**
 

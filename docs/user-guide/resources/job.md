@@ -38,6 +38,16 @@ spec:
   timeoutMinutes: <number>
   native: <bool>                  # true = host-process job, no containers, host-agent only
                                    # (mutually exclusive with podTemplate and step container:)
+  cleanWorkspace: <bool>          # empty a volume mounted at the workspace root ("."), once, before
+                                   # this run; an ordinary workspace is always emptied (see Volumes)
+  volumes:                        # agent-owned named volumes to mount; the only data that survives
+                                   # between runs (see user-guide/writing-jobs/volumes.md)
+    - name: <string | [string]>   # a volume the AGENT declares; a list = candidates, the agent
+                                   # picks a free one; may contain {{ .Params.X }}
+      as: <string>                # handle steps use ($UNIFIED_VOLUME_<AS>); required for a list
+                                   # or a templated name, otherwise defaults to the name
+      mountPath: <string>         # "." = the workspace root; else relative to the workspace, or an
+                                   # absolute path outside it
   podTemplate:                    # sidecar containers for an isolated job (default when native
                                    # is unset/false); full pod config is k8s-agent only, the
                                    # standard agent reads only spec.containers to build its claim
@@ -45,14 +55,9 @@ spec:
     name: <string>
     spec: <PodSpec map>
     workspace:
-      mountPath: <string>
-      pvc:
-        claimName: <string>
-        storageClassName: <string>
-        storageRequest: <string>
-        accessMode: ReadWriteOnce | ReadOnlyMany | ReadWriteMany
-    reuse: <bool>
-    cleanWorkspace: <bool>
+      mountPath: <string>         # where the (ephemeral) workspace is mounted; default /workspace
+    reuse: <bool>                 # keep the Pod for the next run (the workspace is still emptied)
+    cleanWorkspace: <bool>        # same as spec.cleanWorkspace; the two are ORed
     override:
       containers: [<map>]
       volumes: [<map>]
@@ -109,6 +114,8 @@ runtimes, sidecar behavior). The schema-level surface is small:
 |---|---|
 | `spec.native` | `true` opts the whole job out of isolation: every step runs as a host process, exactly like pre-isolation behavior. Host-agent only (a k8s-agent fails a `native: true` claim fast). Mutually exclusive with `podTemplate` and any step `container:` (apply-time errors). |
 | `podTemplate` | Sidecar container definitions for an isolated job. Full PodSpec is k8s-agent only; the standard agent reads `spec.containers` (name/image/env/`resources.limits`) to build its claim pod — see [Kubernetes Pod Template (`podTemplate`)](../writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate) in the Job Reference. |
+| `spec.volumes` | Mounts agent-owned named volumes into the run. The volume is declared in the **agent's** config (name, mode, size, location) and the job only names it and says where it appears, so the same YAML runs on a host agent and a Kubernetes agent. This is the only way data survives between runs: a workspace with no volume is empty at the start of every run and discarded at the end. Entries are `name` (a string, a list of candidates, or a template), `as` and `mountPath`. Not allowed with `spec.detached` or `podTemplate.reuse` (apply-time errors). See [Volumes](../writing-jobs/volumes.md). |
+| `spec.cleanWorkspace` | `true` empties a volume mounted at the workspace root (`mountPath: "."`) before the run. It is the only deliberate way unified-cd destroys a volume's data, and the only way a `native: true` job (which cannot set `podTemplate.cleanWorkspace`) can reach it. `podTemplate.cleanWorkspace` does the same and the two are ORed. An ordinary workspace is always emptied, so it changes nothing without a root volume. |
 | `step.container` | Exec into a named `podTemplate` container instead of the job's primary container. Requires a `podTemplate` defining that container name (checked at apply time for isolated jobs). This is the **canonical** field for targeting a container — the old step-level `runsIn: { image / container }` is **removed**. |
 
 Resource limits for a `podTemplate` container live on the container

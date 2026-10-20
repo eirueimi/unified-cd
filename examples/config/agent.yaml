@@ -32,6 +32,18 @@ labels:
 # only the backstop.
 # finallyTimeout: 10m
 
+# volumes: agent-owned named volumes that jobs mount with spec.volumes. A workspace with no
+# volume is emptied before and after every run; a volume is the only thing that survives
+# between runs. A volume name exists once per agent (two agents declaring the same name hold
+# two independent copies). This list is file-only: it has no flag or environment variable.
+# volumes:
+#   - name: unity-main
+#     mode: exclusive      # required: at most one run on this agent holds the volume at a time
+#     path: /var/lib/unified-cd/volumes/unity-main   # optional; default <workspaceDir>/volumes/<name>
+#     size: 200Gi          # advisory: the agent warns when usage exceeds it, it never enforces it
+#   - name: go-cache
+#     mode: shared         # any number of runs may use it at once; the job must tolerate that
+
 # Garage cache (all fields required to enable cache; omit section to disable)
 cacheEndpoint: garage:3900
 cacheKey: garageadmin

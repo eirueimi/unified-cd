@@ -16,6 +16,8 @@ spec:
   description: <string>           # optional: human-readable summary of the job
   timeoutMinutes: 60              # job-level timeout in minutes
   native: false                   # true = host-process job, no containers at all (see isolation-and-containers.md)
+  volumes: [ ... ]                # agent-owned named volumes: the only data that survives between runs (see volumes.md)
+  cleanWorkspace: false           # true = empty a volume mounted at "." before this run (see volumes.md)
   podTemplate: { ... }            # sidecar containers for an isolated job (both agents honor this)
   steps:
     - name: <string>              # step name (required, unique within job)
@@ -63,6 +65,37 @@ name unchanged. Jobs that previously synced from a subdirectory (e.g.
 qualified name (`team-a/build`) on the next sync — this is a one-time
 prune/re-create of those jobs. Re-point any Schedules or WebhookReceivers
 that reference the old flat name before or right after upgrading.
+
+---
+
+## Workspace, volumes and `cleanWorkspace`
+
+Every run gets a workspace that is **empty when it starts and discarded when it ends**, on host
+and Kubernetes agents alike. Nothing a run writes there is visible to the next run. To keep data
+between runs, mount a named volume that the agent's own config declares:
+
+```yaml
+spec:
+  volumes:
+    - name: go-cache            # declared in the agent's config, not here
+      mountPath: .ucd-cache/go  # relative to the workspace; "." makes the volume the workspace
+  cleanWorkspace: false         # true empties a volume mounted at "." before this run
+```
+
+`spec.volumes` *(optional, list)* — each entry is `name` (a string, a list of candidates, or a
+template), `as` (the handle behind `$UNIFIED_VOLUME_<AS>`; required for a list or a template) and
+`mountPath`. It is rejected on a `detached` job and with `podTemplate.reuse: true`. Whether a volume
+exists is the agent's business: applying a job that names an unknown volume succeeds and its runs
+stay `Queued`.
+
+`spec.cleanWorkspace` *(optional, bool)* — empties a volume that serves as the workspace
+(`mountPath: "."`) before the run. An ordinary workspace is always emptied and needs no flag; this
+exists because a volume is never wiped otherwise, and because `native: true` jobs cannot set
+`podTemplate.cleanWorkspace`. It is the only deliberate way unified-cd destroys a volume's data.
+`podTemplate.cleanWorkspace` is equivalent and the two are ORed.
+
+The full contract (modes, mount paths, the environment variable, archives, scheduling) is in
+[Volumes: Keeping Data Between Runs](volumes.md).
 
 ---
 

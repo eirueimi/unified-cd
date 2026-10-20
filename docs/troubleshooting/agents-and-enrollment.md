@@ -139,3 +139,55 @@ check the configured cluster verifier, TokenReview permission, bounded Pod
 body ID. Start the correct agent identity and do not share credential files.
 The controller also preserves the immutable claimed-run ownership check.
 
+### An agent fails at startup with a `volume ...` configuration error
+
+**Symptom:** a host agent or Kubernetes agent whose config declares `volumes:` exits at startup
+with one of:
+
+```
+volume "go-cache": mode must be "exclusive" or "shared", got ""
+volume "unity-main": path /data/ws/working0/unity is under /data/ws/working0, which the workspace GC sweeps (it removes aged directories below /data/ws/working*); choose a path outside any working* directory
+duplicate volume name "go-cache" in the agent config
+```
+
+and, on a Kubernetes agent:
+
+```
+agentName is required when volumes are declared: it prefixes the PVC names, and it must stay the same across restarts or each restart would provision empty volumes
+volume "Go_Cache": the name becomes part of a PVC name, so it must be lower-case letters, digits and '-': ...
+volume "go-cache": the PVC name "ci-main-go-cache" is 70 characters, over the 63 a label allows; shorten the volume name or agentName
+volume "go-cache": size is required on the Kubernetes agent, which provisions a PVC of that size (for example 200Gi)
+volume "go-cache": look up PVC ci-main-go-cache: persistentvolumeclaims "ci-main-go-cache" is forbidden: User "system:serviceaccount:unified-cd:unified-cd-k8s-agent" cannot get resource "persistentvolumeclaims" ...
+```
+
+**Cause:** the agent validates its volume list before it registers, so a bad entry is a startup
+failure rather than a volume that quietly never appears. `mode` is required (`exclusive` or
+`shared`). A host path must be absolute and must not be, or sit under, a `working*` directory
+(the workspace GC sweeps those) or the agent's `detached` and dot-prefixed directories. On Kubernetes
+a volume name must be a DNS label (lower-case letters, digits and `-`), because the PVC is named
+`<agentName>-<volume>` and that name is at most 63 characters; a name that is legal on a host
+agent can therefore be illegal here. The last error is RBAC: the agent's Role needs `get`, `list`,
+`create` and `update` on `persistentvolumeclaims`, and an older Role carried only `create` and
+`delete`.
+
+**Fix:** correct the entry and restart the agent. For the RBAC error, apply the Role in
+`manifests/base/k8s-agent/rbac.yaml` (or add the verbs to your own) **before** rolling the agent
+image. Never "fix" a too-long or illegal PVC name by changing `agentName` on an agent whose
+volumes already hold data: a new `agentName` provisions new, empty PVCs and leaves the old ones
+behind. See [Named volumes on
+Kubernetes](../operator-manual/kubernetes-integration.md#named-volumes).
+
+### A Kubernetes agent fails at startup with `workspace.pvc was removed`
+
+**Symptom:** the Kubernetes agent exits at startup:
+
+```
+/etc/unified-cd/k8s-agent.yaml: podTemplates["golang"].workspace.pvc: workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from an agent-owned named volume (declare it in the agent's config and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md
+```
+
+**Cause:** an entry under `podTemplates` in the agent config still carries `workspace.pvc`. The
+field is gone; this check exists because that file's loader ignores unknown keys, and silently
+dropping it would turn a persistent workspace into an ephemeral one.
+
+**Fix:** remove the block and move the persistence to a named volume, following the [migration
+guide](../operator-manual/migrations/2026-10-20-named-volumes.md#workspacepvc-is-removed).

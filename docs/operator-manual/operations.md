@@ -83,16 +83,21 @@ Back the key file up wherever you manage secrets (vault, KMS, sealed file, offli
 
 ## Workspace and Claim-Container Hygiene
 
-Two pieces of standard-agent state accumulate on the agent host over time and, unlike the
-k8s-agent's pod GC (see the Recovery Runbook above), are **not** cleaned up automatically by
-default:
+Three pieces of agent-host state can accumulate over time and, unlike the k8s-agent's pod GC
+(see the Recovery Runbook above), are **not** cleaned up automatically by default:
 
 - **Per-job workspace directories.** Every job gets its own subdirectory under each concurrency
   slot (`wsBase/working<N>/<job-name>`, where `wsBase` is `--workspace-dir` /
-  `UNIFIED_AGENT_WORKSPACE_DIR` / the `workspaceDir` config key), and a directory persists for
-  every distinct job name ever run in that slot. Disk usage is an operator responsibility —
-  include `wsBase` in your normal disk-usage monitoring/cleanup (see [Agent Labels and Routing:
-  Workspace lifecycle](agents.md#workspace-lifecycle)).
+  `UNIFIED_AGENT_WORKSPACE_DIR` / the `workspaceDir` config key). A workspace is ephemeral: the
+  agent empties it before every run and removes it after, so these no longer pile up the way
+  they did when a directory persisted for every distinct job name ever run in a slot. What can
+  still be left behind is the directory of a run whose agent crashed before its after-run sweep
+  (and, on a root-owned leftover that even the cleanup container failed to remove, a directory the
+  next run reports as `prepare workspace failed: clean workspace ...`). Keep `wsBase` in your disk
+  monitoring (see [Agent Labels and Routing: Workspace
+  lifecycle](agents.md#workspace-lifecycle)).
+- **Named volumes.** The one thing that persists between runs, and so the one thing that grows
+  without bound. See [Named-Volume Hygiene](#named-volume-hygiene) below.
 - **Crash-orphaned claim containers.** If the standard agent process exits ungracefully
   mid-claim (killed, OOM, host reboot), the claim pod's pause and sidecar containers are left
   running (`/.ucd/ucd-sh pause`) instead of being torn down. The host agent has no automatic
@@ -100,10 +105,10 @@ default:
   [Agent Labels and Routing: Crash-orphaned claim
   containers](agents.md#crash-orphaned-claim-containers)).
 
-Two agent config knobs give operators direct levers over the first item — a
+Two agent config knobs give operators direct levers over the workspace directories — a
 preflight to stop the bleeding, and an opt-in sweep to reclaim space — without
 requiring an external cron job. Both are host-agent only (the k8s-agent's
-workspaces are pod volumes, reclaimed with the pod). See [Configuration
+workspaces are pod `emptyDir`s, reclaimed with the pod). See [Configuration
 Reference: Agent Config File](../reference/configuration.md#agent-config-file) for the
 full flag/env/yaml forms.
 
@@ -138,13 +143,59 @@ full flag/env/yaml forms.
     one process's GC can remove a `working<slot>/<job>` directory a *different*
     process currently has a run in, causing data loss mid-run. Only enable
     this GC when each agent process has an exclusive workspace base.
-  - **Default is off (`0`).** Persistent per-job workspaces are a feature —
-    they act as an inter-run build/dependency cache — so sweeping them away
-    is opt-in, not automatic. Enable it once you've confirmed the disk-usage
-    growth from stale workspaces outweighs the cache benefit for your job mix
-    (e.g. many distinct/short-lived job names sharing a host), and pick a
-    retention window comfortably longer than your slowest job's normal
-    re-run cadence.
+  - **Default is off (`0`).** A workspace is emptied before and after every run, so this
+    GC only reclaims what an agent crash left behind; it is an explicit opt-in. It never
+    touches a [named volume](#named-volume-hygiene), whose path the agent refuses to place
+    anywhere the sweep could reach.
+
+---
+
+## Named-Volume Hygiene
+
+A [named volume](agents.md#named-volumes) holds whatever jobs put in it and **nothing ever
+sweeps it**: not the workspace GC, not the agent's after-run cleanup, not a run finishing. That is
+the point (it is how a 200 GiB Unity `Library/` survives between runs), and it makes volume disk
+usage a new operator responsibility. Removing a volume from the agent's config does not delete it
+either.
+
+**Host agents.**
+
+- Each volume is a directory (`path`, default `<workspaceDir>/volumes/<name>`). Put those
+  paths under your normal disk monitoring, separately from `wsBase`'s `working<N>` directories,
+  and give a large volume its own filesystem so it cannot fill the one the workspaces and the
+  controller's checkouts share.
+- `size` is **advisory**. After each run the agent measures the volume and logs
+  `volume usage exceeds its advisory size; the size is not enforced` when it is over; alert on that
+  line. It never stops a run. `minFreeDisk` checks the *workspace* filesystem only, so it does not
+  protect a volume that lives elsewhere.
+- Two copies of a name on two agents are two independent copies, so total usage is the sum.
+- **Volumes written by isolated jobs on a rootful container runtime end up owned by root.** The
+  agent's own usage measurement tolerates this (it warns `volume usage could not be measured
+  completely ... the figure is a lower bound` rather than failing), and `cleanWorkspace` falls back
+  to a root cleanup container. But reclaiming the directory by hand needs root. Rootless podman
+  avoids all of it.
+- To reclaim space, empty the directory with the agent stopped or the volume idle, or have a job
+  with `cleanWorkspace: true` run once (that wipes a volume mounted at the workspace root only).
+  Deleting a volume's directory while a run holds it breaks that run.
+
+**Kubernetes agents.**
+
+- Each volume is a PVC named `<agentName>-<volume>`, created at startup and **never resized or
+  deleted by the agent**. A volume dropped from the config stops being advertised and its PVC stays,
+  logged as an orphan (`k8s: volume is no longer in the agent config; its PVC is left in place and
+  is not advertised. Delete the PVC yourself if the data is not wanted.`). Delete it with `kubectl`
+  when you are done with the data.
+- Changing `size` or `mode` in the config does not change an existing PVC; the agent logs a
+  mismatch and leaves it alone. Expand it through your StorageClass, or delete and recreate.
+- **Never change `agentName` while volumes hold data.** The PVC names derive from it; a new name
+  provisions new, empty PVCs and orphans the old ones.
+- A crashed run's lock on an exclusive volume clears itself, after up to about three minutes
+  (see [A volume stays held after its run
+  crashed](../troubleshooting/steps-and-execution.md#a-volume-stays-held-after-its-run-crashed)).
+
+**Secrets.** A volume persists whatever a job writes into it, including credentials a step wrote
+to disk. An ordinary workspace is emptied between runs; a volume is not. Review what your jobs
+leave there, and use `cleanWorkspace` or a `finally:` step to remove it.
 
 ---
 
@@ -224,7 +275,7 @@ Upgrade order: **controller first, then agents.**
 
    **Exception:** a database provisioned before the migrations-001-017 squash (commit `79c1074`) is **not** upgraded correctly by this automatic `migrate up` — the new migration chain's version numbering starts below where such a database already is, so the migration runner treats it as already up to date and silently applies nothing. This leaves newer columns/tables (e.g. `role`, `managed_resources`, `audit_logs`, `sync_status`) missing. See [Troubleshooting: `column "..." does not exist` after upgrading](../troubleshooting/controller-and-database.md#schema-drift-migration-renumbering) for the supported fresh-init/manual-bridge paths.
 2. **Agents** — upgrade standard agents after the controller is on the new version.
-3. **k8s-agent + sidecar image** — the k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. Pin `sidecarImage` in the k8s-agent config to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
+3. **k8s-agent + sidecar image** — the k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**. The skew is easy to miss when it is partial: the agent passes the repeatable `--exclude` flag to the sidecar (to keep a volume's contents out of an archive of its ancestor) **only** for a job that archives an ancestor of a volume, and an older sidecar exits 2 on the unknown flag, so only such a job fails (`flag provided but not defined: -exclude`; see [troubleshooting](../troubleshooting/artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude)). More generally: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. Pin `sidecarImage` in the k8s-agent config to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
 4. **Default runner/pause image digest pin** — see [Rotating the default runner/pause image digests](#rotating-the-default-runnerpause-image-digests) below. This step is easy to forget because the build succeeds either way; forgetting it just means agents keep pulling the old image forever.
 
 ### Checking which version is running

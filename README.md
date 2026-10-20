@@ -14,7 +14,7 @@ An open-source CI/CD tool (Jenkins alternative) written in Go.
 
 **GitHub:** https://github.com/eirueimi/unified-cd
 
-**Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO
+**Key features:** YAML-defined jobs · DAG step execution · Multi-platform agents (Linux, macOS, Windows, Kubernetes) · Ephemeral workspaces with agent-owned named volumes for data that must survive between runs · Secrets management · Webhook and cron triggers · High availability · Web UI · OIDC SSO
 
 ---
 
@@ -145,7 +145,7 @@ make test-short  # skip integration tests
 ## Architecture
 
 - **Controller** — stateless HTTP server; schedules and dispatches jobs; manages all resources
-- **Agent** — connects to controller via long-polling; executes job steps in a per-job workspace directory. Jobs are isolated by default: each claim runs inside a container ("claim pod": a pause container + `podTemplate` sidecars sharing one network namespace), the same model as the k8s-agent's real Pod. Jobs that need the host itself opt out with `spec.native: true` — see [Job Isolation](https://eirueimi.github.io/unified-cd/user-guide/writing-jobs/isolation-and-containers/#job-isolation-native-and-the-claim-pod).
+- **Agent** — connects to controller via long-polling; executes job steps in a per-run workspace that is empty when the run starts and discarded when it ends (data that must survive between runs lives on a named volume the agent's own config declares and the job mounts with `spec.volumes`). Jobs are isolated by default: each claim runs inside a container ("claim pod": a pause container + `podTemplate` sidecars sharing one network namespace), the same model as the k8s-agent's real Pod. Jobs that need the host itself opt out with `spec.native: true` — see [Job Isolation](https://eirueimi.github.io/unified-cd/user-guide/writing-jobs/isolation-and-containers/#job-isolation-native-and-the-claim-pod).
 - **k8s-agent** — Kubernetes-native agent; creates a Pod per job and exec's steps inside it
 - **CLI** — `unified-cli` — apply YAML, trigger runs, stream logs, manage secrets and tokens
 
@@ -175,8 +175,10 @@ The full documentation is published at **https://eirueimi.github.io/unified-cd/*
 - **[High Availability Guide](https://eirueimi.github.io/unified-cd/operator-manual/high-availability/)** — controller redundancy, leader election, rolling deploys
 - **[Operations Guide](https://eirueimi.github.io/unified-cd/operator-manual/operations/)** — state layout, backup, recovery runbook, monitoring
 - **[Audit Log Guide](https://eirueimi.github.io/unified-cd/operator-manual/audit/)** — what's recorded/excluded, `GET /api/v1/audit`, `audit list`, retention
+- **[Volumes](https://eirueimi.github.io/unified-cd/user-guide/writing-jobs/volumes/)** — keep data between runs: agent-owned named volumes, `spec.volumes`, modes, mount paths
 - **[Frontend Development Guide](https://eirueimi.github.io/unified-cd/contributing/frontend-development/)** — Svelte + Vite setup, hot reload, routing
 - **[Troubleshooting](https://eirueimi.github.io/unified-cd/troubleshooting/)** — symptom-indexed fixes for common failures
+- **[Ephemeral Workspaces and Named Volumes Migration](https://eirueimi.github.io/unified-cd/operator-manual/migrations/2026-10-20-named-volumes/)** — the workspace is no longer persistent by default, and its `pvc` block is removed
 - **[ID-Scoped Agent Credential Migration](https://eirueimi.github.io/unified-cd/operator-manual/migrations/agent-id-scoped-credentials/)** — move legacy shared agent credentials safely
 
 ### Infrastructure
@@ -212,10 +214,8 @@ spec:
     - name: build
       run: make build
     - name: test
-      needs: [build]
       run: make test
     - name: deploy
-      needs: [test]
       if: 'params.env == "production"'
       run: make deploy
 ```
