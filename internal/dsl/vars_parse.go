@@ -90,7 +90,10 @@ func IsReservedVarName(name string) bool {
 		return true
 	}
 	for _, p := range reservedVarPrefixes {
-		if strings.HasPrefix(u, p) {
+		// Both sides upper-cased: the candidate is, and this function's promise
+		// is to be the one place the two rules combine, so it must not depend on
+		// how a prefix happens to be spelled in the list.
+		if strings.HasPrefix(u, strings.ToUpper(p)) {
 			return true
 		}
 	}

@@ -574,7 +574,8 @@ type VolumeMount struct {
 	// are rejected.
 	As string `yaml:"as,omitempty" json:"as,omitempty"`
 	// MountPath is where the volume appears: relative to the workspace ("."
-	// is the workspace root), or an absolute path outside the workspace.
+	// is the workspace root), or an absolute path outside the workspace. It is
+	// a POSIX path on every agent; a Windows drive-qualified path is rejected.
 	MountPath string `yaml:"mountPath" json:"mountPath"`
 }
 

@@ -103,6 +103,14 @@ func TestValidateVolumes(t *testing.T) {
 		{"empty mountPath", `
   volumes:
     - name: a`, "mountPath is required"},
+		{"drive-qualified mountPath", `
+  volumes:
+    - name: a
+      mountPath: C:/cache`, "mountPath must be a POSIX path"},
+		{"drive-qualified mountPath with backslashes", `
+  volumes:
+    - name: a
+      mountPath: 'd:\cache'`, "mountPath must be a POSIX path"},
 		{"mountPath dot-dot", `
   volumes:
     - name: a

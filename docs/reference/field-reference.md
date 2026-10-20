@@ -340,7 +340,7 @@ VolumeMount mounts an agent-owned named volume into the run's workspace.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `as` | string | no | As is the stable handle steps use to reach the volume. Required when Name is a list of several candidates or contains a template, because the chosen name is not known when the job is written; otherwise it defaults to the single literal Name. A step reads the volume's absolute path from $UNIFIED_VOLUME_&lt;AS&gt;: upper-cased, with "-" as "_" (go-cache gives UNIFIED_VOLUME_GO_CACHE). Two entries whose aliases give one variable are rejected. |
-| `mountPath` | string | yes | MountPath is where the volume appears: relative to the workspace ("." is the workspace root), or an absolute path outside the workspace. |
+| `mountPath` | string | yes | MountPath is where the volume appears: relative to the workspace ("." is the workspace root), or an absolute path outside the workspace. It is a POSIX path on every agent; a Windows drive-qualified path is rejected. |
 | `name` | string \| []string | yes | Name is the volume to mount: one literal name, a list of candidate names (the agent picks a free one), or a template expanded against the run's params. |
 
 ## JobTemplate

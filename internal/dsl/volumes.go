@@ -213,6 +213,13 @@ func cleanVolumeMountPath(p string, v VolumeMount, workspaceRoot string) (string
 	if mp == "" {
 		return "", fmt.Errorf("%s: mountPath is required", p)
 	}
+	// path.IsAbs("C:/cache") is false, so a drive-qualified path would be taken
+	// for a relative one and joined onto the workspace, to surface much later as
+	// an opaque mkdir error on the agent. A mountPath is a POSIX path on every
+	// agent, Windows included.
+	if len(mp) >= 2 && mp[1] == ':' && (mp[0] >= 'a' && mp[0] <= 'z' || mp[0] >= 'A' && mp[0] <= 'Z') {
+		return "", fmt.Errorf("%s: mountPath %q starts with a Windows drive letter; mountPath must be a POSIX path (relative to the workspace, or absolute and starting with \"/\")", p, mp)
+	}
 	c := path.Clean(mp)
 	if path.IsAbs(c) {
 		if isPathAncestor(path.Clean(workspaceRoot), c) || c == path.Clean(workspaceRoot) {

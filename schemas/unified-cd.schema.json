@@ -1072,7 +1072,7 @@
           "type": "string"
         },
         "mountPath": {
-          "description": "MountPath is where the volume appears: relative to the workspace (\".\"\nis the workspace root), or an absolute path outside the workspace.",
+          "description": "MountPath is where the volume appears: relative to the workspace (\".\"\nis the workspace root), or an absolute path outside the workspace. It is\na POSIX path on every agent; a Windows drive-qualified path is rejected.",
           "type": "string"
         },
         "name": {

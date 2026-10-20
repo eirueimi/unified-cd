@@ -139,3 +139,17 @@ spec:
 	assert.Equal(t, "myapp", back.Vars["APP_NAME"],
 		"spec.vars needs a json tag as well as a yaml tag")
 }
+
+// IsReservedVarName is the one place the exact-name and prefix rules combine, so
+// it must hold however a prefix is spelled in the list: the candidate is
+// upper-cased, and so is the prefix it is compared with.
+func TestIsReservedVarName_PrefixMatchDoesNotDependOnHowThePrefixIsSpelled(t *testing.T) {
+	saved := reservedVarPrefixes
+	t.Cleanup(func() { reservedVarPrefixes = saved })
+	reservedVarPrefixes = []string{"Mixed_Case_"}
+	for _, name := range []string{"MIXED_CASE_X", "mixed_case_x", "Mixed_Case_X"} {
+		assert.True(t, IsReservedVarName(name), name)
+	}
+	assert.False(t, IsReservedVarName("MIXED_CASE"), "a name shorter than the prefix is not under it")
+	assert.False(t, IsReservedVarName("OTHER_X"))
+}
