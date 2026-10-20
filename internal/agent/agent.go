@@ -108,6 +108,12 @@ type Agent struct {
 	// opt-in. Host-only.
 	WorkspaceRetentionDays int
 
+	// Volumes owns the agent's declared named volumes (the `volumes` list of
+	// the agent config file). cmd/unified-cd-agent builds it with
+	// NewVolumeManager before Run. Nil means the agent declares none.
+	// Host-only: the k8s agent provisions PVCs instead.
+	Volumes *VolumeManager
+
 	// freeBytesFn reports available bytes for the filesystem containing the
 	// given path. Defaults to freeBytes (the platform-specific syscall
 	// implementation); overridable so tests can inject a fake without

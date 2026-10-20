@@ -151,6 +151,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Volumes are file-only (no flag or env var; see config.AgentConfig.Volumes),
+	// so they come straight from the effective config. A bad declaration is a
+	// hard startup failure: advertising a volume the agent cannot back would
+	// strand every run routed to it.
+	volumes, err := agent.NewVolumeManager(resolvedWorkspaceDir, eff.Volumes)
+	if err != nil {
+		slog.Error("invalid volumes in agent config", "error", err)
+		os.Exit(1)
+	}
+
 	var labels []string
 	if *labelsStr != "" {
 		for _, l := range strings.Split(*labelsStr, ",") {
@@ -213,6 +223,7 @@ func main() {
 	a.ToolsDir = toolsDir
 	a.MinFreeDisk = *minFreeDisk
 	a.WorkspaceRetentionDays = *workspaceRetentionDays
+	a.Volumes = volumes
 
 	// The finally/cleanup-phase ceiling lives on the shared orchestration loop
 	// (agent.RunClaim), which both agent binaries call and which has no

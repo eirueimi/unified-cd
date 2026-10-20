@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/eirueimi/unified-cd/internal/config"
 )
 
 // TestGCWorkspaces exercises gcWorkspaces directly (no Agent/network
@@ -254,4 +256,33 @@ func TestAgent_WorkspaceGC_StartupSweep(t *testing.T) {
 	runAgentBriefly(t, a, 200*time.Millisecond)
 
 	require.NoDirExists(t, agedDir, "startup sweep must remove the aged workspace dir when WorkspaceRetentionDays > 0")
+}
+
+// TestGcWorkspaces_CannotReachAVolume pins that the retention sweep cannot
+// delete a named volume, however old: the default volume path sits outside the
+// "working*" glob, and a volume placed inside it is refused by the manager.
+func TestGcWorkspaces_CannotReachAVolume(t *testing.T) {
+	base := t.TempDir()
+	m, err := NewVolumeManager(base, []config.VolumeConfig{{Name: "x", Mode: "exclusive"}})
+	require.NoError(t, err)
+	vol := m.PathOf("x")
+	require.Equal(t, filepath.Join(base, "volumes", "x"), vol)
+	require.NoError(t, os.WriteFile(filepath.Join(vol, "data"), []byte("keep"), 0o644))
+	old := time.Now().Add(-365 * 24 * time.Hour)
+	for _, p := range []string{filepath.Join(base, "volumes"), vol, filepath.Join(vol, "data")} {
+		require.NoError(t, os.Chtimes(p, old, old))
+	}
+	// An aged job dir alongside proves the sweep really ran.
+	job := filepath.Join(base, "working0", "oldjob")
+	require.NoError(t, os.MkdirAll(job, 0o755))
+	require.NoError(t, os.Chtimes(job, old, old))
+
+	removed, err := gcWorkspaces(base, time.Hour, map[string]struct{}{}, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, []string{job}, removed)
+	require.FileExists(t, filepath.Join(vol, "data"))
+
+	// The one way to put a volume in the sweep's path is refused outright.
+	_, err = NewVolumeManager(base, []config.VolumeConfig{{Name: "y", Mode: "exclusive", Path: filepath.Join(base, "working0", "y")}})
+	require.Error(t, err)
 }
