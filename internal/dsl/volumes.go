@@ -123,7 +123,7 @@ func ValidateVolumes(spec Spec) error {
 		return fmt.Errorf("spec.volumes is not supported on a detached job: a detached run's workspace is deleted when the run finishes, which contradicts a persistent volume")
 	}
 	if spec.PodTemplate != nil && spec.PodTemplate.Reuse {
-		return fmt.Errorf("spec.volumes is not supported with podTemplate.reuse: a reused pod keeps its workspace across runs, which contradicts a volume's lifecycle")
+		return fmt.Errorf("spec.volumes is not supported with podTemplate.reuse: a pooled pod keeps the volumes it was created with, but each run may need different ones")
 	}
 
 	root := defaultWorkspaceRoot

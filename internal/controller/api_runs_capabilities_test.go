@@ -58,7 +58,7 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 	t.Run("host-runnable podTemplate requires container, not pod, and is not pinned to a kubernetes label", func(t *testing.T) {
 		s, pg := newTestServer(t)
 		spec := `{"agentSelector":["kind:docker"],` +
-			`"podTemplate":{"workspace":{"mountPath":"/workspace","pvc":{"storageClassName":"standard","storageRequest":"5Gi","accessMode":"ReadWriteOnce"}},` +
+			`"podTemplate":{"workspace":{"mountPath":"/workspace"},` +
 			`"spec":{"containers":[{"name":"job","image":"python:3.12-slim"},{"name":"ruff","image":"python:3.12-slim"}]}},` +
 			`"steps":[{"name":"s","run":"echo x"}]}`
 		_, _ = pg.UpsertJob(t.Context(), "podjob-host-caps", "unified-cd/v1", []byte(spec))

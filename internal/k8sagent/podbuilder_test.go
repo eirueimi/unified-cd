@@ -116,10 +116,13 @@ func TestBuildPod_UnnamedContainerErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "no name")
 }
 
-func TestBuildPod_WorkspacePVC(t *testing.T) {
+// TestBuildPod_WorkspaceIsAlwaysEmptyDir pins that the undeclared workspace is
+// an emptyDir whatever the template says: persistence comes only from a
+// declared named volume, never from the workspace itself.
+func TestBuildPod_WorkspaceIsAlwaysEmptyDir(t *testing.T) {
 	agentTmpls := map[string]AgentPodTemplate{
 		"golang": {
-			Workspace: &dsl.WorkspaceConfig{PVC: &dsl.WorkspacePVC{ClaimName: "my-pvc"}},
+			Workspace: &dsl.WorkspaceConfig{MountPath: "/ws"},
 			Spec: map[string]any{
 				"containers": []any{
 					map[string]any{"name": "job", "image": "golang:1.24-alpine", "command": []any{"sleep", "3600"}},
@@ -129,9 +132,16 @@ func TestBuildPod_WorkspacePVC(t *testing.T) {
 	}
 	pod, err := BuildPod("run-abc123", "test-ns", agentTmpls, &dsl.PodTemplate{Name: "golang"}, "", SidecarSpec{}, testShimImage, nil)
 	require.NoError(t, err)
-	require.Len(t, pod.Spec.Volumes, 2)
-	require.NotNil(t, pod.Spec.Volumes[0].PersistentVolumeClaim)
-	assert.Equal(t, "my-pvc", pod.Spec.Volumes[0].PersistentVolumeClaim.ClaimName)
+	var ws *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == "workspace" {
+			ws = &pod.Spec.Volumes[i]
+		}
+	}
+	require.NotNil(t, ws, "the pod has a workspace volume")
+	assert.NotNil(t, ws.EmptyDir, "the workspace is an emptyDir")
+	assert.Nil(t, ws.PersistentVolumeClaim)
+	assert.Nil(t, ws.Ephemeral)
 }
 
 func TestBuildPod_ContainersWorkingDirIsWorkspace(t *testing.T) {

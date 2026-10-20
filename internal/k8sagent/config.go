@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -191,7 +192,38 @@ func LoadConfig(configPath string) (Config, error) {
 	if err := loadYAML(configPath, &cfg); err != nil {
 		return cfg, err
 	}
+	if err := rejectRemovedWorkspacePVC(configPath); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+// rejectRemovedWorkspacePVC fails when an agent podTemplate still carries the
+// removed workspace.pvc block. loadYAML is lenient about unknown keys, so
+// without this the block would be dropped silently and a persistent workspace
+// would quietly become an ephemeral one.
+func rejectRemovedWorkspacePVC(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	var raw struct {
+		PodTemplates map[string]any `yaml:"podTemplates"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	names := make([]string, 0, len(raw.PodTemplates))
+	for name := range raw.PodTemplates {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := dsl.CheckRemovedWorkspacePVC(raw.PodTemplates[name], fmt.Sprintf("podTemplates[%q]", name)); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func loadYAML(path string, out any) error {

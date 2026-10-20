@@ -79,9 +79,8 @@ func (s *Server) createRunFromJob(ctx context.Context, jobName string, reqParams
 	// Kubernetes, so RequiredCaps yields "pod" for it — the agent-side
 	// capability match (ClaimNextRun) then restricts the run to a
 	// pod-capable agent instead of the old blanket "kubernetes" label pin. A
-	// host-runnable podTemplate (e.g. plain name/image containers,
-	// workspace.pvc — which the host degrades to a bind mount) yields
-	// "container" and is left to route by the author's agentSelector, so it
+	// host-runnable podTemplate (e.g. plain name/image containers, a
+	// workspace.mountPath) yields "container" and is left to route by the author's agentSelector, so it
 	// can run on a standard agent too.
 	requiredCaps := dsl.RequiredCaps(spec)
 	run, err := s.store.CreateRun(ctx, job.Name, params, runSpec, agentSelector, requiredCaps, triggeredBy, displayName)

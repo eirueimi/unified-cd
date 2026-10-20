@@ -1147,6 +1147,71 @@ spec:
 	assert.Contains(t, err.Error(), "failFast")
 }
 
+// TestParse_WorkspacePVCIsRejected pins that the removed workspace.pvc block
+// fails with an error that names the field and points at the migration guide,
+// not with the strict decoder's bare "field pvc not found in type
+// dsl.WorkspaceConfig". Both the claimName form and the ephemeral form are
+// covered, and both document kinds that carry a podTemplate.
+func TestParse_WorkspacePVCIsRejected(t *testing.T) {
+	forms := map[string]string{
+		"claimName": "claimName: go-build-cache",
+		"ephemeral": "storageClassName: standard\n        storageRequest: 5Gi",
+	}
+	for form, pvc := range forms {
+		job := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  podTemplate:
+    workspace:
+      mountPath: /workspace
+      pvc:
+        ` + pvc + `
+    spec:
+      containers:
+        - name: job
+          image: alpine
+  steps:
+    - name: a
+      run: echo a
+`
+		tpl := strings.Replace(job, "kind: Job", "kind: JobTemplate", 1)
+
+		_, err := Parse(strings.NewReader(job))
+		require.Error(t, err, form)
+		assert.Contains(t, err.Error(), "spec.podTemplate.workspace.pvc", form)
+		assert.Contains(t, err.Error(), "docs/operator-manual/migrations/2026-10-20-named-volumes.md", form)
+		assert.NotContains(t, err.Error(), "not found in type", form)
+
+		_, err = ParseJobTemplate([]byte(tpl))
+		require.Error(t, err, form)
+		assert.Contains(t, err.Error(), "docs/operator-manual/migrations/2026-10-20-named-volumes.md", form)
+	}
+
+	// The rest of the workspace block is unaffected.
+	ok := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: x
+spec:
+  podTemplate:
+    workspace:
+      mountPath: /ws
+    spec:
+      containers:
+        - name: job
+          image: alpine
+  steps:
+    - name: a
+      run: echo a
+`
+	_, err := Parse(strings.NewReader(ok))
+	require.NoError(t, err)
+}
+
 func TestParse_ForeachLiteral(t *testing.T) {
 	input := `
 apiVersion: unified-cd/v1

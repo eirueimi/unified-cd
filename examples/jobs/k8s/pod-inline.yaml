@@ -11,13 +11,11 @@ spec:
     - kind:kubernetes
   # no name + spec present → inline PodSpec, independent of any named agent template
   podTemplate:
+    # The workspace is an emptyDir shared by every container in the Pod. It is empty when the
+    # run starts and is discarded with the Pod. To keep files between runs, declare a named
+    # volume in the k8s-agent config and mount it with spec.volumes (see examples/jobs/volumes.yaml).
     workspace:
       mountPath: /workspace
-      # specifying storageClassName and storageRequest auto-creates an ephemeral PVC
-      pvc:
-        storageClassName: standard
-        storageRequest: 1Gi
-        accessMode: ReadWriteOnce
     spec:
       containers:
         - name: job

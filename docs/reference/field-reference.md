@@ -387,16 +387,6 @@ never reaches a shell. |
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `mountPath` | string | no |  |
-| `pvc` | WorkspacePVC | no |  |
-
-### WorkspacePVC
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `accessMode` | `ReadWriteOnce` \| `ReadOnlyMany` \| `ReadWriteMany` | no |  |
-| `claimName` | string | no |  |
-| `storageClassName` | string | no |  |
-| `storageRequest` | string | no |  |
 
 ### VolumeMount
 

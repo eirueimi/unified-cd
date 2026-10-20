@@ -582,7 +582,7 @@ func volumesFromMaps(ms []map[string]any) ([]corev1.Volume, error) {
 func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) error {
 	mountPath := workspaceMountOf(wsCfg)
 
-	wsVol := buildWorkspaceVolume(wsCfg)
+	wsVol := buildWorkspaceVolume()
 
 	replaced := false
 	for i, v := range podSpec.Volumes {
@@ -660,46 +660,15 @@ func workspaceMountOf(wsCfg *dsl.WorkspaceConfig) string {
 	return "/workspace"
 }
 
-func buildWorkspaceVolume(wsCfg *dsl.WorkspaceConfig) corev1.Volume {
-	vol := corev1.Volume{Name: "workspace"}
-	if wsCfg == nil || wsCfg.PVC == nil {
-		vol.VolumeSource = corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
-		return vol
+// buildWorkspaceVolume is the pod's undeclared workspace: always an emptyDir,
+// which dies with the pod. Persistence comes only from a declared named volume
+// (a PVC the agent provisions and the job mounts with spec.volumes), never
+// from the workspace itself.
+func buildWorkspaceVolume() corev1.Volume {
+	return corev1.Volume{
+		Name:         "workspace",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	}
-	if wsCfg.PVC.ClaimName != "" {
-		vol.VolumeSource = corev1.VolumeSource{
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: wsCfg.PVC.ClaimName,
-			},
-		}
-		return vol
-	}
-	// Ephemeral PVC
-	accessMode := corev1.ReadWriteOnce
-	if wsCfg.PVC.AccessMode != "" {
-		accessMode = corev1.PersistentVolumeAccessMode(wsCfg.PVC.AccessMode)
-	}
-	storageReq := resource.MustParse("10Gi")
-	if wsCfg.PVC.StorageRequest != "" {
-		storageReq = resource.MustParse(wsCfg.PVC.StorageRequest)
-	}
-	sc := wsCfg.PVC.StorageClassName
-	vol.VolumeSource = corev1.VolumeSource{
-		Ephemeral: &corev1.EphemeralVolumeSource{
-			VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes:      []corev1.PersistentVolumeAccessMode{accessMode},
-					StorageClassName: &sc,
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: storageReq,
-						},
-					},
-				},
-			},
-		},
-	}
-	return vol
 }
 
 // toResourceRequirements converts a validated dsl.ResourceSpec to k8s

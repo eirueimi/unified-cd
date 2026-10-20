@@ -1198,32 +1198,6 @@
       "properties": {
         "mountPath": {
           "type": "string"
-        },
-        "pvc": {
-          "$ref": "#/definitions/WorkspacePVC"
-        }
-      },
-      "type": "object"
-    },
-    "WorkspacePVC": {
-      "additionalProperties": false,
-      "properties": {
-        "accessMode": {
-          "enum": [
-            "ReadWriteOnce",
-            "ReadOnlyMany",
-            "ReadWriteMany"
-          ],
-          "type": "string"
-        },
-        "claimName": {
-          "type": "string"
-        },
-        "storageClassName": {
-          "type": "string"
-        },
-        "storageRequest": {
-          "type": "string"
         }
       },
       "type": "object"

@@ -26,7 +26,7 @@ func triggerAndQueue(t *testing.T, s *Server, jobName string) {
 
 // TestAPI_TriggerRun_HostRunnablePodTemplate_NotPinnedToKubernetes verifies that
 // a podTemplate using only host-honored container fields (name/image) plus a
-// workspace.pvc (which the host degrades to a bind mount) is NOT auto-pinned
+// workspace.mountPath is NOT auto-pinned
 // to a Kubernetes agent: with agentSelector [kind:docker] the effective
 // selector stays {kind:docker}, so a docker agent that does NOT carry the
 // "kubernetes" label can claim it, and dsl.RequiredCaps infers "container"
@@ -38,7 +38,7 @@ func triggerAndQueue(t *testing.T, s *Server, jobName string) {
 func TestAPI_TriggerRun_HostRunnablePodTemplate_NotPinnedToKubernetes(t *testing.T) {
 	s, pg := newTestServer(t)
 	spec := `{"agentSelector":["kind:docker"],` +
-		`"podTemplate":{"workspace":{"mountPath":"/workspace","pvc":{"storageClassName":"standard","storageRequest":"5Gi","accessMode":"ReadWriteOnce"}},` +
+		`"podTemplate":{"workspace":{"mountPath":"/workspace"},` +
 		`"spec":{"containers":[{"name":"job","image":"python:3.12-slim"},{"name":"ruff","image":"python:3.12-slim"}]}},` +
 		`"steps":[{"name":"s","run":"echo x"}]}`
 	_, _ = pg.UpsertJob(t.Context(), "podjob-host", "unified-cd/v1", []byte(spec))

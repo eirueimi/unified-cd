@@ -553,8 +553,7 @@ type PodTemplate struct {
 }
 
 type WorkspaceConfig struct {
-	MountPath string        `yaml:"mountPath,omitempty" json:"mountPath,omitempty"`
-	PVC       *WorkspacePVC `yaml:"pvc,omitempty" json:"pvc,omitempty"`
+	MountPath string `yaml:"mountPath,omitempty" json:"mountPath,omitempty"`
 }
 
 // VolumeMount mounts an agent-owned named volume into the run's workspace.
@@ -574,13 +573,6 @@ type VolumeMount struct {
 	// MountPath is where the volume appears: relative to the workspace ("."
 	// is the workspace root), or an absolute path outside the workspace.
 	MountPath string `yaml:"mountPath" json:"mountPath"`
-}
-
-type WorkspacePVC struct {
-	ClaimName        string `yaml:"claimName,omitempty" json:"claimName,omitempty"`
-	StorageClassName string `yaml:"storageClassName,omitempty" json:"storageClassName,omitempty"`
-	StorageRequest   string `yaml:"storageRequest,omitempty" json:"storageRequest,omitempty"`
-	AccessMode       string `yaml:"accessMode,omitempty" json:"accessMode,omitempty" schema:"enum:ReadWriteOnce,ReadOnlyMany,ReadWriteMany"`
 }
 
 type PodSpecPatch struct {
