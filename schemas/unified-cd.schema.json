@@ -547,6 +547,7 @@
       "additionalProperties": false,
       "properties": {
         "cleanWorkspace": {
+          "description": "CleanWorkspace is the same as spec.cleanWorkspace: it wipes a volume that\nserves as the job's workspace (a volume mounted at \".\"), and nothing else.\nThe two are ORed.",
           "type": "boolean"
         },
         "name": {

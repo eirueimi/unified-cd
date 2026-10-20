@@ -544,8 +544,11 @@ type CacheStep struct {
 }
 
 type PodTemplate struct {
-	Name           string           `yaml:"name,omitempty" json:"name,omitempty"`
-	Reuse          bool             `yaml:"reuse,omitempty" json:"reuse,omitempty"`
+	Name  string `yaml:"name,omitempty" json:"name,omitempty"`
+	Reuse bool   `yaml:"reuse,omitempty" json:"reuse,omitempty"`
+	// CleanWorkspace is the same as spec.cleanWorkspace: it wipes a volume that
+	// serves as the job's workspace (a volume mounted at "."), and nothing else.
+	// The two are ORed.
 	CleanWorkspace bool             `yaml:"cleanWorkspace,omitempty" json:"cleanWorkspace,omitempty"`
 	Workspace      *WorkspaceConfig `yaml:"workspace,omitempty" json:"workspace,omitempty"`
 	Override       *PodSpecPatch    `yaml:"override,omitempty" json:"override,omitempty"`

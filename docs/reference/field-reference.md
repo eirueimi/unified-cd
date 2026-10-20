@@ -39,44 +39,20 @@
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `agentSelector` | []string | no |  |
-| `cleanWorkspace` | boolean | no | CleanWorkspace asks the agent to empty a volume that serves as this
-job's workspace (a spec.volumes entry mounted at ".") before the run. An
-ordinary workspace is always emptied and needs no flag; this exists
-because a volume is never wiped otherwise, and a native job cannot use
-podTemplate.cleanWorkspace. The agent-wide --clean-workspace flag never
-wipes a volume. |
+| `cleanWorkspace` | boolean | no | CleanWorkspace asks the agent to empty a volume that serves as this job's workspace (a spec.volumes entry mounted at ".") before the run. An ordinary workspace is always emptied and needs no flag; this exists because a volume is never wiped otherwise, and a native job cannot use podTemplate.cleanWorkspace. The agent-wide --clean-workspace flag never wipes a volume. |
 | `concurrency` | Concurrency | no |  |
 | `description` | string | no | Description is a human-readable summary of the job, shown in the WebUI. |
-| `detached` | boolean | no | Detached marks this job's runs as lightweight orchestrators: they do not
-consume an agent's MaxConcurrent budget and are claimed from a separate
-MaxDetachedConcurrent pool, and get an independent per-run workspace on
-host agents. Intended for jobs that mostly issue call: steps and wait.
-Orthogonal to Native — a native host orchestrator may be detached. The
-json tag matters: the store persists the spec as JSON and re-reads this. |
+| `detached` | boolean | no | Detached marks this job's runs as lightweight orchestrators: they do not consume an agent's MaxConcurrent budget and are claimed from a separate MaxDetachedConcurrent pool, and get an independent per-run workspace on host agents. Intended for jobs that mostly issue call: steps and wait. Orthogonal to Native — a native host orchestrator may be detached. The json tag matters: the store persists the spec as JSON and re-reads this. |
 | `displayName` | string | no | A human-readable label for this job's runs, e.g. "deploy {{ .Params.env }} @ {{ .Params.ref }}" -- interpolated with the run's params at creation, shown in the WebUI in place of the truncated run ID. |
-| `finally` | []StepEntry | no | Finally runs after the main DAG completes, on success, failure, or
-cancellation. Same structure as Steps. A finally step's `if:` defaults to
-always-run; use if: failure()/success() to filter. A finally step that
-fails marks the run Failed (after all finally steps run). |
-| `native` | boolean | no | Native opts the whole job into host-process execution (no claim pod,
-no podTemplate, no container: steps). Host agents only; the default
-(false) is the isolated pod model on both backends. |
-| `params` | Params | no | Params is optional: a job with no declared inputs/outputs omits it
-entirely (the common case — see examples/jobs/*.yaml). Validate does
-not require it, so the generated schema must not either (schemagen
-derives "required" from the absence of omitempty/pointer). |
+| `finally` | []StepEntry | no | Finally runs after the main DAG completes, on success, failure, or cancellation. Same structure as Steps. A finally step's `if:` defaults to always-run; use if: failure()/success() to filter. A finally step that fails marks the run Failed (after all finally steps run). |
+| `native` | boolean | no | Native opts the whole job into host-process execution (no claim pod, no podTemplate, no container: steps). Host agents only; the default (false) is the isolated pod model on both backends. |
+| `params` | Params | no | Params is optional: a job with no declared inputs/outputs omits it entirely (the common case — see examples/jobs/*.yaml). Validate does not require it, so the generated schema must not either (schemagen derives "required" from the absence of omitempty/pointer). |
 | `podTemplate` | PodTemplate | no |  |
-| `shell` | []string | no | Shell overrides the default interpreter argv for every step in this
-job that does not declare its own step-level shell:. Array-only (no
-scalar shorthand); the run: script is appended as the final argv
-element. See Step.Shell for the full resolution priority. |
-| `steps` | []StepEntry | yes | Steps is the main DAG of steps to execute.
-(failFast was removed — all started steps run to completion.) |
+| `shell` | []string | no | Shell overrides the default interpreter argv for every step in this job that does not declare its own step-level shell:. Array-only (no scalar shorthand); the run: script is appended as the final argv element. See Step.Shell for the full resolution priority. |
+| `steps` | []StepEntry | yes | Steps is the main DAG of steps to execute. (failFast was removed — all started steps run to completion.) |
 | `timeoutMinutes` | number | no |  |
 | `vars` | map[string]string | no | Plain-text variables shared by every step of this job, delivered as environment variables and as {{ .Vars.KEY }} in templates. NOT secrets — see kind: Vars. |
-| `volumes` | []VolumeMount | no | Volumes mounts agent-owned named volumes into the run. The job names a
-volume and where it appears; the agent's own configuration decides what
-backs it. See VolumeMount. |
+| `volumes` | []VolumeMount | no | Volumes mounts agent-owned named volumes into the run. The job names a volume and where it appears; the agent's own configuration decides what backs it. See VolumeMount. |
 
 ### Concurrency
 
@@ -139,16 +115,10 @@ The two forms are mutually exclusive; Validate enforces this.
 | `retry` | RetrySpec | no |  |
 | `run` | string | no |  |
 | `runsIn` | RunsIn | no |  |
-| `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image
-makes the whole template one isolated scope. Steps sharing ScopeID run
-in one environment. Not user-authored. |
+| `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image makes the whole template one isolated scope. Steps sharing ScopeID run in one environment. Not user-authored. |
 | `scopeImage` | string | no |  |
-| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside
-ScopeImage — see the ScopeImage comment above. Limits only: apply-time
-validation rejects runsIn.resources.requests (no host equivalent), so
-there is nothing else for this to carry. Not user-authored. |
-| `shell` | []string | no | Shell overrides the effective interpreter argv for this step. See
-Step.Shell for the full resolution priority. |
+| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside ScopeImage — see the ScopeImage comment above. Limits only: apply-time validation rejects runsIn.resources.requests (no host equivalent), so there is nothing else for this to carry. Not user-authored. |
+| `shell` | []string | no | Shell overrides the effective interpreter argv for this step. See Step.Shell for the full resolution priority. |
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
@@ -185,10 +155,7 @@ TimeoutMinutes defaults to 60 (applied at compile time) when zero.
 |-------|------|----------|-------------|
 | `destDir` | string | no | defaults to the current directory if omitted |
 | `name` | string | yes |  |
-| `runId` | string | no | RunID selects the run to download from. Template-expandable (e.g.
-"{{ .Steps.build_app.ChildRunID }}" to fetch from a call step's child
-run). Empty means the current run. The expanded value must match
-^[A-Za-z0-9_-]{1,64}$; the expansion context excludes Secrets and Stdout. |
+| `runId` | string | no | RunID selects the run to download from. Template-expandable (e.g. "{{ .Steps.build_app.ChildRunID }}" to fetch from a call step's child run). Empty means the current run. The expanded value must match ^[A-Za-z0-9_-]{1,64}$; the expansion context excludes Secrets and Stdout. |
 
 ### ForeachDef
 
@@ -233,20 +200,10 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 | `retry` | RetrySpec | no |  |
 | `run` | string | no |  |
 | `runsIn` | RunsIn | no |  |
-| `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image
-makes the whole template one isolated scope. Steps sharing ScopeID run
-in one environment. Not user-authored. |
+| `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image makes the whole template one isolated scope. Steps sharing ScopeID run in one environment. Not user-authored. |
 | `scopeImage` | string | no |  |
-| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside
-ScopeImage — see the ScopeImage comment above. Limits only: apply-time
-validation rejects runsIn.resources.requests (no host equivalent), so
-there is nothing else for this to carry. Not user-authored. |
-| `shell` | []string | no | Shell overrides the effective interpreter argv for this step. Array
-form only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is
-appended as the final argv element. Resolution priority (most specific
-wins): step.shell > a uses: template's own declared shell > spec.shell
-(job-level) > system default. Steps inside parallel: and finally:
-count as steps for this purpose. |
+| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside ScopeImage — see the ScopeImage comment above. Limits only: apply-time validation rejects runsIn.resources.requests (no host equivalent), so there is nothing else for this to carry. Not user-authored. |
+| `shell` | []string | no | Shell overrides the effective interpreter argv for this step. Array form only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is appended as the final argv element. Resolution priority (most specific wins): step.shell &gt; a uses: template's own declared shell &gt; spec.shell (job-level) &gt; system default. Steps inside parallel: and finally: count as steps for this purpose. |
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
@@ -260,12 +217,7 @@ Executed in LIFO order after RunDAG completes.
 |-------|------|----------|-------------|
 | `env` | map[string]string | no |  |
 | `run` | string | no |  |
-| `shell` | []string | no | Shell overrides the interpreter argv for this post hook. When absent,
-the hook inherits its owning step's effective shell. The override
-exists because inheritance alone breaks down for non-shell
-interpreters: a step running under shell: [python3, -c] with a
-shell-script cleanup hook needs post: {shell: [sh, -c], run: ...} to
-be expressible at all. |
+| `shell` | []string | no | Shell overrides the interpreter argv for this post hook. When absent, the hook inherits its owning step's effective shell. The override exists because inheritance alone breaks down for non-shell interpreters: a step running under shell: [python3, -c] with a shell-script cleanup hook needs post: {shell: [sh, -c], run: ...} to be expressible at all. |
 
 ### RetrySpec
 
@@ -273,9 +225,8 @@ RetrySpec configures automatic re-runs of a failing run: step.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `attempts` | integer | yes | Attempts is the total number of tries (1 = no retry). Must be >= 1. |
-| `backoff` | string | no | Backoff is a fixed wait between tries as a Go duration (e.g. "30s").
-Empty means 0 (immediate retry). |
+| `attempts` | integer | yes | Attempts is the total number of tries (1 = no retry). Must be &gt;= 1. |
+| `backoff` | string | no | Backoff is a fixed wait between tries as a Go duration (e.g. "30s"). Empty means 0 (immediate retry). |
 
 ### RunsIn
 
@@ -342,20 +293,14 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `choices` | []string | no | Fixed allow-list of values for this input (string or int type only), rendered by the Web UI as a <select>. Mutually exclusive with pattern:. If set, default: must be one of these choices. |
+| `choices` | []string | no | Fixed allow-list of values for this input (string or int type only), rendered by the Web UI as a &lt;select&gt;. Mutually exclusive with pattern:. If set, default: must be one of these choices. |
 | `default` | any | no |  |
 | `description` | string | no |  |
 | `name` | string | yes |  |
-| `pattern` | string | no | Pattern is a regular expression every supplied value must match (defaults
-are checked too, so a bad default cannot slip through). Param values are
-interpolated into step shell text, so a param fed from an untrusted
-source — a webhook payload especially — is a command-injection vector
-unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
+| `pattern` | string | no | Pattern is a regular expression every supplied value must match (defaults are checked too, so a bad default cannot slip through). Param values are interpolated into step shell text, so a param fed from an untrusted source — a webhook payload especially — is a command-injection vector unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
 | `required` | boolean | no |  |
 | `type` | `string` \| `bool` \| `int` \| `array` | yes |  |
-| `unvalidated` | boolean | no | Unvalidated explicitly opts this input out of the pattern requirement for
-payload-mapped params. Use only when the value is genuinely free-form and
-never reaches a shell. |
+| `unvalidated` | boolean | no | Unvalidated explicitly opts this input out of the pattern requirement for payload-mapped params. Use only when the value is genuinely free-form and never reaches a shell. |
 
 ### Output
 
@@ -368,7 +313,7 @@ never reaches a shell. |
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `cleanWorkspace` | boolean | no |  |
+| `cleanWorkspace` | boolean | no | CleanWorkspace is the same as spec.cleanWorkspace: it wipes a volume that serves as the job's workspace (a volume mounted at "."), and nothing else. The two are ORed. |
 | `name` | string | no |  |
 | `override` | PodSpecPatch | no |  |
 | `reuse` | boolean | no |  |
@@ -394,18 +339,9 @@ VolumeMount mounts an agent-owned named volume into the run's workspace.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `as` | string | no | As is the stable handle steps use to reach the volume. Required when
-Name is a list of several candidates or contains a template, because the
-chosen name is not known when the job is written; otherwise it defaults
-to the single literal Name. A step reads the volume's absolute path from
-$UNIFIED_VOLUME_<AS>: upper-cased, with "-" as "_" (go-cache gives
-UNIFIED_VOLUME_GO_CACHE). Two entries whose aliases give one variable
-are rejected. |
-| `mountPath` | string | yes | MountPath is where the volume appears: relative to the workspace ("."
-is the workspace root), or an absolute path outside the workspace. |
-| `name` | string \| []string | yes | Name is the volume to mount: one literal name, a list of candidate
-names (the agent picks a free one), or a template expanded against the
-run's params. |
+| `as` | string | no | As is the stable handle steps use to reach the volume. Required when Name is a list of several candidates or contains a template, because the chosen name is not known when the job is written; otherwise it defaults to the single literal Name. A step reads the volume's absolute path from $UNIFIED_VOLUME_&lt;AS&gt;: upper-cased, with "-" as "_" (go-cache gives UNIFIED_VOLUME_GO_CACHE). Two entries whose aliases give one variable are rejected. |
+| `mountPath` | string | yes | MountPath is where the volume appears: relative to the workspace ("." is the workspace root), or an absolute path outside the workspace. |
+| `name` | string \| []string | yes | Name is the volume to mount: one literal name, a list of candidate names (the agent picks a free one), or a template expanded against the run's params. |
 
 ## JobTemplate
 
@@ -439,10 +375,7 @@ JobTemplateSpec is the uses:-supported subset of a job spec.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `description` | string | no |  |
-| `finally` | []StepEntry | no | Finally steps run in the CALLER's finally phase (appended after the
-caller's own finally steps, prefixed like all inlined steps). Rejected
-in scope mode (runsIn.image), where the scope pod's lifetime ends with
-the template body. |
+| `finally` | []StepEntry | no | Finally steps run in the CALLER's finally phase (appended after the caller's own finally steps, prefixed like all inlined steps). Rejected in scope mode (runsIn.image), where the scope pod's lifetime ends with the template body. |
 | `params` | Params | no |  |
 | `podTemplate` | JobTemplatePodTemplate | no |  |
 | `shell` | []string | no |  |
@@ -472,16 +405,10 @@ The two forms are mutually exclusive; Validate enforces this.
 | `retry` | RetrySpec | no |  |
 | `run` | string | no |  |
 | `runsIn` | RunsIn | no |  |
-| `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image
-makes the whole template one isolated scope. Steps sharing ScopeID run
-in one environment. Not user-authored. |
+| `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image makes the whole template one isolated scope. Steps sharing ScopeID run in one environment. Not user-authored. |
 | `scopeImage` | string | no |  |
-| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside
-ScopeImage — see the ScopeImage comment above. Limits only: apply-time
-validation rejects runsIn.resources.requests (no host equivalent), so
-there is nothing else for this to carry. Not user-authored. |
-| `shell` | []string | no | Shell overrides the effective interpreter argv for this step. See
-Step.Shell for the full resolution priority. |
+| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside ScopeImage — see the ScopeImage comment above. Limits only: apply-time validation rejects runsIn.resources.requests (no host equivalent), so there is nothing else for this to carry. Not user-authored. |
+| `shell` | []string | no | Shell overrides the effective interpreter argv for this step. See Step.Shell for the full resolution priority. |
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
@@ -518,10 +445,7 @@ TimeoutMinutes defaults to 60 (applied at compile time) when zero.
 |-------|------|----------|-------------|
 | `destDir` | string | no | defaults to the current directory if omitted |
 | `name` | string | yes |  |
-| `runId` | string | no | RunID selects the run to download from. Template-expandable (e.g.
-"{{ .Steps.build_app.ChildRunID }}" to fetch from a call step's child
-run). Empty means the current run. The expanded value must match
-^[A-Za-z0-9_-]{1,64}$; the expansion context excludes Secrets and Stdout. |
+| `runId` | string | no | RunID selects the run to download from. Template-expandable (e.g. "{{ .Steps.build_app.ChildRunID }}" to fetch from a call step's child run). Empty means the current run. The expanded value must match ^[A-Za-z0-9_-]{1,64}$; the expansion context excludes Secrets and Stdout. |
 
 ### ForeachDef
 
@@ -575,20 +499,10 @@ Step is a concrete step. Used inside parallel: blocks and as the body of a StepE
 | `retry` | RetrySpec | no |  |
 | `run` | string | no |  |
 | `runsIn` | RunsIn | no |  |
-| `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image
-makes the whole template one isolated scope. Steps sharing ScopeID run
-in one environment. Not user-authored. |
+| `scopeID` | string | no | Scope tagging: set by inline expansion when a uses-level runsIn.image makes the whole template one isolated scope. Steps sharing ScopeID run in one environment. Not user-authored. |
 | `scopeImage` | string | no |  |
-| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside
-ScopeImage — see the ScopeImage comment above. Limits only: apply-time
-validation rejects runsIn.resources.requests (no host equivalent), so
-there is nothing else for this to carry. Not user-authored. |
-| `shell` | []string | no | Shell overrides the effective interpreter argv for this step. Array
-form only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is
-appended as the final argv element. Resolution priority (most specific
-wins): step.shell > a uses: template's own declared shell > spec.shell
-(job-level) > system default. Steps inside parallel: and finally:
-count as steps for this purpose. |
+| `scopeResourceLimits` | ResourceList | no | ScopeResourceLimits carries outerRunsIn.Resources.Limits alongside ScopeImage — see the ScopeImage comment above. Limits only: apply-time validation rejects runsIn.resources.requests (no host equivalent), so there is nothing else for this to carry. Not user-authored. |
+| `shell` | []string | no | Shell overrides the effective interpreter argv for this step. Array form only (v1): e.g. [bash, -lc] or [python3, -c]; the run: script is appended as the final argv element. Resolution priority (most specific wins): step.shell &gt; a uses: template's own declared shell &gt; spec.shell (job-level) &gt; system default. Steps inside parallel: and finally: count as steps for this purpose. |
 | `timeoutMinutes` | number | no |  |
 | `uploadArtifact` | UploadArtifactStep | no |  |
 | `uses` | UsesStep | no |  |
@@ -602,12 +516,7 @@ Executed in LIFO order after RunDAG completes.
 |-------|------|----------|-------------|
 | `env` | map[string]string | no |  |
 | `run` | string | no |  |
-| `shell` | []string | no | Shell overrides the interpreter argv for this post hook. When absent,
-the hook inherits its owning step's effective shell. The override
-exists because inheritance alone breaks down for non-shell
-interpreters: a step running under shell: [python3, -c] with a
-shell-script cleanup hook needs post: {shell: [sh, -c], run: ...} to
-be expressible at all. |
+| `shell` | []string | no | Shell overrides the interpreter argv for this post hook. When absent, the hook inherits its owning step's effective shell. The override exists because inheritance alone breaks down for non-shell interpreters: a step running under shell: [python3, -c] with a shell-script cleanup hook needs post: {shell: [sh, -c], run: ...} to be expressible at all. |
 
 ### RetrySpec
 
@@ -615,9 +524,8 @@ RetrySpec configures automatic re-runs of a failing run: step.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `attempts` | integer | yes | Attempts is the total number of tries (1 = no retry). Must be >= 1. |
-| `backoff` | string | no | Backoff is a fixed wait between tries as a Go duration (e.g. "30s").
-Empty means 0 (immediate retry). |
+| `attempts` | integer | yes | Attempts is the total number of tries (1 = no retry). Must be &gt;= 1. |
+| `backoff` | string | no | Backoff is a fixed wait between tries as a Go duration (e.g. "30s"). Empty means 0 (immediate retry). |
 
 ### RunsIn
 
@@ -684,20 +592,14 @@ Job must be a git:// URI; unlike CallStep, it never references a registered job 
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `choices` | []string | no | Fixed allow-list of values for this input (string or int type only), rendered by the Web UI as a <select>. Mutually exclusive with pattern:. If set, default: must be one of these choices. |
+| `choices` | []string | no | Fixed allow-list of values for this input (string or int type only), rendered by the Web UI as a &lt;select&gt;. Mutually exclusive with pattern:. If set, default: must be one of these choices. |
 | `default` | any | no |  |
 | `description` | string | no |  |
 | `name` | string | yes |  |
-| `pattern` | string | no | Pattern is a regular expression every supplied value must match (defaults
-are checked too, so a bad default cannot slip through). Param values are
-interpolated into step shell text, so a param fed from an untrusted
-source — a webhook payload especially — is a command-injection vector
-unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
+| `pattern` | string | no | Pattern is a regular expression every supplied value must match (defaults are checked too, so a bad default cannot slip through). Param values are interpolated into step shell text, so a param fed from an untrusted source — a webhook payload especially — is a command-injection vector unless constrained. Suggested starting point: ^[A-Za-z0-9._/-]+$ |
 | `required` | boolean | no |  |
 | `type` | `string` \| `bool` \| `int` \| `array` | yes |  |
-| `unvalidated` | boolean | no | Unvalidated explicitly opts this input out of the pattern requirement for
-payload-mapped params. Use only when the value is genuinely free-form and
-never reaches a shell. |
+| `unvalidated` | boolean | no | Unvalidated explicitly opts this input out of the pattern requirement for payload-mapped params. Use only when the value is genuinely free-form and never reaches a shell. |
 
 ### Output
 
@@ -788,7 +690,7 @@ WebhookReceiver is the DSL type for webhook receiver configuration.
 | `allowUnauthenticated` | boolean | no | required alongside type: none — makes an unauthenticated webhook a deliberate, greppable opt-in |
 | `header` | string | no | token type only: header to compare (default X-Gitlab-Token) |
 | `secretRef` | string | no |  |
-| `type` | `none` \| `hmac-sha256` \| `github` \| `token` | yes | none | hmac-sha256 | github | token |
+| `type` | `none` \| `hmac-sha256` \| `github` \| `token` | yes | none \| hmac-sha256 \| github \| token |
 
 ### WebhookTrigger
 
@@ -831,8 +733,7 @@ the named AppSource on the next reconciler tick.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `allowManualOverride` | boolean | no | AllowManualOverride disables the managed-resource write guard for
-resources managed by this AppSource (direct apply/delete is allowed). |
+| `allowManualOverride` | boolean | no | AllowManualOverride disables the managed-resource write guard for resources managed by this AppSource (direct apply/delete is allowed). |
 | `interval` | string | no |  |
 | `prune` | boolean | no |  |
 

@@ -11,6 +11,45 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCellText(t *testing.T) {
+	for name, tc := range map[string]struct{ in, want string }{
+		"plain":           {"a plain description", "a plain description"},
+		"newlines":        {"wraps over\nthree\n  lines", "wraps over three lines"},
+		"blank line":      {"one\n\ntwo", "one two"},
+		"angle brackets":  {"path from\n$UNIFIED_VOLUME_<AS>: upper-cased", "path from $UNIFIED_VOLUME_&lt;AS&gt;: upper-cased"},
+		"a select":        {"rendered as a <select>.", "rendered as a &lt;select&gt;."},
+		"pipe":            {"none | hmac-sha256", `none \| hmac-sha256`},
+		"code span":       {"host: `<rt> run`; k8s", "host: `<rt> run`; k8s"},
+		"pipe in code":    {"use `a|b` here", "use `a\\|b` here"},
+		"after a code":    {"`x` then <y>", "`x` then &lt;y&gt;"},
+		"comparison":      {"Must be >= 1.", "Must be &gt;= 1."},
+		"empty":           {"", ""},
+		"only whitespace": {" \n\t ", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, tc.want, cellText(tc.in))
+		})
+	}
+}
+
+// A description that wraps over several lines must not end the table early: every
+// property of a type is a row of that type's table.
+func TestWriteSectionKeepsEveryRowOfATableWhoseDescriptionsWrap(t *testing.T) {
+	def := map[string]any{"properties": map[string]any{
+		"a": map[string]any{"type": "string", "description": "first line\nsecond line"},
+		"b": map[string]any{"type": "string", "description": "uses $X_<AS> and a | bar"},
+		"c": map[string]any{"type": "string"},
+	}}
+	var sb strings.Builder
+	writeSection(&sb, "T", def, map[string]any{}, map[string]bool{})
+	lines := strings.Split(strings.TrimSpace(sb.String()), "\n")
+	require.Len(t, lines, 5, "a header, a rule and one line per property")
+	for _, l := range lines {
+		require.True(t, strings.HasPrefix(l, "|") && strings.HasSuffix(l, "|"), "every line is a table row: %q", l)
+	}
+	require.Contains(t, sb.String(), "$X_&lt;AS&gt; and a \\| bar")
+}
+
 // TestFieldReferenceIsUpToDate regenerates docs/reference/field-reference.md
 // in memory — parsing internal/dsl/*_types.go and building the schema the
 // same way schemagen does, then rendering it through generateDoc — and

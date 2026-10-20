@@ -94,9 +94,9 @@ func NewVolumeManager(base string, cfgs []config.VolumeConfig) (*VolumeManager, 
 		pinned:  make(map[string]struct{}),
 
 		removeLink: os.Remove,
-		changed: make(chan struct{}),
-		walk:    filepath.WalkDir,
-		locks:   newVolumeLockState(),
+		changed:    make(chan struct{}),
+		walk:       filepath.WalkDir,
+		locks:      newVolumeLockState(),
 	}
 
 	for _, c := range cfgs {
