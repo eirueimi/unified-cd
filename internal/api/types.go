@@ -139,6 +139,20 @@ type AgentRegisterRequest struct {
 	Volumes []string `json:"volumes,omitempty"`
 }
 
+// ClaimRequest is the optional JSON body of a normal (non-detached) claim.
+// An agent that predates it sends no body, which means the same as the zero
+// value.
+type ClaimRequest struct {
+	// BusyVolumes lists what the agent is holding right now: the exclusive
+	// volumes held by its running claims, and the absolute native mount paths
+	// they occupy. The controller does not hand the agent a run that needs a
+	// volume named here. It is an optimisation that stops an agent claiming a
+	// run it would then wait on while holding a concurrency slot; the agent's
+	// own reservation is what actually enforces exclusion. Absolute paths match
+	// no volume name and are ignored by the controller.
+	BusyVolumes []string `json:"busyVolumes,omitempty"`
+}
+
 type ClaimResponse struct {
 	RunID   string            `json:"runId"`
 	JobName string            `json:"jobName"`
@@ -157,6 +171,11 @@ type ClaimResponse struct {
 	PodTemplate           *dsl.PodTemplate `json:"podTemplate,omitempty"`
 	Native                bool             `json:"native,omitempty"`
 	MatrixMaxCombinations int              `json:"matrixMaxCombinations,omitempty"`
+	// Volumes are the job's spec.volumes with every name expanded against the
+	// run's params, exactly as the controller routed the run on them. Each
+	// entry may still list several candidate names; the agent picks one it can
+	// hold.
+	Volumes []dsl.VolumeMount `json:"volumes,omitempty"`
 }
 
 // ClaimStage is either a single step (Step set) or an explicit parallel group (Parallel set).

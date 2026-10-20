@@ -831,8 +831,10 @@ func (p *Postgres) ClaimNextRun(ctx context.Context, agentID string, agentLabels
 }
 
 // ClaimNextRunDetached claims the next queued detached run for the agent. It
-// takes no busy-volume list, so every volume the agent advertises is treated as
-// free when matching a detached run's required volumes.
+// takes no busy-volume list because it never needs one: spec.volumes is
+// rejected on a detached job at apply time (dsl.ValidateVolumes), so a detached
+// run's required_volumes is always empty and the volume clause of the claim
+// query is vacuously true for it.
 func (p *Postgres) ClaimNextRunDetached(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error) {
 	return p.claimNextRun(ctx, agentID, agentLabels, nil, true)
 }
