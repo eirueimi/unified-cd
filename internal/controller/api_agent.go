@@ -443,6 +443,7 @@ func buildClaimResponse(c *store.ClaimedRun, globalVars map[string]string) (api.
 		TimeoutMinutes: spec.TimeoutMinutes,
 		PodTemplate:    spec.PodTemplate,
 		Native:         spec.Native,
+		CleanWorkspace: spec.CleanWorkspace,
 	}
 
 	// The stored spec still holds the volume names as the job wrote them; the

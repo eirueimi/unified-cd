@@ -174,6 +174,9 @@ func TestPrepareWorkspace_VolumeBackedModeFlipFailsAndKeepsData(t *testing.T) {
 	assert.Contains(t, err.Error(), `"unity"`)
 	assert.Contains(t, err.Error(), "isolated")
 	assert.Contains(t, err.Error(), "native")
+	assert.Contains(t, err.Error(), "spec.cleanWorkspace", "the remedy a native job can actually use")
+	assert.Contains(t, err.Error(), vol.ModeMarker, "the operator's manual exit")
+	assert.NotContains(t, err.Error(), "a isolated")
 	assert.FileExists(t, filepath.Join(dir, "Library", "cache.bin"))
 	assert.FileExists(t, filepath.Join(dir, "top.txt"))
 

@@ -726,6 +726,10 @@
           },
           "type": "array"
         },
+        "cleanWorkspace": {
+          "description": "CleanWorkspace asks the agent to empty a volume that serves as this\njob's workspace (a spec.volumes entry mounted at \".\") before the run. An\nordinary workspace is always emptied and needs no flag; this exists\nbecause a volume is never wiped otherwise, and a native job cannot use\npodTemplate.cleanWorkspace. The agent-wide --clean-workspace flag never\nwipes a volume.",
+          "type": "boolean"
+        },
         "concurrency": {
           "$ref": "#/definitions/Concurrency"
         },

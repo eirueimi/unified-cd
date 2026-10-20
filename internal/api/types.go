@@ -172,10 +172,14 @@ type ClaimResponse struct {
 	JobOutputs    []string          `json:"jobOutputs"`
 	SecretsNeeded []string          `json:"secretsNeeded"`
 	// FailFast removed
-	TimeoutMinutes        float64          `json:"timeoutMinutes,omitempty"`
-	PodTemplate           *dsl.PodTemplate `json:"podTemplate,omitempty"`
-	Native                bool             `json:"native,omitempty"`
-	MatrixMaxCombinations int              `json:"matrixMaxCombinations,omitempty"`
+	TimeoutMinutes float64          `json:"timeoutMinutes,omitempty"`
+	PodTemplate    *dsl.PodTemplate `json:"podTemplate,omitempty"`
+	Native         bool             `json:"native,omitempty"`
+	// CleanWorkspace is the job's spec.cleanWorkspace. The agent ORs it with
+	// PodTemplate.CleanWorkspace to decide whether to wipe a volume used as
+	// the workspace.
+	CleanWorkspace        bool `json:"cleanWorkspace,omitempty"`
+	MatrixMaxCombinations int  `json:"matrixMaxCombinations,omitempty"`
 	// Volumes are the job's spec.volumes with every name expanded against the
 	// run's params, exactly as the controller routed the run on them. Each
 	// entry may still list several candidate names; the agent picks one it can

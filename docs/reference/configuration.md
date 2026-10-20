@@ -151,7 +151,7 @@ unified-cd-agent [FLAGS]
   --cache-bucket          string    Cache storage bucket name
   --max-concurrent        int       Max simultaneous runs (default: 1)
   --max-detached-concurrent int     Max simultaneous detached (spec.detached) runs, from a pool separate from --max-concurrent; 0/unset=default 16, negative=off (env: UNIFIED_AGENT_MAX_DETACHED)
-  --clean-workspace       bool      No longer has any effect: an ordinary workspace is always emptied before and after every run, and a volume used as the workspace is never wiped by this flag (only a job's own podTemplate.cleanWorkspace wipes it). Kept so existing agent configs still start
+  --clean-workspace       bool      No longer has any effect: an ordinary workspace is always emptied before and after every run, and a volume used as the workspace is never wiped by this flag (only a job's own spec.cleanWorkspace or podTemplate.cleanWorkspace wipes it). Kept so existing agent configs still start
   --workspace-dir         string    Base directory for run workspaces (default: current directory at agent startup; env: UNIFIED_AGENT_WORKSPACE_DIR)
   --drain-timeout         duration  Max wait after SIGTERM before forced shutdown (0 = wait forever)
   --finally-timeout       duration  Ceiling on each of a run's post-DAG cleanup phases (the spec.finally pipeline, and each post:/cache: hook drain); 0/unset = default 10m (env: UNIFIED_AGENT_FINALLY_TIMEOUT)

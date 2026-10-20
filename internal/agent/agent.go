@@ -540,15 +540,7 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				}
 				defer release()
 			}
-			// Only the job's own cleanWorkspace asks for a clean. The agent-wide
-			// --clean-workspace flag (a.CleanWorkspace) is deliberately not
-			// consulted: it is an operator hygiene default meant to keep a job
-			// from inheriting another run's leftovers, which an ordinary
-			// workspace now guarantees unconditionally. Applied to a volume it
-			// would destroy, every run, what the job declared it wants to keep.
-			// A volume is also never wiped AFTER a run, even with clean set:
-			// that would destroy exactly what the run produced.
-			clean := resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace
+			clean := claimWantsClean(resp)
 			// A volume at the workspace root IS the workspace (executeRun runs
 			// in its directory), and is the one thing that persists between
 			// runs. Its mode marker lives under wsBase, outside the volume, and
@@ -602,7 +594,7 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 						"toolsDir", a.ToolsDir, "runId", resp.RunID)
 				}
 			}
-			a.executeRun(runCtx, resp, workDir)
+			a.executeRun(runCtx, resp, prepDir)
 		}()
 	}
 }
@@ -681,13 +673,12 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		a.failRun(ctx, c.RunID, fmt.Sprintf("%s: %v", msg, err))
 	}
 
-	// A volume at the workspace root IS the workspace: the run works in the
-	// volume's directory rather than the per-run one. Every other mount is
-	// made relative to wherever that is.
-	root := workspaceVolumeDir(c.Volumes, a.Volumes)
-	if root != "" {
-		workDir = root
-	}
+	// workDir is where the run works, already resolved by runLoop: the volume's
+	// directory when a volume is mounted at the workspace root (that volume IS
+	// the workspace), the per-run directory otherwise. It is passed in rather
+	// than recomputed here so the directory runLoop prepares and sweeps can
+	// never differ from the one the run uses. Every other mount is made
+	// relative to it.
 	// Native volume mounts are links, made here and removed when the run ends.
 	// An isolated run's host side is just its mountpoint directories; the
 	// bind mounts themselves are added to the claim pod below.
@@ -735,12 +726,13 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				failClaim("volume mount failed", verr)
 				return
 			}
-			// The pod's workspace mount uses workDir, which is root above. Two
-			// computations of "the root volume's host directory" must agree, or
-			// the container would mount a different directory than the host
-			// side reads and writes.
-			if rootHost != root {
-				failClaim("volume mount failed", fmt.Errorf("internal error: the root volume resolves to %q for the pod but %q for the host workspace", rootHost, root))
+			// The pod's workspace mount uses workDir, which runLoop resolved to
+			// the root volume's directory. When the claim has a root volume, the
+			// two computations of its host directory must agree, or the
+			// container would mount a different directory than the host side
+			// reads and writes.
+			if rootHost != "" && rootHost != workDir {
+				failClaim("volume mount failed", fmt.Errorf("internal error: the root volume resolves to %q for the pod but %q for the host workspace", rootHost, workDir))
 				return
 			}
 			pod.volumeMounts = extra
@@ -776,14 +768,18 @@ var runClaimFn = RunClaim
 // Production code always leaves this as prepareWorkspace.
 var prepareWorkspaceFn = prepareWorkspace
 
-// warnInRunLog writes a line into the run's own System log (step -1, the same
-// place failRun and the volume wait use) and the agent's log. Best effort: the
-// run proceeds either way.
-func (a *Agent) warnInRunLog(ctx context.Context, runID, msg string) {
-	slog.Warn(msg, "runId", runID)
-	_ = a.Client.AppendLogBulk(ctx, a.ID, runID, -1, []api.LogAppendRequest{{
-		RunID: runID, StepIndex: -1, Stream: "stderr", Timestamp: time.Now().UTC(), Line: msg,
-	}})
+// claimWantsClean reports whether the job itself asked for a clean workspace:
+// spec.cleanWorkspace (any job, and the only way for a native one, which has no
+// podTemplate) or podTemplate.cleanWorkspace.
+//
+// The agent-wide --clean-workspace flag (Agent.CleanWorkspace) is deliberately
+// not consulted. It is an operator hygiene default meant to keep a job from
+// inheriting another run's leftovers, which an ordinary workspace now
+// guarantees unconditionally. Applied to a volume it would destroy, every run,
+// what the job declared it wants to keep. And a volume is never wiped AFTER a
+// run even when this is true: that would destroy exactly what the run produced.
+func claimWantsClean(c api.ClaimResponse) bool {
+	return c.CleanWorkspace || (c.PodTemplate != nil && c.PodTemplate.CleanWorkspace)
 }
 
 // failRun fails a claim that could not even begin executing (workspace

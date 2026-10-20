@@ -42,6 +42,13 @@ type Spec struct {
 	// no podTemplate, no container: steps). Host agents only; the default
 	// (false) is the isolated pod model on both backends.
 	Native bool `yaml:"native,omitempty" json:"native,omitempty"`
+	// CleanWorkspace asks the agent to empty a volume that serves as this
+	// job's workspace (a spec.volumes entry mounted at ".") before the run. An
+	// ordinary workspace is always emptied and needs no flag; this exists
+	// because a volume is never wiped otherwise, and a native job cannot use
+	// podTemplate.cleanWorkspace. The agent-wide --clean-workspace flag never
+	// wipes a volume.
+	CleanWorkspace bool `yaml:"cleanWorkspace,omitempty" json:"cleanWorkspace,omitempty"`
 	// Detached marks this job's runs as lightweight orchestrators: they do not
 	// consume an agent's MaxConcurrent budget and are claimed from a separate
 	// MaxDetachedConcurrent pool, and get an independent per-run workspace on

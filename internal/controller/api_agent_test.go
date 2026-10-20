@@ -600,6 +600,20 @@ func TestBuildClaimResponse_ThreadsNative(t *testing.T) {
 	assert.True(t, resp.Native)
 }
 
+// TestBuildClaimResponse_ThreadsCleanWorkspace verifies the job's
+// spec.cleanWorkspace reaches the agent. A native job cannot set
+// podTemplate.cleanWorkspace, so this is its only way to ask for a clean.
+func TestBuildClaimResponse_ThreadsCleanWorkspace(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		spec := dsl.Spec{Native: true, CleanWorkspace: want, Steps: []dsl.StepEntry{{Name: "s", Run: "true"}}}
+		b, err := json.Marshal(spec)
+		require.NoError(t, err)
+		resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
+		require.NoError(t, err)
+		assert.Equal(t, want, resp.CleanWorkspace)
+	}
+}
+
 // TestBuildClaimResponse_RejectsPreMigrationStepRunsIn verifies a job stored
 // before the 2026-07-08 job-isolation release (whose persisted spec JSON
 // still carries the removed step-level runsIn: on a non-uses step) fails

@@ -137,7 +137,8 @@ func prepareWorkspace(ctx context.Context, workDir, mode string, vol *volumeWork
 	prev, _ := os.ReadFile(vol.ModeMarker)
 	if len(prev) > 0 && string(prev) != mode {
 		if !clean {
-			return fmt.Errorf("volume %q was last used by a %s run and this run is %s: the agent will not reset a volume itself, because that would delete its contents. Keep the job's native setting unchanged, or set podTemplate.cleanWorkspace to wipe the volume once and continue", vol.Name, string(prev), mode)
+			return fmt.Errorf("volume %q was last used by %s run and this run is %s: the agent will not reset a volume itself, because that would delete its contents. To keep the data, run the job as %s again. To wipe the volume once and continue as %s, set spec.cleanWorkspace: true on the job. The agent records the mode in %s; deleting that file also lets the run proceed without wiping",
+				vol.Name, withArticle(string(prev)), mode, string(prev), mode, vol.ModeMarker)
 		}
 		slog.Info("volume mode changed; wiping it because cleanWorkspace is set", "volume", vol.Name, "from", string(prev), "to", mode)
 	}
@@ -155,6 +156,15 @@ func prepareWorkspace(ctx context.Context, workDir, mode string, vol *volumeWork
 		slog.Warn("write volume mode marker failed", "volume", vol.Name, "error", err)
 	}
 	return nil
+}
+
+// withArticle prefixes a mode with the right indefinite article for a message
+// ("an isolated", "a native").
+func withArticle(mode string) string {
+	if mode != "" && strings.ContainsRune("aeiou", rune(mode[0])) {
+		return "an " + mode
+	}
+	return "a " + mode
 }
 
 // finishWorkspace sweeps an ordinary workspace once its run has ended, so the

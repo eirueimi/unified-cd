@@ -39,6 +39,12 @@
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `agentSelector` | []string | no |  |
+| `cleanWorkspace` | boolean | no | CleanWorkspace asks the agent to empty a volume that serves as this
+job's workspace (a spec.volumes entry mounted at ".") before the run. An
+ordinary workspace is always emptied and needs no flag; this exists
+because a volume is never wiped otherwise, and a native job cannot use
+podTemplate.cleanWorkspace. The agent-wide --clean-workspace flag never
+wipes a volume. |
 | `concurrency` | Concurrency | no |  |
 | `description` | string | no | Description is a human-readable summary of the job, shown in the WebUI. |
 | `detached` | boolean | no | Detached marks this job's runs as lightweight orchestrators: they do not

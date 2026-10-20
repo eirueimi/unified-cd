@@ -1200,13 +1200,14 @@ func runVolumeClaims(t *testing.T, a *Agent, srv *volumeLoopServer, claims ...st
 	return got
 }
 
-// The job's own podTemplate.cleanWorkspace is the explicit way to empty a
-// volume used as the workspace (it used to be refused with a warning).
-func TestRunLoop_JobCleanWorkspaceWipesAVolumeWorkspace(t *testing.T) {
+// A native job has no podTemplate, so its spec.cleanWorkspace is the explicit
+// way to empty a volume used as the workspace (it used to be refused with a
+// warning).
+func TestRunLoop_NativeSpecCleanWorkspaceWipesAVolumeWorkspace(t *testing.T) {
 	srv := newVolumeLoopServer(t, func(n int, _ <-chan string) *api.ClaimResponse {
 		if n == 0 {
 			c := volumeClaim("run-1", "test ! -e old.txt", vmount("unity", "", "."))
-			c.PodTemplate = &dsl.PodTemplate{CleanWorkspace: true}
+			c.CleanWorkspace = true // native with no podTemplate: the only shape a native job can have
 			return c
 		}
 		return nil
@@ -1217,6 +1218,16 @@ func TestRunLoop_JobCleanWorkspaceWipesAVolumeWorkspace(t *testing.T) {
 
 	require.Equal(t, "Succeeded", runVolumeClaims(t, a, srv, "run-1")["run-1"])
 	require.NoFileExists(t, filepath.Join(vdir, "old.txt"))
+}
+
+// Either job-level setting asks for a clean: spec.cleanWorkspace (any job) or
+// podTemplate.cleanWorkspace (an isolated job). Nothing else does.
+func TestClaimWantsClean(t *testing.T) {
+	require.False(t, claimWantsClean(api.ClaimResponse{}))
+	require.False(t, claimWantsClean(api.ClaimResponse{PodTemplate: &dsl.PodTemplate{}}))
+	require.True(t, claimWantsClean(api.ClaimResponse{CleanWorkspace: true}))
+	require.True(t, claimWantsClean(api.ClaimResponse{PodTemplate: &dsl.PodTemplate{CleanWorkspace: true}}))
+	require.True(t, claimWantsClean(api.ClaimResponse{CleanWorkspace: true, PodTemplate: &dsl.PodTemplate{CleanWorkspace: true}}))
 }
 
 // The agent-wide --clean-workspace flag is an operator hygiene default; it must
