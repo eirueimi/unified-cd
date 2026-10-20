@@ -499,10 +499,9 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	}
 	podReady = true
 
-	mountPath := "/workspace"
-	if c.PodTemplate != nil && c.PodTemplate.Workspace != nil && c.PodTemplate.Workspace.MountPath != "" {
-		mountPath = c.PodTemplate.Workspace.MountPath
-	}
+	// Where the pod mounted the workspace: resolved exactly as BuildPod did, so
+	// the backend, the volume paths and any wipe name the same directory.
+	mountPath := a.workspaceMount(c.PodTemplate)
 
 	// A reused pod outlives its runs, so its workspace holds the previous
 	// run's files. The default workspace is ephemeral (a fresh pod's emptyDir

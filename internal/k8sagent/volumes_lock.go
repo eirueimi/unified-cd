@@ -33,7 +33,12 @@ import (
 // Nothing about the lock lives in a process. A holder that died leaves its
 // annotation behind; it is treated as stale, and taken over, once the named run
 // has no live pod and the grace period has passed (the grace covers the moment
-// between writing the annotation and creating the pod). The pod labels
+// between writing the annotation and creating the pod). That grace is not a
+// guarantee, since nothing renews the annotation and replicas' clocks can
+// disagree about its age, so the lock is read AGAIN after the pod is created: a
+// run whose lock no longer names it deletes its pod and goes back to waiting
+// (tryCreateWithVolumes). The create is also bounded to a quarter of the grace.
+// The pod labels
 // (BusyVolumes) remain the record of who is using a volume right now, and the
 // choice of volume consults both.
 const (
@@ -153,6 +158,29 @@ func (a *K8sAgent) holderIsLive(ctx context.Context, pvc *corev1.PersistentVolum
 		}
 	}
 	return false, nil
+}
+
+// lostLock re-reads the lock of every exclusive volume in chosen and returns the
+// first that no longer names runID. A read error is returned as an error and is
+// to be treated as a lost lock: not knowing is never read as holding.
+func (a *K8sAgent) lostLock(ctx context.Context, chosen []string, runID string) (string, error) {
+	declared := a.declaredVolumes()
+	pvcs := a.kube.CoreV1().PersistentVolumeClaims(a.cfg.Namespace)
+	seen := map[string]bool{}
+	for _, n := range chosen {
+		if seen[n] || declared[n].Mode != agentlib.VolumeModeExclusive {
+			continue
+		}
+		seen[n] = true
+		pvc, err := pvcs.Get(ctx, claimNameFor(a.cfg.AgentName, n), metav1.GetOptions{})
+		if err != nil {
+			return n, fmt.Errorf("volume %q: re-read PVC to confirm the lock: %w", n, err)
+		}
+		if pvc.Annotations[annoVolumeHeldBy] != runID {
+			return n, nil
+		}
+	}
+	return "", nil
 }
 
 // lockExclusive takes the lock of every exclusive volume in chosen, in name

@@ -282,7 +282,6 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 	annotations := map[string]string{}
 
 	var podSpec *corev1.PodSpec
-	var wsCfg *dsl.WorkspaceConfig
 
 	switch {
 	case jobTmpl == nil:
@@ -298,10 +297,6 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 		if err != nil {
 			return nil, fmt.Errorf("parse agent template %q spec: %w", jobTmpl.Name, err)
 		}
-		wsCfg = at.Workspace
-		if jobTmpl.Workspace != nil {
-			wsCfg = jobTmpl.Workspace
-		}
 		if jobTmpl.Override != nil {
 			if err := applyPatch(podSpec, jobTmpl.Override); err != nil {
 				return nil, fmt.Errorf("apply pod spec patch: %w", err)
@@ -314,11 +309,11 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 		if err != nil {
 			return nil, fmt.Errorf("parse inline pod spec: %w", err)
 		}
-		wsCfg = jobTmpl.Workspace
 
 	default:
 		podSpec = defaultPodSpec(fallbackImage)
 	}
+	wsCfg := resolveWorkspaceConfig(agentTmpls, jobTmpl)
 
 	// Annotate every reuse pod as in-use at creation time, regardless of
 	// which branch above built its spec — a NAMED template pod carries
@@ -628,6 +623,32 @@ func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) error 
 		}
 	}
 	return nil
+}
+
+// resolveWorkspaceConfig is the workspace configuration a pod built from
+// jobTmpl gets: for a named template the agent template's, overridden by the
+// job's; for an inline spec the job's; none otherwise (no template, or a
+// template with neither a name nor a spec).
+//
+// BuildPod uses it to build the pod, and executeRun uses it for the mount path
+// the backend, the volume paths and the workspace wipe all work against. One
+// function, so the pod and the agent's idea of where the workspace is cannot
+// disagree (a named agent template can set workspace.mountPath, which the job
+// alone cannot see).
+func resolveWorkspaceConfig(agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate) *dsl.WorkspaceConfig {
+	switch {
+	case jobTmpl == nil:
+		return nil
+	case jobTmpl.Name != "":
+		if jobTmpl.Workspace != nil {
+			return jobTmpl.Workspace
+		}
+		return agentTmpls[jobTmpl.Name].Workspace
+	case jobTmpl.Spec != nil:
+		return jobTmpl.Workspace
+	default:
+		return nil
+	}
 }
 
 // workspaceMountOf is the container path of the workspace a pod built from

@@ -368,6 +368,96 @@ func TestExecuteRun_HoldsTheVolumeLockForTheRunAndReleasesItAfter(t *testing.T) 
 	assert.Empty(t, pvcAnnotation(t, f.cs, "agent1-unity-main", annoVolumeHeldAt))
 }
 
+// onCreatePM runs hook once, just before the first CreatePod: the moment a
+// stalled create lets the world move on.
+type onCreatePM struct {
+	podManager
+	once sync.Once
+	hook func()
+}
+
+func (p *onCreatePM) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	p.once.Do(p.hook)
+	return p.podManager.CreatePod(ctx, pod)
+}
+
+// TestVolumeLock_LockStolenDuringACreateIsNotKeptByThePod is the lock-to-pod
+// window. Nothing renews the lock while CreatePod is in flight, so a create that
+// stalls (client-side throttling) or a replica whose clock runs ahead can see the
+// lock judged stale and taken over by another replica. When the stalled create
+// finally succeeds the run no longer holds the volume, and its pod must not stay:
+// two pods would mount one exclusive volume.
+func TestVolumeLock_LockStolenDuringACreateIsNotKeptByThePod(t *testing.T) {
+	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
+	ctl := newControllerStub(t)
+	vols := []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")}
+	pm := &onCreatePM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}}
+	// Replica B judges A's lock stale and takes it over while A's create is in flight.
+	pm.hook = func() { setLock(t, cs, "agent1-unity-main", "run-b", time.Now()) }
+	a := lockReplica(cs, ctl.srv.URL, pm, vols)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	type result struct {
+		res claimPodResult
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		res, err := a.createClaimPod(ctx, claimFor("run-a", mount("unity-main", "", ".")))
+		done <- result{res, err}
+	}()
+
+	select {
+	case r := <-done:
+		t.Fatalf("run-a kept a pod for a volume run-b holds (err=%v)", r.err)
+	case <-time.After(400 * time.Millisecond):
+	}
+	pods, err := cs.CoreV1().Pods(testVolNS).List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, pods.Items, "the pod made under a lock that was lost is deleted")
+	assert.Equal(t, "run-b", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "the other run's lock is untouched")
+
+	// run-b finishes and releases; run-a, which has been waiting, gets its turn.
+	require.NoError(t, (&K8sAgent{cfg: a.cfg, kube: cs, pm: pm}).unlockVolume(context.Background(), "unity-main", "run-b"))
+	select {
+	case r := <-done:
+		require.NoError(t, r.err)
+		require.NotNil(t, r.res.pod)
+		assert.Equal(t, "run-a", pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy))
+	case <-time.After(10 * time.Second):
+		t.Fatal("run-a never got the volume once run-b released it")
+	}
+}
+
+type stallingCreatePM struct{ podManager }
+
+func (stallingCreatePM) CreatePod(ctx context.Context, _ *corev1.Pod) (*corev1.Pod, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestVolumeLock_CreatePodIsBoundedWellUnderTheGrace: a create that never
+// returns must be cut off long before the lock could be judged stale, and must
+// give the lock back.
+func TestVolumeLock_CreatePodIsBoundedWellUnderTheGrace(t *testing.T) {
+	prev := volumeLockGrace
+	volumeLockGrace = 400 * time.Millisecond
+	t.Cleanup(func() { volumeLockGrace = prev })
+
+	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
+	ctl := newControllerStub(t)
+	a := lockReplica(cs, ctl.srv.URL, stallingCreatePM{volPM{NewPodManager(cs, testVolNS, "img")}},
+		[]config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+
+	start := time.Now()
+	_, err := a.createClaimPod(context.Background(), claimFor("run-a", mount("unity-main", "", ".")))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create Pod")
+	assert.Less(t, time.Since(start), volumeLockGrace, "the create is abandoned before the lock could be taken over")
+	assert.Empty(t, pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "a timed-out create releases the lock")
+}
+
 type failCreatePM struct{ podManager }
 
 func (failCreatePM) CreatePod(context.Context, *corev1.Pod) (*corev1.Pod, error) {

@@ -276,13 +276,23 @@ type PodVolume struct {
 // cleanVolumeMountPath cleans one mount path and refuses one that climbs out
 // of the workspace. An absolute path is allowed (see dsl.ValidateVolumes for
 // why): on Kubernetes it is a container path and touches nothing else.
-func cleanVolumeMountPath(i int, v dsl.VolumeMount) (string, error) {
+//
+// An absolute path equal to the workspace itself is refused: it means the
+// workspace root, which is spelled ".", and passing it on would give the pod two
+// mounts at one path, which the API server rejects at create time with an
+// opaque "Duplicate value". apply-time validation catches this for the default
+// workspace; workspace is where THIS pod's workspace is, which a named agent
+// template can move.
+func cleanVolumeMountPath(i int, v dsl.VolumeMount, workspace string) (string, error) {
 	if v.MountPath == "" {
 		return "", fmt.Errorf("spec.volumes[%d]: mountPath is required", i)
 	}
 	mp := path.Clean(strings.ReplaceAll(v.MountPath, `\`, "/"))
 	if !path.IsAbs(mp) && (mp == ".." || strings.HasPrefix(mp, "../")) {
 		return "", fmt.Errorf("spec.volumes[%d]: mountPath %q escapes the workspace", i, v.MountPath)
+	}
+	if path.IsAbs(mp) && mp == path.Clean(workspace) {
+		return "", fmt.Errorf("spec.volumes[%d]: mountPath %q is the workspace itself; write \".\" to mount the volume at the workspace root", i, v.MountPath)
 	}
 	return mp, nil
 }
@@ -307,7 +317,7 @@ func planPodVolumes(agentName string, declared map[string]config.VolumeConfig, m
 		if alias == "" {
 			return nil, nil, fmt.Errorf("spec.volumes[%d]: volume %q has no alias", i, name)
 		}
-		mp, err := cleanVolumeMountPath(i, v)
+		mp, err := cleanVolumeMountPath(i, v, workspace)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -455,7 +465,7 @@ func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (cla
 	declared := a.declaredVolumes()
 	sets := make([][]string, len(c.Volumes))
 	for i, v := range c.Volumes {
-		if _, err := cleanVolumeMountPath(i, v); err != nil {
+		if _, err := cleanVolumeMountPath(i, v, a.workspaceMount(c.PodTemplate)); err != nil {
 			return claimPodResult{}, fmt.Errorf("k8s: %w", err)
 		}
 		for _, n := range v.Name {
@@ -551,13 +561,40 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 		narrowed[i] = v
 		narrowed[i].Name = dsl.StringOrSlice{chosen[i]}
 	}
-	vols, paths, err := planPodVolumes(a.cfg.AgentName, declared, narrowed, workspaceMountPath(c.PodTemplate))
+	vols, paths, err := planPodVolumes(a.cfg.AgentName, declared, narrowed, a.workspaceMount(c.PodTemplate))
 	if err != nil {
 		return claimPodResult{}, false, fmt.Errorf("k8s: %w", err)
 	}
-	res, err = a.buildAndCreate(ctx, c, sidecar, vols, paths)
+	// Bounded well under the lock's grace period. The lock is only honoured for
+	// volumeLockGrace while its run has no pod, so a create that stalls past it
+	// (client-side throttling is the usual cause) would let another replica take
+	// the lock over and create its own pod. A create that times out is a failed
+	// create: the deferred release above gives the lock back.
+	createCtx, cancelCreate := context.WithTimeout(ctx, volumeLockGrace/4)
+	res, err = a.buildAndCreate(createCtx, c, sidecar, vols, paths)
+	cancelCreate()
 	if err != nil {
 		return claimPodResult{}, false, err
+	}
+
+	// The lock is checked again now that the pod exists. Nothing renews it while
+	// the create is in flight, and replicas' clocks can disagree about its age,
+	// so another replica may have judged it stale and taken it over meanwhile. If
+	// the lock no longer names this run, this pod must not stay: two pods would
+	// mount one exclusive volume. Delete it and go back to waiting.
+	lost, err := a.lostLock(ctx, chosen, c.RunID)
+	if err != nil || lost != "" {
+		slog.Warn("k8s: lost the lock on a volume while creating the pod; removing the pod and waiting",
+			"runId", c.RunID, "volume", lost, "error", err)
+		delCtx, cancelDel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancelDel()
+		if derr := a.pm.DeletePod(delCtx, res.pod.Name); derr != nil && !apierrors.IsNotFound(derr) {
+			// A pod we could not remove still mounts the volume and carries this
+			// run's label; waiting on with it in place would be wrong. Failing
+			// the run lets the pod GC remove it.
+			return claimPodResult{}, false, fmt.Errorf("k8s: lost the lock on volume %q while creating the pod, and could not delete the pod %s: %w", lost, res.pod.Name, derr)
+		}
+		return claimPodResult{}, false, nil
 	}
 	res.release = release
 	return res, true, nil
@@ -571,6 +608,16 @@ func (a *K8sAgent) buildAndCreate(ctx context.Context, c api.ClaimResponse, side
 	}
 	made, err := a.pm.CreatePod(ctx, pod)
 	if err != nil {
+		if len(vols) > 0 {
+			// A create that timed out client-side may still have succeeded
+			// server-side. A pod that mounts a volume must not outlive the lock
+			// that is about to be given back, so remove it if it exists.
+			delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if derr := a.pm.DeletePod(delCtx, pod.Name); derr != nil && !apierrors.IsNotFound(derr) {
+				slog.Debug("k8s: no pod to remove after a failed create (expected)", "pod", pod.Name, "error", derr)
+			}
+		}
 		return claimPodResult{}, fmt.Errorf("k8s: failed to create Pod: %w", err)
 	}
 	res := claimPodResult{pod: made, volumePaths: paths}
@@ -582,12 +629,9 @@ func (a *K8sAgent) buildAndCreate(ctx context.Context, c api.ClaimResponse, side
 	return res, nil
 }
 
-// workspaceMountPath is the container path of a claim's workspace: the job's
-// podTemplate.workspace.mountPath, else /workspace. It is the same expression
-// executeRun uses for the backend's mount path.
-func workspaceMountPath(pt *dsl.PodTemplate) string {
-	if pt == nil {
-		return workspaceMountOf(nil)
-	}
-	return workspaceMountOf(pt.Workspace)
+// workspaceMount is the container path of a claim's workspace, resolved the way
+// BuildPod resolves it (resolveWorkspaceConfig): a named agent template's
+// workspace.mountPath counts, overridden by the job's.
+func (a *K8sAgent) workspaceMount(pt *dsl.PodTemplate) string {
+	return workspaceMountOf(resolveWorkspaceConfig(a.cfg.PodTemplates, pt))
 }

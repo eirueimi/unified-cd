@@ -468,3 +468,106 @@ func TestRun_RegistersItsVolumesAndProvisionsTheirClaims(t *testing.T) {
 	assert.Contains(t, listPVCs(t, cs), "agent1-unity-main")
 	assert.Contains(t, listPVCs(t, cs), "agent1-go-cache")
 }
+
+// srcTemplate is a named AGENT pod template that moves the workspace. The job
+// that names it cannot see the mount path: only the agent config has it.
+func srcTemplate() map[string]AgentPodTemplate {
+	return map[string]AgentPodTemplate{"golang": {
+		Workspace: &dsl.WorkspaceConfig{MountPath: "/src"},
+		Spec:      map[string]any{"containers": []any{map[string]any{"name": "job", "image": "golang"}}},
+	}}
+}
+
+// TestExecuteRun_AgentTemplateWorkspaceIsHonouredForVolumes: the pod, the
+// UNIFIED_VOLUME_* values, the backend's mount path and the cleanWorkspace wipe
+// must all agree on where the workspace is. A named agent template can set
+// workspace.mountPath; if the volume code looks only at the job's podTemplate it
+// mounts the volume under /src, tells the step /workspace, and wipes a directory
+// that is not the volume: the one deliberate way to destroy volume data
+// silently does nothing.
+func TestExecuteRun_AgentTemplateWorkspaceIsHonouredForVolumes(t *testing.T) {
+	f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi"), vcfg("go-cache", "exclusive", "1Gi")})
+	f.a.cfg.PodTemplates = srcTemplate()
+	var observed []corev1.Pod
+	f.a.exec = &podCapturingExec{inner: f.ex, onExec: func() { observed = f.createdPods(t) }}
+
+	c := f.claim([]dsl.VolumeMount{mount("unity-main", "", "."), mount("go-cache", "go-cache", ".cache")})
+	c.PodTemplate = &dsl.PodTemplate{Name: "golang"}
+	c.CleanWorkspace = true
+	f.a.executeRun(context.Background(), c)
+	require.Equal(t, api.RunSucceeded, f.waitFinish(t))
+
+	require.Len(t, observed, 1)
+	mounts := map[string]string{}
+	for _, m := range observed[0].Spec.Containers[0].VolumeMounts {
+		mounts[m.Name] = m.MountPath
+	}
+	assert.Equal(t, "/src", mounts["workspace"])
+	assert.Equal(t, "/src/.cache", mounts["ucd-vol-1"])
+
+	f.ex.mu.Lock()
+	defer f.ex.mu.Unlock()
+	require.Len(t, f.ex.calls, 2, "the wipe, then the step")
+	assert.Contains(t, f.ex.calls[0].script, "rm -rf")
+	assert.Contains(t, f.ex.calls[0].script, "'/src'", "the wipe targets the directory the volume is mounted at")
+	assert.NotContains(t, f.ex.calls[0].script, "'/workspace'")
+	assert.Contains(t, f.ex.calls[1].env, dsl.VolumeEnvName("go-cache")+"=/src/.cache")
+	assert.Contains(t, f.ex.calls[1].env, "UNIFIED_WORKSPACE=/src")
+}
+
+func TestResolveWorkspaceConfig(t *testing.T) {
+	agent := srcTemplate()
+	job := &dsl.WorkspaceConfig{MountPath: "/job"}
+	assert.Nil(t, resolveWorkspaceConfig(agent, nil))
+	assert.Equal(t, "/src", workspaceMountOf(resolveWorkspaceConfig(agent, &dsl.PodTemplate{Name: "golang"})), "a named template's workspace")
+	assert.Equal(t, "/job", workspaceMountOf(resolveWorkspaceConfig(agent, &dsl.PodTemplate{Name: "golang", Workspace: job})), "the job overrides it")
+	assert.Equal(t, "/job", workspaceMountOf(resolveWorkspaceConfig(agent, &dsl.PodTemplate{Spec: map[string]any{"containers": []any{}}, Workspace: job})), "an inline spec uses the job's")
+	assert.Equal(t, "/workspace", workspaceMountOf(resolveWorkspaceConfig(agent, &dsl.PodTemplate{Name: "missing"})))
+}
+
+// TestBuildPod_UsesResolveWorkspaceConfig keeps the pod and the agent's idea of
+// the workspace from drifting apart again: BuildPod must mount the workspace
+// where resolveWorkspaceConfig says.
+func TestBuildPod_UsesResolveWorkspaceConfig(t *testing.T) {
+	for _, jt := range []*dsl.PodTemplate{
+		nil,
+		{Name: "golang"},
+		{Name: "golang", Workspace: &dsl.WorkspaceConfig{MountPath: "/job"}},
+		{Spec: map[string]any{"containers": []any{map[string]any{"name": "job", "image": "x"}}}, Workspace: &dsl.WorkspaceConfig{MountPath: "/inline"}},
+		{Workspace: &dsl.WorkspaceConfig{MountPath: "/ignored-without-spec-or-name"}},
+	} {
+		pod, err := BuildPod("run-abc123", testVolNS, srcTemplate(), jt, "img", SidecarSpec{}, testShimImage, nil)
+		require.NoError(t, err)
+		want := workspaceMountOf(resolveWorkspaceConfig(srcTemplate(), jt))
+		got := ""
+		for _, m := range pod.Spec.Containers[0].VolumeMounts {
+			if m.Name == "workspace" {
+				got = m.MountPath
+			}
+		}
+		assert.Equal(t, want, got, "template %+v", jt)
+	}
+}
+
+// An absolute mountPath that is the workspace is the workspace root, which is
+// spelled ".". Left alone it gives the pod two mounts at one path and the API
+// server rejects the pod with "Duplicate value" at create time.
+func TestExecuteRun_RejectsAnAbsoluteMountPathThatIsTheWorkspace(t *testing.T) {
+	t.Run("default workspace", func(t *testing.T) {
+		f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+		f.a.executeRun(context.Background(), f.claim([]dsl.VolumeMount{mount("unity-main", "", "/workspace")}))
+		assert.Equal(t, api.RunFailed, f.waitFinish(t))
+		assert.Contains(t, f.logText(), "is the workspace itself")
+		assert.Empty(t, f.createdPods(t))
+	})
+	t.Run("a workspace an agent template moved", func(t *testing.T) {
+		f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+		f.a.cfg.PodTemplates = srcTemplate()
+		c := f.claim([]dsl.VolumeMount{mount("unity-main", "", "/src")})
+		c.PodTemplate = &dsl.PodTemplate{Name: "golang"}
+		f.a.executeRun(context.Background(), c)
+		assert.Equal(t, api.RunFailed, f.waitFinish(t))
+		assert.Contains(t, f.logText(), "is the workspace itself")
+		assert.Empty(t, f.createdPods(t))
+	})
+}
