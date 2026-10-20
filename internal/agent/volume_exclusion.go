@@ -18,12 +18,14 @@ import (
 // An archive of the mount point itself, or of anything inside it, is a
 // deliberate choice of that volume and archives it (see resolveInVolumeMount).
 
-// MountedVolume is a named volume mounted at a relative path inside the
-// workspace, located in the coordinates of the archiving step: a host path on a
-// host agent, a container path on the Kubernetes agent.
+// MountedVolume is a named volume mounted inside the workspace, located where
+// the job put it: Location is the mount point in the workspace's own coordinates
+// (a workspace directory on a host agent, the pod's workspace path on the
+// Kubernetes agent), in the same form as the path being archived. Nesting is
+// judged in these coordinates on both agents, whatever the storage layout.
 type MountedVolume struct {
 	Volume    string // the volume's name
-	MountPath string // as the job declared it: cleaned, slash-separated, relative to the workspace
+	MountPath string // the mount path as the job declared it, cleaned and slash-separated
 	Location  string // where the mount point is, in the same form as the path being archived
 }
 
@@ -41,15 +43,6 @@ func VolumesBelow(archivePath string, vols []MountedVolume) []MountedVolume {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Location < out[j].Location })
 	return out
-}
-
-// VolumeLocations lists where each of vols is, for the archiver's exclusion list.
-func VolumeLocations(vols []MountedVolume) []string {
-	locs := make([]string, len(vols))
-	for i, v := range vols {
-		locs[i] = v.Location
-	}
-	return locs
 }
 
 // VolumeExclusionNotice is the run-log line for one volume left out of an

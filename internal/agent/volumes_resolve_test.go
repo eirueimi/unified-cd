@@ -109,11 +109,14 @@ func TestResolveArtifactPath_OutsideEveryVolumeIsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, scopeWorkDir+"/.ucd-cache/go/x", got)
 
-	// A native run reaches the volume through a link on the host: no mapping.
-	native := newHostBackend(&Agent{}, "r1", "job", t.TempDir(), nil)
-	got, err = native.ResolveArtifactPath(ScopeHandle{}, ".ucd-cache/go/obj")
+	// A claim that mounts no volume has nothing to map: every path resolves
+	// against the workspace. (A native claim that does mount one is covered by
+	// TestResolveArtifactPath_NativeMountPointResolvesToTheVolume and by
+	// TestExecuteRun_NativeArtifactAtAndInsideAVolume.)
+	plain := newHostBackend(&Agent{}, "r1", "job", t.TempDir(), nil)
+	got, err = plain.ResolveArtifactPath(ScopeHandle{}, ".ucd-cache/go/obj")
 	require.NoError(t, err)
-	require.Equal(t, filepath.Join(native.workDir, ".ucd-cache", "go", "obj"), got)
+	require.Equal(t, filepath.Join(plain.workDir, ".ucd-cache", "go", "obj"), got)
 }
 
 // An absolute mount path that lands inside the container workspace is the same
@@ -144,6 +147,18 @@ func TestRelativeVolumeMounts_AbsoluteInsideTheWorkspaceIsTheSameCase(t *testing
 	got2, err := b.ResolveArtifactPath(ScopeHandle{}, "vendor/x")
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(m.PathOf("b"), "x"), got2)
+}
+
+// The path in a run-log notice is the one the job wrote, whether it resolved to
+// the workspace or into a volume.
+func TestHostBackend_ShownPathIsThePathTheJobWrote(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("go-cache"))
+	b, _ := isolatedBackendWithVolumes(t, m, vmount("go-cache", "gc", ".ucd-cache/go"))
+	for _, p := range []string{".", "src", "src/a/b", ".ucd-cache", ".ucd-cache/go", ".ucd-cache/go/pkg/mod"} {
+		resolved, err := b.ResolveArtifactPath(ScopeHandle{}, p)
+		require.NoError(t, err)
+		require.Equal(t, p, b.shownPath(resolved))
+	}
 }
 
 // A native run reaches a volume through a link in the workspace. An archiver

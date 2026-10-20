@@ -321,19 +321,32 @@ func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, 
 	return resolveInVolumeMount(b.workDir, resolved, b.volumeRefs), nil
 }
 
-// mountedVolumes lists the claim's relatively mounted volumes with where their
-// mount points are on the host: a mount point inside another volume's mount is
-// in that volume's directory, not in the workspace.
+// mountedVolumes lists the claim's volumes mounted inside the workspace, each at
+// the place the job put it: Location is the mount point in workspace coordinates.
+// This is the frame an archive is judged in and the run log speaks in, so that
+// an archive of "." reads "excludes dir" and "excludes dir/inner" however the
+// bytes of the inner volume are laid out on this host.
 func (b *hostBackend) mountedVolumes() []MountedVolume {
 	vols := make([]MountedVolume, 0, len(b.volumeRefs))
-	for i, r := range b.volumeRefs {
-		others := make([]volumeMountRef, 0, len(b.volumeRefs)-1)
-		others = append(others, b.volumeRefs[:i]...)
-		others = append(others, b.volumeRefs[i+1:]...)
-		at := filepath.Join(b.workDir, filepath.FromSlash(r.Rel))
-		vols = append(vols, MountedVolume{Volume: r.Volume, MountPath: r.MountPath, Location: resolveInVolumeMount(b.workDir, at, others)})
+	for _, r := range b.volumeRefs {
+		vols = append(vols, MountedVolume{Volume: r.Volume, MountPath: r.MountPath, Location: filepath.Join(b.workDir, filepath.FromSlash(r.Rel))})
 	}
 	return vols
+}
+
+// physicalLocation is where v's mount point actually is on this host. A mount
+// point inside another volume's mount is in that volume's directory, not in the
+// workspace, so an archiver walking that volume is told to skip it there. It is
+// resolved through every OTHER mount, never v's own (which would map the mount
+// point to its own volume).
+func (b *hostBackend) physicalLocation(v MountedVolume) string {
+	others := make([]volumeMountRef, 0, len(b.volumeRefs))
+	for _, r := range b.volumeRefs {
+		if filepath.Join(b.workDir, filepath.FromSlash(r.Rel)) != v.Location {
+			others = append(others, r)
+		}
+	}
+	return resolveInVolumeMount(b.workDir, v.Location, others)
 }
 
 // shownPath is resolved, an artifact or cache path as ResolveArtifactPath
@@ -354,12 +367,21 @@ func (b *hostBackend) shownPath(resolved string) string {
 // excludeVolumes returns what an archive of resolved must leave out: the mount
 // point of every volume strictly below it. It announces each in the run log, so
 // that a smaller-than-expected archive is explained rather than puzzling.
+//
+// "Below" is judged, and announced, in the job's own coordinates: the path as
+// the job wrote it (shownPath) against the mount points where the job put them.
+// Only the returned exclusions are physical (physicalLocation), because that is
+// where the archiver will meet them.
 func (b *hostBackend) excludeVolumes(ctx context.Context, kind, resolved string) []string {
-	below := VolumesBelow(resolved, b.mountedVolumes())
+	shown := b.shownPath(resolved)
+	logical := filepath.Join(b.workDir, filepath.FromSlash(shown))
+	below := VolumesBelow(logical, b.mountedVolumes())
+	exclude := make([]string, 0, len(below))
 	for _, v := range below {
-		b.a.warnRun(ctx, b.runID, VolumeExclusionNotice(kind, b.shownPath(resolved), v))
+		b.a.warnRun(ctx, b.runID, VolumeExclusionNotice(kind, shown, v))
+		exclude = append(exclude, b.physicalLocation(v))
 	}
-	return VolumeLocations(below)
+	return exclude
 }
 
 // ResolveCachePath is identical to ResolveArtifactPath: a non-scoped cache

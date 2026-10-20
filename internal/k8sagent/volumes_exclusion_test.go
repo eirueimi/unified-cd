@@ -206,6 +206,17 @@ func TestMountedVolumes_LocatedByWhereTheyLand(t *testing.T) {
 	require.Equal(t, []string{"rel", "abs"}, below)
 }
 
+// The path in a run-log notice is the one the job wrote; the host agent's
+// shownPath is held to the same table (TestHostBackend_ShownPathIsThePathTheJobWrote).
+func TestK8sBackend_ShownPathIsThePathTheJobWrote(t *testing.T) {
+	b := &k8sBackend{mountPath: "/workspace"}
+	for _, p := range []string{".", "src", "src/a/b", ".ucd-cache", ".ucd-cache/go", ".ucd-cache/go/pkg/mod"} {
+		resolved, err := b.ResolveArtifactPath(agentlib.ScopeHandle{}, p)
+		require.NoError(t, err)
+		require.Equal(t, p, b.shownPath(resolved))
+	}
+}
+
 // rebase places workspace-relative paths in the pod's workspace.
 func rebase(rel []string) []string {
 	out := make([]string, len(rel))
@@ -242,7 +253,7 @@ func TestArchiveOfAnAncestor_HostAndKubernetesProduceTheSameEntries(t *testing.T
 				exclude = append(exclude, filepath.Join(ws, filepath.FromSlash(strings.TrimPrefix(e, "/workspace/"))))
 			}
 
-			rc := artifact.StreamTarZstdExcluding(ws, exclude)
+			rc := artifact.StreamTarZstdExcluding(filepath.Join(ws, filepath.FromSlash(g.ArchivePath)), exclude)
 			defer rc.Close()
 			dest := t.TempDir()
 			require.NoError(t, artifact.ExtractTarZstd(rc, dest))

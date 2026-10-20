@@ -143,6 +143,26 @@ func TestExecuteRun_UploadsAnArtifactFromInsideAVolume(t *testing.T) {
 	require.Empty(t, run.logs, "naming a volume's own path excludes nothing, so there is nothing to announce")
 }
 
+// A native claim reaches a volume through a link in the workspace, and an
+// archiver does not follow a link it is pointed at: an artifact of the mount
+// point itself used to store the link, which extraction refuses. At the mount
+// point, and inside it, the artifact is the volume's real contents.
+func TestExecuteRun_NativeArtifactAtAndInsideAVolume(t *testing.T) {
+	for path, want := range map[string][]string{
+		".ucd-cache/go":     {"obj", "obj/out.txt", "top.txt"},
+		".ucd-cache/go/obj": {"out.txt"},
+	} {
+		t.Run(path, func(t *testing.T) {
+			run := runUploadStep(t, true, []string{"go-cache"}, []dsl.VolumeMount{vmount("go-cache", "gc", ".ucd-cache/go")}, path,
+				func(workDir string, m *VolumeManager) { writeFiles(t, m.PathOf("go-cache"), "obj/out.txt", "top.txt") })
+
+			require.Equal(t, "Succeeded", run.status)
+			require.Equal(t, want, run.entries)
+			require.Empty(t, run.logs, "naming a volume's own path excludes nothing")
+		})
+	}
+}
+
 // A volume's contents are not part of an archive of its ancestor, and the run
 // log says so. The same expectations are checked against the Kubernetes agent
 // (internal/k8sagent), from the same golden file. An absolute mount path that
@@ -297,6 +317,9 @@ func TestHostBackend_CacheRoundTripInsideAVolumeStaysInTheVolume(t *testing.T) {
 func TestHostBackend_CacheRestoreOfAnAncestorLeavesTheVolumesAlone(t *testing.T) {
 	for _, scenario := range scenarioNames(t) {
 		g := exclusionScenarios(t)[scenario]
+		if g.ArchivePath != "." {
+			continue // the legacy archive here is one of the whole workspace
+		}
 		t.Run(scenario, func(t *testing.T) {
 			h := newCacheHarness(t, g)
 
