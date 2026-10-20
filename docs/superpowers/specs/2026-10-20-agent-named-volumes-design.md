@@ -413,11 +413,33 @@ design. Everything else about validation is the builder's (§11).
 
 ### 4.10 `cleanWorkspace`
 
-`spec.cleanWorkspace: true` (and the agent-level `--clean-workspace`) wipes
-whatever the workspace is — including a volume mounted at `"."`. This is the
-necessary escape hatch for a poisoned persistent workspace. It is also the one
-documented path by which unified-cd destroys volume data on purpose, so it must
-be called out in the volume documentation, not only under `cleanWorkspace`.
+`podTemplate.cleanWorkspace: true` wipes whatever the workspace is — including a
+volume mounted at `"."`. This is the necessary escape hatch for a poisoned
+persistent workspace, and it is the **only** path by which unified-cd destroys
+volume data on purpose, so it must be called out in the volume documentation and
+not only under `cleanWorkspace`.
+
+`spec.cleanWorkspace` is **added by this project**. Before it, `CleanWorkspace`
+lived on `PodTemplate` only (`internal/dsl/types.go:542`), and
+`internal/dsl/parse.go:204-207` rejects `spec.native: true` together with
+`spec.podTemplate` — so a native job could not reach the only escape hatch
+there was. That is precisely the Unity configuration this project exists for: a
+`native: true` macOS build with its checkout and `Library/` on a persistent
+volume. Its only remedy would have been an operator deleting tens of gigabytes
+by hand on the agent host. The field also belongs at the spec level on its own
+merits, because it is a workspace concern and `native` lives there too, while
+`podTemplate` is the Kubernetes-flavoured corner. Both spellings are valid and
+`clean` is the OR of the two.
+
+**The agent-level `--clean-workspace` flag does not wipe a volume**, and after
+§4.1 it does nothing at all. Its purpose was to stop a job inheriting another
+run's leftovers, which the unconditional cleaning of every ordinary workspace
+now guarantees — while applied to a volume it would destroy, on every run, the
+data the job's own config declared as the thing to keep. An operator setting a
+fleet-wide hygiene default has not knowingly agreed to that; a job asking for
+`cleanWorkspace` has. The flag is kept so existing agent configs still start,
+its help text says it has no effect, and removing it is a follow-up rather than
+part of this project.
 
 ## 5. `workspace.pvc` is removed
 

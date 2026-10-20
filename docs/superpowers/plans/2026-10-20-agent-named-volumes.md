@@ -327,7 +327,7 @@ git add internal/controller/ && git commit -m "feat(controller): report an unsch
   - `type VolumeManager struct { ... }` in `internal/agent/volumes.go` with:
     - `func NewVolumeManager(base string, cfgs []config.VolumeConfig) (*VolumeManager, error)` — validates and resolves `Path` (default `<workspaceDir>/volumes/<name>`), creates directories.
     - `func (m *VolumeManager) Names() []string` — what the agent advertises.
-    - `func (m *VolumeManager) Reserve(names []string) (string, func(), error)` — picks a free candidate atomically and returns the chosen name with its release func. The manager knows each volume's mode from its own config; callers do not pass it.
+    - `func (m *VolumeManager) Reserve(runID string, names []string) (string, func(), error)` — picks a free candidate atomically and returns the chosen name with its release func. The manager knows each volume's mode from its own config; callers do not pass it. It is **re-entrant per run**: if `runID` already holds a candidate from `names`, that same name comes back with a no-op release. One job may name the same volume in several entries (mounting one volume at two paths is legal — Task 1 rejects duplicate mount paths, not duplicate names), and a per-entry reservation would otherwise have the second entry block on a volume the same run already holds, deadlocking the run against itself.
     - `func (m *VolumeManager) ReservePath(hostPath string) (func(), error)` — the same reservation for an absolute native mount path, which is a machine-wide resource (spec §4.6).
     - `func (m *VolumeManager) Busy() []string` — the claim-time report: occupied exclusive volume names plus occupied absolute mount paths.
     - `func (m *VolumeManager) ModeOf(name string) string`.
@@ -353,6 +353,11 @@ func TestVolumeManager_ExclusiveBlocksSecondReserve(t *testing.T)
 func TestVolumeManager_ReservePicksFreeCandidate(t *testing.T) // [a,b], a busy -> b
 func TestVolumeManager_BusyListsExclusiveNamesAndAbsolutePaths(t *testing.T)
 func TestVolumeManager_ReservePathBlocksSecondHolder(t *testing.T)
+func TestVolumeManager_ReserveIsReentrantForTheSameRun(t *testing.T)
+    // run r reserves exclusive "a", then reserves ["a","b"] again: it gets "a"
+    // back, not "b" and not a block. Releasing both leaves "a" free.
+func TestVolumeManager_ReserveStillBlocksADifferentRun(t *testing.T)
+    // run r holds "a"; run s asking for ["a"] blocks
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -436,7 +441,25 @@ On Windows, `os.Symlink` needs privilege. Fall back to a directory junction, and
 
 Both halves of the wire format land in this task so they cannot drift: the agent client sends the body, and the controller's claim handler reads it and passes it to `ClaimNextRun` (Task 3 changed the store function and deliberately left the handler alone).
 
-Registration sends `m.Names()`. The claim request gains a body carrying `m.Busy()` — today `claim` posts a nil body (`internal/agent/client.go:209`), so this is the first one. After a successful claim, `runLoop` calls `m.Reserve(...)` for each entry, and `m.ReservePath(...)` for each absolute mount path on a native run; a lost race waits for release rather than returning the run, because no endpoint exists to return it (spec §4.7). Call `sweepStaleVolumeLinks` once during startup, before the first claim loop starts; every volume is free at that point because the agent has lost all its runs (spec §7).
+Registration sends `m.Names()`. The claim request gains a body carrying `m.Busy()` — today `claim` posts a nil body (`internal/agent/client.go:209`), so this is the first one. After a successful claim, `runLoop` calls `m.Reserve(runID, ...)` for each entry, and `m.ReservePath(...)` for each absolute mount path on a native run; a lost race waits for release rather than returning the run, because no endpoint exists to return it (spec §4.7). Two entries naming the same volume get the same reservation back (Task 5), and the volume is mounted at each of their mount paths.
+
+**The wait must be cancellable.** Task 5's `Reserve` takes no context, so as written a run waiting for an exclusive volume cannot be abandoned — and the agent's drain path (`--drain-timeout`, SIGTERM) would block on it, holding a slot until the holder finishes, which for a Unity build is tens of minutes. Add a context-aware entry point and wait on the run context, so cancellation and drain both break the wait. A run whose wait is cancelled reports the cancellation; it does not proceed unmounted.
+
+```go
+func TestRunLoop_VolumeWaitIsAbandonedOnDrain(t *testing.T)
+    // a run waiting for a busy exclusive volume stops waiting when the agent
+    // drains, rather than holding its slot until the holder finishes
+```
+
+**Release at run end, not per entry.** A re-entrant `Reserve` returns a no-op release (Task 5): only the call that actually took the volume frees it. Release every reservation once, when the run finishes, rather than as each entry is unmounted — otherwise a volume named by two entries is freed by the first unmount while the run is still using it.
+
+**Three things to settle in Task 5's code before you build on it:**
+
+1. **Make `VolumeManager`'s methods nil-safe.** `Agent.Volumes` is documented as "nil means the agent declares none", but every method dereferences the receiver's fields, so `Names()`, `Busy()` and `Reserve()` panic on a nil manager — and the existing tests construct `Agent{}` without one. You are the first caller on the claim and advertise path. Return empty results on a nil receiver; `Reserve` on a nil manager with a non-empty candidate set returns an error.
+2. **Normalise `ReservePath`'s key to a POSIX spelling.** It accepts a leading `/` but keys on `filepath.Clean`, which turns `/go/cache` into `\go\cache` on Windows. `Busy()` then reports a spelling that cannot match the DSL's POSIX mount path, and the controller compares those strings. Use `path.Clean(filepath.ToSlash(...))` for the key and the report, and fix `volumes_test.go:824`, which currently asserts the native spelling.
+3. **Widen the GC-reach refusal.** It covers `working*`, but the agent also removes `<base>/detached/<runID>` after a run (`internal/agent/workspace.go:78`, `agent.go:457-462`) and keeps the `ucd-sh` shim in `<base>/.ucd-tools`. A volume path placed in either would be destroyed or would collide. Refuse a `detached` or dot-prefixed first component too.
+
+Two comments Task 3 left for you to correct: the `nil` placeholders in `internal/controller/api_agent.go` (register ~63, claim ~148) are the wiring you are adding, and `ClaimNextRunDetached`'s doc comment (`internal/store/postgres.go` ~851) describes behaviour for detached runs requiring volumes, which cannot happen — a detached job's `spec.volumes` is rejected at apply time, so the clause is vacuous there. Reword it rather than leaving a future reader thinking busy tracking is missing. Call `sweepStaleVolumeLinks` once during startup, before the first claim loop starts; every volume is free at that point because the agent has lost all its runs (spec §7).
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -460,8 +483,10 @@ git add internal/agent/ internal/api/ && git commit -m "feat(agent): mount named
 - Modify: `internal/agent/workspace_test.go`
 
 **Interfaces:**
-- Consumes: `VolumeManager` (Task 5).
-- Produces: `prepareWorkspace(ctx, workDir, mode string, volumeBacked bool, clean bool, ...)` — one extra parameter.
+- Consumes: `VolumeManager` (Task 5), `workspaceVolumeDir` (Task 6).
+- Produces: `prepareWorkspace(ctx, workDir, mode string, volumeBacked bool, clean bool, ...)` — one extra parameter — and `finishWorkspace(...)` for the after-run sweep.
+
+**What Task 6 left you, and it is more than a signature change.** A volume mounted at `"."` becomes the workspace itself: the run works in the volume directory and `runLoop` does not call `prepareWorkspaceFn` **at all**. So today a volume-backed workspace gets no `.ucd-mode` read or write, no mode-flip check, no clean and no sweep, and `cleanWorkspace` is not applied — `runLoop` reports a System log line saying it was skipped (Task 6's fix) and proceeds. Restructuring that call is this task's job, not just adding a parameter. Derive whether the workspace is volume-backed with `workspaceVolumeDir(resp.Volumes, a.Volumes) != ""`.
 
 - [ ] **Step 1: Write the failing tests**
 
