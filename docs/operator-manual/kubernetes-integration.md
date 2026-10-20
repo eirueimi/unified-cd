@@ -468,8 +468,10 @@ rejects the combination.
 **Creating the Pod is bounded.** For a volume-bearing run the agent gives each Pod create at most a
 quarter of the two-minute lock grace (30 seconds). A create that times out, or that finds the
 previous attempt's Pod still terminating, releases the run's locks and is retried; after **five**
-failed attempts in a row the run fails with `k8s: creating the run's pod did not complete 5 times in
-a row; giving up. Last attempt: ...`. Each retry is logged on the run as `creating the run's pod did
+consecutive failed attempts the run fails with `k8s: creating the run's pod did not complete in 5
+consecutive attempts, with no wait for a busy volume between them; giving up. Last attempt: ...`. A
+wait for a busy volume between two failures starts the count over, so a run that queued for hours
+behind another is not failed for scattered, unrelated timeouts. Each retry is logged on the run as `creating the run's pod did
 not complete (attempt N of 5: ...); its volume locks were released and it will try again`. A cluster
 that is merely slow costs a run time; one that never answers does not hold the run and its slot
 forever.

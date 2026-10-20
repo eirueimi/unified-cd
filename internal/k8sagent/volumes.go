@@ -408,8 +408,11 @@ func injectVolumes(podSpec *corev1.PodSpec, workspaceMount string, vols []PodVol
 // while it waited for a volume. There is nothing left to report for such a run.
 var errRunTerminalWhileWaiting = errors.New("the controller reports the run finished while it waited for its volumes")
 
-// maxCreateAttempts is how many creates of a volume-bearing run's pod may fail to
-// land, one after another, before the run is failed. A create that times out or
+// maxCreateAttempts is how many consecutive creates of a volume-bearing run's
+// pod may fail to land before the run is failed. The count starts over whenever
+// the run has to wait for a busy volume in between, so it bounds a run that is
+// stuck creating its pod, not one that waited hours for a volume and also met a
+// few scattered transient timeouts. A create that times out or
 // finds its previous attempt's pod still terminating is a slow cluster, and a
 // slow cluster should cost a run time, not the run: failing on the first would
 // turn one slow response during a fleet start into a failed build. But retrying
@@ -566,15 +569,20 @@ func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (cla
 			// cannot hold the run, and its slot, under a wrong explanation.
 			failedCreates++
 			if failedCreates >= maxCreateAttempts {
-				return claimPodResult{}, fmt.Errorf("k8s: creating the run's pod did not complete %d times in a row; giving up. Last attempt: %w", failedCreates, retry.cause)
+				return claimPodResult{}, fmt.Errorf("k8s: creating the run's pod did not complete in %d consecutive attempts, with no wait for a busy volume between them; giving up. Last attempt: %w", failedCreates, retry.cause)
 			}
 			a.warnRun(waitCtx, c.RunID, fmt.Sprintf("creating the run's pod did not complete (attempt %d of %d: %s); its volume locks were released and it will try again",
 				failedCreates, maxCreateAttempts, retry.reason()))
 		} else if err != nil || created {
 			return res, err
-		} else if !announced {
-			announced = true
-			a.warnRun(waitCtx, c.RunID, fmt.Sprintf("waiting for volumes %q, which another run is using", sets))
+		} else {
+			// The run waited for a busy volume, so the failed creates before
+			// this are no longer "consecutive" with any that follow.
+			failedCreates = 0
+			if !announced {
+				announced = true
+				a.warnRun(waitCtx, c.RunID, fmt.Sprintf("waiting for volumes %q, which another run is using", sets))
+			}
 		}
 		select {
 		case <-waitCtx.Done():

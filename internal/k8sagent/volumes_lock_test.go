@@ -576,7 +576,7 @@ func TestVolumeLock_APodCreateThatNeverLandsFailsTheRunWithTheTrueReason(t *test
 	res, err := a.createClaimPod(ctx, claimFor("run-a", mount("unity-main", "", ".")))
 	require.Error(t, err)
 	assert.Nil(t, res.pod)
-	assert.Contains(t, err.Error(), "did not complete 5 times in a row")
+	assert.Contains(t, err.Error(), "did not complete in 5 consecutive attempts")
 	assert.Contains(t, err.Error(), "already exists", "the last cause is carried")
 	assert.Equal(t, int32(maxCreateAttempts), pm.n.Load(), "exactly maxCreateAttempts creates were tried")
 	assert.Empty(t, pvcAnnotation(t, cs, "agent1-unity-main", annoVolumeHeldBy), "a failed run holds no lock")
@@ -586,6 +586,59 @@ func TestVolumeLock_APodCreateThatNeverLandsFailsTheRunWithTheTrueReason(t *test
 	assert.Contains(t, log, "attempt 4 of 5")
 	assert.Contains(t, log, "still exists from an earlier attempt")
 	assert.NotContains(t, log, "another run is using", "the volume was never busy")
+}
+
+// scriptedCreatePM fails the creates whose 1-based number fail accepts, with
+// AlreadyExists, and runs after(n) once the n-th has failed.
+type scriptedCreatePM struct {
+	podManager
+	n     atomic.Int32
+	fail  func(n int32) bool
+	after func(n int32)
+}
+
+func (p *scriptedCreatePM) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	n := p.n.Add(1)
+	if p.fail(n) {
+		if p.after != nil {
+			p.after(n)
+		}
+		return nil, apierrors.NewAlreadyExists(corev1.Resource("pods"), pod.Name)
+	}
+	return p.podManager.CreatePod(ctx, pod)
+}
+
+// TestVolumeLock_FailedCreatesAreCountedConsecutivelyNotForTheLifetimeOfTheRun: a
+// run that waits hours for a busy volume and meets scattered transient create
+// failures must not be failed with "N times in a row" for failures that were not
+// in a row. Here four creates fail, a wait for a busy volume follows, and four
+// more fail: eight in all, never five together.
+func TestVolumeLock_FailedCreatesAreCountedConsecutivelyNotForTheLifetimeOfTheRun(t *testing.T) {
+	cs := lockCluster(t, vcfg("unity-main", "exclusive", "1Gi"))
+	ctl := newControllerStub(t)
+	pm := &scriptedCreatePM{podManager: volPM{NewPodManager(cs, testVolNS, "img")}}
+	pm.fail = func(n int32) bool { return n <= 8 }
+	pm.after = func(n int32) {
+		if n != 4 {
+			return
+		}
+		// Another run takes the volume, and gives it up a moment later.
+		holder := claimPod("holder", "agent1", corev1.PodRunning, "unity-main")
+		_, err := cs.CoreV1().Pods(testVolNS).Create(context.Background(), holder, metav1.CreateOptions{})
+		require.NoError(t, err)
+		time.AfterFunc(200*time.Millisecond, func() {
+			_ = cs.CoreV1().Pods(testVolNS).Delete(context.Background(), "holder", metav1.DeleteOptions{})
+		})
+	}
+	a := lockReplica(cs, ctl.srv.URL, pm, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi")})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := a.createClaimPod(ctx, claimFor("run-a", mount("unity-main", "", ".")))
+	require.NoError(t, err, "eight failures with a wait in the middle are not five in a row")
+	require.NotNil(t, res.pod)
+	assert.Equal(t, int32(9), pm.n.Load())
+	assert.Contains(t, ctl.logText("run-a"), "waiting for volumes", "the wait in the middle really happened")
 }
 
 type alreadyExistsOncePM struct {
