@@ -114,6 +114,10 @@ volume mount failed: spec.volumes[0]: volume "go-cache" is shared and cannot be 
 - **Absolute** (`/root/.cache/go`): a path outside the workspace, for toolchains that keep their
   caches elsewhere or reject relative paths. An absolute path that lands *inside* the workspace is
   rejected: write it relative.
+- **A POSIX path, always.** A `mountPath` is written with `/` on every agent, Windows agents
+  included. A Windows drive-qualified path (`C:/cache`, `d:\cache`) is rejected when the job is
+  applied (`mountPath must be a POSIX path`), because it would otherwise be mistaken for a relative
+  path and fail much later with an opaque `mkdir` error.
 
 How the volume is realised depends on where the run executes, but your YAML does not change:
 
@@ -132,6 +136,12 @@ Three consequences for `native: true` jobs, which have no container to bind-moun
    machine, so two native runs cannot point it at two volumes. A run that needs it waits for the
    run holding it, even when the volume is `shared` and even when you list several candidates;
    candidate lists give parallelism on a native run only for *relative* mount paths.
+   The reservation is made **by the agent, after it has claimed the run**; the controller cannot
+   filter on it (it routes on volume names, and an absolute path is not one). So with
+   `--max-concurrent 4`, four queued runs that all mount the same absolute path are all claimed,
+   one runs, and the other three sit in a concurrency slot waiting. A job in that shape occupies one
+   agent slot per queued run, whatever the volume's mode. A relative `mountPath` avoids this: the
+   controller then routes around a busy exclusive volume instead of letting runs queue up in slots.
 3. **On Windows**, creating a symlink needs administrator rights or Developer Mode. The agent falls
    back to a directory junction, which needs an NTFS volume and a path without `cmd.exe`
    metacharacters; if both fail the run fails with

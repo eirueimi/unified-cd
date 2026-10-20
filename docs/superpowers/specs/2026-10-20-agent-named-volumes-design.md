@@ -307,11 +307,13 @@ unavailable (root-only on Linux, absent on macOS). Three rules follow:
    delete what it did not create.
 2. **An absolute path on a native run is an agent-wide exclusive resource.**
    The host path is global to the machine, so two concurrent native runs cannot
-   point it at two different volumes. The agent treats the absolute path like
-   an occupied exclusive volume and does not claim a second run that needs it
-   (§4.7). Runs wait; they do not fail. A consequence worth documenting: the
-   candidate-list trick in §4.4 does not produce parallelism on native runs
-   when `mountPath` is absolute, only when it is relative.
+   point it at two different volumes. The agent reserves the absolute path like
+   an occupied exclusive volume, after it has claimed a run that needs it (the
+   controller cannot filter on it; see §4.7). Runs wait; they do not fail. A
+   consequence worth documenting: the candidate-list trick in §4.4 does not
+   produce parallelism on native runs when `mountPath` is absolute, only when
+   it is relative, and each queued run that needs the same absolute path holds
+   an agent slot while it waits.
 3. The symlink is removed when the run ends, and stale symlinks are swept at
    agent startup.
 
@@ -334,14 +336,27 @@ is required.
   same channel `dsl.RequiredCaps` already feeds.
 - A run that declares `volumes` requires an agent advertising at least one
   candidate from every entry's `name` set.
-- On claim, the agent reports the exclusive volumes and native absolute mount
-  paths it is currently holding. The controller filters out runs that need
-  them.
+- On claim, the agent reports the exclusive volumes it is currently holding.
+  The controller filters out runs that need them: `runs.required_volumes`
+  holds each entry's candidate **names**, and a run is skipped when one of its
+  entries has no candidate that is both advertised and free.
+- A native **absolute mount path is reserved agent-side only.** The controller
+  cannot filter on it: `required_volumes` holds volume names, and an absolute
+  path matches none. (The host agent's busy report does list the paths it holds,
+  but nothing on the controller side compares them with anything.) So with
+  `native: true`, an absolute `mountPath` and `--max-concurrent 4`, four queued
+  runs that need the same path are all claimed; one runs and the other three
+  wait in a concurrency slot each. This is accepted rather than fixed: closing
+  it needs the controller to record the absolute paths a run needs (a second
+  column beside `required_volumes`), which this project does not take on for a
+  shape the docs already steer away from. A relative `mountPath` avoids it
+  entirely, because the route-around then works on volume names.
 
 The claim-time report is an **optimisation**, not the correctness boundary: it
 stops an agent from taking a run it would then sit on while occupying a
-concurrency slot. Correctness lives in the agent's reservation, taken after the
-run arrives, and the reservation must be atomic across slots.
+concurrency slot, for exclusive volumes. Correctness lives in the agent's
+reservation, taken after the run arrives, and the reservation must be atomic
+across slots.
 
 **Losing the race.** Two slots on one agent can both report a volume free before
 either reserves it. There is no controller endpoint that returns a claimed run
@@ -357,8 +372,11 @@ practice.
 processes from registering under one agent ID: `agents.id`
 (`internal/store/migrations/001_init.up.sql:18`) is one row per ID, which two
 processes simply upsert in turn. A host agent is one machine and in-process
-state is authoritative there; a lock file inside the volume directory is a
-diagnostic that warrants a warning, not an authority. A k8s-agent can have two
+state is authoritative there; a record of which process holds a volume is a
+diagnostic that warrants a warning, not an authority. It is kept under
+`<workspaceDir>/.ucd-volume-locks/<volume>/`, outside the volume so the
+volume's contents stay exactly what the job put there, one file per agent
+process so each of two processes sees the other. A k8s-agent can have two
 processes live at once during a rollout, so in-process state is **not**
 sufficient: the k8s-agent derives occupancy from the live claim pods that mount
 each PVC, labelled by volume. That is the same list `PodPool.Restore`

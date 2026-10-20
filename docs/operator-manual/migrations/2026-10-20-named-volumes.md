@@ -32,10 +32,9 @@ older controller binary keeps working against the migrated schema (it just canno
 The controller therefore stores the names agents advertise and the candidate lists runs need, but
 holds **no volume definitions and no occupancy state**: what a volume is (mode, size, location) lives
 in the agent's config, and who is holding it right now lives with the agent. **Upgrade the controller
-first, then the agents**, so that the volumes an upgraded agent advertises at registration have a
-column to be stored in; an agent upgraded first would register against a schema without
-`agents.volumes`. No job YAML that does not use `workspace.pvc` fails to apply because of this
-release.
+first, then the agents**, so the controller can record the volumes an agent advertises; until it is
+upgraded, jobs that mount volumes stay unschedulable. No job YAML that does not use `workspace.pvc`
+fails to apply because of this release.
 
 ---
 
