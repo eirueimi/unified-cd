@@ -54,6 +54,10 @@ type Spec struct {
 	// scalar shorthand); the run: script is appended as the final argv
 	// element. See Step.Shell for the full resolution priority.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
+	// Volumes mounts agent-owned named volumes into the run. The job names a
+	// volume and where it appears; the agent's own configuration decides what
+	// backs it. See VolumeMount.
+	Volumes []VolumeMount `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	// Description is a human-readable summary of the job, shown in the WebUI.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	// DisplayName is optional: a run whose job has no declared displayName
@@ -544,6 +548,25 @@ type PodTemplate struct {
 type WorkspaceConfig struct {
 	MountPath string        `yaml:"mountPath,omitempty" json:"mountPath,omitempty"`
 	PVC       *WorkspacePVC `yaml:"pvc,omitempty" json:"pvc,omitempty"`
+	// Volume is shorthand for a spec.volumes entry with mountPath ".": the
+	// named volume (or list of candidates) becomes the workspace root.
+	Volume StringOrSlice `yaml:"volume,omitempty" json:"volume,omitempty"`
+}
+
+// VolumeMount mounts an agent-owned named volume into the run's workspace.
+type VolumeMount struct {
+	// Name is the volume to mount: one literal name, a list of candidate
+	// names (the agent picks a free one), or a template expanded against the
+	// run's params.
+	Name StringOrSlice `yaml:"name" json:"name"`
+	// As is the stable handle steps use to reach the volume. Required when
+	// Name is a list of several candidates or contains a template, because the
+	// chosen name is not known when the job is written; otherwise it defaults
+	// to the single literal Name.
+	As string `yaml:"as,omitempty" json:"as,omitempty"`
+	// MountPath is where the volume appears: relative to the workspace ("."
+	// is the workspace root), or an absolute path outside the workspace.
+	MountPath string `yaml:"mountPath" json:"mountPath"`
 }
 
 type WorkspacePVC struct {

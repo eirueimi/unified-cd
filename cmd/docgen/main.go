@@ -176,6 +176,16 @@ func fieldType(v map[string]any) (typeStr, ref string) {
 		}
 		return strings.Join(parts, " \\| "), ""
 	}
+	if branches, ok := v["oneOf"].([]any); ok && len(branches) > 0 {
+		parts := make([]string, 0, len(branches))
+		for _, b := range branches {
+			if bm, ok := b.(map[string]any); ok {
+				t, _ := fieldType(bm)
+				parts = append(parts, t)
+			}
+		}
+		return strings.Join(parts, " \\| "), ""
+	}
 	switch v["type"] {
 	case "array":
 		items, _ := v["items"].(map[string]any)

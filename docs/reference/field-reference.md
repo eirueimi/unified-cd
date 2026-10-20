@@ -68,6 +68,9 @@ element. See Step.Shell for the full resolution priority. |
 (failFast was removed — all started steps run to completion.) |
 | `timeoutMinutes` | number | no |  |
 | `vars` | map[string]string | no | Plain-text variables shared by every step of this job, delivered as environment variables and as {{ .Vars.KEY }} in templates. NOT secrets — see kind: Vars. |
+| `volumes` | []VolumeMount | no | Volumes mounts agent-owned named volumes into the run. The job names a
+volume and where it appears; the agent's own configuration decides what
+backs it. See VolumeMount. |
 
 ### Concurrency
 
@@ -379,6 +382,8 @@ never reaches a shell. |
 |-------|------|----------|-------------|
 | `mountPath` | string | no |  |
 | `pvc` | WorkspacePVC | no |  |
+| `volume` | string \| []string | no | Volume is shorthand for a spec.volumes entry with mountPath ".": the
+named volume (or list of candidates) becomes the workspace root. |
 
 ### WorkspacePVC
 
@@ -388,6 +393,22 @@ never reaches a shell. |
 | `claimName` | string | no |  |
 | `storageClassName` | string | no |  |
 | `storageRequest` | string | no |  |
+
+### VolumeMount
+
+VolumeMount mounts an agent-owned named volume into the run's workspace.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `as` | string | no | As is the stable handle steps use to reach the volume. Required when
+Name is a list of several candidates or contains a template, because the
+chosen name is not known when the job is written; otherwise it defaults
+to the single literal Name. |
+| `mountPath` | string | yes | MountPath is where the volume appears: relative to the workspace ("."
+is the workspace root), or an absolute path outside the workspace. |
+| `name` | string \| []string | yes | Name is the volume to mount: one literal name, a list of candidate
+names (the agent picks a free one), or a template expanded against the
+run's params. |
 
 ## JobTemplate
 

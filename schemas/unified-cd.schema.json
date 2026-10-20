@@ -782,6 +782,13 @@
           },
           "description": "Plain-text variables shared by every step of this job, delivered as environment variables and as {{ .Vars.KEY }} in templates. NOT secrets — see kind: Vars.",
           "type": "object"
+        },
+        "volumes": {
+          "description": "Volumes mounts agent-owned named volumes into the run. The job names a\nvolume and where it appears; the agent's own configuration decides what\nbacks it. See VolumeMount.",
+          "items": {
+            "$ref": "#/definitions/VolumeMount"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -1051,6 +1058,39 @@
       ],
       "type": "object"
     },
+    "VolumeMount": {
+      "additionalProperties": false,
+      "description": "VolumeMount mounts an agent-owned named volume into the run's workspace.",
+      "properties": {
+        "as": {
+          "description": "As is the stable handle steps use to reach the volume. Required when\nName is a list of several candidates or contains a template, because the\nchosen name is not known when the job is written; otherwise it defaults\nto the single literal Name.",
+          "type": "string"
+        },
+        "mountPath": {
+          "description": "MountPath is where the volume appears: relative to the workspace (\".\"\nis the workspace root), or an absolute path outside the workspace.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name is the volume to mount: one literal name, a list of candidate\nnames (the agent picks a free one), or a template expanded against the\nrun's params.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "mountPath"
+      ],
+      "type": "object"
+    },
     "WebhookAuth": {
       "additionalProperties": false,
       "properties": {
@@ -1157,6 +1197,20 @@
         },
         "pvc": {
           "$ref": "#/definitions/WorkspacePVC"
+        },
+        "volume": {
+          "description": "Volume is shorthand for a spec.volumes entry with mountPath \".\": the\nnamed volume (or list of candidates) becomes the workspace root.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ]
         }
       },
       "type": "object"

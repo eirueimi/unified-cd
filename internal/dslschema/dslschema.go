@@ -372,6 +372,14 @@ func identToSchema(name string, structs map[string]StructInfo) SchemaNode {
 		return SchemaNode{"type": "number"}
 	case "any":
 		return SchemaNode{}
+	case "StringOrSlice":
+		// A named slice type (internal/dsl/volumes.go), so it is not in
+		// structs; its UnmarshalYAML accepts a bare string or a list of
+		// strings, which the default (type: string) would under-describe.
+		return SchemaNode{"oneOf": []SchemaNode{
+			{"type": "string"},
+			{"type": "array", "items": SchemaNode{"type": "string"}},
+		}}
 	default:
 		if _, ok := structs[name]; ok {
 			return SchemaNode{"$ref": "#/definitions/" + name}

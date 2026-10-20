@@ -215,6 +215,10 @@ func (j *Job) Validate() error {
 		return err
 	}
 
+	if err := ValidateVolumes(j.Spec); err != nil {
+		return err
+	}
+
 	if err := ValidateVarKeys(j.Spec.Vars); err != nil {
 		return fmt.Errorf("spec.vars: %w", err)
 	}
