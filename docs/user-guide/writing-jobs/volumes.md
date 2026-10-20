@@ -211,7 +211,9 @@ incompatible with `podTemplate`, so a native job, which is the usual home of a l
 workspace, could not otherwise reach the escape hatch.
 
 - It applies to a volume **at the workspace root** (`mountPath: "."`), which *is* the workspace.
-  A volume at any other path is left alone.
+  A volume at any other path is left alone, and that includes one mounted *below* the root
+  (`"."` for the checkout plus `.ucd-cache/go` for a cache): the checkout is emptied, the cache
+  keeps every byte, on host and Kubernetes agents alike.
 - It empties the volume's contents, not the mount point, and falls back to a throwaway root
   container when a rootful container runtime left root-owned files behind.
 - An ordinary workspace is always emptied, so the flag changes nothing for a job with no volume at
