@@ -390,6 +390,24 @@ func TestExecuteRun_CleanWorkspaceWipesAVolumeAtTheRoot(t *testing.T) {
 		require.Equal(t, api.RunSucceeded, f.waitFinish(t))
 		assert.False(t, cleared(scripts(f)), "cleanWorkspace wipes the workspace, and only a volume AT the workspace root is the workspace")
 	})
+	// The pod mounts every volume into the container the wipe runs in, so a
+	// plain rm of the root's children would recurse through a nested mount
+	// point and empty that volume while the run reported success.
+	t.Run("a volume mounted below the root is not wiped", func(t *testing.T) {
+		f := newVolFixture(t, []config.VolumeConfig{vcfg("unity-main", "exclusive", "1Gi"), vcfg("go-cache", "exclusive", "1Gi")})
+		c := f.claim([]dsl.VolumeMount{mount("unity-main", "", "."), mount("go-cache", "", ".ucd-cache/go")})
+		c.CleanWorkspace = true
+		f.a.executeRun(context.Background(), c)
+		require.Equal(t, api.RunSucceeded, f.waitFinish(t))
+		ss := scripts(f)
+		require.NotEmpty(t, ss)
+		wipe := ss[0]
+		assert.True(t, cleared(ss[:1]), "the root volume is still wiped: %v", ss)
+		assert.Contains(t, wipe, `'/workspace/.ucd-cache/go') ;;`, "the nested mount point is skipped")
+		assert.Contains(t, wipe, `'/workspace/.ucd-cache') ucd_wipe "$e" ;;`, "its parent is descended into, not removed")
+		assert.NotContains(t, wipe, `'/workspace'/*`, "the root is never globbed straight into a removal")
+		assert.NotContains(t, wipe, "rm -rf '/workspace", "no removal names a path directly")
+	})
 }
 
 // TestK8sBackend_VolumePathsAreForTheDefaultPodOnly: a scope pod mounts no

@@ -540,7 +540,7 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				}
 				defer release()
 			}
-			clean := claimWantsClean(resp)
+			clean := ClaimWantsClean(resp)
 			// A volume at the workspace root IS the workspace (executeRun runs
 			// in its directory), and is the one thing that persists between
 			// runs. Its mode marker lives under wsBase, outside the volume, and
@@ -775,7 +775,7 @@ var runClaimFn = RunClaim
 // Production code always leaves this as prepareWorkspace.
 var prepareWorkspaceFn = prepareWorkspace
 
-// claimWantsClean reports whether the job itself asked for a clean workspace:
+// ClaimWantsClean reports whether the job itself asked for a clean workspace:
 // spec.cleanWorkspace (any job, and the only way for a native one, which has no
 // podTemplate) or podTemplate.cleanWorkspace.
 //
@@ -785,7 +785,7 @@ var prepareWorkspaceFn = prepareWorkspace
 // guarantees unconditionally. Applied to a volume it would destroy, every run,
 // what the job declared it wants to keep. And a volume is never wiped AFTER a
 // run even when this is true: that would destroy exactly what the run produced.
-func claimWantsClean(c api.ClaimResponse) bool {
+func ClaimWantsClean(c api.ClaimResponse) bool {
 	return c.CleanWorkspace || (c.PodTemplate != nil && c.PodTemplate.CleanWorkspace)
 }
 

@@ -1148,11 +1148,11 @@ func TestRunLoop_NativeSpecCleanWorkspaceWipesAVolumeWorkspace(t *testing.T) {
 // Either job-level setting asks for a clean: spec.cleanWorkspace (any job) or
 // podTemplate.cleanWorkspace (an isolated job). Nothing else does.
 func TestClaimWantsClean(t *testing.T) {
-	require.False(t, claimWantsClean(api.ClaimResponse{}))
-	require.False(t, claimWantsClean(api.ClaimResponse{PodTemplate: &dsl.PodTemplate{}}))
-	require.True(t, claimWantsClean(api.ClaimResponse{CleanWorkspace: true}))
-	require.True(t, claimWantsClean(api.ClaimResponse{PodTemplate: &dsl.PodTemplate{CleanWorkspace: true}}))
-	require.True(t, claimWantsClean(api.ClaimResponse{CleanWorkspace: true, PodTemplate: &dsl.PodTemplate{CleanWorkspace: true}}))
+	require.False(t, ClaimWantsClean(api.ClaimResponse{}))
+	require.False(t, ClaimWantsClean(api.ClaimResponse{PodTemplate: &dsl.PodTemplate{}}))
+	require.True(t, ClaimWantsClean(api.ClaimResponse{CleanWorkspace: true}))
+	require.True(t, ClaimWantsClean(api.ClaimResponse{PodTemplate: &dsl.PodTemplate{CleanWorkspace: true}}))
+	require.True(t, ClaimWantsClean(api.ClaimResponse{CleanWorkspace: true, PodTemplate: &dsl.PodTemplate{CleanWorkspace: true}}))
 }
 
 // The agent-wide --clean-workspace flag is an operator hygiene default; it must

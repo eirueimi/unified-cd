@@ -188,5 +188,28 @@
         "dir/cache/inner"
       ]
     }
+  },
+  "cleanWorkspace": {
+    "description": "cleanWorkspace on a volume mounted at the workspace root, with other volumes mounted below it: every root file is removed, the directories on the path to a nested mount point lose their other children too, and the nested volumes keep every byte. Both agents are held to this: the host agent wipes before it mounts, the Kubernetes agent has to skip the mount points itself because the pod mounts them into the container that does the wiping.",
+    "mounts": [
+      {
+        "name": "go-cache",
+        "mountPath": ".ucd-cache/go"
+      },
+      {
+        "name": "tools",
+        "mountPath": "tools"
+      }
+    ],
+    "rootFiles": [
+      ".git/HEAD",
+      ".ucd-cache/other.txt",
+      "Assets/a.cs",
+      "tools-notes.txt"
+    ],
+    "volumeFiles": [
+      "big.bin",
+      "deep/obj.o"
+    ]
   }
 }

@@ -48,7 +48,7 @@ func TestClearReusedWorkspace_ClearsWithoutCleanWorkspaceSet(t *testing.T) {
 	ex := &clearExec{}
 	a := &K8sAgent{exec: ex}
 	c := claimWithStep(&dsl.PodTemplate{Reuse: true})
-	if err := a.clearReusedWorkspace(context.Background(), "pod-1", c, "/workspace"); err != nil {
+	if err := a.clearReusedWorkspace(context.Background(), "pod-1", c, "/workspace", nil); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if len(ex.scripts) != 1 {
@@ -68,7 +68,7 @@ func TestClearReusedWorkspace_UsesTheConfiguredMountPath(t *testing.T) {
 	ex := &clearExec{}
 	a := &K8sAgent{exec: ex}
 	c := claimWithStep(&dsl.PodTemplate{Reuse: true, Workspace: &dsl.WorkspaceConfig{MountPath: "/work/dir"}})
-	if err := a.clearReusedWorkspace(context.Background(), "pod-1", c, "/work/dir"); err != nil {
+	if err := a.clearReusedWorkspace(context.Background(), "pod-1", c, "/work/dir", nil); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if !strings.Contains(ex.scripts[0], "/work/dir") {
@@ -84,7 +84,7 @@ func TestClearReusedWorkspace_FailureIsReported(t *testing.T) {
 		"exit code":  {exit: 1},
 	} {
 		a := &K8sAgent{exec: ex}
-		if err := a.clearReusedWorkspace(context.Background(), "pod-1", claimWithStep(&dsl.PodTemplate{Reuse: true}), "/workspace"); err == nil {
+		if err := a.clearReusedWorkspace(context.Background(), "pod-1", claimWithStep(&dsl.PodTemplate{Reuse: true}), "/workspace", nil); err == nil {
 			t.Fatalf("%s: want an error", name)
 		}
 	}

@@ -510,19 +510,20 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// run's files. The default workspace is ephemeral (a fresh pod's emptyDir
 	// is), so clear it before every run, whatever cleanWorkspace says.
 	if usePool {
-		if err := a.clearReusedWorkspace(ctx, podName, c, mountPath); err != nil {
+		if err := a.clearReusedWorkspace(ctx, podName, c, mountPath, nil); err != nil {
 			// Do not hand a dirty pod back to the idle pool: delete it.
 			podReady = false
 			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: could not clear the reused Pod's workspace: %v", err))
 			return
 		}
-	} else if rootVolume && (c.CleanWorkspace || (c.PodTemplate != nil && c.PodTemplate.CleanWorkspace)) {
+	} else if rootVolume && agentlib.ClaimWantsClean(c) {
 		// The workspace is a persistent volume, and the job asked for it to be
 		// wiped. This is the one deliberate way unified-cd destroys a volume's
 		// data (spec 4.10), and it applies only to a volume AT the workspace
 		// root: that is the workspace. The agent-wide clean flag never reaches
-		// here, and a fresh emptyDir needs no clearing.
-		if err := a.clearReusedWorkspace(ctx, podName, c, mountPath); err != nil {
+		// here, and a fresh emptyDir needs no clearing. Volumes mounted
+		// below the root are other volumes, and are not wiped.
+		if err := a.clearReusedWorkspace(ctx, podName, c, mountPath, mountedVolumes(mountPath, volumeMounts)); err != nil {
 			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: could not clear the workspace volume: %v", err))
 			return
 		}
@@ -543,11 +544,12 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 
 // clearReusedWorkspace empties mountPath in a reused pooled pod, or in a
 // workspace volume the job asked to have wiped, before the run's first step,
-// dot-prefixed entries included. It runs in the first step's
-// container, since that is the one guaranteed to exist and carry the workspace
-// mount. A failure is returned rather than ignored: running on a workspace that
+// dot-prefixed entries included. vols are the volumes mounted into the pod; any
+// below mountPath is left alone (see clearWorkspaceScript). It runs in the
+// first step's container, since that is the one guaranteed to exist and carry
+// the workspace mount. A failure is returned rather than ignored: running on a workspace that
 // still holds the previous run's files is exactly what this prevents.
-func (a *K8sAgent) clearReusedWorkspace(ctx context.Context, podName string, c api.ClaimResponse, mountPath string) error {
+func (a *K8sAgent) clearReusedWorkspace(ctx context.Context, podName string, c api.ClaimResponse, mountPath string, vols []agentlib.MountedVolume) error {
 	firstContainer := ""
 	for _, stage := range c.Stages {
 		steps := api.StageSteps(stage)
@@ -559,8 +561,7 @@ func (a *K8sAgent) clearReusedWorkspace(ctx context.Context, podName string, c a
 	// nil shell: this is an internal maintenance script (not user-authored
 	// run:), so the shim default (["/.ucd/ucd-sh","-c"], POSIX-compatible)
 	// is always sufficient regardless of any step's declared shell:.
-	q := "'" + strings.ReplaceAll(mountPath, "'", `'\''`) + "'"
-	script := fmt.Sprintf("rm -rf %[1]s/* %[1]s/.[!.]* %[1]s/..?*", q)
+	script := clearWorkspaceScript(mountPath, vols)
 	exit, err := a.exec.ExecStep(ctx, podName, firstContainer, script, nil, nil, io.Discard, io.Discard)
 	if err != nil {
 		return err
