@@ -334,6 +334,175 @@ func (m *VolumeManager) reserve(ctx context.Context, runID string, names []strin
 	}
 }
 
+// ReserveSet acquires everything a run needs in one atomic step: one volume for
+// each entry of volumeSets (each entry lists its candidate names) and every
+// absolute native mount path in absPaths. It returns the volume chosen for each
+// entry, in order, and one release func for the lot.
+//
+// All or nothing, and a run that has to wait holds nothing. A run that took its
+// resources one at a time and blocked on the next would hold some while waiting
+// for others, and two such runs can each wait for what the other holds
+// (hold-and-wait), whatever order the entries are taken in. Here the whole
+// assignment is computed under the manager's lock; if it cannot be completed
+// now, nothing is taken and the call waits for a release and tries again, so no
+// cycle can form. ctx ends the wait, still holding nothing. onWait, if non-nil,
+// is called once, outside the lock, the first time the call has to wait.
+//
+// The assignment is a complete search (backtracking; entry counts are tiny), not
+// a greedy pass: [a b] with [a c] while c is busy elsewhere is satisfied by
+// (b, a), not by taking a first and waiting for c.
+//
+// Two entries get distinct volumes whenever the candidates allow it. One run
+// reuses a volume for a second entry only when every candidate that entry
+// declares is already chosen by this run, which is the legal "one volume mounted
+// at two paths" case (a single name written twice); it does not alias to avoid
+// waiting. Whether distinct volumes are possible is judged on what the agent
+// declares, not on what is free right now: if they are possible but busy, the
+// call waits.
+//
+// A candidate this agent does not declare is not an alternative. It is an error,
+// not a wait, for an entry to have no declared candidate. Reserve is separate
+// and keeps its per-run re-entrancy.
+func (m *VolumeManager) ReserveSet(ctx context.Context, runID string, volumeSets [][]string, absPaths []string, onWait func()) ([]string, func(), error) {
+	if m == nil {
+		return nil, nil, errors.New("reserve volumes: this agent declares no volumes")
+	}
+	if runID == "" {
+		return nil, nil, errors.New("reserve volumes: run ID is required")
+	}
+	declared := make([][]string, len(volumeSets))
+	for i, set := range volumeSets {
+		for _, n := range set {
+			if _, ok := m.vols[n]; ok {
+				declared[i] = append(declared[i], n)
+			}
+		}
+		if len(declared[i]) == 0 {
+			return nil, nil, fmt.Errorf("reserve volumes: this agent declares none of %q", set)
+		}
+	}
+	var keys []string
+	seen := map[string]bool{}
+	for _, p := range absPaths {
+		slashed := filepath.ToSlash(p)
+		if !filepath.IsAbs(p) && !strings.HasPrefix(slashed, "/") {
+			return nil, nil, fmt.Errorf("reserve path: %q is not absolute", p)
+		}
+		if k := path.Clean(slashed); !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+
+	for {
+		m.mu.Lock()
+		if chosen, ok := m.assignLocked(runID, declared, keys); ok {
+			var added []string
+			for _, n := range chosen {
+				if _, held := m.holders[n][runID]; held {
+					continue
+				}
+				if m.holders[n] == nil {
+					m.holders[n] = make(map[string]struct{})
+				}
+				m.holders[n][runID] = struct{}{}
+				added = append(added, n)
+			}
+			for _, k := range keys {
+				m.paths[k] = struct{}{}
+			}
+			m.mu.Unlock()
+			return chosen, m.releaser(func() {
+				for _, n := range added {
+					m.dropHolder(n, runID)
+				}
+				for _, k := range keys {
+					if _, pinned := m.pinned[k]; !pinned {
+						delete(m.paths, k)
+					}
+				}
+			}), nil
+		}
+		wait := m.changed
+		m.mu.Unlock()
+		if onWait != nil {
+			onWait()
+			onWait = nil
+		}
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, nil, fmt.Errorf("waiting for volumes %q and paths %q: %w", volumeSets, keys, ctx.Err())
+		}
+	}
+}
+
+// assignLocked decides whether the whole request can be satisfied right now and,
+// if so, with which volumes. It changes nothing. m.mu must be held.
+func (m *VolumeManager) assignLocked(runID string, declared [][]string, pathKeys []string) ([]string, bool) {
+	for _, k := range pathKeys {
+		if _, held := m.paths[k]; held {
+			return nil, false
+		}
+	}
+	free := func(n string) bool {
+		_, mine := m.holders[n][runID]
+		return mine || m.vols[n].mode == VolumeModeShared || len(m.holders[n]) == 0
+	}
+	if a := assignDistinct(declared, free, false); a != nil {
+		return a, true
+	}
+	// Distinct volumes are not free now. If they exist at all, wait for them
+	// rather than alias.
+	if assignDistinct(declared, func(string) bool { return true }, false) != nil {
+		return nil, false
+	}
+	// Distinct volumes cannot exist: aliasing is the only reading of the job.
+	if a := assignDistinct(declared, free, true); a != nil {
+		return a, true
+	}
+	return nil, false
+}
+
+// assignDistinct searches for one volume per entry, trying each entry's
+// candidates in the order listed, with no volume chosen twice. With alias, an
+// entry whose every candidate is already chosen reuses its first. usable says
+// which volumes may be chosen. It returns nil if there is no assignment.
+func assignDistinct(sets [][]string, usable func(string) bool, alias bool) []string {
+	chosen := make([]string, len(sets))
+	taken := map[string]bool{}
+	var rec func(i int) bool
+	rec = func(i int) bool {
+		if i == len(sets) {
+			return true
+		}
+		anyUnchosen := false
+		for _, n := range sets[i] {
+			if taken[n] {
+				continue
+			}
+			anyUnchosen = true
+			if !usable(n) {
+				continue
+			}
+			taken[n], chosen[i] = true, n
+			if rec(i + 1) {
+				return true
+			}
+			delete(taken, n)
+		}
+		if !anyUnchosen && alias {
+			chosen[i] = sets[i][0]
+			return rec(i + 1)
+		}
+		return false
+	}
+	if !rec(0) {
+		return nil
+	}
+	return chosen
+}
+
 // ReservePath reserves an absolute host path that a native run symlinks a
 // volume into. Unlike a relative mount inside the per-run workspace, such a
 // path is machine-wide: two concurrent runs cannot point it at two different

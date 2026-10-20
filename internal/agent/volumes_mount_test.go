@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -596,6 +597,146 @@ func TestMountVolumes_FailedUnlinkOfAnAbsolutePathKeepsItsReservation(t *testing
 	require.Empty(t, m2.Busy())
 }
 
+// Hold-and-wait: two runs that each list the same two-candidate set at two
+// paths, over exactly two volumes. Acquiring one entry at a time lets run A take
+// c1 and run B take c2, and then each waits for the volume the other holds.
+// Acquisition is all-or-nothing, so a waiting run holds nothing and both finish.
+func TestReserveRunVolumes_SameCandidateSetAtTwoPathsDoesNotInterlock(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("c1"), exclusive("c2"))
+	mounts := []dsl.VolumeMount{
+		{Name: dsl.StringOrSlice{"c1", "c2"}, As: "x", MountPath: "p1"},
+		{Name: dsl.StringOrSlice{"c1", "c2"}, As: "y", MountPath: "p2"},
+	}
+	const rounds = 400
+	failed := make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < rounds; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for _, id := range []string{"A", "B"} {
+				wg.Add(1)
+				go func(id string) {
+					defer wg.Done()
+					<-start
+					chosen, rel, err := reserveRunVolumes(ctx, m, id, mounts, true, nil)
+					if err != nil {
+						select {
+						case failed <- fmt.Sprintf("round %d run %s: %v", i, id, err):
+						default:
+						}
+						return
+					}
+					if chosen[0].Name[0] == chosen[1].Name[0] {
+						select {
+						case failed <- fmt.Sprintf("round %d run %s: both entries got %s", i, id, chosen[0].Name[0]):
+						default:
+						}
+					}
+					time.Sleep(time.Millisecond)
+					rel()
+				}(id)
+			}
+			close(start)
+			wg.Wait()
+			cancel()
+			if len(failed) > 0 {
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(60 * time.Second):
+		t.Fatal("runs interlocked")
+	}
+	select {
+	case msg := <-failed:
+		t.Fatal(msg)
+	default:
+	}
+	require.Empty(t, m.Busy())
+}
+
+// A greedy pass gives [a,b] the volume a and then waits for c; the assignment
+// (b, a) satisfies both at once.
+func TestReserveRunVolumes_FindsAnAssignmentAGreedyPassMisses(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("a"), exclusive("b"), exclusive("c"))
+	_, holdC, err := m.Reserve("other", []string{"c"})
+	require.NoError(t, err)
+	defer holdC()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	chosen, release, err := reserveRunVolumes(ctx, m, "r1", []dsl.VolumeMount{
+		{Name: dsl.StringOrSlice{"a", "b"}, As: "x", MountPath: "p1"},
+		{Name: dsl.StringOrSlice{"a", "c"}, As: "y", MountPath: "p2"},
+	}, true, nil)
+	require.NoError(t, err, "must not wait: (b, a) is available now")
+	defer release()
+	require.Equal(t, "b", chosen[0].Name[0])
+	require.Equal(t, "a", chosen[1].Name[0])
+}
+
+// A run that has to wait holds nothing, volumes and absolute paths alike, so a
+// run holding a volume and waiting for a path (or the reverse) cannot form a cycle.
+func TestReserveRunVolumes_WaitingRunHoldsNothing(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("v"))
+	rel, err := m.ReservePath("/go/cache")
+	require.NoError(t, err)
+
+	got := make(chan error, 1)
+	var release func()
+	go func() {
+		var err error
+		_, release, err = reserveRunVolumes(context.Background(), m, "r1", []dsl.VolumeMount{vmount("v", "", "/go/cache")}, true, nil)
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		t.Fatalf("should be waiting for the path, got %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	require.Equal(t, []string{"/go/cache"}, m.Busy(), "the waiter holds neither the free volume nor the path it wants")
+	_, other, err := m.Reserve("r2", []string{"v"})
+	require.NoError(t, err, "the volume the waiter wants is free for anyone else")
+	other()
+
+	rel()
+	select {
+	case err := <-got:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("never got the path after it was released")
+	}
+	release()
+	require.Empty(t, m.Busy())
+}
+
+func TestVolumeManager_ReserveSet(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("a"), exclusive("b"))
+
+	_, _, err := (*VolumeManager)(nil).ReserveSet(context.Background(), "r", [][]string{{"a"}}, nil, nil)
+	require.Error(t, err)
+	_, _, err = m.ReserveSet(context.Background(), "", [][]string{{"a"}}, nil, nil)
+	require.Error(t, err, "run ID required")
+	_, _, err = m.ReserveSet(context.Background(), "r", [][]string{{"a"}, {"zz"}}, nil, nil)
+	require.Error(t, err, "a set this agent declares none of is an error, not a wait")
+	require.Empty(t, m.Busy(), "a failed reservation takes nothing")
+	_, _, err = m.ReserveSet(context.Background(), "r", [][]string{{"a"}}, []string{"relative"}, nil)
+	require.Error(t, err, "a path must be absolute")
+
+	chosen, release, err := m.ReserveSet(context.Background(), "r", [][]string{{"a", "b"}, {"a"}}, []string{"/x//y/", "/x/y"}, nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"b", "a"}, chosen)
+	require.Equal(t, []string{"a", "b", "/x/y"}, m.Busy(), "paths are keyed POSIX and deduplicated")
+	release()
+	release()
+	require.Empty(t, m.Busy())
+}
+
 func TestMountVolumes_AbsoluteNativePathIsReservedMachineWide(t *testing.T) {
 	m, _ := newTestVolumes(t, exclusive("a"), exclusive("b"))
 	mountPath, hostPath := absMount(t)
@@ -667,6 +808,7 @@ func TestReserveRunVolumes_CancelledWaitReleasesWhatItAcquired(t *testing.T) {
 		got <- err
 	}()
 	require.Eventually(t, waited.Load, 5*time.Second, 10*time.Millisecond, "the wait hook fires when the run starts to wait")
+	require.Equal(t, []string{"b"}, m.Busy(), "while waiting the run holds nothing, not even the free volume a")
 	cancel()
 	select {
 	case err := <-got:
@@ -674,7 +816,7 @@ func TestReserveRunVolumes_CancelledWaitReleasesWhatItAcquired(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelling did not end the wait")
 	}
-	require.Equal(t, []string{"b"}, m.Busy(), "volume a, taken before the wait, is released again")
+	require.Equal(t, []string{"b"}, m.Busy())
 }
 
 // Two runs naming the same two exclusive volumes in opposite orders must not

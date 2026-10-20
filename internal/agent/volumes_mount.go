@@ -489,104 +489,33 @@ func sweepStaleVolumeLinks(m *VolumeManager) error {
 // --- reservation for a run ---
 
 // reserveRunVolumes holds, for runID, every volume the run mounts and (for a
-// native run) every absolute host path it links, waiting for each to be free.
-// It returns mounts with each entry's candidate list narrowed to the one volume
-// chosen, and a release func for everything it took. The caller releases once,
-// when the run ends: the same volume named by two entries is held by one
-// reservation (VolumeManager.Reserve is re-entrant per run), so releasing per
-// entry would free it while the run still uses its other mount path.
+// native run) every absolute host path it links, all at once, waiting until the
+// whole set can be taken. It returns mounts with each entry's candidate list
+// narrowed to the one volume chosen, and a release func for everything it took.
+// The caller releases once, when the run ends: one volume named by two entries
+// is held by one reservation, so releasing per entry would free it while the run
+// still uses its other mount path.
+//
+// Acquisition is atomic (VolumeManager.ReserveSet): a run that is waiting holds
+// no volume and no path, so two runs cannot each wait for what the other holds,
+// however their candidate lists overlap and whether the contended resources are
+// volumes, absolute paths, or one of each. That is why no ordering of entries is
+// needed. Each entry gets a distinct volume when the candidates allow; one is
+// reused for a second entry only when every candidate of that entry is already
+// chosen (the same single name written twice).
 //
 // The wait ends, holding nothing, when ctx is done. onWait, if non-nil, is
 // called once, with a description, the first time the run has to wait.
-//
-// Entries are reserved in a fixed order, not in the order the job lists them:
-// fewest candidates first, then by candidate set, then absolute paths by name.
-// Two runs naming the same two exclusive volumes in opposite orders would
-// otherwise each take their first and wait forever for the other's. The order is
-// not a complete defence: runs whose candidate lists overlap without being equal
-// can still interlock, and then only ctx ends the wait. Absolute paths are taken
-// after every volume, so a run that holds a path has everything else it needs.
-//
-// Each entry prefers a candidate this run has not already chosen for another
-// entry, and waits for one rather than reuse a volume it holds: a job that wrote
-// `[c1, c2]` and `[c1]` meant two caches, not one aliased at two paths. Fewest
-// candidates first makes that work greedily (`[c1]` takes c1 before `[c1, c2]`
-// has a chance to). The run reuses a volume it already holds only when every
-// declared candidate of the entry is already held by it, which is the legal
-// "one volume at two paths" case.
 func reserveRunVolumes(ctx context.Context, m *VolumeManager, runID string, mounts []dsl.VolumeMount, native bool, onWait func(what string)) ([]dsl.VolumeMount, func(), error) {
 	chosen := make([]dsl.VolumeMount, len(mounts))
+	sets := make([][]string, len(mounts))
 	for i, v := range mounts {
 		chosen[i] = v
-		chosen[i].Name = append(dsl.StringOrSlice(nil), v.Name...)
+		sets[i] = append([]string(nil), v.Name...)
 	}
-
-	var releases []func()
-	release := func() {
-		for i := len(releases) - 1; i >= 0; i-- {
-			releases[i]()
-		}
-	}
-	var once sync.Once
-	waiting := func(what string) func() {
-		if onWait == nil {
-			return nil
-		}
-		return func() { once.Do(func() { onWait(what) }) }
-	}
-
-	order := make([]int, len(mounts))
-	for i := range order {
-		order[i] = i
-	}
-	candidateKey := func(i int) string {
-		names := append([]string(nil), mounts[i].Name...)
-		sort.Strings(names)
-		return strings.Join(names, "\x00")
-	}
-	sort.SliceStable(order, func(a, b int) bool {
-		ia, ib := order[a], order[b]
-		if len(mounts[ia].Name) != len(mounts[ib].Name) {
-			return len(mounts[ia].Name) < len(mounts[ib].Name)
-		}
-		return candidateKey(ia) < candidateKey(ib)
-	})
-
-	taken := map[string]bool{} // volumes this run has chosen so far
-	for _, i := range order {
-		var declared, fresh []string
-		for _, n := range mounts[i].Name {
-			if m.PathOf(n) == "" {
-				continue
-			}
-			declared = append(declared, n)
-			if !taken[n] {
-				fresh = append(fresh, n)
-			}
-		}
-		candidates := fresh
-		if len(candidates) == 0 {
-			// Nothing unchosen to prefer: every declared candidate is held by
-			// this run (re-entrant, no wait), or none is declared (an error
-			// from reserve, which also covers a nil manager).
-			candidates = []string(mounts[i].Name)
-			if len(declared) > 0 {
-				candidates = declared
-			}
-		}
-		name, rel, err := m.reserve(ctx, runID, candidates, waiting(fmt.Sprintf("volume %q", candidates)))
-		if err != nil {
-			release()
-			return nil, nil, err
-		}
-		releases = append(releases, rel)
-		taken[name] = true
-		chosen[i].Name = dsl.StringOrSlice{name}
-	}
-
+	var abs []string
 	if native {
 		seen := map[string]bool{}
-		var abs []string
 		for _, v := range mounts {
 			if p := path.Clean(filepath.ToSlash(v.MountPath)); path.IsAbs(p) && !seen[p] {
 				seen[p] = true
@@ -594,14 +523,17 @@ func reserveRunVolumes(ctx context.Context, m *VolumeManager, runID string, moun
 			}
 		}
 		sort.Strings(abs)
-		for _, p := range abs {
-			rel, err := m.reservePath(ctx, p, waiting(fmt.Sprintf("path %q", p)))
-			if err != nil {
-				release()
-				return nil, nil, err
-			}
-			releases = append(releases, rel)
-		}
+	}
+	var wait func()
+	if onWait != nil {
+		wait = func() { onWait(fmt.Sprintf("volumes %q and paths %q", sets, abs)) }
+	}
+	names, release, err := m.ReserveSet(ctx, runID, sets, abs, wait)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i, n := range names {
+		chosen[i].Name = dsl.StringOrSlice{n}
 	}
 	return chosen, release, nil
 }
