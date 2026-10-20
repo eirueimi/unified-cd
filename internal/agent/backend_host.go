@@ -7,7 +7,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -66,11 +69,12 @@ type hostBackend struct {
 	// (mountVolumes / isolatedVolumeMounts). Empty when the job mounts none.
 	volumePaths map[string]string
 
-	// volumeRefs are the volumes an ISOLATED claim bind-mounts at a path inside
-	// the workspace (relativeVolumeMounts); empty for a native claim. The host
-	// directory at such a path is an empty mountpoint, so artifact and cache
+	// volumeRefs are the volumes this claim mounts at a path inside the
+	// workspace (relativeVolumeMounts). The host directory at such a path is an
+	// empty mountpoint (isolated) or a link (native), so artifact and cache
 	// paths inside one are resolved to the volume's own host directory
-	// (resolveInVolumeMount).
+	// (resolveInVolumeMount), and an archive of an ancestor leaves it out
+	// (excludeVolumes).
 	volumeRefs []volumeMountRef
 }
 
@@ -252,7 +256,7 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 	}
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return cache.Save(ctx, b.a.CacheStore, b.jobName, path, key, ttlDays)
+		return cache.SaveExcluding(ctx, b.a.CacheStore, b.jobName, path, key, ttlDays, b.excludeVolumes(ctx, "cache", path))
 	}
 	hostPath, cleanup, err := sm.copyOutToTemp(ctx, h, path)
 	if err != nil {
@@ -267,7 +271,7 @@ func (b *hostBackend) CacheSave(ctx context.Context, scope ScopeHandle, key, pat
 func (b *hostBackend) UploadArtifact(ctx context.Context, scope ScopeHandle, runID, name, path string) error {
 	sm, h, ok := unwrapHostScope(scope)
 	if !ok {
-		return b.a.Client.UploadArtifact(ctx, runID, name, path)
+		return b.a.Client.UploadArtifactExcluding(ctx, runID, name, path, b.excludeVolumes(ctx, "artifact", path))
 	}
 	artifactPath, cleanup, err := sm.copyOutToTemp(ctx, h, path)
 	if err != nil {
@@ -312,12 +316,50 @@ func (b *hostBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, 
 	if err != nil {
 		return "", err
 	}
-	if b.pod != nil {
-		// The host directory at a volume's mount path is an empty
-		// mountpoint; the files are in the volume itself.
-		resolved = resolveInVolumeMount(b.workDir, resolved, b.volumeRefs)
+	// The host directory at a volume's mount path is an empty mountpoint (or, for
+	// a native claim, a link); the files are in the volume itself.
+	return resolveInVolumeMount(b.workDir, resolved, b.volumeRefs), nil
+}
+
+// mountedVolumes lists the claim's relatively mounted volumes with where their
+// mount points are on the host: a mount point inside another volume's mount is
+// in that volume's directory, not in the workspace.
+func (b *hostBackend) mountedVolumes() []MountedVolume {
+	vols := make([]MountedVolume, 0, len(b.volumeRefs))
+	for i, r := range b.volumeRefs {
+		others := make([]volumeMountRef, 0, len(b.volumeRefs)-1)
+		others = append(others, b.volumeRefs[:i]...)
+		others = append(others, b.volumeRefs[i+1:]...)
+		at := filepath.Join(b.workDir, filepath.FromSlash(r.MountPath))
+		vols = append(vols, MountedVolume{Volume: r.Volume, MountPath: r.MountPath, Location: resolveInVolumeMount(b.workDir, at, others)})
 	}
-	return resolved, nil
+	return vols
+}
+
+// shownPath is resolved, an artifact or cache path as ResolveArtifactPath
+// returned it, written as the job would: relative to the workspace, with a path
+// inside a volume given under its mount path.
+func (b *hostBackend) shownPath(resolved string) string {
+	for _, r := range b.volumeRefs {
+		if rel, err := filepath.Rel(r.HostPath, resolved); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return path.Clean(path.Join(r.MountPath, filepath.ToSlash(rel)))
+		}
+	}
+	if rel, err := filepath.Rel(b.workDir, resolved); err == nil {
+		return path.Clean(filepath.ToSlash(rel))
+	}
+	return filepath.ToSlash(resolved)
+}
+
+// excludeVolumes returns what an archive of resolved must leave out: the mount
+// point of every volume strictly below it. It announces each in the run log, so
+// that a smaller-than-expected archive is explained rather than puzzling.
+func (b *hostBackend) excludeVolumes(ctx context.Context, kind, resolved string) []string {
+	below := VolumesBelow(resolved, b.mountedVolumes())
+	for _, v := range below {
+		b.a.warnRun(ctx, b.runID, VolumeExclusionNotice(kind, b.shownPath(resolved), v))
+	}
+	return VolumeLocations(below)
 }
 
 // ResolveCachePath is identical to ResolveArtifactPath: a non-scoped cache

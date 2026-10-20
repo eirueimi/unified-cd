@@ -1,0 +1,22 @@
+{
+  "description": "An archive of the workspace root, for a job mounting two volumes below it. Both agents are checked against this one file: internal/agent (host, isolated and native) and internal/k8sagent. Edit it only when the rule deliberately changes, and both sides must keep passing.",
+  "mounts": [
+    {"name": "go-cache", "mountPath": ".ucd-cache/go"},
+    {"name": "tools", "mountPath": "tools"}
+  ],
+  "archivePath": ".",
+  "workspaceFiles": ["keep.txt", "src/main.go"],
+  "volumeFiles": ["big.bin", "deep/obj.o"],
+  "entries": [".ucd-cache", "keep.txt", "src", "src/main.go"],
+  "notices": {
+    "artifact": [
+      "artifact path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
+      "artifact path \".\" excludes volume \"tools\" mounted at \"tools\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+    ],
+    "cache": [
+      "cache path \".\" excludes volume \"go-cache\" mounted at \".ucd-cache/go\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it",
+      "cache path \".\" excludes volume \"tools\" mounted at \"tools\": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it"
+    ]
+  },
+  "excluded": [".ucd-cache/go", "tools"]
+}

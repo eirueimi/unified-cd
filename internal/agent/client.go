@@ -368,7 +368,13 @@ func (c *Client) FetchSecrets(ctx context.Context, agentID, runID string, names 
 // transfer-encoding, and the controller reads r.Body straight into the object
 // store (r.ContentLength == -1 → a multipart streaming Put).
 func (c *Client) UploadArtifact(ctx context.Context, runID, name, path string) error {
-	body := artifact.StreamTarZstd(path)
+	return c.UploadArtifactExcluding(ctx, runID, name, path, nil)
+}
+
+// UploadArtifactExcluding is UploadArtifact that leaves the paths in exclude
+// out of the archive (see artifact.WriteTarZstdExcluding).
+func (c *Client) UploadArtifactExcluding(ctx context.Context, runID, name, path string, exclude []string) error {
+	body := artifact.StreamTarZstdExcluding(path, exclude)
 	defer body.Close()
 
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)

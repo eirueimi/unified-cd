@@ -693,8 +693,16 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		}
 	}()
 
+	// The volumes mounted below the workspace root, for resolving artifact and
+	// cache paths: a native run reaches them through links, an isolated one
+	// through bind mounts, and both leave the workspace path itself empty.
+	refs, err := relativeVolumeMounts(c.Volumes, a.Volumes)
+	if err != nil {
+		failClaim("volume mount failed", err)
+		return
+	}
+
 	var pod *claimPodManager
-	var refs []volumeMountRef
 	if !c.Native {
 		rt, err := a.containerRuntime()
 		if err != nil {
@@ -737,11 +745,6 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			}
 			pod.volumeMounts = extra
 			volumePaths = resolved
-			refs, verr = relativeVolumeMounts(c.Volumes, a.Volumes)
-			if verr != nil {
-				failClaim("volume mount failed", verr)
-				return
-			}
 		}
 		if err := pod.Start(ctx, c.PodTemplate); err != nil {
 			pod.CloseAll(context.WithoutCancel(ctx))
@@ -780,6 +783,21 @@ var prepareWorkspaceFn = prepareWorkspace
 // run even when this is true: that would destroy exactly what the run produced.
 func claimWantsClean(c api.ClaimResponse) bool {
 	return c.CleanWorkspace || (c.PodTemplate != nil && c.PodTemplate.CleanWorkspace)
+}
+
+// warnRun is failRun's non-fatal twin: it records reason in the agent log and
+// in the run's own log (the same step -1 "run level" stream), and leaves the
+// run's status alone. For a condition the user must see that is not, by design,
+// run-failing. Best-effort, like failRun's log line.
+func (a *Agent) warnRun(ctx context.Context, runID, reason string) {
+	slog.Warn(reason, "runId", runID)
+	_ = a.Client.AppendLogBulk(ctx, a.ID, runID, -1, []api.LogAppendRequest{{
+		RunID:     runID,
+		StepIndex: -1,
+		Stream:    "stderr",
+		Timestamp: time.Now().UTC(),
+		Line:      reason,
+	}})
 }
 
 // failRun fails a claim that could not even begin executing (workspace

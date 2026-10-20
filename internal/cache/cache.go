@@ -72,12 +72,18 @@ func jobPrefix(jobName string) string {
 // same invariant enforced where it actually lives, so no other caller of this
 // library can bypass it by skipping the CLI.
 func Save(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, ttlDays int) error {
+	return SaveExcluding(ctx, store, jobName, path, key, ttlDays, nil)
+}
+
+// SaveExcluding is Save that leaves the paths in exclude out of the archive
+// (see artifact.WriteTarZstdExcluding).
+func SaveExcluding(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, ttlDays int, exclude []string) error {
 	if jobName == "" {
 		return fmt.Errorf("cache save: jobName must not be empty")
 	}
 	oKey := objectKey(jobName, key)
 
-	body := artifact.StreamTarZstd(path)
+	body := artifact.StreamTarZstdExcluding(path, exclude)
 	counter := &countingReader{r: body}
 	if err := store.Put(ctx, oKey+".tar.zst", counter, -1); err != nil {
 		body.Close()

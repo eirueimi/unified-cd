@@ -19,6 +19,19 @@ import (
 // directory; for a single file, the archive contains one entry named the file's
 // base name (so `path: out.txt` round-trips to `out.txt`, matching the docs).
 func WriteTarZstd(w io.Writer, path string) error {
+	return WriteTarZstdExcluding(w, path, nil)
+}
+
+// WriteTarZstdExcluding is WriteTarZstd that leaves out every path in exclude:
+// the entry itself and, for a directory, everything below it. Paths are
+// compared after filepath.Clean, in the same form as path (both absolute, or
+// both relative to the same directory). An exclusion that does not exist under
+// path is simply never met.
+func WriteTarZstdExcluding(w io.Writer, path string, exclude []string) error {
+	skip := make(map[string]bool, len(exclude))
+	for _, e := range exclude {
+		skip[filepath.Clean(e)] = true
+	}
 	// When path is a single file, name entries relative to its parent so the
 	// entry is the base name rather than "." (which would extract onto the dest
 	// directory itself).
@@ -35,6 +48,12 @@ func WriteTarZstd(w io.Writer, path string) error {
 	if err := filepath.WalkDir(path, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
+		}
+		if skip[filepath.Clean(p)] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		info, err := d.Info()
 		if err != nil {
@@ -82,10 +101,16 @@ func WriteTarZstd(w io.Writer, path string) error {
 // or a failed Put — so the producer goroutine cannot leak: Close delivers
 // io.ErrClosedPipe to the producer's next Write, unwinding it.
 func StreamTarZstd(path string) io.ReadCloser {
+	return StreamTarZstdExcluding(path, nil)
+}
+
+// StreamTarZstdExcluding is StreamTarZstd with the exclusions of
+// WriteTarZstdExcluding.
+func StreamTarZstdExcluding(path string, exclude []string) io.ReadCloser {
 	pr, pw := io.Pipe()
 	go func() {
 		// CloseWithError(nil) behaves like Close(): the reader sees a clean io.EOF.
-		pw.CloseWithError(WriteTarZstd(pw, path))
+		pw.CloseWithError(WriteTarZstdExcluding(pw, path, exclude))
 	}()
 	return pr
 }
@@ -125,11 +150,17 @@ func ArtifactKey(runID, name string) (string, error) {
 // Upload tars+zstds dir and stores it at artifacts/{runID}/{name}.tar.gz,
 // streaming the archive so it is never fully buffered in memory.
 func Upload(ctx context.Context, store objectstore.ObjectStore, runID, name, dir string) error {
+	return UploadExcluding(ctx, store, runID, name, dir, nil)
+}
+
+// UploadExcluding is Upload that leaves out the paths in exclude (see
+// WriteTarZstdExcluding).
+func UploadExcluding(ctx context.Context, store objectstore.ObjectStore, runID, name, dir string, exclude []string) error {
 	key, err := ArtifactKey(runID, name)
 	if err != nil {
 		return fmt.Errorf("upload artifact: %w", err)
 	}
-	body := StreamTarZstd(dir)
+	body := StreamTarZstdExcluding(dir, exclude)
 	defer body.Close()
 	return store.Put(ctx, key, body, -1)
 }

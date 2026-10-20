@@ -116,6 +116,21 @@ func TestResolveArtifactPath_OutsideEveryVolumeIsUnchanged(t *testing.T) {
 	require.Equal(t, filepath.Join(native.workDir, ".ucd-cache", "go", "obj"), got)
 }
 
+// A native run reaches a volume through a link in the workspace. An archiver
+// does not follow a link it is pointed at (it would archive the link), so the
+// path to the mount point itself must name the volume's directory too.
+func TestResolveArtifactPath_NativeMountPointResolvesToTheVolume(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("go-cache"))
+	refs, err := relativeVolumeMounts([]dsl.VolumeMount{vmount("go-cache", "gc", ".ucd-cache/go")}, m)
+	require.NoError(t, err)
+	native := newHostBackend(&Agent{}, "r1", "job", t.TempDir(), nil)
+	native.volumeRefs = refs
+
+	got, err := native.ResolveArtifactPath(ScopeHandle{}, ".ucd-cache/go")
+	require.NoError(t, err)
+	require.Equal(t, m.PathOf("go-cache"), got)
+}
+
 // Widening where a legal path may point must not widen what is legal: a path
 // that climbs out of the workspace, including from inside a mount path, is
 // refused, and so is an absolute one.

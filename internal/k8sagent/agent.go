@@ -418,6 +418,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	var podName string
 	podReady := false
 	var volumePaths map[string]string
+	var volumeMounts []PodVolume
 	rootVolume := false
 
 	if usePool {
@@ -469,7 +470,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			return
 		}
 		created := claimed.pod
-		volumePaths, rootVolume = claimed.volumePaths, claimed.rootVolume
+		volumePaths, rootVolume, volumeMounts = claimed.volumePaths, claimed.rootVolume, claimed.mounts
 		podName = created.Name
 		releaseVolumes := claimed.release
 		// See the pooled branch's identical call above for why this happens
@@ -535,6 +536,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// this wrapper does neither).
 	backend := newK8sBackend(a, c.RunID, c.JobName, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
 	backend.volumePaths = volumePaths
+	backend.volumes = mountedVolumes(mountPath, volumeMounts)
 
 	agentlib.RunClaim(ctx, a.client, a.cfg.AgentID, c, backend)
 }

@@ -133,6 +133,9 @@ type k8sBackend struct {
 	// default pod sees it at; nil when the claim mounts none. Set once, before
 	// the backend is handed to RunClaim, and read-only after.
 	volumePaths map[string]string
+	// volumes are the volumes mounted inside the workspace, which an archive of
+	// an ancestor path leaves out (excludeVolumes). Set with volumePaths.
+	volumes []agentlib.MountedVolume
 
 	scopesMu sync.Mutex
 	scopes   map[string]*scopeEntry
@@ -1032,6 +1035,9 @@ func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, 
 		return err
 	}
 	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
+	if scope.IsZero() {
+		argv = append(argv, b.excludeVolumes(ctx, "cache", path)...)
+	}
 	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return err
@@ -1057,6 +1063,9 @@ func (b *k8sBackend) UploadArtifact(ctx context.Context, scope agentlib.ScopeHan
 		return err
 	}
 	argv := []string{"unified-sidecar", "artifact", "upload", "--run", runID, "--name", name, "--path", path, "--broker-run-id", b.runID}
+	if scope.IsZero() {
+		argv = append(argv, b.excludeVolumes(ctx, "artifact", path)...)
+	}
 	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return err

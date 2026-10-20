@@ -448,6 +448,8 @@ type claimPodResult struct {
 	pod *corev1.Pod
 	// volumePaths maps each volume alias to the path a step sees it at.
 	volumePaths map[string]string
+	// mounts are the volumes the pod mounts, as planned.
+	mounts []PodVolume
 	// rootVolume is true when a volume is mounted at the workspace root, which
 	// makes the workspace that volume.
 	rootVolume bool
@@ -703,7 +705,7 @@ func (a *K8sAgent) buildAndCreate(ctx context.Context, c api.ClaimResponse, side
 		}
 		return claimPodResult{}, fmt.Errorf("k8s: failed to create Pod: %w", err)
 	}
-	res := claimPodResult{pod: made, volumePaths: paths}
+	res := claimPodResult{pod: made, volumePaths: paths, mounts: vols}
 	for _, v := range vols {
 		if v.MountPath == "." {
 			res.rootVolume = true
