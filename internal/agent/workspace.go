@@ -137,7 +137,7 @@ func prepareWorkspace(ctx context.Context, workDir, mode string, vol *volumeWork
 	prev, _ := os.ReadFile(vol.ModeMarker)
 	if len(prev) > 0 && string(prev) != mode {
 		if !clean {
-			return fmt.Errorf("volume %q was last used by a %s run and this run is %s: the agent will not reset a volume itself, because that would delete its contents. Keep the job's native setting unchanged, or set podTemplate.cleanWorkspace (or start the agent with --clean-workspace) to wipe the volume once and continue", vol.Name, string(prev), mode)
+			return fmt.Errorf("volume %q was last used by a %s run and this run is %s: the agent will not reset a volume itself, because that would delete its contents. Keep the job's native setting unchanged, or set podTemplate.cleanWorkspace to wipe the volume once and continue", vol.Name, string(prev), mode)
 		}
 		slog.Info("volume mode changed; wiping it because cleanWorkspace is set", "volume", vol.Name, "from", string(prev), "to", mode)
 	}

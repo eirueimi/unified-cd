@@ -1200,12 +1200,31 @@ func runVolumeClaims(t *testing.T, a *Agent, srv *volumeLoopServer, claims ...st
 	return got
 }
 
-// cleanWorkspace used to be refused for a volume with a warning in the run's
-// log. It is the explicit way to empty one now, so it is applied.
-func TestRunLoop_CleanWorkspaceWipesAVolumeWorkspace(t *testing.T) {
+// The job's own podTemplate.cleanWorkspace is the explicit way to empty a
+// volume used as the workspace (it used to be refused with a warning).
+func TestRunLoop_JobCleanWorkspaceWipesAVolumeWorkspace(t *testing.T) {
 	srv := newVolumeLoopServer(t, func(n int, _ <-chan string) *api.ClaimResponse {
 		if n == 0 {
-			return volumeClaim("run-1", "test ! -e old.txt", vmount("unity", "", "."))
+			c := volumeClaim("run-1", "test ! -e old.txt", vmount("unity", "", "."))
+			c.PodTemplate = &dsl.PodTemplate{CleanWorkspace: true}
+			return c
+		}
+		return nil
+	})
+	a, _ := volumeAgent(t, srv, 1, "unity")
+	vdir := a.Volumes.PathOf("unity")
+	require.NoError(t, os.WriteFile(filepath.Join(vdir, "old.txt"), []byte("x"), 0o644))
+
+	require.Equal(t, "Succeeded", runVolumeClaims(t, a, srv, "run-1")["run-1"])
+	require.NoFileExists(t, filepath.Join(vdir, "old.txt"))
+}
+
+// The agent-wide --clean-workspace flag is an operator hygiene default; it must
+// never wipe a volume, which the job declared as what it wants to keep.
+func TestRunLoop_AgentCleanWorkspaceFlagNeverWipesAVolume(t *testing.T) {
+	srv := newVolumeLoopServer(t, func(n int, _ <-chan string) *api.ClaimResponse {
+		if n == 0 {
+			return volumeClaim("run-1", "test -e old.txt", vmount("unity", "", "."))
 		}
 		return nil
 	})
@@ -1215,7 +1234,7 @@ func TestRunLoop_CleanWorkspaceWipesAVolumeWorkspace(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(vdir, "old.txt"), []byte("x"), 0o644))
 
 	require.Equal(t, "Succeeded", runVolumeClaims(t, a, srv, "run-1")["run-1"])
-	require.NoFileExists(t, filepath.Join(vdir, "old.txt"))
+	require.FileExists(t, filepath.Join(vdir, "old.txt"))
 }
 
 // Without cleanWorkspace the volume is the job's persistence: nothing in it is

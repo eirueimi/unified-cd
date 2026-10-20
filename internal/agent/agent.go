@@ -93,8 +93,12 @@ type Agent struct {
 	// Used by Run (see the detached claim pool). Wired from --max-detached-concurrent.
 	MaxDetachedConcurrent int
 	WorkspaceDir          string
-	CleanWorkspace        bool
-	DrainTimeout          time.Duration
+	// CleanWorkspace is the agent-wide --clean-workspace flag. It no longer
+	// has any effect (see runLoop): ordinary workspaces are always cleaned and
+	// a volume is only wiped by a job's own cleanWorkspace. Kept for config
+	// compatibility.
+	CleanWorkspace bool
+	DrainTimeout   time.Duration
 
 	// MinFreeDisk is the minimum free space (in bytes) required on the
 	// workspace filesystem for this agent to keep claiming runs. Zero
@@ -536,7 +540,15 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				}
 				defer release()
 			}
-			clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
+			// Only the job's own cleanWorkspace asks for a clean. The agent-wide
+			// --clean-workspace flag (a.CleanWorkspace) is deliberately not
+			// consulted: it is an operator hygiene default meant to keep a job
+			// from inheriting another run's leftovers, which an ordinary
+			// workspace now guarantees unconditionally. Applied to a volume it
+			// would destroy, every run, what the job declared it wants to keep.
+			// A volume is also never wiped AFTER a run, even with clean set:
+			// that would destroy exactly what the run produced.
+			clean := resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace
 			// A volume at the workspace root IS the workspace (executeRun runs
 			// in its directory), and is the one thing that persists between
 			// runs. Its mode marker lives under wsBase, outside the volume, and
