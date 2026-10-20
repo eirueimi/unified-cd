@@ -226,7 +226,7 @@ type Store interface {
 	// wrap to the head). Runs blocked on concurrency stay Pending and would
 	// otherwise re-fill a fixed head window forever, starving every run behind it.
 	TransitionPendingToQueuedFrom(ctx context.Context, limit int, after *PendingCursor) (queued int, next *PendingCursor, err error)
-	ClaimNextRun(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error)
+	ClaimNextRun(ctx context.Context, agentID string, agentLabels []string, busyVolumes []string) (*ClaimedRun, error)
 	// ClaimNextRunDetached claims the next queued detached run (see spec.detached);
 	// detached runs are claimed from a budget separate from ClaimNextRun.
 	ClaimNextRunDetached(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error)
@@ -335,7 +335,7 @@ type Store interface {
 	GetRunPodBinding(ctx context.Context, runID string) (binding RunPodBinding, ok bool, err error)
 	// UpsertAgent is the REGISTRATION path: it replaces the agent's labels/hostname/
 	// os/version/env wholesale (a registration is the authoritative identity).
-	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, env map[string]string) error
+	UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, env map[string]string) error
 	// UpsertAgentOnClaim is the CLAIM path: a lightweight, non-destructive upsert that
 	// merges labels and only overwrites scalar fields when non-empty, so a claim never
 	// clobbers richer data recorded at registration time.

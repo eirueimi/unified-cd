@@ -107,7 +107,7 @@ func TestArtifact_UploadDownload_RoundTrip(t *testing.T) {
 	ownerToken := issueAgentAccessForTest(t, st, "artifact-owner", nil, nil)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)
-	claimed, err := st.ClaimNextRun(t.Context(), "artifact-owner", nil)
+	claimed, err := st.ClaimNextRun(t.Context(), "artifact-owner", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID)
 
@@ -149,7 +149,7 @@ func TestArtifactList_ReturnsNames(t *testing.T) {
 	ownerToken := issueAgentAccessForTest(t, st, "artifact-list-owner", nil, nil)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)
-	claimed, err := st.ClaimNextRun(t.Context(), "artifact-list-owner", nil)
+	claimed, err := st.ClaimNextRun(t.Context(), "artifact-list-owner", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID)
 
@@ -246,7 +246,7 @@ func TestArtifactUpload_RejectsMismatchedOwnerPrincipal(t *testing.T) {
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)
-	claimed, err := st.ClaimNextRun(t.Context(), "run-claimer", nil)
+	claimed, err := st.ClaimNextRun(t.Context(), "run-claimer", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID)
 
@@ -269,7 +269,7 @@ func TestArtifactUpload_RejectsNonOwnerPrincipal(t *testing.T) {
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)
-	claimed, err := st.ClaimNextRun(t.Context(), "owner", nil)
+	claimed, err := st.ClaimNextRun(t.Context(), "owner", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID)
 

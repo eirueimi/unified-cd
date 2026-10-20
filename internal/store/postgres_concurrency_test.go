@@ -28,7 +28,7 @@ func TestPostgres_ClaimNextRun_DetachedFilter(t *testing.T) {
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
 
-	c1, err := pg.ClaimNextRun(ctx, "a1", nil)
+	c1, err := pg.ClaimNextRun(ctx, "a1", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, c1)
 	assert.Equal(t, normal.ID, c1.ID, "normal claim must skip the detached run")
@@ -121,7 +121,7 @@ func TestPostgres_MarkRunFinished_ReleasesMutex(t *testing.T) {
 	run2, _ := pg.CreateRun(ctx, "j", nil, specWithMutex, nil, nil, "", "")
 
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
-	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil)
+	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil, nil)
 	require.NoError(t, pg.MarkRunRunning(ctx, run1.ID))
 	require.NoError(t, pg.MarkRunFinished(ctx, run1.ID, "Succeeded"))
 
@@ -323,7 +323,7 @@ func TestPostgres_MarkRunFinished_ReleasesOrLockCandidate(t *testing.T) {
 	run2, _ := pg.CreateRun(ctx, "j", nil, specWithOrLock, nil, nil, "", "")
 
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
-	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil)
+	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil, nil)
 	require.NoError(t, pg.MarkRunRunning(ctx, run1.ID))
 	require.NoError(t, pg.MarkRunFinished(ctx, run1.ID, "Succeeded"))
 

@@ -28,7 +28,7 @@ func claimRunForTest(t *testing.T, pg store.Store, agentID, runID string) {
 	t.Helper()
 	_, err := pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)
-	claimed, err := pg.ClaimNextRun(t.Context(), agentID, nil)
+	claimed, err := pg.ClaimNextRun(t.Context(), agentID, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, runID, claimed.ID)
 }
@@ -785,7 +785,7 @@ func TestAgentHeartbeat_ReconcilesLostClaims(t *testing.T) {
 
 	// Claim all three onto the same agent (FIFO claim order matches creation order).
 	for _, want := range []string{r1.ID, r2.ID, r3.ID} {
-		claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-reconcile", nil)
+		claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-reconcile", nil, nil)
 		require.NoError(t, err)
 		require.Equal(t, want, claimed.ID)
 	}
@@ -836,7 +836,7 @@ func TestAgentHeartbeat_ReconcileEmptyActiveSetStillFails(t *testing.T) {
 	require.NoError(t, err)
 	_, err = pgc.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
-	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-empty", nil)
+	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-empty", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, r4.ID, claimed.ID)
 	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r4.ID, 5*time.Minute))
@@ -874,7 +874,7 @@ func TestAgentHeartbeat_BodylessSkipsReconcile(t *testing.T) {
 	require.NoError(t, err)
 	_, err = pgc.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
-	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-legacy", nil)
+	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-legacy", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, r5.ID, claimed.ID)
 	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r5.ID, 5*time.Minute))

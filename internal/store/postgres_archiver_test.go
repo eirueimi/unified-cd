@@ -19,7 +19,7 @@ func TestPostgres_ListRunsNeedingArchival(t *testing.T) {
 
 	// transition run1 to a completed state
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
-	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil)
+	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil, nil)
 	require.NoError(t, pg.MarkRunRunning(ctx, run1.ID))
 	require.NoError(t, pg.MarkRunFinished(ctx, run1.ID, api.RunSucceeded))
 

@@ -40,8 +40,8 @@ func TestCountAgentsByLiveness(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-fresh", "h1", "linux", "v1", nil, nil, nil))
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-stale", "h2", "linux", "v1", nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-fresh", "h1", "linux", "v1", nil, nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-stale", "h2", "linux", "v1", nil, nil, nil, nil))
 	_, err := pg.pool.Exec(ctx,
 		`UPDATE agents SET last_seen_at = NOW() - interval '10 minutes' WHERE id = $1`,
 		"agent-stale")

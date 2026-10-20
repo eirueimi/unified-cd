@@ -171,12 +171,12 @@ func TestPostgres_ClaimNextRun(t *testing.T) {
 	_, _ = pg.CreateRun(ctx, "hello", nil, []byte(`{"steps":[{"name":"s","run":"echo x"}]}`), nil, nil, "", "")
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 
-	claimed, err := pg.ClaimNextRun(ctx, "agent-1", nil)
+	claimed, err := pg.ClaimNextRun(ctx, "agent-1", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 	assert.NotEmpty(t, claimed.ID)
 
-	claimed2, err := pg.ClaimNextRun(ctx, "agent-1", nil)
+	claimed2, err := pg.ClaimNextRun(ctx, "agent-1", nil, nil)
 	require.NoError(t, err)
 	assert.Nil(t, claimed2)
 }
@@ -188,7 +188,7 @@ func TestPostgres_MarkRunFinished(t *testing.T) {
 	_, _ = pg.UpsertJob(ctx, "hello", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
-	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil)
+	_, _ = pg.ClaimNextRun(ctx, "agent-1", nil, nil)
 	require.NoError(t, pg.MarkRunRunning(ctx, run.ID))
 	require.NoError(t, pg.MarkRunFinished(ctx, run.ID, api.RunSucceeded))
 
@@ -206,7 +206,7 @@ func TestMarkRunFinished_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
-	claimed, err := pg.ClaimNextRun(ctx, "agent-1", nil)
+	claimed, err := pg.ClaimNextRun(ctx, "agent-1", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 
@@ -330,13 +330,13 @@ func TestPostgres_ListRunningRunIDsByAgent(t *testing.T) {
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
 
-	c1, err := pg.ClaimNextRun(ctx, "agent-a", nil)
+	c1, err := pg.ClaimNextRun(ctx, "agent-a", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, mine.ID, c1.ID)
-	c2, err := pg.ClaimNextRun(ctx, "agent-b", nil)
+	c2, err := pg.ClaimNextRun(ctx, "agent-b", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, other.ID, c2.ID)
-	c3, err := pg.ClaimNextRun(ctx, "agent-a", nil)
+	c3, err := pg.ClaimNextRun(ctx, "agent-a", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, done.ID, c3.ID)
 

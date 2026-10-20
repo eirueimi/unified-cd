@@ -77,8 +77,8 @@ func (s *InstrumentedStore) UpsertStepReport(ctx context.Context, runID string, 
 // it. A poll that finds nothing to claim returns (nil, nil) and observes
 // nothing — recording a zero there would bury every real wait under a mass of
 // empty polls, and the agents poll continuously.
-func (s *InstrumentedStore) ClaimNextRun(ctx context.Context, agentID string, agentLabels []string) (*store.ClaimedRun, error) {
-	run, err := s.Store.ClaimNextRun(ctx, agentID, agentLabels)
+func (s *InstrumentedStore) ClaimNextRun(ctx context.Context, agentID string, agentLabels []string, busyVolumes []string) (*store.ClaimedRun, error) {
+	run, err := s.Store.ClaimNextRun(ctx, agentID, agentLabels, busyVolumes)
 	s.observeClaim(run, err)
 	return run, err
 }

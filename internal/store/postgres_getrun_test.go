@@ -25,7 +25,7 @@ func TestGetRun_ClaimedByReflectsClaimingAgent(t *testing.T) {
 	// After claim: ClaimedBy is the claiming agent's ID.
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
-	claimed, err := pg.ClaimNextRun(ctx, "agent-xyz", nil)
+	claimed, err := pg.ClaimNextRun(ctx, "agent-xyz", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 

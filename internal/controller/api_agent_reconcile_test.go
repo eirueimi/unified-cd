@@ -43,13 +43,13 @@ func TestAPI_AgentReconcile_FailsOrphanedRunsAndCascades(t *testing.T) {
 	require.NoError(t, err)
 
 	// FIFO claim order matches creation order.
-	c1, err := pg.ClaimNextRun(ctx, "agent-1", nil)
+	c1, err := pg.ClaimNextRun(ctx, "agent-1", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, parent.ID, c1.ID)
-	c2, err := pg.ClaimNextRun(ctx, "agent-2", nil)
+	c2, err := pg.ClaimNextRun(ctx, "agent-2", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, child.ID, c2.ID)
-	c3, err := pg.ClaimNextRun(ctx, "agent-2", nil)
+	c3, err := pg.ClaimNextRun(ctx, "agent-2", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, bystander.ID, c3.ID)
 	for _, id := range []string{parent.ID, child.ID, bystander.ID} {

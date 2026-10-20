@@ -38,7 +38,7 @@ func TestAPI_RunEvents_SSE_TwoViewersOneRun_ShareOneListenConnection(t *testing.
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)
-	_, err = pg.ClaimNextRun(t.Context(), "agent-1", nil)
+	_, err = pg.ClaimNextRun(t.Context(), "agent-1", nil, nil)
 	require.NoError(t, err)
 	// Left Running (not terminal): the SSE handler must fall through the
 	// terminal-status short-circuit and actually enter the live-notify
@@ -99,7 +99,7 @@ func TestAPI_RunEvents_SSE_DisconnectRemovesSubscriber(t *testing.T) {
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)
-	_, err = pg.ClaimNextRun(t.Context(), "agent-1", nil)
+	_, err = pg.ClaimNextRun(t.Context(), "agent-1", nil, nil)
 	require.NoError(t, err)
 	require.NoError(t, pg.MarkRunRunning(t.Context(), run.ID))
 

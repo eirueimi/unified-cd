@@ -42,7 +42,7 @@ func TestHA_NoDoubleClaim(t *testing.T) {
 			defer wg.Done()
 			agentID := "agent-" + string(rune('a'+agentIdx))
 			for {
-				claimed, err := pg.ClaimNextRun(ctx, agentID, nil)
+				claimed, err := pg.ClaimNextRun(ctx, agentID, nil, nil)
 				if err != nil {
 					t.Errorf("claim error: %v", err)
 					return

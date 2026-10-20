@@ -57,7 +57,7 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	if labels == nil {
 		labels = []string{}
 	}
-	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, capabilities, req.Env); err != nil {
+	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, capabilities, nil, req.Env); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -193,7 +193,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 		if detached {
 			claimed, err = s.store.ClaimNextRunDetached(r.Context(), agentID, agentLabels)
 		} else {
-			claimed, err = s.store.ClaimNextRun(r.Context(), agentID, agentLabels)
+			claimed, err = s.store.ClaimNextRun(r.Context(), agentID, agentLabels, nil)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
