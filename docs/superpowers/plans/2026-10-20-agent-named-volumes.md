@@ -213,7 +213,24 @@ Expected: FAIL (columns and parameters do not exist).
 
 - [ ] **Step 4: Wire the queue-time expansion**
 
-Task 2 left this deliberately unwired because the column did not exist. At the `ExpandConcurrency` call site Task 2's report names, call `dsl.ExpandVolumes` with the same params and persist `dsl.RequiredVolumes` of the expanded spec into `runs.required_volumes`.
+Task 2 left this deliberately unwired because the column did not exist. At the `ExpandConcurrency` call site Task 2's report names (`internal/store/postgres.go:630`, inside `tryQueueRun`), call `dsl.ExpandVolumes` with the same params and persist `dsl.RequiredVolumes` of the expanded spec into `runs.required_volumes`. Reuse the error handling already there: roll back, append a system log, mark the run `Failed`, return `(false, nil)`.
+
+Treat a name that expands to the empty string — from an unset param, say — as an expansion error and fail the run the same way. `ExpandVolumes` deliberately does not judge its own output, mirroring `ExpandConcurrency`. An empty name matches no agent's advertised volume, so without this check the run would sit `Queued` forever with a reason naming no volume.
+
+Add to the test list in step 1:
+
+```go
+func TestTryQueueRun_EmptyVolumeNameFailsTheRun(t *testing.T) {
+    // a volume name of "{{ .Params.MISSING }}" marks the run Failed with a
+    // reason naming spec.volumes, not left Queued
+}
+
+func TestTryQueueRun_NoVolumesPersistsAnEmptyArray(t *testing.T) {
+    // runs.required_volumes reads back as [] and never JSON null:
+    // dsl.RequiredVolumes returns a nil slice for a job with no volumes,
+    // and the column is NOT NULL DEFAULT '[]'
+}
+```
 
 - [ ] **Step 5: Extend `UpsertAgent` and `ClaimNextRun`**
 
@@ -280,7 +297,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Thread required volumes through run creation and report them**
 
-Every site that computes `dsl.RequiredCaps(spec)` also computes `dsl.RequiredVolumes(spec)` and persists it. `Schedulability` gains the field and the reason. Note in a comment that an unknown volume is deliberately not an apply-time error: the controller holds no volume state (spec §4.2), so the only honest answer is an unschedulable run with a reason.
+`Schedulability` gains the field and the reason. It does NOT persist `required_volumes`: Task 3 already writes that column in `tryQueueRun`, and queue time is the only place where the params a name expands from exist. Every site that computes `dsl.RequiredCaps(spec)` computes `dsl.RequiredVolumes(spec)` here only to report it, not to store it. Note in a comment that an unknown volume is deliberately not an apply-time error: the controller holds no volume state (spec §4.2), so the only honest answer is an unschedulable run with a reason.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -645,6 +662,7 @@ Every `workspace.pvc` use becomes a named volume. Check each example's README an
 - Reference pages: `docs/user-guide/writing-jobs/job-structure.md`, `docs/user-guide/resources/job.md`, `docs/operator-manual/agents.md`, `docs/reference/configuration.md`, `docs/operator-manual/kubernetes-integration.md`.
 - Narrative pages: `docs/getting-started/quickstart.md` (walk the steps; the workspace is no longer persistent), `docs/troubleshooting/controller-and-database.md` (one symptom entry per new failure mode, each with the exact grep-able error string: unschedulable volume, clobber refusal, mode flip, RWX unavailable, Windows symlink), `docs/operator-manual/operations.md` (volume disk hygiene is a new operator responsibility).
 - `README.md` feature summary.
+- `AGENTS.md`: its Development section tells contributors to run `docker compose -f docker-compose.dev.yaml up -d`, and no such file exists — the repository has `docker-compose.yaml`. Fix the filename, and note that the store's integration tests need only Docker, because `NewTestPostgres` (`internal/store/testutil.go:149`) starts its own PostgreSQL container. Found while implementing this plan, unrelated to the feature, but it is a stale instruction a new contributor will hit immediately.
 - The migration guide: a before/after table for both breaking changes — the workspace is no longer persistent by default, and `workspace.pvc` is gone — with the exact validation errors a user will see.
 
 - [ ] **Step 5: Regenerate and verify**
