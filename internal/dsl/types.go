@@ -548,9 +548,6 @@ type PodTemplate struct {
 type WorkspaceConfig struct {
 	MountPath string        `yaml:"mountPath,omitempty" json:"mountPath,omitempty"`
 	PVC       *WorkspacePVC `yaml:"pvc,omitempty" json:"pvc,omitempty"`
-	// Volume is shorthand for a spec.volumes entry with mountPath ".": the
-	// named volume (or list of candidates) becomes the workspace root.
-	Volume StringOrSlice `yaml:"volume,omitempty" json:"volume,omitempty"`
 }
 
 // VolumeMount mounts an agent-owned named volume into the run's workspace.

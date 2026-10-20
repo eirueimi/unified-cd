@@ -1197,20 +1197,6 @@
         },
         "pvc": {
           "$ref": "#/definitions/WorkspacePVC"
-        },
-        "volume": {
-          "description": "Volume is shorthand for a spec.volumes entry with mountPath \".\": the\nnamed volume (or list of candidates) becomes the workspace root.",
-          "oneOf": [
-            {
-              "type": "string"
-            },
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          ]
         }
       },
       "type": "object"

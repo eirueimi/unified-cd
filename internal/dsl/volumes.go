@@ -77,54 +77,6 @@ func VolumeAlias(v VolumeMount) string {
 	return singleLiteralName(v)
 }
 
-// workspaceVolumePath is the field path reported in errors about the
-// podTemplate.workspace.volume shorthand.
-const workspaceVolumePath = "spec.podTemplate.workspace.volume"
-
-// normalizedVolume is a VolumeMount plus the YAML path to report it under.
-type normalizedVolume struct {
-	VolumeMount
-	path string
-}
-
-func normalizeVolumes(spec Spec) ([]normalizedVolume, error) {
-	var out []normalizedVolume
-	if pt := spec.PodTemplate; pt != nil && pt.Workspace != nil && len(pt.Workspace.Volume) > 0 {
-		for i, v := range spec.Volumes {
-			if v.MountPath != "" && path.Clean(v.MountPath) == "." {
-				return nil, fmt.Errorf("%s conflicts with spec.volumes[%d]: both mount at the workspace root (mountPath \".\"); keep only one", workspaceVolumePath, i)
-			}
-		}
-		out = append(out, normalizedVolume{
-			VolumeMount: VolumeMount{Name: pt.Workspace.Volume, MountPath: "."},
-			path:        workspaceVolumePath,
-		})
-	}
-	for i, v := range spec.Volumes {
-		out = append(out, normalizedVolume{VolumeMount: v, path: fmt.Sprintf("spec.volumes[%d]", i)})
-	}
-	return out, nil
-}
-
-// NormalizeVolumes returns every volume the job mounts as one list. The
-// podTemplate.workspace.volume shorthand is folded in, first, as an entry with
-// MountPath ".". It is an error to use the shorthand together with an explicit
-// spec.volumes entry at ".".
-func NormalizeVolumes(spec Spec) ([]VolumeMount, error) {
-	nv, err := normalizeVolumes(spec)
-	if err != nil {
-		return nil, err
-	}
-	if len(nv) == 0 {
-		return nil, nil
-	}
-	out := make([]VolumeMount, len(nv))
-	for i, v := range nv {
-		out[i] = v.VolumeMount
-	}
-	return out, nil
-}
-
 // ValidateVolumes checks the syntax of a job's volume declarations. It is an
 // apply-time check and deliberately limited to what the job alone can decide:
 // the controller holds no volume state and `mode` lives in the agent's config,
@@ -132,10 +84,7 @@ func NormalizeVolumes(spec Spec) ([]VolumeMount, error) {
 // workspace root, are decided later (the run stays Queued, or the agent
 // rejects the mount).
 func ValidateVolumes(spec Spec) error {
-	vols, err := normalizeVolumes(spec)
-	if err != nil {
-		return err
-	}
+	vols := spec.Volumes
 	if len(vols) == 0 {
 		return nil
 	}
@@ -153,10 +102,10 @@ func ValidateVolumes(spec Spec) error {
 
 	cleaned := make([]string, len(vols))
 	for i, v := range vols {
-		if err := validateVolumeName(v); err != nil {
+		if err := validateVolumeName(volumePath(i), v); err != nil {
 			return err
 		}
-		c, err := cleanVolumeMountPath(v, root)
+		c, err := cleanVolumeMountPath(volumePath(i), v, root)
 		if err != nil {
 			return err
 		}
@@ -166,36 +115,37 @@ func ValidateVolumes(spec Spec) error {
 	for i := range vols {
 		for j := i + 1; j < len(vols); j++ {
 			if cleaned[i] == cleaned[j] {
-				return fmt.Errorf("%s: duplicate mountPath %q (also used by %s)", vols[j].path, vols[j].MountPath, vols[i].path)
+				return fmt.Errorf("%s: duplicate mountPath %q (also used by %s)", volumePath(j), vols[j].MountPath, volumePath(i))
 			}
 			// The workspace root may be combined with any other entry, so
 			// "." is never an ancestor for this purpose.
 			if cleaned[i] != "." && cleaned[j] != "." &&
 				(isPathAncestor(cleaned[i], cleaned[j]) || isPathAncestor(cleaned[j], cleaned[i])) {
-				return fmt.Errorf("%s: nested mountPath %q overlaps %s (%q): a volume cannot be mounted inside another volume", vols[j].path, vols[j].MountPath, vols[i].path, vols[i].MountPath)
+				return fmt.Errorf("%s: nested mountPath %q overlaps %s (%q): a volume cannot be mounted inside another volume", volumePath(j), vols[j].MountPath, volumePath(i), vols[i].MountPath)
 			}
 		}
 	}
 	return nil
 }
 
+// volumePath is the YAML path of the i-th spec.volumes entry, for errors.
+func volumePath(i int) string {
+	return fmt.Sprintf("spec.volumes[%d]", i)
+}
+
 // validateVolumeName checks the name and the `as` rule: a missing name, and a
 // candidate list or templated name with no `as`.
-func validateVolumeName(v normalizedVolume) error {
+func validateVolumeName(p string, v VolumeMount) error {
 	if len(v.Name) == 0 {
-		return fmt.Errorf("%s: name is required", v.path)
+		return fmt.Errorf("%s: name is required", p)
 	}
 	for _, n := range v.Name {
 		if n == "" {
-			return fmt.Errorf("%s: name is required (empty candidate in %v)", v.path, []string(v.Name))
+			return fmt.Errorf("%s: name is required (empty candidate in %v)", p, []string(v.Name))
 		}
 	}
-	if v.As == "" && singleLiteralName(v.VolumeMount) == "" {
-		hint := ""
-		if v.path == workspaceVolumePath {
-			hint = "; the workspace.volume shorthand has no `as`, so declare this volume under spec.volumes instead"
-		}
-		return fmt.Errorf("%s: a name that is a list of candidates or contains a template requires `as`: the chosen name is not known when the job is written%s", v.path, hint)
+	if v.As == "" && singleLiteralName(v) == "" {
+		return fmt.Errorf("%s: a name that is a list of candidates or contains a template requires `as`: the chosen name is not known when the job is written", p)
 	}
 	return nil
 }
@@ -211,20 +161,25 @@ func validateVolumeName(v normalizedVolume) error {
 // configuration. What is still rejected is a relative path that climbs out of
 // the workspace, and an absolute path that lands inside it (where a relative
 // path would have said so).
-func cleanVolumeMountPath(v normalizedVolume, workspaceRoot string) (string, error) {
+//
+// The "inside the workspace" check can only compare against the container
+// workspace root, because that is all the job can know at apply time. A native
+// host agent's workspace is a host directory chosen by the agent; that case is
+// checked at mount time, not here.
+func cleanVolumeMountPath(p string, v VolumeMount, workspaceRoot string) (string, error) {
 	mp := v.MountPath
 	if mp == "" {
-		return "", fmt.Errorf("%s: mountPath is required", v.path)
+		return "", fmt.Errorf("%s: mountPath is required", p)
 	}
 	c := path.Clean(mp)
 	if path.IsAbs(c) {
 		if isPathAncestor(path.Clean(workspaceRoot), c) || c == path.Clean(workspaceRoot) {
-			return "", fmt.Errorf("%s: absolute mountPath %q is inside the workspace %q; use a relative mountPath instead", v.path, mp, workspaceRoot)
+			return "", fmt.Errorf("%s: absolute mountPath %q is inside the workspace %q; use a relative mountPath instead", p, mp, workspaceRoot)
 		}
 		return c, nil
 	}
 	if c == ".." || strings.HasPrefix(c, "../") {
-		return "", fmt.Errorf("%s: mountPath %q escapes the workspace", v.path, mp)
+		return "", fmt.Errorf("%s: mountPath %q escapes the workspace", p, mp)
 	}
 	return c, nil
 }

@@ -382,8 +382,6 @@ never reaches a shell. |
 |-------|------|----------|-------------|
 | `mountPath` | string | no |  |
 | `pvc` | WorkspacePVC | no |  |
-| `volume` | string \| []string | no | Volume is shorthand for a spec.volumes entry with mountPath ".": the
-named volume (or list of candidates) becomes the workspace root. |
 
 ### WorkspacePVC
 
