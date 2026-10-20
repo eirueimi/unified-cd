@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -53,6 +55,10 @@ type VolumeManager struct {
 	// to rescan. Waiters are few and a release is rare, so a broadcast is
 	// cheaper than tracking who is waiting for what.
 	changed chan struct{}
+
+	// linkMu serialises edits to the on-disk registry of links native runs
+	// have created (see volumes_mount.go), which every claim slot writes.
+	linkMu sync.Mutex
 
 	// walk is filepath.WalkDir; a field so a test can inject the failure a
 	// root-owned subtree produces without needing root to build one.
@@ -183,12 +189,26 @@ func checkOutOfGCReach(base, p string) error {
 	if strings.HasPrefix(strings.ToLower(first), "working") {
 		return fmt.Errorf("path %s is under %s, which the workspace GC sweeps (it removes aged directories below %s/working*); choose a path outside any working* directory", p, filepath.Join(base, first), base)
 	}
+	// The agent also owns <base>/detached/<runID>, which it removes after every
+	// detached run, and keeps its tooling (the ucd-sh shim in .ucd-tools, the
+	// volume link registry) in dot-prefixed entries. A volume placed in either
+	// would be destroyed or would collide with the agent's own files.
+	if strings.EqualFold(first, "detached") || strings.HasPrefix(first, ".") {
+		return fmt.Errorf("path %s is under %s, which the agent manages itself (per-run detached workspaces are deleted after the run; dot-prefixed entries hold agent tooling); choose another path", p, filepath.Join(base, first))
+	}
 	return nil
 }
+
+// Every method below is safe on a nil *VolumeManager, which is what an agent
+// that declares no volumes holds (Agent.Volumes): it advertises nothing,
+// reports nothing busy, and cannot reserve anything.
 
 // Names returns the declared volume names, sorted. This is what the agent
 // advertises as capabilities.
 func (m *VolumeManager) Names() []string {
+	if m == nil {
+		return []string{}
+	}
 	names := make([]string, 0, len(m.vols))
 	for n := range m.vols {
 		names = append(names, n)
@@ -200,6 +220,9 @@ func (m *VolumeManager) Names() []string {
 // ModeOf returns the volume's mode, or "" for a name this agent does not
 // declare.
 func (m *VolumeManager) ModeOf(name string) string {
+	if m == nil {
+		return ""
+	}
 	if v, ok := m.vols[name]; ok {
 		return v.mode
 	}
@@ -209,6 +232,9 @@ func (m *VolumeManager) ModeOf(name string) string {
 // PathOf returns the volume's host directory, or "" for a name this agent does
 // not declare.
 func (m *VolumeManager) PathOf(name string) string {
+	if m == nil {
+		return ""
+	}
 	if v, ok := m.vols[name]; ok {
 		return v.path
 	}
@@ -233,9 +259,25 @@ func (m *VolumeManager) PathOf(name string) string {
 // an endless wait, for none of names to be declared. The returned release is
 // idempotent.
 //
-// Reserve has no context: a caller that must give up (run cancelled, agent
-// shutting down) cannot interrupt the wait.
+// Reserve cannot be interrupted; a caller that must be able to give up (run
+// cancelled, agent draining) uses ReserveContext.
 func (m *VolumeManager) Reserve(runID string, names []string) (string, func(), error) {
+	return m.ReserveContext(context.Background(), runID, names)
+}
+
+// ReserveContext is Reserve with an abandonable wait: when ctx is done before a
+// candidate frees, it returns an error wrapping ctx.Err() and holds nothing.
+func (m *VolumeManager) ReserveContext(ctx context.Context, runID string, names []string) (string, func(), error) {
+	return m.reserve(ctx, runID, names, nil)
+}
+
+// reserve is ReserveContext plus onWait, called once, without m.mu held, the
+// first time the call finds nothing free and is about to block. The claim loop
+// uses it to tell the run's log why it is not starting.
+func (m *VolumeManager) reserve(ctx context.Context, runID string, names []string, onWait func()) (string, func(), error) {
+	if m == nil {
+		return "", nil, fmt.Errorf("reserve volume: this agent declares no volumes (wanted one of %q)", names)
+	}
 	if runID == "" {
 		return "", nil, errors.New("reserve volume: run ID is required")
 	}
@@ -269,7 +311,15 @@ func (m *VolumeManager) Reserve(runID string, names []string) (string, func(), e
 		}
 		wait := m.changed
 		m.mu.Unlock()
-		<-wait
+		if onWait != nil {
+			onWait()
+			onWait = nil
+		}
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return "", nil, fmt.Errorf("waiting for volume %q: %w", known, ctx.Err())
+		}
 	}
 }
 
@@ -279,11 +329,29 @@ func (m *VolumeManager) Reserve(runID string, names []string) (string, func(), e
 // volumes, so it is held exclusively like an exclusive volume (spec section
 // 4.6). It blocks while another holder has it, and the returned release is
 // idempotent.
+//
+// The path is the DSL's POSIX mountPath, and it is keyed and reported (Busy) in
+// that spelling on every OS: path.Clean(filepath.ToSlash(p)). filepath.Clean
+// would turn /go/cache into \go\cache on Windows, which the controller could
+// never match against the job's own string.
 func (m *VolumeManager) ReservePath(hostPath string) (func(), error) {
-	if !filepath.IsAbs(hostPath) && !strings.HasPrefix(hostPath, "/") {
+	return m.ReservePathContext(context.Background(), hostPath)
+}
+
+// ReservePathContext is ReservePath with an abandonable wait.
+func (m *VolumeManager) ReservePathContext(ctx context.Context, hostPath string) (func(), error) {
+	return m.reservePath(ctx, hostPath, nil)
+}
+
+func (m *VolumeManager) reservePath(ctx context.Context, hostPath string, onWait func()) (func(), error) {
+	if m == nil {
+		return nil, fmt.Errorf("reserve path %q: this agent declares no volumes", hostPath)
+	}
+	slashed := filepath.ToSlash(hostPath)
+	if !filepath.IsAbs(hostPath) && !strings.HasPrefix(slashed, "/") {
 		return nil, fmt.Errorf("reserve path: %q is not absolute", hostPath)
 	}
-	key := filepath.Clean(hostPath)
+	key := path.Clean(slashed)
 
 	for {
 		m.mu.Lock()
@@ -294,7 +362,15 @@ func (m *VolumeManager) ReservePath(hostPath string) (func(), error) {
 		}
 		wait := m.changed
 		m.mu.Unlock()
-		<-wait
+		if onWait != nil {
+			onWait()
+			onWait = nil
+		}
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("waiting for path %q: %w", key, ctx.Err())
+		}
 	}
 }
 
@@ -329,6 +405,9 @@ func (m *VolumeManager) dropHolder(name, runID string) {
 // The report is an optimisation that stops the agent claiming a run it would
 // then wait on; correctness lives in Reserve.
 func (m *VolumeManager) Busy() []string {
+	if m == nil {
+		return []string{}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	busy := []string{}
@@ -354,6 +433,9 @@ func (m *VolumeManager) Busy() []string {
 // read is skipped and reported in a single warning. A volume with no declared
 // size is not measured.
 func (m *VolumeManager) CheckUsage(name string) {
+	if m == nil {
+		return
+	}
 	v, ok := m.vols[name]
 	if !ok || v.size == 0 {
 		return

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -295,7 +296,7 @@ func TestVolumeManager_BusyListsExclusiveNamesAndAbsolutePaths(t *testing.T) {
 	relP, err := m.ReservePath(abs)
 	require.NoError(t, err)
 
-	require.ElementsMatch(t, []string{"b", filepath.Clean(abs)}, m.Busy())
+	require.ElementsMatch(t, []string{"b", posixKey(abs)}, m.Busy())
 	relB()
 	relS()
 	relP()
@@ -408,6 +409,95 @@ func TestVolumeManager_ExclusionHoldsUnderContention(t *testing.T) {
 		t.Fatal("contending runs deadlocked")
 	}
 	require.Empty(t, m.Busy())
+}
+
+// posixKey is the spelling Busy reports for a reserved path: slash-separated on
+// every OS, so it can match the DSL's POSIX mountPath on a Windows agent too.
+func posixKey(p string) string { return path.Clean(filepath.ToSlash(p)) }
+
+func TestVolumeManager_NilManagerIsSafe(t *testing.T) {
+	var m *VolumeManager
+	require.Empty(t, m.Names())
+	require.NotNil(t, m.Busy(), "Busy must serialise as [] not null")
+	require.Empty(t, m.Busy())
+	require.Equal(t, "", m.ModeOf("a"))
+	require.Equal(t, "", m.PathOf("a"))
+	require.NotPanics(t, func() { m.CheckUsage("a") })
+
+	_, _, err := m.Reserve("r", []string{"a"})
+	require.Error(t, err)
+	_, _, err = m.ReserveContext(context.Background(), "r", []string{"a"})
+	require.Error(t, err)
+	_, err = m.ReservePath("/go/cache")
+	require.Error(t, err)
+}
+
+func TestVolumeManager_ReservePathKeyIsPosix(t *testing.T) {
+	m, _ := newTestVolumes(t)
+	rel, err := m.ReservePath("/go//cache/")
+	require.NoError(t, err)
+	require.Equal(t, []string{"/go/cache"}, m.Busy(), "a POSIX mountPath must be reported as written, on every OS")
+	rel()
+	require.Empty(t, m.Busy())
+}
+
+func TestVolumeManager_RejectsPathsTheAgentItselfManages(t *testing.T) {
+	base := t.TempDir()
+	for _, p := range []string{
+		filepath.Join(base, "detached"),
+		filepath.Join(base, "detached", "run-1"),
+		filepath.Join(base, ".ucd-tools"),
+		filepath.Join(base, ".ucd-tools", "inner"),
+		filepath.Join(base, ".hidden"),
+	} {
+		_, err := NewVolumeManager(base, []config.VolumeConfig{{Name: "a", Mode: "exclusive", Path: p}})
+		require.Error(t, err, "path %q", p)
+		require.NoDirExists(t, p, "a refused path must not be created")
+	}
+	// A near miss is fine.
+	_, err := NewVolumeManager(base, []config.VolumeConfig{{Name: "a", Mode: "exclusive", Path: filepath.Join(base, "detached-cache")}})
+	require.NoError(t, err)
+}
+
+func TestVolumeManager_ReserveContext_CancelledWaitReturns(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("a"))
+	_, rel, err := m.Reserve("holder", []string{"a"})
+	require.NoError(t, err)
+	defer rel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	got := make(chan error, 1)
+	go func() {
+		_, _, err := m.ReserveContext(ctx, "waiter", []string{"a"})
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		t.Fatalf("expected the wait to block, got %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-got:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling the context did not end the wait")
+	}
+	// The abandoned wait must not hold anything.
+	require.Equal(t, []string{"a"}, m.Busy())
+	rel()
+	require.Empty(t, m.Busy())
+}
+
+func TestVolumeManager_ReservePathContext_CancelledWaitReturns(t *testing.T) {
+	m, _ := newTestVolumes(t)
+	rel, err := m.ReservePath("/go/cache")
+	require.NoError(t, err)
+	defer rel()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err = m.ReservePathContext(ctx, "/go/cache")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 // --- helpers ---
