@@ -796,11 +796,24 @@ last.
   directory stays on disk. Removing a line from a config file must not destroy tens of gigabytes.
 - **Restart recovery.** A host agent treats every volume as free at startup (it lost the runs that
   held them; the controller's lost-claim reconcile handles those runs) and sweeps any volume links a
-  crashed native run left behind.
+  crashed native run left behind, and the holder records of processes that are gone.
 - **Native jobs reach a volume through a symlink** (a directory junction on Windows when a symlink
   is not permitted), created before the run and removed after it. An absolute mount path is
   therefore an agent-wide exclusive resource: two native runs cannot point the same host path at two
   volumes. See [Mount paths](../user-guide/writing-jobs/volumes.md#mount-paths).
+- **`exclusive` holds within one agent process.** The agent keeps the table of who holds a volume
+  in memory, so two agent *processes* on one volume directory do not see each other: one agent ID
+  started twice with an overlapping restart, or two agents on one machine that share a
+  `workspaceDir` (both default to `<workspaceDir>/volumes/<name>`). Give each agent its own
+  `workspaceDir`, or its own explicit `path` for the volume, and start each agent ID once. As a
+  diagnostic only, an agent records each exclusive volume it holds in
+  `<workspaceDir>/.ucd-volume-locks/<volume>/` (outside the volume, so its contents stay exactly
+  what jobs put there) and warns in the run's log, and in the agent log, when it finds a record of
+  another process that is still running:
+  `volume "unity-main" is also held by another agent process`. The run proceeds; the warning
+  decides nothing. It can only see agents that share a `workspaceDir`, and it cannot tell two
+  agents with different `workspaceDir`s and the same explicit `path` apart.
+  See [the troubleshooting entry](../troubleshooting/steps-and-execution.md#a-run-warns-that-a-volume-is-also-held-by-another-agent-process).
 - **Draining.** A run still waiting for a volume when the agent starts draining is failed with
   `run abandoned: the agent is draining and the run was still waiting for its volumes`; a drain does
   not wait out a holder that may run for tens of minutes.

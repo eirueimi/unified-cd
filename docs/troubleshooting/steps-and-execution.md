@@ -200,6 +200,35 @@ that protects a lock whose Pod is still being created plus the Pod garbage-colle
 Nothing: it clears itself. Do not remove the annotation by hand while a Pod of that run still
 exists. The takeover is logged as `k8s: taking over a volume lock whose run has no live pod`.
 
+## A run warns that a volume is also held by another agent process
+
+**Symptom**
+
+A run that mounts an `exclusive` volume on a host agent starts normally, but its log (the "System"
+lines, shown before step 1) and the agent log carry:
+
+```
+volume "unity-main" is also held by another agent process (pid 4102 on build-host-1, run 7f3c..., since 2026-10-20T09:14:02Z). An exclusive volume is only exclusive within one agent process, so this run and that one may be using the same data at once. Give each agent its own workspaceDir (or its own explicit path for this volume), and start each agent ID once. This is a warning: the run continues. If no other agent is running on this directory (a crashed agent left the record), remove <wsBase>/.ucd-volume-locks/unity-main/4102-....json
+```
+
+**Cause**
+
+`exclusive` is enforced by an in-memory table inside one agent process. A second agent process on
+the same volume directory has its own table, so it hands the volume to a run while the first still
+has it: two runs then share one checkout. The agent cannot prevent this, only notice it, through the
+holder records it keeps in `<workspaceDir>/.ucd-volume-locks/<volume>/` (one small JSON file per
+process that holds the volume, removed when the run ends). The usual causes are two agents on one
+machine with the same `workspaceDir` (both default to `<workspaceDir>/volumes/<name>`), or one agent
+ID started twice during a restart.
+
+**Fix**
+
+Stop the second process, or give each agent its own `workspaceDir` (or its own explicit `path` for
+the volume). If no other agent is running, the record is left over from a crash on another host or
+a container with a changed hostname: remove the file the message names. A record of a process on
+the same host that is no longer running is swept silently at startup and ignored at reservation, so
+it never produces this warning.
+
 ## Run fails: volume was last used by a native/isolated run
 
 **Symptom**

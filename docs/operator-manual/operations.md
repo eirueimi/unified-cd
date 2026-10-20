@@ -169,6 +169,12 @@ either.
   line. It never stops a run. `minFreeDisk` checks the *workspace* filesystem only, so it does not
   protect a volume that lives elsewhere.
 - Two copies of a name on two agents are two independent copies, so total usage is the sum.
+- **Do not let two agent processes share a volume directory.** `exclusive` is enforced inside one
+  process; two agents on one machine with the same `workspaceDir`, or one agent ID started twice,
+  silently lose it. The agent warns when it notices (`volume "..." is also held by another agent
+  process`, [troubleshooting](../troubleshooting/steps-and-execution.md#a-run-warns-that-a-volume-is-also-held-by-another-agent-process)),
+  and keeps its records under `<workspaceDir>/.ucd-volume-locks/`, which is agent state like
+  `.ucd-volume-modes/` and not part of any volume.
 - **Volumes written by isolated jobs on a rootful container runtime end up owned by root.** The
   agent's own usage measurement tolerates this (it warns `volume usage could not be measured
   completely ... the figure is a lower bound` rather than failing), and `cleanWorkspace` falls back

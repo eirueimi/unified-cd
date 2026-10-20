@@ -624,6 +624,11 @@ func (a *Agent) reserveClaimVolumes(claimCtx, runCtx context.Context, c *api.Cla
 		return nil, fmt.Errorf("could not reserve the run's volumes: %w", err)
 	}
 	c.Volumes = chosen
+	// A volume directory another agent process is also holding: the run
+	// proceeds (the diagnostic decides nothing), but its log says so.
+	for _, w := range a.Volumes.TakeWarnings(c.RunID) {
+		a.warnRun(waitCtx, c.RunID, w)
+	}
 	return func() {
 		measured := map[string]bool{}
 		for _, v := range chosen {

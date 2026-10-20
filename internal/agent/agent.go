@@ -271,6 +271,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := sweepStaleVolumeLinks(a.Volumes); err != nil {
 		slog.Warn("could not remove all stale volume links", "error", err)
 	}
+	a.Volumes.sweepStaleVolumeLocks()
 
 	// runCtx: continues even after claimCtx is cancelled. If DrainTimeout is set,
 	// it will be cancelled DrainTimeout after ctx is cancelled.

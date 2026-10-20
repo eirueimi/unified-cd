@@ -71,6 +71,10 @@ type VolumeManager struct {
 	// walk is filepath.WalkDir; a field so a test can inject the failure a
 	// root-owned subtree produces without needing root to build one.
 	walk func(root string, fn fs.WalkDirFunc) error
+
+	// locks is the diagnostic that notices another agent process on the same
+	// volume directory (volumes_lock.go). It decides nothing.
+	locks *volumeLockState
 }
 
 // NewVolumeManager validates cfgs and creates each volume's backing directory.
@@ -92,6 +96,7 @@ func NewVolumeManager(base string, cfgs []config.VolumeConfig) (*VolumeManager, 
 		removeLink: os.Remove,
 		changed: make(chan struct{}),
 		walk:    filepath.WalkDir,
+		locks:   newVolumeLockState(),
 	}
 
 	for _, c := range cfgs {
@@ -317,7 +322,9 @@ func (m *VolumeManager) reserve(ctx context.Context, runID string, names []strin
 				}
 				m.holders[n][runID] = struct{}{}
 				m.mu.Unlock()
-				return n, m.releaser(func() { m.dropHolder(n, runID) }), nil
+				unmark := m.markHeld(runID, []string{n})
+				release := m.releaser(func() { m.dropHolder(n, runID) })
+				return n, func() { unmark(); release() }, nil
 			}
 		}
 		wait := m.changed
@@ -412,7 +419,8 @@ func (m *VolumeManager) ReserveSet(ctx context.Context, runID string, volumeSets
 				m.paths[k] = struct{}{}
 			}
 			m.mu.Unlock()
-			return chosen, m.releaser(func() {
+			unmark := m.markHeld(runID, added)
+			release := m.releaser(func() {
 				for _, n := range added {
 					m.dropHolder(n, runID)
 				}
@@ -421,7 +429,8 @@ func (m *VolumeManager) ReserveSet(ctx context.Context, runID string, volumeSets
 						delete(m.paths, k)
 					}
 				}
-			}), nil
+			})
+			return chosen, func() { unmark(); release() }, nil
 		}
 		wait := m.changed
 		m.mu.Unlock()
