@@ -200,6 +200,7 @@ environment/config value). Existing workspace contents are not migrated.
 Additionally, every step receives the following environment variables automatically:
 - `UNIFIED_AGENT_OS` — the agent host OS (`linux`, `darwin`, or `windows`)
 - `UNIFIED_WORKSPACE` — the absolute path of the run workspace as seen inside the step (the step's working directory); user `env:` may override it.
+- `UNIFIED_VOLUME_<ALIAS>` — one per volume the job mounts with `spec.volumes`: the absolute path the step sees that volume at. `<ALIAS>` is the entry's `as` (or its single literal `name`) upper-cased with `-` as `_`, so `as: go-cache` gives `UNIFIED_VOLUME_GO_CACHE`. It is named by the alias and never by the volume the run was handed. It is not set for a step that runs in its own `runsIn.image` container, which does not have the volumes mounted. Variables cannot use this prefix.
 
 ### Agent Config File
 

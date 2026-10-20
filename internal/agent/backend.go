@@ -100,6 +100,14 @@ type ExecBackend interface {
 	// scope container's cwd when scoped), exposed to steps as UNIFIED_WORKSPACE.
 	WorkspacePath(scope ScopeHandle) string
 
+	// VolumePaths returns the absolute path a step in this scope sees each
+	// mounted volume at, keyed by the volume's alias (not its resolved name).
+	// The orchestrator exposes them as UNIFIED_VOLUME_<ALIAS>. It is empty for
+	// a job with no volumes, for every k8s claim (volumes are a host-agent
+	// feature), and for a scoped step, whose scope container has no volume
+	// mounted: a path there would name something the step cannot reach.
+	VolumePaths(scope ScopeHandle) map[string]string
+
 	// DefaultAgentOS reports the OS a non-scoped, non-container: step
 	// actually executes on, for the UNIFIED_AGENT_OS env var (scoped/
 	// container: steps always report "linux" regardless of backend, since

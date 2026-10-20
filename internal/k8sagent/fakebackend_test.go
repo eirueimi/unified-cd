@@ -241,6 +241,9 @@ func (f *fakeK8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) 
 	return f.ResolveArtifactPath(scope, p)
 }
 
+// VolumePaths is nil: volumes are a host-agent feature.
+func (f *fakeK8sBackend) VolumePaths(scope agentlib.ScopeHandle) map[string]string { return nil }
+
 // WorkspacePath mirrors k8sBackend.WorkspacePath, using the same default
 // mount path ("/workspace") ResolveArtifactPath above uses.
 func (f *fakeK8sBackend) WorkspacePath(scope agentlib.ScopeHandle) string {

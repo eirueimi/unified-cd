@@ -340,6 +340,18 @@ func (b *hostBackend) WorkspacePath(scope ScopeHandle) string {
 	return b.workDir // native: the host working directory (also the step cwd)
 }
 
+// VolumePaths reports where each mounted volume is for a step in this scope,
+// for UNIFIED_VOLUME_<ALIAS>. A scoped step runs in its own scope container,
+// which mounts no volume, so it gets none. The map is the one mountVolumes
+// (native) or isolatedVolumeMounts (isolated) produced; it is read-only after
+// the backend is constructed.
+func (b *hostBackend) VolumePaths(scope ScopeHandle) map[string]string {
+	if !scope.IsZero() {
+		return nil
+	}
+	return b.volumePaths
+}
+
 // DefaultAgentOS reports "linux" for an isolated claim (its default steps exec
 // inside the Linux claim pod, mirroring the k8s agent) and the host process's
 // own OS for a native claim (its default steps run directly on the host).

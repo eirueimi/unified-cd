@@ -71,6 +71,7 @@ func (probeBackend) RunPostHook(ctx context.Context, scope ScopeHandle, containe
 func (probeBackend) ResolveArtifactPath(scope ScopeHandle, p string) (string, error) { return p, nil }
 func (probeBackend) ResolveCachePath(scope ScopeHandle, p string) (string, error)    { return p, nil }
 func (probeBackend) WorkspacePath(scope ScopeHandle) string                          { return "/workspace" }
+func (probeBackend) VolumePaths(scope ScopeHandle) map[string]string                 { return nil }
 func (probeBackend) DefaultAgentOS() string                                          { return "linux" }
 func (probeBackend) SetMasker(m *secrets.Masker)                                     {}
 

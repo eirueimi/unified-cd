@@ -260,13 +260,14 @@ The same rule applies to a job's `spec.vars`.
 
 ### Reserved names
 
-Two sets are refused, **case-insensitively** (`path`, `Path` and `PATH` are all
+Three sets are refused, **case-insensitively** (`path`, `Path` and `PATH` are all
 the same name):
 
 | Name | Why |
 |---|---|
 | `UNIFIED_CACHE_KEY`, `UNIFIED_CACHE_SECRET`, `UNIFIED_TOKEN`, `UNIFIED_AGENT_CREDENTIAL_FILE`, `UNIFIED_AGENT_ENROLLMENT_TOKEN_FILE` | The agent's own credentials. A job author who could set these could act as the agent — and, via the cache credentials, write directly to the shared object store, bypassing every controller-side check. |
 | `PATH`, `HOME` | A global `Vars` manifest applies to *every step of every job*. A `PATH` that shadows the agent's baseline breaks all of them at once, in a way whose cause is not visible in the failure. The cost of refusing is that nobody can set `PATH` globally, which nobody should want to do; the cost of allowing it is a footgun with the widest possible blast radius. |
+| `UNIFIED_WORKSPACE`, `UNIFIED_AGENT_OS`, and **every name starting with `UNIFIED_VOLUME_`** | Variables the agent sets for every step itself (`UNIFIED_VOLUME_<ALIAS>` carries the path of each volume a job mounts, one per volume). Variables are appended after them, so a variable of the same name would silently redefine the directory every step reads and writes. The `UNIFIED_VOLUME_` rule is a prefix, so it covers a volume nobody has declared yet. |
 
 The agent enforces the same set again at run time, so a run created before this
 validation existed cannot inject one either: a variable with a reserved name is

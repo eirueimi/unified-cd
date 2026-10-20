@@ -1157,6 +1157,11 @@ func (b *k8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) (str
 	return b.ResolveArtifactPath(scope, p)
 }
 
+// VolumePaths is always nil: agent-owned named volumes are a host-agent
+// feature, and a job that declares spec.volumes is routed only to an agent
+// that advertises the volume, which this agent never does.
+func (b *k8sBackend) VolumePaths(scope agentlib.ScopeHandle) map[string]string { return nil }
+
 // WorkspacePath reports the cwd workspace root a step sees on this backend,
 // for UNIFIED_WORKSPACE: the scope pod's fixed working directory when scope
 // is non-zero, else the run/pooled pod's workspace mount path.

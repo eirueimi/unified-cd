@@ -1067,7 +1067,7 @@
       "description": "VolumeMount mounts an agent-owned named volume into the run's workspace.",
       "properties": {
         "as": {
-          "description": "As is the stable handle steps use to reach the volume. Required when\nName is a list of several candidates or contains a template, because the\nchosen name is not known when the job is written; otherwise it defaults\nto the single literal Name.",
+          "description": "As is the stable handle steps use to reach the volume. Required when\nName is a list of several candidates or contains a template, because the\nchosen name is not known when the job is written; otherwise it defaults\nto the single literal Name. A step reads the volume's absolute path from\n$UNIFIED_VOLUME_\u003cAS\u003e: upper-cased, with \"-\" as \"_\" (go-cache gives\nUNIFIED_VOLUME_GO_CACHE). Two entries whose aliases give one variable\nare rejected.",
           "type": "string"
         },
         "mountPath": {

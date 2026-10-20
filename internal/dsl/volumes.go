@@ -77,6 +77,37 @@ func VolumeAlias(v VolumeMount) string {
 	return singleLiteralName(v)
 }
 
+// VolumeEnvPrefix starts the name of every variable that carries a mounted
+// volume's path to a step. It is also a reserved variable prefix
+// (reservedVarPrefixes), which is what keeps a Vars manifest from shadowing one.
+const VolumeEnvPrefix = "UNIFIED_VOLUME_"
+
+// VolumeEnvName is the environment variable that holds the absolute path of the
+// volume the job knows by alias: UNIFIED_VOLUME_ plus the alias upper-cased,
+// with "-" as "_". It is built from the alias and never from the resolved
+// volume name, because a job that lists several candidates cannot predict
+// which one it gets. Both agents call this; neither builds the name inline.
+func VolumeEnvName(alias string) string {
+	return VolumeEnvPrefix + strings.ToUpper(strings.ReplaceAll(alias, "-", "_"))
+}
+
+// validateVolumeEnvName checks that the variable an alias produces is one a
+// step can read and one nothing else owns. The reserved-name half cannot fire
+// for a name with the volume prefix while that prefix is itself reserved, and
+// is kept so that stays true if an exact name under the prefix is ever
+// reserved for another purpose.
+func validateVolumeEnvName(p string, v VolumeMount) (string, error) {
+	alias := VolumeAlias(v)
+	env := VolumeEnvName(alias)
+	if !varKeyRe.MatchString(env) {
+		return "", fmt.Errorf("%s: the alias %q (`as`, or the name when there is no `as`) cannot be part of an environment variable name (%s): use letters, digits, '-' and '_'", p, alias, env)
+	}
+	if reservedVarNames[env] {
+		return "", fmt.Errorf("%s: the alias %q would expose the volume as %s, which is reserved", p, alias, env)
+	}
+	return env, nil
+}
+
 // ValidateVolumes checks the syntax of a job's volume declarations. It is an
 // apply-time check and deliberately limited to what the job alone can decide:
 // the controller holds no volume state and `mode` lives in the agent's config,
@@ -101,10 +132,21 @@ func ValidateVolumes(spec Spec) error {
 	}
 
 	cleaned := make([]string, len(vols))
+	envNames := make(map[string]int, len(vols))
 	for i, v := range vols {
 		if err := validateVolumeName(volumePath(i), v); err != nil {
 			return err
 		}
+		// Two aliases that upper-case to one variable would leave a step
+		// reading whichever volume happened to be written last.
+		env, err := validateVolumeEnvName(volumePath(i), v)
+		if err != nil {
+			return err
+		}
+		if first, dup := envNames[env]; dup {
+			return fmt.Errorf("%s: alias %q and %s (%q) both become %s: aliases are upper-cased and '-' becomes '_', so they must differ by more than case or '-' versus '_'", volumePath(i), VolumeAlias(v), volumePath(first), VolumeAlias(vols[first]), env)
+		}
+		envNames[env] = i
 		c, err := cleanVolumeMountPath(volumePath(i), v, root)
 		if err != nil {
 			return err

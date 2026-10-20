@@ -804,6 +804,12 @@ func RunClaim(ctx context.Context, client *Client, agentID string, c api.ClaimRe
 					EnvAgentOS + "=" + agentOSForStep(step, b.DefaultAgentOS()),
 					EnvWorkspace + "=" + b.WorkspacePath(workspaceScope),
 				}
+				// UNIFIED_VOLUME_<ALIAS>: each mounted volume's absolute path,
+				// for toolchains whose caches live outside the workspace.
+				// Written before the variables like the two above, and
+				// protected the same way: the whole prefix is reserved, so
+				// varsExtraEnv drops a variable of that name.
+				extraEnv = append(extraEnv, volumeExtraEnv(b.VolumePaths(workspaceScope))...)
 				// Vars first, step env second: precedence is expressed as
 				// ordering, because a later duplicate key wins. varsExtraEnv
 				// also drops any var named after an agent credential — see

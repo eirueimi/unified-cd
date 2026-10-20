@@ -124,8 +124,44 @@ const (
 // so an unreserved synthesised name is not merely shadowable: it is shadowed
 // by any global Vars manifest that happens to use it, for every step of every
 // job, on both backends.
+//
+// UNIFIED_VOLUME_<ALIAS> is also synthesised, but once per volume a job
+// mounts, so its names are generated per run and cannot be listed here. They
+// are covered by the prefix rule instead: SynthesizedStepEnvPrefixes names the
+// prefix, dsl.ReservedVarPrefixes reserves it at apply time, and varDenied
+// drops it at run time. TestSynthesizedStepEnvPrefixes_AreReservedAtApplyTime
+// fails if a prefix is synthesised without being reserved.
 func SynthesizedStepEnv() []string {
 	return []string{EnvAgentOS, EnvWorkspace}
+}
+
+// SynthesizedStepEnvPrefixes returns the name prefixes the orchestrator
+// generates step variables under, for names that exist once per run rather
+// than once ever (see SynthesizedStepEnv). It is the prefix counterpart of that
+// list: derived into varDenied, and checked against dsl.ReservedVarPrefixes.
+func SynthesizedStepEnvPrefixes() []string {
+	return []string{dsl.VolumeEnvPrefix}
+}
+
+// volumeExtraEnv renders the mounted volumes' paths as UNIFIED_VOLUME_<ALIAS>
+// entries for the orchestrator's extraEnv slice. paths maps each alias to the
+// absolute path a step sees (hostBackend.volumePaths); the name is built by
+// dsl.VolumeEnvName from the alias, never from the volume the run was handed.
+// Sorted, so a step's environment is stable across runs.
+func volumeExtraEnv(paths map[string]string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	aliases := make([]string, 0, len(paths))
+	for a := range paths {
+		aliases = append(aliases, a)
+	}
+	sort.Strings(aliases)
+	out := make([]string, 0, len(aliases))
+	for _, a := range aliases {
+		out = append(out, dsl.VolumeEnvName(a)+"="+paths[a])
+	}
+	return out
 }
 
 // varsDenied is the set varsExtraEnv filters a claim's variables against: the
@@ -135,6 +171,10 @@ func SynthesizedStepEnv() []string {
 // is folded in by derivation rather than by being listed again here, so a new
 // synthesised name is backstopped the moment it is added.
 // Keys are upper-cased, and lookups upper-case the candidate.
+//
+// This set holds exact names only. Names under a reserved prefix
+// (UNIFIED_VOLUME_*) are not enumerable, so callers ask varDenied, which
+// consults this set and the prefix rule together.
 //
 // It is deliberately a separate set rather than a widening of stepEnvDenied,
 // because the two govern different things. stepEnvDenied also gates ExposeEnv,
@@ -159,6 +199,25 @@ func buildVarsDenied() map[string]bool {
 	return denied
 }
 
+// varDenied reports whether a claim's variable may not reach a step: a name in
+// varsDenied, or one under a reserved prefix. The prefix half asks
+// dsl.IsReservedVarName, the same function apply-time validation calls, plus
+// SynthesizedStepEnvPrefixes by derivation, so a prefix the orchestrator
+// starts generating under is backstopped the moment it is added. Lookups are
+// case-insensitive.
+func varDenied(name string) bool {
+	u := strings.ToUpper(name)
+	if varsDenied[u] || dsl.IsReservedVarName(u) {
+		return true
+	}
+	for _, p := range SynthesizedStepEnvPrefixes() {
+		if strings.HasPrefix(u, strings.ToUpper(p)) {
+			return true
+		}
+	}
+	return false
+}
+
 // varsExtraEnv renders a run's variables as KEY=VALUE entries for the
 // orchestrator's extraEnv slice, sorted so a step's environment is stable
 // across runs with the same inputs.
@@ -176,7 +235,7 @@ func varsExtraEnv(vars map[string]string) []string {
 	}
 	keys := make([]string, 0, len(vars))
 	for k := range vars {
-		if varsDenied[strings.ToUpper(k)] {
+		if varDenied(k) {
 			continue
 		}
 		keys = append(keys, k)
