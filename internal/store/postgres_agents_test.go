@@ -162,3 +162,25 @@ func TestListRunsByAgent(t *testing.T) {
 		t.Errorf("want 1 run, got %d", len(runs))
 	}
 }
+
+// The controller judges whether a run is schedulable by comparing the volumes
+// a job names with what agents advertise, so both agent reads must return them.
+func TestPostgres_AgentReadsReturnVolumes(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-1", "host1", "linux", "dev", nil, nil, []string{"unity-main", "build-cache"}, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-2", "host2", "linux", "dev", nil, nil, nil, nil))
+
+	agents, err := pg.ListAgents(ctx)
+	require.NoError(t, err)
+	got := map[string][]string{}
+	for _, a := range agents {
+		got[a.ID] = a.Volumes
+	}
+	assert.ElementsMatch(t, []string{"unity-main", "build-cache"}, got["agent-1"])
+	assert.Empty(t, got["agent-2"])
+
+	one, err := pg.GetAgent(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"unity-main", "build-cache"}, one.Volumes)
+}

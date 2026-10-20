@@ -1645,7 +1645,7 @@ func (p *Postgres) DeleteAgent(ctx context.Context, agentID string) error {
 }
 
 func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
-	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities FROM agents ORDER BY last_seen_at DESC`
+	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes FROM agents ORDER BY last_seen_at DESC`
 	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1655,7 +1655,7 @@ func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
 	for rows.Next() {
 		var a api.AgentInfo
 		var envJSON []byte
-		if err := rows.Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities); err != nil {
+		if err := rows.Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(envJSON, &a.Env)
@@ -1668,11 +1668,11 @@ func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
 }
 
 func (p *Postgres) GetAgent(ctx context.Context, id string) (*api.AgentInfo, error) {
-	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities FROM agents WHERE id = $1`
+	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes FROM agents WHERE id = $1`
 	var a api.AgentInfo
 	var envJSON []byte
 	err := p.pool.QueryRow(ctx, q, id).
-		Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities)
+		Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

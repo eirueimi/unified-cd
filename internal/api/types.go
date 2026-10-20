@@ -135,6 +135,8 @@ type AgentRegisterRequest struct {
 	Version      string            `json:"version,omitempty"`
 	Env          map[string]string `json:"env,omitempty"`
 	Capabilities []string          `json:"capabilities,omitempty"`
+	// Volumes lists the named volumes the agent declares in its own config.
+	Volumes []string `json:"volumes,omitempty"`
 }
 
 type ClaimResponse struct {
@@ -415,6 +417,8 @@ type AgentInfo struct {
 	Env          map[string]string `json:"env"`
 	LastSeenAt   time.Time         `json:"lastSeenAt"`
 	Capabilities []string          `json:"capabilities,omitempty"`
+	// Volumes lists the named volumes the agent declares in its own config.
+	Volumes []string `json:"volumes,omitempty"`
 }
 
 type UploadArtifactStep struct {
