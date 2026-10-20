@@ -56,6 +56,14 @@ type VolumeManager struct {
 	// cheaper than tracking who is waiting for what.
 	changed chan struct{}
 
+	// pinned holds absolute native mount paths whose link could not be
+	// removed: their reservation is never released (see pinPath).
+	pinned map[string]struct{}
+
+	// removeLink deletes a link; os.Remove, a field so a test can inject the
+	// failure a real unlink only produces on a damaged or busy filesystem.
+	removeLink func(string) error
+
 	// linkMu serialises edits to the on-disk registry of links native runs
 	// have created (see volumes_mount.go), which every claim slot writes.
 	linkMu sync.Mutex
@@ -79,6 +87,9 @@ func NewVolumeManager(base string, cfgs []config.VolumeConfig) (*VolumeManager, 
 		base:    absBase,
 		holders: make(map[string]map[string]struct{}),
 		paths:   make(map[string]struct{}),
+		pinned:  make(map[string]struct{}),
+
+		removeLink: os.Remove,
 		changed: make(chan struct{}),
 		walk:    filepath.WalkDir,
 	}
@@ -358,7 +369,11 @@ func (m *VolumeManager) reservePath(ctx context.Context, hostPath string, onWait
 		if _, held := m.paths[key]; !held {
 			m.paths[key] = struct{}{}
 			m.mu.Unlock()
-			return m.releaser(func() { delete(m.paths, key) }), nil
+			return m.releaser(func() {
+				if _, pinned := m.pinned[key]; !pinned {
+					delete(m.paths, key)
+				}
+			}), nil
 		}
 		wait := m.changed
 		m.mu.Unlock()
@@ -372,6 +387,21 @@ func (m *VolumeManager) reservePath(ctx context.Context, hostPath string, onWait
 			return nil, fmt.Errorf("waiting for path %q: %w", key, ctx.Err())
 		}
 	}
+}
+
+// pinPath keeps the reservation of an absolute native mount path for the life
+// of the process: the run that held it could not remove its link, and that link
+// is machine-wide, so handing the path to another run (which may mount a
+// different volume there) would silently repoint a link nobody is cleaning up.
+// A relative link is different: it lives in a per-run workspace and the next
+// mount over it replaces a link this agent owns, so nothing needs pinning.
+// A restart clears it (the startup sweep retries the unlink from the registry).
+// The path must be currently reserved by the caller.
+func (m *VolumeManager) pinPath(hostPath string) {
+	key := path.Clean(filepath.ToSlash(hostPath))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pinned[key] = struct{}{}
 }
 
 // releaser wraps drop into a once-only release func that also wakes waiters.

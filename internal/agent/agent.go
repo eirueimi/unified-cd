@@ -542,7 +542,10 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 				// so there is no per-run directory to prepare, and nothing here
 				// may reset or delete it.
 				if clean {
-					slog.Warn("cleanWorkspace is not applied to a workspace backed by a volume", "runId", resp.RunID)
+					// The job asked for a clean workspace and is not getting
+					// one. Say so in the run's own log, where its author looks;
+					// the agent's process log is not that place.
+					a.warnInRunLog(runCtx, resp.RunID, "cleanWorkspace is requested but not applied: this run's workspace is a volume, and the agent does not wipe a volume before a run. The workspace may contain files from earlier runs.")
 				}
 			} else if err := prepareWorkspaceFn(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
 				// The claim is ours but its workspace could not be prepared, so the
@@ -663,7 +666,8 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 	// A volume at the workspace root IS the workspace: the run works in the
 	// volume's directory rather than the per-run one. Every other mount is
 	// made relative to wherever that is.
-	if root := workspaceVolumeDir(c.Volumes, a.Volumes); root != "" {
+	root := workspaceVolumeDir(c.Volumes, a.Volumes)
+	if root != "" {
 		workDir = root
 	}
 	// Native volume mounts are links, made here and removed when the run ends.
@@ -708,9 +712,17 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		if len(c.Volumes) > 0 {
 			// workDir is already the root volume's directory if there is one,
 			// so only the other volumes are added as mounts.
-			_, extra, resolved, verr := isolatedVolumeMounts(hostNamedMountPath(c.PodTemplate), c.Volumes, a.Volumes)
+			rootHost, extra, resolved, verr := isolatedVolumeMounts(hostNamedMountPath(c.PodTemplate), c.Volumes, a.Volumes)
 			if verr != nil {
 				failClaim("volume mount failed", verr)
+				return
+			}
+			// The pod's workspace mount uses workDir, which is root above. Two
+			// computations of "the root volume's host directory" must agree, or
+			// the container would mount a different directory than the host
+			// side reads and writes.
+			if rootHost != root {
+				failClaim("volume mount failed", fmt.Errorf("internal error: the root volume resolves to %q for the pod but %q for the host workspace", rootHost, root))
 				return
 			}
 			pod.volumeMounts = extra
@@ -745,6 +757,16 @@ var runClaimFn = RunClaim
 // crash somewhere in the real workspace-prep code. Mirrors runClaimFn above.
 // Production code always leaves this as prepareWorkspace.
 var prepareWorkspaceFn = prepareWorkspace
+
+// warnInRunLog writes a line into the run's own System log (step -1, the same
+// place failRun and the volume wait use) and the agent's log. Best effort: the
+// run proceeds either way.
+func (a *Agent) warnInRunLog(ctx context.Context, runID, msg string) {
+	slog.Warn(msg, "runId", runID)
+	_ = a.Client.AppendLogBulk(ctx, a.ID, runID, -1, []api.LogAppendRequest{{
+		RunID: runID, StepIndex: -1, Stream: "stderr", Timestamp: time.Now().UTC(), Line: msg,
+	}})
+}
 
 // failRun fails a claim that could not even begin executing (workspace
 // preparation failed, the isolated job's container runtime is missing, or its

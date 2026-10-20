@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -474,6 +475,127 @@ func TestReserveRunVolumes_SameVolumeTwiceIsHeldUntilTheRunEnds(t *testing.T) {
 	}
 }
 
+// Two entries whose candidate lists differ must not collapse onto one volume:
+// a job author who wrote two caches expects two.
+func TestReserveRunVolumes_DifferentCandidateSetsGetDistinctVolumes(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("c1"), exclusive("c2"))
+	wide := dsl.VolumeMount{Name: dsl.StringOrSlice{"c1", "c2"}, As: "wide", MountPath: "p1"}
+	narrow := vmount("c1", "", "p2")
+	for name, mounts := range map[string][]dsl.VolumeMount{"wide first": {wide, narrow}, "narrow first": {narrow, wide}} {
+		t.Run(name, func(t *testing.T) {
+			chosen, release, err := reserveRunVolumes(context.Background(), m, "r1", mounts, true, nil)
+			require.NoError(t, err)
+			defer release()
+			got := map[string]string{}
+			for _, c := range chosen {
+				got[c.MountPath] = c.Name[0]
+			}
+			require.Equal(t, map[string]string{"p1": "c2", "p2": "c1"}, got, "[c1] is constrained to c1, so [c1,c2] must take c2")
+		})
+	}
+
+	// The same list twice also yields two volumes while two are available.
+	chosen, release, err := reserveRunVolumes(context.Background(), m, "r2", []dsl.VolumeMount{
+		{Name: dsl.StringOrSlice{"c1", "c2"}, As: "a", MountPath: "p1"},
+		{Name: dsl.StringOrSlice{"c1", "c2"}, As: "b", MountPath: "p2"},
+	}, true, nil)
+	require.NoError(t, err)
+	defer release()
+	require.NotEqual(t, chosen[0].Name[0], chosen[1].Name[0])
+}
+
+// The legal aliasing case: nothing else to choose from, so one volume is
+// mounted at both paths, held once.
+func TestReserveRunVolumes_IdenticalSingleCandidateIsOneVolume(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("c1"), exclusive("c2"))
+	chosen, release, err := reserveRunVolumes(context.Background(), m, "r1", []dsl.VolumeMount{vmount("c1", "x", "p1"), vmount("c1", "y", "p2")}, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, dsl.StringOrSlice{"c1"}, chosen[0].Name)
+	require.Equal(t, dsl.StringOrSlice{"c1"}, chosen[1].Name)
+	require.Equal(t, []string{"c1"}, m.Busy())
+	release()
+	require.Empty(t, m.Busy())
+
+	// A candidate this agent does not declare is not an alternative.
+	chosen, release, err = reserveRunVolumes(context.Background(), m, "r1", []dsl.VolumeMount{
+		{Name: dsl.StringOrSlice{"c1", "undeclared"}, As: "x", MountPath: "p1"}, vmount("c1", "y", "p2"),
+	}, true, nil)
+	require.NoError(t, err)
+	defer release()
+	require.Equal(t, dsl.StringOrSlice{"c1"}, chosen[0].Name)
+}
+
+// When the only unchosen candidate is busy the run waits for it; it does not
+// fall back to a volume it already holds for the other entry.
+func TestReserveRunVolumes_WaitsForAnUnchosenCandidateInsteadOfAliasing(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("c1"), exclusive("c2"))
+	_, holdC2, err := m.Reserve("other", []string{"c2"})
+	require.NoError(t, err)
+
+	type result struct {
+		chosen  []dsl.VolumeMount
+		release func()
+		err     error
+	}
+	got := make(chan result, 1)
+	go func() {
+		c, rel, err := reserveRunVolumes(context.Background(), m, "r1", []dsl.VolumeMount{
+			{Name: dsl.StringOrSlice{"c1", "c2"}, As: "wide", MountPath: "p1"}, vmount("c1", "", "p2"),
+		}, true, nil)
+		got <- result{c, rel, err}
+	}()
+	select {
+	case r := <-got:
+		t.Fatalf("aliased instead of waiting: %+v (err %v)", r.chosen, r.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	holdC2()
+	select {
+	case r := <-got:
+		require.NoError(t, r.err)
+		require.Equal(t, "c2", r.chosen[0].Name[0])
+		require.Equal(t, "c1", r.chosen[1].Name[0])
+		r.release()
+	case <-time.After(5 * time.Second):
+		t.Fatal("never got the volume after it was released")
+	}
+}
+
+// A failed unlink of an absolute path leaves a machine-wide stale link. Another
+// volume's run handed that path would silently repoint it, so the path stays
+// reserved for the life of the process. A relative link is per-run and the next
+// mount replaces a stale link it owns, so nothing is held back for it.
+func TestMountVolumes_FailedUnlinkOfAnAbsolutePathKeepsItsReservation(t *testing.T) {
+	m, _ := newTestVolumes(t, exclusive("a"), exclusive("b"))
+	mountPath, _ := absMount(t)
+	m.removeLink = func(string) error { return errors.New("injected unlink failure") }
+
+	chosen, release, err := reserveRunVolumes(context.Background(), m, "r1", []dsl.VolumeMount{vmount("a", "g", mountPath), vmount("a", "rel", "sub")}, true, nil)
+	require.NoError(t, err)
+	_, cleanup, err := mountVolumes(t.TempDir(), chosen, m, true)
+	require.NoError(t, err)
+	require.Error(t, cleanup(), "the failure is reported")
+	release()
+
+	require.Equal(t, []string{path.Clean(mountPath)}, m.Busy(), "volume a is free again, the absolute path is not")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, _, err = reserveRunVolumes(ctx, m, "r2", []dsl.VolumeMount{vmount("b", "g", mountPath)}, true, nil)
+	require.ErrorIs(t, err, context.DeadlineExceeded, "another run must not be handed a path whose link is still there")
+
+	// The same failure on a relative path pins nothing.
+	m2, _ := newTestVolumes(t, exclusive("a"))
+	m2.removeLink = func(string) error { return errors.New("injected unlink failure") }
+	c2, rel2, err := reserveRunVolumes(context.Background(), m2, "r1", []dsl.VolumeMount{vmount("a", "", "sub")}, true, nil)
+	require.NoError(t, err)
+	_, cleanup2, err := mountVolumes(t.TempDir(), c2, m2, true)
+	require.NoError(t, err)
+	require.Error(t, cleanup2())
+	rel2()
+	require.Empty(t, m2.Busy())
+}
+
 func TestMountVolumes_AbsoluteNativePathIsReservedMachineWide(t *testing.T) {
 	m, _ := newTestVolumes(t, exclusive("a"), exclusive("b"))
 	mountPath, hostPath := absMount(t)
@@ -618,6 +740,8 @@ type volumeLoopServer struct {
 	registered api.AgentRegisterRequest
 	// runStatus overrides what GET /runs/{id} reports (default Running).
 	runStatus map[string]api.RunStatus
+	// logs are the lines the agent shipped into runs' logs (bulk endpoint).
+	logs []api.LogAppendRequest
 }
 
 func newVolumeLoopServer(t *testing.T, claimN func(n int, stepSeen <-chan string) *api.ClaimResponse) *volumeLoopServer {
@@ -667,6 +791,14 @@ func newVolumeLoopServer(t *testing.T, claimN func(n int, stepSeen <-chan string
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(api.Run{ID: r.PathValue("run"), Status: st})
+	})
+	mux.HandleFunc("POST /api/v1/agents/v1/runs/{run}/steps/{idx}/logs/bulk", func(w http.ResponseWriter, r *http.Request) {
+		var lines []api.LogAppendRequest
+		_ = json.NewDecoder(r.Body).Decode(&lines)
+		s.mu.Lock()
+		s.logs = append(s.logs, lines...)
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("POST /api/v1/agents/v1/steps", func(w http.ResponseWriter, r *http.Request) {
 		var body api.StepReportRequest
@@ -907,6 +1039,36 @@ func TestRunLoop_VolumeWaitEndsWhenTheRunIsCancelled(t *testing.T) {
 	waitFinish(t, srv, "run-1")
 	cancel()
 	<-done
+}
+
+// A job that asked for a clean workspace and got a volume instead must be told
+// in the run's own log: the agent's process log is not where its author looks.
+func TestRunLoop_CleanWorkspaceOnAVolumeWorkspaceIsReportedInTheRunLog(t *testing.T) {
+	srv := newVolumeLoopServer(t, func(n int, _ <-chan string) *api.ClaimResponse {
+		if n == 0 {
+			return volumeClaim("run-1", "echo hi", vmount("unity", "", "."))
+		}
+		return nil
+	})
+	a, _ := volumeAgent(t, srv, 1, "unity")
+	a.CleanWorkspace = true
+	claimCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- a.Run(claimCtx) }()
+	require.Equal(t, "Succeeded", waitFinish(t, srv, "run-1").status)
+	cancel()
+	<-done
+
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	var found bool
+	for _, l := range srv.logs {
+		if l.RunID == "run-1" && l.StepIndex == -1 && strings.Contains(l.Line, "cleanWorkspace") && strings.Contains(l.Line, "not applied") {
+			found = true
+		}
+	}
+	require.True(t, found, "the run's System log must say the requested clean was not performed; got %+v", srv.logs)
 }
 
 func TestRunLoop_ClaimReportsBusyVolumes(t *testing.T) {

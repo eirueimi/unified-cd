@@ -149,12 +149,25 @@ func mountVolumes(workDir string, mounts []dsl.VolumeMount, m *VolumeManager, na
 		return nil, noop, nil
 	}
 
-	var created []string
+	type createdLink struct {
+		target string
+		mp     string // the mountPath as the job wrote it, cleaned
+		abs    bool
+	}
+	var created []createdLink
 	cleanup := func() error {
 		var errs []error
 		for i := len(created) - 1; i >= 0; i-- {
-			if err := m.removeOurLink(created[i]); err != nil {
+			l := created[i]
+			if err := m.removeOurLink(l.target); err != nil {
 				errs = append(errs, err)
+				if l.abs {
+					// The caller releases the run's reservations right after
+					// this; keep this one. See pinPath for why an absolute
+					// link is treated differently from a relative one.
+					m.pinPath(l.mp)
+					slog.Error("an absolute volume mount path could not be unlinked and stays reserved until the agent restarts", "path", l.target, "error", err)
+				}
 			}
 		}
 		created = nil
@@ -176,7 +189,7 @@ func mountVolumes(workDir string, mounts []dsl.VolumeMount, m *VolumeManager, na
 			_ = cleanup()
 			return nil, noop, fmt.Errorf("mount volume %q at %q: %w", s.name, s.mp, err)
 		}
-		created = append(created, target)
+		created = append(created, createdLink{target: target, mp: s.mp, abs: s.abs})
 		resolved[s.alias] = target
 	}
 	return resolved, cleanup, nil
@@ -255,7 +268,7 @@ func (m *VolumeManager) removeOurLink(link string) error {
 		m.forgetLink(link)
 		return nil
 	}
-	if err := os.Remove(link); err != nil {
+	if err := m.removeLink(link); err != nil {
 		// Stays in the registry, so the next start's sweep retries it.
 		return fmt.Errorf("remove volume link %s: %w", link, err)
 	}
@@ -458,7 +471,7 @@ func sweepStaleVolumeLinks(m *VolumeManager) error {
 		fi, serr := os.Lstat(l)
 		if serr == nil {
 			if dest, ok := readOurLink(fi, l); ok && m.ownsLinkTarget(dest) {
-				if rerr := os.Remove(l); rerr != nil {
+				if rerr := m.removeLink(l); rerr != nil {
 					errs = append(errs, fmt.Errorf("remove stale volume link %s: %w", l, rerr))
 					continue
 				}
@@ -486,13 +499,21 @@ func sweepStaleVolumeLinks(m *VolumeManager) error {
 // The wait ends, holding nothing, when ctx is done. onWait, if non-nil, is
 // called once, with a description, the first time the run has to wait.
 //
-// Entries are reserved in a fixed order (by candidate set, then absolute paths
-// by name), not in the order the job lists them. Two runs naming the same two
-// exclusive volumes in opposite orders would otherwise each take their first
-// and wait forever for the other's. The order is not a complete defence: runs
-// whose candidate lists overlap without being equal can still interlock, and
-// then only ctx ends the wait. Absolute paths are taken after every volume, so
-// a run that holds a path has everything else it needs.
+// Entries are reserved in a fixed order, not in the order the job lists them:
+// fewest candidates first, then by candidate set, then absolute paths by name.
+// Two runs naming the same two exclusive volumes in opposite orders would
+// otherwise each take their first and wait forever for the other's. The order is
+// not a complete defence: runs whose candidate lists overlap without being equal
+// can still interlock, and then only ctx ends the wait. Absolute paths are taken
+// after every volume, so a run that holds a path has everything else it needs.
+//
+// Each entry prefers a candidate this run has not already chosen for another
+// entry, and waits for one rather than reuse a volume it holds: a job that wrote
+// `[c1, c2]` and `[c1]` meant two caches, not one aliased at two paths. Fewest
+// candidates first makes that work greedily (`[c1]` takes c1 before `[c1, c2]`
+// has a chance to). The run reuses a volume it already holds only when every
+// declared candidate of the entry is already held by it, which is the legal
+// "one volume at two paths" case.
 func reserveRunVolumes(ctx context.Context, m *VolumeManager, runID string, mounts []dsl.VolumeMount, native bool, onWait func(what string)) ([]dsl.VolumeMount, func(), error) {
 	chosen := make([]dsl.VolumeMount, len(mounts))
 	for i, v := range mounts {
@@ -523,15 +544,43 @@ func reserveRunVolumes(ctx context.Context, m *VolumeManager, runID string, moun
 		sort.Strings(names)
 		return strings.Join(names, "\x00")
 	}
-	sort.SliceStable(order, func(a, b int) bool { return candidateKey(order[a]) < candidateKey(order[b]) })
+	sort.SliceStable(order, func(a, b int) bool {
+		ia, ib := order[a], order[b]
+		if len(mounts[ia].Name) != len(mounts[ib].Name) {
+			return len(mounts[ia].Name) < len(mounts[ib].Name)
+		}
+		return candidateKey(ia) < candidateKey(ib)
+	})
 
+	taken := map[string]bool{} // volumes this run has chosen so far
 	for _, i := range order {
-		name, rel, err := m.reserve(ctx, runID, []string(mounts[i].Name), waiting(fmt.Sprintf("volume %q", []string(mounts[i].Name))))
+		var declared, fresh []string
+		for _, n := range mounts[i].Name {
+			if m.PathOf(n) == "" {
+				continue
+			}
+			declared = append(declared, n)
+			if !taken[n] {
+				fresh = append(fresh, n)
+			}
+		}
+		candidates := fresh
+		if len(candidates) == 0 {
+			// Nothing unchosen to prefer: every declared candidate is held by
+			// this run (re-entrant, no wait), or none is declared (an error
+			// from reserve, which also covers a nil manager).
+			candidates = []string(mounts[i].Name)
+			if len(declared) > 0 {
+				candidates = declared
+			}
+		}
+		name, rel, err := m.reserve(ctx, runID, candidates, waiting(fmt.Sprintf("volume %q", candidates)))
 		if err != nil {
 			release()
 			return nil, nil, err
 		}
 		releases = append(releases, rel)
+		taken[name] = true
 		chosen[i].Name = dsl.StringOrSlice{name}
 	}
 
