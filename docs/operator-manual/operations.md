@@ -565,7 +565,8 @@ a series that is not there is not a zero. The cases:
   `unifiedcd_agents{state="stale"}` or an agent's disappearance separately. An agent running a
   version from before these series existed reports none. **A Kubernetes rollout does the same
   thing.** A Kubernetes agent's ID carries its pod UID, so a restarted pod enrols under a new ID:
-  the old ID's series vanish after the 90s window, and the new ID has no volume readings until a run
+  the old ID's series vanish at once when the pod shuts down gracefully (it deregisters) or after the
+  90s window when it dies without deregistering, and the new ID has no volume readings until a run
   next mounts each volume. On a single-replica deployment, a rollout therefore **silently resolves a
   firing low-disk alert** for that volume, and nothing fires again until a run happens to mount it.
 
@@ -597,9 +598,10 @@ min by (agent_name, volume) (
 )
 
 # Age of the freshest reading of each volume, in seconds. On a Kubernetes agent this grows while no
-# run mounts the volume; on a host agent it stays under about 45s (the agent drops a reading older
-# than 30s, and the controller holds it until the next 15s heartbeat), and reaches up to 90s for an
-# agent that has stopped heartbeating but is still inside the live window
+# run mounts the volume; on a healthy host agent it is usually near 30s and reaches about 45s only
+# when a sample is missed (the agent drops a reading older than 30s, and the controller holds it
+# until the next 15s heartbeat). For an agent that has stopped heartbeating but is still inside the
+# 90s live window it can reach about 120s (about 105s if no sample was missed)
 time() - max by (agent_name, volume) (unifiedcd_agent_volume_measured_timestamp_seconds)
 
 # Host agent workspace filesystem more than 90% full
