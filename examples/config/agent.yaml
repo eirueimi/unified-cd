@@ -32,6 +32,12 @@ labels:
 # only the backstop.
 # finallyTimeout: 10m
 
+# minFreeDisk: stop claiming new runs while the workspace filesystem has fewer than this many bytes
+# free. The default, 0, DISABLES the check, so an agent that never sets this has no protection against
+# a full disk. The value is exported as the metric unifiedcd_agent_min_free_disk_bytes (0 there means
+# "disabled", not "no space left"), and unifiedcd_agent_claim_blocked_by_disk shows when it is acting.
+# minFreeDisk: 5368709120   # 5Gi
+
 # volumes: agent-owned named volumes that jobs mount with spec.volumes. A workspace with no
 # volume is emptied before and after every run; a volume is the only thing that survives
 # between runs. A volume name exists once per agent (two agents declaring the same name hold
@@ -40,7 +46,8 @@ labels:
 #   - name: unity-main
 #     mode: exclusive      # required: at most one run on this agent holds the volume at a time
 #     path: /var/lib/unified-cd/volumes/unity-main   # optional; default <workspaceDir>/volumes/<name>
-#     size: 200Gi          # advisory: the agent warns when usage exceeds it, it never enforces it
+#     size: 200Gi          # advisory: the agent warns when usage exceeds it, it never enforces it;
+#                          # real free space is the metric unifiedcd_agent_volume_filesystem_free_bytes
 #   - name: go-cache
 #     mode: shared         # any number of runs may use it at once; the job must tolerate that
 

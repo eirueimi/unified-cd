@@ -296,6 +296,19 @@ holding a concurrency slot (see [Modes](#modes)).
 
 ---
 
+## How full is a volume?
+
+A job cannot see how much room its volume has, and `size` is the operator's setting, not yours. On a
+host agent it is **advisory**: the agent warns when a volume grows past it but never stops a run, so
+it does not tell you how much space is actually left. The real number is on the controller's
+`/metrics` as `unifiedcd_agent_volume_filesystem_free_bytes{agent_name,volume}`, next to
+`unifiedcd_agent_volume_measured_timestamp_seconds`, which says how old it is. On a Kubernetes agent
+the figure is refreshed only when a run mounts the volume. Ask your operator to alert on it; the
+queries, and what a missing series means, are in [Operations: Watching agent disk
+headroom](../../operator-manual/operations.md#watching-agent-disk-headroom).
+
+---
+
 ## Volumes belong to one agent
 
 Two agents declaring the same volume name hold **two independent copies**. A run goes to any agent

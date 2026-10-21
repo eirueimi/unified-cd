@@ -288,10 +288,15 @@ neither a disk preflight nor a directory GC applies there.
   filesystem (`workspaceDir`). Below the threshold, the agent stops claiming
   new runs on that slot and retries after a short backoff — it never deletes
   anything and never fails the run it would have claimed. `0` (default)
-  disables the check. This is an operational lever, not an error condition:
-  pair it with disk-usage monitoring/alerting (see [Operations Guide:
-  Monitoring Points](../operator-manual/operations.md#monitoring-points)) so an operator notices
-  *why* an agent stopped claiming.
+  disables the check, and an agent that has never set it has no protection at all. This is an
+  operational lever, not an error condition: pair it with disk-usage monitoring/alerting (see
+  [Operations Guide: Monitoring Points](../operator-manual/operations.md#monitoring-points)) so an
+  operator notices *why* an agent stopped claiming. The configured value is published as the metric
+  `unifiedcd_agent_min_free_disk_bytes` (an unset value publishes as `0`, which means "disabled", not
+  "no space left"), and `unifiedcd_agent_claim_blocked_by_disk` is `1` while the check is making the
+  agent decline work; see [Operations Guide: Watching agent disk
+  headroom](../operator-manual/operations.md#watching-agent-disk-headroom). A Kubernetes agent
+  publishes neither series, because the setting does not apply to it.
 - **`workspaceRetentionDays`** (days) opt-in-enables a periodic sweep (hourly,
   plus once at startup) that removes per-job workspace directories
   (`workspaceDir/working<slot>/<job>`) whose mtime is older than the

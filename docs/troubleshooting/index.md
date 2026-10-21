@@ -65,6 +65,7 @@ covers it.
 - [Agent enrollment and credentials](agents-and-enrollment.md#agent-enrollment-and-credentials)
 - [An agent fails at startup with a `volume ...` configuration error](agents-and-enrollment.md#an-agent-fails-at-startup-with-a-volume-configuration-error)
 - [A Kubernetes agent fails at startup with `workspace.pvc was removed`](agents-and-enrollment.md#a-kubernetes-agent-fails-at-startup-with-workspacepvc-was-removed)
+- [A host agent is not claiming: `free disk space below minimum, skipping claim`](agents-and-enrollment.md#a-host-agent-is-not-claiming-free-disk-space-below-minimum-skipping-claim)
 
 **Controller and Database**
 
