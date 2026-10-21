@@ -580,7 +580,7 @@ min by (agent_name, volume) (unifiedcd_agent_volume_filesystem_free_bytes)
 ```
 
 On a host agent `agent_name` is the hostname, so the same query changes nothing there (barring two
-host agents on one machine declaring a volume of the same name, which it merges) and one rule serves
+host agents on one machine declaring a volume of the same name, or hosts whose hostname is empty, so that `agent_name` is blank, which it merges) and one rule serves
 both agent types. `min` is the conservative choice, but it can surface a low reading from a replica
 that has not mounted the volume for a while; check the timestamp before acting on it. Because
 these series are read from the database, every controller replica serves the same values, and the
@@ -598,7 +598,7 @@ min by (agent_name, volume) (
 )
 
 # Age of the freshest reading of each volume, in seconds. On a Kubernetes agent this grows while no
-# run mounts the volume; on a healthy host agent it is usually near 30s and reaches about 45s only
+# run mounts the volume; on a healthy host agent it is up to about 30s and reaches about 45s only
 # when a sample is missed (the agent drops a reading older than 30s, and the controller holds it
 # until the next 15s heartbeat). For an agent that has stopped heartbeating but is still inside the
 # 90s live window it can reach about 120s (about 105s if no sample was missed)

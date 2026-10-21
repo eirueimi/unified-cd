@@ -100,15 +100,18 @@ func (s *storageSampler) measure(path string, e *sample) {
 	defer s.wg.Done()
 	free, total, err := s.stat(path)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	e.inflight = false
+	if err == nil {
+		e.free, e.total, e.at, e.measured = free, total, s.now(), true
+	}
+	s.mu.Unlock()
 	if err != nil {
 		// Keep any earlier success: it ages out on its own, so a transient
-		// error does not blank the series at once, a persistent one does.
+		// error does not blank the series at once, a persistent one does. The
+		// log is written after the unlock: a stderr that applies backpressure
+		// must not hold the mutex the heartbeat goroutine reads under.
 		slog.Warn("could not measure a filesystem, omitting it from the heartbeat once its last reading goes stale", "path", path, "error", err)
-		return
 	}
-	e.free, e.total, e.at, e.measured = free, total, s.now(), true
 }
 
 // read returns the latest measurement of path and when it was taken. ok is
