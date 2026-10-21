@@ -65,6 +65,7 @@ func main() {
 		slog.Error("k8s rest config", "error", err)
 		os.Exit(1)
 	}
+	applyClientRateLimits(restCfg, cfg.MaxConcurrent)
 	k8sClient, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
 		slog.Error("k8s client", "error", err)
@@ -111,6 +112,43 @@ func main() {
 		slog.Error("k8s agent run", "error", err)
 		os.Exit(1)
 	}
+}
+
+// defaultMaxConcurrent is what Config.Validate gives an unset maxConcurrent, and
+// what the rate limit is sized for when maxConcurrent is negative (unlimited),
+// where there is no bound to size against.
+const defaultMaxConcurrent = 100
+
+// clientRateLimits returns the client-side QPS and burst for the agent's
+// Kubernetes clientset, sized for maxConcurrent runs.
+//
+// client-go defaults to 5 QPS and a burst of 10, and ONE limiter is shared by
+// every call made through the clientset. The dominant consumer is not what one
+// would guess: PodManager.WaitForPodRunning polls Pods().Get every 500 ms for
+// the whole of each pod's start, which is 2 QPS per starting run, so a fleet of
+// maxConcurrent runs starting together asks for 2*maxConcurrent QPS (200 at the
+// default). Behind it come the waiting-run pod lists (one per run per 5 s, about
+// maxConcurrent/5) and the create, delete and PVC lock calls, for which a flat
+// 20 QPS is left. A token bucket queues without bound under over-demand, so
+// at the defaults those polls make a pod create wait behind them for minutes.
+//
+// Step exec is NOT a consumer: remotecommand.NewSPDYExecutor builds its own
+// round tripper and never touches this limiter. The burst is one second of the
+// sustained rate.
+func clientRateLimits(maxConcurrent int) (qps float32, burst int) {
+	if maxConcurrent <= 0 {
+		maxConcurrent = defaultMaxConcurrent
+	}
+	n := 2*maxConcurrent + maxConcurrent/5 + 20
+	return float32(n), n
+}
+
+// applyClientRateLimits sets the clientset's rate limit for maxConcurrent runs.
+// It overwrites unconditionally: neither rest.InClusterConfig nor the
+// clientcmd loaders set QPS or Burst, so there is no operator-chosen value to
+// preserve.
+func applyClientRateLimits(c *rest.Config, maxConcurrent int) {
+	c.QPS, c.Burst = clientRateLimits(maxConcurrent)
 }
 
 func buildRestConfig(kubeconfig string) (*rest.Config, error) {

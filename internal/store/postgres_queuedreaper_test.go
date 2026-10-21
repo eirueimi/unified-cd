@@ -42,13 +42,13 @@ func TestPostgres_ListUnclaimableQueuedRuns(t *testing.T) {
 
 	// A live docker agent (no unity label): the empty-selector run becomes
 	// claimable; the unity run still cannot be claimed.
-	require.NoError(t, pg.UpsertAgent(ctx, "docker-1", "h", "linux", "dev", []string{"kind:docker"}, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "docker-1", "h", "linux", "dev", []string{"kind:docker"}, nil, nil, nil))
 	m = collect()
 	assert.Contains(t, m, unityRun.ID)
 	assert.NotContains(t, m, anyRun.ID)
 
 	// A live unity agent: the unity run is now claimable too.
-	require.NoError(t, pg.UpsertAgent(ctx, "unity-1", "h2", "windows", "dev", []string{"unity", "macos"}, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "unity-1", "h2", "windows", "dev", []string{"unity", "macos"}, nil, nil, nil))
 	m = collect()
 	assert.NotContains(t, m, unityRun.ID)
 	assert.NotContains(t, m, anyRun.ID)

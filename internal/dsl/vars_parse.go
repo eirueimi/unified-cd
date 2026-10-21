@@ -38,6 +38,10 @@ var varKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // of refusing is that nobody can set them globally, which nobody should want
 // to do.
 //
+// A fourth, by prefix: every name starting with VolumeEnvPrefix
+// (UNIFIED_VOLUME_) is the path of a volume the orchestrator synthesises per
+// run, for the same reason as UNIFIED_WORKSPACE. See reservedVarPrefixes.
+//
 // The runtime backstop is internal/agent's varsDenied, which filters a claim's
 // vars against this whole set (via ReservedVarNames), against stepEnvDenied,
 // and against the orchestrator's synthesised names. The test that all three
@@ -59,7 +63,45 @@ var reservedVarNames = map[string]bool{
 	"HOME":                                true,
 }
 
-// ReservedVarNames returns the variable names apply-time validation refuses,
+// reservedVarPrefixes are name prefixes no variable may start with, for names
+// the orchestrator generates per run rather than from a fixed list.
+// UNIFIED_VOLUME_<ALIAS> is one: it exists once per volume a job mounts, so it
+// cannot be an entry in reservedVarNames. It is built from VolumeEnvPrefix, so
+// the rule and the generator cannot name different things.
+//
+// The prefix rule is the single source. internal/agent's varDenied consults
+// IsReservedVarName rather than keeping a list of its own, and its test asserts
+// that every prefix the orchestrator synthesises is one reserved here.
+var reservedVarPrefixes = []string{VolumeEnvPrefix}
+
+// ReservedVarPrefixes returns the name prefixes apply-time validation refuses,
+// upper-cased, as a copy. Exact names are in ReservedVarNames.
+func ReservedVarPrefixes() []string {
+	return append([]string(nil), reservedVarPrefixes...)
+}
+
+// IsReservedVarName reports whether name may not be defined as a variable:
+// an exact reserved name or a name under a reserved prefix, in any case. It is
+// the one place the two rules are combined, so a caller cannot honour one and
+// forget the other.
+func IsReservedVarName(name string) bool {
+	u := strings.ToUpper(name)
+	if reservedVarNames[u] {
+		return true
+	}
+	for _, p := range reservedVarPrefixes {
+		// Both sides upper-cased: the candidate is, and this function's promise
+		// is to be the one place the two rules combine, so it must not depend on
+		// how a prefix happens to be spelled in the list.
+		if strings.HasPrefix(u, strings.ToUpper(p)) {
+			return true
+		}
+	}
+	return false
+}
+
+// ReservedVarNames returns the exact variable names apply-time validation
+// refuses (names under a reserved prefix are in ReservedVarPrefixes),
 // upper-cased. It exists so the agent's runtime backstop can filter against
 // the real set rather than a copy that drifts: a copy is what the two lists
 // already are, and one drifting list is enough.
@@ -82,7 +124,7 @@ func ValidateVarKeys(vars map[string]string) error {
 			bad = append(bad, "(empty key)")
 		case !varKeyRe.MatchString(k):
 			bad = append(bad, fmt.Sprintf("%q is not a valid variable name (want [A-Za-z_][A-Za-z0-9_]*)", k))
-		case reservedVarNames[strings.ToUpper(k)]:
+		case IsReservedVarName(k):
 			bad = append(bad, fmt.Sprintf("%q is reserved", k))
 		}
 	}

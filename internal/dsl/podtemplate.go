@@ -19,8 +19,8 @@ var HostSupportedContainerFields = map[string]bool{
 // agent's claim pod cannot honor, so a run carrying it must be pinned to a
 // Kubernetes agent (the controller auto-appends the "kubernetes" label).
 //
-// The host claim pod degrades workspace.pvc to a per-claim bind mount by
-// design, so a PVC (and mountPath, reuse) does NOT force kubernetes. Everything
+// The host claim pod honors workspace.mountPath, and reuse is only a
+// performance hint, so neither forces kubernetes. Everything
 // the host silently drops does: a named agent-side template, an override patch,
 // any pod-level spec key beyond "containers", and any container field outside
 // HostSupportedContainerFields.

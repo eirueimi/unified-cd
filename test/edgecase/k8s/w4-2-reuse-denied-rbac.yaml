@@ -13,11 +13,12 @@
 # W4-2 measures whether "silently" is the right word.
 #
 # Scope notes:
-#   - No PVC verbs are needed by the pool path, but `create`/`delete` on
-#     persistentvolumeclaims are kept so this Role differs from the shipped one
-#     in EXACTLY the two verbs under test. internal/k8sagent/ makes no PVC API
-#     calls at all (podbuilder.go:435,453 only put PVC *references* into the
-#     PodSpec, which the kubelet materialises), so this is belt-and-braces.
+#   - No PVC verbs are needed by the pool path, and this rig configures no
+#     agent `volumes`, so the agent makes no PVC API calls at all. The PVC rule
+#     below is kept as it was when this experiment was run. The shipped Role has
+#     since gained `get`, `list` and `update` on persistentvolumeclaims for
+#     agent-owned named volumes, so it now differs from this Role in more than
+#     the two pod verbs under test; none of those extra verbs is exercised here.
 #   - The RoleBinding subject is a ServiceAccount in `ci` rather than in
 #     `unified-cd`, because the W4 rig runs the agent as a HOST process holding
 #     this SA's token through a kubeconfig, not as an in-cluster Pod. The

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -101,4 +102,61 @@ func TestStepEnv_ExtraEnvWins(t *testing.T) {
 	t.Setenv("MY_BUILD_FLAG", "from-host")
 	got := envMap(t, StepEnv([]string{"MY_BUILD_FLAG"}, []string{"MY_BUILD_FLAG=from-step"}))
 	assert.Equal(t, "from-step", got["MY_BUILD_FLAG"])
+}
+
+// A mounted volume's path reaches a step as UNIFIED_VOLUME_<ALIAS>. The name
+// comes from the alias, never from the volume the run was handed, and it is
+// built by dsl.VolumeEnvName so the agents cannot disagree on it.
+func TestStepEnv_ExposesVolumePaths(t *testing.T) {
+	extra := volumeExtraEnv(map[string]string{
+		"go-cache": "/data/vol/go-cache-2",
+		"npm":      "/ws/.npm",
+	})
+	// Sorted, so a step's environment is stable across runs.
+	assert.Equal(t, []string{
+		"UNIFIED_VOLUME_GO_CACHE=/data/vol/go-cache-2",
+		"UNIFIED_VOLUME_NPM=/ws/.npm",
+	}, extra)
+
+	got := envMap(t, StepEnv(nil, extra))
+	assert.Equal(t, "/data/vol/go-cache-2", got["UNIFIED_VOLUME_GO_CACHE"])
+	assert.Equal(t, "/ws/.npm", got["UNIFIED_VOLUME_NPM"])
+
+	assert.Empty(t, volumeExtraEnv(nil), "a job with no volumes gets no volume variables")
+}
+
+// UNIFIED_VOLUME_ names are generated per run, so SynthesizedStepEnv cannot
+// list them. Its prefix twin names the rule, and the rule must be one
+// apply-time validation enforces too.
+func TestSynthesizedStepEnvPrefixes_AreReservedAtApplyTime(t *testing.T) {
+	require.NotEmpty(t, SynthesizedStepEnvPrefixes())
+	for _, p := range SynthesizedStepEnvPrefixes() {
+		assert.Contains(t, dsl.ReservedVarPrefixes(), p,
+			"%s prefixes names the orchestrator synthesises but apply-time validation does not reserve it", p)
+		probe := p + "ANYTHING"
+		assert.Error(t, dsl.ValidateVarKeys(map[string]string{probe: "x"}), probe)
+		assert.True(t, varDenied(probe), probe)
+		assert.True(t, varDenied(strings.ToLower(probe)), strings.ToLower(probe))
+		assert.Empty(t, varsExtraEnv(map[string]string{probe: "x"}), probe)
+		assert.Empty(t, varsExtraEnv(map[string]string{strings.ToLower(probe): "x"}), strings.ToLower(probe))
+	}
+	// The volume names the orchestrator builds are inside the synthesised prefix.
+	assert.Contains(t, SynthesizedStepEnvPrefixes(), dsl.VolumeEnvPrefix)
+	for _, kv := range volumeExtraEnv(map[string]string{"go-cache": "/x"}) {
+		assert.True(t, varDenied(strings.SplitN(kv, "=", 2)[0]), kv)
+	}
+}
+
+// The other direction: every prefix apply-time validation reserves is one the
+// runtime backstop also drops, so a run created before the reservation cannot
+// carry a shadowing variable past it.
+func TestVarsDenied_CoversEveryReservedPrefix(t *testing.T) {
+	require.NotEmpty(t, dsl.ReservedVarPrefixes())
+	for _, p := range dsl.ReservedVarPrefixes() {
+		probe := p + "SOMETHING"
+		assert.True(t, varDenied(probe), "%s is reserved by prefix at apply time but not denied at runtime", probe)
+		assert.Empty(t, varsExtraEnv(map[string]string{probe: "x"}))
+	}
+	assert.False(t, varDenied("UNIFIED_VOLUMES"), "the prefix is UNIFIED_VOLUME_, not a substring match")
+	assert.False(t, varDenied("REGISTRY"))
 }

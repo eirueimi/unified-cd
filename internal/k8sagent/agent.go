@@ -2,6 +2,7 @@ package k8sagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 // logAutoFlushInterval is how often a step's stdout/stderr LogPushers (and a
@@ -63,6 +65,23 @@ type K8sAgent struct {
 	// owns the claim's lifecycle, are different methods that both need it;
 	// Run() only ever reads it (via Snapshot, for the heartbeat).
 	podBindings *podBindingSet
+
+	// kube is the clientset PVC provisioning (EnsurePVCs) runs against. It is
+	// the pool's own client, so it targets the same cluster and namespace as
+	// every pod this agent creates.
+	kube kubernetes.Interface
+	// volMu serialises choosing a free volume and creating the pod that mounts
+	// it (see createClaimPod) within this process. Exclusion against another
+	// replica is the PVC lock's job (volumes_lock.go), not this mutex's.
+	volMu sync.Mutex
+	// drain is Run's claim context: it is cancelled when the agent starts
+	// draining. A run still waiting for a volume gives up then (createClaimPod),
+	// where a run that already holds its volumes is left to finish. Set once by
+	// Run before any claim loop starts; nil (never drains) when executeRun is
+	// called directly.
+	drain context.Context
+	// lockGraceOverride replaces defaultVolumeLockGrace when positive. Tests only.
+	lockGraceOverride time.Duration
 }
 
 // k8sAgentCapabilities reports what the k8s agent can execute: it always
@@ -72,6 +91,9 @@ func k8sAgentCapabilities() []string { return []string{dsl.CapPod, dsl.CapContai
 // NewK8sAgent creates a new K8sAgent.
 func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec *Executor, pool *PodPool) *K8sAgent {
 	a := &K8sAgent{cfg: cfg, client: agentClient, pm: pm, exec: exec, pool: pool, podBindings: newPodBindingSet()}
+	if pool != nil {
+		a.kube = pool.client
+	}
 	a.dispatch = a.executeRun
 	return a
 }
@@ -82,6 +104,20 @@ func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec 
 func (a *K8sAgent) Run(ctx context.Context) error {
 	host, _ := os.Hostname()
 	labels := appendLabelIfMissing(a.cfg.Labels, "kubernetes")
+	a.drain = ctx
+
+	// Provision the volumes' claims BEFORE advertising them: an agent that
+	// registered a volume it could not back would be handed jobs that need it.
+	// A dropped volume's claim is left in place (see EnsurePVCs).
+	if len(a.cfg.Volumes) > 0 {
+		if a.kube == nil {
+			return errors.New("k8s: volumes are configured but the agent has no Kubernetes client to provision their PVCs")
+		}
+		if err := EnsurePVCs(ctx, a.kube, a.cfg.Namespace, a.cfg.AgentName, a.cfg.Volumes); err != nil {
+			return fmt.Errorf("k8s: provision volumes: %w", err)
+		}
+	}
+
 	if err := a.client.Register(ctx, api.AgentRegisterRequest{
 		AgentID:  a.cfg.AgentID,
 		Hostname: host,
@@ -92,12 +128,24 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 		// version for k8s agents too instead of an empty string.
 		Version:      agentlib.Version,
 		Capabilities: k8sAgentCapabilities(),
+		Volumes:      volumeNames(a.cfg.Volumes),
 	}); err != nil {
 		return err
 	}
 
 	if err := a.pool.Restore(ctx, a.client); err != nil {
 		slog.Warn("k8s: pool restore failed, continuing without pool", "error", err)
+	}
+	// Restore adopts only POOLED pods. A per-run claim pod that outlived the
+	// previous process needs no adopting: nothing about volume occupancy lives
+	// in this process, because it is read from the pods' labels on every claim
+	// (BusyVolumes). This line only makes that visible at startup.
+	if len(a.cfg.Volumes) > 0 {
+		if held, err := a.heldVolumes(ctx); err != nil {
+			slog.Warn("k8s: could not read volume occupancy at startup", "error", err)
+		} else if len(held) > 0 {
+			slog.Info("k8s: volumes already held by claim pods from before this process started", "volumes", sortedKeys(held))
+		}
 	}
 	slog.Info("k8s agent registered", "agentId", a.cfg.AgentID, "labels", labels)
 
@@ -231,7 +279,9 @@ func (a *K8sAgent) k8sClaimLoop(ctx, runCtx context.Context, labels []string, se
 		if detached {
 			resp, err = a.client.ClaimDetached(ctx, a.cfg.AgentID, "30s", labels)
 		} else {
-			resp, err = a.client.Claim(ctx, a.cfg.AgentID, "30s", labels)
+			// The volumes this agent declares, and the exclusive ones a live pod
+			// holds (empty for an agent that declares none).
+			resp, err = a.client.Claim(ctx, a.cfg.AgentID, "30s", labels, a.claimRequest(ctx))
 		}
 		if err != nil {
 			if sem != nil {
@@ -355,9 +405,21 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 
 	usePool := c.PodTemplate != nil && c.PodTemplate.Reuse
 
+	// A pooled pod's volumes are fixed when it is created, and successive runs
+	// need different ones. Apply-time validation refuses the combination; this
+	// is the backstop for a claim that arrives with both anyway, and it must
+	// fail rather than quietly run without the volumes it was routed for.
+	if usePool && len(c.Volumes) > 0 {
+		a.failRun(ctx, c.RunID, "k8s: spec.volumes cannot be combined with podTemplate.reuse: a reused pod keeps the volumes it was created with, which contradicts a volume's lifecycle")
+		return
+	}
+
 	var pooledPod *PooledPod
 	var podName string
 	podReady := false
+	var volumePaths map[string]string
+	var volumeMounts []PodVolume
+	rootVolume := false
 
 	if usePool {
 		templateName := ""
@@ -398,18 +460,19 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			}
 		}()
 	} else {
-		pod, err := BuildPod(c.RunID, a.cfg.Namespace, a.cfg.PodTemplates, c.PodTemplate, a.cfg.PodImage,
-			SidecarSpec{Image: a.cfg.SidecarImage, S3SecretName: a.cfg.SidecarS3SecretName, S3SecretMode: a.cfg.SidecarS3SecretMode, BrokerURL: a.cfg.Server}, a.cfg.ShimImage)
+		claimed, err := a.createClaimPod(ctx, c)
 		if err != nil {
-			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: failed to build Pod spec: %v", err))
+			if errors.Is(err, errRunTerminalWhileWaiting) {
+				slog.Info("k8s: run became terminal while waiting for its volumes; abandoning", "runId", c.RunID)
+				return
+			}
+			a.failRun(ctx, c.RunID, err.Error())
 			return
 		}
-		created, err := a.pm.CreatePod(ctx, pod)
-		if err != nil {
-			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: failed to create Pod: %v", err))
-			return
-		}
+		created := claimed.pod
+		volumePaths, rootVolume, volumeMounts = claimed.volumePaths, claimed.rootVolume, claimed.mounts
 		podName = created.Name
+		releaseVolumes := claimed.release
 		// See the pooled branch's identical call above for why this happens
 		// here rather than after awaitPodRunning.
 		a.podBindings.Add(c.RunID, api.PodBinding{PodName: created.Name, PodUID: string(created.UID)})
@@ -418,6 +481,12 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 			defer cancelTeardown()
 			if err := a.pm.DeletePod(teardownCtx, podName); err != nil {
 				slog.Warn("k8s: failed to delete Pod", "pod", podName, "error", err)
+			}
+			// After the delete is issued, never before: the pod's label keeps
+			// the volume busy while it terminates, and only then may another
+			// run take the lock.
+			if releaseVolumes != nil {
+				releaseVolumes(teardownCtx)
 			}
 		}()
 	}
@@ -433,29 +502,31 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	}
 	podReady = true
 
-	// If cleanWorkspace is true, clear the workspace before the first step
-	if usePool && c.PodTemplate != nil && c.PodTemplate.CleanWorkspace {
-		mountPath := "/workspace"
-		if c.PodTemplate.Workspace != nil && c.PodTemplate.Workspace.MountPath != "" {
-			mountPath = c.PodTemplate.Workspace.MountPath
-		}
-		firstContainer := ""
-		for _, stage := range c.Stages {
-			steps := api.StageSteps(stage)
-			if len(steps) > 0 {
-				firstContainer = execContainer(steps[0])
-				break
-			}
-		}
-		// nil shell: this is an internal maintenance script (not user-authored
-		// run:), so the shim default (["/.ucd/ucd-sh","-c"], POSIX-compatible)
-		// is always sufficient regardless of any step's declared shell:.
-		_, _ = a.exec.ExecStep(ctx, podName, firstContainer, fmt.Sprintf("rm -rf %s/*", mountPath), nil, nil, io.Discard, io.Discard)
-	}
+	// Where the pod mounted the workspace: resolved exactly as BuildPod did, so
+	// the backend, the volume paths and any wipe name the same directory.
+	mountPath := a.workspaceMount(c.PodTemplate)
 
-	mountPath := "/workspace"
-	if c.PodTemplate != nil && c.PodTemplate.Workspace != nil && c.PodTemplate.Workspace.MountPath != "" {
-		mountPath = c.PodTemplate.Workspace.MountPath
+	// A reused pod outlives its runs, so its workspace holds the previous
+	// run's files. The default workspace is ephemeral (a fresh pod's emptyDir
+	// is), so clear it before every run, whatever cleanWorkspace says.
+	if usePool {
+		if err := a.clearReusedWorkspace(ctx, podName, c, mountPath, nil); err != nil {
+			// Do not hand a dirty pod back to the idle pool: delete it.
+			podReady = false
+			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: could not clear the reused Pod's workspace: %v", err))
+			return
+		}
+	} else if rootVolume && agentlib.ClaimWantsClean(c) {
+		// The workspace is a persistent volume, and the job asked for it to be
+		// wiped. This is the one deliberate way unified-cd destroys a volume's
+		// data (spec 4.10), and it applies only to a volume AT the workspace
+		// root: that is the workspace. The agent-wide clean flag never reaches
+		// here, and a fresh emptyDir needs no clearing. Volumes mounted
+		// below the root are other volumes, and are not wiped.
+		if err := a.clearReusedWorkspace(ctx, podName, c, mountPath, mountedVolumes(mountPath, volumeMounts)); err != nil {
+			a.failRun(ctx, c.RunID, fmt.Sprintf("k8s: could not clear the workspace volume: %v", err))
+			return
+		}
 	}
 
 	// backend is the seam between the shared step-orchestration loop
@@ -465,8 +536,40 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// installs the masker itself via SetMasker after fetching secrets, so
 	// this wrapper does neither).
 	backend := newK8sBackend(a, c.RunID, c.JobName, podName, mountPath, dsl.SidecarContainerNames(c.PodTemplate), claimSince)
+	backend.volumePaths = volumePaths
+	backend.volumes = mountedVolumes(mountPath, volumeMounts)
 
 	agentlib.RunClaim(ctx, a.client, a.cfg.AgentID, c, backend)
+}
+
+// clearReusedWorkspace empties mountPath in a reused pooled pod, or in a
+// workspace volume the job asked to have wiped, before the run's first step,
+// dot-prefixed entries included. vols are the volumes mounted into the pod; any
+// below mountPath is left alone (see clearWorkspaceScript). It runs in the
+// first step's container, since that is the one guaranteed to exist and carry
+// the workspace mount. A failure is returned rather than ignored: running on a workspace that
+// still holds the previous run's files is exactly what this prevents.
+func (a *K8sAgent) clearReusedWorkspace(ctx context.Context, podName string, c api.ClaimResponse, mountPath string, vols []agentlib.MountedVolume) error {
+	firstContainer := ""
+	for _, stage := range c.Stages {
+		steps := api.StageSteps(stage)
+		if len(steps) > 0 {
+			firstContainer = execContainer(steps[0])
+			break
+		}
+	}
+	// nil shell: this is an internal maintenance script (not user-authored
+	// run:), so the shim default (["/.ucd/ucd-sh","-c"], POSIX-compatible)
+	// is always sufficient regardless of any step's declared shell:.
+	script := clearWorkspaceScript(mountPath, vols)
+	exit, err := a.exec.ExecStep(ctx, podName, firstContainer, script, nil, nil, io.Discard, io.Discard)
+	if err != nil {
+		return err
+	}
+	if exit != 0 {
+		return fmt.Errorf("clearing %s exited %d", mountPath, exit)
+	}
+	return nil
 }
 
 // claimPodTeardownContext builds the context for the claim Pod's own teardown

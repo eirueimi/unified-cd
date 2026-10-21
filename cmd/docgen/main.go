@@ -130,7 +130,7 @@ func writeSection(sb *strings.Builder, defName string, def map[string]any, defs 
 		}
 		typeStr, refName := fieldType(v)
 		desc, _ := v["description"].(string)
-		fmt.Fprintf(sb, "| `%s` | %s | %s | %s |\n", k, typeStr, req, desc)
+		fmt.Fprintf(sb, "| `%s` | %s | %s | %s |\n", k, typeStr, req, cellText(desc))
 
 		if refName != "" && !written[refName] {
 			if _, exists := defs[refName]; exists {
@@ -163,6 +163,38 @@ func writeSection(sb *strings.Builder, defName string, def map[string]any, defs 
 	}
 }
 
+// cellText makes a description safe to put in a Markdown table cell.
+//
+// A newline ends a table row, so a description that wraps (most do, being Go
+// doc comments) used to cut the table short and spill its tail out as a
+// paragraph; every row after it was lost to the table. Runs of whitespace,
+// newlines included, are collapsed to one space.
+//
+// Outside a code span, '<' and '>' are escaped because Markdown reads
+// "$UNIFIED_VOLUME_<AS>:" as an HTML tag and swallows it, and '|' because it is
+// the column separator. Inside a code span '<' and '>' are literal already (and
+// an entity would show as typed), so only '|' is escaped there.
+func cellText(desc string) string {
+	var sb strings.Builder
+	inCode := false
+	for _, r := range strings.Join(strings.Fields(desc), " ") {
+		switch {
+		case r == '`':
+			inCode = !inCode
+			sb.WriteRune(r)
+		case r == '|':
+			sb.WriteString(`\|`)
+		case r == '<' && !inCode:
+			sb.WriteString("&lt;")
+		case r == '>' && !inCode:
+			sb.WriteString("&gt;")
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
 // fieldType returns a human-readable type string and the direct $ref name (if any).
 func fieldType(v map[string]any) (typeStr, ref string) {
 	if r, ok := v["$ref"].(string); ok {
@@ -173,6 +205,16 @@ func fieldType(v map[string]any) (typeStr, ref string) {
 		parts := make([]string, len(enums))
 		for i, e := range enums {
 			parts[i] = fmt.Sprintf("`%v`", e)
+		}
+		return strings.Join(parts, " \\| "), ""
+	}
+	if branches, ok := v["oneOf"].([]any); ok && len(branches) > 0 {
+		parts := make([]string, 0, len(branches))
+		for _, b := range branches {
+			if bm, ok := b.(map[string]any); ok {
+				t, _ := fieldType(bm)
+				parts = append(parts, t)
+			}
 		}
 		return strings.Join(parts, " \\| "), ""
 	}

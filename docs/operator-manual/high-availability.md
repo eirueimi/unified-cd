@@ -370,6 +370,18 @@ claimed since the sweep's snapshot is skipped (`INFO queued-run reaper: run left
 Queued state before it could be failed; skipping`), and nothing — not the terminal
 status, not the reason line, not its concurrency locks — is written for it.
 
+**Named volumes and replicas.** Replicas of one k8s-agent Deployment share a config and therefore
+share one set of volume PVCs (`<agentName>-<volume>`), so `agentName` must be identical across them
+and must never change while the volumes hold data. Exclusion on an `exclusive` volume does not rely
+on any one replica's memory: a run takes a lock on the PVC itself (its `unified-cd/volume-held-by`
+annotation) and occupancy is read from the live Pods that mount it, so two replicas, including two
+alive at once during a rollout, cannot hand one volume to two runs. A crashed holder's lock clears
+itself after up to about three minutes. On **host** agents, volume occupancy is tracked in the agent
+process, which is authoritative only for that process: never point two host agent processes at the
+same volume `path` or workspace directory. Two agents that declare the same volume *name* hold two
+independent copies, not one shared one. See [Named volumes on
+Kubernetes](kubernetes-integration.md#named-volumes) and [Named volumes](agents.md#named-volumes).
+
 ---
 
 ## Orphaned-Run Recovery

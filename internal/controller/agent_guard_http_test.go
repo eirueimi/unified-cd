@@ -48,7 +48,7 @@ func seedGuardRun(t *testing.T, pg store.Store, terminal bool) string {
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
-	claimed, err := pg.ClaimNextRun(ctx, guardOwnerAgent, nil)
+	claimed, err := pg.ClaimNextRun(ctx, guardOwnerAgent, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID, "claim must pick up the just-created run")
 	if terminal {

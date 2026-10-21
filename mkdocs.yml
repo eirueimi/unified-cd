@@ -101,6 +101,7 @@ nav:
           - Artifacts and Cache: user-guide/writing-jobs/artifacts-and-cache.md
           - Templates and Reuse: user-guide/writing-jobs/templates-and-reuse.md
           - Isolation and Containers: user-guide/writing-jobs/isolation-and-containers.md
+          - Volumes: user-guide/writing-jobs/volumes.md
           - Concurrency and Agent Selection: user-guide/writing-jobs/concurrency-and-agent-selection.md
           - Approval and Finally: user-guide/writing-jobs/approval-and-finally.md
           - Complete Example: user-guide/writing-jobs/complete-example.md
@@ -132,6 +133,7 @@ nav:
           - Enforced runsIn.resources: operator-manual/migrations/runsin-resources-enforcement.md
           - "Apply-Time if: Validation": operator-manual/migrations/apply-time-if-validation.md
           - "Undefined params: Key is Empty in if:": operator-manual/migrations/params-undefined-key-is-empty.md
+          - "Ephemeral Workspaces and Named Volumes": operator-manual/migrations/2026-10-20-named-volumes.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

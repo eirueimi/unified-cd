@@ -22,13 +22,13 @@ func TestPostgres_ClaimNextRun_LabelFilter(t *testing.T) {
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 
 	// linux-only agent cannot claim run1 (which requires kubernetes)
-	claimed, err := pg.ClaimNextRun(ctx, "linux-agent", []string{"kind:linux"})
+	claimed, err := pg.ClaimNextRun(ctx, "linux-agent", []string{"kind:linux"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 	assert.Equal(t, run2.ID, claimed.ID, "linux agent should claim the run with no selector")
 
 	// kubernetes agent can claim run1
-	claimed2, err := pg.ClaimNextRun(ctx, "k8s-agent", []string{"kind:kubernetes", "pool:build"})
+	claimed2, err := pg.ClaimNextRun(ctx, "k8s-agent", []string{"kind:kubernetes", "pool:build"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed2)
 	assert.Equal(t, run1.ID, claimed2.ID, "k8s agent should claim the k8s run")
@@ -42,7 +42,7 @@ func TestPostgres_ClaimNextRun_NoLabels_AnyAgent(t *testing.T) {
 	run, _ := pg.CreateRun(ctx, "j", nil, []byte(`{}`), nil, nil, "", "")
 	_, _ = pg.TransitionPendingToQueued(ctx, 10)
 
-	claimed, err := pg.ClaimNextRun(ctx, "any-agent", []string{})
+	claimed, err := pg.ClaimNextRun(ctx, "any-agent", []string{}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 	assert.Equal(t, run.ID, claimed.ID)

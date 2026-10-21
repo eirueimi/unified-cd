@@ -230,7 +230,7 @@ func TestWebhookIngress_ExpandsAgentSelectorParams(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
-	claimed, err := pg.ClaimNextRun(t.Context(), "agent-with-label", []string{"pool:build"})
+	claimed, err := pg.ClaimNextRun(t.Context(), "agent-with-label", []string{"pool:build"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed, "agent with the expanded label must claim the run")
 }

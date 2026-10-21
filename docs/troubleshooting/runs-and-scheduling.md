@@ -126,6 +126,11 @@ The `Reason` field (and banner text) tells you which half failed:
   only k8s-agents online).
 - `no registered agent matches labels [...]` — at least one agent has the
   right capability, but none also carries every label in `agentSelector`.
+- `no agent declares volume "..."`, `no agent declares any of the volumes [...]`,
+  or `no single agent that provides capability [...] and matches labels [...]
+  declares all of the volumes [...]` — the job mounts a named volume no
+  suitable agent declares. See [Job stays Queued: no agent declares
+  volume](#job-stays-queued-no-agent-declares-volume).
 
 If `agentSelector` contains a `{{ .Params.X }}` expression, the label half
 can't be evaluated from the job definition alone (it only resolves at
@@ -152,6 +157,67 @@ parameterized.
 - Once a satisfying agent registers, the banner disappears on the job page's
   next load and the run is claimed on the matching agent's next poll — no
   need to re-trigger it.
+
+## Job stays Queued: no agent declares volume
+
+**Symptom**
+
+A job that mounts a [named volume](../user-guide/writing-jobs/volumes.md) (`spec.volumes`) is
+applied without error, but its runs stay `Queued`, and the job's page in the Web UI shows an
+unschedulable banner. `GET /api/v1/jobs/{name}/schedulability` returns `"satisfiable": false`
+with one of three reasons:
+
+```
+no agent declares volume "unity-main"
+```
+
+```
+no agent declares any of the volumes ["go-cache-1" "go-cache-2"]
+```
+
+```
+no single agent that provides capability [native] and matches labels [macos] declares all of the volumes [["unity-main"] ["go-cache-1" "go-cache-2"]]
+```
+
+**Cause**
+
+A volume is declared in an *agent's* own config, never in the job, and the controller records
+only the names agents advertise (no definitions, no occupancy), so applying a job that names a
+volume nobody declares is not an error: the run is queued and simply never claimed. Routing is an AND of ORs. For every `spec.volumes` entry the
+agent must declare at least one candidate name, and one agent must satisfy every entry, because a
+run is claimed by exactly one agent.
+
+- The first form: no registered agent advertises that single name.
+- The second form: the entry lists several candidate names and no registered agent advertises
+  any of them.
+- The third form: every candidate set *is* declared somewhere, but never all by one agent that
+  also has the job's capability and carries every `agentSelector` label. The volumes are on
+  different agents (or on an agent the selector excludes). Two agents declaring the same name
+  hold two independent copies, which is fine; the failure is that no *one* agent holds them all.
+
+A volume that is declared but currently **busy** is not this: that run is claimed and waits (see
+[A run waits for a volume another run holds](steps-and-execution.md#a-run-waits-for-a-volume-another-run-holds)).
+
+**Fix**
+
+- Check what the agents actually advertise. The volume names an agent declares are in the
+  `volumes` field of `GET /api/v1/agents` and `GET /api/v1/agents/{agentId}` (`unified-cli agent
+  list` does not print them).
+- A name that is simply not declared: add it to an agent's `volumes:` list and restart that agent
+  (the list is read at startup; there is no flag or environment variable form). On a Kubernetes
+  agent the config also needs `agentName` and a `size` for each volume.
+- A name that differs by spelling or case from the declared one: names are matched exactly.
+- The third form: declare all the volumes on one agent, relax the job's `agentSelector`, or
+  mount fewer volumes.
+- Once a satisfying agent registers the run is claimed on its next poll; no need to re-trigger.
+
+**`volumesDependOnParams`.** If a candidate name contains a `{{ .Params.X }}` expression, it only
+resolves when the run is queued, so the controller cannot judge it from the job definition. That
+entry is left out of the check, no banner is raised for it, and the schedulability response sets
+`"volumesDependOnParams": true`, exactly as `selectorDependsOnParams` does for a parameterised
+`agentSelector` (see the section above). The consequence is that a templated volume name which
+*resolves* to something nobody declares gives a run that stays `Queued` with no banner. Read the
+resolved name from the run's params, and compare it with the agents' `volumes`.
 
 ## Run marked `Failed` with "agent lost"
 

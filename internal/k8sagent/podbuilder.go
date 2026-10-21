@@ -264,7 +264,11 @@ func buildArtifactSidecarContainer(sidecar SidecarSpec) (corev1.Container, *core
 // BuildPod constructs a Pod object from the agent template and Job template.
 // shimImage is the image the prepended ucd-shim init container runs (see
 // injectUcdShim) — normally cfg.ShimImage (the k8s-agent's own image).
-func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string) (*corev1.Pod, error) {
+//
+// vols are the agent-owned named volumes the pod mounts (see volumes.go); nil
+// for a pod that mounts none, which is every pooled pod. The pod is labelled
+// with each volume it holds, and that label is what BusyVolumes reads.
+func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate, fallbackImage string, sidecar SidecarSpec, shimImage string, vols []PodVolume) (*corev1.Pod, error) {
 	suffix := runID
 	if len(suffix) > 16 {
 		suffix = suffix[:16]
@@ -278,7 +282,6 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 	annotations := map[string]string{}
 
 	var podSpec *corev1.PodSpec
-	var wsCfg *dsl.WorkspaceConfig
 
 	switch {
 	case jobTmpl == nil:
@@ -294,10 +297,6 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 		if err != nil {
 			return nil, fmt.Errorf("parse agent template %q spec: %w", jobTmpl.Name, err)
 		}
-		wsCfg = at.Workspace
-		if jobTmpl.Workspace != nil {
-			wsCfg = jobTmpl.Workspace
-		}
 		if jobTmpl.Override != nil {
 			if err := applyPatch(podSpec, jobTmpl.Override); err != nil {
 				return nil, fmt.Errorf("apply pod spec patch: %w", err)
@@ -310,11 +309,11 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 		if err != nil {
 			return nil, fmt.Errorf("parse inline pod spec: %w", err)
 		}
-		wsCfg = jobTmpl.Workspace
 
 	default:
 		podSpec = defaultPodSpec(fallbackImage)
 	}
+	wsCfg := resolveWorkspaceConfig(agentTmpls, jobTmpl)
 
 	// Annotate every reuse pod as in-use at creation time, regardless of
 	// which branch above built its spec — a NAMED template pod carries
@@ -356,6 +355,11 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 
 	if err := injectWorkspace(podSpec, wsCfg); err != nil {
 		return nil, err
+	}
+	// After the workspace: a volume nested inside it has to be mounted second.
+	injectVolumes(podSpec, workspaceMountOf(wsCfg), vols)
+	for _, v := range vols {
+		labels[volumeLabelPrefix+v.ClaimName] = v.Name
 	}
 	injectUcdShim(podSpec, shimImage)
 
@@ -576,12 +580,9 @@ func volumesFromMaps(ms []map[string]any) ([]corev1.Volume, error) {
 // UNIFIED_WORKSPACE use the mount path). Other containers (sidecars) keep the
 // existing preserve-if-set / default-if-empty behavior.
 func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) error {
-	mountPath := "/workspace"
-	if wsCfg != nil && wsCfg.MountPath != "" {
-		mountPath = wsCfg.MountPath
-	}
+	mountPath := workspaceMountOf(wsCfg)
 
-	wsVol := buildWorkspaceVolume(wsCfg)
+	wsVol := buildWorkspaceVolume()
 
 	replaced := false
 	for i, v := range podSpec.Volumes {
@@ -624,46 +625,50 @@ func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) error 
 	return nil
 }
 
-func buildWorkspaceVolume(wsCfg *dsl.WorkspaceConfig) corev1.Volume {
-	vol := corev1.Volume{Name: "workspace"}
-	if wsCfg == nil || wsCfg.PVC == nil {
-		vol.VolumeSource = corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
-		return vol
-	}
-	if wsCfg.PVC.ClaimName != "" {
-		vol.VolumeSource = corev1.VolumeSource{
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: wsCfg.PVC.ClaimName,
-			},
+// resolveWorkspaceConfig is the workspace configuration a pod built from
+// jobTmpl gets: for a named template the agent template's, overridden by the
+// job's; for an inline spec the job's; none otherwise (no template, or a
+// template with neither a name nor a spec).
+//
+// BuildPod uses it to build the pod, and executeRun uses it for the mount path
+// the backend, the volume paths and the workspace wipe all work against. One
+// function, so the pod and the agent's idea of where the workspace is cannot
+// disagree (a named agent template can set workspace.mountPath, which the job
+// alone cannot see).
+func resolveWorkspaceConfig(agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl.PodTemplate) *dsl.WorkspaceConfig {
+	switch {
+	case jobTmpl == nil:
+		return nil
+	case jobTmpl.Name != "":
+		if jobTmpl.Workspace != nil {
+			return jobTmpl.Workspace
 		}
-		return vol
+		return agentTmpls[jobTmpl.Name].Workspace
+	case jobTmpl.Spec != nil:
+		return jobTmpl.Workspace
+	default:
+		return nil
 	}
-	// Ephemeral PVC
-	accessMode := corev1.ReadWriteOnce
-	if wsCfg.PVC.AccessMode != "" {
-		accessMode = corev1.PersistentVolumeAccessMode(wsCfg.PVC.AccessMode)
+}
+
+// workspaceMountOf is the container path of the workspace a pod built from
+// wsCfg mounts: wsCfg.MountPath, else /workspace.
+func workspaceMountOf(wsCfg *dsl.WorkspaceConfig) string {
+	if wsCfg != nil && wsCfg.MountPath != "" {
+		return wsCfg.MountPath
 	}
-	storageReq := resource.MustParse("10Gi")
-	if wsCfg.PVC.StorageRequest != "" {
-		storageReq = resource.MustParse(wsCfg.PVC.StorageRequest)
+	return "/workspace"
+}
+
+// buildWorkspaceVolume is the pod's undeclared workspace: always an emptyDir,
+// which dies with the pod. Persistence comes only from a declared named volume
+// (a PVC the agent provisions and the job mounts with spec.volumes), never
+// from the workspace itself.
+func buildWorkspaceVolume() corev1.Volume {
+	return corev1.Volume{
+		Name:         "workspace",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	}
-	sc := wsCfg.PVC.StorageClassName
-	vol.VolumeSource = corev1.VolumeSource{
-		Ephemeral: &corev1.EphemeralVolumeSource{
-			VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes:      []corev1.PersistentVolumeAccessMode{accessMode},
-					StorageClassName: &sc,
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: storageReq,
-						},
-					},
-				},
-			},
-		},
-	}
-	return vol
 }
 
 // toResourceRequirements converts a validated dsl.ResourceSpec to k8s

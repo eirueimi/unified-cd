@@ -111,3 +111,23 @@ spec:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "runsIn.container")
 }
+
+// A native job cannot set podTemplate.cleanWorkspace (a native job has no
+// podTemplate), so spec.cleanWorkspace is how it asks for a clean workspace.
+func TestParse_NativeWithSpecCleanWorkspace(t *testing.T) {
+	y := `
+apiVersion: unified-cd/v1
+kind: Job
+metadata: { name: unity-build }
+spec:
+  native: true
+  cleanWorkspace: true
+  steps:
+    - name: build
+      run: ./build.sh
+`
+	j, err := Parse(strings.NewReader(y))
+	require.NoError(t, err)
+	assert.True(t, j.Spec.Native)
+	assert.True(t, j.Spec.CleanWorkspace)
+}

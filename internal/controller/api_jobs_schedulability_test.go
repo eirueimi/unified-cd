@@ -15,7 +15,7 @@ import (
 // satisfiable schedule when a capable agent is online.
 func TestAPI_GetJobSchedulability_Satisfiable(t *testing.T) {
 	s, pg := newTestServer(t)
-	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:docker"}, []string{"native", "container"}, nil))
+	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:docker"}, []string{"native", "container"}, nil, nil))
 	specJSON := []byte(`{"native":true,"steps":[{"name":"build","run":"echo hi"}]}`)
 	_, err := pg.UpsertJob(t.Context(), "build", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
@@ -37,7 +37,7 @@ func TestAPI_GetJobSchedulability_Satisfiable(t *testing.T) {
 // job's required capability.
 func TestAPI_GetJobSchedulability_Unsatisfiable(t *testing.T) {
 	s, pg := newTestServer(t)
-	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:k8s"}, []string{"pod", "container"}, nil))
+	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:k8s"}, []string{"pod", "container"}, nil, nil))
 	specJSON := []byte(`{"native":true,"steps":[{"name":"build","run":"echo hi"}]}`)
 	_, err := pg.UpsertJob(t.Context(), "build", "unified-cd/v1", specJSON)
 	require.NoError(t, err)
@@ -70,7 +70,7 @@ func TestAPI_GetJobSchedulability_NotFound(t *testing.T) {
 // the "/schedulability" discriminator.
 func TestAPI_GetJobSchedulability_HierarchicalName(t *testing.T) {
 	s, pg := newTestServer(t)
-	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:docker"}, []string{"native", "container"}, nil))
+	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", []string{"kind:docker"}, []string{"native", "container"}, nil, nil))
 	_, err := pg.UpsertJob(t.Context(), "team-a/build", "unified-cd/v1", []byte(`{"native":true}`))
 	require.NoError(t, err)
 

@@ -135,6 +135,27 @@ type AgentRegisterRequest struct {
 	Version      string            `json:"version,omitempty"`
 	Env          map[string]string `json:"env,omitempty"`
 	Capabilities []string          `json:"capabilities,omitempty"`
+	// Volumes lists the named volumes the agent declares in its own config.
+	Volumes []string `json:"volumes,omitempty"`
+}
+
+// ClaimRequest is the optional JSON body of a normal (non-detached) claim.
+// An agent that predates it sends no body, which means the same as the zero
+// value.
+type ClaimRequest struct {
+	// BusyVolumes lists what the agent is holding right now: the exclusive
+	// volumes held by its running claims, and the absolute native mount paths
+	// they occupy. The controller does not hand the agent a run that needs a
+	// volume named here. It is an optimisation that stops an agent claiming a
+	// run it would then wait on while holding a concurrency slot; the agent's
+	// own reservation is what actually enforces exclusion. Absolute paths match
+	// no volume name and are ignored by the controller.
+	BusyVolumes []string `json:"busyVolumes,omitempty"`
+	// Volumes is every volume the agent declares, as it advertised at
+	// registration. A claim can recreate an agent row the database lost; this
+	// lets the recreated row route volume jobs again. Empty (or absent) means
+	// "not supplied" and never clears the recorded volumes.
+	Volumes []string `json:"volumes,omitempty"`
 }
 
 type ClaimResponse struct {
@@ -151,10 +172,19 @@ type ClaimResponse struct {
 	JobOutputs    []string          `json:"jobOutputs"`
 	SecretsNeeded []string          `json:"secretsNeeded"`
 	// FailFast removed
-	TimeoutMinutes        float64          `json:"timeoutMinutes,omitempty"`
-	PodTemplate           *dsl.PodTemplate `json:"podTemplate,omitempty"`
-	Native                bool             `json:"native,omitempty"`
-	MatrixMaxCombinations int              `json:"matrixMaxCombinations,omitempty"`
+	TimeoutMinutes float64          `json:"timeoutMinutes,omitempty"`
+	PodTemplate    *dsl.PodTemplate `json:"podTemplate,omitempty"`
+	Native         bool             `json:"native,omitempty"`
+	// CleanWorkspace is the job's spec.cleanWorkspace. The agent ORs it with
+	// PodTemplate.CleanWorkspace to decide whether to wipe a volume used as
+	// the workspace.
+	CleanWorkspace        bool `json:"cleanWorkspace,omitempty"`
+	MatrixMaxCombinations int  `json:"matrixMaxCombinations,omitempty"`
+	// Volumes are the job's spec.volumes with every name expanded against the
+	// run's params, exactly as the controller routed the run on them. Each
+	// entry may still list several candidate names; the agent picks one it can
+	// hold.
+	Volumes []dsl.VolumeMount `json:"volumes,omitempty"`
 }
 
 // ClaimStage is either a single step (Step set) or an explicit parallel group (Parallel set).
@@ -415,6 +445,8 @@ type AgentInfo struct {
 	Env          map[string]string `json:"env"`
 	LastSeenAt   time.Time         `json:"lastSeenAt"`
 	Capabilities []string          `json:"capabilities,omitempty"`
+	// Volumes lists the named volumes the agent declares in its own config.
+	Volumes []string `json:"volumes,omitempty"`
 }
 
 type UploadArtifactStep struct {

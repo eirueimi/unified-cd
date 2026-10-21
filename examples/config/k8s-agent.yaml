@@ -21,6 +21,21 @@ poolIdleTimeout: ""
 # -> 10m ("unbounded" is not expressible); an unparseable value is rejected at
 # startup and the agent exits 1.
 # finallyTimeout: 10m
+# Agent-owned named volumes (spec.volumes in a Job). Each becomes a PVC named
+# <agentName>-<volume>, created at startup and never deleted by the agent.
+# agentName must stay the same across restarts; it is not the enrolled agent ID.
+# Required when `volumes` is set, and never change it while a volume holds data: the PVC names
+# derive from it, so a new name provisions new, empty PVCs and orphans the old ones.
+# agentName: ci-main
+# volumes:
+#   - name: go-cache         # a DNS label here: lower-case letters, digits and "-"
+#     mode: exclusive        # exclusive -> ReadWriteOnce; shared -> ReadWriteMany (needs an RWX StorageClass)
+#     size: 20Gi             # required on Kubernetes
+#     # storageClassName: gp3  # omit to use the cluster default
+#
+# The agent's Role needs get, list, create and update on persistentvolumeclaims (see
+# manifests/base/k8s-agent/rbac.yaml). A freshly provisioned PVC is usually root-owned: a job
+# whose image runs as a non-root user needs securityContext.fsGroup in its podTemplate.
 # podImage: fallback image when a Job does not specify a podTemplate
 podImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3
 
@@ -29,12 +44,15 @@ podTemplates:
   golang:
     workspace:
       mountPath: /workspace
-      # no pvc → emptyDir (new volume per Pod; persists while the Pod is alive during reuse)
+      # The workspace is always an emptyDir: empty at the start of every run, discarded with the
+      # Pod. (podTemplate.reuse keeps the Pod, but the agent empties the workspace on every claim.)
+      # To keep data between runs, declare a named volume under `volumes:` above and mount it
+      # from the job with spec.volumes.
     spec:
       containers:
         - name: job
           image: golang:1.24-alpine
-          # command omitted → agent injects ["sleep", "infinity"] automatically
+          # command omitted → agent injects ["/.ucd/ucd-sh", "pause"] automatically
           # workspace volumeMount is injected by the agent — no need to specify it
         - name: docker
           image: docker:24-dind

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -57,7 +58,11 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	if labels == nil {
 		labels = []string{}
 	}
-	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, capabilities, req.Env); err != nil {
+	// Volumes are the agent's own declaration, like capabilities: the
+	// controller keeps no volume state of its own and routes runs by whatever
+	// the agent last advertised. A full registration replaces the set, so a
+	// volume removed from the agent's config stops attracting runs.
+	if err := s.store.UpsertAgent(r.Context(), req.AgentID, req.Hostname, req.OS, req.Version, labels, capabilities, req.Volumes, req.Env); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -170,12 +175,20 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	agentLabels := append([]string(nil), principal.AuthorizedLabels...)
 
+	// The body is optional: an agent that predates busy-volume reporting, and
+	// a detached claim, send none. Read it once, before the long poll, rather
+	// than on every iteration of it.
+	claimReq, ok := readClaimRequest(w, r)
+	if !ok {
+		return
+	}
+
 	// Upsert the agent's registration record on every claim so an agent that is
 	// actively claiming/running jobs always (re)appears in inventory (agent list /
 	// UI Agents page), even if it was never explicitly registered or the controller
 	// DB was reset out from under a still-running agent. This is best-effort: a
 	// failure here must not fail the claim itself.
-	if err := s.store.UpsertAgentOnClaim(r.Context(), agentID, "", "", "", agentLabels, nil); err != nil {
+	if err := s.store.UpsertAgentOnClaim(r.Context(), agentID, "", "", "", agentLabels, claimReq.Volumes, nil); err != nil {
 		slog.Warn("agent claim: failed to upsert agent registration", "agentId", agentID, "error", err)
 	}
 
@@ -193,7 +206,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 		if detached {
 			claimed, err = s.store.ClaimNextRunDetached(r.Context(), agentID, agentLabels)
 		} else {
-			claimed, err = s.store.ClaimNextRun(r.Context(), agentID, agentLabels)
+			claimed, err = s.store.ClaimNextRun(r.Context(), agentID, agentLabels, claimReq.BusyVolumes)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -303,6 +316,35 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// maxClaimBodyBytes bounds the claim request body. The only field is a list of
+// volume names and absolute paths an agent holds, which is a few hundred bytes
+// at most; the cap just keeps a hostile or broken agent from streaming
+// something large at an endpoint that is polled continuously.
+const maxClaimBodyBytes = 1 << 20
+
+// readClaimRequest decodes the optional claim body. An absent or empty body is
+// the zero request. A malformed one is rejected with 400 and ok=false, having
+// already written the response.
+func readClaimRequest(w http.ResponseWriter, r *http.Request) (req api.ClaimRequest, ok bool) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return req, true
+	}
+	body := http.MaxBytesReader(w, r.Body, maxClaimBodyBytes)
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
+		if errors.Is(err, io.EOF) {
+			return api.ClaimRequest{}, true
+		}
+		http.Error(w, "invalid claim body: "+err.Error(), http.StatusBadRequest)
+		return api.ClaimRequest{}, false
+	}
+	// Read to the end. The server only notices a client that disconnects while
+	// the handler long-polls (r.Context() is cancelled) once the body has been
+	// consumed; a decoder can stop just short of EOF, and a drained claim
+	// would then hold its connection for the full timeout.
+	_, _ = io.Copy(io.Discard, body)
+	return req, true
+}
+
 // corruptVarsError marks a stored Vars manifest whose spec will not decode.
 // It exists to separate the two failure kinds mergedGlobalVars can hit, which
 // need opposite handling at the claim site.
@@ -401,7 +443,18 @@ func buildClaimResponse(c *store.ClaimedRun, globalVars map[string]string) (api.
 		TimeoutMinutes: spec.TimeoutMinutes,
 		PodTemplate:    spec.PodTemplate,
 		Native:         spec.Native,
+		CleanWorkspace: spec.CleanWorkspace,
 	}
+
+	// The stored spec still holds the volume names as the job wrote them; the
+	// run was routed on their expansion (see tryQueueRun), so hand the agent
+	// that same expansion. Expanding against the run's own params is
+	// deterministic, so this cannot disagree with what routing saw.
+	volumes, err := dsl.ExpandVolumes(spec.Volumes, c.Params)
+	if err != nil {
+		return api.ClaimResponse{}, fmt.Errorf("expand spec.volumes: %w", err)
+	}
+	resp.Volumes = volumes
 
 	for _, o := range spec.Params.Outputs {
 		resp.JobOutputs = append(resp.JobOutputs, o.Name)
@@ -410,7 +463,6 @@ func buildClaimResponse(c *store.ClaimedRun, globalVars map[string]string) (api.
 	secretsNeeded := map[string]struct{}{}
 	stepIdx := 0 // flat step counter across steps and finally
 
-	var err error
 	resp.Stages, err = buildStages(spec.Steps, &stepIdx, secretsNeeded, spec.Shell)
 	if err != nil {
 		return api.ClaimResponse{}, err

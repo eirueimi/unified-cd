@@ -124,9 +124,52 @@ type AgentConfig struct {
 	// WorkspaceRetentionDays is the age (in days) after which an inactive
 	// per-job workspace directory (working<slot>/<job>) becomes eligible
 	// for removal by the opt-in workspace GC. Zero (the default) disables
-	// the GC entirely — persistent workspaces are a feature (inter-run
-	// cache), so sweeping them must be an explicit opt-in. Host-only.
+	// the GC entirely. A workspace is emptied before and after every run, so
+	// the GC only reclaims what an agent crash left behind; it is an explicit
+	// opt-in. Host-only.
 	WorkspaceRetentionDays int `yaml:"workspaceRetentionDays"`
+
+	// Volumes declares the agent-owned named volumes this agent advertises and
+	// jobs may mount (spec.volumes). A volume name exists once per agent: two
+	// agents declaring the same name hold two independent copies.
+	//
+	// This field is FILE-ONLY. Unlike every scalar setting above it has no
+	// command-line flag and no environment variable, because a list of
+	// structured entries has no sensible flag or env spelling; AgentEffective
+	// copies it from the config file and nowhere else.
+	Volumes []VolumeConfig `yaml:"volumes"`
+}
+
+// VolumeConfig declares one named volume in the agent config file. Name and
+// Mode are the contract a job sees; Path, Size and StorageClassName are the
+// operator-only implementation and may differ between agents.
+//
+//	volumes:
+//	  - name: unity-main
+//	    mode: exclusive
+//	    path: /var/lib/unified-cd/volumes/unity-main   # optional
+//	    size: 200Gi                                    # advisory
+//	  - name: go-cache
+//	    mode: shared
+type VolumeConfig struct {
+	// Name is what jobs refer to. It is a single path segment: the default
+	// Path is derived from it.
+	Name string `yaml:"name"`
+	// Mode is "exclusive" (at most one run on this agent holds the volume at a
+	// time) or "shared" (any number of runs may hold it; unified-cd makes no
+	// write-safety guarantee).
+	Mode string `yaml:"mode"`
+	// Path is the host directory backing the volume. Host agent only; it must
+	// be absolute. Defaults to <workspaceDir>/volumes/<name>. It may not be,
+	// or sit under, a working<N> directory, which the workspace GC sweeps.
+	Path string `yaml:"path"`
+	// Size is an advisory capacity such as "200Gi". The host agent measures
+	// usage and warns on overrun; it never enforces the limit. Required by the
+	// Kubernetes agent, which provisions a PVC of this size.
+	Size string `yaml:"size"`
+	// StorageClassName selects the PVC's StorageClass. Kubernetes agent only;
+	// ignored by the host agent.
+	StorageClassName string `yaml:"storageClassName"`
 }
 
 // LoadAgent reads a YAML config file and returns an AgentConfig.
@@ -270,6 +313,11 @@ func AgentEffective(filePath string) (*AgentConfig, error) {
 	}
 	if file.WorkspaceRetentionDays != 0 {
 		eff.WorkspaceRetentionDays = file.WorkspaceRetentionDays
+	}
+	// File-only: there is no env var or flag to merge with (see
+	// AgentConfig.Volumes).
+	if len(file.Volumes) > 0 {
+		eff.Volumes = file.Volumes
 	}
 	return eff, nil
 }

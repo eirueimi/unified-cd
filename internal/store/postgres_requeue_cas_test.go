@@ -26,8 +26,8 @@ func newClaimedRun(t *testing.T, pg *Postgres, agentID string) string {
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
 
-	require.NoError(t, pg.UpsertAgent(ctx, agentID, "h", "linux", "dev", nil, nil, nil))
-	claimed, err := pg.ClaimNextRun(ctx, agentID, nil)
+	require.NoError(t, pg.UpsertAgent(ctx, agentID, "h", "linux", "dev", nil, nil, nil, nil))
+	claimed, err := pg.ClaimNextRun(ctx, agentID, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 	require.Equal(t, run.ID, claimed.ID)
@@ -54,8 +54,8 @@ func TestRequeueClaimedRun_ReturnsTheRunToTheQueue(t *testing.T) {
 	// And it can be claimed again — by a different agent, since the point of
 	// the requeue is that the run is back in the pool rather than pinned to
 	// whoever released it.
-	require.NoError(t, pg.UpsertAgent(ctx, "a2", "h", "linux", "dev", nil, nil, nil))
-	again, err := pg.ClaimNextRun(ctx, "a2", nil)
+	require.NoError(t, pg.UpsertAgent(ctx, "a2", "h", "linux", "dev", nil, nil, nil, nil))
+	again, err := pg.ClaimNextRun(ctx, "a2", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, again)
 	assert.Equal(t, runID, again.ID)

@@ -10,11 +10,11 @@ import (
 // uses to decide whether a podTemplate job must be pinned to a Kubernetes agent
 // (by auto-appending the "kubernetes" label) or may run on any agent — including
 // the host/standard agent, whose claim pod honors only the container fields in
-// HostSupportedContainerFields and degrades workspace.pvc to a bind mount.
+// HostSupportedContainerFields.
 //
 // The rule: needs kubernetes IFF the podTemplate uses something the host claim
-// pod cannot honor. workspace.pvc / mountPath are host-OK (bind-mount degrade),
-// so they must NOT force kubernetes.
+// pod cannot honor. workspace.mountPath is host-OK, so it must NOT force
+// kubernetes.
 func TestPodTemplateNeedsKubernetes(t *testing.T) {
 	container := func(fields map[string]any) map[string]any { return fields }
 	tmpl := func(pt PodTemplate) *PodTemplate { return &pt }
@@ -34,11 +34,10 @@ func TestPodTemplateNeedsKubernetes(t *testing.T) {
 			false,
 		},
 		{
-			"workspace.pvc is host-OK (bind-mount degrade)",
+			"workspace.mountPath is host-OK",
 			tmpl(PodTemplate{
 				Workspace: &WorkspaceConfig{
 					MountPath: "/workspace",
-					PVC:       &WorkspacePVC{StorageClassName: "standard", StorageRequest: "5Gi", AccessMode: "ReadWriteOnce"},
 				},
 				Spec: map[string]any{"containers": []any{
 					container(map[string]any{"name": "job", "image": "python:3.12-slim"}),

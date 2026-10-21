@@ -41,8 +41,8 @@ func TestFinishRunIfStatus_RefusesWhenTheRunHasMovedOn(t *testing.T) {
 	// A live agent claims it — the exact event that falsifies the reaper's
 	// "no live agent can claim this" premise, 8ms after the snapshot in the
 	// measured incident.
-	require.NoError(t, pg.UpsertAgent(ctx, "agent1", "h", "linux", "dev", nil, nil, nil))
-	claimed, err := pg.ClaimNextRun(ctx, "agent1", nil)
+	require.NoError(t, pg.UpsertAgent(ctx, "agent1", "h", "linux", "dev", nil, nil, nil, nil))
+	claimed, err := pg.ClaimNextRun(ctx, "agent1", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 	require.Equal(t, run.ID, claimed.ID)
@@ -99,8 +99,8 @@ func TestFinishRunIfStatus_DoesNotReleaseLocksItDidNotWin(t *testing.T) {
 	require.Equal(t, run.ID, mutexHolder(t, pg, "m1"), "the queued run should hold its mutex")
 
 	// The run is claimed and running; a stale reaper decision now arrives.
-	require.NoError(t, pg.UpsertAgent(ctx, "agent1", "h", "linux", "dev", nil, nil, nil))
-	claimed, err := pg.ClaimNextRun(ctx, "agent1", nil)
+	require.NoError(t, pg.UpsertAgent(ctx, "agent1", "h", "linux", "dev", nil, nil, nil, nil))
+	claimed, err := pg.ClaimNextRun(ctx, "agent1", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 

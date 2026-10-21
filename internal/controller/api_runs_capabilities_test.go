@@ -24,14 +24,14 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 		triggerAndQueue(t, s, "nativejob")
 		_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
-		require.NoError(t, pg.UpsertAgent(t.Context(), "container-only", "h1", "linux", "", []string{}, []string{"container"}, nil))
-		require.NoError(t, pg.UpsertAgent(t.Context(), "native-agent", "h2", "linux", "", []string{}, []string{"native"}, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "container-only", "h1", "linux", "", []string{}, []string{"container"}, nil, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "native-agent", "h2", "linux", "", []string{}, []string{"native"}, nil, nil))
 
-		claimed, err := pg.ClaimNextRun(t.Context(), "container-only", nil)
+		claimed, err := pg.ClaimNextRun(t.Context(), "container-only", nil, nil)
 		require.NoError(t, err)
 		assert.Nil(t, claimed, "a container-only agent must not claim a native-required run")
 
-		claimed, err = pg.ClaimNextRun(t.Context(), "native-agent", nil)
+		claimed, err = pg.ClaimNextRun(t.Context(), "native-agent", nil, nil)
 		require.NoError(t, err)
 		require.NotNil(t, claimed, "a native-capable agent must claim the native-required run")
 	})
@@ -43,14 +43,14 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 		triggerAndQueue(t, s, "isolatedjob")
 		_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
-		require.NoError(t, pg.UpsertAgent(t.Context(), "native-only", "h1", "linux", "", []string{}, []string{"native"}, nil))
-		require.NoError(t, pg.UpsertAgent(t.Context(), "container-agent", "h2", "linux", "", []string{}, []string{"native", "container"}, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "native-only", "h1", "linux", "", []string{}, []string{"native"}, nil, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "container-agent", "h2", "linux", "", []string{}, []string{"native", "container"}, nil, nil))
 
-		claimed, err := pg.ClaimNextRun(t.Context(), "native-only", nil)
+		claimed, err := pg.ClaimNextRun(t.Context(), "native-only", nil, nil)
 		require.NoError(t, err)
 		assert.Nil(t, claimed, "a native-only agent must not claim a container-required run")
 
-		claimed, err = pg.ClaimNextRun(t.Context(), "container-agent", nil)
+		claimed, err = pg.ClaimNextRun(t.Context(), "container-agent", nil, nil)
 		require.NoError(t, err)
 		require.NotNil(t, claimed, "a container-capable agent must claim the container-required run")
 	})
@@ -58,7 +58,7 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 	t.Run("host-runnable podTemplate requires container, not pod, and is not pinned to a kubernetes label", func(t *testing.T) {
 		s, pg := newTestServer(t)
 		spec := `{"agentSelector":["kind:docker"],` +
-			`"podTemplate":{"workspace":{"mountPath":"/workspace","pvc":{"storageClassName":"standard","storageRequest":"5Gi","accessMode":"ReadWriteOnce"}},` +
+			`"podTemplate":{"workspace":{"mountPath":"/workspace"},` +
 			`"spec":{"containers":[{"name":"job","image":"python:3.12-slim"},{"name":"ruff","image":"python:3.12-slim"}]}},` +
 			`"steps":[{"name":"s","run":"echo x"}]}`
 		_, _ = pg.UpsertJob(t.Context(), "podjob-host-caps", "unified-cd/v1", []byte(spec))
@@ -69,9 +69,9 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 		// "kubernetes" label and no "pod" capability must still be able to claim:
 		// the old blanket label pin is gone, and the inferred requirement is
 		// "container" (satisfied by this agent), not "pod".
-		require.NoError(t, pg.UpsertAgent(t.Context(), "docker-agent-caps", "h1", "linux", "", []string{"kind:docker"}, []string{"native", "container"}, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "docker-agent-caps", "h1", "linux", "", []string{"kind:docker"}, []string{"native", "container"}, nil, nil))
 
-		claimed, err := pg.ClaimNextRun(t.Context(), "docker-agent-caps", []string{"kind:docker"})
+		claimed, err := pg.ClaimNextRun(t.Context(), "docker-agent-caps", []string{"kind:docker"}, nil)
 		require.NoError(t, err)
 		require.NotNil(t, claimed, "a docker agent with container capability (no pod cap, no kubernetes label) must claim a host-runnable podTemplate run")
 	})
@@ -85,14 +85,14 @@ func TestTriggerRun_PersistsRequiredCaps(t *testing.T) {
 		triggerAndQueue(t, s, "podjob-k8sonly-caps")
 		_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
-		require.NoError(t, pg.UpsertAgent(t.Context(), "docker-agent-nocaps", "h1", "linux", "", []string{"kind:docker"}, []string{"native", "container"}, nil))
-		require.NoError(t, pg.UpsertAgent(t.Context(), "k8s-agent-caps", "h2", "linux", "", []string{"kind:docker"}, []string{"pod", "container"}, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "docker-agent-nocaps", "h1", "linux", "", []string{"kind:docker"}, []string{"native", "container"}, nil, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "k8s-agent-caps", "h2", "linux", "", []string{"kind:docker"}, []string{"pod", "container"}, nil, nil))
 
-		claimed, err := pg.ClaimNextRun(t.Context(), "docker-agent-nocaps", []string{"kind:docker"})
+		claimed, err := pg.ClaimNextRun(t.Context(), "docker-agent-nocaps", []string{"kind:docker"}, nil)
 		require.NoError(t, err)
 		assert.Nil(t, claimed, "an agent without the pod capability must not claim a kubernetes-only podTemplate run")
 
-		claimed, err = pg.ClaimNextRun(t.Context(), "k8s-agent-caps", []string{"kind:docker"})
+		claimed, err = pg.ClaimNextRun(t.Context(), "k8s-agent-caps", []string{"kind:docker"}, nil)
 		require.NoError(t, err)
 		require.NotNil(t, claimed, "an agent with the pod capability must claim the kubernetes-only podTemplate run")
 	})

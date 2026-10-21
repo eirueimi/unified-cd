@@ -186,18 +186,26 @@ func (c *Client) Heartbeat(ctx context.Context, agentID string, activeRunIDs []s
 	return err
 }
 
-// Claim requests an executable Run for the agent. labels is the list of agent labels.
-func (c *Client) Claim(ctx context.Context, agentID, timeout string, labels []string) (api.ClaimResponse, error) {
-	return c.claim(ctx, agentID, timeout, labels, false)
+// Claim requests an executable Run for the agent. labels is the list of agent
+// labels. req says what the agent is holding (BusyVolumes: the controller will
+// not hand it a run that needs one of them) and what it declares (Volumes: so a
+// row the claim has to recreate keeps routing volume jobs); see api.ClaimRequest.
+//
+// The body is always sent, empty or not, so an idle claim and a busy one are the
+// same request shape. A server that long-polls on the request context must read
+// the body: net/http does not notice a client that disconnects until it has.
+func (c *Client) Claim(ctx context.Context, agentID, timeout string, labels []string, req api.ClaimRequest) (api.ClaimResponse, error) {
+	return c.claim(ctx, agentID, timeout, labels, &req, false)
 }
 
 // ClaimDetached long-polls the claim endpoint for a detached run (kind=detached),
-// drawn from the controller's detached pool rather than the normal one.
+// drawn from the controller's detached pool rather than the normal one. It
+// sends no body: a detached job cannot use volumes, so there is nothing to gate.
 func (c *Client) ClaimDetached(ctx context.Context, agentID, timeout string, labels []string) (api.ClaimResponse, error) {
-	return c.claim(ctx, agentID, timeout, labels, true)
+	return c.claim(ctx, agentID, timeout, labels, nil, true)
 }
 
-func (c *Client) claim(ctx context.Context, agentID, timeout string, labels []string, detached bool) (api.ClaimResponse, error) {
+func (c *Client) claim(ctx context.Context, agentID, timeout string, labels []string, req *api.ClaimRequest, detached bool) (api.ClaimResponse, error) {
 	path := fmt.Sprintf("/api/v1/agents/%s/claim?timeout=%s", agentID, timeout)
 	if len(labels) > 0 {
 		path += "&labels=" + strings.Join(labels, ",")
@@ -205,8 +213,14 @@ func (c *Client) claim(ctx context.Context, agentID, timeout string, labels []st
 	if detached {
 		path += "&kind=detached"
 	}
+	// A nil *ClaimRequest must reach do as a nil interface (no body), not as a
+	// non-nil interface holding a nil pointer, which would marshal to "null".
+	var body any
+	if req != nil {
+		body = req
+	}
 	var out api.ClaimResponse
-	_, err := c.do(ctx, http.MethodPost, path, nil, &out)
+	_, err := c.do(ctx, http.MethodPost, path, body, &out)
 	return out, err
 }
 
@@ -354,7 +368,13 @@ func (c *Client) FetchSecrets(ctx context.Context, agentID, runID string, names 
 // transfer-encoding, and the controller reads r.Body straight into the object
 // store (r.ContentLength == -1 → a multipart streaming Put).
 func (c *Client) UploadArtifact(ctx context.Context, runID, name, path string) error {
-	body := artifact.StreamTarZstd(path)
+	return c.UploadArtifactExcluding(ctx, runID, name, path, nil)
+}
+
+// UploadArtifactExcluding is UploadArtifact that leaves the paths in exclude
+// out of the archive (see artifact.WriteTarZstdExcluding).
+func (c *Client) UploadArtifactExcluding(ctx context.Context, runID, name, path string, exclude []string) error {
+	body := artifact.StreamTarZstdExcluding(path, exclude)
 	defer body.Close()
 
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)
@@ -381,6 +401,12 @@ func (c *Client) UploadArtifact(ctx context.Context, runID, name, path string) e
 // DownloadArtifact downloads an artifact from the master server and extracts it into destDir.
 // Fetches the stream from GET /api/v1/runs/{runID}/artifacts/{name} and extracts it.
 func (c *Client) DownloadArtifact(ctx context.Context, runID, name, destDir string) error {
+	return c.DownloadArtifactExcluding(ctx, runID, name, destDir, nil)
+}
+
+// DownloadArtifactExcluding is DownloadArtifact that extracts nothing at or
+// below the paths in exclude: the mount points of the volumes under destDir.
+func (c *Client) DownloadArtifactExcluding(ctx context.Context, runID, name, destDir string, exclude []string) error {
 	url := c.base + fmt.Sprintf("/api/v1/runs/%s/artifacts/%s", runID, name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -402,5 +428,5 @@ func (c *Client) DownloadArtifact(ctx context.Context, runID, name, destDir stri
 	if destDir == "" {
 		destDir = "."
 	}
-	return artifact.ExtractTarZstd(resp.Body, destDir)
+	return artifact.ExtractTarZstdExcluding(resp.Body, destDir, exclude)
 }

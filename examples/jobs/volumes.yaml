@@ -1,0 +1,88 @@
+# Demonstrates: spec.volumes — agent-owned named volumes, the only thing that survives between runs
+#
+# A workspace with no volume is empty at the start of every run and discarded at the end, on
+# every agent type. A volume is declared in the AGENT's own config (its size, storage class and
+# location are the operator's business), and a job names it and says where it appears.
+#
+# These jobs only run on an agent that declares the volumes they name. With no such agent the
+# run stays Queued and the job page shows "no agent declares volume ...". Declare them first:
+#
+#   # host agent (unified-agent.yaml; see examples/config/agent.yaml)
+#   volumes:
+#     - name: go-cache
+#       mode: shared
+#     - name: unity-main
+#       mode: exclusive
+#       size: 200Gi            # advisory on a host agent
+#
+#   # k8s-agent (see examples/config/k8s-agent.yaml): agentName and size are required
+#   agentName: ci-main
+#   volumes:
+#     - name: go-cache
+#       mode: shared           # needs a StorageClass that supports ReadWriteMany
+#       size: 20Gi
+#   # (unity-persistent-workspace below is native, so only a host agent can run it.)
+#
+# Usage:
+#   unified-cd apply -f examples/jobs/volumes.yaml
+#   unified-cd run trigger go-with-cache-volume
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: go-with-cache-volume
+spec:
+  # The workspace stays ephemeral; only the cache survives. mountPath is relative to the
+  # workspace, or an absolute path outside it.
+  volumes:
+    - name: go-cache
+      mountPath: .ucd-cache/go
+  steps:
+    - name: build
+      # UNIFIED_VOLUME_<AS> is the volume's absolute path as the step sees it. <AS> is the
+      # entry's `as` (here defaulted from the single literal name) upper-cased with "-" as "_".
+      # Point the toolchain at it explicitly: Go rejects a relative GOCACHE.
+      run: |
+        export GOCACHE="$UNIFIED_VOLUME_GO_CACHE/build"
+        export GOMODCACHE="$UNIFIED_VOLUME_GO_CACHE/mod"
+        mkdir -p "$GOCACHE" "$GOMODCACHE"
+        # The workspace is empty every run, but the volume is not: this counter goes up.
+        n=$(cat "$UNIFIED_VOLUME_GO_CACHE/runs" 2>/dev/null || echo 0)
+        echo $((n + 1)) > "$UNIFIED_VOLUME_GO_CACHE/runs"
+        echo "this is run $((n + 1)) on this copy of go-cache; GOCACHE=$GOCACHE"
+        # go build ./...    # a real job builds here, with a Go toolchain in the job container
+---
+# Demonstrates: a native job whose whole workspace persists on an exclusive volume
+#
+# The shape this feature exists for: a large checkout plus a generated cache (Unity's Library/)
+# that is too heavy to rebuild or to tar through the cache store on every run. mountPath: "."
+# makes the volume the workspace itself, so the checkout and Library/ both stay put.
+#
+# - An exclusive volume is held by one run at a time; a second run waits for it.
+# - The volume is never wiped by the agent. spec.cleanWorkspace: true (or
+#   podTemplate.cleanWorkspace) is the one deliberate way to empty it, once, before a run.
+# - A job that last ran native and now runs isolated (or the reverse) FAILS on this volume
+#   instead of resetting it: run it in the same mode, or set cleanWorkspace: true once.
+# - A shared volume cannot be mounted at ".".
+apiVersion: unified-cd/v1
+kind: Job
+metadata:
+  name: unity-persistent-workspace
+spec:
+  native: true
+  agentSelector:
+    - macos
+  volumes:
+    - name: unity-main
+      mountPath: "."
+  # cleanWorkspace: true   # uncomment for one run to wipe a poisoned volume, then remove it
+  steps:
+    - name: update_checkout
+      run: |
+        # The first run finds an empty volume; later runs find the previous checkout.
+        if [ -d .git ]; then
+          git fetch origin && git reset --hard origin/main
+        else
+          git clone https://example.com/your-org/your-unity-project.git .
+        fi
+    - name: build
+      run: echo "unity -batchmode -quit -projectPath . -executeMethod BuildScript.Build"

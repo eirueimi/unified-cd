@@ -153,9 +153,36 @@ func TestClient_Claim_Empty(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "t")
-	resp, err := c.Claim(t.Context(), "a", "1s", nil)
+	resp, err := c.Claim(t.Context(), "a", "1s", nil, api.ClaimRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, resp.RunID)
+}
+
+func TestClient_Claim_AlwaysSendsABody(t *testing.T) {
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		bodies = append(bodies, b)
+		_ = json.NewEncoder(w).Encode(api.ClaimResponse{})
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "t")
+
+	_, err := c.Claim(t.Context(), "a", "1s", nil, api.ClaimRequest{BusyVolumes: []string{"unity", "/go/cache"}, Volumes: []string{"unity", "go-cache"}})
+	require.NoError(t, err)
+	_, err = c.Claim(t.Context(), "a", "1s", nil, api.ClaimRequest{})
+	require.NoError(t, err)
+	_, err = c.ClaimDetached(t.Context(), "a", "1s", nil)
+	require.NoError(t, err)
+
+	require.Len(t, bodies, 3)
+	var req api.ClaimRequest
+	require.NoError(t, json.Unmarshal(bodies[0], &req))
+	assert.Equal(t, []string{"unity", "/go/cache"}, req.BusyVolumes)
+	assert.Equal(t, []string{"unity", "go-cache"}, req.Volumes)
+	assert.JSONEq(t, `{}`, string(bodies[1]), "an idle claim sends the same shape of request, with nothing in it")
+	assert.Empty(t, bodies[2], "a detached claim is not gated on volumes and sends no body")
 }
 
 func TestClient_ClaimDetached_SendsKind(t *testing.T) {
@@ -171,7 +198,7 @@ func TestClient_ClaimDetached_SendsKind(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, gotQuery, "kind=detached", "detached claim must send kind=detached")
 
-	_, err = c.Claim(t.Context(), "a", "1s", nil)
+	_, err = c.Claim(t.Context(), "a", "1s", nil, api.ClaimRequest{})
 	require.NoError(t, err)
 	assert.NotContains(t, gotQuery, "kind=detached", "a normal claim must not send kind=detached")
 }
@@ -372,4 +399,12 @@ func TestClient_UploadArtifact_HTTPErrorSurfaces(t *testing.T) {
 	err := c.UploadArtifact(t.Context(), "run1", "art1", src)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "502")
+}
+
+// drainRequestBody consumes a request body. A test server whose claim handler
+// long-polls on r.Context() must call it first: net/http only notices that a
+// client disconnected (and cancels the request context) once the body has been
+// read, and Client.Claim always sends one.
+func drainRequestBody(r *http.Request) {
+	_, _ = io.Copy(io.Discard, r.Body)
 }

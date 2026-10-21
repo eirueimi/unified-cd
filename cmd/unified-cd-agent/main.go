@@ -86,7 +86,7 @@ func main() {
 	}
 	maxConcurrent := flag.Int("max-concurrent", maxConcurrentDefault, "maximum number of runs that can execute concurrently")
 	maxDetachedConcurrent := flag.Int("max-detached-concurrent", eff.MaxDetachedConcurrent, "max concurrent detached (spec.detached) runs, separate from --max-concurrent; 0/unset=default 16, negative=off (env: UNIFIED_AGENT_MAX_DETACHED)")
-	cleanWorkspace := flag.Bool("clean-workspace", eff.CleanWorkspace, "delete and recreate the workspace before starting a run")
+	cleanWorkspace := flag.Bool("clean-workspace", eff.CleanWorkspace, "no longer has any effect: an ordinary workspace is always emptied before and after every run, and a volume used as the workspace is never wiped by this flag (only a job's own spec.cleanWorkspace or podTemplate.cleanWorkspace wipes it); kept so existing agent configs still start")
 	workspaceDir := flag.String("workspace-dir", eff.WorkspaceDir, "base directory for run workspaces (default: current directory at agent startup) (env: UNIFIED_AGENT_WORKSPACE_DIR)")
 	drainTimeout := flag.Duration("drain-timeout", eff.DrainTimeout, "maximum drain wait time after SIGTERM (0=wait indefinitely). Applies to running steps; post-hooks such as cache saves are never cut short by THIS timeout, but they are bounded by --finally-timeout (default 10m) like every other post-DAG cleanup phase")
 	finallyTimeout := flag.Duration("finally-timeout", eff.FinallyTimeout, "ceiling on EACH of a run's four post-DAG cleanup phases: the post:/cache: hook drain after the main steps, the spec.finally pipeline, the hook drain after finally, and scope/claim-pod teardown. Per phase, not a shared total, so size a rollout's grace period against 4x this value (40m at the default). 0/unset=default 10m (env: UNIFIED_AGENT_FINALLY_TIMEOUT)")
@@ -95,7 +95,7 @@ func main() {
 	pauseImage := flag.String("pause-image", orDefault(eff.PauseImage, defaultPauseImage), "image for the claim pod's pause (netns-holder) container")
 	runnerImage := flag.String("runner-image", orDefault(eff.RunnerImage, defaultRunnerImage), "default primary container image for isolated jobs without a podTemplate job container")
 	minFreeDisk := flag.Uint64("min-free-disk", eff.MinFreeDisk, "minimum free space in bytes on the workspace filesystem required to keep claiming runs; 0 disables the check (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)")
-	workspaceRetentionDays := flag.Int("workspace-retention-days", eff.WorkspaceRetentionDays, "age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; persistent workspaces are a feature) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)")
+	workspaceRetentionDays := flag.Int("workspace-retention-days", eff.WorkspaceRetentionDays, "age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; workspaces are already emptied around every run, so this only reclaims what an agent crash left behind) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)")
 	flag.Parse()
 	_ = f // registered to prevent "flag provided but not defined" error
 
@@ -148,6 +148,16 @@ func main() {
 	toolsDir, err := agent.InstallShim(resolvedWorkspaceDir)
 	if err != nil {
 		slog.Error("install ucd-sh shim failed", "error", err)
+		os.Exit(1)
+	}
+
+	// Volumes are file-only (no flag or env var; see config.AgentConfig.Volumes),
+	// so they come straight from the effective config. A bad declaration is a
+	// hard startup failure: advertising a volume the agent cannot back would
+	// strand every run routed to it.
+	volumes, err := agent.NewVolumeManager(resolvedWorkspaceDir, eff.Volumes)
+	if err != nil {
+		slog.Error("invalid volumes in agent config", "error", err)
 		os.Exit(1)
 	}
 
@@ -213,6 +223,7 @@ func main() {
 	a.ToolsDir = toolsDir
 	a.MinFreeDisk = *minFreeDisk
 	a.WorkspaceRetentionDays = *workspaceRetentionDays
+	a.Volumes = volumes
 
 	// The finally/cleanup-phase ceiling lives on the shared orchestration loop
 	// (agent.RunClaim), which both agent binaries call and which has no

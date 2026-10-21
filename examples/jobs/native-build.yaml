@@ -17,6 +17,10 @@
 # run them at all) and onto host agents that actually have the toolchain,
 # via agentSelector. See docs/user-guide/writing-jobs/isolation-and-containers.md#native-true--host-process-jobs for
 # the full model.
+#
+# The workspace is empty at the start of every run, so this job assumes its sources are put
+# there first (a checkout step, or a persistent checkout on a named volume: see
+# examples/jobs/volumes.yaml, which shows a native job keeping its whole workspace on a volume).
 apiVersion: unified-cd/v1
 kind: Job
 metadata:

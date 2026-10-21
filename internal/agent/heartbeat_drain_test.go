@@ -37,6 +37,7 @@ func TestAgent_HeartbeatContinuesDuringDrain(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/hb-drain/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++

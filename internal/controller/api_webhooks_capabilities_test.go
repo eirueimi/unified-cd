@@ -44,10 +44,10 @@ func TestWebhookIngress_PersistsRequiredCaps(t *testing.T) {
 		// native-required run — confirming required_caps was persisted as
 		// ["native"], not left nil/empty (which would be a subset of any
 		// agent's capabilities and wrongly claimable).
-		require.NoError(t, pg.UpsertAgent(t.Context(), "pod-only", "h1", "linux", "", []string{}, []string{"pod"}, nil))
-		require.NoError(t, pg.UpsertAgent(t.Context(), "native-agent", "h2", "linux", "", []string{}, []string{"native"}, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "pod-only", "h1", "linux", "", []string{}, []string{"pod"}, nil, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "native-agent", "h2", "linux", "", []string{}, []string{"native"}, nil, nil))
 
-		claimed, err := pg.ClaimNextRun(t.Context(), "pod-only", nil)
+		claimed, err := pg.ClaimNextRun(t.Context(), "pod-only", nil, nil)
 		require.NoError(t, err)
 		assert.Nil(t, claimed, "a pod-only agent must not claim a native-required webhook run")
 
@@ -55,7 +55,7 @@ func TestWebhookIngress_PersistsRequiredCaps(t *testing.T) {
 		// (native jobs were never pinned to kubernetes), but a registered agent
 		// without the native capability must be rejected regardless of labels,
 		// confirming routing now goes through capabilities.
-		claimed, err = pg.ClaimNextRun(t.Context(), "native-agent", nil)
+		claimed, err = pg.ClaimNextRun(t.Context(), "native-agent", nil, nil)
 		require.NoError(t, err)
 		require.NotNil(t, claimed, "a native-capable agent must claim the native-required webhook run")
 	})
@@ -80,14 +80,14 @@ func TestWebhookIngress_PersistsRequiredCaps(t *testing.T) {
 
 		_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
-		require.NoError(t, pg.UpsertAgent(t.Context(), "docker-agent-nocaps", "h1", "linux", "", []string{"kind:docker"}, []string{"native", "container"}, nil))
-		require.NoError(t, pg.UpsertAgent(t.Context(), "k8s-agent-caps", "h2", "linux", "", []string{"kind:docker"}, []string{"pod", "container"}, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "docker-agent-nocaps", "h1", "linux", "", []string{"kind:docker"}, []string{"native", "container"}, nil, nil))
+		require.NoError(t, pg.UpsertAgent(t.Context(), "k8s-agent-caps", "h2", "linux", "", []string{"kind:docker"}, []string{"pod", "container"}, nil, nil))
 
-		claimed, err := pg.ClaimNextRun(t.Context(), "docker-agent-nocaps", []string{"kind:docker"})
+		claimed, err := pg.ClaimNextRun(t.Context(), "docker-agent-nocaps", []string{"kind:docker"}, nil)
 		require.NoError(t, err)
 		assert.Nil(t, claimed, "an agent without the pod capability must not claim a kubernetes-only podTemplate webhook run")
 
-		claimed, err = pg.ClaimNextRun(t.Context(), "k8s-agent-caps", []string{"kind:docker"})
+		claimed, err = pg.ClaimNextRun(t.Context(), "k8s-agent-caps", []string{"kind:docker"}, nil)
 		require.NoError(t, err)
 		require.NotNil(t, claimed, "an agent with the pod capability must claim the kubernetes-only podTemplate webhook run, even without a kubernetes label")
 	})

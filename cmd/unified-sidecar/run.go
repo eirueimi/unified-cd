@@ -151,6 +151,8 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		job := fs.String("job", "", "qualified job name owning this cache entry")
 		var restoreKeys stringSlice
 		fs.Var(&restoreKeys, "restore-key", "fallback restore key prefix (repeatable)")
+		var exclude stringSlice
+		fs.Var(&exclude, "exclude", "path to leave alone, with everything below it: no archived entry is extracted there (repeatable)")
 		// Declared so Parse accepts it; the value itself is already consumed
 		// by run()'s extractBrokerRunID pre-scan, before this FlagSet ever
 		// runs — see storeProvider's and extractBrokerRunID's doc comments.
@@ -162,7 +164,7 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 			fmt.Fprintln(stderr, "cache restore: --job is required")
 			return 2
 		}
-		hit, err := cache.Restore(ctx, store, *job, *path, *key, restoreKeys)
+		hit, err := cache.RestoreExcluding(ctx, store, *job, *path, *key, restoreKeys, exclude)
 		if err != nil && !errors.Is(err, cache.ErrCacheMiss) {
 			fmt.Fprintf(stderr, "cache restore error (ignored): %v\n", err)
 			// This path deliberately exits 0 (cache never fails a step) and
@@ -186,6 +188,8 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 		path := fs.String("path", "", "source path")
 		job := fs.String("job", "", "qualified job name owning this cache entry")
 		ttlDays := fs.Int("ttl-days", 30, "TTL in days")
+		var exclude stringSlice
+		fs.Var(&exclude, "exclude", "path to leave out of the archive, with everything below it (repeatable)")
 		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
 		if err := fs.Parse(args); err != nil {
 			return 2
@@ -194,7 +198,7 @@ func runCache(ctx context.Context, store objectstore.ObjectStore, sub string, ar
 			fmt.Fprintln(stderr, "cache save: --job is required")
 			return 2
 		}
-		if err := cache.Save(ctx, store, *job, *path, *key, *ttlDays); err != nil {
+		if err := cache.SaveExcluding(ctx, store, *job, *path, *key, *ttlDays, exclude); err != nil {
 			fmt.Fprintf(stderr, "cache save error (ignored): %v\n", err)
 		} else {
 			fmt.Fprintf(stderr, "cache saved: %s\n", *key)
@@ -220,11 +224,13 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 		runID := fs.String("run", "", "run ID")
 		name := fs.String("name", "", "artifact name")
 		path := fs.String("path", "", "source path")
+		var exclude stringSlice
+		fs.Var(&exclude, "exclude", "path to leave out of the archive, with everything below it (repeatable)")
 		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		if err := artifact.Upload(ctx, store, *runID, *name, *path); err != nil {
+		if err := artifact.UploadExcluding(ctx, store, *runID, *name, *path, exclude); err != nil {
 			fmt.Fprintf(stderr, "artifact upload failed: %v\n", err)
 			return 1
 		}
@@ -238,11 +244,13 @@ func runArtifact(ctx context.Context, store objectstore.ObjectStore, sub string,
 		runID := fs.String("run", "", "run ID")
 		name := fs.String("name", "", "artifact name")
 		dest := fs.String("dest", ".", "destination directory")
+		var exclude stringSlice
+		fs.Var(&exclude, "exclude", "path to leave alone, with everything below it: no archived entry is extracted there (repeatable)")
 		fs.String("broker-run-id", "", "the Pod's own executing run, used only to scope the store-credentials broker request")
 		if err := fs.Parse(args); err != nil {
 			return 2
 		}
-		if err := artifact.Download(ctx, store, *runID, *name, *dest); err != nil {
+		if err := artifact.DownloadExcluding(ctx, store, *runID, *name, *dest, exclude); err != nil {
 			fmt.Fprintf(stderr, "artifact download failed: %v\n", err)
 			return 1
 		}

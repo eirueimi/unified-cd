@@ -135,7 +135,7 @@ func TestArtifactRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 1)
 	require.NoError(t, err)
-	claimed, err := pg.ClaimNextRun(ctx, "artifact-owner", nil)
+	claimed, err := pg.ClaimNextRun(ctx, "artifact-owner", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID)
 

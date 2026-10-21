@@ -55,6 +55,7 @@ func TestAgent_GracefulDrain(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/a1/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++
@@ -138,6 +139,7 @@ func TestAgent_DrainTimeout(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/a2/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++
@@ -206,6 +208,7 @@ func TestAgent_MaxConcurrent(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/a3/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++
@@ -308,6 +311,7 @@ func TestAgent_CleanWorkspace(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/a4/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++
@@ -722,14 +726,14 @@ func TestAgent_RunLoop_PreparePanicIsRecoveredAndFailsRun(t *testing.T) {
 	orig := prepareWorkspaceFn
 	defer func() { prepareWorkspaceFn = orig }()
 	var prepareCalls atomic.Int32
-	prepareWorkspaceFn = func(ctx context.Context, workDir, mode string, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
+	prepareWorkspaceFn = func(ctx context.Context, workDir, mode string, vol *volumeWorkspace, clean bool, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
 		if prepareCalls.Add(1) == 1 {
 			// Only the FIRST claim's prepare panics. The second claim must
 			// reach a real (successful) prepareWorkspace call, which is only
 			// possible if the slot's claim loop survived the first panic.
 			panic("boom in prepareWorkspace")
 		}
-		return orig(ctx, workDir, mode, clean, rtFn, toolsDir)
+		return orig(ctx, workDir, mode, vol, clean, rtFn, toolsDir)
 	}
 
 	wsDir := t.TempDir()
@@ -744,6 +748,7 @@ func TestAgent_RunLoop_PreparePanicIsRecoveredAndFailsRun(t *testing.T) {
 	claimCount := 0
 	var mu sync.Mutex
 	mux.HandleFunc("POST /api/v1/agents/a5/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		mu.Lock()
 		n := claimCount
 		claimCount++

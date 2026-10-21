@@ -41,7 +41,8 @@ func TestRun_RegistersWithBuildVersion(t *testing.T) {
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/reconcile", func(w http.ResponseWriter, _ *http.Request) {
 		orchestrateWriteJSON(w, map[string]int{"failedRuns": 0})
 	})
-	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/claim", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		orchestrateWriteJSON(w, api.ClaimResponse{})
 	})
 

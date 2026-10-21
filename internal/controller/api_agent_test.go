@@ -28,7 +28,7 @@ func claimRunForTest(t *testing.T, pg store.Store, agentID, runID string) {
 	t.Helper()
 	_, err := pg.TransitionPendingToQueued(t.Context(), 10)
 	require.NoError(t, err)
-	claimed, err := pg.ClaimNextRun(t.Context(), agentID, nil)
+	claimed, err := pg.ClaimNextRun(t.Context(), agentID, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, runID, claimed.ID)
 }
@@ -600,6 +600,20 @@ func TestBuildClaimResponse_ThreadsNative(t *testing.T) {
 	assert.True(t, resp.Native)
 }
 
+// TestBuildClaimResponse_ThreadsCleanWorkspace verifies the job's
+// spec.cleanWorkspace reaches the agent. A native job cannot set
+// podTemplate.cleanWorkspace, so this is its only way to ask for a clean.
+func TestBuildClaimResponse_ThreadsCleanWorkspace(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		spec := dsl.Spec{Native: true, CleanWorkspace: want, Steps: []dsl.StepEntry{{Name: "s", Run: "true"}}}
+		b, err := json.Marshal(spec)
+		require.NoError(t, err)
+		resp, err := buildClaimResponse(&store.ClaimedRun{Run: api.Run{ID: "r1", JobName: "j"}, Spec: b}, nil)
+		require.NoError(t, err)
+		assert.Equal(t, want, resp.CleanWorkspace)
+	}
+}
+
 // TestBuildClaimResponse_RejectsPreMigrationStepRunsIn verifies a job stored
 // before the 2026-07-08 job-isolation release (whose persisted spec JSON
 // still carries the removed step-level runsIn: on a non-uses step) fails
@@ -785,7 +799,7 @@ func TestAgentHeartbeat_ReconcilesLostClaims(t *testing.T) {
 
 	// Claim all three onto the same agent (FIFO claim order matches creation order).
 	for _, want := range []string{r1.ID, r2.ID, r3.ID} {
-		claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-reconcile", nil)
+		claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-reconcile", nil, nil)
 		require.NoError(t, err)
 		require.Equal(t, want, claimed.ID)
 	}
@@ -836,7 +850,7 @@ func TestAgentHeartbeat_ReconcileEmptyActiveSetStillFails(t *testing.T) {
 	require.NoError(t, err)
 	_, err = pgc.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
-	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-empty", nil)
+	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-empty", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, r4.ID, claimed.ID)
 	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r4.ID, 5*time.Minute))
@@ -874,7 +888,7 @@ func TestAgentHeartbeat_BodylessSkipsReconcile(t *testing.T) {
 	require.NoError(t, err)
 	_, err = pgc.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
-	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-legacy", nil)
+	claimed, err := pgc.ClaimNextRun(ctx, "agent-hb-legacy", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, r5.ID, claimed.ID)
 	require.NoError(t, pgc.BackdateRunClaimedAt(ctx, r5.ID, 5*time.Minute))

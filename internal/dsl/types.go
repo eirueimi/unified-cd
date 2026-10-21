@@ -42,6 +42,13 @@ type Spec struct {
 	// no podTemplate, no container: steps). Host agents only; the default
 	// (false) is the isolated pod model on both backends.
 	Native bool `yaml:"native,omitempty" json:"native,omitempty"`
+	// CleanWorkspace asks the agent to empty a volume that serves as this
+	// job's workspace (a spec.volumes entry mounted at ".") before the run. An
+	// ordinary workspace is always emptied and needs no flag; this exists
+	// because a volume is never wiped otherwise, and a native job cannot use
+	// podTemplate.cleanWorkspace. The agent-wide --clean-workspace flag never
+	// wipes a volume.
+	CleanWorkspace bool `yaml:"cleanWorkspace,omitempty" json:"cleanWorkspace,omitempty"`
 	// Detached marks this job's runs as lightweight orchestrators: they do not
 	// consume an agent's MaxConcurrent budget and are claimed from a separate
 	// MaxDetachedConcurrent pool, and get an independent per-run workspace on
@@ -54,6 +61,10 @@ type Spec struct {
 	// scalar shorthand); the run: script is appended as the final argv
 	// element. See Step.Shell for the full resolution priority.
 	Shell []string `yaml:"shell,omitempty" json:"shell,omitempty"`
+	// Volumes mounts agent-owned named volumes into the run. The job names a
+	// volume and where it appears; the agent's own configuration decides what
+	// backs it. See VolumeMount.
+	Volumes []VolumeMount `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	// Description is a human-readable summary of the job, shown in the WebUI.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	// DisplayName is optional: a run whose job has no declared displayName
@@ -533,8 +544,11 @@ type CacheStep struct {
 }
 
 type PodTemplate struct {
-	Name           string           `yaml:"name,omitempty" json:"name,omitempty"`
-	Reuse          bool             `yaml:"reuse,omitempty" json:"reuse,omitempty"`
+	Name  string `yaml:"name,omitempty" json:"name,omitempty"`
+	Reuse bool   `yaml:"reuse,omitempty" json:"reuse,omitempty"`
+	// CleanWorkspace is the same as spec.cleanWorkspace: it wipes a volume that
+	// serves as the job's workspace (a volume mounted at "."), and nothing else.
+	// The two are ORed.
 	CleanWorkspace bool             `yaml:"cleanWorkspace,omitempty" json:"cleanWorkspace,omitempty"`
 	Workspace      *WorkspaceConfig `yaml:"workspace,omitempty" json:"workspace,omitempty"`
 	Override       *PodSpecPatch    `yaml:"override,omitempty" json:"override,omitempty"`
@@ -542,15 +556,27 @@ type PodTemplate struct {
 }
 
 type WorkspaceConfig struct {
-	MountPath string        `yaml:"mountPath,omitempty" json:"mountPath,omitempty"`
-	PVC       *WorkspacePVC `yaml:"pvc,omitempty" json:"pvc,omitempty"`
+	MountPath string `yaml:"mountPath,omitempty" json:"mountPath,omitempty"`
 }
 
-type WorkspacePVC struct {
-	ClaimName        string `yaml:"claimName,omitempty" json:"claimName,omitempty"`
-	StorageClassName string `yaml:"storageClassName,omitempty" json:"storageClassName,omitempty"`
-	StorageRequest   string `yaml:"storageRequest,omitempty" json:"storageRequest,omitempty"`
-	AccessMode       string `yaml:"accessMode,omitempty" json:"accessMode,omitempty" schema:"enum:ReadWriteOnce,ReadOnlyMany,ReadWriteMany"`
+// VolumeMount mounts an agent-owned named volume into the run's workspace.
+type VolumeMount struct {
+	// Name is the volume to mount: one literal name, a list of candidate
+	// names (the agent picks a free one), or a template expanded against the
+	// run's params.
+	Name StringOrSlice `yaml:"name" json:"name"`
+	// As is the stable handle steps use to reach the volume. Required when
+	// Name is a list of several candidates or contains a template, because the
+	// chosen name is not known when the job is written; otherwise it defaults
+	// to the single literal Name. A step reads the volume's absolute path from
+	// $UNIFIED_VOLUME_<AS>: upper-cased, with "-" as "_" (go-cache gives
+	// UNIFIED_VOLUME_GO_CACHE). Two entries whose aliases give one variable
+	// are rejected.
+	As string `yaml:"as,omitempty" json:"as,omitempty"`
+	// MountPath is where the volume appears: relative to the workspace ("."
+	// is the workspace root), or an absolute path outside the workspace. It is
+	// a POSIX path on every agent; a Windows drive-qualified path is rejected.
+	MountPath string `yaml:"mountPath" json:"mountPath"`
 }
 
 type PodSpecPatch struct {

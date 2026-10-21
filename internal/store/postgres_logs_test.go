@@ -157,7 +157,7 @@ func TestPostgres_Agents(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, pg.UpsertAgent(ctx, "a1", "host1", "linux", "dev", []string{"build"}, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "a1", "host1", "linux", "dev", []string{"build"}, nil, nil, nil))
 	_, err := pg.TouchAgent(ctx, "a1")
 	require.NoError(t, err)
 }

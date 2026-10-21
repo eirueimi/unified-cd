@@ -27,7 +27,7 @@ func TestAgentRouteIdentityMatrixRejectsImpersonation(t *testing.T) {
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(t.Context(), 1)
 	require.NoError(t, err)
-	claimed, err := st.ClaimNextRun(t.Context(), "agent-b", nil)
+	claimed, err := st.ClaimNextRun(t.Context(), "agent-b", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID)
 

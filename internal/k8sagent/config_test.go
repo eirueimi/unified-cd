@@ -67,6 +67,30 @@ sidecarS3SecretName: my-s3-secret
 	}
 }
 
+// TestLoadConfig_RejectsWorkspacePVC pins that an agent podTemplate still
+// carrying the removed workspace.pvc block stops the agent from starting. This
+// loader is lenient about unknown keys, so without the check the block would be
+// dropped silently and a persistent workspace would quietly become ephemeral.
+func TestLoadConfig_RejectsWorkspacePVC(t *testing.T) {
+	cfg := writeTempYAML(t, `
+server: http://localhost:8080
+namespace: ci
+podTemplates:
+  golang:
+    workspace:
+      pvc:
+        claimName: go-build-cache
+    spec:
+      containers:
+        - name: job
+          image: golang:1.24
+`)
+	_, err := LoadConfig(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `podTemplates["golang"].workspace.pvc`)
+	assert.Contains(t, err.Error(), "docs/operator-manual/migrations/2026-10-20-named-volumes.md")
+}
+
 func TestLoadConfig_DefaultsApplied(t *testing.T) {
 	cfg := writeTempYAML(t, `
 server: http://localhost:8080

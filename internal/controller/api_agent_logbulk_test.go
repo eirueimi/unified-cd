@@ -70,7 +70,7 @@ func claimRunForAgentLogBulkTest(t *testing.T, st store.Store, agentID string) s
 	require.NoError(t, err)
 	_, err = st.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
-	claimed, err := st.ClaimNextRun(ctx, agentID, nil)
+	claimed, err := st.ClaimNextRun(ctx, agentID, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, run.ID, claimed.ID)
 	return run.ID

@@ -78,7 +78,7 @@ func TestDecideApproval_AcceptedWhileTheRunIsLiveAndTheGateIsOpen(t *testing.T) 
 	require.NoError(t, err)
 	_, err = pg.TransitionPendingToQueued(ctx, 10)
 	require.NoError(t, err)
-	_, err = pg.ClaimNextRun(ctx, "agent1", nil)
+	_, err = pg.ClaimNextRun(ctx, "agent1", nil, nil)
 	require.NoError(t, err)
 
 	future := time.Now().Add(time.Hour)

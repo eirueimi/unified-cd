@@ -279,3 +279,68 @@ intentional: if a step that used to "work" with an absolute path now fails
 here, it was previously relying on the silent-reroot/host-resolve behavior —
 switch it to a workspace-relative path per the Fix above.
 
+## An artifact or cache path leaves a volume's contents out
+
+**Symptom**
+
+An `uploadArtifact` or `cache:` step succeeds, but the archive does not contain the files that live
+on a mounted volume, or a `downloadArtifact` step succeeds but files of the artifact are missing
+under a volume's mount path, and the owning step's log has a line like:
+
+```
+artifact path "." excludes volume "go-cache" mounted at ".ucd-cache/go": the contents of a volume are never archived as part of a parent directory; name the volume's mount path to archive it
+```
+
+(`cache path ...` for a cache step; one line per excluded volume.) For a download the line reads:
+
+```
+artifact download path "." excludes volume "go-cache" mounted at ".ucd-cache/go": files of the artifact that lie inside a volume are not extracted into it; name the volume's mount path as the destination to extract into it
+```
+
+**Cause**
+
+The step's `path` (or `destDir`) is an **ancestor** of a volume's mount point (`.`, or `.ucd-cache`
+when a volume is at `.ucd-cache/go`). A volume can hold tens of gigabytes, so its contents are
+deliberately never swept into the archive of a parent directory, and an archive is never extracted
+into a volume through a parent directory either (it would write files into a persistent volume the
+job did not ask to touch, or, on an isolated host agent, into a directory the container cannot
+see). The rule is the same on the host and Kubernetes agents, and the mount point itself is omitted
+too.
+
+**Fix**
+
+Name the volume's own mount path when you do want its contents (`path: .ucd-cache/go`, or
+`destDir: .ucd-cache/go` for a download), or accept the exclusion. This is an announcement, not an
+error.
+
+## Artifact upload fails or a cache is never restored: `flag provided but not defined: -exclude`
+
+**Symptom**
+
+Only for jobs that archive an ancestor of a volume's mount point (or download an artifact into one),
+on a Kubernetes agent: the artifact step fails and the cache step reports "not restored", and the
+`unified-artifact` sidecar
+(visible in the **Sidecars** group of the run) printed:
+
+```
+flag provided but not defined: -exclude
+```
+
+and exited with status 2.
+
+**Cause**
+
+The Kubernetes agent passes the repeatable `--exclude <path>` flag to the sidecar (`artifact upload`,
+`artifact download`, `cache save`, `cache restore`) so a volume's contents stay out of the archive
+and an archive is not extracted into a volume, and it passes it **only** when a job archives (or
+extracts into) an ancestor of a volume. A sidecar image built before the flag exists
+rejects it. The agent and its sidecar image must be rolled together; jobs that never archive an
+ancestor of a volume are unaffected, which is why it can pass unnoticed until one does.
+
+**Fix**
+
+Update the sidecar image to the build that matches the agent (`sidecarImage` in the agent config,
+or the digest-pinned default of that agent release; see [Rotating the default image
+digests](../operator-manual/operations.md#rotating-the-default-runnerpause-image-digests)).
+`unified-sidecar version` inside the container prints its build, so you can compare it with the
+agent's.

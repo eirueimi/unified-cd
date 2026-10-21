@@ -1,7 +1,20 @@
-# Demonstrates: Pod reuse across runs to preserve workspace state (warm cache)
+# Demonstrates: Pod reuse across runs to skip Pod startup (scheduling and image pulls)
 # Usage:
 #   unified-cd apply -f examples/jobs/k8s/pod-reuse.yaml
 #   unified-cd run trigger incremental-build
+#
+# reuse: true returns the Pod to a pool when the run ends instead of deleting it, so the next
+# run of a job with the same template starts in seconds instead of waiting for the cluster.
+# It does NOT carry the workspace over: the agent empties /workspace before every claim, and
+# if it cannot, the run fails and the Pod is deleted rather than returned to the pool. A run
+# therefore never sees another run's files, whichever Pod it lands on.
+#
+# To keep files between runs, use one of:
+#   - cache: (examples/jobs/cache.yaml) for dependency directories, as below. Needs the
+#     k8s-agent's sidecarS3SecretName to be set.
+#   - a named volume (examples/jobs/volumes.yaml). A job that mounts one cannot also set
+#     reuse: true; apply rejects the combination, because a pooled Pod keeps the volumes it was
+#     created with.
 apiVersion: unified-cd/v1
 kind: Job
 metadata:
@@ -11,23 +24,23 @@ spec:
     - kind:kubernetes
   podTemplate:
     name: golang
-    # reuse: true → after the run completes the Pod is returned to the pool instead of deleted
-    # the next run requesting the same template can reuse the existing Pod
     reuse: true
-    # cleanWorkspace: false (default) → /workspace contents carry over to the next run
-    # cleanWorkspace: true → agent runs `rm -rf /workspace/*` before each run
-    cleanWorkspace: false
-    workspace:
-      # mount an existing PVC so the workspace persists even when the Pod is recycled
-      pvc:
-        claimName: go-build-cache
   steps:
-    - name: download_deps
-      # if /workspace/vendor is present from a previous run, this step is a no-op
-      run: |
-        if [ ! -d /workspace/vendor ]; then
-          cd /workspace && go mod vendor
-        fi
+    # Restore the module cache into the (empty) workspace; saved after the run on a miss.
+    - name: restore_modules
+      cache:
+        path: .gomodcache
+        # A real job would derive the key from the lockfile, e.g.
+        #   key: go-mod-{{ hashFile "go.sum" }}
+        # This demo has no source checkout, so the key is static.
+        key: incremental-build-modules-v1
 
+    # The workspace starts empty, so this demo creates a tiny module to build. A real job
+    # checks out its sources first (for example with the checkout template in templates/).
     - name: build
-      run: cd /workspace && go build ./...
+      run: |
+        export GOMODCACHE="$UNIFIED_WORKSPACE/.gomodcache"
+        cd /workspace
+        go mod init example.com/demo
+        printf 'package main\n\nfunc main() { println("hello") }\n' > main.go
+        go build ./...

@@ -12,8 +12,8 @@ import (
 func TestPostgres_ListAgents(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-1", "host1", "linux", "dev", []string{"kind:linux"}, nil, nil))
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-2", "host2", "darwin", "dev", []string{"kind:mac"}, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-1", "host1", "linux", "dev", []string{"kind:linux"}, nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-2", "host2", "darwin", "dev", []string{"kind:mac"}, nil, nil, nil))
 	agents, err := pg.ListAgents(ctx)
 	require.NoError(t, err)
 	require.Len(t, agents, 2)
@@ -31,7 +31,7 @@ func TestGetAgent_ReturnsAgent(t *testing.T) {
 	ctx := context.Background()
 
 	err := st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0",
-		[]string{"kind:docker"}, nil, map[string]string{"PATH": "/usr/bin", "HOME": "/root"})
+		[]string{"kind:docker"}, nil, nil, map[string]string{"PATH": "/usr/bin", "HOME": "/root"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +62,8 @@ func TestUpsertAgent_ReRegistrationReplacesLabels(t *testing.T) {
 	st := NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"a", "b"}, nil, nil))
-	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"a"}, nil, nil))
+	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"a", "b"}, nil, nil, nil))
+	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"a"}, nil, nil, nil))
 
 	a, err := st.GetAgent(ctx, "agent-1")
 	require.NoError(t, err)
@@ -79,8 +79,8 @@ func TestUpsertAgentOnClaim_MergesLabelsAndDoesNotClobber(t *testing.T) {
 	st := NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"kind:linux", "hostname:host1"}, nil, nil))
-	require.NoError(t, st.UpsertAgentOnClaim(ctx, "agent-1", "", "", "", []string{"kind:linux"}, nil))
+	require.NoError(t, st.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1.0.0", []string{"kind:linux", "hostname:host1"}, nil, nil, nil))
+	require.NoError(t, st.UpsertAgentOnClaim(ctx, "agent-1", "", "", "", []string{"kind:linux"}, nil, nil))
 
 	a, err := st.GetAgent(ctx, "agent-1")
 	require.NoError(t, err)
@@ -108,7 +108,7 @@ func TestDeleteStaleAgents(t *testing.T) {
 	ctx := context.Background()
 
 	for _, id := range []string{"agent-old", "agent-new"} {
-		if err := st.UpsertAgent(ctx, id, "host", "linux", "dev", nil, nil, nil); err != nil {
+		if err := st.UpsertAgent(ctx, id, "host", "linux", "dev", nil, nil, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -161,4 +161,54 @@ func TestListRunsByAgent(t *testing.T) {
 	if len(runs) != 1 {
 		t.Errorf("want 1 run, got %d", len(runs))
 	}
+}
+
+// A claim can recreate an agent row (the database was reset under a running
+// agent). The claim carries the agent's full volume list so the recreated row
+// routes volume jobs again, but a claim that carries none must never wipe what
+// registration recorded.
+func TestUpsertAgentOnClaim_VolumesAreWrittenWhenSuppliedAndNeverWiped(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+
+	// A claim recreating a missing row records the volumes it supplies.
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, []string{"unity", "go-cache"}, nil))
+	got, err := pg.GetAgent(ctx, "a")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"unity", "go-cache"}, got.Volumes)
+
+	// A claim that supplies none leaves them alone.
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, nil, nil))
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, []string{}, nil))
+	got, err = pg.GetAgent(ctx, "a")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"unity", "go-cache"}, got.Volumes, "an empty claim-time list must not wipe the registered volumes")
+
+	// A claim that supplies a list replaces it: the claim carries the full set.
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "", "", "", nil, []string{"unity"}, nil))
+	got, err = pg.GetAgent(ctx, "a")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"unity"}, got.Volumes)
+}
+
+// The controller judges whether a run is schedulable by comparing the volumes
+// a job names with what agents advertise, so both agent reads must return them.
+func TestPostgres_AgentReadsReturnVolumes(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-1", "host1", "linux", "dev", nil, nil, []string{"unity-main", "build-cache"}, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-2", "host2", "linux", "dev", nil, nil, nil, nil))
+
+	agents, err := pg.ListAgents(ctx)
+	require.NoError(t, err)
+	got := map[string][]string{}
+	for _, a := range agents {
+		got[a.ID] = a.Volumes
+	}
+	assert.ElementsMatch(t, []string{"unity-main", "build-cache"}, got["agent-1"])
+	assert.Empty(t, got["agent-2"])
+
+	one, err := pg.GetAgent(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"unity-main", "build-cache"}, one.Volumes)
 }

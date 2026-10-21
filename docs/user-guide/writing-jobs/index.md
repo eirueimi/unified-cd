@@ -9,6 +9,7 @@ A comprehensive reference for the `Job` resource — the primary unit of work in
 - [Artifacts and Cache](artifacts-and-cache.md)
 - [Templates and Reuse](templates-and-reuse.md)
 - [Isolation and Containers](isolation-and-containers.md)
+- [Volumes: Keeping Data Between Runs](volumes.md)
 - [Concurrency and Agent Selection](concurrency-and-agent-selection.md)
 - [Approval and Finally](approval-and-finally.md)
 - [Complete Example](complete-example.md)

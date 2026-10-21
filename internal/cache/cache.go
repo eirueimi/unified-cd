@@ -72,12 +72,18 @@ func jobPrefix(jobName string) string {
 // same invariant enforced where it actually lives, so no other caller of this
 // library can bypass it by skipping the CLI.
 func Save(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, ttlDays int) error {
+	return SaveExcluding(ctx, store, jobName, path, key, ttlDays, nil)
+}
+
+// SaveExcluding is Save that leaves the paths in exclude out of the archive
+// (see artifact.WriteTarZstdExcluding).
+func SaveExcluding(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, ttlDays int, exclude []string) error {
 	if jobName == "" {
 		return fmt.Errorf("cache save: jobName must not be empty")
 	}
 	oKey := objectKey(jobName, key)
 
-	body := artifact.StreamTarZstd(path)
+	body := artifact.StreamTarZstdExcluding(path, exclude)
 	counter := &countingReader{r: body}
 	if err := store.Put(ctx, oKey+".tar.zst", counter, -1); err != nil {
 		body.Close()
@@ -135,6 +141,15 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // valid namespace like any other, so an empty jobName would silently read
 // from the pre-fix global namespace instead of failing loudly.
 func Restore(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string) (bool, error) {
+	return RestoreExcluding(ctx, store, jobName, path, key, restoreKeys, nil)
+}
+
+// RestoreExcluding is Restore that does not extract an entry at or below any of
+// the paths in exclude (absolute, in the same form as path). It is the
+// counterpart of SaveExcluding: an archive written before a directory became a
+// volume's mount point still holds files there, and extracting them would write
+// into the volume.
+func RestoreExcluding(ctx context.Context, store objectstore.ObjectStore, jobName, path, key string, restoreKeys []string, exclude []string) (bool, error) {
 	if jobName == "" {
 		return false, fmt.Errorf("cache restore: jobName must not be empty")
 	}
@@ -142,7 +157,7 @@ func Restore(ctx context.Context, store objectstore.ObjectStore, jobName, path, 
 	rc, err := store.Get(ctx, oKey+".tar.zst")
 	if err == nil {
 		defer rc.Close()
-		if err := extract(rc, path); err != nil {
+		if err := extract(rc, path, exclude); err != nil {
 			return false, fmt.Errorf("extract: %w", err)
 		}
 		return true, nil
@@ -167,7 +182,7 @@ func Restore(ctx context.Context, store objectstore.ObjectStore, jobName, path, 
 			return false, ErrCacheMiss
 		}
 		defer rc.Close()
-		if err := extract(rc, path); err != nil {
+		if err := extract(rc, path, exclude); err != nil {
 			return false, fmt.Errorf("extract fallback: %w", err)
 		}
 		return true, nil
@@ -260,9 +275,20 @@ func findBestMatch(ctx context.Context, store objectstore.ObjectStore, jobName s
 	return bestKey, nil
 }
 
+// isUnder reports whether p is one of paths or lies below one of them.
+func isUnder(p string, paths []string) bool {
+	for _, e := range paths {
+		if p == e || strings.HasPrefix(p, e+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
 // extract decompresses a tar+zstd stream into dest.
-// Rejects paths that escape dest (path traversal protection).
-func extract(r io.Reader, dest string) error {
+// Rejects paths that escape dest (path traversal protection). An entry at or
+// below one of the paths in exclude is skipped.
+func extract(r io.Reader, dest string, exclude []string) error {
 	dec, err := zstd.NewReader(r)
 	if err != nil {
 		return fmt.Errorf("zstd reader: %w", err)
@@ -276,6 +302,14 @@ func extract(r io.Reader, dest string) error {
 		return fmt.Errorf("resolve dest %q: %w", dest, err)
 	}
 	cleanDest := absDest + string(filepath.Separator)
+	var skip []string
+	for _, e := range exclude {
+		abs, err := filepath.Abs(e)
+		if err != nil {
+			return fmt.Errorf("resolve excluded path %q: %w", e, err)
+		}
+		skip = append(skip, abs)
+	}
 	tr := tar.NewReader(dec)
 	for {
 		hdr, err := tr.Next()
@@ -288,6 +322,9 @@ func extract(r io.Reader, dest string) error {
 		target := filepath.Join(absDest, filepath.FromSlash(hdr.Name))
 		if !strings.HasPrefix(target+string(filepath.Separator), cleanDest) {
 			return fmt.Errorf("invalid path %q in cache archive", hdr.Name)
+		}
+		if isUnder(target, skip) {
+			continue
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:

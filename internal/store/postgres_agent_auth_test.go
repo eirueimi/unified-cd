@@ -516,7 +516,7 @@ func TestPostgres_DeleteLiveAgentDoesNotDeleteIdentity(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 	issue := enrollTestAgent(t, pg, "agent-preserved")
-	require.NoError(t, pg.UpsertAgent(ctx, issue.AgentID, "host", "linux", "dev", nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, issue.AgentID, "host", "linux", "dev", nil, nil, nil, nil))
 	require.NoError(t, pg.DeleteAgent(ctx, issue.AgentID))
 
 	identity, err := pg.GetAgentIdentity(ctx, issue.AgentID)

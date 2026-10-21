@@ -51,11 +51,11 @@ func TestAPI_TriggerRun_ExpandsAgentSelectorParams(t *testing.T) {
 
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
-	claimed, err := pg.ClaimNextRun(t.Context(), "agent-without-label", []string{"pool:other"})
+	claimed, err := pg.ClaimNextRun(t.Context(), "agent-without-label", []string{"pool:other"}, nil)
 	require.NoError(t, err)
 	assert.Nil(t, claimed, "agent without the expanded label must not claim the run")
 
-	claimed2, err := pg.ClaimNextRun(t.Context(), "agent-with-label", []string{"pool:build"})
+	claimed2, err := pg.ClaimNextRun(t.Context(), "agent-with-label", []string{"pool:build"}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, claimed2, "agent with the expanded label must claim the run")
 }
@@ -243,7 +243,7 @@ func TestAPI_CancelRun(t *testing.T) {
 	_, _ = pg.UpsertJob(t.Context(), "j", "unified-cd/v1", []byte(`{}`))
 	run, _ := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
-	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil)
+	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil, nil)
 	require.NoError(t, pg.MarkRunRunning(t.Context(), run.ID))
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/runs/"+run.ID+"/cancel", nil)
 	req.Header.Set("Authorization", "Bearer secret")
@@ -265,7 +265,7 @@ func TestAPI_RunEvents_SSE_ReceivesExistingLogs(t *testing.T) {
 
 	// Put the Run in Succeeded state so the SSE handler returns immediately.
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
-	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil)
+	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil, nil)
 	require.NoError(t, pg.MarkRunRunning(t.Context(), run.ID))
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunSucceeded))
 
@@ -298,7 +298,7 @@ func TestAPI_RunEvents_SSE_BackfillTruncatesToTail(t *testing.T) {
 		_, _ = pg.AppendLog(t.Context(), run.ID, 0, "stdout", now, ln)
 	}
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
-	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil)
+	_, _ = pg.ClaimNextRun(t.Context(), "agent-1", nil, nil)
 	require.NoError(t, pg.MarkRunRunning(t.Context(), run.ID))
 	require.NoError(t, pg.MarkRunFinished(t.Context(), run.ID, api.RunSucceeded))
 

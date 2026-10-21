@@ -107,7 +107,7 @@ func podReadyOrSkip(t *testing.T, pm *PodManager, runID string) string {
 	t.Helper()
 	shimImage := testShimImageOrSkip(t)
 	ctx := context.Background()
-	pod, err := BuildPod(runID, pm.namespace, nil, nil, testImage, SidecarSpec{}, shimImage)
+	pod, err := BuildPod(runID, pm.namespace, nil, nil, testImage, SidecarSpec{}, shimImage, nil)
 	if err != nil {
 		t.Fatalf("BuildPod: %v", err)
 	}

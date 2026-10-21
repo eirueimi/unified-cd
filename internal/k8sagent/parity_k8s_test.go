@@ -507,6 +507,8 @@ func (b *parityK8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string
 // forward it like any other extraEnv entry (it reaches the script), it just
 // isn't checked, so exact value fidelity doesn't matter here (see
 // ResolveArtifactPath above).
+func (b *parityK8sBackend) VolumePaths(scope agentlib.ScopeHandle) map[string]string { return nil }
+
 func (b *parityK8sBackend) WorkspacePath(scope agentlib.ScopeHandle) string {
 	if !scope.IsZero() {
 		return scopeMountPath

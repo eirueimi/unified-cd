@@ -249,6 +249,31 @@ func ExpandConcurrency(c *Concurrency, params map[string]string) (*Concurrency, 
 	return &out, nil
 }
 
+// ExpandVolumes expands {{ .Params.xxx }} templates in every candidate of each
+// volume's Name using the Run's parameter values, so a job can pick a volume by
+// parameter (e.g. `unity-{{ .Params.LIB }}`). As and MountPath are never
+// expanded. It returns a new slice with new Name slices; the input is not
+// mutated. A failure names the entry and the candidate, e.g.
+// "volumes[1].name[0]".
+func ExpandVolumes(vs []VolumeMount, params map[string]string) ([]VolumeMount, error) {
+	if len(vs) == 0 {
+		return vs, nil
+	}
+	out := make([]VolumeMount, len(vs))
+	for i, v := range vs {
+		out[i] = v
+		out[i].Name = make(StringOrSlice, len(v.Name))
+		for j, n := range v.Name {
+			expanded, err := ExpandTemplate(n, TemplateData{Params: params})
+			if err != nil {
+				return nil, fmt.Errorf("volumes[%d].name[%d]: %w", i, j, err)
+			}
+			out[i].Name[j] = expanded
+		}
+	}
+	return out, nil
+}
+
 // WebhookTemplateData is the template context used when evaluating webhook payload mappings and filters.
 type WebhookTemplateData struct {
 	Payload map[string]any

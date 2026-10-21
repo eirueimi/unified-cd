@@ -5,10 +5,12 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
 	agentlib "github.com/eirueimi/unified-cd/internal/agent"
+	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"gopkg.in/yaml.v3"
 )
@@ -69,6 +71,23 @@ type Config struct {
 	// It also lets the volume be optional, so a missing Secret degrades instead
 	// of failing the whole Pod. Env: UNIFIED_K8S_SIDECAR_S3_SECRET_MODE.
 	SidecarS3SecretMode string `yaml:"sidecarS3SecretMode,omitempty"`
+
+	// AgentName is the stable name this agent's volume claims are prefixed
+	// with: <agentName>-<volume>. Required when Volumes is non-empty, and it
+	// must not change while the claims hold data.
+	//
+	// It is deliberately NOT AgentID. The enrolled ID is
+	// "k8s:<cluster>:<namespace>:<pod UID>", which carries characters a claim
+	// name cannot and changes with every pod, so a prefix derived from it
+	// would provision a fresh empty PVC on each restart and leave the last one
+	// behind. Replicas of one Deployment share this config and so share one set
+	// of claims; that is why occupancy is read from the live pods (BusyVolumes)
+	// and not from any one process. Two agents in one namespace need two names.
+	AgentName string `yaml:"agentName,omitempty"`
+	// Volumes declares the agent-owned named volumes this agent advertises and
+	// jobs may mount (spec.volumes). Each becomes a PVC of the given size, which
+	// is required here; path is meaningless on Kubernetes and is ignored.
+	Volumes []config.VolumeConfig `yaml:"volumes,omitempty"`
 }
 
 // AgentPodTemplate is a Pod template defined in the agent configuration file.
@@ -173,7 +192,38 @@ func LoadConfig(configPath string) (Config, error) {
 	if err := loadYAML(configPath, &cfg); err != nil {
 		return cfg, err
 	}
+	if err := rejectRemovedWorkspacePVC(configPath); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+// rejectRemovedWorkspacePVC fails when an agent podTemplate still carries the
+// removed workspace.pvc block. loadYAML is lenient about unknown keys, so
+// without this the block would be dropped silently and a persistent workspace
+// would quietly become an ephemeral one.
+func rejectRemovedWorkspacePVC(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	var raw struct {
+		PodTemplates map[string]any `yaml:"podTemplates"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	names := make([]string, 0, len(raw.PodTemplates))
+	for name := range raw.PodTemplates {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := dsl.CheckRemovedWorkspacePVC(raw.PodTemplates[name], fmt.Sprintf("podTemplates[%q]", name)); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func loadYAML(path string, out any) error {
@@ -336,6 +386,11 @@ func (c *Config) Validate() error {
 		if _, err := time.ParseDuration(c.FinallyTimeout); err != nil {
 			return fmt.Errorf("finallyTimeout %q: %w", c.FinallyTimeout, err)
 		}
+	}
+	// A bad volume declaration is a refused start, not a run that fails later:
+	// the agent would otherwise advertise a volume it cannot provision.
+	if err := validateVolumeConfigs(c.AgentName, c.Volumes); err != nil {
+		return err
 	}
 	return nil
 }

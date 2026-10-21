@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -92,8 +93,12 @@ type Agent struct {
 	// Used by Run (see the detached claim pool). Wired from --max-detached-concurrent.
 	MaxDetachedConcurrent int
 	WorkspaceDir          string
-	CleanWorkspace        bool
-	DrainTimeout          time.Duration
+	// CleanWorkspace is the agent-wide --clean-workspace flag. It no longer
+	// has any effect (see runLoop): ordinary workspaces are always cleaned and
+	// a volume is only wiped by a job's own cleanWorkspace. Kept for config
+	// compatibility.
+	CleanWorkspace bool
+	DrainTimeout   time.Duration
 
 	// MinFreeDisk is the minimum free space (in bytes) required on the
 	// workspace filesystem for this agent to keep claiming runs. Zero
@@ -103,10 +108,16 @@ type Agent struct {
 	// WorkspaceRetentionDays is the age (in days) after which an inactive
 	// per-job workspace directory (working<slot>/<job>) becomes eligible
 	// for removal by the opt-in workspace GC (see workspace_gc.go). Zero
-	// (the default) disables the GC — persistent workspaces are a feature
-	// (inter-run cache), so sweeping them across jobs must be an explicit
-	// opt-in. Host-only.
+	// (the default) disables the GC. A workspace is emptied before and after
+	// every run, so this only reclaims what an agent crash left behind; it is
+	// an explicit opt-in. Host-only.
 	WorkspaceRetentionDays int
+
+	// Volumes owns the agent's declared named volumes (the `volumes` list of
+	// the agent config file). cmd/unified-cd-agent builds it with
+	// NewVolumeManager before Run. Nil means the agent declares none.
+	// Host-only: the k8s agent provisions PVCs instead.
+	Volumes *VolumeManager
 
 	// freeBytesFn reports available bytes for the filesystem containing the
 	// given path. Defaults to freeBytes (the platform-specific syscall
@@ -201,6 +212,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		Version:      Version,
 		Env:          collectEnv(a.ExposeEnv),
 		Capabilities: agentCapabilities(runtimeAvailable),
+		// The controller routes runs on this list and keeps no volume state
+		// of its own, so it is whatever the operator declared.
+		Volumes: a.Volumes.Names(),
 	}
 	var registerErr error
 	retryUntilSuccess(ctx, func(ctx context.Context) error {
@@ -250,6 +264,14 @@ func (a *Agent) Run(ctx context.Context) error {
 			return fmt.Errorf("create workspace %s: %w", dir, mkErr)
 		}
 	}
+
+	// Every volume is free at this point: the agent has lost all the runs it
+	// was executing, and the controller's lost-claim reconcile (above) has
+	// failed them. Remove the links they left, before any claim can mount one.
+	if err := sweepStaleVolumeLinks(a.Volumes); err != nil {
+		slog.Warn("could not remove all stale volume links", "error", err)
+	}
+	a.Volumes.sweepStaleVolumeLocks()
 
 	// runCtx: continues even after claimCtx is cancelled. If DrainTimeout is set,
 	// it will be cancelled DrainTimeout after ctx is cancelled.
@@ -431,7 +453,14 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 		if detached {
 			resp, err = a.Client.ClaimDetached(claimCtx, a.ID, "30s", a.Labels)
 		} else {
-			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels)
+			// Tell the controller what this agent is holding, so it does not
+			// hand out a run that needs it (only an optimisation: the
+			// reservation below is what enforces exclusion), and what it
+			// declares, so a row the claim recreates still routes volume jobs.
+			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels, api.ClaimRequest{
+				BusyVolumes: a.Volumes.Busy(),
+				Volumes:     a.Volumes.Names(),
+			})
 		}
 		if err != nil {
 			slog.Error("claim", "error", err, "slot", slot, "detached", detached)
@@ -493,8 +522,43 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			if resp.Native {
 				mode = "native"
 			}
-			clean := a.CleanWorkspace || (resp.PodTemplate != nil && resp.PodTemplate.CleanWorkspace)
-			if err := prepareWorkspaceFn(runCtx, workDir, mode, clean, a.containerRuntime, a.ToolsDir); err != nil {
+			// Hold the run's volumes before touching the workspace. The
+			// controller's busy filter only makes this rarely wait; if another
+			// run on this agent holds one, wait here (the run is already claimed
+			// and there is no way to hand it back) until it frees or the agent
+			// drains. Released once, after the run and its unmounts are done.
+			if len(resp.Volumes) > 0 {
+				release, err := a.reserveClaimVolumes(claimCtx, runCtx, &resp)
+				if errors.Is(err, errRunTerminal) {
+					// Cancelled (or reaped) while waiting: already final on the
+					// controller, so there is no result to report.
+					slog.Info("run ended while waiting for its volumes", "runId", resp.RunID)
+					return
+				}
+				if err != nil {
+					a.failRun(runCtx, resp.RunID, err.Error())
+					return
+				}
+				defer release()
+			}
+			clean := ClaimWantsClean(resp)
+			// A volume at the workspace root IS the workspace (executeRun runs
+			// in its directory), and is the one thing that persists between
+			// runs. Its mode marker lives under wsBase, outside the volume, and
+			// nothing resets it unless clean is set. Any other workspace is
+			// ephemeral: emptied before the run, and swept again after it.
+			prepDir := workDir
+			var vol *volumeWorkspace
+			if volDir := workspaceVolumeDir(resp.Volumes, a.Volumes); volDir != "" {
+				name := workspaceVolumeName(resp.Volumes)
+				vol = &volumeWorkspace{Name: name, ModeMarker: volumeModeMarker(wsBase, name)}
+				prepDir = volDir
+			}
+			// Registered before prepareWorkspace so a half-prepared workspace is
+			// swept too; runs after executeRun and its unmounts, and before the
+			// active-set entries and the volume reservation are released.
+			defer finishWorkspace(runCtx, workDir, vol, a.containerRuntime, a.ToolsDir)
+			if err := prepareWorkspaceFn(runCtx, prepDir, mode, vol, clean, a.containerRuntime, a.ToolsDir); err != nil {
 				// The claim is ours but its workspace could not be prepared, so the
 				// run can never start. Fail it on the controller (retried until it
 				// lands) rather than leaving it Running until the stuck-run reaper
@@ -531,7 +595,7 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 						"toolsDir", a.ToolsDir, "runId", resp.RunID)
 				}
 			}
-			a.executeRun(runCtx, resp, workDir)
+			a.executeRun(runCtx, resp, prepDir)
 		}()
 	}
 }
@@ -610,6 +674,39 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		a.failRun(ctx, c.RunID, fmt.Sprintf("%s: %v", msg, err))
 	}
 
+	// workDir is where the run works, already resolved by runLoop: the volume's
+	// directory when a volume is mounted at the workspace root (that volume IS
+	// the workspace), the per-run directory otherwise. It is passed in rather
+	// than recomputed here so the directory runLoop prepares and sweeps can
+	// never differ from the one the run uses. Every other mount is made
+	// relative to it.
+	// Native volume mounts are links, made here and removed when the run ends.
+	// An isolated run's host side is just its mountpoint directories; the
+	// bind mounts themselves are added to the claim pod below.
+	volumePaths, unmount, err := mountVolumes(workDir, c.Volumes, a.Volumes, c.Native)
+	if err != nil {
+		failClaim("volume mount failed", err)
+		return
+	}
+	defer func() {
+		if err := unmount(); err != nil {
+			slog.Error("could not remove volume links", "runId", c.RunID, "error", err)
+		}
+	}()
+
+	// The volumes mounted below the workspace root, for resolving artifact and
+	// cache paths: a native run reaches them through links, an isolated one
+	// through bind mounts, and both leave the workspace path itself empty.
+	containerRoot := hostNamedMountPath(c.PodTemplate)
+	if c.Native {
+		containerRoot = ""
+	}
+	refs, err := relativeVolumeMounts(c.Volumes, a.Volumes, containerRoot)
+	if err != nil {
+		failClaim("volume mount failed", err)
+		return
+	}
+
 	var pod *claimPodManager
 	if !c.Native {
 		rt, err := a.containerRuntime()
@@ -634,6 +731,26 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			return
 		}
 		pod = newClaimPodManager(rt, workDir, hostNamedMountPath(c.PodTemplate), a.PauseImage, a.RunnerImage, a.ToolsDir)
+		if len(c.Volumes) > 0 {
+			// workDir is already the root volume's directory if there is one,
+			// so only the other volumes are added as mounts.
+			rootHost, extra, resolved, verr := isolatedVolumeMounts(hostNamedMountPath(c.PodTemplate), c.Volumes, a.Volumes)
+			if verr != nil {
+				failClaim("volume mount failed", verr)
+				return
+			}
+			// The pod's workspace mount uses workDir, which runLoop resolved to
+			// the root volume's directory. When the claim has a root volume, the
+			// two computations of its host directory must agree, or the
+			// container would mount a different directory than the host side
+			// reads and writes.
+			if rootHost != "" && rootHost != workDir {
+				failClaim("volume mount failed", fmt.Errorf("internal error: the root volume resolves to %q for the pod but %q for the host workspace", rootHost, workDir))
+				return
+			}
+			pod.volumeMounts = extra
+			volumePaths = resolved
+		}
 		if err := pod.Start(ctx, c.PodTemplate); err != nil {
 			pod.CloseAll(context.WithoutCancel(ctx))
 			failClaim("claim pod construction failed", err)
@@ -641,6 +758,8 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 		}
 	}
 	backend := newHostBackend(a, c.RunID, c.JobName, workDir, pod)
+	backend.volumePaths = volumePaths
+	backend.volumeRefs = refs
 	runClaimFn(ctx, a.Client, a.ID, c, backend)
 }
 
@@ -656,6 +775,35 @@ var runClaimFn = RunClaim
 // crash somewhere in the real workspace-prep code. Mirrors runClaimFn above.
 // Production code always leaves this as prepareWorkspace.
 var prepareWorkspaceFn = prepareWorkspace
+
+// ClaimWantsClean reports whether the job itself asked for a clean workspace:
+// spec.cleanWorkspace (any job, and the only way for a native one, which has no
+// podTemplate) or podTemplate.cleanWorkspace.
+//
+// The agent-wide --clean-workspace flag (Agent.CleanWorkspace) is deliberately
+// not consulted. It is an operator hygiene default meant to keep a job from
+// inheriting another run's leftovers, which an ordinary workspace now
+// guarantees unconditionally. Applied to a volume it would destroy, every run,
+// what the job declared it wants to keep. And a volume is never wiped AFTER a
+// run even when this is true: that would destroy exactly what the run produced.
+func ClaimWantsClean(c api.ClaimResponse) bool {
+	return c.CleanWorkspace || (c.PodTemplate != nil && c.PodTemplate.CleanWorkspace)
+}
+
+// warnRun is failRun's non-fatal twin: it records reason in the agent log and
+// in the run's own log (the same step -1 "run level" stream), and leaves the
+// run's status alone. For a condition the user must see that is not, by design,
+// run-failing. Best-effort, like failRun's log line.
+func (a *Agent) warnRun(ctx context.Context, runID, reason string) {
+	slog.Warn(reason, "runId", runID)
+	_ = a.Client.AppendLogBulk(ctx, a.ID, runID, -1, []api.LogAppendRequest{{
+		RunID:     runID,
+		StepIndex: -1,
+		Stream:    "stderr",
+		Timestamp: time.Now().UTC(),
+		Line:      reason,
+	}})
+}
 
 // failRun fails a claim that could not even begin executing (workspace
 // preparation failed, the isolated job's container runtime is missing, or its

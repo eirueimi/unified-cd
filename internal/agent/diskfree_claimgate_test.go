@@ -23,6 +23,7 @@ func TestAgent_MinFreeDisk_SkipsClaimWhileBelowThreshold(t *testing.T) {
 	mux.HandleFunc("POST /api/v1/agents/register", registerHandler)
 	var claimCount int32
 	mux.HandleFunc("POST /api/v1/agents/a-diskfree/claim", func(w http.ResponseWriter, r *http.Request) {
+		drainRequestBody(r)
 		atomic.AddInt32(&claimCount, 1)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(api.ClaimResponse{}) //nolint:errcheck

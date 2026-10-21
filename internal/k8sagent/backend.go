@@ -129,6 +129,13 @@ type k8sBackend struct {
 	// entries stay namespaced per job (mirrors hostBackend.jobName).
 	jobName   string
 	mountPath string
+	// volumePaths maps each mounted volume's alias to the path a step in the
+	// default pod sees it at; nil when the claim mounts none. Set once, before
+	// the backend is handed to RunClaim, and read-only after.
+	volumePaths map[string]string
+	// volumes are the volumes mounted inside the workspace, which an archive of
+	// an ancestor path leaves out (excludeVolumes). Set with volumePaths.
+	volumes []agentlib.MountedVolume
 
 	scopesMu sync.Mutex
 	scopes   map[string]*scopeEntry
@@ -961,6 +968,9 @@ func (b *k8sBackend) CacheRestore(ctx context.Context, scope agentlib.ScopeHandl
 	for _, rk := range restoreKeys {
 		argv = append(argv, "--restore-key", rk)
 	}
+	if scope.IsZero() {
+		argv = append(argv, b.excludeVolumes(ctx, "cache restore", path)...)
+	}
 	ec, stdout, err := b.sidecarExecArgvCapturingStdout(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return false, err
@@ -1028,6 +1038,9 @@ func (b *k8sBackend) CacheSave(ctx context.Context, scope agentlib.ScopeHandle, 
 		return err
 	}
 	argv := []string{"unified-sidecar", "cache", "save", "--key", key, "--ttl-days", strconv.Itoa(ttlDays), "--path", path, "--job", b.jobName, "--broker-run-id", b.runID}
+	if scope.IsZero() {
+		argv = append(argv, b.excludeVolumes(ctx, "cache save", path)...)
+	}
 	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return err
@@ -1053,6 +1066,9 @@ func (b *k8sBackend) UploadArtifact(ctx context.Context, scope agentlib.ScopeHan
 		return err
 	}
 	argv := []string{"unified-sidecar", "artifact", "upload", "--run", runID, "--name", name, "--path", path, "--broker-run-id", b.runID}
+	if scope.IsZero() {
+		argv = append(argv, b.excludeVolumes(ctx, "artifact", path)...)
+	}
 	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return err
@@ -1080,6 +1096,9 @@ func (b *k8sBackend) DownloadArtifact(ctx context.Context, scope agentlib.ScopeH
 		return err
 	}
 	argv := []string{"unified-sidecar", "artifact", "download", "--run", runID, "--name", name, "--dest", destDir, "--broker-run-id", b.runID}
+	if scope.IsZero() {
+		argv = append(argv, b.excludeVolumes(ctx, "artifact download", destDir)...)
+	}
 	ec, err := b.sidecarExecArgv(ctx, targetPod, sidecar, argv)
 	if err != nil {
 		return err
@@ -1155,6 +1174,20 @@ func (b *k8sBackend) ResolveArtifactPath(scope agentlib.ScopeHandle, p string) (
 // artifact path (unlike the pre-fix host agent, which left it unresolved).
 func (b *k8sBackend) ResolveCachePath(scope agentlib.ScopeHandle, p string) (string, error) {
 	return b.ResolveArtifactPath(scope, p)
+}
+
+// VolumePaths reports where each mounted volume is for a step in this scope, for
+// UNIFIED_VOLUME_<ALIAS>. A scoped step runs in its own scope pod, which mounts
+// no volume, so it gets none: a path there would name something the step cannot
+// reach. Same rule as the host backend.
+//
+// This, and not imageStepEnv, is what puts the variable in a step's
+// environment: imageStepEnv only seeds a scope pod's creation env.
+func (b *k8sBackend) VolumePaths(scope agentlib.ScopeHandle) map[string]string {
+	if !scope.IsZero() {
+		return nil
+	}
+	return b.volumePaths
 }
 
 // WorkspacePath reports the cwd workspace root a step sees on this backend,

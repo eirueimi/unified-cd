@@ -113,6 +113,9 @@ func checkForbiddenJobFields(data []byte) error {
 	if _, ok := spec["failFast"]; ok {
 		return fmt.Errorf("spec.failFast is no longer supported: remove it (all started steps run to completion)")
 	}
+	if err := CheckRemovedWorkspacePVC(spec["podTemplate"], "spec.podTemplate"); err != nil {
+		return err
+	}
 	steps, _ := spec["steps"].([]any)
 	if err := checkNeedsInEntries(steps, "spec.steps"); err != nil {
 		return err
@@ -120,6 +123,29 @@ func checkForbiddenJobFields(data []byte) error {
 	finally, _ := spec["finally"].([]any)
 	if err := checkNeedsInEntries(finally, "spec.finally"); err != nil {
 		return err
+	}
+	return nil
+}
+
+// WorkspacePVCRemovedMessage is the tail of the error every surface (job
+// parsing, template parsing, the Kubernetes agent's config) returns for a
+// workspace.pvc block. It names the migration guide so the error is actionable
+// on its own.
+const WorkspacePVCRemovedMessage = "workspace.pvc was removed: the workspace is now ephemeral on every agent, and persistence comes from an agent-owned named volume (declare it in the agent's config and mount it with spec.volumes); see docs/operator-manual/migrations/2026-10-20-named-volumes.md"
+
+// CheckRemovedWorkspacePVC returns an error if the raw (untyped) podTemplate
+// carries a workspace.pvc block. It exists because the field is gone from the
+// types: without this check the strict decoder would reject it with a bare
+// "field pvc not found in type dsl.WorkspaceConfig", which says nothing about
+// what to do instead, and a lenient decoder (the Kubernetes agent's config)
+// would drop it silently and quietly turn a persistent workspace into an
+// ephemeral one. where is the path of podTemplate in the document, for the
+// message.
+func CheckRemovedWorkspacePVC(podTemplate any, where string) error {
+	pt, _ := podTemplate.(map[string]any)
+	ws, _ := pt["workspace"].(map[string]any)
+	if _, ok := ws["pvc"]; ok {
+		return fmt.Errorf("%s.workspace.pvc: %s", where, WorkspacePVCRemovedMessage)
 	}
 	return nil
 }
@@ -212,6 +238,10 @@ func (j *Job) Validate() error {
 	}
 
 	if err := validateStepTargetedWorkingDir(j.Spec); err != nil {
+		return err
+	}
+
+	if err := ValidateVolumes(j.Spec); err != nil {
 		return err
 	}
 

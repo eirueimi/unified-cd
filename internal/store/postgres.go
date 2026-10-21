@@ -583,6 +583,24 @@ func nullableUUID(s string) *string {
 // controller-originated system messages not associated with any step.
 const systemLogStepIndex = -1
 
+// expandVolumesNonEmpty is dsl.ExpandVolumes plus the check ExpandVolumes
+// deliberately leaves to its caller: no candidate may expand to the empty
+// string. The error names the entry and candidate, e.g. "volumes[1].name[0]".
+func expandVolumesNonEmpty(vs []dsl.VolumeMount, params map[string]string) ([]dsl.VolumeMount, error) {
+	out, err := dsl.ExpandVolumes(vs, params)
+	if err != nil {
+		return nil, err
+	}
+	for i, v := range out {
+		for j, n := range v.Name {
+			if n == "" {
+				return nil, fmt.Errorf("volumes[%d].name[%d]: expands to an empty string", i, j)
+			}
+		}
+	}
+	return out, nil
+}
+
 // tryQueueRun acquires concurrency locks inside a transaction and transitions a run to Queued.
 func (p *Postgres) tryQueueRun(ctx context.Context, runID string, specJSON []byte, paramsJSON []byte) (bool, error) {
 	tx, err := p.pool.Begin(ctx)
@@ -643,6 +661,37 @@ func (p *Postgres) tryQueueRun(ctx context.Context, runID string, specJSON []byt
 			slog.Warn("mark run failed failed", "runID", runID, "error", ferr)
 		}
 		return false, nil
+	}
+
+	// Expand parameter templates in volume candidate names. The names can be
+	// templates, so this is the only point where the final names are known:
+	// the result is persisted below as runs.required_volumes, which is what
+	// ClaimNextRun routes on. A name that expands to the empty string (an unset
+	// param renders "" under missingkey=zero, without an error) would match no
+	// agent's volume and leave the run Queued forever, so it fails the run too.
+	volumes, volErr := expandVolumesNonEmpty(spec.Volumes, params)
+	if volErr != nil {
+		// Same rollback-before-AppendLog rule as the concurrency failure above.
+		tx.Rollback(ctx)
+		msg := fmt.Sprintf("spec.volumes template expansion failed: %v", volErr)
+		if _, lerr := p.AppendLog(ctx, runID, systemLogStepIndex, "stderr", time.Now(), msg); lerr != nil {
+			slog.Warn("append system log failed", "runID", runID, "error", lerr)
+		}
+		if ferr := p.MarkRunFinished(ctx, runID, api.RunFailed); ferr != nil {
+			slog.Warn("mark run failed failed", "runID", runID, "error", ferr)
+		}
+		return false, nil
+	}
+	spec.Volumes = volumes
+	requiredVolumes := dsl.RequiredVolumes(spec)
+	if requiredVolumes == nil {
+		// RequiredVolumes returns a nil slice for a job with no volumes, which
+		// would marshal to JSON null; the column is NOT NULL DEFAULT '[]'.
+		requiredVolumes = [][]string{}
+	}
+	requiredVolumesJSON, err := json.Marshal(requiredVolumes)
+	if err != nil {
+		return false, err
 	}
 
 	// Acquire concurrency locks
@@ -759,10 +808,10 @@ func (p *Postgres) tryQueueRun(ctx context.Context, runID string, specJSON []byt
 		}
 	}
 
-	// Transition to Queued
+	// Transition to Queued, recording the volumes the run needs in the same write.
 	if _, err := tx.Exec(ctx,
-		`UPDATE runs SET status = 'Queued', updated_at = NOW() WHERE id = $1`,
-		runID); err != nil {
+		`UPDATE runs SET status = 'Queued', required_volumes = $2::jsonb, updated_at = NOW() WHERE id = $1`,
+		runID, requiredVolumesJSON); err != nil {
 		return false, err
 	}
 
@@ -772,18 +821,30 @@ func (p *Postgres) tryQueueRun(ctx context.Context, runID string, specJSON []byt
 // ClaimNextRun claims the next queued NON-detached run for the agent. Detached
 // runs are claimed separately via ClaimNextRunDetached so an agent's normal and
 // detached budgets do not draw from the same pool (see the detached-runs design).
-func (p *Postgres) ClaimNextRun(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error) {
-	return p.claimNextRun(ctx, agentID, agentLabels, false)
+//
+// busyVolumes lists the agent's advertised volumes that are currently in use by
+// a run it is already executing. A run is claimable only if every volume it
+// requires has at least one candidate that the agent advertises and that is not
+// busy.
+func (p *Postgres) ClaimNextRun(ctx context.Context, agentID string, agentLabels []string, busyVolumes []string) (*ClaimedRun, error) {
+	return p.claimNextRun(ctx, agentID, agentLabels, busyVolumes, false)
 }
 
-// ClaimNextRunDetached claims the next queued detached run for the agent.
+// ClaimNextRunDetached claims the next queued detached run for the agent. It
+// takes no busy-volume list because it never needs one: spec.volumes is
+// rejected on a detached job at apply time (dsl.ValidateVolumes), so a detached
+// run's required_volumes is always empty and the volume clause of the claim
+// query is vacuously true for it.
 func (p *Postgres) ClaimNextRunDetached(ctx context.Context, agentID string, agentLabels []string) (*ClaimedRun, error) {
-	return p.claimNextRun(ctx, agentID, agentLabels, true)
+	return p.claimNextRun(ctx, agentID, agentLabels, nil, true)
 }
 
-func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels []string, detached bool) (*ClaimedRun, error) {
+func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels []string, busyVolumes []string, detached bool) (*ClaimedRun, error) {
 	if agentLabels == nil {
 		agentLabels = []string{}
+	}
+	if busyVolumes == nil {
+		busyVolumes = []string{}
 	}
 	// LEFT JOIN (rather than an inner join against a "me" CTE) is deliberate:
 	// if the claiming agent has no row yet in `agents`, a.capabilities is NULL,
@@ -801,6 +862,19 @@ func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels
 		      AND r.detached = $3
 		      AND (r.agent_selector = '{}' OR r.agent_selector <@ $2::TEXT[])
 		      AND (a.capabilities IS NULL OR r.required_caps <@ a.capabilities)
+		      -- Every volume the run mounts needs at least one candidate name
+		      -- that this agent advertises and has not already lent to another
+		      -- run. required_volumes is an array of candidate-name arrays; the
+		      -- run is rejected if any one of them has no free candidate.
+		      -- ListUnclaimableQueuedRuns is deliberately label-only and must
+		      -- NOT gain this clause either, for the reason stated there.
+		      AND NOT EXISTS (
+		        SELECT 1 FROM jsonb_array_elements(r.required_volumes) AS entry
+		        WHERE NOT (
+		          ARRAY(SELECT jsonb_array_elements_text(entry))
+		          && ARRAY(SELECT unnest(a.volumes) EXCEPT SELECT unnest($4::text[]))
+		        )
+		      )
 		    ORDER BY r.created_at
 		    LIMIT 1
 		    FOR UPDATE OF r SKIP LOCKED
@@ -812,7 +886,7 @@ func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels
 	var cr ClaimedRun
 	var status string
 	var paramsOut []byte
-	err := p.pool.QueryRow(ctx, q, agentID, agentLabels, detached).
+	err := p.pool.QueryRow(ctx, q, agentID, agentLabels, detached, busyVolumes).
 		Scan(&cr.ID, &cr.JobName, &status, &paramsOut, &cr.Spec, &cr.CreatedAt, &cr.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1469,9 +1543,14 @@ func (p *Postgres) SearchLogs(ctx context.Context, runID string, steps []int, q 
 // prior registration is absent here, it is dropped — this is required so removing a
 // label from an agent's config and restarting actually takes effect (see TODO #23).
 // Use UpsertAgentOnClaim for the lightweight, non-destructive claim-time upsert.
-func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, env map[string]string) error {
+func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, env map[string]string) error {
 	if labels == nil {
 		labels = []string{}
+	}
+	// volumes is stored like labels, not like capabilities: the column is NOT
+	// NULL, so an agent that declares none sends an empty array.
+	if volumes == nil {
+		volumes = []string{}
 	}
 	if env == nil {
 		env = map[string]string{}
@@ -1481,20 +1560,21 @@ func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, versi
 		return err
 	}
 	const q = `
-		INSERT INTO agents(id, hostname, os, labels, version, capabilities, env, last_seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		INSERT INTO agents(id, hostname, os, labels, version, capabilities, volumes, env, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (id) DO UPDATE
 		  SET hostname     = EXCLUDED.hostname,
 		      os           = EXCLUDED.os,
 		      labels       = EXCLUDED.labels,
 		      version      = EXCLUDED.version,
 		      capabilities = EXCLUDED.capabilities,
+		      volumes      = EXCLUDED.volumes,
 		      env          = EXCLUDED.env,
 		      last_seen_at = NOW();
 	`
 	// capabilities is stored as-is: nil stays SQL NULL (legacy agent, cap check
 	// skipped by ClaimNextRun); do NOT coerce to []string{} here.
-	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, capabilities, envJSON)
+	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, capabilities, volumes, envJSON)
 	return err
 }
 
@@ -1504,29 +1584,39 @@ func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, versi
 // supplied a non-empty value, and merges (rather than replaces) labels. This lets a
 // claim refresh last_seen_at/labels without clobbering richer data recorded at full
 // registration time (e.g. the register-only hostname:<h> label). See TODO #12/#23.
-func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, env map[string]string) error {
+//
+// volumes is the agent's full advertised list. It is written when non-empty, so a
+// row this claim has to recreate (the database was reset under a running agent)
+// routes volume jobs again instead of looking as if no agent declares the volume.
+// An empty list is "not supplied", never "none": a claim cannot wipe what
+// registration recorded. Dropping a volume is a registration, which replaces.
+func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, volumes []string, env map[string]string) error {
 	if labels == nil {
 		labels = []string{}
 	}
 	if env == nil {
 		env = map[string]string{}
 	}
+	if volumes == nil {
+		volumes = []string{}
+	}
 	envJSON, err := json.Marshal(env)
 	if err != nil {
 		return err
 	}
 	const q = `
-		INSERT INTO agents(id, hostname, os, labels, version, env, last_seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		INSERT INTO agents(id, hostname, os, labels, version, env, volumes, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		ON CONFLICT (id) DO UPDATE
 		  SET hostname     = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
 		      os           = COALESCE(NULLIF(EXCLUDED.os, ''), agents.os),
 		      labels       = (SELECT ARRAY(SELECT DISTINCT unnest(agents.labels || EXCLUDED.labels))),
 		      version      = COALESCE(NULLIF(EXCLUDED.version, ''), agents.version),
 		      env          = CASE WHEN EXCLUDED.env = '{}'::jsonb THEN agents.env ELSE EXCLUDED.env END,
+		      volumes      = CASE WHEN cardinality(EXCLUDED.volumes) > 0 THEN EXCLUDED.volumes ELSE agents.volumes END,
 		      last_seen_at = NOW();
 	`
-	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON)
+	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON, volumes)
 	return err
 }
 
@@ -1567,7 +1657,7 @@ func (p *Postgres) DeleteAgent(ctx context.Context, agentID string) error {
 }
 
 func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
-	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities FROM agents ORDER BY last_seen_at DESC`
+	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes FROM agents ORDER BY last_seen_at DESC`
 	rows, err := p.pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1577,7 +1667,7 @@ func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
 	for rows.Next() {
 		var a api.AgentInfo
 		var envJSON []byte
-		if err := rows.Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities); err != nil {
+		if err := rows.Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(envJSON, &a.Env)
@@ -1590,11 +1680,11 @@ func (p *Postgres) ListAgents(ctx context.Context) ([]api.AgentInfo, error) {
 }
 
 func (p *Postgres) GetAgent(ctx context.Context, id string) (*api.AgentInfo, error) {
-	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities FROM agents WHERE id = $1`
+	const q = `SELECT id, hostname, os, labels, version, env, last_seen_at, capabilities, volumes FROM agents WHERE id = $1`
 	var a api.AgentInfo
 	var envJSON []byte
 	err := p.pool.QueryRow(ctx, q, id).
-		Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities)
+		Scan(&a.ID, &a.Hostname, &a.OS, &a.Labels, &a.Version, &envJSON, &a.LastSeenAt, &a.Capabilities, &a.Volumes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -1702,6 +1792,13 @@ func (p *Postgres) ListStuckRuns(ctx context.Context, staleAfter, grace time.Dur
 // k8s agent is live) is intentionally left Queued rather than auto-failed
 // here — it is surfaced instead via the JobDetail unschedulable banner
 // (see serveJobSchedulability). Do not add a capability clause to this query.
+//
+// The same holds for the volume clause ClaimNextRun ANDs in
+// (`r.required_volumes` against the agent's free `volumes`): volumes only make
+// claiming stricter, so a label-unclaimable run is also volume-unclaimable, and
+// a run that is label-claimable but waiting on a volume (busy right now, or not
+// yet advertised by any live agent) is intentionally left Queued rather than
+// auto-failed here. Do not add a volume clause to this query either.
 //
 // limit bounds the batch. The liveness answer this query returns is a snapshot,
 // and every run the caller acts on is acted on with an answer that is as stale as

@@ -36,8 +36,8 @@ func TestListStuckRuns(t *testing.T) {
 	require.NoError(t, err)
 	pendingRunID := pendingRun.ID
 
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-stale", "host", "linux", "dev", nil, nil, nil))
-	require.NoError(t, pg.UpsertAgent(ctx, "agent-fresh", "host", "linux", "dev", nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-stale", "host", "linux", "dev", nil, nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-fresh", "host", "linux", "dev", nil, nil, nil, nil))
 
 	_, err = pg.pool.Exec(ctx,
 		`UPDATE agents SET last_seen_at = NOW() - interval '5 minutes' WHERE id = $1`, "agent-stale")
@@ -115,7 +115,7 @@ func TestTouchAgent_RecreatesDeletedRowSoLivenessIsNotLost(t *testing.T) {
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, pg.UpsertAgent(ctx, "a1", "host1", "linux", "dev", []string{"kind:linux"}, []string{"native"}, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "a1", "host1", "linux", "dev", []string{"kind:linux"}, []string{"native"}, nil, nil))
 
 	recreated, err := pg.TouchAgent(ctx, "a1")
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestListStuckRuns_HeartbeatAfterRowDeletionClearsTheOrphanMatch(t *testing.
 	run, err := pg.CreateRun(ctx, "hello", nil, []byte(`{}`), nil, nil, "", "")
 	require.NoError(t, err)
 
-	require.NoError(t, pg.UpsertAgent(ctx, "agent1", "host", "linux", "dev", nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(ctx, "agent1", "host", "linux", "dev", nil, nil, nil, nil))
 	_, err = pg.pool.Exec(ctx,
 		`UPDATE runs SET status = 'Running', claimed_by = $1, claimed_at = NOW() - interval '5 minutes' WHERE id = $2`,
 		"agent1", run.ID)

@@ -97,7 +97,7 @@ func TestApprovals_AgentCreateAndGet(t *testing.T) {
 	require.NoError(t, err)
 
 	// Register an agent so agentId exists.
-	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil, nil, nil))
 	// Claim the run as ag1 so the ownership guard on the agent-facing
 	// create-approval endpoint lets this request through.
 	claimRunForTest(t, pg, "ag1", run.ID)
@@ -139,7 +139,7 @@ func TestApprovals_AgentGet_NotFound(t *testing.T) {
 	run, err := pg.CreateRun(t.Context(), "j", nil, []byte(`{}`), nil, nil, "api", "")
 	require.NoError(t, err)
 
-	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil, nil))
+	require.NoError(t, pg.UpsertAgent(t.Context(), "ag1", "host1", "linux", "dev", nil, nil, nil, nil))
 	token := issueAgentAccessForTest(t, pg, "ag1", nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet,

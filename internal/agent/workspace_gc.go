@@ -10,9 +10,10 @@ import (
 )
 
 // gcWorkspaces is the opt-in, age-based sweep for per-job host workspace
-// directories (audit item 7). Persistent workspaces are a feature — a job's
-// working<slot>/<job> directory is an inter-run cache (see claimWorkDir in
-// workspace.go) — so this is never run unless an operator opts in via
+// directories (audit item 7). A working<slot>/<job> directory is emptied before
+// and after every run (see prepareWorkspace in workspace.go), so this only
+// reclaims what an agent crash left behind, and it is never run unless an
+// operator opts in via
 // AgentConfig.WorkspaceRetentionDays (see agent.go's wiring), and it is
 // deliberately conservative:
 //
