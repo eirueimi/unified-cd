@@ -89,9 +89,12 @@ func judgeableVolumes(sets [][]string) (judgeable [][]string, deferred bool) {
 
 // volumesCover reports whether an agent advertising agentVolumes satisfies
 // every candidate set: an AND over the sets, each of them an OR over its
-// candidates. Unlike capsCover there is no legacy "nil covers anything" case:
-// a null-caps agent predates capability routing, but no agent ever predates
-// volumes, so an agent that advertises none covers none.
+// candidates. Unlike capsCover, which holds a null-caps agent to the legacy
+// host baseline (native and container, never pod) rather than letting it cover
+// everything, there is no legacy fallback here: no agent ever predates volumes,
+// so an agent that advertises none covers none. Neither function has a "nil
+// covers anything" case, and capsCover must not regain one: it would let a
+// host agent claim a pod run and silently drop its pod-level fields.
 func volumesCover(agentVolumes []string, sets [][]string) bool {
 	for _, set := range sets {
 		if !setCovered(agentVolumes, set) {

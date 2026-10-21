@@ -326,10 +326,11 @@ declares at least one candidate name for every entry, in addition to the
 capability and label checks. That is not a capability string: the agent
 advertises its volume names separately, as the `volumes` field of its
 registration, which the controller matches against each run's
-(template-expanded) volume names when the run is queued. Unlike capabilities
-there is no legacy "report nothing, match anything" case: an agent that
-declares no volumes covers none. A job naming a volume no suitable agent
-declares stays `Queued` (see [Job stays Queued: no agent declares
+(template-expanded) volume names when the run is queued. Unlike capabilities,
+which fall back to a legacy baseline for an agent that reports none (see
+Legacy agents below), volumes have no such fallback: an agent that declares
+no volumes covers none. A job naming a volume no suitable agent declares
+stays `Queued` (see [Job stays Queued: no agent declares
 volume](../troubleshooting/runs-and-scheduling.md#job-stays-queued-no-agent-declares-volume)).
 
 **Legacy agents** (an agent binary from before capability routing, or any

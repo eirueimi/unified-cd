@@ -38,13 +38,16 @@ func TestClaimNextRun_CapabilityMatch(t *testing.T) {
 	assert.Equal(t, nativeRun.ID, got.ID)
 }
 
-func TestClaimNextRun_LegacyAgentSkipsCapCheck(t *testing.T) {
+func TestClaimNextRun_LegacyAgentGetsHostBaselineNotAFreePass(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres")
 	}
 	pg := NewTestPostgres(t)
 	ctx := context.Background()
-	// legacy agent: capabilities NULL (passed as nil)
+	// legacy agent: capabilities NULL (passed as nil). It is held to the
+	// {native, container} baseline rather than skipping the capability check,
+	// so it still claims this native run by labels. TestClaimNextRun_
+	// NullCapabilitiesMeansLegacyHostBaseline pins the pod side of the rule.
 	require.NoError(t, pg.UpsertAgent(ctx, "legacy-1", "l1", "linux", "", []string{}, nil, nil, nil))
 	_, _ = pg.UpsertJob(ctx, "j", "unified-cd/v1", []byte(`{}`))
 	_, err := pg.CreateRun(ctx, "j", nil, []byte(`{}`), []string{}, []string{"native"}, "test", "")
@@ -53,7 +56,7 @@ func TestClaimNextRun_LegacyAgentSkipsCapCheck(t *testing.T) {
 	require.NoError(t, err)
 	got, err := pg.ClaimNextRun(ctx, "legacy-1", []string{}, nil)
 	require.NoError(t, err)
-	require.NotNil(t, got, "a legacy (null-caps) agent must still claim by labels only")
+	require.NotNil(t, got, "a legacy (null-caps) agent holds the native+container baseline and so claims a native run by labels")
 }
 
 func TestUpsertAgentOnClaim_PreservesCapabilities(t *testing.T) {
