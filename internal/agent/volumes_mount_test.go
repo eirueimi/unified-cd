@@ -279,6 +279,13 @@ func TestMountVolumes_NativeAbsolutePathInsideTheWorkspaceIsRejected(t *testing.
 		// A POSIX-rooted path on Windows cannot spell a drive-qualified
 		// directory, so reach the workspace through its own rooted form.
 		inside = strings.TrimPrefix(inside, filepath.VolumeName(workDir))
+		// ...and a rooted path resolves against the CURRENT drive, not the
+		// workspace's. This test passed locally and failed on CI only because
+		// the runner checks out on D: while its TEMP is on C:, so the stripped
+		// path landed on a drive the workspace is not on and there was nothing
+		// to reject. Put the process on the workspace's drive so the path means
+		// what the test needs it to mean.
+		t.Chdir(workDir)
 	}
 	_, _, err := mountVolumes(workDir, []dsl.VolumeMount{vmount("a", "", inside)}, m, true)
 	require.Error(t, err)
