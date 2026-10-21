@@ -82,6 +82,9 @@ type K8sAgent struct {
 	drain context.Context
 	// lockGraceOverride replaces defaultVolumeLockGrace when positive. Tests only.
 	lockGraceOverride time.Duration
+	// volumeStats caches the latest in-pod measurement of each named volume
+	// (see measureVolumes). It is written by runs and read by the heartbeat.
+	volumeStats volumeReadings
 }
 
 // k8sAgentCapabilities reports what the k8s agent can execute: it always
@@ -198,7 +201,7 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	// Heartbeat bound to runCtx (not ctx): a drain must not stop heartbeats, or
 	// the stuck-run reaper would fail a healthy draining run after staleAfter.
 	// Joined before Run returns so no beat outlives Run.
-	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval, activeRuns.Snapshot, a.podBindings.Snapshot)
+	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval, activeRuns.Snapshot, a.podBindings.Snapshot, a.storageReading)
 	go a.runPodGC(runCtx, time.Minute)
 
 	// Concurrency gates: MaxConcurrent for normal runs; a SEPARATE
@@ -529,6 +532,13 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 		}
 	}
 
+	// The run is about to use its volumes, so this is when their headroom is
+	// cheapest to read: the pod is up, the mounts are in place and a requested
+	// wipe has just happened. Best effort and time-bounded; it never fails the
+	// run. It stays off the heartbeat goroutine, which only reads the result.
+	// The run is measured again after it ends (below).
+	a.measureVolumes(ctx, podName, firstStepContainer(c), mountPath, volumeMounts)
+
 	// backend is the seam between the shared step-orchestration loop
 	// (agentlib.RunClaim) and this pod's concrete execution environment. Its
 	// scope-pod map is torn down at claim end by RunClaim's own deferred
@@ -540,6 +550,15 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	backend.volumes = mountedVolumes(mountPath, volumeMounts)
 
 	agentlib.RunClaim(ctx, a.client, a.cfg.AgentID, c, backend)
+
+	// Measure again now the run is over. The reading above is the headroom the
+	// run started with (after a requested wipe it is always near-full), and a
+	// run that fills a volume and fails would otherwise never be seen. This one
+	// is the figure an alert needs. The pod is still alive: its delete and the
+	// volume release are deferred above and have not run. WithoutCancel so a
+	// cancelled or timed-out run is measured too; measureVolumes adds its own
+	// bound. A dead container just fails the exec and caches nothing.
+	a.measureVolumes(context.WithoutCancel(ctx), podName, firstStepContainer(c), mountPath, volumeMounts)
 }
 
 // clearReusedWorkspace empties mountPath in a reused pooled pod, or in a
@@ -550,14 +569,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 // the workspace mount. A failure is returned rather than ignored: running on a workspace that
 // still holds the previous run's files is exactly what this prevents.
 func (a *K8sAgent) clearReusedWorkspace(ctx context.Context, podName string, c api.ClaimResponse, mountPath string, vols []agentlib.MountedVolume) error {
-	firstContainer := ""
-	for _, stage := range c.Stages {
-		steps := api.StageSteps(stage)
-		if len(steps) > 0 {
-			firstContainer = execContainer(steps[0])
-			break
-		}
-	}
+	firstContainer := firstStepContainer(c)
 	// nil shell: this is an internal maintenance script (not user-authored
 	// run:), so the shim default (["/.ucd/ucd-sh","-c"], POSIX-compatible)
 	// is always sufficient regardless of any step's declared shell:.
@@ -570,6 +582,20 @@ func (a *K8sAgent) clearReusedWorkspace(ctx context.Context, podName string, c a
 		return fmt.Errorf("clearing %s exited %d", mountPath, exit)
 	}
 	return nil
+}
+
+// firstStepContainer is the container of the claim's first step: the one
+// guaranteed to exist and carry the workspace and volume mounts, so it is where
+// maintenance commands run. "" when the claim has no step, which the executor
+// reads as the default "job" container.
+func firstStepContainer(c api.ClaimResponse) string {
+	for _, stage := range c.Stages {
+		steps := api.StageSteps(stage)
+		if len(steps) > 0 {
+			return execContainer(steps[0])
+		}
+	}
+	return ""
 }
 
 // claimPodTeardownContext builds the context for the claim Pod's own teardown

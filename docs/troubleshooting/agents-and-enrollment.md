@@ -191,3 +191,47 @@ dropping it would turn a persistent workspace into an ephemeral one.
 
 **Fix:** remove the block and move the persistence to a named volume, following the [migration
 guide](../operator-manual/migrations/2026-10-20-named-volumes.md#workspacepvc-is-removed).
+
+## A host agent is not claiming: `free disk space below minimum, skipping claim`
+
+**Symptom**
+
+Runs sit `Queued` although an agent that matches them is connected and heartbeating, and that agent's
+log repeats (every 2 seconds per concurrency slot):
+
+```
+level=WARN msg="free disk space below minimum, skipping claim" freeBytes=4203003904 minFreeDisk=5368709120 slot=0
+```
+
+On `/metrics` the agent shows:
+
+```
+unifiedcd_agent_claim_blocked_by_disk{agent="build-agent-01"} 1
+```
+
+**Cause**
+
+The agent's `minFreeDisk` is set and the free space on its workspace filesystem has dropped below it,
+so the agent declines to claim anything until space frees up. Nothing is deleted and no run fails; the
+queue just stops draining on that agent. `unifiedcd_agent_workspace_filesystem_free_bytes` against
+`unifiedcd_agent_min_free_disk_bytes` shows by how much. The value is reported with the agent's 15s
+heartbeat, so it can trail the log line by up to that long.
+
+If the metric is `0`, the agent is not declining because of disk: look at labels, concurrency and
+volumes instead ([Run stays `Queued` forever](runs-and-scheduling.md#run-stays-queued-forever)). If
+the series is absent, the agent is a Kubernetes agent (which has no claim-time disk check), is not
+alive, or predates the metric, so its absence says nothing about disk. If
+`unifiedcd_agent_min_free_disk_bytes` is `0`, `minFreeDisk` is unset and this check is disabled: a full
+disk will fail runs instead of pausing claims.
+
+**Fix**
+
+Free space on the filesystem that holds `workspaceDir`: remove workspaces a crashed run left behind,
+prune container images and stopped claim containers, or enable `workspaceRetentionDays`
+(see [Operations Guide: Workspace and Claim-Container
+Hygiene](../operator-manual/operations.md#workspace-and-claim-container-hygiene)). The agent resumes
+claiming on its own at the next check, and `unifiedcd_agent_claim_blocked_by_disk` returns to `0`. A
+named volume on a different filesystem is not covered by this check; watch
+`unifiedcd_agent_volume_filesystem_free_bytes` for it. If you see `free disk space check failed,
+proceeding with claim` instead, the agent could not measure the filesystem and kept claiming; check
+that `workspaceDir` exists and is readable.

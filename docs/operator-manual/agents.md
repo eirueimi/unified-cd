@@ -771,7 +771,7 @@ volumes:
 | `name` | Yes | What jobs call it. One path segment: `.`, `..` and names containing `/` or `\` are rejected. Names are matched exactly. |
 | `mode` | Yes | `exclusive`: at most one run on this agent holds the volume at a time. `shared`: any number of runs may hold it, with **no** write-safety guarantee from unified-cd. |
 | `path` | No | Absolute host directory backing the volume. Defaults to `<workspaceDir>/volumes/<name>`. Created at startup if absent. |
-| `size` | No | Advisory capacity such as `200Gi`. After each run the agent measures the volume and warns when it exceeds this; it **never enforces** it, because per-directory quotas are not portable across operating systems without root. |
+| `size` | No | Advisory capacity such as `200Gi`. After each run the agent measures the volume and warns when it exceeds this; it **never enforces** it, because per-directory quotas are not portable across operating systems without root. The free space of the filesystem under the volume is on `/metrics`: see [Watching agent disk headroom](operations.md#watching-agent-disk-headroom). |
 | `storageClassName` | — | Kubernetes only; ignored on a host agent. |
 
 The agent refuses to start (`volume "<name>": ...`) on a bad entry: a missing or unknown `mode`, a

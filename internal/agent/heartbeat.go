@@ -34,7 +34,15 @@ const heartbeatTimeout = 10 * time.Second
 // api.HeartbeatRequest.PodBindings; it exists for the Kubernetes agent (see
 // api.HeartbeatRequest.PodBindings' doc comment) and every host-agent caller
 // passes nil, which simply sends no bindings.
-func StartHeartbeat(ctx context.Context, client *Client, agentID string, interval time.Duration, activeRunIDs func() []string, podBindings func() map[string]api.PodBinding) <-chan struct{} {
+//
+// storage is likewise called once per beat and forwarded unchanged as
+// api.HeartbeatRequest.Storage, so the controller holds the reading from the
+// beat it last heard. The provider measures; this goroutine only carries the
+// result. A nil provider, or one that returns nil, sends no reading, and the
+// controller drops whatever it held for the agent (the Kubernetes agent passes
+// nil until it has a reading of its own). Like podBindings, it rides only on a
+// beat that has a body, so it is not sent when activeRunIDs is nil.
+func StartHeartbeat(ctx context.Context, client *Client, agentID string, interval time.Duration, activeRunIDs func() []string, podBindings func() map[string]api.PodBinding, storage func() *api.AgentStorage) <-chan struct{} {
 	if interval <= 0 {
 		interval = DefaultHeartbeatInterval
 	}
@@ -57,7 +65,11 @@ func StartHeartbeat(ctx context.Context, client *Client, agentID string, interva
 				if podBindings != nil {
 					bindings = podBindings()
 				}
-				err := client.Heartbeat(hbCtx, agentID, ids, bindings)
+				var reading *api.AgentStorage
+				if storage != nil {
+					reading = storage()
+				}
+				err := client.Heartbeat(hbCtx, agentID, ids, bindings, reading)
 				cancel()
 				if err != nil && ctx.Err() == nil {
 					slog.Warn("agent heartbeat failed", "agentId", agentID, "error", err)

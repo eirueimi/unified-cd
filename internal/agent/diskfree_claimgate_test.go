@@ -15,9 +15,9 @@ import (
 )
 
 // TestAgent_MinFreeDisk_SkipsClaimWhileBelowThreshold drives the real
-// runLoop (via Agent.Run) with an injected freeBytesFn. While reported free
+// runLoop (via Agent.Run) with an injected diskStatsFn. While reported free
 // space is below MinFreeDisk, the loop must never call Claim. Once
-// freeBytesFn reports free space at/above MinFreeDisk, claiming resumes.
+// diskStatsFn reports free space at/above MinFreeDisk, claiming resumes.
 func TestAgent_MinFreeDisk_SkipsClaimWhileBelowThreshold(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/agents/register", registerHandler)
@@ -49,10 +49,10 @@ func TestAgent_MinFreeDisk_SkipsClaimWhileBelowThreshold(t *testing.T) {
 		MaxConcurrent: 1,
 		WorkspaceDir:  t.TempDir(),
 		MinFreeDisk:   minFreeDisk,
-		freeBytesFn: func(string) (uint64, error) {
+		diskStatsFn: func(string) (uint64, uint64, error) {
 			freeMu.Lock()
 			defer freeMu.Unlock()
-			return freeVal, nil
+			return freeVal, freeVal, nil
 		},
 	}
 

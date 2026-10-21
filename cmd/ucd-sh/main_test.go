@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +130,92 @@ func TestCLI_EndToEnd(t *testing.T) {
 			t.Fatalf("output = %q, want %q", got, "works-from-installed-copy")
 		}
 	})
+}
+
+// parseStatfsLine parses the one-line "free=<bytes> total=<bytes>" contract
+// that `ucd-sh statfs` prints, failing the test on any deviation from it.
+func parseStatfsLine(t *testing.T, stdout string) (free, total uint64) {
+	t.Helper()
+	if !strings.HasSuffix(stdout, "\n") || strings.Count(stdout, "\n") != 1 {
+		t.Fatalf("stdout = %q, want exactly one newline-terminated line", stdout)
+	}
+	if _, err := fmt.Sscanf(stdout, "free=%d total=%d\n", &free, &total); err != nil {
+		t.Fatalf("stdout = %q, does not match %q: %v", stdout, "free=<bytes> total=<bytes>", err)
+	}
+	return free, total
+}
+
+func TestUcdSh_Statfs_PrintsFreeAndTotal(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"statfs", t.TempDir()}, strings.NewReader(""), &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, errOut.String())
+	}
+	free, total := parseStatfsLine(t, out.String())
+	// free may legitimately be 0 on a full disk; total never is.
+	if total == 0 {
+		t.Fatalf("total = 0, want a positive size (stdout: %q)", out.String())
+	}
+	if free > total {
+		t.Fatalf("free = %d exceeds total = %d", free, total)
+	}
+}
+
+func TestUcdSh_Statfs_MissingPathExitsNonZeroAndPrintsNothing(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	var out, errOut bytes.Buffer
+	code := run([]string{"statfs", missing}, strings.NewReader(""), &out, &errOut)
+	if code == 0 {
+		t.Fatalf("exit code = 0, want non-zero for a missing path")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty so a caller cannot parse a zero out of it", out.String())
+	}
+	if !strings.HasPrefix(errOut.String(), "[ucd-sh] statfs: ") {
+		t.Fatalf("stderr = %q, want it prefixed with %q", errOut.String(), "[ucd-sh] statfs: ")
+	}
+}
+
+func TestUcdSh_Statfs_WrongArgCountIsUsage(t *testing.T) {
+	for _, args := range [][]string{{"statfs"}, {"statfs", "a", "b"}} {
+		var out, errOut bytes.Buffer
+		code := run(args, strings.NewReader(""), &out, &errOut)
+		if code != 2 {
+			t.Fatalf("run(%q) exit code = %d, want 2", args, code)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("run(%q) stdout = %q, want empty", args, out.String())
+		}
+		if !strings.Contains(errOut.String(), "usage:") {
+			t.Fatalf("run(%q) stderr = %q, want a usage message", args, errOut.String())
+		}
+	}
+}
+
+// TestCLI_Statfs_EndToEnd drives the real binary: stdout must be exactly the
+// one-line contract with nothing else on it, and a failure must leave stdout
+// empty.
+func TestCLI_Statfs_EndToEnd(t *testing.T) {
+	bin := buildUcdSh(t)
+
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command(bin, "statfs", t.TempDir())
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("statfs: %v (stderr: %s)", err, stderr.String())
+	}
+	parseStatfsLine(t, stdout.String())
+
+	stdout.Reset()
+	stderr.Reset()
+	cmd = exec.Command(bin, "statfs", filepath.Join(t.TempDir(), "does-not-exist"))
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err == nil {
+		t.Fatal("statfs of a missing path succeeded, want a non-zero exit")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty on failure", stdout.String())
+	}
 }
 
 // buildUcdSh compiles cmd/ucd-sh into a temp directory once per test binary

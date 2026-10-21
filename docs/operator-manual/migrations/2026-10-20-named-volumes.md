@@ -264,5 +264,7 @@ Each has a symptom entry with the exact string to search for:
       unknown name leaves the run `Queued`.
 - [ ] Kubernetes: Role updated, `agentName` set, sidecar image current, volume names are DNS labels.
 - [ ] Disk monitoring includes each host agent's volume paths (default `<workspaceDir>/volumes/<name>`).
+      The controller exports each volume's free space as `unifiedcd_agent_volume_filesystem_free_bytes`;
+      see [Watching agent disk headroom](../operations.md#watching-agent-disk-headroom).
 - [ ] Jobs that persisted secrets or credentials in the old workspace are reviewed: a volume
       *does* persist them, and a workspace no longer does.

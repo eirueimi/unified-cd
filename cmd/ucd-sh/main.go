@@ -46,6 +46,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		shim.Pause()
 		return 0
 
+	case "statfs":
+		if len(args) != 2 {
+			usage(stderr)
+			return 2
+		}
+		free, total, err := shim.Statfs(args[1])
+		if err != nil {
+			// Nothing goes to stdout on failure: the caller parses stdout as
+			// numbers, so an error must never look like "free=0 total=0".
+			fmt.Fprintf(stderr, "[ucd-sh] statfs: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "free=%d total=%d\n", free, total)
+		return 0
+
 	case "--install":
 		if len(args) != 2 {
 			usage(stderr)
@@ -64,5 +79,5 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: ucd-sh -c <script> | ucd-sh pause | ucd-sh --install <path>")
+	fmt.Fprintln(w, "usage: ucd-sh -c <script> | ucd-sh pause | ucd-sh statfs <path> | ucd-sh --install <path>")
 }

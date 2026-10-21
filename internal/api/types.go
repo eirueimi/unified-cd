@@ -107,6 +107,12 @@ type HeartbeatRequest struct {
 	// yet know a run's binding; RequireRunBinding's default is chosen with
 	// that window in mind.
 	PodBindings map[string]PodBinding `json:"podBindings,omitempty"`
+
+	// Storage is the agent's latest disk-headroom reading, replaced wholesale
+	// on every beat. nil means the agent reported none (a legacy agent, or one
+	// whose measurement gave up): the controller then drops whatever it held,
+	// so a silent agent loses its series instead of keeping a stale one alive.
+	Storage *AgentStorage `json:"storage,omitempty"`
 }
 
 // PodBinding names the Kubernetes Pod a heartbeating Kubernetes agent
@@ -447,6 +453,56 @@ type AgentInfo struct {
 	Capabilities []string          `json:"capabilities,omitempty"`
 	// Volumes lists the named volumes the agent declares in its own config.
 	Volumes []string `json:"volumes,omitempty"`
+}
+
+// FilesystemStats is one filesystem's free and total capacity, in bytes.
+type FilesystemStats struct {
+	FreeBytes  uint64 `json:"freeBytes"`
+	TotalBytes uint64 `json:"totalBytes"`
+}
+
+// VolumeStats is the reading for one named volume. MeasuredAt is when the agent
+// took it, not when the controller stored it, so a reading that stopped being
+// refreshed stays visibly old.
+type VolumeStats struct {
+	FilesystemStats
+	MeasuredAt time.Time `json:"measuredAt"`
+}
+
+// AgentStorage is one agent's disk headroom, as carried on a heartbeat and
+// persisted by the controller.
+//
+// It is a snapshot: the controller replaces everything it holds for the agent
+// with each reading, so a volume dropped from the agent's configuration loses
+// its row rather than lingering.
+//
+// An agent may legitimately omit parts of it, which is why Workspace is a
+// pointer and Volumes a map. A Kubernetes agent has no workspace filesystem and
+// no minFreeDisk. Absent must stay absent end to end: a zero would read as
+// "plenty of space" (or as a disk that is exactly full), and a false
+// reassurance is worse than no series at all.
+type AgentStorage struct {
+	// AgentName is the name the metrics series are labelled with next to the
+	// agent ID: the hostname for a host agent, the configured agentName for a
+	// Kubernetes agent. Replicas of one Kubernetes agent each enrol under their
+	// own agent ID yet share one set of PVCs named <agentName>-<volume>, so the
+	// ID alone would report one physical volume N times.
+	AgentName string `json:"agentName,omitempty"`
+	// Workspace is the workspace filesystem; nil when the agent has none.
+	Workspace *FilesystemStats `json:"workspace,omitempty"`
+	// Volumes is keyed by volume name; nil or empty when the agent declares none
+	// or cannot measure them.
+	Volumes map[string]VolumeStats `json:"volumes,omitempty"`
+	// MinFreeDiskBytes is the agent's minFreeDisk threshold. nil means the agent
+	// has no such setting at all (a Kubernetes agent); a non-nil 0 means it is
+	// configured as 0, i.e. the check is disabled. The two must stay distinct:
+	// the disabled case is itself a warning an operator needs to see.
+	MinFreeDiskBytes *uint64 `json:"minFreeDiskBytes,omitempty"`
+	// ClaimBlockedByDisk reports whether the agent is currently declining to
+	// claim work because free space is below the threshold. nil means the agent
+	// performs no claim-time disk check; a non-nil false means it checked and is
+	// not blocked.
+	ClaimBlockedByDisk *bool `json:"claimBlockedByDisk,omitempty"`
 }
 
 type UploadArtifactStep struct {

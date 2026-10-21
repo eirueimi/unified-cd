@@ -120,8 +120,10 @@ full flag/env/yaml forms.
   agent from making the disk problem worse until space frees up (an operator
   clears old workspaces, an unrelated process on the host frees space, or the
   opt-in GC below runs). Watch the agent log for `free disk space below
-  minimum, skipping claim` to know when the lever is engaged. `0` (default)
-  disables the check, matching prior behavior.
+  minimum, skipping claim` to know when the lever is engaged, or alert on
+  `unifiedcd_agent_claim_blocked_by_disk` (see [Watching agent disk
+  headroom](#watching-agent-disk-headroom)). `0` (default) disables the check,
+  matching prior behavior.
 - **`workspaceRetentionDays` (`--workspace-retention-days` /
   `UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS`) — opt-in GC.** When set to a
   positive number of days, the agent runs a sweep at startup and then hourly
@@ -167,7 +169,9 @@ either.
 - `size` is **advisory**. After each run the agent measures the volume and logs
   `volume usage exceeds its advisory size; the size is not enforced` when it is over; alert on that
   line. It never stops a run. `minFreeDisk` checks the *workspace* filesystem only, so it does not
-  protect a volume that lives elsewhere.
+  protect a volume that lives elsewhere. The real number is on `/metrics`:
+  `unifiedcd_agent_volume_filesystem_free_bytes` reports the free space of the filesystem under each
+  volume ([Watching agent disk headroom](#watching-agent-disk-headroom)).
 - Two copies of a name on two agents are two independent copies, so total usage is the sum.
 - **Do not let two agent processes share a volume directory.** `exclusive` is enforced inside one
   process; two agents on one machine with the same `workspaceDir`, or one agent ID started twice,
@@ -193,6 +197,9 @@ either.
   when you are done with the data.
 - Changing `size` or `mode` in the config does not change an existing PVC; the agent logs a
   mismatch and leaves it alone. Expand it through your StorageClass, or delete and recreate.
+- A volume's free space is on `/metrics` as `unifiedcd_agent_volume_filesystem_free_bytes`, but it
+  is refreshed only when a run mounts the volume; see [Watching agent disk
+  headroom](#watching-agent-disk-headroom) before alerting on it.
 - **Never change `agentName` while volumes hold data.** The PVC names derive from it; a new name
   provisions new, empty PVCs and orphans the old ones.
 - A crashed run's lock on an exclusive volume clears itself, after up to about three minutes
@@ -398,7 +405,7 @@ Key metrics:
 | `unifiedcd_webhook_events_total{name,outcome}` | counter | Webhook ingress outcomes |
 | `unifiedcd_http_requests_total{method,route,code}` | counter | API traffic by chi route pattern |
 | `unifiedcd_http_request_duration_seconds{method,route}` | histogram | HTTP request duration by method and chi route pattern |
-| `unifiedcd_scrape_collector_errors_total` | counter | Errors collecting DB-backed gauges (`unifiedcd_runs_current`, `unifiedcd_agents`) at scrape time |
+| `unifiedcd_scrape_collector_errors_total` | counter | Errors collecting DB-backed gauges (`unifiedcd_runs_current`, `unifiedcd_agents` and the `unifiedcd_agent_*` disk series below) at scrape time |
 | `unifiedcd_build_info{version}` | gauge | Always `1`; the controller's build version is the label. See [Checking which version is running](#checking-which-version-is-running) |
 | `unifiedcd_run_time_to_claim_seconds` | histogram | Time from run creation to an agent claiming it. Spans Pending (git template resolution, concurrency gating) as well as Queued — it is the wait a CI user actually experiences, not pure queue time |
 | `unifiedcd_background_task_runs_total{task,outcome}` | counter | Background worker passes, by outcome (`success` / `error`) |
@@ -410,6 +417,13 @@ Key metrics:
 | `unifiedcd_db_pool_max_connections{pool}` | gauge | Configured ceiling per pool |
 | `unifiedcd_db_pool_empty_acquires_total{pool}` | counter | Acquires that found no free connection and had to wait |
 | `unifiedcd_db_pool_canceled_acquires_total{pool}` | counter | Acquires abandoned because the caller's context ended while waiting |
+| `unifiedcd_agent_workspace_filesystem_free_bytes{agent}` | gauge | Free bytes on the filesystem holding a **host** agent's `workspaceDir`. See [Watching agent disk headroom](#watching-agent-disk-headroom) |
+| `unifiedcd_agent_workspace_filesystem_size_bytes{agent}` | gauge | Total bytes of that filesystem |
+| `unifiedcd_agent_volume_filesystem_free_bytes{agent,agent_name,volume}` | gauge | Free bytes on the filesystem backing a [named volume](#named-volume-hygiene) |
+| `unifiedcd_agent_volume_filesystem_size_bytes{agent,agent_name,volume}` | gauge | Total bytes of that filesystem |
+| `unifiedcd_agent_volume_measured_timestamp_seconds{agent,agent_name,volume}` | gauge | Unix time at which the agent measured that volume: how old the free/size figures are |
+| `unifiedcd_agent_min_free_disk_bytes{agent}` | gauge | A host agent's configured `minFreeDisk`. **`0` means the claim-time disk check is disabled**, not that the disk is full |
+| `unifiedcd_agent_claim_blocked_by_disk{agent}` | gauge | `1` while a host agent is declining to claim because free disk is below `minFreeDisk`, else `0` |
 | `go_*`, `process_*` | various | Standard Go runtime and process collectors (goroutines, heap, GC pause, RSS, CPU, open FDs) |
 
 ### Watching the background workers
@@ -493,6 +507,123 @@ max(go_goroutines) by (instance)
 Ready-made Prometheus alerting rules for these metrics live in
 [`deployments/observability/prometheus-alerts.yaml`](https://github.com/eirueimi/unified-cd/blob/main/deployments/observability/prometheus-alerts.yaml)
 (no alive agents, queue backlog, high failure rate, collector errors).
+
+### Watching agent disk headroom
+
+Jobs fail when an agent runs out of disk. To give an operator something to alert on first, each
+agent measures the free and total space of the filesystems it depends on and reports them with its
+15s heartbeat; the controller stores the reading and serves it on `/metrics` at scrape time. Your
+Prometheus therefore needs to reach only the controller, never the agents.
+
+Every figure is the free and total space of **the filesystem a path sits on** (a `statfs`), not the
+number of bytes a particular volume occupies. Several volumes on one filesystem all report that
+filesystem's headroom, so do not add them up.
+
+| Series | Labels | Reported by |
+|---|---|---|
+| `unifiedcd_agent_workspace_filesystem_free_bytes` | `agent` | Host agents |
+| `unifiedcd_agent_workspace_filesystem_size_bytes` | `agent` | Host agents |
+| `unifiedcd_agent_volume_filesystem_free_bytes` | `agent`, `agent_name`, `volume` | Both |
+| `unifiedcd_agent_volume_filesystem_size_bytes` | `agent`, `agent_name`, `volume` | Both |
+| `unifiedcd_agent_volume_measured_timestamp_seconds` | `agent`, `agent_name`, `volume` | Both |
+| `unifiedcd_agent_min_free_disk_bytes` | `agent` | Host agents |
+| `unifiedcd_agent_claim_blocked_by_disk` | `agent` | Host agents |
+
+`agent` is the agent ID. `agent_name` is the Kubernetes agent's configured `agentName`; on a host
+agent it is the machine's hostname. All are gauges.
+
+**A missing series never means "fine".** Each series exists only while the agent can answer it, and
+a series that is not there is not a zero. The cases:
+
+- **`minFreeDisk` defaults to `0`, and `0` means the claim-time check is disabled** (not "no space
+  left"). An operator who has never set it has no protection at all, and
+  `unifiedcd_agent_min_free_disk_bytes` publishes that `0` so the gap is visible. The headroom
+  series are a warning; **setting `minFreeDisk` is what turns the warning into protection**, because
+  it is what makes the agent stop claiming before the disk fills. See [Workspace and Claim-Container
+  Hygiene](#workspace-and-claim-container-hygiene).
+- **A Kubernetes agent omits the series it cannot answer.** It has no workspace directory (every
+  claim pod gets an ephemeral `emptyDir`), `minFreeDisk` is a host-only setting, and the claim-time
+  check exists only in the host agent's claim loop. So a Kubernetes agent publishes no
+  `workspace_filesystem_*`, no `min_free_disk_bytes` and no `claim_blocked_by_disk`. Absent means
+  "not applicable", and it must not be read as "not blocked".
+- **A Kubernetes volume figure is only as fresh as the last run that mounted the volume.** The agent
+  measures it from inside the claim pod, which already has the PVC mounted, both before the run
+  starts and again after it ends (so it includes what the run just wrote). Nothing measures an idle
+  volume, so its figure ages. Judge it by
+  `unifiedcd_agent_volume_measured_timestamp_seconds`. A measurement that fails leaves the previous
+  reading and its timestamp in place; it never publishes a zero. A restarted Kubernetes agent holds
+  no readings at all, so a volume's series are **absent** until a run next mounts that volume,
+  deliberately, rather than showing a number from before the restart.
+- **A host agent measures every 15s**, in the background, and omits a filesystem whose measurement
+  failed or went stale (no fresh answer for about two intervals, which is what a hung network mount
+  looks like) rather than reporting a zero or an old number. The workspace and each volume are
+  omitted independently. A volume dropped from the agent's config loses its series on the next
+  heartbeat.
+- **Only live agents are reported.** An agent that has not heartbeated within 90s (the same window as
+  `unifiedcd_agents{state="alive"}`), and one that was deleted, has no series at all rather than its
+  last reading. A threshold alert on these series therefore **resolves when an agent dies**; alert on
+  `unifiedcd_agents{state="stale"}` or an agent's disappearance separately. An agent running a
+  version from before these series existed reports none. **A Kubernetes rollout does the same
+  thing.** A Kubernetes agent's ID carries its pod UID, so a restarted pod enrols under a new ID:
+  the old ID's series vanish at once when the pod shuts down gracefully (it deregisters) or after the
+  90s window when it dies without deregistering, and the new ID has no volume readings until a run
+  next mounts each volume. On a single-replica deployment, a rollout therefore **silently resolves a
+  firing low-disk alert** for that volume, and nothing fires again until a run happens to mount it.
+
+**Aggregate Kubernetes volumes before alerting.** Several Kubernetes agent replicas share one set of
+PVCs, named `<agentName>-<volume>`, but each replica enrols under its own agent ID. One physical
+volume therefore appears as several series, one per replica, each with its own age. An alert on the
+raw series fires once per replica. Aggregate on the labels that identify the physical volume:
+
+```promql
+min by (agent_name, volume) (unifiedcd_agent_volume_filesystem_free_bytes)
+```
+
+On a host agent `agent_name` is the hostname, so the same query changes nothing there (barring two
+host agents on one machine declaring a volume of the same name, or hosts whose hostname is empty, so that `agent_name` is blank, which it merges) and one rule serves
+both agent types. `min` is the conservative choice, but it can surface a low reading from a replica
+that has not mounted the volume for a while; check the timestamp before acting on it. Because
+these series are read from the database, every controller replica serves the same values, and the
+aggregation above also collapses the per-replica `instance` label.
+
+Example queries:
+
+```promql
+# Free space per physical volume (alert when it falls below your threshold)
+min by (agent_name, volume) (unifiedcd_agent_volume_filesystem_free_bytes)
+
+# Fraction free per physical volume
+min by (agent_name, volume) (
+  unifiedcd_agent_volume_filesystem_free_bytes / unifiedcd_agent_volume_filesystem_size_bytes
+)
+
+# Age of the freshest reading of each volume, in seconds. On a Kubernetes agent this grows while no
+# run mounts the volume; on a healthy host agent it is up to about 30s and reaches about 45s only
+# when a sample is missed (the agent drops a reading older than 30s, and the controller holds it
+# until the next 15s heartbeat). For an agent that has stopped heartbeating but is still inside the
+# 90s live window it can reach about 120s (about 105s if no sample was missed)
+time() - max by (agent_name, volume) (unifiedcd_agent_volume_measured_timestamp_seconds)
+
+# Host agent workspace filesystem more than 90% full
+1 - unifiedcd_agent_workspace_filesystem_free_bytes
+  / unifiedcd_agent_workspace_filesystem_size_bytes > 0.9
+
+# Host agents with no claim-time disk check at all (minFreeDisk unset)
+max by (agent) (unifiedcd_agent_min_free_disk_bytes) == 0
+
+# Host agents within 2 GiB of the point where they stop claiming (only where minFreeDisk is set)
+unifiedcd_agent_workspace_filesystem_free_bytes - unifiedcd_agent_min_free_disk_bytes < 2 * 1024^3
+  and unifiedcd_agent_min_free_disk_bytes > 0
+
+# A host agent is declining to claim because of disk right now
+max by (agent) (unifiedcd_agent_claim_blocked_by_disk) == 1
+```
+
+The shipped alerting rules in
+[`deployments/observability/prometheus-alerts.yaml`](https://github.com/eirueimi/unified-cd/blob/main/deployments/observability/prometheus-alerts.yaml)
+include no disk rules, because the right thresholds depend on your disks and volumes. If your
+Prometheus can also reach the cluster, kubelet publishes its own `kubelet_volume_stats_*` series for
+PVCs; the series above exist for the case where only the controller is reachable.
 
 ---
 

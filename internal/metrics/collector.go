@@ -14,6 +14,9 @@ import (
 type Counts interface {
 	CountRunsByStatus(ctx context.Context) (map[api.RunStatus]int, error)
 	CountAgentsByLiveness(ctx context.Context, staleAfter time.Duration) (alive, stale int, err error)
+	// ListAgentStorage returns each live agent's last disk-headroom reading,
+	// keyed by agent ID. Agents that never reported are absent.
+	ListAgentStorage(ctx context.Context, staleAfter time.Duration) (map[string]api.AgentStorage, error)
 }
 
 // collectTimeout bounds the DB work done per scrape.
@@ -24,6 +27,32 @@ var (
 		"Current number of non-terminal runs, by status.", []string{"status"}, nil)
 	agentsDesc = prometheus.NewDesc("unifiedcd_agents",
 		"Registered agents, by heartbeat liveness.", []string{"state"}, nil)
+
+	// Agent disk headroom, read from the database at scrape time so a deleted
+	// or reaped agent's series disappear instead of freezing at their last
+	// value. Each series exists only when the agent reported it: an absent
+	// series is honest, a zero would claim "plenty of space" or "not blocked".
+	workspaceFreeDesc = prometheus.NewDesc("unifiedcd_agent_workspace_filesystem_free_bytes",
+		"Free bytes on the agent's workspace filesystem, as last measured by the agent.",
+		[]string{"agent"}, nil)
+	workspaceSizeDesc = prometheus.NewDesc("unifiedcd_agent_workspace_filesystem_size_bytes",
+		"Total bytes of the agent's workspace filesystem, as last measured by the agent.",
+		[]string{"agent"}, nil)
+	volumeFreeDesc = prometheus.NewDesc("unifiedcd_agent_volume_filesystem_free_bytes",
+		"Free bytes on the filesystem backing a named volume, as last measured by the agent.",
+		[]string{"agent", "agent_name", "volume"}, nil)
+	volumeSizeDesc = prometheus.NewDesc("unifiedcd_agent_volume_filesystem_size_bytes",
+		"Total bytes of the filesystem backing a named volume, as last measured by the agent.",
+		[]string{"agent", "agent_name", "volume"}, nil)
+	volumeMeasuredDesc = prometheus.NewDesc("unifiedcd_agent_volume_measured_timestamp_seconds",
+		"Unix time at which the agent last measured a named volume's filesystem.",
+		[]string{"agent", "agent_name", "volume"}, nil)
+	minFreeDiskDesc = prometheus.NewDesc("unifiedcd_agent_min_free_disk_bytes",
+		"The agent's configured minFreeDisk threshold in bytes; 0 means the claim-time disk check is disabled. Absent for an agent with no such setting.",
+		[]string{"agent"}, nil)
+	claimBlockedDesc = prometheus.NewDesc("unifiedcd_agent_claim_blocked_by_disk",
+		"1 if the agent is currently declining to claim work because free disk is below its minFreeDisk threshold, else 0. Absent for an agent that performs no claim-time disk check.",
+		[]string{"agent"}, nil)
 )
 
 type dbCollector struct {
@@ -41,6 +70,13 @@ func (m *Metrics) RegisterDBCollector(c Counts, staleAfter time.Duration) {
 func (d *dbCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- runsCurrentDesc
 	ch <- agentsDesc
+	ch <- workspaceFreeDesc
+	ch <- workspaceSizeDesc
+	ch <- volumeFreeDesc
+	ch <- volumeSizeDesc
+	ch <- volumeMeasuredDesc
+	ch <- minFreeDiskDesc
+	ch <- claimBlockedDesc
 }
 
 // Collect queries the DB with a bounded timeout. On error it increments the
@@ -65,5 +101,53 @@ func (d *dbCollector) Collect(ch chan<- prometheus.Metric) {
 	} else {
 		ch <- prometheus.MustNewConstMetric(agentsDesc, prometheus.GaugeValue, float64(alive), "alive")
 		ch <- prometheus.MustNewConstMetric(agentsDesc, prometheus.GaugeValue, float64(stale), "stale")
+	}
+
+	if storage, err := d.counts.ListAgentStorage(ctx, d.staleAfter); err != nil {
+		d.errors.Inc()
+		slog.Warn("metrics: list agent storage", "error", err)
+	} else {
+		for id, s := range storage {
+			emitAgentStorage(ch, id, s)
+		}
+	}
+}
+
+// emitAgentStorage emits one agent's series. Presence follows the pointer being
+// non-nil and nothing else: a reported zero is published (a zero
+// min_free_disk_bytes means the claim check is disabled, which is itself a
+// warning), while a value the agent never reported gets no series at all.
+//
+// (agent, volume) is unique because storage is keyed by agent ID and Volumes by
+// volume name, so an empty agent_name cannot make two label sets collide.
+func emitAgentStorage(ch chan<- prometheus.Metric, id string, s api.AgentStorage) {
+	gauge := func(desc *prometheus.Desc, v float64, labels ...string) {
+		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, labels...)
+	}
+	if s.Workspace != nil {
+		gauge(workspaceFreeDesc, float64(s.Workspace.FreeBytes), id)
+		gauge(workspaceSizeDesc, float64(s.Workspace.TotalBytes), id)
+	}
+	for name, v := range s.Volumes {
+		// A zero time means "never stamped". Free and size with no age cannot
+		// be judged for staleness, and the timestamp would read as 1970, so the
+		// whole volume is dropped. Every real producer stamps the field; this
+		// is defensive.
+		if v.MeasuredAt.IsZero() {
+			continue
+		}
+		gauge(volumeFreeDesc, float64(v.FreeBytes), id, s.AgentName, name)
+		gauge(volumeSizeDesc, float64(v.TotalBytes), id, s.AgentName, name)
+		gauge(volumeMeasuredDesc, float64(v.MeasuredAt.Unix()), id, s.AgentName, name)
+	}
+	if s.MinFreeDiskBytes != nil {
+		gauge(minFreeDiskDesc, float64(*s.MinFreeDiskBytes), id)
+	}
+	if s.ClaimBlockedByDisk != nil {
+		blocked := 0.0
+		if *s.ClaimBlockedByDisk {
+			blocked = 1
+		}
+		gauge(claimBlockedDesc, blocked, id)
 	}
 }

@@ -1651,6 +1651,67 @@ func (p *Postgres) TouchAgent(ctx context.Context, agentID string) (recreated bo
 	return recreated, err
 }
 
+// SetAgentStorage records the agent's latest storage reading, replacing
+// whatever the controller held before: the reading is a snapshot, so a volume
+// the agent no longer reports loses its row instead of lingering. Parts the
+// agent omitted (a Kubernetes agent has no workspace and no minFreeDisk) are
+// stored as absent and read back as absent, never as zeros.
+//
+// It only UPDATEs. TouchAgent runs first on every heartbeat and re-creates a
+// missing row, so an unknown agent here means a deregister raced in between;
+// that is a silent no-op rather than an error worth failing a heartbeat over,
+// and it must not conjure an agent row (which would revive a deregistered agent
+// with no hostname). It deliberately leaves last_seen_at alone: only a
+// heartbeat proves liveness.
+//
+// A nil s clears the reading (SQL NULL). The heartbeat handler calls this on
+// every beat, so "this beat carried no reading" must become "no series", not
+// the last reading kept alive by an agent that is still heartbeating (after a
+// downgrade, or when its measurement gives up).
+func (p *Postgres) SetAgentStorage(ctx context.Context, agentID string, s *api.AgentStorage) error {
+	// b stays a nil []byte for a nil s; pgx sends that as SQL NULL, not JSON null.
+	var b []byte
+	if s != nil {
+		var err error
+		if b, err = json.Marshal(s); err != nil {
+			return fmt.Errorf("marshal agent storage: %w", err)
+		}
+	}
+	if _, err := p.pool.Exec(ctx, `UPDATE agents SET storage = $2 WHERE id = $1`, agentID, b); err != nil {
+		return fmt.Errorf("set agent storage: %w", err)
+	}
+	return nil
+}
+
+// ListAgentStorage returns the storage reading of every live agent, keyed by
+// agent ID, for the metrics collector. Live means a heartbeat within
+// staleAfter, the same window CountAgentsByLiveness uses. An agent that has
+// never reported (storage IS NULL, e.g. one not yet upgraded) is absent from
+// the map rather than present with a zero reading.
+func (p *Postgres) ListAgentStorage(ctx context.Context, staleAfter time.Duration) (map[string]api.AgentStorage, error) {
+	const q = `SELECT id, storage FROM agents
+		WHERE storage IS NOT NULL AND last_seen_at >= NOW() - make_interval(secs => $1)`
+	rows, err := p.pool.Query(ctx, q, staleAfter.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("list agent storage: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]api.AgentStorage{}
+	for rows.Next() {
+		var id string
+		var raw []byte
+		if err := rows.Scan(&id, &raw); err != nil {
+			return nil, fmt.Errorf("list agent storage: %w", err)
+		}
+		var s api.AgentStorage
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return nil, fmt.Errorf("list agent storage: decode reading for agent %q: %w", id, err)
+		}
+		out[id] = s
+	}
+	return out, rows.Err()
+}
+
 func (p *Postgres) DeleteAgent(ctx context.Context, agentID string) error {
 	_, err := p.pool.Exec(ctx, `DELETE FROM agents WHERE id = $1`, agentID)
 	return err

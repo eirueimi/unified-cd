@@ -89,6 +89,11 @@ const heartbeatReconcileGrace = 60 * time.Second
 // failOrphanedRun semantics but reacting on the agent's own heartbeat
 // instead of waiting for last_seen_at staleness.
 //
+// The body may also carry the agent's storage reading (HeartbeatRequest.Storage).
+// It is persisted on every beat, and a beat without one (a legacy agent, a
+// bodyless or undecodable body) clears what is held, so an agent that stops
+// reporting loses its series. A failed write is logged and never fails the beat.
+//
 // A legacy agent (built before active-run tracking) sends no body at all,
 // so reconcile is gated on BODY PRESENCE (r.ContentLength != 0), not on the
 // decoded slice being non-nil: a live agent with zero active runs still
@@ -115,9 +120,13 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 			"agentId", agentID)
 	}
 
+	// storage stays nil for a bodyless or undecodable beat; SetAgentStorage is
+	// called with it regardless (see below).
+	var storage *api.AgentStorage
 	if r.ContentLength != 0 {
 		var req api.HeartbeatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			storage = req.Storage
 			reported := map[string]struct{}{}
 			for _, id := range req.ActiveRunIDs {
 				reported[id] = struct{}{}
@@ -150,6 +159,16 @@ func (s *Server) handleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// Replace the stored reading on EVERY beat, with nil when this one carried
+	// none, so an agent that stops reporting (a downgrade, or a measurement
+	// that gave up) loses its series instead of keeping the last reading alive
+	// for as long as it keeps heartbeating. Best-effort like the pod bindings
+	// above, and for the same reason: liveness matters more than a metric, and
+	// the next beat writes the reading again.
+	if err := s.store.SetAgentStorage(r.Context(), agentID, storage); err != nil {
+		slog.Warn("heartbeat: failed to record agent storage", "agentId", agentID, "error", err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

@@ -348,6 +348,14 @@ type Store interface {
 	// are reaped as "agent lost". recreated reports that this heartbeat re-inserted
 	// an absent row.
 	TouchAgent(ctx context.Context, agentID string) (recreated bool, err error)
+	// SetAgentStorage replaces the agent's whole storage reading (snapshot
+	// semantics: a volume the agent stopped reporting loses its row). A nil s
+	// clears the reading, so a heartbeat that carried none leaves no series. An
+	// unknown agent is a silent no-op, not an error.
+	SetAgentStorage(ctx context.Context, agentID string, s *api.AgentStorage) error
+	// ListAgentStorage returns the storage reading of every live agent (heartbeat
+	// within staleAfter) that has reported one, keyed by agent ID.
+	ListAgentStorage(ctx context.Context, staleAfter time.Duration) (map[string]api.AgentStorage, error)
 	DeleteAgent(ctx context.Context, agentID string) error
 	// ListAgents returns all agents ordered by last access descending.
 	ListAgents(ctx context.Context) ([]api.AgentInfo, error)

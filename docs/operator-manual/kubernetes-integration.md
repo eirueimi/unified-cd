@@ -416,6 +416,13 @@ DNS-label names throughout.
   and recreate it yourself.
 - A volume dropped from the config stops being advertised and its PVC stays, logged as an orphan.
   Removing a line from a config file must not destroy tens of gigabytes.
+- **Free space.** The agent measures each volume's filesystem from inside the claim pod, before the
+  run and again after it, and the controller exports it as
+  `unifiedcd_agent_volume_filesystem_free_bytes{agent_name,volume}`. An idle volume is not measured,
+  so its figure ages (see `unifiedcd_agent_volume_measured_timestamp_seconds`), and a restarted agent
+  has no figures until a run next mounts each volume. Replicas sharing one config report the same PVC
+  under different `agent` IDs: aggregate with `min by (agent_name, volume)`. See [Watching agent disk
+  headroom](operations.md#watching-agent-disk-headroom).
 
 **Exclusion across replicas.** `mode: exclusive` is not left to the `ReadWriteOnce` access mode,
 which is a *node*-level constraint and says nothing about two Pods on one node. Instead the agent
