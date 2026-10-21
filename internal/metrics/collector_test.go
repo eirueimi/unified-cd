@@ -17,6 +17,12 @@ type fakeCounts struct {
 	runs         map[api.RunStatus]int
 	alive, stale int
 	err          error
+	storage      map[string]api.AgentStorage
+	storageErr   error
+}
+
+func (f *fakeCounts) ListAgentStorage(ctx context.Context, staleAfter time.Duration) (map[string]api.AgentStorage, error) {
+	return f.storage, f.storageErr
 }
 
 func (f *fakeCounts) CountRunsByStatus(ctx context.Context) (map[api.RunStatus]int, error) {
@@ -60,4 +66,210 @@ func TestDBCollectorErrorsIncrementCounterAndOmitFamilies(t *testing.T) {
 		assert.NotEqual(t, "unifiedcd_agents", f.GetName())
 	}
 	assert.Equal(t, 2.0, testutil.ToFloat64(m.collectorErrors)) // one per failed query
+}
+
+func u64(v uint64) *uint64 { return &v }
+func bptr(v bool) *bool    { return &v }
+
+// storageFamilies are the series this collector adds for agent disk headroom.
+var storageFamilies = []string{
+	"unifiedcd_agent_workspace_filesystem_free_bytes",
+	"unifiedcd_agent_workspace_filesystem_size_bytes",
+	"unifiedcd_agent_volume_filesystem_free_bytes",
+	"unifiedcd_agent_volume_filesystem_size_bytes",
+	"unifiedcd_agent_volume_measured_timestamp_seconds",
+	"unifiedcd_agent_min_free_disk_bytes",
+	"unifiedcd_agent_claim_blocked_by_disk",
+}
+
+func TestCollector_ExportsWorkspaceVolumeAndThreshold(t *testing.T) {
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
+		"agent-1": {
+			AgentName:          "build-host",
+			Workspace:          &api.FilesystemStats{FreeBytes: 700, TotalBytes: 1000},
+			Volumes:            map[string]api.VolumeStats{"unity": {FilesystemStats: api.FilesystemStats{FreeBytes: 40, TotalBytes: 100}, MeasuredAt: time.Unix(1700000000, 0)}},
+			MinFreeDiskBytes:   u64(500),
+			ClaimBlockedByDisk: bptr(true),
+		},
+	}}, 90*time.Second)
+
+	expected := `
+# HELP unifiedcd_agent_claim_blocked_by_disk 1 if the agent is currently declining to claim work because free disk is below its minFreeDisk threshold, else 0. Absent for an agent that performs no claim-time disk check.
+# TYPE unifiedcd_agent_claim_blocked_by_disk gauge
+unifiedcd_agent_claim_blocked_by_disk{agent="agent-1"} 1
+# HELP unifiedcd_agent_min_free_disk_bytes The agent's configured minFreeDisk threshold in bytes; 0 means the claim-time disk check is disabled. Absent for an agent with no such setting.
+# TYPE unifiedcd_agent_min_free_disk_bytes gauge
+unifiedcd_agent_min_free_disk_bytes{agent="agent-1"} 500
+# HELP unifiedcd_agent_volume_filesystem_free_bytes Free bytes on the filesystem backing a named volume, as last measured by the agent.
+# TYPE unifiedcd_agent_volume_filesystem_free_bytes gauge
+unifiedcd_agent_volume_filesystem_free_bytes{agent="agent-1",agent_name="build-host",volume="unity"} 40
+# HELP unifiedcd_agent_volume_filesystem_size_bytes Total bytes of the filesystem backing a named volume, as last measured by the agent.
+# TYPE unifiedcd_agent_volume_filesystem_size_bytes gauge
+unifiedcd_agent_volume_filesystem_size_bytes{agent="agent-1",agent_name="build-host",volume="unity"} 100
+# HELP unifiedcd_agent_volume_measured_timestamp_seconds Unix time at which the agent last measured a named volume's filesystem.
+# TYPE unifiedcd_agent_volume_measured_timestamp_seconds gauge
+unifiedcd_agent_volume_measured_timestamp_seconds{agent="agent-1",agent_name="build-host",volume="unity"} 1.7e+09
+# HELP unifiedcd_agent_workspace_filesystem_free_bytes Free bytes on the agent's workspace filesystem, as last measured by the agent.
+# TYPE unifiedcd_agent_workspace_filesystem_free_bytes gauge
+unifiedcd_agent_workspace_filesystem_free_bytes{agent="agent-1"} 700
+# HELP unifiedcd_agent_workspace_filesystem_size_bytes Total bytes of the agent's workspace filesystem, as last measured by the agent.
+# TYPE unifiedcd_agent_workspace_filesystem_size_bytes gauge
+unifiedcd_agent_workspace_filesystem_size_bytes{agent="agent-1"} 1000
+`
+	require.NoError(t, testutil.GatherAndCompare(m.reg, strings.NewReader(expected), storageFamilies...))
+}
+
+// The design's central promise: a deleted or reaped agent's series vanish
+// rather than freezing at their last healthy value. The collector reads the
+// store at scrape time, so the same registry must stop exporting the agent the
+// moment the store stops returning it.
+func TestCollector_ADeletedAgentHasNoSeries(t *testing.T) {
+	fc := &fakeCounts{storage: map[string]api.AgentStorage{
+		"agent-1": {
+			AgentName:          "build-host",
+			Workspace:          &api.FilesystemStats{FreeBytes: 700, TotalBytes: 1000},
+			Volumes:            map[string]api.VolumeStats{"unity": {MeasuredAt: time.Unix(1700000000, 0)}},
+			MinFreeDiskBytes:   u64(500),
+			ClaimBlockedByDisk: bptr(false),
+		},
+	}}
+	m := New()
+	m.RegisterDBCollector(fc, 90*time.Second)
+
+	before := exportedFamilies(t, m)
+	for _, name := range storageFamilies {
+		require.True(t, before[name], "precondition: %s is exported while the agent exists", name)
+	}
+
+	// The agent is deleted (or reaped, or goes stale): the store no longer
+	// returns it.
+	fc.storage = map[string]api.AgentStorage{}
+	after := exportedFamilies(t, m)
+	for _, name := range storageFamilies {
+		assert.False(t, after[name], "series %s for a deleted agent must disappear", name)
+	}
+}
+
+// A Kubernetes agent has no workspace filesystem and no minFreeDisk, and
+// performs no claim-time check. Exporting a zero for any of them would say
+// "plenty of space" or "not blocked" about something it never reported.
+func TestCollector_OmitsSeriesTheAgentDidNotReport(t *testing.T) {
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
+		"k8s-1": {
+			AgentName: "k8s-agent",
+			Volumes:   map[string]api.VolumeStats{"cache": {FilesystemStats: api.FilesystemStats{FreeBytes: 10, TotalBytes: 20}, MeasuredAt: time.Unix(1700000000, 0)}},
+		},
+	}}, 90*time.Second)
+
+	got := exportedFamilies(t, m)
+	assert.True(t, got["unifiedcd_agent_volume_filesystem_free_bytes"])
+	assert.True(t, got["unifiedcd_agent_volume_filesystem_size_bytes"])
+	assert.True(t, got["unifiedcd_agent_volume_measured_timestamp_seconds"])
+	assert.False(t, got["unifiedcd_agent_workspace_filesystem_free_bytes"])
+	assert.False(t, got["unifiedcd_agent_workspace_filesystem_size_bytes"])
+	assert.False(t, got["unifiedcd_agent_min_free_disk_bytes"])
+	assert.False(t, got["unifiedcd_agent_claim_blocked_by_disk"])
+}
+
+// Presence is the pointer being non-nil, never the value: a reported zero
+// threshold means "the check is disabled" and a reported false means "not
+// blocked". Both must be published.
+func TestCollector_PublishesReportedZeroAndFalse(t *testing.T) {
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
+		"agent-1": {
+			AgentName:          "build-host",
+			Workspace:          &api.FilesystemStats{FreeBytes: 0, TotalBytes: 0},
+			MinFreeDiskBytes:   u64(0),
+			ClaimBlockedByDisk: bptr(false),
+		},
+	}}, 90*time.Second)
+
+	expected := `
+# HELP unifiedcd_agent_claim_blocked_by_disk 1 if the agent is currently declining to claim work because free disk is below its minFreeDisk threshold, else 0. Absent for an agent that performs no claim-time disk check.
+# TYPE unifiedcd_agent_claim_blocked_by_disk gauge
+unifiedcd_agent_claim_blocked_by_disk{agent="agent-1"} 0
+# HELP unifiedcd_agent_min_free_disk_bytes The agent's configured minFreeDisk threshold in bytes; 0 means the claim-time disk check is disabled. Absent for an agent with no such setting.
+# TYPE unifiedcd_agent_min_free_disk_bytes gauge
+unifiedcd_agent_min_free_disk_bytes{agent="agent-1"} 0
+# HELP unifiedcd_agent_workspace_filesystem_free_bytes Free bytes on the agent's workspace filesystem, as last measured by the agent.
+# TYPE unifiedcd_agent_workspace_filesystem_free_bytes gauge
+unifiedcd_agent_workspace_filesystem_free_bytes{agent="agent-1"} 0
+# HELP unifiedcd_agent_workspace_filesystem_size_bytes Total bytes of the agent's workspace filesystem, as last measured by the agent.
+# TYPE unifiedcd_agent_workspace_filesystem_size_bytes gauge
+unifiedcd_agent_workspace_filesystem_size_bytes{agent="agent-1"} 0
+`
+	require.NoError(t, testutil.GatherAndCompare(m.reg, strings.NewReader(expected), storageFamilies...))
+}
+
+// Replicas of one Kubernetes agent share PVCs (hence agent_name and volume)
+// but enrol under their own agent IDs. Two series for one physical volume is
+// intended; operators aggregate with min by (agent_name, volume).
+func TestCollector_TwoReplicasSharingAVolumeExportTwoSeries(t *testing.T) {
+	vol := map[string]api.VolumeStats{"cache": {FilesystemStats: api.FilesystemStats{FreeBytes: 10, TotalBytes: 20}, MeasuredAt: time.Unix(1700000000, 0)}}
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
+		"k8s-a": {AgentName: "k8s-agent", Volumes: vol},
+		"k8s-b": {AgentName: "k8s-agent", Volumes: vol},
+	}}, 90*time.Second)
+
+	expected := `
+# HELP unifiedcd_agent_volume_filesystem_free_bytes Free bytes on the filesystem backing a named volume, as last measured by the agent.
+# TYPE unifiedcd_agent_volume_filesystem_free_bytes gauge
+unifiedcd_agent_volume_filesystem_free_bytes{agent="k8s-a",agent_name="k8s-agent",volume="cache"} 10
+unifiedcd_agent_volume_filesystem_free_bytes{agent="k8s-b",agent_name="k8s-agent",volume="cache"} 10
+`
+	require.NoError(t, testutil.GatherAndCompare(m.reg, strings.NewReader(expected),
+		"unifiedcd_agent_volume_filesystem_free_bytes"))
+}
+
+// An agent that reported no name still has a unique (agent, volume) pair, so
+// the scrape must neither fail nor drop it.
+func TestCollector_AnEmptyAgentNameStillExports(t *testing.T) {
+	vol := map[string]api.VolumeStats{"cache": {FilesystemStats: api.FilesystemStats{FreeBytes: 10, TotalBytes: 20}, MeasuredAt: time.Unix(1700000000, 0)}}
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
+		"a": {Volumes: vol},
+		"b": {Volumes: vol},
+	}}, 90*time.Second)
+
+	expected := `
+# HELP unifiedcd_agent_volume_filesystem_free_bytes Free bytes on the filesystem backing a named volume, as last measured by the agent.
+# TYPE unifiedcd_agent_volume_filesystem_free_bytes gauge
+unifiedcd_agent_volume_filesystem_free_bytes{agent="a",agent_name="",volume="cache"} 10
+unifiedcd_agent_volume_filesystem_free_bytes{agent="b",agent_name="",volume="cache"} 10
+`
+	require.NoError(t, testutil.GatherAndCompare(m.reg, strings.NewReader(expected),
+		"unifiedcd_agent_volume_filesystem_free_bytes"))
+}
+
+// A volume with no measurement time has no timestamp series, rather than one
+// reading as a measurement from 1970.
+func TestCollector_AZeroMeasuredAtHasNoTimestampSeries(t *testing.T) {
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
+		"a": {AgentName: "n", Volumes: map[string]api.VolumeStats{"v": {FilesystemStats: api.FilesystemStats{FreeBytes: 1, TotalBytes: 2}}}},
+	}}, 90*time.Second)
+
+	got := exportedFamilies(t, m)
+	assert.True(t, got["unifiedcd_agent_volume_filesystem_free_bytes"])
+	assert.False(t, got["unifiedcd_agent_volume_measured_timestamp_seconds"])
+}
+
+func TestCollector_AStoreErrorIncrementsCollectorErrors(t *testing.T) {
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{
+		alive: 3, stale: 1,
+		storage:    map[string]api.AgentStorage{"agent-1": {Workspace: &api.FilesystemStats{}}},
+		storageErr: errors.New("db down"),
+	}, 90*time.Second)
+
+	got := exportedFamilies(t, m)
+	for _, name := range storageFamilies {
+		assert.False(t, got[name], name)
+	}
+	assert.True(t, got["unifiedcd_agents"], "an unrelated family must survive a storage error")
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.collectorErrors))
 }
