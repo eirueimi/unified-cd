@@ -19,9 +19,12 @@ type fakeCounts struct {
 	err          error
 	storage      map[string]api.AgentStorage
 	storageErr   error
+	// gotStaleAfter records the window ListAgentStorage was last called with.
+	gotStaleAfter time.Duration
 }
 
 func (f *fakeCounts) ListAgentStorage(ctx context.Context, staleAfter time.Duration) (map[string]api.AgentStorage, error) {
+	f.gotStaleAfter = staleAfter
 	return f.storage, f.storageErr
 }
 
@@ -245,17 +248,70 @@ unifiedcd_agent_volume_filesystem_free_bytes{agent="b",agent_name="",volume="cac
 		"unifiedcd_agent_volume_filesystem_free_bytes"))
 }
 
-// A volume with no measurement time has no timestamp series, rather than one
-// reading as a measurement from 1970.
-func TestCollector_AZeroMeasuredAtHasNoTimestampSeries(t *testing.T) {
+// A volume with no measurement time is dropped whole: free and size with no age
+// are a figure whose staleness nobody can judge, and a timestamp of zero would
+// read as 1970. A stamped volume beside it is unaffected.
+func TestCollector_AZeroMeasuredAtDropsTheWholeVolume(t *testing.T) {
 	m := New()
 	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
-		"a": {AgentName: "n", Volumes: map[string]api.VolumeStats{"v": {FilesystemStats: api.FilesystemStats{FreeBytes: 1, TotalBytes: 2}}}},
+		"a": {AgentName: "n", Volumes: map[string]api.VolumeStats{
+			"unstamped": {FilesystemStats: api.FilesystemStats{FreeBytes: 1, TotalBytes: 2}},
+			"stamped":   {FilesystemStats: api.FilesystemStats{FreeBytes: 3, TotalBytes: 4}, MeasuredAt: time.Unix(1700000000, 0)},
+		}},
 	}}, 90*time.Second)
 
-	got := exportedFamilies(t, m)
-	assert.True(t, got["unifiedcd_agent_volume_filesystem_free_bytes"])
-	assert.False(t, got["unifiedcd_agent_volume_measured_timestamp_seconds"])
+	expected := `
+# HELP unifiedcd_agent_volume_filesystem_free_bytes Free bytes on the filesystem backing a named volume, as last measured by the agent.
+# TYPE unifiedcd_agent_volume_filesystem_free_bytes gauge
+unifiedcd_agent_volume_filesystem_free_bytes{agent="a",agent_name="n",volume="stamped"} 3
+# HELP unifiedcd_agent_volume_filesystem_size_bytes Total bytes of the filesystem backing a named volume, as last measured by the agent.
+# TYPE unifiedcd_agent_volume_filesystem_size_bytes gauge
+unifiedcd_agent_volume_filesystem_size_bytes{agent="a",agent_name="n",volume="stamped"} 4
+# HELP unifiedcd_agent_volume_measured_timestamp_seconds Unix time at which the agent last measured a named volume's filesystem.
+# TYPE unifiedcd_agent_volume_measured_timestamp_seconds gauge
+unifiedcd_agent_volume_measured_timestamp_seconds{agent="a",agent_name="n",volume="stamped"} 1.7e+09
+`
+	require.NoError(t, testutil.GatherAndCompare(m.reg, strings.NewReader(expected),
+		"unifiedcd_agent_volume_filesystem_free_bytes",
+		"unifiedcd_agent_volume_filesystem_size_bytes",
+		"unifiedcd_agent_volume_measured_timestamp_seconds"))
+}
+
+// MinFreeDiskBytes and ClaimBlockedByDisk are presence-keyed on their own
+// pointers, not on Workspace. An agent with no workspace reading that still
+// reported a disabled threshold and "not blocked" must publish both (at 0) and
+// no workspace series. This is the guard against using Workspace != nil as a
+// proxy for "host agent".
+func TestCollector_ThresholdAndBlockedDoNotDependOnWorkspace(t *testing.T) {
+	m := New()
+	m.RegisterDBCollector(&fakeCounts{storage: map[string]api.AgentStorage{
+		"agent-1": {
+			AgentName:          "build-host",
+			Workspace:          nil,
+			MinFreeDiskBytes:   u64(0),
+			ClaimBlockedByDisk: bptr(false),
+		},
+	}}, 90*time.Second)
+
+	expected := `
+# HELP unifiedcd_agent_claim_blocked_by_disk 1 if the agent is currently declining to claim work because free disk is below its minFreeDisk threshold, else 0. Absent for an agent that performs no claim-time disk check.
+# TYPE unifiedcd_agent_claim_blocked_by_disk gauge
+unifiedcd_agent_claim_blocked_by_disk{agent="agent-1"} 0
+# HELP unifiedcd_agent_min_free_disk_bytes The agent's configured minFreeDisk threshold in bytes; 0 means the claim-time disk check is disabled. Absent for an agent with no such setting.
+# TYPE unifiedcd_agent_min_free_disk_bytes gauge
+unifiedcd_agent_min_free_disk_bytes{agent="agent-1"} 0
+`
+	require.NoError(t, testutil.GatherAndCompare(m.reg, strings.NewReader(expected), storageFamilies...))
+}
+
+// The collector must pass its configured liveness window to the store, not a
+// literal; otherwise stale agents would be reported (or live ones dropped).
+func TestCollector_PassesItsStaleAfterWindowToTheStore(t *testing.T) {
+	fc := &fakeCounts{}
+	m := New()
+	m.RegisterDBCollector(fc, 37*time.Second)
+	exportedFamilies(t, m)
+	assert.Equal(t, 37*time.Second, fc.gotStaleAfter)
 }
 
 func TestCollector_AStoreErrorIncrementsCollectorErrors(t *testing.T) {

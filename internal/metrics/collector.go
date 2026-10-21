@@ -129,13 +129,16 @@ func emitAgentStorage(ch chan<- prometheus.Metric, id string, s api.AgentStorage
 		gauge(workspaceSizeDesc, float64(s.Workspace.TotalBytes), id)
 	}
 	for name, v := range s.Volumes {
+		// A zero time means "never stamped". Free and size with no age cannot
+		// be judged for staleness, and the timestamp would read as 1970, so the
+		// whole volume is dropped. Every real producer stamps the field; this
+		// is defensive.
+		if v.MeasuredAt.IsZero() {
+			continue
+		}
 		gauge(volumeFreeDesc, float64(v.FreeBytes), id, s.AgentName, name)
 		gauge(volumeSizeDesc, float64(v.TotalBytes), id, s.AgentName, name)
-		// A zero time means "never stamped"; exporting it would read as a
-		// measurement from 1970 rather than as no measurement.
-		if !v.MeasuredAt.IsZero() {
-			gauge(volumeMeasuredDesc, float64(v.MeasuredAt.Unix()), id, s.AgentName, name)
-		}
+		gauge(volumeMeasuredDesc, float64(v.MeasuredAt.Unix()), id, s.AgentName, name)
 	}
 	if s.MinFreeDiskBytes != nil {
 		gauge(minFreeDiskDesc, float64(*s.MinFreeDiskBytes), id)
