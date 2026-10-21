@@ -288,7 +288,10 @@ neither a disk preflight nor a directory GC applies there.
   filesystem (`workspaceDir`). Below the threshold, the agent stops claiming
   new runs on that slot and retries after a short backoff — it never deletes
   anything and never fails the run it would have claimed. `0` (default)
-  disables the check, and an agent that has never set it has no protection at all. This is an
+  disables the check, and an agent that has never set it has no protection at all. If the free space of
+  the workspace filesystem cannot be measured (the call fails, or the filesystem reports a total size of 0), the
+  agent logs `free disk space check failed, proceeding with claim` and claims anyway rather than declining
+  forever. This is an
   operational lever, not an error condition: pair it with disk-usage monitoring/alerting (see
   [Operations Guide: Monitoring Points](../operator-manual/operations.md#monitoring-points)) so an
   operator notices *why* an agent stopped claiming. The configured value is published as the metric

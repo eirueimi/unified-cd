@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -233,4 +235,63 @@ func TestHeartbeat_ClaimBlockedStaysTrueWhileAnyOneSlotIsStillDeclining(t *testi
 	require.Never(t, func() bool { return !blocked() }, time.Second, 10*time.Millisecond,
 		"the agent reported unblocked while a slot was still declining")
 	require.True(t, blocked())
+}
+
+// blockingHandler is a slog.Handler whose Handle parks until released, like a
+// stderr whose reader has stopped draining. entered closes the first time
+// Handle is reached.
+type blockingHandler struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (h *blockingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *blockingHandler) Handle(context.Context, slog.Record) error {
+	h.once.Do(func() { close(h.entered) })
+	<-h.release
+	return nil
+}
+func (h *blockingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *blockingHandler) WithGroup(string) slog.Handler      { return h }
+
+// A failed measurement logs a warning; that log must be written after the
+// mutex is released. Logging under it let a stderr applying backpressure block
+// read, which the heartbeat goroutine calls, so the agent's running jobs were
+// reaped. This test does not use t.Parallel: it replaces the global slog
+// default.
+func TestStorageSampler_ALogBlockedOnStderrDoesNotBlockRead(t *testing.T) {
+	h := &blockingHandler{entered: make(chan struct{}), release: make(chan struct{})}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	s := newStorageSampler(func(string) (uint64, uint64, error) {
+		return 0, 0, errors.New("statfs failed")
+	}, time.Second)
+	// Registered after the restore above, so it runs first: free the parked
+	// logger and let the measurement goroutine finish before the default is put
+	// back, whether the test passed or failed.
+	t.Cleanup(func() {
+		close(h.release)
+		s.wg.Wait()
+	})
+
+	s.sampleAll([]string{"/p"})
+	select {
+	case <-h.entered:
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "the measurement never reached the log handler")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.read("/p")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		require.Fail(t, "read blocked while a measurement was logging: the sampler must not log under its mutex")
+	}
 }
