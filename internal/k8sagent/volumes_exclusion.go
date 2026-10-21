@@ -17,16 +17,23 @@ import (
 func mountedVolumes(workspace string, vols []PodVolume) []agentlib.MountedVolume {
 	var out []agentlib.MountedVolume
 	for _, v := range vols {
-		loc := path.Clean(v.MountPath)
-		switch {
-		case v.MountPath == ".":
+		if v.MountPath == "." {
 			continue
-		case !path.IsAbs(loc):
-			loc = path.Join(workspace, loc)
 		}
-		out = append(out, agentlib.MountedVolume{Volume: v.Name, MountPath: v.MountPath, Location: loc})
+		out = append(out, agentlib.MountedVolume{Volume: v.Name, MountPath: v.MountPath, Location: podVolumeLocation(workspace, v.MountPath)})
 	}
 	return out
+}
+
+// podVolumeLocation is where a volume mounted at mountPath lands in the
+// container: an absolute path as written, a relative one under the workspace,
+// and "." the workspace itself.
+func podVolumeLocation(workspace, mountPath string) string {
+	loc := path.Clean(mountPath)
+	if !path.IsAbs(loc) {
+		loc = path.Join(workspace, loc)
+	}
+	return loc
 }
 
 // shownPath is resolved, an artifact or cache path as ResolveArtifactPath

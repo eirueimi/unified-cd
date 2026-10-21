@@ -1,13 +1,18 @@
 package k8sagent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -751,4 +756,125 @@ func (a *K8sAgent) removeOwnPod(ctx context.Context, runID, name string) {
 // workspace.mountPath counts, overridden by the job's.
 func (a *K8sAgent) workspaceMount(pt *dsl.PodTemplate) string {
 	return workspaceMountOf(resolveWorkspaceConfig(a.cfg.PodTemplates, pt))
+}
+
+// volumeMeasureTimeout bounds one pass of measuring a run's mounted volumes. A
+// measurement is a metric: a container that will not answer must cost the run
+// at most this long, never its result. A variable so a test can shorten it.
+var volumeMeasureTimeout = 15 * time.Second
+
+// statfsLine is the one line `ucd-sh statfs` prints on success. Anchored and
+// digits-only on purpose: anything else is not a reading.
+var statfsLine = regexp.MustCompile(`^free=([0-9]+) total=([0-9]+)\n$`)
+
+// parseStatfs reads the output of `ucd-sh statfs`. Anything but exactly that
+// one line is an error, so a truncated or noisy stdout can never be mistaken
+// for a measurement. A total of 0 and a free larger than the total are refused
+// too: neither is a filesystem, and a made-up one is worse than no reading.
+func parseStatfs(out string) (api.FilesystemStats, error) {
+	m := statfsLine.FindStringSubmatch(out)
+	if m == nil {
+		return api.FilesystemStats{}, fmt.Errorf("unexpected statfs output %q", out)
+	}
+	free, err := strconv.ParseUint(m[1], 10, 64)
+	if err != nil {
+		return api.FilesystemStats{}, fmt.Errorf("statfs free: %w", err)
+	}
+	total, err := strconv.ParseUint(m[2], 10, 64)
+	if err != nil {
+		return api.FilesystemStats{}, fmt.Errorf("statfs total: %w", err)
+	}
+	if total == 0 || free > total {
+		return api.FilesystemStats{}, fmt.Errorf("implausible statfs reading free=%d total=%d", free, total)
+	}
+	return api.FilesystemStats{FreeBytes: free, TotalBytes: total}, nil
+}
+
+// volumeReadings is the latest measurement of each volume, by volume name. It
+// lives in memory only and is deliberately never cleared: a volume's headroom
+// is still its last known headroom between the runs that mount it, and every
+// reading carries its own MeasuredAt so a consumer can see how old it is. A
+// restart loses it, and those series are then absent until a run next mounts
+// the volume. Runs write it concurrently and the heartbeat reads it, so it
+// carries its own lock; the zero value is ready to use.
+type volumeReadings struct {
+	mu sync.Mutex
+	m  map[string]api.VolumeStats
+}
+
+// set records a reading, unless a newer one for the volume is already held:
+// two runs sharing a volume can finish measuring out of order.
+func (r *volumeReadings) set(name string, fs api.FilesystemStats, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cur, ok := r.m[name]; ok && at.Before(cur.MeasuredAt) {
+		return
+	}
+	if r.m == nil {
+		r.m = map[string]api.VolumeStats{}
+	}
+	r.m[name] = api.VolumeStats{FilesystemStats: fs, MeasuredAt: at}
+}
+
+// snapshot returns a copy the caller may keep, since later measurements must
+// not change a reading a heartbeat is still encoding.
+func (r *volumeReadings) snapshot() map[string]api.VolumeStats {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]api.VolumeStats, len(r.m))
+	for name, v := range r.m {
+		out[name] = v
+	}
+	return out
+}
+
+// storageReading is the heartbeat's storage provider. It only reads the cache:
+// it runs on the heartbeat goroutine, which must never wait on an exec, and a
+// measurement that hung there would stop the agent heartbeating and get its
+// running jobs reaped. Measuring happens during a run (measureVolumes).
+//
+// A Kubernetes agent has no workspace directory of its own, no minFreeDisk and
+// no claim-time disk check, so Workspace, MinFreeDiskBytes and
+// ClaimBlockedByDisk stay nil: "this agent has no such thing". A zero or a
+// false would read as plenty of space and as not blocked.
+func (a *K8sAgent) storageReading() *api.AgentStorage {
+	return &api.AgentStorage{AgentName: a.cfg.AgentName, Volumes: a.volumeStats.snapshot()}
+}
+
+// measureVolumes records the free and total space of each volume vols mounts
+// into the run pod, by running `ucd-sh statfs` in the pod's container: the
+// agent cannot reach a PVC's filesystem from outside the pod, and a job image
+// cannot be assumed to carry df. workspace is where the pod mounted the
+// workspace; a volume at its root is measured there.
+//
+// Best effort, by design. A failed or unparseable measurement logs and caches
+// nothing: no entry, no zero, no timestamp, and the previous reading stands.
+// It never fails the run, and the whole pass is bounded by volumeMeasureTimeout.
+func (a *K8sAgent) measureVolumes(ctx context.Context, podName, container, workspace string, vols []PodVolume) {
+	if len(vols) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, volumeMeasureTimeout)
+	defer cancel()
+	for _, v := range vols {
+		if ctx.Err() != nil {
+			// Out of time, or the run was cancelled: the rest wait for a later run.
+			return
+		}
+		loc := podVolumeLocation(workspace, v.MountPath)
+		var stdout bytes.Buffer
+		exit, err := a.exec.ExecStepArgv(ctx, podName, container, []string{ucdShimPath, "statfs", loc}, &stdout, io.Discard)
+		if err == nil && exit != 0 {
+			err = fmt.Errorf("exited %d", exit)
+		}
+		var fs api.FilesystemStats
+		if err == nil {
+			fs, err = parseStatfs(stdout.String())
+		}
+		if err != nil {
+			slog.Warn("k8s: could not measure volume", "volume", v.Name, "path", loc, "pod", podName, "error", err)
+			continue
+		}
+		a.volumeStats.set(v.Name, fs, time.Now().UTC())
+	}
 }
