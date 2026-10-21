@@ -443,6 +443,13 @@ func (e *createRetryError) Error() string {
 }
 func (e *createRetryError) Unwrap() error { return e.cause }
 
+// errVolumeSearchAbandoned says tryCreateWithVolumes is waiting not because a
+// volume is busy but because agentlib.ChooseVolumes gave up its search for an
+// assignment (see there). It is returned instead of logged on the spot because
+// tryCreateWithVolumes holds volMu, which every pod create on this agent shares.
+// It is not returned past createClaimPod.
+var errVolumeSearchAbandoned = errors.New("the volume assignment search was abandoned")
+
 // reason is the part of the message a user can act on.
 func (e *createRetryError) reason() string {
 	if e.timedOut {
@@ -563,6 +570,7 @@ func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (cla
 	}
 
 	announced := false
+	warnedAbandoned := false
 	failedCreates := 0
 	for {
 		res, created, err := a.tryCreateWithVolumes(ctx, c, sidecar, sets, declared)
@@ -578,6 +586,14 @@ func (a *K8sAgent) createClaimPod(ctx context.Context, c api.ClaimResponse) (cla
 			}
 			a.warnRun(waitCtx, c.RunID, fmt.Sprintf("creating the run's pod did not complete (attempt %d of %d: %s); its volume locks were released and it will try again",
 				failedCreates, maxCreateAttempts, retry.reason()))
+		} else if errors.Is(err, errVolumeSearchAbandoned) {
+			// Logged here, after tryCreateWithVolumes has released volMu. Once
+			// per run: the search is re-run on every poll and would repeat itself.
+			failedCreates = 0
+			if !warnedAbandoned {
+				warnedAbandoned = true
+				a.warnRun(waitCtx, c.RunID, agentlib.VolumeSearchAbandonedMsg(len(sets)))
+			}
 		} else if err != nil || created {
 			return res, err
 		} else {
@@ -624,9 +640,12 @@ func (a *K8sAgent) tryCreateWithVolumes(ctx context.Context, c api.ClaimResponse
 		free := func(n string) bool {
 			return !contended[n] && (declared[n].Mode == agentlib.VolumeModeShared || !held[n])
 		}
-		var ok bool
-		chosen, ok = agentlib.ChooseVolumes(sets, free)
+		var ok, abandoned bool
+		chosen, ok, abandoned = agentlib.ChooseVolumes(sets, free)
 		if !ok {
+			if abandoned {
+				return claimPodResult{}, false, errVolumeSearchAbandoned
+			}
 			return claimPodResult{}, false, nil
 		}
 		var lost string

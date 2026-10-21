@@ -67,6 +67,12 @@ Two rules that are easy to trip over:
 
 - **Two entries carrying the same multi-candidate list resolve to two distinct volumes** when two
   are free. If you want *one* volume at two mount paths, write the same *single* name twice.
+  When a group of entries lists fewer distinct volumes between them than there are entries in the
+  group, the agent's search for distinct volumes is capped, and the run waits instead of starting
+  (the agent logs `volume assignment search abandoned`; see
+  [Troubleshooting](../../troubleshooting/steps-and-execution.md#a-run-waits-and-the-agent-logs-volume-assignment-search-abandoned)).
+  Ordinary jobs, including one with a dozen entries over a dozen declared volumes, never reach the
+  cap.
 - **A name containing anything other than letters, digits, `-` and `_` needs `as`.** The
   environment variable is built from the alias, so a volume named `unity.main` cannot be its own
   alias. The agent config allows such a name (it rejects only `.`, `..` and names with a path

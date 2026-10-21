@@ -355,9 +355,11 @@ func (m *VolumeManager) reserve(ctx context.Context, runID string, names []strin
 // cycle can form. ctx ends the wait, still holding nothing. onWait, if non-nil,
 // is called once, outside the lock, the first time the call has to wait.
 //
-// The assignment is a complete search (backtracking; entry counts are tiny), not
-// a greedy pass: [a b] with [a c] while c is busy elsewhere is satisfied by
-// (b, a), not by taking a first and waiting for c.
+// The assignment is a backtracking search, not a greedy pass: [a b] with [a c]
+// while c is busy elsewhere is satisfied by (b, a), not by taking a first and
+// waiting for c. It is complete for any realistic job but bounded (see
+// maxVolumeSearchNodes), because it runs under m.mu: a crafted job that would
+// need an exhaustive search is logged and left waiting, not searched to the end.
 //
 // Two entries get distinct volumes whenever the candidates allow it. One run
 // reuses a volume for a second entry only when every candidate that entry
@@ -401,9 +403,11 @@ func (m *VolumeManager) ReserveSet(ctx context.Context, runID string, volumeSets
 		}
 	}
 
+	warnedAbandoned := false
 	for {
 		m.mu.Lock()
-		if chosen, ok := m.assignLocked(runID, declared, keys); ok {
+		chosen, ok, abandoned := m.assignLocked(runID, declared, keys)
+		if ok {
 			var added []string
 			for _, n := range chosen {
 				if _, held := m.holders[n][runID]; held {
@@ -434,6 +438,13 @@ func (m *VolumeManager) ReserveSet(ctx context.Context, runID string, volumeSets
 		}
 		wait := m.changed
 		m.mu.Unlock()
+		// Logged here, not in assignLocked: m.mu is released, so a log write
+		// that blocks cannot stall the claims that share it. Once per call; the
+		// search is re-run on every wake-up and would say the same each time.
+		if abandoned && !warnedAbandoned {
+			warnedAbandoned = true
+			slog.Warn(VolumeSearchAbandonedMsg(len(declared)), "runId", runID)
+		}
 		if onWait != nil {
 			onWait()
 			onWait = nil
@@ -448,10 +459,14 @@ func (m *VolumeManager) ReserveSet(ctx context.Context, runID string, volumeSets
 
 // assignLocked decides whether the whole request can be satisfied right now and,
 // if so, with which volumes. It changes nothing. m.mu must be held.
-func (m *VolumeManager) assignLocked(runID string, declared [][]string, pathKeys []string) ([]string, bool) {
+//
+// abandoned is ChooseVolumes's: the search ran out of its budget. It is returned
+// rather than logged here because the caller holds m.mu, and a log write that
+// blocks (a stderr nobody is draining) must not stall every claim on the agent.
+func (m *VolumeManager) assignLocked(runID string, declared [][]string, pathKeys []string) (chosen []string, ok, abandoned bool) {
 	for _, k := range pathKeys {
 		if _, held := m.paths[k]; held {
-			return nil, false
+			return nil, false, false
 		}
 	}
 	free := func(n string) bool {
@@ -459,6 +474,26 @@ func (m *VolumeManager) assignLocked(runID string, declared [][]string, pathKeys
 		return mine || m.vols[n].mode == VolumeModeShared || len(m.holders[n]) == 0
 	}
 	return ChooseVolumes(declared, free)
+}
+
+// maxVolumeSearchNodes bounds one pass of the assignment search. The caller
+// runs it under a lock that every claim on the agent shares, and the search is
+// exponential when no distinct assignment exists (about x11 per extra entry), so
+// an input that is merely unlucky must cost a bounded, small amount of time.
+//
+// 20,000 nodes is a few milliseconds at most per pass (three passes per call).
+// A job that has a distinct assignment finds it in about one node per entry
+// (each entry takes its first candidate that is free and not yet taken), and
+// even one that needs to backtrack through a busy volume or two needs a few
+// hundred, so no realistic job comes within two orders of magnitude of it.
+const maxVolumeSearchNodes = 20_000
+
+// VolumeSearchAbandonedMsg is what the host and Kubernetes agents log when
+// ChooseVolumes reports that it abandoned its search (see there). entries is the
+// number of volume entries in the job.
+func VolumeSearchAbandonedMsg(entries int) string {
+	return fmt.Sprintf("volume assignment search abandoned after %d nodes for a job with %d volume entries; the run will wait instead of starting. Reduce the number of volume entries, or make each entry's candidate list name enough distinct volumes",
+		maxVolumeSearchNodes, entries)
 }
 
 // ChooseVolumes decides which volume each entry of declared (each entry lists
@@ -472,31 +507,92 @@ func (m *VolumeManager) assignLocked(runID string, declared [][]string, pathKeys
 // get distinct volumes whenever the candidates allow it, a run waits rather than
 // alias two entries onto one volume that could have been two, and one name
 // written twice is the legal "one volume mounted at two paths" case.
-func ChooseVolumes(declared [][]string, free func(string) bool) ([]string, bool) {
-	if a := assignDistinct(declared, free, false); a != nil {
-		return a, true
+//
+// The search is bounded (maxVolumeSearchNodes per pass). abandoned reports that
+// a pass hit the bound and the answer therefore rests on a search that was cut
+// short: the run is told to wait, never given an aliased volume it could not
+// prove was unavoidable, and the caller should say so, outside any lock, so an
+// operator can see why a job is not starting. A crafted entry list is the
+// usual cause (some subset of entries referencing too few volumes between
+// them, which only an exhaustive search discovers); a wait is recoverable by
+// fixing the job, an agent stalled inside this function is not.
+func ChooseVolumes(declared [][]string, free func(string) bool) (chosen []string, ok, abandoned bool) {
+	// One volume per entry, no volume twice, needs at least as many distinct
+	// names as entries. With fewer, both distinct passes below are bound to
+	// fail, but only after exhausting a search tree that grows by an order of
+	// magnitude per extra entry; go straight to the aliasing reading, which is
+	// the answer they would have led to.
+	names := map[string]struct{}{}
+	for _, set := range declared {
+		for _, n := range set {
+			names[n] = struct{}{}
+		}
+	}
+	if len(declared) > len(names) {
+		a, ab := assignDistinct(declared, free, true)
+		return a, a != nil, ab
+	}
+	a, freeAbandoned := assignDistinct(declared, free, false)
+	if a != nil {
+		return a, true, false
 	}
 	// Distinct volumes are not free now. If they exist at all, wait for them
 	// rather than alias.
-	if assignDistinct(declared, func(string) bool { return true }, false) != nil {
-		return nil, false
+	exists, ab := assignDistinct(declared, func(string) bool { return true }, false)
+	if exists != nil {
+		// freeAbandoned: the wait may be needless, a free distinct assignment
+		// may exist that the cut-short search did not reach.
+		return nil, false, freeAbandoned
+	}
+	if ab {
+		// Whether distinct volumes exist is unknown, so aliasing would be a
+		// guess; wait.
+		return nil, false, true
 	}
 	// Distinct volumes cannot exist: aliasing is the only reading of the job.
-	if a := assignDistinct(declared, free, true); a != nil {
-		return a, true
-	}
-	return nil, false
+	a, ab = assignDistinct(declared, free, true)
+	return a, a != nil, ab
 }
 
 // assignDistinct searches for one volume per entry, trying each entry's
 // candidates in the order listed, with no volume chosen twice. With alias, an
 // entry whose every candidate is already chosen reuses its first. usable says
-// which volumes may be chosen. It returns nil if there is no assignment.
-func assignDistinct(sets [][]string, usable func(string) bool, alias bool) []string {
+// which volumes may be chosen. It returns nil if there is no assignment, and
+// abandoned if it gave up after maxVolumeSearchNodes without finding one or
+// exhausting the search (the nil then means "not found", not "does not exist").
+func assignDistinct(sets [][]string, usable func(string) bool, alias bool) (assignment []string, abandoned bool) {
+	if !alias {
+		// The same counting argument as in ChooseVolumes, over the volumes that
+		// may be chosen: fewer of them than entries and no distinct assignment
+		// exists. This is the common way for a pass to fail (a run that wants
+		// twelve volumes while two are busy), and without it that failure costs
+		// the whole search, which would be mistaken for a pathological input.
+		judged, nUsable := map[string]struct{}{}, 0
+		for _, set := range sets {
+			for _, n := range set {
+				if _, seen := judged[n]; !seen {
+					judged[n] = struct{}{}
+					if usable(n) {
+						nUsable++
+					}
+				}
+			}
+		}
+		if len(sets) > nUsable {
+			return nil, false
+		}
+	}
 	chosen := make([]string, len(sets))
 	taken := map[string]bool{}
+	nodes := 0
 	var rec func(i int) bool
 	rec = func(i int) bool {
+		if nodes++; nodes > maxVolumeSearchNodes {
+			abandoned = true
+		}
+		if abandoned {
+			return false
+		}
 		if i == len(sets) {
 			return true
 		}
@@ -513,6 +609,9 @@ func assignDistinct(sets [][]string, usable func(string) bool, alias bool) []str
 			if rec(i + 1) {
 				return true
 			}
+			if abandoned {
+				return false
+			}
 			delete(taken, n)
 		}
 		if !anyUnchosen && alias {
@@ -522,9 +621,9 @@ func assignDistinct(sets [][]string, usable func(string) bool, alias bool) []str
 		return false
 	}
 	if !rec(0) {
-		return nil
+		return nil, abandoned
 	}
-	return chosen
+	return chosen, false
 }
 
 // ReservePath reserves an absolute host path that a native run symlinks a

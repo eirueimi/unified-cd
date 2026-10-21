@@ -179,6 +179,34 @@ was still waiting for its volumes`.
 - A native run with an **absolute** `mountPath` waits for the path even when copies are free:
   candidate lists help a native run only for relative mount paths.
 
+## A run waits and the agent logs "volume assignment search abandoned"
+
+**Symptom**
+
+A run that mounts several [named volumes](../user-guide/writing-jobs/volumes.md) is claimed but runs
+no steps, even though the volumes it names are free. The agent logs a warning once per such run
+(on a Kubernetes agent the same line is also written to the run's own log):
+
+```
+volume assignment search abandoned after 20000 nodes for a job with 12 volume entries; the run will wait instead of starting. Reduce the number of volume entries, or make each entry's candidate list name enough distinct volumes
+```
+
+**Cause**
+
+To give every volume entry its own volume, the agent searches the candidate lists. When some group
+of entries names fewer volumes between them than there are entries in the group (for example, eleven
+entries that all list the same ten volumes), no assignment exists, and proving that by search takes
+exponentially longer with each added entry. The search is capped so that one job cannot hold up
+every other claim on the agent; when the cap is hit, the run is held back rather than started on a
+guess. It never aliases two entries onto one volume in that case. Such a run typically waits until
+it is cancelled or times out, because the search is repeated on every retry and gives up the same
+way.
+
+**Fix**
+
+Make the job satisfiable: give each group of entries enough distinct candidate volumes, or reduce
+the number of entries. Cancel the waiting run to free its slot.
+
 ## A volume stays held after its run crashed
 
 **Symptom**
