@@ -150,10 +150,14 @@ parameterized.
   requirement matches an agent you actually have (e.g. remove a
   Kubernetes-only `podTemplate` feature so the job infers `container`
   instead of `pod`, letting it run on a standard agent too).
-- Legacy agents (pre-upgrade binaries reporting no `capabilities`) are not
-  counted against you here — they match by label only, same as before this
-  feature shipped, so they don't need to be re-registered just to clear the
-  warning.
+- Legacy agents (pre-upgrade binaries reporting no `capabilities`) are
+  counted as standard host agents advertising `native` and `container`, same
+  as the claim itself does: they satisfy a `native` or `container` job (by
+  label) without being re-registered, but never a `pod` job. If the missing
+  capability is `pod` and your Kubernetes agent is running, check that it is
+  on a current build: an agent that sends no capability set on its claim
+  polls cannot recover a record that was re-created without one until it
+  restarts.
 - Once a satisfying agent registers, the banner disappears on the job page's
   next load and the run is claimed on the matching agent's next poll — no
   need to re-trigger it.

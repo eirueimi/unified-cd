@@ -284,7 +284,12 @@ func (a *K8sAgent) k8sClaimLoop(ctx, runCtx context.Context, labels []string, se
 		} else {
 			// The volumes this agent declares, and the exclusive ones a live pod
 			// holds (empty for an agent that declares none).
-			resp, err = a.client.Claim(ctx, a.cfg.AgentID, "30s", labels, a.claimRequest(ctx))
+			req := a.claimRequest(ctx)
+			// Always send the capability set, volumes or not: a heartbeat can
+			// recreate this agent's row without it, and this poll is what puts
+			// pod back so the row can claim the runs only this agent can run.
+			req.Capabilities = k8sAgentCapabilities()
+			resp, err = a.client.Claim(ctx, a.cfg.AgentID, "30s", labels, req)
 		}
 		if err != nil {
 			if sem != nil {

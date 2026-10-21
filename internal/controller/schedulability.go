@@ -20,7 +20,7 @@ type Schedulability struct {
 
 // EvaluateSchedulability reports whether at least one agent can run a job with
 // this spec: an agent whose capabilities cover RequiredCaps (a legacy null-caps
-// agent counts, matching the claim rule), whose labels cover the job's
+// agent counts as {native, container}, matching the claim rule), whose labels cover the job's
 // agentSelector, AND which advertises a candidate of every volume the job
 // names. Selector entries containing "{{" resolve only at trigger time, so the
 // label part is skipped and SelectorDependsOnParams is set. A volume whose
@@ -125,11 +125,14 @@ func setDeclaredBy(agents []api.AgentInfo, set []string) bool {
 	return false
 }
 
-// capsCover: a nil agent-cap set is legacy and covers anything (matches the
-// claim SQL's `me.caps IS NULL` branch).
+// capsCover reports whether an agent advertising agentCaps can run a run that
+// requires the capabilities in required. A nil agent-cap set is an agent that
+// never advertised any, so it is held to the legacy host baseline
+// (dsl.LegacyAgentCapabilities), exactly as the claim SQL does with its
+// COALESCE: it covers native and container, and never pod.
 func capsCover(agentCaps, required []string) bool {
 	if agentCaps == nil {
-		return true
+		agentCaps = dsl.LegacyAgentCapabilities()
 	}
 	set := map[string]bool{}
 	for _, c := range agentCaps {

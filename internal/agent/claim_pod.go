@@ -74,18 +74,12 @@ func parseContainerDef(name string, c map[string]any) (containerDef, error) {
 				// (dsl.PodTemplateNeedsKubernetes / containerNeedsKubernetes) started
 				// looking inside env: such a container now requires the "pod"
 				// capability, which a standard agent never advertises
-				// (agentCapabilities in agent.go). A standard agent running the
-				// current binary can therefore never claim this run — except
-				// during a rolling upgrade: an agent that has not re-registered
-				// since upgrading reports no capabilities at all yet, which skips
-				// the capability check entirely (deliberately, so the upgrade
-				// itself doesn't strand runs — see the rolling-upgrade note in
-				// docs/operator-manual/agents.md), and can still claim and degrade
-				// this run until it restarts and re-registers. That gap is exactly
-				// why this warning, and the one below, are left in place as
-				// defence in depth for a run created before that change, or for
-				// this builder being reached by some other path — do not delete as
-				// dead code.
+				// (agentCapabilities in agent.go), and the controller treats an
+				// agent with no recorded capabilities as advertising only native
+				// and container, so no standard agent can claim this run. The
+				// warning, and the ones below, are left in place as defence in
+				// depth for a run created before that change, or for this builder
+				// being reached by some other path — do not delete as dead code.
 				slog.Warn("podTemplate container env without a literal value is ignored on the host agent",
 					"container", name, "env", en)
 				continue
@@ -113,12 +107,12 @@ func parseContainerDef(name string, c map[string]any) (containerDef, error) {
 				// (dsl.PodTemplateNeedsKubernetes / containerNeedsKubernetes) started
 				// looking inside resources.limits: a limits key other than cpu/memory
 				// (an extended resource, ephemeral-storage, hugepages-*, ...) now
-				// requires the "pod" capability, which a standard agent running the
-				// current binary never advertises (agentCapabilities in agent.go) and
-				// so can never claim this run — with the same rolling-upgrade
-				// exception noted below. Left in place as defence in depth for a run
-				// created before that change, or for this builder being reached by
-				// some other path — do not delete as dead code.
+				// requires the "pod" capability, which a standard agent never
+				// advertises (agentCapabilities in agent.go) and which the controller
+				// never credits to an agent with no recorded capabilities, so no
+				// standard agent can claim this run. Left in place as defence in
+				// depth for a run created before that change, or for this builder
+				// being reached by some other path — do not delete as dead code.
 				slog.Warn("podTemplate container resources.limits key is not supported on the host agent "+
 					"(only cpu/memory are mapped) and is ignored; route to a Kubernetes agent",
 					"container", name, "key", k)
@@ -129,16 +123,12 @@ func parseContainerDef(name string, c map[string]any) (containerDef, error) {
 			// (dsl.PodTemplateNeedsKubernetes / containerNeedsKubernetes) started
 			// looking inside resources: such a container now requires the "pod"
 			// capability, which a standard agent never advertises
-			// (agentCapabilities in agent.go). A standard agent running the current
-			// binary can therefore never claim this run — except during a rolling
-			// upgrade: an agent that has not re-registered since upgrading reports
-			// no capabilities at all yet, which skips the capability check entirely
-			// (deliberately, so the upgrade itself doesn't strand runs — see the
-			// rolling-upgrade note in docs/operator-manual/agents.md), and can
-			// still claim and degrade this run until it restarts and re-registers.
-			// That gap is exactly why this warning is left in place as defence in
-			// depth for a run created before that change, or for this builder
-			// being reached by some other path — do not delete as dead code.
+			// (agentCapabilities in agent.go), and the controller treats an agent
+			// with no recorded capabilities as advertising only native and
+			// container, so no standard agent can claim this run. This warning is
+			// left in place as defence in depth for a run created before that
+			// change, or for this builder being reached by some other path — do
+			// not delete as dead code.
 			slog.Warn("podTemplate container resources.requests is not supported on the host agent "+
 				"(docker/podman have no request concept) and is ignored; use resources.limits or route to a Kubernetes agent",
 				"container", name)

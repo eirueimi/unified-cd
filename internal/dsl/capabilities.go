@@ -9,6 +9,18 @@ const (
 	CapPod       = "pod"       // build a Kubernetes Pod (k8s agent only)
 )
 
+// LegacyAgentCapabilities is what an agent is taken to be able to run when it
+// has never advertised a capability set: {native, container}. An agents row
+// with NULL capabilities (or no row at all) can only belong to an agent that
+// predates capability advertisement, which was a host agent; the Kubernetes
+// agent has always advertised pod. The claim query substitutes this set for the
+// NULL so such an agent keeps claiming what it always could, and can never be
+// handed a pod run, which a host agent would silently degrade. It returns a
+// fresh slice each call.
+func LegacyAgentCapabilities() []string {
+	return []string{CapNative, CapContainer}
+}
+
 // ValidCapability reports whether s is a known capability string.
 func ValidCapability(s string) bool {
 	return s == CapNative || s == CapContainer || s == CapPod

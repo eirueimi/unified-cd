@@ -64,7 +64,7 @@ func TestUpsertAgentOnClaim_PreservesCapabilities(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, pg.UpsertAgent(ctx, "a", "h", "linux", "", []string{"kind:docker"}, []string{"native", "container"}, nil, nil))
 	// claim-path upsert (no caps) must NOT wipe the registered caps
-	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "h", "linux", "", []string{"kind:docker"}, nil, nil))
+	require.NoError(t, pg.UpsertAgentOnClaim(ctx, "a", "h", "linux", "", []string{"kind:docker"}, nil, nil, nil))
 	info, err := pg.GetAgent(ctx, "a")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"native", "container"}, info.Capabilities)

@@ -141,10 +141,12 @@ Rules, enforced at apply time:
   claim it — see [Capabilities and
   routing](../../operator-manual/agents.md#capabilities-and-routing). **You do not need to
   hand-write a k8s-excluding `agentSelector` for this** on a fully-upgraded
-  fleet. This capability check is skipped only for a legacy agent that
-  reports no capabilities at all (pre-upgrade binary); if such an agent is a
-  k8s-agent and claims a native job by label match alone, it fails the run
-  immediately with a clear error as a safety net.
+  fleet. An agent whose record carries no capabilities at all (a
+  pre-upgrade binary, or a record a heartbeat re-created before the agent's
+  next claim poll restored them) is treated as a host agent that advertises
+  `native` and `container`; if such an agent is really a k8s-agent and claims
+  a native job by label match alone, it fails the run immediately with a clear
+  error as a safety net.
 - Conversely, an isolated job (the default — no `native: true`) is
   auto-routed to a `container`- or `pod`-capable agent, so it lands on a
   host with a runtime or on Kubernetes. If a legacy, capability-unaware host
@@ -275,7 +277,10 @@ values, `resources.limits` restricted to `cpu`/`memory` as strings, a
 `workspace.mountPath`). A host-runnable
 `podTemplate` can run on **either** a standard agent or a k8s-agent with no
 hand-written selector required to make that work; a Kubernetes-only
-`podTemplate` is routed to a k8s-agent only. See [Capabilities and
+`podTemplate` is routed to a k8s-agent only. This is judged on the spec that
+will actually run, so a `uses:` git template that contributes a Kubernetes-only
+field (such as pod-level `volumes`) moves the run to a k8s-agent once it is
+resolved. See [Capabilities and
 routing](../../operator-manual/agents.md#capabilities-and-routing) for the full model.
 
 See the [Kubernetes Integration Guide](../../operator-manual/kubernetes-integration.md) for full details.
