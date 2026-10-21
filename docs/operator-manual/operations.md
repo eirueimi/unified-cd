@@ -510,9 +510,9 @@ Ready-made Prometheus alerting rules for these metrics live in
 
 ### Watching agent disk headroom
 
-Jobs fail when an agent runs out of disk, and nothing used to warn anyone first. Each agent now
-measures the free and total space of the filesystems it depends on and reports them with its 15s
-heartbeat; the controller stores the reading and serves it on `/metrics` at scrape time. Your
+Jobs fail when an agent runs out of disk. To give an operator something to alert on first, each
+agent measures the free and total space of the filesystems it depends on and reports them with its
+15s heartbeat; the controller stores the reading and serves it on `/metrics` at scrape time. Your
 Prometheus therefore needs to reach only the controller, never the agents.
 
 Every figure is the free and total space of **the filesystem a path sits on** (a `statfs`), not the
@@ -563,7 +563,11 @@ a series that is not there is not a zero. The cases:
   `unifiedcd_agents{state="alive"}`), and one that was deleted, has no series at all rather than its
   last reading. A threshold alert on these series therefore **resolves when an agent dies**; alert on
   `unifiedcd_agents{state="stale"}` or an agent's disappearance separately. An agent running a
-  version from before these series existed reports none.
+  version from before these series existed reports none. **A Kubernetes rollout does the same
+  thing.** A Kubernetes agent's ID carries its pod UID, so a restarted pod enrols under a new ID:
+  the old ID's series vanish after the 90s window, and the new ID has no volume readings until a run
+  next mounts each volume. On a single-replica deployment, a rollout therefore **silently resolves a
+  firing low-disk alert** for that volume, and nothing fires again until a run happens to mount it.
 
 **Aggregate Kubernetes volumes before alerting.** Several Kubernetes agent replicas share one set of
 PVCs, named `<agentName>-<volume>`, but each replica enrols under its own agent ID. One physical
@@ -574,7 +578,8 @@ raw series fires once per replica. Aggregate on the labels that identify the phy
 min by (agent_name, volume) (unifiedcd_agent_volume_filesystem_free_bytes)
 ```
 
-On a host agent `agent_name` is the hostname, so the same query is a no-op there and one rule serves
+On a host agent `agent_name` is the hostname, so the same query changes nothing there (barring two
+host agents on one machine declaring a volume of the same name, which it merges) and one rule serves
 both agent types. `min` is the conservative choice, but it can surface a low reading from a replica
 that has not mounted the volume for a while; check the timestamp before acting on it. Because
 these series are read from the database, every controller replica serves the same values, and the
@@ -592,7 +597,9 @@ min by (agent_name, volume) (
 )
 
 # Age of the freshest reading of each volume, in seconds. On a Kubernetes agent this grows while no
-# run mounts the volume; on a host agent it stays under about 30s
+# run mounts the volume; on a host agent it stays under about 45s (the agent drops a reading older
+# than 30s, and the controller holds it until the next 15s heartbeat), and reaches up to 90s for an
+# agent that has stopped heartbeating but is still inside the live window
 time() - max by (agent_name, volume) (unifiedcd_agent_volume_measured_timestamp_seconds)
 
 # Host agent workspace filesystem more than 90% full
