@@ -119,11 +119,11 @@ type Agent struct {
 	// Host-only: the k8s agent provisions PVCs instead.
 	Volumes *VolumeManager
 
-	// freeBytesFn reports available bytes for the filesystem containing the
-	// given path. Defaults to freeBytes (the platform-specific syscall
-	// implementation); overridable so tests can inject a fake without
+	// diskStatsFn reports available and total bytes for the filesystem
+	// containing the given path. Defaults to diskStats (the platform-specific
+	// syscall implementation); overridable so tests can inject a fake without
 	// touching the real filesystem.
-	freeBytesFn func(string) (uint64, error)
+	diskStatsFn func(string) (uint64, uint64, error)
 
 	// RuntimePref selects the container runtime for runsIn.image steps
 	// (docker|podman|nerdctl|wslc|container); empty = auto-detect.
@@ -177,12 +177,12 @@ func agentCapabilities(runtimeAvailable bool) []string {
 
 // New creates a new agent with the given ID and client.
 func New(id string, client *Client) *Agent {
-	return &Agent{ID: id, Client: client, freeBytesFn: freeBytes}
+	return &Agent{ID: id, Client: client, diskStatsFn: diskStats}
 }
 
 // NewWithLabels creates a new agent with the given labels.
 func NewWithLabels(id string, labels []string, client *Client) *Agent {
-	return &Agent{ID: id, Labels: labels, Client: client, freeBytesFn: freeBytes}
+	return &Agent{ID: id, Labels: labels, Client: client, diskStatsFn: diskStats}
 }
 
 // collectEnv collects and returns PATH/PWD/HOME/HOSTNAME and any variables listed in exposeEnv.
@@ -429,11 +429,11 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			return
 		}
 		if a.MinFreeDisk > 0 {
-			freeBytesFn := a.freeBytesFn
-			if freeBytesFn == nil {
-				freeBytesFn = freeBytes
+			diskStatsFn := a.diskStatsFn
+			if diskStatsFn == nil {
+				diskStatsFn = diskStats
 			}
-			free, err := freeBytesFn(wsBase)
+			free, _, err := diskStatsFn(wsBase)
 			if err != nil {
 				// Can't determine free space; log and proceed rather than
 				// wedging the agent on a stat failure.
