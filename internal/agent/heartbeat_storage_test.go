@@ -41,7 +41,7 @@ func TestHeartbeat_HostReportsWorkspaceAndEachVolume(t *testing.T) {
 		return 7, 50, nil
 	})
 
-	got := a.storageReading(ws, "host-1")
+	got := readingOf(a, ws, "host-1")
 
 	require.NotNil(t, got)
 	require.Equal(t, "host-1", got.AgentName)
@@ -67,7 +67,7 @@ func TestHeartbeat_MeasuresEachVolumeAtItsResolvedPath(t *testing.T) {
 		return 1, 2, nil
 	})
 
-	a.storageReading(ws, "h")
+	readingOf(a, ws, "h")
 
 	require.ElementsMatch(t, []string{ws, a.Volumes.PathOf("cache"), a.Volumes.PathOf("data")}, seen)
 	require.Equal(t, filepath.Join(ws, "volumes", "cache"), a.Volumes.PathOf("cache"))
@@ -77,7 +77,7 @@ func TestHeartbeat_ReportsTheConfiguredThreshold(t *testing.T) {
 	const fiveGiB = uint64(5) << 30
 	a, ws := newStorageTestAgent(t, fiveGiB, func(string) (uint64, uint64, error) { return 1 << 40, 1 << 41, nil })
 
-	got := a.storageReading(ws, "h")
+	got := readingOf(a, ws, "h")
 
 	require.NotNil(t, got.MinFreeDiskBytes)
 	require.Equal(t, fiveGiB, *got.MinFreeDiskBytes)
@@ -89,7 +89,7 @@ func TestHeartbeat_ReportsTheConfiguredThreshold(t *testing.T) {
 func TestHeartbeat_UnsetThresholdReportsZero(t *testing.T) {
 	a, ws := newStorageTestAgent(t, 0, func(string) (uint64, uint64, error) { return 1, 2, nil })
 
-	got := a.storageReading(ws, "h")
+	got := readingOf(a, ws, "h")
 
 	require.NotNil(t, got.MinFreeDiskBytes, "a host agent always reports its threshold")
 	require.EqualValues(t, 0, *got.MinFreeDiskBytes)
@@ -175,10 +175,10 @@ func TestHeartbeat_ClaimBlockedClearsWhenTheDecliningSlotExits(t *testing.T) {
 		a.runLoop(ctx, context.Background(), 0, t.TempDir(), NewRunSet(), NewRunSet(), false)
 	}()
 
-	require.Eventually(t, func() bool { return *a.storageReading("", "h").ClaimBlockedByDisk }, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return *readingOf(a, "", "h").ClaimBlockedByDisk }, 5*time.Second, 10*time.Millisecond)
 	cancel()
 	<-exited
-	require.False(t, *a.storageReading("", "h").ClaimBlockedByDisk)
+	require.False(t, *readingOf(a, "", "h").ClaimBlockedByDisk)
 }
 
 // A volume whose statfs fails is omitted: no zero entry, no timestamp. A zero
@@ -193,7 +193,7 @@ func TestHeartbeat_AVolumeWhoseStatfsFailsIsOmitted(t *testing.T) {
 		return 9, 10, nil
 	})
 
-	got := a.storageReading(ws, "h")
+	got := readingOf(a, ws, "h")
 
 	require.NotNil(t, got)
 	require.NotContains(t, got.Volumes, "cache")
@@ -214,7 +214,7 @@ func TestHeartbeat_AWorkspaceWhoseStatfsFailsIsOmitted(t *testing.T) {
 		return 9, 10, nil
 	})
 
-	got := a.storageReading(ws, "h")
+	got := readingOf(a, ws, "h")
 
 	require.Nil(t, got.Workspace)
 	require.Len(t, got.Volumes, 2)

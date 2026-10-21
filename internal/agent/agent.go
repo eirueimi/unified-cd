@@ -172,21 +172,34 @@ func (a *Agent) statfs() func(string) (uint64, uint64, error) {
 	return diskStats
 }
 
-// storageReading measures the workspace filesystem and each declared volume for
-// one heartbeat. agentName becomes the agent_name metric label; Run passes the
-// hostname, the closest thing a host agent has to a name.
+// storagePaths lists every filesystem the heartbeat reports on: the workspace
+// and each declared volume's resolved directory.
+func (a *Agent) storagePaths(wsBase string) []string {
+	names := a.Volumes.Names()
+	paths := make([]string, 0, 1+len(names))
+	paths = append(paths, wsBase)
+	for _, name := range names {
+		paths = append(paths, a.Volumes.PathOf(name))
+	}
+	return paths
+}
+
+// storageReading assembles one heartbeat's storage reading from what sampler
+// last published; it measures nothing itself (see storageSampler for why the
+// heartbeat must never call statfs). agentName becomes the agent_name metric
+// label; Run passes the hostname, the closest thing a host agent has to a name.
 //
 // A host agent always reports MinFreeDiskBytes and ClaimBlockedByDisk, even
 // when MinFreeDisk is unset: nil would mean "this agent has no such setting"
 // (a Kubernetes agent), and an unset threshold is the disabled case, which an
 // operator needs to see as a 0, not as nothing.
 //
-// A filesystem that cannot be measured is omitted rather than reported as
-// zeros: a zero reads as "plenty of space" (or as exactly full), and a false
-// reassurance is worse than a missing series. The volumes that did measure are
-// still reported.
-func (a *Agent) storageReading(wsBase, agentName string) *api.AgentStorage {
-	stat := a.statfs()
+// A filesystem the sampler has no fresh measurement of (it failed, never
+// answered, or its last answer is stale) is omitted rather than reported as
+// zeros or as an old number: either reads as headroom the agent does not
+// know it has, and a false reassurance is worse than a missing series. The
+// filesystems that did measure are still reported.
+func (a *Agent) storageReading(sampler *storageSampler, wsBase, agentName string) *api.AgentStorage {
 	minFree := a.MinFreeDisk
 	blocked := a.blockedSlots.Load() > 0
 	out := &api.AgentStorage{
@@ -194,16 +207,12 @@ func (a *Agent) storageReading(wsBase, agentName string) *api.AgentStorage {
 		MinFreeDiskBytes:   &minFree,
 		ClaimBlockedByDisk: &blocked,
 	}
-	if free, total, err := stat(wsBase); err != nil {
-		slog.Warn("could not measure the workspace filesystem, omitting it from the heartbeat", "path", wsBase, "error", err)
-	} else {
+	if free, total, _, ok := sampler.read(wsBase); ok {
 		out.Workspace = &api.FilesystemStats{FreeBytes: free, TotalBytes: total}
 	}
 	for _, name := range a.Volumes.Names() {
-		path := a.Volumes.PathOf(name)
-		free, total, err := stat(path)
-		if err != nil {
-			slog.Warn("could not measure a volume, omitting it from the heartbeat", "volume", name, "path", path, "error", err)
+		free, total, at, ok := sampler.read(a.Volumes.PathOf(name))
+		if !ok {
 			continue
 		}
 		if out.Volumes == nil {
@@ -211,7 +220,7 @@ func (a *Agent) storageReading(wsBase, agentName string) *api.AgentStorage {
 		}
 		out.Volumes[name] = api.VolumeStats{
 			FilesystemStats: api.FilesystemStats{FreeBytes: free, TotalBytes: total},
-			MeasuredAt:      time.Now().UTC(),
+			MeasuredAt:      at.UTC(),
 		}
 	}
 	return out
@@ -375,7 +384,14 @@ func (a *Agent) Run(ctx context.Context) error {
 	// runLoop's signature doesn't need to branch on WorkspaceRetentionDays.
 	activeWorkDirs := NewRunSet()
 
-	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot, nil, func() *api.AgentStorage { return a.storageReading(wsBase, host) })
+	// The sampler measures the workspace and every volume in the background and
+	// the heartbeat only reads what it published, so a statfs stuck on a dead
+	// mount can never stall a beat. It stops with runCtx, like the heartbeat; an
+	// abandoned measurement is not waited for.
+	sampler := newStorageSampler(a.statfs(), heartbeatInterval)
+	go sampler.run(runCtx, a.storagePaths(wsBase))
+
+	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot, nil, func() *api.AgentStorage { return a.storageReading(sampler, wsBase, host) })
 
 	// gcDone is closed once workspaceGCLoop has fully stopped, so Run can join
 	// it (like hbDone) and guarantee no sweep outlives Run. nil when the GC is
