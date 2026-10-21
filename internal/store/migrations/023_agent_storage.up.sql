@@ -1,0 +1,20 @@
+-- Per-agent disk headroom, published through the controller's /metrics (see
+-- docs/superpowers/specs/2026-10-21-agent-storage-metrics-design.md).
+--
+-- agents.storage is the agent's most recent storage reading, written on every
+-- heartbeat as one JSON snapshot (api.AgentStorage). It lives in the database
+-- rather than in a replica's memory because the controller runs several
+-- replicas behind a load balancer: the heartbeat lands on one replica and the
+-- Prometheus scrape on another, so the scrape can only see what is stored.
+--
+-- It is a single column on agents, not a table of its own, so that the reading
+-- goes away with the agent's row. A separate table would need its own cleanup
+-- to stop exporting series for an agent that was deregistered or expired.
+--
+-- The column is nullable and has no default: NULL means "this agent has never
+-- reported a reading", which the metrics collector must treat as absent. A
+-- default of an empty or zeroed reading would read as an agent with plenty of
+-- free space, which is exactly the false reassurance this feature exists to
+-- avoid. It is additive because the controller is upgraded before the agents;
+-- until an agent is upgraded too, its row simply stays NULL.
+ALTER TABLE agents ADD COLUMN storage jsonb;
