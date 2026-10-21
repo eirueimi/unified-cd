@@ -487,12 +487,16 @@ type AgentStorage struct {
 	// Volumes is keyed by volume name; nil or empty when the agent declares none
 	// or cannot measure them.
 	Volumes map[string]VolumeStats `json:"volumes,omitempty"`
-	// MinFreeDiskBytes is the agent's minFreeDisk threshold; 0 means none is
-	// configured.
-	MinFreeDiskBytes uint64 `json:"minFreeDiskBytes,omitempty"`
-	// ClaimBlockedByDisk reports that the agent is currently declining to claim
-	// work because free space is below MinFreeDiskBytes.
-	ClaimBlockedByDisk bool `json:"claimBlockedByDisk,omitempty"`
+	// MinFreeDiskBytes is the agent's minFreeDisk threshold. nil means the agent
+	// has no such setting at all (a Kubernetes agent); a non-nil 0 means it is
+	// configured as 0, i.e. the check is disabled. The two must stay distinct:
+	// the disabled case is itself a warning an operator needs to see.
+	MinFreeDiskBytes *uint64 `json:"minFreeDiskBytes,omitempty"`
+	// ClaimBlockedByDisk reports whether the agent is currently declining to
+	// claim work because free space is below the threshold. nil means the agent
+	// performs no claim-time disk check; a non-nil false means it checked and is
+	// not blocked.
+	ClaimBlockedByDisk *bool `json:"claimBlockedByDisk,omitempty"`
 }
 
 type UploadArtifactStep struct {

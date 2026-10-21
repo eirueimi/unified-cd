@@ -1663,10 +1663,19 @@ func (p *Postgres) TouchAgent(ctx context.Context, agentID string) (recreated bo
 // and it must not conjure an agent row (which would revive a deregistered agent
 // with no hostname). It deliberately leaves last_seen_at alone: only a
 // heartbeat proves liveness.
-func (p *Postgres) SetAgentStorage(ctx context.Context, agentID string, s api.AgentStorage) error {
-	b, err := json.Marshal(s)
-	if err != nil {
-		return fmt.Errorf("marshal agent storage: %w", err)
+//
+// A nil s clears the reading (SQL NULL). The heartbeat handler calls this on
+// every beat, so "this beat carried no reading" must become "no series", not
+// the last reading kept alive by an agent that is still heartbeating (after a
+// downgrade, or when its measurement gives up).
+func (p *Postgres) SetAgentStorage(ctx context.Context, agentID string, s *api.AgentStorage) error {
+	// b stays a nil []byte for a nil s; pgx sends that as SQL NULL, not JSON null.
+	var b []byte
+	if s != nil {
+		var err error
+		if b, err = json.Marshal(s); err != nil {
+			return fmt.Errorf("marshal agent storage: %w", err)
+		}
 	}
 	if _, err := p.pool.Exec(ctx, `UPDATE agents SET storage = $2 WHERE id = $1`, agentID, b); err != nil {
 		return fmt.Errorf("set agent storage: %w", err)
