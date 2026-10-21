@@ -107,6 +107,12 @@ type HeartbeatRequest struct {
 	// yet know a run's binding; RequireRunBinding's default is chosen with
 	// that window in mind.
 	PodBindings map[string]PodBinding `json:"podBindings,omitempty"`
+
+	// Storage is the agent's latest disk-headroom reading, replaced wholesale
+	// on every beat. nil means the agent reported none (a legacy agent, or one
+	// whose measurement gave up): the controller then drops whatever it held,
+	// so a silent agent loses its series instead of keeping a stale one alive.
+	Storage *AgentStorage `json:"storage,omitempty"`
 }
 
 // PodBinding names the Kubernetes Pod a heartbeating Kubernetes agent

@@ -198,7 +198,7 @@ func (a *K8sAgent) Run(ctx context.Context) error {
 	// Heartbeat bound to runCtx (not ctx): a drain must not stop heartbeats, or
 	// the stuck-run reaper would fail a healthy draining run after staleAfter.
 	// Joined before Run returns so no beat outlives Run.
-	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval, activeRuns.Snapshot, a.podBindings.Snapshot)
+	hbDone := agentlib.StartHeartbeat(runCtx, a.client, a.cfg.AgentID, agentlib.DefaultHeartbeatInterval, activeRuns.Snapshot, a.podBindings.Snapshot, nil)
 	go a.runPodGC(runCtx, time.Minute)
 
 	// Concurrency gates: MaxConcurrent for normal runs; a SEPARATE

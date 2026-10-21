@@ -177,10 +177,14 @@ func (c *Client) Deregister(ctx context.Context, agentID string) error {
 // PodBindings' doc comment for why this rides the existing heartbeat call
 // rather than a new endpoint. Ignored (never sent) when activeRunIDs is
 // nil, since a bodyless beat cannot carry it either.
-func (c *Client) Heartbeat(ctx context.Context, agentID string, activeRunIDs []string, podBindings map[string]api.PodBinding) error {
+//
+// storage is forwarded unchanged as api.HeartbeatRequest.Storage and is
+// likewise ignored when activeRunIDs is nil. A nil storage sends no reading,
+// which the controller reads as "clear what you hold for this agent".
+func (c *Client) Heartbeat(ctx context.Context, agentID string, activeRunIDs []string, podBindings map[string]api.PodBinding, storage *api.AgentStorage) error {
 	var body any
 	if activeRunIDs != nil {
-		body = api.HeartbeatRequest{ActiveRunIDs: activeRunIDs, PodBindings: podBindings}
+		body = api.HeartbeatRequest{ActiveRunIDs: activeRunIDs, PodBindings: podBindings, Storage: storage}
 	}
 	_, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/heartbeat", body, nil)
 	return err

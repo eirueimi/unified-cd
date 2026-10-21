@@ -29,7 +29,7 @@ func TestStartHeartbeat_DoneChannelJoinsGoroutine(t *testing.T) {
 
 	c := NewClient(srv.URL, "t")
 	ctx, cancel := context.WithCancel(context.Background())
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return nil }, nil)
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return nil }, nil, nil)
 
 	time.Sleep(80 * time.Millisecond) // a few beats
 	cancel()
@@ -65,7 +65,7 @@ func TestStartHeartbeat_TicksUntilCtxDone(t *testing.T) {
 
 	c := NewClient(srv.URL, "t")
 	ctx, cancel := context.WithCancel(context.Background())
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return nil }, nil)
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return nil }, nil, nil)
 	time.Sleep(120 * time.Millisecond)
 	if got := atomic.LoadInt32(&hits); got < 3 {
 		t.Fatalf("expected several heartbeats, got %d", got)
@@ -101,7 +101,7 @@ func TestStartHeartbeat_SendsActiveRunIDsFromProvider(t *testing.T) {
 	c := NewClient(srv.URL, "t")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return []string{"run-1", "run-2"} }, nil)
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return []string{"run-1", "run-2"} }, nil, nil)
 	defer func() { cancel(); <-done }()
 
 	deadline := time.After(2 * time.Second)
@@ -139,7 +139,7 @@ func TestStartHeartbeat_SendsPodBindingsFromProvider(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bindings := map[string]api.PodBinding{"run-1": {PodName: "ucd-run-1", PodUID: "uid-1"}}
-	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return []string{"run-1"} }, func() map[string]api.PodBinding { return bindings })
+	done := StartHeartbeat(ctx, c, "a1", 20*time.Millisecond, func() []string { return []string{"run-1"} }, func() map[string]api.PodBinding { return bindings }, nil)
 	defer func() { cancel(); <-done }()
 
 	deadline := time.After(2 * time.Second)

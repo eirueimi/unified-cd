@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
@@ -125,6 +126,13 @@ type Agent struct {
 	// touching the real filesystem.
 	diskStatsFn func(string) (uint64, uint64, error)
 
+	// blockedSlots counts the claim slots currently declining to claim because
+	// free space is below MinFreeDisk (see runLoop). The heartbeat goroutine
+	// reads it while the slots write it, hence the atomic. It is a count, not a
+	// flag, so slots that disagree (one checked just before space was freed,
+	// another just after) cannot overwrite each other.
+	blockedSlots atomic.Int32
+
 	// RuntimePref selects the container runtime for runsIn.image steps
 	// (docker|podman|nerdctl|wslc|container); empty = auto-detect.
 	RuntimePref string
@@ -153,6 +161,60 @@ type Agent struct {
 	resolvedRuntime crt.ContainerRuntime
 	runtimeErr      error
 	runtimeOnce     sync.Once
+}
+
+// statfs returns the function that measures a filesystem: diskStatsFn, or the
+// platform diskStats when none was injected.
+func (a *Agent) statfs() func(string) (uint64, uint64, error) {
+	if a.diskStatsFn != nil {
+		return a.diskStatsFn
+	}
+	return diskStats
+}
+
+// storageReading measures the workspace filesystem and each declared volume for
+// one heartbeat. agentName becomes the agent_name metric label; Run passes the
+// hostname, the closest thing a host agent has to a name.
+//
+// A host agent always reports MinFreeDiskBytes and ClaimBlockedByDisk, even
+// when MinFreeDisk is unset: nil would mean "this agent has no such setting"
+// (a Kubernetes agent), and an unset threshold is the disabled case, which an
+// operator needs to see as a 0, not as nothing.
+//
+// A filesystem that cannot be measured is omitted rather than reported as
+// zeros: a zero reads as "plenty of space" (or as exactly full), and a false
+// reassurance is worse than a missing series. The volumes that did measure are
+// still reported.
+func (a *Agent) storageReading(wsBase, agentName string) *api.AgentStorage {
+	stat := a.statfs()
+	minFree := a.MinFreeDisk
+	blocked := a.blockedSlots.Load() > 0
+	out := &api.AgentStorage{
+		AgentName:          agentName,
+		MinFreeDiskBytes:   &minFree,
+		ClaimBlockedByDisk: &blocked,
+	}
+	if free, total, err := stat(wsBase); err != nil {
+		slog.Warn("could not measure the workspace filesystem, omitting it from the heartbeat", "path", wsBase, "error", err)
+	} else {
+		out.Workspace = &api.FilesystemStats{FreeBytes: free, TotalBytes: total}
+	}
+	for _, name := range a.Volumes.Names() {
+		path := a.Volumes.PathOf(name)
+		free, total, err := stat(path)
+		if err != nil {
+			slog.Warn("could not measure a volume, omitting it from the heartbeat", "volume", name, "path", path, "error", err)
+			continue
+		}
+		if out.Volumes == nil {
+			out.Volumes = make(map[string]api.VolumeStats)
+		}
+		out.Volumes[name] = api.VolumeStats{
+			FilesystemStats: api.FilesystemStats{FreeBytes: free, TotalBytes: total},
+			MeasuredAt:      time.Now().UTC(),
+		}
+	}
+	return out
 }
 
 // containerRuntime resolves (once) the container runtime for runsIn.image
@@ -313,7 +375,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// runLoop's signature doesn't need to branch on WorkspaceRetentionDays.
 	activeWorkDirs := NewRunSet()
 
-	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot, nil)
+	hbDone := StartHeartbeat(runCtx, a.Client, a.ID, heartbeatInterval, activeRuns.Snapshot, nil, func() *api.AgentStorage { return a.storageReading(wsBase, host) })
 
 	// gcDone is closed once workspaceGCLoop has fully stopped, so Run can join
 	// it (like hbDone) and guarantee no sweep outlives Run. nil when the GC is
@@ -424,28 +486,46 @@ func (a *Agent) Run(ctx context.Context) error {
 // below it before the recover's failRun runs, so a panicking claim is never
 // left in either active set.
 func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase string, activeRuns, activeWorkDirs *RunSet, detached bool) {
+	// slotBlocked is this slot's own view of the claim-time disk gate and is
+	// touched only by this goroutine; setBlocked folds each change into
+	// a.blockedSlots, the one atomic the heartbeat reads. The gate is retired
+	// on return, so a slot that exits while declining cannot leave the agent
+	// reported as blocked for good.
+	slotBlocked := false
+	setBlocked := func(b bool) {
+		if b == slotBlocked {
+			return
+		}
+		slotBlocked = b
+		if b {
+			a.blockedSlots.Add(1)
+		} else {
+			a.blockedSlots.Add(-1)
+		}
+	}
+	defer setBlocked(false)
 	for {
 		if claimCtx.Err() != nil {
 			return
 		}
 		if a.MinFreeDisk > 0 {
-			diskStatsFn := a.diskStatsFn
-			if diskStatsFn == nil {
-				diskStatsFn = diskStats
-			}
-			free, _, err := diskStatsFn(wsBase)
+			free, _, err := a.statfs()(wsBase)
 			if err != nil {
 				// Can't determine free space; log and proceed rather than
 				// wedging the agent on a stat failure.
 				slog.Warn("free disk space check failed, proceeding with claim", "error", err, "slot", slot)
+				setBlocked(false)
 			} else if belowMinFreeDisk(free, a.MinFreeDisk) {
 				slog.Warn("free disk space below minimum, skipping claim", "freeBytes", free, "minFreeDisk", a.MinFreeDisk, "slot", slot)
+				setBlocked(true)
 				select {
 				case <-claimCtx.Done():
 					return
 				case <-time.After(2 * time.Second):
 				}
 				continue
+			} else {
+				setBlocked(false)
 			}
 		}
 		var resp api.ClaimResponse
