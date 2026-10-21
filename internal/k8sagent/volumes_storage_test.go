@@ -186,6 +186,7 @@ func TestK8sStorage_AFailedExecCachesNothing(t *testing.T) {
 			a := storageAgent(ex)
 			measure(a, PodVolume{Name: "v", MountPath: "v"})
 
+			assert.NotEmpty(t, ex.argvs(), "the measurement must actually have been attempted")
 			assert.Empty(t, a.storageReading().Volumes, "no entry, no zero, no timestamp")
 		})
 	}
@@ -198,7 +199,9 @@ func TestK8sStorage_AFailedExecCachesNothing(t *testing.T) {
 		require.NotZero(t, first.MeasuredAt)
 
 		ex.setFailing("/workspace/v")
+		calls := len(ex.argvs())
 		measure(a, PodVolume{Name: "v", MountPath: "v"})
+		assert.Greater(t, len(ex.argvs()), calls, "the failing measurement must actually have been attempted")
 
 		assert.Equal(t, first, a.storageReading().Volumes["v"])
 	})
@@ -208,6 +211,7 @@ func TestK8sStorage_AFailedExecCachesNothing(t *testing.T) {
 		a := storageAgent(ex)
 		measure(a, PodVolume{Name: "a", MountPath: "a"}, PodVolume{Name: "b", MountPath: "b"})
 
+		assert.Len(t, ex.argvs(), 2, "both volumes were attempted")
 		got := a.storageReading().Volumes
 		assert.NotContains(t, got, "a")
 		assert.Contains(t, got, "b")
@@ -395,4 +399,95 @@ func (s *stepAndStatfsExec) ExecStepArgv(ctx context.Context, pod, container str
 		return s.statfs.ExecStepArgv(ctx, pod, container, argv, stdout, stderr)
 	}
 	return s.steps.ExecStepArgv(ctx, pod, container, argv, stdout, stderr)
+}
+
+// The reading taken when the run starts shows the headroom it started with, and
+// after a wipe that is always near-full. The one an alert needs is taken after
+// the run, so the cache must end up holding it.
+func TestK8sStorage_ExecuteRunMeasuresAgainAfterTheRun(t *testing.T) {
+	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "10Gi")})
+	var n int
+	var mu sync.Mutex
+	ex := &statfsExec{override: func(_ context.Context, _ []string, stdout io.Writer) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		n++
+		if n == 1 {
+			_, _ = io.WriteString(stdout, reading(90, 100)) // before the run
+		} else {
+			_, _ = io.WriteString(stdout, reading(3, 100)) // after the run filled it
+		}
+		return 0, nil
+	}}
+	f.a.exec = &stepAndStatfsExec{steps: f.ex, statfs: ex}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	f.a.executeRun(ctx, f.claim([]dsl.VolumeMount{mount("go-cache", "go-cache", ".cache")}))
+	require.Equal(t, api.RunSucceeded, f.waitFinish(t))
+
+	assert.Len(t, ex.argvs(), 2, "once before the run and once after")
+	assert.Equal(t, uint64(3), f.a.storageReading().Volumes["go-cache"].FreeBytes, "the post-run reading is the one that stands")
+}
+
+// A cancelled or timed-out run is the likeliest to have filled its volume, so
+// it is measured too: the post-run measurement does not inherit the run's
+// cancellation.
+func TestK8sStorage_ExecuteRunMeasuresAfterACancelledRun(t *testing.T) {
+	f := newVolFixture(t, []config.VolumeConfig{vcfg("go-cache", "exclusive", "10Gi")})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var mu sync.Mutex
+	n := 0
+	ex := &statfsExec{override: func(c context.Context, _ []string, stdout io.Writer) (int, error) {
+		mu.Lock()
+		n++
+		first := n == 1
+		mu.Unlock()
+		if !first && c.Err() != nil {
+			return 1, c.Err() // what the run's cancellation leaking in would look like
+		}
+		if first {
+			_, _ = io.WriteString(stdout, reading(90, 100))
+		} else {
+			_, _ = io.WriteString(stdout, reading(4, 100))
+		}
+		return 0, nil
+	}}
+	f.a.exec = &cancelOnStepExec{stepAndStatfsExec: stepAndStatfsExec{steps: f.ex, statfs: ex}, cancel: cancel}
+
+	f.a.executeRun(ctx, f.claim([]dsl.VolumeMount{mount("go-cache", "go-cache", ".cache")}))
+	f.waitFinish(t)
+
+	assert.Len(t, ex.argvs(), 2)
+	assert.Equal(t, uint64(4), f.a.storageReading().Volumes["go-cache"].FreeBytes)
+}
+
+// cancelOnStepExec cancels the run's context as its first step executes.
+type cancelOnStepExec struct {
+	stepAndStatfsExec
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnStepExec) ExecStep(ctx context.Context, pod, container, script string, shell, env []string, stdout, stderr io.Writer) (int, error) {
+	c.cancel()
+	return c.stepAndStatfsExec.ExecStep(ctx, pod, container, script, shell, env, stdout, stderr)
+}
+
+// Of two runs measuring one shared volume, the one that started later must
+// carry the later time. So the stamp is taken before the exec starts, not
+// after it returns.
+func TestK8sStorage_TheTimestampIsTakenBeforeTheExec(t *testing.T) {
+	var inExec time.Time
+	ex := &statfsExec{override: func(_ context.Context, _ []string, stdout io.Writer) (int, error) {
+		inExec = time.Now()
+		time.Sleep(20 * time.Millisecond)
+		_, _ = io.WriteString(stdout, reading(1, 2))
+		return 0, nil
+	}}
+	a := storageAgent(ex)
+	measure(a, PodVolume{Name: "v", MountPath: "v"})
+
+	got := a.storageReading().Volumes["v"].MeasuredAt
+	assert.False(t, got.After(inExec), "MeasuredAt %v is later than the exec's start %v", got, inExec)
 }

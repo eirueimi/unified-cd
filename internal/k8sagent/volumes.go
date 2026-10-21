@@ -862,6 +862,10 @@ func (a *K8sAgent) measureVolumes(ctx context.Context, podName, container, works
 			return
 		}
 		loc := podVolumeLocation(workspace, v.MountPath)
+		// Stamped before the exec, not after: of two runs measuring one shared
+		// volume, the one that started later must carry the later time, or the
+		// older reading could win in set.
+		at := time.Now().UTC()
 		var stdout bytes.Buffer
 		exit, err := a.exec.ExecStepArgv(ctx, podName, container, []string{ucdShimPath, "statfs", loc}, &stdout, io.Discard)
 		if err == nil && exit != 0 {
@@ -875,6 +879,6 @@ func (a *K8sAgent) measureVolumes(ctx context.Context, podName, container, works
 			slog.Warn("k8s: could not measure volume", "volume", v.Name, "path", loc, "pod", podName, "error", err)
 			continue
 		}
-		a.volumeStats.set(v.Name, fs, time.Now().UTC())
+		a.volumeStats.set(v.Name, fs, at)
 	}
 }

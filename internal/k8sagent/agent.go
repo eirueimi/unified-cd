@@ -536,6 +536,7 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// cheapest to read: the pod is up, the mounts are in place and a requested
 	// wipe has just happened. Best effort and time-bounded; it never fails the
 	// run. It stays off the heartbeat goroutine, which only reads the result.
+	// The run is measured again after it ends (below).
 	a.measureVolumes(ctx, podName, firstStepContainer(c), mountPath, volumeMounts)
 
 	// backend is the seam between the shared step-orchestration loop
@@ -549,6 +550,15 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	backend.volumes = mountedVolumes(mountPath, volumeMounts)
 
 	agentlib.RunClaim(ctx, a.client, a.cfg.AgentID, c, backend)
+
+	// Measure again now the run is over. The reading above is the headroom the
+	// run started with (after a requested wipe it is always near-full), and a
+	// run that fills a volume and fails would otherwise never be seen. This one
+	// is the figure an alert needs. The pod is still alive: its delete and the
+	// volume release are deferred above and have not run. WithoutCancel so a
+	// cancelled or timed-out run is measured too; measureVolumes adds its own
+	// bound. A dead container just fails the exec and caches nothing.
+	a.measureVolumes(context.WithoutCancel(ctx), podName, firstStepContainer(c), mountPath, volumeMounts)
 }
 
 // clearReusedWorkspace empties mountPath in a reused pooled pod, or in a
