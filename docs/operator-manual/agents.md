@@ -290,7 +290,12 @@ works out which capability a run of it needs:
 - Everything else (the isolated default, or a host-runnable `podTemplate`) →
   `container`.
 
-That inferred requirement travels with the run and gates claiming: an agent
+That inferred requirement travels with the run and gates claiming. It is
+derived from the spec that will actually execute: a run whose `uses:` steps
+resolve git templates is re-derived after resolution, because a template can
+contribute pod-level fields (such as `volumes`) that make a run Kubernetes-only
+which did not look that way as submitted. The requirement therefore gates
+claiming: an agent
 may only claim a run if its `capabilities` are a superset of the run's
 required capability, **in addition to** the existing `agentSelector` label
 match — both must pass. In practice this means:
@@ -321,19 +326,35 @@ declares at least one candidate name for every entry, in addition to the
 capability and label checks. That is not a capability string: the agent
 advertises its volume names separately, as the `volumes` field of its
 registration, which the controller matches against each run's
-(template-expanded) volume names when the run is queued. Unlike capabilities
-there is no legacy "report nothing, match anything" case: an agent that
-declares no volumes covers none. A job naming a volume no suitable agent
-declares stays `Queued` (see [Job stays Queued: no agent declares
+(template-expanded) volume names when the run is queued. Unlike capabilities,
+which fall back to a legacy baseline for an agent that reports none (see
+Legacy agents below), volumes have no such fallback: an agent that declares
+no volumes covers none. A job naming a volume no suitable agent declares
+stays `Queued` (see [Job stays Queued: no agent declares
 volume](../troubleshooting/runs-and-scheduling.md#job-stays-queued-no-agent-declares-volume)).
 
-**Legacy agents** (an agent binary from before capability routing, or a
-freshly-registered agent that reports no `capabilities` at all) are treated
-as capability-agnostic: the capability check is skipped for them, and they
-match purely on `agentSelector` labels, same as before this feature shipped.
-This is deliberate — it means a rolling upgrade (some agents already on the
-new binary, some not) never strands a run that an old agent could otherwise
-still run correctly.
+**Legacy agents** (an agent binary from before capability routing, or any
+agent whose record carries no `capabilities`) are treated as a standard host
+agent that advertises `native` and `container`. They keep claiming `native`
+and `container` runs by `agentSelector` labels, same as before this feature
+shipped, so a rolling upgrade (some agents already on the new binary, some
+not) does not strand the runs an old host agent could run correctly. They can
+never claim a `pod` run: a record without capabilities can only belong to a
+host agent, because the Kubernetes agent has always advertised `pod`, and a
+host agent would drop the pod-level fields of a `pod` run (`nodeSelector`,
+`volumes`, `initContainers`, `override`, a named template) and still report
+success. The same baseline applies to an agent ID that has no record at all.
+
+An agent's record can lose its capabilities after registration: a heartbeat
+re-creates a minimal record when something deleted it (for example a
+duplicate-ID instance deregistering at the end of a start-before-stop
+rollout), and that record has none. Every agent therefore sends its
+capability set with each claim poll, and the controller writes it back when
+it is non-empty (an empty or missing set never clears what is stored). A
+current Kubernetes agent is back to claiming `pod` runs on its next poll. An
+agent built before this change sends no set on a claim, so in that situation
+it stays on the legacy baseline until it restarts and re-registers; during a
+rolling upgrade, upgrade the Kubernetes agents too.
 
 An unknown capability string in an agent's registration request (anything
 other than `native`/`container`/`pod`) is rejected with `400` — the agent is
@@ -856,8 +877,8 @@ controller reports its own version in its first log line and as the
 an operator can see which part of a fleet is mid-upgrade; it is not a
 compatibility check, and a controller will never refuse an agent for being
 old. Compatibility is decided by capabilities (above), which is why an agent
-reporting no capabilities is treated as capability-agnostic rather than
-rejected.
+reporting no capabilities is treated as a legacy host agent (`native` and
+`container`) rather than rejected.
 
 When an agent claims a run (`POST /api/v1/agents/{id}/claim`), the
 controller also upserts the agent row, but via a separate, non-destructive
@@ -866,7 +887,10 @@ non-empty value, and it **merges** (rather than replaces) labels. This lets
 a claim refresh `last_seen_at` and pick up newly-observed labels without
 clobbering richer data recorded at full registration time (e.g. the
 register-only `hostname:<h>` label — see [Automatic hostname
-label](#automatic-hostname-label)).
+label](#automatic-hostname-label)). The claim also carries the agent's
+capability set and declared volumes, and writes each only when non-empty, so
+a record that was re-created without them is repaired on the next poll while
+a claim can never blank what registration recorded.
 
 The declared **volumes** follow a fifth rule of their own. Registration
 replaces the recorded list wholesale, so dropping a volume from the config

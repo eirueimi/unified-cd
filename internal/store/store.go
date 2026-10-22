@@ -340,8 +340,9 @@ type Store interface {
 	// merges labels and only overwrites scalar fields when non-empty, so a claim never
 	// clobbers richer data recorded at registration time. A non-empty volumes list is
 	// written (so a row a claim recreates keeps routing volume jobs); an empty one
-	// leaves the recorded volumes untouched.
-	UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, volumes []string, env map[string]string) error
+	// leaves the recorded volumes untouched. Capabilities follow the same rule, so
+	// a row a heartbeat recreated with none gets them back on the next claim poll.
+	UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, env map[string]string) error
 	// TouchAgent refreshes an agent's last_seen_at from its heartbeat. It UPSERTs:
 	// a heartbeat must be able to recreate a row something else deleted (the row is
 	// not owned by the process that heartbeats it), otherwise a live agent's runs
@@ -539,6 +540,8 @@ type Store interface {
 
 	// Git resolver helpers
 	ListPendingRuns(ctx context.Context, limit int, excluded []string) ([]PendingRun, error)
+	// UpdateRunSpec replaces a Pending run's spec and recomputes its required_caps
+	// from the new spec in the same write (the resolver can change what it needs).
 	UpdateRunSpec(ctx context.Context, runID string, specJSON []byte) error
 
 	// Schedules

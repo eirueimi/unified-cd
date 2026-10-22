@@ -201,13 +201,22 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The capability set is stored when supplied, so hold it to the same
+	// vocabulary registration does: a string outside it would never match any
+	// run's required_caps and would hide the agent's real set behind a bogus one.
+	for _, c := range claimReq.Capabilities {
+		if !dsl.ValidCapability(c) {
+			http.Error(w, "unknown capability: "+c, http.StatusBadRequest)
+			return
+		}
+	}
 
 	// Upsert the agent's registration record on every claim so an agent that is
 	// actively claiming/running jobs always (re)appears in inventory (agent list /
 	// UI Agents page), even if it was never explicitly registered or the controller
 	// DB was reset out from under a still-running agent. This is best-effort: a
 	// failure here must not fail the claim itself.
-	if err := s.store.UpsertAgentOnClaim(r.Context(), agentID, "", "", "", agentLabels, claimReq.Volumes, nil); err != nil {
+	if err := s.store.UpsertAgentOnClaim(r.Context(), agentID, "", "", "", agentLabels, claimReq.Capabilities, claimReq.Volumes, nil); err != nil {
 		slog.Warn("agent claim: failed to upsert agent registration", "agentId", agentID, "error", err)
 	}
 

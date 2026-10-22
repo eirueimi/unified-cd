@@ -246,6 +246,14 @@ func agentCapabilities(runtimeAvailable bool) []string {
 	return caps
 }
 
+// capabilities is the set this agent advertises, at registration and on every
+// claim poll. The container runtime is resolved once (containerRuntime caches
+// it), so the two always agree and the claim poll costs nothing.
+func (a *Agent) capabilities() []string {
+	_, rtErr := a.containerRuntime()
+	return agentCapabilities(rtErr == nil)
+}
+
 // New creates a new agent with the given ID and client.
 func New(id string, client *Client) *Agent {
 	return &Agent{ID: id, Client: client, diskStatsFn: diskStats}
@@ -273,8 +281,6 @@ func collectEnv(exposeEnv []string) map[string]string {
 // When ctx (claimCtx) is cancelled, new claims are stopped (cordon) and the agent waits for in-flight Runs to complete before exiting (drain).
 func (a *Agent) Run(ctx context.Context) error {
 	host, _ := os.Hostname()
-	_, rtErr := a.containerRuntime()
-	runtimeAvailable := rtErr == nil
 	req := api.AgentRegisterRequest{
 		AgentID:      a.ID,
 		Hostname:     host,
@@ -282,7 +288,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		Labels:       a.Labels,
 		Version:      Version,
 		Env:          collectEnv(a.ExposeEnv),
-		Capabilities: agentCapabilities(runtimeAvailable),
+		Capabilities: a.capabilities(),
 		// The controller routes runs on this list and keeps no volume state
 		// of its own, so it is whatever the operator declared.
 		Volumes: a.Volumes.Names(),
@@ -553,9 +559,14 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 			// hand out a run that needs it (only an optimisation: the
 			// reservation below is what enforces exclusion), and what it
 			// declares, so a row the claim recreates still routes volume jobs.
+			// The capability set rides along for the same reason: a heartbeat
+			// can recreate the row without it, and the claim poll is what
+			// restores it, so the agent is not left to the legacy baseline
+			// (never pod) until it restarts.
 			resp, err = a.Client.Claim(claimCtx, a.ID, "30s", a.Labels, api.ClaimRequest{
-				BusyVolumes: a.Volumes.Busy(),
-				Volumes:     a.Volumes.Names(),
+				BusyVolumes:  a.Volumes.Busy(),
+				Volumes:      a.Volumes.Names(),
+				Capabilities: a.capabilities(),
 			})
 		}
 		if err != nil {

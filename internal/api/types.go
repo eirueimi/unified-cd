@@ -162,6 +162,14 @@ type ClaimRequest struct {
 	// lets the recreated row route volume jobs again. Empty (or absent) means
 	// "not supplied" and never clears the recorded volumes.
 	Volumes []string `json:"volumes,omitempty"`
+	// Capabilities is the capability set the agent advertised at registration
+	// (native, container, pod). Registration is the only other writer of that
+	// column, and a heartbeat can recreate an agent row without it, so a row
+	// recreated that way would otherwise stay without capabilities until the
+	// agent restarted. Sending it on every claim lets the controller restore it
+	// on the next poll. Empty (or absent) means "not supplied", which is what an
+	// older agent sends, and never clears the recorded capabilities.
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 type ClaimResponse struct {

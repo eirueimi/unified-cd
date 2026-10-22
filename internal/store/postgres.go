@@ -847,13 +847,20 @@ func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels
 		busyVolumes = []string{}
 	}
 	// LEFT JOIN (rather than an inner join against a "me" CTE) is deliberate:
-	// if the claiming agent has no row yet in `agents`, a.capabilities is NULL,
-	// which falls into the "skip cap check" branch below (treated as legacy)
-	// rather than an inner join silently excluding every run because the
-	// agent side of the join is empty. In practice the claim handler always
-	// upserts the agent before calling ClaimNextRun, but tests/callers that
-	// invoke this directly for an unregistered agent ID must still fall back
-	// to label-only matching.
+	// if the claiming agent has no row in `agents`, a.capabilities is NULL and
+	// the COALESCE below gives it the legacy baseline (dsl.LegacyAgentCapabilities,
+	// $5) instead of an inner join silently excluding every run because the
+	// agent side of the join is empty. An unregistered agent ID therefore still
+	// matches by label, but only for runs a host agent could take: it can claim
+	// native and container runs and can never claim a pod run. The claim handler
+	// upserts the agent before calling this, and tests that call it directly for
+	// an unregistered ID rely on that label matching.
+	//
+	// NULL is not "skip the check". The capabilities column is written by
+	// registration and restored by every claim poll (UpsertAgentOnClaim), so a
+	// NULL can only be an agent that has never advertised any, which predates the
+	// feature and is a host agent. Letting it claim anything would hand it pod
+	// runs, whose podTemplate fields it drops without a log line.
 	const q = `
 		WITH picked AS (
 		    SELECT r.id FROM runs r
@@ -861,7 +868,7 @@ func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels
 		    WHERE r.status = 'Queued'
 		      AND r.detached = $3
 		      AND (r.agent_selector = '{}' OR r.agent_selector <@ $2::TEXT[])
-		      AND (a.capabilities IS NULL OR r.required_caps <@ a.capabilities)
+		      AND r.required_caps <@ COALESCE(a.capabilities, $5::TEXT[])
 		      -- Every volume the run mounts needs at least one candidate name
 		      -- that this agent advertises and has not already lent to another
 		      -- run. required_volumes is an array of candidate-name arrays; the
@@ -886,7 +893,7 @@ func (p *Postgres) claimNextRun(ctx context.Context, agentID string, agentLabels
 	var cr ClaimedRun
 	var status string
 	var paramsOut []byte
-	err := p.pool.QueryRow(ctx, q, agentID, agentLabels, detached, busyVolumes).
+	err := p.pool.QueryRow(ctx, q, agentID, agentLabels, detached, busyVolumes, dsl.LegacyAgentCapabilities()).
 		Scan(&cr.ID, &cr.JobName, &status, &paramsOut, &cr.Spec, &cr.CreatedAt, &cr.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1572,8 +1579,10 @@ func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, versi
 		      env          = EXCLUDED.env,
 		      last_seen_at = NOW();
 	`
-	// capabilities is stored as-is: nil stays SQL NULL (legacy agent, cap check
-	// skipped by ClaimNextRun); do NOT coerce to []string{} here.
+	// capabilities is stored as-is: nil stays SQL NULL, which ClaimNextRun reads
+	// as the legacy host baseline (dsl.LegacyAgentCapabilities), not as "may
+	// claim anything"; do NOT coerce to []string{} here, because an empty array
+	// would mean "advertises nothing" and claim no run at all.
 	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, capabilities, volumes, envJSON)
 	return err
 }
@@ -1590,7 +1599,14 @@ func (p *Postgres) UpsertAgent(ctx context.Context, agentID, hostname, os, versi
 // routes volume jobs again instead of looking as if no agent declares the volume.
 // An empty list is "not supplied", never "none": a claim cannot wipe what
 // registration recorded. Dropping a volume is a registration, which replaces.
-func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, volumes []string, env map[string]string) error {
+//
+// capabilities follows the same rule, for the same reason: it is written when
+// non-empty and otherwise left alone. TouchAgent recreates a deleted row with
+// NULL capabilities, and registration, the only other writer, runs once at
+// startup, so without this the column would stay NULL until the agent
+// restarted. An agent that predates the field sends none and leaves the column
+// exactly as it was.
+func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os, version string, labels []string, capabilities []string, volumes []string, env map[string]string) error {
 	if labels == nil {
 		labels = []string{}
 	}
@@ -1605,8 +1621,8 @@ func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os
 		return err
 	}
 	const q = `
-		INSERT INTO agents(id, hostname, os, labels, version, env, volumes, last_seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		INSERT INTO agents(id, hostname, os, labels, version, env, volumes, capabilities, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (id) DO UPDATE
 		  SET hostname     = COALESCE(NULLIF(EXCLUDED.hostname, ''), agents.hostname),
 		      os           = COALESCE(NULLIF(EXCLUDED.os, ''), agents.os),
@@ -1614,9 +1630,17 @@ func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os
 		      version      = COALESCE(NULLIF(EXCLUDED.version, ''), agents.version),
 		      env          = CASE WHEN EXCLUDED.env = '{}'::jsonb THEN agents.env ELSE EXCLUDED.env END,
 		      volumes      = CASE WHEN cardinality(EXCLUDED.volumes) > 0 THEN EXCLUDED.volumes ELSE agents.volumes END,
+		      capabilities = CASE WHEN cardinality(EXCLUDED.capabilities) > 0 THEN EXCLUDED.capabilities ELSE agents.capabilities END,
 		      last_seen_at = NOW();
 	`
-	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON, volumes)
+	// An empty set is stored as SQL NULL, not '{}': a row this claim creates for
+	// an agent that sent no capabilities must read as "never advertised" (the
+	// legacy baseline), not as "advertises nothing", which would claim nothing.
+	// cardinality(NULL) is NULL, so the CASE above also keeps the stored value.
+	if len(capabilities) == 0 {
+		capabilities = nil
+	}
+	_, err = p.pool.Exec(ctx, q, agentID, hostname, os, labels, version, envJSON, volumes, capabilities)
 	return err
 }
 
@@ -1635,9 +1659,14 @@ func (p *Postgres) UpsertAgentOnClaim(ctx context.Context, agentID, hostname, os
 //
 // recreated reports that the row was absent and this heartbeat re-inserted it, so
 // the caller can make an otherwise invisible state loud. The re-inserted row is
-// deliberately minimal (empty hostname/os/version, NULL capabilities): the next
-// registration or claim poll fills the real values back in via UpsertAgent /
-// UpsertAgentOnClaim. What matters here is only that liveness is not lost.
+// deliberately minimal (empty hostname/os/version, NULL capabilities, empty
+// volumes): the next registration or claim poll fills the real values back in via
+// UpsertAgent / UpsertAgentOnClaim. The claim poll restores labels, volumes and
+// capabilities (each from what the agent sends on every poll) but never
+// hostname/os/version, which only a registration supplies. Until capabilities
+// are restored the row reads as the legacy host baseline, so a recreated
+// Kubernetes agent cannot claim a pod run for that one poll interval. What
+// matters here is only that liveness is not lost.
 func (p *Postgres) TouchAgent(ctx context.Context, agentID string) (recreated bool, err error) {
 	const q = `
 		INSERT INTO agents(id, hostname, os, labels, version, env, last_seen_at)
@@ -1846,8 +1875,8 @@ func (p *Postgres) ListStuckRuns(ctx context.Context, staleAfter, grace time.Dur
 // agent can claim: no agent with a heartbeat within staleAfter has labels that
 // satisfy the run's agent_selector (empty selector matches any agent). This
 // check is label-only by design and deliberately omits the capability clause
-// that ClaimNextRun ANDs in (`a.capabilities IS NULL OR r.required_caps <@
-// a.capabilities`): capabilities only make claiming stricter, so a
+// that ClaimNextRun ANDs in (`r.required_caps <@ COALESCE(a.capabilities,
+// <legacy baseline>)`): capabilities only make claiming stricter, so a
 // label-unclaimable run is also cap-unclaimable, while a run that's
 // label-claimable but capability-unschedulable (e.g. a native job when only a
 // k8s agent is live) is intentionally left Queued rather than auto-failed
@@ -2756,10 +2785,32 @@ func (p *Postgres) ListPendingRuns(ctx context.Context, limit int, excluded []st
 	return list, rows.Err()
 }
 
+// UpdateRunSpec replaces a Pending run's spec with the one the git-template
+// resolver produced, and recomputes required_caps from it in the same UPDATE.
+//
+// CreateRun fixed required_caps from the spec as submitted, but resolution can
+// change what the spec needs: merging a fetched template fills podTemplate with
+// containers and pod-level keys, so a run submitted as "container" can become
+// Kubernetes-only. Left stale, a host agent could claim it and silently drop
+// those fields. This is the only writer of runs.spec after insert, so deriving
+// the capability here keeps it true to the spec at the one place it can go
+// wrong.
+//
+// required_volumes is deliberately NOT recomputed here: volume names can be
+// parameter templates that are only final at the Pending-to-Queued transition,
+// so that column is derived there. required_caps depends only on the structure
+// of the spec, never on parameter values, so it is final as soon as the spec is.
+//
+// A spec that does not parse is refused, not stored: there is no capability to
+// derive from it and keeping the old one would reintroduce the mismatch.
 func (p *Postgres) UpdateRunSpec(ctx context.Context, runID string, specJSON []byte) error {
+	var spec dsl.Spec
+	if err := json.Unmarshal(specJSON, &spec); err != nil {
+		return fmt.Errorf("update run spec: parse spec to derive required capabilities: %w", err)
+	}
 	_, err := p.pool.Exec(ctx,
-		`UPDATE runs SET spec = $1, updated_at = NOW() WHERE id = $2 AND status = 'Pending'`,
-		specJSON, runID)
+		`UPDATE runs SET spec = $1, required_caps = $3, updated_at = NOW() WHERE id = $2 AND status = 'Pending'`,
+		specJSON, runID, dsl.RequiredCaps(spec))
 	return err
 }
 

@@ -50,8 +50,9 @@ func TestAPI_TriggerRun_HostRunnablePodTemplate_NotPinnedToKubernetes(t *testing
 	triggerAndQueue(t, s, "podjob-host")
 	_, _ = pg.TransitionPendingToQueued(t.Context(), 10)
 
-	// A legacy agent (never registered, so capabilities is NULL) is unaffected
-	// by the capability check and is claimable purely on labels, confirming no
+	// A legacy agent (never registered, so capabilities is NULL) is held to the
+	// {native, container} baseline. This run infers "container", which the
+	// baseline covers, so it is claimable on its labels alone, confirming no
 	// "kubernetes" label was appended to the run's agentSelector.
 	claimed, err := pg.ClaimNextRun(t.Context(), "docker-agent", []string{"kind:docker", "pool:default"}, nil)
 	require.NoError(t, err)
