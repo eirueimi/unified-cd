@@ -36,8 +36,11 @@ poolIdleTimeout: ""
 # The agent's Role needs get, list, create and update on persistentvolumeclaims (see
 # manifests/base/k8s-agent/rbac.yaml). A freshly provisioned PVC is usually root-owned: a job
 # whose image runs as a non-root user needs securityContext.fsGroup in its podTemplate.
-# podImage: fallback image when a Job does not specify a podTemplate
-podImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3
+# podImage: fallback image when a Job does not specify a podTemplate. Leave it unset to get the
+# runner published with this agent's release (the tag matches the agent's version; :latest for
+# a locally built agent). Set it to pin a different image, or to a digest to make the runner
+# immutable. The same applies to sidecarImage and shimImage, which default the same way.
+# podImage: ghcr.io/eirueimi/unified-cd-runner@sha256:<digest>
 
 podTemplates:
   # template name: referenced by podTemplate.name in Job YAML

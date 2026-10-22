@@ -12,4 +12,9 @@ data:
       - kind:kubernetes
     namespace: ci
     maxConcurrent: 5
+    # podImage overrides the default runner image (the unified-cd-runner image
+    # published with the agent's release) with a plain Go toolchain image, so a job
+    # that declares no podTemplate runs in Go. It is a third-party tag that does
+    # not follow the agent's version. Remove the line to use the runner image
+    # matching the agent's version instead.
     podImage: golang:1.24-alpine

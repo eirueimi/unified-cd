@@ -155,8 +155,8 @@ unified-cd-agent [FLAGS]
   --workspace-dir         string    Base directory for run workspaces (default: current directory at agent startup; env: UNIFIED_AGENT_WORKSPACE_DIR)
   --drain-timeout         duration  Max wait after SIGTERM before forced shutdown (0 = wait forever)
   --finally-timeout       duration  Ceiling on each of a run's post-DAG cleanup phases (the spec.finally pipeline, and each post:/cache: hook drain); 0/unset = default 10m (env: UNIFIED_AGENT_FINALLY_TIMEOUT)
-  --pause-image           string    Image for the claim pod's pause (netns-holder) container (default: busybox:1.36)
-  --runner-image          string    Default primary container image for isolated jobs without a podTemplate job container (default: ghcr.io/eirueimi/unified-cd-runner:v0.0.3)
+  --pause-image           string    Image for the claim pod's pause (netns-holder) container (default: busybox:1.36, pinned by digest)
+  --runner-image          string    Default primary container image for isolated jobs without a podTemplate job container (default: ghcr.io/eirueimi/unified-cd-runner:<this agent's version>, or :latest for a build that carries no release version)
   --min-free-disk         uint64    Minimum free space in bytes on the workspace filesystem required to keep claiming runs; 0 disables the check (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)
   --workspace-retention-days int    Age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; workspaces are already emptied around every run, so this only reclaims what an agent crash left behind) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)
   --log-level             string    Log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)
@@ -166,7 +166,11 @@ unified-cd-agent [FLAGS]
 pod](../operator-manual/agents.md#job-isolation-on-the-standard-agent-claim-pod), built for
 every isolated (non-`native`) job claim. They have no dedicated environment
 variable — set them via flag or the `pauseImage`/`runnerImage` config-file
-keys below.
+keys below. The runner default is derived from the agent's version; the pause
+default is a fixed `busybox` digest. See [Default images and the pause image
+digest](../operator-manual/operations.md#default-images-and-the-pause-image-digest),
+and [the migration note](../operator-manual/migrations/2026-10-22-version-derived-default-images.md)
+for how to pin the runner by digest.
 
 ### Agent Environment Variables
 
@@ -228,8 +232,8 @@ cleanWorkspace: false          # no longer has any effect (see --clean-workspace
 workspaceDir: /data/unified-cd/workspace
 drainTimeout: 60s
 finallyTimeout: 10m            # ceiling on each post-DAG cleanup phase (spec.finally, and each post:/cache: drain); default shown
-pauseImage: busybox:1.36                              # claim pod pause container (default shown)
-runnerImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3 # default primary container (default shown)
+# pauseImage: busybox:1.36@sha256:<digest>            # claim pod pause container; left unset it keeps the shipped digest pin. Do not paste this without the digest: that would drop the pin on the one default image this project still pins
+# runnerImage: ghcr.io/eirueimi/unified-cd-runner:<agent version> # default primary container; left unset it follows the agent's own version. Do not paste a literal tag: it would stop following the agent
 minFreeDisk: 5368709120        # 5Gi; below this free space on workspaceDir's filesystem, stop claiming (0 = disabled, default)
 workspaceRetentionDays: 0      # >0 opts in to the periodic GC of workspace directories an agent crash left behind (0 = disabled, default)
 logLevel: info
@@ -401,20 +405,25 @@ finallyTimeout: 10m         # ceiling on each post-DAG cleanup phase (spec.final
 podImage: alpine:3.19
 
 # Image the prepended init container runs to install the ucd-sh shim onto
-# the shared /.ucd volume. Defaults to the k8s-agent's own image (below);
-# override for air-gapped registries that mirror it under another name.
-# shimImage: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
+# the shared /.ucd volume. Defaults to the k8s-agent's own image (below) at
+# the tag matching the agent's version; override for air-gapped registries that
+# mirror it under another name, or set a digest to pin it.
+# shimImage: ghcr.io/eirueimi/unified-cd-k8s-agent:v0.7.0
 
 # kubeconfig: /path/to/kubeconfig
 # Omit to use InClusterConfig (when running inside the cluster)
 # or ~/.kube/config (when running outside)
 
 # Artifact-transfer sidecar injected into every job/scope Pod. The default is
-# digest-pinned — the tag is kept for readability, but the digest is what is
-# pulled. Keep the digest when overriding this; a bare mutable tag would let a
-# registry compromise run code in a sidecar that holds S3 credentials, on every
-# Pod in the fleet.
-sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest@sha256:5e30d747d7ec954a88d84f4f7a8b5ac5c4b69d152555b80e253e7a0938eb14dd
+# the tag matching the agent's version (shown for a v0.7.0 agent; :latest for a
+# locally built agent). That tag is mutable: a registry compromise could run
+# code in a sidecar that holds S3 credentials, on every Pod in the fleet. Set a
+# digest here to close that (see kubernetes-integration.md, "Shim image: pin it
+# in production", which covers every default image).
+# Leave it unset to follow the agent. Do not paste a literal tag (for example
+# :v0.7.0): it would pin the sidecar while the agent moves on, and the skew
+# fails jobs with "flag provided but not defined: -exclude".
+# sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:<agent version>
 
 # Name of a Secret carrying UNIFIED_S3_* env for the sidecar. Enables
 # cache/artifact transfers; when unset, cache steps are no-ops (reported
@@ -481,9 +490,9 @@ podTemplates:
 | `agentId` | string | No (runtime only) | - | Populated by the agent after enrollment from verified Kubernetes identity; not a config input. |
 | `labels` | []string | No | — | Agent labels matched against a Job's `agentSelector` |
 | `namespace` | string | No | `default` | Namespace the agent creates job/scope Pods in |
-| `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Fallback job-container image when no `podTemplate` is referenced. Bash-less/sh-less images work (`alpine`, busybox-based) — steps exec via the injected `ucd-sh` shim by default, not a shell the image must provide. Truly empty images (`scratch`, distroless-static) cannot run steps on the k8s agent: env application prepends the `env` binary, which they lack (exit 127). See [Job Reference: Shell (`shell:`)](../user-guide/writing-jobs/steps.md#shell-shell). |
-| `shimImage` | string | No | `ghcr.io/eirueimi/unified-cd-k8s-agent:latest` | Image the prepended `ucd-shim` init container runs to install the `ucd-sh` shim onto the shared `/.ucd` `emptyDir`. Override for air-gapped registries mirroring the k8s-agent image under another name. **Unlike `sidecarImage`/`podImage` the default is a floating tag, not digest-pinned — in production set this to the digest of the k8s-agent image you actually deployed. See [kubernetes-integration.md](../operator-manual/kubernetes-integration.md#shim-image-pin-it-in-production).** |
-| `sidecarImage` | string | No | `ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest` | Artifact-transfer sidecar image injected into every job/scope Pod |
+| `podImage` | string | No | `ghcr.io/eirueimi/unified-cd-runner:<agent version>` (`:latest` for a build with no release version) | Fallback job-container image when no `podTemplate` is referenced. The default is the runner image published with this agent's release; set a digest to pin it (see [kubernetes-integration.md](../operator-manual/kubernetes-integration.md#shim-image-pin-it-in-production)). Bash-less/sh-less images work (`alpine`, busybox-based) — steps exec via the injected `ucd-sh` shim by default, not a shell the image must provide. Truly empty images (`scratch`, distroless-static) cannot run steps on the k8s agent: env application prepends the `env` binary, which they lack (exit 127). See [Job Reference: Shell (`shell:`)](../user-guide/writing-jobs/steps.md#shell-shell). |
+| `shimImage` | string | No | `ghcr.io/eirueimi/unified-cd-k8s-agent:<agent version>` (`:latest` for a build with no release version) | Image the prepended `ucd-shim` init container runs to install the `ucd-sh` shim onto the shared `/.ucd` `emptyDir`. Override for air-gapped registries mirroring the k8s-agent image under another name. **Like `sidecarImage` and `podImage`, the default is a version-derived tag, not a digest — in production set this to the digest of the k8s-agent image you actually deployed. See [kubernetes-integration.md](../operator-manual/kubernetes-integration.md#shim-image-pin-it-in-production).** |
+| `sidecarImage` | string | No | `ghcr.io/eirueimi/unified-cd-artifact-sidecar:<agent version>` (`:latest` for a build with no release version) | Artifact-transfer sidecar image injected into every job/scope Pod. It must match the agent's release (binary exec protocol); the default does by construction, an override must be kept in step. Set a digest to pin it — see [Shim image: pin it in production](../operator-manual/kubernetes-integration.md#shim-image-pin-it-in-production) |
 | `sidecarS3SecretName` | string | No | — | Secret carrying `UNIFIED_S3_*` for the artifact sidecar. **The Secret must exist in the namespace `namespace` names** (where job Pods run), not the agent's own namespace — it is attached with a `LocalObjectReference`, which Kubernetes always resolves in the Pod's namespace. Unset: cache steps are no-ops (Succeeded, with one per-run warning) and a claim carrying an artifact step that would run unconditionally is failed immediately, before a Pod is created (`continueOnError` steps are exempt; `if:`-guarded ones only warn). Set but missing in the job namespace: **every** job fails, because `envFrom.secretRef` is not `optional` and the kubelet cannot start the Pod (`CreateContainerConfigError`) |
 | `kubeconfig` | string | No | in-cluster / `~/.kube/config` | Path to a kubeconfig; omit to use `InClusterConfig` (in cluster) or `~/.kube/config` (out of cluster) |
 | `maxConcurrent` | int | No | `100` | Max simultaneous job Pods, enforced by a semaphore around the claim loop. `0`/unset → `100`. A **negative** value (e.g. `-1`) → unlimited: no agent-side cap, bounded only by cluster scheduling/quota. A positive value is that exact concurrency bound. |

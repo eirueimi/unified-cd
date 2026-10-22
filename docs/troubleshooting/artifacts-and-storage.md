@@ -118,7 +118,9 @@ fine), or clear `sidecarS3SecretName` if you do not need sidecar transfers yet.
 
 The job's pod is stuck in `ImagePullBackOff` or `ErrImagePull`, and the failing
 container is `unified-artifact` (the auto-injected workspace sidecar), not one
-of the job's own containers.
+of the job's own containers. (With the default images the same symptom can show
+on the `ucd-shim` init container or on `job`, for the same reason; see the
+release-tag cause below.)
 
 You no longer need `kubectl describe pod` to find that out: the run's own
 failure message carries the kubelet's reason and message, e.g.
@@ -127,7 +129,7 @@ failure message carries the kubelet's reason and message, e.g.
 k8s: run pod did not become ready: waiting for Pod ucd-run-abc123 to become
 Running: context deadline exceeded (container "unified-artifact" is waiting:
 ImagePullBackOff: Back-off pulling image
-"ghcr.io/…/unified-cd-artifact-sidecar:latest")
+"ghcr.io/…/unified-cd-artifact-sidecar:v0.7.0")
 ```
 
 The agent also logs the reason as soon as it appears, rather than only when
@@ -140,13 +142,26 @@ run failure.
 
 The k8s-agent injects a sidecar container named `unified-artifact` into every
 pod to handle `uploadArtifact` / `downloadArtifact` / `cache` transfers. Its
-image is set by the agent's `sidecarImage` config field
-(default `ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest`) — if that tag
-isn't pullable from the node (private registry without imagePullSecrets, typo
-in the tag, or the tag was deleted), the pod can never become Ready.
+image is set by the agent's `sidecarImage` config field (default
+`ghcr.io/eirueimi/unified-cd-artifact-sidecar:<agent version>`, so a `v0.7.0`
+agent asks for `:v0.7.0`; `:latest` for a locally built agent) — if that tag
+isn't pullable from the node (private registry without imagePullSecrets, a
+mirror that does not carry the tag, typo in the tag, or the tag was deleted),
+the pod can never become Ready.
+
+One cause is specific to the version-derived default: **the agent's release
+never published its images.** The git tag exists, so the agent binary was built
+and deployed, but `release-docker.yml` failed (its `verify` job reports it), so
+`:v0.7.0` does not resolve. Check with
+`docker manifest inspect ghcr.io/eirueimi/unified-cd-artifact-sidecar:v0.7.0`.
+See the [migration
+note](../operator-manual/migrations/2026-10-22-version-derived-default-images.md#a-release-whose-images-did-not-publish).
 
 **Fix**
 
+- If the tag is the agent's own version and does not resolve in the registry,
+  re-push the release tag so `release-docker.yml` publishes the images; if you
+  mirror images, copy that tag into the mirror.
 - Confirm the configured `sidecarImage` is pullable from the cluster's nodes:
   `docker pull <sidecarImage>` from a node, or check for image pull secrets if
   the registry is private.
@@ -340,7 +355,8 @@ ancestor of a volume are unaffected, which is why it can pass unnoticed until on
 **Fix**
 
 Update the sidecar image to the build that matches the agent (`sidecarImage` in the agent config,
-or the digest-pinned default of that agent release; see [Rotating the default image
-digests](../operator-manual/operations.md#rotating-the-default-runnerpause-image-digests)).
+or leave it unset: the default is derived from the agent's version, so a released agent gets its own
+release's sidecar; see [Default images and the pause image
+digest](../operator-manual/operations.md#default-images-and-the-pause-image-digest)).
 `unified-sidecar version` inside the container prints its build, so you can compare it with the
 agent's.

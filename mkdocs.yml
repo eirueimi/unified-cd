@@ -134,6 +134,7 @@ nav:
           - "Apply-Time if: Validation": operator-manual/migrations/apply-time-if-validation.md
           - "Undefined params: Key is Empty in if:": operator-manual/migrations/params-undefined-key-is-empty.md
           - "Ephemeral Workspaces and Named Volumes": operator-manual/migrations/2026-10-20-named-volumes.md
+          - "Version-Derived Default Images": operator-manual/migrations/2026-10-22-version-derived-default-images.md
   - Reference:
       - CLI Reference: reference/cli.md
       - Configuration Reference: reference/configuration.md

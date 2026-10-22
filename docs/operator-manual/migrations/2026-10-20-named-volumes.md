@@ -234,8 +234,8 @@ cluster.
    `unified-artifact` sidecar, but only when a job archives (or downloads an artifact into) an ancestor of a volume's mount point.
    A sidecar image that predates the flag exits 2 on it, so that artifact upload fails and that
    cache reads as "not restored". Both are set in the agent's config (`sidecarImage`); if you
-   override it, bump it to the build that ships with the agent. See [Rotating the default
-   image digests](../operations.md#rotating-the-default-runnerpause-image-digests).
+   override it, bump it to the build that ships with the agent; the default is derived from the
+   agent's version and follows it. See [Sidecar image](../kubernetes-integration.md#sidecar-image).
 4. **Volume names are DNS labels.** Lower-case letters, digits and `-`, with the claim name
    `<agentName>-<volume>` at most 63 characters. A name that is legal on a host agent can be
    illegal here.
