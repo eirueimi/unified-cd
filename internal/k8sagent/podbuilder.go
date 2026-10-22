@@ -376,7 +376,7 @@ func BuildPod(runID, namespace string, agentTmpls map[string]AgentPodTemplate, j
 
 func defaultPodSpec(image string) *corev1.PodSpec {
 	if image == "" {
-		image = defaultPodImage
+		image = defaultPodImage()
 	}
 	return &corev1.PodSpec{
 		Containers: []corev1.Container{

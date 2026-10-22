@@ -2,21 +2,13 @@ package k8sagent
 
 import (
 	"os"
-	"regexp"
 	"testing"
 	"time"
 
+	agentlib "github.com/eirueimi/unified-cd/internal/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// digestPinPattern requires a well-formed, complete 64-hex-character sha256
-// digest anchored at the end of the string. A plain `strings.Contains(img,
-// "@sha256:")` check would still pass for a truncated or malformed digest
-// (e.g. "@sha256:" with nothing after it) — which is exactly the kind of pin
-// that looks correct at a glance but silently resolves to the wrong (or no)
-// image at pull time.
-var digestPinPattern = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
 
 func writeTempYAML(t *testing.T, content string) string {
 	t.Helper()
@@ -105,42 +97,91 @@ server: http://localhost:8080
 	if got.MaxConcurrent != 100 {
 		t.Errorf("MaxConcurrent = %d, want 100", got.MaxConcurrent)
 	}
-	if got.PodImage != defaultPodImage {
-		t.Errorf("PodImage = %q, want %q", got.PodImage, defaultPodImage)
+	if got.PodImage != defaultPodImage() {
+		t.Errorf("PodImage = %q, want %q", got.PodImage, defaultPodImage())
 	}
-	if got.ShimImage != defaultShimImage {
-		t.Errorf("ShimImage = %q, want %q", got.ShimImage, defaultShimImage)
+	if got.ShimImage != defaultShimImage() {
+		t.Errorf("ShimImage = %q, want %q", got.ShimImage, defaultShimImage())
 	}
 }
 
-// TestDefaultPodImageIsDigestPinned guards against the k8s-agent's
-// fleet-wide default pod image regressing to a mutable tag. A mutable tag
-// lets whoever controls the registry repository force-push it and execute
-// code in the primary container of every isolated job lacking its own
-// podTemplate job container.
-func TestDefaultPodImageIsDigestPinned(t *testing.T) {
-	assert.Regexp(t, digestPinPattern, defaultPodImage,
-		"default pod image must be pinned to a well-formed, complete sha256 digest — "+
-			"a mutable tag (or a truncated/malformed digest) lets whoever controls the "+
-			"registry repository force-push it and execute code in the primary container "+
-			"of every isolated job lacking its own podTemplate job container")
+// setAgentVersion stamps agentlib.Version for one test. A test binary always
+// reports "dev", which maps to ":latest" -- a test reading a default image
+// without stamping a version could not tell "derived from the version" from
+// "hard-coded :latest".
+func setAgentVersion(t *testing.T, v string) {
+	t.Helper()
+	old := agentlib.Version
+	agentlib.Version = v
+	t.Cleanup(func() { agentlib.Version = old })
 }
 
-// TestDefaultSidecarImageIsDigestPinned guards against the k8s-agent's
-// fleet-wide default artifact-sidecar image regressing to a mutable tag.
-// Unlike PodImage, this is auto-injected into every k8s-agent pod regardless
-// of job-author-supplied podTemplate — it is never job-author-controlled —
-// and it holds long-lived, bucket-scoped static S3 credentials (see
-// SidecarS3SecretName / podbuilder.go's buildArtifactSidecarContainer and
-// cmd/unified-sidecar/main.go). A mutable tag here is therefore not just a
-// code-exec path but a credential-exfiltration path: a registry compromise
-// of this image gets read/write over the whole artifact bucket.
-func TestDefaultSidecarImageIsDigestPinned(t *testing.T) {
-	assert.Regexp(t, digestPinPattern, defaultSidecarImage,
-		"default sidecar image must be pinned to a well-formed, complete sha256 digest — "+
-			"a mutable tag (or a truncated/malformed digest) lets whoever controls the "+
-			"registry repository force-push it and both execute code in, and exfiltrate the "+
-			"long-lived S3 credentials of, every k8s-agent pod's auto-injected sidecar fleet-wide")
+// TestDefaultImagesCarryNoDigest guards the invariant that replaced digest
+// pinning: every unified-cd default image is named by a tag derived from the
+// agent's own version, never by a digest.
+//
+// A digest of an image published from this repository can only be recorded in
+// a commit AFTER the image is pushed, so a digest pin can only ever name the
+// PREVIOUS release. Operators who need immutability set the image explicitly in
+// the agent configuration; see docs/operator-manual/kubernetes-integration.md.
+func TestDefaultImagesCarryNoDigest(t *testing.T) {
+	for name, img := range map[string]string{
+		"pod":     defaultPodImage(),
+		"sidecar": defaultSidecarImage(),
+		"shim":    defaultShimImage(),
+	} {
+		assert.NotContains(t, img, "@sha256:",
+			"default %s image must be version-derived, not digest-pinned: a digest for an "+
+				"image built from this tree can only name the previous release", name)
+	}
+}
+
+// TestDefaultImagesResolveThroughVersionedImage pins that each default is
+// computed from the stamped version rather than holding a literal tag. Without
+// this a literal ":v0.0.3" would satisfy the no-digest test above and silently
+// reintroduce the version skew.
+func TestDefaultImagesResolveThroughVersionedImage(t *testing.T) {
+	const (
+		runner  = "ghcr.io/eirueimi/unified-cd-runner"
+		sidecar = "ghcr.io/eirueimi/unified-cd-artifact-sidecar"
+		shim    = "ghcr.io/eirueimi/unified-cd-k8s-agent"
+	)
+	setAgentVersion(t, "v9.9.9")
+	assert.Equal(t, agentlib.VersionedImage(runner, "v9.9.9"), defaultPodImage())
+	assert.Equal(t, agentlib.VersionedImage(sidecar, "v9.9.9"), defaultSidecarImage())
+	assert.Equal(t, agentlib.VersionedImage(shim, "v9.9.9"), defaultShimImage())
+	assert.Equal(t, runner+":v9.9.9", defaultPodImage())
+	assert.Equal(t, sidecar+":v9.9.9", defaultSidecarImage())
+	assert.Equal(t, shim+":v9.9.9", defaultShimImage())
+
+	setAgentVersion(t, "dev")
+	assert.Equal(t, runner+":latest", defaultPodImage())
+	assert.Equal(t, sidecar+":latest", defaultSidecarImage())
+	assert.Equal(t, shim+":latest", defaultShimImage())
+}
+
+// TestDefaultsReachEveryCallSite confirms DefaultConfig, Validate and
+// defaultPodSpec all take their image from the version-derived defaults. Each
+// of the three used to read a constant; one left holding a literal string
+// would keep working and silently pin the old image.
+func TestDefaultsReachEveryCallSite(t *testing.T) {
+	setAgentVersion(t, "v9.9.9")
+
+	dc := DefaultConfig()
+	assert.Equal(t, defaultPodImage(), dc.PodImage)
+	assert.Equal(t, defaultSidecarImage(), dc.SidecarImage)
+	assert.Equal(t, defaultShimImage(), dc.ShimImage)
+
+	cfg := Config{Server: "http://localhost:8080", EnrollmentPolicy: "p"}
+	require.NoError(t, cfg.Validate())
+	assert.Equal(t, defaultPodImage(), cfg.PodImage)
+	assert.Equal(t, defaultSidecarImage(), cfg.SidecarImage)
+	assert.Equal(t, defaultShimImage(), cfg.ShimImage)
+
+	spec := defaultPodSpec("")
+	require.NotEmpty(t, spec.Containers)
+	assert.Equal(t, defaultPodImage(), spec.Containers[0].Image)
+	assert.Contains(t, spec.Containers[0].Image, ":v9.9.9")
 }
 
 // TestDefaultConfig_ShimImage confirms DefaultConfig() itself (not just
@@ -148,8 +189,8 @@ func TestDefaultSidecarImageIsDigestPinned(t *testing.T) {
 // image.
 func TestDefaultConfig_ShimImage(t *testing.T) {
 	cfg := DefaultConfig()
-	if cfg.ShimImage != defaultShimImage {
-		t.Errorf("ShimImage = %q, want %q", cfg.ShimImage, defaultShimImage)
+	if cfg.ShimImage != defaultShimImage() {
+		t.Errorf("ShimImage = %q, want %q", cfg.ShimImage, defaultShimImage())
 	}
 }
 
@@ -166,8 +207,8 @@ func TestValidate_ShimImageFallback(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.ShimImage != defaultShimImage {
-		t.Errorf("ShimImage = %q, want %q", cfg.ShimImage, defaultShimImage)
+	if cfg.ShimImage != defaultShimImage() {
+		t.Errorf("ShimImage = %q, want %q", cfg.ShimImage, defaultShimImage())
 	}
 }
 

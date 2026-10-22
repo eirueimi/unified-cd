@@ -15,17 +15,33 @@ import (
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 )
 
-// Default images are digest-pinned: the tag is retained for readability, but
-// the digest is what is pulled. A mutable tag would let a registry
-// compromise execute code in the primary container of every isolated job on
-// the fleet (see claimNeedsRunnerImage in internal/agent/claim_pod.go).
-// Rotate these together with the runner image release — see
-// docs/operator-manual/operations.md#rotating-the-default-runnerpause-image-digests for the
-// rotation procedure.
-const (
-	defaultRunnerImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3@sha256:d7fa1600cf2ec38b78a8893025db7a09cc70b8ac61ae474ceac48444905a729d"
-	defaultPauseImage  = "busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
-)
+// defaultRunnerImage is the default primary container image for isolated jobs
+// that do not supply their own podTemplate job container.
+//
+// It is derived from the agent's own stamped version (agent.VersionedImage), so
+// an agent of release vX.Y.Z pulls the runner published alongside it. It is
+// deliberately NOT digest-pinned: a digest of an image built from this
+// repository can only be recorded in a commit made after the image is pushed,
+// so a pin could only ever name the PREVIOUS release's runner and would need a
+// manual rotation on every release. Operators who need an immutable reference
+// set runnerImage explicitly to a digest. A build that carries no release
+// version (a plain `go build`, a `make` build) falls back to :latest.
+func defaultRunnerImage() string {
+	return agent.VersionedImage("ghcr.io/eirueimi/unified-cd-runner", agent.Version)
+}
+
+// defaultPauseImage is DELIBERATELY the odd one out: it stays pinned to a
+// digest while the unified-cd images above are version-derived. Do not "make it
+// consistent". busybox is a third-party image with no unified-cd release
+// identity, so there is no release it could be in lockstep with and no version
+// to derive a tag from; nothing in this tree is published together with it, and
+// so there is no per-release rotation chore attached to it. The digest costs
+// nothing here (it is a stable, externally published reference, changed only
+// when busybox itself is deliberately bumped) and keeps a mutable tag from
+// letting a registry compromise run code in the pause container of every claim
+// pod. Dropping it would be a supply-chain posture change that buys nothing.
+// TestDefaultPauseImageStaysDigestPinned fails if this is changed.
+const defaultPauseImage = "busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
 
 // orDefault returns s if it is non-empty, otherwise def. Used to give
 // image flags a built-in default when neither env, config file, nor an
@@ -93,7 +109,7 @@ func main() {
 	logLevel := flag.String("log-level", os.Getenv("UNIFIED_AGENT_LOG_LEVEL"), "log level: debug, info, warn, error (env: UNIFIED_AGENT_LOG_LEVEL)")
 	containerRuntime := flag.String("container-runtime", "", "container runtime for runsIn.image steps; empty = auto-detect (docker|podman|nerdctl|wslc). Apple's 'container' is explicit-only (not auto-detected) and cannot run isolated/claim-pod jobs")
 	pauseImage := flag.String("pause-image", orDefault(eff.PauseImage, defaultPauseImage), "image for the claim pod's pause (netns-holder) container")
-	runnerImage := flag.String("runner-image", orDefault(eff.RunnerImage, defaultRunnerImage), "default primary container image for isolated jobs without a podTemplate job container")
+	runnerImage := flag.String("runner-image", orDefault(eff.RunnerImage, defaultRunnerImage()), "default primary container image for isolated jobs without a podTemplate job container")
 	minFreeDisk := flag.Uint64("min-free-disk", eff.MinFreeDisk, "minimum free space in bytes on the workspace filesystem required to keep claiming runs; 0 disables the check (host agent only) (env: UNIFIED_AGENT_MIN_FREE_DISK)")
 	workspaceRetentionDays := flag.Int("workspace-retention-days", eff.WorkspaceRetentionDays, "age in days after which an inactive per-job workspace directory becomes eligible for removal by the opt-in workspace GC; 0 disables it (default; workspaces are already emptied around every run, so this only reclaims what an agent crash left behind) (host agent only) (env: UNIFIED_AGENT_WORKSPACE_RETENTION_DAYS)")
 	flag.Parse()

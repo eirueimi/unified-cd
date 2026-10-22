@@ -99,78 +99,75 @@ type AgentPodTemplate struct {
 // defaultShimImage is the default value of Config.ShimImage: the k8s-agent's
 // own image, which ships /ucd-sh at its root (see docker/k8s-agent.Dockerfile).
 //
-// DELIBERATELY NOT DIGEST-PINNED, unlike defaultPodImage and
-// defaultSidecarImage below. That asymmetry is recorded here because it looks
-// like an oversight and is not — pinning this constant to a digest would be
-// strictly worse than leaving it floating, and a future reader "fixing" the
-// inconsistency would reintroduce the bug this comment exists to prevent.
+// It is derived from the agent's stamped version (agentlib.VersionedImage), so
+// the shim the agent injects is, by construction, the one published with that
+// agent's release; a build with no release version falls back to :latest.
 //
-// The reason is circularity, and it applies to this constant alone.
-// defaultPodImage and defaultSidecarImage name OTHER images, with release
-// identities independent of this source tree: a digest for them is knowable
-// at the commit that records it, and rotating it is a normal edit. This
+// DELIBERATELY NOT DIGEST-PINNED, and it must not be re-pinned. That is
+// recorded here because a digest looks like the safer choice and is
+// strictly worse than a version-derived tag. The reason is circularity. This
 // constant names THIS binary's own image. Its digest is a function of the
-// built image, which contains this constant — so the digest of the image a
+// built image, which contains this constant -- so the digest of the image a
 // given commit produces cannot be written into that same commit. A digest
 // pin here could only ever name the PREVIOUS release, which would permanently
-// hard-code the very version skew that docs/operator-manual/operations.md's lockstep
-// requirement forbids, instead of merely risking it.
+// hard-code the very version skew that docs/operator-manual/operations.md's
+// lockstep requirement forbids, instead of merely risking it. (defaultPodImage
+// and defaultSidecarImage name OTHER images and were once digest-pinned for
+// the same supply-chain reason, but a digest can be recorded only after its
+// image is pushed, so those pins also always named an older release. All
+// three now share the version-derived rule.)
 //
-// The exposure that pins the two siblings — a mutable tag lets a registry
-// compromise execute code in every pod fleet-wide — DOES apply here, and is
+// The exposure a pin would have closed -- a mutable tag lets a registry
+// compromise execute code in every pod fleet-wide -- DOES apply here, and is
 // arguably sharper: this image's init container installs the ucd-sh binary
-// that every subsequent step in the job container then execs. The exposure is
-// accepted at the default and mitigated by configuration, not by pinning:
-// operators who need it closed should set `shimImage` explicitly to the
-// digest of the k8s-agent image they actually deployed (which they know, and
-// which is by construction the lockstep-correct value). See
-// docs/operator-manual/kubernetes-integration.md's "Shim image" section.
+// that every subsequent step in the job container then execs. A release tag
+// is far less mutable than :latest, but the exposure is accepted at the
+// default and mitigated by configuration, not by pinning: operators who need
+// it closed should set `shimImage` explicitly to the digest of the k8s-agent
+// image they actually deployed (which they know, and which is by construction
+// the lockstep-correct value). See docs/operator-manual/kubernetes-integration.md's
+// "Shim image" section.
 //
 // Making the field REQUIRED was considered and rejected: it would break every
 // existing deployment on upgrade to force a value that is mechanically
 // derivable from the agent's own image.
-//
-// The resolution that satisfies both lockstep and immutability is a
-// version-derived default (":" + the agent's build version, falling back to
-// ":latest" for dev builds), which needs no digest and so has no circularity.
-// It is blocked on the agent binary carrying a real version at all: no
-// Dockerfile passes -ldflags today, so every containerised agent reports
-// "dev". That is tracked as a separate defect; when it is fixed, this
-// constant should become version-derived.
-//
-// NOTE ON WHAT :latest MEANS TODAY: measured 2026-08-03, this tag resolves
-// byte-identically to :v0.3.0, because the v0.4.0 release run never applied
-// any tag (see the release-docker.yml `verify` job comment). Until the
-// operator re-pushes a release tag, a k8s-agent at HEAD running shipped
-// defaults injects a v0.3.0 shim.
-const defaultShimImage = "ghcr.io/eirueimi/unified-cd-k8s-agent:latest"
+func defaultShimImage() string {
+	return agentlib.VersionedImage("ghcr.io/eirueimi/unified-cd-k8s-agent", agentlib.Version)
+}
 
 // defaultPodImage is the default value of Config.PodImage: the fleet-wide
 // primary container image for isolated jobs that don't supply their own
-// podTemplate job container. It is digest-pinned — the tag is retained for
-// readability, but the digest is what is pulled. A mutable tag would let a
-// registry compromise execute code in that container on every such job
-// across the fleet. Rotate this together with the runner image release —
-// see docs/operator-manual/operations.md#rotating-the-default-runnerpause-image-digests for
-// the rotation procedure.
-const defaultPodImage = "ghcr.io/eirueimi/unified-cd-runner:v0.0.3@sha256:d7fa1600cf2ec38b78a8893025db7a09cc70b8ac61ae474ceac48444905a729d"
+// podTemplate job container. It names the same image, by the same
+// version-derived rule, as the host agent's default runner image.
+//
+// It is not digest-pinned: a digest of an image built from this repository
+// can only be recorded after the image is pushed, so a pin could only ever
+// name the PREVIOUS release's runner. Operators who need an immutable
+// reference (a mutable tag lets a registry compromise execute code in this
+// container on every such job) set podImage explicitly to a digest.
+func defaultPodImage() string {
+	return agentlib.VersionedImage("ghcr.io/eirueimi/unified-cd-runner", agentlib.Version)
+}
 
 // defaultSidecarImage is the default value of Config.SidecarImage: the
 // fleet-wide artifact-transfer sidecar auto-injected into every k8s-agent pod
-// (see podbuilder.go's BuildPod/buildArtifactSidecarContainer) — unlike
+// (see podbuilder.go's BuildPod/buildArtifactSidecarContainer) -- unlike
 // PodImage, this is never a job-author-controlled value, so the "job authors
-// can already run their own code" carve-out doesn't apply here. It is
-// digest-pinned for the same reason as defaultPodImage: a mutable tag would
-// let a registry compromise execute code in this sidecar on every k8s-agent
-// pod across the fleet, and that sidecar holds long-lived, bucket-scoped
-// static S3 credentials (injected via SidecarS3SecretName; see
-// cmd/unified-sidecar/main.go and docs/operator-manual/kubernetes-integration.md's threat
-// model), making it a credential-exfiltration path, not just a code-exec one.
-// The tag is retained for readability, but the digest is what is pulled.
-// Rotate this together with the sidecar image release — see
-// docs/operator-manual/operations.md#rotating-the-default-runnerpause-image-digests for the
-// rotation procedure.
-const defaultSidecarImage = "ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest@sha256:5e30d747d7ec954a88d84f4f7a8b5ac5c4b69d152555b80e253e7a0938eb14dd"
+// can already run their own code" carve-out doesn't apply here. That sidecar
+// holds long-lived, bucket-scoped static S3 credentials (injected via
+// SidecarS3SecretName; see cmd/unified-sidecar/main.go and
+// docs/operator-manual/kubernetes-integration.md's threat model), making a
+// registry compromise of it a credential-exfiltration path, not just a
+// code-exec one.
+//
+// It is derived from the agent's stamped version like the other defaults, and
+// for the same reason is not digest-pinned: a digest can be recorded only
+// after the image is pushed, so a pin could only name the PREVIOUS release's
+// sidecar. Operators who need the exposure closed set sidecarImage explicitly
+// to a digest.
+func defaultSidecarImage() string {
+	return agentlib.VersionedImage("ghcr.io/eirueimi/unified-cd-artifact-sidecar", agentlib.Version)
+}
 
 const defaultServiceAccountTokenFile = "/var/run/secrets/unified-cd-agent/token"
 
@@ -178,9 +175,9 @@ const defaultServiceAccountTokenFile = "/var/run/secrets/unified-cd-agent/token"
 func DefaultConfig() Config {
 	return Config{
 		Namespace:               "default",
-		PodImage:                defaultPodImage,
-		SidecarImage:            defaultSidecarImage,
-		ShimImage:               defaultShimImage,
+		PodImage:                defaultPodImage(),
+		SidecarImage:            defaultSidecarImage(),
+		ShimImage:               defaultShimImage(),
 		ServiceAccountTokenFile: defaultServiceAccountTokenFile,
 		MaxConcurrent:           100,
 	}
@@ -344,13 +341,13 @@ func (c *Config) Validate() error {
 		c.Namespace = "default"
 	}
 	if c.PodImage == "" {
-		c.PodImage = defaultPodImage
+		c.PodImage = defaultPodImage()
 	}
 	if c.SidecarImage == "" {
-		c.SidecarImage = defaultSidecarImage
+		c.SidecarImage = defaultSidecarImage()
 	}
 	if c.ShimImage == "" {
-		c.ShimImage = defaultShimImage
+		c.ShimImage = defaultShimImage()
 	}
 	if c.SidecarS3SecretMode == "" {
 		c.SidecarS3SecretMode = SidecarS3SecretModeEnv
