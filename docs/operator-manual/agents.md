@@ -464,8 +464,8 @@ the compose network.
 
 | Flag | Config key | Default | Purpose |
 |---|---|---|---|
-| `--pause-image` | `pauseImage` | `busybox:1.36` | Image for the pause (netns-holder) container, one per claim. |
-| `--runner-image` | `runnerImage` | `ghcr.io/eirueimi/unified-cd-runner:v0.0.3` | Primary container image injected when the job's `podTemplate` defines none. |
+| `--pause-image` | `pauseImage` | `busybox:1.36`, pinned by digest | Image for the pause (netns-holder) container, one per claim. Unlike the runner, it is not derived from the agent's version. |
+| `--runner-image` | `runnerImage` | `ghcr.io/eirueimi/unified-cd-runner:<agent version>` (`:latest` for a build with no release version) | Primary container image injected when the job's `podTemplate` defines none. The default is the runner published with this agent's release; set a digest to pin it (see [Default images and the pause image digest](operations.md#default-images-and-the-pause-image-digest)). |
 
 See [Configuration Reference: Agent Flags](../reference/configuration.md#agent-flags) for
 the full flag list.

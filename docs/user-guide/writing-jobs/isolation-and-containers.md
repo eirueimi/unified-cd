@@ -36,7 +36,7 @@ network namespace; the primary container (the target of default steps) and
 every `podTemplate` container join it with `--network container:<pause>`
 and share the claim's workspace via a bind mount. If the `podTemplate`
 defines no container, the agent injects its configured default runner image
-(`--runner-image`, default `ghcr.io/eirueimi/unified-cd-runner:v0.0.3`) as
+(`--runner-image`, default `ghcr.io/eirueimi/unified-cd-runner` at the tag of the agent's own release version, e.g. `:v0.7.0`) as
 the primary. Supported container runtimes are **docker, podman, and
 nerdctl** — Apple's `container` CLI is not auto-detected and not supported
 for isolated jobs (no reliable network-namespace-join equivalent), so macOS

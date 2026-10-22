@@ -288,8 +288,8 @@ Upgrade order: **controller first, then agents.**
 
    **Exception:** a database provisioned before the migrations-001-017 squash (commit `79c1074`) is **not** upgraded correctly by this automatic `migrate up` — the new migration chain's version numbering starts below where such a database already is, so the migration runner treats it as already up to date and silently applies nothing. This leaves newer columns/tables (e.g. `role`, `managed_resources`, `audit_logs`, `sync_status`) missing. See [Troubleshooting: `column "..." does not exist` after upgrading](../troubleshooting/controller-and-database.md#schema-drift-migration-renumbering) for the supported fresh-init/manual-bridge paths.
 2. **Agents** — upgrade standard agents after the controller is on the new version.
-3. **k8s-agent + sidecar image** — the k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**. The skew is easy to miss when it is partial: the agent passes the repeatable `--exclude` flag to the sidecar (to keep a volume's contents out of an archive of its ancestor, and an artifact or cache entry from being extracted into it) **only** for a job that archives or extracts into an ancestor of a volume, and an older sidecar exits 2 on the unknown flag, so only such a job fails (`flag provided but not defined: -exclude`; see [troubleshooting](../troubleshooting/artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude)). More generally: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. Pin `sidecarImage` in the k8s-agent config to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
-4. **Default runner/pause image digest pin** — see [Rotating the default runner/pause image digests](#rotating-the-default-runnerpause-image-digests) below. This step is easy to forget because the build succeeds either way; forgetting it just means agents keep pulling the old image forever.
+3. **k8s-agent + sidecar image** — the k8s-agent and its auto-injected `unified-artifact` sidecar communicate over a binary exec protocol and **must be upgraded in lockstep**. The skew is easy to miss when it is partial: the agent passes the repeatable `--exclude` flag to the sidecar (to keep a volume's contents out of an archive of its ancestor, and an artifact or cache entry from being extracted into it) **only** for a job that archives or extracts into an ancestor of a volume, and an older sidecar exits 2 on the unknown flag, so only such a job fails (`flag provided but not defined: -exclude`; see [troubleshooting](../troubleshooting/artifacts-and-storage.md#artifact-upload-fails-or-a-cache-is-never-restored-flag-provided-but-not-defined-exclude)). More generally: an old sidecar image paired with a new agent (or vice versa) is incompatible even if the image pulls successfully. The default `sidecarImage` is derived from the agent's own version, so it moves with the agent and needs no action; if you override `sidecarImage`, bump the override to the same release as the agent binary on every upgrade (see [Kubernetes Integration Guide: Sidecar image](kubernetes-integration.md#sidecar-image)).
+4. **Mirrored or air-gapped registries** — the default runner, sidecar and shim images are named after the agent's version (`:vX.Y.Z`), so the new release's tags must be in your mirror **before** its agents start, or their pods land in `ImagePullBackOff`. Nothing in this repository needs rotating for these images; see [Default images and the pause image digest](#default-images-and-the-pause-image-digest) below and the [migration note](migrations/2026-10-22-version-derived-default-images.md).
 
 ### Checking which version is running
 
@@ -305,7 +305,7 @@ another way (including a plain `go build`) reports `dev`.
 | k8s-agent | Same `GET /api/v1/agents` field, or `kubectl exec <pod> -- /k8s-agent --version` |
 | Artifact sidecar | `kubectl exec <pod> -c unified-artifact -- unified-sidecar version` — the only way to verify the lockstep pin in step 3 above |
 | CLI | `unified-cd version` |
-| Runner image | No unified-cd binary and therefore no version; identified by its digest pin (see [Rotating the default runner/pause image digests](#rotating-the-default-runnerpause-image-digests)) |
+| Runner image | No unified-cd binary and therefore no version of its own. An agent's default runner image carries the tag of the agent's version (see [Default images and the pause image digest](#default-images-and-the-pause-image-digest)); to see which image a pod actually runs, read it off the pod |
 
 **Nothing enforces these versions.** The controller does not compare its
 version against an agent's and will never refuse an old agent — compatibility
@@ -317,60 +317,91 @@ system has already handled.
 
 ---
 
-### Rotating the default runner/pause image digests
+### Default images and the pause image digest
 
 The fleet-wide default images — the primary container for isolated jobs that
-don't supply their own `podTemplate` job container, the claim pod's pause
-(netns-holder) container, and the k8s-agent's auto-injected artifact
-sidecar — are referenced by **digest**, not by mutable tag:
+don't supply their own `podTemplate` job container, the k8s-agent's
+auto-injected artifact sidecar, the image of the `ucd-shim` init container, and
+the claim pod's pause (netns-holder) container — come in two kinds.
 
-- Host agent: `defaultRunnerImage` / `defaultPauseImage` constants in `cmd/unified-cd-agent/main.go`
-- k8s-agent: `defaultPodImage` constant in `internal/k8sagent/config.go` (also consumed by the fallback in `internal/k8sagent/podbuilder.go`'s `defaultPodSpec`)
-- k8s-agent artifact sidecar: `defaultSidecarImage` constant in `internal/k8sagent/config.go` (fleet-wide default for `Config.SidecarImage`, auto-injected into every k8s-agent pod by `internal/k8sagent/podbuilder.go`'s `buildArtifactSidecarContainer` — not job-author-controlled, and this sidecar holds long-lived, bucket-scoped static S3 credentials, so treat its pin with at least the same care as the runner/pod image)
+| Image | Configured by | Default |
+| --- | --- | --- |
+| Runner | `runnerImage` (host agent), `podImage` (k8s-agent) | `ghcr.io/eirueimi/unified-cd-runner:<agent version>` |
+| Artifact sidecar | `sidecarImage` (k8s-agent) | `ghcr.io/eirueimi/unified-cd-artifact-sidecar:<agent version>` |
+| Shim | `shimImage` (k8s-agent) | `ghcr.io/eirueimi/unified-cd-k8s-agent:<agent version>` |
+| Pause | `pauseImage` (host agent) | `busybox:1.36@sha256:<digest>` (fixed digest) |
 
-This is deliberate: a bare tag like `v0.0.3` or `1.36` looks immutable but
-isn't — whoever controls that registry repository can force-push the tag and
-execute code in the primary container of every isolated job on every agent
-that lacks its own `podTemplate` job container. Pinning to
-`repo:tag@sha256:<digest>` keeps the tag for human readability while the
-digest is what actually gets pulled and enforced.
+**The three unified-cd images are derived from the agent's version and need no
+rotation.** `release-docker.yml` builds all five images from one git tag and
+tags every one of them `:$TAG` (and `:latest`), so a `v0.7.0` agent asking for
+`:v0.7.0` is asking for an image built from the same commit. A release does not
+include a "bump the default image" step, and there is no digest to resolve.
 
-**The cost of this is that the pin rots silently.** When the runner image is
-rebuilt and re-tagged (e.g. a new `unified-cd-runner` release), agents keep
-pulling the *old* image at the *old* digest until someone manually updates
-the constant. There is no automated check that the pinned digest still
-matches the tag's current content. Treat updating the pin as a **required
-step of every runner-image release**, not an optional follow-up:
+The tag comes from the version stamped into the agent binary:
 
-1. After publishing the new `unified-cd-runner` image (and whenever bumping
-   the pinned `busybox` version), resolve the new manifest-list digest:
+| The agent reports | It asks for |
+| --- | --- |
+| `v0.7.0` (images) or `0.7.0` (release binaries; the `v` is added) | `:v0.7.0` |
+| `v0.7.0-rc1` | `:v0.7.0-rc1` |
+| `dev` (plain `go build`), `v0.6.0-3-gabc123-dirty` (`make`), a bare commit SHA, or nothing | `:latest` |
+
+Three consequences for an operator, all covered in the [migration
+note](migrations/2026-10-22-version-derived-default-images.md):
+
+- **The default is a tag, not a digest.** Whoever can write to the registry
+  repository can move it. An operator who needs immutability sets the image
+  field explicitly to a digest; the migration note has the exact fields.
+- **A release whose image publish failed fails loudly.** The binary asks for a
+  tag that does not exist and pods sit in `ImagePullBackOff`. The `verify` job
+  in `release-docker.yml` reports it and its error message says to fix the
+  build and re-push the tag.
+- **A locally built agent (`make`, `go build`) still asks for `:latest`** and
+  can still skew against the newest release. Only *released* agents are
+  self-consistent.
+
+Because the unified-cd defaults follow the version, there is nothing to update
+in the source when a runner, sidecar or shim image changes.
+
+#### The pause image (`busybox`)
+
+`defaultPauseImage` in `cmd/unified-cd-agent/main.go` is the one default that
+stays **digest-pinned**. It is a third-party image with no unified-cd release
+identity, so there is nothing to derive a tag from and no release step tied to
+it; and a bare tag like `1.36` looks immutable but isn't — whoever controls
+that registry repository can force-push the tag and run code in the netns-holder
+container of every claim pod. Pinning to `repo:tag@sha256:<digest>` keeps the
+tag for readability while the digest is what actually gets pulled.
+
+The cost is that the pin rots silently: nothing checks that the digest still
+matches the tag's current content, and it only changes when someone changes it.
+It is not touched by unified-cd releases; rotate it deliberately, when you
+decide to move to a newer `busybox`:
+
+1. Resolve the new manifest-list digest:
 
    ```bash
-   docker buildx imagetools inspect ghcr.io/eirueimi/unified-cd-runner:vX.Y.Z
    docker buildx imagetools inspect busybox:1.36
-   docker buildx imagetools inspect ghcr.io/eirueimi/unified-cd-artifact-sidecar:vX.Y.Z
    ```
 
    Use the **top-level `Digest:`** from the multi-arch index output, not one
    of the per-platform manifest digests listed under `Manifests:` — a
    per-platform digest would break agents on other architectures.
 
-2. Update, in the same commit:
-   - `cmd/unified-cd-agent/main.go`: `defaultRunnerImage` and/or `defaultPauseImage`
-   - `internal/k8sagent/config.go`: `defaultPodImage` and/or `defaultSidecarImage`
-   - Bump the tag portion of the string (e.g. `v0.0.3` → `vX.Y.Z`) alongside the digest so the two never drift apart. **Exception: `defaultSidecarImage`** is intentionally pinned as `...:latest@sha256:<digest>` — there is no `vX.Y.Z` release tag to bump for this image, so only its digest changes on rotation; the tag portion (`latest`) stays as-is.
+2. Update `defaultPauseImage` in `cmd/unified-cd-agent/main.go`, bumping the
+   tag portion alongside the digest so the two never drift apart.
 
 3. Record both old and new digests in the commit message so the pin change
    is auditable in `git log`/`git blame`.
 
-4. Run `go test ./cmd/... ./internal/agent/ ./internal/k8sagent/ -count=1` —
-   `TestDefaultImagesAreDigestPinned` (`cmd/unified-cd-agent/main_test.go`),
-   `TestDefaultPodImageIsDigestPinned`, and `TestDefaultSidecarImageIsDigestPinned`
-   (both in `internal/k8sagent/config_test.go`) only assert the string is a
-   well-formed `@sha256:<64 hex chars>` pin, so they will **not** catch a
-   stale-but-still-pinned digest; a full pull/smoke-test of the new image on
-   at least one host and one k8s agent is the real verification that the
-   rotation took effect.
+4. Run `go test ./cmd/unified-cd-agent/ -count=1`.
+   `TestDefaultPauseImageStaysDigestPinned` only asserts the string is a
+   well-formed `busybox:<tag>@sha256:<64 hex chars>` pin with no unified-cd
+   version substituted into it, so it will **not** catch a stale-but-still-pinned
+   digest; a smoke test that pulls the new image on at least one host is the
+   real verification that the rotation took effect.
+
+Do not "make it consistent" by deriving the pause image from the version too:
+there is no `busybox:v0.7.0` for it to resolve to.
 
 ---
 

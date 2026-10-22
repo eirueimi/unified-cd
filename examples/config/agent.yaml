@@ -16,11 +16,14 @@ labels:
   - env:prod
 
 # pauseImage: image for the claim pod's pause (netns-holder) container, one per claim.
+# The built-in default is busybox:1.36 pinned by digest; setting this replaces it.
 # pauseImage: busybox:1.36
 
 # runnerImage: primary container image injected into the claim pod when an isolated job's
-# podTemplate defines no container of its own.
-# runnerImage: ghcr.io/eirueimi/unified-cd-runner:v0.0.3
+# podTemplate defines no container of its own. Leave it unset to get the runner published
+# with this agent's release (the tag matches the agent's version; :latest for a locally
+# built agent). Set it to a digest to pin the image:
+# runnerImage: ghcr.io/eirueimi/unified-cd-runner@sha256:<digest>
 
 # finallyTimeout: ceiling on each of a run's post-DAG cleanup phases — each
 # post:/cache: hook drain, the spec.finally pipeline, and scope/claim-pod

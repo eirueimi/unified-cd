@@ -160,8 +160,10 @@ podImage: golang:1.24-alpine
 
 # Image the prepended init container runs to install the ucd-sh shim onto
 # the shared /.ucd volume (see "Step execution mechanism" below). Defaults
-# to the k8s-agent's own image, which ships /ucd-sh at its root.
-# shimImage: ghcr.io/eirueimi/unified-cd-k8s-agent:latest
+# to the k8s-agent's own image at the tag matching the agent's version
+# (:latest for a locally built agent); the image ships /ucd-sh at its root.
+# Set a digest to pin it (see "Shim image: pin it in production" below).
+# shimImage: ghcr.io/eirueimi/unified-cd-k8s-agent:v0.7.0
 
 # kubeconfig omitted → uses InClusterConfig if running inside the cluster,
 #                       or ~/.kube/config if running outside
@@ -556,42 +558,67 @@ Every Pod this agent builds — job Pods, scope Pods (from a `uses:`-level
 
 #### Shim image: pin it in production
 
-Unlike `sidecarImage` and `podImage`, the `shimImage` default is **not**
-digest-pinned: it is the floating tag
-`ghcr.io/eirueimi/unified-cd-k8s-agent:latest`. This is deliberate — the
-default names the k8s-agent's *own* image, so a digest written into the source
-could only ever be the previous release's, which would hard-code the version
-skew the lockstep rule below forbids. See the `defaultShimImage` comment in
-`internal/k8sagent/config.go` for the full reasoning.
+The `shimImage` default is the k8s-agent's *own* image, at the tag that matches
+the agent's version: a `v0.7.0` agent defaults to
+`ghcr.io/eirueimi/unified-cd-k8s-agent:v0.7.0`, so a released agent injects the
+shim published with its own release by construction. An agent built any other
+way (`make`, a plain `go build`; it reports `dev` or a `git describe` string)
+defaults to `:latest`. The default is deliberately **not** digest-pinned: it
+names this binary's own image, so a digest written into the source could only
+ever be the previous release's, which would hard-code the version skew the
+lockstep rule in [operations.md](operations.md) forbids. See the
+`defaultShimImage` comment in `internal/k8sagent/config.go` for the full
+reasoning.
 
-The consequence is that the shipped default carries two risks an operator
-should close explicitly:
+The same rule now sets **every** unified-cd default image: `podImage` (the
+runner) and `sidecarImage` default to a tag derived from the agent's version
+too, and this section's guidance applies to all three. The one default that is
+still a digest is the host agent's `pauseImage` (busybox); see [Default images
+and the pause image digest](operations.md#default-images-and-the-pause-image-digest).
 
-1. **Version skew.** `:latest` tracks the newest *published release*, not the
-   agent you are running. An agent built from a commit ahead of the last
-   release injects an older shim, contrary to the lockstep requirement in
-   [operations.md](operations.md). If no release has been published for a
-   while, that gap can be large.
-2. **Mutable-tag exposure.** The `ucd-shim` init container installs the
-   `ucd-sh` binary that every subsequent step execs, so a registry compromise
-   of a floating tag is fleet-wide code execution.
+A tag is mutable, so the shipped defaults carry two risks an operator should
+close explicitly:
 
-Both are closed by setting `shimImage` to the exact image you deployed the
-agent from, by digest:
+1. **Mutable-tag exposure.** Whoever can write to the registry repository can
+   move a tag. For `shimImage` that is fleet-wide code execution: the
+   `ucd-shim` init container installs the `ucd-sh` binary that every
+   subsequent step execs. For `sidecarImage` it is a credential-exfiltration
+   path (see [Sidecar image](#sidecar-image)); for `podImage`, code execution
+   in the primary container of every job that declares no container of its own.
+2. **Version skew on a locally built agent.** `:latest` tracks the newest
+   *published release*, not the agent you are running, so an agent built from a
+   commit ahead of the last release injects an older shim, contrary to the
+   lockstep requirement in [operations.md](operations.md). A released agent
+   does not have this problem.
+
+Both are closed by setting the field to the exact image you deployed, by
+digest:
 
 ```yaml
 # k8s-agent-config.yaml
 shimImage: ghcr.io/eirueimi/unified-cd-k8s-agent@sha256:<digest of your agent image>
+sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar@sha256:<digest of the sidecar of the same release>
+podImage: ghcr.io/eirueimi/unified-cd-runner@sha256:<digest of the runner of the same release>
 ```
 
-Resolve the digest with:
+Resolve each digest with:
 
 ```bash
 docker buildx imagetools inspect ghcr.io/eirueimi/unified-cd-k8s-agent:<your tag>
+docker buildx imagetools inspect ghcr.io/eirueimi/unified-cd-artifact-sidecar:<your tag>
+docker buildx imagetools inspect ghcr.io/eirueimi/unified-cd-runner:<your tag>
 ```
 
-This is by construction the lockstep-correct value, since it is the same image
-the agent itself runs. Update it whenever you upgrade the agent.
+Use the **top-level `Digest:`** of the multi-arch index, not one of the
+per-platform digests under `Manifests:`. For the shim this is by construction
+the lockstep-correct value, since it is the same image the agent itself runs.
+
+A digest you set no longer follows the agent: **update all three whenever you
+upgrade the agent**, or you will be running a shim, sidecar or runner from the
+old release. The sidecar is the one that breaks visibly, because it speaks a
+binary exec protocol to the agent (see [Sidecar image](#sidecar-image)). The
+[migration note](migrations/2026-10-22-version-derived-default-images.md) lists
+who is affected and what else changes with these defaults.
 
 `/.ucd` is therefore a **reserved path**: a `podTemplate` that mounts
 something else there is user error and fails loudly (an exec into that
@@ -664,19 +691,24 @@ The sidecar image is configurable via the agent's `sidecarImage` config field:
 
 ```yaml
 # k8s-agent-config.yaml
-# The default is digest-pinned; the tag is kept only for readability.
-sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:latest@sha256:5e30d747d7ec954a88d84f4f7a8b5ac5c4b69d152555b80e253e7a0938eb14dd   # default
+# The default is derived from the agent's version (:v0.7.0 for a v0.7.0 agent,
+# :latest for a locally built agent); shown here for a v0.7.0 agent.
+sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:v0.7.0   # default
 ```
 
-Keep the `@sha256:` digest if you override this. The sidecar is auto-injected
-into every job and scope Pod and holds long-lived, bucket-scoped S3
-credentials, so a mutable tag would let a registry compromise exfiltrate those
-credentials from every Pod in the fleet.
+The default is a version-derived tag, not a digest. The sidecar is
+auto-injected into every job and scope Pod and holds long-lived, bucket-scoped
+S3 credentials, so a mutable tag would let a registry compromise exfiltrate
+those credentials from every Pod in the fleet. If that matters to you, set
+`sidecarImage` to a digest, as described under [Shim image: pin it in
+production](#shim-image-pin-it-in-production), which covers all the default
+images.
 
 Pinning by digest closes the registry risk but not skew: the sidecar and the
 k8s-agent talk over a binary exec protocol and must be upgraded in lockstep
 (see [Operations: Upgrades](operations.md#upgrades)), so a digest left behind
-across a k8s-agent upgrade pins the *wrong* sidecar. To confirm a running
+across a k8s-agent upgrade pins the *wrong* sidecar. The version-derived default
+does not have this problem: it moves with the agent. To confirm a running
 pod's pair actually matches, ask both binaries:
 
 ```bash

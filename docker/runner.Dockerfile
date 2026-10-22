@@ -1,8 +1,10 @@
 # The runner is the default primary container for isolated jobs: a toolbox of
 # third-party CLIs, not a unified-cd binary. It is the one released image with
-# no Go build and therefore no version variable to stamp with -ldflags; it is
-# identified by the digest pin in cmd/unified-cd-agent/main.go instead (see
-# docs/operations.md "Rotating the default runner/pause image digests").
+# no Go build and therefore no version variable to stamp with -ldflags. Agents find
+# it by tag instead: each derives the tag from its own stamped version (see
+# docs/operator-manual/operations.md "Default images and the pause image digest"),
+# which works because release-docker.yml tags this image with the release tag like
+# every other image.
 FROM debian:12-slim
 
 ARG TARGETARCH
