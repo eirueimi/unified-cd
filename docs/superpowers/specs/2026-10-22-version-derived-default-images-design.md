@@ -130,6 +130,29 @@ So the predicate is:
   Requiring a leading `v` instead — as an earlier draft of §7 suggested —
   would send every release host-agent binary down the fallback path, which is
   the opposite of the intent.
+- **That accept pattern alone is not enough, and an earlier draft of this
+  section was wrong to imply it was.** It matches
+  `v0.6.0-3-gabc123-dirty`, because a semver pre-release identifier may
+  contain hyphens, digits and letters — the `git describe` form is not a case
+  of extra dot-separated segments. So a second check rejects what
+  `git describe --tags --always --dirty` appends:
+  `(-dirty|-\d+-g[0-9a-f]+(-dirty)?)$`. This was found by running the pattern
+  rather than reading it.
+
+  The cost, stated because it is a real one: a genuine pre-release tag shaped
+  like `v0.7.0-5-gdeadbeef` would be read as a dev build and fall back to
+  `latest`. Nothing would tag a release that way, so this is accepted.
+
+  The deeper point is that provenance is being inferred from the *shape* of a
+  human-facing string, and no purely syntactic rule can separate a describe
+  output from a pre-release tag that happens to look like one. The clean
+  alternative is to stamp a second variable that only the release path sets
+  (goreleaser's `{{.Tag}}`, which keeps the `v`, and `github.ref_name` for
+  the images), making the helper "empty means dev" with no parsing and no
+  normalisation at all. That was not taken here because it touches four
+  Dockerfiles, the goreleaser config and the release workflow to fix a case
+  that cannot realistically occur — but it is the right shape if this
+  heuristic ever bites.
 - A pre-release like `v0.7.0-rc1` is accepted. `release-docker.yml` triggers
   on `v*`, so that tag really is published, and accepting it keeps an rc
   self-consistent.
