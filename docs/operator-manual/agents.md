@@ -264,6 +264,22 @@ The standard agent reports `["native"]`, or `["native", "container"]` once it
 detects a container runtime at startup. The Kubernetes agent reports
 `["pod", "container"]`.
 
+The standard agent logs what it registered as, so a host that came up without
+`container` is visible in its own log:
+
+```
+INFO agent registered agentId=build-01 capabilities=[native]
+```
+
+When no runtime was found, a warning carrying the detection error comes first:
+
+```
+WARN no container runtime: this agent will not run isolated (container) jobs; restart the agent once a runtime is available agentId=build-01 error="no container runtime available (looked for [...])"
+```
+
+Detection runs once per agent process. A runtime installed, started or put on
+`PATH` after the agent started is not picked up until the agent is restarted.
+
 ### Automatic routing
 
 At trigger time (a direct `POST /runs/trigger`, a webhook delivery, a

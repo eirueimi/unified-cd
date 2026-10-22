@@ -123,7 +123,12 @@ The `Reason` field (and banner text) tells you which half failed:
 - `no registered agent provides capability [...]` — no connected agent
   reports the needed capability at all (e.g. a `podTemplate` that needs
   Kubernetes, but no k8s-agent is registered; or a `native: true` job with
-  only k8s-agents online).
+  only k8s-agents online). For `[container]`, check the standard agents' logs
+  for `no container runtime`: an agent that started before docker/podman was
+  running, or without it on `PATH`, registers as native-only and stays that
+  way until it is restarted. The same happens silently to a single host when
+  other agents still provide `container`, so that host's isolated jobs go to
+  the others or wait.
 - `no registered agent matches labels [...]` — at least one agent has the
   right capability, but none also carries every label in `agentSelector`.
 - `no agent declares volume "..."`, `no agent declares any of the volumes [...]`,
