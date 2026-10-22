@@ -254,6 +254,19 @@ func (a *Agent) capabilities() []string {
 	return agentCapabilities(rtErr == nil)
 }
 
+// logRegistration records what the agent registered as. Without it a host whose
+// container runtime was not found (docker not on PATH, or started after the
+// agent) silently registers as native-only: isolated jobs route elsewhere or
+// stay Queued, and nothing in this host's log says why. Detection runs once per
+// process, so the warning also says a restart is needed to pick the runtime up.
+func logRegistration(id string, caps []string, rtErr error) {
+	if rtErr != nil {
+		slog.Warn("no container runtime: this agent will not run isolated (container) jobs; restart the agent once a runtime is available",
+			"agentId", id, "error", rtErr)
+	}
+	slog.Info("agent registered", "agentId", id, "capabilities", caps)
+}
+
 // New creates a new agent with the given ID and client.
 func New(id string, client *Client) *Agent {
 	return &Agent{ID: id, Client: client, diskStatsFn: diskStats}
@@ -304,7 +317,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	if registerErr != nil {
 		return registerErr
 	}
-	slog.Info("agent registered", "agentId", a.ID)
+	_, rtErr := a.containerRuntime()
+	logRegistration(a.ID, req.Capabilities, rtErr)
 
 	// Fail runs a previous process incarnation left behind BEFORE claiming
 	// anything. A restarted agent re-registers under the same ID and resumes
