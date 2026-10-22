@@ -232,7 +232,7 @@ cleanWorkspace: false          # no longer has any effect (see --clean-workspace
 workspaceDir: /data/unified-cd/workspace
 drainTimeout: 60s
 finallyTimeout: 10m            # ceiling on each post-DAG cleanup phase (spec.finally, and each post:/cache: drain); default shown
-pauseImage: busybox:1.36                              # claim pod pause container (default shown; the real default also carries a @sha256 digest)
+# pauseImage: busybox:1.36@sha256:<digest>            # claim pod pause container; left unset it keeps the shipped digest pin. Do not paste this without the digest: that would drop the pin on the one default image this project still pins
 # runnerImage: ghcr.io/eirueimi/unified-cd-runner:<agent version> # default primary container; left unset it follows the agent's own version. Do not paste a literal tag: it would stop following the agent
 minFreeDisk: 5368709120        # 5Gi; below this free space on workspaceDir's filesystem, stop claiming (0 = disabled, default)
 workspaceRetentionDays: 0      # >0 opts in to the periodic GC of workspace directories an agent crash left behind (0 = disabled, default)
