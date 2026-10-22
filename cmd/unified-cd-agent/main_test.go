@@ -1,12 +1,17 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/eirueimi/unified-cd/internal/agent"
 )
@@ -64,6 +69,64 @@ func TestDefaultPauseImageStaysDigestPinned(t *testing.T) {
 		"the pause image must stay a busybox image pinned to a complete sha256 digest")
 	assert.False(t, strings.Contains(defaultPauseImage, "9.9.9") || strings.Contains(defaultPauseImage, "unified-cd"),
 		"the pause image must not be derived from the agent version: busybox has no unified-cd release")
+}
+
+// TestEveryDefaultImageIsClassified covers the SET of default images in this
+// package rather than trusting the two tests above to be exhaustive. They name
+// the runner and pause images by hand, so a third default image added to
+// main.go would be covered by neither. This scans the package's non-test source
+// for every top-level identifier named default<Something>Image and requires it
+// to appear in the table below, so adding one fails here until its policy
+// (version-derived or deliberately pinned) is decided and a test exists for it.
+//
+// When it fails: add the new identifier to the table, and add or extend a test
+// for its policy (TestDefaultRunnerImageResolvesThroughVersionedImage for a
+// version-derived default, TestDefaultPauseImageStaysDigestPinned for a pin).
+func TestEveryDefaultImageIsClassified(t *testing.T) {
+	classified := map[string]string{
+		"defaultRunnerImage": "version-derived (TestDefaultRunnerImageResolvesThroughVersionedImage)",
+		"defaultPauseImage":  "digest-pinned third-party (TestDefaultPauseImageStaysDigestPinned)",
+	}
+	isDefaultImage := regexp.MustCompile(`^default\w*Image$`)
+
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parsing package source: %v", err)
+	}
+	found := map[string]bool{}
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				switch d := decl.(type) {
+				case *ast.FuncDecl:
+					if d.Recv == nil && isDefaultImage.MatchString(d.Name.Name) {
+						found[d.Name.Name] = true
+					}
+				case *ast.GenDecl:
+					for _, spec := range d.Specs {
+						if vs, ok := spec.(*ast.ValueSpec); ok {
+							for _, n := range vs.Names {
+								if isDefaultImage.MatchString(n.Name) {
+									found[n.Name] = true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	require.NotEmpty(t, found, "found no default*Image identifier at all; has the naming convention changed?")
+	for name := range found {
+		assert.Contains(t, classified, name,
+			"%s is a default image with no recorded policy: classify it in this test and cover it", name)
+	}
+	for name := range classified {
+		assert.True(t, found[name], "%s is classified here but no longer exists in main.go", name)
+	}
 }
 
 // TestRunnerImageFlagDefaultIsVersionDerived covers the one place the runner

@@ -2,6 +2,8 @@ package k8sagent
 
 import (
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,6 +160,54 @@ func TestDefaultImagesResolveThroughVersionedImage(t *testing.T) {
 	assert.Equal(t, runner+":latest", defaultPodImage())
 	assert.Equal(t, sidecar+":latest", defaultSidecarImage())
 	assert.Equal(t, shim+":latest", defaultShimImage())
+}
+
+// TestEveryImageConfigFieldHasAVersionDerivedDefault covers the SET of default
+// images rather than a hand-written list of them. The three tests above name
+// pod, sidecar and shim individually, so a fourth image field added to Config
+// would be covered by none of them. This one walks every Config field whose
+// name ends in "Image" and requires its DefaultConfig value to be a tag derived
+// from the stamped version.
+//
+// A new image field that is deliberately NOT version-derived (a third-party
+// image, like the host agent's busybox pause image) fails here on purpose: add
+// it to the exemptions below with the reason, rather than loosening the check.
+func TestEveryImageConfigFieldHasAVersionDerivedDefault(t *testing.T) {
+	// Image fields that are intentionally not derived from the agent version.
+	// Empty today: every k8s-agent default image is a unified-cd image.
+	exempt := map[string]string{}
+
+	typ := reflect.TypeOf(Config{})
+	var checked []string
+	for _, version := range []struct{ stamped, tag string }{
+		{"v9.9.9", ":v9.9.9"},
+		{"dev", ":latest"},
+	} {
+		setAgentVersion(t, version.stamped)
+		dc := reflect.ValueOf(DefaultConfig())
+		checked = checked[:0]
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			if !strings.HasSuffix(f.Name, "Image") {
+				continue
+			}
+			if why, ok := exempt[f.Name]; ok {
+				t.Logf("%s exempt: %s", f.Name, why)
+				continue
+			}
+			checked = append(checked, f.Name)
+			img := dc.Field(i).String()
+			assert.NotEmpty(t, img, "Config.%s has no default image", f.Name)
+			assert.NotContains(t, img, "@sha256:",
+				"Config.%s default must be version-derived, not digest-pinned", f.Name)
+			assert.True(t, strings.HasSuffix(img, version.tag),
+				"Config.%s default %q must end in %q when the agent is stamped %q",
+				f.Name, img, version.tag, version.stamped)
+		}
+	}
+	// If the reflection ever stops finding fields (a rename of the suffix
+	// convention), fail rather than pass vacuously.
+	assert.GreaterOrEqual(t, len(checked), 3, "expected at least PodImage, SidecarImage and ShimImage; checked %v", checked)
 }
 
 // TestDefaultsReachEveryCallSite confirms DefaultConfig, Validate and
