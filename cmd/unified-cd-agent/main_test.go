@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -62,4 +64,37 @@ func TestDefaultPauseImageStaysDigestPinned(t *testing.T) {
 		"the pause image must stay a busybox image pinned to a complete sha256 digest")
 	assert.False(t, strings.Contains(defaultPauseImage, "9.9.9") || strings.Contains(defaultPauseImage, "unified-cd"),
 		"the pause image must not be derived from the agent version: busybox has no unified-cd release")
+}
+
+// TestRunnerImageFlagDefaultIsVersionDerived covers the one place the runner
+// default is consumed, the --runner-image flag registered in main(). Testing
+// defaultRunnerImage() alone cannot see that call site: reverting the flag to a
+// literal tag would leave every other test green while host agents pull a stale
+// runner. So this runs the real main() in a child process, with a stamped
+// version, and reads the default out of its -h output.
+func TestRunnerImageFlagDefaultIsVersionDerived(t *testing.T) {
+	if os.Getenv("UCD_TEST_RUN_MAIN_HELP") == "1" {
+		agent.Version = "v9.9.9"
+		os.Args = []string{"unified-cd-agent", "-h"}
+		main() // -h prints the usage with every flag default and exits
+		os.Exit(0)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunnerImageFlagDefaultIsVersionDerived$")
+	// A scratch working directory so no unified-agent.yaml is picked up, and no
+	// inherited UNIFIED_AGENT_* variable can change the effective default.
+	cmd.Dir = t.TempDir()
+	env := []string{"UCD_TEST_RUN_MAIN_HELP=1"}
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "UNIFIED_AGENT_") {
+			env = append(env, kv)
+		}
+	}
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("running main -h: %v: %s", err, out)
+	}
+	assert.Contains(t, string(out), `(default "ghcr.io/eirueimi/unified-cd-runner:v9.9.9")`,
+		"--runner-image must default to the runner derived from the agent's version")
 }

@@ -50,3 +50,18 @@ func VersionedImage(repo, version string) string {
 	}
 	return repo + ":" + version
 }
+
+// runnerImageRepo is the repository of the runner image: the default primary
+// container for isolated jobs without a podTemplate job container. It exists
+// once, here, because the host agent and the Kubernetes agent must default to
+// the SAME image; two copies of this string would let a rename in one leave the
+// other quietly pulling a different (or missing) image.
+const runnerImageRepo = "ghcr.io/eirueimi/unified-cd-runner"
+
+// DefaultRunnerImage is the fleet-wide default runner image for the running
+// agent: the runner published with this agent's own release, or :latest for a
+// build that carries no release version. Both the host agent's runnerImage
+// default and the Kubernetes agent's podImage default delegate to it.
+func DefaultRunnerImage() string {
+	return VersionedImage(runnerImageRepo, Version)
+}

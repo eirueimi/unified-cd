@@ -58,3 +58,19 @@ func TestVersionedImage_RepositoryIsPreserved(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// DefaultRunnerImage is the single source of the runner repository for both the
+// host agent and the Kubernetes agent, so it must follow the stamped Version.
+func TestDefaultRunnerImage_FollowsVersion(t *testing.T) {
+	old := Version
+	t.Cleanup(func() { Version = old })
+
+	Version = "v9.9.9"
+	if got, want := DefaultRunnerImage(), "ghcr.io/eirueimi/unified-cd-runner:v9.9.9"; got != want {
+		t.Errorf("DefaultRunnerImage() = %q, want %q", got, want)
+	}
+	Version = "dev"
+	if got, want := DefaultRunnerImage(), "ghcr.io/eirueimi/unified-cd-runner:latest"; got != want {
+		t.Errorf("DefaultRunnerImage() = %q, want %q", got, want)
+	}
+}

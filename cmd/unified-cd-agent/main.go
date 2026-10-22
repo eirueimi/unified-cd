@@ -27,7 +27,7 @@ import (
 // set runnerImage explicitly to a digest. A build that carries no release
 // version (a plain `go build`, a `make` build) falls back to :latest.
 func defaultRunnerImage() string {
-	return agent.VersionedImage("ghcr.io/eirueimi/unified-cd-runner", agent.Version)
+	return agent.DefaultRunnerImage()
 }
 
 // defaultPauseImage is DELIBERATELY the odd one out: it stays pinned to a
@@ -40,7 +40,9 @@ func defaultRunnerImage() string {
 // when busybox itself is deliberately bumped) and keeps a mutable tag from
 // letting a registry compromise run code in the pause container of every claim
 // pod. Dropping it would be a supply-chain posture change that buys nothing.
-// TestDefaultPauseImageStaysDigestPinned fails if this is changed.
+// TestDefaultPauseImageStaysDigestPinned catches the digest being dropped and
+// the image being made version-derived; a deliberate busybox digest bump
+// passes it, as it should.
 const defaultPauseImage = "busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
 
 // orDefault returns s if it is non-empty, otherwise def. Used to give

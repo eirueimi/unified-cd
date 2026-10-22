@@ -121,7 +121,8 @@ type AgentPodTemplate struct {
 // compromise execute code in every pod fleet-wide -- DOES apply here, and is
 // arguably sharper: this image's init container installs the ucd-sh binary
 // that every subsequent step in the job container then execs. A release tag
-// is far less mutable than :latest, but the exposure is accepted at the
+// is still mutable -- a registry lets anyone with push access move it -- and is
+// merely not expected to move; the exposure is accepted at the
 // default and mitigated by configuration, not by pinning: operators who need
 // it closed should set `shimImage` explicitly to the digest of the k8s-agent
 // image they actually deployed (which they know, and which is by construction
@@ -137,8 +138,9 @@ func defaultShimImage() string {
 
 // defaultPodImage is the default value of Config.PodImage: the fleet-wide
 // primary container image for isolated jobs that don't supply their own
-// podTemplate job container. It names the same image, by the same
-// version-derived rule, as the host agent's default runner image.
+// podTemplate job container. It is the same image, by the same version-derived
+// rule, as the host agent's default runner image: both delegate to
+// agent.DefaultRunnerImage so the repository string exists in one place.
 //
 // It is not digest-pinned: a digest of an image built from this repository
 // can only be recorded after the image is pushed, so a pin could only ever
@@ -146,7 +148,7 @@ func defaultShimImage() string {
 // reference (a mutable tag lets a registry compromise execute code in this
 // container on every such job) set podImage explicitly to a digest.
 func defaultPodImage() string {
-	return agentlib.VersionedImage("ghcr.io/eirueimi/unified-cd-runner", agentlib.Version)
+	return agentlib.DefaultRunnerImage()
 }
 
 // defaultSidecarImage is the default value of Config.SidecarImage: the
