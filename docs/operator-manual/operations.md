@@ -295,8 +295,10 @@ Upgrade order: **controller first, then agents.**
 
 An upgrade is a fleet mid-way between two versions, so every unified-cd
 binary reports the release tag it was built from. Released images are stamped
-from the git tag by `.github/workflows/release-docker.yml`; anything built
-another way (including a plain `go build`) reports `dev`.
+from the git tag by `.github/workflows/release-docker.yml`, and release binaries
+by goreleaser. `make` stamps the output of `git describe` (for example
+`v0.6.0-3-gabc123-dirty`), and a plain `go build` stamps nothing, so it reports
+`dev`.
 
 | Component | How to read its version |
 | --- | --- |

@@ -233,7 +233,7 @@ workspaceDir: /data/unified-cd/workspace
 drainTimeout: 60s
 finallyTimeout: 10m            # ceiling on each post-DAG cleanup phase (spec.finally, and each post:/cache: drain); default shown
 pauseImage: busybox:1.36                              # claim pod pause container (default shown; the real default also carries a @sha256 digest)
-runnerImage: ghcr.io/eirueimi/unified-cd-runner:v0.7.0 # default primary container (default: the tag of the agent's own version, shown for a v0.7.0 agent)
+# runnerImage: ghcr.io/eirueimi/unified-cd-runner:<agent version> # default primary container; left unset it follows the agent's own version. Do not paste a literal tag: it would stop following the agent
 minFreeDisk: 5368709120        # 5Gi; below this free space on workspaceDir's filesystem, stop claiming (0 = disabled, default)
 workspaceRetentionDays: 0      # >0 opts in to the periodic GC of workspace directories an agent crash left behind (0 = disabled, default)
 logLevel: info
@@ -420,7 +420,10 @@ podImage: alpine:3.19
 # code in a sidecar that holds S3 credentials, on every Pod in the fleet. Set a
 # digest here to close that (see kubernetes-integration.md, "Shim image: pin it
 # in production", which covers every default image).
-sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:v0.7.0
+# Leave it unset to follow the agent. Do not paste a literal tag (for example
+# :v0.7.0): it would pin the sidecar while the agent moves on, and the skew
+# fails jobs with "flag provided but not defined: -exclude".
+# sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:<agent version>
 
 # Name of a Secret carrying UNIFIED_S3_* env for the sidecar. Enables
 # cache/artifact transfers; when unset, cache steps are no-ops (reported

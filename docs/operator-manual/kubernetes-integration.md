@@ -692,8 +692,9 @@ The sidecar image is configurable via the agent's `sidecarImage` config field:
 ```yaml
 # k8s-agent-config.yaml
 # The default is derived from the agent's version (:v0.7.0 for a v0.7.0 agent,
-# :latest for a locally built agent); shown here for a v0.7.0 agent.
-sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:v0.7.0   # default
+# :latest for a locally built agent). Leave it unset to follow the agent; a
+# literal tag pasted here pins the sidecar while the agent moves on.
+# sidecarImage: ghcr.io/eirueimi/unified-cd-artifact-sidecar:<agent version>   # default
 ```
 
 The default is a version-derived tag, not a digest. The sidecar is

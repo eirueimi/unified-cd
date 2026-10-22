@@ -28,7 +28,9 @@ that does not name a published release (`dev`, a `make` build's
 `v0.6.0-3-gabc123-dirty`, a bare commit SHA) falls back to `:latest`.
 
 Nothing is rejected at startup and no job YAML changes. The effects are all at
-image pull time, listed below.
+image pull time, listed below. If you are about to push a release tag, read
+[Pushing a pre-release moves `:latest`](#pushing-a-pre-release-moves-latest)
+first.
 
 ## Who is affected
 
@@ -153,6 +155,47 @@ If nodes already pulled a tag that was later moved by a re-push, an
 `IfNotPresent` node keeps its old copy; delete the image on the node or use a
 digest.
 
+## Pushing a pre-release moves `:latest`
+
+This is new with this change. `release-docker.yml` runs on **any** `v*` tag and
+tags every image `:latest` as well as `:$TAG`, with no check that the tag is a
+final release. Pushing `v0.7.0-rc1` therefore moves `:latest` of the runner,
+the sidecar and the shim to the **pre-release**.
+
+Before this change the runner and sidecar defaults were digest-pinned, so a
+push could not move them, and only the shim default (already `:latest`) was
+exposed. Now every agent that resolves to `:latest` follows `:latest`:
+
+- every locally built agent (`make`, `go build`), which asks for `:latest` (see
+  [Locally built agents still skew](#locally-built-agents-still-skew)), and
+- every Kubernetes node pulling one of those images, because Kubernetes
+  defaults `:latest` to `imagePullPolicy: Always` (see [The pull policy
+  depends on the tag](#the-pull-policy-depends-on-the-tag)). The next pod
+  re-pulls the pre-release's runner, sidecar and shim. A host agent picks it up
+  the next time its host has no local copy, because the container runtime pulls
+  only an absent image.
+
+A released agent is not affected: it asks for its own `:vX.Y.Z` tag.
+
+If you cannot accept that, do not push the pre-release tag as it stands: pin
+the image fields on every locally built or `:latest` agent first (see
+[Restoring a digest pin](#restoring-a-digest-pin)), or change the workflow so
+that a pre-release is not tagged `:latest`. The workflow is not changed by this
+migration.
+
+## Rollback depends on old tags still existing
+
+Rolling an agent back to the previous release (the recovery in [A release whose
+images did not publish](#a-release-whose-images-did-not-publish), or any other
+downgrade) works because the older agent asks for **its own** version's tag,
+for example `:v0.6.0`. That tag must still exist in the registry.
+
+Pruning old image tags, whether by a registry retention policy, a cleanup job,
+or a mirror that keeps only recent releases, strands every older agent that is
+still running: its pods go to `ImagePullBackOff` instead of quietly running a
+pinned digest, which before this change kept resolving. Keep the tags of every
+release you may still run or roll back to, in the registry and in any mirror.
+
 ## Mirrored and air-gapped registries
 
 A pinned digest stayed valid across restarts and upgrades. A version-derived tag
@@ -177,15 +220,28 @@ unified-cd releases.
 This change fixes **released** agents. A binary from `make` or `go build`
 reports `dev` or a `git describe` string such as `v0.6.0-3-gabc123-dirty`, which
 does not name a published tag, so it asks for `:latest` and gets whichever
-release is newest. A locally built agent can therefore still run images from a
-different commit than itself, which is exactly the skew this change removes for
-released agents. If you build agents yourself, pin the image fields as above.
+tag was pushed most recently, **including a pre-release** (see [Pushing a
+pre-release moves `:latest`](#pushing-a-pre-release-moves-latest)). A locally
+built agent can therefore still run images from a different commit than itself,
+which is exactly the skew this change removes for released agents. If you build
+agents yourself, pin the image fields as above.
 
 A related case: a goreleaser **snapshot** build stamps
 `<version>-SNAPSHOT-<short sha>`. That string looks like a pre-release, so the
 agent accepts it and requests an image tag that was never published. Nothing in
 this repository configures snapshot builds, so this is a note and not a defect;
 if you run snapshot builds, set the image fields.
+
+## The Kubernetes agent has no immutable default left
+
+`pauseImage` is a host-agent field only, so it is the only default that is still
+a digest and the Kubernetes agent never pulls it. Every image a Kubernetes agent
+pulls by default is now a mutable tag (`podImage`, `sidecarImage` and
+`shimImage`), so nothing is immutable unless you set it. If registry write access is part of
+your threat model, set all three to digests (see [Restoring a digest pin](#restoring-a-digest-pin)); the
+sidecar and the shim carry the most exposure, as
+[Kubernetes Integration](../kubernetes-integration.md#shim-image-pin-it-in-production)
+explains.
 
 ## What the operations guide says now
 
