@@ -341,7 +341,9 @@ a Kubernetes agent and on a standard agent alike. The standard agent honours the
 | Level | Fields |
 |---|---|
 | Pod (`podTemplate.spec.securityContext`) | `runAsUser`, `runAsGroup`, `runAsNonRoot`, `supplementalGroups`, `fsGroup`, `fsGroupChangePolicy` (`Always` or `OnRootMismatch`), `supplementalGroupsPolicy: Merge` |
+| Pod, hardening | `seccompProfile` and `appArmorProfile` with `type: RuntimeDefault` (the runtime's default profile, which docker and podman already apply where the host supports it) |
 | Container (`containers[].securityContext`) | `runAsUser`, `runAsGroup`, `runAsNonRoot` (a container value overrides the pod value, as in Kubernetes) |
+| Container, hardening | `allowPrivilegeEscalation: false` (`no-new-privileges`), `capabilities.drop` (any capability, `ALL` included) and `capabilities.add` limited to `NET_BIND_SERVICE`, `readOnlyRootFilesystem: true`, `privileged: false`, `procMount: Default`, `seccompProfile` / `appArmorProfile` with `type: RuntimeDefault` |
 
 A job that sets only these fields is routed to any Kubernetes agent, or to a standard agent that
 advertises the `securitycontext` capability (see [Capabilities and
@@ -351,10 +353,17 @@ claims such a job, rather than running it with the fields silently dropped.
 
 **These still pin the job to a Kubernetes agent**, because the standard agent cannot honour them:
 `sysctls`, `seLinuxOptions`, `windowsOptions`, `supplementalGroupsPolicy: Strict`,
-`seccompProfile` and `appArmorProfile` (every value, `RuntimeDefault` included, for now), the
-container-level `privileged`, `allowPrivilegeEscalation`, `capabilities`, `readOnlyRootFilesystem`
-and `procMount`, and any key not listed above. A `securityContext` that mixes honoured and pinned
-values is pinned as a whole.
+`seccompProfile` and `appArmorProfile` of type `Unconfined` or `Localhost`, `privileged: true`,
+`capabilities.add` of anything but `NET_BIND_SERVICE`, a `procMount` other than `Default`, and any
+key not listed above. A `securityContext` that mixes honoured and pinned values is pinned as a
+whole.
+
+With `readOnlyRootFilesystem: true` the container's root filesystem, `/tmp` included, is read-only
+on both kinds of agent (a standard agent does not add the writable `/tmp` that podman would
+otherwise mount). The workspace and [named volumes](volumes.md) are mounts, so they stay writable:
+write temporary files under `$UNIFIED_WORKSPACE`. `capabilities.drop: [ALL]` leaves even root with
+no effective capabilities, and `allowPrivilegeEscalation: false` sets `NoNewPrivs` for the
+container. These apply to the container that sets them only, as in Kubernetes.
 
 ```yaml
 spec:

@@ -57,13 +57,18 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   every claim-pod container, matching k8s.
 - **`securityContext`** — honoured on both agents for the identity and group fields
   (`runAsUser`, `runAsGroup`, `runAsNonRoot`, `supplementalGroups`, `fsGroup`,
-  `fsGroupChangePolicy`, `supplementalGroupsPolicy: Merge`), at pod and container level. A job
-  that sets only those is claimed by a Kubernetes agent or by a standard agent that advertises
-  the `securitycontext` capability. A `securityContext` using anything else still pins the job to
-  a Kubernetes agent: `sysctls`, `seLinuxOptions`, `windowsOptions`, `supplementalGroupsPolicy:
-  Strict`, `seccompProfile` / `appArmorProfile` (all values, for now), the container-level
-  `privileged`, `allowPrivilegeEscalation`, `capabilities`, `readOnlyRootFilesystem` and
-  `procMount`, and any unlisted key. Mixed honoured and pinned values pin the whole job. See
+  `fsGroupChangePolicy`, `supplementalGroupsPolicy: Merge`) at pod and container level, and for
+  the hardening fields `allowPrivilegeEscalation: false`, `capabilities.drop` (with
+  `capabilities.add` limited to `NET_BIND_SERVICE`), `readOnlyRootFilesystem`, `privileged:
+  false`, `procMount: Default` and `seccompProfile` / `appArmorProfile` of type `RuntimeDefault`.
+  A job that sets only those is claimed by a Kubernetes agent or by a standard agent that
+  advertises the `securitycontext` capability. A `securityContext` using anything else still pins
+  the job to a Kubernetes agent: `sysctls`, `seLinuxOptions`, `windowsOptions`,
+  `supplementalGroupsPolicy: Strict`, a `seccompProfile` / `appArmorProfile` of type `Unconfined`
+  or `Localhost`, `privileged: true`, `capabilities.add` of anything but `NET_BIND_SERVICE`, a
+  `procMount` other than `Default`, and any unlisted key. Mixed honoured and pinned values pin the
+  whole job. On a standard agent `readOnlyRootFilesystem` leaves the workspace and named volumes
+  writable (they are mounts) and `/tmp` read-only, as on Kubernetes. See
   [Running as a non-root
   user](../user-guide/writing-jobs/isolation-and-containers.md#running-as-a-non-root-user).
   The k8s-agent advertises `securitycontext`, and the controller records `pod` as implying it, so

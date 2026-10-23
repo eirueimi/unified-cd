@@ -313,14 +313,18 @@ works out which capability a run of it needs:
 - `spec.podTemplate` sets a `securityContext` (pod level, container level, or
   both) whose fields and values the standard agent honours — the identity fields
   `runAsUser`, `runAsGroup`, `runAsNonRoot`, `supplementalGroups`, `fsGroup`,
-  `fsGroupChangePolicy` and `supplementalGroupsPolicy: Merge` — → `container`
+  `fsGroupChangePolicy` and `supplementalGroupsPolicy: Merge`, and the hardening
+  fields `allowPrivilegeEscalation: false`, `capabilities.drop` (and
+  `capabilities.add` limited to `NET_BIND_SERVICE`), `readOnlyRootFilesystem`,
+  `privileged: false`, `procMount: Default` and `seccompProfile` /
+  `appArmorProfile` of type `RuntimeDefault` — → `container`
   **and** `securitycontext`. Only an agent that advertises both can claim it: a
   standard agent whose startup probe passed, or a Kubernetes agent. A
   `securityContext` that uses anything else is pinned → `pod`: `sysctls`,
   `seLinuxOptions`, `windowsOptions`, `supplementalGroupsPolicy: Strict`,
-  `seccompProfile` / `appArmorProfile` (including `RuntimeDefault` for now), the
-  container-level hardening fields (`privileged`, `allowPrivilegeEscalation`,
-  `capabilities`, `readOnlyRootFilesystem`, `procMount`) and any key not listed.
+  `seccompProfile` / `appArmorProfile` of type `Unconfined` or `Localhost`,
+  `privileged: true`, `capabilities.add` of anything but `NET_BIND_SERVICE`,
+  a `procMount` other than `Default`, and any key not listed.
   A `securityContext` mixing honoured and pinned values is pinned as a whole. See
   [Running as a non-root
   user](../user-guide/writing-jobs/isolation-and-containers.md#running-as-a-non-root-user).

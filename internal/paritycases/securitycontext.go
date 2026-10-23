@@ -30,6 +30,8 @@ func SecurityContextCases() []Case {
 		secVolumeRegroupAlways(),
 		secVolumeOnRootMismatchSkips(),
 		secNoSecurityContext(),
+		secHardeningCapsAndPrivileges(),
+		secHardeningReadOnlyRootfs(),
 	}
 }
 
@@ -304,6 +306,77 @@ func secNoSecurityContext() Case {
 		},
 		Expect: expectStdout([]string{"ident"}, map[string][]string{"ident": {
 			"uid=0", "gid=0", "groups=0,10,", "ws=777", "file=0 0",
+		}}),
+	}
+}
+
+// procStatus prints the two /proc/self/status lines the hardening cases watch,
+// as fixed "key=value" lines.
+const procStatus = `echo "capeff=$(grep '^CapEff:' /proc/self/status | tr -d '	 ' | cut -d: -f2)"
+echo "nnp=$(grep '^NoNewPrivs:' /proc/self/status | tr -d '	 ' | cut -d: -f2)"`
+
+// (g) capabilities.drop [ALL] empties the effective set even for root, adding
+// back NET_BIND_SERVICE (bit 10) leaves exactly that bit, and
+// allowPrivilegeEscalation: false sets no_new_privs; a container with none of
+// these keeps the runtime's default set and NoNewPrivs 0. Hardening is per
+// container, so each of the three is observed in its own container (V7).
+func secHardeningCapsAndPrivileges() Case {
+	hardened := func(name string, sc map[string]any) map[string]any {
+		return map[string]any{
+			"name": name, "image": SecurityContextImage,
+			"command":         []any{"sleep", "infinity"},
+			"securityContext": sc,
+		}
+	}
+	job := map[string]any{
+		"name": "job", "image": SecurityContextImage,
+		"securityContext": map[string]any{
+			"allowPrivilegeEscalation": false,
+			"capabilities":             map[string]any{"drop": []any{"ALL"}},
+		},
+	}
+	nbs := hardened("nbs", map[string]any{
+		"capabilities": map[string]any{"drop": []any{"ALL"}, "add": []any{"NET_BIND_SERVICE"}},
+	})
+	plain := map[string]any{"name": "plain", "image": SecurityContextImage, "command": []any{"sleep", "infinity"}}
+	return Case{
+		Name: "secctx-hardening-caps-nonewprivs",
+		Claim: func() api.ClaimResponse {
+			tpl := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{job, nbs, plain}}}
+			return isolatedClaim("run-secctx-hardening-caps", tpl, nil,
+				step(0, "dropped", procStatus),
+				containerStep(1, "nbs", "nbs", procStatus),
+				containerStep(2, "plain", "plain", procStatus))
+		},
+		Expect: expectStdout([]string{"dropped", "nbs", "plain"}, map[string][]string{
+			"dropped": {"capeff=0000000000000000", "nnp=1"},
+			"nbs":     {"capeff=0000000000000400", "nnp=0"},
+			"plain":   {"nnp=0"},
+		}),
+	}
+}
+
+// (h) readOnlyRootFilesystem makes the root filesystem read-only, /tmp included
+// (Kubernetes mounts nothing writable there, so neither may the host: podman's
+// --read-only tmpfs is switched off), while the workspace and a volume, which
+// are mounts, stay writable (V7).
+func secHardeningReadOnlyRootfs() Case {
+	job := map[string]any{
+		"name": "job", "image": SecurityContextImage,
+		"securityContext": map[string]any{"readOnlyRootFilesystem": true},
+	}
+	check := `{ touch /x; } 2>/dev/null && echo "root=writable" || echo "root=readonly"
+{ touch /tmp/x; } 2>/dev/null && echo "tmp=writable" || echo "tmp=readonly"
+{ touch ws-file; } 2>/dev/null && echo "ws=writable" || echo "ws=readonly"
+{ touch /data/vol-file; } 2>/dev/null && echo "vol=writable" || echo "vol=readonly"`
+	return Case{
+		Name: "secctx-hardening-readonly-rootfs",
+		Claim: func() api.ClaimResponse {
+			tpl := &dsl.PodTemplate{Spec: map[string]any{"containers": []any{job}}}
+			return isolatedClaim("run-secctx-hardening-ro", tpl, dataVolume, step(0, "check", check))
+		},
+		Expect: expectStdout([]string{"check"}, map[string][]string{"check": {
+			"root=readonly", "tmp=readonly", "ws=writable", "vol=writable",
 		}}),
 	}
 }

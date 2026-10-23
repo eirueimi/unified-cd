@@ -14,7 +14,7 @@ import (
 // Default and seccompProfile/appArmorProfile RuntimeDefault. While false, every
 // one of them is pinned to a Kubernetes agent; flipping it to true makes the
 // host honour them. Tier A (identity, fsGroup) does not depend on it.
-const hostHonoursHardeningFields = false
+const hostHonoursHardeningFields = true
 
 // maxSecurityID is the largest uid/gid Kubernetes accepts (int32 max).
 const maxSecurityID = 2147483647

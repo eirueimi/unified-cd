@@ -291,3 +291,31 @@ func TestParse_SecurityContextValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestTierBHardeningIsHonouredOnTheHost pins the outcome with literals (the
+// table above derives from the constant, so it cannot notice the switch being
+// left off): the flag-only hardening fields no longer pin a job to Kubernetes,
+// while the widening values still do.
+func TestTierBHardeningIsHonouredOnTheHost(t *testing.T) {
+	honoured := []map[string]any{
+		{"allowPrivilegeEscalation": false},
+		{"readOnlyRootFilesystem": true},
+		{"capabilities": map[string]any{"drop": []any{"ALL"}}},
+		{"capabilities": map[string]any{"drop": []any{"ALL"}, "add": []any{"NET_BIND_SERVICE"}}},
+		{"seccompProfile": profile("RuntimeDefault")},
+		{"privileged": false},
+	}
+	for _, sc := range honoured {
+		assert.False(t, containerSecurityNeedsKubernetes(sc), "%v", sc)
+	}
+	assert.False(t, podSecurityNeedsKubernetes(map[string]any{"seccompProfile": profile("RuntimeDefault")}))
+	pinned := []map[string]any{
+		{"capabilities": map[string]any{"add": []any{"SYS_ADMIN"}}},
+		{"seccompProfile": profile("Unconfined")},
+		{"privileged": true},
+	}
+	for _, sc := range pinned {
+		assert.True(t, containerSecurityNeedsKubernetes(sc), "%v", sc)
+	}
+	assert.True(t, podSecurityNeedsKubernetes(map[string]any{"seccompProfile": profile("Unconfined")}))
+}

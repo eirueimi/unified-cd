@@ -3,7 +3,9 @@
 Standard (host) agents now apply a `podTemplate`'s `securityContext` identity
 fields to the claim pod: `runAsUser`, `runAsGroup`, `runAsNonRoot`,
 `supplementalGroups`, `fsGroup`, `fsGroupChangePolicy` and
-`supplementalGroupsPolicy: Merge`. Previously the host silently dropped them, so
+`supplementalGroupsPolicy: Merge`, and the flag-only hardening fields
+(`allowPrivilegeEscalation: false`, `capabilities`, `readOnlyRootFilesystem`,
+`seccompProfile: RuntimeDefault`). Previously the host silently dropped them, so
 the controller pinned every job that set any `securityContext` to a Kubernetes
 agent. The pin is now narrower, which changes routing, and the isolated
 workspace mode changes with it.
@@ -17,18 +19,22 @@ sets a `securityContext`.
 |---|---|---|
 | Required capabilities of a job whose `podTemplate` sets only host-honoured `securityContext` fields | `[pod]` (Kubernetes agent only) | `[container, securitycontext]` (a Kubernetes agent, or a standard agent that advertises `securitycontext`) |
 | `securityContext` using a field outside the honoured set | `[pod]` | unchanged, still `[pod]` |
+| Hardening fields only (`allowPrivilegeEscalation: false`, `capabilities.drop` / `add: [NET_BIND_SERVICE]`, `readOnlyRootFilesystem`, `seccompProfile: RuntimeDefault`) | `[pod]` | `[container, securitycontext]`; the standard agent passes `--security-opt no-new-privileges`, `--cap-drop`, `--cap-add`, `--read-only` to the container that sets them (not to the pause container), and a job that relied on a writable `/tmp` under `readOnlyRootFilesystem` fails on both agents, as on Kubernetes |
 | New capability string | none | `securitycontext` |
 | Isolated host workspace root (`working<N>/<job>`) | `0755`, owned by the agent user | `0777`, like a Kubernetes `emptyDir` |
 | Files the agent writes into the workspace (artifact download, cache restore) | owned by the agent user | owned by the pod-level `runAsUser`/`runAsGroup`; an unset pod-level ID is `0`, so the owner is `0:0` when only a container sets `runAsUser` or only the pod sets `fsGroup`; only the extracted entries are re-owned |
 | Rootless runtimes | rootless podman was the recommended runtime: a root container maps to the agent user, and a non-root UID maps to a subordinate UID that the root cleanup fallback removes | the same, plus an ID above the mapped range now fails the claim pod (see below) |
 | A securityContext job in a fleet with no Kubernetes agent | stays `Queued` forever | runs on a standard agent that passed its startup probe |
 
-The honoured set is exactly the identity fields listed above. These still pin
-the job to `pod`: `sysctls`, `seLinuxOptions`, `windowsOptions`,
-`supplementalGroupsPolicy: Strict`, `seccompProfile` / `appArmorProfile`
-(including `RuntimeDefault`, for now), the container-level hardening fields
-(`privileged`, `allowPrivilegeEscalation`, `capabilities`,
-`readOnlyRootFilesystem`, `procMount`) and any key not listed. A
+The honoured set is the identity fields listed above plus the hardening fields
+`allowPrivilegeEscalation: false`, `capabilities.drop` (with `capabilities.add`
+limited to `NET_BIND_SERVICE`), `readOnlyRootFilesystem`, `privileged: false`,
+`procMount: Default` and `seccompProfile` / `appArmorProfile` of type
+`RuntimeDefault`. These still pin the job to `pod`: `sysctls`, `seLinuxOptions`,
+`windowsOptions`, `supplementalGroupsPolicy: Strict`, `seccompProfile` /
+`appArmorProfile` of type `Unconfined` or `Localhost`, `privileged: true`,
+`capabilities.add` of anything but `NET_BIND_SERVICE`, a `procMount` other than
+`Default`, and any key not listed. A
 `securityContext` that mixes honoured and pinned values is pinned as a whole. See
 [Capabilities and routing](../agents.md#capabilities-and-routing).
 

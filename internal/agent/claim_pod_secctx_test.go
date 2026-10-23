@@ -258,3 +258,34 @@ func TestParseContainerDef_NoWarnForSecurityContext(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, msgs)
 }
+
+func TestClaimPod_HardeningFlagsPerContainer(t *testing.T) {
+	f := &secFakeRT{}
+	pt := secPT(nil,
+		map[string]any{"name": "job", "image": "runner:img", "securityContext": map[string]any{
+			"allowPrivilegeEscalation": false,
+			"readOnlyRootFilesystem":   true,
+			"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"NET_BIND_SERVICE"}},
+		}},
+		map[string]any{"name": "db", "image": "db:1"},
+	)
+	m := newClaimPodManager(f, "/w", "/workspace", "pause:img", "runner:img", "")
+	require.NoError(t, m.Start(context.Background(), pt))
+
+	job := createdByImage(t, &f.podFakeRT, "runner:img")
+	assert.Equal(t, []string{"ALL"}, job.CapDrop)
+	assert.Equal(t, []string{"NET_BIND_SERVICE"}, job.CapAdd)
+	assert.True(t, job.NoNewPrivileges)
+	assert.True(t, job.ReadOnlyRootfs)
+
+	db := createdByImage(t, &f.podFakeRT, "db:1")
+	assert.Empty(t, db.CapDrop)
+	assert.Empty(t, db.CapAdd)
+	assert.False(t, db.NoNewPrivileges)
+	assert.False(t, db.ReadOnlyRootfs, "hardening is per container, as on Kubernetes")
+
+	pause := f.created[0]
+	assert.False(t, pause.ReadOnlyRootfs)
+	assert.False(t, pause.NoNewPrivileges)
+	assert.Empty(t, pause.CapDrop)
+}

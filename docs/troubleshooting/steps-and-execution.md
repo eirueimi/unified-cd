@@ -424,7 +424,7 @@ podTemplate:
           runAsUser: 1000
 ```
 
-A job that sets only the honoured `securityContext` fields (identity and `fsGroup`) is not pinned to
+A job that sets only the honoured `securityContext` fields (identity, `fsGroup` and the hardening fields) is not pinned to
 Kubernetes: a standard agent that advertises `securitycontext` runs it, applying the group to the
 workspace and every volume and repairing the ownership of root-owned leftovers (under the default
 `fsGroupChangePolicy: Always`). Put `runAsUser` and `fsGroup` at the **pod** level, so files the
@@ -487,7 +487,7 @@ numeric non-root `USER`.
 
 **Symptom**
 
-A job that sets `securityContext` (identity or `fsGroup`) stays `Queued` with the unschedulable
+A job that sets `securityContext` (identity, `fsGroup` or a hardening field) stays `Queued` with the unschedulable
 warning, or runs only on Kubernetes agents. A standard agent's log has this warning at startup:
 
 ```
