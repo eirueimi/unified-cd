@@ -512,18 +512,19 @@ also never claims these jobs; upgrade it.
 
 **Symptom**
 
-After upgrading a standard agent, its log repeats a registration failure containing
-`unknown capability: securitycontext` and it claims no jobs.
+After upgrading a standard agent, it exits shortly after start. Its log ends with
+`permanent error, giving up retry` and `status=400`, and it claims no jobs.
 
 **Cause**
 
 The controller is older than the agent. A controller that predates the `securitycontext`
-capability rejects the registration, and the agent retries until it succeeds.
+capability rejects the registration with `400 unknown capability: securitycontext`. A 4xx is
+permanent, so the agent gives up and exits instead of retrying.
 
 **Fix**
 
-Upgrade the controller first, then the agents. The retry then succeeds without restarting the
-agent.
+Upgrade the controller first, then restart the agent (or let your service manager's restart
+loop do it).
 
 ## Step failed because its `if:` could not be evaluated
 

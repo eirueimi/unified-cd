@@ -419,9 +419,10 @@ other than `native`, `container`, `pod` or `securitycontext`) is rejected with
 `400` — the agent is not recorded, rather than silently accepted with a
 capability set that would never match anything. A controller that predates
 `securitycontext` rejects a new standard agent's registration this way
-(`400 unknown capability: securitycontext`); the agent keeps retrying, visibly in
-its log, until the controller is upgraded. Upgrade the controller first, then the
-agents. The [host-agent securityContext migration
+(`400 unknown capability: securitycontext`). A 4xx is a permanent error, so the agent
+logs `permanent error, giving up retry` (`status=400`) and exits; restart it after the
+controller is upgraded (or let your service manager do so). Upgrade the controller first,
+then the agents. The [host-agent securityContext migration
 note](migrations/2026-10-23-host-security-context.md) covers which jobs change routing, the
 startup probe and the `0777` workspace change.
 

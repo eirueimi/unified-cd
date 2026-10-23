@@ -19,8 +19,8 @@ sets a `securityContext`.
 | `securityContext` using a field outside the honoured set | `[pod]` | unchanged, still `[pod]` |
 | New capability string | none | `securitycontext` |
 | Isolated host workspace root (`working<N>/<job>`) | `0755`, owned by the agent user | `0777`, like a Kubernetes `emptyDir` |
-| Files the agent writes into the workspace (artifact download, cache restore) | owned by the agent user | owned by the pod-level `runAsUser`/`runAsGroup` (`0:0` when only a container sets `runAsUser`); only the extracted entries are re-owned |
-| Rootless runtimes | rootless podman "avoided all ownership problems" | an ID outside the mapped range fails the claim pod (see below) |
+| Files the agent writes into the workspace (artifact download, cache restore) | owned by the agent user | owned by the pod-level `runAsUser`/`runAsGroup`; an unset pod-level ID is `0`, so the owner is `0:0` when only a container sets `runAsUser` or only the pod sets `fsGroup`; only the extracted entries are re-owned |
+| Rootless runtimes | rootless podman was the recommended runtime: a root container maps to the agent user, and a non-root UID maps to a subordinate UID that the root cleanup fallback removes | the same, plus an ID above the mapped range now fails the claim pod (see below) |
 | A securityContext job in a fleet with no Kubernetes agent | stays `Queued` forever | runs on a standard agent that passed its startup probe |
 
 The honoured set is exactly the identity fields listed above. These still pin
@@ -101,9 +101,12 @@ Upgrade the controller before any agent, as usual.
 
 - **New host agent, old controller.** The old controller does not know the
   `securitycontext` capability, so registration is rejected with
-  `400 unknown capability: securitycontext`. The agent retries registration
-  until it succeeds, visibly in its log, so upgrading the controller fixes it
-  without restarting the agent.
+  `400 unknown capability: securitycontext`. A 4xx is a permanent error: the
+  agent logs `permanent error, giving up retry` with `status=400`, stops
+  registering and exits (the log does not show the response text; the
+  `unknown capability` message is in the HTTP response and on the controller
+  side). Upgrade the controller, then restart the agent, or rely on your service
+  manager's restart loop.
 - **Old Kubernetes agents keep claiming.** An old Kubernetes agent advertises
   `[pod, container]`. The controller normalises every stored capability set so
   that `pod` implies `securitycontext`, so these jobs keep reaching it until you
@@ -122,7 +125,8 @@ At startup (after the container runtime is detected and `ucd-sh` is installed)
 the agent runs a probe: it starts a root helper and a container with a
 non-root user and supplementary group against a scratch directory under the
 workspace base, and checks that identity, supplementary groups, `fsGroup`
-ownership and setgid inheritance behave as Kubernetes would. Only if all checks
+ownership and setgid inheritance behave as Kubernetes would. The probe runs once
+at startup and its cached result is reused on every claim poll. Only if all checks
 pass does it advertise `securitycontext` next to `native` and `container`.
 Otherwise it logs one warning and does not advertise it:
 
@@ -130,9 +134,10 @@ Otherwise it logs one warning and does not advertise it:
 container runtime cannot honour securityContext (<reason>); jobs that set securityContext will not be routed to this agent
 ```
 
-Docker Desktop on Windows and macOS typically fails the probe, because the
-file-sharing layer between the host and the VM does not honour setgid
-inheritance. The reason then reads, for example, `a file created in the
+Docker Desktop on Windows and macOS often fails the probe: the setgid
+inheritance check fails on a file-sharing mount, because the layer between the
+host and the VM does not honour setgid inheritance (observed on Docker Desktop
+for Windows). The reason then reads, for example, `a file created in the
 workspace has group <n>, want 54321: setgid inheritance did not give it the
 fsGroup`. Such an agent keeps running jobs without `securityContext`; it just
 never receives the ones that need it. The probe runs once per agent process, so
@@ -149,7 +154,9 @@ agent's workspace base directory (`wsBase`) to `0750` or stricter. That, not the
 workspace, is what keeps other users on the host out.
 
 Files the agent writes for the job (an artifact download, a cache restore) are
-owned by the pod-level identity, as the Kubernetes artifact sidecar does. Only
+owned by the pod-level identity, as the Kubernetes artifact sidecar does: an
+unset pod-level `runAsUser` or `runAsGroup` means ID `0`, so the owner is `0:0`
+when only a container sets `runAsUser` or only the pod sets `fsGroup`. Only
 the entries the extraction wrote, and directories it newly created, are
 re-owned; anything already at the destination keeps its owner. Workspace
 cleanup and garbage collection fall back to a root helper container, so files
@@ -166,6 +173,8 @@ this form (the field, ID and range vary):
 runAsUser 70000 is not mapped by this agent's rootless container runtime (mapped container IDs 0-65535); use an ID within that range or run the job on a Kubernetes agent
 ```
 
-Rootless podman therefore no longer "avoids all ownership problems": it avoids
-them for IDs inside its mapped range and rejects the rest. Use an ID within the
+Rootless podman is still the recommended runtime (files a root container writes
+belong to the agent user, and files owned by a non-root UID that maps to a
+subordinate UID are removed by the root cleanup fallback), but it is no longer
+unrestricted: an ID above its mapped range is rejected. Use an ID within the
 range, or add `agentSelector: [kubernetes]`.
