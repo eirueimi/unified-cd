@@ -421,7 +421,9 @@ capability set that would never match anything. A controller that predates
 `securitycontext` rejects a new standard agent's registration this way
 (`400 unknown capability: securitycontext`); the agent keeps retrying, visibly in
 its log, until the controller is upgraded. Upgrade the controller first, then the
-agents.
+agents. The [host-agent securityContext migration
+note](migrations/2026-10-23-host-security-context.md) covers which jobs change routing, the
+startup probe and the `0777` workspace change.
 
 **If no registered agent can satisfy a job's inferred capability and
 selector**, the run stays `Queued` indefinitely rather than failing — see

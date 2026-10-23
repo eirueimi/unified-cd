@@ -67,7 +67,8 @@ seam) — only the execution backend differs per agent. The remaining intentiona
   [Running as a non-root
   user](../user-guide/writing-jobs/isolation-and-containers.md#running-as-a-non-root-user).
   The k8s-agent advertises `securitycontext`, and the controller records `pod` as implying it, so
-  an older k8s-agent keeps claiming these jobs during an upgrade.
+  an older k8s-agent keeps claiming these jobs during an upgrade. See the [migration
+  note](migrations/2026-10-23-host-security-context.md) for what moves and the upgrade order.
 - **Resource `requests`** (`podTemplate.spec.containers[].resources.requests`) — applied
   only on Kubernetes, because docker/podman/nerdctl have no request concept for the
   standard agent to map it onto. A `podTemplate` container that sets
