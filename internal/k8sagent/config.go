@@ -13,6 +13,7 @@ import (
 	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // Config holds the configuration for the Kubernetes agent.
@@ -88,12 +89,30 @@ type Config struct {
 	// jobs may mount (spec.volumes). Each becomes a PVC of the given size, which
 	// is required here; path is meaningless on Kubernetes and is ignored.
 	Volumes []config.VolumeConfig `yaml:"volumes,omitempty"`
+
+	// MinFreeDisk is the free-space headroom a named volume must have before
+	// this agent claims runs that mount it (percent of the volume, a size, a
+	// byte count, or off). Unset means 1%; an explicit 0/"off" disables the
+	// gate. Validate resolves the default into this field, and
+	// EffectiveMinFreeDisk applies it for a Config that was never validated, so
+	// no construction path can end up with a silent "off". A malformed value is
+	// a Validate/load error. Env: UNIFIED_K8S_MIN_FREE_DISK.
+	MinFreeDisk config.DiskThreshold `yaml:"minFreeDisk"`
+	// WorkspaceSizeLimit caps the workspace emptyDir (a resource.Quantity such
+	// as "20Gi"). Empty means no cap: deliberately unset by default, because a
+	// default would evict builds that legitimately write more. Per-template
+	// overrides: AgentPodTemplate.WorkspaceSizeLimit. Env:
+	// UNIFIED_K8S_WORKSPACE_SIZE_LIMIT.
+	WorkspaceSizeLimit string `yaml:"workspaceSizeLimit,omitempty"`
 }
 
 // AgentPodTemplate is a Pod template defined in the agent configuration file.
 type AgentPodTemplate struct {
 	Workspace *dsl.WorkspaceConfig `yaml:"workspace,omitempty"`
 	Spec      map[string]any       `yaml:"spec"`
+	// WorkspaceSizeLimit overrides Config.WorkspaceSizeLimit for runs that use
+	// this template. Empty inherits the global value.
+	WorkspaceSizeLimit string `yaml:"workspaceSizeLimit,omitempty"`
 }
 
 // defaultShimImage is the default value of Config.ShimImage: the k8s-agent's
@@ -306,6 +325,48 @@ func (c *Config) DrainTimeoutDuration() time.Duration {
 	return d
 }
 
+// EffectiveMinFreeDisk returns MinFreeDisk with the 1% default applied when it
+// was never configured.
+func (c *Config) EffectiveMinFreeDisk() config.DiskThreshold {
+	return c.MinFreeDisk.OrDefault()
+}
+
+// WorkspaceSizeLimitUnset reports that no global workspaceSizeLimit is set.
+func (c *Config) WorkspaceSizeLimitUnset() bool { return c.WorkspaceSizeLimit == "" }
+
+// WorkspaceSizeLimitFor returns the workspace size limit for the named pod
+// template: the template's own value if set, else the global one. ok is false
+// when neither is set.
+func (c *Config) WorkspaceSizeLimitFor(template string) (resource.Quantity, bool, error) {
+	raw := c.WorkspaceSizeLimit
+	field := "workspaceSizeLimit"
+	if t, ok := c.PodTemplates[template]; ok && t.WorkspaceSizeLimit != "" {
+		raw = t.WorkspaceSizeLimit
+		field = fmt.Sprintf("podTemplates[%q].workspaceSizeLimit", template)
+	}
+	if raw == "" {
+		return resource.Quantity{}, false, nil
+	}
+	q, err := parseWorkspaceSizeLimit(field, raw)
+	if err != nil {
+		return resource.Quantity{}, false, err
+	}
+	return q, true, nil
+}
+
+// parseWorkspaceSizeLimit parses a workspaceSizeLimit value as a Kubernetes
+// Quantity and requires it to be positive. field names the setting in errors.
+func parseWorkspaceSizeLimit(field, raw string) (resource.Quantity, error) {
+	q, err := resource.ParseQuantity(raw)
+	if err != nil {
+		return resource.Quantity{}, fmt.Errorf("%s %q: %w", field, raw, err)
+	}
+	if q.Sign() <= 0 {
+		return resource.Quantity{}, fmt.Errorf("%s %q: must be greater than 0 (leave it unset for no limit)", field, raw)
+	}
+	return q, nil
+}
+
 // Validate validates the configuration values and fills in default values.
 func (c *Config) Validate() error {
 	if v := os.Getenv("UNIFIED_K8S_POD_START_TIMEOUT"); v != "" {
@@ -324,6 +385,19 @@ func (c *Config) Validate() error {
 	}
 	if v := os.Getenv("UNIFIED_K8S_SIDECAR_S3_SECRET_MODE"); v != "" {
 		c.SidecarS3SecretMode = v
+	}
+	if v := os.Getenv("UNIFIED_K8S_MIN_FREE_DISK"); v != "" {
+		// A malformed value is a refused start, never a silent fallback to
+		// the default: an operator who typed "10GB " expecting a gate must
+		// not get a different one.
+		t, err := config.ParseDiskThreshold(v)
+		if err != nil {
+			return fmt.Errorf("UNIFIED_K8S_MIN_FREE_DISK: %w", err)
+		}
+		c.MinFreeDisk = t
+	}
+	if v := os.Getenv("UNIFIED_K8S_WORKSPACE_SIZE_LIMIT"); v != "" {
+		c.WorkspaceSizeLimit = v
 	}
 	if c.Server == "" {
 		return fmt.Errorf("server is required")
@@ -384,6 +458,26 @@ func (c *Config) Validate() error {
 	if c.FinallyTimeout != "" {
 		if _, err := time.ParseDuration(c.FinallyTimeout); err != nil {
 			return fmt.Errorf("finallyTimeout %q: %w", c.FinallyTimeout, err)
+		}
+	}
+	// Resolve the 1% default here so every path that validates a Config
+	// (and every reader via EffectiveMinFreeDisk) sees the same value.
+	c.MinFreeDisk = c.MinFreeDisk.OrDefault()
+	if c.WorkspaceSizeLimit != "" {
+		if _, err := parseWorkspaceSizeLimit("workspaceSizeLimit", c.WorkspaceSizeLimit); err != nil {
+			return err
+		}
+	}
+	tmplNames := make([]string, 0, len(c.PodTemplates))
+	for name := range c.PodTemplates {
+		tmplNames = append(tmplNames, name)
+	}
+	sort.Strings(tmplNames)
+	for _, name := range tmplNames {
+		if v := c.PodTemplates[name].WorkspaceSizeLimit; v != "" {
+			if _, err := parseWorkspaceSizeLimit(fmt.Sprintf("podTemplates[%q].workspaceSizeLimit", name), v); err != nil {
+				return err
+			}
 		}
 	}
 	// A bad volume declaration is a refused start, not a run that fails later:

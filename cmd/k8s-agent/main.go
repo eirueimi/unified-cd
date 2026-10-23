@@ -56,6 +56,9 @@ func main() {
 		slog.Error("invalid config", "error", err)
 		os.Exit(1)
 	}
+	if cfg.WorkspaceSizeLimitUnset() {
+		slog.Info("workspaceSizeLimit is unset: a run can fill the node's ephemeral storage; set workspaceSizeLimit (or podTemplates.<name>.workspaceSizeLimit) to cap the workspace emptyDir")
+	}
 	if cfg.SidecarS3SecretName == "" {
 		slog.Warn("sidecarS3SecretName is not set: cache steps will be no-ops (best-effort, reported Succeeded) and any claim carrying an unconditional, run-failing artifact upload/download step will be failed immediately, before its Pod is created; set it to a Secret carrying UNIFIED_S3_* that exists in the JOB Pod namespace (this agent's namespace: field) to enable sidecar transfers", "jobNamespace", cfg.Namespace)
 	}
