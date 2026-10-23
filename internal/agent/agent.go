@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/eirueimi/unified-cd/internal/objectstore"
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
@@ -101,10 +102,11 @@ type Agent struct {
 	CleanWorkspace bool
 	DrainTimeout   time.Duration
 
-	// MinFreeDisk is the minimum free space (in bytes) required on the
-	// workspace filesystem for this agent to keep claiming runs. Zero
-	// disables the check. Host-only: k8s agents use pod volumes instead.
-	MinFreeDisk uint64
+	// MinFreeDisk is the minimum free space required on the workspace
+	// filesystem for this agent to keep claiming runs (a percentage or an
+	// absolute size). Off or unset disables the check. Host-only: k8s agents
+	// use pod volumes instead.
+	MinFreeDisk config.DiskThreshold
 
 	// WorkspaceRetentionDays is the age (in days) after which an inactive
 	// per-job workspace directory (working<slot>/<job>) becomes eligible
@@ -200,7 +202,11 @@ func (a *Agent) storagePaths(wsBase string) []string {
 // know it has, and a false reassurance is worse than a missing series. The
 // filesystems that did measure are still reported.
 func (a *Agent) storageReading(sampler *storageSampler, wsBase, agentName string) *api.AgentStorage {
-	minFree := a.MinFreeDisk
+	var wsTotal uint64
+	if _, total, _, ok := sampler.read(wsBase); ok {
+		wsTotal = total
+	}
+	minFree := a.MinFreeDisk.Resolve(wsTotal)
 	blocked := a.blockedSlots.Load() > 0
 	out := &api.AgentStorage{
 		AgentName:          agentName,
@@ -544,15 +550,15 @@ func (a *Agent) runLoop(claimCtx, runCtx context.Context, slot int, wsBase strin
 		if claimCtx.Err() != nil {
 			return
 		}
-		if a.MinFreeDisk > 0 {
-			free, _, err := a.statfs()(wsBase)
+		if t := a.MinFreeDisk; !t.Off && (t.Bytes > 0 || t.Percent > 0) {
+			free, total, err := a.statfs()(wsBase)
 			if err != nil {
 				// Can't determine free space; log and proceed rather than
 				// wedging the agent on a stat failure.
 				slog.Warn("free disk space check failed, proceeding with claim", "error", err, "slot", slot)
 				setBlocked(false)
-			} else if belowMinFreeDisk(free, a.MinFreeDisk) {
-				slog.Warn("free disk space below minimum, skipping claim", "freeBytes", free, "minFreeDisk", a.MinFreeDisk, "slot", slot)
+			} else if belowMinFreeDisk(free, t.Resolve(total)) {
+				slog.Warn("free disk space below minimum, skipping claim", "freeBytes", free, "minFreeDisk", t.Resolve(total), "slot", slot)
 				setBlocked(true)
 				select {
 				case <-claimCtx.Done():

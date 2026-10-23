@@ -28,7 +28,7 @@ func newStorageTestAgent(t *testing.T, minFreeDisk uint64, stats func(path strin
 		{Name: "data", Mode: VolumeModeShared},
 	})
 	require.NoError(t, err)
-	return &Agent{ID: "a1", Volumes: vm, MinFreeDisk: minFreeDisk, diskStatsFn: stats}, ws
+	return &Agent{ID: "a1", Volumes: vm, MinFreeDisk: config.DiskThreshold{Bytes: minFreeDisk, Set: minFreeDisk > 0}, diskStatsFn: stats}, ws
 }
 
 func TestHeartbeat_HostReportsWorkspaceAndEachVolume(t *testing.T) {
@@ -134,7 +134,7 @@ func TestHeartbeat_ClaimBlockedIsReportedByTheAgent(t *testing.T) {
 		Client:        NewClient(srv.URL, "tok"),
 		MaxConcurrent: 2,
 		WorkspaceDir:  t.TempDir(),
-		MinFreeDisk:   uint64(1) << 30,
+		MinFreeDisk:   config.DiskThreshold{Bytes: 1 << 30, Set: true},
 		diskStatsFn: func(string) (uint64, uint64, error) {
 			freeMu.Lock()
 			defer freeMu.Unlock()
@@ -165,7 +165,7 @@ func TestHeartbeat_ClaimBlockedIsReportedByTheAgent(t *testing.T) {
 func TestHeartbeat_ClaimBlockedClearsWhenTheDecliningSlotExits(t *testing.T) {
 	a := &Agent{
 		ID:          "a1",
-		MinFreeDisk: uint64(1) << 30,
+		MinFreeDisk: config.DiskThreshold{Bytes: 1 << 30, Set: true},
 		diskStatsFn: func(string) (uint64, uint64, error) { return 1, 2, nil },
 	}
 	ctx, cancel := context.WithCancel(context.Background())

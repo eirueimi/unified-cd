@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/eirueimi/unified-cd/internal/agent"
+	"github.com/eirueimi/unified-cd/internal/config"
 )
 
 // setAgentVersion stamps agent.Version for one test. A test binary always
@@ -160,4 +161,31 @@ func TestRunnerImageFlagDefaultIsVersionDerived(t *testing.T) {
 	}
 	assert.Contains(t, string(out), `(default "ghcr.io/eirueimi/unified-cd-runner:v9.9.9")`,
 		"--runner-image must default to the runner derived from the agent's version")
+}
+
+func TestParseMinFreeDiskFlag(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want config.DiskThreshold
+	}{
+		{"", config.DiskThreshold{}},
+		{"5368709120", config.DiskThreshold{Bytes: 5368709120, Set: true}},
+		{"1%", config.DiskThreshold{Percent: 1, Set: true}},
+		{"10GiB", config.DiskThreshold{Bytes: 10 << 30, Set: true}},
+		{"0", config.DiskThreshold{Set: true, Off: true}},
+	} {
+		got, err := parseMinFreeDiskFlag(tc.in)
+		require.NoError(t, err, tc.in)
+		assert.Equal(t, tc.want, got, tc.in)
+	}
+	_, err := parseMinFreeDiskFlag("lots")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--min-free-disk")
+}
+
+func TestMinFreeDiskLogValue(t *testing.T) {
+	assert.Equal(t, "minFreeDisk=1% (default)", minFreeDiskLogValue(config.DiskThreshold{}))
+	assert.Equal(t, "minFreeDisk=5368709120 bytes", minFreeDiskLogValue(config.DiskThreshold{Bytes: 5368709120, Set: true}))
+	assert.Equal(t, "minFreeDisk=2%", minFreeDiskLogValue(config.DiskThreshold{Percent: 2, Set: true}))
+	assert.Equal(t, "disabled", minFreeDiskLogValue(config.DiskThreshold{Set: true, Off: true}))
 }
