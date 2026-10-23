@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/stretchr/testify/assert"
@@ -142,4 +143,33 @@ func TestAgentCapabilities_ProbeSkippedWithoutToolsDir(t *testing.T) {
 	a.runtimeOnce.Do(func() {})
 	assert.Equal(t, []string{"native", "container"}, a.capabilities())
 	assert.NotEmpty(t, a.securityContextProbe().Reason)
+}
+
+func TestRun_CancelDuringProbeReturnsPromptly(t *testing.T) {
+	started := make(chan struct{})
+	prev := probeSecurityContextFn
+	probeSecurityContextFn = func(ctx context.Context, _ crt.ContainerRuntime, _, _, _ string) (probeResult, error) {
+		close(started)
+		<-ctx.Done()
+		return probeResult{Reason: "probe did not run: " + ctx.Err().Error()}, nil
+	}
+	t.Cleanup(func() { probeSecurityContextFn = prev })
+
+	a := New("a1", NewClient("http://127.0.0.1:1", "t"))
+	a.ToolsDir, a.PauseImage, a.WorkspaceDir = "/t", "p", t.TempDir()
+	a.resolvedRuntime = &probeFakeRT{}
+	a.runtimeOnce.Do(func() {})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after its context was cancelled during the probe")
+	}
+	assert.False(t, a.securityContextProbe().OK)
 }

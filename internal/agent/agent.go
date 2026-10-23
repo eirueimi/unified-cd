@@ -331,6 +331,14 @@ func collectEnv(exposeEnv []string) map[string]string {
 // When ctx (claimCtx) is cancelled, new claims are stopped (cordon) and the agent waits for in-flight Runs to complete before exiting (drain).
 func (a *Agent) Run(ctx context.Context) error {
 	host, _ := os.Hostname()
+	// Run the securityContext probe now, bound to ctx, so a SIGTERM during it
+	// is honoured; capabilities() below then reads the cached result.
+	if _, rtErr := a.containerRuntime(); rtErr == nil {
+		a.securityContextProbeCtx(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
 	req := api.AgentRegisterRequest{
 		AgentID:      a.ID,
 		Hostname:     host,

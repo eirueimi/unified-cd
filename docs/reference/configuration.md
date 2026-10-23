@@ -400,8 +400,8 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
   agent measures its runtime instead of consulting an allowlist. It creates a
   dot-prefixed directory under the workspace directory, starts the pause image
   twice (about two container starts), and checks:
-    1. a helper started without `--user` runs as uid 0 (this catches a runtime
-       that overrides the default user, such as podman `--userns=keep-id`);
+    1. a helper started with `--user 0:0`, like the claim pod's pause
+       container, really runs as uid 0;
     2. after the helper applies `fsGroup 54321` to the directory, a container
        started with `--user 54322:54323 --group-add 54321` really has that uid,
        gid and supplementary group;
@@ -409,7 +409,7 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
        the directory keeps the setgid bit and group rwx.
 
   Everything the probe creates is removed afterwards, and it is bounded by a
-  3 minute timeout. A failed probe never stops the agent: it only leaves
+  90 second timeout (it also stops at once if the agent is told to shut down). A failed probe never stops the agent: it only leaves
   `securitycontext` out of the advertised capabilities, so jobs that set
   `securityContext` are not routed to this agent, and logs one WARN naming the
   failed check:
@@ -421,8 +421,6 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
   or similar ID above the highest mapped ID (typically 65536) fails the run at
   claim-pod start. Apple's `container` is never auto-detected and cannot pass
   the probe, so an agent using it never advertises `securitycontext`.
-  The pause image must run as root by default (the default busybox image does).
-
 ---
 
 ## K8s Agent

@@ -21,10 +21,13 @@ const (
 	probeGID     = 54323
 )
 
-// probeTimeout bounds the whole startup probe (two container starts and a
-// possible image pull). A probe that does not finish in time is a failed
-// probe, never a stuck agent.
-const probeTimeout = 3 * time.Minute
+// probeTimeout bounds the whole startup probe: two container starts, a few
+// execs and a possible pause-image pull. 90s covers a cold pull of the small
+// busybox image on a slow link while keeping a hung runtime from delaying
+// registration for minutes. A probe that does not finish in time is a failed
+// probe, never a stuck agent. The probe also stops as soon as the agent's own
+// context is cancelled (SIGTERM).
+const probeTimeout = 90 * time.Second
 
 // probeResult is what the startup probe learned. OK is true only when the
 // runtime delivered every securityContext behaviour the host agent relies on
@@ -96,9 +99,9 @@ func probeSecurityContext(ctx context.Context, rt crt.ContainerRuntime, wsBase, 
 		mounts = append(mounts, crt.Mount{HostPath: toolsDir, ContainerPath: "/.ucd", ReadOnly: true})
 	}
 
-	// 2. The root helper: created WITHOUT --user, so a runtime that overrides
-	// the image's default user (podman --userns=keep-id) shows up as uid != 0.
-	h, cErr := rt.Create(ctx, crt.CreateSpec{Image: pauseImage, Entrypoint: ucdShPause, Mounts: mounts})
+	// 2. The root helper, created exactly like the claim pod's pause container
+	// (--user 0:0, claim_pod.go), so the probe result equals claim behaviour.
+	h, cErr := rt.Create(ctx, crt.CreateSpec{Image: pauseImage, Entrypoint: ucdShPause, User: "0:0", Mounts: mounts})
 	if cErr != nil {
 		res.Reason = fmt.Sprintf("cannot start the probe helper container (image %q): %v", pauseImage, cErr)
 		return res, cErr
@@ -132,7 +135,7 @@ func probeSecurityContext(ctx context.Context, rt crt.ContainerRuntime, wsBase, 
 	rootInfo := parseProbeOutput(out)
 	res.Rootless, res.MaxMappedID = mappedRange(rootInfo.uidMap, rootInfo.gidMap)
 	if !rootInfo.haveID || rootInfo.uid != 0 {
-		return fail("the root helper container (no --user) ran as uid %s, not 0: the runtime overrides the default user (for example podman --userns=keep-id) or the pause image does not run as root", rootInfo.uidString())
+		return fail("the root helper container (--user 0:0) ran as uid %s, not 0: the runtime does not honour --user 0:0", rootInfo.uidString())
 	}
 
 	// 3. The container that carries the identity under test.
@@ -313,6 +316,13 @@ func highestMapped(m string) (high int64, unlimited, ok bool) {
 // It never fails agent startup: a failed probe only means the securitycontext
 // capability is not advertised.
 func (a *Agent) securityContextProbe() probeResult {
+	return a.securityContextProbeCtx(context.Background())
+}
+
+// securityContextProbeCtx is securityContextProbe with the probe bound to ctx
+// (Run passes its own so SIGTERM interrupts it). Only the first call runs the
+// probe; later calls return the cached result.
+func (a *Agent) securityContextProbeCtx(parent context.Context) probeResult {
 	a.probeOnce.Do(func() {
 		rt, rtErr := a.containerRuntime()
 		switch {
@@ -331,7 +341,7 @@ func (a *Agent) securityContextProbe() probeResult {
 			a.probeRes = probeResult{Reason: err.Error()}
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		ctx, cancel := context.WithTimeout(parent, probeTimeout)
 		defer cancel()
 		res, perr := probeSecurityContextFn(ctx, rt, wsBase, a.ToolsDir, a.PauseImage)
 		if perr != nil && res.Reason == "" {

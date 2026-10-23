@@ -31,7 +31,7 @@ type probeFakeRT struct {
 }
 
 func (f *probeFakeRT) Create(_ context.Context, s crt.CreateSpec) (crt.ContainerHandle, error) {
-	isUser := s.User != ""
+	isUser := len(s.GroupAdd) > 0
 	if isUser && f.createErr != nil {
 		return crt.ContainerHandle{}, f.createErr
 	}
@@ -89,7 +89,7 @@ func runProbe(t *testing.T, f *probeFakeRT) probeResult {
 	for _, id := range []string{"root", "user"} {
 		created := false
 		for _, c := range f.created {
-			if (c.User != "") == (id == "user") {
+			if (len(c.GroupAdd) > 0) == (id == "user") {
 				created = true
 			}
 		}
@@ -109,7 +109,7 @@ func TestProbe_AllChecksPass(t *testing.T) {
 	assert.Equal(t, int64(0), res.MaxMappedID)
 
 	require.Len(t, f.created, 2)
-	assert.Empty(t, f.created[0].User, "the root helper is created without --user")
+	assert.Equal(t, "0:0", f.created[0].User, "the root helper is created like the claim pod's pause container")
 	assert.Equal(t, "54322:54323", f.created[1].User)
 	assert.Equal(t, []string{"54321"}, f.created[1].GroupAdd)
 	for _, c := range f.created {
