@@ -46,7 +46,7 @@ func TestHandleAgentHeartbeat_PersistsTheStorage(t *testing.T) {
 	want := &api.AgentStorage{
 		AgentName:          "host-1",
 		Workspace:          &api.FilesystemStats{FreeBytes: 40, TotalBytes: 100},
-		Volumes:            map[string]api.VolumeStats{"cache": {FilesystemStats: api.FilesystemStats{FreeBytes: 7, TotalBytes: 50}, MeasuredAt: measured}},
+		Volumes:            map[string]api.VolumeStats{"cache": {FilesystemStats: api.FilesystemStats{FreeBytes: 7, TotalBytes: 50}, MeasuredAt: measured, ClaimBlocked: true}},
 		MinFreeDiskBytes:   u64p(0),
 		ClaimBlockedByDisk: boolp(false),
 	}
@@ -60,6 +60,7 @@ func TestHandleAgentHeartbeat_PersistsTheStorage(t *testing.T) {
 	assert.Equal(t, "host-1", got["agent-st"].AgentName)
 	assert.Equal(t, want.Workspace, got["agent-st"].Workspace)
 	assert.EqualValues(t, 7, got["agent-st"].Volumes["cache"].FreeBytes)
+	assert.True(t, got["agent-st"].Volumes["cache"].ClaimBlocked, "a gated volume must survive the heartbeat round trip")
 	require.NotNil(t, got["agent-st"].MinFreeDiskBytes, "a configured-as-zero threshold must survive as 0, not become absent")
 	assert.EqualValues(t, 0, *got["agent-st"].MinFreeDiskBytes)
 	require.NotNil(t, got["agent-st"].ClaimBlockedByDisk)

@@ -48,8 +48,11 @@ var (
 		"Unix time at which the agent last measured a named volume's filesystem.",
 		[]string{"agent", "agent_name", "volume"}, nil)
 	minFreeDiskDesc = prometheus.NewDesc("unifiedcd_agent_min_free_disk_bytes",
-		"The agent's configured minFreeDisk threshold in bytes; 0 means the claim-time disk check is disabled. Absent for an agent with no such setting.",
+		"The agent's minFreeDisk threshold for its workspace, resolved to bytes (a percentage is resolved against the workspace size); 0 means the claim-time disk check is disabled. Absent when the agent has no such setting or the threshold cannot be resolved yet.",
 		[]string{"agent"}, nil)
+	volumeClaimBlockedDesc = prometheus.NewDesc("unifiedcd_agent_volume_claim_blocked",
+		"1 if the agent is keeping runs that mount this named volume queued because its free space is below minFreeDisk, else 0.",
+		[]string{"agent", "agent_name", "volume"}, nil)
 	claimBlockedDesc = prometheus.NewDesc("unifiedcd_agent_claim_blocked_by_disk",
 		"1 if the agent is currently declining to claim work because free disk is below its minFreeDisk threshold, else 0. Absent for an agent that performs no claim-time disk check.",
 		[]string{"agent"}, nil)
@@ -76,6 +79,7 @@ func (d *dbCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- volumeSizeDesc
 	ch <- volumeMeasuredDesc
 	ch <- minFreeDiskDesc
+	ch <- volumeClaimBlockedDesc
 	ch <- claimBlockedDesc
 }
 
@@ -116,7 +120,9 @@ func (d *dbCollector) Collect(ch chan<- prometheus.Metric) {
 // emitAgentStorage emits one agent's series. Presence follows the pointer being
 // non-nil and nothing else: a reported zero is published (a zero
 // min_free_disk_bytes means the claim check is disabled, which is itself a
-// warning), while a value the agent never reported gets no series at all.
+// warning), while a value the agent never reported gets no series at all. A nil
+// MinFreeDiskBytes is "unknown" (a percent threshold with no workspace sample
+// yet), never "disabled", so it is omitted rather than published as 0.
 //
 // (agent, volume) is unique because storage is keyed by agent ID and Volumes by
 // volume name, so an empty agent_name cannot make two label sets collide.
@@ -139,6 +145,11 @@ func emitAgentStorage(ch chan<- prometheus.Metric, id string, s api.AgentStorage
 		gauge(volumeFreeDesc, float64(v.FreeBytes), id, s.AgentName, name)
 		gauge(volumeSizeDesc, float64(v.TotalBytes), id, s.AgentName, name)
 		gauge(volumeMeasuredDesc, float64(v.MeasuredAt.Unix()), id, s.AgentName, name)
+		blocked := 0.0
+		if v.ClaimBlocked {
+			blocked = 1
+		}
+		gauge(volumeClaimBlockedDesc, blocked, id, s.AgentName, name)
 	}
 	if s.MinFreeDiskBytes != nil {
 		gauge(minFreeDiskDesc, float64(*s.MinFreeDiskBytes), id)
