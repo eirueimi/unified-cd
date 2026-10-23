@@ -523,12 +523,10 @@ been **removed**; an agent config that still carries it does not start. Persiste
 the agent's [`volumes`](#k8s-agent-config-fields) mounted by a job's `spec.volumes`. See the
 [migration guide](../operator-manual/migrations/2026-10-20-named-volumes.md).
 
-On the Kubernetes agent a job's `podTemplate.workspace` takes effect only when the `podTemplate`
-also names a template (`name`) or carries a `spec`. A `podTemplate` that sets *only*
-`workspace.mountPath`, with neither, has that mount path **silently ignored**: the workspace stays at
-`/workspace`. (The standard agent does honor a lone `workspace.mountPath`, so the same job can behave
-differently on the two; always give the `podTemplate` a `name` or a `spec` when you set a mount
-path. Apply-time validation would be better and is a known follow-up.)
+A job's `podTemplate.workspace.mountPath` takes effect on the Kubernetes agent whether the
+`podTemplate` names a template (`name`), carries a `spec`, or sets nothing else: a `podTemplate` with
+only `workspace.mountPath` gets the agent's default Pod with the workspace mounted there, the same as on
+the standard agent. A job's value overrides a named agent template's.
 
 The primary `job` container always receives `["/.ucd/ucd-sh", "pause"]` as
 its keep-alive command (previously `["sleep", "infinity"]`), unconditionally

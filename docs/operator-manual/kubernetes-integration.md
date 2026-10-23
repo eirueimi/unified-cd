@@ -363,12 +363,10 @@ standard agent alike. The `pvc` block that an earlier release accepted under `wo
 per-Pod ephemeral one) has been removed; a job or agent config that still carries it is rejected. See the [migration
 guide](migrations/2026-10-20-named-volumes.md).
 
-> **A `podTemplate.workspace.mountPath` on its own is silently ignored on this agent.** The
-> `workspace` block is read only from a template the Pod is actually built from: a named agent
-> template, or an inline `podTemplate` that carries a `spec`. A job whose `podTemplate` sets *only*
-> `workspace.mountPath`, with neither `name` nor `spec`, keeps `/workspace`. (The standard agent
-> honors it, so the same job can behave differently.) Give the `podTemplate` a `name` or a `spec`
-> whenever you set a mount path. Apply-time validation would be better and is a known follow-up.
+> **A `podTemplate.workspace.mountPath` on its own is honored.** A job whose `podTemplate` sets *only*
+> `workspace.mountPath`, with neither `name` nor `spec`, gets the agent's default Pod with the
+> workspace mounted at that path, exactly as on the standard agent. The mount path is also where
+> `UNIFIED_WORKSPACE`, relative artifact and cache paths, volume mounts and the workspace wipe resolve.
 
 ---
 
