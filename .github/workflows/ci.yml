@@ -141,7 +141,7 @@ jobs:
           test "$rc" -eq 0
           # No selected test may have skipped, and the parity golden must have
           # run all 9 of its cases.
-          .github/scripts/check-test-json.sh host-test.json 'SecCtx|ClaimPod|ProbeSecurityContext' '^$' 'TestSecCtxParity_HostAgent/=9'
+          bash .github/scripts/check-test-json.sh host-test.json 'SecCtx|ClaimPod|ProbeSecurityContext' '^$' 'TestSecCtxParity_HostAgent/=9'
 
   # Build the k8s-agent image on every PR.
   #
@@ -248,4 +248,4 @@ jobs:
           test "$rc" -eq 0
           # The securityContext golden must not have skipped anything but its two
           # documented host-only cases, and must have run the other 7.
-          .github/scripts/check-test-json.sh k8s-test.json 'SecCtx' '^TestSecCtxParity_K8s/secctx-volume-' 'TestSecCtxParity_K8s/=7'
+          bash .github/scripts/check-test-json.sh k8s-test.json 'SecCtx' '^TestSecCtxParity_K8s/secctx-volume-' 'TestSecCtxParity_K8s/=7'

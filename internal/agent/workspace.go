@@ -235,6 +235,13 @@ func wipeDir(ctx context.Context, dir string, contentsOnly bool, rtFn func() (cr
 	return remove()
 }
 
+// cleanupImage is the root cleanup container's image. Fully qualified and
+// digest-pinned (the digest of the agent's default pause image, so it is
+// normally already pulled): a bare "busybox" depends on the runtime's
+// short-name resolution, which podman may refuse non-interactively and an
+// air-gapped host cannot do at all.
+const cleanupImage = "docker.io/library/busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+
 // containerCleanup deletes workDir's contents as root via a throwaway
 // container, for files another UID owns: a rootful runtime's root, or the
 // UID a job's securityContext ran as.
@@ -250,7 +257,7 @@ func containerCleanup(ctx context.Context, workDir string, rtFn func() (crt.Cont
 	// The /.ucd mount is what makes that keep-alive binary available.
 	mounts := append([]crt.Mount{{HostPath: workDir, ContainerPath: "/w"}}, ucdToolsMount(toolsDir)...)
 	h, err := rt.Create(ctx, crt.CreateSpec{
-		Image:      "busybox",
+		Image:      cleanupImage,
 		WorkDir:    "/w",
 		Mounts:     mounts,
 		Entrypoint: ucdShPause,
