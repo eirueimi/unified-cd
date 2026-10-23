@@ -34,7 +34,7 @@ covers it.
 - [Run fails: `is not mapped by this agent's rootless container runtime`](steps-and-execution.md#run-fails-is-not-mapped-by-this-agents-rootless-container-runtime)
 - [Run fails: `container has runAsNonRoot and image will run as root`](steps-and-execution.md#run-fails-container-has-runasnonroot-and-image-will-run-as-root)
 - [A securityContext job stays Queued: `container runtime cannot honour securityContext`](steps-and-execution.md#a-securitycontext-job-stays-queued-container-runtime-cannot-honour-securitycontext)
-- [Agent log: `400 unknown capability: securitycontext`](steps-and-execution.md#agent-log-400-unknown-capability-securitycontext)
+- [Agent exits after an upgrade: `permanent error, giving up retry` with `status=400`](steps-and-execution.md#agent-exits-after-an-upgrade-permanent-error-giving-up-retry-with-status400)
 
 **Artifacts and Storage**
 

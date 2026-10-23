@@ -92,10 +92,11 @@ reported today come only from image `USER` lines and image-default root. On root
 docker or podman, a container that runs as image `USER 1000` already writes files
 owned by a subordinate UID. The agent cannot remove those files itself and needs the
 `containerCleanup` fallback. That fallback works there by accident: container root
-holds `CAP_DAC_OVERRIDE` over every mapped UID inside its user namespace. The docs say
-"Rootless podman avoids all of it" (`docs/operator-manual/operations.md:185-188`,
-`docs/troubleshooting/steps-and-execution.md:115-116`). That is true only while every
-container runs as root. It becomes false the moment this feature ships.
+holds `CAP_DAC_OVERRIDE` over every mapped UID inside its user namespace. The docs
+presented rootless podman as the way around this (`docs/operator-manual/operations.md:185-188`,
+`docs/troubleshooting/steps-and-execution.md:115-116`). That holds only while every
+container runs as root. Once jobs can run as non-root UIDs, rootless podman no longer
+removes every ownership problem, and those docs must say so.
 
 **The host workspace is less permissive than `emptyDir`.** An image with a non-root
 `USER` cannot write the workspace root on a host today. The root is 0755 and owned by
@@ -481,9 +482,12 @@ range.
 - **Upgrade order** stays "controller first, then agents"
   (`docs/operator-manual/operations.md:281`). A new host agent registering against an
   old controller is rejected with `400 unknown capability: securitycontext`
-  (`api_agent.go:51-55`). Registration is retried until it succeeds (`agent.go:310-313`),
-  so the agent keeps retrying, visibly in its log, until the controller is upgraded.
-  The migration note must say this.
+  (`api_agent.go:51-55`). A 4xx is a permanent error: `retryUntilSuccess`
+  (`internal/agent/retry.go:33-37`) logs `permanent error, giving up retry` with
+  `status=400`, `Run` returns the registration error, and the agent exits. The
+  `unknown capability` text is in the HTTP response, not in the agent log. Restart the
+  agent (or let the service manager do so) after upgrading the controller. The
+  migration note must say this.
 - Runs already created keep the `required_caps` stored at `CreateRun`
   (`postgres.go:250-285`). `UpdateRunSpec` recomputes only Pending runs
   (`postgres.go:2805-2815`). So a run that is Queued at upgrade time stays on `[pod]`.

@@ -508,7 +508,7 @@ the agent: the probe runs once per process. See [Job isolation
 notes](../reference/configuration.md#job-isolation-notes). An agent that predates the capability
 also never claims these jobs; upgrade it.
 
-## Agent log: `400 unknown capability: securitycontext`
+## Agent exits after an upgrade: `permanent error, giving up retry` with `status=400`
 
 **Symptom**
 
@@ -518,7 +518,8 @@ After upgrading a standard agent, it exits shortly after start. Its log ends wit
 **Cause**
 
 The controller is older than the agent. A controller that predates the `securitycontext`
-capability rejects the registration with `400 unknown capability: securitycontext`. A 4xx is
+capability rejects the registration with `400 unknown capability: securitycontext` (that text is
+in the controller's HTTP response and on the controller side; the agent log shows only `status=400`). A 4xx is
 permanent, so the agent gives up and exits instead of retrying.
 
 **Fix**
