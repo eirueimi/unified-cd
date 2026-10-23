@@ -493,23 +493,26 @@ func (a *K8sAgent) heldVolumes(ctx context.Context) (map[string]bool, error) {
 	return heldVolumes(pods.Items, a.cfg.AgentName), nil
 }
 
-// claimRequest is the body of a normal claim: the volumes this agent declares
-// and the exclusive ones a live pod holds. An agent with no volumes sends
-// nothing, as before.
+// claimRequest is the body of a normal claim: the volumes this agent declares,
+// the exclusive ones a live pod holds, and the ones whose last known free space
+// is below minFreeDisk (volume_gate.go). An agent with no volumes sends nothing,
+// as before.
 //
 // The busy list is an optimisation that stops the agent being handed a run it
 // would then wait on while holding a concurrency slot. Correctness is
 // createClaimPod's check, taken again when the pod is about to be created. So
-// a failure to read the pods degrades to an empty list rather than blocking the
-// claim loop.
+// a failure to read the pods degrades to the gated names alone rather than
+// blocking the claim loop: gating reads only this agent's own cache.
 func (a *K8sAgent) claimRequest(ctx context.Context) api.ClaimRequest {
 	if len(a.cfg.Volumes) == 0 {
 		return api.ClaimRequest{}
 	}
 	req := api.ClaimRequest{Volumes: volumeNames(a.cfg.Volumes)}
+	gated := a.gatedNames(time.Now().UTC())
 	held, err := a.heldVolumes(ctx)
 	if err != nil {
 		slog.Warn("k8s: could not read volume occupancy for the claim; reporting none busy", "error", err)
+		req.BusyVolumes = withGated(nil, gated)
 		return req
 	}
 	declared := a.declaredVolumes()
@@ -518,6 +521,7 @@ func (a *K8sAgent) claimRequest(ctx context.Context) api.ClaimRequest {
 			req.BusyVolumes = append(req.BusyVolumes, name)
 		}
 	}
+	req.BusyVolumes = withGated(req.BusyVolumes, gated)
 	return req
 }
 
@@ -857,7 +861,16 @@ func (r *volumeReadings) snapshot() map[string]api.VolumeStats {
 // ClaimBlockedByDisk stay nil: "this agent has no such thing". A zero or a
 // false would read as plenty of space and as not blocked.
 func (a *K8sAgent) storageReading() *api.AgentStorage {
-	return &api.AgentStorage{AgentName: a.cfg.AgentName, Volumes: a.volumeStats.snapshot()}
+	vols := a.volumeStats.snapshot()
+	th := a.cfg.EffectiveMinFreeDisk()
+	now := time.Now().UTC()
+	for name, v := range vols {
+		// The same decision the claim makes, so the heartbeat never says a
+		// volume is blocked when its stale reading has let a probe run through.
+		v.ClaimBlocked = volumeGated(v, th, now)
+		vols[name] = v
+	}
+	return &api.AgentStorage{AgentName: a.cfg.AgentName, Volumes: vols}
 }
 
 // measureVolumes records the free and total space of each volume vols mounts

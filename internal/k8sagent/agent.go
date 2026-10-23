@@ -85,6 +85,9 @@ type K8sAgent struct {
 	// volumeStats caches the latest in-pod measurement of each named volume
 	// (see measureVolumes). It is written by runs and read by the heartbeat.
 	volumeStats volumeReadings
+	// volGate remembers which volumes the claim gate is withholding, to log
+	// each transition once (volume_gate.go).
+	volGate k8sVolumeGate
 }
 
 // k8sAgentCapabilities reports what the k8s agent can execute: it always
@@ -543,6 +546,9 @@ func (a *K8sAgent) executeRun(ctx context.Context, c api.ClaimResponse) {
 	// run. It stays off the heartbeat goroutine, which only reads the result.
 	// The run is measured again after it ends (below).
 	a.measureVolumes(ctx, podName, firstStepContainer(c), mountPath, volumeMounts)
+	// A run that gets here on a volume still under minFreeDisk is the probe the
+	// gate lets through once a reading is stale: say so in its own log.
+	a.warnLowVolumes(ctx, c.RunID, volumeMounts)
 
 	// backend is the seam between the shared step-orchestration loop
 	// (agentlib.RunClaim) and this pod's concrete execution environment. Its
