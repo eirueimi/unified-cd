@@ -99,7 +99,8 @@ k8s: could not clear the reused Pod's workspace: ...
 Every ordinary workspace is emptied before every run, so a run never starts on another run's
 files. When emptying fails the run fails too: it used to warn and proceed on the dirty directory.
 The usual cause is **root-owned files** that a rootful docker container wrote into the
-bind-mounted workspace, which the (usually non-root) agent process cannot remove. The agent retries
+bind-mounted workspace (or files a job's `securityContext.runAsUser` wrote as another UID), which the
+(usually non-root) agent process cannot remove. The agent retries
 through a throwaway root cleanup container (a `busybox` container with the directory mounted), and
 the run fails only if that also fails (no container runtime reachable, the image cannot be pulled,
 the directory is on a filesystem the container cannot see). A reused Kubernetes Pod whose

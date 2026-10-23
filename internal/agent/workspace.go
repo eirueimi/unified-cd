@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	crt "github.com/eirueimi/unified-cd/internal/runtime"
@@ -131,6 +132,24 @@ func prepareWorkspace(ctx context.Context, workDir, mode string, vol *volumeWork
 		if err := os.MkdirAll(workDir, 0o755); err != nil {
 			return fmt.Errorf("create workspace %s: %w", workDir, err)
 		}
+		if mode == "isolated" {
+			// An isolated ephemeral workspace is this host's emptyDir: Kubernetes
+			// creates one 0777 so a container running as any UID can write to it,
+			// and the host must match or a job with runAsUser would fail here and
+			// pass there. An explicit chmod, because the agent's umask would
+			// narrow the mode MkdirAll asked for. The directory is private to
+			// this one run, but its parent is not: keep wsBase 0750 or stricter
+			// (docs/operator-manual/agents.md, "Workspace lifecycle"). Native
+			// workspaces and volumes are untouched.
+			if err := os.Chmod(workDir, 0o777); err != nil {
+				if runtime.GOOS != "windows" {
+					return fmt.Errorf("make workspace %s world-writable: %w", workDir, err)
+				}
+				// Windows has no mode bits to widen; the Linux VM behind the
+				// container runtime decides who can write.
+				slog.Warn("could not chmod the isolated workspace", "dir", workDir, "error", err)
+			}
+		}
 		return nil
 	}
 
@@ -217,7 +236,8 @@ func wipeDir(ctx context.Context, dir string, contentsOnly bool, rtFn func() (cr
 }
 
 // containerCleanup deletes workDir's contents as root via a throwaway
-// container, for files a rootful container runtime left owned by root.
+// container, for files another UID owns: a rootful runtime's root, or the
+// UID a job's securityContext ran as.
 func containerCleanup(ctx context.Context, workDir string, rtFn func() (crt.ContainerRuntime, error), toolsDir string) error {
 	rt, err := rtFn()
 	if err != nil {
@@ -234,6 +254,10 @@ func containerCleanup(ctx context.Context, workDir string, rtFn func() (crt.Cont
 		WorkDir:    "/w",
 		Mounts:     mounts,
 		Entrypoint: ucdShPause,
+		// Explicitly root: the point of this container is to delete files the
+		// agent's own user cannot, so that must not depend on the image's
+		// default USER.
+		User: "0:0",
 	})
 	if err != nil {
 		return err

@@ -342,7 +342,9 @@ fields](#k8s-agent-config-fields)); this section describes the host agent's.
   `workspaceDir` itself, never removes a `working<slot>` directory itself,
   never touches a dot-prefixed sibling (e.g. the `.ucd-tools` shim directory),
   and never removes a directory belonging to a currently-active run (cross-
-  checked against that agent process's live in-flight claims). See
+  checked against that agent process's live in-flight claims). A directory
+  holding files the agent cannot delete itself is removed through a root
+  cleanup container, like the per-run sweep. See
   [Operations Guide: Workspace and Claim-Container
   Hygiene](../operator-manual/operations.md#workspace-and-claim-container-hygiene) for when to
   enable it.

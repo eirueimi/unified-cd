@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"path"
 	"context"
 	"fmt"
 	"io"
@@ -205,4 +206,92 @@ func (m *claimPodManager) applyFSGroup(ctx context.Context, fsGroup int64, polic
 		return fmt.Errorf("apply fsGroup %d: ucd-sh fsgroup exited with code %d", fsGroup, code)
 	}
 	return nil
+}
+
+// agentWriteOwner is who owns what the agent writes into the claim on the job's
+// behalf (artifact download, cache restore), as "<uid>:<gid>", or ok=false when
+// the pod sets no identity field and the agent keeps writing as itself.
+//
+// On Kubernetes that work is done by the unified-artifact sidecar, which runs
+// as the pod-level runAsUser/runAsGroup, or root when those are unset
+// (design 6.4). A container-level runAsUser does not reach the sidecar, so a
+// pod whose only identity field is on the job container gets 0:0, exactly as it
+// gets root-owned downloads on Kubernetes.
+func (m *claimPodManager) agentWriteOwner() (string, bool) {
+	m.mu.Lock()
+	pt := m.podTemplate
+	m.mu.Unlock()
+	if !setsIdentity(pt) {
+		return "", false
+	}
+	eff, err := dsl.ResolveSecurity(podSecurityContext(pt), nil)
+	if err != nil {
+		// Start already resolved the pod-level context successfully.
+		return "", false
+	}
+	var uid, gid int64
+	if eff.UID != nil {
+		uid = *eff.UID
+	}
+	if eff.GID != nil {
+		gid = *eff.GID
+	}
+	return fmt.Sprintf("%d:%d", uid, gid), true
+}
+
+// setsIdentity reports whether pt sets runAsUser, runAsGroup or fsGroup at pod
+// level, or runAsUser/runAsGroup on any container: the fields that make a job
+// care who owns its files.
+func setsIdentity(pt *dsl.PodTemplate) bool {
+	has := func(sc map[string]any, keys ...string) bool {
+		for _, k := range keys {
+			if sc[k] != nil {
+				return true
+			}
+		}
+		return false
+	}
+	if has(podSecurityContext(pt), "runAsUser", "runAsGroup", "fsGroup") {
+		return true
+	}
+	for _, c := range dsl.PodTemplateContainers(pt) {
+		sc, _ := c["securityContext"].(map[string]any)
+		if has(sc, "runAsUser", "runAsGroup") {
+			return true
+		}
+	}
+	return false
+}
+
+// ChownAsAgentWrite re-owns containerPath and everything below it as the
+// identity agentWriteOwner names, by running `ucd-sh chown-as` in pause. It does
+// nothing when the pod sets no identity field. The path is cleaned first:
+// chown-as takes a trailing-slash path as its own parent.
+func (m *claimPodManager) ChownAsAgentWrite(ctx context.Context, containerPath string) error {
+	owner, ok := m.agentWriteOwner()
+	if !ok {
+		return nil
+	}
+	argv := []string{"/.ucd/ucd-sh", "chown-as", owner, path.Clean(containerPath)}
+	var out strings.Builder
+	code, err := m.HelperExec(ctx, argv, &out, &out)
+	if err != nil {
+		return fmt.Errorf("ucd-sh chown-as %s %s: %w", owner, containerPath, err)
+	}
+	if code != 0 {
+		return fmt.Errorf("ucd-sh chown-as %s %s exited with code %d: %s", owner, containerPath, code, strings.TrimSpace(out.String()))
+	}
+	return nil
+}
+
+// CopyOutFromPause copies containerPath out of the root pause container to
+// hostPath. Pause is root and has the same mounts as the job, so it reads what
+// the agent's own user cannot.
+func (m *claimPodManager) CopyOutFromPause(ctx context.Context, containerPath, hostPath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pause.ID == "" {
+		return fmt.Errorf("claim pod copy out: the pause container is not running")
+	}
+	return m.rt.CopyOut(ctx, m.pause, containerPath, hostPath)
 }

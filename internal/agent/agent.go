@@ -447,7 +447,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		// in use by ANOTHER live agent process sharing this wsBase would have
 		// to be younger than retention (days-scale) to survive anyway, since a
 		// truly stuck/abandoned dir is exactly what this GC exists to reclaim.
-		if removed, err := gcWorkspaces(wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now()); err != nil {
+		if removed, err := gcWorkspaces(runCtx, wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now(), a.containerRuntime, a.ToolsDir); err != nil {
 			slog.Warn("workspace gc: startup sweep failed", "error", err)
 		} else if len(removed) > 0 {
 			slog.Info("workspace gc: startup sweep removed aged workspace dirs", "count", len(removed), "dirs", removed)
@@ -786,7 +786,7 @@ func (a *Agent) workspaceGCLoop(ctx context.Context, wsBase string, retention ti
 			return
 		case <-ticker.C:
 		}
-		removed, err := gcWorkspaces(wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now())
+		removed, err := gcWorkspaces(ctx, wsBase, retention, activeWorkDirSet(activeWorkDirs.Snapshot()), time.Now(), a.containerRuntime, a.ToolsDir)
 		if err != nil {
 			slog.Warn("workspace gc: sweep failed", "error", err)
 			continue

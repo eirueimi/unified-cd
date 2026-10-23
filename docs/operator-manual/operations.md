@@ -140,7 +140,12 @@ full flag/env/yaml forms.
   older than the retention window. It is deliberately conservative about what
   it will ever touch:
   - **Deletes:** only inactive `wsBase/working<slot>/<job>` directories aged
-    past retention.
+    past retention. A directory the agent's own user cannot remove (files a
+    container left owned by another UID, such as root under rootful docker or a
+    job's `runAsUser`) is removed through the same root cleanup container the
+    per-run sweep falls back to, so the agent needs a working container
+    runtime for that. If that fails too, the sweep logs `workspace gc: remove
+    failed` with the directory and tries again on the next tick.
   - **Protects, always:** `wsBase` itself; `working<slot>` directories
     themselves; any dot-prefixed entry (in particular `.ucd-tools`, the
     `ucd-sh` shim directory); and any `working<slot>/<job>` directory that

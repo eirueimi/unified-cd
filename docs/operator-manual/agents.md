@@ -749,13 +749,33 @@ between `native` and isolated simply gets a fresh directory like any other run. 
 so nothing the agent writes appears in the volume's contents. A flip on such a volume **fails the
 run** rather than resetting the directory, because a reset would delete the volume.
 
+**Workspace permissions (isolated jobs).** An isolated job's ordinary workspace is the host
+equivalent of a Kubernetes `emptyDir`: the agent creates `working<N>/<job>` with mode `0777`
+(an explicit `chmod`, so the agent's umask does not narrow it), so a container running as any UID
+(`securityContext.runAsUser`) can write to it. This applies to **every** isolated job, with or
+without a `securityContext`. A `native: true` job's workspace stays `0755`, and a workspace that is a
+[volume](#named-volumes) is never re-moded. The directory is private to one run, but its *parent* is
+not, so **keep `wsBase` (the workspace directory) at `0750` or stricter**: that, not the workspace
+itself, is what keeps other users on the host out. On Windows hosts the `chmod` is best-effort
+(a failure is logged as a warning).
+
+Files the agent itself writes into the workspace for the job (an artifact download, a cache
+restore) are owned like the files the Kubernetes artifact sidecar writes: by the *pod-level*
+`runAsUser`/`runAsGroup`, or by `0:0` when only a container sets `runAsUser`. When the pod sets no
+identity field the agent keeps writing as itself. When the agent cannot read a file because a job
+container created it as another UID, an artifact upload or cache save retries once from a root copy
+taken out of the claim pod. That copy can include files the pod-level user could not read on
+Kubernetes, so on the host those uploads are slightly more permissive than on Kubernetes.
+
 **Root-owned files (Linux, rootful docker).** Containers created by rootful
-docker write as root inside the bind-mounted workspace; the agent process
-(usually non-root) can then fail to clean or overwrite those files
-(`EPERM`). When a plain removal fails this way, the agent falls back to a
-throwaway root cleanup container (a `busybox` container with the directory
-mounted) before recreating the directory. If that also fails, **the run
-fails**. **Recommended fix: run rootless podman.** With rootless podman, the
+docker write as root inside the bind-mounted workspace, and a job that sets
+`runAsUser` writes as that UID; the agent process (usually non-root) can then
+fail to clean or overwrite those files (`EPERM`). When a plain removal fails
+this way, the agent falls back to a throwaway root (`0:0`) cleanup container
+(a `busybox` container with the directory mounted) before recreating the
+directory. The opt-in [workspace GC](operations.md#workspace-and-claim-container-hygiene)
+uses the same fallback. If it also fails, **the run fails** (the GC logs the
+directory and keeps it for the next sweep). **Recommended fix: run rootless podman.** With rootless podman, the
 container's root maps to the agent's own user, so this class of problem does
 not occur in the first place — it is the first-choice deployment for Linux
 hosts running isolated jobs. The same applies to a volume wiped with
