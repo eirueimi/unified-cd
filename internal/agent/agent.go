@@ -912,6 +912,13 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 			pod.volumeMounts = extra
 			volumePaths = resolved
 		}
+		// fsgroup helper output goes to the run log (step -1, like failRun).
+		pod.runLog = func(line string) {
+			_ = a.Client.AppendLogBulk(ctx, a.ID, c.RunID, -1, []api.LogAppendRequest{{
+				RunID: c.RunID, StepIndex: -1, Stream: "stderr", Timestamp: time.Now().UTC(), Line: line,
+			}})
+		}
+		pod.maxMappedID = 0 // 0 = no limit; the startup probe populates it
 		if err := pod.Start(ctx, c.PodTemplate); err != nil {
 			pod.CloseAll(context.WithoutCancel(ctx))
 			failClaim("claim pod construction failed", err)

@@ -25,8 +25,9 @@ func TestClaimPod_ToolsDirMountedReadOnlyOnEveryContainer(t *testing.T) {
 	wantUcdMount := crt.Mount{HostPath: "/host/tools", ContainerPath: "/.ucd", ReadOnly: true}
 
 	pause := f.created[0]
-	require.Len(t, pause.Mounts, 1, "pause has no workspace mount, only /.ucd")
-	assert.Equal(t, wantUcdMount, pause.Mounts[0])
+	require.Len(t, pause.Mounts, 2, "pause is the root helper: workspace mount + /.ucd, like the job containers")
+	assert.Equal(t, "/workspace", pause.Mounts[0].ContainerPath)
+	assert.Equal(t, wantUcdMount, pause.Mounts[1])
 
 	for _, spec := range f.created[1:] {
 		require.Len(t, spec.Mounts, 2, "workspace mount + /.ucd shim mount")
