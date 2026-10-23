@@ -125,7 +125,7 @@ The workspace emptyDir is limited to 20Gi by the agent workspaceSizeLimit; use a
 (exec error: ...)
 ```
 
-The second line (the hint) appears only when the agent has a `workspaceSizeLimit` configured. The
+The second line (the hint) appears only when the agent has a `workspaceSizeLimit` configured and the kubelet message mentions `emptyDir` or ephemeral storage. The
 cluster shows the eviction: `kubectl -n ci get events --field-selector reason=Evicted`.
 
 **Cause**

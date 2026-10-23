@@ -49,7 +49,9 @@ Integration: Disk limits and headroom](../kubernetes-integration.md#disk-limits-
    Kubernetes agent). An explicit `0` beats the default and the environment variable.
 4. **If you already set a byte count**, nothing changes for the workspace; the same number now also
    applies to every named volume. A value larger than a volume's whole filesystem cannot be met, so
-   that volume is not gated and the agent logs one WARN.
+   that volume is not gated and the agent logs one WARN. The workspace filesystem is **not**
+   exempted the same way: a byte count larger than the workspace's normal free space stops all
+   claiming, so check it against `workspaceDir`'s filesystem too.
 5. **Fix any alerts and dashboards that assume `unifiedcd_agent_min_free_disk_bytes == 0` means "never
    configured".** It now means "explicitly disabled"; the PromQL in
    [Watching agent disk headroom](../operations.md#watching-agent-disk-headroom) is updated.

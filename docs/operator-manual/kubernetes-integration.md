@@ -560,7 +560,7 @@ The workspace emptyDir is limited to 20Gi by the agent workspaceSizeLimit; use a
 (exec error: ...)
 ```
 
-The hint appears only when a limit is configured. See [Kubernetes run fails: pod was
+The hint appears only when a limit is configured and the kubelet message mentions `emptyDir` or ephemeral storage. See [Kubernetes run fails: pod was
 evicted](../troubleshooting/artifacts-and-storage.md#kubernetes-run-fails-pod-was-evicted-usage-of-emptydir-volume-workspace-exceeds-the-limit).
 To look for evictions on the cluster:
 

@@ -690,12 +690,18 @@ a single run from filling the disk once it has been admitted. Two consequences:
   floor lets a second run start with room for only a quarter of what it needs, while all running
   jobs keep writing. A Unity project that keeps a 200 GiB `Library/` in a named volume and writes
   tens of gigabytes of build output per run wants something like `60GiB` on that volume's
-  filesystem, so that a build is never admitted to a disk that cannot hold it. Because the threshold
-  is one value for the workspace and every volume, set it for the most demanding filesystem, or put
-  the big volume on its own filesystem and use the absolute form.
+  filesystem, so that a build is never admitted to a disk that cannot hold it. **The same value
+  also gates the workspace filesystem**, so do not set it from the volume alone (see the warning
+  below).
 
-An absolute threshold that is as large as a filesystem (or larger) can never be met on it; that
-filesystem is then not gated and the agent logs a WARN once, naming the volume and both numbers.
+**Warning: the workspace gate has no exemption.** The threshold is one value applied to the
+workspace filesystem and to every volume. A named volume whose filesystem is no bigger than an
+*absolute* threshold is skipped (it can never satisfy it): that volume is not gated and the agent
+logs a WARN once, naming the volume and both numbers. The workspace filesystem is **never**
+skipped. If an absolute value is larger than the workspace's normal free space, the agent stops
+claiming on every slot (`free disk space below minimum, skipping claim`), whatever the volumes hold.
+So pick an absolute value that fits the workspace filesystem too; or put the big volume on its own
+filesystem and use a percentage, which scales to each filesystem separately; or keep the default.
 A host agent's volume gate reads the 15s background sample rather than measuring in the claim path,
 so it reacts to a filling volume within about that time, not instantly.
 
