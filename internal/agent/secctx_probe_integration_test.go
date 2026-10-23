@@ -16,14 +16,17 @@ import (
 // container runtime on this host. It logs the result; on a rootful docker it
 // must pass with no mapped-ID limit.
 func TestProbeSecurityContext_RealRuntime(t *testing.T) {
-	rt, err := crt.Detect("")
+	rt, err := crt.Detect(testRuntimePref())
 	if err != nil {
 		t.Skipf("no container runtime: %v", err)
 	}
 	// UCD_PROBE_WSBASE points the probe at a directory the runtime can bind
 	// with real Linux semantics (a Windows or macOS file-sharing mount may
 	// not honour setgid, which is exactly what the probe detects).
-	ws := os.Getenv("UCD_PROBE_WSBASE")
+	ws := os.Getenv(testWorkspaceBaseEnv)
+	if ws == "" {
+		ws = os.Getenv("UCD_PROBE_WSBASE") // older name for the same thing
+	}
 	if ws == "" {
 		ws = t.TempDir()
 	}
