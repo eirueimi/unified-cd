@@ -66,12 +66,15 @@ jobs:
           - leg: docker-rootful
             runtime: docker
             experimental: false
+            rootless: "0"
           - leg: podman-rootless
             runtime: podman
             experimental: false
+            rootless: "1"
           - leg: docker-rootless
             runtime: docker
             experimental: true
+            rootless: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -83,16 +86,15 @@ jobs:
         run: |
           set -eux
           # podman is preinstalled and, for a non-root user such as this
-          # runner user, rootless by default. Short image names (busybox:1.36)
-          # need a search registry or podman refuses to resolve them without a
-          # TTY.
-          mkdir -p "$HOME/.config/containers"
-          printf '%s\n' 'unqualified-search-registries = ["docker.io"]' 'short-name-mode = "permissive"' > "$HOME/.config/containers/registries.conf"
+          # runner user, rootless by default. Assert that rather than assume
+          # it: a leg that ran as root would test the wrong thing and pass.
+          test "$(id -u)" -ne 0
           podman --version
-          podman info --format '{{.Host.Security.Rootless}} {{.Host.IDMappings}}'
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+          podman info --format '{{.Host.IDMappings}}'
           id
           grep "^$(id -un):" /etc/subuid /etc/subgid
-          podman run --rm busybox:1.36 sh -c 'echo uid=$(id -u); cat /proc/self/uid_map'
+          podman run --rm docker.io/library/busybox:1.36 sh -c 'echo uid=$(id -u); cat /proc/self/uid_map'
       - name: Set up rootless docker
         if: matrix.leg == 'docker-rootless'
         run: |
@@ -105,10 +107,10 @@ jobs:
           export XDG_RUNTIME_DIR="$HOME/.xdg-run"
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
-          # The setup tool wants a systemd user session, which a runner lacks;
-          # it then prints how to start the daemon by hand, which is what the
-          # next lines do.
-          dockerd-rootless-setuptool.sh install || true
+          # The setup tool wants a systemd user session, which a runner lacks.
+          # Its failure is tolerated only because the daemon is then started by
+          # hand and the assertions below prove the result either way.
+          dockerd-rootless-setuptool.sh install || echo "setuptool did not complete; starting dockerd-rootless.sh by hand"
           nohup dockerd-rootless.sh > "$HOME/dockerd-rootless.log" 2>&1 &
           for i in $(seq 1 60); do
             [ -S "$XDG_RUNTIME_DIR/docker.sock" ] && break
@@ -116,14 +118,30 @@ jobs:
           done
           echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
           echo "DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock" >> "$GITHUB_ENV"
-          DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock" docker info --format '{{.SecurityOptions}}'
-          DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock" docker run --rm busybox:1.36 sh -c 'echo uid=$(id -u); cat /proc/self/uid_map'
+          export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
+          # Prove this is the rootless daemon and the rootful one is gone.
+          test "$(id -u)" -ne 0
+          docker info --format '{{.SecurityOptions}}' | grep -q rootless
+          if docker -H unix:///var/run/docker.sock info >/dev/null 2>&1; then
+            echo "the rootful docker daemon is still reachable"; exit 1
+          fi
+          docker run --rm docker.io/library/busybox:1.36 sh -c 'echo uid=$(id -u); cat /proc/self/uid_map'
       - name: Run host runtime integration tests
         shell: bash
         env:
           UCD_TEST_CONTAINER_RUNTIME: ${{ matrix.runtime }}
+          UCD_TEST_EXPECT_ROOTLESS: ${{ matrix.rootless }}
+          # A missing runtime or shim must fail, not skip (go test reports a
+          # skip as ok).
+          UCD_REQUIRE_RUNTIME: "1"
         run: |
-          go test -tags integration ./internal/agent/ -run 'SecCtx|ClaimPod|ProbeSecurityContext' -count=1 -v -timeout 25m
+          rc=0
+          go test -tags integration ./internal/agent/ -run 'SecCtx|ClaimPod|ProbeSecurityContext' -count=1 -json -timeout 25m > host-test.json || rc=$?
+          jq -j 'select(.Action=="output") | .Output' host-test.json
+          test "$rc" -eq 0
+          # No selected test may have skipped, and the parity golden must have
+          # run all 9 of its cases.
+          .github/scripts/check-test-json.sh host-test.json 'SecCtx|ClaimPod|ProbeSecurityContext' '^$' 'TestSecCtxParity_HostAgent/=9'
 
   # Build the k8s-agent image on every PR.
   #
@@ -224,4 +242,10 @@ jobs:
           # satisfied by a kind-loaded image without a pull attempt.
           UCD_K8S_TEST_SHIM_IMAGE: ucd-shim-test:ci
         run: |
-          go test -tags k8s ./internal/k8sagent/... -timeout 20m -v
+          rc=0
+          go test -tags k8s ./internal/k8sagent/... -timeout 20m -json > k8s-test.json || rc=$?
+          jq -j 'select(.Action=="output") | .Output' k8s-test.json
+          test "$rc" -eq 0
+          # The securityContext golden must not have skipped anything but its two
+          # documented host-only cases, and must have run the other 7.
+          .github/scripts/check-test-json.sh k8s-test.json 'SecCtx' '^TestSecCtxParity_K8s/secctx-volume-' 'TestSecCtxParity_K8s/=7'

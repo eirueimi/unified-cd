@@ -280,6 +280,11 @@ func newParityHostServer(t *testing.T, agentID string, h *parityHostHarness) *ht
 		h.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// Sidecar phase reports (ReportSidecarStatus) from claim pods that have a
+	// user sidecar; accepted and ignored.
+	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/sidecars", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /api/v1/agents/"+agentID+"/runs/{runId}/finish", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Status string `json:"status"`

@@ -592,7 +592,12 @@ func (b *hostBackend) readWithFallback(ctx context.Context, kind, resolved strin
 	defer os.RemoveAll(tmp)
 	// Keep the source's base name: a single-file upload names its archive entry
 	// after it, so a generic name here would change what the artifact contains.
-	dst := filepath.Join(tmp, path.Base(src))
+	base := path.Base(src)
+	if base == "/" || base == "." {
+		// A copy named "/" or "." would be the temp directory itself.
+		return fmt.Errorf("%w (root copy: refusing to copy %q into a temp directory)", err, src)
+	}
+	dst := filepath.Join(tmp, base)
 	if cerr := b.pod.CopyOutFromPause(ctx, src, dst); cerr != nil {
 		return fmt.Errorf("%w (root copy: %v)", err, cerr)
 	}

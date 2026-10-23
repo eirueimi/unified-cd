@@ -26,6 +26,14 @@ import (
 // container-level one of its own, writing into the workspace. A plain busybox
 // container in the pod, given nothing but the pod's securityContext, has
 // exactly that identity, so the cases' ownership expectations hold for it.
+//
+// That equivalence is an INVARIANT, not something this test proves: the
+// emulator has no securityContext by construction, so artifact case d2 would
+// pass whatever BuildPod did to the real sidecar. The invariant is pinned by
+// TestBuildPod_ArtifactSidecarHasNoContainerSecurityContext
+// (podbuilder_test.go), which fails if BuildPod ever gives the real sidecar a
+// container-level securityContext. If it does, this emulation and the host's
+// chown-as rule (claim_pod_security.go agentWriteOwner) must change together.
 const artifactEmuContainer = "artifact-emu"
 
 // secCtxK8sBackend runs a case's steps by exec'ing into a real pod on a real
@@ -170,4 +178,39 @@ func TestSecCtx_K8s_PodRunAsNonRootBlocksInjectedRootContainers(t *testing.T) {
 		return false
 	}, 2*time.Minute, time.Second, "no container was blocked by runAsNonRoot; last waiting state: %s", last)
 	t.Logf("blocked as documented (Q8): %s", last)
+}
+
+// TestSecCtx_K8s_FreshEmptyDirRootWithFSGroup checks what the kubelet does to
+// the root of a fresh emptyDir under fsGroup: it is created 0777 and the walk
+// adds the group and setgid, giving "2777 F" (design 6.1, V1). The host's
+// named-volume equivalent starts from 0755, hence the design's "2775 F" row
+// for a volume root; this pins the k8s side's exact mask.
+func TestSecCtx_K8s_FreshEmptyDirRootWithFSGroup(t *testing.T) {
+	shimImage := testShimImageOrSkip(t)
+	client, restCfg := newTestKubeClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	ns := newTestNamespace(t, client)
+	pm := NewPodManager(client, ns, paritycases.SecurityContextImage)
+	tpl := &dsl.PodTemplate{Spec: map[string]any{
+		"securityContext": map[string]any{"runAsUser": 1000, "fsGroup": 4000},
+		"volumes":         []any{map[string]any{"name": "scratch", "emptyDir": map[string]any{}}},
+		"containers": []any{map[string]any{
+			"name": "job", "image": paritycases.SecurityContextImage,
+			"volumeMounts": []any{map[string]any{"name": "scratch", "mountPath": "/scratch"}},
+		}},
+	}}
+	pod, err := BuildPod(uniqueRunID("emptydir"), ns, nil, tpl, paritycases.SecurityContextImage, SidecarSpec{}, shimImage, nil)
+	require.NoError(t, err)
+	created, err := pm.CreatePod(ctx, pod)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pm.DeletePod(context.Background(), created.Name) })
+	require.NoError(t, pm.WaitForPodRunning(ctx, created.Name))
+
+	var out strings.Builder
+	code, err := NewExecutor(client, restCfg, ns).ExecStep(ctx, created.Name, "job", `stat -c '%a %g' /scratch`, nil, nil, &out, &out)
+	require.NoError(t, err)
+	require.Equal(t, 0, code, out.String())
+	require.Equal(t, "2777 4000", strings.TrimSpace(out.String()))
 }

@@ -84,7 +84,14 @@ Environment variables for the `integration` tests:
   the tests skip with a message saying so. Under Docker Desktop, use a path inside
   the VM that is not `noexec` (not `/tmp`), for example by running the test binary
   in a container that mounts the Docker socket and a VM directory at the same
-  path. CI (`CI=true`) fails instead of skipping.
+  path.
+- `UCD_REQUIRE_RUNTIME=1` (implied by `CI`) turns "no runtime / no shim / no
+  cluster" from a skip into a failure, because `go test` reports a skip as ok.
+  The CI jobs also run `.github/scripts/check-test-json.sh` over `go test -json`,
+  which fails on any skipped test of the required set (other than the documented
+  host-only cases) and on a wrong number of passed parity subtests.
+- `UCD_TEST_EXPECT_ROOTLESS=1` (set by the rootless CI legs) asserts the startup
+  probe saw a rootless runtime.
 
 The securityContext parity golden is `paritycases.SecurityContextCases()`. The
 same cases run against a real container runtime
@@ -92,4 +99,19 @@ same cases run against a real container runtime
 (`internal/k8sagent/secctx_parity_k8s_test.go`, tag `k8s`), and must produce the
 same output. A difference between the two is a design question, not a test to
 adjust.
+
+Two things the golden does not compare:
+
+- The two volume-drift cases (`secctx-volume-regroup-always`,
+  `secctx-volume-onrootmismatch-skips`) are host-only. They need a root-owned
+  leftover in a volume that outlives a run, and the kubelet applies `fsGroup` when
+  it sets a volume up, before any container can write; kind's `local-path` PVCs
+  are never regrouped at all (design 6.5). On Kubernetes they skip, and CI
+  allows exactly those two skips.
+- The Kubernetes side emulates the `unified-artifact` sidecar with a plain
+  container that has only the pod's `securityContext`. That relies on the real
+  sidecar never carrying a container-level `securityContext`, which
+  `TestBuildPod_ArtifactSidecarHasNoContainerSecurityContext`
+  (`internal/k8sagent/podbuilder_test.go`) pins. Without that test, artifact
+  case `secctx-artifact-container-level` could not fail on the Kubernetes side.
 

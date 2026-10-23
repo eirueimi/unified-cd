@@ -39,6 +39,50 @@ const testWorkspaceBaseEnv = "UCD_TEST_WSBASE"
 // crt.Detect and Agent.RuntimePref.
 func testRuntimePref() string { return os.Getenv(containerRuntimeEnv) }
 
+// requireRuntimeEnv names the switch that turns "this environment lacks a
+// runtime" from a skip into a failure. CI sets CI=true itself; a developer can
+// set UCD_REQUIRE_RUNTIME=1 to get the same strictness locally. Without it a
+// CI leg whose runtime silently failed to install would go green by skipping
+// every test (go test reports a skip as ok).
+const requireRuntimeEnv = "UCD_REQUIRE_RUNTIME"
+
+// expectRootlessEnv, when "1", makes the host driver assert that the startup
+// probe saw a rootless runtime. The rootless CI legs set it so a leg that
+// quietly fell back to a rootful daemon cannot pass as rootless.
+const expectRootlessEnv = "UCD_TEST_EXPECT_ROOTLESS"
+
+// skipOrFailInCI skips the test on a developer machine and fails it when CI (or
+// UCD_REQUIRE_RUNTIME=1) says the environment is supposed to provide what is
+// missing.
+func skipOrFailInCI(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("CI") != "" || os.Getenv(requireRuntimeEnv) == "1" {
+		t.Fatalf("required environment missing (CI=%q %s=%q): "+format,
+			append([]any{os.Getenv("CI"), requireRuntimeEnv, os.Getenv(requireRuntimeEnv)}, args...)...)
+	}
+	t.Skipf(format, args...)
+}
+
+// requireProbe runs the agent's startup probe, logs what it saw, and fails or
+// skips when it did not pass (without it the agent would not advertise
+// securitycontext, so the cases would never be routed here). When
+// UCD_TEST_EXPECT_ROOTLESS=1 it also requires the probe to report a rootless
+// runtime.
+func requireProbe(t *testing.T, rt crt.ContainerRuntime, a *Agent) {
+	t.Helper()
+	probe := a.securityContextProbe()
+	t.Logf("runtime=%s probe: ok=%v rootless=%v maxMappedID=%d reason=%q",
+		rt.Name(), probe.OK, probe.Rootless, probe.MaxMappedID, probe.Reason)
+	if !probe.OK {
+		skipOrFailInCI(t, "the securityContext startup probe failed on this runtime/workspace: %s (set %s to a directory with real Linux semantics)",
+			probe.Reason, testWorkspaceBaseEnv)
+		return
+	}
+	if os.Getenv(expectRootlessEnv) == "1" && !probe.Rootless {
+		t.Fatalf("%s=1 but the probe reports a rootful %s runtime", expectRootlessEnv, rt.Name())
+	}
+}
+
 const secCtxAgentID = "secctx-parity-agent"
 
 // TestSecCtxParity_HostAgent runs every paritycases.SecurityContextCases claim
@@ -50,7 +94,7 @@ func TestSecCtxParity_HostAgent(t *testing.T) {
 	pref := testRuntimePref()
 	rt, err := crt.Detect(pref)
 	if err != nil {
-		t.Skipf("no container runtime available (%s=%q): %v", containerRuntimeEnv, pref, err)
+		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, pref, err)
 	}
 	t.Logf("container runtime: %s", rt.Name())
 
@@ -70,21 +114,7 @@ func TestSecCtxParity_HostAgent(t *testing.T) {
 		WorkspaceDir: wsBase,
 	}
 
-	probe := a.securityContextProbe()
-	t.Logf("startup probe: ok=%v maxMappedID=%d reason=%q", probe.OK, probe.MaxMappedID, probe.Reason)
-	if !probe.OK {
-		// Without the probe passing the agent would not advertise
-		// securitycontext, so these cases would never be routed here and their
-		// results mean nothing. CI must fail loudly; a developer machine whose
-		// bind mounts drop setgid (Windows, macOS) is told how to point the
-		// test at a Linux path.
-		msg := "the securityContext startup probe failed on this runtime/workspace: " + probe.Reason +
-			" (set " + testWorkspaceBaseEnv + " to a directory with real Linux semantics)"
-		if os.Getenv("CI") != "" {
-			t.Fatal(msg)
-		}
-		t.Skip(msg)
-	}
+	requireProbe(t, rt, a)
 
 	for _, tc := range paritycases.SecurityContextCases() {
 		t.Run(tc.Name, func(t *testing.T) {
@@ -98,7 +128,7 @@ func installShimIntoOrSkip(t *testing.T, base string) string {
 	t.Helper()
 	toolsDir, err := InstallShim(base)
 	if err != nil {
-		t.Skipf("ucd-sh shim not embedded (run `go generate ./internal/shim/embedded/` first): %v", err)
+		skipOrFailInCI(t, "ucd-sh shim not embedded (run `go generate ./internal/shim/embedded/` first): %v", err)
 	}
 	return toolsDir
 }
@@ -193,7 +223,7 @@ func TestSecCtx_Integration_UploadFallbackReadsOwnerOnlyFile(t *testing.T) {
 	pref := testRuntimePref()
 	rt, err := crt.Detect(pref)
 	if err != nil {
-		t.Skipf("no container runtime available (%s=%q): %v", containerRuntimeEnv, pref, err)
+		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, pref, err)
 	}
 	wsBase := os.Getenv(testWorkspaceBaseEnv)
 	if wsBase == "" {
@@ -204,12 +234,7 @@ func TestSecCtx_Integration_UploadFallbackReadsOwnerOnlyFile(t *testing.T) {
 		ID: secCtxAgentID, PauseImage: paritycases.SecurityContextImage, RunnerImage: paritycases.SecurityContextImage,
 		ToolsDir: installShimIntoOrSkip(t, wsBase), RuntimePref: pref, WorkspaceDir: wsBase,
 	}
-	if p := a.securityContextProbe(); !p.OK {
-		if os.Getenv("CI") != "" {
-			t.Fatalf("securityContext startup probe failed on %s: %s", rt.Name(), p.Reason)
-		}
-		t.Skipf("securityContext startup probe failed (set %s to a Linux path): %s", testWorkspaceBaseEnv, p.Reason)
-	}
+	requireProbe(t, rt, a)
 
 	caseBase, err := os.MkdirTemp(wsBase, "secctx-upload-")
 	require.NoError(t, err)
@@ -260,4 +285,20 @@ func TestSecCtx_Integration_UploadFallbackReadsOwnerOnlyFile(t *testing.T) {
 		LogMustContain: []paritycases.LogLine{{Step: "write", Stream: "stdout", Substring: "600 1000"}},
 	}, obs)
 	require.Equal(t, "owner-only\n", string(uploaded), "the uploaded artifact must carry the 0600 file's content")
+}
+
+// rootCleanedTempDir is a t.TempDir that the root cleanup container empties first. A
+// container running as root (or any other UID) leaves files in the workspace
+// that the non-root user running the test, such as a CI runner, cannot delete,
+// which would fail the test in TempDir's own cleanup. The agent's workspace
+// sweep has the same fallback (wipeDir).
+func rootCleanedTempDir(t *testing.T, a *Agent) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Cleanup(func() {
+		if err := wipeDir(context.Background(), dir, true, a.containerRuntime, a.ToolsDir); err != nil {
+			t.Logf("cleanup %s: %v", dir, err)
+		}
+	})
+	return dir
 }

@@ -109,7 +109,7 @@ func installShimOrSkip(t *testing.T) string {
 	t.Helper()
 	toolsDir, err := InstallShim(t.TempDir())
 	if err != nil {
-		t.Skipf("ucd-sh shim not embedded (run `go generate ./internal/shim/embedded/` first): %v", err)
+		skipOrFailInCI(t, "ucd-sh shim not embedded (run `go generate ./internal/shim/embedded/` first): %v", err)
 	}
 	return toolsDir
 }
@@ -128,7 +128,7 @@ func installShimOrSkip(t *testing.T) string {
 // the claim-pod refactor).
 func TestClaimPod_Integration_SidecarLocalhostAndWorkspace(t *testing.T) {
 	if _, err := crt.Detect(testRuntimePref()); err != nil {
-		t.Skipf("no container runtime available, skipping: %v", err)
+		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, testRuntimePref(), err)
 	}
 
 	const agentID = "claim-pod-integration-agent"
@@ -141,8 +141,8 @@ func TestClaimPod_Integration_SidecarLocalhostAndWorkspace(t *testing.T) {
 		RuntimePref: testRuntimePref(),
 		ID:          agentID,
 		Client:      NewClient(srv.URL, "tok"),
-		PauseImage:  "busybox:1.36",
-		RunnerImage: "busybox:1.36",
+		PauseImage:  "docker.io/library/busybox:1.36",
+		RunnerImage: "docker.io/library/busybox:1.36",
 		ToolsDir:    installShimOrSkip(t),
 	}
 
@@ -158,7 +158,7 @@ func TestClaimPod_Integration_SidecarLocalhostAndWorkspace(t *testing.T) {
 		// below for the real-entrypoint-sidecar case this masked.
 		PodTemplate: &dsl.PodTemplate{Spec: map[string]any{
 			"containers": []any{
-				map[string]any{"name": "web", "image": "busybox:1.36", "command": []any{"sleep", "infinity"}},
+				map[string]any{"name": "web", "image": "docker.io/library/busybox:1.36", "command": []any{"sleep", "infinity"}},
 			},
 		}},
 		Stages: []api.ClaimStage{
@@ -183,7 +183,7 @@ func TestClaimPod_Integration_SidecarLocalhostAndWorkspace(t *testing.T) {
 		},
 	}
 
-	a.executeRun(context.Background(), claim, t.TempDir())
+	a.executeRun(context.Background(), claim, rootCleanedTempDir(t, a))
 
 	select {
 	case status := <-h.finishCh:
@@ -213,7 +213,7 @@ func TestClaimPod_Integration_SidecarLocalhostAndWorkspace(t *testing.T) {
 // this poll would time out and fail the step.
 func TestClaimPod_Integration_RedisSidecarEntrypointRuns(t *testing.T) {
 	if _, err := crt.Detect(testRuntimePref()); err != nil {
-		t.Skipf("no container runtime available, skipping: %v", err)
+		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, testRuntimePref(), err)
 	}
 
 	const agentID = "claim-pod-redis-sidecar-agent"
@@ -226,8 +226,8 @@ func TestClaimPod_Integration_RedisSidecarEntrypointRuns(t *testing.T) {
 		RuntimePref: testRuntimePref(),
 		ID:          agentID,
 		Client:      NewClient(srv.URL, "tok"),
-		PauseImage:  "busybox:1.36",
-		RunnerImage: "busybox:1.36",
+		PauseImage:  "docker.io/library/busybox:1.36",
+		RunnerImage: "docker.io/library/busybox:1.36",
 		ToolsDir:    installShimOrSkip(t),
 	}
 
@@ -240,7 +240,7 @@ func TestClaimPod_Integration_RedisSidecarEntrypointRuns(t *testing.T) {
 		// exposed the bug — a sidecar's image entrypoint must run untouched.
 		PodTemplate: &dsl.PodTemplate{Spec: map[string]any{
 			"containers": []any{
-				map[string]any{"name": "redis", "image": "redis:7"},
+				map[string]any{"name": "redis", "image": "docker.io/library/redis:7"},
 			},
 		}},
 		Stages: []api.ClaimStage{
@@ -261,7 +261,7 @@ exit 1`,
 		},
 	}
 
-	a.executeRun(context.Background(), claim, t.TempDir())
+	a.executeRun(context.Background(), claim, rootCleanedTempDir(t, a))
 
 	select {
 	case status := <-h.finishCh:
@@ -291,7 +291,7 @@ exit 1`,
 // the same "no bash, no sleep, must work anyway" proof on that container.
 func TestClaimPod_Integration_Shim_DefaultShellRunsInBashlessAlpine(t *testing.T) {
 	if _, err := crt.Detect(testRuntimePref()); err != nil {
-		t.Skipf("no container runtime available, skipping: %v", err)
+		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, testRuntimePref(), err)
 	}
 
 	const agentID = "claim-pod-shim-alpine-agent"
@@ -304,8 +304,8 @@ func TestClaimPod_Integration_Shim_DefaultShellRunsInBashlessAlpine(t *testing.T
 		RuntimePref: testRuntimePref(),
 		ID:          agentID,
 		Client:      NewClient(srv.URL, "tok"),
-		PauseImage:  "alpine:3",
-		RunnerImage: "alpine:3",
+		PauseImage:  "docker.io/library/alpine:3",
+		RunnerImage: "docker.io/library/alpine:3",
 		ToolsDir:    installShimOrSkip(t),
 	}
 
@@ -324,7 +324,7 @@ func TestClaimPod_Integration_Shim_DefaultShellRunsInBashlessAlpine(t *testing.T
 		},
 	}
 
-	a.executeRun(context.Background(), claim, t.TempDir())
+	a.executeRun(context.Background(), claim, rootCleanedTempDir(t, a))
 
 	select {
 	case status := <-h.finishCh:
@@ -347,7 +347,7 @@ func TestClaimPod_Integration_Shim_DefaultShellRunsInBashlessAlpine(t *testing.T
 // $BASH_VERSION being set — a variable only a real bash process populates.
 func TestClaimPod_Integration_Shim_ExplicitBashShellRunsInDebian(t *testing.T) {
 	if _, err := crt.Detect(testRuntimePref()); err != nil {
-		t.Skipf("no container runtime available, skipping: %v", err)
+		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, testRuntimePref(), err)
 	}
 
 	const agentID = "claim-pod-shim-debian-agent"
@@ -360,8 +360,8 @@ func TestClaimPod_Integration_Shim_ExplicitBashShellRunsInDebian(t *testing.T) {
 		RuntimePref: testRuntimePref(),
 		ID:          agentID,
 		Client:      NewClient(srv.URL, "tok"),
-		PauseImage:  "alpine:3",
-		RunnerImage: "debian:bookworm-slim",
+		PauseImage:  "docker.io/library/alpine:3",
+		RunnerImage: "docker.io/library/debian:bookworm-slim",
 		ToolsDir:    installShimOrSkip(t),
 	}
 
@@ -378,7 +378,7 @@ func TestClaimPod_Integration_Shim_ExplicitBashShellRunsInDebian(t *testing.T) {
 		},
 	}
 
-	a.executeRun(context.Background(), claim, t.TempDir())
+	a.executeRun(context.Background(), claim, rootCleanedTempDir(t, a))
 
 	select {
 	case status := <-h.finishCh:
@@ -401,7 +401,7 @@ func TestClaimPod_Integration_Shim_ExplicitBashShellRunsInDebian(t *testing.T) {
 // the other and both succeed.
 func TestClaimPod_Integration_ConcurrentClaimsNoPortCollision(t *testing.T) {
 	if _, err := crt.Detect(testRuntimePref()); err != nil {
-		t.Skipf("no container runtime available, skipping: %v", err)
+		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, testRuntimePref(), err)
 	}
 
 	const agentID = "claim-pod-concurrent-agent"
@@ -415,8 +415,8 @@ func TestClaimPod_Integration_ConcurrentClaimsNoPortCollision(t *testing.T) {
 			RuntimePref: testRuntimePref(),
 			ID:          agentID,
 			Client:      NewClient(srv.URL, "tok"),
-			PauseImage:  "busybox:1.36",
-			RunnerImage: "busybox:1.36",
+			PauseImage:  "docker.io/library/busybox:1.36",
+			RunnerImage: "docker.io/library/busybox:1.36",
 			ToolsDir:    installShimOrSkip(t),
 		}
 
@@ -439,7 +439,7 @@ func TestClaimPod_Integration_ConcurrentClaimsNoPortCollision(t *testing.T) {
 			},
 		}
 
-		a.executeRun(context.Background(), claim, t.TempDir())
+		a.executeRun(context.Background(), claim, rootCleanedTempDir(t, a))
 
 		select {
 		case status := <-h.finishCh:
@@ -482,7 +482,7 @@ func TestClaimPod_Integration_ConcurrentClaimsNoPortCollision(t *testing.T) {
 // into the container normally.
 func TestClaimPod_Integration_EntrypointImagePrimaryKeepsAlive(t *testing.T) {
 	if _, err := crt.Detect(testRuntimePref()); err != nil {
-		t.Skipf("no container runtime available, skipping: %v", err)
+		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, testRuntimePref(), err)
 	}
 
 	const agentID = "claim-pod-entrypoint-primary-agent"
@@ -495,7 +495,7 @@ func TestClaimPod_Integration_EntrypointImagePrimaryKeepsAlive(t *testing.T) {
 		RuntimePref: testRuntimePref(),
 		ID:          agentID,
 		Client:      NewClient(srv.URL, "tok"),
-		PauseImage:  "busybox:1.36",
+		PauseImage:  "docker.io/library/busybox:1.36",
 		// The primary "job" container is injected from RunnerImage (no
 		// podTemplate "job" container defined below), and httpd:2.4's own
 		// ENTRYPOINT (httpd-foreground) is exactly the case under test.
@@ -517,7 +517,7 @@ func TestClaimPod_Integration_EntrypointImagePrimaryKeepsAlive(t *testing.T) {
 		},
 	}
 
-	a.executeRun(context.Background(), claim, t.TempDir())
+	a.executeRun(context.Background(), claim, rootCleanedTempDir(t, a))
 
 	select {
 	case status := <-h.finishCh:
@@ -545,7 +545,7 @@ func TestClaimPod_Integration_EntrypointImagePrimaryKeepsAlive(t *testing.T) {
 // does not accept "sh -c ..." as arguments and would fail or ignore them).
 func TestClaimPod_Integration_SidecarCommandOverridesImageEntrypoint(t *testing.T) {
 	if _, err := crt.Detect(testRuntimePref()); err != nil {
-		t.Skipf("no container runtime available, skipping: %v", err)
+		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, testRuntimePref(), err)
 	}
 
 	const agentID = "claim-pod-sidecar-override-agent"
@@ -558,8 +558,8 @@ func TestClaimPod_Integration_SidecarCommandOverridesImageEntrypoint(t *testing.
 		RuntimePref: testRuntimePref(),
 		ID:          agentID,
 		Client:      NewClient(srv.URL, "tok"),
-		PauseImage:  "busybox:1.36",
-		RunnerImage: "busybox:1.36",
+		PauseImage:  "docker.io/library/busybox:1.36",
+		RunnerImage: "docker.io/library/busybox:1.36",
 		ToolsDir:    installShimOrSkip(t),
 	}
 
@@ -598,7 +598,7 @@ exit 1`,
 		},
 	}
 
-	a.executeRun(context.Background(), claim, t.TempDir())
+	a.executeRun(context.Background(), claim, rootCleanedTempDir(t, a))
 
 	select {
 	case status := <-h.finishCh:
@@ -631,7 +631,7 @@ exit 1`,
 // another (very large) "step index" as far as that bucketing is concerned.
 func TestClaimPod_Integration_SidecarLogsStreamed(t *testing.T) {
 	if _, err := crt.Detect(testRuntimePref()); err != nil {
-		t.Skipf("no container runtime available, skipping: %v", err)
+		skipOrFailInCI(t, "no container runtime available (%s=%q): %v", containerRuntimeEnv, testRuntimePref(), err)
 	}
 
 	const agentID = "claim-pod-sidecar-logs-agent"
@@ -644,8 +644,8 @@ func TestClaimPod_Integration_SidecarLogsStreamed(t *testing.T) {
 		RuntimePref: testRuntimePref(),
 		ID:          agentID,
 		Client:      NewClient(srv.URL, "tok"),
-		PauseImage:  "busybox:1.36",
-		RunnerImage: "busybox:1.36",
+		PauseImage:  "docker.io/library/busybox:1.36",
+		RunnerImage: "docker.io/library/busybox:1.36",
 		ToolsDir:    installShimOrSkip(t),
 	}
 
@@ -660,7 +660,7 @@ func TestClaimPod_Integration_SidecarLogsStreamed(t *testing.T) {
 			"containers": []any{
 				map[string]any{
 					"name":    "marker",
-					"image":   "busybox:1.36",
+					"image":   "docker.io/library/busybox:1.36",
 					"command": []any{"sh", "-c", "echo SIDECAR_MARKER; sleep infinity"},
 				},
 			},
@@ -673,7 +673,7 @@ func TestClaimPod_Integration_SidecarLogsStreamed(t *testing.T) {
 		},
 	}
 
-	a.executeRun(context.Background(), claim, t.TempDir())
+	a.executeRun(context.Background(), claim, rootCleanedTempDir(t, a))
 
 	select {
 	case status := <-h.finishCh:

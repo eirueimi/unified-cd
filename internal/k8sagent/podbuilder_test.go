@@ -703,3 +703,34 @@ func TestMergeContainers(t *testing.T) {
 	assert.Equal(t, "golang:1.23-alpine", result[0].Image)
 	assert.Equal(t, "node", result[1].Name)
 }
+
+// TestBuildPod_ArtifactSidecarHasNoContainerSecurityContext pins an invariant
+// the securityContext parity golden relies on (design 6.4): the injected
+// unified-artifact sidecar never carries a container-level securityContext, so
+// it runs with the POD-level identity (or root when the pod sets none) whatever
+// the job container sets. secctx_parity_k8s_test.go emulates that sidecar with a
+// plain container that has no securityContext of its own; if this test fails,
+// that emulation, and the host's chown-as rule that mirrors it, are wrong.
+func TestBuildPod_ArtifactSidecarHasNoContainerSecurityContext(t *testing.T) {
+	tpl := &dsl.PodTemplate{Spec: map[string]any{
+		"securityContext": map[string]any{"runAsUser": 1000, "fsGroup": 1000},
+		"containers": []any{map[string]any{
+			"name": "job", "image": "job-image:latest",
+			"securityContext": map[string]any{"runAsUser": 2000},
+		}},
+	}}
+	for _, sc := range []SidecarSpec{
+		{Image: "sidecar:latest"},
+		{Image: "sidecar:latest", S3SecretName: "ucd-s3"},
+		{Image: "sidecar:latest", S3SecretName: "ucd-s3", S3SecretMode: SidecarS3SecretModeFile},
+		{Image: "sidecar:latest", S3SecretMode: SidecarS3SecretModeBroker, BrokerURL: "http://broker"},
+	} {
+		pod, err := BuildPod("run1", "ns", nil, tpl, "job-image:latest", sc, testShimImage, nil)
+		require.NoError(t, err)
+		sidecar := findContainer(pod, artifactSidecarName)
+		require.NotNil(t, sidecar, "pod must include the unified-artifact sidecar (%+v)", sc)
+		assert.Nil(t, sidecar.SecurityContext, "the artifact sidecar must inherit the pod-level securityContext (%+v)", sc)
+		require.NotNil(t, pod.Spec.SecurityContext)
+		assert.Equal(t, int64(1000), *pod.Spec.SecurityContext.RunAsUser)
+	}
+}

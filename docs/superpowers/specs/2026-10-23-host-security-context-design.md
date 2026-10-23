@@ -566,6 +566,15 @@ prints, in a fixed format:
 plus a case that downloads an artifact and `stat`s it, and a volume case. `Expectation`
 reuses `LogMustContain`, so the golden is the shared expected stdout.
 
+- **Host-only cases.** The two volume-drift cases (regroup under `Always`, skip under
+  `OnRootMismatch`) run on the host driver only. They need a root-owned leftover in a
+  volume that survives a run; the kubelet applies `fsGroup` at volume setup, before any
+  container can write, and kind's `local-path` PVCs are never regrouped (§6.5). The k8s
+  driver skips exactly those two, and CI allows exactly those skips. The k8s driver
+  instead pins the fresh-`emptyDir` root under `fsGroup` (`2777 F`, V1) in its own test.
+  It also emulates the `unified-artifact` sidecar with a container that has only the
+  pod's `securityContext`; that is sound only while `BuildPod` never gives the real
+  sidecar a container-level one, which a `BuildPod` unit test pins.
 - Host driver: `internal/agent/secctx_parity_integration_test.go`, `//go:build integration`.
   It uses the real runtime chosen by `UCD_TEST_CONTAINER_RUNTIME` and the pattern of
   `claim_pod_integration_test.go:124-150`.

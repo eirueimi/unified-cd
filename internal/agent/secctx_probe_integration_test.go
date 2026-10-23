@@ -18,7 +18,7 @@ import (
 func TestProbeSecurityContext_RealRuntime(t *testing.T) {
 	rt, err := crt.Detect(testRuntimePref())
 	if err != nil {
-		t.Skipf("no container runtime: %v", err)
+		skipOrFailInCI(t, "no container runtime (%s=%q): %v", containerRuntimeEnv, testRuntimePref(), err)
 	}
 	// UCD_PROBE_WSBASE points the probe at a directory the runtime can bind
 	// with real Linux semantics (a Windows or macOS file-sharing mount may
@@ -33,7 +33,7 @@ func TestProbeSecurityContext_RealRuntime(t *testing.T) {
 	toolsDir, err := InstallShim(ws)
 	require.NoError(t, err)
 
-	res, perr := probeSecurityContext(context.Background(), rt, ws, toolsDir, "busybox:1.36")
+	res, perr := probeSecurityContext(context.Background(), rt, ws, toolsDir, "docker.io/library/busybox:1.36")
 	t.Logf("runtime=%s probe=%+v err=%v", rt.Name(), res, perr)
 	assert.True(t, res.OK, res.Reason)
 

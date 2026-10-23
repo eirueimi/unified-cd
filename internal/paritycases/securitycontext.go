@@ -8,7 +8,7 @@ import (
 // SecurityContextImage is the image every securityContext case runs in. It is
 // small, has no USER, and its /etc/passwd and /etc/group give the cases below
 // something to find (www-data is 33:33) and something not to find (1234).
-const SecurityContextImage = "busybox:1.36"
+const SecurityContextImage = "docker.io/library/busybox:1.36"
 
 // SecurityContextCases returns the real-runtime securityContext parity cases
 // (design §10). They are kept apart from Cases(): a fake shell cannot observe
