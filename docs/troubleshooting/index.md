@@ -30,7 +30,11 @@ covers it.
 - [Run fails: `cannot link ... on Windows`](steps-and-execution.md#run-fails-cannot-link-on-windows)
 - [Run fails: volume is shared and cannot be mounted at the workspace root](steps-and-execution.md#run-fails-volume-is-shared-and-cannot-be-mounted-at-the-workspace-root)
 - [A shared volume never binds (RWX unavailable)](steps-and-execution.md#a-shared-volume-never-binds-rwx-unavailable)
-- [Permission denied writing to a volume on Kubernetes](steps-and-execution.md#permission-denied-writing-to-a-volume-on-kubernetes)
+- [Permission denied writing to a volume as a non-root user](steps-and-execution.md#permission-denied-writing-to-a-volume-as-a-non-root-user)
+- [Run fails: `is not mapped by this agent's rootless container runtime`](steps-and-execution.md#run-fails-is-not-mapped-by-this-agents-rootless-container-runtime)
+- [Run fails: `container has runAsNonRoot and image will run as root`](steps-and-execution.md#run-fails-container-has-runasnonroot-and-image-will-run-as-root)
+- [A securityContext job stays Queued: `container runtime cannot honour securityContext`](steps-and-execution.md#a-securitycontext-job-stays-queued-container-runtime-cannot-honour-securitycontext)
+- [Agent log: `400 unknown capability: securitycontext`](steps-and-execution.md#agent-log-400-unknown-capability-securitycontext)
 
 **Artifacts and Storage**
 

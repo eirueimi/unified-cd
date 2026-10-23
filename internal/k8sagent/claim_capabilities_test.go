@@ -66,6 +66,6 @@ func TestRun_EveryClaimPollCarriesTheCapabilitySet(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for i, c := range claims {
-		assert.ElementsMatch(t, []string{"pod", "container"}, c.Capabilities, "claim poll %d", i)
+		assert.ElementsMatch(t, []string{"pod", "container", "securitycontext"}, c.Capabilities, "claim poll %d", i)
 	}
 }

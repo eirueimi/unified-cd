@@ -54,6 +54,9 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Store the implied capabilities too (pod implies securitycontext), so an
+	// agent that predates securitycontext keeps claiming what it always could.
+	capabilities = dsl.NormalizeCapabilities(capabilities)
 	// Use an empty slice when labels is nil to avoid a NULL constraint violation.
 	if labels == nil {
 		labels = []string{}
@@ -216,7 +219,7 @@ func (s *Server) handleAgentClaim(w http.ResponseWriter, r *http.Request) {
 	// UI Agents page), even if it was never explicitly registered or the controller
 	// DB was reset out from under a still-running agent. This is best-effort: a
 	// failure here must not fail the claim itself.
-	if err := s.store.UpsertAgentOnClaim(r.Context(), agentID, "", "", "", agentLabels, claimReq.Capabilities, claimReq.Volumes, nil); err != nil {
+	if err := s.store.UpsertAgentOnClaim(r.Context(), agentID, "", "", "", agentLabels, dsl.NormalizeCapabilities(claimReq.Capabilities), claimReq.Volumes, nil); err != nil {
 		slog.Warn("agent claim: failed to upsert agent registration", "agentId", agentID, "error", err)
 	}
 

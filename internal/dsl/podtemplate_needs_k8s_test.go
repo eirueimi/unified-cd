@@ -244,3 +244,62 @@ func TestPodTemplateNeedsKubernetes(t *testing.T) {
 		})
 	}
 }
+
+// TestPodTemplateNeedsKubernetes_SecurityContext covers design section 4: a
+// securityContext no longer pins a job on its own. Only a field or value the
+// host does not honour does, and a mixture pins.
+func TestPodTemplateNeedsKubernetes_SecurityContext(t *testing.T) {
+	withPod := func(sc any) *PodTemplate {
+		return &PodTemplate{Spec: map[string]any{
+			"securityContext": sc,
+			"containers":      []any{map[string]any{"name": "job", "image": "x"}},
+		}}
+	}
+	withCtr := func(sc any) *PodTemplate {
+		return &PodTemplate{Spec: map[string]any{"containers": []any{
+			map[string]any{"name": "job", "image": "x", "securityContext": sc},
+		}}}
+	}
+
+	cases := []struct {
+		name string
+		pt   *PodTemplate
+		want bool
+	}{
+		{"pod identity and fsGroup are honoured", withPod(map[string]any{
+			"runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000, "runAsNonRoot": true,
+			"supplementalGroups": []any{2000}, "fsGroupChangePolicy": "OnRootMismatch",
+		}), false},
+		{"pod float64 ids (store round trip) are honoured", withPod(map[string]any{"runAsUser": float64(1000), "fsGroup": float64(1000)}), false},
+		{"pod supplementalGroupsPolicy Merge is honoured", withPod(map[string]any{"supplementalGroupsPolicy": "Merge"}), false},
+		{"pod supplementalGroupsPolicy Strict pins", withPod(map[string]any{"supplementalGroupsPolicy": "Strict"}), true},
+		{"pod sysctls pins", withPod(map[string]any{"sysctls": []any{}}), true},
+		{"pod seLinuxOptions pins", withPod(map[string]any{"seLinuxOptions": map[string]any{"level": "s0"}}), true},
+		{"pod unknown key pins", withPod(map[string]any{"fooBar": true}), true},
+		{"pod seccomp Unconfined pins", withPod(map[string]any{"seccompProfile": map[string]any{"type": "Unconfined"}}), true},
+		{"pod seccomp RuntimeDefault stays pinned while tier B is off", withPod(map[string]any{"seccompProfile": map[string]any{"type": "RuntimeDefault"}}), true},
+		{"pod securityContext that is not a map pins", withPod("nope"), true},
+		{"pod securityContext null is unset", withPod(nil), false},
+		{"pod identity plus a pinned value pins", withPod(map[string]any{"runAsUser": 1000, "sysctls": []any{}}), true},
+		{"container identity is honoured", withCtr(map[string]any{"runAsUser": 1000, "runAsGroup": 1000, "runAsNonRoot": true}), false},
+		{"container privileged true pins", withCtr(map[string]any{"runAsUser": 1000, "privileged": true}), true},
+		{"container capabilities add SYS_ADMIN pins", withCtr(map[string]any{"capabilities": map[string]any{"add": []any{"SYS_ADMIN"}}}), true},
+		{"container unknown key pins", withCtr(map[string]any{"fooBar": 1}), true},
+		{"container securityContext that is not a map pins", withCtr([]any{}), true},
+		{"container seLinuxOptions pins", withCtr(map[string]any{"seLinuxOptions": map[string]any{}}), true},
+		{"container identity but pod pinned value pins", &PodTemplate{Spec: map[string]any{
+			"securityContext": map[string]any{"sysctls": []any{}},
+			"containers": []any{map[string]any{"name": "job", "image": "x",
+				"securityContext": map[string]any{"runAsUser": 1000}}},
+		}}, true},
+		{"honoured securityContext but another pinned container field pins", &PodTemplate{Spec: map[string]any{
+			"securityContext": map[string]any{"fsGroup": 1000},
+			"containers":      []any{map[string]any{"name": "job", "image": "x", "volumeMounts": []any{}}},
+		}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, PodTemplateNeedsKubernetes(tc.pt))
+		})
+	}
+}

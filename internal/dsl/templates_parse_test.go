@@ -54,3 +54,16 @@ func TestTemplatesParse(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildkitRootlessTemplateStaysPinned guards design section 12: the
+// buildkit template sets seccompProfile/appArmorProfile Unconfined, which the
+// host never honours, so it must keep routing to a Kubernetes agent ([pod])
+// after securityContext stopped pinning on its own.
+func TestBuildkitRootlessTemplateStaysPinned(t *testing.T) {
+	f, err := os.Open("../../templates/buildkit-rootless-build-push.yaml")
+	require.NoError(t, err)
+	defer f.Close()
+	job, err := Parse(f)
+	require.NoError(t, err)
+	assert.Equal(t, []string{CapPod}, RequiredCaps(job.Spec))
+}

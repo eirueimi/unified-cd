@@ -57,6 +57,10 @@ func ValidCapability(s string) bool {
 //   - no podTemplate (isolated)    -> container
 //   - podTemplate host can't honor -> pod   (PodTemplateNeedsKubernetes, from 8ca1567)
 //   - podTemplate host CAN honor   -> container
+//   - ... and it sets a securityContext (pod or container level, HasSecurityContext)
+//     -> container + securitycontext: only an agent that proved it delivers
+//     those semantics (a host agent after its startup probe, or a Kubernetes
+//     agent) may claim it
 //
 // native takes precedence: a native job never runs in a container/pod.
 func RequiredCaps(spec Spec) []string {
@@ -65,6 +69,8 @@ func RequiredCaps(spec Spec) []string {
 		return []string{CapNative}
 	case spec.PodTemplate != nil && PodTemplateNeedsKubernetes(spec.PodTemplate):
 		return []string{CapPod}
+	case HasSecurityContext(spec.PodTemplate):
+		return []string{CapContainer, CapSecurityContext}
 	default:
 		return []string{CapContainer}
 	}

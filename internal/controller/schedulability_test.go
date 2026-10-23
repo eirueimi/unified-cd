@@ -52,3 +52,24 @@ func TestEvaluateSchedulability_NullCapabilitiesAgentIsAHostAgent(t *testing.T) 
 	assert.True(t, EvaluateSchedulability(dsl.Spec{Native: true}, []api.AgentInfo{legacy}).Satisfiable)
 	assert.True(t, EvaluateSchedulability(dsl.Spec{}, []api.AgentInfo{legacy}).Satisfiable)
 }
+
+// A job requiring securitycontext is satisfiable by a new host agent and by
+// an old Kubernetes agent (pod implies securitycontext), but not by an old host
+// agent or a NULL-capabilities agent, which would silently drop the fields.
+func TestEvaluateSchedulability_SecurityContext(t *testing.T) {
+	spec := dsl.Spec{PodTemplate: &dsl.PodTemplate{Spec: map[string]any{
+		"securityContext": map[string]any{"runAsUser": 1000},
+		"containers":      []any{map[string]any{"name": "job", "image": "x"}},
+	}}}
+	require.Equal(t, []string{dsl.CapContainer, dsl.CapSecurityContext}, dsl.RequiredCaps(spec))
+
+	oldHost := agent([]string{"native", "container"}, nil)
+	newHost := agent([]string{"native", "container", "securitycontext"}, nil)
+	oldK8s := agent([]string{"pod", "container"}, nil)
+
+	assert.False(t, EvaluateSchedulability(spec, []api.AgentInfo{oldHost}).Satisfiable)
+	assert.False(t, EvaluateSchedulability(spec, []api.AgentInfo{agent(nil, nil)}).Satisfiable)
+	assert.True(t, EvaluateSchedulability(spec, []api.AgentInfo{newHost}).Satisfiable)
+	assert.True(t, EvaluateSchedulability(spec, []api.AgentInfo{oldK8s}).Satisfiable,
+		"an agent stored before normalization existed must still count")
+}

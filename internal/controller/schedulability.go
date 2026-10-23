@@ -137,6 +137,9 @@ func capsCover(agentCaps, required []string) bool {
 	if agentCaps == nil {
 		agentCaps = dsl.LegacyAgentCapabilities()
 	}
+	// An agent row stored before the controller normalized capabilities still
+	// lists pod without securitycontext; pod implies it.
+	agentCaps = dsl.NormalizeCapabilities(agentCaps)
 	set := map[string]bool{}
 	for _, c := range agentCaps {
 		set[c] = true

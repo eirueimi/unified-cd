@@ -71,3 +71,36 @@ func TestNormalizeCapabilities_DoesNotMutateInput(t *testing.T) {
 	_ = NormalizeCapabilities(in)
 	assert.Equal(t, []string{"pod"}, in)
 }
+
+func TestRequiredCaps_SecurityContext(t *testing.T) {
+	pod := func(sc map[string]any) *PodTemplate {
+		return &PodTemplate{Spec: map[string]any{
+			"securityContext": sc,
+			"containers":      []any{map[string]any{"name": "job", "image": "x"}},
+		}}
+	}
+	ctr := func(sc map[string]any) *PodTemplate {
+		return &PodTemplate{Spec: map[string]any{"containers": []any{
+			map[string]any{"name": "job", "image": "x", "securityContext": sc},
+		}}}
+	}
+
+	// honoured pod-level and container-level fields -> container + securitycontext
+	assert.Equal(t, []string{"container", "securitycontext"},
+		RequiredCaps(Spec{PodTemplate: pod(map[string]any{"runAsUser": 1000, "fsGroup": 1000})}))
+	assert.Equal(t, []string{"container", "securitycontext"},
+		RequiredCaps(Spec{PodTemplate: ctr(map[string]any{"runAsUser": 1000})}))
+
+	// an empty securityContext sets nothing, so it needs no capability
+	assert.Equal(t, []string{"container"}, RequiredCaps(Spec{PodTemplate: pod(map[string]any{})}))
+
+	// a pinned value still means pod
+	assert.Equal(t, []string{"pod"},
+		RequiredCaps(Spec{PodTemplate: pod(map[string]any{"runAsUser": 1000, "sysctls": []any{}})}))
+	assert.Equal(t, []string{"pod"},
+		RequiredCaps(Spec{PodTemplate: ctr(map[string]any{"privileged": true})}))
+
+	// native still wins
+	assert.Equal(t, []string{"native"},
+		RequiredCaps(Spec{Native: true, PodTemplate: pod(map[string]any{"runAsUser": 1000})}))
+}

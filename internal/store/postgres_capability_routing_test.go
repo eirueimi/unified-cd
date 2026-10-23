@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/eirueimi/unified-cd/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -219,5 +220,56 @@ func TestUpdateRunSpec_RecomputesRequiredCaps(t *testing.T) {
 		run, err := pg.CreateRun(ctx, "j", nil, []byte(plain), []string{}, []string{"container"}, "test", "")
 		require.NoError(t, err)
 		require.Error(t, pg.UpdateRunSpec(ctx, run.ID, []byte(`not json`)))
+	})
+}
+
+// A job whose only special feature is an honoured securityContext requires
+// [container, securitycontext]. Only an agent that advertises both may claim
+// it: an old host agent, or one with NULL capabilities, would silently drop the
+// fields. An old Kubernetes agent keeps claiming once the controller has
+// normalized its stored set (pod implies securitycontext).
+func TestClaimNextRun_SecurityContextRouting(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres")
+	}
+	ctx := context.Background()
+
+	t.Run("an old host agent cannot claim", func(t *testing.T) {
+		pg := NewTestPostgres(t)
+		require.NoError(t, pg.UpsertAgent(ctx, "old", "h", "linux", "", []string{}, []string{"native", "container"}, nil, nil))
+		queueRun(t, pg, "container", "securitycontext")
+		got, err := pg.ClaimNextRun(ctx, "old", []string{}, nil)
+		require.NoError(t, err)
+		assert.Nil(t, got)
+	})
+
+	t.Run("a NULL-capabilities agent cannot claim", func(t *testing.T) {
+		pg := NewTestPostgres(t)
+		require.NoError(t, pg.UpsertAgent(ctx, "legacy", "h", "linux", "", []string{}, nil, nil, nil))
+		queueRun(t, pg, "container", "securitycontext")
+		got, err := pg.ClaimNextRun(ctx, "legacy", []string{}, nil)
+		require.NoError(t, err)
+		assert.Nil(t, got)
+	})
+
+	t.Run("a new host agent can claim", func(t *testing.T) {
+		pg := NewTestPostgres(t)
+		require.NoError(t, pg.UpsertAgent(ctx, "new", "h", "linux", "", []string{}, []string{"native", "container", "securitycontext"}, nil, nil))
+		id := queueRun(t, pg, "container", "securitycontext")
+		got, err := pg.ClaimNextRun(ctx, "new", []string{}, nil)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Equal(t, id, got.ID)
+	})
+
+	t.Run("an old k8s agent can claim once its stored caps are normalized", func(t *testing.T) {
+		pg := NewTestPostgres(t)
+		// What the controller stores for an old agent that reports [pod, container].
+		require.NoError(t, pg.UpsertAgent(ctx, "k8s", "h", "linux/k8s", "", []string{}, dsl.NormalizeCapabilities([]string{"pod", "container"}), nil, nil))
+		id := queueRun(t, pg, "container", "securitycontext")
+		got, err := pg.ClaimNextRun(ctx, "k8s", []string{}, nil)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Equal(t, id, got.ID)
 	})
 }

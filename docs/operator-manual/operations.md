@@ -198,7 +198,9 @@ either.
   agent's own usage measurement tolerates this (it warns `volume usage could not be measured
   completely ... the figure is a lower bound` rather than failing), and `cleanWorkspace` falls back
   to a root cleanup container. But reclaiming the directory by hand needs root. Rootless podman
-  avoids all of it.
+  removes the root-owned part (a root container's files belong to the agent's own user), but a
+  job that sets `securityContext.runAsUser` still leaves files owned by a subordinate UID, which
+  the agent cannot remove either; the same root fallback and the same by-hand caveat apply.
 - To reclaim space, empty the directory with the agent stopped or the volume idle. A job with
   `cleanWorkspace: true` (which wipes a volume mounted at the workspace root only) is **not** a way
   out of a volume the gate is withholding: a job that mounts the volume waits like any other, and a

@@ -4,15 +4,18 @@ package dsl
 // (standard) agent's claim pod honors. command/args are honored: the host
 // claim-pod builder (parseContainerDef in internal/agent/claim_pod.go) carries
 // them into containerDef.Entrypoint/Args (ENTRYPOINT/CMD override,
-// respectively), which become the container's argv. Every other key on a
-// container (volumeMounts, ports, securityContext, envFrom, ...) is silently
-// dropped by the host backend, so its presence means the job can only run
-// correctly on a Kubernetes agent. This is the single source of truth for
+// respectively), which become the container's argv. securityContext is
+// honoured in PART: containerNeedsKubernetes (via
+// containerSecurityNeedsKubernetes) pins any key or value the host does not
+// honour. Every other key on a container (volumeMounts, ports, envFrom, ...)
+// is silently dropped by the host backend, so its presence means the job can
+// only run correctly on a Kubernetes agent. This is the single source of truth for
 // that set: the host claim-pod builder (internal/agent/claim_pod.go) and the
 // controller's routing predicate (PodTemplateNeedsKubernetes) both read it.
 var HostSupportedContainerFields = map[string]bool{
 	"name": true, "image": true, "env": true, "resources": true,
 	"command": true, "args": true,
+	"securityContext": true,
 }
 
 // PodTemplateNeedsKubernetes reports whether pt uses any feature the host
@@ -22,8 +25,10 @@ var HostSupportedContainerFields = map[string]bool{
 // The host claim pod honors workspace.mountPath, and reuse is only a
 // performance hint, so neither forces kubernetes. Everything
 // the host silently drops does: a named agent-side template, an override patch,
-// any pod-level spec key beyond "containers", and any container field outside
-// HostSupportedContainerFields.
+// any pod-level spec key beyond "containers" and "securityContext", and any
+// container field outside HostSupportedContainerFields. A securityContext (pod
+// or container level) pins only when it sets a field or value the host does
+// not honour (podSecurityNeedsKubernetes, containerSecurityNeedsKubernetes).
 func PodTemplateNeedsKubernetes(pt *PodTemplate) bool {
 	if pt == nil {
 		return false
@@ -38,9 +43,21 @@ func PodTemplateNeedsKubernetes(pt *PodTemplate) bool {
 		return true
 	}
 	for key := range pt.Spec {
-		if key != "containers" {
+		switch key {
+		case "containers":
+		case "securityContext":
+			// Honoured in part: identity and fsGroup yes, the rest per the
+			// decision tables in securitycontext.go. A value that is not a map
+			// (other than an unset null) is malformed and stays pinned.
+			if raw := pt.Spec[key]; raw != nil {
+				sc, ok := raw.(map[string]any)
+				if !ok || podSecurityNeedsKubernetes(sc) {
+					return true
+				}
+			}
+		default:
 			// volumes, nodeSelector, affinity, initContainers, tolerations,
-			// securityContext, serviceAccountName, ... — all host-unsupported.
+			// serviceAccountName, ... — all host-unsupported.
 			return true
 		}
 	}
@@ -72,6 +89,9 @@ func PodTemplateNeedsKubernetes(pt *PodTemplate) bool {
 //     because docker/podman have no request concept.
 //   - env: the host honors a literal value but cannot resolve valueFrom, which
 //     needs a Kubernetes API to dereference.
+//   - securityContext: the host honors identity (runAsUser, runAsGroup,
+//     runAsNonRoot) and, per containerSecurityNeedsKubernetes, the allowlisted
+//     hardening values; any other key or value is dropped there.
 //
 // Without this check a container carrying only the unsupported half is
 // classified host-runnable, routes to a standard agent, and is silently
@@ -119,6 +139,12 @@ func containerNeedsKubernetes(c map[string]any) bool {
 					return true
 				}
 			}
+		}
+	}
+	if raw := c["securityContext"]; raw != nil {
+		sc, ok := raw.(map[string]any)
+		if !ok || containerSecurityNeedsKubernetes(sc) {
+			return true
 		}
 	}
 	env, _ := c["env"].([]any)

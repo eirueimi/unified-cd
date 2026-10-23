@@ -247,8 +247,8 @@ as any other trigger.
 ## Capabilities and routing
 
 Alongside labels, every agent advertises a typed `capabilities` list —
-`native`, `container`, or `pod` — describing what kind of step execution it
-can actually perform. Unlike labels (author-chosen, free-form topology tags),
+`native`, `container`, `pod` or `securitycontext` — describing what kind of step
+execution it can actually perform. Unlike labels (author-chosen, free-form topology tags),
 capabilities are auto-detected and self-reported by the agent at startup (and
 on every subsequent registration) — there is no admin flag or enrollment
 setting to configure them, so they cannot be mistyped or forgotten by a job
@@ -264,7 +264,15 @@ author:
 The standard agent reports `["native"]`, or `["native", "container"]` once it
 detects a container runtime at startup, plus `securitycontext` when its startup
 probe shows that runtime honours a `securityContext`. The Kubernetes agent reports
-`["pod", "container"]`.
+`["pod", "container", "securitycontext"]`.
+
+The controller also **normalizes** every capability set it stores: `pod` implies
+`securitycontext`. A Kubernetes agent from before `securitycontext` existed
+reports only `["pod", "container"]`; the controller records it as
+`["pod", "container", "securitycontext"]`, so it keeps claiming the
+`securityContext` jobs it always ran, during an upgrade as well as after. A
+standard agent is never given the capability this way: it has to earn it with the
+startup probe.
 
 The standard agent logs what it registered as, so a host that came up without
 `container` is visible in its own log:
@@ -300,9 +308,22 @@ works out which capability a run of it needs:
 - `spec.native: true` → `native`.
 - `spec.podTemplate` is set and uses a feature the standard agent's claim pod
   can't honor at all — a named agent-side template, an `override` patch, a
-  pod-spec field beyond `containers`, or a container field outside the
-  host-supported set (`volumeMounts`, `securityContext`, `envFrom`, ...) —
-  → `pod`.
+  pod-spec field beyond `containers` and `securityContext`, or a container field
+  outside the host-supported set (`volumeMounts`, `envFrom`, ...) → `pod`.
+- `spec.podTemplate` sets a `securityContext` (pod level, container level, or
+  both) whose fields and values the standard agent honours — the identity fields
+  `runAsUser`, `runAsGroup`, `runAsNonRoot`, `supplementalGroups`, `fsGroup`,
+  `fsGroupChangePolicy` and `supplementalGroupsPolicy: Merge` — → `container`
+  **and** `securitycontext`. Only an agent that advertises both can claim it: a
+  standard agent whose startup probe passed, or a Kubernetes agent. A
+  `securityContext` that uses anything else is pinned → `pod`: `sysctls`,
+  `seLinuxOptions`, `windowsOptions`, `supplementalGroupsPolicy: Strict`,
+  `seccompProfile` / `appArmorProfile` (including `RuntimeDefault` for now), the
+  container-level hardening fields (`privileged`, `allowPrivilegeEscalation`,
+  `capabilities`, `readOnlyRootFilesystem`, `procMount`) and any key not listed.
+  A `securityContext` mixing honoured and pinned values is pinned as a whole. See
+  [Running as a non-root
+  user](../user-guide/writing-jobs/isolation-and-containers.md#running-as-a-non-root-user).
 - `spec.podTemplate` is set and a container's field is host-supported by
   *name* but uses a sub-field the host only partially honors: a
   `resources.requests` entry; a `resources.limits` key other than `cpu`/
@@ -313,8 +334,8 @@ works out which capability a run of it needs:
   Template](../user-guide/writing-jobs/isolation-and-containers.md#kubernetes-pod-template-podtemplate)
   and the [sub-field routing migration
   guide](migrations/podtemplate-subfield-routing.md).
-- Everything else (the isolated default, or a host-runnable `podTemplate`) →
-  `container`.
+- Everything else (the isolated default, or a host-runnable `podTemplate`
+  without a `securityContext`) → `container`.
 
 That inferred requirement travels with the run and gates claiming. It is
 derived from the spec that will actually execute: a run whose `uses:` steps
@@ -341,6 +362,15 @@ match — both must pass. In practice this means:
   pod already supports in full (plain `name`/`image` containers, literal
   `env` values, `resources.limits` restricted to `cpu`/`memory` as strings)
   can be claimed by **either** agent type.
+- A `podTemplate` job whose only special feature is a host-honoured
+  `securityContext` can be claimed by a Kubernetes agent or by a standard agent
+  that advertises `securitycontext`. A standard agent that failed its startup
+  probe, or that predates the capability, never claims it, because it would
+  silently drop the fields. A fleet with no Kubernetes agent used to leave such a
+  job `Queued` forever; it now runs on a qualifying standard agent.
+- A run keeps the routing computed when it was created. A run that is already
+  `Queued` when the controller is upgraded stays `pod`-pinned; a replay
+  recomputes it.
 
 This is automatic — you don't need to hand-write an `agentSelector` just to
 keep native jobs off Kubernetes or podTemplate jobs off the standard agent
@@ -369,7 +399,9 @@ never claim a `pod` run: a record without capabilities can only belong to a
 host agent, because the Kubernetes agent has always advertised `pod`, and a
 host agent would drop the pod-level fields of a `pod` run (`nodeSelector`,
 `volumes`, `initContainers`, `override`, a named template) and still report
-success. The same baseline applies to an agent ID that has no record at all.
+success. For the same reason they can never claim a `securitycontext` run:
+the baseline does not include `securitycontext`. The same baseline applies to an
+agent ID that has no record at all.
 
 An agent's record can lose its capabilities after registration: a heartbeat
 re-creates a minimal record when something deleted it (for example a
@@ -383,9 +415,13 @@ it stays on the legacy baseline until it restarts and re-registers; during a
 rolling upgrade, upgrade the Kubernetes agents too.
 
 An unknown capability string in an agent's registration request (anything
-other than `native`/`container`/`pod`/`securitycontext`) is rejected with `400` — the agent is
-not recorded, rather than silently accepted with a capability set that would
-never match anything.
+other than `native`, `container`, `pod` or `securitycontext`) is rejected with
+`400` — the agent is not recorded, rather than silently accepted with a
+capability set that would never match anything. A controller that predates
+`securitycontext` rejects a new standard agent's registration this way
+(`400 unknown capability: securitycontext`); the agent keeps retrying, visibly in
+its log, until the controller is upgraded. Upgrade the controller first, then the
+agents.
 
 **If no registered agent can satisfy a job's inferred capability and
 selector**, the run stays `Queued` indefinitely rather than failing — see
@@ -787,13 +823,18 @@ this way, the agent falls back to a throwaway root (`0:0`) cleanup container
 (a `busybox` container with the directory mounted) before recreating the
 directory. The opt-in [workspace GC](operations.md#workspace-and-claim-container-hygiene)
 uses the same fallback. If it also fails, **the run fails** (the GC logs the
-directory and keeps it for the next sweep). **Recommended fix: run rootless podman.** With rootless podman, the
-container's root maps to the agent's own user, so this class of problem does
-not occur in the first place — it is the first-choice deployment for Linux
-hosts running isolated jobs. The same applies to a volume wiped with
-`cleanWorkspace`, and a volume's contents are owned by root when a rootful
-runtime wrote them, which an operator reclaiming the directory by hand will
-need root for.
+directory and keeps it for the next sweep). **Recommended: run rootless podman.** With rootless
+podman, the container's root maps to the agent's own user, so files a *root* container wrote are
+the agent's own and the root fallback is not needed for them — it is the first-choice deployment
+for Linux hosts running isolated jobs. It does not remove every ownership problem: a job that
+sets `securityContext.runAsUser` / `fsGroup` runs as a non-root UID inside the container, and under
+rootless podman that UID maps to a *subordinate* UID on the host, which the agent cannot remove
+either. Those files are cleaned by the same root fallback, and a `fsGroup` makes new files
+group-owned so the job itself can reuse them (see [Running as a non-root
+user](../user-guide/writing-jobs/isolation-and-containers.md#running-as-a-non-root-user)). The same
+applies to a volume wiped with `cleanWorkspace`, and a volume's contents are owned by root (or by a
+subordinate UID) when a rootful runtime or a non-root job wrote them, which an operator reclaiming
+the directory by hand will need root for.
 
 **Disk usage.** Ordinary workspaces no longer accumulate: each is removed after its run. What can
 be left behind is a directory from a run whose agent crashed before the sweep; the opt-in

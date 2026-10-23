@@ -383,8 +383,11 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
 
 - **Rootless podman is the recommended runtime on Linux hosts.** It avoids
   root-owned files leaking into the bind-mounted workspace (the container's
-  root maps to the agent's own user), sidestepping the EPERM-fallback
-  cleanup path entirely — see [Agent Labels and Routing: Workspace
+  root maps to the agent's own user), so a job that runs as root needs no
+  EPERM-fallback cleanup. It does not remove every ownership problem: a job
+  that sets `securityContext.runAsUser` writes as a subordinate UID on the host,
+  which the agent cannot remove, and the cleanup then relies on the same root
+  fallback — see [Agent Labels and Routing: Workspace
   lifecycle](../operator-manual/agents.md#workspace-lifecycle).
 - **On macOS/Windows, `--workspace-dir`/`workspaceDir` must live under a
   path your container runtime's file sharing exposes** — e.g. under

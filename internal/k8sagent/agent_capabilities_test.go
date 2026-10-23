@@ -7,5 +7,5 @@ import (
 )
 
 func TestK8sAgentCapabilities(t *testing.T) {
-	assert.ElementsMatch(t, []string{"pod", "container"}, k8sAgentCapabilities())
+	assert.ElementsMatch(t, []string{"pod", "container", "securitycontext"}, k8sAgentCapabilities())
 }

@@ -93,8 +93,11 @@ type K8sAgent struct {
 }
 
 // k8sAgentCapabilities reports what the k8s agent can execute: it always
-// builds a Kubernetes Pod, and that pod always has a runnable container.
-func k8sAgentCapabilities() []string { return []string{dsl.CapPod, dsl.CapContainer} }
+// builds a Kubernetes Pod, that pod always has a runnable container, and
+// Kubernetes honours every securityContext field by construction.
+func k8sAgentCapabilities() []string {
+	return []string{dsl.CapPod, dsl.CapContainer, dsl.CapSecurityContext}
+}
 
 // NewK8sAgent creates a new K8sAgent.
 func NewK8sAgent(cfg Config, agentClient *agentlib.Client, pm *PodManager, exec *Executor, pool *PodPool) *K8sAgent {
