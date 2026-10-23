@@ -346,13 +346,9 @@ still carries it is rejected at apply time; persistence now comes from a [named
 volume](volumes.md). See the [migration
 guide](../../operator-manual/migrations/2026-10-20-named-volumes.md).
 
-> **`workspace.mountPath` alone does nothing on a Kubernetes agent.** The Kubernetes agent reads
-> `podTemplate.workspace` only from a template it actually builds the Pod from: a named agent
-> template (`name`), or an inline `podTemplate` that carries a `spec`. A `podTemplate` that sets
-> *only* `workspace.mountPath`, with neither, has that mount path silently ignored there (the
-> standard agent honors it, so the same job can behave differently on the two). Give the
-> `podTemplate` a `name` or a `spec` whenever you set a mount path. Apply-time validation would be
-> better and is a known follow-up.
+> **`workspace.mountPath` alone is honored on every agent.** A `podTemplate` that sets *only*
+> `workspace.mountPath`, with neither `name` nor `spec`, mounts the workspace at that path on a
+> Kubernetes agent (in its default Pod) just as on the standard agent.
 
 Use `container:` in a step to target a specific container (see
 [`container:` — targeting a podTemplate

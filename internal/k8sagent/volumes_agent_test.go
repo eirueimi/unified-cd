@@ -552,7 +552,7 @@ func TestBuildPod_UsesResolveWorkspaceConfig(t *testing.T) {
 		{Name: "golang"},
 		{Name: "golang", Workspace: &dsl.WorkspaceConfig{MountPath: "/job"}},
 		{Spec: map[string]any{"containers": []any{map[string]any{"name": "job", "image": "x"}}}, Workspace: &dsl.WorkspaceConfig{MountPath: "/inline"}},
-		{Workspace: &dsl.WorkspaceConfig{MountPath: "/ignored-without-spec-or-name"}},
+		{Workspace: &dsl.WorkspaceConfig{MountPath: "/lone-mountpath"}},
 	} {
 		pod, err := BuildPod("run-abc123", testVolNS, srcTemplate(), jt, "img", SidecarSpec{}, testShimImage, nil)
 		require.NoError(t, err)
@@ -588,4 +588,23 @@ func TestExecuteRun_RejectsAnAbsoluteMountPathThatIsTheWorkspace(t *testing.T) {
 		assert.Contains(t, f.logText(), "is the workspace itself")
 		assert.Empty(t, f.createdPods(t))
 	})
+}
+
+// A podTemplate that sets only workspace.mountPath (no name, no spec) builds
+// the default pod, and the workspace is mounted at that path, as on the host
+// agent. Every consumer of the mount path goes through resolveWorkspaceConfig.
+func TestLoneWorkspaceMountPath(t *testing.T) {
+	jt := &dsl.PodTemplate{Workspace: &dsl.WorkspaceConfig{MountPath: "/data"}}
+	assert.Equal(t, "/data", workspaceMountOf(resolveWorkspaceConfig(srcTemplate(), jt)))
+
+	pod, err := BuildPod("run-abc123", testVolNS, srcTemplate(), jt, "img", SidecarSpec{}, testShimImage, nil)
+	require.NoError(t, err)
+	var mounts []string
+	for _, m := range pod.Spec.Containers[0].VolumeMounts {
+		if m.Name == "workspace" {
+			mounts = append(mounts, m.MountPath)
+		}
+	}
+	assert.Equal(t, []string{"/data"}, mounts)
+	assert.Equal(t, "/data", pod.Spec.Containers[0].WorkingDir)
 }

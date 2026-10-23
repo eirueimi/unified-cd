@@ -627,8 +627,8 @@ func injectWorkspace(podSpec *corev1.PodSpec, wsCfg *dsl.WorkspaceConfig) error 
 
 // resolveWorkspaceConfig is the workspace configuration a pod built from
 // jobTmpl gets: for a named template the agent template's, overridden by the
-// job's; for an inline spec the job's; none otherwise (no template, or a
-// template with neither a name nor a spec).
+// job's; for an inline spec, or a template with neither a name nor a spec (the
+// default pod), the job's; none when there is no template.
 //
 // BuildPod uses it to build the pod, and executeRun uses it for the mount path
 // the backend, the volume paths and the workspace wipe all work against. One
@@ -644,10 +644,11 @@ func resolveWorkspaceConfig(agentTmpls map[string]AgentPodTemplate, jobTmpl *dsl
 			return jobTmpl.Workspace
 		}
 		return agentTmpls[jobTmpl.Name].Workspace
-	case jobTmpl.Spec != nil:
-		return jobTmpl.Workspace
 	default:
-		return nil
+		// An inline spec, or neither a name nor a spec (the default pod): the
+		// job's own workspace config, so a lone workspace.mountPath is honoured
+		// exactly as the host agent honours it.
+		return jobTmpl.Workspace
 	}
 }
 
