@@ -175,6 +175,11 @@ type Agent struct {
 	resolvedRuntime crt.ContainerRuntime
 	runtimeErr      error
 	runtimeOnce     sync.Once
+
+	// probeRes is the result of the startup securityContext probe, computed
+	// once by securityContextProbe.
+	probeRes  probeResult
+	probeOnce sync.Once
 }
 
 // statfs returns the function that measures a filesystem: diskStatsFn, or the
@@ -258,11 +263,16 @@ func (a *Agent) containerRuntime() (crt.ContainerRuntime, error) {
 }
 
 // agentCapabilities reports what this standard agent can execute: always
-// native (host process), plus container when a container runtime is present.
-func agentCapabilities(runtimeAvailable bool) []string {
+// native (host process), plus container when a container runtime is present,
+// plus securitycontext when the startup probe showed that runtime honours a
+// claim's securityContext (secCtx; meaningless without a runtime).
+func agentCapabilities(runtimeAvailable, secCtx bool) []string {
 	caps := []string{dsl.CapNative}
 	if runtimeAvailable {
 		caps = append(caps, dsl.CapContainer)
+		if secCtx {
+			caps = append(caps, dsl.CapSecurityContext)
+		}
 	}
 	return caps
 }
@@ -272,7 +282,10 @@ func agentCapabilities(runtimeAvailable bool) []string {
 // it), so the two always agree and the claim poll costs nothing.
 func (a *Agent) capabilities() []string {
 	_, rtErr := a.containerRuntime()
-	return agentCapabilities(rtErr == nil)
+	if rtErr != nil {
+		return agentCapabilities(false, false)
+	}
+	return agentCapabilities(true, a.securityContextProbe().OK)
 }
 
 // logRegistration records what the agent registered as. Without it a host whose
@@ -280,10 +293,13 @@ func (a *Agent) capabilities() []string {
 // agent) silently registers as native-only: isolated jobs route elsewhere or
 // stay Queued, and nothing in this host's log says why. Detection runs once per
 // process, so the warning also says a restart is needed to pick the runtime up.
-func logRegistration(id string, caps []string, rtErr error) {
+func logRegistration(id string, caps []string, rtErr error, probe probeResult) {
 	if rtErr != nil {
 		slog.Warn("no container runtime: this agent will not run isolated (container) jobs; restart the agent once a runtime is available",
 			"agentId", id, "error", rtErr)
+	} else if !probe.OK {
+		slog.Warn(fmt.Sprintf("container runtime cannot honour securityContext (%s); jobs that set securityContext will not be routed to this agent", probe.Reason),
+			"agentId", id)
 	}
 	slog.Info("agent registered", "agentId", id, "capabilities", caps)
 }
@@ -339,7 +355,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return registerErr
 	}
 	_, rtErr := a.containerRuntime()
-	logRegistration(a.ID, req.Capabilities, rtErr)
+	logRegistration(a.ID, req.Capabilities, rtErr, a.securityContextProbe())
 
 	// Fail runs a previous process incarnation left behind BEFORE claiming
 	// anything. A restarted agent re-registers under the same ID and resumes
@@ -918,7 +934,7 @@ func (a *Agent) executeRun(ctx context.Context, c api.ClaimResponse, workDir str
 				RunID: c.RunID, StepIndex: -1, Stream: "stderr", Timestamp: time.Now().UTC(), Line: line,
 			}})
 		}
-		pod.maxMappedID = 0 // 0 = no limit; the startup probe populates it
+		pod.maxMappedID = a.securityContextProbe().MaxMappedID // 0 = no limit (rootful, or the probe did not run)
 		if err := pod.Start(ctx, c.PodTemplate); err != nil {
 			pod.CloseAll(context.WithoutCancel(ctx))
 			failClaim("claim pod construction failed", err)

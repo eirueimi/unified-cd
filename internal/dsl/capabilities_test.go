@@ -50,3 +50,24 @@ func TestValidCapability(t *testing.T) {
 	assert.False(t, ValidCapability("gpu"))
 	assert.False(t, ValidCapability(""))
 }
+
+func TestValidCapability_SecurityContext(t *testing.T) {
+	assert.True(t, ValidCapability(CapSecurityContext))
+	assert.Equal(t, "securitycontext", CapSecurityContext)
+}
+
+func TestNormalizeCapabilities_PodImpliesSecurityContext(t *testing.T) {
+	assert.ElementsMatch(t, []string{"pod", "securitycontext"}, NormalizeCapabilities([]string{"pod"}))
+	assert.ElementsMatch(t, []string{"native", "pod", "securitycontext"}, NormalizeCapabilities([]string{"native", "pod"}))
+	// Already present: no duplicate.
+	assert.ElementsMatch(t, []string{"pod", "securitycontext"}, NormalizeCapabilities([]string{"pod", "securitycontext"}))
+	// No pod: unchanged.
+	assert.Equal(t, []string{"native", "container"}, NormalizeCapabilities([]string{"native", "container"}))
+	assert.Empty(t, NormalizeCapabilities(nil))
+}
+
+func TestNormalizeCapabilities_DoesNotMutateInput(t *testing.T) {
+	in := []string{"pod"}
+	_ = NormalizeCapabilities(in)
+	assert.Equal(t, []string{"pod"}, in)
+}

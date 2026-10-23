@@ -2,18 +2,20 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 
+	crt "github.com/eirueimi/unified-cd/internal/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestAgentCapabilities_NativeAlways(t *testing.T) {
 	// runtimeAvailable == false -> only native
-	assert.Equal(t, []string{"native"}, agentCapabilities(false))
+	assert.Equal(t, []string{"native"}, agentCapabilities(false, false))
 	// runtimeAvailable == true -> native + container
-	assert.ElementsMatch(t, []string{"native", "container"}, agentCapabilities(true))
+	assert.ElementsMatch(t, []string{"native", "container"}, agentCapabilities(true, false))
 }
 
 // recordHandler keeps every record so a test can assert on what was logged.
@@ -55,7 +57,7 @@ func TestLogRegistration_MissingRuntimeWarnsWithTheReason(t *testing.T) {
 	_, rtErr := (&Agent{RuntimePref: "no-such-runtime"}).containerRuntime()
 	require.Error(t, rtErr)
 
-	logRegistration("a1", agentCapabilities(false), rtErr)
+	logRegistration("a1", agentCapabilities(false, false), rtErr, probeResult{})
 
 	require.Len(t, h.records, 2)
 	warn := h.records[0]
@@ -74,11 +76,70 @@ func TestLogRegistration_MissingRuntimeWarnsWithTheReason(t *testing.T) {
 func TestLogRegistration_RuntimePresentDoesNotWarn(t *testing.T) {
 	h := captureLogs(t)
 
-	logRegistration("a1", agentCapabilities(true), nil)
+	logRegistration("a1", agentCapabilities(true, true), nil, probeResult{OK: true})
 
 	require.Len(t, h.records, 1)
 	assert.Equal(t, slog.LevelInfo, h.records[0].Level)
 	caps, ok := attr(h.records[0], "capabilities")
 	require.True(t, ok)
-	assert.ElementsMatch(t, []string{"native", "container"}, caps.Any())
+	assert.ElementsMatch(t, []string{"native", "container", "securitycontext"}, caps.Any())
+}
+
+func TestAgentCapabilities_SecurityContextOnlyWithPassingProbe(t *testing.T) {
+	assert.ElementsMatch(t, []string{"native", "container", "securitycontext"}, agentCapabilities(true, true))
+	assert.ElementsMatch(t, []string{"native", "container"}, agentCapabilities(true, false))
+	// Without a runtime the probe cannot have passed.
+	assert.Equal(t, []string{"native"}, agentCapabilities(false, true))
+}
+
+func TestLogRegistration_FailedProbeWarnsWithTheReason(t *testing.T) {
+	h := captureLogs(t)
+
+	logRegistration("a1", agentCapabilities(true, false), nil, probeResult{Reason: "file group not inherited"})
+
+	require.Len(t, h.records, 2)
+	warn := h.records[0]
+	assert.Equal(t, slog.LevelWarn, warn.Level)
+	assert.Contains(t, warn.Message, "cannot honour securityContext (file group not inherited)")
+	assert.Contains(t, warn.Message, "jobs that set securityContext will not be routed to this agent")
+	assert.Equal(t, slog.LevelInfo, h.records[1].Level)
+}
+
+func TestLogRegistration_NoRuntimeDoesNotAddProbeWarning(t *testing.T) {
+	h := captureLogs(t)
+	logRegistration("a1", agentCapabilities(false, false), errors.New("none"), probeResult{Reason: "no container runtime"})
+	require.Len(t, h.records, 2, "the missing-runtime warning already covers it")
+}
+
+func TestAgentCapabilities_UsesProbeOnce(t *testing.T) {
+	calls := 0
+	prev := probeSecurityContextFn
+	probeSecurityContextFn = func(context.Context, crt.ContainerRuntime, string, string, string) (probeResult, error) {
+		calls++
+		return probeResult{OK: true, Rootless: true, MaxMappedID: 65536}, nil
+	}
+	t.Cleanup(func() { probeSecurityContextFn = prev })
+
+	a := &Agent{ToolsDir: "/t", PauseImage: "p", WorkspaceDir: t.TempDir()}
+	a.resolvedRuntime = &probeFakeRT{}
+	a.runtimeOnce.Do(func() {})
+	assert.ElementsMatch(t, []string{"native", "container", "securitycontext"}, a.capabilities())
+	assert.ElementsMatch(t, []string{"native", "container", "securitycontext"}, a.capabilities())
+	assert.Equal(t, 1, calls, "the probe runs once per process")
+	assert.Equal(t, int64(65536), a.securityContextProbe().MaxMappedID)
+}
+
+func TestAgentCapabilities_ProbeSkippedWithoutToolsDir(t *testing.T) {
+	prev := probeSecurityContextFn
+	probeSecurityContextFn = func(context.Context, crt.ContainerRuntime, string, string, string) (probeResult, error) {
+		t.Fatal("the probe must not run without a tools dir")
+		return probeResult{}, nil
+	}
+	t.Cleanup(func() { probeSecurityContextFn = prev })
+
+	a := &Agent{PauseImage: "p"}
+	a.resolvedRuntime = &probeFakeRT{}
+	a.runtimeOnce.Do(func() {})
+	assert.Equal(t, []string{"native", "container"}, a.capabilities())
+	assert.NotEmpty(t, a.securityContextProbe().Reason)
 }

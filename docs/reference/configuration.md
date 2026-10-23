@@ -395,6 +395,33 @@ needs a container runtime (docker, podman, or nerdctl) to run isolated jobs.
   namespace). Select it explicitly with `--container-runtime container` only
   for non-isolated `runsIn.image` steps; use docker or podman for isolated
   jobs.
+- **A startup probe decides whether the agent can honour `securityContext`.**
+  Once, after the runtime is detected and the `ucd-sh` shim is installed, the
+  agent measures its runtime instead of consulting an allowlist. It creates a
+  dot-prefixed directory under the workspace directory, starts the pause image
+  twice (about two container starts), and checks:
+    1. a helper started without `--user` runs as uid 0 (this catches a runtime
+       that overrides the default user, such as podman `--userns=keep-id`);
+    2. after the helper applies `fsGroup 54321` to the directory, a container
+       started with `--user 54322:54323 --group-add 54321` really has that uid,
+       gid and supplementary group;
+    3. a file it creates there is owned `54322:54321` (setgid inheritance), and
+       the directory keeps the setgid bit and group rwx.
+
+  Everything the probe creates is removed afterwards, and it is bounded by a
+  3 minute timeout. A failed probe never stops the agent: it only leaves
+  `securitycontext` out of the advertised capabilities, so jobs that set
+  `securityContext` are not routed to this agent, and logs one WARN naming the
+  failed check:
+  `container runtime cannot honour securityContext (<reason>); jobs that set securityContext will not be routed to this agent`.
+  There is no flag to override the result; fix the cause (for example move
+  `--workspace-dir` to a filesystem that honours setgid, since a Windows or
+  macOS file-sharing mount often does not) and restart the agent. The same run
+  reads the user-namespace map of a rootless runtime: a `runAsUser`, `fsGroup`
+  or similar ID above the highest mapped ID (typically 65536) fails the run at
+  claim-pod start. Apple's `container` is never auto-detected and cannot pass
+  the probe, so an agent using it never advertises `securitycontext`.
+  The pause image must run as root by default (the default busybox image does).
 
 ---
 

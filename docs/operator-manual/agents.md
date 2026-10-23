@@ -259,9 +259,11 @@ author:
 | `native` | Can run a step as a plain host process | Standard agent (always) |
 | `container` | Can run a step inside an isolated container | Standard agent (when a container runtime — docker/podman/nerdctl — is detected), Kubernetes agent (always) |
 | `pod` | Can build a Kubernetes Pod | Kubernetes agent (always) |
+| `securitycontext` | Can honour a job's `securityContext` (`runAsUser`, `fsGroup`, ...) the way Kubernetes does | Standard agent, only when its startup probe passes (see [Job isolation notes](../reference/configuration.md#job-isolation-notes)). `pod` implies it. |
 
 The standard agent reports `["native"]`, or `["native", "container"]` once it
-detects a container runtime at startup. The Kubernetes agent reports
+detects a container runtime at startup, plus `securitycontext` when its startup
+probe shows that runtime honours a `securityContext`. The Kubernetes agent reports
 `["pod", "container"]`.
 
 The standard agent logs what it registered as, so a host that came up without
@@ -277,8 +279,16 @@ When no runtime was found, a warning carrying the detection error comes first:
 WARN no container runtime: this agent will not run isolated (container) jobs; restart the agent once a runtime is available agentId=build-01 error="no container runtime available (looked for [...])"
 ```
 
-Detection runs once per agent process. A runtime installed, started or put on
-`PATH` after the agent started is not picked up until the agent is restarted.
+When a runtime was found but the startup probe failed, the registration line
+lacks `securitycontext` and a warning names the check that failed:
+
+```
+WARN container runtime cannot honour securityContext (a file created in the workspace has group 54323, want 54321: setgid inheritance did not give it the fsGroup); jobs that set securityContext will not be routed to this agent agentId=build-01
+```
+
+Detection and the probe run once per agent process. A runtime installed,
+started or put on `PATH` after the agent started is not picked up until the
+agent is restarted.
 
 ### Automatic routing
 
@@ -373,7 +383,7 @@ it stays on the legacy baseline until it restarts and re-registers; during a
 rolling upgrade, upgrade the Kubernetes agents too.
 
 An unknown capability string in an agent's registration request (anything
-other than `native`/`container`/`pod`) is rejected with `400` — the agent is
+other than `native`/`container`/`pod`/`securitycontext`) is rejected with `400` — the agent is
 not recorded, rather than silently accepted with a capability set that would
 never match anything.
 
