@@ -35,11 +35,17 @@ labels:
 # only the backstop.
 # finallyTimeout: 10m
 
-# minFreeDisk: stop claiming new runs while the workspace filesystem has fewer than this many bytes
-# free. The default, 0, DISABLES the check, so an agent that never sets this has no protection against
-# a full disk. The value is exported as the metric unifiedcd_agent_min_free_disk_bytes (0 there means
-# "disabled", not "no space left"), and unifiedcd_agent_claim_blocked_by_disk shows when it is acting.
-# minFreeDisk: 5368709120   # 5Gi
+# minFreeDisk: stop claiming new runs while the workspace filesystem has less free space than this.
+# A named volume below it only keeps back the runs that mount it (they stay Queued). Accepted forms:
+# a percentage of the filesystem ("1%"), a size ("10GiB"), or a byte count (5368709120, the legacy
+# form). The default is "1%", so the check is ON unless you set 0 or "off" (which disables it). A
+# malformed value fails startup. The resolved value is exported as the metric
+# unifiedcd_agent_min_free_disk_bytes (0 there means "disabled", not "no space left"), and
+# unifiedcd_agent_claim_blocked_by_disk / unifiedcd_agent_volume_claim_blocked show when it is acting.
+# A floor, not a margin: choose it larger than what one run can write (see the operations guide).
+# minFreeDisk: "1%"         # the default
+# minFreeDisk: "20GiB"      # an absolute floor
+# minFreeDisk: 0            # disable the check
 
 # volumes: agent-owned named volumes that jobs mount with spec.volumes. A workspace with no
 # volume is emptied before and after every run; a volume is the only thing that survives

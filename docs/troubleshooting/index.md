@@ -9,6 +9,7 @@ covers it.
 - [Run failed with "no eligible agent available to claim it"](runs-and-scheduling.md#run-failed-with-no-eligible-agent-available-to-claim-it)
 - [Job stays Queued / unschedulable warning](runs-and-scheduling.md#job-stays-queued-unschedulable-warning)
 - [Job stays Queued: no agent declares volume](runs-and-scheduling.md#job-stays-queued-no-agent-declares-volume)
+- [Run stays Queued: the volume it mounts is below `minFreeDisk`](runs-and-scheduling.md#run-stays-queued-the-volume-it-mounts-is-below-minfreedisk)
 - [Run marked `Failed` with "agent lost"](runs-and-scheduling.md#run-marked-failed-with-agent-lost)
 - [Run marked `Failed` by heartbeat reconcile after a lost claim](runs-and-scheduling.md#run-marked-failed-by-heartbeat-reconcile-after-a-lost-claim)
 - [Approve/reject returns 409 `run is already terminal` or `approval window has expired`](runs-and-scheduling.md#approvereject-returns-409-run-is-already-terminal-or-approval-window-has-expired)
@@ -35,6 +36,7 @@ covers it.
 
 - [Step fails with `requires S3 configuration (UNIFIED_S3_*)`](artifacts-and-storage.md#step-fails-with-requires-s3-configuration-unified_s3_)
 - [Job pods never start with `CreateContainerConfigError` (`secret "…" not found`)](artifacts-and-storage.md#job-pods-never-start-with-createcontainerconfigerror)
+- [Kubernetes run fails: pod was evicted: Usage of EmptyDir volume "workspace" exceeds the limit](artifacts-and-storage.md#kubernetes-run-fails-pod-was-evicted-usage-of-emptydir-volume-workspace-exceeds-the-limit)
 - [k8s pod `ImagePullBackOff` on `unified-artifact`](artifacts-and-storage.md#k8s-pod-imagepullbackoff-on-unified-artifact)
 - [A sidecar failed to start](artifacts-and-storage.md#a-sidecar-failed-to-start)
 - [Artifact step fails `no such file`](artifacts-and-storage.md#artifact-step-fails-no-such-file)

@@ -36,6 +36,22 @@ poolIdleTimeout: ""
 # The agent's Role needs get, list, create and update on persistentvolumeclaims (see
 # manifests/base/k8s-agent/rbac.yaml). A freshly provisioned PVC is usually root-owned: a job
 # whose image runs as a non-root user needs securityContext.fsGroup in its podTemplate.
+
+# minFreeDisk: stop claiming runs that mount a named volume (see volumes below) while that volume has
+# less free space than this. Forms: a percentage ("1%"), a size ("10Gi"), a byte count, or 0 / "off" to
+# disable. The default is "1%", so the check is ON unless you disable it; a malformed value fails
+# startup. A volume is measured only by runs that mount it, so a reading older than 10 minutes stops
+# gating (runs go through until one re-measures the volume) and restarting the agent clears it. This loader ignores unknown
+# keys: a misspelled minFreeDisk is silently ignored, so copy the key exactly.
+# minFreeDisk: "1%"
+#
+# workspaceSizeLimit: cap each run's workspace emptyDir (sizeLimit) and reserve the same amount as an
+# ephemeral-storage request on the job container, so one run cannot fill the node. UNSET by default
+# (no cap); a limit that is too small evicts legitimate runs. Not applied when the pod template already
+# sets ephemeral-storage or the workspace is a named volume. A podTemplates.<name>.workspaceSizeLimit
+# overrides it for that template.
+# workspaceSizeLimit: 20Gi
+
 # podImage: fallback image when a Job does not specify a podTemplate. Leave it unset to get the
 # runner published with this agent's release (the tag matches the agent's version; :latest for
 # a locally built agent). Set it to pin a different image, or to a digest to make the runner
@@ -51,6 +67,7 @@ podTemplates:
       # Pod. (podTemplate.reuse keeps the Pod, but the agent empties the workspace on every claim.)
       # To keep data between runs, declare a named volume under `volumes:` above and mount it
       # from the job with spec.volumes.
+    # workspaceSizeLimit: 40Gi   # overrides the global workspaceSizeLimit for this template
     spec:
       containers:
         - name: job

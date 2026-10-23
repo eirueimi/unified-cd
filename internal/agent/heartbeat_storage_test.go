@@ -28,7 +28,7 @@ func newStorageTestAgent(t *testing.T, minFreeDisk uint64, stats func(path strin
 		{Name: "data", Mode: VolumeModeShared},
 	})
 	require.NoError(t, err)
-	return &Agent{ID: "a1", Volumes: vm, MinFreeDisk: minFreeDisk, diskStatsFn: stats}, ws
+	return &Agent{ID: "a1", Volumes: vm, MinFreeDisk: config.DiskThreshold{Bytes: minFreeDisk, Set: minFreeDisk > 0}, diskStatsFn: stats}, ws
 }
 
 func TestHeartbeat_HostReportsWorkspaceAndEachVolume(t *testing.T) {
@@ -134,7 +134,7 @@ func TestHeartbeat_ClaimBlockedIsReportedByTheAgent(t *testing.T) {
 		Client:        NewClient(srv.URL, "tok"),
 		MaxConcurrent: 2,
 		WorkspaceDir:  t.TempDir(),
-		MinFreeDisk:   uint64(1) << 30,
+		MinFreeDisk:   config.DiskThreshold{Bytes: 1 << 30, Set: true},
 		diskStatsFn: func(string) (uint64, uint64, error) {
 			freeMu.Lock()
 			defer freeMu.Unlock()
@@ -165,7 +165,7 @@ func TestHeartbeat_ClaimBlockedIsReportedByTheAgent(t *testing.T) {
 func TestHeartbeat_ClaimBlockedClearsWhenTheDecliningSlotExits(t *testing.T) {
 	a := &Agent{
 		ID:          "a1",
-		MinFreeDisk: uint64(1) << 30,
+		MinFreeDisk: config.DiskThreshold{Bytes: 1 << 30, Set: true},
 		diskStatsFn: func(string) (uint64, uint64, error) { return 1, 2, nil },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -246,4 +246,67 @@ func TestStartHeartbeat_SendsStorageFromProvider(t *testing.T) {
 		v, ok := lastBody.Load().(api.HeartbeatRequest)
 		return ok && v.Storage != nil && v.Storage.AgentName == "host-1" && v.Storage.Workspace != nil && v.Storage.Workspace.FreeBytes == 1
 	}, 2*time.Second, 5*time.Millisecond, "heartbeat never carried the provider's storage reading")
+}
+
+// A percent threshold is reported resolved against the workspace total.
+func TestHeartbeat_PercentThresholdIsReportedResolvedToBytes(t *testing.T) {
+	a, ws := newStorageTestAgent(t, 0, func(string) (uint64, uint64, error) { return 1 << 30, 200 << 30, nil })
+	a.MinFreeDisk = config.DiskThreshold{Percent: 1, Set: true}
+
+	got := readingOf(a, ws, "h")
+
+	require.NotNil(t, got.MinFreeDiskBytes)
+	require.EqualValues(t, uint64(2)<<30, *got.MinFreeDiskBytes)
+}
+
+// Percent with no workspace sample yet: the bytes are unknown, so nil (not 0,
+// which the metrics layer reads as "disabled").
+func TestHeartbeat_PercentThresholdWithoutAWorkspaceSampleReportsNil(t *testing.T) {
+	var ws string
+	var a *Agent
+	a, ws = newStorageTestAgent(t, 0, func(path string) (uint64, uint64, error) {
+		if path == ws {
+			return 0, 0, errors.New("statfs: boom")
+		}
+		return 1, 2, nil
+	})
+	a.MinFreeDisk = config.DiskThreshold{Percent: 1, Set: true}
+
+	got := readingOf(a, ws, "h")
+
+	require.Nil(t, got.MinFreeDiskBytes)
+	require.NotNil(t, got.ClaimBlockedByDisk)
+}
+
+func TestHeartbeat_OffReportsZeroAndAbsoluteNeedsNoSample(t *testing.T) {
+	a, ws := newStorageTestAgent(t, 0, func(string) (uint64, uint64, error) { return 0, 0, errors.New("boom") })
+	a.MinFreeDisk = config.DiskThreshold{Set: true, Off: true}
+	got := readingOf(a, ws, "h")
+	require.NotNil(t, got.MinFreeDiskBytes)
+	require.EqualValues(t, 0, *got.MinFreeDiskBytes)
+
+	a.MinFreeDisk = config.DiskThreshold{Bytes: 77, Set: true}
+	got = readingOf(a, ws, "h")
+	require.NotNil(t, got.MinFreeDiskBytes)
+	require.EqualValues(t, 77, *got.MinFreeDiskBytes)
+}
+
+func TestHeartbeat_VolumeClaimBlockedMirrorsTheClaimGate(t *testing.T) {
+	var a *Agent
+	var ws string
+	a, ws = newStorageTestAgent(t, 0, func(path string) (uint64, uint64, error) {
+		switch path {
+		case a.Volumes.PathOf("cache"):
+			return 5, 1000, nil // below 1% of 1000
+		case a.Volumes.PathOf("data"):
+			return 500, 1000, nil
+		}
+		return 500, 1000, nil
+	})
+	a.MinFreeDisk = config.DiskThreshold{Percent: 1, Set: true}
+
+	got := readingOf(a, ws, "h")
+
+	require.True(t, got.Volumes["cache"].ClaimBlocked)
+	require.False(t, got.Volumes["data"].ClaimBlocked)
 }

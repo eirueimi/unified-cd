@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -282,4 +283,39 @@ func TestSetAgentStorage_DoesNotRefreshLastSeen(t *testing.T) {
 	got, err := pg.ListAgentStorage(ctx, storageStaleAfter)
 	require.NoError(t, err)
 	assert.NotContains(t, got, "agent-1")
+}
+
+func TestSetAgentStorage_RoundTripsVolumeClaimBlocked(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1", nil, nil, nil, nil))
+
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	blocked := volumeReading(1, 100, at)
+	blocked.ClaimBlocked = true
+	require.NoError(t, pg.SetAgentStorage(ctx, "agent-1", &api.AgentStorage{
+		AgentName: "host1",
+		Volumes:   map[string]api.VolumeStats{"full": blocked, "roomy": volumeReading(90, 100, at)},
+	}))
+
+	got, err := pg.ListAgentStorage(ctx, storageStaleAfter)
+	require.NoError(t, err)
+	assert.True(t, got["agent-1"].Volumes["full"].ClaimBlocked)
+	assert.False(t, got["agent-1"].Volumes["roomy"].ClaimBlocked)
+}
+
+// A reading written by an agent that predates the field has no claimBlocked key.
+func TestListAgentStorage_MissingClaimBlockedKeyIsFalse(t *testing.T) {
+	pg := NewTestPostgres(t)
+	ctx := context.Background()
+	require.NoError(t, pg.UpsertAgent(ctx, "agent-1", "host1", "linux", "v1", nil, nil, nil, nil))
+
+	var old api.AgentStorage
+	require.NoError(t, json.Unmarshal([]byte(`{"agentName":"host1","volumes":{"cache":{"freeBytes":1,"totalBytes":2,"measuredAt":"2026-10-21T09:00:00Z"}}}`), &old))
+	require.NoError(t, pg.SetAgentStorage(ctx, "agent-1", &old))
+
+	got, err := pg.ListAgentStorage(ctx, storageStaleAfter)
+	require.NoError(t, err)
+	require.Contains(t, got["agent-1"].Volumes, "cache")
+	assert.False(t, got["agent-1"].Volumes["cache"].ClaimBlocked)
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/eirueimi/unified-cd/internal/api"
+	"github.com/eirueimi/unified-cd/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,7 +49,7 @@ func TestAgent_MinFreeDisk_SkipsClaimWhileBelowThreshold(t *testing.T) {
 		Client:        NewClient(srv.URL, "tok"),
 		MaxConcurrent: 1,
 		WorkspaceDir:  t.TempDir(),
-		MinFreeDisk:   minFreeDisk,
+		MinFreeDisk:   config.DiskThreshold{Bytes: minFreeDisk, Set: true},
 		diskStatsFn: func(string) (uint64, uint64, error) {
 			freeMu.Lock()
 			defer freeMu.Unlock()

@@ -56,6 +56,20 @@ func main() {
 		slog.Error("invalid config", "error", err)
 		os.Exit(1)
 	}
+	// The effective threshold, logged like the host agent's "disk gate:" line:
+	// the loader ignores misspelled keys, so this is the operator's check that
+	// the setting they wrote took effect.
+	switch th := cfg.EffectiveMinFreeDisk(); {
+	case th.Off:
+		slog.Info("volume disk gate: disabled")
+	case th.Bytes != 0:
+		slog.Info(fmt.Sprintf("volume disk gate: minFreeDisk=%d bytes", th.Bytes))
+	default:
+		slog.Info("volume disk gate: minFreeDisk=" + th.String())
+	}
+	if cfg.WorkspaceSizeLimitUnset() {
+		slog.Info("workspaceSizeLimit is unset: a run can fill the node's ephemeral storage; set workspaceSizeLimit (or podTemplates.<name>.workspaceSizeLimit) to cap the workspace emptyDir")
+	}
 	if cfg.SidecarS3SecretName == "" {
 		slog.Warn("sidecarS3SecretName is not set: cache steps will be no-ops (best-effort, reported Succeeded) and any claim carrying an unconditional, run-failing artifact upload/download step will be failed immediately, before its Pod is created; set it to a Secret carrying UNIFIED_S3_* that exists in the JOB Pod namespace (this agent's namespace: field) to enable sidecar transfers", "jobNamespace", cfg.Namespace)
 	}

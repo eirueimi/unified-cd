@@ -687,7 +687,11 @@ not the primary control.
 A job's workspace is **ephemeral**: it is empty when a run starts and is removed when the run ends,
 for `native: true` and isolated jobs alike, and the Kubernetes agent behaves the same way (a Pod's
 workspace is an `emptyDir`, and a reused Pod's is emptied before every run). The only thing that
-survives from one run to the next is a [named volume](#named-volumes) a job mounts. See
+survives from one run to the next is a [named volume](#named-volumes) a job mounts. Disk is guarded
+at claim time: when the workspace filesystem has less free space than `minFreeDisk` (default `1%`) the
+agent stops claiming altogether, and a named volume below it only keeps back the runs that mount it
+(they stay `Queued`); see [Operations: Workspace and Claim-Container
+Hygiene](operations.md#workspace-and-claim-container-hygiene). See
 [Volumes](../user-guide/writing-jobs/volumes.md) for the job-author view and the [migration
 guide](migrations/2026-10-20-named-volumes.md) if you are coming from an earlier release, where a
 host agent kept `working<N>/<job>` between runs.

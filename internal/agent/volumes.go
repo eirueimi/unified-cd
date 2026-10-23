@@ -56,6 +56,11 @@ type VolumeManager struct {
 	// cheaper than tracking who is waiting for what.
 	changed chan struct{}
 
+	// gated holds the volumes the disk gate currently withholds from new claims
+	// (see SetGated). Guarded by mu, like holders, so an assignment reads the
+	// same gate state the claim advertised.
+	gated map[string]struct{}
+
 	// pinned holds absolute native mount paths whose link could not be
 	// removed: their reservation is never released (see pinPath).
 	pinned map[string]struct{}
@@ -473,7 +478,27 @@ func (m *VolumeManager) assignLocked(runID string, declared [][]string, pathKeys
 		_, mine := m.holders[n][runID]
 		return mine || m.vols[n].mode == VolumeModeShared || len(m.holders[n]) == 0
 	}
-	return ChooseVolumes(declared, free)
+	return ChooseVolumesAvoiding(declared, free, func(n string) bool {
+		_, g := m.gated[n]
+		return g
+	})
+}
+
+// SetGated records which volumes the disk gate currently withholds (the same
+// list the claim reports as busy). It only steers the choice among an entry's
+// candidates, see ChooseVolumesAvoiding; it never makes a volume unusable.
+// Safe on a nil manager.
+func (m *VolumeManager) SetGated(names []string) {
+	if m == nil {
+		return
+	}
+	g := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		g[n] = struct{}{}
+	}
+	m.mu.Lock()
+	m.gated = g
+	m.mu.Unlock()
 }
 
 // maxVolumeSearchNodes bounds one pass of the assignment search. The caller
@@ -552,6 +577,32 @@ func ChooseVolumes(declared [][]string, free func(string) bool) (chosen []string
 	// Distinct volumes cannot exist: aliasing is the only reading of the job.
 	a, ab = assignDistinct(declared, free, true)
 	return a, a != nil, ab
+}
+
+// ChooseVolumesAvoiding is ChooseVolumes that prefers volumes avoid does not
+// name (the ones the disk gate withholds). The controller only hands out a run
+// that has a non-gated candidate for every entry it could not otherwise serve,
+// so an entry listing a gated and a healthy volume must land on the healthy
+// one. If no assignment exists without the avoided volumes, it falls back to
+// plain ChooseVolumes: the run was already claimed, and the gate steers, it
+// does not fail runs. With nothing avoided it is exactly ChooseVolumes.
+func ChooseVolumesAvoiding(declared [][]string, free, avoid func(string) bool) (chosen []string, ok, abandoned bool) {
+	anyAvoided := false
+	for _, set := range declared {
+		for _, n := range set {
+			if avoid(n) {
+				anyAvoided = true
+			}
+		}
+	}
+	if !anyAvoided {
+		return ChooseVolumes(declared, free)
+	}
+	chosen, ok, _ = ChooseVolumes(declared, func(n string) bool { return free(n) && !avoid(n) })
+	if ok {
+		return chosen, true, false
+	}
+	return ChooseVolumes(declared, free)
 }
 
 // assignDistinct searches for one volume per entry, trying each entry's
